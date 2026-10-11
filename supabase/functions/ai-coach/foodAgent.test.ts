@@ -9,6 +9,7 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import { FOOD_AGENT_SYSTEM, type FoodAgentDeps, historyMessages, LAST_TURN_NOTE, MAX_TURNS, recentDays, runFoodAgent, statusFor } from "./foodAgent.ts";
 import type { ParseMealResult } from "./parseMeal.ts";
+import { SONNET_MODEL } from "../_shared/sonnet.ts";
 
 type Use = { name: string; input: Record<string, unknown> };
 
@@ -137,8 +138,12 @@ Deno.test("the cap is code: five calls, the last says so, and its read never run
   if (out.kind === "failed") assertEquals(out.reason, "read_on_last_turn");
   // Four reads ran. The fifth turn asked for one and did not get it.
   assertEquals(log.length, 4);
-  assertEquals(bodies[4].system, FOOD_AGENT_SYSTEM + LAST_TURN_NOTE);
-  assertEquals(bodies[3].system, FOOD_AGENT_SYSTEM);
+  // The note is appended to the messages on the last turn; the system prompt
+  // never changes between turns.
+  for (const b of bodies) assertEquals(b.system, FOOD_AGENT_SYSTEM);
+  const lastMessages = bodies[4].messages as { role: string; content: unknown }[];
+  assertEquals(lastMessages[lastMessages.length - 1], { role: "system", content: LAST_TURN_NOTE });
+  assertEquals(lastMessages.filter((m) => m.role === "system").length, 1);
 });
 
 Deno.test("log_food with text reuses the parse already done for that text", async () => {
@@ -350,4 +355,20 @@ Deno.test("log_food can put one message's food in two sections", async () => {
   assertEquals(out.kind, "log");
   if (out.kind !== "log") return;
   assertEquals(out.result.parsed!.items.map((i) => [i.food_name, i.meal_type]), [["oats", "breakfast"], ["oats", "snack"]]);
+});
+
+Deno.test("Sonnet 5.5: no forced tool_choice, and no thinking, on every turn", async () => {
+  // Sonnet 5.5 returns a 400 for tool_choice "any" or "tool"; one left in
+  // would fail every multi-step food message.
+  const bodies: Record<string, unknown>[] = [];
+  const base = deps(scripted([
+    [{ name: "coach_list_logged_meals", input: { days_ago: 1 } }],
+    [{ name: "reply", input: { text: "Nothing logged yesterday." } }],
+  ], bodies), []);
+  await runFoodAgent(INPUT, { ...base, model: SONNET_MODEL });
+  assertEquals(bodies.length, 2);
+  for (const b of bodies) {
+    assertEquals(b.tool_choice, undefined);
+    assertEquals(b.thinking, { type: "between_tools" });
+  }
 });

@@ -3,12 +3,14 @@ import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 import {
   buildSystemPrompt,
+  CATALOG_MODES,
   CREATE_CUSTOM_FOOD_TOOL,
   CREATE_CUSTOM_MEAL_TOOL,
   LIST_LOGGED_MEALS_TOOL,
   MEMORY_TOOL_NAMES,
   STRUCTURED_TOOLS,
   TERMINAL_TOOLS,
+  withExerciseCatalog,
 } from "./prompt.ts";
 import { lookupAppGuide } from "./appGuide.ts";
 import {
@@ -23,6 +25,7 @@ import {
   summarizeMeasurements,
 } from "./memory.ts";
 import { envInt } from "../_shared/envInt.ts";
+import { requireTool, retryTool, SONNET_MODEL, SONNET_SETTINGS, sonnetSettings } from "../_shared/sonnet.ts";
 import { AI_LIMITS } from "../_shared/aiLimits.ts";
 import { isTimeZone } from "../_shared/wallClock.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
@@ -127,8 +130,12 @@ if (!CLERK_ISSUER) {
 const RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RATE_LIMIT_MAX = AI_LIMITS.proChat;
 const PREVIEW_MAX_CHARS = 200;
-const MODEL = "claude-sonnet-4-6";
+const MODEL = SONNET_MODEL;
 const MAX_TOOL_ITERATIONS = 5;
+// What the user sees when Sonnet declines a turn on safety grounds (a 200 with
+// stop_reason "refusal" and no text). Rare for a fitness coach, but an empty
+// bubble reads as a crash.
+const REFUSAL_REPLY = "I can't help with that one. Ask me about your training, food or recovery.";
 // Mode-aware token budgets. Chat replies stay tight (the rubric rewards
 // concise coaching prose). Single-workout generation needs ~700–1500 tokens
 // for the JSON tool input plus the 1-line intent. Plan generation easily
@@ -137,16 +144,19 @@ const MAX_TOOL_ITERATIONS = 5;
 // when the model hits the cap mid-tool-emission → stop_reason flips to
 // "max_tokens", the tool_use block is incomplete, and the client gets a
 // `structured: null` payload.
-const CHAT_MAX_TOKENS = 1024;
-const GENERATE_WORKOUT_MAX_TOKENS = 2048;
-const GENERATE_PLAN_MAX_TOKENS = 4096;
+// Every budget here went up ~30% with Sonnet 5.5, whose tokenizer counts the
+// same text as ~30% more tokens than Sonnet 4.6's (1024, 2048, 4096, 6144
+// before). Same outputs, same headroom.
+const CHAT_MAX_TOKENS = 1400;
+const GENERATE_WORKOUT_MAX_TOKENS = 2700;
+const GENERATE_PLAN_MAX_TOKENS = 5400;
 // generate_program has its own ceiling. Measured from a real 6-phase emission
 // (~465 chars of prose per phase + ~250 of JSON keys/numbers) a schema-max
 // 12-phase program is ~9.5k chars, roughly 2.4-2.7k tokens. 4096 covered that
 // but thinly. Anthropic bills actual output, so the extra ceiling costs nothing
 // on the typical 2-6 phase program and only exists for the tail. Truncation is
 // still hard-errored (tool_truncated), never silently dropped.
-const GENERATE_PROGRAM_MAX_TOKENS = 6144;
+const GENERATE_PROGRAM_MAX_TOKENS = 8000;
 const ANTHROPIC_MAX_TOKENS = CHAT_MAX_TOKENS; // default; overridden per-mode
 // Every model-call timeout below reads its budget through the shared envInt
 // (../_shared/envInt.ts), so any of them can be retuned from the Edge
@@ -173,7 +183,10 @@ const RETRIEVAL_QUERY_TIMEOUT_MS = envInt("RETRIEVAL_QUERY_TIMEOUT_MS", 8000);
 // NOT the coach 30/24h window: meals happen several times a day and must not
 // eat chat quota. Web search (tier 3 of the fallback ladder) is env-gated so
 // it can be killed without a redeploy if costs or quality surprise us.
-const PARSE_MEAL_MODEL = "claude-haiku-4-5";
+// Haiku 5.5 since 2026-10-11: 99/102 on the parse_meal eval against 98/102
+// for Haiku 4.5, at a tenth of the per-token price. It thinks by default on
+// unforced turns (the web lookup loop), so watch latency there.
+const PARSE_MEAL_MODEL = "claude-haiku-5-5";
 
 // ── Food intent routing (log vs create) ─────────────────────────────────────
 // TypeSafe's Jev decides whether a message is "I ate this" or "save this for
@@ -212,7 +225,8 @@ async function classifyFoodIntentWithModel(text: string): Promise<FoodIntent | n
   if (!ANTHROPIC_API_KEY) return null;
   const res = await callAnthropic({
     model: PARSE_MEAL_MODEL,
-    max_tokens: 64,
+    // 96, not 64: Haiku 5.5 counts the same text as ~30% more tokens.
+    max_tokens: 96,
     system:
       "You route messages typed into a food tracking app. Decide on the INSTRUCTION in the message, " +
       "not on the food it describes. Creating requires an EXPLICIT ask to save, create, or remember a " +
@@ -472,7 +486,12 @@ async function replyToFoodBarChat(
     : "";
   const res = await callWithDiaryReads({
     model: PARSE_MEAL_MODEL,
-    max_tokens: 300,
+    // Haiku 5.5 thinks before an unforced reply, and thinking spends this cap.
+    // At 300 it could run out mid-thought and return no text, which the caller
+    // serves as the canned decline. Low effort keeps the thinking short; the
+    // prompt, not the cap, keeps the reply to three sentences.
+    max_tokens: 1024,
+    output_config: { effort: "low" },
     system:
       "You are Coach Drona, answering inside the food logging box of a fitness app. The user typed something that is not a meal. " +
       `${canDo} ${diary}` +
@@ -514,7 +533,8 @@ async function draftFoodCreate(
     : "";
   const res = await callWithDiaryReads({
     model: PARSE_MEAL_MODEL,
-    max_tokens: 900,
+    // 1200, not 900: Haiku 5.5 counts the same text as ~30% more tokens.
+    max_tokens: 1200,
     system:
       "The user asked to SAVE a food or meal in a fitness app. Call exactly one tool. " +
       "create_custom_food for one thing with no parts; create_custom_meal for a named dish described by its ingredients. " +
@@ -588,6 +608,7 @@ function startFoodAgent(args: {
   admin: any;
   userId: string;
   recentTurns: { role: "user" | "drona"; text: string }[];
+  brandWeb: boolean;
   onStatus?: (label: string) => void;
 }): Promise<FoodAgentOutcome | null> {
   return args.intentP.then(async (d) => {
@@ -609,7 +630,7 @@ function startFoodAgent(args: {
         // A fresh parse without onProgress: the agent's parses must not paint
         // rows on the card behind its back.
         parseFood: (t) =>
-          runParseMeal(makeParseDeps(args.userClient, args.admin, args.userId), {
+          runParseMeal(makeParseDeps(args.userClient, args.admin, args.userId, { brandWeb: args.brandWeb }), {
             text: t,
             localHour: args.localHour,
             mealHint: args.mealHint,
@@ -754,9 +775,10 @@ function foodIntentStep(d: FoodIntentDecision | null, outcome?: FoodBarOutcome):
 // The DECIDE call's budget. It writes one line per item plus the Drona line,
 // so it scales with the item count, and that ceiling went from 12 to 50
 // (MAX_ITEMS_PER_PARSE). 1600 was sized for twelve; a long day would have been
-// cut off mid-JSON. 5000 matches the extract budgets - a cap, not a target, so
-// an ordinary two-item meal costs exactly what it did before.
-const PARSE_MEAL_MAX_TOKENS = 5000;
+// cut off mid-JSON. It matches the extract budgets - a cap, not a target, so
+// an ordinary two-item meal costs exactly what it did before. 5000 until Haiku
+// 5.5, which counts the same text as ~30% more tokens; 6500 since.
+const PARSE_MEAL_MAX_TOKENS = 6500;
 // #1 latency instrumentation: per-isolate parse counter; ==1 means the isolate
 // was cold for this request (proxy for cold-start cost we cannot time inside).
 let PARSE_ISOLATE_REQUESTS = 0;
@@ -780,6 +802,16 @@ const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on
 // The user's own food memory (userFoodMemory.ts, migration 0149): on unless
 // set to "off", a kill switch that needs no deploy.
 const USER_FOOD_MEMORY = (Deno.env.get("USER_FOOD_MEMORY") ?? "on").trim().toLowerCase() !== "off";
+// Precise on Tavily: one model-written retry search when the fixed ones miss.
+const SEARCH_REWRITE = (Deno.env.get("SEARCH_REWRITE") ?? "on").trim().toLowerCase() !== "off";
+
+// Thorough's row check (thoroughMatch.ts): Jev asks whether the catalog row
+// IS the food named, and a "no" makes decide estimate. Same values and same
+// rule as PRECISE_MATCH_MODE: off unless set on purpose.
+const THOROUGH_MATCH_MODE: "off" | "shadow" | "on" = (() => {
+  const v = (Deno.env.get("THOROUGH_MATCH_MODE") ?? "off").trim().toLowerCase();
+  return v === "shadow" || v === "on" ? v : "off";
+})();
 
 const PRECISE_MATCH_MODE: "off" | "shadow" | "on" = (() => {
   const v = (Deno.env.get("PRECISE_MATCH_MODE") ?? "off").trim().toLowerCase();
@@ -840,12 +872,12 @@ const RETRIEVAL_QUERY_CAP = 4000; // max chars sent to Voyage per query
 // embedding (see buildRetrievalQuery). Shorter ones are already close enough to
 // question-shaped that the extra hop costs latency for nothing.
 const RETRIEVAL_REWRITE_MIN_CHARS = 180;
-const RETRIEVAL_QUERY_MODEL = "claude-haiku-4-5";
+const RETRIEVAL_QUERY_MODEL = "claude-haiku-5-5";
 const VOYAGE_TIMEOUT_MS = envInt("VOYAGE_TIMEOUT_MS", 6000);
 
 // SSE keepalive. The streaming coach turn can go completely silent on the
 // wire for minutes: only `text_delta` is forwarded to the client, and a
-// forced terminal tool (generate_program above all — 6144 max_tokens, the
+// required terminal tool (generate_program above all — 8000 max_tokens, the
 // largest budget of any mode) emits its whole payload as `input_json_delta`,
 // which is accumulated server-side and never sent. generate_plan is shielded
 // by the fan-out's plan_skeleton/plan_day events; program modes have no
@@ -1499,7 +1531,12 @@ async function buildRetrievalQuery(
   const startMs = Date.now();
   const result = await callAnthropic({
     model: RETRIEVAL_QUERY_MODEL,
-    max_tokens: 100,
+    // 100 under Haiku 4.5; ~30% up for Haiku 5.5's tokenizer.
+    max_tokens: 130,
+    // This hop runs before the coach's first token. Haiku 5.5 thinks by
+    // default, which would add latency and spend the cap on reasoning a
+    // one-line rewrite does not need; off is accepted at its default effort.
+    thinking: { type: "disabled" },
     system:
       "Rewrite the lifter's message as ONE short exercise-science search question " +
       "capturing what evidence would answer it. Strip greetings, their specific " +
@@ -1552,7 +1589,8 @@ async function buildRetrievalQuery(
 
 // ── Anthropic API ───────────────────────────────────────────────────────────
 interface AnthropicMessage {
-  role: "user" | "assistant";
+  // "system" is a mid-conversation operator note (requireTool), Sonnet 5.5+.
+  role: "user" | "assistant" | "system";
   content: string | unknown[];
 }
 
@@ -1714,13 +1752,16 @@ async function runStreamingToolLoop(
   let hitIterationCap = false;
   let structured: { name: string; input: Record<string, unknown> } | null = null;
 
+  // Sonnet 5.5 rejects a forced tool_choice, so the required tool is named in
+  // an appended system note instead (requireTool). It must follow a user turn;
+  // the client always ends on one, but an unexpected history falls back to the
+  // retry below rather than sending a 400.
+  const lastRole = conversation[conversation.length - 1]?.role;
+  if (forceTool && lastRole === "user") conversation.push(requireTool(forceTool));
+  // One second ask when the model answers a required turn in text.
+  let retriedForce = false;
+
   for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
-    // forceTool ONLY on the first iteration. Once the terminal tool has
-    // fired (or after a follow-up turn appended tool_results), the model
-    // should be free to either chat or call another tool.
-    const toolChoice = (forceTool && iter === 0)
-      ? { type: "tool" as const, name: forceTool }
-      : undefined;
     const iterStartedAt = Date.now();
 
     // Same hung-upstream guard as the non-streaming callAnthropic. The abort
@@ -1745,7 +1786,7 @@ async function runStreamingToolLoop(
           tools,
           messages: conversation,
           stream: true,
-          ...(toolChoice ? { tool_choice: toolChoice } : {}),
+          ...SONNET_SETTINGS,
         }),
         signal: streamAbort.signal,
       });
@@ -1798,6 +1839,22 @@ async function runStreamingToolLoop(
             sse.write("delta", { text: d.text });
           } else if (d.type === "input_json_delta") {
             blk._input += d.partial_json;
+          } else if (d.type === "thinking_delta") {
+            // between_tools: a progress note written between tool calls ("Let
+            // me check your bench history."). Sonnet 4.6 sent these as text, so
+            // they stream to the user as before.
+            blk.thinking = (blk.thinking ?? "") + d.thinking;
+            if (!wroteTextThisIteration && iter > 0 && accumulatedText && !/\s$/.test(accumulatedText)) {
+              accumulatedText += "\n\n";
+              sse.write("delta", { text: "\n\n" });
+            }
+            wroteTextThisIteration = true;
+            accumulatedText += d.thinking;
+            sse.write("delta", { text: d.thinking });
+          } else if (d.type === "signature_delta") {
+            // The block must go back to the API unchanged, signature included,
+            // or the next iteration's request is rejected.
+            blk.signature = (blk.signature ?? "") + d.signature;
           }
         } else if (t === "content_block_stop") {
           const blk = blocks[event.index];
@@ -1856,6 +1913,26 @@ async function runStreamingToolLoop(
           sse.write("error", { error: msg, code: "tool_truncated" });
           throw new Error(msg);
         }
+      }
+      if (stopReason === "refusal") {
+        // A safety decline arrives as a normal 200. Say something rather than
+        // ending on an empty bubble.
+        trace.tool_calls.push("__refusal");
+        if (!accumulatedText.trim()) {
+          accumulatedText = REFUSAL_REPLY;
+          sse.write("delta", { text: REFUSAL_REPLY });
+        }
+        return { finalText: accumulatedText, totalInput, totalOutput, totalCacheCreation, totalCacheRead, hitIterationCap, structured };
+      }
+      // A required tool answered in text: ask once more, keeping the model's
+      // own reply in the history. Forcing used to make this impossible.
+      // Only a reply with text goes back: an empty or note-only assistant turn can be rejected.
+      if (forceTool && !retriedForce && stopReason === "end_turn" && cleanBlocks.some((b: any) => b.type === "text") && iter < MAX_TOOL_ITERATIONS - 1) {
+        retriedForce = true;
+        trace.tool_calls.push(`${forceTool}__retry`);
+        conversation.push({ role: "assistant", content: cleanBlocks });
+        conversation.push(retryTool(forceTool));
+        continue;
       }
       // Model is done — we've streamed all the text already.
       return { finalText: accumulatedText, totalInput, totalOutput, totalCacheCreation, totalCacheRead, hitIterationCap, structured };
@@ -1945,11 +2022,13 @@ async function loadExerciseCatalog(admin: SupabaseClient): Promise<string[]> {
  *  the whole body before parsing anyway, so streaming buys nothing here. */
 function makeTextCaller(): TextCaller {
   return async ({ system, messages, maxTokens, model, label }) => {
+    const m = model ?? MODEL;
     const res = await callAnthropic({
-      model: model ?? MODEL,
+      model: m,
       max_tokens: maxTokens,
       system,
       messages,
+      ...sonnetSettings(m),
     });
     if (!res.ok) throw new Error(`${label}: anthropic ${res.status}: ${res.body.slice(0, 160)}`);
     const blocks: Array<{ type: string; text?: string }> = res.data.content ?? [];
@@ -2764,6 +2843,9 @@ function makeParseDeps(
   userClient: SupabaseClient,
   admin: SupabaseClient,
   userId: string,
+  /** Pro and trialing only. A web lookup is Anthropic's or Tavily's fee, the
+   *  same reason Precise is Pro-only; absent means no web. */
+  opts: { brandWeb?: boolean } = {},
 ): ParseMealDeps {
   let searchCountryP: Promise<string | null> | undefined;
   return {
@@ -2824,7 +2906,7 @@ function makeParseDeps(
           .maybeSingle();
         if (error) {
           console.log(`[parse_meal] precise_cache upsert failed: ${error.message}`);
-          return;
+          return null;
         }
         // The meaning-search embedding (0141). Awaited so the isolate does not
         // drop it, but never allowed to fail the write that already landed.
@@ -2839,17 +2921,20 @@ function makeParseDeps(
             if (up.error) console.log(`[parse_meal] precise_cache embedding update failed: ${up.error.message}`);
           }
         }
+        // The row's id, so the user's words can be stored as its alias.
+        return written?.id ?? null;
       }
       : undefined,
-    preciseAliasPut: async (aliasKey: string, rowId: string, confidence: number) => {
+    preciseAliasPut: async (aliasKey: string, rowId: string, confidence: number | null, source: "jev" | "lookup" = "jev") => {
       // ignoreDuplicates: the first mapping of a phrase wins and is never repointed.
       const { error } = await admin.from("precise_alias").upsert(
-        { alias_key: aliasKey, row_id: rowId, source: "jev", confidence },
+        { alias_key: aliasKey, row_id: rowId, source, confidence },
         { onConflict: "alias_key", ignoreDuplicates: true },
       );
       if (error) console.log(`[parse_meal] precise_alias upsert failed: ${error.message}`);
     },
     webLookup: PRECISE_WEB_PROVIDER,
+    searchRewrite: SEARCH_REWRITE,
     tavily: TAVILY_API_KEY ? { apiKey: TAVILY_API_KEY, timeoutMs: 20_000, log: (m) => console.log(m) } : undefined,
     // Time is not Precise's constraint, so relevance gets a longer leash than
     // the food-intent race does.
@@ -2868,6 +2953,18 @@ function makeParseDeps(
           if (!keys.length) return [];
           const { data } = await userClient.from("user_food_cache").select("*").overlaps("aliases", keys);
           return (data ?? []).map((c) => ({ ...cachedMemoryEntry(c as Record<string, unknown>), alias_lookup: true }));
+        },
+      }
+      : undefined,
+    thoroughMatch: THOROUGH_MATCH_MODE !== "off" && JEV_API_KEY
+      ? {
+        mode: THOROUGH_MATCH_MODE,
+        brandWeb: opts.brandWeb === true,
+        sourcesOf: async (ids: string[]) => {
+          if (ids.length === 0) return new Map<string, string>();
+          const { data, error } = await admin.from("foods").select("id, source").in("id", ids);
+          if (error) throw new Error(error.message);
+          return new Map(((data ?? []) as Array<{ id: string; source: string }>).map((r) => [r.id, r.source]));
         },
       }
       : undefined,
@@ -3165,6 +3262,12 @@ async function handleParseMealRequest(args: {
             r.meal_type === "dinner" || r.meal_type === "snack"
           ? r.meal_type
           : undefined,
+        ...(typeof r.said_name === "string" && r.said_name.trim()
+          // Control characters stripped: it becomes a web search term and is
+          // shown back to extract inside previous_meal.
+          ? { said_name: r.said_name.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 100) }
+          : {}),
+        ...(r.research === true ? { research: true } : {}),
       }];
     })
     : [];
@@ -3375,7 +3478,7 @@ async function handleParseMealRequest(args: {
     // path (type, send, close the app), so cancel() is a no-op and the parse
     // runs through to the diary write. parseAbortFor scopes that to the flag.
     const abort = parseAbortFor(autoLogArmed);
-    const deps = { ...makeParseDeps(userClient, admin, userId), abortSignal: abort.signal };
+    const deps = { ...makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier }), abortSignal: abort.signal };
     const stream = new ReadableStream({
       cancel() {
         abort.cancel();
@@ -3404,7 +3507,7 @@ async function handleParseMealRequest(args: {
         void intentP.then((d) => { settledIntent = d; });
         const agentP = startFoodAgent({
           intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary,
-          contextPromise, userClient, admin, userId, recentTurns,
+          contextPromise, userClient, admin, userId, recentTurns, brandWeb: !parseFreeTier,
           // Builds that do not know this event skip it (dietData ignores
           // unknown events), so this needs no capability of its own.
           onStatus: (label) => send("status", { label }),
@@ -3628,13 +3731,13 @@ async function handleParseMealRequest(args: {
     const agentP = startFoodAgent({
       intentP, supportsCreate, text, mealHint, localHour, localDate,
       mode: wantsSuper ? "super" : wantsFast ? "fast" : null,
-      savedMealsP, readDiary, contextPromise, userClient, admin, userId, recentTurns,
+      savedMealsP, readDiary, contextPromise, userClient, admin, userId, recentTurns, brandWeb: !parseFreeTier,
     });
     const work = (async () => {
       const pendingMeal = foodContext.pendingMeal && (await intentP)?.intent === "continue"
         ? foodContext.pendingMeal : null;
       const firstParse = await runParseMeal(
-        makeParseDeps(userClient, admin, userId),
+        makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier }),
         {
           text,
           localHour,
@@ -3901,30 +4004,54 @@ async function handleAnonOnboardingProgram(args: {
     mode: "generate_program",
   });
 
-  const apiResult = await callAnthropic({
-    model: MODEL,
-    max_tokens: GENERATE_PROGRAM_MAX_TOKENS,
-    system,
-    tools,
-    messages: [{ role: "user", content: programMessage }],
-    tool_choice: { type: "tool", name: "generate_program" },
-  });
-  if (!apiResult.ok) {
-    trace.status = "anthropic_error";
-    trace.error_message = `anon_anthropic_${apiResult.status}: ${preview(apiResult.body) ?? ""}`;
-    return respond({ error: "generation_failed" }, 502);
+  // Required, not forced (Sonnet 5.5 rejects forced tool_choice): the tool is
+  // named in a system note, and a text-only answer gets one second ask.
+  const messages: AnthropicMessage[] = [
+    { role: "user", content: programMessage },
+    requireTool("generate_program"),
+  ];
+  type Block = { type: string; name?: string; input?: Record<string, unknown> };
+  let toolUse: Block | undefined;
+  for (let attempt = 0; attempt < 2 && !toolUse; attempt++) {
+    const apiResult = await callAnthropic({
+      model: MODEL,
+      max_tokens: GENERATE_PROGRAM_MAX_TOKENS,
+      system,
+      tools,
+      messages,
+      ...SONNET_SETTINGS,
+    });
+    if (!apiResult.ok) {
+      trace.status = "anthropic_error";
+      trace.error_message = `anon_anthropic_${apiResult.status}: ${preview(apiResult.body) ?? ""}`;
+      return respond({ error: "generation_failed" }, 502);
+    }
+
+    const usage = apiResult.data.usage ?? {};
+    trace.input_tokens = (trace.input_tokens ?? 0) + (usage.input_tokens ?? 0);
+    trace.output_tokens = (trace.output_tokens ?? 0) + (usage.output_tokens ?? 0);
+
+    const blocks: Block[] = apiResult.data.content ?? [];
+    const stop = apiResult.data.stop_reason;
+    toolUse = blocks.find((b) => b.type === "tool_use" && b.name === "generate_program");
+    // A program cut off at the cap parses to a partial object; do not ship it.
+    if (toolUse && stop === "max_tokens") {
+      trace.status = "internal_error";
+      trace.error_message = "anon: generate_program truncated at max_tokens";
+      return respond({ error: "no_program" }, 502);
+    }
+    if (toolUse) break;
+    // Only a plain text answer earns a second ask. A refusal, a cap hit or an
+    // empty reply would get the same result again, billed twice.
+    if (stop !== "end_turn" || !blocks.some((b) => b.type === "text")) {
+      trace.error_message = `anon: no generate_program (stop_reason ${stop ?? "none"})`;
+      break;
+    }
+    messages.push({ role: "assistant", content: blocks }, retryTool("generate_program"));
   }
-
-  const usage = apiResult.data.usage ?? {};
-  trace.input_tokens = usage.input_tokens ?? null;
-  trace.output_tokens = usage.output_tokens ?? null;
-
-  const blocks: Array<{ type: string; name?: string; input?: Record<string, unknown> }> =
-    apiResult.data.content ?? [];
-  const toolUse = blocks.find((b) => b.type === "tool_use" && b.name === "generate_program");
   if (!toolUse?.input) {
     trace.status = "internal_error";
-    trace.error_message = "anon: no generate_program tool_use in response";
+    trace.error_message = trace.error_message ?? "anon: no generate_program tool_use in response";
     return respond({ error: "no_program" }, 502);
   }
 
@@ -4609,6 +4736,12 @@ Deno.serve(async (req) => {
     });
   }
 
+  // After the fan-out branch on purpose: fan-out adds its own catalog block,
+  // and two would double the input and the cache markers.
+  if (CATALOG_MODES.has(mode ?? "")) {
+    system = withExerciseCatalog(system, await loadExerciseCatalog(admin)) as typeof system;
+  }
+
   // ── Streaming branch (Phase 2.6) ────────────────────────────────────────
   // Client opts in via `stream: true` in the request body. We return an SSE
   // response and the tool-use loop runs in a fire-and-forget IIFE, writing
@@ -4652,7 +4785,7 @@ Deno.serve(async (req) => {
     // across 45 days while users were reporting failures — every stream that
     // died took its own trace row with it.
     keepAlive((async () => {
-      // Keeps the socket warm through the long silent stretch of a forced
+      // Keeps the socket warm through the long silent stretch of a terminal
       // tool emission. Cleared in the finally below, and self-latching once
       // the client disconnects (see SSEWriter.comment).
       const heartbeat = SSE_HEARTBEAT_MS > 0
@@ -4771,8 +4904,8 @@ Deno.serve(async (req) => {
   // 6. Non-streaming tool-use loop (legacy / fallback path).
   //
   // Keep behavior in sync with the streaming branch above:
-  //  - same per-mode max_tokens budget (so generate_plan gets 4096)
-  //  - force tool_choice on iter 0 when force_tool is set
+  //  - same per-mode max_tokens budget (so generate_plan gets 5400)
+  //  - require the force_tool tool on iter 0 (requireTool note; Sonnet 5.5 rejects forcing)
   //  - terminal tools (generate_workout / generate_plan) are NOT executed;
   //    their input IS the structured response, returned in `structured`
   //    just like the streaming `done` event does
@@ -4800,23 +4933,24 @@ Deno.serve(async (req) => {
   let finalText: string | null = null;
   let structured: { name: string; input: Record<string, unknown> } | null = null;
 
+  // The required tool is named in an appended system note, not forced
+  // (Sonnet 5.5 rejects forced tool_choice). Identical to streaming behavior.
+  // Use effectiveForceTool here so refine modes (which set it to null even
+  // when forceTool was technically present) never require one.
+  if (effectiveForceTool && conversation[conversation.length - 1]?.role === "user") {
+    conversation.push(requireTool(effectiveForceTool));
+  }
+  let retriedForce = false;
+
   try {
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
-      // Force the matching terminal tool ONLY on the first iteration so
-      // follow-up turns (after we've appended tool_results) are free to
-      // either chat or call another tool. Identical to streaming behavior.
-      // Use effectiveForceTool here so refine modes (which set it to null
-      // even when forceTool was technically present) never auto-force.
-      const toolChoice = (effectiveForceTool && iter === 0)
-        ? { type: "tool" as const, name: effectiveForceTool }
-        : undefined;
       const apiResult = await callAnthropic({
         model: MODEL,
         max_tokens: nonStreamMaxTokens,
         system,
         tools,
         messages: conversation,
-        ...(toolChoice ? { tool_choice: toolChoice } : {}),
+        ...SONNET_SETTINGS,
       });
 
       if (!apiResult.ok) {
@@ -4837,6 +4971,25 @@ Deno.serve(async (req) => {
 
       const stopReason = data.stop_reason;
       const contentBlocks: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }> = data.content ?? [];
+
+      // A required tool answered in text: ask once more, as in streaming.
+      if (stopReason === "end_turn" && effectiveForceTool && !retriedForce && contentBlocks.some((b) => b.type === "text") && iter < MAX_TOOL_ITERATIONS - 1) {
+        retriedForce = true;
+        trace.tool_calls.push(`${effectiveForceTool}__retry`);
+        conversation.push({ role: "assistant", content: contentBlocks });
+        conversation.push(retryTool(effectiveForceTool));
+        continue;
+      }
+      if (stopReason === "refusal") {
+        // Same as streaming: keep any text the model wrote before declining.
+        trace.tool_calls.push("__refusal");
+        finalText = contentBlocks
+          .filter((b) => b.type === "text")
+          .map((b) => b.text ?? "")
+          .join("\n")
+          .trim() || REFUSAL_REPLY;
+        break;
+      }
 
       // Final response: no more tool calls. Extract text and exit loop.
       if (stopReason !== "tool_use") {
