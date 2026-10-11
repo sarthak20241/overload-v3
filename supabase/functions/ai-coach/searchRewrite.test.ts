@@ -407,7 +407,14 @@ Deno.test("the double check searches for the user's words, and the line takes th
 
 // ── The double check looks up the tapped line, and only that line ───────────
 
-function researchDeps(looked: string[], extraction: Record<string, unknown> = {}, extractSeen: string[] = []): ParseMealDeps {
+function researchDeps(
+  looked: string[],
+  extraction: Record<string, unknown> = {},
+  extractSeen: string[] = [],
+  /** Foods per lookup call, in call order; a call whose foods include `failOn` errors. */
+  calls: string[][] = [],
+  failOn?: string,
+): ParseMealDeps {
   const fetchFn = (async (_url: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body ?? "{}"));
     const tools: string[] = (body.tools ?? []).map((t: { name: string }) => t.name);
@@ -421,6 +428,8 @@ function researchDeps(looked: string[], extraction: Record<string, unknown> = {}
     if (name === "report_labels") {
       const items = JSON.parse(body.messages[0].content) as Array<{ name: string }>;
       looked.push(...items.map((i) => i.name));
+      calls.push(items.map((i) => i.name));
+      if (failOn && items.some((i) => i.name === failOn)) return new Response("overloaded", { status: 529 });
       return reply({ results: items.map((i) => ({ for_item: i.name, found: true, per_100: { kcal: 500, protein_g: 10, carb_g: 50, fat_g: 28 }, source_note: "label" })) });
     }
     throw new Error(`unexpected model call ${name}`);
@@ -454,10 +463,20 @@ Deno.test("the double check looks up only the tapped line, even the fourth, and 
   ]);
 });
 
-Deno.test("an old app that marks no line still gets the first three looked up", async () => {
-  const looked: string[] = [];
-  await runParseMeal(researchDeps(looked), ask(MEAL));
-  assertEquals(looked, ["chicken", "peanuts", "banana"]);
+Deno.test("nothing marked (an old app, 'check everything') looks up EVERY line, three per call", async () => {
+  const calls: string[][] = [];
+  const r = await runParseMeal(researchDeps([], {}, [], calls), ask(MEAL));
+  assertEquals(calls, [["chicken", "peanuts", "banana"], ["chicken breast"]]);
+  assertEquals(r.parsed!.items.map((i) => i.kcal), [500, 500, 500, 500]);
+});
+
+Deno.test("a seven-line meal is checked in three calls, and a failed call costs only its own lines", async () => {
+  const meal = ["oats", "milk", "whey", "almonds", "apple", "curd", "honey"].map((n) => line(n, 5, 10, 2));
+  const calls: string[][] = [];
+  const r = await runParseMeal(researchDeps([], {}, [], calls, "apple"), ask(meal));
+  assertEquals(calls.map((c) => c.length), [3, 3, 1]);
+  // apple's call failed: almonds, apple and curd keep their numbers; the rest take the label.
+  assertEquals(r.parsed!.items.map((i) => i.kcal), [500, 500, 500, 78, 78, 78, 500]);
 });
 
 // ── Typed double checks target the line they name ───────────────────────────
@@ -494,16 +513,18 @@ Deno.test("the tapped line wins over names the model read out of the text", asyn
   assertEquals(looked, ["banana"]);
 });
 
-Deno.test("names that match no line keep the first-three reach", async () => {
+Deno.test("a named food the card does not hold: Drona asks which line, and looks nothing up", async () => {
   const looked: string[] = [];
-  await runParseMeal(researchDeps(looked, { research_food_names: ["paneer"] }), ask(MEAL));
-  assertEquals(looked, ["chicken", "peanuts", "banana"]);
+  const r = await runParseMeal(researchDeps(looked, { research_food_names: ["paneer"] }), ask(MEAL));
+  assertEquals(looked, []);
+  assertEquals(r.parsed, null);
+  assertEquals(r.declined!.message, "Which one should I check? On the card: chicken, peanuts, banana, chicken breast.");
 });
 
 Deno.test("each name marks ONE line: 'milk' is the milk, not the milk tea", () => {
   const meal = [line("Chai / Milk Tea", 1, 5, 1), line("Milk", 3, 5, 3)];
-  assertEquals(markResearchTargets(meal, ["milk"]).map((p) => p.research === true), [false, true]);
-  assertEquals(markResearchTargets(meal, null), meal);
+  assertEquals(markResearchTargets(meal, ["milk"]).lines.map((p) => p.research === true), [false, true]);
+  assertEquals(markResearchTargets(meal, null), { lines: meal, unmatched: false });
 });
 
 Deno.test("an untouched line keeps the user's words through a double check", async () => {

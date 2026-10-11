@@ -4099,12 +4099,16 @@ export function removalNames(phrase: string, rowName: string): boolean {
  * looks up only those. A line the client already marked (the tapped button)
  * wins and the names are ignored. Each name resolves to ONE line, the same way
  * a removal does, by food_name or by the user's own words for the line. Names
- * that match nothing mark nothing, and research then keeps its first-three reach.
+ * that match nothing come back as `unmatched`, so the caller can ask.
  */
-export function markResearchTargets(previous: PreviousItem[], names: unknown): PreviousItem[] {
-  if (previous.some((p) => p.research === true) || !Array.isArray(names)) return previous;
+export function markResearchTargets(
+  previous: PreviousItem[],
+  names: unknown,
+): { lines: PreviousItem[]; unmatched: boolean } {
+  const none = { lines: previous, unmatched: false };
+  if (previous.some((p) => p.research === true) || !Array.isArray(names)) return none;
   const wanted = names.filter((n): n is string => typeof n === "string" && n.trim() !== "").map((n) => n.trim());
-  if (wanted.length === 0) return previous;
+  if (wanted.length === 0) return none;
   const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   const hit = new Set<PreviousItem>();
   for (const n of wanted) {
@@ -4117,8 +4121,10 @@ export function markResearchTargets(previous: PreviousItem[], names: unknown): P
     const line = previous.find((p) => p === target) ?? previous.find((p) => p.said_name === target.food_name);
     if (line) hit.add(line);
   }
-  if (hit.size === 0) return previous;
-  return previous.map((p) => (hit.has(p) ? { ...p, research: true } : p));
+  // Named, and nothing on the card answers to it: the caller asks which line,
+  // rather than guessing or checking lines the user never meant.
+  if (hit.size === 0) return { lines: previous, unmatched: true };
+  return { lines: previous.map((p) => (hit.has(p) ? { ...p, research: true } : p)), unmatched: false };
 }
 
 export function bestRemovalTarget(phrase: string, previous: PreviousItem[]): PreviousItem | null {
@@ -4936,6 +4942,9 @@ async function answerAboutPrevious(
  * Keeps their grams (they know what they ate) and replaces only the per-100
  * basis, which is the part that was in doubt.
  */
+/** Foods per double-check lookup call. See researchPrevious. */
+const RESEARCH_BATCH = 3;
+
 async function researchPrevious(
   deps: ParseMealDeps,
   previous: PreviousItem[],
@@ -4947,22 +4956,31 @@ async function researchPrevious(
   // the very row being doubted (a catalog row swapped in for their product),
   // and looking THAT up only confirms the mistake.
   const lookupName = (p: PreviousItem) => p.said_name?.trim() || p.food_name;
-  // The tapped line only, when the client says which one. Looking up the first
+  // The tapped or named lines only, when there are any. Looking up the first
   // three regardless re-priced lines nobody doubted (a remembered peanuts line
   // lost its own numbers to a web panel, 2026-10-11) and never reached a
-  // tapped fourth line at all. A typed "check these" marks nothing and keeps
-  // the old first-three reach.
+  // tapped fourth line at all. Nothing marked ("check everything", a bare yes)
+  // means every line: a check that silently skips lines is the worse failure.
   const marked = previous.filter((p) => p.research === true);
-  const pool = marked.length > 0 ? marked.slice(0, 3) : previous.slice(0, 3);
-  const targets: ExtractedItem[] = pool.map((p) => ({
+  const pool = marked.length > 0 ? marked : previous;
+  const asTarget = (p: PreviousItem): ExtractedItem => ({
     name: lookupName(p),
     brand: null,
     quantity: p.quantity,
     unit: p.serving_label,
     prep: null,
-  }));
-  const labels = await runWebLookup(deps, targets, onUsage, onCall).catch(() => null);
-  if (!labels || labels.size === 0) return null;
+  });
+  // One lookup call shares WEB_SEARCH_TOOL's max_uses searches across every
+  // food it is given, so a whole meal in one call starves each food. Groups of
+  // RESEARCH_BATCH run side by side instead: more calls, same wait.
+  const batches: PreviousItem[][] = [];
+  for (let i = 0; i < pool.length; i += RESEARCH_BATCH) batches.push(pool.slice(i, i + RESEARCH_BATCH));
+  const found = await Promise.all(
+    batches.map((b) => runWebLookup(deps, b.map(asTarget), onUsage, onCall).catch(() => null)),
+  );
+  const labels = new Map<string, WebLabel>();
+  for (const m of found) for (const [k, v] of m ?? []) labels.set(k, v);
+  if (labels.size === 0) return null;
 
   const items: ParsedItem[] = [];
   let changed = 0;
@@ -5698,7 +5716,25 @@ async function runParseMealCore(
   // spends web-search time on purpose: they have told us the fast answer was
   // wrong, so the slow one is worth it.
   if (hasPrevious && ext.requests_research === true) {
-    const targets = markResearchTargets(prevItems, ext.research_food_names);
+    const { lines: targets, unmatched } = markResearchTargets(prevItems, ext.research_food_names);
+    if (unmatched) {
+      // They named a food the card does not hold. Checking every line instead
+      // would spend lookups on food they did not ask about; ask which one.
+      const names = prevItems.slice(0, 6).map((p) => p.said_name?.trim() || p.food_name);
+      steps.push({ iter: 1, tool: "research_previous", input: { unmatched: ext.research_food_names } });
+      T.decide_ms = 0;
+      steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: false } });
+      return {
+        parsed: null,
+        declined: {
+          message: scrubDashes(`Which one should I check? On the card: ${names.join(", ")}.`).slice(0, 300),
+        },
+        usage,
+        tool_calls: toolCalls,
+        steps,
+        iterations: anthropicCalls,
+      };
+    }
     const researched = await researchPrevious(deps, targets, accumulate, () => anthropicCalls++)
       .catch(() => null);
     steps.push({
@@ -5706,7 +5742,7 @@ async function runParseMealCore(
       tool: "research_previous",
       input: {
         found: researched ? researched.items.length : 0,
-        // Which lines were looked up: the tapped or named ones, else null (first three).
+        // Which lines were looked up: the tapped or named ones, else null (all).
         targets: targets.some((p) => p.research) ? targets.filter((p) => p.research).map((p) => p.food_name) : null,
       },
     });
