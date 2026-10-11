@@ -25,6 +25,7 @@ import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { track } from '@/lib/analytics';
 import { normalizeFuelDays, type FuelDay } from '@/lib/fuelDays';
 import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from '@/lib/targetHistory';
+import { readSwapOptions, type SwapOption } from '@/lib/variantSwap';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
@@ -662,6 +663,13 @@ export interface ParsedMealItem {
    *  instead of "edited": the numbers are the user's, from My Meals. */
   saved_meal?: string | null;
 
+  /** Other variants the user also logs, priced from their own numbers, for the
+   *  one-tap swap chip (lib/variantSwap). Only on lines Drona answered from
+   *  the user's memory; absent from an older server build. */
+  alternatives?: SwapOption[];
+  /** False once the user swapped to a variant they log less, so the card
+   *  stops calling it their usual. Set only by swapToAlternative. */
+  usual?: boolean;
   /** The user's own words for this line, when the card names it differently
    *  (a catalog row, a product found under another name). The double check
    *  looks the food up by these, not by the card's name. */
@@ -696,7 +704,7 @@ export type AutoLogSkipped = 'declined' | 'implausible' | 'write_error';
 /** What this build's food bar can render, sent with every parse. A list rather
  *  than a boolean so the next capability (improvise, challenge) is one more
  *  string, not a second flag the server has to learn to read. */
-export const FOOD_BAR_CAPABILITIES = ['food_create'] as const;
+export const FOOD_BAR_CAPABILITIES = ['food_create', 'variant_swap'] as const;
 
 export interface PendingFoodMeal {
   status: 'awaiting_clarification';
@@ -801,6 +809,7 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
     // render rather than claiming a cross-check that never happened.
     verified: i.verified === true,
     ...(typeof i.saved_meal === 'string' && i.saved_meal.trim() ? { saved_meal: i.saved_meal.trim() } : {}),
+    alternatives: readSwapOptions(i.alternatives),
     ...(typeof i.said_name === 'string' && i.said_name.trim() ? { said_name: i.said_name.trim() } : {}),
   };
 }

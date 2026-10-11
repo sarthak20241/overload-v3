@@ -90,6 +90,9 @@ export interface MemoryFood {
    *  user's words describe but a different variant ("vanilla whey" beside
    *  "chocolate whey"), named on the card so the user can say which it was. */
   also?: string[];
+  /** The remembered rows behind `also`, so the card can offer each as a
+   *  one-tap swap priced from the user's own numbers (memoryAlternatives). */
+  alsoFoods?: MemoryFood[];
 }
 
 const RANK: Record<ParseTierName, number> = { fast: 1, thorough: 2, precise: 3 };
@@ -362,8 +365,12 @@ export function decideMemory(foods: MemoryFood[], scores: Array<number | null>, 
     trustOf(b.f) - trustOf(a.f) ||
     Date.parse(b.f.last_logged_at) - Date.parse(a.f.last_logged_at)
   );
-  const also = [...new Set(rest.filter((x) => differentVariants(x.f.name, best.f.name)).map((x) => x.f.name))].slice(0, 2);
-  return { food: { ...best.f, also }, confidence: best.p };
+  const seen = new Set<string>();
+  const alsoFoods = rest.filter((x) => differentVariants(x.f.name, best.f.name))
+    .filter((x) => !seen.has(x.f.name) && !!seen.add(x.f.name))
+    .slice(0, 2)
+    .map((x) => x.f);
+  return { food: { ...best.f, also: alsoFoods.map((f) => f.name), alsoFoods }, confidence: best.p };
 }
 
 export interface MemoryMatch {

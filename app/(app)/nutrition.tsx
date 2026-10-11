@@ -69,6 +69,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import type { MealType } from '@/lib/foods';
 import { formatServing, formatMacroGrams } from '@/lib/foods';
+import { swapToAlternative } from '@/lib/variantSwap';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
@@ -935,6 +936,19 @@ export default function NutritionScreen() {
   // How many times the user corrected the card before adding it. Read by
   // onAdd so "accepted untouched" and "fixed three lines first" are separable.
   const editCountRef = useRef(0);
+  /** One tap on a variant chip: the line becomes the variant the user also
+   *  logs, priced from their own numbers (lib/variantSwap). Pure client state
+   *  like every card edit; nothing is written until Add. */
+  const onSwapItem = useCallback((i: number, k: number) => {
+    editCountRef.current += 1;
+    track('parse_proposal_edited', { action: 'swap_variant' });
+    setFlow((f): ParseFlow => {
+      if (f.status !== 'review' || !f.meal.items[i]) return f;
+      const items = f.meal.items.map((it, idx) => (idx === i ? swapToAlternative(it, k) : it));
+      return { ...f, meal: { ...f.meal, items } };
+    });
+  }, []);
+
   const onRemoveItem = useCallback((i: number) => {
     editCountRef.current += 1;
     track('parse_proposal_edited', { action: 'remove_item' });
@@ -1447,6 +1461,7 @@ export default function NutritionScreen() {
               checkingIndex={flow.status === 'review' ? checkingIndex : null}
               onCheckItem={flow.status === 'review' ? onCheckItem : undefined}
               onRemoveItem={flow.status === 'review' && checkingIndex === null ? onRemoveItem : undefined}
+              onSwapItem={flow.status === 'review' && checkingIndex === null ? onSwapItem : undefined}
               saved={flow.status === 'review' && savedReview}
               onAdd={flow.status === 'review' ? onAdd : undefined}
               onSave={flow.status === 'review' ? () => setSaveItems(flow.meal.items) : undefined}

@@ -168,11 +168,30 @@ export interface ParsedItem {
   numbers_tier?: ParseTier;
   /** A proposed personal alias. Learned only when this food is saved. */
   memory_input_name?: string;
+  /** Other variants the user also logs ("vanilla whey" beside the "chocolate
+   *  whey" served), priced at this line's weight from their own numbers, so
+   *  the card can swap the line in one tap with no model call. */
+  alternatives?: ParsedSwap[];
   /** The user's own words for this line, when the card names it differently
    *  (a catalog row's name, a rewritten search name). The double check looks
    *  the food up by THESE: looking up the card's name only re-checks the row
    *  that may be the mistake. */
   said_name?: string;
+}
+
+/** One tap-to-swap option for a line: everything that changes when the user
+ *  picks it. Amount, unit and section stay the line's own. */
+export interface ParsedSwap {
+  food_name: string;
+  grams: number;
+  kcal: number;
+  protein_g: number;
+  carb_g: number;
+  fat_g: number;
+  fiber_g: number | null;
+  source: ParsedItem["source"];
+  assumption: string | null;
+  numbers_tier: ParseTier;
 }
 
 // One entry in the agent's tool-call trail, captured for observability + eval.
@@ -902,6 +921,9 @@ export interface ParseMealInput {
    *  the extract may not decline it (PENDING_MUST_LOG). Set only by
    *  runParseMeal's own retry of a continuation that declined anyway. */
   mustLog?: boolean;
+  /** This build draws the one-tap variant chip (client capability
+   *  "variant_swap"), so notes drop the "say so" sentence (forSwapChips). */
+  variantChips?: boolean;
   /** The last few turns of this logging conversation, oldest first. Without it
    *  Drona can see the meal but not what either side just SAID, so a reply like
    *  "yes do that" or "no the other one" has nothing to attach to. */
@@ -4293,6 +4315,9 @@ export interface MemoryStamp {
   source: ParsedItem["source"];
   canonical_name?: string;
   input_name?: string;
+  /** The variants to offer beside this food (MemoryFood.alsoFoods), priced
+   *  once the line's final weight is known. */
+  swap?: { foods: MemoryFood[]; timeZone?: string | null };
 }
 
 const MEMORY_SOURCES = new Set<ParsedItem["source"]>(["catalog", "off", "fatsecret", "web", "estimate", "manual"]);
@@ -4311,7 +4336,38 @@ export function memoryStamp(food: MemoryFood, timeZone?: string | null, inputNam
     note: memoryNote(food, timeZone),
     level: food.level,
     source: MEMORY_SOURCES.has(src) ? src : "catalog",
+    ...(food.alsoFoods?.length ? { swap: { foods: food.alsoFoods, timeZone } } : {}),
   };
+}
+
+/** Each other variant at the served line's weight, from the user's own
+ *  per-100 numbers. Empty when there is nothing to offer or no weight. */
+export function memoryAlternatives(foods: MemoryFood[], grams: number, timeZone?: string | null): ParsedSwap[] {
+  if (!(grams > 0)) return [];
+  const f = grams / 100;
+  return foods.map((alt) => {
+    const src = (alt.source ?? "") as ParsedItem["source"];
+    return {
+      food_name: alt.name,
+      grams: round1(grams),
+      kcal: round1(alt.per100.kcal * f),
+      protein_g: round1(alt.per100.protein_g * f),
+      carb_g: round1(alt.per100.carb_g * f),
+      fat_g: round1(alt.per100.fat_g * f),
+      fiber_g: alt.per100.fiber_g == null ? null : round1(alt.per100.fiber_g * f),
+      source: MEMORY_SOURCES.has(src) ? src : "catalog",
+      assumption: memoryNote({ ...alt, also: [] }, timeZone),
+      numbers_tier: alt.level,
+    };
+  });
+}
+
+/** For a build that draws the swap chip, the note stops telling the user to
+ *  type the other variant's name: the chip does it in one tap. memoryNote
+ *  writes that sentence, so this removes exactly what it wrote. */
+export function forSwapChips(it: ParsedItem): ParsedItem {
+  if (!it.alternatives?.length || !it.assumption) return it;
+  return { ...it, assumption: it.assumption.replace(/ You also log .+?; if it was that, just say so\.$/, "") };
 }
 
 /** A remembered food as a catalog candidate, for Thorough and Precise. */
@@ -4461,6 +4517,7 @@ export function memoryQuickItem(
     assumption: stamp.note,
     confidence: "high",
     numbers_tier: stamp.level,
+    ...(stamp.swap ? { alternatives: memoryAlternatives(stamp.swap.foods, grams, stamp.swap.timeZone) } : {}),
   };
 }
 
@@ -4478,7 +4535,11 @@ export function stripEphemeralIds(
     const verdict = it.food_id ? verifiedByFood?.get(it.food_id) : undefined;
     const mem = it.food_id ? memoryByFood?.get(it.food_id) : undefined;
     const base = mem
-      ? { ...it, food_name: mem.canonical_name ?? it.food_name, memory_input_name: mem.input_name, assumption: mem.note, numbers_tier: mem.level, source: mem.source, confidence: "high" as const }
+      ? {
+        ...it, food_name: mem.canonical_name ?? it.food_name, memory_input_name: mem.input_name, assumption: mem.note,
+        numbers_tier: mem.level, source: mem.source, confidence: "high" as const,
+        ...(mem.swap ? { alternatives: memoryAlternatives(mem.swap.foods, it.grams, mem.swap.timeZone) } : {}),
+      }
       : it;
     const marked = verdict === undefined ? base : { ...base, verified: verdict };
     return isEphemeralId(marked.food_id) ? { ...marked, food_id: null } : marked;
@@ -5278,6 +5339,15 @@ const PENDING_MUST_LOG =
   "of mixed vegetables), never a list of guesses.";
 
 export async function runParseMeal(
+  deps: ParseMealDeps,
+  input: ParseMealInput,
+): Promise<ParseMealResult> {
+  const result = await runParseMealSaved(deps, input);
+  if (input.variantChips && result.parsed) result.parsed.items = result.parsed.items.map(forSwapChips);
+  return result;
+}
+
+async function runParseMealSaved(
   deps: ParseMealDeps,
   input: ParseMealInput,
 ): Promise<ParseMealResult> {
