@@ -898,6 +898,10 @@ export interface ParseMealInput {
   previousItems?: PreviousItem[];
   /** Only set after the router identifies a continuation of an unlogged meal. */
   pendingMeal?: PendingFoodMeal | null;
+  /** The user was already asked about this meal and told Drona to go ahead:
+   *  the extract may not decline it (PENDING_MUST_LOG). Set only by
+   *  runParseMeal's own retry of a continuation that declined anyway. */
+  mustLog?: boolean;
   /** The last few turns of this logging conversation, oldest first. Without it
    *  Drona can see the meal but not what either side just SAID, so a reply like
    *  "yes do that" or "no the other one" has nothing to attach to. */
@@ -5263,6 +5267,16 @@ export async function tryFastCorrection(
 // or four only when server web_search fires), with every catalog lookup a
 // deterministic parallel fetch between them — versus 3-6 sequential model
 // turns in the old tool-loop design.
+/** On a turn that answers a waiting meal the user has already been asked once.
+ *  Asking again is how a thread went round in circles until the user gave up
+ *  (live, 2026-10-04 and 2026-10-08), so this turn always logs. */
+const PENDING_MUST_LOG =
+  "The user has already been asked about this meal and has answered, so never decline it and never ask again: " +
+  "every food in it is something they want logged. When the answer leaves a detail open, picks by position, or " +
+  "leaves the choice to you, use the most common version and a typical serving, and say what you chose in that " +
+  "item's assumption. Log only the foods the user wrote: a vague food stays one item (\"veggies\" is one serving " +
+  "of mixed vegetables), never a list of guesses.";
+
 export async function runParseMeal(
   deps: ParseMealDeps,
   input: ParseMealInput,
@@ -5280,7 +5294,29 @@ export async function runParseMeal(
   }
   const hits: SavedHit[] = [];
   const suggestions: NonNullable<ParseMealResult["saved_suggestions"]> = [];
-  const result = await runParseMealCore(deps, input, saved, hits, suggestions);
+  let result = await runParseMealCore(deps, input, saved, hits, suggestions);
+  // A continuation that declined anyway: the prompt forbids it, and this makes
+  // the rule true. The waiting meal and the answer go through once more as one
+  // message that may not be declined. A second decline stands (the meal keeps
+  // waiting, carryPendingMeal), so this can never loop.
+  if (input.pendingMeal && !result.parsed && result.declined && !result.declined.cleared) {
+    const first = result;
+    result = await runParseMealCore(deps, {
+      ...input,
+      text: continuationText(input.text, input.pendingMeal),
+      pendingMeal: null,
+      mustLog: true,
+    }, saved, [], []);
+    result.steps = [
+      ...first.steps,
+      { iter: 9, tool: "pending_retry", input: { declined: first.declined!.message }, result: { logged: !!result.parsed } },
+      ...result.steps,
+    ];
+    for (const k of Object.keys(first.usage) as (keyof typeof first.usage)[]) {
+      (result.usage[k] as number) = ((result.usage[k] as number) ?? 0) + ((first.usage[k] as number) ?? 0);
+    }
+    result.iterations += first.iterations;
+  }
   // Same inputs runParseMealCore gated on. The rerun below overwrites this with
   // its own: that one is a first shot, so it runs the tier the user picked.
   result.tier = resolveParseTier(input.mode, !firstShot);
@@ -5443,16 +5479,7 @@ async function runParseMealCore(
   if (input.pendingMeal) {
     steps.push({ iter: 0, tool: "pending_meal", input: { status: input.pendingMeal.status, question: input.pendingMeal.question } });
   }
-  const extractTool = input.pendingMeal
-    ? JSON.parse(JSON.stringify(fastMode ? FAST_EXTRACT_TOOL : EXTRACT_TOOL))
-    : fastMode ? FAST_EXTRACT_TOOL : EXTRACT_TOOL;
-  if (input.pendingMeal) {
-    extractTool.input_schema.properties.accepts_generic_estimate = {
-      type: "boolean",
-      description: "True only when this clarification explicitly asks you to assume, estimate, use a generic food, or choose the common variant for the item in pending_meal.question. A quantity alone is false. This permission applies only to that questioned food.",
-    };
-    extractTool.input_schema.required.push("accepts_generic_estimate");
-  }
+  const extractTool = fastMode ? FAST_EXTRACT_TOOL : EXTRACT_TOOL;
   const extractRes = await callAnthropicOnce(deps, {
     model: deps.model,
     // A cap, not a target: the model emits what the message needs, so a short
@@ -5473,7 +5500,10 @@ async function runParseMealCore(
         : hasPrevious
         ? EXTRACT_SYSTEM_SMART + EXTRACT_CORRECTION_RULES
         : EXTRACT_SYSTEM_SMART) + (input.pendingMeal
-          ? "\nThe message contains an unlogged pending_meal and the user's clarification. Re-extract ALL foods from pending_meal.text, applying the clarification to the questioned item. Preserve amounts and meal sections for every other food. This is one meal request, not an additional log. When they ask you to assume or estimate, choose a sensible generic food and note the assumption. The question is context, not a food to extract."
+          ? "\nThe message contains an unlogged pending_meal and the user's clarification. Re-extract ALL foods from pending_meal.text, applying the clarification to the questioned item. Preserve amounts and meal sections for every other food. This is one meal request, not an additional log. The question is context, not a food to extract: a food named only in the question is an example Drona gave, never something the user ate. " +
+            PENDING_MUST_LOG
+          : input.mustLog
+          ? "\n" + PENDING_MUST_LOG
           : ""),
     ),
     tools: withToolCache([extractTool]),
@@ -6110,11 +6140,6 @@ async function runParseMealCore(
   // "first one") rarely released it (live, 2026-10-05..09). decideMemory now
   // picks one and names any other variant on the card.
   const memory = await memoryP;
-  // Kept as a trace only: the user allowed an estimate for a pending question.
-  // Nothing here waits on it now that memory never blocks a meal.
-  if (input.pendingMeal && ext.accepts_generic_estimate === true) {
-    steps.push({ iter: 1, tool: "pending_estimate", input: { question: input.pendingMeal.question } });
-  }
 
   // ── FAST MODE: the model's estimate, and nothing else ─────────────────────
   // Decided 2026-09-15. Quick used to search the catalog here and let an

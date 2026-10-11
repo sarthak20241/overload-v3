@@ -58,6 +58,7 @@ import {
   type SavedMealSummary,
   CREATE_ACTION_FLOOR,
   decideFoodAction,
+  withPendingMeal,
   type FoodFollowup,
   readDraftResult,
   readReplyResult,
@@ -756,6 +757,10 @@ function foodIntentStep(d: FoodIntentDecision | null, outcome?: FoodBarOutcome):
       source: d.source,
       confidence: d.confidence,
       note: d.note,
+      // The waiting-meal questions (carryPendingMeal): what Jev made of food
+      // in this message, and of the meal that was waiting, if any.
+      has_food: d.hasFood ?? null,
+      pending_action: d.pendingAction ?? null,
       saved_match: d.savedMatch
         ? { id: d.savedMatch.id, name: d.savedMatch.name, confidence: d.savedMatch.confidence }
         : null,
@@ -3560,14 +3565,18 @@ async function handleParseMealRequest(args: {
               send("end", { parsed: null, declined: null, proposal: null, create: outcome.create });
             } else if (outcome.action === "reply") {
               // The existing decline channel, which every build already draws.
-              send("end", { parsed: null, declined: { message: outcome.reply }, proposal: null });
+              send("end", {
+                parsed: null,
+                declined: withPendingMeal({ message: outcome.reply! }, { decision: outcome.decision, incoming: foodContext.pendingMeal, text }),
+                proposal: null,
+              });
             } else {
               // The diary write happens BEFORE `end` so a connected client's
               // strip goes straight to "Added" with the ids Undo needs.
               autoRes = await finishAutoLog(result);
               send("end", {
                 parsed: result.parsed,
-                declined: result.declined,
+                declined: withPendingMeal(result.declined, { decision: outcome.decision, incoming: foodContext.pendingMeal, text }),
                 proposal: result.proposal ?? null,
                 // "Use your saved X?" chips: a food that is only part of a saved meal.
                 saved_suggestions: result.saved_suggestions ?? [],
@@ -3847,14 +3856,20 @@ async function handleParseMealRequest(args: {
     }
     if (outcome.action === "reply") {
       return respond(
-        { parsed: null, declined: { message: outcome.reply }, proposal: null, usage: result.usage, tool_calls: result.tool_calls },
+        {
+          parsed: null,
+          declined: withPendingMeal({ message: outcome.reply! }, { decision: outcome.decision, incoming: foodContext.pendingMeal, text }),
+          proposal: null,
+          usage: result.usage,
+          tool_calls: result.tool_calls,
+        },
         200,
       );
     }
     return respond(
       {
         parsed: result.parsed,
-        declined: result.declined,
+        declined: withPendingMeal(result.declined, { decision: outcome.decision, incoming: foodContext.pendingMeal, text }),
         // Researched alternative for the user to accept or reject on the card.
         proposal: result.proposal ?? null,
         // "Use your saved X?" chips: a food that is only part of a saved meal.
