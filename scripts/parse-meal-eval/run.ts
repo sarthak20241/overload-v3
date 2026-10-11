@@ -8,7 +8,7 @@
 //
 // Run from the repo root:
 //   ANTHROPIC_API_KEY=sk-ant-... npx tsx scripts/parse-meal-eval/run.ts
-//   # optional: EVAL_WEB_SEARCH=1  ONLY=roti-dal,whey-scoop  MODEL=claude-haiku-4-5
+//   # optional: EVAL_WEB_SEARCH=1  ONLY=roti-dal,whey-scoop  MODEL=claude-haiku-4-5 (a control run; default is prod's model)
 //
 // Supabase URL/key come from env (EXPO_PUBLIC_SUPABASE_URL / _ANON_KEY) or
 // a .env.local in the cwd. Costs: ~40 Haiku calls per full run (well under

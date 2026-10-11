@@ -759,9 +759,9 @@ function foodIntentStep(d: FoodIntentDecision | null, outcome?: FoodBarOutcome):
 // The DECIDE call's budget. It writes one line per item plus the Drona line,
 // so it scales with the item count, and that ceiling went from 12 to 50
 // (MAX_ITEMS_PER_PARSE). 1600 was sized for twelve; a long day would have been
-// cut off mid-JSON. 5000 matches the extract budgets - a cap, not a target, so
-// an ordinary two-item meal costs exactly what it did before. 6500 since Haiku
-// 5.5, which counts the same text as ~30% more tokens.
+// cut off mid-JSON. It matches the extract budgets - a cap, not a target, so
+// an ordinary two-item meal costs exactly what it did before. 5000 until Haiku
+// 5.5, which counts the same text as ~30% more tokens; 6500 since.
 const PARSE_MEAL_MAX_TOKENS = 6500;
 // #1 latency instrumentation: per-isolate parse counter; ==1 means the isolate
 // was cold for this request (proxy for cold-start cost we cannot time inside).
