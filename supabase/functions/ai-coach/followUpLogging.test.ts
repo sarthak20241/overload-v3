@@ -45,6 +45,7 @@ function harness(options: {
   cache?: PreciseCacheRow | null;
   aliasEntries?: MemoryEntry[];
   web?: boolean;
+  decide?: Record<string, unknown>;
 } = {}) {
   const calls: string[] = [], aliasKeys: string[][] = [], extractionMessages: string[] = [];
   let historyReads = 0;
@@ -75,7 +76,7 @@ function harness(options: {
           .map((url) => ({ url, per_100: panel })),
       }] : [] };
     } else {
-      input = { meal_type: "snack", drona_line: "Added.", items: [] };
+      input = { meal_type: "snack", drona_line: "Added.", items: [], ...options.decide };
     }
     return Response.json({
       stop_reason: "tool_use", usage: {},
@@ -240,13 +241,14 @@ for (const extraction of [
   });
 }
 
-Deno.test("ambiguous follow-up shorthand asks for the variant without substituting a catalogue row", async () => {
+Deno.test("follow-up shorthand on two remembered variants logs one and names the other, never a catalogue row", async () => {
   const h = harness({ entries: [
     memory(), memory({ food_name: "Doctor's Choice chocolate protein oats" }),
   ] });
   const r = await runParseMeal(h.deps, base);
-  assertEquals(r.parsed, null);
-  assert(r.declined!.message.includes("more than one saved match"));
+  assertEquals(r.declined, null);
+  const line = r.parsed!.items.find((i) => i.food_name.startsWith("Doctor's Choice"))!;
+  assert(line.assumption!.includes("You also log"), line.assumption!);
   assert(!h.calls.includes("cache"));
   assert(!h.calls.includes("catalog"));
 });
@@ -272,6 +274,61 @@ Deno.test("follow-up can add a saved meal with its own numbers and no lookup", a
   assertEquals(r.parsed!.corrects_previous, false);
   assertEquals(h.calls, ["extract_meal"]);
   assertEquals(h.reads(), 0);
+});
+
+// Thorough only: decide reads the whole message, so it can see "my oat bowl"
+// next to the banana and log the saved meal a second time as an estimate.
+// Quick has no decide call, which is why only Thorough doubled it.
+Deno.test("thorough logs a named saved meal once, even when decide relists it", async () => {
+  const banana = { name: "banana", brand: null, quantity: 1, unit: "piece", prep: null, meal: null };
+  const h = harness({
+    extraction: { items: [
+      { name: "My oat bowl", saved_meal: "My oat bowl", quantity: 1, unit: "serving", meal: null },
+      banana,
+    ] },
+    decide: { items: [
+      { food_id: null, food_name: "Oat Bowl", grams: 150, kcal: 175, protein_g: 6, carb_g: 30, fat_g: 3,
+        source: "estimate", confidence: "low", assumption: "One bowl." },
+      { food_id: null, food_name: "Banana", grams: 120, kcal: 107, protein_g: 1.3, carb_g: 27, fat_g: 0.4,
+        source: "estimate", confidence: "medium", assumption: "One medium banana." },
+    ] },
+  });
+  const r = await runParseMeal(h.deps, {
+    ...base, text: "my oat bowl and a banana", previousText: null, previousItems: [],
+    mode: null, savedMeals: Promise.resolve([saved]),
+  });
+  assertEquals(r.parsed!.items.map((i) => [i.food_name, i.saved_meal ?? null]), [
+    [canonical, "My oat bowl"],
+    ["Banana", null],
+  ]);
+  assert(h.calls.includes("log_meal"));
+});
+
+// The guard keeps a line only when it names an extracted food, so a food decide
+// RENAMED is dropped too. reconcileExtracted then puts the extracted food back,
+// so the user never loses it: the banana is here, even though decide called it
+// "Cavendish fruit".
+Deno.test("a food decide renames is dropped by the guard and restored, never lost", async () => {
+  const banana = { name: "banana", brand: null, quantity: 1, unit: "piece", prep: null, meal: null };
+  const h = harness({
+    extraction: { items: [
+      { name: "My oat bowl", saved_meal: "My oat bowl", quantity: 1, unit: "serving", meal: null },
+      banana,
+    ] },
+    decide: { items: [
+      { food_id: null, food_name: "Cavendish fruit", grams: 120, kcal: 107, protein_g: 1.3, carb_g: 27, fat_g: 0.4,
+        source: "estimate", confidence: "medium", assumption: "One medium banana." },
+    ] },
+  });
+  const r = await runParseMeal(h.deps, {
+    ...base, text: "my oat bowl and a banana", previousText: null, previousItems: [],
+    mode: null, savedMeals: Promise.resolve([saved]),
+  });
+  const names = r.parsed!.items.map((i) => i.food_name.toLowerCase());
+  assertEquals(names.length, 2);
+  assertEquals(names[0], canonical.toLowerCase());
+  assert(names[1].includes("banana"), names.join(" | "));
+  assert(r.steps.some((s) => s.tool === "saved_meal_guard"));
 });
 
 Deno.test("saved meal replacement retains the correction contract and untouched card lines", async () => {

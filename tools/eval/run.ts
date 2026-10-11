@@ -38,6 +38,7 @@ import {
   COACH_TOOLS,
   type ResearchSnippet,
 } from '../../supabase/functions/ai-coach/prompt.ts';
+import { SONNET_MODEL, SONNET_SETTINGS } from '../../supabase/functions/_shared/sonnet';
 
 // ── Auto-load .env.local ────────────────────────────────────────────────────
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -64,7 +65,7 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const VOYAGE_API_KEY = process.env.VOYAGE_API_KEY;
 
 // COACH_MODEL must track the hardcoded MODEL in supabase/functions/ai-coach/index.ts.
-const COACH_MODEL = 'claude-sonnet-4-6';
+const COACH_MODEL = SONNET_MODEL;
 // claude-opus-4-1-20250805 was retired and 404'd every judge call (whole runs
 // scored 0.000). Keep this on a current model.
 const JUDGE_MODEL = process.env.JUDGE_MODEL || 'claude-opus-5';
@@ -292,9 +293,10 @@ async function runCoach(prompt: { conversation: { role: string; content: string 
   for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
     const data = await callAnthropic({
       model: COACH_MODEL,
-      max_tokens: 1024,
+      max_tokens: 1400, // CHAT_MAX_TOKENS in ai-coach
       system, tools,
       messages: conversation,
+      ...SONNET_SETTINGS,
     });
     const blocks = data.content || [];
     finalText += blocks.filter((b: any) => b.type === 'text').map((b: any) => b.text || '').join('\n');

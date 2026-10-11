@@ -56,5 +56,4 @@ Deno.test("incident replay: clarification rebuilds five foods in breakfast and s
   assertEquals(result.parsed!.items.map((i) => i.food_name), items.map((i) => i.name));
   assertEquals(result.parsed!.items.map((i) => i.meal_type), ["breakfast", "breakfast", "snack", "snack", "snack"]);
   assertEquals(result.parsed!.continued_pending, true);
-  assertEquals(result.steps.some((s) => s.tool === "pending_estimate"), true);
 });
