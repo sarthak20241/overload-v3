@@ -1272,4 +1272,41 @@ export const CASES: EvalCase[] = [
       totalKcalBetween: [300, 1300],
     },
   },
+
+  // ── Totals the user writes (owner decision 2026-09-29) ──────────────────
+  // Real messages from one user, held out: no prompt quotes them.
+  {
+    // Logged 905 kcal and 50 g protein in Precise before the fix.
+    id: "user-meal-total",
+    text: "Add roughly 500 cal for dinner having 12g protein rest fats and carbs (i had chicken curry, poha, rice, salad and watermelon)",
+    hour: 23,
+    expect: {
+      maxItems: 1,
+      mealType: "dinner",
+      items: [{ nameIncludes: "curry", kcalBetween: [495, 505], proteinBetween: [11.5, 12.5] }],
+      totalKcalBetween: [495, 505],
+    },
+  },
+  {
+    // A line total with no weight: nothing read it before the fix.
+    id: "user-line-total-no-weight",
+    text: "Track daliya in lunch (roughly 80 cal, most carbs and rest fat, 1g protein)",
+    hour: 14,
+    expect: {
+      maxItems: 1,
+      items: [{ nameIncludes: "daliya", kcalBetween: [79, 81], proteinBetween: [0.5, 1.5] }],
+    },
+  },
+  {
+    // The fast correction recomputed from the old row: 75 kcal again.
+    id: "user-correction-kcal",
+    text: "145g apple for snacks",
+    followUp: "No, 145g apple should be 90 cals",
+    expectCorrection: true,
+    hour: 17,
+    expect: {
+      maxItems: 1,
+      items: [{ nameIncludes: "apple", kcalBetween: [88, 92] }],
+    },
+  },
 ];
