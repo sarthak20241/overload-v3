@@ -10,7 +10,8 @@
  * and only on a phrase that cannot mean anything else:
  *   - "tomorrow" (and its usual misspellings), "day after tomorrow"
  *   - a weekday with a lead-in: "for friday", "on friday", "next friday"
- *   - a day + month name: "14 oct", "oct 14th", "on the 14th of october"
+ *   - a day + month name: "14 oct", "on the 14th of october", "for oct 14th"
+ *     (month first needs the "on"/"for": "oct 12 eggs" is twelve eggs)
  * Numeric dates are not read: "2/3 cup" is a fraction, not February 3rd.
  * A bare weekday is not read either: "from sunday's batch" is about food
  * made on Sunday, not a log for next Sunday. A weekday in a message that
@@ -83,8 +84,9 @@ export function readLogDayPhrase(text: string, now: Date = new Date()): LogDayPh
     const date = nextDate(Number(m[1]), MONTHS[m[2].toLowerCase()], today);
     if (date) return found(m, date);
   }
-  // "oct 14", "october 14th"
-  m = new RegExp(String.raw`\b${LEAD}${MONTH}\.?\s+(?:the\s+)?(\d{1,2})${ORDINAL}(?![\w'’])`, 'i').exec(text);
+  // "on oct 14", "for october 14th". The lead-in is required here: without it
+  // "oct 12 eggs" or "dec 3 rotis" would read the count as a day.
+  m = new RegExp(String.raw`\b(?:for|on)\s+${MONTH}\.?\s+(?:the\s+)?(\d{1,2})${ORDINAL}(?![\w'’])`, 'i').exec(text);
   if (m) {
     const date = nextDate(Number(m[2]), MONTHS[m[1].toLowerCase()], today);
     if (date) return found(m, date);

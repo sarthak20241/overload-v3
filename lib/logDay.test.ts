@@ -61,6 +61,9 @@ Deno.test("food words that look like dates are left alone", () => {
   assertEquals(read("sun dried tomatoes 20g"), null);
   assertEquals(read("i may have 2 eggs"), null);
   assertEquals(read("100g march mango"), null);
+  // Month first without "on"/"for" is a count, not a day.
+  assertEquals(read("oct 12 eggs"), null);
+  assertEquals(read("dec 3 rotis"), null);
 });
 
 Deno.test("a message that is only the day has nothing left to parse", () => {

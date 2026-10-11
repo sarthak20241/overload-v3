@@ -418,6 +418,8 @@ export async function nutritionStreak(supabase: Supa | null): Promise<number> {
   // ~250-day streak — well beyond any realistic run before it would undercount.
   const { data } = await supabase
     .from('meals').select('logged_at')
+    // Planned days ahead are not part of a streak and must not use up the 1000.
+    .lte('logged_at', new Date().toISOString())
     .order('logged_at', { ascending: false })
     .limit(1000);
   if (!data || data.length === 0) return 0;

@@ -2660,7 +2660,9 @@ function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
     // A food logged ahead carries its planned day as last_logged_at. Until that
     // day comes, date it by when it was written, so the card never says
     // "Same as you logged on" a day that has not happened.
-    tier: String(c.tier), logged_at: Date.parse(String(c.last_logged_at)) > Date.now() ? String(c.confirmed_at) : String(c.last_logged_at),
+    tier: String(c.tier), logged_at: Date.parse(String(c.last_logged_at)) > Date.now()
+      ? (c.confirmed_at ? String(c.confirmed_at) : new Date().toISOString())
+      : String(c.last_logged_at),
     persistent: true, confirmed_at: String(c.confirmed_at),
     confirmed_aliases: Array.isArray(c.aliases) ? c.aliases.filter((a): a is string => typeof a === "string") : [],
   };
