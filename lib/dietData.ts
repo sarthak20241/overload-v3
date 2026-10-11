@@ -418,6 +418,8 @@ export async function nutritionStreak(supabase: Supa | null): Promise<number> {
   // ~250-day streak — well beyond any realistic run before it would undercount.
   const { data } = await supabase
     .from('meals').select('logged_at')
+    // Planned days ahead are not part of a streak and must not use up the 1000.
+    .lte('logged_at', new Date().toISOString())
     .order('logged_at', { ascending: false })
     .limit(1000);
   if (!data || data.length === 0) return 0;
@@ -517,6 +519,9 @@ export async function recentFoods(supabase: Supa | null, limit = 20): Promise<Pi
   if (!supabase) return [];
   const { data: meals } = await supabase
     .from('meals').select('id, logged_at')
+    // Food logged ahead for a later day is planned, not eaten, so it is not
+    // "recent" yet, and it must not crowd real meals out of the 40.
+    .lte('logged_at', new Date().toISOString())
     .order('logged_at', { ascending: false }).limit(40);
   if (!meals || meals.length === 0) return [];
   const order = new Map<string, number>(meals.map((m: any) => [m.id, new Date(m.logged_at).getTime()]));
