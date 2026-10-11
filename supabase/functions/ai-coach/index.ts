@@ -1905,7 +1905,8 @@ async function runStreamingToolLoop(
       }
       // A required tool answered in text: ask once more, keeping the model's
       // own reply in the history. Forcing used to make this impossible.
-      if (forceTool && !retriedForce && stopReason === "end_turn" && iter < MAX_TOOL_ITERATIONS - 1) {
+      // An empty reply cannot be sent back (the API rejects an empty assistant turn).
+      if (forceTool && !retriedForce && stopReason === "end_turn" && cleanBlocks.length > 0 && iter < MAX_TOOL_ITERATIONS - 1) {
         retriedForce = true;
         trace.tool_calls.push(`${forceTool}__retry`);
         conversation.push({ role: "assistant", content: cleanBlocks });
@@ -3976,20 +3977,26 @@ async function handleAnonOnboardingProgram(args: {
     trace.output_tokens = (trace.output_tokens ?? 0) + (usage.output_tokens ?? 0);
 
     const blocks: Block[] = apiResult.data.content ?? [];
+    const stop = apiResult.data.stop_reason;
     toolUse = blocks.find((b) => b.type === "tool_use" && b.name === "generate_program");
     // A program cut off at the cap parses to a partial object; do not ship it.
-    if (toolUse && apiResult.data.stop_reason === "max_tokens") {
+    if (toolUse && stop === "max_tokens") {
       trace.status = "internal_error";
       trace.error_message = "anon: generate_program truncated at max_tokens";
       return respond({ error: "no_program" }, 502);
     }
-    if (!toolUse && apiResult.data.stop_reason === "end_turn") {
-      messages.push({ role: "assistant", content: blocks }, retryTool("generate_program"));
+    if (toolUse) break;
+    // Only a plain text answer earns a second ask. A refusal, a cap hit or an
+    // empty reply would get the same result again, billed twice.
+    if (stop !== "end_turn" || blocks.length === 0) {
+      trace.error_message = `anon: no generate_program (stop_reason ${stop ?? "none"})`;
+      break;
     }
+    messages.push({ role: "assistant", content: blocks }, retryTool("generate_program"));
   }
   if (!toolUse?.input) {
     trace.status = "internal_error";
-    trace.error_message = "anon: no generate_program tool_use in response";
+    trace.error_message = trace.error_message ?? "anon: no generate_program tool_use in response";
     return respond({ error: "no_program" }, 502);
   }
 
@@ -4911,7 +4918,7 @@ Deno.serve(async (req) => {
       const contentBlocks: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }> = data.content ?? [];
 
       // A required tool answered in text: ask once more, as in streaming.
-      if (stopReason === "end_turn" && effectiveForceTool && !retriedForce && iter < MAX_TOOL_ITERATIONS - 1) {
+      if (stopReason === "end_turn" && effectiveForceTool && !retriedForce && contentBlocks.length > 0 && iter < MAX_TOOL_ITERATIONS - 1) {
         retriedForce = true;
         trace.tool_calls.push(`${effectiveForceTool}__retry`);
         conversation.push({ role: "assistant", content: contentBlocks });
@@ -4919,8 +4926,13 @@ Deno.serve(async (req) => {
         continue;
       }
       if (stopReason === "refusal") {
+        // Same as streaming: keep any text the model wrote before declining.
         trace.tool_calls.push("__refusal");
-        finalText = REFUSAL_REPLY;
+        finalText = contentBlocks
+          .filter((b) => b.type === "text")
+          .map((b) => b.text ?? "")
+          .join("\n")
+          .trim() || REFUSAL_REPLY;
         break;
       }
 

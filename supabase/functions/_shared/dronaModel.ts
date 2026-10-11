@@ -191,7 +191,7 @@ export async function askCaloriesModel(
     }
     const block = (data?.content ?? []).find((b: { type?: string }) => b?.type === 'tool_use');
     if (!block || (block.name !== 'propose_targets' && block.name !== 'hold')) {
-      const why = data?.stop_reason === 'refusal' ? 'refusal' : data?.stop_reason === 'max_tokens' ? 'max_tokens' : 'no tool call';
+      const why = data?.stop_reason === 'refusal' ? 'refusal' : 'no tool call';
       return { tool: 'none', input: {}, usage, latency_ms: Date.now() - started, error: why };
     }
     return { tool: block.name, input: block.input ?? {}, usage, latency_ms: Date.now() - started };
