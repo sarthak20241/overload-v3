@@ -856,7 +856,7 @@ const RETRIEVAL_QUERY_CAP = 4000; // max chars sent to Voyage per query
 // embedding (see buildRetrievalQuery). Shorter ones are already close enough to
 // question-shaped that the extra hop costs latency for nothing.
 const RETRIEVAL_REWRITE_MIN_CHARS = 180;
-const RETRIEVAL_QUERY_MODEL = "claude-haiku-4-5";
+const RETRIEVAL_QUERY_MODEL = "claude-haiku-5-5";
 const VOYAGE_TIMEOUT_MS = envInt("VOYAGE_TIMEOUT_MS", 6000);
 
 // SSE keepalive. The streaming coach turn can go completely silent on the
@@ -1515,7 +1515,12 @@ async function buildRetrievalQuery(
   const startMs = Date.now();
   const result = await callAnthropic({
     model: RETRIEVAL_QUERY_MODEL,
-    max_tokens: 100,
+    // 100 under Haiku 4.5; ~30% up for Haiku 5.5's tokenizer.
+    max_tokens: 130,
+    // This hop runs before the coach's first token. Haiku 5.5 thinks by
+    // default, which would add latency and spend the cap on reasoning a
+    // one-line rewrite does not need; off is accepted at its default effort.
+    thinking: { type: "disabled" },
     system:
       "Rewrite the lifter's message as ONE short exercise-science search question " +
       "capturing what evidence would answer it. Strip greetings, their specific " +
