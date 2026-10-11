@@ -33,6 +33,9 @@ export type ThoroughMatchMode = "off" | "shadow" | "on";
  *  other reason is a failure to judge (no answer, a timeout, a throw), and a
  *  failure must never cost the user rows they would have had without this. */
 const JUDGED_NO = new Set<string>([
+  // Nothing to judge, and nothing to keep: the line estimates either way,
+  // and a branded one may still get its label (wantsBrandWeb).
+  "no_candidates",
   "none",
   "below_floor",
   "brand",

@@ -181,7 +181,7 @@ Deno.test("only catalog ids are looked up: a FatSecret id would fail the whole l
 // ── Branded products with no row: the label from the web (Pro only) ─────────
 
 const PANEL = { kcal: 210, protein_g: 24, carb_g: 4, fat_g: 11 };
-function brandHarness(opts: { mode: "shadow" | "on"; brandWeb: boolean; brand: string | null; kind: string }) {
+function brandHarness(opts: { mode: "shadow" | "on"; brandWeb: boolean; brand: string | null; kind: string; noRows?: boolean }) {
   const calls: string[] = [];
   const decideRows: string[][] = [];
   const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -207,7 +207,7 @@ function brandHarness(opts: { mode: "shadow" | "on"; brandWeb: boolean; brand: s
   }) as typeof fetch;
   const deps: ParseMealDeps = {
     anthropicApiKey: "test", model: "test", maxTokens: 1000, timeoutMs: 1000, webSearchEnabled: true, fetchFn,
-    searchFoods: async () => [food("p1", "Low Fat Paneer", 190, 25), food("p2", "Pork, loin, lean and fat", 256, 26)],
+    searchFoods: async () => opts.noRows ? [] : [food("p1", "Low Fat Paneer", 190, 25), food("p2", "Pork, loin, lean and fat", 256, 26)],
     backfillOffFood: async () => null,
     getFoodPer100: async () => null,
     jev: { apiKey: "jev-test", timeoutMs: 1000, fetchFn },
@@ -240,4 +240,11 @@ Deno.test("no web for a free user, an unbranded line, a kind that is not package
     await runParseMeal(h.deps, brandInput);
     assert(!h.calls.includes("report_sources"), JSON.stringify(c));
   }
+});
+
+Deno.test("a branded product with no rows at all still gets its label", async () => {
+  const h = brandHarness({ mode: "on", brandWeb: true, brand: "Country Delight", kind: "packaged", noRows: true });
+  const r = await runParseMeal(h.deps, brandInput);
+  assert(h.calls.includes("report_sources"), JSON.stringify(h.calls));
+  assertEquals(r.parsed!.items[0].kcal, 210);
 });

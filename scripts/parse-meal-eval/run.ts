@@ -112,12 +112,14 @@ const FATSECRET_SECRET = env("FATSECRET_CONSUMER_SECRET");
 // Thorough's Jev row check (thoroughMatch.ts): THOROUGH_MATCH=shadow|on. Needs
 // JEV_API_KEY; off without it, same as production.
 const JEV_API_KEY = env("JEV_API_KEY");
-const THOROUGH_MATCH = (["shadow", "on"] as const).find((m) => m === env("THOROUGH_MATCH")) ?? "off";
+// Same name as production's secret; THOROUGH_MATCH is the older spelling.
+const THOROUGH_MATCH = (["shadow", "on"] as const)
+  .find((m) => m === (env("THOROUGH_MATCH_MODE") || env("THOROUGH_MATCH"))) ?? "off";
 // EVAL_BRAND_WEB=1: a Pro user, so a branded product with no row gets its
 // label from the web. Through Tavily, because the CLI cannot run Anthropic's
 // server web_search tool. Spends Tavily credits; nothing is written to the
 // Precise cache (no preciseCachePut here).
-const BRAND_WEB = env("EVAL_BRAND_WEB") === "1" && !!env("TAVILY_API_KEY");
+const BRAND_WEB = env("EVAL_BRAND_WEB") === "1" && !!env("TAVILY_API_KEY") && THOROUGH_MATCH !== "off";
 async function embedQueryForEval(text: string): Promise<number[] | null> {
   if (!VOYAGE_API_KEY) return null;
   try {

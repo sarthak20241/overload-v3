@@ -6304,7 +6304,10 @@ async function runParseMealCore(
   const tm = deps.thoroughMatch;
   if (!fastMode && !superMode && tm && tm.mode !== "off" && deps.jev) {
     const tMatch0 = Date.now();
-    const asked = resolved.map((r) => !r.resolvedIdentity && r.candidates.length > 0);
+    // A line with no rows at all is asked too when it names a brand: Jev's
+    // kind answer is what lets a branded product with nothing of ours reach
+    // the label lookup below. With no brand there is nothing to ask.
+    const asked = resolved.map((r) => !r.resolvedIdentity && (r.candidates.length > 0 || !!r.brand?.trim()));
     if (asked.some(Boolean)) {
       // Catalog rows only. A FatSecret row carries "fs:<id>", which is not a
       // foods id: one in the list fails the whole lookup. Its origin is its
