@@ -282,6 +282,28 @@ Deno.test("a meal total counts a saved meal the user named, and the rest fits", 
   assertEquals(items.find((i) => /banana/.test(i.food_name))!.kcal, 100);
 });
 
+Deno.test("a meal total far below the estimate never rounds a food away", async () => {
+  // 5 kcal over a 2000 kcal guess: every portion shrinks to 1/400 or less,
+  // which rounds to 0 servings and 0 g without a floor.
+  const r = await runParseMeal(
+    mealDeps({
+      declined: false, meal_type_from_text: "snack", stated_meal_total: { kcal: 5 },
+      items: [est("cake", 2000, 20, 250, 100, 500), est("mint", 10, 0, 2.5, 0, 2)],
+    }, []),
+    { ...BASE, text: "cake and a mint, 5 kcal total", mode: "fast" },
+  );
+  const items = r.parsed!.items;
+  assertEquals(items.length, 2);
+  for (const it of items) {
+    assert(it.quantity > 0 && it.grams > 0, JSON.stringify([it.food_name, it.quantity, it.grams]));
+    // The steps are the card's own: two decimals of a serving, one of a gram.
+    assertEquals(it.quantity, Math.round(it.quantity * 100) / 100);
+    assertEquals(it.grams, Math.round(it.grams * 10) / 10);
+  }
+  // Portions still follow the kcal where there is room to.
+  assertEquals(items[0].grams, 1.3); // 500 g x 5/2000
+});
+
 Deno.test("fiber moves with the carbs it is part of and never exceeds them", () => {
   const [salad] = splitTotal([{ kcal: 13, protein_g: 1, carb_g: 1.6, fat_g: 0.4, fiber_g: 1.5 }, { kcal: 892, protein_g: 49, carb_g: 99, fat_g: 32.7, fiber_g: 5 }],
     { kcal: 500, protein_g: 12, carb_g: null, fat_g: null, fiber_g: null });

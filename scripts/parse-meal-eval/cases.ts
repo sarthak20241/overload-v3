@@ -1311,6 +1311,17 @@ export const CASES: EvalCase[] = [
     },
   },
   {
+    // Numbers for one food are not a meal total: the other food keeps its own
+    // estimate instead of being squeezed into what is left.
+    id: "user-line-numbers-no-meal-split",
+    text: "2 eggs (140 kcal) and a plate of poha for breakfast",
+    hour: 9,
+    expect: {
+      minItems: 2,
+      items: [{ nameIncludes: "egg", kcalBetween: [139, 141] }, { nameIncludes: "poha", kcalBetween: [150, 700] }],
+    },
+  },
+  {
     // The fast correction recomputed from the old row: 75 kcal again.
     id: "user-correction-kcal",
     text: "145g apple for snacks",

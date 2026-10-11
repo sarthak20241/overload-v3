@@ -4354,10 +4354,15 @@ export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, step
         const { line, ratio } = split[j];
         if (sameNumbers(line, out[idx])) return;
         const before = out[idx];
+        // A total far below the estimate must not round a food away: a line
+        // keeps the smallest portion it can show. A line whose share is 0 kcal
+        // keeps its portion, since there is nothing to scale it by.
+        const scaled = (v: number, step: number) =>
+          v > 0 && ratio > 0 ? Math.max(step, Math.round((v * ratio) / step) / Math.round(1 / step)) : v;
         out[idx] = {
           ...line,
-          grams: round1(before.grams * ratio),
-          quantity: Math.round(before.quantity * ratio * 100) / 100,
+          grams: scaled(before.grams, 0.1),
+          quantity: scaled(before.quantity, 0.01),
           // Our arithmetic, not the user's numbers: the lowest trust, so the
           // user's memory reuses it only in Quick and only when nothing better
           // exists.
