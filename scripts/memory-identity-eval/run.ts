@@ -20,7 +20,7 @@ interface Case {
   rows: Record<string, Level[]>;
   /** The food decideMemory should serve, or null for none. Optional. */
   serves?: string | null;
-  /** How often she logged each row (decideMemory ranks by it). */
+  /** How often the user logged each row (decideMemory ranks by it). */
   times?: Record<string, number>;
 }
 
@@ -74,7 +74,7 @@ const CASES: Case[] = [
     serves: "chocolate whey",
   },
   {
-    // Fat-level variants of what she typed, and a different food that only
+    // Fat-level variants of what the user typed, and a different food that only
     // shares the word. Not the prompt's own word-order example.
     id: "milk-variants", typed: "milk",
     rows: { "toned milk": SU, "skimmed milk": SU, "milk cake": D },

@@ -16,9 +16,9 @@
 //     wrong" live, and the user is asking us NOT to repeat ourselves
 //
 // Owner decision 2026-10-11:
-//   - Jev judges identity only (is this remembered food what she means?), never
+//   - Jev judges identity only (is this remembered food what the user means?), never
 //     whether another remembered food also fits
-//   - several that fit are never a refusal: the one she logs most, then the
+//   - several that fit are never a refusal: the one the user logs most, then the
 //     most trusted numbers, then the newest; a different variant is named on
 //     the card
 //   - within one name, the most trusted numbers win, not the newest
@@ -88,7 +88,7 @@ export interface MemoryFood {
   confirmed_aliases?: string[];
   /** Set by the decision only: other remembered foods that are also what the
    *  user's words describe but a different variant ("vanilla whey" beside
-   *  "chocolate whey"), named on the card so she can say which it was. */
+   *  "chocolate whey"), named on the card so the user can say which it was. */
   also?: string[];
 }
 
@@ -105,7 +105,7 @@ export function entryLevel(e: Pick<MemoryEntry, "tier" | "source" | "logged_via"
  * How much an entry's numbers are trusted, highest first: numbers the user
  * typed or edited herself (4), then Precise (3), Thorough (2), Quick (1).
  * Owner decision 2026-10-11: within one food this, not recency, picks the
- * numbers. Newest-wins let a Quick guess of 6.3 kcal/100 g replace her own
+ * numbers. Newest-wins let a Quick guess of 6.3 kcal/100 g replace the user's own
  * 12.5 for cucumber (live, 2026-10-04).
  */
 export function entryTrust(e: Pick<MemoryEntry, "tier" | "source" | "logged_via">): number {
@@ -301,7 +301,7 @@ function differentVariants(a: string, b: string): boolean {
 /**
  * The user's words already pick between two variants: they contain a word
  * that tells them apart ("vanilla whey" against chocolate and vanilla whey).
- * Then habit must not choose for her (PR #235 review).
+ * Then habit must not choose for them (PR #235 review).
  */
 function namesVariant(typed: string, a: string, b: string): boolean {
   const t = nameWords(typed), x = nameWords(a), y = nameWords(b);
@@ -311,10 +311,10 @@ function namesVariant(typed: string, a: string, b: string): boolean {
 /**
  * The food to serve, from Jev's per-row chance that it IS what the user means.
  * Below the floor nothing is served, and the normal sources answer. Several
- * above it are never a refusal (owner decision 2026-10-11): the one she logs
+ * above it are never a refusal (owner decision 2026-10-11): the one the user logs
  * most wins, then the most trusted numbers (entryTrust), then the newest. A
- * different variant that also fits is named on the card, so she can say which
- * it was. `typed` is what she wrote; when it names a variant, a sibling under
+ * different variant that also fits is named on the card, so the user can say which
+ * it was. `typed` is what the user wrote; when it names a variant, a sibling under
  * the floor may not compete.
  */
 export function decideMemory(foods: MemoryFood[], scores: Array<number | null>, floor = MEMORY_FLOOR, typed = ""): MemoryDecision {
@@ -328,9 +328,9 @@ export function decideMemory(foods: MemoryFood[], scores: Array<number | null>, 
   // A variant whose sibling cleared the floor: the product is established, so
   // which variant is habit, not identity. Jev put "chocolate whey" at 0.73 and
   // "vanilla whey" at 0.91 for "whey" (real Jev, 2026-10-11); without this the
-  // one she rarely logs won and the other was not even named. Not when her own
+  // one the user rarely logs won and the other was not even named. Not when their own
   // words already chose between the two: "vanilla whey" must not become the
-  // chocolate one she logs more.
+  // chocolate one they log more.
   const family = scored.filter((x) =>
     x.p >= floor ||
     (x.p >= VARIANT_FLOOR && passing.some((y) =>
@@ -423,7 +423,7 @@ export async function matchMemory(
 /** The card's note for a line answered from memory: "Same as you logged on
  *  Sep 26", on the user's own calendar when their zone is known. */
 export function memoryNote(food: MemoryFood, timeZone?: string | null): string {
-  // A different variant that also fits: name it, so a wrong pick costs her one
+  // A different variant that also fits: name it, so a wrong pick costs the user one
   // sentence ("it was the vanilla") instead of a refused meal.
   const also = food.also?.length ? ` You also log ${food.also.join(" and ")}; if it was that, just say so.` : "";
   const d = new Date(food.last_logged_at);

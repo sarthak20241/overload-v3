@@ -418,7 +418,7 @@ Deno.test("an alias checks explicit brand and preparation too", async () => {
   assertEquals(requests, 2);
 });
 
-Deno.test("the same alias on two products picks the one she logs most, and names the other", async () => {
+Deno.test("the same alias on two products picks the one the user logs most, and names the other", async () => {
   const list = [{ ...food("Brand banana protein oats", 400), times: 1 }, { ...food("Brand banana regular oats", 400), times: 4 }]
     .map((f) => ({ ...f, confirmed_aliases: ["brand banana oats"] }));
   const r = await matchMemory({ apiKey: "", timeoutMs: 1 }, list, { name: "brand banana oats", brand: null });
@@ -529,11 +529,11 @@ Deno.test("the failure this prevents: one food saved under three names was 'ambi
   ];
   const d = decideMemory(list, [0.9, 0.88, 0.8]);
   assertEquals(d.food?.name, "cucumber");
-  // The same food under other names is not a choice worth showing her.
+  // The same food under other names is not a choice worth showing the user.
   assertEquals(d.food?.also, []);
 });
 
-Deno.test("real variants: the one she logs most, with the other named on the card", () => {
+Deno.test("real variants: the one the user logs most, with the other named on the card", () => {
   const list = [{ ...food("vanilla whey", 380), times: 1 }, { ...food("chocolate whey", 390), times: 3 }];
   const d = decideMemory(list, [0.9, 0.9]);
   assertEquals(d.food?.name, "chocolate whey");
@@ -551,7 +551,7 @@ Deno.test("a variant just under the floor competes when its sibling cleared it",
   assertEquals(decideMemory([list[0]], [0.73]).food, null);
 });
 
-Deno.test("when she names the variant, habit cannot swap it for the sibling she logs more", () => {
+Deno.test("when the user names the variant, habit cannot swap it for the sibling they log more", () => {
   // PR #235 review: "vanilla whey" typed, chocolate (logged 9 times) at 0.6.
   const list = [{ ...food("chocolate whey", 390), times: 9 }, { ...food("vanilla whey", 380), times: 1 }];
   assertEquals(decideMemory(list, [0.6, 0.95], undefined, "vanilla whey").food?.name, "vanilla whey");
@@ -559,8 +559,8 @@ Deno.test("when she names the variant, habit cannot swap it for the sibling she 
   assertEquals(decideMemory(list, [0.6, 0.95], undefined, "whey").food?.name, "chocolate whey");
 });
 
-Deno.test("'it was vanilla' after a chocolate pick serves the vanilla she logged", async () => {
-  // The card named the other variant; her correction must reach it, not be
+Deno.test("'it was vanilla' after a chocolate pick serves the vanilla the user logged", async () => {
+  // The card named the other variant; the user's correction must reach it, not be
   // swallowed by the same habit pick.
   const calls: string[] = [], lookups: string[] = [];
   const entries = [
@@ -580,7 +580,7 @@ Deno.test("'it was vanilla' after a chocolate pick serves the vanilla she logged
   const names = r.parsed!.items.map((i) => i.food_name);
   assert(names.includes("vanilla whey"), JSON.stringify(names));
   assert(!names.includes("chocolate whey"), JSON.stringify(names));
-  // Served from her memory (the decide in this harness writes its own numbers).
+  // Served from the user's memory (the decide in this harness writes its own numbers).
   assert(r.parsed!.items.find((i) => i.food_name === "vanilla whey")!.assumption!.startsWith("Same as you logged"));
 });
 
@@ -600,7 +600,7 @@ Deno.test("synonyms are not variants: 'Veggies' is served without naming 'vegeta
   assertEquals(d.food?.also, []);
 });
 
-Deno.test("among foods she logs as often, her own numbers beat a Quick guess", () => {
+Deno.test("among foods logged as often, the user's own numbers beat a Quick guess", () => {
   const list = [
     { ...food("whole eggs", 155), level: "fast" as const, trust: 1 },
     { ...food("whole egg", 143), level: "precise" as const, trust: 4 },
@@ -608,8 +608,8 @@ Deno.test("among foods she logs as often, her own numbers beat a Quick guess", (
   assertEquals(decideMemory(list, [0.9, 0.9]).food?.name, "whole egg");
 });
 
-Deno.test("the failure this prevents: a newer Quick guess replaced her own number", () => {
-  // Live: her own 12.5 kcal/100 g cucumber (28 Sep) was replaced by a 6.3 Quick
+Deno.test("the failure this prevents: a newer Quick guess replaced the user's own number", () => {
+  // Live: the user's own 12.5 kcal/100 g cucumber (28 Sep) was replaced by a 6.3 Quick
   // guess (4 Oct) because the newest line always won.
   const [cucumber] = buildMemory([
     entry({ food_name: "cucumber", kcal: 30, grams: 240, quantity: 2, serving_unit: "whole", source: "manual", tier: "fast", logged_at: daysAgo(5) }),
