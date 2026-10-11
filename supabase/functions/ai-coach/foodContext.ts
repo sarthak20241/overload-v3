@@ -56,3 +56,44 @@ export function foodIntentState(text: string, context?: FoodConversationContext)
 export function continuationText(text: string, pending: PendingFoodMeal): string {
   return `${pending.text}\nUser clarification for this unlogged meal: ${text}`;
 }
+
+/**
+ * The waiting meal to send back with a reply that logged nothing.
+ *
+ * The app keeps only what the latest reply carries (nutrition.tsx sets it from
+ * every decline), so a reply without it is how a meal was forgotten mid-thread.
+ * Live, 2026-10-08: "8g cocoa powder, 4g casein" was waiting on one question;
+ * the next reply asked again without carrying it, and "any" and "log it" after
+ * that had nothing left to finish. Every installed build already round-trips
+ * this field, so the rule lives here, on the server.
+ *
+ * - The user cancelled: nothing waits.
+ * - A meal was waiting: it keeps waiting. On a turn that answered it, the
+ *   answer joins the meal, so the next answer adds to both.
+ * - Nothing was waiting, but this message named food and was not logged: it
+ *   waits now, on what Drona just said.
+ */
+export function carryPendingMeal(a: {
+  incoming: PendingFoodMeal | null;
+  cancelled: boolean;
+  /** This turn was routed as an answer to the waiting meal. */
+  continued: boolean;
+  text: string;
+  /** The router judged that this message names food the user had. */
+  hasFood: boolean;
+  /** What Drona said back, which becomes the question being answered. */
+  shown: string;
+}): PendingFoodMeal | null {
+  if (a.cancelled) return null;
+  const question = a.shown.trim().slice(0, 400);
+  if (a.incoming) {
+    if (!a.continued) return a.incoming;
+    return {
+      status: "awaiting_clarification",
+      text: continuationText(a.text.trim(), a.incoming).slice(0, 2000),
+      question: question || a.incoming.question,
+    };
+  }
+  if (!a.hasFood || !a.text.trim() || !question) return null;
+  return { status: "awaiting_clarification", text: a.text.trim().slice(0, 2000), question };
+}
