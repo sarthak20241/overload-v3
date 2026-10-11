@@ -98,3 +98,21 @@ Deno.test('a label-only correction preserves precise nutrition and extended nutr
   assert(!('fiber_g' in patch));
   assert(!('source' in patch));
 });
+
+Deno.test('a rename saves the new name and keeps nutrition as logged', async () => {
+  const f = fixture();
+  const renamed = { ...item, ...entry, serving_label: 'glass', grams: 240, food_name: '  Boiled kabuli chana ' };
+  assertEquals(await persistLoggedEntryEdit(f.client, entry, renamed, date, f.findMeal), {});
+  const patch = f.calls.find(c => c[0] === 'update')[2];
+  assertEquals(patch.food_name, 'Boiled kabuli chana');
+  assert(!('source' in patch));
+});
+
+Deno.test('an unchanged name is not rewritten, and a blank name is rejected', async () => {
+  const same = fixture();
+  await persistLoggedEntryEdit(same.client, entry, item, date, same.findMeal);
+  assert(!('food_name' in same.calls.find(c => c[0] === 'update')[2]));
+  const blank = fixture();
+  assert((await persistLoggedEntryEdit(blank.client, entry, { ...item, food_name: '  ' }, date, blank.findMeal)).error);
+  assertEquals(blank.calls, []);
+});
