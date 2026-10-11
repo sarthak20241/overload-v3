@@ -399,7 +399,10 @@ export async function matchMemory(
     const exact = foods.filter((f) => (f.confirmed_aliases ?? []).some((a) => memoryKey(a) === memoryKey(lookup)));
     if (exact.length > 0) {
       trace.path = "confirmed_alias";
-      const d = decideMemory(exact, exact.map(() => 1)) as MemoryDecision & { food: MemoryFood };
+      // The typed words still rank first: two rows under one alias ("cucumber"
+      // and "Cucumber, raw", both confirmed as "cucumber") otherwise tie on
+      // times and trust, and the newer one won by a millisecond.
+      const d = decideMemory(exact, exact.map(() => 1), MEMORY_FLOOR, lookup) as MemoryDecision & { food: MemoryFood };
       trace.decision = decided(d);
       return { food: d.food, confidence: 1, trace };
     }
