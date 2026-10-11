@@ -130,6 +130,7 @@ const OLD_RULE =
 
 // ── Running ─────────────────────────────────────────────────────────────────
 
+/** The Jev key: JEV_API_KEY from the environment, else from .env.local. */
 function key(): string {
   const fromEnv = Deno.env.get("JEV_API_KEY");
   if (fromEnv) return fromEnv;
@@ -142,6 +143,7 @@ function key(): string {
   throw new Error("JEV_API_KEY not found");
 }
 
+/** A remembered food with neutral numbers; only its name, habit and trust matter here. */
 const food = (name: string, times = 1): MemoryFood => ({
   key: name.toLowerCase(), name, food_id: null,
   per100: { kcal: 100, protein_g: 10, carb_g: 10, fat_g: 2, fiber_g: null },
@@ -152,6 +154,7 @@ const food = (name: string, times = 1): MemoryFood => ({
 const LEVELS: Level[] = ["different", "unclear", "same"];
 const pct = (n: number) => `${Math.round(n * 100)}`.padStart(3);
 
+/** One case against the real Jev (new question, or the old one when `old`), plus what decideMemory serves. */
 async function run(c: Case, apiKey: string, old: boolean) {
   const names = Object.keys(c.rows);
   const line = { name: c.typed, brand: null };
@@ -173,7 +176,7 @@ async function run(c: Case, apiKey: string, old: boolean) {
     return { name: n, ch, top, ok: c.rows[n].includes(top) };
   });
   const foods = names.map((n) => food(n, c.times?.[n] ?? 1));
-  const d = decideMemory(foods, rows.map((r) => r.ch.same));
+  const d = decideMemory(foods, rows.map((r) => r.ch.same), undefined, c.typed);
   return { c, rows, served: d.food?.name ?? null, also: d.food?.also ?? [] };
 }
 

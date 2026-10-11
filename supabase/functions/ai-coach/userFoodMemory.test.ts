@@ -551,6 +551,39 @@ Deno.test("a variant just under the floor competes when its sibling cleared it",
   assertEquals(decideMemory([list[0]], [0.73]).food, null);
 });
 
+Deno.test("when she names the variant, habit cannot swap it for the sibling she logs more", () => {
+  // PR #235 review: "vanilla whey" typed, chocolate (logged 9 times) at 0.6.
+  const list = [{ ...food("chocolate whey", 390), times: 9 }, { ...food("vanilla whey", 380), times: 1 }];
+  assertEquals(decideMemory(list, [0.6, 0.95], undefined, "vanilla whey").food?.name, "vanilla whey");
+  // Plain "whey" names neither, so habit still decides.
+  assertEquals(decideMemory(list, [0.6, 0.95], undefined, "whey").food?.name, "chocolate whey");
+});
+
+Deno.test("'it was vanilla' after a chocolate pick serves the vanilla she logged", async () => {
+  // The card named the other variant; her correction must reach it, not be
+  // swallowed by the same habit pick.
+  const calls: string[] = [], lookups: string[] = [];
+  const entries = [
+    ...[3, 2, 1].map((d) => live({ food_name: "chocolate whey", kcal: 117, grams: 30, quantity: 30, logged_at: liveAgo(d) })),
+    live({ food_name: "vanilla whey", kcal: 114, grams: 30, quantity: 30, logged_at: liveAgo(4) }),
+  ];
+  const previous = [{
+    food_id: null, food_name: "chocolate whey", quantity: 30, serving_label: "g", grams: 30,
+    kcal: 117, protein_g: 24, carb_g: 3, fat_g: 1.5, fiber_g: null, source: "catalog" as const, meal_type: "snack" as const,
+  }];
+  const r = await runParseMeal(
+    deps(entries, { "vanilla whey": 0.95, "chocolate whey": 0.02 }, calls, lookups,
+      { ...ESTIMATED, name: "vanilla whey", quantity: 30, unit: "g", corrects_food_name: "chocolate whey", est_total_g: 30 },
+      { corrects_previous: true }),
+    { ...BASE, text: "it was vanilla whey", mode: "fast", previousText: "30g whey", previousItems: previous },
+  );
+  const names = r.parsed!.items.map((i) => i.food_name);
+  assert(names.includes("vanilla whey"), JSON.stringify(names));
+  assert(!names.includes("chocolate whey"), JSON.stringify(names));
+  // Served from her memory (the decide in this harness writes its own numbers).
+  assert(r.parsed!.items.find((i) => i.food_name === "vanilla whey")!.assumption!.startsWith("Same as you logged"));
+});
+
 Deno.test("a food under the floor that is not a variant never wins on habit", () => {
   // She logs casein far more, but Jev gave it 0.6 for "whey": it is not a
   // variant of the whey that cleared the floor, so it stays out.

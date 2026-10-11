@@ -113,6 +113,7 @@ export function entryTrust(e: Pick<MemoryEntry, "tier" | "source" | "logged_via"
   return RANK[entryLevel(e)];
 }
 
+/** A remembered food's trust; hand-built foods without one rank by level. */
 const trustOf = (f: MemoryFood) => f.trust ?? RANK[f.level];
 
 /** May a food remembered at `level` answer a parse running in `tier`? */
@@ -251,11 +252,14 @@ export const MEMORY_RULE =
   "Do not prefer protein products merely because the user logged them. " +
   "Quantities do not affect food identity. Score the candidate using the ordered criteria.";
 
+/** The line as the user named it, brand first when extract split it out and
+ *  the name does not already carry it: "Amul" + "toned milk". */
 export function memoryInputName(line: { name: string; brand: string | null }): string {
   return line.brand && !memoryKey(line.name).includes(memoryKey(line.brand))
     ? `${line.brand} ${line.name}` : line.name;
 }
 
+/** One identity question per remembered food, keyed m1..mN in list order. */
 export function memoryQuestions(line: { name: string; brand: string | null }, foods: MemoryFood[]): Record<string, JevQuestion> {
   return Object.fromEntries(foods.map((f, i) => [`m${i + 1}`, {
     type: "score",
@@ -283,8 +287,10 @@ function nameWords(name: string): Set<string> {
  * one food under two names: they share a word and each adds one of its own
  * ("chocolate whey", "vanilla whey"). "Cucumber, raw" beside "cucumbers" is one
  * food (only one side adds a word); "Veggies" beside "vegetables" is a synonym
- * (no shared word). Display only - it decides what the card names, never which
- * food is served or what numbers it carries.
+ * (no shared word). Used for two things: naming the other variant on the card,
+ * and letting a variant just under the floor compete with its sibling
+ * (decideMemory). It never decides identity: Jev's score still has to admit a
+ * row first.
  */
 function differentVariants(a: string, b: string): boolean {
   const x = nameWords(a), y = nameWords(b);
@@ -293,14 +299,25 @@ function differentVariants(a: string, b: string): boolean {
 }
 
 /**
+ * The user's words already pick between two variants: they contain a word
+ * that tells them apart ("vanilla whey" against chocolate and vanilla whey).
+ * Then habit must not choose for her (PR #235 review).
+ */
+function namesVariant(typed: string, a: string, b: string): boolean {
+  const t = nameWords(typed), x = nameWords(a), y = nameWords(b);
+  return [...t].some((w) => x.has(w) !== y.has(w));
+}
+
+/**
  * The food to serve, from Jev's per-row chance that it IS what the user means.
  * Below the floor nothing is served, and the normal sources answer. Several
  * above it are never a refusal (owner decision 2026-10-11): the one she logs
  * most wins, then the most trusted numbers (entryTrust), then the newest. A
  * different variant that also fits is named on the card, so she can say which
- * it was.
+ * it was. `typed` is what she wrote; when it names a variant, a sibling under
+ * the floor may not compete.
  */
-export function decideMemory(foods: MemoryFood[], scores: Array<number | null>, floor = MEMORY_FLOOR): MemoryDecision {
+export function decideMemory(foods: MemoryFood[], scores: Array<number | null>, floor = MEMORY_FLOOR, typed = ""): MemoryDecision {
   if (foods.length === 0) return { food: null, reason: "no_foods", confidence: 0 };
   if (scores.every((s) => s === null)) return { food: null, reason: "no_answer", confidence: 0 };
   const scored = foods.map((f, i) => ({ f, p: scores[i] ?? 0 }));
@@ -311,10 +328,14 @@ export function decideMemory(foods: MemoryFood[], scores: Array<number | null>, 
   // A variant whose sibling cleared the floor: the product is established, so
   // which variant is habit, not identity. Jev put "chocolate whey" at 0.73 and
   // "vanilla whey" at 0.91 for "whey" (real Jev, 2026-10-11); without this the
-  // one she rarely logs won and the other was not even named.
+  // one she rarely logs won and the other was not even named. Not when her own
+  // words already chose between the two: "vanilla whey" must not become the
+  // chocolate one she logs more.
   const family = scored.filter((x) =>
     x.p >= floor ||
-    (x.p >= VARIANT_FLOOR && passing.some((y) => differentVariants(x.f.name, y.f.name)))
+    (x.p >= VARIANT_FLOOR && passing.some((y) =>
+      differentVariants(x.f.name, y.f.name) && !namesVariant(typed, x.f.name, y.f.name)
+    ))
   );
   const [best, ...rest] = family.sort((a, b) =>
     b.f.times - a.f.times ||
@@ -386,7 +407,7 @@ export async function matchMemory(
       score: scores[i] === null ? null : r2(scores[i] as number),
       ...(chances[i] ? { different: r2(chances[i]!.different), unclear: r2(chances[i]!.unclear), same: r2(chances[i]!.same) } : {}),
     }));
-    const d = decideMemory(list, scores);
+    const d = decideMemory(list, scores, MEMORY_FLOOR, lookup);
     if (!d.food) {
       trace.decision = { match: null, reason: res && !res.ok ? `jev_${res.failure}` : d.reason, conf: r2(d.confidence) };
       return { food: null, confidence: d.confidence, trace };
