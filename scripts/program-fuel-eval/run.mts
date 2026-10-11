@@ -25,8 +25,9 @@
 import { buildSystemPrompt } from "../../supabase/functions/ai-coach/prompt.ts";
 import { fuelDaysFromCoach, fuelDaysText, type FuelDay } from "../../supabase/functions/_shared/fuelDays.ts";
 import { makeClaudeCliFetch } from "../parse-meal-eval/claude-cli-fetch.ts";
+import { requireTool, SONNET_MODEL, SONNET_SETTINGS } from "../../supabase/functions/_shared/sonnet.ts";
 
-const MODEL = "claude-sonnet-4-6"; // ai-coach's MODEL
+const MODEL = SONNET_MODEL; // ai-coach's MODEL
 const VIA_CLI = process.env.EVAL_VIA_CLI === "1";
 const API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 if (!VIA_CLI && !API_KEY) { console.error("Set EVAL_VIA_CLI=1 (subscription) or ANTHROPIC_API_KEY (ask first)."); process.exit(2); }
@@ -186,11 +187,13 @@ async function runCase(c: Case): Promise<{ ok: boolean; note: string }> {
     headers: { "content-type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 6144,
+      max_tokens: 8000, // GENERATE_PROGRAM_MAX_TOKENS
       system,
       tools,
-      tool_choice: { type: "tool", name: "generate_program" },
-      messages: c.turns,
+      // Required, not forced, exactly as ai-coach sends it. No second ask here:
+      // a missing call fails the case, so the eval is the stricter of the two.
+      messages: [...c.turns, requireTool("generate_program")],
+      ...SONNET_SETTINGS,
     }),
   });
   const body = await res.json() as { content?: { type: string; name?: string; input?: Record<string, unknown> }[]; error?: unknown };
