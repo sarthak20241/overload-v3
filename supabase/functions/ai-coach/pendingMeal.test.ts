@@ -5,7 +5,7 @@
 //
 //   "8g cocoa powder, 4g casein"   -> a question; the meal waits
 //   "Choose first"                 -> the question again, WITHOUT the meal
-//   "AAAAAAAAAAA I HATE YOU"       -> chat; nothing was waiting any more
+//   (an angry message)             -> chat; nothing was waiting any more
 //   "any"                          -> chat: "logging a standard casein shake
 //                                     for you now". Nothing was logged.
 //   "Log kar na bc"                -> parsed alone: "no food here"
@@ -39,7 +39,7 @@ const decision = (d: Partial<FoodIntentDecision>): FoodIntentDecision => ({
 Deno.test("the failure this prevents: a chat reply dropped the meal that was waiting", () => {
   const out = withPendingMeal(
     { message: "I hear you, casein options can be frustrating!" },
-    { decision: decision({ intent: "other", pendingAction: "unrelated", hasFood: 0.05 }), incoming: casein, text: "AAAAAAAAAAA I HATE YOU" },
+    { decision: decision({ intent: "other", pendingAction: "unrelated", hasFood: 0.05 }), incoming: casein, text: "ugh, this is so annoying" },
   );
   assertEquals(out?.pending_meal, casein);
 });
