@@ -9,7 +9,8 @@ export async function persistLoggedEntryEdit(
   date: Date,
   findMeal: (meal: ParsedMealItem['meal_type'], date: Date) => Promise<{ id?: string; error?: string }>,
 ): Promise<{ error?: string }> {
-  if (!(item.quantity > 0) || !Number.isFinite(item.quantity) || !item.serving_label.trim() ||
+  const name = item.food_name.trim();
+  if (!name || !(item.quantity > 0) || !Number.isFinite(item.quantity) || !item.serving_label.trim() ||
       [item.kcal, item.protein_g, item.carb_g, item.fat_g, item.grams].some(n => !Number.isFinite(n) || n < 0)) {
     return { error: 'Enter a valid portion and nutrition values.' };
   }
@@ -25,6 +26,8 @@ export async function persistLoggedEntryEdit(
     meal_id: mealId, quantity: item.quantity, serving_unit: item.serving_label,
     grams_logged: item.grams > 0 ? item.grams : null,
     kcal: item.kcal, protein_g: item.protein_g, carb_g: item.carb_g, fat_g: item.fat_g,
+    // A rename is a label fix: the numbers stay as logged, so source does not move.
+    ...(name !== entry.food_name ? { food_name: name } : {}),
     // Extended nutrients were not edited; after a correction they are unknown.
     ...(nutritionChanged ? { source: 'manual', fiber_g: null, sugar_g: null, sat_fat_g: null, sodium_mg: null } : {}),
   }).eq('id', entry.id).select('id').single();

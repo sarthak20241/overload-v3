@@ -14,6 +14,8 @@
  * The portion reads as serving SIZE + UNIT, eaten QUANTITY times (100 g x 1.5,
  * 1 slice x 2), with the total spelled out under it. It used to be "Quantity"
  * beside "Amount", and on a gram line both boxes said 15.
+ * The name is editable too: a rename is a label fix, so it keeps the numbers
+ * and does not mark the line 'manual' on its own.
  * Macro fields are always editable; touching one stops the auto-derive so the
  * user's numbers are never silently overwritten, and marks the line 'manual'
  * (migration 0084) so the card stops calling it "Drona's estimate".
@@ -24,6 +26,7 @@ import {
   Keyboard, Platform, useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Feather } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
 import { Spacing, Radius, FontSize, FontWeight, LetterSpacing } from '@/constants/theme';
 import { loadFoodForEdit, macroKcal, type ParsedMealItem, type Per100Macros } from '@/lib/dietData';
@@ -80,6 +83,7 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
   const s = makeStyles(C);
   const supabase = useSupabaseClient();
 
+  const [name, setName] = useState('');
   const [servings, setServings] = useState<FoodServing[]>([]);
   const [per100, setPer100] = useState<Per100Macros | null>(null);
   const [size, setSize] = useState('1');
@@ -119,6 +123,7 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
   // servings + per-100 basis (only for catalog-backed lines).
   useEffect(() => {
     if (!item) return;
+    setName(item.food_name);
     const p = splitServing(item.quantity, item.serving_label, isMeasurementUnit);
     setSize(fmt(p.size));
     setUnit(p.unit);
@@ -262,7 +267,7 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
 
   // An empty or zero box has no amount to save. Save used to fall back to 1
   // and keep the grams of the last real number, so the two disagreed.
-  const canSave = !busy && sizeNum > 0 && qtyNum > 0 && unit.trim().length > 0;
+  const canSave = !busy && name.trim().length > 0 && sizeNum > 0 && qtyNum > 0 && unit.trim().length > 0;
 
   const close = () => { if (!busy) { Keyboard.dismiss(); onCancel(); } };
 
@@ -287,6 +292,7 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
       : scaleServingNutrition(b, ratio);
     onSave({
       ...item,
+      food_name: name.trim(),
       meal_type: section,
       quantity: stored.quantity,
       serving_label: stored.serving_label,
@@ -327,7 +333,17 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
         ]}
       >
         <ScrollView pointerEvents={busy ? 'none' : 'auto'} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-          <Text style={s.title} numberOfLines={1}>{item?.food_name ?? ''}</Text>
+          <View style={s.nameRow}>
+            <TextInput
+              value={name} onChangeText={setName} placeholder="Food name"
+              // 80 is what the double check sends of a name, so a longer one
+              // would be cut there anyway.
+              maxLength={80} autoCorrect={false} returnKeyType="done"
+              style={s.nameInput} placeholderTextColor={C.textDim}
+              accessibilityLabel="Food name"
+            />
+            <Feather name="edit-2" size={13} color={C.textMuted} />
+          </View>
 
           <Text style={s.eyebrow}>Meal</Text>
           <View style={s.chipWrap}>
@@ -477,7 +493,14 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
       borderTopWidth: 1, borderColor: C.borderSubtle,
       padding: Spacing.lg, paddingBottom: Spacing.xl, maxHeight: '80%',
     },
-    title: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold, color: C.foreground, marginBottom: Spacing.md },
+    nameRow: {
+      flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.md,
+      borderBottomWidth: 1, borderColor: C.borderSubtle,
+    },
+    nameInput: {
+      flex: 1, paddingVertical: 6, paddingHorizontal: 0,
+      fontSize: FontSize.lg, fontWeight: FontWeight.semibold, color: C.foreground,
+    },
     eyebrow: {
       fontSize: 10, color: C.textMuted, fontWeight: FontWeight.medium,
       letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase', marginBottom: 6,
