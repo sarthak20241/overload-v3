@@ -407,6 +407,31 @@ export function reconcileExtracted(
   return missing.length > 0 ? [...items, ...missing] : items;
 }
 
+/**
+ * The other direction: drop a decide line that stands for no extracted food.
+ *
+ * Only run when saved meals were taken out of the extraction. Decide still
+ * reads the user's whole message, so "my oat bowl and a banana" with only the
+ * banana in `items` came back with an estimated "Oat Bowl" next to it, and the
+ * saved rows merged on top logged the meal twice (Thorough only; Quick has no
+ * decide call). Extraction is the authority on WHICH foods were eaten, the
+ * same authority reconcileExtracted leans on, so a line matching no resolved
+ * item is food the user did not name as food to look up. A line it repeats
+ * from the card on screen is kept: the correction guards own those.
+ */
+export function dropUnextracted(
+  items: ParsedItem[],
+  resolved: ResolvedItem[],
+  previous: PreviousItem[] = [],
+): ParsedItem[] {
+  return items.filter((it) =>
+    resolved.some((r) =>
+      (it.food_id && r.candidates.some((c) => c.food_id === it.food_id)) || wordsOverlap(it.food_name, r.name)
+    ) ||
+    previous.some((p) => wordsOverlap(it.food_name, p.food_name))
+  );
+}
+
 // ── P3: code fill (skip the decide call when we are sure) ───────────────────
 //
 // decide is the single most expensive step in a parse (2.2s of a 7.8s meal,
@@ -6170,6 +6195,17 @@ async function runParseMealCore(
     deps.log,
   );
   let items = await verifyItems(deps, picked, candidatePer100);
+  if (hits.length > 0) {
+    const before = items.map((i) => i.food_name);
+    items = dropUnextracted(items, resolved, prevItems);
+    if (items.length !== before.length) {
+      steps.push({
+        iter: 8,
+        tool: "saved_meal_guard",
+        input: { dropped: before.filter((n) => !items.some((i) => i.food_name === n)) },
+      });
+    }
+  }
   if (correctsPrevious) {
     // Enforce the correction contract on every line the user did not re-target:
     // still present (1), and if it was hand-edited, its provenance and numbers

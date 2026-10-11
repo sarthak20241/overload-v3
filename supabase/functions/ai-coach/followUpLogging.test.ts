@@ -45,6 +45,7 @@ function harness(options: {
   cache?: PreciseCacheRow | null;
   aliasEntries?: MemoryEntry[];
   web?: boolean;
+  decide?: Record<string, unknown>;
 } = {}) {
   const calls: string[] = [], aliasKeys: string[][] = [], extractionMessages: string[] = [];
   let historyReads = 0;
@@ -75,7 +76,7 @@ function harness(options: {
           .map((url) => ({ url, per_100: panel })),
       }] : [] };
     } else {
-      input = { meal_type: "snack", drona_line: "Added.", items: [] };
+      input = { meal_type: "snack", drona_line: "Added.", items: [], ...options.decide };
     }
     return Response.json({
       stop_reason: "tool_use", usage: {},
@@ -272,6 +273,34 @@ Deno.test("follow-up can add a saved meal with its own numbers and no lookup", a
   assertEquals(r.parsed!.corrects_previous, false);
   assertEquals(h.calls, ["extract_meal"]);
   assertEquals(h.reads(), 0);
+});
+
+// Thorough only: decide reads the whole message, so it can see "my oat bowl"
+// next to the banana and log the saved meal a second time as an estimate.
+// Quick has no decide call, which is why only Thorough doubled it.
+Deno.test("thorough logs a named saved meal once, even when decide relists it", async () => {
+  const banana = { name: "banana", brand: null, quantity: 1, unit: "piece", prep: null, meal: null };
+  const h = harness({
+    extraction: { items: [
+      { name: "My oat bowl", saved_meal: "My oat bowl", quantity: 1, unit: "serving", meal: null },
+      banana,
+    ] },
+    decide: { items: [
+      { food_id: null, food_name: "Oat Bowl", grams: 150, kcal: 175, protein_g: 6, carb_g: 30, fat_g: 3,
+        source: "estimate", confidence: "low", assumption: "One bowl." },
+      { food_id: null, food_name: "Banana", grams: 120, kcal: 107, protein_g: 1.3, carb_g: 27, fat_g: 0.4,
+        source: "estimate", confidence: "medium", assumption: "One medium banana." },
+    ] },
+  });
+  const r = await runParseMeal(h.deps, {
+    ...base, text: "my oat bowl and a banana", previousText: null, previousItems: [],
+    mode: null, savedMeals: Promise.resolve([saved]),
+  });
+  assertEquals(r.parsed!.items.map((i) => [i.food_name, i.saved_meal ?? null]), [
+    [canonical, "My oat bowl"],
+    ["Banana", null],
+  ]);
+  assert(h.calls.includes("log_meal"));
 });
 
 Deno.test("saved meal replacement retains the correction contract and untouched card lines", async () => {
