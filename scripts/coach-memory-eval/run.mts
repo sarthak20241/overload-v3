@@ -24,8 +24,9 @@
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { buildSystemPrompt } from "../../supabase/functions/ai-coach/prompt.ts";
+import { SONNET_MODEL, SONNET_SETTINGS } from "../../supabase/functions/_shared/sonnet.ts";
 
-const MODEL = "claude-sonnet-4-6"; // ai-coach's MODEL
+const MODEL = SONNET_MODEL; // ai-coach's MODEL
 const VIA_CLI = process.env.EVAL_VIA_CLI === "1";
 const API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 if (!VIA_CLI && !API_KEY) { console.error("Set EVAL_VIA_CLI=1 (subscription) or ANTHROPIC_API_KEY (ask first)."); process.exit(2); }
@@ -121,7 +122,7 @@ async function turnViaApi(system: unknown, tools: unknown[], message: string): P
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model: MODEL, max_tokens: 2048, system, tools, messages: [{ role: "user", content: message }] }),
+    body: JSON.stringify({ model: MODEL, max_tokens: 2048, system, tools, messages: [{ role: "user", content: message }], ...SONNET_SETTINGS }),
   });
   const body = await res.json() as { content?: { type: string; name?: string; input?: Record<string, unknown> }[]; error?: unknown };
   if (!body.content) throw new Error(`API: ${JSON.stringify(body).slice(0, 300)}`);

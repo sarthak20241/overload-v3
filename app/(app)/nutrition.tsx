@@ -818,6 +818,10 @@ export default function NutritionScreen() {
     const token = ++checkTokenRef.current;
     setChecking({ token, index: i });
     try {
+      // The server reads at most 12 previous lines. A tapped line past that is
+      // sent on its own, so the check still reaches it; only this line is ever
+      // applied from the answer, so the others need not ride along.
+      const far = i >= 12;
       const res = await parseMeal(supabase, {
         // Phrased as ACCEPTING a lookup, not as asking a question. Tapping the
         // button IS the request, so the turn must land on requests_research
@@ -831,11 +835,16 @@ export default function NutritionScreen() {
         // length so a crafted product name cannot append instructions of its
         // own. Low severity - the lookup is bounded and its output is a
         // schema-constrained macro panel - but the guard costs nothing.
+        // The user's own words when the server sent them: the card's name can
+        // be the wrong row itself (a different brand's bar), and searching for
+        // it would only "confirm" the mistake.
         text: `yes, look up the label for ${
-          item.food_name.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 80)
+          (item.said_name ?? item.food_name).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 80)
         } online and check these numbers`,
         mealHint: f.mealType,
-        previous: { text: f.raw, items: f.meal.items },
+        previous: { text: f.raw, items: far ? [item] : f.meal.items },
+        // Only this line is looked up; the rest of the card stays as it is.
+        researchLine: far ? 0 : i,
         turns: turnsRef.current.slice(),
       });
       // The daily allowance covers this lookup too, so a cap here has to say so
@@ -896,10 +905,16 @@ export default function NutritionScreen() {
           // I15 exists to stop, just triggered by a button instead of a timer.
           // Prefer the exact name+grams match; fall back to name only, and to
           // the sole item when the lookup returned just one.
+          // The server hands every line back in the order it was sent, and a
+          // looked-up line may come back under the user's own words (said_name)
+          // rather than the card's name, so position is the last fallback.
+          const sentAt = far ? 0 : i;
+          const sentCount = far ? 1 : Math.min(cur.meal.items.length, 12);
           const found = res.meal.items.find((r) => key(r) === originalKey)
             ?? res.meal.items.find(
               (r) => r.food_name.toLowerCase() === item.food_name.toLowerCase(),
             )
+            ?? (res.meal.items.length === sentCount ? res.meal.items[sentAt] ?? null : null)
             ?? (res.meal.items.length === 1 ? res.meal.items[0] : null);
           if (!found) return { ...cur, notice: 'I could not improve that one.' };
           const items = cur.meal.items.map((it, idx) => (idx === i ? found : it));
@@ -958,7 +973,12 @@ export default function NutritionScreen() {
     track('parse_proposal_edited', { action: 'edit_item', source: patch.source ?? null });
     setFlow((f) => {
       if (f.status !== 'review' || editIndex === null) return f;
-      const items = f.meal.items.map((it, i) => (i === editIndex ? patch : it));
+      // A different food now: the user's old words no longer name this line,
+      // and a later double check must not look up the food they replaced.
+      const before = f.meal.items[editIndex];
+      const renamed = before && patch.food_name.trim().toLowerCase() !== before.food_name.trim().toLowerCase();
+      const line = renamed ? { ...patch, said_name: undefined } : patch;
+      const items = f.meal.items.map((it, i) => (i === editIndex ? line : it));
       // The editor can move one line, which can leave the card with a single
       // section. Keep the card-level field on the first line so a later
       // fallback reads the surviving section rather than an emptied one.

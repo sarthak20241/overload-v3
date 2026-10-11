@@ -572,7 +572,7 @@ const EXERCISE_SCHEMA = {
     sets: { type: 'integer', description: 'Number of working sets. 1-8.' },
     reps: {
       type: 'string',
-      description: 'Rep prescription. Examples: "6-8", "5", "AMRAP", "8-10 then drop to 12-15".',
+      description: 'Reps as plain numbers only: one number ("5") or a range ("6-8"). The app reads nothing else, so words, units or "per leg" in this field are lost. For a timed hold give the seconds as the numbers ("30-45" for a plank) and say "seconds" in the note; put per-side work, AMRAP and drop sets in the note too.',
     },
     rest_seconds: {
       type: 'integer',
@@ -1358,3 +1358,38 @@ export function buildSystemPrompt(ctx: PromptContext): {
   return { system: blocks, tools };
 }
 
+/**
+ * Modes whose answer names exercises in one tool call (generate_workout, or a
+ * generate_plan from refine/discuss or with PLAN_FANOUT off). They used to get
+ * no exercise list at all, so every name was a guess from memory, and a guess
+ * the catalog lacks ("Barbell Squat" for "Squat") becomes a duplicate custom
+ * exercise on save. Sonnet 5.5 guesses longer names than 4.6 did.
+ */
+export const CATALOG_MODES = new Set([
+  'generate_workout', 'generate_plan',
+  'refine_workout', 'refine_plan', 'discuss_workout', 'discuss_plan',
+]);
+
+/**
+ * The system blocks with the global exercise catalog inserted right after the
+ * static prompt. The catalog is the same for every user, so it belongs in the
+ * shared cache prefix: the static block's cache marker moves onto the catalog
+ * block, which keeps the request at the same number of markers (the API allows
+ * four, and tools + static + user context already use three).
+ */
+export function withExerciseCatalog(system: unknown, names: string[]): unknown {
+  if (!Array.isArray(system) || system.length === 0 || names.length === 0) return system;
+  const [first, ...rest] = system as Record<string, unknown>[];
+  const { cache_control: _moved, ...staticBlock } = first;
+  return [
+    staticBlock,
+    {
+      type: "text",
+      text: "<exercise_catalog>\n" + names.join("; ") + "\n</exercise_catalog>\n" +
+        "Every exercise name you put in generate_workout or generate_plan must be copied character-for-character " +
+        "from this catalog. A name that is not in it is saved as a new custom exercise and splits the user's history.",
+      cache_control: { type: "ephemeral" },
+    },
+    ...rest,
+  ];
+}

@@ -9,6 +9,7 @@
 // system prompt and the model answers {"calls": [...]}, several calls allowed,
 // which are re-wrapped as tool_use blocks for runFoodAgent.
 
+import { SONNET_MODEL } from "../../supabase/functions/_shared/sonnet.ts";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { runFoodAgent, type FoodAgentDeps } from "../../supabase/functions/ai-coach/foodAgent.ts";
@@ -60,7 +61,7 @@ function runClaude(system: string, stdin: string): Promise<string> {
       if (k.startsWith("CLAUDE_CODE_") || k === "ANTHROPIC_API_KEY" || k === "ANTHROPIC_AUTH_TOKEN" || k === "ANTHROPIC_BASE_URL") delete env[k];
     }
     const child = spawn("claude", [
-      "-p", "--output-format", "json", "--model", "sonnet", "--system-prompt", system, "--max-turns", "1",
+      "-p", "--output-format", "json", "--model", SONNET_MODEL, "--system-prompt", system, "--max-turns", "1",
       "--disallowed-tools", "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,Task,TodoWrite",
     ], { cwd: tmpdir(), env, stdio: ["pipe", "pipe", "pipe"] });
     let out = "";

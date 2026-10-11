@@ -17,6 +17,7 @@
 //
 // Deps are injected so the loop is testable without the network.
 
+import { sonnetSettings } from "../_shared/sonnet.ts";
 import {
   type AnthropicTool,
   CREATE_CUSTOM_FOOD_TOOL,
@@ -174,10 +175,12 @@ export const FOOD_AGENT_SYSTEM =
   "Apply any change they asked for " +
   "(half the rice, without the naan) to the copied lines. If you cannot tell which foods they mean, or nothing " +
   "matches, reply with one short question.\n" +
-  "A card's summary is an offer the user has not tapped: never say saved or logged. No em dashes anywhere.";
+  "A card's summary is an offer the user has not tapped: never say saved or logged. No em dashes anywhere.\n" +
+  "Act only through the tools. Every turn calls at least one; to talk to the user, use reply. Plain text with no tool " +
+  "call ends the work without an answer.";
 
 export const LAST_TURN_NOTE =
-  "\n\nThis is your LAST turn. You must finish now with create_custom_meal, create_custom_food, log_food or reply. " +
+  "This is your LAST turn. You must finish now with create_custom_meal, create_custom_food, log_food or reply. " +
   "Do not call any other tool.";
 
 // ── Status lines ────────────────────────────────────────────────────────────
@@ -305,15 +308,23 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
   for (let turn = 1; turn <= MAX_TURNS; turn++) {
     const last = turn === MAX_TURNS;
     const t0 = Date.now();
+    // The last-turn note is appended as a system message, never added to the
+    // system prompt: changing the system prompt mid-loop would edit history the
+    // model already answered (and break the prompt cache).
+    // A copy, so the note can never leak into a later turn's history.
+    const sent = last ? [...messages, { role: "system", content: LAST_TURN_NOTE }] : messages;
     const res = await deps.callModel({
       model: deps.model,
-      max_tokens: 2000,
-      system: FOOD_AGENT_SYSTEM + (last ? LAST_TURN_NOTE : ""),
+      // 2000 under Sonnet 4.6; ~30% up for Sonnet 5.5's tokenizer.
+      max_tokens: 2600,
+      system: FOOD_AGENT_SYSTEM,
       tools: FOOD_AGENT_TOOLS,
       // Always a tool: free text would be a reply that skipped the reply tool's
-      // rules, and it would end the loop without saying so.
-      tool_choice: { type: "any" },
-      messages,
+      // rules, and it would end the loop without saying so. Sonnet 5.5 rejects
+      // a forced tool_choice, so the system prompt says it and the code below
+      // fails a text-only turn as before.
+      ...sonnetSettings(deps.model),
+      messages: sent,
     });
     if (!res.ok) return { kind: "failed", reason: `http_${res.status}`, turns };
 
