@@ -239,7 +239,7 @@ Deno.test("the total still wins when the user's own lines already exceed it", as
 });
 
 Deno.test("the failure this prevents: a meal total on a correction merged the card's foods into one line", async () => {
-  // PR #236 review: the restored lines were folded into one combined line.
+  // The restored lines used to be folded into one combined line.
   const prev = [
     { ...line("eggs", 155, 13, 1, 11, 100), source: "catalog" as const, confidence: "high" as const, meal_type: "breakfast" as const },
     { ...line("toast", 80, 3, 15, 1, 30), source: "catalog" as const, confidence: "high" as const, meal_type: "breakfast" as const },
@@ -256,6 +256,33 @@ Deno.test("the failure this prevents: a meal total on a correction merged the ca
   const items = r.parsed!.items;
   assertEquals(items.map((i) => i.food_name), ["eggs", "toast", "orange juice"]);
   assertEquals(sum(items, "kcal"), 400);
+});
+
+Deno.test("the failure this prevents: a total-only correction looked every food up again", async () => {
+  // Real model, 2026-10-11: "make the whole meal 400 kcal" changed no food, yet
+  // every line was searched again and "toast" came back as Toaster pastries.
+  const prev = [
+    { ...line("boiled eggs", 155, 13, 1, 11, 100), source: "estimate" as const, confidence: "medium" as const, meal_type: "breakfast" as const },
+    { ...line("toast", 80, 3, 15, 1, 30), source: "estimate" as const, confidence: "medium" as const, meal_type: "breakfast" as const },
+    { ...line("orange juice", 110, 2, 26, 0.5, 250), source: "estimate" as const, confidence: "medium" as const, meal_type: "breakfast" as const },
+  ];
+  const copy = (n: string, k: number, p: number, c: number, f: number, g: number) => ({ ...est(n, k, p, c, f, g), corrects_food_name: null });
+  const searched: string[] = [];
+  const r = await runParseMeal(
+    mealDeps({
+      declined: false, corrects_previous: true, meal_type_from_text: null, stated_meal_total: { kcal: 400 },
+      items: [copy("boiled eggs", 155, 13, 1, 11, 100), copy("toast", 80, 3, 15, 1, 30), copy("orange juice", 110, 2, 26, 0.5, 250)],
+    }, [line("Toaster pastries, brown-sugar-cinnamon", 410, 4, 70, 12, 100)], {
+      searchFoods: async (q: string) => { searched.push(q); return []; },
+    }),
+    { ...BASE, text: "make the whole meal 400 kcal", mode: "fast", previousText: "2 boiled eggs, 1 toast and a glass of orange juice", previousItems: prev },
+  );
+  assertEquals(searched, []);
+  const items = r.parsed!.items;
+  assertEquals(items.map((i) => i.food_name), ["boiled eggs", "toast", "orange juice"]);
+  assertEquals(items.map((i) => i.meal_type), ["breakfast", "breakfast", "breakfast"]);
+  assertEquals(sum(items, "kcal"), 400);
+  assert(r.steps.some((s) => s.tool === "meal_total_correction"));
 });
 
 Deno.test("a meal total counts a saved meal the user named, and the rest fits", async () => {

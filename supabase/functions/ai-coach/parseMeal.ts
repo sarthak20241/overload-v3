@@ -3847,6 +3847,9 @@ export function scopeCorrection(
   extItems: ExtractedItem[],
   prevItems: PreviousItem[],
   replaced: Set<string>,
+  /** The turn's change is a meal total, not a food: every line unchanged is
+   *  then the right answer, not a sign the model missed an edit. */
+  mealTotalOnly = false,
 ): {
   toResolve: ExtractedItem[];
   /** How many lines the NARROWING skipped. 0 both when nothing looked
@@ -3911,7 +3914,7 @@ export function scopeCorrection(
     const key = p.food_name.trim().toLowerCase();
     if (replaced.delete(key)) unreplaced.push(p.food_name);
   }
-  if (passthrough.size > 0 && passthrough.size < extItems.length) {
+  if (passthrough.size > 0 && (passthrough.size < extItems.length || mealTotalOnly)) {
     return {
       toResolve: extItems.filter((_, i) => !passthrough.has(i)),
       untouched: passthrough.size,
@@ -5905,7 +5908,7 @@ async function runParseMealCore(
   // previous version is restored verbatim by keepUncoveredPrevious below.
   let toResolve = extItems;
   if (correctsPrevious && prevItems.length > 0) {
-    const scoped = scopeCorrection(extItems, prevItems, replacedNames);
+    const scoped = scopeCorrection(extItems, prevItems, replacedNames, statedOut.meal !== null);
     toResolve = scoped.toResolve;
     // ALWAYS emitted, including when nothing was narrowed. The absence of this
     // step used to be the only signal that the scoping had bailed, and an
@@ -5925,6 +5928,32 @@ async function runParseMealCore(
         ...(scoped.contradictions.length > 0 ? { contradictions: scoped.contradictions } : {}),
       },
     });
+    // "Make the whole meal 400 kcal": no food changed, so none is looked up
+    // again. Re-resolving them all searched "toast" and logged Toaster pastries
+    // (real model, 2026-10-11). The card's lines come back as they are and
+    // runParseMeal scales them to the total.
+    if (toResolve.length === 0) {
+      const kept = keepUncoveredPrevious([], prevItems, replacedNames);
+      steps.push({ iter: 1, tool: "meal_total_correction", input: { items: kept.length } });
+      const items = assignItemMeals(kept, extItems, {
+        explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour),
+      });
+      T.decide_ms = 0;
+      steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: false } });
+      return {
+        parsed: {
+          meal_type: items[0]?.meal_type ?? mealFromText ?? input.mealHint ?? mealForHour(input.localHour),
+          items,
+          drona_line: "Updated. Numbers adjusted.",
+          corrects_previous: true,
+        },
+        declined: null,
+        usage,
+        tool_calls: [...toolCalls, "meal_total_correction"],
+        steps,
+        iterations: anthropicCalls,
+      };
+    }
   }
   const tResolve0 = Date.now();
   // ── The user's own memory, before every other source ─────────────────────
