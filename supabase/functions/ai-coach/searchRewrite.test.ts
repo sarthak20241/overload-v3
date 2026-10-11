@@ -30,7 +30,9 @@ import {
   type ResolvedItem,
   runParseMeal,
   stampSaidNames,
+  superLookupOne,
 } from "./parseMeal.ts";
+import { cacheKey } from "./preciseCache.ts";
 
 // ── Invented foods ──────────────────────────────────────────────────────────
 // The user calls the "Vanilla Wafer" flavour by a nickname, "biscotti".
@@ -589,4 +591,52 @@ Deno.test("checking everything: a label for 'chicken breast' does not land on th
   assertEquals(r.parsed!.items.map((i) => [i.food_name, i.kcal]), [
     ["chicken", 234], ["peanuts", 609], ["banana", 96], ["chicken breast", 500],
   ]);
+});
+
+// ── The cache row takes the product's real name; the user's words alias it ──
+
+function cacheDeps(rows: Array<{ cache_key: string; display_name: string }>, aliases: unknown[][]): ParseMealDeps {
+  const net = newNet();
+  const tav = fakeNet(byQuery, net);
+  const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+    if (!String(url).includes("anthropic")) return tav(url, init);
+    const body = JSON.parse(String(init?.body));
+    const name = (body.tools ?? [])[0]?.name;
+    if (name === "search_again") {
+      return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name, input: { name: SOLD_AS, queries: ["fitzo vanilla wafer bar label"] } }] });
+    }
+    const msg = JSON.parse(body.messages[0].content);
+    return Response.json({
+      stop_reason: "tool_use", usage: {},
+      content: [{ type: "tool_use", name: "report_page_panels", input: { pages: msg.pages.map((p: { page_id: string }) => ({ page_id: p.page_id, same_food: true, basis: "per_100g", kcal: 380, protein_g: 28, carb_g: 40, fat_g: 12 })) } }],
+    });
+  }) as typeof fetch;
+  return {
+    anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: true,
+    searchFoods: async () => [], backfillOffFood: async () => null, getFoodPer100: async () => null,
+    fetchFn, webLookup: "tavily",
+    tavily: { apiKey: "t", timeoutMs: 1000, fetchFn },
+    jev: { apiKey: "j", timeoutMs: 1000, fetchFn },
+    preciseCachePut: async (row) => { rows.push(row); return "row-1"; },
+    preciseAliasPut: async (...args) => { aliases.push(args); },
+  };
+}
+
+Deno.test("found under the sold name: the row is saved under that name, and the user's words point at it", async () => {
+  const rows: Array<{ cache_key: string; display_name: string }> = [];
+  const aliases: unknown[][] = [];
+  const item = { name: "biscotti protein bar", brand: "Fitzo", quantity: 1, unit: "piece", prep: null };
+  const found = await superLookupOne(cacheDeps(rows, aliases), item, () => {}, () => {});
+  assertEquals(found?.name, "Fitzo Protein Bar Vanilla Wafer");
+  assertEquals(rows.map((r) => [r.cache_key, r.display_name]), [[cacheKey(SOLD_AS, "Fitzo"), "Fitzo Protein Bar Vanilla Wafer"]]);
+  assertEquals(aliases, [[cacheKey("biscotti protein bar", "Fitzo"), "row-1", null, "lookup"]]);
+});
+
+Deno.test("found under the user's own words: one row under those words, no alias", async () => {
+  const rows: Array<{ cache_key: string; display_name: string }> = [];
+  const aliases: unknown[][] = [];
+  const item = { name: "vanilla wafer protein bar", brand: "Fitzo", quantity: 1, unit: "piece", prep: null };
+  await superLookupOne(cacheDeps(rows, aliases), item, () => {}, () => {});
+  assertEquals(rows.map((r) => r.cache_key), [cacheKey("vanilla wafer protein bar", "Fitzo")]);
+  assertEquals(aliases, []);
 });

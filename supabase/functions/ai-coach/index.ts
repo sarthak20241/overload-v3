@@ -2889,7 +2889,7 @@ function makeParseDeps(
           .maybeSingle();
         if (error) {
           console.log(`[parse_meal] precise_cache upsert failed: ${error.message}`);
-          return;
+          return null;
         }
         // The meaning-search embedding (0141). Awaited so the isolate does not
         // drop it, but never allowed to fail the write that already landed.
@@ -2904,12 +2904,14 @@ function makeParseDeps(
             if (up.error) console.log(`[parse_meal] precise_cache embedding update failed: ${up.error.message}`);
           }
         }
+        // The row's id, so the user's words can be stored as its alias.
+        return written?.id ?? null;
       }
       : undefined,
-    preciseAliasPut: async (aliasKey: string, rowId: string, confidence: number) => {
+    preciseAliasPut: async (aliasKey: string, rowId: string, confidence: number | null, source: "jev" | "lookup" = "jev") => {
       // ignoreDuplicates: the first mapping of a phrase wins and is never repointed.
       const { error } = await admin.from("precise_alias").upsert(
-        { alias_key: aliasKey, row_id: rowId, source: "jev", confidence },
+        { alias_key: aliasKey, row_id: rowId, source, confidence },
         { onConflict: "alias_key", ignoreDuplicates: true },
       );
       if (error) console.log(`[parse_meal] precise_alias upsert failed: ${error.message}`);

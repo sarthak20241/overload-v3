@@ -1006,8 +1006,10 @@ export interface ParseMealDeps {
    *  the next person typing them gets an exact hit with no Jev call and no web
    *  lookup (migration 0141's precise_alias; first mapping wins). Called only
    *  when PRECISE_MATCH_MODE=on serves a cache row: in shadow it would change
-   *  what users are served. */
-  preciseAliasPut?(aliasKey: string, rowId: string, confidence: number): Promise<void>;
+   *  what users are served. Also called with source "lookup" when the search
+   *  rewrite found the label under another name: the user's words become an
+   *  alias of the row saved under the product's own name. */
+  preciseAliasPut?(aliasKey: string, rowId: string, confidence: number | null, source?: "jev" | "lookup"): Promise<void>;
 
   /** Super only: store what a lookup cost us to learn, so the next person asking
    *  about this food does not pay for it again. Upsert on cache_key; a
@@ -1028,7 +1030,8 @@ export interface ParseMealDeps {
     evidence: SourceReading[];
     verified: boolean;
     source_note: string | null;
-  }): Promise<void>;
+    /** The written row's id when the store reports it, so an alias can point at it. */
+  }): Promise<string | null | void>;
   // Cross-encoder rerank over the merged candidate docs. Optional - absent
   // when unconfigured; the merge order stands. See rerank.ts.
   rerankCandidates?(query: string, docs: string[]): Promise<{
@@ -3225,8 +3228,8 @@ export async function superLookupOne(
   // "Parle Hide and Seek biscuits", which put "Parle Parle ..." on the card
   // and into precise_cache.display_name (live, ai-coach v186, 2026-09-26).
   // Found under a rewritten name: the card shows the product as it is sold, so
-  // the user can see which one we took. The cache key stays the user's words below,
-  // so the next time anyone types them it is a straight hit.
+  // the user can see which one we took. The row is saved under that name and
+  // the user's words become its alias (below), so both hit it next time.
   const display = finding.searched_as
     ? foodLabel({ name: finding.searched_as, brand: item.brand ?? null })
     : foodLabel(item);
@@ -3234,14 +3237,19 @@ export async function superLookupOne(
   // one value for the cache row and for this turn's candidate.
   const brand = item.brand ?? finding.brand ?? null;
 
+  // Found under a rewritten name: the row is saved under THAT name, which is
+  // what the label is for, and the user's words become an alias pointing at it
+  // (0141's precise_alias). So "<nickname>" and "<real name>" both hit one row,
+  // and the row's name never claims to be the nickname.
+  const rowKey = finding.searched_as ? cacheKey(finding.searched_as, item.brand) : cacheKey(item.name, item.brand);
   if (deps.preciseCachePut) {
     // Never let a cache write cost the user their meal: the lookup already
     // succeeded and the line is good whether or not the row lands.
-    await deps.preciseCachePut({
-      cache_key: cacheKey(item.name, item.brand),
+    const rowId = await deps.preciseCachePut({
+      cache_key: rowKey,
       display_name: display,
-      // The key stays on the line as extracted (cacheKey above), so the next
-      // identical line still hits.
+      // The line as extracted, or the product's own name when the rewrite found
+      // it (rowKey above); either way the next identical line still hits.
       brand,
       base_unit: "g",
       ...per100,
@@ -3250,7 +3258,12 @@ export async function superLookupOne(
       evidence: finding.readings,
       verified,
       source_note: finding.source_note,
-    }).catch((e) => deps.log?.(`[parse_meal] precise_cache write failed: ${String(e).slice(0, 120)}`));
+    }).catch((e) => { deps.log?.(`[parse_meal] precise_cache write failed: ${String(e).slice(0, 120)}`); return null; });
+    const userKey = cacheKey(item.name, item.brand);
+    if (finding.searched_as && rowId && userKey !== rowKey && deps.preciseAliasPut) {
+      await deps.preciseAliasPut(userKey, rowId, null, "lookup")
+        .catch((e) => deps.log?.(`[parse_meal] precise_alias write failed: ${String(e).slice(0, 120)}`));
+    }
   }
 
   return {
