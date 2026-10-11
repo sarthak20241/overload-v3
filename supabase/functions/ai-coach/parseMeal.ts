@@ -287,6 +287,9 @@ export interface PreviousItem {
   meal_type?: MealType;
   /** ParsedItem.said_name, sent back by the client. */
   said_name?: string;
+  /** The line the user tapped "double check" on. When any line carries it,
+   *  research looks up ONLY the marked lines and leaves the rest as they were. */
+  research?: boolean;
 }
 
 /** An untouched previous line, rebuilt verbatim. */
@@ -4906,7 +4909,14 @@ async function researchPrevious(
   // the very row being doubted (a catalog row swapped in for their product),
   // and looking THAT up only confirms the mistake.
   const lookupName = (p: PreviousItem) => p.said_name?.trim() || p.food_name;
-  const targets: ExtractedItem[] = previous.slice(0, 3).map((p) => ({
+  // The tapped line only, when the client says which one. Looking up the first
+  // three regardless re-priced lines nobody doubted (a remembered peanuts line
+  // lost its own numbers to a web panel, 2026-10-11) and never reached a
+  // tapped fourth line at all. A typed "check these" marks nothing and keeps
+  // the old first-three reach.
+  const marked = previous.filter((p) => p.research === true);
+  const pool = marked.length > 0 ? marked.slice(0, 3) : previous.slice(0, 3);
+  const targets: ExtractedItem[] = pool.map((p) => ({
     name: lookupName(p),
     brand: null,
     quantity: p.quantity,
@@ -4924,7 +4934,9 @@ async function researchPrevious(
     for (const [forItem, l] of labels) {
       if (wordsOverlap(lookupName(p), forItem)) { label = l; break; }
     }
-    if (!label || !(p.grams > 0)) {
+    // Only a looked-up line takes a label: names overlap ("chicken breast" and
+    // "chicken curry"), and a label for one must not land on its neighbour.
+    if (!pool.includes(p) || !label || !(p.grams > 0)) {
       // No label for this line (not looked up, or no name match). Keep it as it
       // was: the caller replaces the whole meal with what we return.
       items.push(previousAsParsedItem(p));

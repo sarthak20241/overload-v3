@@ -1132,6 +1132,9 @@ export async function parseMeal(
      *  read as a brand new one. The server resolves a pure serving/quantity
      *  change without a second model call, so refining is cheaper than parsing. */
     previous?: { text: string; items: ParsedMealItem[] } | null;
+    /** Index in previous.items of the line the user tapped "double check" on.
+     *  The server then looks up only that line. */
+    researchLine?: number | null;
     /** Original food retained even when parsing stopped before producing items. */
     pendingMeal?: PendingFoodMeal | null;
     /** Recent turns of this logging conversation, oldest first. Lets a bare
@@ -1192,7 +1195,7 @@ export async function parseMeal(
             // Macros ride along so the server can hand an UNTOUCHED line back
             // verbatim: a correction replaces the whole meal, so anything it
             // cannot reconstruct would be silently dropped.
-            previous_items: args.previous.items.slice(0, 12).map((it) => ({
+            previous_items: args.previous.items.slice(0, 12).map((it, idx) => ({
               food_id: it.food_id,
               food_name: it.food_name,
               quantity: it.quantity,
@@ -1212,6 +1215,7 @@ export async function parseMeal(
               // The user's words for the line, so a double check looks up what
               // they named rather than the row that may be the mistake.
               ...(it.said_name ? { said_name: it.said_name } : {}),
+              ...(idx === args.researchLine ? { research: true } : {}),
             })),
           }
           : {}),

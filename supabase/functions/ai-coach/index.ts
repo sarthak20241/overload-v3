@@ -3234,6 +3234,7 @@ async function handleParseMealRequest(args: {
         ...(typeof r.said_name === "string" && r.said_name.trim()
           ? { said_name: r.said_name.trim().slice(0, 100) }
           : {}),
+        ...(r.research === true ? { research: true } : {}),
       }];
     })
     : [];

@@ -838,6 +838,8 @@ export default function NutritionScreen() {
         } online and check these numbers`,
         mealHint: f.mealType,
         previous: { text: f.raw, items: f.meal.items },
+        // Only this line is looked up; the rest of the card stays as it is.
+        researchLine: i,
         turns: turnsRef.current.slice(),
       });
       // The daily allowance covers this lookup too, so a cap here has to say so

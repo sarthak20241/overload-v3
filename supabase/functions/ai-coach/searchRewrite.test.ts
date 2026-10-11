@@ -403,3 +403,55 @@ Deno.test("the double check searches for the user's words, and the line takes th
   assertEquals(r.parsed!.items[0].food_name, "Fitzo biscotti protein bar");
   assertEquals(r.parsed!.items[0].kcal, 228);
 });
+
+// ── The double check looks up the tapped line, and only that line ───────────
+
+function researchDeps(looked: string[]): ParseMealDeps {
+  const fetchFn = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    const tools: string[] = (body.tools ?? []).map((t: { name: string }) => t.name);
+    const name = tools.find((t) => t !== "web_search") ?? "";
+    const reply = (input: unknown) =>
+      Response.json({ stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: "tool_use", name, input }] });
+    if (name === "extract_meal") return reply({ requests_research: true, items: [] });
+    if (name === "report_labels") {
+      const items = JSON.parse(body.messages[0].content) as Array<{ name: string }>;
+      looked.push(...items.map((i) => i.name));
+      return reply({ results: items.map((i) => ({ for_item: i.name, found: true, per_100: { kcal: 500, protein_g: 10, carb_g: 50, fat_g: 28 }, source_note: "label" })) });
+    }
+    throw new Error(`unexpected model call ${name}`);
+  }) as typeof fetch;
+  return {
+    anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: true,
+    searchFoods: async () => [], backfillOffFood: async () => null, getFoodPer100: async () => null, fetchFn,
+  };
+}
+
+// Macros that add up to the kcal, so the Atwater check leaves untouched lines alone.
+const line = (food_name: string, protein_g: number, carb_g: number, fat_g: number): ParsedItem => ({
+  food_id: null, food_name, quantity: 100, serving_label: "g", grams: 100,
+  kcal: 4 * protein_g + 4 * carb_g + 9 * fat_g, protein_g, carb_g, fat_g, fiber_g: null,
+  source: "estimate", assumption: null, confidence: "medium",
+});
+const MEAL = [line("chicken", 27, 0, 14), line("peanuts", 26, 16, 49), line("banana", 1, 23, 0), line("chicken breast", 31, 0, 4)];
+const ask = (previousItems: Array<ParsedItem & { research?: boolean }>) => ({
+  text: "yes, look up the label for chicken breast online and check these numbers",
+  localHour: 10, mealHint: null, recentFoods: [], todayTotals: null, targets: null,
+  previousText: "chicken, peanuts, banana, chicken breast", previousItems,
+});
+
+Deno.test("the double check looks up only the tapped line, even the fourth, and leaves the rest alone", async () => {
+  const looked: string[] = [];
+  const r = await runParseMeal(researchDeps(looked), ask(MEAL.map((it, i) => (i === 3 ? { ...it, research: true } : it))));
+  assertEquals(looked, ["chicken breast"]);
+  // "chicken" matches the looked-up "chicken breast" by name and must not take its label.
+  assertEquals(r.parsed!.items.map((i) => [i.food_name, i.kcal]), [
+    ["chicken", 234], ["peanuts", 609], ["banana", 96], ["chicken breast", 500],
+  ]);
+});
+
+Deno.test("an old app that marks no line still gets the first three looked up", async () => {
+  const looked: string[] = [];
+  await runParseMeal(researchDeps(looked), ask(MEAL));
+  assertEquals(looked, ["chicken", "peanuts", "banana"]);
+});
