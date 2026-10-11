@@ -23,18 +23,19 @@
  * client. Those are ~1s of the measured 25-48s and belong in production spans.
  */
 import { createClient } from '@supabase/supabase-js';
-import { buildSystemPrompt } from '../../supabase/functions/ai-coach/prompt';
+import { buildSystemPrompt, withExerciseCatalog } from '../../supabase/functions/ai-coach/prompt';
 import { EXERCISE_LIBRARY } from '../../lib/exercises';
 import { COMPACT_FORMAT_SPEC, parseCompactPlan, type ParsedPlan } from './encoding';
 import { callClaudeCli } from './cliCaller';
 // The fanout variant drives the SHIPPED module, not a copy of it.
 import { runGeneratePlan, type TextCaller } from '../../supabase/functions/ai-coach/generatePlan';
+import { requireTool, SONNET_MODEL, sonnetSettings } from '../../supabase/functions/_shared/sonnet';
 import type { CoachIntake, EvalCase, OnboardingIntake } from './cases';
 import type { CoachGoal } from '../../lib/types';
 
-export const DEFAULT_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_MODEL = SONNET_MODEL;
 /** Mirrors GENERATE_PLAN_MAX_TOKENS in supabase/functions/ai-coach/index.ts. */
-export const GENERATE_PLAN_MAX_TOKENS = 4096;
+export const GENERATE_PLAN_MAX_TOKENS = 5400;
 /** Mirrors ANTHROPIC_TIMEOUT_MS after the 2026-07-19 bump from 30s. Runs that
  *  cross the OLD 30s value are still counted, since that is what shipped
  *  before and what PR #66's non-streaming call would have hit. */
@@ -377,14 +378,23 @@ function failed(c: EvalCase, pipeline: string, error: string, partial?: Partial<
 
 export async function runBaseline(c: EvalCase, o: VariantOpts): Promise<RunResult> {
   const model = o.model ?? DEFAULT_MODEL;
-  const { system, tools } = buildSystemPrompt({ userContext: userContextFor(c), mode: 'generate_plan' });
+  const built = buildSystemPrompt({ userContext: userContextFor(c), mode: 'generate_plan' });
+  const tools = built.tools;
+  // ai-coach adds the full catalog to every single-call generate mode
+  // (CATALOG_MODES); without it this would score a prompt the app no longer sends.
+  const system = withExerciseCatalog(built.system, await globalCatalog());
   const started = Date.now();
   let r: CallResult;
   try {
+    const user = { role: 'user', content: await messageFor(c, o.catalog ?? 'library') };
     r = await streamCall(o.apiKey, {
       model, max_tokens: GENERATE_PLAN_MAX_TOKENS, system, tools,
-      messages: [{ role: 'user', content: await messageFor(c, o.catalog ?? 'library') }],
-      tool_choice: { type: 'tool', name: 'generate_plan' },
+      // Required, not forced, as ai-coach does it: Sonnet 5.5 rejects forced
+      // tool_choice. An older --model (the 4.6 control run) gets the forced
+      // request it shipped with; it would 400 on the system note instead.
+      ...(model === SONNET_MODEL
+        ? { messages: [user, requireTool('generate_plan')], ...sonnetSettings(model) }
+        : { messages: [user], tool_choice: { type: 'tool', name: 'generate_plan' } }),
     }, { trackToolWorkouts: true });
   } catch (e) {
     return failed(c, 'baseline', String(e).slice(0, 200));
@@ -429,6 +439,7 @@ export async function runCompact(c: EvalCase, o: VariantOpts): Promise<RunResult
       r = await streamCall(o.apiKey, {
         model, max_tokens: GENERATE_PLAN_MAX_TOKENS, system,
         messages: [{ role: 'user', content: msg }],
+        ...sonnetSettings(model),
       }, { trackCompactDays: true });
     }
   } catch (e) {
@@ -488,6 +499,7 @@ export async function runFanout(c: EvalCase, o: VariantOpts): Promise<RunResult>
           max_tokens: maxTokens,
           system: sys,
           messages,
+          ...sonnetSettings(m ?? model),
         });
         if (label === 'skeleton') firstTtft = r.ttft_ms;
         return {

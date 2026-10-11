@@ -2352,9 +2352,12 @@ export const MAX_ITEMS_PER_PARSE = 50;
  *  mid-JSON - the failure the `extract_truncated` guard was written for. These
  *  are CAPS, not targets: a two-item message emits the same ~200 tokens under
  *  700 or 5000, so nothing routine pays for the headroom. Optimise from real
- *  usage rather than from arithmetic. */
-const EXTRACT_MAX_TOKENS_FAST = 5000;
-const EXTRACT_MAX_TOKENS_SMART = 5000;
+ *  usage rather than from arithmetic.
+ *
+ *  6500 since the Haiku 5.5 switch (2026-10-11): it counts the same text as
+ *  ~30% more tokens than Haiku 4.5, so 5000 would have been a ~30% tighter cap. */
+const EXTRACT_MAX_TOKENS_FAST = 6500;
+const EXTRACT_MAX_TOKENS_SMART = 6500;
 
 /** How much of the user's own message reaches the model.
  *

@@ -6,7 +6,7 @@
 // about the app and about memory, and which modes carry the memory tools.
 
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
-import { buildSystemPrompt, MEMORY_TOOL_NAMES, TERMINAL_TOOLS } from "./prompt.ts";
+import { buildSystemPrompt, CATALOG_MODES, MEMORY_TOOL_NAMES, TERMINAL_TOOLS, withExerciseCatalog } from "./prompt.ts";
 import { APP_GUIDE_TOPICS } from "./appGuide.ts";
 
 type Mode = NonNullable<Parameters<typeof buildSystemPrompt>[0]["mode"]>;
@@ -90,4 +90,20 @@ Deno.test("the app guide tool lists its topics so the model can pick", () => {
   assertStringIncludes(guide.description, "not_available");
   const topic = (guide.input_schema.properties as Record<string, { enum?: string[] }>).topic;
   assertEquals(topic.enum, APP_GUIDE_TOPICS);
+});
+
+Deno.test("withExerciseCatalog: catalog sits after the static block and the cache markers stay at three in system", () => {
+  const { system, tools } = buildSystemPrompt({ userContext: null, retrievedResearch: [], mode: "generate_workout" });
+  const before = (system as { cache_control?: unknown }[]).filter((b) => b.cache_control).length;
+  const out = withExerciseCatalog(system, ["Squat", "Bench Press"]) as { text: string; cache_control?: unknown }[];
+  assertEquals(out.length, (system as unknown[]).length + 1);
+  assert(out[1].text.includes("Squat; Bench Press"));
+  assertEquals(out[0].cache_control, undefined);
+  assertEquals(out[1].cache_control, { type: "ephemeral" });
+  // The API allows four markers: tools carry one, so system may hold three.
+  const markers = out.filter((b) => b.cache_control).length;
+  assertEquals(markers, before);
+  assert(markers + (tools as { cache_control?: unknown }[]).filter((t) => t.cache_control).length <= 4);
+  assertEquals(withExerciseCatalog(system, []), system);
+  assert(CATALOG_MODES.has("refine_plan") && !CATALOG_MODES.has("chat") && !CATALOG_MODES.has("generate_program"));
 });
