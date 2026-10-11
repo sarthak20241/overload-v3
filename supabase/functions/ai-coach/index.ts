@@ -2657,7 +2657,13 @@ function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
     grams: 100, quantity: c.serving_grams ? 100 / Number(c.serving_grams) : 100,
     serving_unit: typeof c.serving_label === "string" ? c.serving_label : "g",
     source: typeof c.source === "string" ? c.source : null, logged_via: "ai",
-    tier: String(c.tier), logged_at: String(c.last_logged_at), persistent: true, confirmed_at: String(c.confirmed_at),
+    // A food logged ahead carries its planned day as last_logged_at. Until that
+    // day comes, date it by when it was written, so the card never says
+    // "Same as you logged on" a day that has not happened.
+    tier: String(c.tier), logged_at: Date.parse(String(c.last_logged_at)) > Date.now()
+      ? (c.confirmed_at ? String(c.confirmed_at) : new Date().toISOString())
+      : String(c.last_logged_at),
+    persistent: true, confirmed_at: String(c.confirmed_at),
     confirmed_aliases: Array.isArray(c.aliases) ? c.aliases.filter((a): a is string => typeof a === "string") : [],
   };
 }
@@ -2673,6 +2679,9 @@ async function fetchMemoryEntries(
         "logged_at, meal_entries(food_name, food_id, kcal, protein_g, carb_g, fat_g, fiber_g, grams_logged, quantity, serving_unit, source, logged_via, tier)",
       )
       .gte("logged_at", sinceIso)
+      // A meal logged ahead for a later day is planned, not eaten. It joins
+      // memory once its day arrives.
+      .lte("logged_at", new Date().toISOString())
       .order("logged_at", { ascending: false })
       .limit(300),
     userClient.from("user_profiles").select("timezone").maybeSingle(),
@@ -2718,6 +2727,8 @@ async function mealsWithin(userClient: SupabaseClient, days: number): Promise<Me
     .from("meals")
     .select("logged_at, meal_entries(food_name, quantity, serving_unit)")
     .gte("logged_at", sinceIso)
+    // Planned meals (a later day) are not staples yet.
+    .lte("logged_at", new Date().toISOString())
     .order("logged_at", { ascending: false })
     .limit(200);
   if (error || !Array.isArray(data)) return [];

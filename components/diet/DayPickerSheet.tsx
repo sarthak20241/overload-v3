@@ -1,8 +1,8 @@
 /**
  * DayPickerSheet — a compact month calendar for jumping the diet diary to any
- * past day (MyFitnessPal's date picker). Portal sheet like the other diet sheets
- * (flush on Android edge-to-edge). Future days are disabled — you can't log ahead
- * of today. No external calendar lib; the grid is a plain 7-column layout.
+ * past day, or ahead to plan one (MyFitnessPal's date picker). Portal sheet like
+ * the other diet sheets (flush on Android edge-to-edge). Days past latestLogDay()
+ * are disabled. No external calendar lib; the grid is a plain 7-column layout.
  */
 import { useEffect, useState } from 'react';
 import { View, Text, Pressable, TouchableOpacity, StyleSheet, BackHandler } from 'react-native';
@@ -14,6 +14,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
 import { haptics } from '@/lib/haptics';
 import { ymd } from '@/lib/dietData';
+import { latestLogDay } from '@/lib/logDay';
 
 interface Props {
   open: boolean;
@@ -44,6 +45,8 @@ export function DayPickerSheet({ open, date, onClose, onPick }: Props) {
   if (!open) return <Portal>{null}</Portal>;
 
   const todayIso = ymd(new Date());
+  const latest = latestLogDay();
+  const latestIso = ymd(latest);
   const selIso = ymd(date);
   const year = cursor.getFullYear();
   const month = cursor.getMonth();
@@ -54,8 +57,8 @@ export function DayPickerSheet({ open, date, onClose, onPick }: Props) {
   for (let i = 0; i < firstWeekday; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
 
-  // Don't page past the current month.
-  const canGoNext = year < new Date().getFullYear() || (year === new Date().getFullYear() && month < new Date().getMonth());
+  // Don't page past the month of the last day a log can land on.
+  const canGoNext = year < latest.getFullYear() || (year === latest.getFullYear() && month < latest.getMonth());
   const stepMonth = (dir: -1 | 1) => { haptics.tick(); setCursor(new Date(year, month + dir, 1)); };
 
   return (
@@ -91,20 +94,20 @@ export function DayPickerSheet({ open, date, onClose, onPick }: Props) {
                 if (d == null) return <View key={i} style={s.cell} />;
                 const cellDate = new Date(year, month, d);
                 const iso = ymd(cellDate);
-                const isFuture = iso > todayIso;
+                const pastLatest = iso > latestIso;
                 const isSel = iso === selIso;
                 const isToday = iso === todayIso;
                 return (
                   <Pressable
                     key={i}
-                    disabled={isFuture}
+                    disabled={pastLatest}
                     onPress={() => { haptics.selection(); onPick(cellDate); onClose(); }}
                     style={s.cell}
                   >
                     <View style={[s.dayInner, isSel && { backgroundColor: Colors.primary }]}>
                       <Text style={[
                         s.dayTxt,
-                        { color: isFuture ? C.textDim : isSel ? Colors.primaryFg : C.foreground },
+                        { color: pastLatest ? C.textDim : isSel ? Colors.primaryFg : C.foreground },
                         isToday && !isSel && { color: C.accentText, fontWeight: FontWeight.bold },
                       ]}>{d}</Text>
                     </View>
