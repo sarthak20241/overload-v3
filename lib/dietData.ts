@@ -662,6 +662,11 @@ export interface ParsedMealItem {
    *  instead of "edited": the numbers are the user's, from My Meals. */
   saved_meal?: string | null;
 
+  /** The user's own words for this line, when the card names it differently
+   *  (a catalog row, a product found under another name). The double check
+   *  looks the food up by these, not by the card's name. */
+  said_name?: string;
+
   /** The diary section THIS line goes to. One message can cover a whole day
    *  ("eggs for breakfast, dal at lunch"), so lines in one parsed meal can
    *  belong to different sections. The server stamps every line; the client
@@ -796,6 +801,7 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
     // render rather than claiming a cross-check that never happened.
     verified: i.verified === true,
     ...(typeof i.saved_meal === 'string' && i.saved_meal.trim() ? { saved_meal: i.saved_meal.trim() } : {}),
+    ...(typeof i.said_name === 'string' && i.said_name.trim() ? { said_name: i.said_name.trim() } : {}),
   };
 }
 
@@ -1126,6 +1132,9 @@ export async function parseMeal(
      *  read as a brand new one. The server resolves a pure serving/quantity
      *  change without a second model call, so refining is cheaper than parsing. */
     previous?: { text: string; items: ParsedMealItem[] } | null;
+    /** Index in previous.items of the line the user tapped "double check" on.
+     *  The server then looks up only that line. */
+    researchLine?: number | null;
     /** Original food retained even when parsing stopped before producing items. */
     pendingMeal?: PendingFoodMeal | null;
     /** Recent turns of this logging conversation, oldest first. Lets a bare
@@ -1186,7 +1195,7 @@ export async function parseMeal(
             // Macros ride along so the server can hand an UNTOUCHED line back
             // verbatim: a correction replaces the whole meal, so anything it
             // cannot reconstruct would be silently dropped.
-            previous_items: args.previous.items.slice(0, 12).map((it) => ({
+            previous_items: args.previous.items.slice(0, 12).map((it, idx) => ({
               food_id: it.food_id,
               food_name: it.food_name,
               quantity: it.quantity,
@@ -1203,6 +1212,10 @@ export async function parseMeal(
               meal_type: it.meal_type,
               assumption: it.assumption,
               confidence: it.confidence,
+              // The user's words for the line, so a double check looks up what
+              // they named rather than the row that may be the mistake.
+              ...(it.said_name ? { said_name: it.said_name } : {}),
+              ...(idx === args.researchLine ? { research: true } : {}),
             })),
           }
           : {}),

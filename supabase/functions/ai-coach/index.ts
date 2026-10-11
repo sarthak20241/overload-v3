@@ -796,6 +796,8 @@ const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on
 // The user's own food memory (userFoodMemory.ts, migration 0149): on unless
 // set to "off", a kill switch that needs no deploy.
 const USER_FOOD_MEMORY = (Deno.env.get("USER_FOOD_MEMORY") ?? "on").trim().toLowerCase() !== "off";
+// Precise on Tavily: one model-written retry search when the fixed ones miss.
+const SEARCH_REWRITE = (Deno.env.get("SEARCH_REWRITE") ?? "on").trim().toLowerCase() !== "off";
 
 const PRECISE_MATCH_MODE: "off" | "shadow" | "on" = (() => {
   const v = (Deno.env.get("PRECISE_MATCH_MODE") ?? "off").trim().toLowerCase();
@@ -2887,7 +2889,7 @@ function makeParseDeps(
           .maybeSingle();
         if (error) {
           console.log(`[parse_meal] precise_cache upsert failed: ${error.message}`);
-          return;
+          return null;
         }
         // The meaning-search embedding (0141). Awaited so the isolate does not
         // drop it, but never allowed to fail the write that already landed.
@@ -2902,17 +2904,20 @@ function makeParseDeps(
             if (up.error) console.log(`[parse_meal] precise_cache embedding update failed: ${up.error.message}`);
           }
         }
+        // The row's id, so the user's words can be stored as its alias.
+        return written?.id ?? null;
       }
       : undefined,
-    preciseAliasPut: async (aliasKey: string, rowId: string, confidence: number) => {
+    preciseAliasPut: async (aliasKey: string, rowId: string, confidence: number | null, source: "jev" | "lookup" = "jev") => {
       // ignoreDuplicates: the first mapping of a phrase wins and is never repointed.
       const { error } = await admin.from("precise_alias").upsert(
-        { alias_key: aliasKey, row_id: rowId, source: "jev", confidence },
+        { alias_key: aliasKey, row_id: rowId, source, confidence },
         { onConflict: "alias_key", ignoreDuplicates: true },
       );
       if (error) console.log(`[parse_meal] precise_alias upsert failed: ${error.message}`);
     },
     webLookup: PRECISE_WEB_PROVIDER,
+    searchRewrite: SEARCH_REWRITE,
     tavily: TAVILY_API_KEY ? { apiKey: TAVILY_API_KEY, timeoutMs: 20_000, log: (m) => console.log(m) } : undefined,
     // Time is not Precise's constraint, so relevance gets a longer leash than
     // the food-intent race does.
@@ -3228,6 +3233,12 @@ async function handleParseMealRequest(args: {
             r.meal_type === "dinner" || r.meal_type === "snack"
           ? r.meal_type
           : undefined,
+        ...(typeof r.said_name === "string" && r.said_name.trim()
+          // Control characters stripped: it becomes a web search term and is
+          // shown back to extract inside previous_meal.
+          ? { said_name: r.said_name.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 100) }
+          : {}),
+        ...(r.research === true ? { research: true } : {}),
       }];
     })
     : [];
