@@ -368,9 +368,15 @@ function startFoodIntent(
  *  bar. Builds 110 (iOS) and 107 (Android) do not send it and cannot draw one,
  *  so for them a create is served as a log: exactly what they do today. */
 const CLIENT_CAP_FOOD_CREATE = "food_create";
+/** The build draws the one-tap variant chip from `alternatives`. */
+const CLIENT_CAP_VARIANT_SWAP = "variant_swap";
 
 function clientSupportsFoodCreate(body: Record<string, unknown>): boolean {
   return Array.isArray(body?.supports) && (body.supports as unknown[]).includes(CLIENT_CAP_FOOD_CREATE);
+}
+
+function clientSupportsVariantSwap(body: Record<string, unknown>): boolean {
+  return Array.isArray(body?.supports) && (body.supports as unknown[]).includes(CLIENT_CAP_VARIANT_SWAP);
 }
 
 /** Reads the food box may do before it answers: the user's diary, so "save
@@ -3447,6 +3453,7 @@ async function handleParseMealRequest(args: {
                 previousItems,
                 pendingMeal,
                 recentTurns,
+                variantChips: clientSupportsVariantSwap(body),
               },
             );
             const outcome = await resolveFoodBarOutcome({
@@ -3654,6 +3661,7 @@ async function handleParseMealRequest(args: {
           previousItems,
           pendingMeal,
           recentTurns,
+          variantChips: clientSupportsVariantSwap(body),
         },
       );
       // Decided before the diary write, for the same reason as the stream: a

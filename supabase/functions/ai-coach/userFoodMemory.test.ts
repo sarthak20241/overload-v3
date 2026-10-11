@@ -672,3 +672,58 @@ Deno.test("a later confirmation on a past diary day keeps its alias and correcte
   assertEquals(remembered.per100.kcal, 166.7);
   assertEquals(remembered.confirmed_aliases, ["my chicken"]);
 });
+
+// ── The one-tap swap chip ───────────────────────────────────────────────────
+// The card names the other variant ("You also log vanilla whey"). The chip lets
+// the user swap to it in one tap, so each line carries that variant already
+// priced at the line's weight, from the user's own numbers. No model call.
+
+const WHEY_ENTRIES = () => [
+  ...[3, 2, 1].map((d) => live({ food_name: "chocolate whey", kcal: 117, protein_g: 24, carb_g: 3, fat_g: 1.5, grams: 30, quantity: 30, logged_at: liveAgo(d) })),
+  live({ food_name: "vanilla whey", kcal: 114, protein_g: 23, carb_g: 3, fat_g: 1.5, grams: 30, quantity: 30, logged_at: liveAgo(4) }),
+];
+const WHEY_LINE = { ...ESTIMATED, name: "whey", quantity: 40, unit: "g", est_total_g: 40 };
+
+Deno.test("the decision keeps the other variant's row, not just its name", () => {
+  const list = [{ ...food("vanilla whey", 380), times: 1 }, { ...food("chocolate whey", 390), times: 3 }];
+  const d = decideMemory(list, [0.9, 0.9]);
+  assertEquals(d.food?.also, ["vanilla whey"]);
+  assertEquals(d.food?.alsoFoods?.map((f) => [f.name, f.per100.kcal]), [["vanilla whey", 380]]);
+});
+
+for (const [tier, mode] of [["Quick", "fast"], ["Thorough", null], ["Precise", "super"]] as const) {
+  Deno.test(`${tier}: the line carries the other variant at its own weight, from the user's numbers`, async () => {
+    const calls: string[] = [], lookups: string[] = [];
+    const r = await runParseMeal(
+      deps(WHEY_ENTRIES(), { "chocolate whey": 0.9, "vanilla whey": 0.9 }, calls, lookups, WHEY_LINE),
+      { ...BASE, text: "40g whey", mode, variantChips: true },
+    );
+    const item = r.parsed!.items[0];
+    assertEquals(item.food_name, "chocolate whey");
+    // The line's own weight (40 g typed; this harness's decide answers 150 g),
+    // never the 30 g logged before. Vanilla is 380 kcal per 100 g.
+    const g = item.grams;
+    assert(g !== 30, String(g));
+    assertEquals(item.alternatives?.map((a) => [a.food_name, a.grams, a.kcal]), [["vanilla whey", g, Math.round(380 * g / 10) / 10]]);
+    assertEquals(item.alternatives?.[0].numbers_tier, "precise");
+    assert(item.alternatives![0].assumption!.startsWith("Same as you logged on"), item.alternatives![0].assumption!);
+    // The chip names it, so the note no longer asks the user to type it.
+    assert(!item.assumption!.includes("You also log"), item.assumption!);
+  });
+}
+
+Deno.test("an older build without the chip still gets the sentence that names the other variant", async () => {
+  const r = await runParseMeal(
+    deps(WHEY_ENTRIES(), { "chocolate whey": 0.9, "vanilla whey": 0.9 }, [], [], WHEY_LINE),
+    { ...BASE, text: "40g whey", mode: "fast" },
+  );
+  assert(r.parsed!.items[0].assumption!.endsWith("You also log vanilla whey; if it was that, just say so."));
+});
+
+Deno.test("a food with no other variant offers no chip", async () => {
+  const r = await runParseMeal(
+    deps(WHEY_ENTRIES().slice(0, 3), { "chocolate whey": 0.9 }, [], [], WHEY_LINE),
+    { ...BASE, text: "40g whey", mode: "fast", variantChips: true },
+  );
+  assertEquals(r.parsed!.items[0].alternatives, undefined);
+});
