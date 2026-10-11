@@ -6452,13 +6452,15 @@ async function runParseMealCore(
   );
   let items = await verifyItems(deps, picked, candidatePer100);
   if (hits.length > 0) {
-    const before = items.map((i) => i.food_name);
+    const before = items;
     items = dropUnextracted(items, resolved, prevItems);
     if (items.length !== before.length) {
       steps.push({
         iter: 8,
         tool: "saved_meal_guard",
-        input: { dropped: before.filter((n) => !items.some((i) => i.food_name === n)) },
+        // By line, not by name: a kept line with the same name as a dropped
+        // one would otherwise hide it from the trace.
+        input: { dropped: before.filter((i) => !items.includes(i)).map((i) => i.food_name) },
       });
     }
   }
