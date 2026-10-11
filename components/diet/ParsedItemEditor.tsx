@@ -336,7 +336,9 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
           <View style={s.nameRow}>
             <TextInput
               value={name} onChangeText={setName} placeholder="Food name"
-              autoCorrect={false} returnKeyType="done"
+              // 80 is what the double check sends of a name, so a longer one
+              // would be cut there anyway.
+              maxLength={80} autoCorrect={false} returnKeyType="done"
               style={s.nameInput} placeholderTextColor={C.textDim}
               accessibilityLabel="Food name"
             />
