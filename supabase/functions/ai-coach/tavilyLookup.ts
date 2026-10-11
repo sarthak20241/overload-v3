@@ -96,8 +96,12 @@ export interface TavilyLookupOutcome {
    *  working. */
   unavailable: boolean;
   /** The name the search rewrite searched under, whether or not it found a
-   *  label: the catalog and FatSecret can still find the food by it. */
+   *  label: the catalog and FatSecret can still find the food by it. Set only
+   *  when it differs from the user's words and its searches ran. */
   renamed?: string | null;
+  /** Every search ran and none found a label for this food: "not found" is
+   *  then a fact, not an outage. */
+  searchedNoLabel?: boolean;
 }
 
 // ── Tuning ──────────────────────────────────────────────────────────────────
@@ -128,7 +132,8 @@ export const HEADING_CHARS = 300;
 export const MAX_PAGES_READ = 5;
 /** Results Jev judges per search. */
 export const MAX_RESULTS = 8;
-/** Two searches at most: the second only when the first found no panel. */
+/** Fixed searches: the second only when the first found no panel. The search
+ *  rewrite may add MAX_REWRITE_SEARCHES more after these. */
 export const MAX_SEARCHES = 2;
 /** Searches the rewrite may add, after the fixed ones found nothing. */
 export const MAX_REWRITE_SEARCHES = 2;
@@ -861,7 +866,9 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
     if (found) return { finding: found, credits, steps, unavailable: false };
   }
 
-  if (!deps.suggestSearch) return { finding: null, credits, steps, unavailable: false };
+  const missed = { finding: null, credits, steps, unavailable: false, searchedNoLabel: true };
+  // No results at all leaves the rewrite nothing to learn from but the name.
+  if (!deps.suggestSearch || judged.length === 0) return missed;
   const raw = await deps.suggestSearch(item, judged.slice(0, MAX_SEEN_FOR_REWRITE)).catch(() => null);
   const rewrite = cleanRewrite(raw, item, asked);
   steps.push({
@@ -869,28 +876,33 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
     input: { seen: judged.length },
     result: rewrite ? { name: rewrite.name, queries: rewrite.queries } : { none: true },
   });
-  if (!rewrite) return { finding: null, credits, steps, unavailable: false };
+  if (!rewrite) return missed;
+  // The same words with new searches is a retry, not a new name: nothing to
+  // tell the catalog or decide.
+  const differs = normName(rewrite.name) !== normName(foodLabel(item)) && normName(rewrite.name) !== normName(item.name);
 
   // Judged and read as the rewritten name, with the user's brand: Jev's "same
   // brand, same product, same variant" is then asked of the product the rewrite
   // believes they ate, and a page for any other one still fails it.
   const as: WebFoodItem = { name: rewrite.name, brand: item.brand };
+  let ran = false;
   for (const q of rewrite.queries) {
     const found = await attempt(q, as);
     // An outage HERE is not a reason to pay the fallback provider: the fixed
     // searches ran and answered "nothing", and that answer stands.
     if (found === "unavailable") break;
+    ran = true;
     if (found) {
       return {
-        finding: { ...found, searched_as: rewrite.name },
+        finding: { ...found, ...(differs ? { searched_as: rewrite.name } : {}) },
         credits,
         steps,
         unavailable: false,
-        renamed: rewrite.name,
+        ...(differs ? { renamed: rewrite.name } : {}),
       };
     }
   }
-  return { finding: null, credits, steps, unavailable: false, renamed: rewrite.name };
+  return { ...missed, ...(differs && ran ? { renamed: rewrite.name } : {}) };
 }
 
 const normName = (s: string) => s.toLowerCase().replace(/[^a-z0-9\u0900-\u097f]+/g, " ").trim();

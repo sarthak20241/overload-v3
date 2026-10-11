@@ -30,14 +30,17 @@ export const OTHER_BRAND_FLOOR = 0.8;
 const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
 
 /** Rows already written under the user's brand, in any spacing or case, need
- *  no question. Everything else goes to Jev, unbranded rows included: Jev says
- *  they are not ANOTHER brand, and they stay. */
+ *  no question. A row's own brand field is what it is sold under, so when it
+ *  has one only that is compared ("OtherCo" selling "Fitzo-style bars" is still
+ *  asked about); the name stands in only for a row with no brand. Everything
+ *  else goes to Jev, unbranded rows included: Jev says they are not ANOTHER
+ *  brand, and they stay. */
 export function rowsToAsk(brand: string, rows: BrandRow[]): number[] {
   const b = squash(brand);
   if (b.length < 2) return [];
   const out: number[] = [];
   rows.forEach((r, i) => {
-    if (!squash([r.brand ?? "", r.name].join(" ")).includes(b)) out.push(i);
+    if (!squash(r.brand?.trim() ? r.brand : r.name).includes(b)) out.push(i);
   });
   return out;
 }

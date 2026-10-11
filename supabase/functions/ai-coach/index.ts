@@ -3232,7 +3232,9 @@ async function handleParseMealRequest(args: {
           ? r.meal_type
           : undefined,
         ...(typeof r.said_name === "string" && r.said_name.trim()
-          ? { said_name: r.said_name.trim().slice(0, 100) }
+          // Control characters stripped: it becomes a web search term and is
+          // shown back to extract inside previous_meal.
+          ? { said_name: r.said_name.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 100) }
           : {}),
         ...(r.research === true ? { research: true } : {}),
       }];

@@ -414,6 +414,8 @@ function researchDeps(
   /** Foods per lookup call, in call order; a call whose foods include `failOn` errors. */
   calls: string[][] = [],
   failOn?: string,
+  /** Foods the web has a label for; default all. */
+  hasLabel: (name: string) => boolean = () => true,
 ): ParseMealDeps {
   const fetchFn = (async (_url: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body ?? "{}"));
@@ -430,7 +432,7 @@ function researchDeps(
       looked.push(...items.map((i) => i.name));
       calls.push(items.map((i) => i.name));
       if (failOn && items.some((i) => i.name === failOn)) return new Response("overloaded", { status: 529 });
-      return reply({ results: items.map((i) => ({ for_item: i.name, found: true, per_100: { kcal: 500, protein_g: 10, carb_g: 50, fat_g: 28 }, source_note: "label" })) });
+      return reply({ results: items.filter((i) => hasLabel(i.name)).map((i) => ({ for_item: i.name, found: true, per_100: { kcal: 500, protein_g: 10, carb_g: 50, fat_g: 28 }, source_note: "label" })) });
     }
     throw new Error(`unexpected model call ${name}`);
   }) as typeof fetch;
@@ -535,4 +537,56 @@ Deno.test("an untouched line keeps the user's words through a double check", asy
     ask([MEAL[0], peanuts, MEAL[2], { ...MEAL[3], research: true }]),
   );
   assertEquals(r.parsed!.items[1].said_name, "groundnuts");
+});
+
+// ── Review fixes (PR #242) ──────────────────────────────────────────────────
+
+Deno.test("a rewrite that keeps the user's words is a retry, not a new name", async () => {
+  const net = newNet();
+  const out = await runTavilyLookup(
+    deps(fakeNet(byQuery, net), net, async () => ({ name: "Fitzo biscotti protein bar", queries: ["fitzo biscotti bar label"] })),
+    ITEM,
+  );
+  assertEquals(net.searches.length, 3);
+  assertEquals(out.renamed, undefined);
+  assertEquals(out.searchedNoLabel, true);
+});
+
+Deno.test("no results at all: the rewrite is not asked to guess from the name alone", async () => {
+  const net = newNet();
+  let asked = 0;
+  await runTavilyLookup(deps(fakeNet(() => [], net), net, async () => { asked++; return null; }), ITEM);
+  assertEquals(asked, 0);
+});
+
+Deno.test("an outage is not 'no label': decide is not told the label was searched for and missing", async () => {
+  const run = newRun();
+  const d = preciseDeps(run, () => []);
+  // Tavily down; the fallback lookup then fails too.
+  const base = d.fetchFn!;
+  const down = (async (url: string | URL | Request, init?: RequestInit) =>
+    String(url).includes("api.tavily.com") ? new Response("no credits", { status: 432 }) : base(url, init)) as typeof fetch;
+  d.fetchFn = down;
+  d.tavily = { ...d.tavily!, fetchFn: down };
+  await runParseMeal(d, INPUT).catch(() => null);
+  assertEquals(run.decidePayload?.items[0].label_not_found, undefined);
+});
+
+Deno.test("a row's own brand decides: another company selling a name with the user's brand in it is asked about", () => {
+  assertEquals(rowsToAsk("Fitzo", [{ name: "Fitzo-style protein bar", brand: "Nova" }, { name: "Bar", brand: "FITZO" }]), [0]);
+});
+
+Deno.test("a row two items both offered carries nobody's words", () => {
+  const two = [
+    { name: "biscotti protein bar", brand: "Fitzo", quantity: 1, unit: "piece", prep: null, candidates: [NOVA] },
+    { name: "wafer bar", brand: null, quantity: 1, unit: "piece", prep: null, candidates: [NOVA] },
+  ] as ResolvedItem[];
+  assertEquals(stampSaidNames([LINE], two)[0].said_name, undefined);
+});
+
+Deno.test("checking everything: a label for 'chicken breast' does not land on the 'chicken' line beside it", async () => {
+  const r = await runParseMeal(researchDeps([], {}, [], [], undefined, (n) => n === "chicken breast"), ask(MEAL));
+  assertEquals(r.parsed!.items.map((i) => [i.food_name, i.kcal]), [
+    ["chicken", 234], ["peanuts", 609], ["banana", 96], ["chicken breast", 500],
+  ]);
 });

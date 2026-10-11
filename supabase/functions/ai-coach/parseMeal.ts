@@ -2523,7 +2523,7 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
   The same phrase shape gives opposite answers: "amul toned milk" -> plain toned milk row is fine, "quest protein bar" -> a generic protein bar row is NOT.
 - grade_not_stocked on an item means we checked every candidate in CODE and none of them stock the grade the user asked for. Do NOT take one of those rows. ESTIMATE the product they actually named, and say so in assumption ("No low fat paneer row, so these are estimated"). A generic row's macros are more wrong than a careful estimate: low fat paneer is ~190 kcal/100 g against plain paneer's 283, double toned milk ~42 against toned's 58.
 - sources_disagree_pct on a candidate means we read that food's calories from several places and they did not agree, by roughly that percentage. Its per_100 is the middle of what we found, not a settled fact. Still pick the candidate if it is the right food, but never mark that line confidence high, and say the doubt out loud in assumption in Drona's voice ("Sources vary on this one, so treat it as a ballpark"). A candidate with no such flag agreed with itself; say nothing about sourcing there.
-- looked_up_as on an item means the user's words found no label as written, and a search showed the product is sold under that name. A candidate that is the looked_up_as product IS the user's food; say in assumption which product you took it as.
+- looked_up_as on an item means the user's words found no label as written, and from what the search returned the product is most likely sold under that name. A candidate that is the looked_up_as product is the user's food; say in assumption which product you took it as.
 - similar_products on an item are other companies' products we found. They are NEVER the food: do not log one, and do not copy its numbers. Use them, with what you know of the user's brand and its range, only to keep your estimate in a sensible range.
 - label_not_found on an item means the web was searched for this product's label and none was found. If no candidate is acceptable, say so in assumption ("Couldn't find this exact label, so this is my estimate").
 - No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
@@ -3130,6 +3130,7 @@ async function webFindingFor(
   onCall: () => void,
   onStep?: (step: ParseStep) => void,
   onRenamed?: (name: string) => void,
+  onNoLabel?: () => void,
 ): Promise<(SuperFinding & { searched_as?: string | null }) | undefined> {
   if (deps.webLookup === "tavily" && deps.tavily) {
     const country = deps.resolveSearchCountry
@@ -3163,6 +3164,7 @@ async function webFindingFor(
       },
     }, { name: item.name, brand: item.brand ?? null });
     if (out.renamed) onRenamed?.(out.renamed);
+    if (out.searchedNoLabel) onNoLabel?.();
     // Counted through the same accumulator as tokens, so the credits land in
     // usage and index.ts can write the Tavily cost row.
     if (out.credits > 0) onUsage({ tavily_credits: out.credits });
@@ -3183,8 +3185,9 @@ export async function superLookupOne(
   onCall: () => void,
   onStep?: (step: ParseStep) => void,
   onRenamed?: (name: string) => void,
+  onNoLabel?: () => void,
 ): Promise<CandidateFood | null> {
-  const finding = await webFindingFor(deps, item, onUsage, onCall, onStep, onRenamed);
+  const finding = await webFindingFor(deps, item, onUsage, onCall, onStep, onRenamed, onNoLabel);
   if (!finding || finding.readings.length === 0) return null;
 
   const reconciled = reconcileReadings(finding.readings);
@@ -3309,7 +3312,11 @@ async function resolveOneItem(
    *  (see the WEB_LOOKUP_TOOL header): upgrade before the card exists and it is
    *  stable, upgrade after and the user watches numbers move under a live Add
    *  button. */
-  superLookup?: (item: ExtractedItem, onRenamed?: (name: string) => void) => Promise<CandidateFood | null>,
+  superLookup?: (
+    item: ExtractedItem,
+    onRenamed?: (name: string) => void,
+    onNoLabel?: () => void,
+  ) => Promise<CandidateFood | null>,
 ): Promise<ResolvedItem> {
   /** Precise: the search rewrite's name for this food, when its label was not
    *  found under the user's words. The catalog ladder below searches it too. */
@@ -3379,8 +3386,11 @@ async function resolveOneItem(
       }
     }
     const tWeb0 = Date.now();
-    const found = await superLookup(item, (name) => { lookedUpAs = name; }).catch(() => null);
-    labelNotFound = !found;
+    // labelNotFound only when every search RAN and found nothing. A null from
+    // an outage or a throw is not "no label exists", and decide would say so.
+    let noLabel = false;
+    const found = await superLookup(item, (name) => { lookedUpAs = name; }, () => { noLabel = true; }).catch(() => null);
+    labelNotFound = !found && noLabel;
     if (ours && pm?.mode === "shadow") {
       // Shadow adds at most SHADOW_GRACE_MS to the answer the user is waiting
       // for, and usually nothing: the match runs beside the web lookup, which
@@ -4110,21 +4120,26 @@ export function markResearchTargets(
   const wanted = names.filter((n): n is string => typeof n === "string" && n.trim() !== "").map((n) => n.trim());
   if (wanted.length === 0) return none;
   const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  const hit = new Set<PreviousItem>();
+  // The user's-words view keeps each line's position, so a match maps back by
+  // index and two lines sharing a said_name can never swap.
+  const saidView = previous.map((p) => ({ ...p, food_name: p.said_name ?? "" }));
+  const hit = new Set<number>();
   for (const n of wanted) {
-    const exact = previous.find((p) => norm(p.food_name) === norm(n) || (p.said_name && norm(p.said_name) === norm(n)));
-    const target = exact ??
-      bestRemovalTarget(n, previous) ??
-      bestRemovalTarget(n, previous.map((p) => ({ ...p, food_name: p.said_name ?? "" })));
-    if (!target) continue;
-    // bestRemovalTarget on the said_name view returns a copy: map it back.
-    const line = previous.find((p) => p === target) ?? previous.find((p) => p.said_name === target.food_name);
-    if (line) hit.add(line);
+    let at = previous.findIndex((p) => norm(p.food_name) === norm(n) || (!!p.said_name && norm(p.said_name) === norm(n)));
+    if (at < 0) {
+      const byName = bestRemovalTarget(n, previous);
+      at = byName ? previous.indexOf(byName) : -1;
+    }
+    if (at < 0) {
+      const bySaid = bestRemovalTarget(n, saidView);
+      at = bySaid ? saidView.indexOf(bySaid) : -1;
+    }
+    if (at >= 0) hit.add(at);
   }
   // Named, and nothing on the card answers to it: the caller asks which line,
   // rather than guessing or checking lines the user never meant.
   if (hit.size === 0) return { lines: previous, unmatched: true };
-  return { lines: previous.map((p) => (hit.has(p) ? { ...p, research: true } : p)), unmatched: false };
+  return { lines: previous.map((p, i) => (hit.has(i) ? { ...p, research: true } : p)), unmatched: false };
 }
 
 export function bestRemovalTarget(phrase: string, previous: PreviousItem[]): PreviousItem | null {
@@ -4434,8 +4449,10 @@ export function stampSaidNames(items: ParsedItem[], resolved: ResolvedItem[]): P
   const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   return items.map((it) => {
     if (!it.food_id || it.said_name) return it;
-    const r = resolved.find((x) => x.candidates.some((c) => c.food_id === it.food_id));
-    if (!r) return it;
+    // Two items offered the same row: the line cannot say whose words it is.
+    const owners = resolved.filter((x) => x.candidates.some((c) => c.food_id === it.food_id));
+    if (owners.length !== 1) return it;
+    const r = owners[0];
     const said = [r.prep && !norm(r.name).includes(norm(r.prep)) ? r.prep : null, foodLabel(r)]
       .filter(Boolean).join(" ").slice(0, 100);
     return norm(said) && norm(said) !== norm(it.food_name) ? { ...it, said_name: said } : it;
@@ -4986,9 +5003,15 @@ async function researchPrevious(
   let changed = 0;
   const conflicts: string[] = [];
   for (const p of previous) {
-    let label: WebLabel | null = null;
-    for (const [forItem, l] of labels) {
-      if (wordsOverlap(lookupName(p), forItem)) { label = l; break; }
+    // Exact name first. A loose match only when this is the ONE looked-up line
+    // it fits: "chicken breast"'s label must not reach a "chicken" line that
+    // was looked up beside it and came back empty.
+    let label: WebLabel | null = pool.includes(p) ? labels.get(lookupName(p)) ?? null : null;
+    if (!label && pool.includes(p)) {
+      for (const [forItem, l] of labels) {
+        const fits = pool.filter((q) => wordsOverlap(lookupName(q), forItem));
+        if (fits.length === 1 && fits[0] === p) { label = l; break; }
+      }
     }
     // Only a looked-up line takes a label: names overlap ("chicken breast" and
     // "chicken curry"), and a label for one must not land on its neighbour.
@@ -6200,8 +6223,8 @@ async function runParseMealCore(
         const looked = await resolveOneItem(
           deps, item, steps, toolCalls, stapleNames,
           superMode
-            ? (it: ExtractedItem, onRenamed?: (name: string) => void) =>
-              superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st2) => steps.push(st2), onRenamed)
+            ? (it: ExtractedItem, onRenamed?: (name: string) => void, onNoLabel?: () => void) =>
+              superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st2) => steps.push(st2), onRenamed, onNoLabel)
             : undefined,
         );
         // Nothing to fill the missing fields from: the lookup's own answer
@@ -6239,8 +6262,8 @@ async function runParseMealCore(
         // accumulate() is passed through so the web_search_requests these calls
         // spend land in usage, which is what 0113 prices.
         superMode
-          ? (it: ExtractedItem, onRenamed?: (name: string) => void) =>
-            superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st) => steps.push(st), onRenamed)
+          ? (it: ExtractedItem, onRenamed?: (name: string) => void, onNoLabel?: () => void) =>
+            superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st) => steps.push(st), onRenamed, onNoLabel)
           : undefined,
       );
     }),
