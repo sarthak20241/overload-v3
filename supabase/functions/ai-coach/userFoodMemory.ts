@@ -301,11 +301,25 @@ function differentVariants(a: string, b: string): boolean {
 /**
  * The user's words already pick between two variants: they contain a word
  * that tells them apart ("vanilla whey" against chocolate and vanilla whey).
- * Then habit must not choose for them (PR #235 review).
+ * Then habit must not choose for them.
  */
 function namesVariant(typed: string, a: string, b: string): boolean {
   const t = nameWords(typed), x = nameWords(a), y = nameWords(b);
   return [...t].some((w) => x.has(w) !== y.has(w));
+}
+
+/** The user's words name a sibling variant of `a` and not `a` itself: typed
+ *  "vanilla whey" rules out "chocolate whey" when vanilla whey is remembered,
+ *  whatever Jev scored the chocolate row. */
+function ruledOutByWords(typed: string, a: string, all: string[]): boolean {
+  const t = nameWords(typed), x = nameWords(a);
+  return all.some((b) => differentVariants(a, b) && [...nameWords(b)].some((w) => !x.has(w) && t.has(w)));
+}
+
+/** The remembered name is what the user typed, word for word (plurals aside). */
+function sameWords(typed: string, a: string): boolean {
+  const t = nameWords(typed), x = nameWords(a);
+  return t.size > 0 && t.size === x.size && [...t].every((w) => x.has(w));
 }
 
 /**
@@ -314,13 +328,17 @@ function namesVariant(typed: string, a: string, b: string): boolean {
  * above it are never a refusal (owner decision 2026-10-11): the one the user logs
  * most wins, then the most trusted numbers (entryTrust), then the newest. A
  * different variant that also fits is named on the card, so the user can say which
- * it was. `typed` is what the user wrote; when it names a variant, a sibling under
- * the floor may not compete.
+ * it was. `typed` is what the user wrote. When it names a variant, no other
+ * variant competes, whatever its score. A row whose name is exactly what the
+ * user typed goes before habit: "oats" logged once beats "protein oats" logged
+ * ten times, because the extra word may be a different product.
  */
 export function decideMemory(foods: MemoryFood[], scores: Array<number | null>, floor = MEMORY_FLOOR, typed = ""): MemoryDecision {
   if (foods.length === 0) return { food: null, reason: "no_foods", confidence: 0 };
   if (scores.every((s) => s === null)) return { food: null, reason: "no_answer", confidence: 0 };
-  const scored = foods.map((f, i) => ({ f, p: scores[i] ?? 0 }));
+  const names = foods.map((f) => f.name);
+  const scored = foods.map((f, i) => ({ f, p: scores[i] ?? 0 }))
+    .filter((x) => !typed || !ruledOutByWords(typed, x.f.name, names));
   const passing = scored.filter((x) => x.p >= floor);
   if (passing.length === 0) {
     return { food: null, reason: "below_floor", confidence: Math.max(...scores.map((s) => s ?? 0)) };
@@ -337,7 +355,9 @@ export function decideMemory(foods: MemoryFood[], scores: Array<number | null>, 
       differentVariants(x.f.name, y.f.name) && !namesVariant(typed, x.f.name, y.f.name)
     ))
   );
+  const exact = (x: { f: MemoryFood }) => (typed && sameWords(typed, x.f.name) ? 1 : 0);
   const [best, ...rest] = family.sort((a, b) =>
+    exact(b) - exact(a) ||
     b.f.times - a.f.times ||
     trustOf(b.f) - trustOf(a.f) ||
     Date.parse(b.f.last_logged_at) - Date.parse(a.f.last_logged_at)

@@ -5830,8 +5830,8 @@ async function runParseMealCore(
   // "first one") rarely released it (live, 2026-10-05..09). decideMemory now
   // picks one and names any other variant on the card.
   const memory = await memoryP;
-  // A build still holding a pending meal from that old question: with nothing
-  // left to release, its permission to estimate changes nothing and is traced.
+  // Kept as a trace only: the user allowed an estimate for a pending question.
+  // Nothing here waits on it now that memory never blocks a meal.
   if (input.pendingMeal && ext.accepts_generic_estimate === true) {
     steps.push({ iter: 1, tool: "pending_estimate", input: { question: input.pendingMeal.question } });
   }

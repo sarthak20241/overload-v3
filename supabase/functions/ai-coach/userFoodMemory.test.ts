@@ -552,11 +552,30 @@ Deno.test("a variant just under the floor competes when its sibling cleared it",
 });
 
 Deno.test("when the user names the variant, habit cannot swap it for the sibling they log more", () => {
-  // PR #235 review: "vanilla whey" typed, chocolate (logged 9 times) at 0.6.
+  // "vanilla whey" typed, chocolate (logged 9 times) at 0.6.
   const list = [{ ...food("chocolate whey", 390), times: 9 }, { ...food("vanilla whey", 380), times: 1 }];
   assertEquals(decideMemory(list, [0.6, 0.95], undefined, "vanilla whey").food?.name, "vanilla whey");
   // Plain "whey" names neither, so habit still decides.
   assertEquals(decideMemory(list, [0.6, 0.95], undefined, "whey").food?.name, "chocolate whey");
+});
+
+Deno.test("a named variant wins even when the other variant also clears the floor", () => {
+  // Jev is noisy near 0.75: chocolate at 0.76 must not win on habit when the
+  // user typed vanilla, and must not be named on the card either.
+  const list = [{ ...food("chocolate whey", 390), times: 9 }, { ...food("vanilla whey", 380), times: 1 }];
+  const d = decideMemory(list, [0.76, 0.95], undefined, "vanilla whey");
+  assertEquals(d.food?.name, "vanilla whey");
+  assertEquals(d.food?.also, []);
+  // Only the ruled-out sibling is above the floor: nothing is served.
+  assertEquals(decideMemory(list, [0.8, 0.4], undefined, "vanilla whey").food, null);
+});
+
+Deno.test("the row named exactly as typed beats a longer name logged more", () => {
+  const list = [{ ...food("protein oats", 400), times: 10 }, { ...food("oats", 380), times: 1 }];
+  assertEquals(decideMemory(list, [0.8, 0.99], undefined, "oats").food?.name, "oats");
+  // Plurals count as the same words; habit still picks among exact names.
+  const cuke = [{ ...food("cucumbers", 10.7), times: 1 }, { ...food("cucumber", 12.5), times: 7 }, { ...food("Cucumber, raw", 16), times: 9 }];
+  assertEquals(decideMemory(cuke, [0.9, 0.9, 0.9], undefined, "cucumber").food?.name, "cucumber");
 });
 
 Deno.test("'it was vanilla' after a chocolate pick serves the vanilla the user logged", async () => {

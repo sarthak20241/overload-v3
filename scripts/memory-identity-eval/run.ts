@@ -182,10 +182,10 @@ async function run(c: Case, apiKey: string, old: boolean) {
 
 const apiKey = key();
 const withOld = Deno.env.get("OLD") === "1";
-let rowsOk = 0, rowsAll = 0, servesOk = 0, servesAll = 0;
+let rowsOk = 0, rowsAll = 0, servesOk = 0, servesAll = 0, failed = 0;
 for (const c of CASES) {
   const r = await run(c, apiKey, false);
-  if ("error" in r) { console.log(`ERROR ${c.id}: ${r.error}`); continue; }
+  if ("error" in r) { failed++; console.log(`ERROR ${c.id}: ${r.error}`); continue; }
   console.log(`\n${c.real ? "[real] " : ""}${c.id}: typed "${c.typed}"`);
   console.log("   diff unc same  answer      expected");
   for (const row of r.rows!) {
@@ -210,3 +210,8 @@ for (const c of CASES) {
 }
 console.log(`\nrows answered as expected: ${rowsOk}/${rowsAll}`);
 console.log(`foods served as expected:  ${servesOk}/${servesAll}`);
+// A Jev error skips its case, so the totals above would look complete.
+if (failed > 0) {
+  console.log(`INCOMPLETE: ${failed} case(s) got no Jev answer`);
+  Deno.exit(1);
+}
