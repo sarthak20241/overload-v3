@@ -3,12 +3,14 @@ import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 import {
   buildSystemPrompt,
+  CATALOG_MODES,
   CREATE_CUSTOM_FOOD_TOOL,
   CREATE_CUSTOM_MEAL_TOOL,
   LIST_LOGGED_MEALS_TOOL,
   MEMORY_TOOL_NAMES,
   STRUCTURED_TOOLS,
   TERMINAL_TOOLS,
+  withExerciseCatalog,
 } from "./prompt.ts";
 import { lookupAppGuide } from "./appGuide.ts";
 import {
@@ -4659,6 +4661,12 @@ Deno.serve(async (req) => {
       stream: (body as { stream?: unknown }).stream === true,
       userClient,
     });
+  }
+
+  // After the fan-out branch on purpose: fan-out adds its own catalog block,
+  // and two would double the input and the cache markers.
+  if (CATALOG_MODES.has(mode ?? "")) {
+    system = withExerciseCatalog(system, await loadExerciseCatalog(admin)) as typeof system;
   }
 
   // ── Streaming branch (Phase 2.6) ────────────────────────────────────────

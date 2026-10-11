@@ -23,7 +23,7 @@
  * client. Those are ~1s of the measured 25-48s and belong in production spans.
  */
 import { createClient } from '@supabase/supabase-js';
-import { buildSystemPrompt } from '../../supabase/functions/ai-coach/prompt';
+import { buildSystemPrompt, withExerciseCatalog } from '../../supabase/functions/ai-coach/prompt';
 import { EXERCISE_LIBRARY } from '../../lib/exercises';
 import { COMPACT_FORMAT_SPEC, parseCompactPlan, type ParsedPlan } from './encoding';
 import { callClaudeCli } from './cliCaller';
@@ -378,15 +378,23 @@ function failed(c: EvalCase, pipeline: string, error: string, partial?: Partial<
 
 export async function runBaseline(c: EvalCase, o: VariantOpts): Promise<RunResult> {
   const model = o.model ?? DEFAULT_MODEL;
-  const { system, tools } = buildSystemPrompt({ userContext: userContextFor(c), mode: 'generate_plan' });
+  const built = buildSystemPrompt({ userContext: userContextFor(c), mode: 'generate_plan' });
+  const tools = built.tools;
+  // ai-coach adds the full catalog to every single-call generate mode
+  // (CATALOG_MODES); without it this would score a prompt the app no longer sends.
+  const system = withExerciseCatalog(built.system, await globalCatalog());
   const started = Date.now();
   let r: CallResult;
   try {
+    const user = { role: 'user', content: await messageFor(c, o.catalog ?? 'library') };
     r = await streamCall(o.apiKey, {
       model, max_tokens: GENERATE_PLAN_MAX_TOKENS, system, tools,
-      // Required, not forced, as ai-coach does it: Sonnet 5.5 rejects forced tool_choice.
-      messages: [{ role: 'user', content: await messageFor(c, o.catalog ?? 'library') }, requireTool('generate_plan')],
-      ...sonnetSettings(model),
+      // Required, not forced, as ai-coach does it: Sonnet 5.5 rejects forced
+      // tool_choice. An older --model (the 4.6 control run) gets the forced
+      // request it shipped with; it would 400 on the system note instead.
+      ...(model === SONNET_MODEL
+        ? { messages: [user, requireTool('generate_plan')], ...sonnetSettings(model) }
+        : { messages: [user], tool_choice: { type: 'tool', name: 'generate_plan' } }),
     }, { trackToolWorkouts: true });
   } catch (e) {
     return failed(c, 'baseline', String(e).slice(0, 200));
