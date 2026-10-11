@@ -522,6 +522,8 @@ async function main() {
             "web_panels",
             "web_read",
             "web_fallback",
+            "search_rewrite",
+            "brand_check",
           ].includes(String(st.tool))
         ) {
           console.log(`      # ${st.tool} ${JSON.stringify(st.input)} -> ${JSON.stringify(st.result ?? null)}`);
