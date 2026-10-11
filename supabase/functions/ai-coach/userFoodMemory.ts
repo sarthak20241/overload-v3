@@ -15,6 +15,14 @@
 //   - skipped on a follow-up turn: that is where "double check" and "that's
 //     wrong" live, and the user is asking us NOT to repeat ourselves
 //
+// Owner decision 2026-10-11:
+//   - Jev judges identity only (is this remembered food what the user means?), never
+//     whether another remembered food also fits
+//   - several that fit are never a refusal: the one the user logs most, then the
+//     most trusted numbers, then the newest; a different variant is named on
+//     the card
+//   - within one name, the most trusted numbers win, not the newest
+//
 // Runtime-agnostic (no Deno globals), like ourSources.ts.
 
 import { askJev, type JevDeps, type JevQuestion } from "./jev.ts";
@@ -33,6 +41,9 @@ export const MEMORY_SHORTLIST = 10;
 /** Jev's chance that a remembered food IS this line, needed to serve it. Same
  *  floor as the catalog match (preciseMatch.MATCH_FLOOR). */
 export const MEMORY_FLOOR = 0.75;
+/** A variant of a product that already cleared MEMORY_FLOOR may compete with
+ *  it when Jev thinks it more likely the food than not. */
+export const VARIANT_FLOOR = 0.5;
 
 /** One logged line, as read from meal_entries + meals. */
 export interface MemoryEntry {
@@ -69,9 +80,16 @@ export interface MemoryFood {
   source: string | null;
   /** The tier this food may serve down to (see level()). */
   level: ParseTierName;
+  /** How much its numbers are trusted (entryTrust). Absent on hand-built
+   *  foods, which then rank by their level. */
+  trust?: number;
   times: number;
   last_logged_at: string;
   confirmed_aliases?: string[];
+  /** Set by the decision only: other remembered foods that are also what the
+   *  user's words describe but a different variant ("vanilla whey" beside
+   *  "chocolate whey"), named on the card so the user can say which it was. */
+  also?: string[];
 }
 
 const RANK: Record<ParseTierName, number> = { fast: 1, thorough: 2, precise: 3 };
@@ -82,6 +100,21 @@ export function entryLevel(e: Pick<MemoryEntry, "tier" | "source" | "logged_via"
   if (e.tier === "precise" || e.tier === "thorough" || e.tier === "fast") return e.tier;
   return "fast";
 }
+
+/**
+ * How much an entry's numbers are trusted, highest first: numbers the user
+ * typed or edited herself (4), then Precise (3), Thorough (2), Quick (1).
+ * Owner decision 2026-10-11: within one food this, not recency, picks the
+ * numbers. Newest-wins let a Quick guess of 6.3 kcal/100 g replace the user's own
+ * 12.5 for cucumber (live, 2026-10-04).
+ */
+export function entryTrust(e: Pick<MemoryEntry, "tier" | "source" | "logged_via">): number {
+  if (e.source === "manual" || e.logged_via === "manual") return 4;
+  return RANK[entryLevel(e)];
+}
+
+/** A remembered food's trust; hand-built foods without one rank by level. */
+const trustOf = (f: MemoryFood) => f.trust ?? RANK[f.level];
 
 /** May a food remembered at `level` answer a parse running in `tier`? */
 export function servesTier(level: ParseTierName, tier: ParseTierName): boolean {
@@ -97,9 +130,9 @@ const r1 = (n: number) => Math.round(n * 10) / 10;
 
 /**
  * The foods this parse may use: entries from the window that may serve `tier`,
- * newest entry per name (the numbers the user accepted most recently), frequent
- * foods first, then recent ones, capped. Entries without a weight cannot give a
- * per-100 and are left out.
+ * one per name carrying the most trusted numbers (entryTrust, newest on a tie),
+ * frequent foods first, then recent ones, capped. Entries without a weight
+ * cannot give a per-100 and are left out.
  */
 export function buildMemory(
   entries: MemoryEntry[],
@@ -120,7 +153,9 @@ export function buildMemory(
     if (!got) byKey.set(key, { newest: e, times: 1 });
     else {
       got.times++;
-      if (Date.parse(e.confirmed_at ?? e.logged_at) > Date.parse(got.newest.confirmed_at ?? got.newest.logged_at)) got.newest = e;
+      const [t, kept] = [entryTrust(e), entryTrust(got.newest)];
+      const newer = Date.parse(e.confirmed_at ?? e.logged_at) > Date.parse(got.newest.confirmed_at ?? got.newest.logged_at);
+      if (t > kept || (t === kept && newer)) got.newest = e;
     }
   }
   const foods: MemoryFood[] = [...byKey.entries()].map(([key, { newest: e, times }]) => {
@@ -143,6 +178,7 @@ export function buildMemory(
         : null,
       source: e.source,
       level: entryLevel(e),
+      trust: entryTrust(e),
       times,
       last_logged_at: e.logged_at,
       confirmed_aliases: e.confirmed_aliases ?? [],
@@ -185,34 +221,45 @@ export function shortlist(foods: MemoryFood[], line: string, n = MEMORY_SHORTLIS
     .map((x) => x.f);
 }
 
-/** Personal history interprets omitted descriptors as shorthand, while the
- * global catalog still requires an exact product match. Keep explicit input
- * and candidate names IN each question: references alone confused Jev in the
- * multi-row regression even when the state included both names. */
+/**
+ * Jev judges IDENTITY only (owner decision 2026-10-11): is this one remembered
+ * food a food the user's words describe? Never whether another remembered food
+ * also fits. That used to be part of "same" ("no other remembered product
+ * equally fits"), so one food saved as "cucumber", "cucumbers" and "Cucumber,
+ * raw" scored "unresolved" on all three, and the meal was refused with "more
+ * than one saved match" (live, 2026-10-05..09). Choosing between several that
+ * fit, and whose numbers to use, is decideMemory's job, in code.
+ *
+ * Keep the input and candidate names IN each question: references alone
+ * confused Jev in the multi-row regression.
+ */
 export const MEMORY_LEVELS = [
-  "Different food or an explicitly conflicting brand, flavour, preparation, or variant.",
-  "Unresolved: more than one remembered product fits the shorthand, or the identity is unclear.",
-  "The same remembered product, including unique compatible shorthand or omitted descriptors. No explicit detail conflicts and no other remembered product equally fits.",
+  "Different: the core food is another food, or a detail the user DID write (brand, flavour, preparation, fat level, variant) conflicts with the candidate.",
+  "Unclear: the user's words are too vague to tell whether they mean this food.",
+  "Same: a food the user's words describe. The candidate may carry details the user did not write; those are compatible. It does not matter whether other foods would also fit.",
 ];
 export const MEMORY_RULE =
-  "Resolve the user's shorthand against ONLY this user's remembered foods in remembered_foods. " +
-  "The candidate is a food this user previously accepted. Judge intended identity, not exact wording. " +
-  "Missing words such as protein, product-line words, or full brand spelling are unspecified, not contradictory. " +
-  "Punctuation, possessives, abbreviation and obvious spelling errors may be shorthand. " +
-  "A partial brand may identify its unique compatible remembered brand. " +
+  "Judge one thing: is the candidate, a food this user logged before, a food the user's words describe? " +
+  "Judge intended identity, not exact wording. " +
+  "Missing words such as protein, product-line words, flavour, or full brand spelling are unspecified, not contradictory. " +
+  "When the candidate names a flavour, brand, fat level or product line the user did not write, that detail is compatible: the user simply did not say it. " +
+  "A dish, snack or drink made from the food is a different food, even when its name contains the food. " +
+  "Punctuation, plurals, possessives, abbreviation and obvious spelling errors may be shorthand. A partial brand may name the full one. " +
   "The core food or ingredient must be the same. Different ingredients or plant species are different foods even when both are seeds, nuts, grains or milk. " +
-  "Every explicitly named flavour, brand, preparation, fat level, and other variant must agree. " +
-  "An explicit different flavour/brand or raw versus cooked is a conflict. " +
-  "If multiple remembered products fit the stated details, choose unresolved for each, unless this user has a confirmed alias that uniquely identifies one. " +
-  "Do not invent aliases and do not prefer protein products merely because the user logged them. " +
-  "Other brands/flavours in the list do not create ambiguity when they conflict with explicit input details. " +
-  "Quantities do not affect food identity. Score the specified candidate using the ordered criteria.";
+  "Word order matters: chocolate milk is not milk chocolate. " +
+  "Every flavour, brand, preparation, fat level and other variant the user DID write must agree. " +
+  "An explicit different flavour or brand, or raw versus cooked, is a conflict. " +
+  "Do not prefer protein products merely because the user logged them. " +
+  "Quantities do not affect food identity. Score the candidate using the ordered criteria.";
 
+/** The line as the user named it, brand first when extract split it out and
+ *  the name does not already carry it: "Amul" + "toned milk". */
 export function memoryInputName(line: { name: string; brand: string | null }): string {
   return line.brand && !memoryKey(line.name).includes(memoryKey(line.brand))
     ? `${line.brand} ${line.name}` : line.name;
 }
 
+/** One identity question per remembered food, keyed m1..mN in list order. */
 export function memoryQuestions(line: { name: string; brand: string | null }, foods: MemoryFood[]): Record<string, JevQuestion> {
   return Object.fromEntries(foods.map((f, i) => [`m${i + 1}`, {
     type: "score",
@@ -223,31 +270,100 @@ export function memoryQuestions(line: { name: string; brand: string | null }, fo
 
 export type MemoryDecision =
   | { food: MemoryFood; confidence: number }
-  | { food: null; reason: "no_foods" | "no_answer" | "below_floor" | "ambiguous"; confidence: number };
+  | { food: null; reason: "no_foods" | "no_answer" | "below_floor"; confidence: number };
+
+/** A name's words, singular: "Cucumbers, raw" -> {cucumber, raw}. */
+function nameWords(name: string): Set<string> {
+  return new Set(memoryKey(name).split(" ").filter(Boolean).map((w) =>
+    w.length > 4 && w.endsWith("ies") ? `${w.slice(0, -3)}y`
+      : w.length > 4 && w.endsWith("oes") ? w.slice(0, -2)
+      : w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1)
+      : w
+  ));
+}
 
 /**
- * The food to serve, from Jev's per-row chance of "exactly this food". Below
- * the floor nothing is served. Distinct products that both clear the floor are ambiguous. Reordered names
- * for the same food keep the latest accepted nutrition.
+ * Two remembered foods that are different variants of one product rather than
+ * one food under two names: they share a word and each adds one of its own
+ * ("chocolate whey", "vanilla whey"). "Cucumber, raw" beside "cucumbers" is one
+ * food (only one side adds a word); "Veggies" beside "vegetables" is a synonym
+ * (no shared word). Used for two things: naming the other variant on the card,
+ * and letting a variant just under the floor compete with its sibling
+ * (decideMemory). It never decides identity: Jev's score still has to admit a
+ * row first.
  */
-export function decideMemory(foods: MemoryFood[], scores: Array<number | null>, floor = MEMORY_FLOOR): MemoryDecision {
+function differentVariants(a: string, b: string): boolean {
+  const x = nameWords(a), y = nameWords(b);
+  const shared = [...x].some((w) => y.has(w));
+  return shared && [...x].some((w) => !y.has(w)) && [...y].some((w) => !x.has(w));
+}
+
+/**
+ * The user's words already pick between two variants: they contain a word
+ * that tells them apart ("vanilla whey" against chocolate and vanilla whey).
+ * Then habit must not choose for them.
+ */
+function namesVariant(typed: string, a: string, b: string): boolean {
+  const t = nameWords(typed), x = nameWords(a), y = nameWords(b);
+  return [...t].some((w) => x.has(w) !== y.has(w));
+}
+
+/** The user's words name a sibling variant of `a` and not `a` itself: typed
+ *  "vanilla whey" rules out "chocolate whey" when vanilla whey is remembered,
+ *  whatever Jev scored the chocolate row. */
+function ruledOutByWords(typed: string, a: string, all: string[]): boolean {
+  const t = nameWords(typed), x = nameWords(a);
+  return all.some((b) => differentVariants(a, b) && [...nameWords(b)].some((w) => !x.has(w) && t.has(w)));
+}
+
+/** The remembered name is what the user typed, word for word (plurals aside). */
+function sameWords(typed: string, a: string): boolean {
+  const t = nameWords(typed), x = nameWords(a);
+  return t.size > 0 && t.size === x.size && [...t].every((w) => x.has(w));
+}
+
+/**
+ * The food to serve, from Jev's per-row chance that it IS what the user means.
+ * Below the floor nothing is served, and the normal sources answer. Several
+ * above it are never a refusal (owner decision 2026-10-11): the one the user logs
+ * most wins, then the most trusted numbers (entryTrust), then the newest. A
+ * different variant that also fits is named on the card, so the user can say which
+ * it was. `typed` is what the user wrote. When it names a variant, no other
+ * variant competes, whatever its score. A row whose name is exactly what the
+ * user typed goes before habit: "oats" logged once beats "protein oats" logged
+ * ten times, because the extra word may be a different product.
+ */
+export function decideMemory(foods: MemoryFood[], scores: Array<number | null>, floor = MEMORY_FLOOR, typed = ""): MemoryDecision {
   if (foods.length === 0) return { food: null, reason: "no_foods", confidence: 0 };
   if (scores.every((s) => s === null)) return { food: null, reason: "no_answer", confidence: 0 };
-  const passing = foods
-    .map((f, i) => ({ f, p: scores[i] ?? 0 }))
-    .filter((x) => x.p >= floor);
+  const names = foods.map((f) => f.name);
+  const scored = foods.map((f, i) => ({ f, p: scores[i] ?? 0 }))
+    .filter((x) => !typed || !ruledOutByWords(typed, x.f.name, names));
+  const passing = scored.filter((x) => x.p >= floor);
   if (passing.length === 0) {
     return { food: null, reason: "below_floor", confidence: Math.max(...scores.map((s) => s ?? 0)) };
   }
-  const best = passing.sort((a, b) => b.p - a.p)[0];
-  // Equal nutrition is not proof of equal identity (two flavours can have
-  // the same calories). Only reordered names share the old recency tie-break.
-  const identity = (f: MemoryFood) => memoryKey(f.name).split(" ").sort().join(" ");
-  if (passing.some((x) => identity(x.f) !== identity(best.f))) {
-    return { food: null, reason: "ambiguous", confidence: best.p };
-  }
-  const newest = passing.sort((a, b) => Date.parse(b.f.last_logged_at) - Date.parse(a.f.last_logged_at))[0];
-  return { food: newest.f, confidence: newest.p };
+  // A variant whose sibling cleared the floor: the product is established, so
+  // which variant is habit, not identity. Jev put "chocolate whey" at 0.73 and
+  // "vanilla whey" at 0.91 for "whey" (real Jev, 2026-10-11); without this the
+  // one the user rarely logs won and the other was not even named. Not when their own
+  // words already chose between the two: "vanilla whey" must not become the
+  // chocolate one they log more.
+  const family = scored.filter((x) =>
+    x.p >= floor ||
+    (x.p >= VARIANT_FLOOR && passing.some((y) =>
+      differentVariants(x.f.name, y.f.name) && !namesVariant(typed, x.f.name, y.f.name)
+    ))
+  );
+  const exact = (x: { f: MemoryFood }) => (typed && sameWords(typed, x.f.name) ? 1 : 0);
+  const [best, ...rest] = family.sort((a, b) =>
+    exact(b) - exact(a) ||
+    b.f.times - a.f.times ||
+    trustOf(b.f) - trustOf(a.f) ||
+    Date.parse(b.f.last_logged_at) - Date.parse(a.f.last_logged_at)
+  );
+  const also = [...new Set(rest.filter((x) => differentVariants(x.f.name, best.f.name)).map((x) => x.f.name))].slice(0, 2);
+  return { food: { ...best.f, also }, confidence: best.p };
 }
 
 export interface MemoryMatch {
@@ -264,20 +380,24 @@ export async function matchMemory(
   line: { name: string; brand: string | null },
 ): Promise<MemoryMatch> {
   const lookup = memoryInputName(line);
-  const trace: Record<string, unknown> = { item: line.name, lookup_name: lookup, remembered: foods.length, policy: "personal-shorthand-v1" };
+  const trace: Record<string, unknown> = { item: line.name, lookup_name: lookup, remembered: foods.length, policy: "identity-v2" };
+  const decided = (d: MemoryDecision & { food: MemoryFood }) => ({
+    match: d.food.name.slice(0, 60), kcal: d.food.per100.kcal, level: d.food.level,
+    logged: d.food.last_logged_at.slice(0, 10), conf: Math.round(d.confidence * 100) / 100,
+    ...(d.food.also?.length ? { also: d.food.also } : {}),
+  });
   try {
     // Confirmed aliases resolve before a top-N cut and without model calls.
-    // Multiple targets remain ambiguous, including after a user correction.
+    // One alias on several foods is chosen like any other tie, never refused.
     const exact = foods.filter((f) => (f.confirmed_aliases ?? []).some((a) => memoryKey(a) === memoryKey(lookup)));
     if (exact.length > 0) {
       trace.path = "confirmed_alias";
-      if (exact.length !== 1) {
-        trace.decision = { match: null, reason: "ambiguous", candidates: exact.map((f) => f.name) };
-        return { food: null, confidence: 0, trace };
-      }
-      const food = exact[0];
-      trace.decision = { match: food.name, level: food.level, conf: 1 };
-      return { food, confidence: 1, trace };
+      // The typed words still rank first: two rows under one alias ("cucumber"
+      // and "Cucumber, raw", both confirmed as "cucumber") otherwise tie on
+      // times and trust, and the newer one won by a millisecond.
+      const d = decideMemory(exact, exact.map(() => 1), MEMORY_FLOOR, lookup) as MemoryDecision & { food: MemoryFood };
+      trace.decision = decided(d);
+      return { food: d.food, confidence: 1, trace };
     }
     trace.path = "jev";
     const list = shortlist(foods, lookup);
@@ -286,33 +406,36 @@ export async function matchMemory(
       trace.decision = { match: null, reason: "no_foods" };
       return { food: null, confidence: 0, trace };
     }
+    // The other remembered foods are deliberately NOT in the state: Jev judges
+    // each one alone, so a second name for the same food cannot pull an answer
+    // from "same" to "unclear".
     const res = await askJev(
-      {
-        foods: [{ id: "f1", name: line.name, brand: line.brand }],
-        remembered_foods: list.map((f, i) => ({ id: `m${i + 1}`, name: f.name, confirmed_aliases: f.confirmed_aliases ?? [] })),
-      },
+      { foods: [{ id: "f1", name: line.name, brand: line.brand }] },
       memoryQuestions(line, list),
       jev,
     ).catch(() => null);
-    const scores = list.map((_, i) => {
+    const chances = list.map((_, i) => {
       if (!res?.ok) return null;
       const a = res.response.answers[`m${i + 1}`] as { type?: string; probabilities?: Record<string, number> } | undefined;
-      return a?.type === "score" ? (a.probabilities?.["2"] ?? 0) : null;
+      if (a?.type !== "score") return null;
+      const p = a.probabilities ?? {};
+      return { different: p["0"] ?? 0, unclear: p["1"] ?? 0, same: p["2"] ?? 0 };
     });
-    trace.rows = list.map((f, i) => ({ name: f.name.slice(0, 60), kcal: f.per100.kcal, level: f.level, score: scores[i] === null ? null : Math.round((scores[i] as number) * 100) / 100 }));
-    const unresolved = list.filter((_, i) => {
-      if (!res?.ok) return false;
-      const a = res.response.answers[`m${i + 1}`] as { probabilities?: Record<string, number> } | undefined;
-      return (a?.probabilities?.["1"] ?? 0) >= MEMORY_FLOOR;
-    });
-    const d = unresolved.length > 1
-      ? { food: null, reason: "ambiguous" as const, confidence: 0 }
-      : decideMemory(list, scores);
+    const scores = chances.map((c) => (c === null ? null : c.same));
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+    // All three chances, not just "same": the answer that decides is not always
+    // the one that serves.
+    trace.rows = list.map((f, i) => ({
+      name: f.name.slice(0, 60), kcal: f.per100.kcal, level: f.level,
+      score: scores[i] === null ? null : r2(scores[i] as number),
+      ...(chances[i] ? { different: r2(chances[i]!.different), unclear: r2(chances[i]!.unclear), same: r2(chances[i]!.same) } : {}),
+    }));
+    const d = decideMemory(list, scores, MEMORY_FLOOR, lookup);
     if (!d.food) {
-      trace.decision = { match: null, reason: res && !res.ok ? `jev_${res.failure}` : d.reason, candidates: d.reason === "ambiguous" ? list.map((f) => f.name) : undefined, conf: Math.round(d.confidence * 100) / 100 };
+      trace.decision = { match: null, reason: res && !res.ok ? `jev_${res.failure}` : d.reason, conf: r2(d.confidence) };
       return { food: null, confidence: d.confidence, trace };
     }
-    trace.decision = { match: d.food.name.slice(0, 60), kcal: d.food.per100.kcal, level: d.food.level, logged: d.food.last_logged_at.slice(0, 10), conf: Math.round(d.confidence * 100) / 100 };
+    trace.decision = decided(d);
     return { food: d.food, confidence: d.confidence, trace };
   } catch (e) {
     trace.decision = { match: null, reason: "threw", error: String(e).slice(0, 120) };
@@ -323,13 +446,16 @@ export async function matchMemory(
 /** The card's note for a line answered from memory: "Same as you logged on
  *  Sep 26", on the user's own calendar when their zone is known. */
 export function memoryNote(food: MemoryFood, timeZone?: string | null): string {
+  // A different variant that also fits: name it, so a wrong pick costs the user one
+  // sentence ("it was the vanilla") instead of a refused meal.
+  const also = food.also?.length ? ` You also log ${food.also.join(" and ")}; if it was that, just say so.` : "";
   const d = new Date(food.last_logged_at);
-  if (!Number.isFinite(d.getTime())) return "Same as you logged before";
+  if (!Number.isFinite(d.getTime())) return also ? `Same as you logged before.${also}` : "Same as you logged before";
+  let day: string;
   try {
-    const day = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: timeZone || "UTC" }).format(d);
-    return `Same as you logged on ${day}`;
+    day = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: timeZone || "UTC" }).format(d);
   } catch {
-    const day = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).format(d);
-    return `Same as you logged on ${day}`;
+    day = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).format(d);
   }
+  return also ? `Same as you logged on ${day}.${also}` : `Same as you logged on ${day}`;
 }

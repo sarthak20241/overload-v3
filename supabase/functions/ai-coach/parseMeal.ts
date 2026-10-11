@@ -24,7 +24,7 @@
 // passes the deterministic guardrails (density clamp, Atwater, prep-state),
 // so catalog-backed numbers are never model-invented.
 
-import { continuationText, pendingFoodMeal, type PendingFoodMeal } from "./foodContext.ts";
+import { continuationText, type PendingFoodMeal } from "./foodContext.ts";
 import { nearWord } from "./textMatch.ts";
 import {
   findSavedMeal,
@@ -6104,24 +6104,14 @@ async function runParseMealCore(
     });
   }
 
+  // The memory never refuses a meal (owner decision 2026-10-11). It used to
+  // stop the whole meal with "more than one saved match for X" whenever one
+  // food fitted several remembered rows, and the user's answers ("choose any",
+  // "first one") rarely released it (live, 2026-10-05..09). decideMemory now
+  // picks one and names any other variant on the card.
   const memory = await memoryP;
-  const ambiguityQuestion = (item: unknown) => `I have more than one saved match for ${item}. Add the brand, flavour or variant so I use the right one.`;
-  const ambiguous = memory.find((m) =>
-    (m?.trace.decision as { reason?: string } | undefined)?.reason === "ambiguous" &&
-    !(ext.accepts_generic_estimate === true && input.pendingMeal?.question === ambiguityQuestion(m?.trace.item))
-  );
-  if (ambiguous) {
-    const question = ambiguityQuestion(ambiguous.trace.item);
-    const result = declineResult(question);
-    result.declined!.pending_meal = pendingFoodMeal(
-      input.pendingMeal ? continuationText(userText.text, input.pendingMeal) : userText.text,
-      question,
-    )!;
-    return result;
-  }
-  // Permission to estimate applies only to the item Drona asked about.
-  // Its ambiguous memory match remains null, so the normal fallback supplies
-  // numbers; unrelated foods keep their confirmed memory and safety checks.
+  // Kept as a trace only: the user allowed an estimate for a pending question.
+  // Nothing here waits on it now that memory never blocks a meal.
   if (input.pendingMeal && ext.accepts_generic_estimate === true) {
     steps.push({ iter: 1, tool: "pending_estimate", input: { question: input.pendingMeal.question } });
   }

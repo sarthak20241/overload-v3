@@ -241,13 +241,14 @@ for (const extraction of [
   });
 }
 
-Deno.test("ambiguous follow-up shorthand asks for the variant without substituting a catalogue row", async () => {
+Deno.test("follow-up shorthand on two remembered variants logs one and names the other, never a catalogue row", async () => {
   const h = harness({ entries: [
     memory(), memory({ food_name: "Doctor's Choice chocolate protein oats" }),
   ] });
   const r = await runParseMeal(h.deps, base);
-  assertEquals(r.parsed, null);
-  assert(r.declined!.message.includes("more than one saved match"));
+  assertEquals(r.declined, null);
+  const line = r.parsed!.items.find((i) => i.food_name.startsWith("Doctor's Choice"))!;
+  assert(line.assumption!.includes("You also log"), line.assumption!);
   assert(!h.calls.includes("cache"));
   assert(!h.calls.includes("catalog"));
 });
