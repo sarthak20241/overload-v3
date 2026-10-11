@@ -311,7 +311,8 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
     // The last-turn note is appended as a system message, never added to the
     // system prompt: changing the system prompt mid-loop would edit history the
     // model already answered (and break the prompt cache).
-    if (last) messages.push({ role: "system", content: LAST_TURN_NOTE });
+    // A copy, so the note can never leak into a later turn's history.
+    const sent = last ? [...messages, { role: "system", content: LAST_TURN_NOTE }] : messages;
     const res = await deps.callModel({
       model: deps.model,
       // 2000 under Sonnet 4.6; ~30% up for Sonnet 5.5's tokenizer.
@@ -323,7 +324,7 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
       // a forced tool_choice, so the system prompt says it and the code below
       // fails a text-only turn as before.
       ...sonnetSettings(deps.model),
-      messages,
+      messages: sent,
     });
     if (!res.ok) return { kind: "failed", reason: `http_${res.status}`, turns };
 

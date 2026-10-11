@@ -861,7 +861,7 @@ const VOYAGE_TIMEOUT_MS = envInt("VOYAGE_TIMEOUT_MS", 6000);
 
 // SSE keepalive. The streaming coach turn can go completely silent on the
 // wire for minutes: only `text_delta` is forwarded to the client, and a
-// forced terminal tool (generate_program above all — 8000 max_tokens, the
+// required terminal tool (generate_program above all — 8000 max_tokens, the
 // largest budget of any mode) emits its whole payload as `input_json_delta`,
 // which is accumulated server-side and never sent. generate_plan is shielded
 // by the fan-out's plan_skeleton/plan_day events; program modes have no
@@ -1905,8 +1905,8 @@ async function runStreamingToolLoop(
       }
       // A required tool answered in text: ask once more, keeping the model's
       // own reply in the history. Forcing used to make this impossible.
-      // An empty reply cannot be sent back (the API rejects an empty assistant turn).
-      if (forceTool && !retriedForce && stopReason === "end_turn" && cleanBlocks.length > 0 && iter < MAX_TOOL_ITERATIONS - 1) {
+      // Only a reply with text goes back: an empty or note-only assistant turn can be rejected.
+      if (forceTool && !retriedForce && stopReason === "end_turn" && cleanBlocks.some((b: any) => b.type === "text") && iter < MAX_TOOL_ITERATIONS - 1) {
         retriedForce = true;
         trace.tool_calls.push(`${forceTool}__retry`);
         conversation.push({ role: "assistant", content: cleanBlocks });
@@ -3988,7 +3988,7 @@ async function handleAnonOnboardingProgram(args: {
     if (toolUse) break;
     // Only a plain text answer earns a second ask. A refusal, a cap hit or an
     // empty reply would get the same result again, billed twice.
-    if (stop !== "end_turn" || blocks.length === 0) {
+    if (stop !== "end_turn" || !blocks.some((b) => b.type === "text")) {
       trace.error_message = `anon: no generate_program (stop_reason ${stop ?? "none"})`;
       break;
     }
@@ -4730,7 +4730,7 @@ Deno.serve(async (req) => {
     // across 45 days while users were reporting failures — every stream that
     // died took its own trace row with it.
     keepAlive((async () => {
-      // Keeps the socket warm through the long silent stretch of a forced
+      // Keeps the socket warm through the long silent stretch of a terminal
       // tool emission. Cleared in the finally below, and self-latching once
       // the client disconnects (see SSEWriter.comment).
       const heartbeat = SSE_HEARTBEAT_MS > 0
@@ -4850,7 +4850,7 @@ Deno.serve(async (req) => {
   //
   // Keep behavior in sync with the streaming branch above:
   //  - same per-mode max_tokens budget (so generate_plan gets 5400)
-  //  - force tool_choice on iter 0 when force_tool is set
+  //  - require the force_tool tool on iter 0 (requireTool note; Sonnet 5.5 rejects forcing)
   //  - terminal tools (generate_workout / generate_plan) are NOT executed;
   //    their input IS the structured response, returned in `structured`
   //    just like the streaming `done` event does
@@ -4918,7 +4918,7 @@ Deno.serve(async (req) => {
       const contentBlocks: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }> = data.content ?? [];
 
       // A required tool answered in text: ask once more, as in streaming.
-      if (stopReason === "end_turn" && effectiveForceTool && !retriedForce && contentBlocks.length > 0 && iter < MAX_TOOL_ITERATIONS - 1) {
+      if (stopReason === "end_turn" && effectiveForceTool && !retriedForce && contentBlocks.some((b) => b.type === "text") && iter < MAX_TOOL_ITERATIONS - 1) {
         retriedForce = true;
         trace.tool_calls.push(`${effectiveForceTool}__retry`);
         conversation.push({ role: "assistant", content: contentBlocks });
