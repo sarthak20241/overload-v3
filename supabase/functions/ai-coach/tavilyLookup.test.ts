@@ -48,6 +48,8 @@ Deno.test("foodLabel does not repeat a brand already in the name", () => {
   assertEquals(foodLabel({ name: "Amul masti dahi", brand: "Amul" }), "Amul masti dahi");
   assertEquals(foodLabel({ name: "rice cake", brand: "Pintola" }), "Pintola rice cake");
   assertEquals(foodLabel({ name: "banana", brand: null }), "banana");
+  // Spaced in the user's words, joined on the label.
+  assertEquals(foodLabel({ name: "FitZo Protein Bar Vanilla", brand: "Fit Zo" }), "FitZo Protein Bar Vanilla");
 });
 
 const report = (over: Partial<PageReport>): PageReport => ({
