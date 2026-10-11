@@ -418,13 +418,13 @@ Deno.test("an alias checks explicit brand and preparation too", async () => {
   assertEquals(requests, 2);
 });
 
-Deno.test("the same alias on two products is ambiguous, not newest-wins", async () => {
-  const list = [food("Brand banana protein oats", 400), food("Brand banana regular oats", 400)]
+Deno.test("the same alias on two products picks the one she logs most, and names the other", async () => {
+  const list = [{ ...food("Brand banana protein oats", 400), times: 1 }, { ...food("Brand banana regular oats", 400), times: 4 }]
     .map((f) => ({ ...f, confirmed_aliases: ["brand banana oats"] }));
   const r = await matchMemory({ apiKey: "", timeoutMs: 1 }, list, { name: "brand banana oats", brand: null });
-  assertEquals(r.food, null);
-  assertEquals((r.trace.decision as { reason: string }).reason, "ambiguous");
-  assertEquals(decideMemory(list, [0.98, 0.99]).food, null);
+  assertEquals(r.food?.name, "Brand banana regular oats");
+  assertEquals(r.food?.also, ["Brand banana protein oats"]);
+  assertEquals(decideMemory(list, [0.98, 0.99]).food?.name, "Brand banana regular oats");
 });
 
 Deno.test("an exact alias cannot disappear behind the top-ten shortlist", async () => {
@@ -450,7 +450,7 @@ Deno.test("an exact alias DB lookup survives the 300-food memory bound", () => {
 
 Deno.test("new shorthand questions name the input and each candidate explicitly", async () => {
   const oats = food("Doctor's Choice banana caramel protein oats", 427.3);
-  let state: { remembered_foods: unknown[] } | undefined;
+  let state: { remembered_foods?: unknown[] } | undefined;
   const r = await matchMemory({ apiKey: "k", timeoutMs: 100, fetchFn: (async (_url, init) => {
     const body = JSON.parse(String(init?.body));
     state = body.state;
@@ -460,16 +460,17 @@ Deno.test("new shorthand questions name the input and each candidate explicitly"
     return Response.json({ answers: { m1: { type: "score", probabilities: { "0": 0.01, "1": 0.01, "2": 0.98 } } } });
   }) as typeof fetch }, [oats], { name: "doctors banana caramel oats", brand: null });
   assertEquals(r.food?.name, oats.name);
-  assertEquals(state?.remembered_foods.length, 1);
+  assertEquals(state?.remembered_foods, undefined);
 });
 
-Deno.test("Jev's unresolved variants are declined rather than falling back to generic food", async () => {
+Deno.test("Jev unsure on every row: no memory, and the meal is never blocked", async () => {
   const list = [food("Brand protein oats", 400), food("Brand regular oats", 400)];
   const r = await matchMemory({ apiKey: "k", timeoutMs: 100, fetchFn: (async () => Response.json({ answers: {
     m1: { type: "score", probabilities: { "0": 0.01, "1": 0.95, "2": 0.04 } },
     m2: { type: "score", probabilities: { "0": 0.01, "1": 0.95, "2": 0.04 } },
   } })) as typeof fetch }, list, { name: "Brand oats", brand: null });
-  assertEquals((r.trace.decision as { reason: string }).reason, "ambiguous");
+  assertEquals(r.food, null);
+  assertEquals((r.trace.decision as { reason: string }).reason, "below_floor");
 });
 
 Deno.test("confirmed alias repeat scales the new portion and carries save-only evidence", async () => {
@@ -487,51 +488,129 @@ Deno.test("confirmed alias repeat scales the new portion and carries save-only e
   assertEquals(lookups, []);
 });
 
-Deno.test("an ambiguous confirmed alias stops a parse before catalog and web lookup", async () => {
+Deno.test("the failure this prevents: an alias on two products blocked the whole meal", async () => {
+  // Live 2026-10-05..09: "more than one saved match" refused whole meals, and
+  // the user's answers ("choose any", "first one") never released them.
   const calls: string[] = [], lookups: string[] = [];
   const entries = ["Brand banana protein oats", "Brand banana regular oats"].map((food_name) => live({ food_name, confirmed_aliases: ["brand banana oats"] }));
   const r = await runParseMeal(deps(entries, {}, calls, lookups, { ...ESTIMATED, name: "brand banana oats" }),
     { ...BASE, text: "20g brand banana oats", mode: "fast" });
-  assertEquals(r.parsed, null);
-  assert(r.declined?.message.includes("more than one saved match"));
-  assertEquals(r.declined!.pending_meal!.text, "20g brand banana oats");
-  assertEquals(r.declined!.pending_meal!.question, r.declined!.message);
-  assertEquals(lookups, []);
+  assertEquals(r.declined, null);
+  assert(r.parsed!.items[0].food_name.startsWith("Brand banana"));
+  assert(r.parsed!.items[0].assumption!.includes("You also log"), r.parsed!.items[0].assumption!);
 });
 
-Deno.test("clarification: permission to estimate releases only the questioned ambiguous food", async () => {
-  const entries = ["Brand banana protein oats", "Brand banana regular oats"].map((food_name) => live({ food_name, confirmed_aliases: ["brand banana oats"] }));
-  const line = { ...ESTIMATED, name: "brand banana oats" };
-  const first = await runParseMeal(deps(entries, {}, [], [], line), { ...BASE, text: "20g brand banana oats", mode: "fast" });
-  const result = await runParseMeal(deps(entries, {}, [], [], line, { accepts_generic_estimate: true }), {
-    ...BASE, text: "No brand, assume on it own", mode: "fast", pendingMeal: first.declined!.pending_meal,
-  });
-  assertEquals(result.declined, null);
-  assertEquals(result.parsed!.items[0].source, "estimate");
-  assertEquals(result.parsed!.continued_pending, true);
+// ── Identity only (owner decision 2026-10-11) ───────────────────────────────
+//
+// Jev judges whether a remembered food IS the food the user means, nothing
+// else. Choosing between several that are, and whose numbers to use, is code.
+
+Deno.test("Jev is asked about identity only, never whether another row also fits", async () => {
+  let body: { state: { remembered_foods?: unknown[] }; questions: Record<string, { instructions: string; criteria: string[] }> } | undefined;
+  await matchMemory({ apiKey: "k", timeoutMs: 100, fetchFn: (async (_u, init) => {
+    body = JSON.parse(String(init?.body));
+    return Response.json({ answers: {} });
+  }) as typeof fetch }, [food("cucumber", 12.5), food("cucumbers", 10.7)], { name: "cucumber", brand: null });
+  const q = body!.questions.m1;
+  assert(!/equally fits|choose unresolved|more than one remembered product fits/i.test(q.instructions + q.criteria.join(" ")), q.instructions);
+  assert(q.criteria[1].startsWith("Unclear"), q.criteria[1]);
+  assert(q.criteria[2].startsWith("Same"), q.criteria[2]);
+  // Other remembered foods are not in the state: they cannot pull an answer
+  // from "same" to "unclear".
+  assertEquals(body!.state.remembered_foods, undefined);
 });
 
-Deno.test("clarification: a quantity alone does not choose between ambiguous products", async () => {
-  const entries = ["Brand banana protein oats", "Brand banana regular oats"].map((food_name) => live({ food_name, confirmed_aliases: ["brand banana oats"] }));
-  const line = { ...ESTIMATED, name: "brand banana oats" };
-  const first = await runParseMeal(deps(entries, {}, [], [], line), { ...BASE, text: "20g brand banana oats", mode: "fast" });
-  const result = await runParseMeal(deps(entries, {}, [], [], line, { accepts_generic_estimate: false }), {
-    ...BASE, text: "Actually 30 grams", mode: "fast", pendingMeal: first.declined!.pending_meal,
-  });
-  assertEquals(result.parsed, null);
-  assertEquals(result.declined!.message, first.declined!.message);
-  assert(result.declined!.pending_meal!.text.includes("20g brand banana oats"));
-  assert(result.declined!.pending_meal!.text.includes("Actually 30 grams"));
+Deno.test("the failure this prevents: one food saved under three names was 'ambiguous'", () => {
+  // Her real rows, 2026-10-06: cucumber 7 times, the other two once each.
+  const list = [
+    { ...food("cucumber", 12.5), times: 7 },
+    { ...food("cucumbers", 10.7), times: 1 },
+    { ...food("Cucumber, raw", 16), times: 1 },
+  ];
+  const d = decideMemory(list, [0.9, 0.88, 0.8]);
+  assertEquals(d.food?.name, "cucumber");
+  // The same food under other names is not a choice worth showing her.
+  assertEquals(d.food?.also, []);
 });
 
-Deno.test("clarification: permission for cucumber does not resolve an ambiguous oats alias", async () => {
-  const entries = ["Brand banana protein oats", "Brand banana regular oats"].map((food_name) => live({ food_name, confirmed_aliases: ["brand banana oats"] }));
-  const result = await runParseMeal(deps(entries, {}, [], [], { ...ESTIMATED, name: "brand banana oats" }, { accepts_generic_estimate: true }), {
-    ...BASE, text: "Estimate the cucumber", mode: "fast",
-    pendingMeal: { status: "awaiting_clarification", text: "20g brand banana oats, 2 cucumber", question: "I have more than one saved match for cucumber. Add the brand, flavour or variant so I use the right one." },
-  });
-  assertEquals(result.parsed, null);
-  assert(result.declined!.message.includes("brand banana oats"));
+Deno.test("real variants: the one she logs most, with the other named on the card", () => {
+  const list = [{ ...food("vanilla whey", 380), times: 1 }, { ...food("chocolate whey", 390), times: 3 }];
+  const d = decideMemory(list, [0.9, 0.9]);
+  assertEquals(d.food?.name, "chocolate whey");
+  assertEquals(d.food?.also, ["vanilla whey"]);
+  assertEquals(memoryNote(d.food!, null), "Same as you logged on Sep 26. You also log vanilla whey; if it was that, just say so.");
+});
+
+Deno.test("a variant just under the floor competes when its sibling cleared it", () => {
+  // Real Jev for "whey": chocolate 0.73, vanilla 0.91. She logs chocolate more.
+  const list = [{ ...food("chocolate whey", 390), times: 3 }, { ...food("vanilla whey", 380), times: 1 }];
+  const d = decideMemory(list, [0.73, 0.91]);
+  assertEquals(d.food?.name, "chocolate whey");
+  assertEquals(d.food?.also, ["vanilla whey"]);
+  // With no sibling over the floor, 0.73 still serves nothing.
+  assertEquals(decideMemory([list[0]], [0.73]).food, null);
+});
+
+Deno.test("a food under the floor that is not a variant never wins on habit", () => {
+  // She logs casein far more, but Jev gave it 0.6 for "whey": it is not a
+  // variant of the whey that cleared the floor, so it stays out.
+  const list = [{ ...food("chocolate whey", 390), times: 1 }, { ...food("casein", 370), times: 9 }];
+  const d = decideMemory(list, [0.9, 0.6]);
+  assertEquals(d.food?.name, "chocolate whey");
+  assertEquals(d.food?.also, []);
+});
+
+Deno.test("synonyms are not variants: 'Veggies' is served without naming 'vegetables'", () => {
+  const list = [{ ...food("Veggies", 70), times: 3 }, food("vegetables", 40), food("Mixed vegetables", 60)];
+  const d = decideMemory(list, [0.99, 0.97, 0.9]);
+  assertEquals(d.food?.name, "Veggies");
+  assertEquals(d.food?.also, []);
+});
+
+Deno.test("among foods she logs as often, her own numbers beat a Quick guess", () => {
+  const list = [
+    { ...food("whole eggs", 155), level: "fast" as const, trust: 1 },
+    { ...food("whole egg", 143), level: "precise" as const, trust: 4 },
+  ];
+  assertEquals(decideMemory(list, [0.9, 0.9]).food?.name, "whole egg");
+});
+
+Deno.test("the failure this prevents: a newer Quick guess replaced her own number", () => {
+  // Live: her own 12.5 kcal/100 g cucumber (28 Sep) was replaced by a 6.3 Quick
+  // guess (4 Oct) because the newest line always won.
+  const [cucumber] = buildMemory([
+    entry({ food_name: "cucumber", kcal: 30, grams: 240, quantity: 2, serving_unit: "whole", source: "manual", tier: "fast", logged_at: daysAgo(5) }),
+    entry({ food_name: "cucumber", kcal: 19, grams: 300, quantity: 1, serving_unit: "piece", source: "estimate", tier: "fast", logged_at: daysAgo(1) }),
+  ], "fast", NOW);
+  assertEquals(cucumber.per100.kcal, 12.5);
+  assertEquals(cucumber.times, 2);
+});
+
+Deno.test("a Precise number is not replaced by a newer Quick guess", () => {
+  const [egg] = buildMemory([
+    entry({ food_name: "whole egg", kcal: 143, grams: 100, tier: "precise", source: "catalog", logged_at: daysAgo(4) }),
+    entry({ food_name: "whole egg", kcal: 160, grams: 100, tier: "fast", source: "estimate", logged_at: daysAgo(1) }),
+  ], "fast", NOW);
+  assertEquals(egg.per100.kcal, 143);
+});
+
+Deno.test("the trace keeps all three of Jev's chances for every row", async () => {
+  const r = await matchMemory({ apiKey: "k", timeoutMs: 100, fetchFn: (async () => Response.json({ answers: {
+    m1: { type: "score", probabilities: { "0": 0.1, "1": 0.2, "2": 0.7 } },
+  } })) as typeof fetch }, [food("whole egg", 143)], { name: "whole egg", brand: null });
+  const row = (r.trace.rows as Array<Record<string, number>>)[0];
+  assertEquals([row.different, row.unclear, row.same], [0.1, 0.2, 0.7]);
+});
+
+Deno.test("a meal with one unclear food logs every food, the unclear one from its normal source", async () => {
+  const calls: string[] = [], lookups: string[] = [];
+  const entries = ["cucumber", "cucumbers"].map((food_name) => live({ food_name, kcal: 30, grams: 240, tier: "fast", source: "estimate" }));
+  // Jev unsure about both rows.
+  const r = await runParseMeal(deps(entries, { cucumber: 0.3, cucumbers: 0.3 }, calls, lookups,
+    { ...ESTIMATED, name: "cucumber", quantity: 2, unit: "whole", est_kcal: 30, est_protein_g: 1.5, est_carb_g: 7, est_fat_g: 0.2, est_total_g: 600 }),
+    { ...BASE, text: "2 cucumbers", mode: "fast" });
+  assertEquals(r.declined, null);
+  assertEquals(r.parsed!.items[0].source, "estimate");
 });
 
 Deno.test("a later confirmation on a past diary day keeps its alias and corrected nutrition", () => {
