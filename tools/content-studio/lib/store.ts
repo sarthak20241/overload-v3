@@ -6,7 +6,9 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-export const DATA_DIR = path.join(process.cwd(), 'data');
+/** STUDIO_DATA_DIR keeps your data outside the checkout, so a git worktree
+ *  being cleaned up or switched never takes your drafts with it. */
+export const DATA_DIR = process.env.STUDIO_DATA_DIR?.trim() || path.join(process.cwd(), 'data');
 
 const chains: Map<string, Promise<unknown>> =
   ((globalThis as any).__studioChains ??= new Map());

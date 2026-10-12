@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import { partLength, SPECS } from '@/lib/channels';
-import { hasDashes } from '@/lib/lint';
+import { postBlocker } from '@/lib/checks';
 import { postToLinkedIn } from '@/lib/publish/linkedin';
 import { PartialThreadError, postToX } from '@/lib/publish/x';
 import { read, update } from '@/lib/store';
@@ -41,13 +40,8 @@ export async function POST(req: Request) {
 
   let postedUrl = url?.trim() || undefined;
   if (action === 'post') {
-    const spec = SPECS[draft.channel];
-    const tooLong = draft.parts.findIndex((p) => partLength(draft.channel, p) > spec.limit);
-    if (tooLong >= 0) return NextResponse.json({ error: `Part ${tooLong + 1} is over the ${spec.limit} character limit.` }, { status: 400 });
-    if (draft.parts.some((p) => /\[[^\]]+\](?!\()/.test(p))) {
-      return NextResponse.json({ error: 'The draft still has a [placeholder]. Fill it in first.' }, { status: 400 });
-    }
-    if (draft.parts.some(hasDashes)) return NextResponse.json({ error: 'The draft has an em dash. Remove it first.' }, { status: 400 });
+    const blocker = postBlocker(draft);
+    if (blocker) return NextResponse.json({ error: blocker }, { status: 400 });
 
     if (inFlight.has(draftId)) return NextResponse.json({ error: 'This draft is already being posted.' }, { status: 409 });
     inFlight.add(draftId);

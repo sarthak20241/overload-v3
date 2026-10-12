@@ -49,6 +49,7 @@ export default function DraftsView({ s }: { s: StudioApi }) {
               <button key={d.id} className={`item ${current?.id === d.id ? 'on' : ''}`} onClick={() => setSel(d.id)}>
                 <div className="row" style={{ marginBottom: 4 }}>
                   <span className={`tag ${d.channel}`}>{CHANNEL_NAME[d.channel]}</span>
+                  {d.ready && <span className="tag ok">Ready</span>}
                   <span className="subtle">{ago(d.updatedAt)}</span>
                 </div>
                 <div className="t">{d.topicTitle}</div>
@@ -251,6 +252,16 @@ function Publish({ d, s, blocked, confirm, setConfirm }: { d: Draft; s: StudioAp
   const [manualUrl, setManualUrl] = useState('');
   const [opened, setOpened] = useState(false);
 
+  const setReady = async (ready: boolean) => {
+    setErr(null);
+    try {
+      await api('/api/drafts', 'PATCH', { id: d.id, ready });
+      await s.reload();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+
   const canApi = d.channel === 'x' ? st.x : d.channel === 'linkedin' ? st.linkedinConnected : false;
   const hasLink = d.parts.some((p) => /https?:\/\/\S+/.test(p));
   const cost = d.parts.reduce((sum, p) => sum + (/https?:\/\/\S+/.test(p) ? 0.2 : 0.015), 0);
@@ -301,6 +312,22 @@ function Publish({ d, s, blocked, confirm, setConfirm }: { d: Draft; s: StudioAp
     <div>
       <div className="label" style={{ marginBottom: 8 }}>Publish</div>
       {blocked && <div className="subtle" style={{ marginBottom: 8 }}>{blocked}</div>}
+
+      {d.channel === 'x' && (
+        <div className="spread preview" style={{ marginBottom: 12 }}>
+          <span>
+            {d.ready
+              ? 'Ready. The daily routine will post this one when its turn comes.'
+              : 'Read it, then mark it Ready. The daily routine only posts Ready drafts, one a day.'}
+          </span>
+          {d.ready ? (
+            <button className="btn small" onClick={() => setReady(false)}>Not ready</button>
+          ) : (
+            <button className="btn small dark" disabled={!!blocked} onClick={() => setReady(true)}>Mark Ready</button>
+          )}
+        </div>
+      )}
+      {err && !confirm && <div className="error" style={{ marginBottom: 12 }}>{err}</div>}
 
       <div className="row">
         {d.channel !== 'reddit' && (

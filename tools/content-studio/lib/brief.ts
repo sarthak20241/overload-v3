@@ -81,7 +81,7 @@ export const DEFAULT_BRIEF: Brief = {
       label: 'Voice rules',
       hint: 'How every post must sound.',
       text: [
-        'Human founder voice. Calm, direct, specific. No hype, no buzzwords.',
+        "Sounds like me talking, not writing. Contractions, short sentences, plain words, first person. Calm, direct, specific. No hype, no buzzwords.",
         'Never use em dashes. Use commas, colons or a new sentence.',
         'Overload is a workout tracker with a coach. Never call it an "AI coach app" and do not lead with "AI-powered".',
         'Lead with the benefit the lifter feels, not the tech.',
