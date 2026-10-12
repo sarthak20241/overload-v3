@@ -21,10 +21,12 @@
  */
 import { readFileSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
+import { cleanupOnCrash } from './_cleanup.mts';
 
 const env = Object.fromEntries(readFileSync(new URL('../../.env.local', import.meta.url), 'utf8').split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1).trim()]));
 const db = createClient(env.EXPO_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 const UID = 'user_probe_training_schedule_0137';
+cleanupOnCrash(() => db.rpc('delete_user_data', { p_user_id: UID }));
 let fails = 0;
 const ok = (name: string, cond: boolean, detail?: unknown) => {
   if (!cond) fails++;

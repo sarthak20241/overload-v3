@@ -34,6 +34,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
+import { cleanupOnCrash } from './_cleanup.mts';
 
 const env = Object.fromEntries(readFileSync(new URL('../../.env.local', import.meta.url), 'utf8').split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1).trim()]));
 const db = createClient(env.EXPO_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
@@ -59,6 +60,7 @@ const cleanup = async () => {
   await db.rpc('delete_user_data', { p_user_id: UID });
   await db.from('exercises').delete().eq('created_by', UID);
 };
+cleanupOnCrash(cleanup);
 await cleanup();
 must(await db.from('user_profiles').insert({ clerk_user_id: UID, timezone: 'UTC', weekly_target_sessions: 3 }), 'profile');
 

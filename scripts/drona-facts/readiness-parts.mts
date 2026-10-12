@@ -15,6 +15,7 @@
 import { readFileSync } from 'node:fs';
 import crypto from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
+import { cleanupOnCrash } from './_cleanup.mts';
 import { computeReadiness, type BaselineStat } from '../../lib/readiness';
 import { storeReadinessParts } from '../../lib/readinessParts';
 
@@ -48,6 +49,7 @@ const cleanup = async () => {
   await admin.rpc('delete_user_data', { p_user_id: UID });
   await admin.rpc('delete_user_data', { p_user_id: OTHER });
 };
+cleanupOnCrash(cleanup);
 await cleanup();
 must(await admin.from('user_profiles').insert([{ clerk_user_id: UID, timezone: 'UTC' }, { clerk_user_id: OTHER, timezone: 'UTC' }]), 'profiles');
 
