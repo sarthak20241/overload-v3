@@ -280,15 +280,23 @@ export async function computeAndStoreReadiness(
   supabase: SupabaseClient,
   userId: string,
 ): Promise<ReadinessResult | null> {
+  // One local day for both rows, so a save around midnight cannot split the
+  // score and its parts across two dates.
+  const day = todayLocalISO();
   const result = await loadReadiness(supabase, userId);
   if (result && result.score != null) {
     const { error: upErr } = await supabase.from('daily_metrics').upsert(
-      { user_id: userId, metric_date: todayLocalISO(), metric_type: 'readiness_score', value: result.score, unit: 'score', source: 'manual' },
+      { user_id: userId, metric_date: day, metric_type: 'readiness_score', value: result.score, unit: 'score', source: 'manual' },
       { onConflict: 'user_id,metric_date,metric_type' },
     );
     if (upErr) throw upErr;
   }
-  if (result) await storeReadinessParts(supabase, userId, todayLocalISO(), result);
+  if (result) {
+    const partsErr = await storeReadinessParts(supabase, userId, day, result);
+    // Best effort, never blocks the score; but a missing table or an RLS refusal
+    // should still be visible somewhere.
+    if (partsErr) console.warn('[readiness] parts not saved', partsErr);
+  }
   return result;
 }
 

@@ -101,8 +101,9 @@ export type SignalWhy = 'used' | 'no_reading' | 'short_baseline' | 'needs_rhr' |
 /**
  * The score taken apart. `points` is what each signal moved the score from the
  * neutral 50 (share of the blend x its z x 15, the same scale zToScore uses),
- * so base = 50 + sleep + rhr + hrv points, before rounding and clamping, and the
- * final score = base + load + diet points, clamped to 0-100.
+ * so baseScore = round(50 + sleep + rhr + hrv points), clamped to 0-100 (the
+ * points themselves are kept unrounded), and the final score = baseScore + load
+ * + diet points, clamped to 0-100.
  */
 export interface ReadinessParts {
   formula: number;
