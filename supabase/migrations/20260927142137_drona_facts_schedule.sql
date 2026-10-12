@@ -1,13 +1,102 @@
--- 20261012_drona_word_facts_upsert.sql — an edited note moves, it is not added twice
+-- 20260927142137_drona_facts_schedule.sql (was 0149; main has its own 0149) — the facts rebuild themselves, once a day per person
 --
--- Found on 2026-10-12 in drona_facts_runs: one person's word facts had failed
--- every day since 9 Oct with a duplicate key. They edited a sticky exercise
--- note on 9 Oct; its fact row from the first edit was dated 14 Aug, outside the
--- two weeks the daily rebuild clears, so the new row collided with the old one.
--- A meal moved to another day, a workout's start edited, or a memory updated
--- would do the same. Each kind keyed by its source row now moves to the new day
--- and text instead (chat stays "do nothing": a request is never edited).
+-- Until now every facts domain was backfilled by hand. From here a pg_cron job
+-- runs every 15 minutes and rebuilds the people whose LOCAL day has turned since
+-- their last rebuild (and it is at least 00:15 there, so yesterday is closed).
+-- Each gets the last two weeks rebuilt: this week and last, which covers late
+-- syncs (a weigh-in that reaches the server days later) and every week-on-week
+-- delta. A missed run is caught by the next one: "due" is "not done for today
+-- yet", not "it is exactly midnight".
+--
+--   drona_rebuild_all_facts(user, from, to)   the 7 domains, each in its own
+--       sub-transaction: one failing domain is recorded and the rest still run
+--   drona_rebuild_facts_due(limit)            picks up to `limit` due people
+--   drona_facts_runs                          one row per person: last day done,
+--       when, how long, and any errors. Service role only.
+--
+-- Also: coach_traces is pruned after 90 days (prune_coach_traces_daily), and it
+-- is the only server copy of a person's messages to Drona. So a word-facts
+-- rebuild no longer deletes chat messages older than 85 days: once the source
+-- is gone, the facts are the record.
 
+create table if not exists public.drona_facts_runs (
+  user_id          text primary key references public.user_profiles (clerk_user_id) on delete cascade,
+  last_day_done    date,          -- the person's local day this rebuild was for
+  last_started_at  timestamptz,
+  last_ms          int,
+  last_errors      jsonb,         -- {"training": "message"}; {} when clean
+  runs             int not null default 0
+);
+
+alter table public.drona_facts_runs enable row level security;
+revoke all on public.drona_facts_runs from anon, authenticated;
+
+create or replace function public.drona_rebuild_all_facts(p_user_id text, p_from date, p_to date)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $function$
+declare
+  v_errors jsonb := '{}';
+  d text;
+begin
+  foreach d in array array['weight', 'food', 'training', 'recovery', 'plan', 'word', 'card'] loop
+    begin
+      execute format('select public.drona_rebuild_%s_facts($1, $2, $3)', d) using p_user_id, p_from, p_to;
+    exception when others then
+      v_errors := v_errors || jsonb_build_object(d, sqlerrm);
+    end;
+  end loop;
+  return v_errors;
+end;
+$function$;
+
+revoke all on function public.drona_rebuild_all_facts(text, date, date) from public, anon, authenticated;
+grant execute on function public.drona_rebuild_all_facts(text, date, date) to service_role;
+
+create or replace function public.drona_rebuild_facts_due(p_limit int default 25)
+returns int
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $function$
+declare
+  r        record;
+  v_start  timestamptz;
+  v_errors jsonb;
+  v_done   int := 0;
+begin
+  for r in
+    with zones as materialized (select name from pg_timezone_names)
+    select p.clerk_user_id as user_id,
+           (now() at time zone coalesce(z.name, 'UTC'))::date as local_day
+      from user_profiles p
+      left join zones z on z.name = p.timezone
+      left join drona_facts_runs f on f.user_id = p.clerk_user_id
+     where (now() at time zone coalesce(z.name, 'UTC'))::time >= time '00:15'
+       and (f.last_day_done is null or f.last_day_done < (now() at time zone coalesce(z.name, 'UTC'))::date)
+     order by f.last_day_done nulls first, p.clerk_user_id
+     limit p_limit
+  loop
+    v_start := clock_timestamp();
+    v_errors := public.drona_rebuild_all_facts(r.user_id, r.local_day - 13, r.local_day);
+    insert into drona_facts_runs as t (user_id, last_day_done, last_started_at, last_ms, last_errors, runs)
+    values (r.user_id, r.local_day, v_start,
+            (extract(epoch from clock_timestamp() - v_start) * 1000)::int, v_errors, 1)
+    on conflict (user_id) do update set
+      last_day_done = excluded.last_day_done, last_started_at = excluded.last_started_at,
+      last_ms = excluded.last_ms, last_errors = excluded.last_errors, runs = t.runs + 1;
+    v_done := v_done + 1;
+  end loop;
+  return v_done;
+end;
+$function$;
+
+revoke all on function public.drona_rebuild_facts_due(int) from public, anon, authenticated;
+grant execute on function public.drona_rebuild_facts_due(int) to service_role;
+
+-- ── Words: keep chat older than the log's retention ─────────────────────────
 create or replace function public.drona_rebuild_word_facts(
   p_user_id text, p_from date, p_to date
 )
@@ -37,9 +126,7 @@ begin
          w.name, trim(w.notes), length(trim(w.notes))
     from workouts w
    where w.user_id = p_user_id and nullif(trim(w.notes), '') is not null
-     and (w.started_at at time zone v_tz)::date between v_from and v_end
-  on conflict (user_id, kind, source_id) do update set
-    day = excluded.day, context = excluded.context, text = excluded.text, chars = excluded.chars, computed_at = now();
+     and (w.started_at at time zone v_tz)::date between v_from and v_end;
 
   insert into drona_word_facts (user_id, kind, source_id, day, context, text, chars)
   select p_user_id, 'exercise_note', n.workout_id::text || ':' || n.exercise_id::text,
@@ -48,9 +135,7 @@ begin
     join workouts w on w.id = n.workout_id
     left join exercises e on e.id = n.exercise_id
    where w.user_id = p_user_id and nullif(trim(n.note), '') is not null
-     and (w.started_at at time zone v_tz)::date between v_from and v_end
-  on conflict (user_id, kind, source_id) do update set
-    day = excluded.day, context = excluded.context, text = excluded.text, chars = excluded.chars, computed_at = now();
+     and (w.started_at at time zone v_tz)::date between v_from and v_end;
 
   insert into drona_word_facts (user_id, kind, source_id, day, context, text, chars)
   select p_user_id, 'sticky_note', n.exercise_id::text, (n.updated_at at time zone v_tz)::date,
@@ -58,18 +143,14 @@ begin
     from user_exercise_notes n
     left join exercises e on e.id = n.exercise_id
    where n.user_id = p_user_id and nullif(trim(n.note), '') is not null
-     and (n.updated_at at time zone v_tz)::date between v_from and v_end
-  on conflict (user_id, kind, source_id) do update set
-    day = excluded.day, context = excluded.context, text = excluded.text, chars = excluded.chars, computed_at = now();
+     and (n.updated_at at time zone v_tz)::date between v_from and v_end;
 
   insert into drona_word_facts (user_id, kind, source_id, day, context, text, chars)
   select p_user_id, 'meal_note', m.id::text, (m.logged_at at time zone v_tz)::date,
          m.meal_type, trim(m.note), length(trim(m.note))
     from meals m
    where m.user_id = p_user_id and nullif(trim(m.note), '') is not null
-     and (m.logged_at at time zone v_tz)::date between v_from and v_end
-  on conflict (user_id, kind, source_id) do update set
-    day = excluded.day, context = excluded.context, text = excluded.text, chars = excluded.chars, computed_at = now();
+     and (m.logged_at at time zone v_tz)::date between v_from and v_end;
 
   insert into drona_word_facts (user_id, kind, source_id, day, context, text, chars, is_preview, answered, is_repeat)
   select p_user_id, 'chat_message', t.id::text, (t.request_at at time zone v_tz)::date,
@@ -89,9 +170,7 @@ begin
          c.key || ': ' || c.value, length(c.key || ': ' || c.value)
     from coach_memory c
    where c.user_id = p_user_id
-     and (c.updated_at at time zone v_tz)::date between v_from and v_end
-  on conflict (user_id, kind, source_id) do update set
-    day = excluded.day, context = excluded.context, text = excluded.text, chars = excluded.chars, computed_at = now();
+     and (c.updated_at at time zone v_tz)::date between v_from and v_end;
 
   with wk as (
     select g::date as week_start from generate_series(v_from, v_to, interval '7 days') g
@@ -160,3 +239,5 @@ $function$;
 
 revoke all on function public.drona_rebuild_word_facts(text, date, date) from public, anon, authenticated;
 grant execute on function public.drona_rebuild_word_facts(text, date, date) to service_role;
+
+select cron.schedule('drona-facts-rebuild', '*/15 * * * *', $$ select public.drona_rebuild_facts_due(25); $$);

@@ -471,7 +471,7 @@ What the cards facts show (6 cards, since 18 Sep):
   it reached the server on 22 Sep, so the 18 Sep card saw no weight (0148).
 - **A Later ran out.** One deferred card expired unanswered.
 
-## The facts rebuild themselves (2026-09-27, migration 0149)
+## The facts rebuild themselves (2026-09-27, migration 20260927142137_drona_facts_schedule, first numbered 0149)
 
 pg_cron job `drona-facts-rebuild`, every 15 minutes: `drona_rebuild_facts_due(25)`
 rebuilds the people whose local day has turned since their last rebuild (and

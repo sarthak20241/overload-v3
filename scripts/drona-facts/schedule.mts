@@ -1,5 +1,5 @@
 /**
- * Proves the facts schedule (0149) on a made-up person. Runs against LIVE with
+ * Proves the facts schedule (20260927142137_drona_facts_schedule) on a made-up person. Runs against LIVE with
  * a made-up user id, then deletes it.
  *
  *   npx tsx scripts/drona-facts/schedule.mts
