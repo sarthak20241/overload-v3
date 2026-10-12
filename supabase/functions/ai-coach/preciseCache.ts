@@ -258,7 +258,7 @@ export function independenceKey(r: SourceReading): string | null {
   return host ? `web:${host}` : "web:unknown";
 }
 
-function hostOf(ref: string | null | undefined): string | null {
+export function hostOf(ref: string | null | undefined): string | null {
   if (!ref) return null;
   try {
     return new URL(ref).hostname.replace(/^www\./, "").toLowerCase();

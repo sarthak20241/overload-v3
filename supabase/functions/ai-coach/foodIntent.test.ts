@@ -271,7 +271,7 @@ Deno.test("the whole ladder is exercised in order: jev, then model, then default
 
 // A compile-time reminder that the union is what the criteria advertise. If a
 // new intent is added to FoodIntent without a rubric, this stops being valid.
-const _exhaustive: Record<FoodIntent, true> = { log: true, create: true, other: true, steps: true };
+const _exhaustive: Record<FoodIntent, true> = { log: true, create: true, other: true, steps: true, continue: true };
 void _exhaustive;
 
 // ── The gate: should we even ask? ───────────────────────────────────────────
@@ -399,7 +399,8 @@ Deno.test("no saved meals means the question is never asked", async () => {
   });
   assertEquals(d.savedMatch, null);
   const sent = JSON.parse(cap.body ?? "{}");
-  assertEquals(Object.keys(sent.questions), ["intent"]);
+  // has_food rides every call: an unlogged food message must keep waiting.
+  assertEquals(Object.keys(sent.questions).sort(), ["has_food", "intent"]);
 });
 
 Deno.test("with saved meals, both questions ride ONE call", async () => {
@@ -411,7 +412,7 @@ Deno.test("with saved meals, both questions ride ONE call", async () => {
     savedMeals: SAVED,
   });
   const sent = JSON.parse(cap.body ?? "{}");
-  assertEquals(Object.keys(sent.questions).sort(), ["intent", "saved"]);
+  assertEquals(Object.keys(sent.questions).sort(), ["has_food", "intent", "saved"]);
   // The no-match option must always be offered, or the model is forced to name
   // a saved meal for food that is not one.
   assertEquals(NO_SAVED_MATCH in sent.questions.saved.criteria, true);

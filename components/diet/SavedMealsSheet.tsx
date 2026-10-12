@@ -7,7 +7,7 @@
  * P3: track the same custom thing daily without re-typing it. Portal sheet.
  */
 import { useEffect, useState, useCallback } from 'react';
-import { View, Text, Pressable, TouchableOpacity, ScrollView, StyleSheet, BackHandler } from 'react-native';
+import { View, Text, Pressable, TouchableOpacity, ScrollView, StyleSheet, BackHandler, Keyboard } from 'react-native';
 import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -45,6 +45,10 @@ export function SavedMealsSheet({ open, defaultMeal, mealLabel, onClose, onLogge
   }, [supabase]);
 
   useEffect(() => { if (open) { setMeals(null); setFlash(null); void load(); } }, [open, load]);
+
+  // The header bookmark doesn't blur the food box, so its keyboard would stay
+  // up and cover the bottom of this sheet. Nothing here takes typing.
+  useEffect(() => { if (open) Keyboard.dismiss(); }, [open]);
 
   useEffect(() => {
     if (!open) return;

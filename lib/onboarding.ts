@@ -31,11 +31,14 @@ import {
   type GuestProfile,
 } from '@/lib/guestStore';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
+import { missingGoalsColumn, primaryGoal, selectedGoals } from '@/lib/fitnessGoals';
 
 // ─── Answers ─────────────────────────────────────────────────────────────────
 
 export interface OnboardingAnswers {
   goal: CoachGoal | null;
+  /** All selected goals. Optional for intakes saved by older app versions. */
+  goals?: CoachGoal[];
   experience: ExperienceLevel | null;
   /** Target training sessions per week (2..6). */
   frequency: number | null;
@@ -198,7 +201,12 @@ function activityFactor(frequency: number): number {
 // (general, endurance) but the user named a target weight, lean the budget
 // toward that direction instead.
 function goalAdjustment(a: OnboardingAnswers): number {
-  switch (a.goal) {
+  // Fat loss must not accidentally get a surplus because muscle was tapped first.
+  const goals = selectedGoals(a);
+  const nutritionGoal = goals.includes('fat_loss') ? 'fat_loss'
+    : goals.includes('hypertrophy') ? 'hypertrophy'
+    : goals.includes('strength') ? 'strength' : primaryGoal(a);
+  switch (nutritionGoal) {
     case 'fat_loss': return 0.8;
     case 'hypertrophy': return 1.1;
     case 'strength': return 1.05;
@@ -234,7 +242,8 @@ function bmrOf(a: OnboardingAnswers): number | null {
 
 /** Protein-first macro split shared by every targets path. */
 function macroSplit(kcal: number, a: OnboardingAnswers): DailyTargets {
-  const protein = roundTo((a.weightKg ?? 0) * PROTEIN_G_PER_KG[a.goal ?? 'general'], 5);
+  const proteinPerKg = Math.max(...selectedGoals(a).map((g) => PROTEIN_G_PER_KG[g]), PROTEIN_G_PER_KG.general);
+  const protein = roundTo((a.weightKg ?? 0) * proteinPerKg, 5);
   const fat = Math.max(40, roundTo((kcal * 0.25) / 9, 5));
   const carb = Math.max(0, roundTo((kcal - protein * 4 - fat * 9) / 4, 5));
   return { kcal, protein, carb, fat };
@@ -346,7 +355,11 @@ export async function saveOnboardingProfile(
   opts: { isGuest: boolean; clerkId: string | null; client: SupabaseClient },
 ): Promise<void> {
   const patch: Partial<GuestProfile> = {};
-  if (answers.goal) patch.goal = answers.goal;
+  const goals = selectedGoals(answers);
+  if (goals.length) {
+    patch.goal = primaryGoal(answers);
+    patch.goals = goals;
+  }
   if (answers.experience) {
     patch.experience_level = answers.experience;
     patch.training_age_months = TRAINING_AGE_MONTHS[answers.experience];
@@ -381,9 +394,17 @@ export async function saveOnboardingProfile(
   if (prefs) row.training_preferences = prefs.slice(0, 500);
   if (Object.keys(row).length === 1) return; // nothing beyond the id
   try {
-    await withChangeSource(opts.client, 'onboarding')
+    const { error } = await withChangeSource(opts.client, 'onboarding')
       .from('user_profiles')
       .upsert(row, { onConflict: 'clerk_user_id' });
+    // A client may arrive before the migration/cache refresh. Preserve the
+    // rest of its intake and scalar primary goal during that short window.
+    if (missingGoalsColumn(error)) {
+      const { goals: _goals, ...legacyRow } = row;
+      await withChangeSource(opts.client, 'onboarding')
+        .from('user_profiles')
+        .upsert(legacyRow, { onConflict: 'clerk_user_id' });
+    }
   } catch {
     /* best-effort; see docstring */
   }

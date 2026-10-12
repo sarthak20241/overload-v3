@@ -12,6 +12,7 @@
  * Catalog: searchCatalog() merges the bundled FOOD_LIBRARY (Indian staples, always
  * offline) with the Supabase `foods` table (the 7.4k USDA catalog), deduped by name.
  */
+import { persistLoggedEntryEdit } from './loggedEntryEdit';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { FunctionRegion } from '@supabase/supabase-js';
@@ -22,7 +23,9 @@ import { coachInvokeErrorMessage, coachInvokeCapSignal } from '@/lib/coachErrors
 import { isMeasurementUnit } from '@/lib/units';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { track } from '@/lib/analytics';
-import { normalizeFuelDays, targetsOnDow, type FuelDay } from '@/lib/fuelDays';
+import { normalizeFuelDays, type FuelDay } from '@/lib/fuelDays';
+import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from '@/lib/targetHistory';
+import { readSwapOptions, type SwapOption } from '@/lib/variantSwap';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
@@ -57,6 +60,8 @@ export interface LoggedEntry {
   id: string;
   meal_id: string;              // parent meal, for move + empty-meal cleanup
   meal_type: MealType;
+  food_id?: string | null;
+  source?: ParsedMealItem['source'];
   food_name: string;
   serving_unit: string;
   quantity: number;
@@ -157,7 +162,7 @@ async function fetchDayRange(supabase: Supa, first: Date, last: Date): Promise<D
   const { end } = dayRange(last);
   const { data, error } = await supabase
     .from('meals')
-    .select('id, meal_type, logged_at, meal_entries(id, meal_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, position)')
+    .select('id, meal_type, logged_at, meal_entries(id, meal_id, food_id, source, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, position)')
     .gte('logged_at', start).lte('logged_at', end);
   // A failed query is NOT "nothing logged": the caller keeps what it has.
   if (error || !data) return { ok: false };
@@ -185,6 +190,7 @@ async function fetchDayRange(supabase: Supa, first: Date, last: Date): Promise<D
     for (const { mt, e } of list) {
       grouped[mt].push({
         id: e.id, meal_id: e.meal_id, meal_type: mt, food_name: e.food_name,
+        food_id: e.food_id ?? null, source: e.source,
         serving_unit: e.serving_unit, quantity: num(e.quantity),
         grams_logged: e.grams_logged == null ? null : num(e.grams_logged),
         kcal: num(e.kcal), protein_g: num(e.protein_g),
@@ -412,6 +418,8 @@ export async function nutritionStreak(supabase: Supa | null): Promise<number> {
   // ~250-day streak — well beyond any realistic run before it would undercount.
   const { data } = await supabase
     .from('meals').select('logged_at')
+    // Planned days ahead are not part of a streak and must not use up the 1000.
+    .lte('logged_at', new Date().toISOString())
     .order('logged_at', { ascending: false })
     .limit(1000);
   if (!data || data.length === 0) return 0;
@@ -511,6 +519,9 @@ export async function recentFoods(supabase: Supa | null, limit = 20): Promise<Pi
   if (!supabase) return [];
   const { data: meals } = await supabase
     .from('meals').select('id, logged_at')
+    // Food logged ahead for a later day is planned, not eaten, so it is not
+    // "recent" yet, and it must not crowd real meals out of the 40.
+    .lte('logged_at', new Date().toISOString())
     .order('logged_at', { ascending: false }).limit(40);
   if (!meals || meals.length === 0) return [];
   const order = new Map<string, number>(meals.map((m: any) => [m.id, new Date(m.logged_at).getTime()]));
@@ -657,6 +668,18 @@ export interface ParsedMealItem {
    *  instead of "edited": the numbers are the user's, from My Meals. */
   saved_meal?: string | null;
 
+  /** Other variants the user also logs, priced from their own numbers, for the
+   *  one-tap swap chip (lib/variantSwap). Only on lines Drona answered from
+   *  the user's memory; absent from an older server build. */
+  alternatives?: SwapOption[];
+  /** False once the user swapped to a variant they log less, so the card
+   *  stops calling it their usual. Set only by swapToAlternative. */
+  usual?: boolean;
+  /** The user's own words for this line, when the card names it differently
+   *  (a catalog row, a product found under another name). The double check
+   *  looks the food up by these, not by the card's name. */
+  said_name?: string;
+
   /** The diary section THIS line goes to. One message can cover a whole day
    *  ("eggs for breakfast, dal at lunch"), so lines in one parsed meal can
    *  belong to different sections. The server stamps every line; the client
@@ -674,6 +697,7 @@ export interface ParsedMeal {
    *  REPLACE it. When false/absent they are new food, so a caller showing a
    *  pending meal appends them instead of throwing the old lines away. */
   corrects_previous?: boolean;
+  continued_pending?: boolean;
 }
 
 /** parse_meal outcome: either a parsed meal to log, or a decline (non-food
@@ -685,7 +709,13 @@ export type AutoLogSkipped = 'declined' | 'implausible' | 'write_error';
 /** What this build's food bar can render, sent with every parse. A list rather
  *  than a boolean so the next capability (improvise, challenge) is one more
  *  string, not a second flag the server has to learn to read. */
-export const FOOD_BAR_CAPABILITIES = ['food_create'] as const;
+export const FOOD_BAR_CAPABILITIES = ['food_create', 'variant_swap'] as const;
+
+export interface PendingFoodMeal {
+  status: 'awaiting_clarification';
+  text: string;
+  question: string;
+}
 
 export type ParseMealResult =
   | {
@@ -711,6 +741,7 @@ export type ParseMealResult =
   | {
     kind: 'declined';
     message: string;
+    pendingMeal?: PendingFoodMeal | null;
     proposal?: { items: ParsedMealItem[]; note: string } | null;
     cleared?: boolean;
   }
@@ -783,6 +814,8 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
     // render rather than claiming a cross-check that never happened.
     verified: i.verified === true,
     ...(typeof i.saved_meal === 'string' && i.saved_meal.trim() ? { saved_meal: i.saved_meal.trim() } : {}),
+    alternatives: readSwapOptions(i.alternatives),
+    ...(typeof i.said_name === 'string' && i.said_name.trim() ? { said_name: i.said_name.trim() } : {}),
   };
 }
 
@@ -835,6 +868,10 @@ function toParseResult(data: any): ParseMealResult {
       message: String(data.declined.message),
       proposal,
       cleared: data.declined.cleared === true,
+      pendingMeal: data.declined.pending_meal?.status === 'awaiting_clarification' &&
+          typeof data.declined.pending_meal.text === 'string' && typeof data.declined.pending_meal.question === 'string'
+        ? { status: 'awaiting_clarification', text: data.declined.pending_meal.text.slice(0, 2000), question: data.declined.pending_meal.question.slice(0, 400) }
+        : null,
     };
   }
   const parsed = data?.parsed;
@@ -870,6 +907,7 @@ function toParseResult(data: any): ParseMealResult {
       items: (parsed.items as any[]).map((i) => toParsedItem(i, mealType)),
       drona_line: String(parsed.drona_line ?? 'Here it is. Keep the protein coming.'),
       corrects_previous: parsed.corrects_previous === true,
+      continued_pending: parsed.continued_pending === true,
     },
     logged,
     autoLogSkipped: skipped === 'declined' || skipped === 'implausible' || skipped === 'write_error' ? skipped : null,
@@ -1006,6 +1044,7 @@ export async function parseMealStreaming(
         ...(args.turns && args.turns.length > 0
           ? { recent_turns: args.turns.slice(-4).map((t) => ({ role: t.role, text: t.text.slice(0, 240) })) }
           : {}),
+        ...(args.pendingMeal ? { pending_meal: args.pendingMeal } : {}),
         ...autoLogFields(args.autoLog, now),
       }),
     });
@@ -1107,6 +1146,11 @@ export async function parseMeal(
      *  read as a brand new one. The server resolves a pure serving/quantity
      *  change without a second model call, so refining is cheaper than parsing. */
     previous?: { text: string; items: ParsedMealItem[] } | null;
+    /** Index in previous.items of the line the user tapped "double check" on.
+     *  The server then looks up only that line. */
+    researchLine?: number | null;
+    /** Original food retained even when parsing stopped before producing items. */
+    pendingMeal?: PendingFoodMeal | null;
     /** Recent turns of this logging conversation, oldest first. Lets a bare
      *  "yes" answer whatever Drona just offered. */
     turns?: { role: 'user' | 'drona'; text: string }[];
@@ -1155,6 +1199,7 @@ export async function parseMeal(
         ...(args.turns && args.turns.length > 0
           ? { recent_turns: args.turns.slice(-4).map((t) => ({ role: t.role, text: t.text.slice(0, 240) })) }
           : {}),
+        ...(args.pendingMeal ? { pending_meal: args.pendingMeal } : {}),
         ...autoLogFields(args.autoLog, now),
         ...(args.previous && args.previous.items.length > 0
           ? {
@@ -1164,7 +1209,7 @@ export async function parseMeal(
             // Macros ride along so the server can hand an UNTOUCHED line back
             // verbatim: a correction replaces the whole meal, so anything it
             // cannot reconstruct would be silently dropped.
-            previous_items: args.previous.items.slice(0, 12).map((it) => ({
+            previous_items: args.previous.items.slice(0, 12).map((it, idx) => ({
               food_id: it.food_id,
               food_name: it.food_name,
               quantity: it.quantity,
@@ -1181,6 +1226,10 @@ export async function parseMeal(
               meal_type: it.meal_type,
               assumption: it.assumption,
               confidence: it.confidence,
+              // The user's words for the line, so a double check looks up what
+              // they named rather than the row that may be the mistake.
+              ...(it.said_name ? { said_name: it.said_name } : {}),
+              ...(idx === args.researchLine ? { research: true } : {}),
             })),
           }
           : {}),
@@ -1440,20 +1489,27 @@ export function fillMissingMacros(
   return out;
 }
 
-interface CachedTargets { targets: NutritionTargets; isCustom: boolean; fuelDays?: FuelDay[] }
+interface CachedTargets {
+  targets: NutritionTargets; isCustom: boolean; fuelDays?: FuelDay[];
+  history?: TargetHistoryRow[]; dayTargets?: DayTargetRow[];
+}
 
 /** Read the user's daily targets. isCustom = they've set at least one real goal
  *  (vs pure defaults), so the UI can nudge first-timers to set theirs.
  *
- *  `targets` is the BASE day. Fuel days (lib/fuelDays) add calories on top on
- *  their weekday, so anything that draws a specific day's ring or bars reads
- *  `targetsOn(date)`, never `targets` directly. */
+ *  `targets` is TODAY's base day. Anything that draws a specific day's ring or
+ *  bars reads `targetsOn(date)`, never `targets` directly: fuel days
+ *  (lib/fuelDays) add calories on their weekday, and a PAST day is held to the
+ *  goal it had then (lib/targetHistory), not to today's. */
 export function useNutritionTargets(): {
   targets: NutritionTargets; isCustom: boolean; reload: () => void;
   apply: (t: NutritionTargets) => void;
   fuelDays: FuelDay[];
   applyFuelDays: (days: FuelDay[]) => void;
   targetsOn: (date: Date) => NutritionTargets;
+  /** The goal set for today only ("Today only" on the goal sheet), if any. */
+  todayOverride: NutritionTargets | null;
+  applyDayTarget: (dayISO: string, t: NutritionTargets | null) => void;
 } {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
@@ -1466,13 +1522,35 @@ export function useNutritionTargets(): {
   const [fuelDays, setFuelDays] = useState<FuelDay[]>(cachedSeed?.fuelDays ?? []);
   const fuelRef = useRef(fuelDays);
   fuelRef.current = fuelDays;
+  // The goal as it stood on each past day (0150). Null until read; a failed or
+  // missing read leaves past days on today's goal, as they were before.
+  const [history, setHistory] = useState<TargetHistoryRow[] | null>(cachedSeed?.history ?? null);
+  const historyRef = useRef(history);
+  historyRef.current = history;
+  // Goals set for one day only (0151). Same fail-open rule as the history.
+  const [dayTargets, setDayTargets] = useState<DayTargetRow[]>(cachedSeed?.dayTargets ?? []);
+  const dayTargetsRef = useRef(dayTargets);
+  dayTargetsRef.current = dayTargets;
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((t) => t + 1), []);
   // Optimistic update so the ring/pill reflect a saved goal instantly, without
   // waiting out read-after-write lag on the refetch.
   const apply = useCallback((t: NutritionTargets) => {
     setTargets(t); setIsCustom(true);
-    writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: t, isCustom: true, fuelDays: fuelRef.current });
+    writeCache<CachedTargets>('nutritionTargets', clerkId, {
+      targets: t, isCustom: true, fuelDays: fuelRef.current, history: historyRef.current ?? undefined,
+      dayTargets: dayTargetsRef.current,
+    });
+  }, [clerkId]);
+  // Optimistic set/clear of one day's goal, so the ring moves on Save.
+  const applyDayTarget = useCallback((dayISO: string, t: NutritionTargets | null) => {
+    const rest = dayTargetsRef.current.filter((r) => r.day !== dayISO);
+    const next = t
+      ? [...rest, { day: dayISO, kcal: t.kcal, protein_g: t.protein, carb_g: t.carb, fat_g: t.fat }]
+      : rest;
+    setDayTargets(next);
+    const cur = readCache<CachedTargets>('nutritionTargets', clerkId);
+    if (cur) writeCache<CachedTargets>('nutritionTargets', clerkId, { ...cur, dayTargets: next });
   }, [clerkId]);
   const applyFuelDays = useCallback((days: FuelDay[]) => {
     setFuelDays(days);
@@ -1480,9 +1558,27 @@ export function useNutritionTargets(): {
     if (cur) writeCache<CachedTargets>('nutritionTargets', clerkId, { ...cur, fuelDays: days });
   }, [clerkId]);
   const targetsOn = useCallback(
-    (date: Date) => targetsOnDow(targets, fuelDays, date.getDay()),
-    [targets, fuelDays],
+    (date: Date) => targetsForDay({
+      dayISO: ymd(date),
+      todayISO: ymd(new Date()),
+      dow: date.getDay(),
+      live: targets,
+      liveFuel: fuelDays,
+      history,
+      defaults: DEFAULT_TARGETS,
+      overrides: dayTargets,
+    }),
+    [targets, fuelDays, history, dayTargets],
   );
+  const todayRow = dayTargets.find((r) => r.day === ymd(new Date()));
+  const todayOverride: NutritionTargets | null = todayRow
+    ? {
+        kcal: Number(todayRow.kcal),
+        protein: todayRow.protein_g == null ? targets.protein : Number(todayRow.protein_g),
+        carb: todayRow.carb_g == null ? targets.carb : Number(todayRow.carb_g),
+        fat: todayRow.fat_g == null ? targets.fat : Number(todayRow.fat_g),
+      }
+    : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -1492,7 +1588,11 @@ export function useNutritionTargets(): {
       await hydrateCache(clerkId);
       if (cancelled) return;
       const cached = readCache<CachedTargets>('nutritionTargets', clerkId);
-      if (cached) { setTargets(cached.targets); setIsCustom(cached.isCustom); setFuelDays(cached.fuelDays ?? []); }
+      if (cached) {
+        setTargets(cached.targets); setIsCustom(cached.isCustom); setFuelDays(cached.fuelDays ?? []);
+        if (cached.history) setHistory(cached.history);
+        if (cached.dayTargets) setDayTargets(cached.dayTargets);
+      }
 
       if (!supabase) return;
       const cols = 'daily_calorie_target, protein_target_g, carb_target_g, fat_target_g';
@@ -1500,12 +1600,28 @@ export function useNutritionTargets(): {
       // the column exists (0139) must still paint the base targets, so a
       // failure there keeps whatever fuel days we had instead of taking the
       // targets with it.
-      const [{ data }, fuelRes] = await Promise.all([
+      // The history the same way: its own read, so a build ahead of 0150 only
+      // loses the past-day goals, never today's.
+      const [{ data }, fuelRes, historyRes, dayRes] = await Promise.all([
         clerkId
           ? supabase.from('user_profiles').select(cols).eq('clerk_user_id', clerkId).maybeSingle()
           : supabase.from('user_profiles').select(cols).limit(1).maybeSingle(),
         clerkId
           ? supabase.from('user_profiles').select('calorie_day_boosts').eq('clerk_user_id', clerkId).maybeSingle()
+          : Promise.resolve(null),
+        clerkId
+          ? supabase.from('user_target_history')
+            .select('effective_from, kcal, protein_g, carb_g, fat_g, calorie_day_boosts')
+            .eq('user_id', clerkId)
+            .order('effective_from', { ascending: true })
+          : Promise.resolve(null),
+        // One-day goals from the last 90 days: far enough back for any day the
+        // app lets you scroll to without paging, and small.
+        clerkId
+          ? supabase.from('user_day_targets')
+            .select('day, kcal, protein_g, carb_g, fat_g')
+            .eq('user_id', clerkId)
+            .gte('day', ymd(new Date(Date.now() - 90 * 86_400_000)))
           : Promise.resolve(null),
       ]);
       if (cancelled || !data) return;
@@ -1524,10 +1640,19 @@ export function useNutritionTargets(): {
       if (fuelRes && !fuelRes.error) {
         nextFuel = normalizeFuelDays((fuelRes.data as { calorie_day_boosts?: unknown } | null)?.calorie_day_boosts);
       }
+      let nextHistory = historyRef.current;
+      if (historyRes && !historyRes.error) nextHistory = (historyRes.data ?? []) as TargetHistoryRow[];
       setTargets(next);
       setIsCustom(nextIsCustom);
       setFuelDays(nextFuel);
-      writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: next, isCustom: nextIsCustom, fuelDays: nextFuel });
+      setHistory(nextHistory);
+      let nextDays = dayTargetsRef.current;
+      if (dayRes && !dayRes.error) nextDays = (dayRes.data ?? []) as DayTargetRow[];
+      setDayTargets(nextDays);
+      writeCache<CachedTargets>('nutritionTargets', clerkId, {
+        targets: next, isCustom: nextIsCustom, fuelDays: nextFuel, history: nextHistory ?? undefined,
+        dayTargets: nextDays,
+      });
     })();
     return () => { cancelled = true; };
   }, [supabase, clerkId, tick]);
@@ -1542,7 +1667,30 @@ export function useNutritionTargets(): {
     }, [reload]),
   );
 
-  return { targets, isCustom, reload, apply, fuelDays, applyFuelDays, targetsOn };
+  return { targets, isCustom, reload, apply, fuelDays, applyFuelDays, targetsOn, todayOverride, applyDayTarget };
+}
+
+/** "Today only": a goal for one local day. The plan and the profile are untouched. */
+export async function saveDayTarget(
+  supabase: Supa,
+  clerkId: string,
+  dayISO: string,
+  t: NutritionTargets,
+): Promise<{ error?: string }> {
+  const { error } = await supabase.from('user_day_targets').upsert({
+    user_id: clerkId, day: dayISO, kcal: t.kcal, protein_g: t.protein, carb_g: t.carb, fat_g: t.fat,
+  }, { onConflict: 'user_id,day' });
+  return error ? { error: error.message } : {};
+}
+
+/** Drop a day's one-day goal, so the day reads the lasting goal again. */
+export async function clearDayTarget(
+  supabase: Supa,
+  clerkId: string,
+  dayISO: string,
+): Promise<{ error?: string }> {
+  const { error } = await supabase.from('user_day_targets').delete().eq('user_id', clerkId).eq('day', dayISO);
+  return error ? { error: error.message } : {};
 }
 
 /** Persist the user's fuel days (an empty list clears them). With `phaseId`
@@ -1828,6 +1976,14 @@ export async function deleteMealEntry(
   return {};
 }
 
+/** Edit the logged snapshot, keeping a meal move in the same row update. */
+export async function updateLoggedEntry(
+  supabase: Supa, entry: LoggedEntry, item: ParsedMealItem, date: Date = getLogDate(),
+): Promise<{ error?: string }> {
+  return persistLoggedEntryEdit(supabase, entry, item, date,
+    (meal, day) => findOrCreateMeal(supabase, meal, day));
+}
+
 /** Rescale a logged entry to a new quantity, scaling grams + the macro snapshot
  *  linearly from the current values (macros are linear in amount). Clamps to a
  *  sane range so a fat-fingered stepper can't write absurd rows. */
@@ -2047,3 +2203,4 @@ export async function logQuickAdd(
   });
   return {};
 }
+

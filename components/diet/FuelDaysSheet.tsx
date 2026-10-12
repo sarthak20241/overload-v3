@@ -23,7 +23,7 @@ import { loadActiveProgram } from '@/lib/programData';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
-  DAY_NAMES, FUEL_DEFAULT, FUEL_MAX, FUEL_MIN, FUEL_STEP, WEEK_ORDER,
+  DAY_NAMES, FUEL_DEFAULT, FUEL_LABEL_MAX, FUEL_MAX, FUEL_MIN, FUEL_STEP, WEEK_ORDER,
   normalizeFuelDays, weekKcal, type FuelDay,
 } from '@/lib/fuelDays';
 
@@ -246,7 +246,7 @@ export function FuelDaysSheet({ open, initial, baseKcal, source, phaseId, onClos
                       placeholderTextColor={C.textMuted}
                       autoCorrect={false}
                       autoCapitalize="sentences"
-                      maxLength={24}
+                      maxLength={FUEL_LABEL_MAX}
                       returnKeyType="done"
                       style={[s.labelInput, { color: C.foreground }]}
                       accessibilityLabel={`What ${DAY_NAMES[dow]} is for`}

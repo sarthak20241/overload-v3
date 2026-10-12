@@ -42,7 +42,7 @@ export const FUEL_MIN = 50;
 export const FUEL_MAX = 1000;
 /** What a newly picked day starts at. */
 export const FUEL_DEFAULT = 300;
-const MAX_LABEL = 24;
+export const FUEL_LABEL_MAX = 24;
 
 /** Monday first: the order people read a week in. */
 export const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
@@ -68,7 +68,7 @@ export function normalizeFuelDays(v: unknown): FuelDay[] {
     const snapped = Math.round(kcal / FUEL_STEP) * FUEL_STEP;
     if (snapped < FUEL_MIN) continue;
     const day: FuelDay = { dow, kcal: Math.min(FUEL_MAX, snapped) };
-    const label = typeof r.label === 'string' ? r.label.replace(/\s+/g, ' ').trim().slice(0, MAX_LABEL) : '';
+    const label = typeof r.label === 'string' ? r.label.replace(/\s+/g, ' ').trim().slice(0, FUEL_LABEL_MAX) : '';
     if (label) day.label = label;
     byDow.set(dow, day);
   }

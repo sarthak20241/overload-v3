@@ -331,7 +331,7 @@ function rowFor(mealId: string, name: string): AutoLogEntryRow {
     meal_id: mealId, food_id: null, food_name: name, quantity: 1, serving_unit: "serving",
     grams_logged: 100, kcal: 100, protein_g: 5, carb_g: 10, fat_g: 3, fiber_g: null,
     sugar_g: null, sat_fat_g: null, sodium_mg: null, position: 0, logged_via: "ai_auto",
-    source: "estimate", client_id: CID,
+    source: "estimate", client_id: CID, tier: null,
   };
 }
 
@@ -345,4 +345,20 @@ Deno.test("write: a line with no known weight is stored as null grams, never 0",
   ]));
   assert("logged" in res);
   assertEquals(store.entries.map((e) => e.grams_logged), [null, 48]);
+});
+
+Deno.test("write: each line records the tier whose numbers it carries (0149)", async () => {
+  // The trigger that stamps client-written lines cannot see auto-logged ones:
+  // they land before the parse's trace. A line answered from the user's memory
+  // keeps the tier of the entry it came from, not the tier this parse ran in.
+  const store = new FakeStore();
+  const res = await writeAutoLog(store, {
+    ...writeArgs([
+      line("oats", { meal_type: "snack" }),
+      line("paneer", { meal_type: "snack", numbers_tier: "precise" }),
+    ]),
+    tier: "fast",
+  });
+  assert("logged" in res);
+  assertEquals(store.entries.map((e) => e.tier), ["fast", "precise"]);
 });

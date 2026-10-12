@@ -40,7 +40,8 @@ import { useTheme } from '@/hooks/useTheme';
 import { Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/constants/theme';
 import { sectionsOfItems, type ParsedMeal, type ParsedMealItem } from '@/lib/dietData';
 import type { MealType } from '@/lib/foods';
-import { formatServing } from '@/lib/foods';
+import { formatServing, formatMacroGrams } from '@/lib/foods';
+import { optionAt, swapLabel } from '@/lib/variantSwap';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 /** One more state for "Just log it": `sent` (the stream dropped after the
@@ -110,6 +111,8 @@ interface Props {
   onEditItem?: (index: number) => void;
   /** Remove a single line from the card before adding. */
   onRemoveItem?: (index: number) => void;
+  /** Swap a line to the k-th variant the user also logs (lib/variantSwap). */
+  onSwapItem?: (index: number, option: number) => void;
   onAdd?: () => void;
   onSave?: () => void;                        // save this parse as a meal/recipe
   onRetry?: () => void;
@@ -173,7 +176,7 @@ function provenance(source: ParsedMealItem['source']): string | null {
 export function ParsedMealCard({
   state, streamingRows, rawText, maxHeight, meal, mealType, message, adding, saved, notice, proposalLabel,
   checkingIndex, onCheckItem,
-  onMealTypeChange, onMoveGroup, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onAdd, onSave, onRetry, onDismiss,
+  onMealTypeChange, onMoveGroup, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onSwapItem, onAdd, onSave, onRetry, onDismiss,
   minimized, onToggleMinimize,
   autoLogging, statusLabel,
 }: Props) {
@@ -210,7 +213,11 @@ export function ParsedMealCard({
   const renderRow = (it: ParsedMealItem, i: number, divider: boolean) => {
     // A saved meal's own rows are the user's numbers from My Meals, not an
     // edit: "edited" on them read as if something had been changed.
-    const prov = it.saved_meal ? 'saved meal' : provenance(it.source);
+    // A line with variants to swap to was answered from the user's own log.
+    // As served it is the one they log most (userFoodMemory.decideMemory);
+    // after a swap it is one they log less.
+    const options = it.alternatives ?? [];
+    const prov = it.saved_meal ? 'saved meal' : swapLabel(it) ?? provenance(it.source);
     return (
       <Pressable
         key={i}
@@ -257,17 +264,38 @@ export function ParsedMealCard({
         </View>
         <View style={s.macros}>
           <Text style={[s.macroNum, { color: C.foreground }]}>{r0(it.kcal)} cal</Text>
-          <Text style={[s.macroNum, { color: C.macro.protein }]}>{r0(it.protein_g)}g P</Text>
-          <Text style={[s.macroNum, { color: C.macro.carbs }]}>{r0(it.carb_g)}g C</Text>
-          <Text style={[s.macroNum, { color: C.macro.fat }]}>{r0(it.fat_g)}g F</Text>
+          <Text style={[s.macroNum, { color: C.macro.protein }]}>{formatMacroGrams(it.protein_g)}g P</Text>
+          <Text style={[s.macroNum, { color: C.macro.carbs }]}>{formatMacroGrams(it.carb_g)}g C</Text>
+          <Text style={[s.macroNum, { color: C.macro.fat }]}>{formatMacroGrams(it.fat_g)}g F</Text>
         </View>
         {it.assumption && <Text style={s.assumption}>{it.assumption}</Text>}
+        {/* The other variant the user logs, one tap away. Its numbers came
+            with the parse, so the swap is instant and offline. */}
+        {onSwapItem && options.length > 0 && (
+          <View style={s.swapRow}>
+            <Text style={s.swapLead}>Not this one?</Text>
+            {options.map((o, k) => (
+              <Pressable
+                key={`${o.food_name}-${k}`}
+                onPress={(e) => { e.stopPropagation(); onSwapItem(i, k); }}
+                hitSlop={8}
+                style={({ pressed }) => [s.swapChip, pressed && s.itemPressed]}
+                accessibilityRole="button"
+                accessibilityLabel={`Swap to ${o.food_name}, ${r0(optionAt(o, it.grams).kcal)} calories`}
+              >
+                <Text style={s.swapTxt} numberOfLines={1}>
+                  {o.food_name} · {r0(optionAt(o, it.grams).kcal)} cal
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
         {/* I14. Deliberately a BUTTON, not a tappable sentence: nobody
             knows to tap prose, and the row itself already opens the
             editor, so a tap inside it would be ambiguous. Its own hit
             area, its own label, and it turns into the progress
             indicator in place rather than moving the card around. */}
-        {onCheckItem && uncertain(it) && (
+        {onCheckItem && uncertain(it) && options.length === 0 && (
           <Pressable
             onPress={(e) => { e.stopPropagation(); onCheckItem(i); }}
             disabled={checkingIndex !== null && checkingIndex !== undefined}
@@ -410,9 +438,9 @@ export function ParsedMealCard({
           {items.length > 1 && (
             <View style={s.totals}>
               <Text style={[s.totalNum, { color: C.foreground }]}>{r0(sum.kcal)}</Text>
-              <Text style={[s.totalNum, { color: C.macro.protein }]}>{r0(sum.p)}g P</Text>
-              <Text style={[s.totalNum, { color: C.macro.carbs }]}>{r0(sum.c)}g C</Text>
-              <Text style={[s.totalNum, { color: C.macro.fat }]}>{r0(sum.f)}g F</Text>
+              <Text style={[s.totalNum, { color: C.macro.protein }]}>{formatMacroGrams(sum.p)}g P</Text>
+              <Text style={[s.totalNum, { color: C.macro.carbs }]}>{formatMacroGrams(sum.c)}g C</Text>
+              <Text style={[s.totalNum, { color: C.macro.fat }]}>{formatMacroGrams(sum.f)}g F</Text>
               <Text style={s.totalCount}>{items.length} items</Text>
             </View>
           )}
@@ -763,6 +791,13 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
       borderRadius: Radius.full, borderWidth: 1, borderColor: C.borderSubtle,
     },
     checkTxt: { fontSize: FontSize.xs, color: C.textSecondary, fontWeight: '600' },
+    swapRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 6 },
+    swapLead: { fontSize: FontSize.xs, color: C.textSecondary },
+    swapChip: {
+      paddingVertical: 5, paddingHorizontal: 10, maxWidth: '100%',
+      borderRadius: Radius.full, borderWidth: 1, borderColor: C.borderSubtle,
+    },
+    swapTxt: { fontSize: FontSize.xs, color: C.foreground, fontWeight: FontWeight.medium },
 
     sectionRow: {
       flexDirection: 'row', gap: 6, marginTop: Spacing.md,

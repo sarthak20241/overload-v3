@@ -2,6 +2,21 @@
 
 Status: approved 2026-06-15. Direction locked, building in phases.
 
+Update 2026-09-19: P2 (memory) is BUILT, with these differences from the text
+below. Migration is 0127 (not 0040/0041), applied live. The tools are
+`remember_fact` and `forget_fact`, exposed in EVERY conversational mode (chat,
+refine, discuss, program, live_workout), not chat only: the user asked that
+refine and program sessions save decisions too. Both RPCs are SECURITY DEFINER
+with a self-filter; the table grants authenticated SELECT only. Categories
+gained `decision` (a change made with the coach, with its reason and date).
+Alongside memory, user_context now carries `recent_plan_changes` (plan_changes,
+0123, formatted one line each), `recent_coach_cards` (drona_cards) and
+`body_measurements`, and the static prompt carries `<app_features>` plus an
+on-demand `coach_get_app_guide` tool (see ai-coach/appGuide.ts) after Drona
+told a user the app could not track body measurements. The editable "What Coach
+knows about you" screen is NOT built yet; in-chat forget_fact covers correction.
+P1 (cloud history, 0042) is still unapplied on the live project.
+
 Three gaps, one root cause: Coach Drona is stateless on both ends. The chat lives in a
 React `useState` that dies when the sheet unmounts, the edge function persists nothing
 user-facing, and the only thing the coach "knows" is structured training data. This plan

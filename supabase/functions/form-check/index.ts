@@ -40,12 +40,14 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const CLERK_ISSUER = Deno.env.get("CLERK_ISSUER");
 if (!CLERK_ISSUER) throw new Error("CLERK_ISSUER is required");
 
-const MODEL = "claude-haiku-4-5";
-const ANALYZE_MAX_TOKENS = 700;
-const AUTHOR_MAX_TOKENS = 1600;
+const MODEL = "claude-haiku-5-5";
+// 700 / 1600 under Haiku 4.5; ~30% up for Haiku 5.5's tokenizer. Both calls
+// force their tool, which on Haiku 5.5 also means no thinking spends the cap.
+const ANALYZE_MAX_TOKENS = 910;
+const AUTHOR_MAX_TOKENS = 2100;
 // Overridable via the FORM_CHECK_TIMEOUT_MS Edge Function secret. Named apart
 // from the coach's ANTHROPIC_TIMEOUT_MS on purpose: these are different calls
-// with different budgets (haiku + 700/1600 tokens here), and one secret
+// with different budgets (haiku + 910/2100 tokens here), and one secret
 // silently moving both is how a form-check tweak breaks program chat.
 const ANTHROPIC_TIMEOUT_MS = envInt("FORM_CHECK_TIMEOUT_MS", 30000);
 
@@ -129,6 +131,9 @@ function terminalInput(
   data: Record<string, any>,
   toolName: string,
 ): Record<string, unknown> | null {
+  // A tool call cut off at the cap parses to a partial object; treat it as
+  // no answer rather than act on half a note or half a rule spec.
+  if (data.stop_reason === "max_tokens") return null;
   const blocks: Array<Record<string, any>> = data.content ?? [];
   const terminal = blocks.find((b) => b.type === "tool_use" && b.name === toolName);
   if (!terminal) return null;

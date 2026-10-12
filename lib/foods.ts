@@ -214,6 +214,11 @@ export function resolveBaseAmount(food: FoodDef, unit: string, quantity: number)
   return null;
 }
 
+/** Display macro grams to one decimal, without padding whole numbers. */
+export function formatMacroGrams(grams: number): string {
+  return String(Math.round(grams * 10) / 10);
+}
+
 /**
  * How a logged portion reads under a food name.
  *

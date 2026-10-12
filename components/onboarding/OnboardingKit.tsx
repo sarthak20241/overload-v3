@@ -143,6 +143,7 @@ export function OptionCard({
   selected,
   onPress,
   index,
+  multiple = false,
 }: {
   icon: keyof typeof Feather.glyphMap;
   title: string;
@@ -150,6 +151,7 @@ export function OptionCard({
   selected: boolean;
   onPress: () => void;
   index: number;
+  multiple?: boolean;
 }) {
   const { C } = useTheme();
   return (
@@ -166,9 +168,9 @@ export function OptionCard({
             borderColor: selected ? C.primaryBorder : 'transparent',
           },
         ]}
-        accessibilityRole="button"
+        accessibilityRole={multiple ? 'checkbox' : 'button'}
         accessibilityLabel={title}
-        accessibilityState={{ selected }}
+        accessibilityState={multiple ? { checked: selected } : { selected }}
       >
         <View style={[k.optionIcon, { backgroundColor: C.muted }]}>
           <Feather name={icon} size={IconSize.sm} color={selected ? C.accentText : C.textMuted} />
@@ -180,12 +182,15 @@ export function OptionCard({
         <View
           style={[
             k.radio,
+            multiple && { borderRadius: Radius.sm },
             selected
               ? { backgroundColor: C.accentText, borderColor: C.accentText }
               : { borderColor: C.border },
           ]}
         >
-          {selected && <View style={[k.radioDot, { backgroundColor: C.background }]} />}
+          {selected && (multiple
+            ? <Feather name="check" size={IconSize.xs} color={C.background} />
+            : <View style={[k.radioDot, { backgroundColor: C.background }]} />)}
         </View>
       </PressableScale>
     </Animated.View>

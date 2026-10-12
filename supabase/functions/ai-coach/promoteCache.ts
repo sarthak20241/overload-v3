@@ -64,12 +64,45 @@ import { nearWord } from "./textMatch.ts";
 // is driven from Node by the eval harness), so this costs nothing at load.
 import { implausiblePer100 } from "./parseMeal.ts";
 import {
+  hostOf,
   isFresh,
+  kcalAgrees,
   meetsVerificationBar,
   type Per100,
   type SourceReading,
   VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
+
+/**
+ * Sites whose page may still answer one person's meal but can never be one of
+ * the two sources that publish a row to the shared catalog. Matched on the host
+ * and every subdomain of it.
+ *
+ * Three kinds, each seen in rows this job actually published (2026-09-27):
+ *   - marketplaces where the SELLER writes the listing: spice.alibaba.com was
+ *     the second source for "sweet potato".
+ *   - AI calorie apps, whose pages are model estimates or copies of another
+ *     database, so they add no second opinion: nutriscan.app next to a
+ *     fatsecret.co.in page for Parle, nutrola.app for "Cornflakes".
+ *   - databases anyone can type a food into: carbmanager.com and prospre.io
+ *     were BOTH sources for "habanero salsa dip".
+ *
+ * A short list on purpose. Every host here is a page this job stops trusting,
+ * and the cache still serves Precise from it at full quality; only publishing
+ * to everyone needs the stronger evidence.
+ */
+export const WEAK_PROMOTION_HOSTS = [
+  "alibaba.com", "aliexpress.com", "indiamart.com", "made-in-china.com",
+  "nutriscan.app", "nutrola.app", "snapcalorie.com",
+  "myfitnesspal.com", "carbmanager.com", "prospre.io",
+];
+
+/** The weak host this reading came from, or null when it may count. */
+export function weakHost(r: SourceReading): string | null {
+  const host = hostOf(r.ref);
+  if (!host) return null;
+  return WEAK_PROMOTION_HOSTS.find((h) => host === h || host.endsWith(`.${h}`)) ? host : null;
+}
 
 /** How far kcal may sit from 4P + 4C + 9F and still be a real label.
  *  Same 30% as checkAtwater in parseMeal.ts, and generous for the same measured
@@ -134,7 +167,13 @@ export type SkipReason =
   | "bad-name"
   | "catalog-conflict"
   | "already-current"
-  | "promoted-row-missing";
+  | "promoted-row-missing"
+  /** Linked to a catalog row we did not publish (USDA, OFF, curated...). Its
+   *  numbers are not ours to refresh. */
+  | "linked"
+  /** Jev could not say whether the catalog already holds this food (down, no
+   *  key, or unsure what kind of food it is). Not publishing is the safe side. */
+  | "match-unavailable";
 
 export type PromotionDecision =
   /** Insert a new global catalog row. */
@@ -318,12 +357,14 @@ export function promotionDecision(
     return { action: "skip", reason: "expired" };
   }
 
-  const bar = meetsVerificationBar(cand.kcal, cand.evidence);
+  const weak = [...new Set((cand.evidence ?? []).map(weakHost).filter((h): h is string => !!h))];
+  const bar = meetsVerificationBar(cand.kcal, (cand.evidence ?? []).filter((r) => !weakHost(r)));
   if (!bar.verified) {
+    const found = bar.agreeing.length ? `only ${bar.agreeing.join(", ")}` : "no independent source";
     return {
       action: "skip",
       reason: "unverified",
-      detail: bar.agreeing.length ? `only ${bar.agreeing.join(", ")}` : "no independent source",
+      detail: weak.length ? `${found} (not counted: ${weak.join(", ")})` : found,
     };
   }
 
@@ -345,9 +386,16 @@ export function promotionDecision(
       // human removed it for some reason.
       return { action: "skip", reason: "promoted-row-missing" };
     }
+    // A link to someone else's row. Deciding "refresh" here only ever wrote
+    // nothing (refreshFood touches web_verified rows alone) while counting a
+    // refresh every night.
+    if (published.source !== "web_verified") return { action: "skip", reason: "linked" };
     const stale = !published.last_verified_at ||
       new Date(published.last_verified_at).getTime() < new Date(cand.last_verified_at).getTime();
-    if (stale && macrosMoved(published, cand)) {
+    // A brand found since publishing (brandFromName) is worth a write on its
+    // own: an unbranded packaged row reads as a plain food to every search.
+    const brandFound = !published.brand && !!cand.brand;
+    if ((stale && macrosMoved(published, cand)) || brandFound) {
       return { action: "refresh", food_id: published.id, agreeing: bar.agreeing };
     }
     return { action: "skip", reason: "already-current" };
@@ -369,4 +417,119 @@ export function promotionDecision(
   }
 
   return { action: "promote", agreeing: bar.agreeing };
+}
+
+// ── brand from the name ─────────────────────────────────────────────────────
+
+/** Brand spans are at most this many words ("milky mist", "country delight"). */
+const MAX_BRAND_WORDS = 3;
+
+export const foldWords = (s: string) =>
+  (s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^A-Za-z0-9]+/).filter(Boolean);
+
+/**
+ * The brand hiding in a food's name, when the row has none: "Pintola rice cake"
+ * and "Kesar pista oats yogabar" reached the cache with brand null because the
+ * extract step left the brand inside the name. Published that way, the row reads
+ * as a plain food to every later search and match (a plain line may take an
+ * unbranded row), which is how a packaged product ends up answering "rice cake".
+ *
+ * `brands`: every brand the catalog and the cache already know, lowercased and
+ * folded to single-spaced words. `foodWords`: every word in a lab or curated food
+ * name (USDA, CoFID, Ciqual, curated). A span counts only if it is a known brand
+ * AND at least one of its words is not a food word, because OFF carries junk
+ * brands like "raw" and "dark", and "raw chicken breast" has no brand.
+ *
+ * Earliest span wins, then the longest ("Sunfeast Dark Fantasy" is Sunfeast).
+ * Returned in the name's own spelling, capitalised when it was all lowercase.
+ * Null when nothing qualifies: an unknown brand stays unknown rather than guessed.
+ */
+export function brandFromName(
+  name: string,
+  brands: ReadonlySet<string>,
+  foodWords: ReadonlySet<string>,
+): string | null {
+  const words = foldWords(name);
+  const lower = words.map((w) => w.toLowerCase());
+  for (let start = 0; start < words.length; start++) {
+    for (let len = Math.min(MAX_BRAND_WORDS, words.length - start); len >= 1; len--) {
+      // The whole name is never its own brand: something must be left to eat.
+      if (len === words.length) continue;
+      const span = lower.slice(start, start + len);
+      if (span.join(" ").length < 3) continue;
+      if (!brands.has(span.join(" "))) continue;
+      if (span.every((w) => foodWords.has(w))) continue;
+      const original = words.slice(start, start + len);
+      return original
+        .map((w) => (w === w.toLowerCase() ? w[0].toUpperCase() + w.slice(1) : w))
+        .join(" ");
+    }
+  }
+  return null;
+}
+
+// ── "is it already in the catalog?", judged by Jev ─────────────────────────
+
+/**
+ * What the Jev match (ourSources.ts, the same questions and gate Precise uses
+ * live) said about this row against the catalog.
+ *
+ * Why Jev and not only findDuplicate: names alone published "Banana", "eggs" and
+ * "almonds" beside the USDA rows that already answer them, because "eggs" and
+ * "Egg, whole, raw, fresh" share too few words for a name test to call them one
+ * food. And "eggs", "whole eggs" and "boiled eggs" went in as three rows.
+ */
+export type CatalogMatch =
+  /** Jev and the gate picked this existing row as the same food. */
+  | { status: "matched"; row: { id: string; name: string; source: string; kcal: number } }
+  /** Jev looked and no row is this food. */
+  | { status: "none" }
+  /** No answer we can trust (Jev down, no key, or unsure what kind of food). */
+  | { status: "unavailable"; detail: string };
+
+/**
+ * Only a "promote" is changed: a matched row with the same energy becomes a link,
+ * a matched row with different energy is a conflict for a human, and no answer
+ * means no write. Everything else passes through untouched.
+ */
+export function applyCatalogMatch(
+  decision: PromotionDecision,
+  cand: { kcal: number },
+  match: CatalogMatch,
+): PromotionDecision {
+  if (decision.action !== "promote") return decision;
+  if (match.status === "unavailable") {
+    return { action: "skip", reason: "match-unavailable", detail: match.detail };
+  }
+  if (match.status === "none") return decision;
+  const r = match.row;
+  if (kcalAgrees(cand.kcal, r.kcal)) return { action: "link", food_id: r.id };
+  return {
+    action: "skip",
+    reason: "catalog-conflict",
+    detail: `${r.name} (${r.source}) has ${r.kcal} kcal, we have ${cand.kcal}`,
+  };
+}
+
+/**
+ * Whether a "no match" from matchOurSources means Jev LOOKED and found no row
+ * for this food, or that we simply have no answer. An allow-list on purpose:
+ * any reason not named here, including one added later, publishes nothing.
+ *
+ *   none          Jev chose "none of these"
+ *   below_floor   no row scored as the same food with enough confidence
+ *   no_candidates the catalog search found nothing to compare
+ *   brand, kind   the best row is a different brand, or the wrong kind of row
+ *                 (a branded pack for a plain food), so it is not this food
+ *
+ * Everything else is unclear: no_answer (a Jev call failed or timed out,
+ * including the tie-break's), contested (two rows with different numbers both
+ * look right), uncorroborated (an Open Food Facts row looks like this food but
+ * nothing backs its numbers), unknown_pick, jev_*.
+ */
+const LOOKED_AND_FOUND_NOTHING = new Set(["none", "below_floor", "no_candidates", "brand", "kind"]);
+export function noMatchMeans(reason: string | null | undefined): CatalogMatch {
+  return reason && LOOKED_AND_FOUND_NOTHING.has(reason)
+    ? { status: "none" }
+    : { status: "unavailable", detail: reason || "no reason given" };
 }

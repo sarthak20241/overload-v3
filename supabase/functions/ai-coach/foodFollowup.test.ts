@@ -75,3 +75,19 @@ Deno.test("a follow-up that never ran says so", () => {
   assertEquals(f.error, "no_api_key");
   assertEquals(f.http_status, null);
 });
+
+Deno.test("reply: reject the exact false logging confirmation from the incident", () => {
+  const text = "Got it - I've logged your breakfast with 1 scoop ON mango whey and 6g chia seeds, plus the 150g apple, 2 whole eggs, and cucumber for snacks. You're locked in.";
+  const { reply, followup } = readReplyResult(ok([{ type: "text", text }]), 981);
+  assertEquals(reply, "I haven't logged anything from that reply. Please send the full meal with those details.");
+  assertEquals(followup.raw_text, text);
+  assertEquals(followup.shown_text, reply);
+  assertEquals(followup.ok, false);
+  assertEquals(followup.error, "unsupported_action_claim");
+});
+
+Deno.test("reply: honest capability statements and diary facts remain answers", () => {
+  for (const text of ["I can log food here.", "I haven't logged anything yet.", "You logged two eggs yesterday."]) {
+    assertEquals(readReplyResult(ok([{ type: "text", text }]), 1).reply, text);
+  }
+});

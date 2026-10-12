@@ -14,9 +14,9 @@ Deno.test("resolveParseTier: a first shot runs the tier asked for", () => {
   assertEquals(resolveParseTier(undefined, false), "thorough");
 });
 
-Deno.test("resolveParseTier: a correction runs Thorough whatever was asked for", () => {
+Deno.test("resolveParseTier: follow-ups retain Precise and use Thorough for Quick", () => {
   assertEquals(resolveParseTier("fast", true), "thorough");
-  assertEquals(resolveParseTier("super", true), "thorough");
+  assertEquals(resolveParseTier("super", true), "precise");
   assertEquals(resolveParseTier(null, true), "thorough");
 });
 

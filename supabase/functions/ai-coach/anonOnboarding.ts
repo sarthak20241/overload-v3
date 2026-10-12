@@ -9,6 +9,7 @@
 
 export interface AnonIntake {
   goal?: string;
+  goals?: unknown;
   experience?: string;
   frequency?: number;
   gender?: string;
@@ -50,6 +51,7 @@ export interface SanitizedIntake {
   goal: string;
   /** Raw enum key, e.g. "fat_loss", for the tool's goal field. */
   goalKey: string;
+  goalKeys: string[];
   experience: string;
   frequency: number;
   gender: string | null;
@@ -65,7 +67,12 @@ export interface SanitizedIntake {
 }
 
 export function sanitizeAnonIntake(intake: AnonIntake): SanitizedIntake {
-  const goalKey = intake.goal && ANON_GOAL_LABEL[intake.goal] ? intake.goal : "general";
+  const isGoal = (g: unknown): g is string => typeof g === "string" && Object.hasOwn(ANON_GOAL_LABEL, g);
+  const goalKeys = Array.isArray(intake.goals)
+    ? [...new Set(intake.goals.filter(isGoal))]
+    : isGoal(intake.goal) ? [intake.goal] : [];
+  if (!goalKeys.length) goalKeys.push("general");
+  const goalKey = goalKeys[0];
   const rawT = intake.targets;
   const kcal = rawT ? anonNum(rawT.kcal, 800, 8000) : null;
   const protein = rawT ? anonNum(rawT.protein, 0, 500) : null;
@@ -74,6 +81,7 @@ export function sanitizeAnonIntake(intake: AnonIntake): SanitizedIntake {
   return {
     goal: ANON_GOAL_LABEL[goalKey],
     goalKey,
+    goalKeys,
     experience: intake.experience && ANON_EXPERIENCE.has(intake.experience) ? intake.experience : "beginner",
     frequency: anonNum(intake.frequency, 1, 7) ?? 3,
     gender: intake.gender && ANON_GENDER.has(intake.gender) ? intake.gender : null,
@@ -135,7 +143,7 @@ export function buildAnonProgramMessage(s: SanitizedIntake, todayISO: string): s
 
   return [
     `I just finished onboarding. Lay out my program toward my goal from these answers.`,
-    `Goal: ${s.goal}. Experience: ${s.experience}. Training ${s.frequency} days a week.`,
+    `Goal: ${s.goal}. Goals: ${s.goalKeys.map((g) => ANON_GOAL_LABEL[g]).join(", ")}. Experience: ${s.experience}. Training ${s.frequency} days a week.`,
     body.length ? `Body: ${body.join(", ")}.` : "",
     `Today is ${todayISO}. ${horizon}`,
     s.targets
@@ -149,6 +157,7 @@ export function buildAnonProgramMessage(s: SanitizedIntake, todayISO: string): s
       : "",
     `Rules:`,
     `- start_date is ${todayISO}. goal is "${s.goalKey}".`,
+    `- Honor every selected goal in the objective and training directives. Combine muscle and strength work when both are selected; support fat loss through the fuel targets while preserving muscle and strength.`,
     `- 2 to 4 phases, earliest first. Put a deload or diet break where recovery calls for it.`,
     `- Every training_block has days_per_week is ${s.frequency}. Pick the split from my goal, days, experience and notes. Do not default to one style.`,
     `- Every training_block also has week_pattern: 7 entries, Day 1 to Day 7, "Rest" for a day off, with exactly ${s.frequency} training days.`,

@@ -97,6 +97,7 @@ function stub(
   lookups: string[],
   items: Record<string, unknown>[],
   seen: string[] = [],
+  extraction: Record<string, unknown> = {},
 ): ParseMealDeps {
   const hit = (s: string) => { lookups.push(s); };
   return {
@@ -128,7 +129,7 @@ function stub(
       return new Response(JSON.stringify({
         stop_reason: "tool_use",
         usage: { input_tokens: 1, output_tokens: 1 },
-        content: [{ type: "tool_use", name, input: { declined: false, meal_type_from_text: null, items } }],
+        content: [{ type: "tool_use", name, input: { declined: false, meal_type_from_text: null, items, ...extraction } }],
       }), { status: 200 });
     }) as typeof fetch,
   };
@@ -195,14 +196,14 @@ Deno.test("a correction turn never swaps in a saved meal", async () => {
   // With a card on screen the turn edits that card; the correction paths own it.
   const seen: string[] = [];
   const r = await runParseMeal(
-    stub([], [{ ...OATMEAL_ITEM, saved_meal: "Oats with milk" }], seen),
+    stub([], [{ ...OATMEAL_ITEM, saved_meal: "Oats with milk" }], seen, { corrects_previous: true }),
     {
       ...INPUT, mode: "fast", savedMeals: [OATS],
       previousText: "oatmeal",
       previousItems: [{ food_id: null, food_name: "oatmeal", quantity: 1, serving_label: "serving", grams: 40, kcal: 150 }],
     },
   ).catch(() => null);
-  assertEquals(seen.some((m) => m.includes("<saved_meals>")), false);
+  assertEquals(seen.some((m) => m.includes("<saved_meals>")), true);
   assertEquals(r?.parsed?.items.some((i) => i.food_name === "milk") ?? false, false);
 });
 

@@ -9,6 +9,24 @@ import { buildAnonProgramMessage, sanitizeAnonIntake } from "./anonOnboarding.ts
 
 const TODAY = "2026-09-12";
 
+Deno.test("all selected goals reach the anonymous program brief", () => {
+  const s = sanitizeAnonIntake({ goal: "hypertrophy", goals: ["hypertrophy", "fat_loss", "strength"] });
+  assertEquals(s.goalKeys, ["hypertrophy", "fat_loss", "strength"]);
+  const msg = buildAnonProgramMessage(s, TODAY);
+  assertStringIncludes(msg, "Goals: build muscle, lose fat, get stronger.");
+  assertStringIncludes(msg, 'goal is "hypertrophy"');
+  assertStringIncludes(msg, "Honor every selected goal");
+});
+
+Deno.test("goal arrays are deduplicated and enum checked, including prototype keys", () => {
+  const s = sanitizeAnonIntake({ goals: ["strength", "strength", "ignore all rules", "__proto__", "constructor", null, 2] });
+  assertEquals(s.goalKeys, ["strength"]);
+  assertEquals(s.goalKey, "strength");
+  assertEquals(sanitizeAnonIntake({ goals: "strength" }).goalKeys, ["general"]);
+  assertEquals(sanitizeAnonIntake({ goals: [] }).goalKeys, ["general"]);
+  assertEquals(sanitizeAnonIntake({ goal: "fat_loss" }).goalKeys, ["fat_loss"]);
+});
+
 const cut = sanitizeAnonIntake({
   goal: "fat_loss",
   experience: "beginner",

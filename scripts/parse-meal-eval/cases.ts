@@ -204,7 +204,9 @@ export const CASES: EvalCase[] = [
     expect: {
       minItems: 2, maxItems: 2,
       items: [
-        { nameIncludes: "milk", gramsBetween: [500, 500] },
+        // Milk is ~1.03 g/ml, so 500 ml is ~515 g. Either 1:1 or the real
+        // density is a correct log; the gap is ~3%.
+        { nameIncludes: "milk", gramsBetween: [500, 525] },
         { nameIncludes: "whey", gramsBetween: [25, 40] },
       ],
     },
@@ -479,7 +481,8 @@ export const CASES: EvalCase[] = [
     id: "amul-kool",
     text: "1 bottle amul kool 200ml",
     hour: 15,
-    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "kool", gramsBetween: [200, 200] }] },
+    // 1.00 to 1.05 g/ml: a milk drink logged at its real density is not wrong.
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "kool", gramsBetween: [200, 210] }] },
   },
   {
     id: "epigamia-yogurt",
@@ -1270,6 +1273,67 @@ export const CASES: EvalCase[] = [
       // keeps the dish whole. The wrong rows this case exists for are named
       // above; the total only has to catch a part or a dish priced as a meal.
       totalKcalBetween: [300, 1300],
+    },
+  },
+
+  // ── Totals the user writes (owner decision 2026-09-29) ──────────────────
+  // Real messages from one user, held out: no prompt quotes them.
+  {
+    // Logged 905 kcal and 50 g protein in Precise before the fix.
+    id: "user-meal-total",
+    text: "Add roughly 500 cal for dinner having 12g protein rest fats and carbs (i had chicken curry, poha, rice, salad and watermelon)",
+    hour: 23,
+    expect: {
+      // Every food stays its own line, scaled to the user's total.
+      minItems: 4,
+      mealType: "dinner",
+      totalKcalBetween: [495, 505],
+    },
+  },
+  {
+    // A meal total on a correction used to merge the card's foods into one line.
+    id: "user-meal-total-correction",
+    text: "2 boiled eggs, 1 toast and a glass of orange juice for breakfast",
+    followUp: "make the whole meal 400 kcal",
+    expectCorrection: true,
+    hour: 9,
+    expect: {
+      minItems: 3,
+      mealType: "breakfast",
+      totalKcalBetween: [395, 405],
+    },
+  },
+  {
+    // A line total with no weight: nothing read it before the fix.
+    id: "user-line-total-no-weight",
+    text: "Track daliya in lunch (roughly 80 cal, most carbs and rest fat, 1g protein)",
+    hour: 14,
+    expect: {
+      maxItems: 1,
+      items: [{ nameIncludes: "daliya", nameIncludesAny: ["dalia"], kcalBetween: [79, 81], proteinBetween: [0.5, 1.5] }],
+    },
+  },
+  {
+    // Numbers for one food are not a meal total: the other food keeps its own
+    // estimate instead of being squeezed into what is left.
+    id: "user-line-numbers-no-meal-split",
+    text: "2 eggs (140 kcal) and a plate of poha for breakfast",
+    hour: 9,
+    expect: {
+      minItems: 2,
+      items: [{ nameIncludes: "egg", kcalBetween: [139, 141] }, { nameIncludes: "poha", kcalBetween: [150, 700] }],
+    },
+  },
+  {
+    // The fast correction recomputed from the old row: 75 kcal again.
+    id: "user-correction-kcal",
+    text: "145g apple for snacks",
+    followUp: "No, 145g apple should be 90 cals",
+    expectCorrection: true,
+    hour: 17,
+    expect: {
+      maxItems: 1,
+      items: [{ nameIncludes: "apple", kcalBetween: [88, 92] }],
     },
   },
 ];

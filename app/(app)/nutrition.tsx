@@ -16,7 +16,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, Text, ScrollView, Pressable, TextInput, StyleSheet, useWindowDimensions, AppState,
+  View, Text, ScrollView, Pressable, TextInput, StyleSheet, useWindowDimensions, AppState, Keyboard,
   type NativeScrollEvent, type NativeSyntheticEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -36,6 +36,7 @@ import { EntryEditSheet } from '@/components/diet/EntryEditSheet';
 import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
 import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
 import { fuelOn } from '@/lib/fuelDays';
+import { latestLogDay, readLogDayPhrase } from '@/lib/logDay';
 import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
 import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
@@ -47,7 +48,7 @@ import {
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext, sectionsOf,
+  type PendingFoodMeal, parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext, sectionsOf,
   loadNutritionRange, dateFromYmd, listSavedMeals, savedMealAsItems, usePrefetchWeek,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
 } from '@/lib/dietData';
@@ -68,7 +69,8 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import type { MealType } from '@/lib/foods';
-import { formatServing } from '@/lib/foods';
+import { formatServing, formatMacroGrams } from '@/lib/foods';
+import { swapToAlternative } from '@/lib/variantSwap';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
@@ -106,7 +108,7 @@ type ParseFlow =
       // choice. Applying is local, so picking costs no round trip.
       proposal?: { items: ParsedMealItem[]; note: string } | null;
     }
-  | { status: 'declined'; raw: string; message: string }
+  | { status: 'declined'; raw: string; message: string; pendingMeal?: PendingFoodMeal | null }
   // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
   // WRITE, not the whole AI parse (which would burn an API call + could differ).
   // `clientId`/`logDate`: a "Just log it" send that failed in transport. Retry
@@ -208,13 +210,16 @@ const round = (n: number) => Math.round(n);
 export default function NutritionScreen() {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
-  // Which calendar day the diary is showing. Defaults to today; ‹ › + the calendar
-  // move it. Logging/editing on a past day writes to that day (see the sync below).
+  // Which calendar day the diary is showing. Defaults to today; ‹ ›, the week
+  // strip and the calendar move it, back or ahead up to latestLogDay(). Logging
+  // or editing on another day writes to that day (see the sync below).
   const [viewDate, setViewDate] = useState<Date>(() => new Date());
   const [calendarOpen, setCalendarOpen] = useState(false);
   const viewIso = ymd(viewDate);
   const todayIso = ymd(new Date());
   const isToday = viewIso === todayIso;
+  const latestIso = ymd(latestLogDay());
+  const atLatest = viewIso >= latestIso;
   // The strip shows the Sunday-start calendar week containing viewDate, so the
   // columns (S M T W T F S) never shuffle — only the highlight moves. Jumping
   // to another week via the calendar swaps the whole row in place.
@@ -314,7 +319,7 @@ export default function NutritionScreen() {
   // read `targets`, the viewed day's own numbers.
   const {
     targets: baseTargets, isCustom, apply: applyTargets,
-    fuelDays, applyFuelDays, targetsOn,
+    fuelDays, applyFuelDays, targetsOn, todayOverride, applyDayTarget,
   } = useNutritionTargets();
   const targets = targetsOn(viewDate);
   const viewFuel = fuelOn(fuelDays, viewDate.getDay());
@@ -471,12 +476,13 @@ export default function NutritionScreen() {
     ));
   }, [totalsDayIso, totals.kcal]);
 
-  // Step the diary a day back/forward; never past today.
+  // Step the diary a day back/forward; never past the last day a log can
+  // land on (a few weeks ahead, for planning).
   const stepDay = useCallback((delta: number) => {
     track('nutrition_day_changed', { direction: delta > 0 ? 'forward' : 'back' });
     setViewDate((d) => {
       const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + delta);
-      return ymd(next) > ymd(new Date()) ? d : next;
+      return ymd(next) > ymd(latestLogDay()) ? d : next;
     });
   }, []);
 
@@ -487,12 +493,26 @@ export default function NutritionScreen() {
   const runParse = useCallback(async (raw: string, retry?: { clientId: string; logDate: string }) => {
     const t = raw.trim();
     if (!t || !supabase) return;
+    // "2 eggs for tomorrow": the message names its own day. Go there first, so
+    // the diary on screen, the card's Add and a "Just log it" write all land on
+    // it, and send the parser the food without the date. A retry keeps the day
+    // it was first sent for and only needs the same words taken out.
+    const named = readLogDayPhrase(t);
+    const sendText = named ? named.rest : t;
+    const logDay = !retry && named ? named.date : viewDate;
+    if (!retry && named && ymd(named.date) !== ymd(viewDate)) {
+      track('nutrition_day_changed', { direction: named.date > viewDate ? 'forward' : 'back', source: 'text' });
+      setViewDate(named.date);
+    }
+    // Only a day ("for tomorrow"): moving there was the whole ask.
+    if (!sendText) return;
     setSavedReview(false);
     setCardMinimized(false);
     // A meal still under review is context for the next line: "make it a small
     // one" should correct THAT samosa, not log a second one. Captured before we
     // switch to 'analysing' (which drops the reviewed meal from flow).
     const prevReview = flowRef.current.status === 'review' ? flowRef.current : null;
+    const pendingMeal = !retry && flowRef.current.status === 'declined' ? flowRef.current.pendingMeal : null;
     // A RETRY carries no context, deliberately. It re-sends one specific past
     // send, so the meal on screen is not what it is about: passing `pending`
     // here made the retry text arrive as a CORRECTION of an unrelated reviewed
@@ -520,7 +540,7 @@ export default function NutritionScreen() {
     // It cleared `pending` above, so the two rules do not fight.
     const auto = retry
       ?? (!pending && autoLogRef.current
-        ? { clientId: newAutoLogClientId(), logDate: ymd(viewDate) }
+        ? { clientId: newAutoLogClientId(), logDate: ymd(logDay) }
         : null);
     if (auto) {
       // Pending BEFORE the request leaves: if the app dies mid-stream, the next
@@ -530,7 +550,7 @@ export default function NutritionScreen() {
       setLostSends((l) => l.filter((x) => x.client_id !== auto.clientId));
     }
     setFlow({ status: 'analysing', raw: t, auto: !!auto });
-    const turns = turnsRef.current.slice();
+    const turns = retry ? [] : turnsRef.current.slice();
     pushTurn('user', t);
     // The card on screen is a better hint than the wall clock. "and a dosa"
     // added to a meal the user has placed in Dinner must join THAT meal, and
@@ -539,9 +559,10 @@ export default function NutritionScreen() {
     // the only thing standing between it and the hour. Falls back to the clock
     // for a first-shot log, which is what it was always for.
     const args = {
-      text: t,
+      text: sendText,
       mealHint: prevReview?.mealType ?? mealForNow(),
       previous: pending,
+      pendingMeal,
       turns,
       autoLog: auto,
       // The food bar can draw a save card, so it asks for creates.
@@ -616,7 +637,7 @@ export default function NutritionScreen() {
         setFlow({ ...prevReview, notice: res.message, proposal: res.proposal ?? null });
         return;
       }
-      setFlow({ status: 'declined', raw: t, message: res.message });
+      setFlow({ status: 'declined', raw: t, message: res.message, pendingMeal: res.pendingMeal });
       return;
     }
     // The free tier's daily logs ran out. This is a paywall, not a breakage:
@@ -744,7 +765,7 @@ export default function NutritionScreen() {
           const head = keptMealType ?? headOf(res.meal.items);
           return {
             status: 'review',
-            raw: t,
+            raw: res.meal.continued_pending && pendingMeal ? `${pendingMeal.text}; ${t}` : t,
             meal: { ...res.meal, meal_type: head },
             mealType: head,
             mealTypePicked: prevReview?.mealTypePicked,
@@ -815,6 +836,10 @@ export default function NutritionScreen() {
     const token = ++checkTokenRef.current;
     setChecking({ token, index: i });
     try {
+      // The server reads at most 12 previous lines. A tapped line past that is
+      // sent on its own, so the check still reaches it; only this line is ever
+      // applied from the answer, so the others need not ride along.
+      const far = i >= 12;
       const res = await parseMeal(supabase, {
         // Phrased as ACCEPTING a lookup, not as asking a question. Tapping the
         // button IS the request, so the turn must land on requests_research
@@ -828,11 +853,16 @@ export default function NutritionScreen() {
         // length so a crafted product name cannot append instructions of its
         // own. Low severity - the lookup is bounded and its output is a
         // schema-constrained macro panel - but the guard costs nothing.
+        // The user's own words when the server sent them: the card's name can
+        // be the wrong row itself (a different brand's bar), and searching for
+        // it would only "confirm" the mistake.
         text: `yes, look up the label for ${
-          item.food_name.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 80)
+          (item.said_name ?? item.food_name).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 80)
         } online and check these numbers`,
         mealHint: f.mealType,
-        previous: { text: f.raw, items: f.meal.items },
+        previous: { text: f.raw, items: far ? [item] : f.meal.items },
+        // Only this line is looked up; the rest of the card stays as it is.
+        researchLine: far ? 0 : i,
         turns: turnsRef.current.slice(),
       });
       // The daily allowance covers this lookup too, so a cap here has to say so
@@ -893,10 +923,16 @@ export default function NutritionScreen() {
           // I15 exists to stop, just triggered by a button instead of a timer.
           // Prefer the exact name+grams match; fall back to name only, and to
           // the sole item when the lookup returned just one.
+          // The server hands every line back in the order it was sent, and a
+          // looked-up line may come back under the user's own words (said_name)
+          // rather than the card's name, so position is the last fallback.
+          const sentAt = far ? 0 : i;
+          const sentCount = far ? 1 : Math.min(cur.meal.items.length, 12);
           const found = res.meal.items.find((r) => key(r) === originalKey)
             ?? res.meal.items.find(
               (r) => r.food_name.toLowerCase() === item.food_name.toLowerCase(),
             )
+            ?? (res.meal.items.length === sentCount ? res.meal.items[sentAt] ?? null : null)
             ?? (res.meal.items.length === 1 ? res.meal.items[0] : null);
           if (!found) return { ...cur, notice: 'I could not improve that one.' };
           const items = cur.meal.items.map((it, idx) => (idx === i ? found : it));
@@ -918,6 +954,23 @@ export default function NutritionScreen() {
   // How many times the user corrected the card before adding it. Read by
   // onAdd so "accepted untouched" and "fixed three lines first" are separable.
   const editCountRef = useRef(0);
+  /** One tap on a variant chip: the line becomes the variant the user also
+   *  logs, priced from their own numbers (lib/variantSwap). Pure client state
+   *  like every card edit; nothing is written until Add. */
+  const onSwapItem = useCallback((i: number, k: number) => {
+    // Counted only when there is a line to swap: a tap that lands after the
+    // card moved on is not an edit.
+    const cur = flowRef.current;
+    if (cur.status !== 'review' || !cur.meal.items[i]?.alternatives?.[k]) return;
+    editCountRef.current += 1;
+    track('parse_proposal_edited', { action: 'swap_variant' });
+    setFlow((f): ParseFlow => {
+      if (f.status !== 'review' || !f.meal.items[i]) return f;
+      const items = f.meal.items.map((it, idx) => (idx === i ? swapToAlternative(it, k) : it));
+      return { ...f, meal: { ...f.meal, items } };
+    });
+  }, []);
+
   const onRemoveItem = useCallback((i: number) => {
     editCountRef.current += 1;
     track('parse_proposal_edited', { action: 'remove_item' });
@@ -942,7 +995,12 @@ export default function NutritionScreen() {
     track('parse_proposal_edited', { action: 'edit_item', source: patch.source ?? null });
     setFlow((f) => {
       if (f.status !== 'review' || editIndex === null) return f;
-      const items = f.meal.items.map((it, i) => (i === editIndex ? patch : it));
+      // A different food now: the user's old words no longer name this line,
+      // and a later double check must not look up the food they replaced.
+      const before = f.meal.items[editIndex];
+      const renamed = before && patch.food_name.trim().toLowerCase() !== before.food_name.trim().toLowerCase();
+      const line = renamed ? { ...patch, said_name: undefined } : patch;
+      const items = f.meal.items.map((it, i) => (i === editIndex ? line : it));
       // The editor can move one line, which can leave the card with a single
       // section. Keep the card-level field on the first line so a later
       // fallback reads the surviving section rather than an emptied one.
@@ -1091,6 +1149,7 @@ export default function NutritionScreen() {
     // abort stops that work rather than merely ignoring its answer.
     parseTokenRef.current += 1;
     parseAbortRef.current?.abort();
+    turnsRef.current = [];
     setFlow({ status: 'idle' });
   }, [flow]);
 
@@ -1122,7 +1181,12 @@ export default function NutritionScreen() {
   // One story, one narrator: Drona's line must agree with the ring. Placeholder
   // logic until the coach reads the day for real (edge fn).
   const surplus = eaten.kcal - targets.kcal;
-  const dronaLine = surplus > 0
+  // A day still ahead holds a plan, not food eaten, so it gets its own line.
+  const dronaLine = viewIso > todayIso
+    ? surplus > 0
+      ? `That plan runs ${fmtK(surplus)} over. Trim it now and the day lands on target.`
+      : 'Planning ahead. Build the day here and keep the ring inside your goal.'
+    : surplus > 0
     ? `You're ${fmtK(surplus)} over today. Ease up at dinner and the week still balances.`
     : "Good start. Get one more protein hit in at lunch and you're on pace.";
 
@@ -1151,7 +1215,7 @@ export default function NutritionScreen() {
                 <Text style={s.title}>{dayLabel(viewDate)}</Text>
                 <Feather name="calendar" size={13} color={C.textMuted} />
               </Pressable>
-              <Pressable onPress={() => stepDay(1)} disabled={isToday} hitSlop={8} style={[s.dayArrow, { opacity: isToday ? 0.3 : 1 }]} accessibilityLabel="Next day">
+              <Pressable onPress={() => stepDay(1)} disabled={atLatest} hitSlop={8} style={[s.dayArrow, { opacity: atLatest ? 0.3 : 1 }]} accessibilityLabel="Next day">
                 <Feather name="chevron-right" size={18} color={C.textSecondary} />
               </Pressable>
             </View>
@@ -1170,20 +1234,21 @@ export default function NutritionScreen() {
 
         {/* Week strip — the calendar week around the viewed day; tap a bubble to
             jump straight there. Each day wears a thin ring showing how much of
-            the calorie goal was eaten that day. Future days are dimmed/locked. */}
+            the calorie goal is logged for that day, planned days included.
+            Only days past latestLogDay() are dimmed/locked. */}
         <View style={s.weekStrip}>
           {weekDays.map((d) => {
             const iso = ymd(d);
             const selected = iso === viewIso;
-            const future = iso > todayIso;
+            const locked = iso > latestIso;
             const pct = Math.min((weekKcal[iso] ?? 0) / (targetsOn(d).kcal || 1), 1);
             const R = 16, CIRC = 2 * Math.PI * R;
             return (
               <Pressable
                 key={iso}
                 onPress={() => setViewDate(d)}
-                disabled={future}
-                style={[s.weekDay, future && { opacity: 0.35 }]}
+                disabled={locked}
+                style={[s.weekDay, locked && { opacity: 0.35 }]}
                 accessibilityLabel={`Go to ${dayLabel(d)}`}
               >
                 <Text style={[s.weekDayName, selected && { color: C.foreground }]}>
@@ -1192,7 +1257,7 @@ export default function NutritionScreen() {
                 <View style={s.weekDayRing}>
                   <Svg width={36} height={36} style={StyleSheet.absoluteFill}>
                     <Circle cx={18} cy={18} r={R} stroke={C.borderSubtle} strokeWidth={2} fill="none" />
-                    {!future && pct > 0 && (
+                    {!locked && pct > 0 && (
                       <Circle
                         cx={18} cy={18} r={R}
                         stroke={C.macro.calories} strokeWidth={2} fill="none"
@@ -1294,7 +1359,7 @@ export default function NutritionScreen() {
                 <Text style={s.sectionLabel}>{m.label}</Text>
                 <View style={{ flex: 1 }} />
                 {entries.length > 0 && (
-                  <Text style={s.sectionSub}>{round(sub.protein)}g P · {round(sub.kcal)}</Text>
+                  <Text style={s.sectionSub}>{formatMacroGrams(sub.protein)}g P · {round(sub.kcal)}</Text>
                 )}
               </View>
 
@@ -1318,9 +1383,9 @@ export default function NutritionScreen() {
                       </Text>
                       <View style={s.macros}>
                         <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
-                        <Text style={[s.macroNum, { color: C.macro.protein }]}>{round(e.protein_g)}g P</Text>
-                        <Text style={[s.macroNum, { color: C.macro.carbs }]}>{round(e.carb_g)}g C</Text>
-                        <Text style={[s.macroNum, { color: C.macro.fat }]}>{round(e.fat_g)}g F</Text>
+                        <Text style={[s.macroNum, { color: C.macro.protein }]}>{formatMacroGrams(e.protein_g)}g P</Text>
+                        <Text style={[s.macroNum, { color: C.macro.carbs }]}>{formatMacroGrams(e.carb_g)}g C</Text>
+                        <Text style={[s.macroNum, { color: C.macro.fat }]}>{formatMacroGrams(e.fat_g)}g F</Text>
                       </View>
                     </Pressable>
                     {dronaRef && (
@@ -1424,6 +1489,7 @@ export default function NutritionScreen() {
               checkingIndex={flow.status === 'review' ? checkingIndex : null}
               onCheckItem={flow.status === 'review' ? onCheckItem : undefined}
               onRemoveItem={flow.status === 'review' && checkingIndex === null ? onRemoveItem : undefined}
+              onSwapItem={flow.status === 'review' && checkingIndex === null ? onSwapItem : undefined}
               saved={flow.status === 'review' && savedReview}
               onAdd={flow.status === 'review' ? onAdd : undefined}
               onSave={flow.status === 'review' ? () => setSaveItems(flow.meal.items) : undefined}
@@ -1461,7 +1527,12 @@ export default function NutritionScreen() {
                 will actually RUN, so a lapsed subscriber sees Thorough rather
                 than a Precise badge over a Thorough parse. */}
             <Pressable
-              onPress={() => setSpeedSheetOpen(true)}
+              onPress={() => {
+                // The portal shares the app window, so the keyboard would cover
+                // its bottom rows. Blur the composer without clearing its draft.
+                Keyboard.dismiss();
+                setSpeedSheetOpen(true);
+              }}
               hitSlop={12}
               accessibilityRole="button"
               accessibilityLabel={`Logging mode: ${SPEED_CHIP[runningSpeed].label}`}
@@ -1491,9 +1562,10 @@ export default function NutritionScreen() {
         )}
       </View>
 
-      {/* Tap a logged entry to rescale it, move its section, or delete it. */}
+      {/* Tap a logged entry to edit its portion, macros, or meal section. */}
       <EntryEditSheet
         entry={editEntry}
+        date={viewDate}
         onClose={() => setEditEntry(null)}
         onSaved={() => { setEditEntry(null); reload(); }}
       />
@@ -1501,10 +1573,30 @@ export default function NutritionScreen() {
       {/* Set daily calorie + macro goals (the ring/bars draw against these). */}
       <NutritionGoalSheet
         open={goalOpen}
-        initial={baseTargets}
+        // Today's own goal when it was set for today only, else the lasting one.
+        initial={todayOverride ?? baseTargets}
+        lasting={baseTargets}
+        firstGoal={!isCustom}
         fuelDays={fuelDays}
         onClose={() => setGoalOpen(false)}
-        onSaved={(saved) => { setGoalOpen(false); applyTargets(saved); }}
+        onSaved={(saved, scope, clearedToday) => {
+          setGoalOpen(false);
+          const today = ymd(new Date());
+          if (scope === 'today') {
+            applyDayTarget(today, saved);
+          } else {
+            applyTargets(saved);
+            // Only drop today's one-day goal on screen when the server really
+            // did; otherwise it would come back on the next refetch.
+            if (clearedToday) applyDayTarget(today, null);
+          }
+        }}
+        // A change to the whole plan is Drona's job: open the program chat on
+        // Goal & Plan with the new number already typed, sent by the user.
+        onOpenDronaPlan={(kcal) => {
+          setGoalOpen(false);
+          router.push({ pathname: '/goal-plan', params: { drona: 'calories', kcal: String(kcal) } } as any);
+        }}
         // Guests have no profile to save fuel days to, so no door to the sheet.
         onOpenFuelDays={isSignedIn ? () => { setGoalOpen(false); setFuelOpen(true); } : undefined}
       />
@@ -1543,7 +1635,7 @@ export default function NutritionScreen() {
         onLogged={reload}
       />
 
-      {/* Jump the diary to any past day. */}
+      {/* Jump the diary to any past day, or ahead to plan one. */}
       <ParseSpeedSheet
         open={speedSheetOpen}
         value={parseSpeed}
@@ -1651,3 +1743,4 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     send: { width: 28, height: 28, borderRadius: 14, backgroundColor: C.accentText, alignItems: 'center', justifyContent: 'center' },
   });
 }
+

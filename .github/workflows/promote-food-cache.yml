@@ -15,7 +15,11 @@ name: Promote Food Cache
 #     rather than being left to whatever reads the row back.
 #   - named like a food, not like a log line. "200g paneer" is fine on one person's
 #     card and permanent in a catalog everyone searches.
-#   - not already covered by a catalog row (a second "Paneer" splits the ranking)
+#   - not already covered by a catalog row (a second "Paneer" splits the ranking),
+#     judged by Jev with the same questions Precise asks live, so "eggs" links to
+#     USDA's egg instead of becoming a second egg
+#   - the two sources are not weak pages (seller listings, AI calorie apps,
+#     databases anyone can type into; WEAK_PROMOTION_HOSTS)
 #
 # Never runs inline with a parse. A promotion is a write to the shared catalog, and
 # it belongs on its own clock where a mistake is found before thousands of meals are
@@ -23,7 +27,8 @@ name: Promote Food Cache
 #
 # Secrets: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY, both already configured for
 # the Research Ingest workflow. precise_cache is granted to service_role only
-# (migration 0109), so the anon key cannot run this.
+# (migration 0109), so the anon key cannot run this. JEV_API_KEY for the catalog
+# match: without it nothing NEW is published (links and refreshes still run).
 #
 # Manual trigger: Actions tab -> Promote Food Cache -> Run workflow (dry run by
 # default there, so you can read the decisions before anything is written).
@@ -45,6 +50,12 @@ on:
         description: 'Max cache rows to consider in this run'
         required: false
         default: '200'
+      audit:
+        description: 'Also list published rows that duplicate another catalog row (prints only)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['true', 'false']
 
 # Two runs would race on the same precise_cache rows and could double-insert a
 # food. Queue instead of cancelling: a half-finished promotion pass is fine to
@@ -71,8 +82,10 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          JEV_API_KEY: ${{ secrets.JEV_API_KEY }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
           LIMIT: ${{ github.event.inputs.limit || '200' }}
+          AUDIT: ${{ github.event.inputs.audit || 'false' }}
         run: |
           set -eo pipefail
           # An ARRAY, and unquoted "${ARGS}" is why. `limit` is free text typed
@@ -83,6 +96,7 @@ jobs:
           # that value now reaches the script as one nonsense --limit it rejects.
           ARGS=("--limit=${LIMIT}")
           if [ "${DRY_RUN}" = "true" ]; then ARGS+=("--dry-run"); fi
+          if [ "${AUDIT}" = "true" ]; then ARGS+=("--audit"); fi
           # --node-modules-dir=none: the repo root carries the React Native
           # node_modules, and Deno otherwise tries to resolve supabase-js's npm
           # dependencies out of it and fails. Nothing here wants a node_modules.
