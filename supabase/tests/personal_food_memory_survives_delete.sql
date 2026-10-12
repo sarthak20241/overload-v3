@@ -7,7 +7,7 @@ begin;
 insert into public.user_profiles (clerk_user_id) values ('memory_keep_a');
 
 do $$
-declare m1 uuid; m2 uuid; m3 uuid; m4 uuid; e1 uuid; e2 uuid; e3 uuid; e4 uuid;
+declare m1 uuid; m2 uuid; m3 uuid; m4 uuid; e1 uuid; e2 uuid; e3 uuid; e4 uuid; e5 uuid; t2 uuid; item2 jsonb;
   c public.user_food_cache; confirmed timestamptz;
   item jsonb := '{"food_name":"Keep dairy nutrifit dahi","confidence":"high","memory_input_name":"nutrifit",
                   "quantity":35,"grams":35,"kcal":18,"protein_g":1.4,"carb_g":1.8,"fat_g":0.5}';
@@ -23,7 +23,8 @@ begin
     values (m1,'Keep dairy nutrifit dahi',35,'g',35,18,1.4,1.8,0.5,'ai','manual') returning id into e1;
   -- "100g nutrifit dahi", kept: teaches "nutrifit dahi".
   item := item || '{"memory_input_name":"nutrifit dahi","quantity":100,"grams":100,"kcal":51,"protein_g":4,"carb_g":5.1,"fat_g":1.4}';
-  insert into public.parse_traces(user_id,input_text,outcome,items,tier) values ('memory_keep_a','100g nutrifit dahi','meal',jsonb_build_array(item),'fast');
+  item2 := item;
+  insert into public.parse_traces(user_id,input_text,outcome,items,tier) values ('memory_keep_a','100g nutrifit dahi','meal',jsonb_build_array(item),'fast') returning id into t2;
   insert into public.meal_entries(meal_id,food_name,quantity,serving_unit,grams_logged,kcal,protein_g,carb_g,fat_g,logged_via,source)
     values (m2,'Keep dairy nutrifit dahi',100,'g',100,51,4,5.1,1.4,'ai','manual') returning id into e2;
   -- "80g nutrifit dahi" again: a second proof for the same alias.
@@ -62,6 +63,19 @@ begin
   if c.aliases is distinct from array['nutrifit'] then raise exception 'swap kept a contradicted alias: %', c.aliases; end if;
   if exists(select 1 from public.user_food_cache where user_id='memory_keep_a' and canonical_key='keep other curd' and cardinality(aliases)>0) then
     raise exception 'swapped-to food inherited an alias'; end if;
+  -- Proof from before the swap never brings it back: the 100 g log still
+  -- matches its "nutrifit dahi" parse.
+  perform food_memory_private.learn_alias(c.id, item2, t2);
+  if exists(select 1 from public.user_food_cache where id=c.id and 'nutrifit dahi' = any(aliases)) then
+    raise exception 'older proof brought back an alias a swap removed'; end if;
+  -- A new kept match after the swap teaches it again.
+  insert into public.parse_traces(user_id,input_text,outcome,items,tier,created_at) values ('memory_keep_a','60g nutrifit dahi','meal',
+    jsonb_build_array(item2 || '{"quantity":60,"grams":60,"kcal":30.6,"protein_g":2.4,"carb_g":3.1,"fat_g":0.8}'),'fast',clock_timestamp() + interval '1 second');
+  insert into public.meal_entries(meal_id,food_name,quantity,serving_unit,grams_logged,kcal,protein_g,carb_g,fat_g,logged_via,source)
+    values (m2,'Keep dairy nutrifit dahi',60,'g',60,30.6,2.4,3.1,0.8,'ai','manual') returning id into e5;
+  if not exists(select 1 from public.user_food_cache where id=c.id and aliases=array['nutrifit','nutrifit dahi']) then
+    raise exception 'a new kept match after the swap did not teach the alias again'; end if;
+  delete from public.meal_entries where id=e5;
 
   -- 3. A rename that keeps the same name key is not a swap.
   update public.meal_entries set food_name='Keep Dairy NUTRIFIT dahi' where id=e1;
@@ -83,5 +97,5 @@ begin
     raise exception 'trigger function exposed to clients'; end if;
 end;
 $$;
-select 'newest-log delete keeps food and proven aliases, swap drops aliases, same-key rename, meal delete, last log forgets, privileges passed' as checks;
+select 'newest-log delete keeps food and proven aliases, swap drops aliases and older proof cannot restore them, re-teach after swap, same-key rename, meal delete, last log forgets, privileges passed' as checks;
 rollback;

@@ -29,6 +29,9 @@ A deleted log means "I did not eat this", not "wrong food" (owner decision
 - A swap (a log renamed to a food with another name key) drops every alias that
   log confirmed, whatever else confirmed it. A rename that keeps the name key
   ("Nutrifit Dahi") is not a swap.
+- A swap is written down in `food_memory_private.alias_rejections`. Proof from a
+  parse before the swap never brings that alias back, not through a late save
+  and not through the repair. A new kept match after the swap teaches it again.
 
 Before this, deleting the newest log cascaded away the whole row and every
 alias on it. `food_memory_private.repair_lost_memory(apply)` restores what that

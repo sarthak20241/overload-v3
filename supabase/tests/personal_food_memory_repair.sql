@@ -24,6 +24,17 @@ begin
   insert into public.parse_traces(user_id,input_text,outcome,items,tier) values ('memory_repair_a','100g nutrifit dahi','meal',jsonb_build_array(item),'fast');
   insert into public.meal_entries(meal_id,food_name,quantity,serving_unit,grams_logged,kcal,protein_g,carb_g,fat_g,logged_via,source)
     values (m2,'Repair dairy dahi',100,'g',100,51,4,5.1,1.4,'ai','manual') returning id into e2;
+  -- "dahi swap" proven twice, then one of its logs is swapped to another food:
+  -- the other log's proof must not bring it back.
+  item := item || '{"memory_input_name":"dahi swap","quantity":25,"grams":25,"kcal":12.8,"protein_g":1,"carb_g":1.3,"fat_g":0.4}';
+  insert into public.parse_traces(user_id,input_text,outcome,items,tier) values ('memory_repair_a','25g dahi swap','meal',jsonb_build_array(item),'fast');
+  insert into public.meal_entries(meal_id,food_name,quantity,serving_unit,grams_logged,kcal,protein_g,carb_g,fat_g,logged_via,source)
+    values (m1,'Repair dairy dahi',25,'g',25,12.8,1,1.3,0.4,'ai','manual');
+  item := item || '{"quantity":45,"grams":45,"kcal":23,"protein_g":1.8,"carb_g":2.3,"fat_g":0.6}';
+  insert into public.parse_traces(user_id,input_text,outcome,items,tier) values ('memory_repair_a','45g dahi swap','meal',jsonb_build_array(item),'fast');
+  insert into public.meal_entries(meal_id,food_name,quantity,serving_unit,grams_logged,kcal,protein_g,carb_g,fat_g,logged_via,source)
+    values (m2,'Repair dairy dahi',45,'g',45,23,1.8,2.3,0.6,'ai','manual') returning id into e4;
+  update public.meal_entries set food_name='Repair other curd' where id=e4;
   -- Edited before saving (proposed 80 g, saved 90 g): proves nothing.
   item := item || '{"memory_input_name":"my dahi","quantity":80,"grams":80,"kcal":40.8,"protein_g":3.2,"carb_g":4.1,"fat_g":1.1}';
   insert into public.parse_traces(user_id,input_text,outcome,items,tier) values ('memory_repair_a','80g my dahi','meal',jsonb_build_array(item),'fast');
@@ -93,5 +104,5 @@ begin
     raise exception 'repair exposed to clients'; end if;
 end;
 $$;
-select 'repair dry run, restore from newest kept log, proven aliases only, edited/deleted/other-user proof ignored, untouched food, idempotent, privileges passed' as checks;
+select 'repair dry run, restore from newest kept log, proven aliases only, edited/deleted/other-user/swapped proof ignored, untouched food, idempotent, privileges passed' as checks;
 rollback;

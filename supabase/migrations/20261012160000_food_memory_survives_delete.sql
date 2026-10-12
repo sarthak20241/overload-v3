@@ -16,6 +16,9 @@
 --     log confirmed, whatever else confirmed it: the user said the words
 --     meant another food
 --   - a rename that keeps the name key ("Nutrifit Dahi") is not a swap
+--   - a swap is written down (alias_rejections): proof from a parse before
+--     it can never bring that alias back, not even through the repair. A new
+--     kept match after it can.
 --
 -- Also adds repair_lost_memory(apply), the one-off repair for rows the old
 -- cascade deleted. See scripts/personal-food-memory/README.md.
@@ -39,7 +42,7 @@ returns jsonb language sql immutable set search_path = '' as $$
            'entry_ids', to_jsonb(kept), 'entry_id', kept[cardinality(kept)])), '{}')
   from jsonb_each(evidence) kv(k, v)
   cross join lateral (select array(
-    select x from unnest(food_memory_private.evidence_ids(v)) x where x <> all(ids)) as kept) k
+    select x from unnest(food_memory_private.evidence_ids(v)) x where x <> all(ids)) as kept) kept_ids
   where cardinality(kept) > 0;
 $$;
 
@@ -58,6 +61,28 @@ returns jsonb language sql immutable set search_path = '' as $$
   select coalesce(jsonb_object_agg(k, v), '{}')
   from jsonb_each(evidence) kv(k, v)
   where not (food_memory_private.evidence_ids(v) && ids);
+$$;
+
+-- When a swap removed an alias. Kept apart from user_food_cache, whose row may
+-- be deleted and rebuilt. Private: written only by the triggers below.
+create table food_memory_private.alias_rejections (
+  user_id text not null,
+  canonical_key text not null,
+  alias text not null,
+  entry_id uuid,
+  rejected_at timestamptz not null default clock_timestamp(),
+  primary key (user_id, canonical_key, alias)
+);
+alter table food_memory_private.alias_rejections enable row level security;
+revoke all on food_memory_private.alias_rejections from public, anon, authenticated;
+
+-- A swap rejected this alias after `proof_at`, the time of the parse offered
+-- as proof. Proof of unknown age counts as old.
+create function food_memory_private.alias_rejected(p_user text, p_key text, p_alias text, proof_at timestamptz)
+returns boolean language sql stable security definer set search_path = '' as $$
+  select exists (select 1 from food_memory_private.alias_rejections r
+    where r.user_id = p_user and r.canonical_key = p_key and r.alias = p_alias
+      and r.rejected_at > coalesce(proof_at, '-infinity'::timestamptz));
 $$;
 
 -- The newest kept log that can stand for this food, `skip` aside. Same order
@@ -138,6 +163,11 @@ begin
   alias_key := food_memory_private.name_key(item->>'memory_input_name');
   if alias_key is null or length(alias_key) < 2 or length(alias_key) > 240
      or item->>'confidence' is distinct from 'high' or p_entry is null then return; end if;
+  if exists (select 1 from public.user_food_cache c where c.id = cache_id
+       and food_memory_private.alias_rejected(c.user_id, c.canonical_key, alias_key,
+         (select t.created_at from public.parse_traces t where t.id = trace_id))) then
+    return;
+  end if;
   update public.user_food_cache c
   set aliases = case when alias_key = any(c.aliases) then c.aliases
                      else c.aliases || alias_key end,
@@ -169,11 +199,18 @@ begin
   if tg_op = 'UPDATE' and food_memory_private.name_key(old.food_name)
        is distinct from key and meal.user_id is not null then
     -- A swap: the user says this log is another food. Every alias it confirmed
-    -- named the wrong food, so those aliases go whatever else confirmed them.
+    -- named the wrong food, so those aliases go whatever else confirmed them,
+    -- and older proof may not bring them back.
+    insert into food_memory_private.alias_rejections (user_id, canonical_key, alias, entry_id)
+    select c.user_id, c.canonical_key, kv.k, old.id
+    from public.user_food_cache c cross join lateral jsonb_each(c.alias_evidence) kv(k, v)
+    where c.user_id = meal.user_id and old.id::text = any(food_memory_private.evidence_ids(kv.v))
+    on conflict (user_id, canonical_key, alias) do update
+      set rejected_at = excluded.rejected_at, entry_id = excluded.entry_id;
     update public.user_food_cache c set
       alias_evidence = food_memory_private.evidence_contradicted(c.alias_evidence, array[old.id::text]),
-      aliases = array(select a from unnest(c.aliases) a where
-        food_memory_private.evidence_contradicted(c.alias_evidence, array[old.id::text]) ? a)
+      aliases = array(select a from unnest(c.aliases) a where not (c.alias_evidence ? a)
+        or (food_memory_private.evidence_contradicted(c.alias_evidence, array[old.id::text]) ? a))
     where c.user_id = meal.user_id
       and exists (select 1 from jsonb_each(c.alias_evidence) kv(k, v)
                   where old.id::text = any(food_memory_private.evidence_ids(v)));
@@ -238,8 +275,8 @@ begin
   if owner_id is null then return old; end if;
   update public.user_food_cache c set
     alias_evidence = food_memory_private.evidence_without(c.alias_evidence, array[old.id::text]),
-    aliases = array(select a from unnest(c.aliases) a where
-      food_memory_private.evidence_without(c.alias_evidence, array[old.id::text]) ? a)
+    aliases = array(select a from unnest(c.aliases) a where not (c.alias_evidence ? a)
+      or (food_memory_private.evidence_without(c.alias_evidence, array[old.id::text]) ? a))
   where c.user_id = owner_id
     and exists (select 1 from jsonb_each(c.alias_evidence) kv(k, v)
                 where old.id::text = any(food_memory_private.evidence_ids(v)));
@@ -256,8 +293,8 @@ begin
   if entry_ids is null then return old; end if;
   update public.user_food_cache c set
     alias_evidence = food_memory_private.evidence_without(c.alias_evidence, entry_ids),
-    aliases = array(select a from unnest(c.aliases) a where
-      food_memory_private.evidence_without(c.alias_evidence, entry_ids) ? a)
+    aliases = array(select a from unnest(c.aliases) a where not (c.alias_evidence ? a)
+      or (food_memory_private.evidence_without(c.alias_evidence, entry_ids) ? a))
   where c.user_id = old.user_id
     and exists (select 1 from jsonb_each(c.alias_evidence) kv(k, v)
                 where food_memory_private.evidence_ids(v) && entry_ids);
@@ -296,11 +333,11 @@ begin
 
   for r in
     select m.user_id as uid, food_memory_private.name_key(e.food_name) as key, e.id as entry_id,
-      p.trace_id, p.item, food_memory_private.name_key(p.item->>'memory_input_name') as alias
+      p.trace_id, p.proof_at, p.item, food_memory_private.name_key(p.item->>'memory_input_name') as alias
     from public.meal_entries e join public.meals m on m.id = e.meal_id
     cross join lateral (
       -- The parse nearest the meal's save that proposed exactly this line.
-      select t.id as trace_id, i.item
+      select t.id as trace_id, t.created_at as proof_at, i.item
       from public.parse_traces t
       cross join lateral jsonb_array_elements(coalesce(t.items, '[]')) i(item)
       where t.user_id = m.user_id and t.outcome = 'meal'
@@ -317,7 +354,8 @@ begin
     where m.created_at >= timestamptz '2026-10-01'
     order by m.user_id, m.logged_at, m.created_at, e.position
   loop
-    continue when r.alias is null or length(r.alias) < 2 or length(r.alias) > 240 or r.alias = r.key;
+    continue when r.alias is null or length(r.alias) < 2 or length(r.alias) > 240 or r.alias = r.key
+      or food_memory_private.alias_rejected(r.uid, r.key, r.alias, r.proof_at);
     select c.id into cache_id from public.user_food_cache c where c.user_id = r.uid and c.canonical_key = r.key;
     if cache_id is not null and exists (select 1 from public.user_food_cache c where c.id = cache_id
          and r.entry_id::text = any(food_memory_private.evidence_ids(c.alias_evidence->r.alias))) then
