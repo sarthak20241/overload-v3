@@ -2,7 +2,9 @@
  * The daily Aside routine talks to the studio through plain GET links, since a
  * browser agent opens pages more reliably than it sends POSTs. Any web page
  * could make your browser open such a link, so each one needs this token,
- * which only the routine prompt knows.
+ * which only the routine prompt knows. The token ends up in browser history
+ * and logs: acceptable because the server only listens on 127.0.0.1, and the
+ * worst a leaked token can do is mark a Ready draft as posted.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promises as fs } from 'node:fs';

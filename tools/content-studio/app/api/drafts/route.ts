@@ -19,10 +19,13 @@ export async function POST(req: Request) {
 /** Your own edits. Saved as-is except that dashes are still cleaned. */
 export async function PUT(req: Request) {
   const body = (await req.json()) as Pick<Draft, 'id' | 'parts' | 'title' | 'subreddit'>;
-  let saved: Draft | undefined;
+  let saved = undefined as Draft | undefined;
+  let claimed = false;
   await update<Draft[]>('drafts', [], (cur) =>
     cur.map((d) => {
       if (d.id !== body.id) return d;
+      // The routine may be posting this exact text right now.
+      if (d.claimedAt) { claimed = true; return d; }
       saved = {
         ...d,
         history: [{ title: d.title, subreddit: d.subreddit, parts: d.parts, at: d.updatedAt, note: 'before your edit' }, ...d.history].slice(0, 20),
@@ -30,12 +33,13 @@ export async function PUT(req: Request) {
         title: body.title !== undefined ? cleanDashes(body.title) : d.title,
         subreddit: body.subreddit ?? d.subreddit,
         ready: false,
-        claimedAt: undefined,
+        readyAt: undefined,
         updatedAt: new Date().toISOString(),
       };
       return saved;
     }),
   );
+  if (claimed) return NextResponse.json({ error: 'The daily routine has taken this draft to post. Press "Not ready" to take it back first.' }, { status: 409 });
   return NextResponse.json(saved ?? null);
 }
 
@@ -54,8 +58,10 @@ export async function PATCH(req: Request) {
         error = postBlocker(d);
         if (error) return d;
       }
+      if (ready && d.ready) return (saved = d); // already Ready: a repeat call must not touch the claim
+      if (ready) return (saved = { ...d, ready: true, readyAt: new Date().toISOString() });
       // Not ready also releases a claim, so you can take a draft back from the routine.
-      return (saved = { ...d, ready, claimedAt: undefined, updatedAt: new Date().toISOString() });
+      return (saved = { ...d, ready: false, readyAt: undefined, claimedAt: undefined });
     }),
   );
   if (error) return NextResponse.json({ error }, { status: 400 });

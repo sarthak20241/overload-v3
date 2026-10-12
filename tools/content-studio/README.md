@@ -46,6 +46,14 @@ Every API post shows the exact text and asks you to confirm first.
 - `knowledge/made-to-stick.md`: the sticky-idea rules every prompt uses.
 - `lib/generate.ts`: all prompts. `lib/llm.ts`: the CLI runner.
 
+## Tests
+
+The daily routine must never post the same X thread twice. Those rules are tested:
+
+```bash
+cd tools/content-studio && npx tsx --test test/routine.test.mts
+```
+
 ## Notes
 
 - The CLI is run with MCP servers and settings files off. Without that, each

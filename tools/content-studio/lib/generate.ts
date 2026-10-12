@@ -334,6 +334,7 @@ export async function refineDraft(opts: { draftId: string; instruction: string }
   const drafts = await read<Draft[]>('drafts', []);
   const d = drafts.find((x) => x.id === opts.draftId);
   if (!d) throw new Error('That draft no longer exists.');
+  if (d.claimedAt) throw new Error('The daily routine has taken this draft to post. Press "Not ready" to take it back first.');
   log('Rewriting.');
 
   const prompt = `${await context()}
@@ -362,7 +363,7 @@ ${draftContract(d.channel)}`;
         parts: out.parts.length ? out.parts : x.parts,
         // A rewrite is new text you haven't read yet.
         ready: false,
-        claimedAt: undefined,
+        readyAt: undefined,
         rationale: out.rationale || x.rationale,
         altHooks: out.altHooks.length ? out.altHooks : x.altHooks,
         scores: Object.keys(out.scores).length ? out.scores : x.scores,
