@@ -352,9 +352,12 @@ ${draftContract(d.channel)}`;
   const out = await writeWith(await draftSystem(d.channel), prompt, log);
   const now = new Date().toISOString();
   let saved: Draft | undefined;
+  let claimedMeanwhile = false;
   await update<Draft[]>('drafts', [], (cur) =>
     cur.map((x) => {
       if (x.id !== d.id) return x;
+      // The routine may have taken it while the model was writing.
+      if (x.claimedAt) { claimedMeanwhile = true; return x; }
       saved = {
         ...x,
         history: [{ title: x.title, subreddit: x.subreddit, parts: x.parts, at: x.updatedAt, note: opts.instruction }, ...x.history].slice(0, 20),
@@ -372,6 +375,7 @@ ${draftContract(d.channel)}`;
       return saved;
     }),
   );
+  if (claimedMeanwhile) throw new Error('The daily routine has taken this draft to post. Press "Not ready" to take it back first.');
   log('Saved.');
   return saved!;
 }

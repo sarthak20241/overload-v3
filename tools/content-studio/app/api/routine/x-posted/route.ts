@@ -22,7 +22,7 @@ export async function GET(req: Request) {
   await update<Draft[]>('drafts', [], (cur) =>
     cur.map((d) => {
       if (d.id !== id) return d;
-      if (d.channel !== 'x' || !d.ready || !d.claimedAt || d.status !== 'draft') { error = 'That draft was not handed out by x-next, or is already posted.'; return d; }
+      if (d.channel !== 'x' || !d.claimedAt || d.status !== 'draft') { error = 'That draft was not handed out by x-next, or is already posted.'; return d; }
       return (result = { ...d, status: 'posted', postedUrl: url, postedAt: now, updatedAt: now });
     }),
   );

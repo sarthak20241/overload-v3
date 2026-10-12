@@ -80,3 +80,63 @@ test('only a draft that could be posted as-is can be Ready', async () => {
   seed([{ ...base, id: 'P', topicTitle: 'P', parts: ['fill [this]'] }]);
   assert.equal((await call(drafts.PATCH, 'PATCH', { id: 'P', ready: true })).status, 400);
 });
+
+test('Post now and the routine at the same moment: only one sends', async () => {
+  Object.assign(process.env, { X_API_KEY: 'k', X_API_SECRET: 's', X_ACCESS_TOKEN: 't', X_ACCESS_SECRET: 'a' });
+  const { POST: publish } = await import('../app/api/publish/route');
+  seed([{ ...base, id: 'A', topicTitle: 'A', parts: ['a'], ready: true, readyAt: '1' }]);
+  let sends = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    sends++;
+    await new Promise((r) => setTimeout(r, 200));
+    return new Response(JSON.stringify({ data: { id: '9' } }), { status: 201 });
+  }) as typeof fetch;
+  try {
+    const posting = call(publish, 'POST', { draftId: 'A', action: 'post' });
+    await new Promise((r) => setTimeout(r, 50)); // Post now is mid-flight
+    const routine = await next();
+    assert.equal(routine.draft, null, 'the routine must not take a draft that is being posted');
+    assert.equal((await posting).status, 200);
+    assert.equal(sends, 1);
+    assert.equal(load()[0].status, 'posted');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('a failed Post now gives the draft back', async () => {
+  const { POST: publish } = await import('../app/api/publish/route');
+  seed([{ ...base, id: 'A', topicTitle: 'A', parts: ['a'], ready: true, readyAt: '1' }]);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response('{}', { status: 503 })) as typeof fetch;
+  try {
+    assert.equal((await call(publish, 'POST', { draftId: 'A', action: 'post' })).status, 502);
+    assert.equal(load()[0].claimedAt, undefined);
+    assert.equal((await next()).draft.id, 'A');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('a rewrite that finishes after the routine took the draft does not overwrite it', async () => {
+  // A fake writer that takes a moment, like the real one.
+  const fake = path.join(dir, 'fakeclaude.mjs');
+  const reply = JSON.stringify({ parts: ['rewritten'], rationale: 'r', altHooks: [], scores: {} });
+  writeFileSync(fake, `#!${process.execPath}
+process.stdin.resume();
+process.stdin.on('end', () => setTimeout(() => {
+  console.log(JSON.stringify({ type: 'result', is_error: false, result: ${JSON.stringify(reply)} }));
+}, 1000));
+`, { mode: 0o755 });
+  process.env.CLAUDE_BIN = fake;
+  process.env.OVERLOAD_REPO = path.resolve('..', '..');
+  const { refineDraft } = await import('../lib/generate');
+  seed([{ ...base, id: 'A', topicTitle: 'A', parts: ['original'], ready: true, readyAt: '1' }]);
+  const rewriting = refineDraft({ draftId: 'A', instruction: 'shorter' }, () => {});
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal((await next()).draft.id, 'A'); // routine takes it mid-rewrite
+  await assert.rejects(rewriting, /routine has taken/);
+  assert.deepEqual(load()[0].parts, ['original']);
+  assert.ok(load()[0].claimedAt);
+});

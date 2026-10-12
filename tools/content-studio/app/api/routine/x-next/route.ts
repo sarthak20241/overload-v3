@@ -20,11 +20,13 @@ export async function GET(req: Request) {
   let blocked: string[] = [];
   const now = new Date().toISOString();
   await update<Draft[]>('drafts', [], (cur) => {
-    const open = cur.filter((d) => d.channel === 'x' && d.status === 'draft' && d.ready);
-    pending = open.find((d) => d.claimedAt);
+    const unposted = cur.filter((d) => d.channel === 'x' && d.status === 'draft');
+    // Any claim blocks the day, Ready or not: a claim means something may be live.
+    pending = unposted.find((d) => d.claimedAt);
     if (pending) return cur;
-    blocked = open.filter((d) => postBlocker(d)).map((d) => `${d.topicTitle}: ${postBlocker(d)}`);
-    next = open.filter((d) => !postBlocker(d)).sort((a, b) => (a.readyAt ?? a.updatedAt).localeCompare(b.readyAt ?? b.updatedAt))[0];
+    const open = unposted.filter((d) => d.ready).map((d) => ({ d, why: postBlocker(d) }));
+    blocked = open.filter((o) => o.why).map((o) => `${o.d.topicTitle}: ${o.why}`);
+    next = open.filter((o) => !o.why).map((o) => o.d).sort((a, b) => (a.readyAt ?? a.updatedAt).localeCompare(b.readyAt ?? b.updatedAt))[0];
     if (!next) return cur;
     next = { ...next, claimedAt: now };
     return cur.map((d) => (d.id === next!.id ? next! : d));
