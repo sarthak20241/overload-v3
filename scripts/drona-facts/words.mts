@@ -81,6 +81,14 @@ ok('week: characters add up (16 + 21 + 19 + 7 + 13 + 2 + 200 + 20 = 298)', w1?.w
 ok('injury notes: not on that past week, only on the running week', w1?.wd_injury_notes === null && wk[wk.length - 1]?.wd_injury_notes === 'ACL',
   [w1?.wd_injury_notes, wk[wk.length - 1]?.wd_injury_notes]);
 
+// An edited sticky note, rebuilt with a window that no longer holds its first
+// day, must move rather than collide (the 2026-10-12 duplicate-key bug).
+must(await db.from('user_exercise_notes').update({ note: 'feet wider now', updated_at: '2026-09-23T06:00:00Z' }).eq('user_id', UID).eq('exercise_id', ex), 'edit sticky');
+const rerun = await db.rpc('drona_rebuild_word_facts', { p_user_id: UID, p_from: '2026-09-21', p_to: '2026-09-21' });
+const sticky = must(await db.from('drona_word_facts').select('day, text').eq('user_id', UID).eq('kind', 'sticky_note'), 'sticky') as any[];
+ok('an edited note outside the old window moves to its new day and text', !rerun.error && sticky.length === 1
+  && sticky[0].day === '2026-09-23' && sticky[0].text === 'feet wider now', { error: rerun.error?.message, sticky });
+
 await db.rpc('delete_user_data', { p_user_id: UID });
 const left = must(await db.from('drona_word_facts').select('kind').eq('user_id', UID), 'cleanup') as any[];
 ok('delete_user_data removed every word row', left.length === 0, left.length);
