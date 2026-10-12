@@ -21,9 +21,41 @@ function list<T = string>(v: unknown, keep: (x: unknown) => boolean = (x) => typ
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 const obj = (x: unknown) => !!x && typeof x === 'object' && !Array.isArray(x);
 
+/**
+ * One model call that must come back as JSON. Spoken-style drafts broke the
+ * JSON 3 times in 10 (a retry of the same prompt then passed every time), so
+ * a bad reply gets one more try before the job fails.
+ */
+async function runJson<T>(opts: { system: string; prompt: string; log: (s: string) => void }): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    const text = await runLLM({ system: opts.system, prompt: opts.prompt, onProgress: opts.log, timeoutMs: 8 * 60_000 });
+    try {
+      return extractJson<T>(text);
+    } catch (e) {
+      if (attempt >= 2) throw e;
+      opts.log('The reply was not valid JSON. Trying once more.');
+    }
+  }
+}
+
 async function stickRules(): Promise<string> {
   return fs.readFile(path.join(process.cwd(), 'knowledge', 'made-to-stick.md'), 'utf8');
 }
+
+/**
+ * The founder wants posts that sound said out loud, not written. Style rules
+ * only: an example scene in here gets copied into every post (the Fastlane
+ * reels repeated one example for weeks).
+ */
+const SPOKEN_VOICE = `# How the posts must sound: spoken, not written
+Write the way the founder would say it out loud to a friend at the gym or on a voice note. Read every line in your head as speech. If nobody would say it that way, rewrite it.
+- Use contractions every time a person would: I'm, don't, it's, that's, you're, didn't, can't, wasn't. "It is not" and "I do not" sound like a robot.
+- First person and plain words. Say "I" and "you". Pick the word you'd use in a text message over the word you'd use in a report.
+- Short sentences. Fragments are fine. Start a sentence with "And", "But" or "So" when that's how you'd say it.
+- Let it be a little messy the way talk is: a small aside, an honest "honestly", a "turns out", a question you ask yourself. Use these lightly, not in every line.
+- No written-only structure: no colon-then-list lines, no neat groups of three, no "Here's the thing", no "Let that sink in", no mirrored lines like "X isn't Y. It's Z." more than once per post.
+- No hashtags, no emoji unless a person would really drop one there.
+- Keep numbers and specifics. Casual doesn't mean vague.`;
 
 const WRITER_ROLE = `You are the content partner of a solo founder who builds Overload, a workout tracker with a coach called Drona, in public.
 You think with the Made to Stick framework (Chip and Dan Heath) and you know how each social channel rewards content.
@@ -32,7 +64,9 @@ Hard rules for everything you write:
 - Never invent facts, numbers, users, quotes or events. Use only what the brief, the product facts and the recent work say. If a post needs a real detail you do not have, write it as a bracketed placeholder like [your squat number] so the founder fills it in.
 - Only describe features listed as live as if they exist. Anything else is "coming" or "building".
 - Sound like a real person, not a brand and not an AI. No buzzwords like "game-changer", "revolutionize", "unlock", "elevate", "dive in", "journey" used as filler.
-- Reply with JSON only when asked for JSON. No prose around it, no code fence.`;
+- Reply with JSON only when asked for JSON. No prose around it, no code fence.
+
+${SPOKEN_VOICE}`;
 
 async function context(): Promise<string> {
   const [brief, features, work] = await Promise.all([getBrief(), featuresDoc(), recentWork()]);
@@ -166,8 +200,7 @@ Reply with ONLY a JSON array:
 }]
 In "stick", say in a few words how the topic uses each principle, or leave it "" if it does not.`;
 
-  const text = await runLLM({ system, prompt, onProgress: log, timeoutMs: 8 * 60_000 });
-  const raw = list<Partial<Topic>>(extractJson<unknown>(text), obj);
+  const raw = list<Partial<Topic>>(await runJson<unknown>({ system, prompt, log }), obj);
   if (!raw.length) throw new Error('No topics came back in the right shape. Try again.');
   const now = new Date().toISOString();
   const topics: Topic[] = raw.map((t) => ({
@@ -221,8 +254,7 @@ Score honestly: 2 = done well, 1 = partly, 0 = missing.`;
 }
 
 async function writeWith(system: string, prompt: string, log: (s: string) => void): Promise<DraftJson> {
-  const text = await runLLM({ system, prompt, onProgress: log, timeoutMs: 8 * 60_000 });
-  const raw = extractJson<Record<string, unknown>>(text);
+  const raw = await runJson<Record<string, unknown>>({ system, prompt, log });
   if (!obj(raw)) throw new Error('The draft came back in the wrong shape. Try again.');
   return {
     title: str(raw.title) ? cleanDashes(str(raw.title)) : undefined,
@@ -302,6 +334,7 @@ export async function refineDraft(opts: { draftId: string; instruction: string }
   const drafts = await read<Draft[]>('drafts', []);
   const d = drafts.find((x) => x.id === opts.draftId);
   if (!d) throw new Error('That draft no longer exists.');
+  if (d.claimedAt) throw new Error('The daily routine has taken this draft to post. Press "Not ready" to take it back first.');
   log('Rewriting.');
 
   const prompt = `${await context()}
@@ -319,15 +352,21 @@ ${draftContract(d.channel)}`;
   const out = await writeWith(await draftSystem(d.channel), prompt, log);
   const now = new Date().toISOString();
   let saved: Draft | undefined;
+  let claimedMeanwhile = false;
   await update<Draft[]>('drafts', [], (cur) =>
     cur.map((x) => {
       if (x.id !== d.id) return x;
+      // The routine may have taken it while the model was writing.
+      if (x.claimedAt) { claimedMeanwhile = true; return x; }
       saved = {
         ...x,
         history: [{ title: x.title, subreddit: x.subreddit, parts: x.parts, at: x.updatedAt, note: opts.instruction }, ...x.history].slice(0, 20),
         title: out.title ?? x.title,
         subreddit: out.subreddit ?? x.subreddit,
         parts: out.parts.length ? out.parts : x.parts,
+        // A rewrite is new text you haven't read yet.
+        ready: false,
+        readyAt: undefined,
         rationale: out.rationale || x.rationale,
         altHooks: out.altHooks.length ? out.altHooks : x.altHooks,
         scores: Object.keys(out.scores).length ? out.scores : x.scores,
@@ -336,6 +375,7 @@ ${draftContract(d.channel)}`;
       return saved;
     }),
   );
+  if (claimedMeanwhile) throw new Error('The daily routine has taken this draft to post. Press "Not ready" to take it back first.');
   log('Saved.');
   return saved!;
 }

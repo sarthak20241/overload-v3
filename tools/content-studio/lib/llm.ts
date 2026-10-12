@@ -9,7 +9,7 @@
  * and MCP tool lists before it read a word of our prompt.
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { DATA_DIR, read } from './store';
@@ -249,5 +249,7 @@ export function extractJson<T = unknown>(text: string): T {
     if (end <= start) continue;
     try { return JSON.parse(c.slice(start, end + 1)) as T; } catch { /* try next */ }
   }
+  // Keep the whole reply: the 200 characters in the message never show where it broke.
+  try { writeFileSync(path.join(DATA_DIR, 'last-bad-json.txt'), text); } catch { /* best effort */ }
   throw new Error(`The model did not return valid JSON. It said: ${text.slice(0, 200)}`);
 }

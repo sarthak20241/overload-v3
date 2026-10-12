@@ -95,6 +95,13 @@ export interface Draft {
   scores: Partial<Record<keyof StickCheck, number>>;
   history: DraftVersion[];
   status: 'draft' | 'posted';
+  /** You read it and it may go out. The daily routine posts only Ready X drafts. */
+  ready?: boolean;
+  /** When you marked it Ready. The routine posts oldest-Ready first. */
+  readyAt?: string;
+  /** When the routine took this draft to post. A claimed draft is never handed
+   *  out again until it is confirmed posted or you release it. */
+  claimedAt?: string;
   postedUrl?: string;
   postedAt?: string;
   createdAt: string;
