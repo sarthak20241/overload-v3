@@ -47,6 +47,10 @@ export function SaveMealSheet({ open, items, onClose, onSaved }: Props) {
     const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
     const showSub = Keyboard.addListener(showEvt, (e) => setKbHeight(e.endCoordinates?.height ?? 0));
     const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    // The food box keeps its keyboard up when the card's bookmark is tapped,
+    // and no show event fires for a keyboard that is already open, so the
+    // sheet would sit behind it. Drop it; the name is prefilled anyway.
+    Keyboard.dismiss();
     return () => { showSub.remove(); hideSub.remove(); };
   }, [open]);
 
