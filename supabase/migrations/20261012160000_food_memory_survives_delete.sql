@@ -85,6 +85,20 @@ returns boolean language sql stable security definer set search_path = '' as $$
       and r.rejected_at > coalesce(proof_at, '-infinity'::timestamptz));
 $$;
 
+-- Swap records hold words the user typed. They go once no log of the food is
+-- left (`skip_entry` / `skip_meal` are on their way out), whether or not its
+-- cache row still exists: then no old proof can exist either. Also how
+-- account deletion (delete_user_data deletes meals) clears them.
+create function food_memory_private.forget_rejections_if_gone(p_user text, p_key text, skip_entry uuid, skip_meal uuid)
+returns void language sql security definer set search_path = '' as $$
+  delete from food_memory_private.alias_rejections r
+  where r.user_id = p_user and r.canonical_key = p_key
+    and not exists (
+      select 1 from public.meal_entries e join public.meals m on m.id = e.meal_id
+      where m.user_id = p_user and food_memory_private.name_key(e.food_name) = p_key
+        and e.id is distinct from skip_entry and m.id is distinct from skip_meal);
+$$;
+
 -- The newest kept log that can stand for this food, `skip` aside. Same order
 -- as the original warm-up.
 create function food_memory_private.newest_snapshot_entry(p_user text, p_key text, skip uuid)
@@ -148,10 +162,6 @@ begin
   next_entry := food_memory_private.newest_snapshot_entry(c.user_id, c.canonical_key, gone);
   if next_entry is null then
     delete from public.user_food_cache where id = c.id;
-    -- No kept log of this food is left, so no old proof can exist either.
-    -- Also how account deletion (delete_user_data deletes meals) clears them.
-    delete from food_memory_private.alias_rejections r
-    where r.user_id = c.user_id and r.canonical_key = c.canonical_key;
   else
     perform food_memory_private.write_snapshot(next_entry, null);
   end if;
@@ -222,6 +232,8 @@ begin
     for moved in select id from public.user_food_cache where last_entry_id = old.id loop
       perform food_memory_private.move_snapshot(moved.id, old.id);
     end loop;
+    perform food_memory_private.forget_rejections_if_gone(
+      meal.user_id, food_memory_private.name_key(old.food_name), old.id, null);
   end if;
   cache_id := food_memory_private.write_snapshot(new.id, now());
   if cache_id is null then return new; end if;
@@ -254,11 +266,18 @@ $$;
 -- so its other logs are never picked.
 create function food_memory_private.keep_food_memory()
 returns trigger language plpgsql security definer set search_path = '' as $$
-declare moved record;
+declare moved record; owner_id text;
 begin
   for moved in select id from public.user_food_cache where last_entry_id = old.id loop
     perform food_memory_private.move_snapshot(moved.id, old.id);
   end loop;
+  -- On a meal delete the meal row is gone here; retract_meal_aliases has
+  -- already cleared that meal's swap records.
+  select m.user_id into owner_id from public.meals m where m.id = old.meal_id;
+  if owner_id is not null then
+    perform food_memory_private.forget_rejections_if_gone(
+      owner_id, food_memory_private.name_key(old.food_name), old.id, null);
+  end if;
   return old;
 exception when others then
   -- The cascade then deletes the row: the old behaviour, never a failed delete.
@@ -295,6 +314,9 @@ begin
   select array_agg(e.id::text) into entry_ids
   from public.meal_entries e where e.meal_id = old.id;
   if entry_ids is null then return old; end if;
+  perform food_memory_private.forget_rejections_if_gone(old.user_id, k, null, old.id)
+  from (select distinct food_memory_private.name_key(e.food_name) as k
+        from public.meal_entries e where e.meal_id = old.id) keys;
   update public.user_food_cache c set
     alias_evidence = food_memory_private.evidence_without(c.alias_evidence, entry_ids),
     aliases = array(select a from unnest(c.aliases) a where not (c.alias_evidence ? a)

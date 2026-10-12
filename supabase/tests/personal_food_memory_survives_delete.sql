@@ -94,6 +94,31 @@ begin
     raise exception 'food with no kept log is still remembered'; end if;
   if exists(select 1 from food_memory_private.alias_rejections where user_id='memory_keep_a') then
     raise exception 'swap records outlived the food'; end if;
+
+  -- Swap records go with the food's last log even when the memory row is
+  -- already gone (a user may delete their own cache row through the API).
+  declare mb1 uuid; mb2 uuid; b2 uuid;
+    bitem jsonb := '{"food_name":"Keep b curd","confidence":"high","memory_input_name":"plain curd",
+                     "quantity":50,"grams":50,"kcal":30,"protein_g":2,"carb_g":2,"fat_g":1.5}';
+  begin
+    insert into public.user_profiles (clerk_user_id) values ('memory_keep_b');
+    insert into public.meals(user_id,meal_type,logged_at) values ('memory_keep_b','lunch',now()-interval '2 days') returning id into mb1;
+    insert into public.meals(user_id,meal_type,logged_at) values ('memory_keep_b','lunch',now()-interval '1 day') returning id into mb2;
+    insert into public.parse_traces(user_id,input_text,outcome,items,tier) values ('memory_keep_b','50g plain curd','meal',jsonb_build_array(bitem),'fast');
+    insert into public.meal_entries(meal_id,food_name,quantity,serving_unit,grams_logged,kcal,protein_g,carb_g,fat_g,logged_via,source)
+      values (mb1,'Keep b curd',50,'g',50,30,2,2,1.5,'ai','manual');
+    bitem := bitem || '{"quantity":30,"grams":30,"kcal":18,"protein_g":1.2,"carb_g":1.2,"fat_g":0.9}';
+    insert into public.parse_traces(user_id,input_text,outcome,items,tier) values ('memory_keep_b','30g plain curd','meal',jsonb_build_array(bitem),'fast');
+    insert into public.meal_entries(meal_id,food_name,quantity,serving_unit,grams_logged,kcal,protein_g,carb_g,fat_g,logged_via,source)
+      values (mb2,'Keep b curd',30,'g',30,18,1.2,1.2,0.9,'ai','manual') returning id into b2;
+    update public.meal_entries set food_name='Keep b other' where id=b2;
+    if not exists(select 1 from food_memory_private.alias_rejections where user_id='memory_keep_b' and alias='plain curd') then
+      raise exception 'setup: swap was not recorded'; end if;
+    delete from public.user_food_cache where user_id='memory_keep_b' and canonical_key='keep b curd';
+    delete from public.meals where id=mb1;
+    if exists(select 1 from food_memory_private.alias_rejections where user_id='memory_keep_b' and canonical_key='keep b curd') then
+      raise exception 'swap records outlived the food when its memory row was already gone'; end if;
+  end;
   if has_function_privilege('authenticated','food_memory_private.keep_food_memory()','EXECUTE')
      or has_function_privilege('anon','food_memory_private.keep_food_memory()','EXECUTE') then
     raise exception 'trigger function exposed to clients'; end if;
