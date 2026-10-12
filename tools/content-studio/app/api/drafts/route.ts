@@ -30,6 +30,7 @@ export async function PUT(req: Request) {
         title: body.title !== undefined ? cleanDashes(body.title) : d.title,
         subreddit: body.subreddit ?? d.subreddit,
         ready: false,
+        claimedAt: undefined,
         updatedAt: new Date().toISOString(),
       };
       return saved;
@@ -40,18 +41,21 @@ export async function PUT(req: Request) {
 
 /** Mark a draft Ready (or not). Only a draft that could be posted as-is can be Ready. */
 export async function PATCH(req: Request) {
-  const { id, ready } = (await req.json()) as { id: string; ready: boolean };
-  let error: string | null = null;
+  const { id, ready } = (await req.json()) as { id: string; ready: unknown };
+  if (typeof ready !== 'boolean') return NextResponse.json({ error: 'ready must be true or false' }, { status: 400 });
+  let error = null as string | null;
   let saved: Draft | undefined;
   await update<Draft[]>('drafts', [], (cur) =>
     cur.map((d) => {
       if (d.id !== id) return d;
       if (d.status === 'posted') { error = 'This draft is already posted.'; return d; }
+      if (d.channel !== 'x') { error = 'Only X drafts can be Ready. The routine posts nothing else.'; return d; }
       if (ready) {
         error = postBlocker(d);
         if (error) return d;
       }
-      return (saved = { ...d, ready: Boolean(ready), updatedAt: new Date().toISOString() });
+      // Not ready also releases a claim, so you can take a draft back from the routine.
+      return (saved = { ...d, ready, claimedAt: undefined, updatedAt: new Date().toISOString() });
     }),
   );
   if (error) return NextResponse.json({ error }, { status: 400 });

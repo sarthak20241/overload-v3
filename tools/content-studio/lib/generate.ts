@@ -362,6 +362,7 @@ ${draftContract(d.channel)}`;
         parts: out.parts.length ? out.parts : x.parts,
         // A rewrite is new text you haven't read yet.
         ready: false,
+        claimedAt: undefined,
         rationale: out.rationale || x.rationale,
         altHooks: out.altHooks.length ? out.altHooks : x.altHooks,
         scores: Object.keys(out.scores).length ? out.scores : x.scores,

@@ -4,7 +4,7 @@
  * could make your browser open such a link, so each one needs this token,
  * which only the routine prompt knows.
  */
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './store';
@@ -24,5 +24,8 @@ export async function routineToken(): Promise<string> {
 
 export async function tokenOk(req: Request): Promise<boolean> {
   const given = new URL(req.url).searchParams.get('token') ?? '';
-  return given.length > 0 && given === (await routineToken());
+  if (!given) return false;
+  // Hash both so the compare is constant-time even when lengths differ.
+  const h = (s: string) => createHash('sha256').update(s).digest();
+  return timingSafeEqual(h(given), h(await routineToken()));
 }

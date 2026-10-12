@@ -43,6 +43,7 @@ export async function POST(req: Request) {
     const blocker = postBlocker(draft);
     if (blocker) return NextResponse.json({ error: blocker }, { status: 400 });
 
+    if (draft.claimedAt) return NextResponse.json({ error: 'The daily routine has taken this draft to post. Check X first, or press "Not ready" to take it back.' }, { status: 409 });
     if (inFlight.has(draftId)) return NextResponse.json({ error: 'This draft is already being posted.' }, { status: 409 });
     inFlight.add(draftId);
     try {

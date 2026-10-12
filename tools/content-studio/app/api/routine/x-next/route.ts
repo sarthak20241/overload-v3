@@ -1,22 +1,45 @@
 import { NextResponse } from 'next/server';
 import { postBlocker } from '@/lib/checks';
 import { tokenOk } from '@/lib/routine';
-import { read } from '@/lib/store';
+import { update } from '@/lib/store';
 import type { Draft } from '@/lib/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/** The oldest X draft you marked Ready and that is still unposted, or none. */
+/**
+ * Hands the routine the oldest Ready X draft and claims it. If an earlier
+ * draft was claimed but never confirmed, the routine posted it and failed to
+ * record it, or never posted it: either way nothing new goes out until that is
+ * settled, so a hiccup can't put the same thread on X twice.
+ */
 export async function GET(req: Request) {
   if (!(await tokenOk(req))) return NextResponse.json({ error: 'Bad token' }, { status: 403 });
-  const drafts = await read<Draft[]>('drafts', []);
-  const next = drafts
-    .filter((d) => d.channel === 'x' && d.status === 'draft' && d.ready && !postBlocker(d))
-    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))[0];
+  let pending = undefined as Draft | undefined;
+  let next = undefined as Draft | undefined;
+  const now = new Date().toISOString();
+  await update<Draft[]>('drafts', [], (cur) => {
+    const open = cur.filter((d) => d.channel === 'x' && d.status === 'draft' && d.ready);
+    pending = open.find((d) => d.claimedAt);
+    if (pending) return cur;
+    next = open.filter((d) => !postBlocker(d)).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))[0];
+    if (!next) return cur;
+    next = { ...next, claimedAt: now };
+    return cur.map((d) => (d.id === next!.id ? next! : d));
+  });
+
+  if (pending) {
+    const p = pending as Draft;
+    return NextResponse.json({
+      draft: null,
+      unconfirmed: { id: p.id, topic: p.topicTitle, firstPost: p.parts[0], claimedAt: p.claimedAt },
+      note: 'An earlier draft was handed out but never confirmed. Do NOT post anything on X today. Check https://x.com/build_sarthak: if a post starting with firstPost is there, open /api/routine/x-posted with this id and that post\'s URL. If it is not there, report it so the founder can release it in the studio.',
+    });
+  }
   if (!next) return NextResponse.json({ draft: null, note: 'No X draft is marked Ready. Post nothing on X today.' });
+  const n = next as Draft;
   return NextResponse.json({
-    draft: { id: next.id, topic: next.topicTitle, posts: next.parts, count: next.parts.length },
+    draft: { id: n.id, topic: n.topicTitle, posts: n.parts, count: n.parts.length },
     note: 'Post these as ONE thread to Everyone, in this exact order and wording. Then open /api/routine/x-posted with id and url.',
   });
 }

@@ -16,13 +16,13 @@ export async function GET(req: Request) {
   if (!/^https:\/\/(x|twitter)\.com\/[^/]+\/status\/\d+/.test(url)) {
     return NextResponse.json({ error: 'url must be the link to the first post, like https://x.com/build_sarthak/status/123' }, { status: 400 });
   }
-  let result: Draft | undefined;
+  let result = undefined as Draft | undefined;
   let error = 'Draft not found.';
   const now = new Date().toISOString();
   await update<Draft[]>('drafts', [], (cur) =>
     cur.map((d) => {
       if (d.id !== id) return d;
-      if (d.channel !== 'x' || !d.ready || d.status !== 'draft') { error = 'That draft is not a Ready, unposted X draft.'; return d; }
+      if (d.channel !== 'x' || !d.ready || !d.claimedAt || d.status !== 'draft') { error = 'That draft was not handed out by x-next, or is already posted.'; return d; }
       return (result = { ...d, status: 'posted', postedUrl: url, postedAt: now, updatedAt: now });
     }),
   );

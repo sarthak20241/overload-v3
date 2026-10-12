@@ -316,7 +316,9 @@ function Publish({ d, s, blocked, confirm, setConfirm }: { d: Draft; s: StudioAp
       {d.channel === 'x' && (
         <div className="spread preview" style={{ marginBottom: 12 }}>
           <span>
-            {d.ready
+            {d.ready && d.claimedAt
+              ? 'The routine took this one to post. If it never showed up on X, press "Not ready" to take it back.'
+              : d.ready
               ? 'Ready. The daily routine will post this one when its turn comes.'
               : 'Read it, then mark it Ready. The daily routine only posts Ready drafts, one a day.'}
           </span>
