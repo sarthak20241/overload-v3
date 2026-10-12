@@ -23,8 +23,10 @@ A deleted log means "I did not eat this", not "wrong food" (owner decision
 
 - Deleting a food's newest log moves its cache row to the next newest kept log
   of that food. The row goes only when no kept log is left.
-- Each alias keeps every log that confirmed it (`alias_evidence.entry_ids`, the
-  20 newest) and lives while any of them is kept. Entry and whole-meal deletes
+- Each alias keeps the logs that confirmed it (`alias_evidence.entry_ids`, the
+  20 newest) and lives while any of those is kept. An alias confirmed more than
+  20 times can go once its 20 newest logs are deleted, though older ones remain.
+  That is the safe direction. Entry and whole-meal deletes
   remove only their own logs from that list.
 - A swap (a log renamed to a food with another name key) drops every alias that
   log confirmed, whatever else confirmed it. A rename that keeps the name key
@@ -32,6 +34,7 @@ A deleted log means "I did not eat this", not "wrong food" (owner decision
 - A swap is written down in `food_memory_private.alias_rejections`. Proof from a
   parse before the swap never brings that alias back, not through a late save
   and not through the repair. A new kept match after the swap teaches it again.
+  The records go when the food's last log goes, including on account deletion.
 
 Before this, deleting the newest log cascaded away the whole row and every
 alias on it. `food_memory_private.repair_lost_memory(apply)` restores what that
@@ -39,6 +42,9 @@ removed, from proof still in the diary: each lost food from its newest kept
 log, and each alias only where a kept log matches, unchanged, the
 high-confidence parse that resolved the user's words to it. Run it with
 `false` first: it returns the plan and writes nothing. It is idempotent.
+Swaps before this migration were never recorded, so apply mode cannot see them;
+a check on live on 2026-10-12 found none (no kept log whose name differs from
+the parse it came from). Review the dry run before applying.
 
 Food additions and identity replacements in follow-ups use the same personal
 memory, saved-meal matching and precise cache as first-shot logs. Precise

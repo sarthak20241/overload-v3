@@ -1,8 +1,9 @@
 // Runs the personal food memory SQL tests on an in-memory Postgres (PGlite),
 // so the triggers can be tested before anything touches the live database.
 // It builds only the Supabase surface these migrations use (roles, auth.jwt,
-// meals, meal_entries, parse_traces and the live tier-stamp trigger), applies
-// every food-memory migration in order, then runs each test file.
+// meals, meal_entries, parse_traces and a hand copy of the live tier-stamp
+// trigger, which can drift from production), applies every food-memory
+// migration in order, then runs each test file.
 //
 //   deno run --node-modules-dir=none --allow-read --allow-env --allow-net --allow-write --allow-sys supabase/tests/food_memory_local.ts
 //
@@ -12,7 +13,6 @@ import { PGlite } from "npm:@electric-sql/pglite@0.2.17";
 
 const repo = new URL("../../", import.meta.url).pathname;
 const join = (...p: string[]) => repo + p.join("/");
-const readFileSync = (p: string) => Deno.readTextFileSync(p);
 const migrations = [
   "supabase/migrations/20261001024340_personal_food_aliases.sql",
   "supabase/migrations/20261001114748_personal_food_cache_grants.sql",
@@ -92,18 +92,19 @@ create trigger trg_meal_entries_stamp_tier before insert on public.meal_entries
 `);
 
 for (const f of migrations) {
-  await db.exec(readFileSync(join(f)));
+  await db.exec(Deno.readTextFileSync(join(f)));
   console.log(`applied ${f}`);
 }
 let failed = 0;
 for (const f of tests) {
   try {
-    const res = await db.exec(readFileSync(join(f)));
+    const res = await db.exec(Deno.readTextFileSync(join(f)));
     const rows = res.flatMap((r) => r.rows as Array<{ checks?: string }>).filter((r) => r.checks);
     console.log(`PASS ${f}: ${rows.map((r) => r.checks).join(" | ")}`);
   } catch (e) {
     failed++;
     console.log(`FAIL ${f}: ${(e as Error).message}`);
+    // End the failed test's transaction so the next file starts clean.
     await db.exec("rollback").catch(() => {});
   }
 }

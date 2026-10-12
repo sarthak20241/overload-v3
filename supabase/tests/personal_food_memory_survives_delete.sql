@@ -92,6 +92,8 @@ begin
   delete from public.meals where id=m1;
   if exists(select 1 from public.user_food_cache where user_id='memory_keep_a' and canonical_key='keep dairy nutrifit dahi') then
     raise exception 'food with no kept log is still remembered'; end if;
+  if exists(select 1 from food_memory_private.alias_rejections where user_id='memory_keep_a') then
+    raise exception 'swap records outlived the food'; end if;
   if has_function_privilege('authenticated','food_memory_private.keep_food_memory()','EXECUTE')
      or has_function_privilege('anon','food_memory_private.keep_food_memory()','EXECUTE') then
     raise exception 'trigger function exposed to clients'; end if;

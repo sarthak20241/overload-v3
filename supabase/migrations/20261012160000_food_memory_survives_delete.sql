@@ -10,8 +10,8 @@
 --   - deleting the newest log moves the memory to the next newest kept log
 --     of that food; with none left the row goes, as before (the FK cascade
 --     stays as the backstop)
---   - an alias keeps every log that confirmed it (alias_evidence.entry_ids)
---     and lives while any of them is kept
+--   - an alias keeps the logs that confirmed it (alias_evidence.entry_ids,
+--     the 20 newest) and lives while any of those is kept
 --   - a swap (the log renamed to another food) still drops every alias that
 --     log confirmed, whatever else confirmed it: the user said the words
 --     meant another food
@@ -148,6 +148,10 @@ begin
   next_entry := food_memory_private.newest_snapshot_entry(c.user_id, c.canonical_key, gone);
   if next_entry is null then
     delete from public.user_food_cache where id = c.id;
+    -- No kept log of this food is left, so no old proof can exist either.
+    -- Also how account deletion (delete_user_data deletes meals) clears them.
+    delete from food_memory_private.alias_rejections r
+    where r.user_id = c.user_id and r.canonical_key = c.canonical_key;
   else
     perform food_memory_private.write_snapshot(next_entry, null);
   end if;
