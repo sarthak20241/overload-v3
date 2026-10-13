@@ -1,25 +1,16 @@
 name: Deploy to app stores
 
-# Builds a production binary for each platform and submits it to the stores
-# whenever main is updated (i.e. a PR is merged). Can also be run on demand
-# from the EAS dashboard via the manual trigger.
+# Builds a production binary for each platform and submits it to the stores.
+# MANUAL ONLY: run it from the EAS dashboard or `eas workflow:run deploy.yml
+# --ref <full sha>`. It no longer runs on every merge to main.
 #
-# Paths filter: backend and docs changes don't alter the app binary, so they
-# shouldn't burn a build + store-submission cycle. Everything else triggers.
+# Why: on the free plan the submit jobs hit the 60-minute CI/CD cap (Oct 2026),
+# so every merge burned two cloud builds that never reached a store. Releases
+# are now built on the Mac and submitted from the CLI instead:
+#   eas build -p <android|ios> --profile production --local --output <file>
+#   eas submit -p <android|ios> --profile production --path <file>
+# To bring back build-on-merge, restore the `push` trigger (see git history).
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - '**'
-      - '!supabase/**'        # DB migrations + edge functions deploy separately
-      - '!.planning/**'
-      - '!.github/**'
-      - '!.claude/**'
-      - '!.eas/**'            # editing workflows shouldn't rebuild the app
-      - '!store-assets/**'
-      - '!sketches/**'
-      - '!**/*.md'
   workflow_dispatch: {}
 
 jobs:
