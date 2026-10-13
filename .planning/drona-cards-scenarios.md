@@ -548,3 +548,61 @@ and asks, and B1 is the first card with a real decision in it.
 1. `deferred_at` + the popup for every kind, with **Later** on each. Tapping
    outside the popup counts as Later. The card under TODAY goes away.
 2. The From Drona screen (Waiting + Done), rows on Profile and Goal.
+
+## L. A plan change is a conversation first (owner, 2026-09-20)
+
+Two corrections from the owner after B1 shipped.
+
+### L1. Calories move both ways
+B1's validator refuses anything that is not a cut. That is right for B1 (a cut
+that stalled) and wrong as a general rule: a cut running too fast wants MORE
+food, a bulk running too fast wants LESS, a bulk that stalled wants more.
+
+So B1, B2 and the bulk cases become ONE "adjust calories" card. The model picks
+the direction; the validator checks the direction against goal and trend:
+
+| Goal | Trend (3 weeks, 6+ weigh-ins) | Valid direction |
+|---|---|---|
+| cut | flat | down |
+| cut | faster than 1% of bodyweight a week | up |
+| bulk | faster than 0.5% a week | down |
+| bulk | flat | up |
+| any | the right speed | hold |
+
+Step size, floor, the four ugly checks and Undo stay exactly as B1 has them.
+
+### L2. Drift is asked about before it is acted on
+The same two sessions in a week can mean "no time this week" or "four days was
+never realistic". The data alone cannot tell them apart, and changing someone's
+plan on a guess is how trust dies. So:
+
+| What the sessions show | First move |
+|---|---|
+| ONE week short, the weeks before on plan | No plan change. Offer to re-lay THIS week or next: which sessions to keep, which to drop. |
+| The SAME shape two or more weeks running | Ask why, then propose. |
+| Nothing at all for 10+ days | Ask why. The answer may be injury or travel, and a plan card would be tone-deaf. |
+
+**The ask is the TALK card**, the third kind, not built yet. A popup with
+Drona's question and tappable answers (no typing needed): "No time right now" /
+"Travelling" / "Sick or hurt" / "The plan is too much" / "Lost my rhythm", plus
+"Something else" which opens the chat.
+
+The answer goes to the model WITH the facts, and only then does it propose:
+
+| Answer | What the model may propose |
+|---|---|
+| No time right now | this phase at N days a week (N = what they actually do), or keep the plan and move the goal date |
+| Travelling / a busy stretch with an end | hold the plan, re-lay the weeks until it ends, no permanent change |
+| Sick or hurt | hold everything; a lighter first week back when they say so |
+| The plan is too much | fewer days AND shorter sessions, this phase only |
+| Lost my rhythm | no plan change; one small ask (one session this week) |
+
+Every proposal still goes through a validator and lands with Undo. The answer
+is stored on the card (`summary`) and in Drona's memory (`coach_memory`), so
+next week's card knows "work is busy until October" and does not ask again.
+
+### L3. Build order, revised
+1. The TALK card: question, tappable answers, the answer stored.
+2. A1 on top of it: one-off vs pattern, then the proposals in L2.
+3. Calories both ways (L1).
+4. G1 log RIR.

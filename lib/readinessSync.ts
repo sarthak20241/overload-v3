@@ -11,6 +11,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { computeReadiness, type BaselineStat, type ReadinessResult } from './readiness';
 import { syncHealthData } from './healthSync';
 import { dowOfISO, normalizeFuelDays } from './fuelDays';
+import { storeReadinessParts } from './readinessParts';
 import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from './targetHistory';
 
 const BASELINE_DAYS = 28;
@@ -49,9 +50,11 @@ function stat(values: number[]): BaselineStat {
 export async function loadReadiness(
   supabase: SupabaseClient,
   userId: string,
+  /** The local day to score. Defaults to now; a caller that also saves passes its own. */
+  day?: string,
 ): Promise<ReadinessResult | null> {
   if (!userId) return null;
-  const today = todayLocalISO();
+  const today = day ?? todayLocalISO();
   const since = shiftDaysISO(today, -BASELINE_DAYS);
 
   // The recovery-metrics, acute-load and nutrition reads are independent, so fire
@@ -279,13 +282,22 @@ export async function computeAndStoreReadiness(
   supabase: SupabaseClient,
   userId: string,
 ): Promise<ReadinessResult | null> {
-  const result = await loadReadiness(supabase, userId);
+  // One local day for the score, its inputs and both rows, so a save around
+  // midnight cannot score one day and file it under another.
+  const day = todayLocalISO();
+  const result = await loadReadiness(supabase, userId, day);
   if (result && result.score != null) {
     const { error: upErr } = await supabase.from('daily_metrics').upsert(
-      { user_id: userId, metric_date: todayLocalISO(), metric_type: 'readiness_score', value: result.score, unit: 'score', source: 'manual' },
+      { user_id: userId, metric_date: day, metric_type: 'readiness_score', value: result.score, unit: 'score', source: 'manual' },
       { onConflict: 'user_id,metric_date,metric_type' },
     );
     if (upErr) throw upErr;
+  }
+  if (result) {
+    const partsErr = await storeReadinessParts(supabase, userId, day, result);
+    // Best effort, never blocks the score; but a missing table or an RLS refusal
+    // should still be visible somewhere.
+    if (partsErr) console.warn('[readiness] parts not saved', partsErr);
   }
   return result;
 }

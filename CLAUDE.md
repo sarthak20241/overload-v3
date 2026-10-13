@@ -37,6 +37,7 @@ deno test --allow-all supabase/functions/revenuecat-webhook/
 deno test --allow-all supabase/functions/_shared/   # TODAY pick rules, shared by app + daily-suggestion
 deno test --allow-all lib/xp.test.ts
 deno test --allow-all lib/tiers.test.ts
+deno test --unstable-sloppy-imports --import-map=lib/test-import-map.json lib/readiness.test.ts
 deno test --allow-all lib/coachErrors.test.ts  # which bucket a failure lands in
 deno test --allow-all lib/servingSize.test.ts # food editor portion <-> stored serving
 deno test --allow-all lib/logDay.test.ts      # "2 eggs for tomorrow" -> which day a food log lands on
