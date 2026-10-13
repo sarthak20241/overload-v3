@@ -376,7 +376,9 @@ export function NutritionGoalSheet({
         ? (phase ? `Just for ${dayLong}. The other days stay on your plan.` : `Just for ${dayLong}. The other days keep your usual goal.`)
         : (phase ? 'Just for today. Tomorrow you are back on your plan.' : 'Just for today. Tomorrow goes back to your usual goal.'))
     : (phase ? `Every day until ${phase.name} ends. Your plan changes to match.` : 'Every day from today on.');
-  const stuckDay = stuck && stuck.failed.includes(todayISO) ? 'today' : dayLong;
+  // Every day still holding its own goal, so the message never names fewer.
+  const stuckDays = (stuck?.failed ?? []).map((d) => (d === todayISO ? 'today' : dayLong)).join(' and ');
+  const stuckHas = (stuck?.failed.length ?? 0) > 1 ? 'still have their own goals' : 'still has its own goal';
   const saveLabel = busy
     ? 'Saving...'
     : stuck ? 'Try again'
@@ -428,6 +430,9 @@ export function NutritionGoalSheet({
                   value={vals[f.key]}
                   onChangeText={(t) => onChangeField(f.key, t)}
                   keyboardType="number-pad"
+                  // Saved already: "Try again" only retries the clear, so an
+                  // edit here would be silently dropped. Lock the fields.
+                  editable={!stuck}
                   returnKeyType="done"
                   selectTextOnFocus
                   maxLength={5}
@@ -467,7 +472,7 @@ export function NutritionGoalSheet({
 
           {/* Where the change lands. Asked once a goal exists; "<day> only" first,
               so a one-off day never quietly rewrites the plan. */}
-          {!firstGoal && phaseReady && (
+          {!firstGoal && phaseReady && !stuck && (
             <View style={s.scopeWrap}>
               <View style={[s.scopeTrack, { backgroundColor: C.muted }]}>
                 {(['day', 'lasting'] as const).map((k) => {
@@ -508,7 +513,7 @@ export function NutritionGoalSheet({
 
           {stuck && (
             <Text style={[s.scopeNote, { color: C.dangerText, marginTop: Spacing.sm }]}>
-              {`Your new goal is saved, but ${stuckDay} still has its own goal. Check your connection and try again.`}
+              {`Your new goal is saved, but ${stuckDays} ${stuckHas}. Check your connection and try again.`}
             </Text>
           )}
 
