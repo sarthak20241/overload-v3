@@ -33,7 +33,7 @@ import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMea
 import { DayLoadFailed, DaySummaryLoading, MealRowsLoading } from '@/components/diet/DayLoading';
 import { ParsedItemEditor } from '@/components/diet/ParsedItemEditor';
 import { EntryEditSheet } from '@/components/diet/EntryEditSheet';
-import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
+import { NutritionGoalSheet, goalDayFor } from '@/components/diet/NutritionGoalSheet';
 import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
 import { fuelOn } from '@/lib/fuelDays';
 import { latestLogDay, readLogDayPhrase } from '@/lib/logDay';
@@ -1577,7 +1577,7 @@ export default function NutritionScreen() {
         // today (a past day keeps the goal it had). Seed it from that day's own
         // one-day goal when it has one, else the lasting one.
         day={viewDate}
-        initial={overrideOn(viewIso > ymd(new Date()) ? viewDate : new Date()) ?? baseTargets}
+        initial={overrideOn(goalDayFor(viewDate)) ?? baseTargets}
         lasting={baseTargets}
         firstGoal={!isCustom}
         fuelDays={fuelDays}

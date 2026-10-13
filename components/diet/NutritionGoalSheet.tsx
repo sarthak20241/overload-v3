@@ -44,6 +44,15 @@ const FIELDS: Field[] = [
 
 export type GoalScope = 'day' | 'lasting';
 
+/**
+ * The day a "<day> only" goal lands on for the day on screen. A future day is
+ * its own; today or a past day is today, since a past day keeps the goal it
+ * had. One rule for the sheet and the screen that seeds it.
+ */
+export function goalDayFor(view: Date, now = new Date()): Date {
+  return ymd(view) > ymd(now) ? view : now;
+}
+
 interface Props {
   open: boolean;
   /** The day's goal: its one-day goal when it has one, else the lasting goal. */
@@ -92,10 +101,12 @@ export function NutritionGoalSheet({
   const [busy, setBusy] = useState(false);
   const [scope, setScope] = useState<GoalScope>('day');
   // The day a one-day goal lands on. Only a future day moves it off today.
-  const todayISO = ymd(new Date());
+  const now = new Date();
+  const todayISO = ymd(now);
   const viewISO = day ? ymd(day) : todayISO;
-  const future = viewISO > todayISO;
-  const dayISO = future ? viewISO : todayISO;
+  const dayISO = ymd(goalDayFor(day ?? now, now));
+  const future = dayISO !== todayISO;
+  const past = viewISO < todayISO;
   const dayShort = future && day
     ? day.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' })
     : 'Today';
@@ -371,7 +382,9 @@ export function NutritionGoalSheet({
           <View style={s.header}>
             <View style={{ flex: 1 }}>
               <Text style={[s.title, { color: C.foreground }]}>Daily goal</Text>
-              <Text style={[s.subtitle, { color: C.mutedFg }]}>Past days keep the goal they had.</Text>
+              <Text style={[s.subtitle, { color: C.mutedFg }]}>
+                {past ? 'This sets today\'s goal. Past days keep the goal they had.' : 'Past days keep the goal they had.'}
+              </Text>
             </View>
             <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityLabel="Close">
               <Feather name="x" size={15} color={C.foreground} />
