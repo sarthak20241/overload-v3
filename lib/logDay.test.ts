@@ -4,7 +4,7 @@
 // "now" to Sunday 11 Oct 2026, 21:40 local.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { latestLogDay, MAX_FUTURE_LOG_DAYS, readLogDayPhrase } from "./logDay.ts";
+import { goalDayFor, latestLogDay, MAX_FUTURE_LOG_DAYS, readLogDayPhrase } from "./logDay.ts";
 
 const NOW = new Date(2026, 9, 11, 21, 40); // Sun 11 Oct 2026
 const ymd = (d: Date) =>
@@ -76,4 +76,15 @@ Deno.test("the window ends MAX_FUTURE_LOG_DAYS after today", () => {
   assertEquals(MAX_FUTURE_LOG_DAYS, 30);
   assertEquals(read("on 10 nov 2 eggs")?.day, "2026-11-10");
   assertEquals(read("on 11 nov 2 eggs"), null);
+});
+
+Deno.test("a goal set on a future day lands on that day; today and past days land on today", () => {
+  const tomorrowEarly = new Date(2026, 9, 12, 0, 5);
+  const laterToday = new Date(2026, 9, 11, 23, 59);
+  const yesterday = new Date(2026, 9, 10, 12, 0);
+  const nextMonth = new Date(2026, 10, 2, 8, 0);
+  assertEquals(ymd(goalDayFor(tomorrowEarly, NOW)), "2026-10-12");
+  assertEquals(ymd(goalDayFor(nextMonth, NOW)), "2026-11-02");
+  assertEquals(ymd(goalDayFor(laterToday, NOW)), "2026-10-11");
+  assertEquals(ymd(goalDayFor(yesterday, NOW)), "2026-10-11");
 });

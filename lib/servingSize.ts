@@ -98,3 +98,46 @@ export function scaleServingNutrition<T extends { kcal: number; protein: number;
   return { kcal: basis.kcal * ratio, protein: basis.protein * ratio,
     carb: basis.carb * ratio, fat: basis.fat * ratio };
 }
+
+/**
+ * A count for display. A tenth is fine from one up ("1.5 x bowl"), but below
+ * one it rounds a real amount to nothing: 0.04 of a "100 g" scoop read
+ * "0 x 100 g" next to 16 kcal. Below one we keep two places, and an amount
+ * too small even for that says so instead of claiming zero.
+ */
+export function formatCount(n: number): string {
+  if (!(n > 0)) return '0';
+  if (n >= 1) return String(Math.round(n * 10) / 10);
+  const two = Math.round(n * 100) / 100;
+  return two > 0 ? String(two) : '<0.01';
+}
+
+/**
+ * How a logged portion reads under a food name.
+ *
+ * A MEASUREMENT already carries the amount: "150 g", never "150 x g".
+ * A serving that is itself a measurement ("100 g", "250 ml") folds into one:
+ * 0.16 x "100 g" reads "16 g" and 2 x "100 g" reads "200 g", which is what
+ * the user ate, with no multiplication left for them to do.
+ * A NAMED portion (bowl, egg, roti) keeps the multiplier, "2 x bowl", and
+ * stands alone at one.
+ *
+ * No pluralisation: serving labels come from third-party catalogues in
+ * whatever form they were entered, so guessing a plural would mangle as many
+ * as it fixed.
+ */
+export function servingText(
+  quantity: number,
+  label: string,
+  isMeasurement: (unit: string) => boolean,
+): string {
+  const l = label.trim();
+  if (isMeasurement(l)) return `${formatCount(quantity)} ${l}`;
+  const m = l.match(LEAD);
+  if (m && isMeasurement(m[2].trim())) {
+    const size = parseNum(m[1]);
+    if (size > 0) return `${formatCount(quantity * size)} ${m[2].trim()}`;
+  }
+  const qty = formatCount(quantity);
+  return qty === '1' ? l : `${qty} × ${l}`;
+}
