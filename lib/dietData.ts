@@ -1507,8 +1507,8 @@ export function useNutritionTargets(): {
   fuelDays: FuelDay[];
   applyFuelDays: (days: FuelDay[]) => void;
   targetsOn: (date: Date) => NutritionTargets;
-  /** The goal set for today only ("Today only" on the goal sheet), if any. */
-  todayOverride: NutritionTargets | null;
+  /** The goal set for this one day only ("... only" on the goal sheet), if any. */
+  overrideOn: (date: Date) => NutritionTargets | null;
   applyDayTarget: (dayISO: string, t: NutritionTargets | null) => void;
 } {
   const supabase = useSupabaseClient();
@@ -1548,6 +1548,9 @@ export function useNutritionTargets(): {
     const next = t
       ? [...rest, { day: dayISO, kcal: t.kcal, protein_g: t.protein, carb_g: t.carb, fat_g: t.fat }]
       : rest;
+    // Ahead of the render, so a second call in the same tick (a lasting save
+    // clears two days) builds on this one instead of putting the first back.
+    dayTargetsRef.current = next;
     setDayTargets(next);
     const cur = readCache<CachedTargets>('nutritionTargets', clerkId);
     if (cur) writeCache<CachedTargets>('nutritionTargets', clerkId, { ...cur, dayTargets: next });
@@ -1570,15 +1573,17 @@ export function useNutritionTargets(): {
     }),
     [targets, fuelDays, history, dayTargets],
   );
-  const todayRow = dayTargets.find((r) => r.day === ymd(new Date()));
-  const todayOverride: NutritionTargets | null = todayRow
-    ? {
-        kcal: Number(todayRow.kcal),
-        protein: todayRow.protein_g == null ? targets.protein : Number(todayRow.protein_g),
-        carb: todayRow.carb_g == null ? targets.carb : Number(todayRow.carb_g),
-        fat: todayRow.fat_g == null ? targets.fat : Number(todayRow.fat_g),
-      }
-    : null;
+  const overrideOn = useCallback((date: Date): NutritionTargets | null => {
+    const row = dayTargets.find((r) => r.day === ymd(date));
+    return row
+      ? {
+          kcal: Number(row.kcal),
+          protein: row.protein_g == null ? targets.protein : Number(row.protein_g),
+          carb: row.carb_g == null ? targets.carb : Number(row.carb_g),
+          fat: row.fat_g == null ? targets.fat : Number(row.fat_g),
+        }
+      : null;
+  }, [dayTargets, targets]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1667,10 +1672,10 @@ export function useNutritionTargets(): {
     }, [reload]),
   );
 
-  return { targets, isCustom, reload, apply, fuelDays, applyFuelDays, targetsOn, todayOverride, applyDayTarget };
+  return { targets, isCustom, reload, apply, fuelDays, applyFuelDays, targetsOn, overrideOn, applyDayTarget };
 }
 
-/** "Today only": a goal for one local day. The plan and the profile are untouched. */
+/** "<day> only": a goal for one local day. The plan and the profile are untouched. */
 export async function saveDayTarget(
   supabase: Supa,
   clerkId: string,

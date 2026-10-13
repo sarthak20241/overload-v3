@@ -5,8 +5,9 @@
  * until they're set the app falls back to sensible defaults, so this is how a
  * user makes the framing theirs. Portal sheet, matching EntryEditSheet.
  *
- * Where a change lands (asked once a goal exists, "Today only" first):
+ * Where a change lands (asked once a goal exists, "<day> only" first):
  *   - Today only         -> user_day_targets for today; the plan is untouched
+ *     (on a future day: "Wed 15 only", a row for that day instead)
  *   - Rest of this phase -> the profile AND the current program phase, so the
  *                           plan and the ring agree (with a program)
  *   - From today on      -> the profile (no program)
@@ -41,12 +42,17 @@ const FIELDS: Field[] = [
   { key: 'fat', label: 'Fat', unit: 'g', color: (c) => c.macro.fat, min: 0, max: 400 },
 ];
 
-export type GoalScope = 'today' | 'lasting';
+export type GoalScope = 'day' | 'lasting';
 
 interface Props {
   open: boolean;
-  /** Today's goal: a one-day goal when today has one, else the lasting goal. */
+  /** The day's goal: its one-day goal when it has one, else the lasting goal. */
   initial: NutritionTargets;
+  /**
+   * The day on screen. A future day gets its own one-day goal. Today or a past
+   * day edits today: a past day keeps the goal it had. Defaults to today.
+   */
+  day?: Date;
   /**
    * The lasting goal. Switching to the lasting choice before typing reseeds the
    * fields from it, so a one-day number is never saved to the whole phase just
@@ -55,12 +61,12 @@ interface Props {
   lasting?: NutritionTargets;
   onClose: () => void;
   /**
-   * `today`: a goal for today only; `lasting`: from today on (and the phase,
-   * with a program). `clearedToday`: a lasting save also removed today's
-   * one-day goal, so the caller can drop it locally; false when that delete
-   * failed and the row is still there.
+   * `day`: a goal for `dayISO` only; `lasting`: from today on (and the phase,
+   * with a program). `clearedDays`: the one-day goals a lasting save removed
+   * (today's, and the day on screen), so the caller can drop them locally. A
+   * day whose delete failed is left out: its row is still there.
    */
-  onSaved: (saved: NutritionTargets, scope: GoalScope, clearedToday: boolean) => void;
+  onSaved: (saved: NutritionTargets, scope: GoalScope, dayISO: string, clearedDays: string[]) => void;
   /** No goal set yet: save it as the lasting goal without asking. */
   firstGoal?: boolean;
   /** With a program: hand the new calories to Drona to rework the whole plan. */
@@ -71,7 +77,7 @@ interface Props {
 }
 
 export function NutritionGoalSheet({
-  open, initial, lasting, onClose, onSaved, fuelDays, onOpenFuelDays, firstGoal, onOpenDronaPlan,
+  open, initial, lasting, day, onClose, onSaved, fuelDays, onOpenFuelDays, firstGoal, onOpenDronaPlan,
 }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
@@ -84,7 +90,18 @@ export function NutritionGoalSheet({
     kcal: '', protein: '', carb: '', fat: '',
   });
   const [busy, setBusy] = useState(false);
-  const [scope, setScope] = useState<GoalScope>('today');
+  const [scope, setScope] = useState<GoalScope>('day');
+  // The day a one-day goal lands on. Only a future day moves it off today.
+  const todayISO = ymd(new Date());
+  const viewISO = day ? ymd(day) : todayISO;
+  const future = viewISO > todayISO;
+  const dayISO = future ? viewISO : todayISO;
+  const dayShort = future && day
+    ? day.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' })
+    : 'Today';
+  const dayLong = future && day
+    ? day.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })
+    : 'today';
   // The program phase running today, if any: "Rest of this phase" writes it too.
   // `before` keeps the phase's own values, nulls included, so an undo restores
   // exactly what was there.
@@ -130,7 +147,7 @@ export function NutritionGoalSheet({
       setBusy(false);
       setFailed(false);
       setDirty(false);
-      setScope(firstGoal ? 'lasting' : 'today');
+      setScope(firstGoal ? 'lasting' : 'day');
       setPhase(null);
       setPhaseReady(false);
       const clerkId = user?.id;
@@ -183,12 +200,12 @@ export function NutritionGoalSheet({
     });
     splitRef.current = energySplit(t);
   };
-  // Untouched fields follow the choice: today's goal for "Today only", the
+  // Untouched fields follow the choice: the day's goal for "<day> only", the
   // lasting goal otherwise. Typed numbers stay whatever the choice.
   const pickScope = (k: GoalScope) => {
     haptics.selection();
     setScope(k);
-    if (!dirty) seed(k === 'today' ? initial : (lasting ?? initial));
+    if (!dirty) seed(k === 'day' ? initial : (lasting ?? initial));
   };
 
   const onChangeField = (key: keyof NutritionTargets, raw: string) => {
@@ -266,11 +283,10 @@ export function NutritionGoalSheet({
       next.carb = m.carb;
       next.fat = m.fat;
     }
-    const today = ymd(new Date());
     let error: string | undefined;
-    let clearedToday = false;
-    if (scope === 'today') {
-      ({ error } = await saveDayTarget(supabase, clerkId, today, next));
+    const clearedDays: string[] = [];
+    if (scope === 'day') {
+      ({ error } = await saveDayTarget(supabase, clerkId, dayISO, next));
     } else {
       // With a program, the phase moves too, so Goal & Plan, the next phase
       // change and Drona all read the same number as the ring. Phase first,
@@ -293,13 +309,17 @@ export function NutritionGoalSheet({
         // so "did not save" is true of both.
         if (error && phase) await writePhase(phase.before);
       }
-      // A lasting goal ends any "today only" one, or today would still show it.
-      // Not fatal: the goal itself is saved, and a "did not save" here would
-      // be untrue. The caller clears it locally either way.
+      // A lasting goal ends today's one-day goal, and the one on the day the
+      // user is looking at, or those days would still show the old number.
+      // Other future one-day goals stay: the user set them on purpose. Not
+      // fatal: the goal itself is saved, and a "did not save" here would be
+      // untrue.
       if (!error) {
-        const { error: clearErr } = await clearDayTarget(supabase, clerkId, today);
-        if (clearErr) console.warn('[goal] could not clear today\'s one-day goal', clearErr);
-        else clearedToday = true;
+        for (const d of dayISO === todayISO ? [todayISO] : [todayISO, dayISO]) {
+          const { error: clearErr } = await clearDayTarget(supabase, clerkId, d);
+          if (clearErr) console.warn('[goal] could not clear a one-day goal', d, clearErr);
+          else clearedDays.push(d);
+        }
       }
     }
     setBusy(false);
@@ -309,18 +329,20 @@ export function NutritionGoalSheet({
       kcal_delta: next.kcal - initial.kcal,
       protein_delta: next.protein - initial.protein,
       clamped: kcal !== parseInt(vals.kcal, 10),
-      scope: scope === 'today' ? 'today' : phase ? 'phase' : 'from_today',
+      scope: scope === 'day' ? (future ? 'future_day' : 'today') : phase ? 'phase' : 'from_today',
     });
-    onSaved(next, scope, clearedToday);
+    onSaved(next, scope, dayISO, clearedDays);
   };
 
   const lastingLabel = phase ? 'Rest of this phase' : 'From today on';
-  const scopeNote = scope === 'today'
-    ? (phase ? 'Just for today. Tomorrow you are back on your plan.' : 'Just for today. Tomorrow goes back to your usual goal.')
+  const scopeNote = scope === 'day'
+    ? (future
+        ? (phase ? `Just for ${dayLong}. The other days stay on your plan.` : `Just for ${dayLong}. The other days keep your usual goal.`)
+        : (phase ? 'Just for today. Tomorrow you are back on your plan.' : 'Just for today. Tomorrow goes back to your usual goal.'))
     : (phase ? `Every day until ${phase.name} ends. Your plan changes to match.` : 'Every day from today on.');
   const saveLabel = busy
     ? 'Saving...'
-    : firstGoal ? 'Save goal' : scope === 'today' ? 'Save for today' : phase ? 'Save for this phase' : 'Save goal';
+    : firstGoal ? 'Save goal' : scope === 'day' ? `Save for ${future ? dayShort : 'today'}` : phase ? 'Save for this phase' : 'Save goal';
 
   return (
     <Portal>
@@ -403,12 +425,12 @@ export function NutritionGoalSheet({
             )}
           </ScrollView>
 
-          {/* Where the change lands. Asked once a goal exists; "Today only" first,
+          {/* Where the change lands. Asked once a goal exists; "<day> only" first,
               so a one-off day never quietly rewrites the plan. */}
           {!firstGoal && phaseReady && (
             <View style={s.scopeWrap}>
               <View style={[s.scopeTrack, { backgroundColor: C.muted }]}>
-                {(['today', 'lasting'] as const).map((k) => {
+                {(['day', 'lasting'] as const).map((k) => {
                   const on = scope === k;
                   return (
                     <Pressable
@@ -419,7 +441,7 @@ export function NutritionGoalSheet({
                       accessibilityState={{ selected: on }}
                     >
                       <Text style={[s.scopeTxt, { color: on ? C.foreground : C.mutedFg }]}>
-                        {k === 'today' ? 'Today only' : lastingLabel}
+                        {k === 'day' ? `${dayShort} only` : lastingLabel}
                       </Text>
                     </Pressable>
                   );

@@ -21,6 +21,7 @@
  */
 
 import { MASS_UNITS, VOLUME_UNITS, massToGrams, volumeToMl, isMeasurementUnit } from './units';
+import { servingText } from './servingSize';
 
 // ── Enums (mirror the DB CHECK constraints in migrations 0046 + 0065) ────────
 
@@ -219,27 +220,9 @@ export function formatMacroGrams(grams: number): string {
   return String(Math.round(grams * 10) / 10);
 }
 
-/**
- * How a logged portion reads under a food name.
- *
- * A MEASUREMENT unit (g, ml, kg, cup, tbsp...) already carries the amount in
- * the number itself, so "100 g" is the portion. Multiplying it renders
- * "100 × g", which reads as a hundred of a thing called "g" and was the bug
- * users reported on the day list.
- *
- * A NAMED portion (bowl, egg, roti, jar) is a countable thing, so the
- * multiplier is exactly right there: "2 × bowl". At a quantity of one the
- * multiplier is noise, so the label stands alone.
- *
- * No pluralisation: serving labels come from third-party catalogues (Open Food
- * Facts, FatSecret) in whatever form they were entered, so guessing a plural
- * would mangle as many as it fixed.
- */
+/** How a logged portion reads under a food name. Rules in lib/servingSize.ts. */
 export function formatServing(quantity: number, unit: string): string {
-  const qty = Math.round(quantity * 10) / 10;
-  const measurement = isMeasurementUnit(unit);
-  if (measurement) return `${qty} ${unit}`;
-  return qty === 1 ? unit : `${qty} × ${unit}`;
+  return servingText(quantity, unit, isMeasurementUnit);
 }
 
 // ── Search ───────────────────────────────────────────────────────────────────

@@ -319,7 +319,7 @@ export default function NutritionScreen() {
   // read `targets`, the viewed day's own numbers.
   const {
     targets: baseTargets, isCustom, apply: applyTargets,
-    fuelDays, applyFuelDays, targetsOn, todayOverride, applyDayTarget,
+    fuelDays, applyFuelDays, targetsOn, overrideOn, applyDayTarget,
   } = useNutritionTargets();
   const targets = targetsOn(viewDate);
   const viewFuel = fuelOn(fuelDays, viewDate.getDay());
@@ -1573,22 +1573,24 @@ export default function NutritionScreen() {
       {/* Set daily calorie + macro goals (the ring/bars draw against these). */}
       <NutritionGoalSheet
         open={goalOpen}
-        // Today's own goal when it was set for today only, else the lasting one.
-        initial={todayOverride ?? baseTargets}
+        // The goal sheet edits the day on screen when it is a future day, else
+        // today (a past day keeps the goal it had). Seed it from that day's own
+        // one-day goal when it has one, else the lasting one.
+        day={viewDate}
+        initial={overrideOn(viewIso > ymd(new Date()) ? viewDate : new Date()) ?? baseTargets}
         lasting={baseTargets}
         firstGoal={!isCustom}
         fuelDays={fuelDays}
         onClose={() => setGoalOpen(false)}
-        onSaved={(saved, scope, clearedToday) => {
+        onSaved={(saved, scope, dayISO, clearedDays) => {
           setGoalOpen(false);
-          const today = ymd(new Date());
-          if (scope === 'today') {
-            applyDayTarget(today, saved);
+          if (scope === 'day') {
+            applyDayTarget(dayISO, saved);
           } else {
             applyTargets(saved);
-            // Only drop today's one-day goal on screen when the server really
-            // did; otherwise it would come back on the next refetch.
-            if (clearedToday) applyDayTarget(today, null);
+            // Only drop a one-day goal on screen when the server really did;
+            // otherwise it would come back on the next refetch.
+            for (const d of clearedDays) applyDayTarget(d, null);
           }
         }}
         // A change to the whole plan is Drona's job: open the program chat on

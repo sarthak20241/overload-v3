@@ -4,7 +4,7 @@
 // check is a copy of the two tables' keys in lib/units.ts.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { joinServing, splitServing, sizeForUnitChange, scaleServingNutrition } from "./servingSize.ts";
+import { joinServing, splitServing, sizeForUnitChange, scaleServingNutrition, servingText, formatCount } from "./servingSize.ts";
 
 const UNITS = new Set(["g", "kg", "oz", "lb", "ml", "l", "cup", "tbsp", "tsp"]);
 const isM = (u: string) => UNITS.has(u.trim().toLowerCase());
@@ -65,4 +65,27 @@ Deno.test("serving chip round trips retain the full precision snapshot", () => {
   assertEquals(Math.round(doubled.protein * 10) / 10, 13.4);
   assertEquals(Math.round(doubled.carb * 10) / 10, 56.2);
   assertEquals(doubled.kcal, 600);
+});
+
+Deno.test("a small part of a 100 g serving reads as grams, not 0 x 100 g", () => {
+  // The reported day list: 0.04 of a "100 g" whey serving showed "0 x 100 g".
+  assertEquals(servingText(0.04, "100 g", isM), "4 g");
+  assertEquals(servingText(0.16, "100 g", isM), "16 g");
+  assertEquals(servingText(1.5, "100 g", isM), "150 g");
+  assertEquals(servingText(1, "100 g", isM), "100 g");
+  assertEquals(servingText(0.5, "250 ml", isM), "125 ml");
+});
+
+Deno.test("a small part of a named serving keeps two places instead of reading 0", () => {
+  assertEquals(servingText(0.04, "1 scoop", isM), "0.04 × 1 scoop");
+  assertEquals(servingText(0.25, "bowl", isM), "0.25 × bowl");
+  assertEquals(servingText(0.001, "bowl", isM), "<0.01 × bowl");
+});
+
+Deno.test("ordinary portions read as before", () => {
+  assertEquals(servingText(150, "g", isM), "150 g");
+  assertEquals(servingText(2, "bowl", isM), "2 × bowl");
+  assertEquals(servingText(1, "1 large egg", isM), "1 large egg");
+  assertEquals(servingText(1.25, "roti", isM), "1.3 × roti");
+  assertEquals(formatCount(0), "0");
 });
