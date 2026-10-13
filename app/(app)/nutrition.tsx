@@ -33,10 +33,10 @@ import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMea
 import { DayLoadFailed, DaySummaryLoading, MealRowsLoading } from '@/components/diet/DayLoading';
 import { ParsedItemEditor } from '@/components/diet/ParsedItemEditor';
 import { EntryEditSheet } from '@/components/diet/EntryEditSheet';
-import { NutritionGoalSheet, goalDayFor } from '@/components/diet/NutritionGoalSheet';
+import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
 import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
 import { fuelOn } from '@/lib/fuelDays';
-import { latestLogDay, readLogDayPhrase } from '@/lib/logDay';
+import { goalDayFor, latestLogDay, readLogDayPhrase } from '@/lib/logDay';
 import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
 import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';

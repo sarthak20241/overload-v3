@@ -27,6 +27,15 @@ export const MAX_FUTURE_LOG_DAYS = 30;
 const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 
+/**
+ * The day a "<day> only" goal lands on for the day on screen. A future day is
+ * its own; today or a past day is today, since a past day keeps the goal it
+ * had. One rule for the goal sheet and the screen that seeds it.
+ */
+export function goalDayFor(view: Date, now: Date = new Date()): Date {
+  return startOfDay(view) > startOfDay(now) ? view : now;
+}
+
 /** The last day a log may land on: today + MAX_FUTURE_LOG_DAYS, local time. */
 export function latestLogDay(now: Date = new Date()): Date {
   return addDays(startOfDay(now), MAX_FUTURE_LOG_DAYS);

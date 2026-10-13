@@ -33,6 +33,7 @@ import { loadActiveProgram } from '@/lib/programData';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { fuelDayText, type FuelDay } from '@/lib/fuelDays';
+import { goalDayFor } from '@/lib/logDay';
 
 interface Field { key: keyof NutritionTargets; label: string; unit: string; color: (c: any) => string; min: number; max: number }
 const FIELDS: Field[] = [
@@ -43,15 +44,6 @@ const FIELDS: Field[] = [
 ];
 
 export type GoalScope = 'day' | 'lasting';
-
-/**
- * The day a "<day> only" goal lands on for the day on screen. A future day is
- * its own; today or a past day is today, since a past day keeps the goal it
- * had. One rule for the sheet and the screen that seeds it.
- */
-export function goalDayFor(view: Date, now = new Date()): Date {
-  return ymd(view) > ymd(now) ? view : now;
-}
 
 interface Props {
   open: boolean;
@@ -100,6 +92,10 @@ export function NutritionGoalSheet({
   });
   const [busy, setBusy] = useState(false);
   const [scope, setScope] = useState<GoalScope>('day');
+  // A lasting goal saved, but a one-day goal it should have ended is still
+  // there. The sheet stays open to say so and to try the clear again; closing
+  // it still reports the save, so the screen shows the new goal.
+  const [stuck, setStuck] = useState<{ saved: NutritionTargets; cleared: string[]; failed: string[] } | null>(null);
   // The day a one-day goal lands on. Only a future day moves it off today.
   const now = new Date();
   const todayISO = ymd(now);
@@ -157,6 +153,7 @@ export function NutritionGoalSheet({
       splitRef.current = energySplit(initial);
       setBusy(false);
       setFailed(false);
+      setStuck(null);
       setDirty(false);
       setScope(firstGoal ? 'lasting' : 'day');
       setPhase(null);
@@ -189,11 +186,18 @@ export function NutritionGoalSheet({
     wasOpen.current = open;
   }, [open, initial, firstGoal, supabase, user?.id]);
 
+  const close = () => {
+    if (stuck) onSaved(stuck.saved, 'lasting', dayISO, stuck.cleared);
+    else onClose();
+  };
+  const closeRef = useRef(close);
+  closeRef.current = close;
+
   useEffect(() => {
     if (!open) return;
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => { onClose(); return true; });
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => { closeRef.current(); return true; });
     return () => sub.remove();
-  }, [open, onClose]);
+  }, [open]);
 
   // Editing calories re-derives the macros at the same split; editing a macro
   // re-reads the split so the next calorie change respects it.
@@ -263,7 +267,22 @@ export function NutritionGoalSheet({
 
   const onSave = async () => {
     const clerkId = user?.id;
-    if (!supabase || !clerkId || busy) { onClose(); return; }
+    if (!supabase || !clerkId || busy) { close(); return; }
+    // The goal is already saved: only the one-day goals it should end are left.
+    if (stuck) {
+      setBusy(true);
+      const cleared = [...stuck.cleared];
+      const failedDays: string[] = [];
+      for (const d of stuck.failed) {
+        const { error: clearErr } = await clearDayTarget(supabase, clerkId, d);
+        if (clearErr) failedDays.push(d);
+        else cleared.push(d);
+      }
+      setBusy(false);
+      if (failedDays.length > 0) { haptics.warning(); setStuck({ ...stuck, cleared, failed: failedDays }); return; }
+      onSaved(stuck.saved, 'lasting', dayISO, cleared);
+      return;
+    }
     // Every save waits for the program lookup: a lasting save made before it
     // answers would skip the phase, even a first goal's.
     if (!phaseReady) return;
@@ -296,6 +315,7 @@ export function NutritionGoalSheet({
     }
     let error: string | undefined;
     const clearedDays: string[] = [];
+    const failedClears: string[] = [];
     if (scope === 'day') {
       ({ error } = await saveDayTarget(supabase, clerkId, dayISO, next));
     } else {
@@ -322,13 +342,13 @@ export function NutritionGoalSheet({
       }
       // A lasting goal ends today's one-day goal, and the one on the day the
       // user is looking at, or those days would still show the old number.
-      // Other future one-day goals stay: the user set them on purpose. Not
-      // fatal: the goal itself is saved, and a "did not save" here would be
-      // untrue.
+      // Other future one-day goals stay: the user set them on purpose. A
+      // failed clear is not "did not save" (the goal is saved), so it gets its
+      // own message and a retry below.
       if (!error) {
         for (const d of dayISO === todayISO ? [todayISO] : [todayISO, dayISO]) {
           const { error: clearErr } = await clearDayTarget(supabase, clerkId, d);
-          if (clearErr) console.warn('[goal] could not clear a one-day goal', d, clearErr);
+          if (clearErr) { console.warn('[goal] could not clear a one-day goal', d, clearErr); failedClears.push(d); }
           else clearedDays.push(d);
         }
       }
@@ -342,6 +362,11 @@ export function NutritionGoalSheet({
       clamped: kcal !== parseInt(vals.kcal, 10),
       scope: scope === 'day' ? (future ? 'future_day' : 'today') : phase ? 'phase' : 'from_today',
     });
+    if (failedClears.length > 0) {
+      haptics.warning();
+      setStuck({ saved: next, cleared: clearedDays, failed: failedClears });
+      return;
+    }
     onSaved(next, scope, dayISO, clearedDays);
   };
 
@@ -351,8 +376,10 @@ export function NutritionGoalSheet({
         ? (phase ? `Just for ${dayLong}. The other days stay on your plan.` : `Just for ${dayLong}. The other days keep your usual goal.`)
         : (phase ? 'Just for today. Tomorrow you are back on your plan.' : 'Just for today. Tomorrow goes back to your usual goal.'))
     : (phase ? `Every day until ${phase.name} ends. Your plan changes to match.` : 'Every day from today on.');
+  const stuckDay = stuck && stuck.failed.includes(todayISO) ? 'today' : dayLong;
   const saveLabel = busy
     ? 'Saving...'
+    : stuck ? 'Try again'
     : firstGoal ? 'Save goal' : scope === 'day' ? `Save for ${future ? dayShort : 'today'}` : phase ? 'Save for this phase' : 'Save goal';
 
   return (
@@ -364,7 +391,7 @@ export function NutritionGoalSheet({
             exiting={FadeOut.duration(150)}
             style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }]}
           >
-            <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+            <Pressable style={StyleSheet.absoluteFill} onPress={close} />
           </Animated.View>
         )}
         <Animated.View
@@ -386,7 +413,7 @@ export function NutritionGoalSheet({
                 {past ? 'This sets today\'s goal. Past days keep the goal they had.' : 'Past days keep the goal they had.'}
               </Text>
             </View>
-            <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityLabel="Close">
+            <TouchableOpacity onPress={close} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityLabel="Close">
               <Feather name="x" size={15} color={C.foreground} />
             </TouchableOpacity>
           </View>
@@ -477,6 +504,12 @@ export function NutritionGoalSheet({
                 </Pressable>
               )}
             </View>
+          )}
+
+          {stuck && (
+            <Text style={[s.scopeNote, { color: C.dangerText, marginTop: Spacing.sm }]}>
+              {`Your new goal is saved, but ${stuckDay} still has its own goal. Check your connection and try again.`}
+            </Text>
           )}
 
           {failed && (
