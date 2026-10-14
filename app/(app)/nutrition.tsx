@@ -1304,7 +1304,8 @@ export default function NutritionScreen() {
                 const goal = targetsOn(d).kcal;
                 const frac = kcal / (goal || 1);
                 const pct = Math.min(frac, 1);
-                const over = frac > 1;
+                // No goal set means nothing to be over.
+                const over = goal > 0 && frac > 1;
                 const R = 16, CIRC = 2 * Math.PI * R;
                 const SW = 3;
                 // The seam, as on the hero ring: a background-colored disc punched
@@ -1320,7 +1321,7 @@ export default function NutritionScreen() {
                     onPress={() => setViewDate(d)}
                     disabled={locked}
                     style={[s.weekDay, locked && { opacity: 0.35 }]}
-                    accessibilityLabel={over && goal > 0
+                    accessibilityLabel={over
                       ? `Go to ${dayLabel(d)}, ${round(kcal - goal)} calories over`
                       : `Go to ${dayLabel(d)}`}
                   >
