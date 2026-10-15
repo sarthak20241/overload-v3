@@ -323,7 +323,12 @@ export default function NutritionScreen() {
   const [inputFocused, setInputFocused] = useState(false);
   // The last thing sent from this box, offered back while the box is empty.
   const [lastSent, setLastSent] = useState<LastFoodText | null>(null);
-  useEffect(() => { void loadLastFoodText().then(setLastSent); }, []);
+  useEffect(() => {
+    let live = true;
+    // A send made before the load lands is newer: keep it.
+    void loadLastFoodText().then((v) => { if (live) setLastSent((p) => p ?? v); });
+    return () => { live = false; };
+  }, []);
   const [flow, setFlow] = useState<ParseFlow>({ status: 'idle' });
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).
@@ -1083,9 +1088,13 @@ export default function NutritionScreen() {
     // manual picker exactly as the old bar did.
     if (!isSignedIn) { openSearch(mealForNow()); return; }
     setText('');
-    const last = { text: t, at: Date.now(), userId };
-    setLastSent(last);
-    void saveLastFoodText(last);
+    // Only a fresh message is worth offering back. A reply while a card is up
+    // is a correction or an answer ("make it 3 eggs", "yes"), not the meal.
+    if (flow.status === 'idle') {
+      const last = { text: t, at: Date.now(), userId };
+      setLastSent(last);
+      void saveLastFoodText(last);
+    }
     void runParse(t);
   }, [text, isSignedIn, flow.status, runParse, userId]);
 
