@@ -1092,7 +1092,9 @@ export default function NutritionScreen() {
     // a card is up is a correction or an answer ("make it 3 eggs", "yes"), and a
     // day on its own ("for tomorrow") only moves the view; neither is the meal.
     const named = readLogDayPhrase(t);
-    if (flow.status === 'idle' && (named ? named.rest : t).trim()) {
+    // No user yet (Clerk still loading): a record nobody owns could never be
+    // offered back, so it would only overwrite one that could.
+    if (flow.status === 'idle' && userId && (named ? named.rest : t).trim()) {
       const last = { text: t, at: Date.now(), userId };
       setLastSent(last);
       void saveLastFoodText(last);
