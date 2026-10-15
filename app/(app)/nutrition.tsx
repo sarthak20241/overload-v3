@@ -72,7 +72,8 @@ import type { MealType } from '@/lib/foods';
 import { formatServing, formatMacroGrams } from '@/lib/foods';
 import { swapToAlternative } from '@/lib/variantSwap';
 import { DronaMark } from '@/components/coach/DronaMark';
-import { isRecallable, loadLastFoodText, saveLastFoodText, type LastFoodText } from '@/lib/lastFoodText';
+import { isRecallable, type LastFoodText } from '@/lib/lastFoodText';
+import { loadLastFoodText, saveLastFoodText } from '@/lib/lastFoodTextStore';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
  *  'review' holds a parsed-but-UNLOGGED meal: nothing is written until the user
@@ -259,7 +260,8 @@ export default function NutritionScreen() {
   // screen has landed, so it never competes with it.
   usePrefetchWeek(weekStartIso, !dayUnknown);
   const supabase = useSupabaseClient();
-  const { isSignedIn } = useClerkUser();
+  const { isSignedIn, user } = useClerkUser();
+  const userId = user?.id ?? null;
   const { kbHeight } = useKeyboardAwareScroll();
   const { width: winW, height: winH } = useWindowDimensions();
   // Bottom edge of the calorie ring + macro bars, in the day scroll's CONTENT
@@ -1081,11 +1083,11 @@ export default function NutritionScreen() {
     // manual picker exactly as the old bar did.
     if (!isSignedIn) { openSearch(mealForNow()); return; }
     setText('');
-    const last = { text: t, at: Date.now() };
+    const last = { text: t, at: Date.now(), userId };
     setLastSent(last);
     void saveLastFoodText(last);
     void runParse(t);
-  }, [text, isSignedIn, flow.status, runParse]);
+  }, [text, isSignedIn, flow.status, runParse, userId]);
 
   const onMealTypeChange = useCallback((m: MealType) => {
     editCountRef.current += 1;
@@ -1196,12 +1198,10 @@ export default function NutritionScreen() {
     }
   }, [flow, supabase, viewDate, reload]);
 
-  const onDismiss = useCallback(() => {
-    track('parse_proposal_rejected', {
-      flow_status: flow.status,
-      item_count: flow.status === 'review' ? flow.meal.items.length : null,
-      edit_count: editCountRef.current,
-    });
+  /** Close the card with no verdict on it. Discard calls this after counting a
+   *  rejection; editing your words calls it without one, since taking the words
+   *  back to change them is not a no to the meal. */
+  const clearCard = useCallback(() => {
     editCountRef.current = 0;
     setChecking(null);
     setCardMinimized(false);
@@ -1212,7 +1212,16 @@ export default function NutritionScreen() {
     parseAbortRef.current?.abort();
     turnsRef.current = [];
     setFlow({ status: 'idle' });
-  }, [flow]);
+  }, []);
+
+  const onDismiss = useCallback(() => {
+    track('parse_proposal_rejected', {
+      flow_status: flow.status,
+      item_count: flow.status === 'review' ? flow.meal.items.length : null,
+      edit_count: editCountRef.current,
+    });
+    clearCard();
+  }, [flow, clearCard]);
 
   /** Undo from a diary row's "Added by Drona" chip: the whole send that row
    *  came from, which is the action being undone. Removing one line is what
@@ -1613,10 +1622,12 @@ export default function NutritionScreen() {
               onDismiss={onDismiss}
               // Editing the words starts this meal over: a send while a card is
               // in review would be read as a correction to it.
-              onEditWords={parseInFlight ? undefined : () => {
+              // Not on 'sent' either: the server is already writing that meal,
+              // and resending its words would log it twice.
+              onEditWords={parseInFlight || flow.status === 'sent' ? undefined : () => {
                 const raw = flow.raw;
                 track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
-                onDismiss();
+                clearCard();
                 setText(raw);
                 inputRef.current?.focus();
               }}
@@ -1628,7 +1639,7 @@ export default function NutritionScreen() {
 
         {/* Use again: the last thing sent, offered only while the box is empty,
             focused and nothing is on the card, so it never competes with a meal. */}
-        {isSignedIn && flow.status === 'idle' && inputFocused && !text && isRecallable(lastSent, Date.now()) && (
+        {isSignedIn && flow.status === 'idle' && inputFocused && !text && isRecallable(lastSent, Date.now(), userId) && (
           <Pressable
             style={s.recall}
             onPress={() => {

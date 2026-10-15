@@ -41,6 +41,7 @@ deno test --unstable-sloppy-imports --import-map=lib/test-import-map.json lib/re
 deno test --allow-all lib/coachErrors.test.ts  # which bucket a failure lands in
 deno test --allow-all lib/servingSize.test.ts # food editor portion <-> stored serving
 deno test --allow-all lib/logDay.test.ts      # "2 eggs for tomorrow" -> which day a food log lands on
+deno test --allow-all lib/lastFoodText.test.ts # food box "use again": who and how long
 deno test --allow-all lib/fitnessGoals.test.ts
 ```
 
