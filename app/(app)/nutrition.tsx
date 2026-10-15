@@ -1088,9 +1088,11 @@ export default function NutritionScreen() {
     // manual picker exactly as the old bar did.
     if (!isSignedIn) { openSearch(mealForNow()); return; }
     setText('');
-    // Only a fresh message is worth offering back. A reply while a card is up
-    // is a correction or an answer ("make it 3 eggs", "yes"), not the meal.
-    if (flow.status === 'idle') {
+    // Only a fresh message with food in it is worth offering back. A reply while
+    // a card is up is a correction or an answer ("make it 3 eggs", "yes"), and a
+    // day on its own ("for tomorrow") only moves the view; neither is the meal.
+    const named = readLogDayPhrase(t);
+    if (flow.status === 'idle' && (named ? named.rest : t).trim()) {
       const last = { text: t, at: Date.now(), userId };
       setLastSent(last);
       void saveLastFoodText(last);
@@ -1634,7 +1636,9 @@ export default function NutritionScreen() {
               // Not on 'sent', nor on a "Just log it" send that failed in transport
               // (it carries a clientId): the server may already be writing that
               // meal. Retry keeps the id and is safe; resending the words is not.
-              onEditWords={parseInFlight || flow.status === 'sent' || (flow.status === 'error' && !!flow.clientId) ? undefined : () => {
+              // Nor while Add is writing: the card would go, the write would not,
+              // and the words left in the box could log the meal twice.
+              onEditWords={parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && !!flow.clientId) ? undefined : () => {
                 const raw = flow.raw;
                 track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
                 clearCard();
