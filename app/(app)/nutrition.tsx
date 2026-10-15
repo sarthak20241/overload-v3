@@ -72,6 +72,7 @@ import type { MealType } from '@/lib/foods';
 import { formatServing, formatMacroGrams } from '@/lib/foods';
 import { swapToAlternative } from '@/lib/variantSwap';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { isRecallable, loadLastFoodText, saveLastFoodText, type LastFoodText } from '@/lib/lastFoodText';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
  *  'review' holds a parsed-but-UNLOGGED meal: nothing is written until the user
@@ -316,6 +317,11 @@ export default function NutritionScreen() {
   // the commit and the SERVER writes the diary, so the user can close the app.
   // Undo lives on the receipt strip and on each diary row Drona added.
   const [text, setText] = useState('');
+  const inputRef = useRef<TextInput>(null);
+  const [inputFocused, setInputFocused] = useState(false);
+  // The last thing sent from this box, offered back while the box is empty.
+  const [lastSent, setLastSent] = useState<LastFoodText | null>(null);
+  useEffect(() => { void loadLastFoodText().then(setLastSent); }, []);
   const [flow, setFlow] = useState<ParseFlow>({ status: 'idle' });
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).
@@ -1075,6 +1081,9 @@ export default function NutritionScreen() {
     // manual picker exactly as the old bar did.
     if (!isSignedIn) { openSearch(mealForNow()); return; }
     setText('');
+    const last = { text: t, at: Date.now() };
+    setLastSent(last);
+    void saveLastFoodText(last);
     void runParse(t);
   }, [text, isSignedIn, flow.status, runParse]);
 
@@ -1602,21 +1611,49 @@ export default function NutritionScreen() {
               onSave={flow.status === 'review' ? () => setSaveItems(flow.meal.items) : undefined}
               onRetry={flow.status === 'error' ? onRetry : undefined}
               onDismiss={onDismiss}
+              // Editing the words starts this meal over: a send while a card is
+              // in review would be read as a correction to it.
+              onEditWords={parseInFlight ? undefined : () => {
+                const raw = flow.raw;
+                track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
+                onDismiss();
+                setText(raw);
+                inputRef.current?.focus();
+              }}
               minimized={cardMinimized}
               onToggleMinimize={() => setCardMinimized((v) => !v)}
             />
           </View>
         )}
 
+        {/* Use again: the last thing sent, offered only while the box is empty,
+            focused and nothing is on the card, so it never competes with a meal. */}
+        {isSignedIn && flow.status === 'idle' && inputFocused && !text && isRecallable(lastSent, Date.now()) && (
+          <Pressable
+            style={s.recall}
+            onPress={() => {
+              track('food_text_reused', { from: 'box', chars: lastSent.text.length });
+              setText(lastSent.text);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel={`Use again: ${lastSent.text}`}
+          >
+            <Feather name="rotate-ccw" size={11} color={C.textMuted} />
+            <Text style={s.recallTxt} numberOfLines={1}>{lastSent.text}</Text>
+          </Pressable>
+        )}
         {isSignedIn ? (
           <View style={s.input}>
             <Pressable onPress={() => openSearch(mealForNow())} hitSlop={8} style={s.iconBox}>
               <Feather name="search" size={16} color={C.textSecondary} />
             </Pressable>
             <TextInput
+              ref={inputRef}
               style={s.inputText}
               value={text}
               onChangeText={setText}
+              onFocus={() => setInputFocused(true)}
+              onBlur={() => setInputFocused(false)}
               // "Just log it" changes what send DOES, and the placeholder is the
               // honest always-visible signal of that: send now commits.
               placeholder={autoLog ? 'Tell Drona what you ate, it goes straight in' : 'Tell Drona what you ate'}
@@ -1850,6 +1887,12 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     // centred box the send button has, and the text line is lifted to match.
     inputText: { flex: 1, fontSize: FontSize.base, lineHeight: 20, color: C.foreground, padding: 0, marginBottom: 4, maxHeight: 96, textAlignVertical: 'top' },
     iconBox: { height: 28, justifyContent: 'center', alignItems: 'center' },
+    recall: {
+      flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', maxWidth: '100%', gap: 6,
+      paddingHorizontal: 10, paddingVertical: 5, marginBottom: Spacing.sm, marginLeft: Spacing.sm,
+      borderRadius: Radius.full, borderWidth: 1, borderColor: C.borderSubtle, backgroundColor: C.card,
+    },
+    recallTxt: { flexShrink: 1, fontSize: FontSize.xs, color: C.textSecondary },
     send: { width: 28, height: 28, borderRadius: 14, backgroundColor: C.accentText, alignItems: 'center', justifyContent: 'center' },
   });
 }
