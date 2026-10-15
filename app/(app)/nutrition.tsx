@@ -1631,9 +1631,10 @@ export default function NutritionScreen() {
               onDismiss={onDismiss}
               // Editing the words starts this meal over: a send while a card is
               // in review would be read as a correction to it.
-              // Not on 'sent' either: the server is already writing that meal,
-              // and resending its words would log it twice.
-              onEditWords={parseInFlight || flow.status === 'sent' ? undefined : () => {
+              // Not on 'sent', nor on a "Just log it" send that failed in transport
+              // (it carries a clientId): the server may already be writing that
+              // meal. Retry keeps the id and is safe; resending the words is not.
+              onEditWords={parseInFlight || flow.status === 'sent' || (flow.status === 'error' && !!flow.clientId) ? undefined : () => {
                 const raw = flow.raw;
                 track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
                 clearCard();
