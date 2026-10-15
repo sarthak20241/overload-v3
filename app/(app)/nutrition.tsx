@@ -509,12 +509,23 @@ export default function NutritionScreen() {
   // A swipe to another week keeps the weekday: Wednesday stays Wednesday,
   // except past the last loggable day, which is as far as a day can go.
   const weekListRef = useRef<FlatList<Date>>(null);
+  // The week a swipe already moved to, so the drag-end and momentum-end
+  // callbacks for one swipe count once. Cleared when the week changes.
+  const swipedWeek = useRef<string | null>(null);
   const onWeekSwipe = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const ws = weekStarts[Math.round(e.nativeEvent.contentOffset.x / winW)];
-    if (!ws || ymd(ws) === weekStartIso) return;
+    if (!ws || ymd(ws) === weekStartIso || ymd(ws) === swipedWeek.current) return;
+    swipedWeek.current = ymd(ws);
     track('nutrition_day_changed', { direction: ymd(ws) > weekStartIso ? 'forward' : 'back' });
     const next = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + viewDate.getDay());
     setViewDate(ymd(next) > latestIso ? latestLogDay() : next);
+  };
+  // A slow drag released right on a page boundary settles with no momentum,
+  // so onMomentumScrollEnd never fires. Count it here, only when it is
+  // already resting on a page (mid-page, the momentum end handles it).
+  const onWeekDragEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const x = e.nativeEvent.contentOffset.x;
+    if (Math.abs(x - Math.round(x / winW) * winW) < 1) onWeekSwipe(e);
   };
   // ‹ ›, the calendar and "for tomorrow" logs move viewDate without a swipe;
   // bring the strip to its week. A one-week move slides, a jump snaps.
@@ -523,6 +534,7 @@ export default function NutritionScreen() {
     if (weekIndex < 0) return;
     const animated = Math.abs(weekIndex - lastWeekIndex.current) === 1;
     lastWeekIndex.current = weekIndex;
+    swipedWeek.current = null;
     weekListRef.current?.scrollToOffset({ offset: weekIndex * winW, animated });
   }, [weekIndex, winW]);
 
@@ -1292,6 +1304,7 @@ export default function NutritionScreen() {
           windowSize={3}
           extraData={{ weekKcal, viewIso, latestIso, targetsOn, C }}
           onMomentumScrollEnd={onWeekSwipe}
+          onScrollEndDrag={onWeekDragEnd}
           style={s.weekList}
           renderItem={({ item: ws }) => (
             <View style={[s.weekStrip, { width: winW }]}>
@@ -1313,7 +1326,10 @@ export default function NutritionScreen() {
                 // or it vanishes on a line this thin.
                 const HOLE = 3.6;
                 const holeFrac = HOLE / CIRC;
-                const lapFrac = over ? Math.max((frac - 1) % 1, holeFrac * 1.25) : 0;
+                // A whole extra goal (2x, 3x) leaves no remainder; draw it as a
+                // near-full lap, not the minimum stub.
+                const rem = (frac - 1) % 1;
+                const lapFrac = !over ? 0 : rem === 0 ? 1 - holeFrac * 1.25 : Math.max(rem, holeFrac * 1.25);
                 const tipA = (lapFrac * 360 - 90) * (Math.PI / 180);
                 return (
                   <Pressable
