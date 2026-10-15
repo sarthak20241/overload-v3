@@ -1638,7 +1638,8 @@ export default function NutritionScreen() {
                 const raw = flow.raw;
                 track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
                 clearCard();
-                setText(raw);
+                // Keep a half-typed follow-up: it rides after the words, not over them.
+                setText((cur) => (cur.trim() ? `${raw}, ${cur.trim()}` : raw));
                 inputRef.current?.focus();
               }}
               minimized={cardMinimized}
