@@ -33,6 +33,7 @@ Deno.test('rep targets fill the rep columns as before', () => {
   assertEquals(planRepsAndNote('6-10', 'RIR 2'), { reps_min: 6, reps_max: 10, note: 'RIR 2' });
   assertEquals(planRepsAndNote('5'), { reps_min: 5, reps_max: 5, note: null });
   assertEquals(planRepsAndNote('8-12 reps', ''), { reps_min: 8, reps_max: 12, note: null });
+  assertEquals(planRepsAndNote('12-8'), { reps_min: 8, reps_max: 12, note: null });
 });
 
 Deno.test('a rep range with extra words keeps its numbers and its words', () => {
@@ -99,6 +100,17 @@ Deno.test('against a database without the columns, the target rides in the cue',
     note: 'Aim for 45s. Squeeze the glute',
   });
   assertEquals(planRepsAndNote('AMRAP'), { reps_min: 8, reps_max: 12, note: 'Aim for AMRAP.' });
+  const legacy = { targetColumns: false };
+  assertEquals(planRepsAndNote('20min', null, legacy), { reps_min: 8, reps_max: 12, note: 'Aim for 20min.' });
+  assertEquals(planRepsAndNote('500m', null, legacy), { reps_min: 8, reps_max: 12, note: 'Aim for 500m.' });
+  assertEquals(planRepsAndNote('2 km', null, legacy), { reps_min: 8, reps_max: 12, note: 'Aim for 2 km.' });
+  assertEquals(planRepsAndNote('15cal', null, legacy), { reps_min: 8, reps_max: 12, note: 'Aim for 15cal.' });
+});
+
+Deno.test('calories have no column, and a bare 500m with no type is not trusted', () => {
+  assertEquals(planRepsAndNote('15cal'), { reps_min: 8, reps_max: 12, note: 'Aim for 15cal.' });
+  assertEquals(planRepsAndNote('500m'), { reps_min: 8, reps_max: 12, note: 'Aim for 500m.' });
+  assertEquals(planRepsAndNote('2 km'), { reps_min: 8, reps_max: 12, note: null, target_distance_m: 2000 });
 });
 
 // A timed row stores the table's default 8-12 reps when it has no target, so the
