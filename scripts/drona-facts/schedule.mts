@@ -5,7 +5,7 @@
  *   npx tsx scripts/drona-facts/schedule.mts
  *
  *   1. One failing domain does not stop the others: for someone with no profile
- *      every domain fails, and all 7 errors come back instead of a throw.
+ *      every domain fails, and all 8 errors come back instead of a throw.
  *   2. The due picker rebuilds a person once per local day, and records it.
  *   3. Chat older than 85 days survives the log's 90-day prune: its trace is
  *      deleted and a rebuild keeps the word row. A recent message whose trace
@@ -33,9 +33,9 @@ const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
 
 // 1. Errors are collected, not thrown.
 const ghost = must(await db.rpc('drona_rebuild_all_facts', { p_user_id: 'user_probe_no_such_person', p_from: iso(daysAgo(13)), p_to: iso(daysAgo(0)) }), 'ghost') as Record<string, string>;
-// Every domain writes rows that need a profile, so each one fails. All 7 errors
+// Every domain writes rows that need a profile, so each one fails. All 8 errors
 // coming back proves each domain ran after the one before it failed.
-ok('a person with no profile: all 7 domains ran and failed alone, nothing thrown', Object.keys(ghost).length === 7,
+ok('a person with no profile: all 8 domains ran and failed alone, nothing thrown', Object.keys(ghost).length === 8 && 'steering' in ghost,
   Object.keys(ghost));
 
 await db.rpc('delete_user_data', { p_user_id: UID });

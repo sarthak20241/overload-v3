@@ -67,9 +67,32 @@ moved live from `>= 0.75` to `> 0.75` made 2 checks fail; restored, md5 checked.
 | `own_way` | 1 | 1 | 0 (lost to `goals_unclear`) |
 
 `lift_stall` causes: real_plateau 34, inconsistent_training 4, recovery 1,
-cant_tell 1, expected_on_cut 1. One person has 18 stall weeks; most "plateaus"
+cant_tell 1, expected_on_cut 1. After the full 26-week facts rebuild of 2026-10-16
+(stale exercise facts for one person, see the ledger, step 8), `lift_stall` is
+49 weeks. One person has 18 stall weeks; most "plateaus"
 are on people who train steadily. Watch this before cards act on it: a stall
 card every week would be noise.
+
+## Proposed: steering behaviours (NOT BUILT, waiting on the owner)
+
+Read the steering facts (ledger, step 8). Same rules: a pattern is 2 finished
+weeks, plan changes start as a talk card. "Steer" means it feeds the next plan
+Drona writes, with no card of its own.
+
+| # | Behaviour | Line | How Drona acts | Today |
+|---|---|---|---|---|
+| S1 | `off_pace` | a trusted trend (8+ weigh-ins over 21+ days, scale not untrusted), a goal and a date; arrival 2+ weeks after the date, or the pace needed is over 1% of body weight a week (loss) or 0.5% (gain) | talk: "at this pace you reach 59 kg in March; move the date or change the plan?" | 0 (nobody has a trend and a date) |
+| S2 | `maintenance_found` | the same trend and 14+ whole food days in the window | steer: calorie targets start from the measured maintenance, not a formula; talk only when the target misses the goal pace by 250+ kcal | 0 (1 person measured, their target fits) |
+| S3 | `trains_any_day` | 6+ of 8 weeks trained, 3+ sessions a week on average, at most 1 weekday trained in 6+ of 8 weeks | steer: keep the rolling plan (TODAY), never pin weekdays | 2 (the owner among them) |
+| S4 | `fixed_days` | 3+ weekdays trained in 6+ of 8 weeks | steer: build the plan on exactly those days | 1 |
+| S5 | `plan_too_big` | 6+ of 8 weeks trained, planned sessions at least 1 more than their 8-week average | talk: "you train about 3 times a week; plan for 3?" | 0 |
+| S6 | `keep_favourites` | an exercise done in 6+ of 8 weeks and not in the program (custom counts: the owner's line) | steer: keep it in the next plan | 2 people (17 and 1 exercises) |
+| S7 | `swap_skipped` | a program exercise in the phase 4+ weeks, never done, while they did at least half of the phase's other exercises; or skipped in half or more of 4+ routine sessions | talk: "you never do X; swap it for Y?" | 2 people, 4 exercises, all routine skips. The owner's 9 never-done program exercises fail the half line (7 of 16 done): that is own_way, not this |
+| S8 | `topic_not_landing` | a card topic with 2+ cards and none followed | meta: mute that topic 4 weeks; ask once why (talk) | 3 people (weigh_in x2, due_session x1) |
+| S9 | `what_worked` | a change standing alone (at most 1 other the same day, none after) with 14 days before and after | later: compare sessions, food and weight before and after | wait: 1 of 153 changes qualifies |
+
+Two things data cannot show, to ask once in a talk card: equipment and where
+they train, and which days and times they are free.
 
 ## Next
 
