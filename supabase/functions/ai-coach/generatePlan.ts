@@ -183,6 +183,21 @@ Rules:
 
 const cell = (s: string | undefined) => (s ?? "").trim();
 
+/** Longest name an invented exercise may carry into the exercises table. */
+export const MAX_NEW_NAME = 60;
+
+/**
+ * Cut a runaway invented name at a word boundary. Catalog names never get
+ * near this; a NEW name past it is the model rambling, and it would otherwise
+ * be stored as a permanent custom exercise.
+ */
+function capName(n: string): string {
+  if (n.length <= MAX_NEW_NAME) return n;
+  const cut = n.slice(0, MAX_NEW_NAME);
+  const space = cut.lastIndexOf(" ");
+  return (space > 20 ? cut.slice(0, space) : cut).trim();
+}
+
 function toInt(s: string | undefined, fallback: number, lo: number, hi: number): number {
   const n = parseInt(cell(s), 10);
   if (!Number.isFinite(n)) return fallback;
@@ -214,7 +229,7 @@ export function parseSkeleton(raw: string): PlanSkeleton | null {
       if (n) days[days.length - 1].slots.push(n);
     } else if (tag === "NEW") {
       if (days.length === 0) continue;
-      const n = cell(parts[1]);
+      const n = capName(cell(parts[1]));
       if (!n) continue;
       days[days.length - 1].slots.push(n);
       new_exercises[n] = normalizeNewExercise(parts[2], parts[3], parts[4]);

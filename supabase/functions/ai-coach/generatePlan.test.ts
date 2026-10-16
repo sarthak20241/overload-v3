@@ -1,5 +1,6 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
+  MAX_NEW_NAME,
   assemblePlan,
   groundSkeleton,
   parseSkeleton,
@@ -101,4 +102,13 @@ Deno.test("an exercise named like an object property is not mistaken for a templ
   assertEquals(plan.workouts[0].exercises[0].new_exercise, undefined);
   assertEquals(plan.workouts[0].exercises[0].reps, "8-12");
   assertEquals(plan.workouts[0].exercises[1].new_exercise?.metric_type, "duration");
+});
+
+Deno.test("a runaway invented name is cut at a word boundary before it is saved", () => {
+  const long = "Slow Controlled Half Kneeling Hip Flexor Stretch With Overhead Reach And Rotation Toward The Front Leg";
+  const s = parseSkeleton(`DAY | A | b\nNEW | ${long} | Hip Flexors | Bodyweight | duration`)!;
+  const name = s.days[0].slots[0];
+  assertEquals(name.length <= MAX_NEW_NAME, true);
+  assertEquals(long.startsWith(name), true);
+  assertEquals(s.new_exercises?.[name]?.metric_type, "duration");
 });
