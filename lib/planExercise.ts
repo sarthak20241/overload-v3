@@ -45,6 +45,8 @@ export function planExerciseInsert(ex: { name: string; new_exercise?: NewExercis
 
 /** Leading rep count or range, and whatever follows it ("/side", "s", "min"). */
 const LEADING_REPS = /^\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*(.*)$/;
+/** "3x10", "3 x 8-12": the leading number is sets, the rest is reps. */
+const SETS_X_REPS = /^\s*\d+\s*[x\u00d7]\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*$/i;
 /** A suffix that makes the number a time, not a rep count. */
 const TIME_UNIT = /^(s|secs?|seconds?|min|mins|minutes?)\b/i;
 
@@ -64,6 +66,12 @@ export function planRepsAndNote(reps: string, note?: string | null): {
   const target = (reps ?? '').trim();
   const cue = (note ?? '').trim();
   const withTarget = cue ? `Aim for ${target}. ${cue}` : `Aim for ${target}.`;
+  // "3x10" / "3 x 8-12" is sets x reps: the reps are the part after the x.
+  const sxr = SETS_X_REPS.exec(target);
+  if (sxr) {
+    const lo = Number(sxr[1]) || 8;
+    return { reps_min: lo, reps_max: Number(sxr[2]) || lo, note: withTarget };
+  }
   const m = LEADING_REPS.exec(target);
   if (m && !TIME_UNIT.test(m[3])) {
     const lo = Number(m[1]) || 8;

@@ -194,7 +194,9 @@ export function parseSkeleton(raw: string): PlanSkeleton | null {
   let name = "";
   let split_type: string | undefined;
   let days_per_week: number | undefined;
-  const new_exercises: Record<string, NewExerciseDef> = {};
+  // Keyed by model-written names, so no prototype: "constructor" must not
+  // read as a template, and "__proto__" must be a plain key.
+  const new_exercises: Record<string, NewExerciseDef> = Object.create(null);
 
   for (const line of raw.split("\n")) {
     const parts = line.trim().replace(/^[`*\-\s]+/, "").split("|");
@@ -245,6 +247,11 @@ export function parseFill(raw: string): PlanExercise[] {
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
 
+/** Own-key template lookup; never an inherited property. */
+function templateOf(defs: PlanSkeleton["new_exercises"], slot: string): NewExerciseDef | undefined {
+  return defs && Object.hasOwn(defs, slot) ? defs[slot] : undefined;
+}
+
 /** Loose key for catalog matching: the catalog is inconsistently punctuated. */
 const catalogKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 /** Looser still: also ignores spacing, so "TBar Row" finds "T-Bar Row". */
@@ -268,6 +275,8 @@ export function groundSkeleton(skeleton: PlanSkeleton, catalog: string[]): PlanS
     day.slots = day.slots.map((slot) => {
       const hit = byKey.get(catalogKey(slot)) ?? bySquashed.get(squashedKey(slot));
       if (!hit) return slot;
+      // Templates are keyed by name, not by day, so one delete covers every
+      // day that used this name; a later day finding it gone is a no-op.
       delete defs[slot];
       return hit;
     });
@@ -318,11 +327,11 @@ export function buildWorkout(
       const ex: PlanExercise = {
         name: slot,
         sets: hit?.sets ?? 3,
-        reps: hit?.reps ?? fallbackReps(newExercises?.[slot]),
+        reps: hit?.reps ?? fallbackReps(templateOf(newExercises, slot)),
         rest_seconds: hit?.rest_seconds ?? 90,
         note: hit?.note,
       };
-      const def = newExercises?.[slot];
+      const def = templateOf(newExercises, slot);
       if (def) ex.new_exercise = def;
       return ex;
     }),
@@ -364,7 +373,7 @@ Not every slot has to be a lift. When the lifter's goals, preferences, or limita
  */
 function measureHint(slots: string[], defs: PlanSkeleton["new_exercises"]): string {
   const timed = slots.filter((s) => {
-    const m = defs?.[s]?.metric_type;
+    const m = templateOf(defs, s)?.metric_type;
     return m === "duration" || m === "duration_weight" || m === "distance_duration" || m === "resistance_duration";
   });
   return timed.length ? `Measured by time, not reps: ${timed.join(", ")}.` : "";

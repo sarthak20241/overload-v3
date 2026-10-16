@@ -94,3 +94,11 @@ Deno.test("a timed invention whose fill died falls back to a time, not 8-12 reps
   const reps = plan.workouts[0].exercises.map((e) => e.reps);
   assertEquals(reps, ["8-12", "8-12", "30s"]);
 });
+
+Deno.test("an exercise named like an object property is not mistaken for a template", () => {
+  const s = parseSkeleton("DAY | A | b\nSLOT | constructor\nNEW | __proto__ | Core | Bodyweight | duration")!;
+  const plan = assemblePlan(s, [null], "why");
+  assertEquals(plan.workouts[0].exercises[0].new_exercise, undefined);
+  assertEquals(plan.workouts[0].exercises[0].reps, "8-12");
+  assertEquals(plan.workouts[0].exercises[1].new_exercise?.metric_type, "duration");
+});

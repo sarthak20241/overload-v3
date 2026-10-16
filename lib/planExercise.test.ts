@@ -43,6 +43,8 @@ Deno.test('a rep range with extra words keeps its numbers and its words', () => 
   });
   assertEquals(planRepsAndNote('6-8 each'), { reps_min: 6, reps_max: 8, note: 'Aim for 6-8 each.' });
   assertEquals(planRepsAndNote('AMRAP'), { reps_min: 8, reps_max: 12, note: 'Aim for AMRAP.' });
+  assertEquals(planRepsAndNote('3x10'), { reps_min: 10, reps_max: 10, note: 'Aim for 3x10.' });
+  assertEquals(planRepsAndNote('3 x 8-12'), { reps_min: 8, reps_max: 12, note: 'Aim for 3 x 8-12.' });
 });
 
 Deno.test('a timed target is kept in the cue instead of turning into 8-12 reps', () => {
