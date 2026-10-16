@@ -103,6 +103,10 @@ type ParseFlow =
       // is weaker evidence than a choice the user already made - without this
       // flag their pick silently reverts on the next message.
       mealTypePicked?: boolean;
+      // Everything the user wrote for this meal, follow-ups joined ("1 apple;
+      // make it a small one"). `raw` keeps only a correction's own words, so
+      // the card's return arrow sends this instead. Absent: same as `raw`.
+      words?: string;
       notice?: string | null;
       // Researched numbers that disagree with what is shown, offered as a
       // choice. Applying is local, so picking costs no round trip.
@@ -117,6 +121,8 @@ type ParseFlow =
   | {
       status: 'error'; raw: string; message: string; meal?: ParsedMeal; mealType?: MealType;
       clientId?: string; logDate?: string;
+      /** The reviewed card's `words`, kept so Retry rebuilds it whole. */
+      words?: string;
     }
   // The user asked to SAVE a food or meal, and Drona drafted it. Nothing is
   // written until the card is tapped; `result` is what came back from that tap.
@@ -316,6 +322,7 @@ export default function NutritionScreen() {
   // the commit and the SERVER writes the diary, so the user can close the app.
   // Undo lives on the receipt strip and on each diary row Drona added.
   const [text, setText] = useState('');
+  const inputRef = useRef<TextInput>(null);
   const [flow, setFlow] = useState<ParseFlow>({ status: 'idle' });
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).
@@ -798,6 +805,7 @@ export default function NutritionScreen() {
     // disagreement; the head is stamped back so a later fallback agrees too.
     const headOf = (its: ParsedMealItem[]): MealType =>
       its[0]?.meal_type ?? res.meal.meal_type;
+    const words = pending ? `${prevReview?.words ?? pending.text}; ${t}` : undefined;
     // A follow-up either CORRECTS the pending meal (replace its lines) or ADDS
     // to it (append) — appending is what keeps "and a dosa" from silently
     // dropping the samosa the user already reviewed.
@@ -808,6 +816,7 @@ export default function NutritionScreen() {
           return {
             status: 'review',
             raw: `${pending.text}; ${t}`,
+            words,
             meal: { ...res.meal, items, meal_type: head },
             mealType: head,
             mealTypePicked: prevReview?.mealTypePicked,
@@ -818,6 +827,7 @@ export default function NutritionScreen() {
           return {
             status: 'review',
             raw: res.meal.continued_pending && pendingMeal ? `${pendingMeal.text}; ${t}` : t,
+            words,
             meal: { ...res.meal, meal_type: head },
             mealType: head,
             mealTypePicked: prevReview?.mealTypePicked,
@@ -1144,7 +1154,7 @@ export default function NutritionScreen() {
     if (!error) editCountRef.current = 0;
     if (error) {
       // Keep the reviewed meal so Retry re-attempts the write (see onRetry).
-      setFlow({ status: 'error', raw: flow.raw, message: 'Could not add that. Try again.', meal: flow.meal, mealType: flow.mealType });
+      setFlow({ status: 'error', raw: flow.raw, message: 'Could not add that. Try again.', meal: flow.meal, mealType: flow.mealType, words: flow.words });
       return;
     }
     reload();
@@ -1159,7 +1169,7 @@ export default function NutritionScreen() {
     // A write failure kept the meal → re-show the review card (tapping Add re-writes
     // it, to the current day). Only re-run the AI parse if the meal is gone.
     if (flow.meal && flow.mealType) {
-      setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.mealType });
+      setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.mealType, words: flow.words });
     } else {
       // A failed "Just log it" send retries under its ORIGINAL id (see ParseFlow).
       void runParse(
@@ -1187,12 +1197,10 @@ export default function NutritionScreen() {
     }
   }, [flow, supabase, viewDate, reload]);
 
-  const onDismiss = useCallback(() => {
-    track('parse_proposal_rejected', {
-      flow_status: flow.status,
-      item_count: flow.status === 'review' ? flow.meal.items.length : null,
-      edit_count: editCountRef.current,
-    });
+  /** Close the card with no verdict on it. Discard calls this after counting a
+   *  rejection; editing your words calls it without one, since taking the words
+   *  back to change them is not a no to the meal. */
+  const clearCard = useCallback(() => {
     editCountRef.current = 0;
     setChecking(null);
     setCardMinimized(false);
@@ -1203,7 +1211,16 @@ export default function NutritionScreen() {
     parseAbortRef.current?.abort();
     turnsRef.current = [];
     setFlow({ status: 'idle' });
-  }, [flow]);
+  }, []);
+
+  const onDismiss = useCallback(() => {
+    track('parse_proposal_rejected', {
+      flow_status: flow.status,
+      item_count: flow.status === 'review' ? flow.meal.items.length : null,
+      edit_count: editCountRef.current,
+    });
+    clearCard();
+  }, [flow, clearCard]);
 
   /** Undo from a diary row's "Added by Drona" chip: the whole send that row
    *  came from, which is the action being undone. Removing one line is what
@@ -1602,6 +1619,23 @@ export default function NutritionScreen() {
               onSave={flow.status === 'review' ? () => setSaveItems(flow.meal.items) : undefined}
               onRetry={flow.status === 'error' ? onRetry : undefined}
               onDismiss={onDismiss}
+              // Editing the words starts this meal over: a send while a card is
+              // in review would be read as a correction to it.
+              // Not on 'sent', nor on a "Just log it" send that failed in transport
+              // (it carries a clientId): the server may already be writing that
+              // meal. Retry keeps the id and is safe; resending the words is not.
+              // Nor while Add is writing, nor after Add failed (the error card
+              // keeps the meal): the write may still have landed, and the words
+              // left in the box could log the meal twice. Retry is the safe path.
+              onEditWords={parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && (!!flow.clientId || !!flow.meal)) ? undefined : () => {
+                // The whole conversation, not just a correction's own words.
+                const raw = flow.status === 'review' && flow.words ? flow.words : flow.raw;
+                track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
+                clearCard();
+                // Keep a half-typed follow-up: it rides after the words, not over them.
+                setText((cur) => (cur.trim() ? `${raw}, ${cur.trim()}` : raw));
+                inputRef.current?.focus();
+              }}
               minimized={cardMinimized}
               onToggleMinimize={() => setCardMinimized((v) => !v)}
             />
@@ -1614,6 +1648,7 @@ export default function NutritionScreen() {
               <Feather name="search" size={16} color={C.textSecondary} />
             </Pressable>
             <TextInput
+              ref={inputRef}
               style={s.inputText}
               value={text}
               onChangeText={setText}
