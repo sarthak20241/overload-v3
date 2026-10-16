@@ -62,6 +62,7 @@ import ReorderableList, {
   type ReorderableListReorderEvent,
 } from 'react-native-reorderable-list';
 import { metricTypeOf, usesReps, type ExerciseDef, type MetricType } from '@/lib/exercises';
+import { formatDuration } from '@/lib/format';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -630,12 +631,12 @@ function ExerciseEditorCard({
             )}
             {takesDurationTarget(exercise.metricType) ? (
               <View style={{ flex: 1.2 }}>
-                {/* "1.5" or "abc" saves no target; say so instead of dropping it quietly. */}
-                {exercise.targetDuration.trim() && !parseEditorDuration(exercise.targetDuration) ? (
-                  <Text style={[styles.editorLabel, { color: C.dangerText }]}>Time as m:ss</Text>
-                ) : (
-                  <Text style={[styles.editorLabel, { color: C.textMuted }]}>Time</Text>
-                )}
+                <Text
+                  style={[styles.editorLabel, { color: timeLabel(exercise.targetDuration).bad ? C.dangerText : C.textMuted }]}
+                  numberOfLines={1}
+                >
+                  {timeLabel(exercise.targetDuration).text}
+                </Text>
                 <TextInput
                   value={exercise.targetDuration}
                   onChangeText={(v) => onChange({ ...exercise, targetDuration: v })}
@@ -1421,6 +1422,19 @@ function EmptyState({ onAdd, onAI }: { onAdd: () => void; onAI: () => void }) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+/**
+ * The Time field's label. "1.5" or "abc" saves no target, so it says so. A
+ * bare number is seconds, which is easy to misread ("5" for five minutes),
+ * so the label reads it back: "Time · 0:05".
+ */
+function timeLabel(text: string): { text: string; bad: boolean } {
+  const t = text.trim();
+  if (!t) return { text: 'Time', bad: false };
+  const secs = parseEditorDuration(t);
+  if (!secs) return { text: 'Time as m:ss', bad: true };
+  return t.includes(':') ? { text: 'Time', bad: false } : { text: `Time · ${formatDuration(secs)}`, bad: false };
+}
+
 /** Editor text fields for a loaded routine row's time / distance target. */
 function editorTargets(re: unknown): { targetDuration: string; targetDistance: string } {
   const text = targetEditorText(readRoutineTargets(re));

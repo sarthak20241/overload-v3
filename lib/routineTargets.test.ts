@@ -183,3 +183,12 @@ Deno.test('the editor keeps a loaded target when it does not know the exercise t
     target_distance_m: null,
   });
 });
+
+Deno.test('a write never sends a target past the column bounds', () => {
+  assertEquals(targetColumns({ target_duration_seconds: 86400, target_distance_m: 1_000_000 }), {
+    target_duration_seconds: 86400,
+    target_distance_m: 1_000_000,
+  });
+  assertEquals(targetColumns({ target_duration_seconds: 86401, target_distance_m: 1_000_001 }), {});
+  assertEquals(targetColumns({ target_duration_seconds: 0.4 }), {});
+});

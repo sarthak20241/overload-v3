@@ -187,17 +187,25 @@ export function targetsFromEditor(
   return { target_duration_seconds: secs > 0 ? secs : null, target_distance_m: meters > 0 ? meters : null };
 }
 
+/** The migration's CHECK bounds: a set is at most a day and 1000 km. */
+export const MAX_TARGET_SECONDS = 86400;
+export const MAX_TARGET_METERS = 1_000_000;
+
 /**
  * Only the target keys that are set. A write sends these and nothing else, so
  * a rep-based row never names the new columns and keeps working against a
- * database that predates them.
+ * database that predates them. A value past the column's CHECK bound is
+ * dropped here: sent, it would fail the whole write (and park a queued
+ * routine for good), for a target that can only be a typo.
  */
 export function targetColumns(t: Partial<RoutineTargets> | null | undefined): Partial<RoutineTargets> {
   const out: Partial<RoutineTargets> = {};
   const secs = positive(t?.target_duration_seconds);
   const meters = positive(t?.target_distance_m);
-  if (secs != null) out.target_duration_seconds = Math.round(secs);
-  if (meters != null) out.target_distance_m = meters;
+  if (secs != null && Math.round(secs) >= 1 && Math.round(secs) <= MAX_TARGET_SECONDS) {
+    out.target_duration_seconds = Math.round(secs);
+  }
+  if (meters != null && meters <= MAX_TARGET_METERS) out.target_distance_m = meters;
   return out;
 }
 
