@@ -72,8 +72,6 @@ import type { MealType } from '@/lib/foods';
 import { formatServing, formatMacroGrams } from '@/lib/foods';
 import { swapToAlternative } from '@/lib/variantSwap';
 import { DronaMark } from '@/components/coach/DronaMark';
-import { isRecallable, type LastFoodText } from '@/lib/lastFoodText';
-import { loadLastFoodText, saveLastFoodText } from '@/lib/lastFoodTextStore';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
  *  'review' holds a parsed-but-UNLOGGED meal: nothing is written until the user
@@ -260,8 +258,7 @@ export default function NutritionScreen() {
   // screen has landed, so it never competes with it.
   usePrefetchWeek(weekStartIso, !dayUnknown);
   const supabase = useSupabaseClient();
-  const { isSignedIn, user } = useClerkUser();
-  const userId = user?.id ?? null;
+  const { isSignedIn } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();
   const { width: winW, height: winH } = useWindowDimensions();
   // Bottom edge of the calorie ring + macro bars, in the day scroll's CONTENT
@@ -320,15 +317,6 @@ export default function NutritionScreen() {
   // Undo lives on the receipt strip and on each diary row Drona added.
   const [text, setText] = useState('');
   const inputRef = useRef<TextInput>(null);
-  const [inputFocused, setInputFocused] = useState(false);
-  // The last thing sent from this box, offered back while the box is empty.
-  const [lastSent, setLastSent] = useState<LastFoodText | null>(null);
-  useEffect(() => {
-    let live = true;
-    // A send made before the load lands is newer: keep it.
-    void loadLastFoodText().then((v) => { if (live) setLastSent((p) => p ?? v); });
-    return () => { live = false; };
-  }, []);
   const [flow, setFlow] = useState<ParseFlow>({ status: 'idle' });
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).
@@ -1088,19 +1076,8 @@ export default function NutritionScreen() {
     // manual picker exactly as the old bar did.
     if (!isSignedIn) { openSearch(mealForNow()); return; }
     setText('');
-    // Only a fresh message with food in it is worth offering back. A reply while
-    // a card is up is a correction or an answer ("make it 3 eggs", "yes"), and a
-    // day on its own ("for tomorrow") only moves the view; neither is the meal.
-    const named = readLogDayPhrase(t);
-    // No user yet (Clerk still loading): a record nobody owns could never be
-    // offered back, so it would only overwrite one that could.
-    if (flow.status === 'idle' && userId && (named ? named.rest : t).trim()) {
-      const last = { text: t, at: Date.now(), userId };
-      setLastSent(last);
-      void saveLastFoodText(last);
-    }
     void runParse(t);
-  }, [text, isSignedIn, flow.status, runParse, userId]);
+  }, [text, isSignedIn, flow.status, runParse]);
 
   const onMealTypeChange = useCallback((m: MealType) => {
     editCountRef.current += 1;
@@ -1654,22 +1631,6 @@ export default function NutritionScreen() {
           </View>
         )}
 
-        {/* Use again: the last thing sent, offered only while the box is empty,
-            focused and nothing is on the card, so it never competes with a meal. */}
-        {isSignedIn && flow.status === 'idle' && inputFocused && !text && isRecallable(lastSent, Date.now(), userId) && (
-          <Pressable
-            style={s.recall}
-            onPress={() => {
-              track('food_text_reused', { from: 'box', chars: lastSent.text.length });
-              setText(lastSent.text);
-            }}
-            accessibilityRole="button"
-            accessibilityLabel={`Use again: ${lastSent.text}`}
-          >
-            <Feather name="rotate-ccw" size={11} color={C.textMuted} />
-            <Text style={s.recallTxt} numberOfLines={1}>{lastSent.text}</Text>
-          </Pressable>
-        )}
         {isSignedIn ? (
           <View style={s.input}>
             <Pressable onPress={() => openSearch(mealForNow())} hitSlop={8} style={s.iconBox}>
@@ -1680,8 +1641,6 @@ export default function NutritionScreen() {
               style={s.inputText}
               value={text}
               onChangeText={setText}
-              onFocus={() => setInputFocused(true)}
-              onBlur={() => setInputFocused(false)}
               // "Just log it" changes what send DOES, and the placeholder is the
               // honest always-visible signal of that: send now commits.
               placeholder={autoLog ? 'Tell Drona what you ate, it goes straight in' : 'Tell Drona what you ate'}
@@ -1915,12 +1874,6 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     // centred box the send button has, and the text line is lifted to match.
     inputText: { flex: 1, fontSize: FontSize.base, lineHeight: 20, color: C.foreground, padding: 0, marginBottom: 4, maxHeight: 96, textAlignVertical: 'top' },
     iconBox: { height: 28, justifyContent: 'center', alignItems: 'center' },
-    recall: {
-      flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', maxWidth: '100%', gap: 6,
-      paddingHorizontal: 10, paddingVertical: 5, marginBottom: Spacing.sm, marginLeft: Spacing.sm,
-      borderRadius: Radius.full, borderWidth: 1, borderColor: C.borderSubtle, backgroundColor: C.card,
-    },
-    recallTxt: { flexShrink: 1, fontSize: FontSize.xs, color: C.textSecondary },
     send: { width: 28, height: 28, borderRadius: 14, backgroundColor: C.accentText, alignItems: 'center', justifyContent: 'center' },
   });
 }
