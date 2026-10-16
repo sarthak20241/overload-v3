@@ -45,8 +45,8 @@ export function planExerciseInsert(ex: { name: string; new_exercise?: NewExercis
 
 /** Leading rep count or range, and whatever follows it ("/side", "s", "min"). */
 const LEADING_REPS = /^\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*(.*)$/;
-/** "3x10", "3 x 8-12": the leading number is sets, the rest is reps. */
-const SETS_X_REPS = /^\s*\d+\s*[x\u00d7]\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*$/i;
+/** "3x10", "3 x 8-12", "3-4x10": the leading part is sets, the rest is reps. */
+const SETS_X_REPS = /^\s*\d+(?:\s*[-\u2013]\s*\d+)?\s*[x\u00d7]\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*$/i;
 /** A suffix that makes the number a time, not a rep count. */
 const TIME_UNIT = /^(s|secs?|seconds?|min|mins|minutes?)\b/i;
 
@@ -73,7 +73,8 @@ export function planRepsAndNote(reps: string, note?: string | null): {
     return { reps_min: lo, reps_max: Number(sxr[2]) || lo, note: withTarget };
   }
   const m = LEADING_REPS.exec(target);
-  if (m && !TIME_UNIT.test(m[3])) {
+  // A decimal ("1.5min") is never a rep count, whatever follows it.
+  if (m && !TIME_UNIT.test(m[3]) && !/^[.,]\d/.test(m[3])) {
     const lo = Number(m[1]) || 8;
     const rest = m[3].trim();
     const plain = rest === '' || /^reps?$/i.test(rest);
