@@ -192,3 +192,14 @@ Deno.test('a write never sends a target past the column bounds', () => {
   assertEquals(targetColumns({ target_duration_seconds: 86401, target_distance_m: 1_000_001 }), {});
   assertEquals(targetColumns({ target_duration_seconds: 0.4 }), {});
 });
+
+Deno.test('the editor drops a target past the column bounds instead of showing it', () => {
+  assertEquals(targetsFromEditor('distance_duration', { duration: '25:00:01', distance: '99999' }), {
+    target_duration_seconds: null,
+    target_distance_m: null,
+  });
+  assertEquals(targetsFromEditor('distance_duration', { duration: '24:00:00', distance: '1000' }), {
+    target_duration_seconds: 86400,
+    target_distance_m: 1_000_000,
+  });
+});

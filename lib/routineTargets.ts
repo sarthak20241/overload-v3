@@ -184,7 +184,12 @@ export function targetsFromEditor(
   const known = metricType != null;
   const secs = !known || takesDurationTarget(metricType) ? parseEditorDuration(text.duration) : 0;
   const meters = !known || takesDistanceTarget(metricType) ? parseDistanceKm(text.distance ?? '') : 0;
-  return { target_duration_seconds: secs > 0 ? secs : null, target_distance_m: meters > 0 ? meters : null };
+  // Past the column bounds is a typo: kept, it would show locally and then
+  // be dropped at sync, so it is dropped here (and the label says so).
+  return {
+    target_duration_seconds: secs > 0 && secs <= MAX_TARGET_SECONDS ? secs : null,
+    target_distance_m: meters > 0 && meters <= MAX_TARGET_METERS ? meters : null,
+  };
 }
 
 /** The migration's CHECK bounds: a set is at most a day and 1000 km. */

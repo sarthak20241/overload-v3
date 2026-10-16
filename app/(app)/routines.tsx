@@ -44,6 +44,8 @@ import {
   slotTargetLabel,
   takesDistanceTarget,
   takesDurationTarget,
+  MAX_TARGET_METERS,
+  MAX_TARGET_SECONDS,
   parseEditorDuration,
   targetEditorText,
   targetsFromEditor,
@@ -62,7 +64,7 @@ import ReorderableList, {
   type ReorderableListReorderEvent,
 } from 'react-native-reorderable-list';
 import { metricTypeOf, usesReps, type ExerciseDef, type MetricType } from '@/lib/exercises';
-import { formatDuration } from '@/lib/format';
+import { formatDuration, parseDistanceKm } from '@/lib/format';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -615,7 +617,12 @@ function ExerciseEditorCard({
                 its target takes the Reps slot (lib/routineTargets.ts). */}
             {takesDistanceTarget(exercise.metricType) && (
               <View style={{ flex: 1 }}>
-                <Text style={[styles.editorLabel, { color: C.textMuted }]}>Km</Text>
+                <Text
+                  style={[styles.editorLabel, { color: distanceLabel(exercise.targetDistance).bad ? C.dangerText : C.textMuted }]}
+                  numberOfLines={1}
+                >
+                  {distanceLabel(exercise.targetDistance).text}
+                </Text>
                 <TextInput
                   value={exercise.targetDistance}
                   onChangeText={(v) => onChange({ ...exercise, targetDistance: v })}
@@ -1432,7 +1439,17 @@ function timeLabel(text: string): { text: string; bad: boolean } {
   if (!t) return { text: 'Time', bad: false };
   const secs = parseEditorDuration(t);
   if (!secs) return { text: 'Time as m:ss', bad: true };
+  if (secs > MAX_TARGET_SECONDS) return { text: 'Time over a day', bad: true };
   return t.includes(':') ? { text: 'Time', bad: false } : { text: `Time · ${formatDuration(secs)}`, bad: false };
+}
+
+/** The Km field's label: a distance past 1000 km saves nothing, so say so. */
+function distanceLabel(text: string): { text: string; bad: boolean } {
+  const t = text.trim();
+  if (!t) return { text: 'Km', bad: false };
+  const meters = parseDistanceKm(t);
+  if (!meters) return { text: 'Km as a number', bad: true };
+  return meters > MAX_TARGET_METERS ? { text: 'Km too far', bad: true } : { text: 'Km', bad: false };
 }
 
 /** Editor text fields for a loaded routine row's time / distance target. */
