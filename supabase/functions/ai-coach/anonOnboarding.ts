@@ -135,7 +135,8 @@ export function buildAnonProgramMessage(s: SanitizedIntake, todayISO: string): s
 
   // The program's goal is what it does, not the first goal picked: a cut is
   // fat_loss even for "build muscle", and a gain is never fat_loss. Twin of
-  // lib/fitnessGoals.programGoalFor, which the app applies again on save.
+  // lib/fitnessGoals.programGoalFor, which the app applies again on save; the
+  // same 1 kg dead band comes from hasWeightGoal above.
   const programGoal = hasWeightGoal && s.goalWeightKg! < s.weightKg!
     ? "fat_loss"
     : hasWeightGoal && s.goalKey === "fat_loss" ? "hypertrophy" : s.goalKey;

@@ -312,6 +312,42 @@ export async function applyPhaseTargets(
 }
 
 /**
+ * Today's weight for labelling a program: the latest weigh-in from the last
+ * 30 days (daily_metrics), else the profile weight, which can be months old.
+ * null when neither reads; errors are swallowed because the label is a
+ * nicety and must never block a save.
+ */
+async function currentWeightKg(supabase: Supa, clerkId: string): Promise<number | null> {
+  const positive = (v: unknown) => {
+    const n = Number(v);
+    return v != null && Number.isFinite(n) && n > 0 ? n : null;
+  };
+  try {
+    const since = new Date();
+    since.setDate(since.getDate() - 30);
+    const { data: logged, error } = await supabase
+      .from('daily_metrics')
+      .select('value')
+      .eq('user_id', clerkId)
+      .eq('metric_type', 'bodyweight_kg')
+      .gte('metric_date', toLocalISO(since))
+      .order('metric_date', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const fromLog = error ? null : positive(logged?.value);
+    if (fromLog != null) return fromLog;
+    const { data: profile, error: profileErr } = await supabase
+      .from('user_profiles')
+      .select('weight_kg')
+      .eq('clerk_user_id', clerkId)
+      .maybeSingle();
+    return profileErr ? null : positive(profile?.weight_kg);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Persist a coach-emitted program on Apply. Archives any existing active
  * program first (the partial-unique index allows only one active per user),
  * inserts the program + its phases, then mirrors the active phase's diet
@@ -392,20 +428,13 @@ export async function saveProgram(
   };
 
   // 2. Insert the program. Its goal is what the program does: a target weight
-  //    below today's is a cut whatever the coach labelled it (the chat path
-  //    has no intake to check against, so the profile weight stands in).
-  //    Best-effort: an unread weight keeps the coach's label.
-  const { data: weightRow } = await supabase
-    .from('user_profiles')
-    .select('weight_kg')
-    .eq('clerk_user_id', clerkId)
-    .maybeSingle();
-  const checked = programGoalFor(
-    program.goal,
-    program.target_weight_kg,
-    weightRow?.weight_kg != null ? Number(weightRow.weight_kg) : null,
-  );
-  const goal = program.goal != null || checked === 'fat_loss' ? checked : null;
+  //    below today's is a cut whatever the coach labelled it. Best-effort: with
+  //    no weight to compare, the coach's label stands.
+  const currentKg = await currentWeightKg(supabase, clerkId);
+  let goal: string | null = program.goal ?? null;
+  const checked = programGoalFor(goal, program.target_weight_kg, currentKg);
+  // An unlabelled program stays unlabelled unless its own target says cut.
+  if (goal != null || checked === 'fat_loss') goal = checked;
   const { data: prog, error: progErr } = await supabase
     .from('coach_programs')
     .insert({
