@@ -12,6 +12,7 @@ import {
   targetsFor,
   targetEditorText,
   targetsFromEditor,
+  trustDistanceUnit,
   withoutTargetColumns,
   writeWithTargetFallback,
 } from './routineTargets.ts';
@@ -160,4 +161,14 @@ Deno.test('a write retries without the target columns only when they are missing
   // A retry that fails too reports the retry's error.
   const late = { code: '42501', message: 'permission denied' };
   assertEquals(await writeWithTargetFallback((cols) => Promise.resolve({ error: cols ? missing : late })), late);
+});
+
+Deno.test('a bare m is trusted as meters only where meters make sense', () => {
+  const bare = (text: string) => parseTimedTarget(text)!;
+  assertEquals(trustDistanceUnit(bare('5km'), null), true);
+  assertEquals(trustDistanceUnit(bare('400m'), null), false);
+  assertEquals(trustDistanceUnit(bare('20m'), 'weight_distance'), true);
+  assertEquals(trustDistanceUnit(bare('5m'), 'distance_duration'), false);
+  assertEquals(trustDistanceUnit(bare('400m'), 'distance_duration'), true);
+  assertEquals(trustDistanceUnit(bare('400m'), 'duration'), false);
 });

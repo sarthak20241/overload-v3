@@ -108,6 +108,21 @@ export function parseTimedTarget(text: string | null | undefined): TimedTarget |
   return /^m\.?$/i.test(m[3]) ? { distance_m: meters, range, bareM: true } : { distance_m: meters, range };
 }
 
+/** Below this, a bare "m" on an exercise that logs time (a run) is read as
+ *  minutes, not meters: "5m" of running is five minutes, "400m" is a lap. */
+const BARE_M_MIN_METERS_ON_TIMED = 100;
+
+/**
+ * Whether a target's distance can be stored as written. Only a bare "m" is in
+ * doubt (meters or minutes?): it needs a metric type that logs distance, and
+ * on one that also logs time it needs to be a plausible distance.
+ */
+export function trustDistanceUnit(t: TimedTarget, metricType: string | null | undefined): boolean {
+  if (!t.bareM) return true;
+  if (metricType == null || !takesDistanceTarget(metricType)) return false;
+  return !takesDurationTarget(metricType) || (t.distance_m ?? 0) >= BARE_M_MIN_METERS_ON_TIMED;
+}
+
 /** A short label for a target: "0:45", "20:00", "5 km". Null when there is none. */
 export function formatRoutineTarget(t: RoutineTargets): string | null {
   const parts: string[] = [];

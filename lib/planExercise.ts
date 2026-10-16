@@ -17,6 +17,7 @@ import {
   takesDistanceTarget,
   takesDurationTarget,
   targetColumns,
+  trustDistanceUnit,
   type RoutineTargets,
 } from './routineTargets';
 
@@ -97,12 +98,8 @@ export function planRepsAndNote(
   const timed = opts.targetColumns === false ? null : parseTimedTarget(target);
   // A time on an exercise that does not log time (Drona timed a lift) would
   // land in a column nothing shows, so it stays in the cue instead.
-  // A bare "m" could be meters or minutes. It is only trusted as meters on an
-  // exercise that logs distance, and on one that also logs time (a run) only
-  // from 100 up: "5m" of running is five minutes, "400m" is a lap.
-  const bareMOk = !timed?.bareM || (opts.metricType != null && (
-    !takesDurationTarget(opts.metricType) || (timed.distance_m ?? 0) >= 100));
-  const fits = timed && bareMOk && (opts.metricType == null
+  // A bare "m" could be meters or minutes; trustDistanceUnit decides.
+  const fits = timed && trustDistanceUnit(timed, opts.metricType) && (opts.metricType == null
     || (timed.duration_seconds != null ? takesDurationTarget(opts.metricType) : takesDistanceTarget(opts.metricType)));
   if (timed && fits) {
     return {
