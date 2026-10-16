@@ -58,6 +58,7 @@ import { PastChatsList } from '@/components/coach/PastChatsList';
 import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
 import { withChangeSource } from '@/lib/planChangeSource';
 import { parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
+import { missingTargetColumn } from '@/lib/routineTargets';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 import {
   describeCoachEditOp,
@@ -3907,7 +3908,7 @@ export function AICoachModal({
             // Parity with the authenticated branch — guest users keep
             // their cues too. Otherwise the routine renders without
             // notes the moment they save it.
-            ...planRepsAndNote(ex.reps, ex.note),
+            ...planRepsAndNote(ex.reps, ex.note, { metricType: def.metric_type }),
             exercises: {
               id: `gex-${Date.now()}-${i}`,
               name: ex.name,
@@ -3942,13 +3943,17 @@ export function AICoachModal({
       // Case-insensitive find, oldest row first — .single() would error when a
       // global library row and a same-named custom both match (legal scopes
       // under migration 0037's unique indexes).
+      // How the matched row is measured, so a time on a lift stays in the cue
+      // rather than landing in a target column nothing shows.
+      let metricType: string | null | undefined = ex.new_exercise?.metric_type;
       const findByName = async () => {
         const { data } = await supabase
           .from('exercises')
-          .select('id')
+          .select('id, metric_type')
           .ilike('name', ex.name)
           .order('created_at', { ascending: true })
           .limit(1);
+        if (data?.[0]) metricType = data[0].metric_type;
         return data?.[0]?.id;
       };
 
@@ -3962,11 +3967,13 @@ export function AICoachModal({
           .select('id')
           .single();
         // 23505: lost the create race to another session — take the winner.
+        // A bare insert takes the table default, weight_reps.
+        if (newEx?.id) metricType = ex.new_exercise?.metric_type ?? 'weight_reps';
         exerciseId = newEx?.id ?? (insErr?.code === '23505' ? await findByName() : undefined);
       }
       if (!exerciseId) return;
 
-      const { error: linkErr } = await withChangeSource(supabase, 'chat').from('routine_exercises').insert({
+      const link = (targetColumns: boolean) => withChangeSource(supabase, 'chat').from('routine_exercises').insert({
         routine_id: routine.id,
         exercise_id: exerciseId,
         sets: ex.sets,
@@ -3974,10 +3981,14 @@ export function AICoachModal({
         order: i,
         // Phase 2.5 (from PR #6): persist the coach's per-exercise cue
         // (e.g. "RIR 2", "Hams-focused"). Routines created via the editor
-        // don't set this. A timed target ("45s") has no column, so
-        // planRepsAndNote carries it at the front of the cue.
-        ...planRepsAndNote(ex.reps, ex.note),
+        // don't set this. A time or distance target ("45s", "5km") goes to
+        // its own column; planRepsAndNote only names that column when set.
+        ...planRepsAndNote(ex.reps, ex.note, { targetColumns, metricType }),
       });
+      let { error: linkErr } = await link(true);
+      // A database from before the target columns: save the target in the cue
+      // instead, as the app did before they existed.
+      if (missingTargetColumn(linkErr)) ({ error: linkErr } = await link(false));
       if (linkErr) throw linkErr;
     }));
   };

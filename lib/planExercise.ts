@@ -6,12 +6,19 @@
  * where they quietly lost data. A NEW exercise was inserted as muscle group
  * "Other", equipment "Other", measured by weight and reps, whatever Drona
  * meant. A timed target like "45s" or "20min" parsed to NaN and fell back to
- * 8-12 reps, because routine_exercises has no column for a time or a distance.
+ * 8-12 reps; it now goes to the routine row's own time or distance column.
  */
 import {
   normalizeNewExercise,
   type NewExerciseDef,
 } from '../supabase/functions/_shared/exerciseVocab';
+import {
+  parseTimedTarget,
+  takesDistanceTarget,
+  takesDurationTarget,
+  targetColumns,
+  type RoutineTargets,
+} from './routineTargets';
 
 export type { NewExerciseDef };
 
@@ -50,22 +57,54 @@ const SETS_X_REPS = /^\s*\d+\s*[x\u00d7]\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*$/i;
 /** A suffix that makes the number a time, not a rep count. */
 const TIME_UNIT = /^(s|secs?|seconds?|min|mins|minutes?)\b/i;
 
-/**
- * Rep range and cue for a routine_exercises row. A rep target ("8-12", "5")
- * fills reps_min/reps_max as before, and so does the rep part of "10-12/side"
- * or "6-8 each", whose extra words then lead the cue. A time ("45s", "20min")
- * or a target with no number ("AMRAP") has no column to live in, so it rides
- * at the front of the cue instead of being dropped, and the reps fall back to
- * the table's own defaults.
- */
-export function planRepsAndNote(reps: string, note?: string | null): {
+export interface PlanRoutineRow extends Partial<RoutineTargets> {
   reps_min: number;
   reps_max: number;
   note: string | null;
-} {
+}
+
+/**
+ * Rep range, cue, and time or distance target for a routine_exercises row.
+ *
+ * A rep target ("8-12", "5") fills reps_min/reps_max, and so does the rep part
+ * of "10-12/side" or "6-8 each", whose extra words then lead the cue. A time or
+ * distance ("45s", "20min", "5km") goes to target_duration_seconds /
+ * target_distance_m, and the reps fall back to the table's own defaults. A
+ * range ("30-45s") stores its low end and keeps the range in front of the cue,
+ * so the ceiling is not lost. A target with no number ("AMRAP") has no column,
+ * so it rides in the cue.
+ *
+ * targetColumns: false is the shape for a database from before the target
+ * columns (see missingTargetColumn): every time target rides in the cue. The
+ * target keys are only present when set, so a rep row never names the new
+ * columns at all. metricType, when known, keeps a time or distance the
+ * exercise does not log in the cue, where it is still seen.
+ */
+export function planRepsAndNote(
+  reps: string,
+  note?: string | null,
+  opts: { targetColumns?: boolean; metricType?: string | null } = {},
+): PlanRoutineRow {
   const target = (reps ?? '').trim();
   const cue = (note ?? '').trim();
   const withTarget = cue ? `Aim for ${target}. ${cue}` : `Aim for ${target}.`;
+  if (!target) return { reps_min: 8, reps_max: 12, note: cue || null };
+  // Time and distance first: "5km" and "400m" also start with a number, and
+  // the rep reading below would take them for 5 and 400 reps.
+  const timed = opts.targetColumns === false ? null : parseTimedTarget(target);
+  // A time on an exercise that does not log time (Drona timed a lift) would
+  // land in a column nothing shows, so it stays in the cue instead.
+  const fits = timed && (opts.metricType == null
+    || (timed.duration_seconds != null ? takesDurationTarget(opts.metricType) : takesDistanceTarget(opts.metricType)));
+  if (timed && fits) {
+    return {
+      reps_min: 8,
+      reps_max: 12,
+      note: timed.range ? withTarget : cue || null,
+      ...targetColumns({ target_duration_seconds: timed.duration_seconds, target_distance_m: timed.distance_m }),
+    };
+  }
+  if (timed) return { reps_min: 8, reps_max: 12, note: withTarget };
   // "3x10" / "3 x 8-12" is sets x reps: the reps are the part after the x.
   const sxr = SETS_X_REPS.exec(target);
   if (sxr) {
@@ -79,6 +118,5 @@ export function planRepsAndNote(reps: string, note?: string | null): {
     const plain = rest === '' || /^reps?$/i.test(rest);
     return { reps_min: lo, reps_max: Number(m[2]) || lo, note: plain ? cue || null : withTarget };
   }
-  if (!target) return { reps_min: 8, reps_max: 12, note: cue || null };
   return { reps_min: 8, reps_max: 12, note: withTarget };
 }

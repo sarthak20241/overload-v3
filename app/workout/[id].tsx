@@ -54,6 +54,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
 import { roundVolume, abbreviateNumber, formatWeight, formatDuration, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
 import { metricTypeOf, metricTypeDef } from '@/lib/exercises';
+import { readRoutineTargets, slotTargetLabel } from '@/lib/routineTargets';
 import { setVolumeKg } from '@/lib/sets';
 import type { ExerciseDef, MetricAxis } from '@/lib/exercises';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
@@ -736,6 +737,7 @@ export default function ActiveWorkoutScreen() {
           .sort((a: any, b: any) => a.order - b.order)
           .map((re: any) => {
             const prev = prevPerf[re.exercises?.name];
+            const target = readRoutineTargets(re);
             return {
               exercise: re.exercises,
               sets: Array.from({ length: re.sets }, (_, i) => ({
@@ -749,6 +751,8 @@ export default function ActiveWorkoutScreen() {
               targetSets: re.sets,
               repsMin: re.reps_min,
               repsMax: re.reps_max,
+              targetDurationSeconds: target.target_duration_seconds,
+              targetDistanceM: target.target_distance_m,
               restSeconds: re.rest_seconds ?? 90,
               supersetGroup: typeof re.superset_group === 'number' ? re.superset_group : null,
             };
@@ -1153,6 +1157,15 @@ export default function ActiveWorkoutScreen() {
     }
   }, [workout.isPaused]);
 
+  // A routine slot's time / distance target into the logger's fields. The
+  // stopwatch is left alone: pressing ▶ still times the hold from zero, and
+  // logging without it records the target as typed.
+  const seedTargetInputs = (ex: ActiveWorkoutExercise) => {
+    const axes = metricTypeDef(metricTypeOf(ex.exercise)).axes;
+    if (axes.includes('duration') && ex.targetDurationSeconds) setInputDuration(formatDuration(ex.targetDurationSeconds));
+    if (axes.includes('distance') && ex.targetDistanceM) setInputDistance(formatDistanceKm(ex.targetDistanceM));
+  };
+
   // Seed the shared inputs for whichever exercise is now open — on arrival
   // (navigation, a superset hop, a remount after minimizing) and when its
   // previous performance resolves in the background. This runs for exercises
@@ -1205,6 +1218,10 @@ export default function ActiveWorkoutScreen() {
       setInputWeight('0');
       setInputReps(String(currentEx.sets[0]?.reps || 10));
     }
+    // The routine's time / distance target ("hold 45s", "run 5 km") seeds the
+    // fields the index-change effect just cleared. Only the axes this exercise
+    // logs, so a slot swapped from a stretch to a lift ignores its old time.
+    seedTargetInputs(currentEx);
     // exercise.id, so a session restored from a snapshot (or an ad-hoc exercise
     // whose real row resolves late) seeds once its exercise actually lands —
     // currentIdx alone can stay 0 across that whole transition.
@@ -1406,6 +1423,8 @@ export default function ActiveWorkoutScreen() {
       resetStopwatch();
       setInputDuration('0:00');
     }
+    // The next set aims for the same target: put it back in the cleared field.
+    seedTargetInputs(currentEx);
 
     if (willAdvance) {
       // Hop the pager to the next member; the index-change effects prefill the new
@@ -3152,6 +3171,17 @@ export default function ActiveWorkoutScreen() {
                       </TouchableOpacity>
                     </View>
                   );
+                })()}
+                {(() => {
+                  const target = slotTargetLabel(currentEx.exercise.metric_type, {
+                    target_duration_seconds: currentEx.targetDurationSeconds ?? null,
+                    target_distance_m: currentEx.targetDistanceM ?? null,
+                  });
+                  return target ? (
+                    <Text style={[styles.coachCue, { color: C.textMuted }]} numberOfLines={1}>
+                      Target {target} per set
+                    </Text>
+                  ) : null;
                 })()}
                 {currentEx.coachNote ? (
                   <Text style={[styles.coachCue, { color: C.accentText }]} numberOfLines={3}>

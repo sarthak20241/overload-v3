@@ -39,6 +39,14 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { newClientId } from '@/lib/syncQueue';
 import { enqueueRoutine, applyRoutineToCache, mergePendingRoutines, type PendingRoutine } from '@/lib/routineQueue';
+import {
+  readRoutineTargets,
+  slotTargetLabel,
+  takesDistanceTarget,
+  takesDurationTarget,
+  targetEditorText,
+  targetsFromEditor,
+} from '@/lib/routineTargets';
 import { useSync } from '@/components/SyncProvider';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
@@ -52,7 +60,7 @@ import ReorderableList, {
   reorderItems,
   type ReorderableListReorderEvent,
 } from 'react-native-reorderable-list';
-import type { ExerciseDef } from '@/lib/exercises';
+import { metricTypeOf, usesReps, type ExerciseDef, type MetricType } from '@/lib/exercises';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -69,11 +77,15 @@ interface RoutineExerciseRaw {
   note?: string | null;
   // Supersets (migration 0060): grouping ordinal; null/missing = solo.
   superset_group?: number | null;
+  // Time / distance target (lib/routineTargets.ts); absent before its migration.
+  target_duration_seconds?: number | null;
+  target_distance_m?: number | null;
   exercises: {
     id: string;
     name: string;
     muscle_group: string;
     category: string;
+    metric_type?: MetricType;
   };
 }
 
@@ -109,6 +121,13 @@ interface EditorExercise {
   /** Superset grouping ordinal (migration 0060); null = solo. Members share a value
    *  and are kept contiguous in the list (order = list position). */
   supersetGroup?: number | null;
+  /** How the exercise is measured (exercises.metric_type). A timed or distance
+   *  type swaps the Reps field for a target time / distance. */
+  metricType?: MetricType;
+  /** Target time per set as typed ("0:45" or "45"); '' = none. */
+  targetDuration: string;
+  /** Target distance per set in km as typed; '' = none. */
+  targetDistance: string;
 }
 
 // A fresh, collision-proof row id (Date.now() can repeat within a .map(), so mix
@@ -128,6 +147,8 @@ function newExercise(): EditorExercise {
     restSeconds: 90,
     notes: '',
     supersetGroup: null,
+    targetDuration: '',
+    targetDistance: '',
   };
 }
 
@@ -529,8 +550,9 @@ function ExerciseEditorCard({
               {exercise.name || 'Unnamed exercise'}
             </Text>
             <Text style={[styles.editorExSub, { color: C.textMuted }]}>
-              {exercise.targetSets} sets · {exercise.targetReps} reps
-              {exercise.muscleGroup ? ` · ${exercise.muscleGroup}` : ''}
+              {[`${exercise.targetSets} sets`, editorSlotTarget(exercise), exercise.muscleGroup]
+                .filter(Boolean)
+                .join(' · ')}
             </Text>
           </View>
           <Feather
@@ -587,14 +609,49 @@ function ExerciseEditorCard({
                 onFocus={onInputFocus}
               />
             </View>
-            <View style={{ flex: 1.5 }}>
-              <Text style={[styles.editorLabel, { color: C.textMuted }]}>Reps</Text>
-              <RepRangeInput
-                value={exercise.targetReps}
-                onChange={(v) => onChange({ ...exercise, targetReps: v })}
-                onFocus={onInputFocus}
-              />
-            </View>
+            {/* A stretch or a run is prescribed by time or distance, not reps:
+                its target takes the Reps slot (lib/routineTargets.ts). */}
+            {takesDistanceTarget(exercise.metricType) && (
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.editorLabel, { color: C.textMuted }]}>Km</Text>
+                <TextInput
+                  value={exercise.targetDistance}
+                  onChangeText={(v) => onChange({ ...exercise, targetDistance: v })}
+                  onFocus={onInputFocus}
+                  keyboardType="decimal-pad"
+                  placeholder="5"
+                  placeholderTextColor={C.textMuted}
+                  maxLength={6}
+                  accessibilityLabel="Target distance in kilometers"
+                  style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
+                />
+              </View>
+            )}
+            {takesDurationTarget(exercise.metricType) ? (
+              <View style={{ flex: 1.2 }}>
+                <Text style={[styles.editorLabel, { color: C.textMuted }]}>Time</Text>
+                <TextInput
+                  value={exercise.targetDuration}
+                  onChangeText={(v) => onChange({ ...exercise, targetDuration: v })}
+                  onFocus={onInputFocus}
+                  keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default'}
+                  placeholder="0:45"
+                  placeholderTextColor={C.textMuted}
+                  maxLength={8}
+                  accessibilityLabel="Target time, minutes and seconds"
+                  style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
+                />
+              </View>
+            ) : !takesDistanceTarget(exercise.metricType) ? (
+              <View style={{ flex: 1.5 }}>
+                <Text style={[styles.editorLabel, { color: C.textMuted }]}>Reps</Text>
+                <RepRangeInput
+                  value={exercise.targetReps}
+                  onChange={(v) => onChange({ ...exercise, targetReps: v })}
+                  onFocus={onInputFocus}
+                />
+              </View>
+            ) : null}
             <View style={{ flex: 1 }}>
               <Text style={[styles.editorLabel, { color: C.textMuted }]}>Rest (s)</Text>
               <IntField
@@ -764,7 +821,14 @@ function RoutineEditorSheet({
           // The picker identifies exercises by name (ExerciseDef carries no id),
           // so a re-picked row's old catalog exerciseId is now stale — clear it
           // so the save resolves the new exercise by name, not the wrong id.
-          const next = { ...e, name: ex.name, muscleGroup: ex.muscle_group, category: ex.category, exerciseId: undefined };
+          const next = {
+            ...e,
+            name: ex.name,
+            muscleGroup: ex.muscle_group,
+            category: ex.category,
+            metricType: ex.metric_type ? metricTypeOf(ex) : undefined,
+            exerciseId: undefined,
+          };
           // Custom creations carry set/rep/rest targets from the form; library
           // picks keep whatever the card already has.
           if (custom) {
@@ -827,6 +891,8 @@ function RoutineEditorSheet({
               restSeconds: re.rest_seconds || 90,
               notes: re.note || '',
               supersetGroup: typeof re.superset_group === 'number' ? re.superset_group : null,
+              metricType: re.exercises?.metric_type ? metricTypeOf(re.exercises) : undefined,
+              ...editorTargets(re),
             }))
           : [newExercise()]
       );
@@ -847,6 +913,8 @@ function RoutineEditorSheet({
       // read undefined, so opening an AI-generated routine dropped its cues.
       notes: re.note || re.notes || '',
       supersetGroup: typeof re.superset_group === 'number' ? re.superset_group : null,
+      metricType: re.exercises?.metric_type ? metricTypeOf(re.exercises) : undefined,
+      ...editorTargets(re),
     });
 
     // Cache-first: hydrate the editor from the cached routine so it is never
@@ -912,11 +980,13 @@ function RoutineEditorSheet({
           reps_max: repsMax,
           rest_seconds: ex.restSeconds,
           superset_group: ex.supersetGroup ?? null,
+          ...savedTargets(ex),
           exercises: {
             id: exId,
             name: ex.name,
             muscle_group: ex.muscleGroup || 'Other',
             category: 'Custom',
+            ...(ex.metricType ? { metric_type: ex.metricType } : {}),
           },
         };
       });
@@ -960,7 +1030,12 @@ function RoutineEditorSheet({
       exercises: validExercises.map((ex, i) => {
         const [reps_min, reps_max] = parseReps(ex.targetReps);
         return {
-          def: { name: ex.name, muscle_group: ex.muscleGroup || 'Other', category: ex.category || 'Custom' },
+          def: {
+            name: ex.name,
+            muscle_group: ex.muscleGroup || 'Other',
+            category: ex.category || 'Custom',
+            ...(ex.metricType ? { metric_type: ex.metricType } : {}),
+          },
           // Loaded-from-routine rows carry a real catalog id — attach it directly
           // so the flusher skips name re-resolution (which can mis-match a
           // duplicate name). Picked/hand-typed rows clear it and resolve by name.
@@ -972,6 +1047,7 @@ function RoutineEditorSheet({
           rest_seconds: ex.restSeconds,
           note: ex.notes?.trim() ? ex.notes.trim() : null,
           superset_group: ex.supersetGroup ?? null,
+          ...savedTargets(ex),
         };
       }),
       phase: 'queued',
@@ -1338,6 +1414,26 @@ function EmptyState({ onAdd, onAI }: { onAdd: () => void; onAI: () => void }) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+/** Editor text fields for a loaded routine row's time / distance target. */
+function editorTargets(re: unknown): { targetDuration: string; targetDistance: string } {
+  const text = targetEditorText(readRoutineTargets(re));
+  return { targetDuration: text.duration, targetDistance: text.distance };
+}
+
+/** "0:45" or "8-12 reps" for the collapsed card. A timed row without a target
+ *  shows neither: its rep range is only the default, not a prescription. */
+function editorSlotTarget(ex: EditorExercise): string | null {
+  const target = slotTargetLabel(ex.metricType, savedTargets(ex));
+  if (target) return target;
+  return usesReps(ex.metricType) ? `${ex.targetReps} reps` : null;
+}
+
+/** The targets a row saves: only the axes its exercise logs, so a stretch
+ *  swapped for a lift does not carry its old time along. */
+function savedTargets(ex: EditorExercise) {
+  return targetsFromEditor(ex.metricType, { duration: ex.targetDuration, distance: ex.targetDistance });
+}
+
 function parseReps(reps: string): [number, number] {
   const parts = reps.split('-').map(Number);
   if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {

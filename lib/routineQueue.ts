@@ -16,13 +16,17 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveExerciseRow } from '@/lib/exerciseResolve';
+import type { MetricType } from '@/lib/exercises';
 import { readCache, writeCache } from '@/lib/localCache';
+import { missingTargetColumn, targetColumns, withoutTargetColumns } from '@/lib/routineTargets';
 
 const KEY = (userId: string) => `pending_routines_v1::${userId}`;
 const SCHEMA = 1 as const;
 
 export interface PendingRoutineExercise {
-  def: { name: string; muscle_group: string; category: string };
+  /** metric_type rides along so a not-yet-synced routine still knows which
+   *  slots are timed, and a custom it creates is measured the right way. */
+  def: { name: string; muscle_group: string; category: string; metric_type?: MetricType };
   resolvedExerciseId: string | null;
   order: number;
   sets: number;
@@ -32,6 +36,10 @@ export interface PendingRoutineExercise {
   note: string | null;
   /** Superset grouping ordinal (migration 0060); null = solo. */
   superset_group: number | null;
+  /** Time / distance target for the slot (lib/routineTargets.ts). Optional so
+   *  an entry queued by an older build still reads as "no target". */
+  target_duration_seconds?: number | null;
+  target_distance_m?: number | null;
 }
 
 export interface PendingRoutine {
@@ -160,11 +168,14 @@ export function pendingRoutineToCacheRow(p: PendingRoutine, prev?: { program_pha
         rest_seconds: ex.rest_seconds,
         note: ex.note,
         superset_group: ex.superset_group,
+        target_duration_seconds: ex.target_duration_seconds ?? null,
+        target_distance_m: ex.target_distance_m ?? null,
         exercises: {
           id: exId,
           name: ex.def.name,
           muscle_group: ex.def.muscle_group,
           category: ex.def.category,
+          ...(ex.def.metric_type ? { metric_type: ex.def.metric_type } : {}),
         },
       };
     }),
@@ -283,8 +294,17 @@ async function flushPendingRoutine(
         rest_seconds: ex.rest_seconds,
         note: ex.note,
         superset_group: ex.superset_group,
+        // Only a slot with a target names the target columns, so a routine
+        // without one saves the same as before against any database.
+        ...targetColumns(ex),
       }));
-      const { error: insErr } = await supabase.from('routine_exercises').insert(rows);
+      let { error: insErr } = await supabase.from('routine_exercises').insert(rows);
+      // The app shipped before the target columns' migration: drop the
+      // targets rather than fail the whole routine save. The server copy has
+      // no targets until the routine is saved again after the migration.
+      if (missingTargetColumn(insErr)) {
+        ({ error: insErr } = await supabase.from('routine_exercises').insert(rows.map(withoutTargetColumns)));
+      }
       if (insErr) throw insErr;
     }
     phase = 'done';

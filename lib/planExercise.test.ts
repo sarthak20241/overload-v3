@@ -47,16 +47,50 @@ Deno.test('a rep range with extra words keeps its numbers and its words', () => 
   assertEquals(planRepsAndNote('3 x 8-12'), { reps_min: 8, reps_max: 12, note: 'Aim for 3 x 8-12.' });
 });
 
-Deno.test('a timed target is kept in the cue instead of turning into 8-12 reps', () => {
+Deno.test('a 45s stretch saves 45 seconds to the time column, not the cue', () => {
   assertEquals(planRepsAndNote('45s', 'Squeeze the glute'), {
+    reps_min: 8,
+    reps_max: 12,
+    note: 'Squeeze the glute',
+    target_duration_seconds: 45,
+  });
+  assertEquals(planRepsAndNote('20min'), { reps_min: 8, reps_max: 12, note: null, target_duration_seconds: 1200 });
+});
+
+Deno.test('a timed range stores its low end and keeps the range in the cue', () => {
+  assertEquals(planRepsAndNote('30-45s', 'Breathe out'), {
+    reps_min: 8,
+    reps_max: 12,
+    note: 'Aim for 30-45s. Breathe out',
+    target_duration_seconds: 30,
+  });
+});
+
+Deno.test('a distance target saves meters to the distance column', () => {
+  assertEquals(planRepsAndNote('5km', 'Easy pace'), {
+    reps_min: 8,
+    reps_max: 12,
+    note: 'Easy pace',
+    target_distance_m: 5000,
+  });
+  assertEquals(planRepsAndNote('400m'), { reps_min: 8, reps_max: 12, note: null, target_distance_m: 400 });
+});
+
+Deno.test('a rep target never names the target columns', () => {
+  const row = planRepsAndNote('8-12', 'RIR 2');
+  assertEquals('target_duration_seconds' in row || 'target_distance_m' in row, false);
+});
+
+Deno.test('against a database without the columns, the target rides in the cue', () => {
+  assertEquals(planRepsAndNote('45s', 'Squeeze the glute', { targetColumns: false }), {
     reps_min: 8,
     reps_max: 12,
     note: 'Aim for 45s. Squeeze the glute',
   });
-  assertEquals(planRepsAndNote('20min'), { reps_min: 8, reps_max: 12, note: 'Aim for 20min.' });
+  assertEquals(planRepsAndNote('AMRAP'), { reps_min: 8, reps_max: 12, note: 'Aim for AMRAP.' });
 });
 
-// A timed row stores the table's default 8-12 reps (no time column yet), so the
+// A timed row stores the table's default 8-12 reps when it has no target, so the
 // routine card must not print it as a prescription.
 Deno.test('only exercises counted in reps show a rep target', () => {
   assertEquals(usesReps('duration'), false);
@@ -65,4 +99,19 @@ Deno.test('only exercises counted in reps show a rep target', () => {
   assertEquals(usesReps('weight_reps'), true);
   assertEquals(usesReps('bodyweight_reps'), true);
   assertEquals(usesReps(undefined), true);
+});
+
+Deno.test('a time on an exercise that does not log time stays in the cue', () => {
+  assertEquals(planRepsAndNote('30s', 'Brace', { metricType: 'weight_reps' }), {
+    reps_min: 8,
+    reps_max: 12,
+    note: 'Aim for 30s. Brace',
+  });
+  assertEquals(planRepsAndNote('5km', null, { metricType: 'duration' }), { reps_min: 8, reps_max: 12, note: 'Aim for 5km.' });
+  assertEquals(planRepsAndNote('45s', null, { metricType: 'duration' }), {
+    reps_min: 8,
+    reps_max: 12,
+    note: null,
+    target_duration_seconds: 45,
+  });
 });
