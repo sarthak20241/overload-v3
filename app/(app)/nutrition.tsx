@@ -121,6 +121,8 @@ type ParseFlow =
   | {
       status: 'error'; raw: string; message: string; meal?: ParsedMeal; mealType?: MealType;
       clientId?: string; logDate?: string;
+      /** The reviewed card's `words`, kept so Retry rebuilds it whole. */
+      words?: string;
     }
   // The user asked to SAVE a food or meal, and Drona drafted it. Nothing is
   // written until the card is tapped; `result` is what came back from that tap.
@@ -1152,7 +1154,7 @@ export default function NutritionScreen() {
     if (!error) editCountRef.current = 0;
     if (error) {
       // Keep the reviewed meal so Retry re-attempts the write (see onRetry).
-      setFlow({ status: 'error', raw: flow.raw, message: 'Could not add that. Try again.', meal: flow.meal, mealType: flow.mealType });
+      setFlow({ status: 'error', raw: flow.raw, message: 'Could not add that. Try again.', meal: flow.meal, mealType: flow.mealType, words: flow.words });
       return;
     }
     reload();
@@ -1167,7 +1169,7 @@ export default function NutritionScreen() {
     // A write failure kept the meal → re-show the review card (tapping Add re-writes
     // it, to the current day). Only re-run the AI parse if the meal is gone.
     if (flow.meal && flow.mealType) {
-      setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.mealType });
+      setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.mealType, words: flow.words });
     } else {
       // A failed "Just log it" send retries under its ORIGINAL id (see ParseFlow).
       void runParse(
@@ -1622,9 +1624,10 @@ export default function NutritionScreen() {
               // Not on 'sent', nor on a "Just log it" send that failed in transport
               // (it carries a clientId): the server may already be writing that
               // meal. Retry keeps the id and is safe; resending the words is not.
-              // Nor while Add is writing: the card would go, the write would not,
-              // and the words left in the box could log the meal twice.
-              onEditWords={parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && !!flow.clientId) ? undefined : () => {
+              // Nor while Add is writing, nor after Add failed (the error card
+              // keeps the meal): the write may still have landed, and the words
+              // left in the box could log the meal twice. Retry is the safe path.
+              onEditWords={parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && (!!flow.clientId || !!flow.meal)) ? undefined : () => {
                 // The whole conversation, not just a correction's own words.
                 const raw = flow.status === 'review' && flow.words ? flow.words : flow.raw;
                 track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
