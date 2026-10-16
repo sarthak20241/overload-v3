@@ -109,3 +109,28 @@ Deno.test("the message never prescribes a split", () => {
   assert(!msg.includes("upper/lower"), "no upper/lower in the program brief");
   assertStringIncludes(msg, "pick the split");
 });
+
+Deno.test("a cut is briefed as fat_loss even when muscle is the first goal", () => {
+  const cut = sanitizeAnonIntake({
+    goal: "hypertrophy", goals: ["hypertrophy"], weightKg: 82, goalWeightKg: 75, weeklyRateKg: 0.5, direction: "loss",
+  });
+  assertStringIncludes(buildAnonProgramMessage(cut, TODAY), 'goal is "fat_loss"');
+
+  const gain = sanitizeAnonIntake({
+    goal: "fat_loss", goals: ["fat_loss"], weightKg: 66, goalWeightKg: 71, weeklyRateKg: 0.25, direction: "gain",
+  });
+  assertStringIncludes(buildAnonProgramMessage(gain, TODAY), 'goal is "hypertrophy"');
+
+  const hold = sanitizeAnonIntake({ goal: "strength", goals: ["strength"], weightKg: 80, goalWeightKg: 80 });
+  assertStringIncludes(buildAnonProgramMessage(hold, TODAY), 'goal is "strength"');
+
+  // Under 1 kg either way is a hold, as in programGoalFor.
+  const nudge = sanitizeAnonIntake({
+    goal: "strength", goals: ["strength"], weightKg: 80, goalWeightKg: 79.5, weeklyRateKg: 0.25, direction: "loss",
+  });
+  assertStringIncludes(buildAnonProgramMessage(nudge, TODAY), 'goal is "strength"');
+  const nudgeUp = sanitizeAnonIntake({
+    goal: "fat_loss", goals: ["fat_loss"], weightKg: 80, goalWeightKg: 80.5, weeklyRateKg: 0.25, direction: "gain",
+  });
+  assertStringIncludes(buildAnonProgramMessage(nudgeUp, TODAY), 'goal is "fat_loss"');
+});

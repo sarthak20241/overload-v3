@@ -44,3 +44,27 @@ export function joinGoals(values: readonly string[]): string {
   if (values.length === 2) return values.join(' and ');
   return `${values.slice(0, -1).join(', ')}, and ${values[values.length - 1]}`;
 }
+
+/**
+ * The goal a PROGRAM records (coach_programs.goal): what the plan does, not
+ * what the profile was labelled. A program that takes bodyweight down by 1 kg
+ * or more is a cut, so it is fat_loss whatever the profile's primary goal
+ * says ("build muscle" plus a lower target weight is still a cut; muscle is
+ * kept by the training, not named by the label). A program that takes weight
+ * up is never fat_loss. With no weight target, or under 1 kg either way, the
+ * given goal stands, so a recomp keeps its training goal.
+ */
+export function programGoalFor(
+  goal: unknown,
+  targetWeightKg: number | null | undefined,
+  currentWeightKg: number | null | undefined,
+): CoachGoal {
+  const given: CoachGoal = typeof goal === 'string' && Object.hasOwn(GOAL_LABELS, goal)
+    ? goal as CoachGoal
+    : 'general';
+  if (targetWeightKg == null || currentWeightKg == null || !(currentWeightKg > 0)) return given;
+  const diff = targetWeightKg - currentWeightKg;
+  if (diff <= -1) return 'fat_loss';
+  if (diff >= 1 && given === 'fat_loss') return 'hypertrophy';
+  return given;
+}
