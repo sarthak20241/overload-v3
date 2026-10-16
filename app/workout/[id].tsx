@@ -1255,6 +1255,9 @@ export default function ActiveWorkoutScreen() {
     // The routine's time / distance target ("hold 45s", "run 5 km") seeds the
     // fields the index-change effect just cleared. Only the axes this exercise
     // logs, so a slot swapped from a stretch to a lift ignores its old time.
+    // Never over a typed value: typing or starting the stopwatch calls
+    // markEdited, and the guard at the top of this effect then returns before
+    // any seeding, including a late previous-performance re-run.
     seedTargetInputs(currentEx);
     // exercise.id, so a session restored from a snapshot (or an ad-hoc exercise
     // whose real row resolves late) seeds once its exercise actually lands —
