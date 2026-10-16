@@ -13,6 +13,7 @@ import {
   targetEditorText,
   targetsFromEditor,
   withoutTargetColumns,
+  writeWithTargetFallback,
 } from './routineTargets.ts';
 
 Deno.test('time targets parse to seconds', () => {
@@ -134,4 +135,29 @@ Deno.test('a routine saved from a session keeps only the targets its exercise lo
   assertEquals(targetsFor('duration', t), { target_duration_seconds: 45, target_distance_m: null });
   assertEquals(targetsFor('weight_reps', t), { target_duration_seconds: null, target_distance_m: null });
   assertEquals(targetsFor('distance_duration', {}), { target_duration_seconds: null, target_distance_m: null });
+});
+
+Deno.test('a write retries without the target columns only when they are missing', async () => {
+  const missing = { code: 'PGRST204', message: "Could not find the 'target_duration_seconds' column" };
+  const calls: boolean[] = [];
+  // An older database: the first write fails on the column, the retry lands.
+  const err = await writeWithTargetFallback((cols) => {
+    calls.push(cols);
+    return Promise.resolve({ error: cols ? missing : null });
+  });
+  assertEquals(err, null);
+  assertEquals(calls, [true, false]);
+
+  // Any other error is not retried, and is handed back.
+  const other = { code: '23505', message: 'duplicate key' };
+  const calls2: boolean[] = [];
+  assertEquals(await writeWithTargetFallback((cols) => {
+    calls2.push(cols);
+    return Promise.resolve({ error: other });
+  }), other);
+  assertEquals(calls2, [true]);
+
+  // A retry that fails too reports the retry's error.
+  const late = { code: '42501', message: 'permission denied' };
+  assertEquals(await writeWithTargetFallback((cols) => Promise.resolve({ error: cols ? missing : late })), late);
 });

@@ -198,3 +198,18 @@ export function missingTargetColumn(error: { code?: string; message?: string } |
   return !!error && ['42703', 'PGRST204'].includes(error.code ?? '')
     && /target_(duration_seconds|distance_m)/.test(error.message ?? '');
 }
+
+/**
+ * Run a write that may name the target columns, and run it again without them
+ * when the database predates them. write(true) is the normal write;
+ * write(false) is the same write without the targets (stripped, or carried in
+ * the cue). Any other error is returned as is. Every routine_exercises writer
+ * that can carry a target goes through here, so the fallback is one rule.
+ */
+export async function writeWithTargetFallback<E extends { code?: string; message?: string }>(
+  write: (targetColumns: boolean) => PromiseLike<{ error: E | null }>,
+): Promise<E | null> {
+  const { error } = await write(true);
+  if (!missingTargetColumn(error)) return error;
+  return (await write(false)).error;
+}

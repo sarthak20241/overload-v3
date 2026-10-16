@@ -18,7 +18,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveExerciseRow } from '@/lib/exerciseResolve';
 import type { MetricType } from '@/lib/exercises';
 import { readCache, writeCache } from '@/lib/localCache';
-import { missingTargetColumn, targetColumns, withoutTargetColumns } from '@/lib/routineTargets';
+import { targetColumns, withoutTargetColumns, writeWithTargetFallback } from '@/lib/routineTargets';
 
 const KEY = (userId: string) => `pending_routines_v1::${userId}`;
 const SCHEMA = 1 as const;
@@ -298,13 +298,11 @@ async function flushPendingRoutine(
         // without one saves the same as before against any database.
         ...targetColumns(ex),
       }));
-      let { error: insErr } = await supabase.from('routine_exercises').insert(rows);
       // The app shipped before the target columns' migration: drop the
       // targets rather than fail the whole routine save. The server copy has
       // no targets until the routine is saved again after the migration.
-      if (missingTargetColumn(insErr)) {
-        ({ error: insErr } = await supabase.from('routine_exercises').insert(rows.map(withoutTargetColumns)));
-      }
+      const insErr = await writeWithTargetFallback((cols) =>
+        supabase.from('routine_exercises').insert(cols ? rows : rows.map(withoutTargetColumns)));
       if (insErr) throw insErr;
     }
     phase = 'done';

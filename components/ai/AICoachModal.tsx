@@ -58,7 +58,7 @@ import { PastChatsList } from '@/components/coach/PastChatsList';
 import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
 import { withChangeSource } from '@/lib/planChangeSource';
 import { parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
-import { missingTargetColumn } from '@/lib/routineTargets';
+import { writeWithTargetFallback } from '@/lib/routineTargets';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 import {
   describeCoachEditOp,
@@ -3989,10 +3989,9 @@ export function AICoachModal({
         // its own column; planRepsAndNote only names that column when set.
         ...planRepsAndNote(ex.reps, ex.note, { targetColumns, metricType }),
       });
-      let { error: linkErr } = await link(true);
       // A database from before the target columns: save the target in the cue
       // instead, as the app did before they existed.
-      if (missingTargetColumn(linkErr)) ({ error: linkErr } = await link(false));
+      const linkErr = await writeWithTargetFallback(link);
       if (linkErr) throw linkErr;
     }));
   };

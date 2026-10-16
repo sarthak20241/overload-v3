@@ -55,12 +55,12 @@ import { haptics } from '@/lib/haptics';
 import { roundVolume, abbreviateNumber, formatWeight, formatDuration, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
 import { metricTypeOf, metricTypeDef, usesReps } from '@/lib/exercises';
 import {
-  missingTargetColumn,
   readRoutineTargets,
   slotTargetLabel,
   targetColumns,
   targetsFor,
   withoutTargetColumns,
+  writeWithTargetFallback,
   type RoutineTargets,
 } from '@/lib/routineTargets';
 import { setVolumeKg } from '@/lib/sets';
@@ -2468,12 +2468,10 @@ export default function ActiveWorkoutScreen() {
         order: a.order,
         ...a.targets,
       }));
-      let { error } = await supabase.from('routine_exercises').insert(rows);
       // A database from before the target columns: keep the exercises, drop
       // the targets (same fallback as the routine queue).
-      if (missingTargetColumn(error)) {
-        ({ error } = await supabase.from('routine_exercises').insert(rows.map(withoutTargetColumns)));
-      }
+      const error = await writeWithTargetFallback((cols) =>
+        supabase.from('routine_exercises').insert(cols ? rows : rows.map(withoutTargetColumns)));
       if (error) throw error;
     }
 
