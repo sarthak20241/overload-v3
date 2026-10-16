@@ -43,8 +43,8 @@ export function planExerciseInsert(ex: { name: string; new_exercise?: NewExercis
   return { name: ex.name, muscle_group: def.muscle_group, category: def.category, metric_type: def.metric_type };
 }
 
-/** Leading rep count or range, and whatever follows it ("/side", "s", "min"). */
-const LEADING_REPS = /^\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*(.*)$/;
+/** Leading rep count or range ("8-12", "12 to 15"), and whatever follows it ("/side", "s", "min"). */
+const LEADING_REPS = /^\s*(\d+)\s*(?:(?:[-\u2013]|to\b)\s*(\d+))?\s*(.*)$/;
 /** A range written high-to-low ("12-8") still stores min <= max. */
 const ordered = (a: number, b: number) => ({ reps_min: Math.min(a, b), reps_max: Math.max(a, b) });
 
