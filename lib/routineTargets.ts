@@ -120,10 +120,16 @@ export function formatRoutineTarget(t: RoutineTargets): string | null {
  * swapped for a lift keeps the row, and its target means nothing there).
  */
 export function slotTargetLabel(metricType: string | null | undefined, t: RoutineTargets): string | null {
-  return formatRoutineTarget({
-    target_duration_seconds: takesDurationTarget(metricType) ? t.target_duration_seconds : null,
-    target_distance_m: takesDistanceTarget(metricType) ? t.target_distance_m : null,
-  });
+  return formatRoutineTarget(targetsFor(metricType, t));
+}
+
+/** Only the targets this metric type logs: a time for a timed type, a
+ *  distance for a distance type. Anything else is dropped as stale. */
+export function targetsFor(metricType: string | null | undefined, t: Partial<RoutineTargets>): RoutineTargets {
+  return {
+    target_duration_seconds: takesDurationTarget(metricType) ? t.target_duration_seconds ?? null : null,
+    target_distance_m: takesDistanceTarget(metricType) ? t.target_distance_m ?? null : null,
+  };
 }
 
 /** Routine editor fields ("0:45", "5") for a slot's targets. */
@@ -135,15 +141,27 @@ export function targetEditorText(t: RoutineTargets): { duration: string; distanc
 }
 
 /**
+ * The routine editor's Time field in seconds: "0:45", "1:30", a plain "45"
+ * (seconds), or a unit ("45s", "1.5 min"). Anything else is 0, never a guess:
+ * parseDuration alone read "1.5" as 1 second.
+ */
+export function parseEditorDuration(text: string | null | undefined): number {
+  const t = (text ?? '').trim();
+  if (/^\d+$/.test(t)) return Number(t);
+  if (t.includes(':')) return parseDuration(t);
+  return parseTimedTarget(t)?.duration_seconds ?? 0;
+}
+
+/**
  * Routine editor fields back to targets. A field the exercise does not log
  * saves nothing, so picking a lift over a stretch drops the stretch's time.
- * The time field takes "0:45" or a plain "45" (seconds); distance is km.
+ * The time field is read by parseEditorDuration; distance is km.
  */
 export function targetsFromEditor(
   metricType: string | null | undefined,
   text: { duration?: string; distance?: string },
 ): RoutineTargets {
-  const secs = takesDurationTarget(metricType) ? parseDuration(text.duration ?? '') : 0;
+  const secs = takesDurationTarget(metricType) ? parseEditorDuration(text.duration) : 0;
   const meters = takesDistanceTarget(metricType) ? parseDistanceKm(text.distance ?? '') : 0;
   return { target_duration_seconds: secs > 0 ? secs : null, target_distance_m: meters > 0 ? meters : null };
 }

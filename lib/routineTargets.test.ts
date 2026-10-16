@@ -2,12 +2,14 @@ import { assertEquals } from 'jsr:@std/assert@1';
 import {
   formatRoutineTarget,
   missingTargetColumn,
+  parseEditorDuration,
   parseTimedTarget,
   readRoutineTargets,
   slotTargetLabel,
   takesDistanceTarget,
   takesDurationTarget,
   targetColumns,
+  targetsFor,
   targetEditorText,
   targetsFromEditor,
   withoutTargetColumns,
@@ -113,4 +115,22 @@ Deno.test('the editor saves no target for an exercise that does not log one', ()
     target_duration_seconds: null,
     target_distance_m: null,
   });
+});
+
+Deno.test('the editor Time field never guesses at a malformed time', () => {
+  assertEquals(parseEditorDuration('0:45'), 45);
+  assertEquals(parseEditorDuration('45'), 45);
+  assertEquals(parseEditorDuration('45s'), 45);
+  assertEquals(parseEditorDuration('1.5 min'), 90);
+  assertEquals(parseEditorDuration('1.5'), 0);
+  assertEquals(parseEditorDuration('abc'), 0);
+  assertEquals(parseEditorDuration(''), 0);
+  assertEquals(targetsFromEditor('duration', { duration: '1.5' }), { target_duration_seconds: null, target_distance_m: null });
+});
+
+Deno.test('a routine saved from a session keeps only the targets its exercise logs', () => {
+  const t = { target_duration_seconds: 45, target_distance_m: 400 };
+  assertEquals(targetsFor('duration', t), { target_duration_seconds: 45, target_distance_m: null });
+  assertEquals(targetsFor('weight_reps', t), { target_duration_seconds: null, target_distance_m: null });
+  assertEquals(targetsFor('distance_duration', {}), { target_duration_seconds: null, target_distance_m: null });
 });

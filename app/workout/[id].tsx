@@ -54,7 +54,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
 import { roundVolume, abbreviateNumber, formatWeight, formatDuration, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
 import { metricTypeOf, metricTypeDef } from '@/lib/exercises';
-import { readRoutineTargets, slotTargetLabel } from '@/lib/routineTargets';
+import { readRoutineTargets, slotTargetLabel, targetColumns, targetsFor } from '@/lib/routineTargets';
 import { setVolumeKg } from '@/lib/sets';
 import type { ExerciseDef, MetricAxis } from '@/lib/exercises';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
@@ -2143,6 +2143,11 @@ export default function ActiveWorkoutScreen() {
         reps_min: Math.min(...reps),
         reps_max: Math.max(...reps),
         rest_seconds: ex.restSeconds ?? 90,
+        // A slot that came from a routine with a time / distance target keeps it.
+        ...targetColumns(targetsFor(ex.exercise.metric_type, {
+          target_duration_seconds: ex.targetDurationSeconds,
+          target_distance_m: ex.targetDistanceM,
+        })),
       };
     };
 
@@ -2169,6 +2174,7 @@ export default function ActiveWorkoutScreen() {
             name: ex.exercise.name,
             muscle_group: ex.exercise.muscle_group || 'Other',
             category: ex.exercise.category || 'Custom',
+            ...(ex.exercise.metric_type ? { metric_type: ex.exercise.metric_type } : {}),
           },
         })),
       } as any);
@@ -2196,6 +2202,7 @@ export default function ActiveWorkoutScreen() {
             name: ex.exercise.name,
             muscle_group: ex.exercise.muscle_group || 'Other',
             category: ex.exercise.category || 'Custom',
+            ...(ex.exercise.metric_type ? { metric_type: ex.exercise.metric_type } : {}),
           },
           resolvedExerciseId: String(ex.exercise.id).startsWith('temp-') ? null : ex.exercise.id,
           order: i,
@@ -2203,6 +2210,8 @@ export default function ActiveWorkoutScreen() {
           reps_min: r.reps_min,
           reps_max: r.reps_max,
           rest_seconds: r.rest_seconds,
+          target_duration_seconds: r.target_duration_seconds ?? null,
+          target_distance_m: r.target_distance_m ?? null,
           note: null,
           // Carry the superset grouping into the saved routine (migration 0060).
           superset_group: ex.supersetGroup ?? null,
@@ -2280,6 +2289,7 @@ export default function ActiveWorkoutScreen() {
           name: ex.exercise.name,
           muscle_group: ex.exercise.muscle_group || 'Other',
           category: ex.exercise.category || 'Custom',
+          ...(ex.exercise.metric_type ? { metric_type: ex.exercise.metric_type } : {}),
         },
       })),
     ];
@@ -2467,6 +2477,7 @@ export default function ActiveWorkoutScreen() {
                       name: a.def.name,
                       muscle_group: a.def.muscle_group,
                       category: a.def.category,
+                      ...(a.def.metric_type ? { metric_type: a.def.metric_type } : {}),
                     },
                   })),
                 ],
