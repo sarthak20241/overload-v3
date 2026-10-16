@@ -43,26 +43,34 @@ export function planExerciseInsert(ex: { name: string; new_exercise?: NewExercis
   return { name: ex.name, muscle_group: def.muscle_group, category: def.category, metric_type: def.metric_type };
 }
 
-const REP_TARGET = /^\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*(?:reps?)?\s*$/i;
+/** Leading rep count or range, and whatever follows it ("/side", "s", "min"). */
+const LEADING_REPS = /^\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*(.*)$/;
+/** A suffix that makes the number a time, not a rep count. */
+const TIME_UNIT = /^(s|secs?|seconds?|min|mins|minutes?)\b/i;
 
 /**
  * Rep range and cue for a routine_exercises row. A rep target ("8-12", "5")
- * fills reps_min/reps_max as before. Anything else ("45s", "20min") has no
- * column to live in, so it rides at the front of the cue instead of being
- * dropped, and the reps fall back to the table's own defaults.
+ * fills reps_min/reps_max as before, and so does the rep part of "10-12/side"
+ * or "6-8 each", whose extra words then lead the cue. A time ("45s", "20min")
+ * or a target with no number ("AMRAP") has no column to live in, so it rides
+ * at the front of the cue instead of being dropped, and the reps fall back to
+ * the table's own defaults.
  */
 export function planRepsAndNote(reps: string, note?: string | null): {
   reps_min: number;
   reps_max: number;
   note: string | null;
 } {
-  const m = REP_TARGET.exec(reps ?? '');
-  if (m) {
-    const lo = Number(m[1]) || 8;
-    return { reps_min: lo, reps_max: Number(m[2]) || lo || 12, note: note || null };
-  }
   const target = (reps ?? '').trim();
   const cue = (note ?? '').trim();
+  const withTarget = cue ? `Aim for ${target}. ${cue}` : `Aim for ${target}.`;
+  const m = LEADING_REPS.exec(target);
+  if (m && !TIME_UNIT.test(m[3])) {
+    const lo = Number(m[1]) || 8;
+    const rest = m[3].trim();
+    const plain = rest === '' || /^reps?$/i.test(rest);
+    return { reps_min: lo, reps_max: Number(m[2]) || lo, note: plain ? cue || null : withTarget };
+  }
   if (!target) return { reps_min: 8, reps_max: 12, note: cue || null };
-  return { reps_min: 8, reps_max: 12, note: cue ? `Aim for ${target}. ${cue}` : `Aim for ${target}.` };
+  return { reps_min: 8, reps_max: 12, note: withTarget };
 }

@@ -354,7 +354,7 @@ function measureHint(slots: string[], defs: PlanSkeleton["new_exercises"]): stri
     const m = defs?.[s]?.metric_type;
     return m === "duration" || m === "duration_weight" || m === "distance_duration" || m === "resistance_duration";
   });
-  return timed.length ? `\nMeasured by time, not reps: ${timed.join(", ")}.` : "";
+  return timed.length ? `Measured by time, not reps: ${timed.join(", ")}.` : "";
 }
 
 function skeletonText(s: PlanSkeleton): string {
@@ -446,7 +446,10 @@ export async function runGeneratePlan(
           ``,
           `Exercises for D${i + 1}, in order:`,
           ...day.slots.map((s) => `- ${s}`),
-          measureHint(day.slots, skeleton.new_exercises),
+          ...(() => {
+            const hint = measureHint(day.slots, skeleton.new_exercises);
+            return hint ? [``, hint] : [];
+          })(),
           ``,
           FILL_FORMAT_SPEC,
         ].join("\n"),

@@ -15,6 +15,7 @@ import { Portal } from '@/components/ui/Portal';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useExerciseNotes } from '@/hooks/useExerciseNotes';
+import { usesReps } from '@/lib/exercises';
 
 // Shared routine-detail / session-preview sheet. Used by the Routines screen
 // (tap a routine) and by the dashboard's "today" card (tap the suggestion).
@@ -41,6 +42,9 @@ export interface RoutineExerciseRaw {
     name: string;
     muscle_group: string;
     category: string;
+    // Selected by every routines query (exercises(*)). Optional for rows
+    // cached before the column existed and for guest rows.
+    metric_type?: string | null;
   };
 }
 
@@ -162,7 +166,9 @@ export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, o
                         {re.exercises?.name || 'Unknown'}
                       </Text>
                       <Text style={[s.detailExMeta, { color: C.textMuted }]}>
-                        {re.sets} sets · {re.reps_min === re.reps_max ? re.reps_min : `${re.reps_min}-${re.reps_max}`} reps · {re.rest_seconds}s rest
+                        {re.sets} sets · {usesReps(re.exercises?.metric_type)
+                          ? `${re.reps_min === re.reps_max ? re.reps_min : `${re.reps_min}-${re.reps_max}`} reps · `
+                          : ''}{re.rest_seconds}s rest
                       </Text>
                       {re.note ? (
                         <Text style={[s.detailExNote, { color: C.accentText }]} numberOfLines={3}>
