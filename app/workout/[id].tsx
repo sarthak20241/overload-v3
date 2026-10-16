@@ -54,7 +54,15 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
 import { roundVolume, abbreviateNumber, formatWeight, formatDuration, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
 import { metricTypeOf, metricTypeDef, usesReps } from '@/lib/exercises';
-import { readRoutineTargets, slotTargetLabel, targetColumns, targetsFor } from '@/lib/routineTargets';
+import {
+  missingTargetColumn,
+  readRoutineTargets,
+  slotTargetLabel,
+  targetColumns,
+  targetsFor,
+  withoutTargetColumns,
+  type RoutineTargets,
+} from '@/lib/routineTargets';
 import { setVolumeKg } from '@/lib/sets';
 import type { ExerciseDef, MetricAxis } from '@/lib/exercises';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
@@ -104,6 +112,15 @@ type SupersetStep =
   | { kind: 'advance'; idx: number }
   | { kind: 'round'; idx: number; restTarget: number }
   | { kind: 'groupDone' };
+
+/** The targets a session slot hands to a routine row: only the keys that are
+ *  set, and only for the axes the exercise logs. */
+function sessionTargets(ex: ActiveWorkoutExercise): Partial<RoutineTargets> {
+  return targetColumns(targetsFor(ex.exercise.metric_type, {
+    target_duration_seconds: ex.targetDurationSeconds,
+    target_distance_m: ex.targetDistanceM,
+  }));
+}
 
 /**
  * The per-set target after "3 sets" in the exercise header: " × 0:45" for a
@@ -188,6 +205,8 @@ interface RoutineSyncAdd {
   reps_max: number;
   rest_seconds: number;
   order: number;
+  /** Time / distance target the session slot carried (only the axes it logs). */
+  targets: Partial<RoutineTargets>;
 }
 
 interface RoutineSyncOffer {
@@ -2159,10 +2178,7 @@ export default function ActiveWorkoutScreen() {
         reps_max: Math.max(...reps),
         rest_seconds: ex.restSeconds ?? 90,
         // A slot that came from a routine with a time / distance target keeps it.
-        ...targetColumns(targetsFor(ex.exercise.metric_type, {
-          target_duration_seconds: ex.targetDurationSeconds,
-          target_distance_m: ex.targetDistanceM,
-        })),
+        ...sessionTargets(ex),
       };
     };
 
@@ -2299,6 +2315,7 @@ export default function ActiveWorkoutScreen() {
         reps_min: ex.repsMin,
         reps_max: ex.repsMax,
         rest_seconds: ex.restSeconds ?? 90,
+        ...sessionTargets(ex),
         exercises: {
           id: ex.exercise.id,
           name: ex.exercise.name,
@@ -2384,6 +2401,7 @@ export default function ActiveWorkoutScreen() {
         reps_max: ex.repsMax,
         rest_seconds: ex.restSeconds ?? 90,
         order: nextOrder + i,
+        targets: sessionTargets(ex),
       })),
       guestExercises: null,
     };
@@ -2440,17 +2458,22 @@ export default function ActiveWorkoutScreen() {
     const alreadyPresent = new Set(current.map((re) => re.exercise_id));
     const toInsert = resolved.filter((a) => !alreadyPresent.has(a.exerciseId));
     if (toInsert.length > 0) {
-      const { error } = await supabase.from('routine_exercises').insert(
-        toInsert.map((a) => ({
-          routine_id: offer.routineId,
-          exercise_id: a.exerciseId,
-          sets: a.sets,
-          reps_min: a.reps_min,
-          reps_max: a.reps_max,
-          rest_seconds: a.rest_seconds,
-          order: a.order,
-        })),
-      );
+      const rows = toInsert.map((a) => ({
+        routine_id: offer.routineId,
+        exercise_id: a.exerciseId,
+        sets: a.sets,
+        reps_min: a.reps_min,
+        reps_max: a.reps_max,
+        rest_seconds: a.rest_seconds,
+        order: a.order,
+        ...a.targets,
+      }));
+      let { error } = await supabase.from('routine_exercises').insert(rows);
+      // A database from before the target columns: keep the exercises, drop
+      // the targets (same fallback as the routine queue).
+      if (missingTargetColumn(error)) {
+        ({ error } = await supabase.from('routine_exercises').insert(rows.map(withoutTargetColumns)));
+      }
       if (error) throw error;
     }
 
@@ -2485,6 +2508,7 @@ export default function ActiveWorkoutScreen() {
                     reps_min: a.reps_min,
                     reps_max: a.reps_max,
                     rest_seconds: a.rest_seconds,
+                    ...a.targets,
                     note: null,
                     superset_group: null,
                     exercises: {

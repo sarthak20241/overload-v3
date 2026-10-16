@@ -3943,35 +3943,37 @@ export function AICoachModal({
       // Case-insensitive find, oldest row first — .single() would error when a
       // global library row and a same-named custom both match (legal scopes
       // under migration 0037's unique indexes).
-      // How the matched row is measured, so a time on a lift stays in the cue
-      // rather than landing in a target column nothing shows.
-      let metricType: string | null | undefined = ex.new_exercise?.metric_type;
-      const findByName = async () => {
+      // It also returns how the row is measured, so a time on a lift stays in
+      // the cue rather than landing in a target column nothing shows. A row
+      // with no metric_type predates the column and is weight_reps.
+      const findByName = async (): Promise<{ id: string; metricType: string } | undefined> => {
         const { data } = await supabase
           .from('exercises')
           .select('id, metric_type')
           .ilike('name', ex.name)
           .order('created_at', { ascending: true })
           .limit(1);
-        // A row with no metric_type predates the column and is weight_reps.
-        if (data?.[0]) metricType = data[0].metric_type ?? 'weight_reps';
-        return data?.[0]?.id;
+        const row = data?.[0];
+        return row ? { id: row.id, metricType: row.metric_type ?? 'weight_reps' } : undefined;
       };
 
-      let exerciseId = await findByName();
-      if (!exerciseId) {
+      let found = await findByName();
+      if (!found) {
         // A Drona-invented exercise carries its own template (muscle group,
-        // equipment, how it is measured); anything else keeps the bare insert.
+        // equipment, how it is measured); anything else keeps the bare insert,
+        // which takes the table default, weight_reps.
         const { data: newEx, error: insErr } = await supabase
           .from('exercises')
           .insert(planExerciseInsert(ex))
           .select('id')
           .single();
         // 23505: lost the create race to another session — take the winner.
-        // A bare insert takes the table default, weight_reps.
-        if (newEx?.id) metricType = ex.new_exercise?.metric_type ?? 'weight_reps';
-        exerciseId = newEx?.id ?? (insErr?.code === '23505' ? await findByName() : undefined);
+        found = newEx?.id
+          ? { id: newEx.id, metricType: ex.new_exercise?.metric_type ?? 'weight_reps' }
+          : insErr?.code === '23505' ? await findByName() : undefined;
       }
+      const exerciseId = found?.id;
+      const metricType = found?.metricType;
       if (!exerciseId) return;
 
       const link = (targetColumns: boolean) => withChangeSource(supabase, 'chat').from('routine_exercises').insert({

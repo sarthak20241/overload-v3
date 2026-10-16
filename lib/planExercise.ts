@@ -97,11 +97,13 @@ export function planRepsAndNote(
   const timed = opts.targetColumns === false ? null : parseTimedTarget(target);
   // A time on an exercise that does not log time (Drona timed a lift) would
   // land in a column nothing shows, so it stays in the cue instead.
-  // A bare "m" with no metric type to settle it (meters or minutes?) is not
-  // trusted with a column either.
-  const fits = timed && (opts.metricType == null
-    ? !timed.bareM
-    : timed.duration_seconds != null ? takesDurationTarget(opts.metricType) : takesDistanceTarget(opts.metricType));
+  // A bare "m" could be meters or minutes. It is only trusted as meters on an
+  // exercise that logs distance, and on one that also logs time (a run) only
+  // from 100 up: "5m" of running is five minutes, "400m" is a lap.
+  const bareMOk = !timed?.bareM || (opts.metricType != null && (
+    !takesDurationTarget(opts.metricType) || (timed.distance_m ?? 0) >= 100));
+  const fits = timed && bareMOk && (opts.metricType == null
+    || (timed.duration_seconds != null ? takesDurationTarget(opts.metricType) : takesDistanceTarget(opts.metricType)));
   if (timed && fits) {
     return {
       reps_min: 8,
