@@ -23,6 +23,38 @@ Migration `20261013161335_drona_signals`. Nothing reads them yet.
 
 Finished weeks only: the running week is never judged.
 
+## Signals 6-10 (rule_version 1, approved 2026-10-16)
+
+Migration `20261016021746_drona_signals_2`.
+
+| Signal | Judged when | Fires when |
+|---|---|---|
+| `weight_wrong_way` | 4 weeks of weigh-ins in a row, no untrusted scale, the goal (program target, else profile) >= 0.5 kg away | the last 2 weeks' average moved >= 0.3 kg away from the goal |
+| `protein_short` | >= 3 whole days logged (not a snack week) | most of them under 70% of the protein target |
+| `training_dropped` | planned sessions this week and last, >= 4 sessions in the 4 weeks before | under half the planned sessions both weeks |
+| `lift_stuck` | any lift trained 3 finished weeks running, custom lifts included | its best estimated max is no higher than 3 weeks back; a pattern is the same lift again |
+| `goals_disagree` | a program with a goal | profile and program goal differ, or goal weights more than 2 kg apart |
+
+Owner's reasons: 70% because there are few users yet; every lift counts because
+"if he is putting effort into an exercise, even a custom one, he cares about it,
+so we should care about its growth, or advise a change based on science"; a goal
+weight gap is something Drona should ask about.
+
+First run, 26 weeks: weight_wrong_way 0 fired (few people weigh in 4 weeks
+running); protein_short 2 weeks, 1 person (the owner, July); training_dropped 34
+weeks, 8 people (most stopped in mid-August); lift_stuck 69 weeks, 8 people;
+goals_disagree 23 weeks, 3 people (the owner 66 vs 59 kg; the demo account and
+one tester hypertrophy vs fat_loss).
+
+Noticed: lift_stuck fires most weeks for anyone tracking many lifts (one of 14 is
+always flat), so the PATTERN (the same lift two weeks running, 41 weeks) is the
+stronger line for a card. Two accounts carry identical lift histories
+(3EGT2QEE, 3EowGWx5): imported or copied data. Programs titled "Cut" but tagged
+hypertrophy (task spawned) make goals_disagree miss a real disagreement.
+
+Proof: `signals.mts` now 25 checks, every new line from both sides; with protein
+moved to 60% on purpose, 1 fails.
+
 ## First run (2026-10-13, 26 weeks, 52 people)
 
 57 rows judged, 15 fired:

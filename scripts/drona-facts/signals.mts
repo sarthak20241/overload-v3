@@ -22,6 +22,7 @@
  *              4 2 days logged: no row
  *              5 "no thanks": an answer, so 1 miss of the last 2: no
  *   This week  every value set to fire, but the week is not over: no rows
+ * Signals 6-10 are proved on July weeks, described above their block.
  */
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -107,6 +108,58 @@ ok('5 W2 expired then tapped-not-done: fires', fired('cards_not_landing', W2) ==
 ok('5 W3 a "no thanks" is an answer: does not fire', fired('cards_not_landing', W3) === false);
 ok('this week is not over: no rows at all', rows.every((r) => r.week_start !== NOW), rows.filter((r) => r.week_start === NOW).map((r) => r.signal));
 ok('every row carries rule version 1', rows.length > 0 && rows.every((r) => r.rule_version === 1), rows.length);
+
+// ── Signals 6-10 (rule_version 1, 2026-10-16), on July weeks ─────────────────
+//   A 6 Jul, B 13 Jul, C 20 Jul, D 27 Jul; 3 sessions a week before them.
+//   6 weight 80.0, 80.0, 80.2, 80.4: the last 2 weeks moved +0.3 kg away from a
+//     72.9 kg program target: fires at D (exactly the 0.3 line)
+//   7 B: 3 of 4 whole days under 70% protein: fires. C: a snack week: no row
+//   8 C: 1 of 4 sessions after 3 of 4: no. D: 0 of 4 after 1 of 4: fires
+//   9 lift X 100, 105, 100 (no higher than 3 weeks back): stuck at D; lift Y
+//     99, 100, 101, 102 climbs: never stuck; at C both climbed: no
+//  10 C: goal weights 75 vs 73.0 (exactly 2 kg): no. D: 75 vs 72.9: fires
+const A = '2026-07-06', B = '2026-07-13', C = '2026-07-20', D = '2026-07-27';
+const prog = randomUUID();
+const wk = (week: string, o: Record<string, unknown>) => ({ user_id: UID, week_start: week, t_planned_sessions: 4, ...o });
+must(await db.from('drona_week_facts').insert([
+  wk('2026-06-22', { t_sessions: 3 }), wk('2026-06-29', { t_sessions: 3 }),
+  wk(A, { t_sessions: 3, w_readings: 2, w_avg_kg: 80.0, w_typical_swing_kg: 0.2, w_dropped_impossible: 0 }),
+  wk(B, { t_sessions: 3, w_readings: 2, w_avg_kg: 80.0, w_typical_swing_kg: 0.2, w_dropped_impossible: 0,
+          f_days_logged: 4, f_days_under_half_target: 0, f_target_kcal: 2000 }),
+  wk(C, { t_sessions: 1, w_readings: 2, w_avg_kg: 80.2, w_typical_swing_kg: 0.2, w_dropped_impossible: 0,
+          f_days_logged: 4, f_days_under_half_target: 4, f_target_kcal: 2000,
+          p_program_id: prog, p_goal: 'hypertrophy', p_program_goal: 'hypertrophy', p_goal_weight_kg: 75, p_program_target_kg: 73.0 }),
+  wk(D, { t_sessions: 0, w_readings: 2, w_avg_kg: 80.4, w_typical_swing_kg: 0.2, w_dropped_impossible: 0,
+          p_program_id: prog, p_goal: 'hypertrophy', p_program_goal: 'hypertrophy', p_goal_weight_kg: 75, p_program_target_kg: 72.9 }),
+]), 'july weeks');
+const dayFact = (day: string, protein: number) => ({ user_id: UID, day, entries: 3, protein_g: protein, target_protein_g: 100 });
+must(await db.from('drona_day_facts').insert([
+  dayFact('2026-07-13', 60), dayFact('2026-07-14', 60), dayFact('2026-07-15', 60), dayFact('2026-07-16', 90),
+  dayFact('2026-07-20', 10), dayFact('2026-07-21', 10), dayFact('2026-07-22', 10), dayFact('2026-07-23', 10),
+]), 'day facts');
+const X = randomUUID(), Y = randomUUID();
+const lift = (id: string, name: string, week: string, e1rm: number) => ({ user_id: UID, week_start: week, exercise_id: id, exercise_name: name, best_e1rm_kg: e1rm });
+must(await db.from('drona_exercise_week_facts').insert([
+  lift(X, 'Lift X', A, 100), lift(X, 'Lift X', B, 100), lift(X, 'Lift X', C, 105), lift(X, 'Lift X', D, 100),
+  lift(Y, 'Lift Y', A, 99), lift(Y, 'Lift Y', B, 100), lift(Y, 'Lift Y', C, 101), lift(Y, 'Lift Y', D, 102),
+]), 'lifts');
+
+must(await db.rpc('drona_rebuild_signals', { p_user_id: UID, p_from: '2026-06-22', p_to: NOW }), 'rebuild 2');
+const rows2 = must(await db.from('drona_signals').select('*').eq('user_id', UID), 'signals 2') as any[];
+const s2 = (signal: string, week: string) => rows2.find((r) => r.signal === signal && r.week_start === week);
+
+ok('6 D: +0.3 kg away from a 72.9 kg program target fires', s2('weight_wrong_way', D)?.fired === true
+  && Number(s2('weight_wrong_way', D)?.detail?.change_kg) === 0.3 && s2('weight_wrong_way', D)?.detail?.goal_from === 'program',
+  s2('weight_wrong_way', D)?.detail);
+ok('7 B: 3 of 4 whole days under 70% protein fires', s2('protein_short', B)?.fired === true, s2('protein_short', B)?.detail);
+ok('7 C: a snack week is not judged for protein', s2('protein_short', C) === undefined);
+ok('8 C: one low week after a normal one does not fire', s2('training_dropped', C)?.fired === false);
+ok('8 D: two low weeks after training fires', s2('training_dropped', D)?.fired === true, s2('training_dropped', D)?.detail);
+ok('9 C: both lifts climbed, not stuck', s2('lift_stuck', C)?.fired === false);
+ok('9 D: Lift X (100 then 105 then 100) is stuck, Lift Y is not', s2('lift_stuck', D)?.fired === true
+  && JSON.stringify((s2('lift_stuck', D)?.detail?.lifts ?? []).map((l: any) => l.exercise)) === '["Lift X"]', s2('lift_stuck', D)?.detail);
+ok('10 C: goal weights exactly 2 kg apart do not fire', s2('goals_disagree', C)?.fired === false);
+ok('10 D: 2.1 kg apart fires', s2('goals_disagree', D)?.fired === true);
 
 await db.rpc('delete_user_data', { p_user_id: UID });
 const left = must(await db.from('drona_signals').select('signal').eq('user_id', UID), 'cleanup') as any[];
