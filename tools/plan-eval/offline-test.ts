@@ -19,6 +19,8 @@ import {
   assemblePlan, buildWorkout, parseFill, parseSkeleton, runGeneratePlan,
   stripToolDirectives, type PlanExercise, type TextCaller,
 } from '../../supabase/functions/ai-coach/generatePlan';
+import { buildCatalogIndex, scorePlan } from './score';
+import { CASES } from './cases';
 
 let passed = 0;
 const failures: string[] = [];
@@ -261,6 +263,33 @@ async function main() {
   });
   check('onSkeleton fires', skeletonSeen);
   eq('onDay fires once per day', days.sort().length, 4);
+}
+
+{
+  // Scoring of invented exercises (NEW lines). Catalog share and invention
+  // are counted apart, and a "timed" invention needs a time target.
+  const mob = CASES.find((c) => c.id === 'coach-mobility-3d')!;
+  const lift = (n: string) => ({ name: n, sets: 3, reps: '8-12', rest_seconds: 90 });
+  const stretch = (n: string, reps: string) => ({
+    name: n, sets: 2, reps, rest_seconds: 30,
+    new_exercise: { muscle_group: 'Hip Flexors', category: 'Bodyweight', metric_type: 'duration' },
+  });
+  const catalogNames = buildCatalogIndex(['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((x) => `lift ${x}`));
+  const planWith = (extra: Record<string, unknown>[]) => ({
+    name: 'P', days_per_week: 3, rationale: 'x'.repeat(200),
+    workouts: [
+      { name: 'A', exercises: [lift('lift a'), lift('lift b'), lift('lift c'), ...extra.slice(0, 1)] },
+      { name: 'B', exercises: [lift('lift d'), lift('lift e'), ...extra.slice(1, 2), lift('lift f')] },
+      { name: 'C', exercises: [lift('lift g'), ...extra.slice(2), lift('lift a'), lift('lift b')] },
+    ],
+  });
+  const timed = scorePlan(mob, planWith([stretch('S1', '45s'), stretch('S2', '30s'), stretch('S3', '1min')]), { catalog: catalogNames });
+  eq('catalog share excludes inventions', Math.round(timed.metrics.catalogResolution * 100), 75);
+  eq('templated inventions are not junk', timed.failures.filter((f) => f.includes('grounded')).length, 0);
+  eq('timed inventions satisfy the mobility ask', timed.failures.filter((f) => f.includes('mobility')).length, 0);
+  const untimed = scorePlan(mob, planWith([stretch('S1', '8-12')]), { catalog: catalogNames });
+  check('a duration stretch on 8-12 reps does not satisfy the mobility ask',
+    untimed.failures.some((f) => f.includes('mobility')), untimed.failures);
 }
 
 // ── report ────────────────────────────────────────────────────────────────

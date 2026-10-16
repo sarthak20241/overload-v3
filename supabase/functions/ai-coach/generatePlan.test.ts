@@ -81,3 +81,16 @@ Deno.test("the day fill is told which new exercises are held for time", async ()
   assertEquals(d2.includes("Measured by time"), false);
   assertEquals(r.plan?.workouts[0].exercises[2].new_exercise?.muscle_group, "Hip Flexors");
 });
+
+Deno.test("a catalog name written without its punctuation still folds to the catalog", () => {
+  const s = groundSkeleton(parseSkeleton("DAY | A | b\nNEW | TBar Row | Back | Barbell | weight_reps")!, CATALOG);
+  assertEquals(s.days[0].slots, ["T-Bar Row"]);
+  assertEquals(s.new_exercises, undefined);
+});
+
+Deno.test("a timed invention whose fill died falls back to a time, not 8-12 reps", () => {
+  const s = groundSkeleton(parseSkeleton(SKELETON)!, CATALOG);
+  const plan = assemblePlan(s, [null, null], "why");
+  const reps = plan.workouts[0].exercises.map((e) => e.reps);
+  assertEquals(reps, ["8-12", "8-12", "30s"]);
+});

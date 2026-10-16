@@ -247,6 +247,8 @@ const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
 
 /** Loose key for catalog matching: the catalog is inconsistently punctuated. */
 const catalogKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+/** Looser still: also ignores spacing, so "TBar Row" finds "T-Bar Row". */
+const squashedKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
 
 /**
  * Hold the skeleton to the catalog. Any slot, SLOT or NEW, whose name is a
@@ -257,10 +259,14 @@ const catalogKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").tr
  */
 export function groundSkeleton(skeleton: PlanSkeleton, catalog: string[]): PlanSkeleton {
   const byKey = new Map(catalog.map((c) => [catalogKey(c), c]));
+  // First catalog row wins a squashed-key collision, matching the earlier
+  // passes' preference for the catalog's own spelling.
+  const bySquashed = new Map<string, string>();
+  for (const c of catalog) if (!bySquashed.has(squashedKey(c))) bySquashed.set(squashedKey(c), c);
   const defs = skeleton.new_exercises ?? {};
   for (const day of skeleton.days) {
     day.slots = day.slots.map((slot) => {
-      const hit = byKey.get(catalogKey(slot));
+      const hit = byKey.get(catalogKey(slot)) ?? bySquashed.get(squashedKey(slot));
       if (!hit) return slot;
       delete defs[slot];
       return hit;
@@ -296,6 +302,13 @@ export function buildWorkout(
 ): PlanWorkout {
   const list = filled ?? [];
   const byName = new Map(list.map((e) => [norm(e.name), e]));
+  // A dead or short fill falls back to 3 x 8-12. For an exercise held for
+  // time that is a rep target on something nobody counts in reps, so a timed
+  // invention falls back to a time instead.
+  const fallbackReps = (def: NewExerciseDef | undefined) =>
+    def?.metric_type === "duration" || def?.metric_type === "duration_weight" ? "30s"
+    : def?.metric_type === "distance_duration" || def?.metric_type === "resistance_duration" ? "10min"
+    : "8-12";
   return {
     name: day.name,
     note: day.note,
@@ -305,7 +318,7 @@ export function buildWorkout(
       const ex: PlanExercise = {
         name: slot,
         sets: hit?.sets ?? 3,
-        reps: hit?.reps ?? "8-12",
+        reps: hit?.reps ?? fallbackReps(newExercises?.[slot]),
         rest_seconds: hit?.rest_seconds ?? 90,
         note: hit?.note,
       };
