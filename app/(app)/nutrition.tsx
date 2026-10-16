@@ -103,6 +103,10 @@ type ParseFlow =
       // is weaker evidence than a choice the user already made - without this
       // flag their pick silently reverts on the next message.
       mealTypePicked?: boolean;
+      // Everything the user wrote for this meal, follow-ups joined ("1 apple;
+      // make it a small one"). `raw` keeps only a correction's own words, so
+      // the card's return arrow sends this instead. Absent: same as `raw`.
+      words?: string;
       notice?: string | null;
       // Researched numbers that disagree with what is shown, offered as a
       // choice. Applying is local, so picking costs no round trip.
@@ -799,6 +803,7 @@ export default function NutritionScreen() {
     // disagreement; the head is stamped back so a later fallback agrees too.
     const headOf = (its: ParsedMealItem[]): MealType =>
       its[0]?.meal_type ?? res.meal.meal_type;
+    const words = pending ? `${prevReview?.words ?? pending.text}; ${t}` : undefined;
     // A follow-up either CORRECTS the pending meal (replace its lines) or ADDS
     // to it (append) — appending is what keeps "and a dosa" from silently
     // dropping the samosa the user already reviewed.
@@ -809,6 +814,7 @@ export default function NutritionScreen() {
           return {
             status: 'review',
             raw: `${pending.text}; ${t}`,
+            words,
             meal: { ...res.meal, items, meal_type: head },
             mealType: head,
             mealTypePicked: prevReview?.mealTypePicked,
@@ -819,6 +825,7 @@ export default function NutritionScreen() {
           return {
             status: 'review',
             raw: res.meal.continued_pending && pendingMeal ? `${pendingMeal.text}; ${t}` : t,
+            words,
             meal: { ...res.meal, meal_type: head },
             mealType: head,
             mealTypePicked: prevReview?.mealTypePicked,
@@ -1618,7 +1625,8 @@ export default function NutritionScreen() {
               // Nor while Add is writing: the card would go, the write would not,
               // and the words left in the box could log the meal twice.
               onEditWords={parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && !!flow.clientId) ? undefined : () => {
-                const raw = flow.raw;
+                // The whole conversation, not just a correction's own words.
+                const raw = flow.status === 'review' && flow.words ? flow.words : flow.raw;
                 track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
                 clearCard();
                 // Keep a half-typed follow-up: it rides after the words, not over them.
