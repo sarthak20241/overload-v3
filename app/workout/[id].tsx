@@ -53,7 +53,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
 import { roundVolume, abbreviateNumber, formatWeight, formatDuration, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
-import { metricTypeOf, metricTypeDef } from '@/lib/exercises';
+import { metricTypeOf, metricTypeDef, usesReps } from '@/lib/exercises';
 import { readRoutineTargets, slotTargetLabel, targetColumns, targetsFor } from '@/lib/routineTargets';
 import { setVolumeKg } from '@/lib/sets';
 import type { ExerciseDef, MetricAxis } from '@/lib/exercises';
@@ -104,6 +104,21 @@ type SupersetStep =
   | { kind: 'advance'; idx: number }
   | { kind: 'round'; idx: number; restTarget: number }
   | { kind: 'groupDone' };
+
+/**
+ * The per-set target after "3 sets" in the exercise header: " × 0:45" for a
+ * timed slot with a target, " × 8-12 reps" for a rep slot, and nothing for a
+ * timed slot without one (its stored 8-12 reps is only the table default).
+ */
+function headerTarget(ex: ActiveWorkoutExercise): string {
+  const target = slotTargetLabel(ex.exercise.metric_type, {
+    target_duration_seconds: ex.targetDurationSeconds ?? null,
+    target_distance_m: ex.targetDistanceM ?? null,
+  });
+  if (target) return ` × ${target}`;
+  if (!usesReps(ex.exercise.metric_type)) return '';
+  return ` × ${ex.repsMin === ex.repsMax ? ex.repsMin : `${ex.repsMin}-${ex.repsMax}`} reps`;
+}
 
 function nextSupersetStep(exs: ActiveWorkoutExercise[], fromIdx: number, finished: boolean[]): SupersetStep {
   const g = exs[fromIdx]?.supersetGroup;
@@ -3135,7 +3150,7 @@ export default function ActiveWorkoutScreen() {
                   {currentEx.exercise.name}
                 </Text>
                 <Text style={[styles.exerciseMeta, { color: C.textMuted }]}>
-                  {currentEx.targetSets} sets × {currentEx.repsMin === currentEx.repsMax ? currentEx.repsMin : `${currentEx.repsMin}-${currentEx.repsMax}`} reps{currentEx.restSeconds > 0 ? ` · ${currentEx.restSeconds}s rest` : ''}
+                  {currentEx.targetSets} sets{headerTarget(currentEx)}{currentEx.restSeconds > 0 ? ` · ${currentEx.restSeconds}s rest` : ''}
                 </Text>
                 {(() => {
                   // Supersets: name the group + the members so the back-to-back flow is
@@ -3182,17 +3197,6 @@ export default function ActiveWorkoutScreen() {
                       </TouchableOpacity>
                     </View>
                   );
-                })()}
-                {(() => {
-                  const target = slotTargetLabel(currentEx.exercise.metric_type, {
-                    target_duration_seconds: currentEx.targetDurationSeconds ?? null,
-                    target_distance_m: currentEx.targetDistanceM ?? null,
-                  });
-                  return target ? (
-                    <Text style={[styles.coachCue, { color: C.textMuted }]} numberOfLines={1}>
-                      Target {target} per set
-                    </Text>
-                  ) : null;
                 })()}
                 {currentEx.coachNote ? (
                   <Text style={[styles.coachCue, { color: C.accentText }]} numberOfLines={3}>
