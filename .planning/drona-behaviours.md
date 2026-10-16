@@ -73,31 +73,62 @@ cant_tell 1, expected_on_cut 1. After the full 26-week facts rebuild of 2026-10-
 are on people who train steadily. Watch this before cards act on it: a stall
 card every week would be noise.
 
-## Proposed: steering behaviours (NOT BUILT, waiting on the owner)
+## Steering behaviours (rule_version 1, built 2026-10-16)
 
-Read the steering facts (ledger, step 8). Same rules: a pattern is 2 finished
-weeks, plan changes start as a talk card. "Steer" means it feeds the next plan
-Drona writes, with no card of its own.
+The owner approved all nine, and asked for an ACTIVE maintenance finder:
+someone trying to reach a weight needs Drona to work out their calories, and to
+ask for exactly what is missing until it can.
 
-| # | Behaviour | Line | How Drona acts | Today |
-|---|---|---|---|---|
-| S1 | `off_pace` | a trusted trend (8+ weigh-ins over 21+ days, scale not untrusted), a goal and a date; arrival 2+ weeks after the date, or the pace needed is over 1% of body weight a week (loss) or 0.5% (gain) | talk: "at this pace you reach 59 kg in March; move the date or change the plan?" | 0 (nobody has a trend and a date) |
-| S2 | `maintenance_found` | the same trend and 14+ whole food days in the window | steer: calorie targets start from the measured maintenance, not a formula; talk only when the target misses the goal pace by 250+ kcal | 0 (1 person measured, their target fits) |
-| S3 | `trains_any_day` | 6+ of 8 weeks trained, 3+ sessions a week on average, at most 1 weekday trained in 6+ of 8 weeks | steer: keep the rolling plan (TODAY), never pin weekdays | 2 (the owner among them) |
-| S4 | `fixed_days` | 3+ weekdays trained in 6+ of 8 weeks | steer: build the plan on exactly those days | 1 |
-| S5 | `plan_too_big` | 6+ of 8 weeks trained, planned sessions at least 1 more than their 8-week average | talk: "you train about 3 times a week; plan for 3?" | 0 |
-| S6 | `keep_favourites` | an exercise done in 6+ of 8 weeks and not in the program (custom counts: the owner's line) | steer: keep it in the next plan | 2 people (17 and 1 exercises) |
-| S7 | `swap_skipped` | a program exercise in the phase 4+ weeks, never done, while they did at least half of the phase's other exercises; or skipped in half or more of 4+ routine sessions | talk: "you never do X; swap it for Y?" | 2 people, 4 exercises, all routine skips. The owner's 9 never-done program exercises fail the half line (7 of 16 done): that is own_way, not this |
-| S8 | `topic_not_landing` | a card topic with 2+ cards and none followed | meta: mute that topic 4 weeks; ask once why (talk) | 3 people (weigh_in x2, due_session x1) |
-| S9 | `what_worked` | a change standing alone (at most 1 other the same day, none after) with 14 days before and after | later: compare sessions, food and weight before and after | wait: 1 of 153 changes qualifies |
+Migrations `20261016160716_drona_steering_behaviours` +
+`20261016160822_drona_steering_signals_history`. Ten new signals in
+`drona_signals` (`drona_rebuild_steering_signals`, run after the other signals),
+twelve new behaviours. A new card kind, `steer`: it feeds the next plan Drona
+writes and is never a card, so `drona_behaviour_pick` skips it. `on_track` still
+reads only the first ten signals.
 
-Two things data cannot show, to ask once in a talk card: equipment and where
-they train, and which days and times they are free.
+| Signal | Judged when | Fires when |
+|---|---|---|
+| `off_pace` | trusted trend (8+ weigh-ins over 21+ days, no untrusted scale in 4 weeks), goal 0.5+ kg away, a date | date passed; trend not moving toward the goal; pace needed over 1% of body weight a week (loss) or 0.5% (gain); or arriving 2+ weeks late |
+| `maintenance_unknown` | goal 0.5+ kg from the weight, and 1+ weigh-in or 3+ food days in the window | until the trend is trusted AND 14+ whole food days exist. Says what is missing and how much |
+| `calories_off` | maintenance known (as above), a goal 0.5+ kg away, a kcal target | target 250+ kcal from maintenance + pace x 1100 (pace = the date's, kept inside the safe band, else 0.5% a week down or 0.25% up; rounded to 50) |
+| `trains_any_day` | 6+ of 8 weeks trained | 3+ sessions a week and at most 1 weekday trained in 6+ of 8 weeks |
+| `fixed_days` | same | 3+ such weekdays |
+| `plan_too_big` | same, sessions planned | planned 1+ above the 8-week average |
+| `favourite_exercises` | 6+ of 8 weeks trained | done in 6+ of 8 weeks, not in this week's phase (custom counts) |
+| `exercise_skipped` | 4+ of 8 weeks trained | skipped in half or more of 4+ routine sessions, or in the phase 4+ trained weeks and never done while half the phase's others were. A pattern is the same exercise |
+| `topic_not_landing` | any card history | a topic with 2+ cards, none followed, 2+ not followed, the last within 21 days |
+| `change_backfired` | a change alone (1 other the same day at most, none after), 2+ sessions or 4+ food days before, its 14 days after closing this week | sessions or food days fell under 3 in 4 of before |
+
+| Pri | Behaviour | From | Card |
+|---|---|---|---|
+| 13 | `topic_not_landing` | fired; mutes `topic:<topic>` | talk the first week, then steer |
+| 14 | `finding_maintenance` | `maintenance_unknown` pattern | request |
+| 15 | `off_pace` | pattern | talk |
+| 16 | `calories_off` | pattern | talk |
+| 24 | `plan_too_big` | pattern | talk |
+| 25 | `exercise_skipped` | pattern, the exercises skipped both weeks | talk |
+| 26 | `change_backfired` | fired, the backfired changes | talk |
+| 80 | `maintenance_found` | any `calories_off` row: maintenance and the suggested target | steer |
+| 81 | `trains_any_day` | fired | steer |
+| 82 | `fixed_days` | fired | steer |
+| 83 | `keep_favourites` | `favourite_exercises` fired | steer |
+| 84 | `change_worked` | judged changes that did not backfire | steer |
+
+Proof: `scripts/drona-facts/steering-behaviours.mts`, 38 checks, every line
+from both sides. Moving the 250 kcal line live from `>=` to `>` made 3 fail;
+restored. The other four suites still pass.
+
+**First run (26 weeks).** `finding_maintenance` wins the pick 73 times for 10
+people, 15 of the last 4 weeks' 25 picks: people with a goal who weigh in or log
+a little, but not enough. `calories_off` judged twice (one person, Jul/Aug:
+maintenance about 1,820, target 2,250, suggested 2,000-2,050). `off_pace` judged
+never: nobody has a trusted trend and a date. `change_backfired` judged never
+after the history fix (the first run called a change backfired on one food day).
+`fixed_days` 8 people, `trains_any_day` 5, `keep_favourites` 8, `exercise_skipped`
+3, `plan_too_big` 5, `topic_not_landing` 3.
 
 ## Next
 
-- Steering facts: pace to goal, estimated maintenance, real training weekdays,
-  per-exercise skip and add habits, change outcomes, card answers by topic.
 - The word behaviours (with Jev): life got in the way, trains but does not log,
   hurting, already asked for a change.
 - Cards read `drona_behaviour_pick`.

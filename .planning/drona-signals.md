@@ -74,3 +74,10 @@ Before the food signal, the food facts were moved to the app's own day targets
 (`20261013161042_drona_targets_from_history`): 6,768 of 6,768 day targets equal
 `targetsForDay`, where the old lookup got 52 wrong (fuel days, one-day goals).
 `scripts/drona-facts/targets-compare.mts`.
+
+## Steering signals (rule_version 1, 2026-10-16)
+
+Ten more, read from the steering facts by `drona_rebuild_steering_signals`
+(after the first ten, which it never touches). The lines and their behaviours
+are in `.planning/drona-behaviours.md`.
+
