@@ -48,6 +48,8 @@ export interface ScoreResult {
     /** Names not present in the scoring catalog. Kept for diagnosis: the
      *  earlier wrong-denominator bug was invisible without these. */
     unresolvedNames: string[];
+    /** Exercises Drona invented (NEW lines), with how each is measured. */
+    newExercises: { name: string; metric_type: string }[];
   };
 }
 
@@ -60,6 +62,8 @@ function parseRepsOk(reps: unknown): boolean {
   // Timed work: "45s", "30-45s". Legal ONLY because the compact format asks
   // for it explicitly and assembly can route it by the catalog's metric_type.
   if (/^\d{1,3}\s*(-\s*\d{1,3})?\s*s$/i.test(t)) return true;
+  // Cardio for time: "20min", "15-20min".
+  if (/^\d{1,3}\s*(-\s*\d{1,3})?\s*min$/i.test(t)) return true;
   if (/^(amrap|to failure)$/i.test(t)) return true;
   return false;
 }
@@ -91,13 +95,14 @@ export function scorePlan(
   const warnings: string[] = [];
   const setsByMuscle: Record<string, number> = {};
   const unresolvedNames: string[] = [];
+  const newExercises: { name: string; metric_type: string }[] = [];
   const dayCountByExercise = new Map<string, number>();
   let exercisesTotal = 0, exercisesResolved = 0, weeklySets = 0;
 
   const empty: ScoreResult['metrics'] = {
     workouts: 0, exercisesTotal: 0, exercisesResolved: 0, catalogResolution: 0,
     weeklySets: 0, setsByMuscle: {}, rationaleChars: 0, distinctRatio: 0,
-    crossDayRepeats: [], unresolvedNames: [],
+    crossDayRepeats: [], unresolvedNames: [], newExercises: [],
   };
 
   if (!plan) return { failures: ['no plan emitted'], warnings, metrics: empty };
@@ -140,7 +145,7 @@ export function scorePlan(
     exs.forEach((rawEx, xi) => {
       exercisesTotal++;
       if (typeof rawEx !== 'object' || rawEx === null) { failures.push(`workout[${wi}].exercise[${xi}] is not an object`); return; }
-      const ex = rawEx as { name?: unknown; sets?: unknown; reps?: unknown; rest_seconds?: unknown };
+      const ex = rawEx as { name?: unknown; sets?: unknown; reps?: unknown; rest_seconds?: unknown; new_exercise?: { metric_type?: unknown } };
       const name = typeof ex.name === 'string' ? ex.name.trim() : '';
       if (!name) { failures.push(`workout[${wi}].exercise[${xi}] has no name`); return; }
 
@@ -152,6 +157,12 @@ export function scorePlan(
         const mg = MUSCLE_BY_NAME.get(norm(name));
         const sets = typeof ex.sets === 'number' ? ex.sets : 0;
         if (mg) setsByMuscle[mg] = (setsByMuscle[mg] ?? 0) + sets;
+      } else if (ex.new_exercise && typeof ex.new_exercise === 'object') {
+        // A deliberate invention with a template, saved as a custom exercise.
+        // Not a resolution failure, but tracked so a plan that invents its
+        // way around the catalog shows up.
+        exercisesResolved++;
+        newExercises.push({ name, metric_type: String(ex.new_exercise.metric_type ?? '') });
       } else {
         unresolvedNames.push(name);
       }
@@ -198,6 +209,17 @@ export function scorePlan(
     warnings.push(`"${name}" repeats on ${days} days`);
   }
 
+  const timedNew = newExercises.filter((n) => n.metric_type !== 'weight_reps' && n.metric_type !== 'bodyweight_reps');
+  if (e.mobility === 'required' && timedNew.length === 0) {
+    failures.push('asked for mobility/stretching but the plan has no timed new exercise');
+  }
+  if (!e.mobility && newExercises.length > 0) {
+    warnings.push(`invented ${newExercises.length} exercise(s) nobody asked for: ${newExercises.map((n) => n.name).join(', ')}`);
+  }
+  if (newExercises.length > exercisesTotal / 3) {
+    failures.push(`${newExercises.length}/${exercisesTotal} exercises are invented; the catalog should carry most of the plan`);
+  }
+
   for (const [muscle, sets] of Object.entries(setsByMuscle)) {
     if (sets > 32) warnings.push(`${muscle}: ${sets} sets/week across the plan looks high`);
   }
@@ -210,7 +232,7 @@ export function scorePlan(
     metrics: {
       workouts: workouts.length, exercisesTotal, exercisesResolved,
       catalogResolution: resolution, weeklySets, setsByMuscle,
-      rationaleChars: rationale.length, distinctRatio, crossDayRepeats, unresolvedNames,
+      rationaleChars: rationale.length, distinctRatio, crossDayRepeats, unresolvedNames, newExercises,
     },
   };
 }
