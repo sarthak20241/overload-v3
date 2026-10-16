@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert@1';
-import { goalLabels, joinGoals, missingGoalsColumn, primaryGoal, selectedGoals, toggleGoal } from './fitnessGoals.ts';
+import { goalLabels, joinGoals, missingGoalsColumn, primaryGoal, programGoalFor, selectedGoals, toggleGoal } from './fitnessGoals.ts';
 
 Deno.test('muscle, fat loss and strength remain selected together', () => {
   let a = toggleGoal({ goals: [] }, 'hypertrophy');
@@ -45,4 +45,33 @@ Deno.test('legacy retry only covers a missing goals column', () => {
 Deno.test('commitment copy joins goals naturally', () => {
   assertEquals(joinGoals(['Building muscle', 'getting stronger']), 'Building muscle and getting stronger');
   assertEquals(joinGoals(['Building muscle', 'losing fat', 'getting stronger']), 'Building muscle, losing fat, and getting stronger');
+});
+
+// The live rows that started this (2026-10-16): cuts saved as 'hypertrophy'.
+Deno.test('a program that takes weight down is fat_loss whatever the profile says', () => {
+  assertEquals(programGoalFor('hypertrophy', 59.5, 65.5), 'fat_loss');
+  assertEquals(programGoalFor('hypertrophy', 62, 67.5), 'fat_loss');
+  assertEquals(programGoalFor('hypertrophy', 75, 82), 'fat_loss');
+  assertEquals(programGoalFor('strength', 70, 71), 'fat_loss');
+  assertEquals(programGoalFor('endurance', 70, 78), 'fat_loss');
+});
+
+Deno.test('a gain is never fat_loss, and a gain keeps its training goal', () => {
+  assertEquals(programGoalFor('fat_loss', 76, 70), 'hypertrophy');
+  assertEquals(programGoalFor('strength', 76, 70), 'strength');
+  assertEquals(programGoalFor('hypertrophy', 76, 70), 'hypertrophy');
+});
+
+Deno.test('no weight target, or under 1 kg of change, keeps the given goal (recomp)', () => {
+  assertEquals(programGoalFor('hypertrophy', undefined, 80), 'hypertrophy');
+  assertEquals(programGoalFor('hypertrophy', 79.5, 80), 'hypertrophy');
+  assertEquals(programGoalFor('fat_loss', 80.5, 80), 'fat_loss');
+  assertEquals(programGoalFor('strength', 70, null), 'strength');
+  assertEquals(programGoalFor('strength', 70, 0), 'strength');
+});
+
+Deno.test('an unknown goal becomes general, unless the weight says cut', () => {
+  assertEquals(programGoalFor(undefined, undefined, 80), 'general');
+  assertEquals(programGoalFor('__proto__', undefined, 80), 'general');
+  assertEquals(programGoalFor('recomp', 72, 80), 'fat_loss');
 });

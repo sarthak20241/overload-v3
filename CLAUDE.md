@@ -31,6 +31,10 @@ ANTHROPIC_API_KEY=sk-ant-... npx tsx scripts/parse-meal-eval/run.ts
 # weekdays, and only then? Same CLI rule as above.
 EVAL_VIA_CLI=1 npx tsx scripts/program-fuel-eval/run.mts
 
+# Program goal label: a generated cut must carry goal = fat_loss (Drona's
+# goals_disagree signal reads coach_programs.goal). Same CLI rule.
+EVAL_VIA_CLI=1 npx tsx scripts/program-goal-eval/run.mts
+
 # Edge function unit tests (the one real test suite).
 deno test --allow-all supabase/functions/ai-coach/
 deno test --allow-all supabase/functions/revenuecat-webhook/
