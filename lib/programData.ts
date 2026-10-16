@@ -21,6 +21,7 @@ import { fillMissingMacros, DEFAULT_TARGETS } from '@/lib/dietData';
 import { normalizeWeekPattern } from '@/lib/weekPattern';
 import { fuelDaysFromCoach, normalizeFuelDays, type FuelDay } from '@/lib/fuelDays';
 import { track } from '@/lib/analytics';
+import { programGoalFor } from '@/lib/fitnessGoals';
 
 // ── Client shapes ────────────────────────────────────────────────────────────
 export interface ProgramDiet {
@@ -390,14 +391,28 @@ export async function saveProgram(
     }
   };
 
-  // 2. Insert the program.
+  // 2. Insert the program. Its goal is what the program does: a target weight
+  //    below today's is a cut whatever the coach labelled it (the chat path
+  //    has no intake to check against, so the profile weight stands in).
+  //    Best-effort: an unread weight keeps the coach's label.
+  const { data: weightRow } = await supabase
+    .from('user_profiles')
+    .select('weight_kg')
+    .eq('clerk_user_id', clerkId)
+    .maybeSingle();
+  const checked = programGoalFor(
+    program.goal,
+    program.target_weight_kg,
+    weightRow?.weight_kg != null ? Number(weightRow.weight_kg) : null,
+  );
+  const goal = program.goal != null || checked === 'fat_loss' ? checked : null;
   const { data: prog, error: progErr } = await supabase
     .from('coach_programs')
     .insert({
       user_id: clerkId,
       title: program.title,
       objective: program.objective ?? null,
-      goal: program.goal ?? null,
+      goal,
       target_weight_kg: program.target_weight_kg ?? null,
       target_date: program.target_date && ISO_RE.test(program.target_date) ? program.target_date : null,
       start_date: startDate,
