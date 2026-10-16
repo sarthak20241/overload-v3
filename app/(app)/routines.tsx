@@ -44,6 +44,7 @@ import {
   slotTargetLabel,
   takesDistanceTarget,
   takesDurationTarget,
+  parseEditorDuration,
   targetEditorText,
   targetsFromEditor,
 } from '@/lib/routineTargets';
@@ -629,7 +630,12 @@ function ExerciseEditorCard({
             )}
             {takesDurationTarget(exercise.metricType) ? (
               <View style={{ flex: 1.2 }}>
-                <Text style={[styles.editorLabel, { color: C.textMuted }]}>Time</Text>
+                {/* "1.5" or "abc" saves no target; say so instead of dropping it quietly. */}
+                {exercise.targetDuration.trim() && !parseEditorDuration(exercise.targetDuration) ? (
+                  <Text style={[styles.editorLabel, { color: C.dangerText }]}>Time as m:ss</Text>
+                ) : (
+                  <Text style={[styles.editorLabel, { color: C.textMuted }]}>Time</Text>
+                )}
                 <TextInput
                   value={exercise.targetDuration}
                   onChangeText={(v) => onChange({ ...exercise, targetDuration: v })}
@@ -826,7 +832,8 @@ function RoutineEditorSheet({
             name: ex.name,
             muscleGroup: ex.muscle_group,
             category: ex.category,
-            metricType: ex.metric_type ? metricTypeOf(ex) : undefined,
+            // The picker always knows: a library row without one is weight_reps.
+            metricType: metricTypeOf(ex),
             exerciseId: undefined,
           };
           // Custom creations carry set/rep/rest targets from the form; library

@@ -173,14 +173,17 @@ export function parseEditorDuration(text: string | null | undefined): number {
 /**
  * Routine editor fields back to targets. A field the exercise does not log
  * saves nothing, so picking a lift over a stretch drops the stretch's time.
- * The time field is read by parseEditorDuration; distance is km.
+ * An unknown metric type (a row from a cache without it) keeps what was
+ * loaded rather than guess it away. The time field is read by
+ * parseEditorDuration; distance is km.
  */
 export function targetsFromEditor(
   metricType: string | null | undefined,
   text: { duration?: string; distance?: string },
 ): RoutineTargets {
-  const secs = takesDurationTarget(metricType) ? parseEditorDuration(text.duration) : 0;
-  const meters = takesDistanceTarget(metricType) ? parseDistanceKm(text.distance ?? '') : 0;
+  const known = metricType != null;
+  const secs = !known || takesDurationTarget(metricType) ? parseEditorDuration(text.duration) : 0;
+  const meters = !known || takesDistanceTarget(metricType) ? parseDistanceKm(text.distance ?? '') : 0;
   return { target_duration_seconds: secs > 0 ? secs : null, target_distance_m: meters > 0 ? meters : null };
 }
 

@@ -29,7 +29,10 @@ export interface GuestRoutineExercise {
   note?: string | null;
   /** Superset grouping ordinal (migration 0060); null/missing = solo. */
   superset_group?: number | null;
-  exercises: { id: string; name: string; muscle_group: string; category: string };
+  /** Time / distance target (lib/routineTargets.ts); missing = none. */
+  target_duration_seconds?: number | null;
+  target_distance_m?: number | null;
+  exercises: { id: string; name: string; muscle_group: string; category: string; metric_type?: MetricType };
 }
 
 export interface GuestRoutine {

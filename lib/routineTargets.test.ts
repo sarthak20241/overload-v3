@@ -172,3 +172,14 @@ Deno.test('a bare m is trusted as meters only where meters make sense', () => {
   assertEquals(trustDistanceUnit(bare('400m'), 'distance_duration'), true);
   assertEquals(trustDistanceUnit(bare('400m'), 'duration'), false);
 });
+
+Deno.test('the editor keeps a loaded target when it does not know the exercise type', () => {
+  assertEquals(targetsFromEditor(undefined, { duration: '0:45', distance: '' }), {
+    target_duration_seconds: 45,
+    target_distance_m: null,
+  });
+  assertEquals(targetsFromEditor(null, { duration: '', distance: '' }), {
+    target_duration_seconds: null,
+    target_distance_m: null,
+  });
+});
