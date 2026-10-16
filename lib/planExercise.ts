@@ -45,6 +45,9 @@ export function planExerciseInsert(ex: { name: string; new_exercise?: NewExercis
 
 /** Leading rep count or range, and whatever follows it ("/side", "s", "min"). */
 const LEADING_REPS = /^\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*(.*)$/;
+/** A range written high-to-low ("12-8") still stores min <= max. */
+const ordered = (a: number, b: number) => ({ reps_min: Math.min(a, b), reps_max: Math.max(a, b) });
+
 /** "3x10", "3 x 8-12", "3-4x10": the leading part is sets, the rest is reps. */
 const SETS_X_REPS = /^\s*\d+(?:\s*[-\u2013]\s*\d+)?\s*[x\u00d7]\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*$/i;
 /** A suffix that makes the number a time, not a rep count. */
@@ -70,7 +73,7 @@ export function planRepsAndNote(reps: string, note?: string | null): {
   const sxr = SETS_X_REPS.exec(target);
   if (sxr) {
     const lo = Number(sxr[1]) || 8;
-    return { reps_min: lo, reps_max: Number(sxr[2]) || lo, note: withTarget };
+    return { ...ordered(lo, Number(sxr[2]) || lo), note: withTarget };
   }
   const m = LEADING_REPS.exec(target);
   // A decimal ("1.5min") is never a rep count, whatever follows it.
@@ -78,7 +81,7 @@ export function planRepsAndNote(reps: string, note?: string | null): {
     const lo = Number(m[1]) || 8;
     const rest = m[3].trim();
     const plain = rest === '' || /^reps?$/i.test(rest);
-    return { reps_min: lo, reps_max: Number(m[2]) || lo, note: plain ? cue || null : withTarget };
+    return { ...ordered(lo, Number(m[2]) || lo), note: plain ? cue || null : withTarget };
   }
   if (!target) return { reps_min: 8, reps_max: 12, note: cue || null };
   return { reps_min: 8, reps_max: 12, note: withTarget };

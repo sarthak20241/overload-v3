@@ -33,6 +33,7 @@ Deno.test('rep targets fill the rep columns as before', () => {
   assertEquals(planRepsAndNote('6-10', 'RIR 2'), { reps_min: 6, reps_max: 10, note: 'RIR 2' });
   assertEquals(planRepsAndNote('5'), { reps_min: 5, reps_max: 5, note: null });
   assertEquals(planRepsAndNote('8-12 reps', ''), { reps_min: 8, reps_max: 12, note: null });
+  assertEquals(planRepsAndNote('12-8'), { reps_min: 8, reps_max: 12, note: null });
 });
 
 Deno.test('a rep range with extra words keeps its numbers and its words', () => {
