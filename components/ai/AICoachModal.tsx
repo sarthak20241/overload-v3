@@ -3961,15 +3961,16 @@ export function AICoachModal({
       if (!found) {
         // A Drona-invented exercise carries its own template (muscle group,
         // equipment, how it is measured); anything else keeps the bare insert,
-        // which takes the table default, weight_reps.
+        // which takes the table default. The stored metric_type is read back
+        // rather than assumed, so the fit check sees what the row holds.
         const { data: newEx, error: insErr } = await supabase
           .from('exercises')
           .insert(planExerciseInsert(ex))
-          .select('id')
+          .select('id, metric_type')
           .single();
         // 23505: lost the create race to another session — take the winner.
         found = newEx?.id
-          ? { id: newEx.id, metricType: ex.new_exercise?.metric_type ?? 'weight_reps' }
+          ? { id: newEx.id, metricType: newEx.metric_type ?? 'weight_reps' }
           : insErr?.code === '23505' ? await findByName() : undefined;
       }
       const exerciseId = found?.id;
