@@ -46,7 +46,10 @@ Deno.test('a rep range with extra words keeps its numbers and its words', () => 
   assertEquals(planRepsAndNote('3x10'), { reps_min: 10, reps_max: 10, note: 'Aim for 3x10.' });
   assertEquals(planRepsAndNote('3 x 8-12'), { reps_min: 8, reps_max: 12, note: 'Aim for 3 x 8-12.' });
   assertEquals(planRepsAndNote('3-4x10'), { reps_min: 10, reps_max: 10, note: 'Aim for 3-4x10.' });
-  assertEquals(planRepsAndNote('1.5min'), { reps_min: 8, reps_max: 12, note: 'Aim for 1.5min.' });
+  // A decimal time is never reps: it goes to the time column, or the cue
+  // against a database without one.
+  assertEquals(planRepsAndNote('1.5min'), { reps_min: 8, reps_max: 12, note: null, target_duration_seconds: 90 });
+  assertEquals(planRepsAndNote('1.5min', null, { targetColumns: false }), { reps_min: 8, reps_max: 12, note: 'Aim for 1.5min.' });
 });
 
 Deno.test('a 45s stretch saves 45 seconds to the time column, not the cue', () => {
