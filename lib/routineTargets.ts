@@ -74,6 +74,8 @@ export interface TimedTarget {
   distance_m?: number;
   /** "30-45s": the low end is the target, the range is worth keeping in the cue. */
   range: boolean;
+  /** Written with a bare "m", which could mean minutes as easily as meters. */
+  bareM?: boolean;
 }
 
 /**
@@ -102,7 +104,8 @@ export function parseTimedTarget(text: string | null | undefined): TimedTarget |
     return secs > 0 ? { duration_seconds: secs, range } : null;
   }
   const meters = Math.round(lo * UNIT_METERS[unit.unit] * 100) / 100;
-  return meters > 0 ? { distance_m: meters, range } : null;
+  if (!(meters > 0)) return null;
+  return /^m\.?$/i.test(m[3]) ? { distance_m: meters, range, bareM: true } : { distance_m: meters, range };
 }
 
 /** A short label for a target: "0:45", "20:00", "5 km". Null when there is none. */

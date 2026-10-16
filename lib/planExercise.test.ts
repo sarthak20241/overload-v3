@@ -78,7 +78,13 @@ Deno.test('a distance target saves meters to the distance column', () => {
     note: 'Easy pace',
     target_distance_m: 5000,
   });
-  assertEquals(planRepsAndNote('400m'), { reps_min: 8, reps_max: 12, note: null, target_distance_m: 400 });
+  assertEquals(planRepsAndNote('400m', null, { metricType: 'distance_duration' }), {
+    reps_min: 8,
+    reps_max: 12,
+    note: null,
+    target_distance_m: 400,
+  });
+  assertEquals(planRepsAndNote('400 meters'), { reps_min: 8, reps_max: 12, note: null, target_distance_m: 400 });
 });
 
 Deno.test('a rep target never names the target columns', () => {
@@ -119,4 +125,9 @@ Deno.test('a time on an exercise that does not log time stays in the cue', () =>
     note: null,
     target_duration_seconds: 45,
   });
+});
+
+Deno.test('a bare m with no metric type stays in the cue: meters or minutes?', () => {
+  assertEquals(planRepsAndNote('5m'), { reps_min: 8, reps_max: 12, note: 'Aim for 5m.' });
+  assertEquals(planRepsAndNote('5m', null, { metricType: 'duration' }), { reps_min: 8, reps_max: 12, note: 'Aim for 5m.' });
 });

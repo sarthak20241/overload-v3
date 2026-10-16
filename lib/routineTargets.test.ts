@@ -32,7 +32,8 @@ Deno.test('a range keeps its low end and says it was a range', () => {
 
 Deno.test('distance targets parse to meters, and a bare m is meters', () => {
   assertEquals(parseTimedTarget('5km'), { distance_m: 5000, range: false });
-  assertEquals(parseTimedTarget('400m'), { distance_m: 400, range: false });
+  assertEquals(parseTimedTarget('400m'), { distance_m: 400, range: false, bareM: true });
+  assertEquals(parseTimedTarget('400 meters'), { distance_m: 400, range: false });
   assertEquals(parseTimedTarget('1 mile'), { distance_m: 1609.34, range: false });
 });
 

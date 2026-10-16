@@ -3953,7 +3953,8 @@ export function AICoachModal({
           .ilike('name', ex.name)
           .order('created_at', { ascending: true })
           .limit(1);
-        if (data?.[0]) metricType = data[0].metric_type;
+        // A row with no metric_type predates the column and is weight_reps.
+        if (data?.[0]) metricType = data[0].metric_type ?? 'weight_reps';
         return data?.[0]?.id;
       };
 
