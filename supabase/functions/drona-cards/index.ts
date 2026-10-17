@@ -17,6 +17,7 @@ import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 import { decideCard, type DronaFacts, onCooldown, signalsFrom, weekStartOf } from "../_shared/dronaCards.ts";
 import { decideSwap, type SwapFacts, swapCard } from "../_shared/dronaSwap.ts";
 import { calorieGate, caloriesCard, type DietFacts, uglyChecks, validateTargets } from "../_shared/dronaCalories.ts";
+import { decideEnergyCard, type EnergyFacts } from "../_shared/dronaEnergy.ts";
 import { askCaloriesModel, DRONA_CARD_MODEL } from "../_shared/dronaModel.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
@@ -131,6 +132,38 @@ type CardRow = {
 };
 
 /**
+ * The adaptive calories cards (20261017115750_drona_energy_facts). The
+ * database keeps a maintenance estimate that starts at the app's formula and
+ * moves toward the person's real number as weigh-ins and whole food days
+ * arrive; last week's behaviours say whether to ask for that data or to move
+ * the calorie target. get_drona_energy_facts rebuilds the facts first when the
+ * daily job has not reached this person yet today, so a Monday card reads the
+ * week that just ended. Rules only, no model.
+ *
+ * Returns the row to insert, or null to let the next step have its turn.
+ */
+async function energyFirst(
+  db: SupabaseClient,
+  userId: string,
+  localDay: string,
+  weekStart: string,
+  facts: DronaFacts,
+  source: "cron" | "app",
+): Promise<CardRow | null> {
+  const { data, error } = await retried(() =>
+    db.rpc("get_drona_energy_facts", { p_user_id: userId, p_as_of: localDay })
+  );
+  if (error || !data) return null;
+  const card = decideEnergyCard(data as EnergyFacts, (topic) => onCooldown(topic, facts));
+  if (!card) return null;
+  return {
+    user_id: userId, week_start: weekStart, kind: card.kind, topic: card.topic, title: card.title,
+    body: card.body, evidence: card.evidence, payload: card.payload, signals: card.signals,
+    facts: { ...facts, energy: data }, source,
+  };
+}
+
+/**
  * B1, the first card the MODEL decides (plan section 3). The rules gate the
  * week and set the anchor; the model reads the series and the diary and
  * answers with one tool call; the validator has the last word. A refused
@@ -211,6 +244,19 @@ async function generate(
   if (!newUser && !onCooldown("swap", facts as DronaFacts)) {
     const swap = await swapFirst(db, userId, localDay, weekStart, source);
     if (swap) return swap;
+  }
+
+  // The adaptive calories cards: ask for the weigh-ins or food days the
+  // maintenance estimate is missing, or move the target toward it.
+  if (!newUser) {
+    const row = await energyFirst(db, userId, localDay, weekStart, facts as DronaFacts, source);
+    if (row) {
+      const { error: insErr } = await retried(() => db.from("drona_cards").insert(row));
+      if (insErr && (insErr as { code?: string }).code !== "23505") {
+        return { kind: row.kind, saved: false, error: insErr.message };
+      }
+      return { kind: row.kind, saved: !insErr };
+    }
   }
 
   // B1 (Pro, model-decided). A model hold is written as a held row so the
