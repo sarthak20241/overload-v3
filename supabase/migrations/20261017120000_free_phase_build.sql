@@ -101,5 +101,7 @@ begin
 end;
 $$;
 
-revoke all on function try_claim_free_phase_build(uuid) from public;
+-- Supabase's default privileges grant anon EXECUTE on new public functions;
+-- revoking from public does not remove that explicit grant.
+revoke all on function try_claim_free_phase_build(uuid) from public, anon;
 grant execute on function try_claim_free_phase_build(uuid) to authenticated;
