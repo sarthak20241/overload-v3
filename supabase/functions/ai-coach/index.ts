@@ -93,6 +93,7 @@ import type { PreciseCacheRow } from "./preciseCache.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
+import { freePhaseBuildCandidate } from "./freePhaseBuild.ts";
 import { selectMatchRows } from "./ourSources.ts";
 import { MEMORY_DAYS, type MemoryEntry } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
@@ -4227,17 +4228,12 @@ Deno.serve(async (req) => {
         (typeof peekMode === "string" && peekMode !== "chat" && peekMode !== "live_workout")
         || typeof peekForce === "string";
       // The one exception: a free user's first "Build phase 1" runs as Pro,
-      // once, so they see what building a phase does. Only a plain forced
-      // generate_plan naming a phase qualifies (refine/discuss stay Pro), and
-      // the RPC decides whether it is phase 1 and still unspent. An RPC error
-      // falls through to the paywall, same as before this existed.
-      const peekPhaseId = (body as { phase_id?: unknown }).phase_id;
-      if (
-        wantsProFlow
-        && peekForce === "generate_plan"
-        && peekMode === undefined
-        && typeof peekPhaseId === "string"
-      ) {
+      // once, so they see what building a phase does. freePhaseBuildCandidate
+      // says which requests may ask (refine/discuss stay Pro), and the RPC
+      // decides whether it is phase 1 and still unspent. An RPC error falls
+      // through to the paywall, same as before this existed.
+      const peekPhaseId = freePhaseBuildCandidate(body);
+      if (wantsProFlow && peekPhaseId !== null) {
         const { data: claimData, error: claimErr } = await userClient.rpc(
           "try_claim_free_phase_build",
           { p_phase_id: peekPhaseId },
