@@ -468,6 +468,10 @@ interface StreamingOptions {
   // chat, which is never persisted.
   conversationId?: string;
   clientMsgId?: string;
+  // The program phase a forced generate_plan is building. The server lets a
+  // free user's first phase-1 build through on it (once); for everyone else
+  // it is ignored.
+  phaseId?: string;
 }
 
 function callAICoachStreaming(
@@ -562,6 +566,7 @@ function callAICoachStreaming(
           ...(mode ? { mode } : {}),
           ...(options.conversationId ? { conversation_id: options.conversationId } : {}),
           ...(options.clientMsgId ? { client_msg_id: options.clientMsgId } : {}),
+          ...(options.phaseId ? { phase_id: options.phaseId } : {}),
         }),
         signal: controller.signal,
       });
@@ -2002,6 +2007,7 @@ function GeneratePlanScreen({
   onSaveRoutines,
   onRequestUpgrade,
   seed,
+  phaseId,
 }: {
   onBack: () => void;
   onSaveRoutines: (routines: GeneratedWorkout[]) => void;
@@ -2009,6 +2015,9 @@ function GeneratePlanScreen({
   // When present (from the Goal & Plan screen "Build workout split"), pre-seeds
   // the form + prompt so the generated split matches a specific program phase.
   seed?: { goal?: string; days?: string; note?: string };
+  // The phase being built. Sent with the request so a free user's first
+  // phase-1 build is let through by the server.
+  phaseId?: string;
 }) {
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -2205,7 +2214,7 @@ function GeneratePlanScreen({
           onRequestUpgrade?.(kind);
         },
       },
-      { forceTool: 'generate_plan' },
+      { forceTool: 'generate_plan', phaseId },
     );
   };
 
@@ -4310,6 +4319,7 @@ export function AICoachModal({
                   onBack={() => setScreen('menu')}
                   onSaveRoutines={handleSaveRoutines}
                   seed={planSeed}
+                  phaseId={linkRoutinesToPhaseId}
                   onRequestUpgrade={(kind) =>
                     handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')
                   }

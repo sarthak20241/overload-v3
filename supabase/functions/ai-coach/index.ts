@@ -4189,6 +4189,9 @@ Deno.serve(async (req) => {
   // rate-limit insert below, so a denied Pro request never burns one of the
   // user's 3 free slots. Only unknown/unauthenticated states are locked out.
   let freeTier = false;
+  // A free user's one free phase-1 build (see the claim below). It runs with
+  // the Pro prompt and toolkit and does not spend a chat message.
+  let freePhaseBuild = false;
   try {
     const { data: accessData, error: accessErr } = await userClient.rpc(
       "get_coach_access_status",
@@ -4223,7 +4226,33 @@ Deno.serve(async (req) => {
       const wantsProFlow =
         (typeof peekMode === "string" && peekMode !== "chat" && peekMode !== "live_workout")
         || typeof peekForce === "string";
-      if (wantsProFlow) {
+      // The one exception: a free user's first "Build phase 1" runs as Pro,
+      // once, so they see what building a phase does. Only a plain forced
+      // generate_plan naming a phase qualifies (refine/discuss stay Pro), and
+      // the RPC decides whether it is phase 1 and still unspent. An RPC error
+      // falls through to the paywall, same as before this existed.
+      const peekPhaseId = (body as { phase_id?: unknown }).phase_id;
+      if (
+        wantsProFlow
+        && peekForce === "generate_plan"
+        && peekMode === undefined
+        && typeof peekPhaseId === "string"
+      ) {
+        const { data: claimData, error: claimErr } = await userClient.rpc(
+          "try_claim_free_phase_build",
+          { p_phase_id: peekPhaseId },
+        );
+        const claim = (Array.isArray(claimData) ? claimData[0] : claimData) as
+          | { allowed?: boolean; reason?: string }
+          | null;
+        if (claimErr) console.log("[ai-coach] free phase build claim error:", claimErr.message);
+        if (!claimErr && claim?.allowed) {
+          freePhaseBuild = true;
+          freeTier = false;
+          trace.spans = { ...(trace.spans ?? {}), free_phase_build: claim.reason ?? "claimed" };
+        }
+      }
+      if (wantsProFlow && !freePhaseBuild) {
         trace.status = "unauthorized";
         trace.error_message = `pro_required:${String(peekMode ?? peekForce)}`;
         return respond(
@@ -4250,10 +4279,13 @@ Deno.serve(async (req) => {
   // Called via userClient (Clerk JWT) since the RPC reads
   // current_clerk_user_id(); the resulting row is written under the
   // service role indirectly through security-definer.
+  // The free phase-1 build skips this: its own claim (max 3 tries, once per
+  // account) is the limit, and it must not eat one of the 3 free messages.
   const chatCap = freeTier ? FREE_CHAT_LIMIT : RATE_LIMIT_MAX;
   const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
-  const { data: slotData, error: slotErr } = await userClient
-    .rpc("try_reserve_ai_coach_slot", { p_cap: chatCap });
+  const { data: slotData, error: slotErr } = freePhaseBuild
+    ? { data: { inserted: true, current_count: 0 }, error: null }
+    : await userClient.rpc("try_reserve_ai_coach_slot", { p_cap: chatCap });
   if (slotErr) {
     trace.status = "internal_error";
     trace.error_message = `rate_limit_check_failed: ${slotErr.message}`;
