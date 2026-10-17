@@ -2214,7 +2214,10 @@ function GeneratePlanScreen({
           onRequestUpgrade?.(kind);
         },
       },
-      { forceTool: 'generate_plan', phaseId },
+      // phaseId only on a fresh build: each request carrying it spends one of a
+      // free user's 3 phase-1 tries. (Refine runs through RefineChatScreen with
+      // a mode, which the server never counts.)
+      { forceTool: 'generate_plan', phaseId: isRefine ? undefined : phaseId },
     );
   };
 

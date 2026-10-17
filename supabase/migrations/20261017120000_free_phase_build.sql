@@ -11,7 +11,9 @@
 --     program and starting a new one does not hand out a second build
 --   * up to 3 tries on that same phase while it still has no saved routines,
 --     so a dropped stream or a build the user did not like is not the end of
---     the taste. Once routines are saved to the phase, it is spent.
+--     the taste. A try is counted when it is claimed, before generation runs,
+--     so a failed build spends one too; that is what the spare 2 are for.
+--     Once routines are saved to the phase, it is spent.
 --
 -- Additive. Apply to live via Supabase MCP apply_migration, then
 -- `notify pgrst, 'reload schema'`.
