@@ -51,10 +51,16 @@ export interface Expectations {
   maxWorkouts: number;
   minExercisesPerWorkout: number;
   maxExercisesPerWorkout: number;
-  /** Fraction of emitted exercise names that must resolve to the catalog.
-   *  Onboarding drops unresolved names and falls back entirely above 30%
-   *  unresolved, so anything under 1.0 is already degraded output. */
+  /** Fraction of emitted exercise names that must be GROUNDED: a catalog row,
+   *  or an invention carrying a template (capped separately at a third of the
+   *  plan). Onboarding drops unresolved names and falls back entirely above
+   *  30% unresolved, so anything under 1.0 is already degraded output. The
+   *  pure catalog share is reported as metrics.catalogResolution. */
   minCatalogResolution: number;
+  /** 'required': the user asked for mobility or stretching, so the plan must
+   *  carry at least one timed invented exercise. Absent: any invention is
+   *  reported as a warning, since nothing asked for it. */
+  mobility?: 'required';
 }
 
 export type EvalCase =
@@ -208,6 +214,16 @@ const COACH_CASES: EvalCase[] = [
       userContext: { ...HISTORY_CONTEXT, training_inactive: true, sessions_last_28_days: 0 },
     },
     expect: { daysPerWeek: 3, minWorkouts: 2, maxWorkouts: 3, minExercisesPerWorkout: 3, maxExercisesPerWorkout: 8, minCatalogResolution: 0.8 },
+  },
+  {
+    // The catalog has no stretches, so this can only pass through NEW lines.
+    id: 'coach-mobility-3d',
+    variant: 'coach',
+    intake: {
+      goal: 'build muscle, and loosen up my stiff hips and tight shoulders from sitting at a desk all day',
+      days: 3, sessionLength: '60 min', level: 'intermediate', userContext: HISTORY_CONTEXT,
+    },
+    expect: { daysPerWeek: 3, minWorkouts: 2, maxWorkouts: 3, minExercisesPerWorkout: 4, maxExercisesPerWorkout: 10, minCatalogResolution: 0.8, mobility: 'required' },
   },
 ];
 
