@@ -39,6 +39,7 @@ as $$
 declare
   v_uid  text;
   v_row  public.free_phase_builds%rowtype;
+  v_had  boolean;
 begin
   v_uid := current_clerk_user_id();
   if v_uid is null or p_phase_id is null then
@@ -65,19 +66,22 @@ begin
   perform pg_advisory_xact_lock(hashtext('free_phase_build:' || v_uid));
 
   select * into v_row from public.free_phase_builds where user_id = v_uid;
+  v_had := found;
 
-  if not found then
+  -- Checked before the first claim too: a phase built while on a trial or Pro
+  -- already has its split, so a user who then drops to free gets no rebuild.
+  if exists (select 1 from public.routines where program_phase_id = p_phase_id) then
+    allowed := false; reason := 'used';
+    return next; return;
+  end if;
+
+  if not v_had then
     insert into public.free_phase_builds(user_id, phase_id) values (v_uid, p_phase_id);
     allowed := true; reason := 'claimed';
     return next; return;
   end if;
 
   if v_row.phase_id <> p_phase_id then
-    allowed := false; reason := 'used';
-    return next; return;
-  end if;
-
-  if exists (select 1 from public.routines where program_phase_id = p_phase_id) then
     allowed := false; reason := 'used';
     return next; return;
   end if;
