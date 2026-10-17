@@ -6,22 +6,28 @@
  *
  *   npx tsx scripts/drona-facts/steering-behaviours.mts
  *
- * Pace and calories (trusted trend: 8 weigh-ins over 21 days; 80 kg, goal 76):
- *   W1  needs -0.80 kg/wk (exactly 1%), arrives exactly 2 weeks late: on pace.
- *       Maintenance 2500, pace -0.8 -> 1620 -> 1600; target 1850 is 250 away: calories off
- *   W2  needs -0.81: off pace (unsafe). Calories 250 away again: calories_off (2 weeks)
- *   W3  arrives 15 days late: off pace again -> off_pace. Target 1849, 249 away: not off
- *   W4  the date has passed: off pace. No kcal target: calories not judged
- *   W5  no date: pace not judged; calories at the default pace (-0.5% = -0.4):
- *       2060 -> 2050 = the target
- * Finding maintenance (goal 76):
- *   W6  13 whole days: missing whole days (1 more)
- *   W7  weigh-ins over 20 days: missing weigh-ins -> finding_maintenance (2 weeks)
+ * Pace (trusted trend: 8 weigh-ins over 21 days; 80 kg, goal 76):
+ *   W1  needs -0.80 kg/wk (exactly 1%), arrives exactly 2 weeks late: on pace
+ *   W2  needs -0.81: off pace (unsafe)
+ *   W3  arrives 15 days late: off pace again -> off_pace
+ *   W4  the date has passed: off pace.  W5 no date: pace not judged
+ * Calories, rule_version 2 (the adaptive estimate, m_*: 2500 kcal, measured):
+ *   W1  date pace -0.8 -> 2500 - 880 = 1620 -> 1625; target 1725, exactly 100 away: off
+ *   W2  again -> calories_off, an act card
+ *   W3  resting floor 1690 -> 1700 beats 1625; target 1799 is 99 away: not off
+ *   W4  no kcal target: not judged.  W5 default pace -0.4 -> 2060 -> 2050 = the target
+ *   W6  13 days since the last target change: not judged (it settles 14)
+ *   W7  last weigh-in 11 days before the window ends: stale, not judged
+ *   W8  the estimate is still the formula guess: not judged
+ * Finding maintenance, rule_version 2 (goal 76; asks the first week):
+ *   W6  13 whole days: missing whole days (1 more) -> finding_maintenance at once
+ *   W7  weigh-ins over 20 days and stale: missing weigh-ins and stale
  *   W8  7 weigh-ins: 1 more needed
- *   W9  the scale is untrusted this week: missing scale
+ *   W9  3 outliers to 2 kept weigh-ins: missing scale
  *   W10 0.4 kg from the goal: not judged
  *   W11 no weigh-in and 2 food days: not judged (not trying yet)
- *   W12 3 food days, weight from the profile (90): judged, missing
+ *   W12 3 food days, weight from the profile (90), one outlier alone: judged,
+ *       missing weigh-ins, stale, whole days, and NOT scale
  * Training days (3 sessions every week, so 3.0 a week over 8):
  *   W10 6 of 8 weeks, 1 steady day: trains any day. Planned 4 = 1 above: too big
  *   W11 5 of 8 weeks: none of these judged
@@ -70,21 +76,25 @@ await db.rpc('delete_user_data', { p_user_id: UID });
 must(await db.from('user_profiles').insert({ clerk_user_id: UID, timezone: 'UTC', weight_kg: 90 }), 'profile');
 
 const trend = { g_readings: 8, g_span_days: 21, g_goal_kg: 76, g_now_kg: 80, g_kg_to_go: -4 };
-const whole = (food: number, under: number) => ({ e_food_days: food, e_food_days_under_half: under });
 const T = '2026-07-05';
+const m = (i: number, o: Record<string, unknown> = {}) => ({
+  m_window_to: addDays(W[i], 6), m_last_weigh_in: addDays(W[i], 6), m_trend_kg: 80, m_readings_28: 8, m_span_days: 21,
+  m_whole_days_28: 14, m_outliers_28: 0, m_data_weight: 1, m_estimate_kcal: 2500, m_source: 'measured', m_data_weeks: 4,
+  m_bmr_kcal: 1500, ...o,
+});
 const rows: Record<string, unknown>[] = [
-  { week_start: W[1], ...trend, g_target_date: T, g_weeks_left: 5, g_needed_kg_per_week: -0.80, g_eta_date: addDays(T, 14), ...whole(16, 2), e_maint_kcal_full: 2500, p_kcal_target: 1850 },
-  { week_start: W[2], ...trend, g_target_date: T, g_weeks_left: 5, g_needed_kg_per_week: -0.81, g_eta_date: addDays(T, 14), ...whole(16, 2), e_maint_kcal_full: 2500, p_kcal_target: 1850 },
-  { week_start: W[3], ...trend, g_target_date: T, g_weeks_left: 5, g_needed_kg_per_week: -0.80, g_eta_date: addDays(T, 15), ...whole(16, 2), e_maint_kcal_full: 2500, p_kcal_target: 1849 },
-  { week_start: W[4], ...trend, g_target_date: T, g_weeks_left: 0, g_needed_kg_per_week: null, g_eta_date: addDays(T, 40), ...whole(16, 2), e_maint_kcal_full: 2500, p_kcal_target: null },
-  { week_start: W[5], ...trend, ...whole(16, 2), e_maint_kcal_full: 2500, p_kcal_target: 2050 },
-  { week_start: W[6], ...trend, ...whole(15, 2) },
-  { week_start: W[7], ...trend, g_span_days: 20, ...whole(16, 2) },
-  { week_start: W[8], ...trend, g_readings: 7, ...whole(16, 2) },
-  { week_start: W[9], ...trend, ...whole(16, 2) },
-  { week_start: W[10], ...trend, g_now_kg: 76.4, g_kg_to_go: -0.4, t_weeks_trained_8w: 6, t_weekday_weeks_8w: { 1: 6, 2: 5, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0 }, t_planned_sessions: 4 },
-  { week_start: W[11], g_readings: 0, g_goal_kg: 76, ...whole(2, 0), t_weeks_trained_8w: 5, t_weekday_weeks_8w: { 1: 5 }, c_card_id: randomUUID(), c_topic: 'weigh_in' },
-  { week_start: W[12], g_readings: 0, g_goal_kg: 76, ...whole(3, 0), t_weeks_trained_8w: 6, t_weekday_weeks_8w: { 1: 6, 2: 0, 3: 6, 4: 0, 5: 6, 6: 0, 7: 0 }, t_planned_sessions: 3, c_card_id: randomUUID(), c_topic: 'due_session' },
+  { week_start: W[1], ...trend, g_target_date: T, g_weeks_left: 5, g_needed_kg_per_week: -0.80, g_eta_date: addDays(T, 14), ...m(1), p_kcal_target: 1725 },
+  { week_start: W[2], ...trend, g_target_date: T, g_weeks_left: 5, g_needed_kg_per_week: -0.81, g_eta_date: addDays(T, 14), ...m(2), p_kcal_target: 1725 },
+  { week_start: W[3], ...trend, g_target_date: T, g_weeks_left: 5, g_needed_kg_per_week: -0.80, g_eta_date: addDays(T, 15), ...m(3, { m_bmr_kcal: 1690 }), p_kcal_target: 1799 },
+  { week_start: W[4], ...trend, g_target_date: T, g_weeks_left: 0, g_needed_kg_per_week: null, g_eta_date: addDays(T, 40), ...m(4), p_kcal_target: null },
+  { week_start: W[5], ...trend, ...m(5), p_kcal_target: 2050 },
+  { week_start: W[6], ...trend, ...m(6, { m_whole_days_28: 13, m_data_weight: 0.93 }), p_kcal_target: 2500, p_days_since_target_change: 13 },
+  { week_start: W[7], ...trend, ...m(7, { m_span_days: 20, m_data_weight: 0.95, m_last_weigh_in: addDays(W[7], -5) }), p_kcal_target: 2500 },
+  { week_start: W[8], ...trend, ...m(8, { m_readings_28: 7, m_data_weight: 0.88, m_source: 'guess', m_data_weeks: 0 }), p_kcal_target: 2500 },
+  { week_start: W[9], ...trend, ...m(9, { m_readings_28: 2, m_outliers_28: 3, m_data_weight: 0 }) },
+  { week_start: W[10], ...trend, ...m(10, { m_trend_kg: 76.4 }), g_now_kg: 76.4, g_kg_to_go: -0.4, t_weeks_trained_8w: 6, t_weekday_weeks_8w: { 1: 6, 2: 5, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0 }, t_planned_sessions: 4 },
+  { week_start: W[11], g_goal_kg: 76, ...m(11, { m_trend_kg: null, m_readings_28: 0, m_span_days: null, m_last_weigh_in: null, m_whole_days_28: 0, m_data_weight: 0 }), e_food_days: 2, t_weeks_trained_8w: 5, t_weekday_weeks_8w: { 1: 5 }, c_card_id: randomUUID(), c_topic: 'weigh_in' },
+  { week_start: W[12], g_goal_kg: 76, ...m(12, { m_trend_kg: null, m_readings_28: 0, m_outliers_28: 1, m_span_days: null, m_last_weigh_in: null, m_whole_days_28: 0, m_data_weight: 0 }), e_food_days: 3, t_weeks_trained_8w: 6, t_weekday_weeks_8w: { 1: 6, 2: 0, 3: 6, 4: 0, 5: 6, 6: 0, 7: 0 }, t_planned_sessions: 3, c_card_id: randomUUID(), c_topic: 'due_session' },
   { week_start: W[13], t_weeks_trained_8w: 6, t_weekday_weeks_8w: { 1: 6, 2: 6 }, t_planned_sessions: 4 },
   { week_start: W[14], t_weeks_trained_8w: 6, t_weekday_weeks_8w: { 1: 6, 2: 6 }, t_planned_sessions: 4 },
   { week_start: W[15] },
@@ -146,21 +156,25 @@ ok('W2 needs 0.81: unsafe pace', s('off_pace', 2)?.fired === true && s('off_pace
 ok('W3 15 days late, second week: off_pace', s('off_pace', 3)?.detail?.reason === 'late' && b('off_pace', 3)?.card_kind === 'talk');
 ok('W4 the date passed', s('off_pace', 4)?.detail?.reason === 'date_passed');
 ok('W5 no date: pace not judged', s('off_pace', 5) === undefined);
-ok('W1 maintenance 2500, pace -0.8 -> suggests 1600, target 250 away: calories off',
-  s('calories_off', 1)?.fired === true && s('calories_off', 1)?.detail?.suggested_kcal === 1600 && s('calories_off', 1)?.detail?.gap_kcal === 250, s('calories_off', 1)?.detail);
-ok('W2 pace -0.81 kept at -0.8, still 1600, second week: calories_off', s('calories_off', 2)?.detail?.suggested_kcal === 1600 && b('calories_off', 2)?.card_kind === 'talk', s('calories_off', 2)?.detail);
-ok('W3 249 away: not off', s('calories_off', 3)?.fired === false);
+ok('W1 estimate 2500, pace -0.8 -> 1625; target exactly 100 away: calories off',
+  s('calories_off', 1)?.fired === true && s('calories_off', 1)?.detail?.suggested_kcal === 1625 && s('calories_off', 1)?.detail?.gap_kcal === 100, s('calories_off', 1)?.detail);
+ok('W2 again: calories_off, an act card', b('calories_off', 2)?.card_kind === 'act' && b('calories_off', 2)?.rule_version === 2);
+ok('W3 floor 1690 -> 1700; target 99 away: not off', s('calories_off', 3)?.fired === false && s('calories_off', 3)?.detail?.suggested_kcal === 1700, s('calories_off', 3)?.detail);
 ok('W4 no kcal target: calories not judged, no maintenance_found', s('calories_off', 4) === undefined && b('maintenance_found', 4) === undefined);
 ok('W5 default pace -0.4 -> 2060 -> 2050 = the target', s('calories_off', 5)?.fired === false && s('calories_off', 5)?.detail?.suggested_kcal === 2050 && s('calories_off', 5)?.detail?.pace_from === 'default', s('calories_off', 5)?.detail);
+ok('W6 changed 13 days ago, W7 stale, W8 still a guess: calories not judged', [6, 7, 8].every((i) => s('calories_off', i) === undefined));
 ok('W1-W3, W5 maintenance known: maintenance_found (steer), never unknown',
   [1, 2, 3, 5].every((i) => b('maintenance_found', i)?.card_kind === 'steer') && [1, 2, 3, 4, 5].every((i) => s('maintenance_unknown', i)?.fired === false));
-ok('W6 13 whole days: 1 more whole day needed', JSON.stringify(s('maintenance_unknown', 6)?.detail?.missing) === '["whole_days"]' && s('maintenance_unknown', 6)?.detail?.whole_days_needed === 1, s('maintenance_unknown', 6)?.detail);
-ok('W7 weigh-ins over 20 days, second week: finding_maintenance (request)',
-  JSON.stringify(s('maintenance_unknown', 7)?.detail?.missing) === '["weigh_ins"]' && b('finding_maintenance', 7)?.card_kind === 'request', s('maintenance_unknown', 7)?.detail);
+ok('W6 13 whole days: 1 more, and finding_maintenance asks at once', JSON.stringify(s('maintenance_unknown', 6)?.detail?.missing) === '["whole_days"]'
+  && s('maintenance_unknown', 6)?.detail?.whole_days_needed === 1 && b('finding_maintenance', 6)?.card_kind === 'request' && b('finding_maintenance', 6)?.rule_version === 2, s('maintenance_unknown', 6)?.detail);
+ok('W7 weigh-ins over 20 days, and stale', JSON.stringify(s('maintenance_unknown', 7)?.detail?.missing) === '["weigh_ins","stale"]', s('maintenance_unknown', 7)?.detail);
 ok('W8 7 weigh-ins: 1 more needed', s('maintenance_unknown', 8)?.detail?.weigh_ins_needed === 1);
-ok('W9 untrusted scale: missing scale', JSON.stringify(s('maintenance_unknown', 9)?.detail?.missing) === '["scale"]', s('maintenance_unknown', 9)?.detail);
+ok('W9 3 outliers to 2 kept: missing scale', (s('maintenance_unknown', 9)?.detail?.missing ?? []).includes('scale'), s('maintenance_unknown', 9)?.detail);
 ok('W10 0.4 kg from the goal, W11 not trying yet: not judged', s('maintenance_unknown', 10) === undefined && s('maintenance_unknown', 11) === undefined);
-ok('W12 3 food days, profile weight 90: judged and missing', s('maintenance_unknown', 12)?.fired === true && Number(s('maintenance_unknown', 12)?.detail?.weight_kg) === 90);
+ok('W12 3 food days, profile weight 90, one outlier alone is not a broken scale', s('maintenance_unknown', 12)?.fired === true
+  && Number(s('maintenance_unknown', 12)?.detail?.weight_kg) === 90
+  && JSON.stringify(s('maintenance_unknown', 12)?.detail?.missing) === '["weigh_ins","stale","whole_days"]', s('maintenance_unknown', 12)?.detail);
+ok('the two changed signals carry rule_version 2', ['maintenance_unknown', 'calories_off'].every((x) => sigs.filter((r) => r.signal === x).every((r) => r.rule_version === 2)));
 
 ok('W10 3.0 a week, 1 steady day: trains_any_day (steer)', s('trains_any_day', 10)?.fired === true && b('trains_any_day', 10)?.card_kind === 'steer');
 ok('W10 planned 4 vs 3.0: too big', s('plan_too_big', 10)?.fired === true);
