@@ -282,9 +282,15 @@ export function ParsedMealCard({
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mounted = useRef(true);
-  useEffect(() => () => {
-    mounted.current = false;
-    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+  useEffect(() => {
+    // Set on every (re)run, not only at first render: React may run this
+    // effect's cleanup and then the effect again (fast refresh, strict
+    // mode), and a ref left false by that cleanup hid the label for good.
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    };
   }, []);
   useEffect(() => { setWordsOpen(false); setCopied(false); }, [rawText]);
   const wordsCut = !wordsOpen && wordsLines > 2;
@@ -295,7 +301,7 @@ export function ParsedMealCard({
     haptics.tick();
     setCopied(true);
     if (copiedTimer.current) clearTimeout(copiedTimer.current);
-    copiedTimer.current = setTimeout(() => setCopied(false), 1500);
+    copiedTimer.current = setTimeout(() => setCopied(false), 1800);
   };
   const isCollapsed = collapsible && !!minimized;
 
@@ -513,7 +519,7 @@ export function ParsedMealCard({
                 onPress={onWordsPress}
                 style={({ pressed }) => [s.youBubble, pressed && s.itemPressed]}
                 accessibilityRole="button"
-                accessibilityLabel={copied ? 'Copied' : `You said: ${rawText}`}
+                accessibilityLabel={copied ? 'Copied to clipboard' : `You said: ${rawText}`}
                 accessibilityHint={wordsCut ? 'Shows your whole message' : 'Copies your message'}
               >
                 <Text style={s.youTxt} numberOfLines={wordsOpen ? undefined : 2}>{rawText}</Text>
@@ -525,12 +531,14 @@ export function ParsedMealCard({
                 >
                   {rawText}
                 </Text>
-                {/* A clipboard on the bubble's corner says what just happened
-                    (a tick would only say "done"), next to what was copied,
-                    without moving the text. */}
+                {/* Says it in words, on the bubble it is about, without
+                    moving the text. */}
+                {/* A plain view, shown and hidden. Both a layout-animation
+                    enter and a shared-value fade left it invisible inside the
+                    popover's frame on device. */}
                 {copied && (
                   <View style={s.youCopied} pointerEvents="none">
-                    <Feather name="clipboard" size={10} color={C.background} />
+                    <Text style={s.youCopiedTxt}>Copied to clipboard</Text>
                   </View>
                 )}
               </Pressable>
@@ -976,11 +984,13 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     youTxt: { fontSize: FontSize.sm, lineHeight: 18, color: C.foreground },
     // Invisible twin of the text, same width as the bubble's text, unclamped.
     youMeasure: { position: 'absolute', top: 6, left: 10, right: 10, opacity: 0 },
+    // Pinned to the bubble's bottom edge, hanging into the gap below it.
     youCopied: {
-      position: 'absolute', right: -6, bottom: -6,
-      width: 18, height: 18, borderRadius: 9,
-      backgroundColor: C.accentText, alignItems: 'center', justifyContent: 'center',
+      position: 'absolute', right: 8, bottom: -9,
+      paddingVertical: 2, paddingHorizontal: 8, borderRadius: Radius.full,
+      backgroundColor: C.accentText,
     },
+    youCopiedTxt: { fontSize: FontSize.xs, color: C.background, fontWeight: FontWeight.semibold },
     // The header icons sit level with the bubble's first line (its 6pt top
     // padding plus half the line), not below it, so they cost no height.
     rawRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm },
