@@ -260,11 +260,12 @@ async function generate(
   // week is settled and the audit keeps the reason; a model failure writes
   // nothing and the rules below get their turn. Never in a week the calorie
   // check-in spoke: two calorie systems must not talk at once.
-  const { data: checkinRow } = await retried(() =>
+  // A failed lookup counts as "it spoke": better no B1 than two calorie cards.
+  const { data: checkinRow, error: checkinErr } = await retried(() =>
     db.from("drona_cards").select("id").eq("user_id", userId).eq("week_start", weekStart)
       .eq("slot", "calories").maybeSingle()
   );
-  if (!newUser && !checkinRow && !onCooldown("calories", facts as DronaFacts)) {
+  if (!newUser && !checkinErr && !checkinRow && !onCooldown("calories", facts as DronaFacts)) {
     const row = await caloriesFirst(db, userId, localDay, weekStart, facts as DronaFacts, source);
     if (row) {
       const { error: insErr } = await retried(() => db.from("drona_cards").insert(row));

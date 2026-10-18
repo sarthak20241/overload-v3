@@ -23,7 +23,7 @@
 --   exercise_skipped     skipped in half or more of 4+ routine sessions, or in the phase 4+
 --                        trained weeks and never done while half the phase's others were
 --   topic_not_landing    a card topic with 2+ cards, none followed, 2+ not followed, the last
---                        one within 4 weeks
+--                        one within 3 weeks (21 days)
 --   change_backfired     a change standing alone (1 other the same day at most, none after)
 --                        with history before, whose 14 days after closed this week: sessions or
 --                        food days fell under 3 in 4 of before

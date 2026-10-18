@@ -96,7 +96,9 @@ const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is
 /**
  * The calorie target a calories_off week leads to, or null when no change is
  * due. Moves at most MAX_STEP_KCAL toward the suggestion, on a 25 grid, and
- * never under the floor rounded up to the grid.
+ * never under the floor rounded up to the grid. The floor can only stop a
+ * cut, never turn it into a raise: a live target already under the floor with
+ * an even lower suggestion is left alone.
  */
 export function nextTarget(live: number | null, suggested: number | null, floor: number | null): number | null {
   if (live == null || suggested == null) return null;
@@ -105,7 +107,8 @@ export function nextTarget(live: number | null, suggested: number | null, floor:
   const step = Math.max(-MAX_STEP_KCAL, Math.min(MAX_STEP_KCAL, gap));
   let to = Math.round((live + step) / GRID) * GRID;
   if (floor != null) to = Math.max(to, Math.ceil(floor / GRID) * GRID);
-  return to === live ? null : to;
+  if (to === live || Math.sign(to - live) !== Math.sign(gap)) return null;
+  return to;
 }
 
 /**
@@ -172,7 +175,13 @@ function caloriesCard(f: EnergyFacts, d: Record<string, unknown>, live: number, 
   if (suggested != null && goal != null && pace != null) {
     parts.push(`About ${suggested} kcal would move you toward ${goal} kg at ${Math.abs(pace).toFixed(2)} kg a week.`);
   }
-  if (suggested != null && to !== suggested) parts.push(`${to} is a careful first step.`);
+  // Say why the card's number is not the suggestion: the step cap, or the floor.
+  const floorGrid = n(d.floor_kcal) != null ? Math.ceil(n(d.floor_kcal)! / GRID) * GRID : null;
+  if (suggested != null && to > suggested && floorGrid != null && to === floorGrid) {
+    parts.push(`${to} is as low as this goes: your body needs about that at rest.`);
+  } else if (suggested != null && to !== suggested) {
+    parts.push(`${to} is a careful first step.`);
+  }
   const phases = phaseMoves(f, n(f.estimate_kcal) ?? est, n(d.floor_kcal));
   if (phases) {
     const named = phases.moves.slice(0, 2).map((m) => `${m.name} ${m.from_kcal} to ${m.to_kcal}`).join(', ');
@@ -220,7 +229,9 @@ function weighInCard(d: Record<string, unknown>, missing: string[]): EnergyCard 
   return {
     kind: 'request',
     topic: 'weigh_in',
-    title: missing.includes('weigh_ins') ? 'Three mornings on the scale' : 'Step on the scale this week',
+    // The title from the same branch as the body.
+    title: missing.includes('scale') ? 'Same scale, same mornings'
+      : missing.includes('weigh_ins') ? 'Three mornings on the scale' : 'Step on the scale this week',
     body,
     evidence: [
       { label: 'Weigh-ins in 4 weeks', value: String(readings) },

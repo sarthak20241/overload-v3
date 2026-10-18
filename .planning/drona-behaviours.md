@@ -17,6 +17,13 @@ Stored in `drona_behaviours`, one row per person, finished week and behaviour:
 non-meta row by priority. If a meta row exists that week, the pick is said as a
 `notice`. `mutes` gathers every row's mutes for the week.
 
+Notes for the cards layer (PR #253 review): a week whose only row is a meta
+behaviour has no pick, which means "say nothing", not an error. `mutes` is
+only recorded: the calorie check-in honours `topic:<x>` mutes, but nothing yet
+filters `weight_wrong_way` or `protein_short` by the signal mutes; the cards
+layer must. Behaviours are skipped (logged as `behaviours: skipped`) when the
+signals rebuild failed, so `on_track` never stands on missing signals.
+
 Rebuilt daily by the facts job, after signals (`drona_rebuild_behaviours`, its
 own subtransaction, errors logged as `behaviours` in `drona_facts_runs`).
 Migration `20261016133352_drona_behaviours`. Nothing reads them yet; the cards

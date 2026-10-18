@@ -179,3 +179,24 @@ Deno.test("check-in cooldown: a data ask waits two weeks, four after a no", () =
   assertEquals(cd([{ week_start: "2026-10-12", topic: "weigh_in", status: "applied" }])("log_food"), false);
 });
 
+// ── PR #253 review fixes (2026-10-18) ──
+Deno.test("the floor never turns a cut into a raise", () => {
+  // live 1500 already under a 1686 floor, the suggestion lower still: leave it
+  assertEquals(nextTarget(1500, 1300, 1686), null);
+  // a raise toward the suggestion is still a raise
+  assertEquals(nextTarget(1500, 1800, 1686), 1700);
+});
+
+Deno.test("a floor-held card says it is the floor, not a first step", () => {
+  const card = decideEnergyCard(facts([caloriesOff({ suggested_kcal: 1500, floor_kcal: 1686 })]), never)!;
+  assertEquals(card.payload.to_kcal, 1700);
+  assertEquals(card.body.includes("1700 is as low as this goes"), true, card.body);
+  assertEquals(card.body.includes("first step"), false, card.body);
+});
+
+Deno.test("an untrusted scale gets the matching title", () => {
+  const card = decideEnergyCard(facts([finding(["weigh_ins", "scale"])]), never)!;
+  assertEquals(card.title, "Same scale, same mornings");
+  assertEquals(card.body.startsWith("A few recent weigh-ins jumped"), true);
+});
+

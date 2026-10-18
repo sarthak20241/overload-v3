@@ -161,6 +161,25 @@ ok('9 D: Lift X (100 then 105 then 100) is stuck, Lift Y is not', s2('lift_stuck
 ok('10 C: goal weights exactly 2 kg apart do not fire', s2('goals_disagree', C)?.fired === false);
 ok('10 D: 2.1 kg apart fires', s2('goals_disagree', D)?.fired === true);
 
+// ── Null paths (PR #253 review, 2026-10-18) ────────────────────────────────
+//   E 7 Sep: a protein target but no calorie target, 3 days at half the protein:
+//     the snack-week test cannot be judged, which must not drop the week
+//   F 14 Sep: planned 4, sessions unknown: training_dropped is not fired, and
+//     one empty count must not abort the whole rebuild
+const E = '2026-09-07', F = '2026-09-14';
+must(await db.from('drona_week_facts').insert([
+  { user_id: UID, week_start: E, t_planned_sessions: 4, t_sessions: 1, f_days_logged: 3, f_days_under_half_target: null, f_target_kcal: null },
+  { user_id: UID, week_start: F, t_planned_sessions: 4, t_sessions: null },
+]), 'null weeks');
+must(await db.from('drona_day_facts').insert(['2026-09-07', '2026-09-08', '2026-09-09'].map((day) =>
+  ({ user_id: UID, day, entries: 2, protein_g: 50, target_protein_g: 100 }))), 'null days');
+const nullRun = await db.rpc('drona_rebuild_signals', { p_user_id: UID, p_from: E, p_to: F });
+ok('an unknown session count does not abort the rebuild', !nullRun.error, nullRun.error?.message);
+const rows3 = must(await db.from('drona_signals').select('*').eq('user_id', UID), 'signals 3') as any[];
+const s3 = (signal: string, week: string) => rows3.find((r) => r.signal === signal && r.week_start === week);
+ok('7 E: no calorie target is not a snack week: protein judged, and short', s3('protein_short', E)?.fired === true, s3('protein_short', E)?.detail);
+ok('8 F: sessions unknown: judged, not fired', s3('training_dropped', F)?.fired === false, s3('training_dropped', F));
+
 await db.rpc('delete_user_data', { p_user_id: UID });
 const left = must(await db.from('drona_signals').select('signal').eq('user_id', UID), 'cleanup') as any[];
 ok('delete_user_data removed every signal row', left.length === 0, left.length);

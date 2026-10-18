@@ -32,7 +32,7 @@ Migration `20261016021746_drona_signals_2`.
 | `weight_wrong_way` | 4 weeks of weigh-ins in a row, no untrusted scale, the goal (program target, else profile) >= 0.5 kg away | the last 2 weeks' average moved >= 0.3 kg away from the goal |
 | `protein_short` | >= 3 whole days logged (not a snack week) | most of them under 70% of the protein target |
 | `training_dropped` | planned sessions this week and last, >= 4 sessions in the 4 weeks before | under half the planned sessions both weeks |
-| `lift_stuck` | any lift trained 3 finished weeks running, custom lifts included | its best estimated max is no higher than 3 weeks back; a pattern is the same lift again |
+| `lift_stuck` | any lift trained 3 finished weeks running, custom lifts included | its best estimated max this week is no higher than at the start of those 3 weeks (2 weeks earlier); a pattern is the same lift again |
 | `goals_disagree` | a program with a goal | profile and program goal differ, or goal weights more than 2 kg apart |
 
 Owner's reasons: 70% because there are few users yet; every lift counts because
