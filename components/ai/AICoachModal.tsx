@@ -59,6 +59,7 @@ import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
 import { withChangeSource } from '@/lib/planChangeSource';
 import { ilikeExact, parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
 import { writeWithTargetFallback } from '@/lib/routineTargets';
+import { findCatalogExerciseByName } from '@/lib/exerciseResolve';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 import {
   describeCoachEditOp,
@@ -3911,6 +3912,11 @@ export function AICoachModal({
         created_at: new Date().toISOString(),
         routine_exercises: workout.exercises.map((ex, i) => {
           const def = planExerciseInsert(ex);
+          // A library exercise: how it is measured comes from the device's
+          // catalog, as the signed-in branch reads it from the row. Without it
+          // a guest's "Plank 45s" would store a time no screen shows.
+          const lib = ex.new_exercise ? null : findCatalogExerciseByName(ex.name, null);
+          const metricType = def.metric_type ?? lib?.metric_type;
           return {
             id: `gre-${Date.now()}-${i}`,
             exercise_id: `gex-${Date.now()}-${i}`,
@@ -3920,13 +3926,13 @@ export function AICoachModal({
             // Parity with the authenticated branch — guest users keep
             // their cues too. Otherwise the routine renders without
             // notes the moment they save it.
-            ...planRepsAndNote(ex.reps, ex.note, { metricType: def.metric_type }),
+            ...planRepsAndNote(ex.reps, ex.note, { metricType }),
             exercises: {
               id: `gex-${Date.now()}-${i}`,
               name: ex.name,
-              muscle_group: def.muscle_group,
-              category: def.category,
-              ...(def.metric_type ? { metric_type: def.metric_type } : {}),
+              muscle_group: lib?.muscle_group ?? def.muscle_group,
+              category: lib?.category ?? def.category,
+              ...(metricType ? { metric_type: metricType } : {}),
             },
           };
         }),

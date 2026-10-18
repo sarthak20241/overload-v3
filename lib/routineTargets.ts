@@ -2,7 +2,7 @@
  * Time and distance targets for a routine slot.
  *
  * routine_exercises.target_duration_seconds / target_distance_m (migration
- * 20261016140000). A rep-based slot leaves both NULL. A slot whose exercise is
+ * 20261018120000). A rep-based slot leaves both NULL. A slot whose exercise is
  * measured by time or distance (exercises.metric_type) can carry one, and the
  * workout screen prefills the logger from it.
  *
