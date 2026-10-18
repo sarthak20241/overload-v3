@@ -415,8 +415,13 @@ export default function NutritionScreen() {
     }
   }, [flow.status, pop]);
   // Top of the food box on screen, so the popover and its blur stop above it.
+  // The bar's bottom padding lives here once: the bar's style uses it, and so
+  // does the popover's edge, so the two cannot drift apart. Computed rather
+  // than measured because the bar rides the keyboard by `bottom`, which
+  // fires no onLayout on the row inside it.
+  const barPadBottom = kbHeight > 0 ? Spacing.sm : insets.bottom + 12;
   const [inputRowH, setInputRowH] = useState(52);
-  const popBottomEdge = winH - kbHeight - (kbHeight > 0 ? Spacing.sm : insets.bottom + 12) - inputRowH;
+  const popBottomEdge = winH - kbHeight - barPadBottom - inputRowH;
   // Parse tier (Quick default / Thorough opt-in / Precise for Pro). A ref
   // mirrors the state so onSend reads the CURRENT choice, matching the flowRef
   // idiom above.
@@ -1691,7 +1696,7 @@ export default function NutritionScreen() {
           kbHeight (absolute bar can't rely on window resize under edge-to-edge). */}
       <View style={[
         s.inputWrap,
-        { bottom: kbHeight, paddingBottom: kbHeight > 0 ? Spacing.sm : insets.bottom + 12 },
+        { bottom: kbHeight, paddingBottom: barPadBottom },
       ]}>
         {flow.status === 'create' && (
           <View style={{ marginBottom: Spacing.sm }}>
@@ -1844,7 +1849,11 @@ export default function NutritionScreen() {
       />
 
       {/* The review card, bigger. Declared BEFORE the line editor and save
-          sheets: portal order is paint order, so those open on top of it. */}
+          sheets: portal order is paint order, so those open on top of it.
+          While it is up, the inline card stays mounted (hidden) as the spot
+          to return to, so two ParsedMealCards exist at once. Keep the card
+          free of side effects (analytics, writes) for that reason: those
+          belong in the callbacks here, which run once. */}
       <MealCardPopover
         visible={!!pop}
         open={popOpen}
