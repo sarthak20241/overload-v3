@@ -47,6 +47,12 @@ export interface PickCard {
   /** talk: the opening line sent for the person when they tap "Talk it through". */
   payload: { action?: string; prompt?: string };
   signals: string[];
+  /**
+   * The body without its ask: only what Drona saw. A hushed week (not hearing
+   * Drona) says this as a notice, so no question is left without a button.
+   * Never stored: the worker writes the card's fields one by one.
+   */
+  quiet?: string;
 }
 
 /** The calorie check-in owns these (slot 'calories', _shared/dronaEnergy.ts). */
@@ -100,6 +106,7 @@ function scaleUntrusted(d: Record<string, unknown>): Words {
     title: 'Same scale, same mornings',
     body: `${swing != null ? `Your readings swing about ${kg(swing)} kg from one to the next. ` : ''}`
       + 'Weigh in after waking, on the same scale, and the trend gets honest.',
+    quiet: swing != null ? `Your readings swing about ${kg(swing)} kg from one to the next.` : undefined,
     evidence: swing != null ? [{ label: 'Typical swing', value: `${kg(swing)} kg` }] : [],
     payload: { action: 'log_weight' },
   };
@@ -115,6 +122,7 @@ function logsPartialDays(d: Record<string, unknown>): Words {
     title: 'Log whole days, even rough ones',
     body: `${numbers ? `Your logged days average ${thousands(Math.round(avg!))} kcal against a ${thousands(Math.round(target!))} target. ` : ''}`
       + 'Part days hide what you really eat.',
+    quiet: numbers ? `Your logged days average ${thousands(Math.round(avg!))} kcal against a ${thousands(Math.round(target!))} target.` : undefined,
     evidence: [
       ...(numbers ? [{ label: 'Average logged day', value: `${thousands(Math.round(avg!))} kcal` }] : []),
       ...(days != null ? [{ label: 'Days logged', value: String(days) }] : []),
@@ -145,6 +153,7 @@ function goalsUnclear(d: Record<string, unknown>): Words {
     kind: 'talk',
     title: 'Your goal and your program disagree',
     body: `Your profile says: ${profile}. Your program${name ? `, ${name},` : ''} says: ${program}. Tell me which one is right.`,
+    quiet: `Your profile says: ${profile}. Your program${name ? `, ${name},` : ''} says: ${program}.`,
     // Chips are big type made for numbers: the goal weights, when both are known.
     evidence: num(d.profile_goal_kg) != null && num(d.program_target_kg) != null
       ? [{ label: 'Profile goal', value: `${kg(num(d.profile_goal_kg)!)} kg` },
@@ -166,6 +175,7 @@ function driftingAway(d: Record<string, unknown>): Words {
     title: 'Two quiet weeks',
     body: `${done === 0 ? 'No sessions for two weeks.' : `${done} of ${planned} planned sessions in two weeks.`} `
       + 'That happens. Tell me what got in the way, and we will make the plan fit your week.',
+    quiet: `${done === 0 ? 'No sessions for two weeks.' : `${done} of ${planned} planned sessions in two weeks.`} That happens.`,
     evidence: [{ label: 'Sessions in 2 weeks', value: `${done} of ${planned}` }],
     payload: {
       action: 'talk',
@@ -183,6 +193,7 @@ function ownWay(d: Record<string, unknown>): Words {
     title: 'You train your own way',
     body: `Most days you pick your own session, not the one that is due.${left ? ` ${left} got left out.` : ''} `
       + 'Want a plan built around how you train?',
+    quiet: `Most days you pick your own session, not the one that is due.${left ? ` ${left} got left out.` : ''}`,
     evidence: [],
     payload: {
       action: 'talk',
@@ -191,41 +202,49 @@ function ownWay(d: Record<string, unknown>): Words {
   };
 }
 
-const STALL: Record<string, { kind: PickKind; title: (l: string) => string; body: (l: string) => string; why: string }> = {
+const STALL: Record<string, {
+  kind: PickKind; title: (l: string) => string; body: (l: string) => string; quiet: (l: string) => string; why: string;
+}> = {
   real_plateau: {
     kind: 'talk',
     title: (l) => `${l} has stopped moving`,
     body: (l) => `${l} has not gone up in three weeks, and you are training enough. Time to change the stimulus.`,
+    quiet: (l) => `${l} has not gone up in three weeks.`,
     why: 'a real plateau: I am training enough',
   },
   expected_on_cut: {
     kind: 'notice',
     title: () => 'Holding strength on a cut',
     body: (l) => `${l} is holding while you cut. On a cut, holding strength is a win.`,
+    quiet: (l) => `${l} is holding while you cut. On a cut, holding strength is a win.`,
     why: 'the cut',
   },
   recovery: {
     kind: 'talk',
     title: (l) => `${l} is stuck, and sleep is short`,
     body: (l) => `${l} has not gone up in three weeks, and your sleep has been short. Recovery is the likely cause.`,
+    quiet: (l) => `${l} has not gone up in three weeks, and your sleep has been short.`,
     why: 'short sleep',
   },
   under_fuelled: {
     kind: 'talk',
     title: (l) => `${l} is stuck, and protein is short`,
     body: (l) => `${l} has not gone up in three weeks, and protein has been short. Food is the first thing to fix.`,
+    quiet: (l) => `${l} has not gone up in three weeks, and protein has been short.`,
     why: 'too little protein',
   },
   cant_tell: {
     kind: 'request',
     title: (l) => `${l} is stuck`,
     body: (l) => `${l} has not gone up in three weeks. With part-day food logs I cannot tell why. Log whole days this week.`,
+    quiet: (l) => `${l} has not gone up in three weeks.`,
     why: 'not clear yet',
   },
   inconsistent_training: {
     kind: 'talk',
     title: (l) => `${l} is stuck`,
     body: (l) => `${l} has not gone up in three weeks, and sessions have been missed. Consistency first.`,
+    quiet: (l) => `${l} has not gone up in three weeks, and sessions have been missed.`,
     why: 'missed sessions',
   },
 };
@@ -242,6 +261,7 @@ function liftStall(d: Record<string, unknown>): Words {
     kind: s.kind,
     title: s.title(name),
     body: s.body(name),
+    quiet: s.quiet(name),
     evidence: from != null && now != null
       ? [{ label: 'Best max, 3 weeks ago', value: `${kg(from)} kg` }, { label: 'Best max now', value: `${kg(now)} kg` }]
       : [],
@@ -260,6 +280,7 @@ function planTooBig(d: Record<string, unknown>): Words {
     kind: 'talk',
     title: `The plan asks for ${planned}, you do about ${about}`,
     body: `Over the last 8 weeks you averaged ${kg(avg)} sessions a week. A ${about}-day plan you finish beats a ${planned}-day plan you half do.`,
+    quiet: `Over the last 8 weeks you averaged ${kg(avg)} sessions a week, against ${planned} planned.`,
     evidence: [{ label: 'Planned a week', value: String(planned) }, { label: 'Your average', value: kg(avg) }],
     payload: {
       action: 'talk',
@@ -286,6 +307,9 @@ function exerciseSkipped(d: Record<string, unknown>): Words {
     body: routine
       ? `You skipped ${name}${more} in ${skipped} of ${planned} sessions. Want something you will do instead?`
       : `${name}${more} is in your plan, and you have not done it this phase. Want something you will do instead?`,
+    quiet: routine
+      ? `You skipped ${name}${more} in ${skipped} of ${planned} sessions.`
+      : `${name}${more} is in your plan, and you have not done it this phase.`,
     evidence: routine ? [{ label: 'Sessions skipped', value: `${skipped} of ${planned}` }] : [],
     payload: {
       action: 'talk',
@@ -303,6 +327,7 @@ function topicNotLanding(d: Record<string, unknown>): Words {
   return {
     kind: 'talk',
     title: `I keep asking for ${w.asked}`,
+    quiet: `I asked for ${w.asked} ${times(cards)}, and ${w.none}. I will leave it for now.`,
     body: `I asked for ${w.asked} ${times(cards)}, and ${w.none}. I will leave it for now. `
       + 'If it does not fit your week, tell me, and we will find another way.',
     evidence: [{ label: 'Asked', value: String(cards) }],
@@ -351,16 +376,20 @@ export function mutedTopics(pf: PickFacts | null | undefined): Set<string> {
 
 /**
  * not_hearing_drona: two cards in a row went unanswered, so Drona backs off and
- * speaks in notices. decidePick does this for its own card; the worker passes
- * the P0 fallback's card through here too, so a hushed week never asks.
+ * speaks in notices. A card is said as a notice with its quiet body (only what
+ * Drona saw, no ask, since a notice has no button to answer with). A card
+ * with no quiet body (the P0 fallback's asks) says nothing that week.
+ * decidePick does this for its own card; the worker passes the P0 card here too.
  */
-export function hushed<C extends { kind: string; payload: object; signals: string[] }>(
+export function hushed<C extends { kind: string; body: string; payload: object; signals: string[]; quiet?: string }>(
   card: C,
   pf: PickFacts | null | undefined,
 ): C {
   const meta = (pf?.behaviours ?? []).some((r) => r?.meta === true);
   if (!meta || card.kind === 'notice' || card.kind === 'hold') return card;
-  return { ...card, kind: 'notice', payload: {}, signals: [...card.signals, 'behaviour:not_hearing_drona'] };
+  const signals = [...card.signals, 'behaviour:not_hearing_drona'];
+  if (!card.quiet) return { ...card, kind: 'hold', payload: {}, signals };
+  return { ...card, kind: 'notice', body: card.quiet, payload: {}, signals };
 }
 
 /**

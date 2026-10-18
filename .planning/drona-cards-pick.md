@@ -33,7 +33,10 @@ The order for the weekly slot. The first step that gives a card wins.
 has written 0 cards in the last 9 weeks. Its code stays; only the call goes.
 
 **Meta.** When `not_hearing_drona` is there (two cards in a row went unanswered),
-the pick is said as a notice: same words, no ask, one "Got it" button.
+the pick is said as a notice with one "Got it" button: only what Drona saw, with
+the ask cut off (a notice has no button to answer a question with). A card with
+no such quiet form (the P0 asks) says nothing that week. (Changed 2026-10-18 from
+"same words, no ask" after review: the words ended in questions.)
 
 ## The words
 
@@ -121,7 +124,7 @@ weeks, so they would see it every 2 weeks, or every 4 after "Skip".
 - `get_drona_pick_facts` live (migration `20261018114836_drona_pick_facts`).
   Service role only: anon is refused (42501). Same "rebuild first when today
   is not done" step as `get_drona_energy_facts`.
-- `_shared/dronaPick.ts` + `dronaPick.test.ts` (18 tests). Each skip rule was
+- `_shared/dronaPick.ts` + `dronaPick.test.ts` (19 tests). Each skip rule was
   broken on purpose and a test failed: check-in skip, steer skip, cooldown, the
   mute on what a card asks for, the meta notice, the priority order, the one-side
   goals detail, the "most skipped" choice, "twice", `hushed`.
@@ -183,4 +186,8 @@ restored exactly (facts md5 unchanged).
   `PICK_ASKS` in step with `WORDS` (every behaviour with words is checked).
   On the app path the pick read rarely rebuilds: the check-in read just before
   it has already done today's rebuild.
+- Fourth review: a hushed card kept its question ("Tell me which one is
+  right.") with no button to answer. Each card now carries a quiet body (what
+  Drona saw, no ask); hushed uses it, and a card without one says nothing. A
+  test checks every behaviour's hushed body for an ask.
 

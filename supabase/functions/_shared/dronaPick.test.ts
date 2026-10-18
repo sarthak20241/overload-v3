@@ -115,17 +115,21 @@ Deno.test("not hearing Drona: the pick is said as a notice, no ask", () => {
   const meta = row("not_hearing_drona", 12, "notice", {}, { meta: true });
   const card = decidePick(pf(meta, goals), facts())!;
   assertEquals([card.topic, card.kind, card.payload], ["goals_unclear", "notice", {}]);
-  assertEquals(card.body.startsWith("Your profile says"), true);
+  // Only what Drona saw: a notice has no button, so it asks nothing.
+  assertEquals(card.body,
+    "Your profile says: build muscle, hold at 72.5 kg. Your program, 9-Week Six-Pack Cut, says: lose fat, down to 69 kg.");
 });
 
 Deno.test("not hearing Drona with no pick: the fallback card is hushed too", () => {
   const meta = row("not_hearing_drona", 12, "notice", {}, { meta: true });
   assertEquals(decidePick(pf(meta), facts()), null);
-  const ask = { kind: "request", topic: "due_session", payload: { action: "start_session" }, signals: ["no_training"] };
+  // A P0 ask has no quiet body: a hushed week says nothing rather than ask.
+  const ask = { kind: "request", topic: "due_session", body: "Start with what is due.", payload: { action: "start_session" },
+    signals: ["no_training"] };
   const quiet = hushed(ask, pf(meta));
-  assertEquals([quiet.kind, quiet.payload, quiet.signals.at(-1)], ["notice", {}, "behaviour:not_hearing_drona"]);
+  assertEquals([quiet.kind, quiet.payload, quiet.signals.at(-1)], ["hold", {}, "behaviour:not_hearing_drona"]);
   assertEquals(hushed(ask, pf(onTrack)), ask);
-  const hold = { kind: "hold", topic: "hold", payload: {}, signals: [] };
+  const hold = { kind: "hold", topic: "hold", body: "", payload: {}, signals: [] };
   assertEquals(hushed(hold, pf(meta)), hold);
 });
 
@@ -195,6 +199,23 @@ Deno.test("chips stay short: big type is made for numbers", () => {
     row("logs_partial_days", 11, "request", { avg_kcal: 416.7, target_kcal: 1800, days_logged: 3 })];
   for (const r of all) {
     for (const e of decidePick(pf(r), facts())?.evidence ?? []) assertEquals(e.value.length <= 10, true, `${r.behaviour}: ${e.value}`);
+  }
+});
+
+Deno.test("every hushed card is a notice that asks nothing, or nothing at all", () => {
+  const meta = row("not_hearing_drona", 12, "notice", {}, { meta: true });
+  const all = [goals, stall("real_plateau"), stall("recovery"), stall("under_fuelled"), stall("cant_tell"),
+    stall("inconsistent_training"), onTrack, notLanding, scale,
+    row("logs_partial_days", 11, "request", { avg_kcal: 416.7, target_kcal: 1800, days_logged: 3 }),
+    row("drifting_away", 21, "talk", { sessions: 0, planned: 5, last_week_sessions: 0, last_week_planned: 5 }),
+    row("own_way", 22, "talk", { muscles_left_out: ["Calves"] }),
+    row("plan_too_big", 24, "talk", { planned: 6, avg_sessions: 4 }),
+    row("exercise_skipped", 25, "talk", { exercises: [{ exercise: "Shrugs", why: "never_done", phase_weeks: 4 }] })];
+  for (const r of all) {
+    const c = decidePick(pf(meta, r), facts());
+    if (!c) continue;
+    assertEquals(c.kind, "notice", r.behaviour);
+    assertEquals(/\?|Tell me|Log |Weigh in|Time to|first\.|is the first/.test(c.body), false, `${r.behaviour}: ${c.body}`);
   }
 });
 
