@@ -4529,6 +4529,7 @@ Deno.serve(async (req) => {
             const { data, error: weekError } = await userClient
               .from("drona_week_facts")
               .select("a_as_of, a_steps_days, a_steps_days_met, a_cardio_sessions, r_steps_avg")
+              .eq("user_id", userId)
               .eq("week_start", weekStart)
               .maybeSingle();
             if (weekError) console.log("[ai-coach] week activity error:", weekError.message);
