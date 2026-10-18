@@ -36,7 +36,10 @@ async function fetchHistory(supabase: Supa): Promise<HistoryEntry[] | null> {
     .from('meals')
     .select('meal_type, logged_at, meal_entries(food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, source, logged_via, tier, position)')
     .gte('logged_at', first.toISOString())
-    .lte('logged_at', end.toISOString());
+    .lte('logged_at', end.toISOString())
+    // Newest first, so if the row cap ever cuts this short, the oldest days
+    // are what is lost, not an arbitrary set.
+    .order('logged_at', { ascending: false });
   if (error || !data) return null;
   const out: (HistoryEntry & { position: number })[] = [];
   for (const m of data as any[]) {

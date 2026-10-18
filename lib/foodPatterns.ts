@@ -93,19 +93,27 @@ function daysBetween(a: string, b: string): number {
 
 /**
  * Suggestions for `forIso` (the day on screen), grouped by meal, best first.
- * Only history strictly BEFORE `forIso` counts, so a planned future row or
- * today's own food never teaches the pattern it is being compared with.
+ * Only history strictly before both `forIso` and the real today counts, so
+ * a row planned ahead, or the day's own food, never teaches the pattern it
+ * is being compared with.
  */
 export function learnPatterns(
   history: HistoryEntry[],
   forIso: string,
+  /** The real today. Only days before BOTH it and `forIso` teach, so food
+   *  planned ahead never becomes a habit, even when the day on screen is
+   *  past the planned one. Defaults to `forIso`. */
+  todayIso: string = forIso,
 ): Record<PatternMeal, FoodSuggestion[]> {
   const out: Record<PatternMeal, FoodSuggestion[]> = { breakfast: [], lunch: [], dinner: [], snack: [] };
   const weekday = dateOf(forIso).getDay();
-  const weight = (iso: string) => Math.pow(0.5, (daysBetween(iso, forIso) - 1) / HALF_LIFE_DAYS);
+  // Ages and weights count back from the earlier of the two, the last day
+  // that can have been eaten rather than planned.
+  const anchor = forIso < todayIso ? forIso : todayIso;
+  const weight = (iso: string) => Math.pow(0.5, (daysBetween(iso, anchor) - 1) / HALF_LIFE_DAYS);
 
   const past = history.filter((e) => {
-    const age = daysBetween(e.dayIso, forIso);
+    const age = daysBetween(e.dayIso, anchor);
     return age >= 1 && age <= PATTERN_WINDOW_DAYS && nameKey(e.food_name) !== '';
   });
 

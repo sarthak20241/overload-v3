@@ -478,7 +478,7 @@ export default function NutritionScreen() {
     [byMeal, totalsDayIso],
   );
   const { history } = useFoodHistory(isSignedIn ? diaryVersion : 'guest');
-  const patterns = useMemo(() => learnPatterns(isSignedIn ? history : [], viewIso), [history, viewIso, isSignedIn]);
+  const patterns = useMemo(() => learnPatterns(isSignedIn ? history : [], viewIso, todayIso), [history, viewIso, todayIso, isSignedIn]);
   // Today runs on the clock (breakfast in the morning, and still at lunch if
   // it was skipped). Any other day is backfill or planning: every meal open.
   // Held in state and ticked each minute, so a screen left open moves on with

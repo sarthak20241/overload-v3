@@ -61,6 +61,17 @@ Deno.test("only history before the day counts: today and planned days never teac
   assertEquals(learnPatterns(h, TODAY).lunch, []);
 });
 
+Deno.test("food planned ahead never teaches, even viewing a later day", () => {
+  // Today is Sun 18. Lunch is planned for Mon 19 and Tue 20; the user looks at Wed 21.
+  const h = [
+    entry("2026-10-19", "lunch", "Meal prep bowl"),
+    entry("2026-10-20", "lunch", "Meal prep bowl"),
+  ];
+  assertEquals(learnPatterns(h, "2026-10-21", TODAY).lunch, []);
+  // Without the real today, the planned days look like eaten ones.
+  assertEquals(learnPatterns(h, "2026-10-21").lunch.length, 1);
+});
+
 Deno.test("history older than the window is forgotten", () => {
   const h = [40, 45, 50].map((n) => entry(daysAgo(n), "snack", "Protein bar"));
   assertEquals(learnPatterns(h, TODAY).snack, []);
