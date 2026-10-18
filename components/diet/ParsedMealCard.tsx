@@ -272,7 +272,10 @@ export function ParsedMealCard({
   // Discard and Add disappeared there. Grow to the need, never past the gap.
   const minNeeded = contentH - listH + Math.min(listContentH, ITEM_FLOOR);
   const cap = maxHeight == null ? undefined
-    : hasList && hardMaxHeight != null && cardH > 0 && listH > 0
+    // Gated on the footer having laid out and the list having content, not
+    // on the list's viewport: under a tight cap that viewport can be 0, and
+    // waiting for it would leave the card stuck in the very case this fixes.
+    : hasList && hardMaxHeight != null && footerBottom > 0 && listContentH > 0
       ? Math.min(hardMaxHeight, Math.max(maxHeight, minNeeded))
       : maxHeight;
   // The card stays mounted across a follow-up (review -> analysing -> review)
