@@ -603,6 +603,15 @@ export default function DashboardScreen() {
       return;
     }
     void setCardStatus(supabase, popupCard.id, 'applied');
+    if (action === 'talk') {
+      // A talk card opens the chat on its own opening line, which carries the
+      // numbers the card showed, so the coach starts from the same facts.
+      setAiCoachPrompt(popupCard.payload.prompt || undefined);
+      setAiCoachInitialScreen('chat');
+      setAiCoachSource('drona_card');
+      setAiCoachOpen(true);
+      return;
+    }
     if (action === 'start_session') {
       // The session that is due is exactly what the TODAY card opens.
       handleTodayPress();

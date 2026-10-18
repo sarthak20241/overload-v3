@@ -26,6 +26,7 @@ import { useToast } from '@/components/ui/Toast';
 import { track } from '@/lib/analytics';
 import { DronaCardView } from '@/components/coach/DronaCardView';
 import { ACTION_ROUTES } from '@/lib/dronaRules';
+import { requestCoachOpen } from '@/lib/coachLaunch';
 import { bucketOf, canUndo } from '@/lib/dronaInbox';
 import {
   movesFor, readCardHistory, setCardStatus, type SavedDronaCard,
@@ -96,6 +97,12 @@ export default function FromDronaScreen() {
     patch(card.id, { status: 'applied', decided_at: new Date().toISOString() });
     void setCardStatus(supabase, card.id, 'applied');
     if (action === 'start_session') { router.replace('/(app)'); return; }
+    if (action === 'talk') {
+      // The coach sheet lives on the dashboard: leave it the opening line.
+      requestCoachOpen({ screen: 'chat', prompt: card.payload.prompt || undefined });
+      router.replace('/(app)');
+      return;
+    }
     const route = action ? ACTION_ROUTES[action] : undefined;
     if (route) router.push(route as any);
   };

@@ -1,0 +1,153 @@
+import { assertEquals } from "jsr:@std/assert@1";
+import type { DronaFacts } from "./dronaCards.ts";
+import { type BehaviourRow, decidePick, hushed, mutedTopics, type PickFacts, WORDS } from "./dronaPick.ts";
+
+const WEEK = "2026-10-19";
+const facts = (cards: DronaFacts["cards"] = []): DronaFacts => ({ week_start: WEEK, cards });
+const pf = (...behaviours: BehaviourRow[]): PickFacts => ({ week_start: "2026-10-12", behaviours });
+const row = (behaviour: string, priority: number, card_kind: string, detail: Record<string, unknown> = {},
+  over: Partial<BehaviourRow> = {}): BehaviourRow => ({ behaviour, priority, card_kind, mutes: [], detail, ...over });
+
+// Details shaped like the live rows (2026-10-18).
+const goals = row("goals_unclear", 20, "talk", {
+  program: "9-Week Six-Pack Cut", profile_goal: "hypertrophy", program_goal: "fat_loss",
+  profile_goal_kg: 72.5, program_target_kg: 69, profile_direction: "hold", program_direction: "loss",
+});
+const stall = (cause: string) => row("lift_stall", 23, "talk", {
+  cause, lifts: [{ exercise: "Rear delt machine", from_kg: 50.4, now_kg: 49.2, change_pct: -2.4 },
+                 { exercise: "Dragon Fly", from_kg: 1.2, now_kg: 1.2, change_pct: 0 }],
+});
+const onTrack = row("on_track", 90, "notice", { sessions: 6, planned: 6 });
+const finding = row("finding_maintenance", 14, "request", { missing: ["weigh_ins"] });
+const notLanding = row("topic_not_landing", 13, "talk",
+  { topics: [{ topic: "weigh_in", cards: 2, not_followed: 2 }] }, { mutes: ["topic:weigh_in"] });
+const scale = row("scale_untrusted", 10, "request", { readings: 2, typical_swing_kg: 15 },
+  { mutes: ["weight_wrong_way"] });
+
+Deno.test("nothing judged: no card", () => {
+  assertEquals(decidePick(null, facts()), null);
+  assertEquals(decidePick(pf(), facts()), null);
+});
+
+Deno.test("the best priority wins", () => {
+  assertEquals(decidePick(pf(onTrack, goals), facts())?.topic, "goals_unclear");
+});
+
+Deno.test("the check-in's own behaviours are skipped: it has its own card", () => {
+  assertEquals(decidePick(pf(finding, goals), facts())?.topic, "goals_unclear");
+  assertEquals(decidePick(pf(finding), facts()), null);
+  // Even if it had words of its own, the weekly card still leaves it to the check-in.
+  WORDS.finding_maintenance = () => ({ kind: "request", title: "t", body: "b", evidence: [], payload: {} });
+  try {
+    assertEquals(decidePick(pf(finding, goals), facts())?.topic, "goals_unclear");
+  } finally {
+    delete WORDS.finding_maintenance;
+  }
+});
+
+Deno.test("steer rows are never a card", () => {
+  const steer = row("topic_not_landing", 13, "steer", notLanding.detail!, { mutes: ["topic:weigh_in"] });
+  assertEquals(decidePick(pf(steer, goals), facts())?.topic, "goals_unclear");
+});
+
+Deno.test("cooldown: shown last week, skip to the next; dismissed 3 weeks ago, still skipped", () => {
+  assertEquals(decidePick(pf(goals, onTrack), facts([{ week_start: "2026-10-12", topic: "goals_unclear", status: "pending" }]))?.topic,
+    "on_track");
+  assertEquals(decidePick(pf(goals), facts([{ week_start: "2026-09-28", topic: "goals_unclear", status: "dismissed" }])), null);
+  assertEquals(decidePick(pf(goals), facts([{ week_start: "2026-10-05", topic: "goals_unclear", status: "applied" }]))?.topic,
+    "goals_unclear");
+});
+
+Deno.test("a 'topic:' mute skips a card that asks for that topic", () => {
+  // topic_not_landing mutes weigh-ins; the scale card asks for one.
+  assertEquals([...mutedTopics(pf(notLanding, scale))], ["weigh_in"]);
+  const steer = row("topic_not_landing", 13, "steer", notLanding.detail!, { mutes: ["topic:weigh_in"] });
+  assertEquals(decidePick(pf(scale, steer, onTrack), facts())?.topic, "on_track");
+  // A signal mute is not a topic mute.
+  assertEquals(decidePick(pf(scale), facts())?.topic, "scale_untrusted");
+});
+
+Deno.test("not hearing Drona: the pick is said as a notice, no ask", () => {
+  const meta = row("not_hearing_drona", 12, "notice", {}, { meta: true });
+  const card = decidePick(pf(meta, goals), facts())!;
+  assertEquals([card.topic, card.kind, card.payload], ["goals_unclear", "notice", {}]);
+  assertEquals(card.body.startsWith("Your profile says"), true);
+});
+
+Deno.test("not hearing Drona with no pick: the fallback card is hushed too", () => {
+  const meta = row("not_hearing_drona", 12, "notice", {}, { meta: true });
+  assertEquals(decidePick(pf(meta), facts()), null);
+  const ask = { kind: "request", topic: "due_session", payload: { action: "start_session" }, signals: ["no_training"] };
+  const quiet = hushed(ask, pf(meta));
+  assertEquals([quiet.kind, quiet.payload, quiet.signals.at(-1)], ["notice", {}, "behaviour:not_hearing_drona"]);
+  assertEquals(hushed(ask, pf(onTrack)), ask);
+  const hold = { kind: "hold", topic: "hold", payload: {}, signals: [] };
+  assertEquals(hushed(hold, pf(meta)), hold);
+});
+
+Deno.test("goals_unclear: both sides in words, and the opening line carries them", () => {
+  const card = decidePick(pf(goals), facts())!;
+  assertEquals(card.kind, "talk");
+  assertEquals(card.body,
+    "Your profile says: build muscle, hold at 72.5 kg. Your program, 9-Week Six-Pack Cut, says: lose fat, down to 69 kg. Tell me which one is right.");
+  assertEquals(card.payload.action, "talk");
+  assertEquals(card.payload.prompt?.includes("lose fat, down to 69 kg"), true);
+});
+
+Deno.test("lift_stall: the cause picks the words and the kind", () => {
+  const plateau = decidePick(pf(stall("real_plateau")), facts())!;
+  assertEquals([plateau.kind, plateau.title], ["talk", "Rear delt machine has stopped moving"]);
+  assertEquals(plateau.evidence, [{ label: "Rear delt machine, best estimated max", value: "50.4 kg, now 49.2 kg" }]);
+  const cut = decidePick(pf(stall("expected_on_cut")), facts())!;
+  assertEquals([cut.kind, cut.payload], ["notice", {}]);
+  const blind = decidePick(pf(stall("cant_tell")), facts())!;
+  assertEquals([blind.kind, blind.payload.action], ["request", "log_food"]);
+  assertEquals(decidePick(pf(stall("no_such_cause")), facts()), null);
+});
+
+Deno.test("drifting_away: zero sessions says so; some sessions say how many", () => {
+  const zero = row("drifting_away", 21, "talk", { sessions: 0, planned: 5, last_week_sessions: 0, last_week_planned: 5 });
+  assertEquals(decidePick(pf(zero), facts())!.body.startsWith("No sessions for two weeks."), true);
+  const some = row("drifting_away", 21, "talk", { sessions: 1, planned: 4, last_week_sessions: 1, last_week_planned: 4 });
+  assertEquals(decidePick(pf(some), facts())!.body.startsWith("2 of 8 planned sessions in two weeks."), true);
+});
+
+Deno.test("plan_too_big, exercise_skipped, topic_not_landing, own_way, partial days: the numbers land", () => {
+  const big = decidePick(pf(row("plan_too_big", 24, "talk", { planned: 6, avg_sessions: 4.125, weeks_trained: 7 })), facts())!;
+  assertEquals(big.title, "The plan asks for 6, you do about 4");
+  assertEquals(big.body.includes("averaged 4.1 sessions"), true);
+
+  const skipped = decidePick(pf(row("exercise_skipped", 25, "talk", { exercises: [
+    { exercise: "Incline Dumbbell Press", why: "routine_skip", planned: 14, skipped: 7 },
+    { exercise: "Chest Supported Kelso Shrugs", why: "routine_skip", planned: 6, skipped: 5 },
+  ] })), facts())!;
+  assertEquals(skipped.title, "You keep skipping Chest Supported Kelso Shrugs");
+  assertEquals(skipped.body.includes("in 5 of 6 sessions"), true);
+
+  const landing = decidePick(pf(notLanding), facts())!;
+  assertEquals(landing.body.startsWith("I asked for weigh-ins twice, and none came."), true);
+
+  const own = decidePick(pf(row("own_way", 22, "talk", { muscles_left_out: ["Calves", "Hamstrings"] })), facts())!;
+  assertEquals(own.body.includes("Calves and Hamstrings got left out."), true);
+
+  const partial = decidePick(pf(row("logs_partial_days", 11, "request",
+    { avg_kcal: 416.7, target_kcal: 1800, days_logged: 3 })), facts())!;
+  assertEquals(partial.body.startsWith("Your logged days average 417 kcal against a 1,800 target."), true);
+});
+
+Deno.test("a detail too thin for honest words is skipped, not said wrong", () => {
+  // One side known is not a disagreement anyone can read.
+  assertEquals(decidePick(pf(row("goals_unclear", 20, "talk", { profile_goal: "hypertrophy" }), onTrack), facts())?.topic,
+    "on_track");
+  assertEquals(decidePick(pf(row("unknown_behaviour", 1, "talk", {})), facts()), null);
+});
+
+Deno.test("no words use an em dash", () => {
+  const all = [goals, stall("real_plateau"), stall("recovery"), stall("under_fuelled"), stall("inconsistent_training"),
+    onTrack, notLanding, scale];
+  for (const r of all) {
+    const c = decidePick(pf(r), facts());
+    if (!c) continue;
+    assertEquals(/—/.test(`${c.title} ${c.body} ${c.payload.prompt ?? ""} ${JSON.stringify(c.evidence)}`), false);
+  }
+});

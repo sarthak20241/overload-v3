@@ -38,6 +38,8 @@ export interface DronaCardPayload {
   phase_id?: string | null;
   /** apply_targets from the calorie check-in: the future phases that move with it. */
   phases?: { id: string; name?: string; from_kcal: number; to_kcal: number }[];
+  /** talk: the opening line sent for the person when they tap "Talk it through". */
+  prompt?: string;
 }
 
 export interface SavedDronaCard {
