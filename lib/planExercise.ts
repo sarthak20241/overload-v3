@@ -18,13 +18,17 @@ export type { NewExerciseDef };
 /**
  * Read the template off a plan exercise payload. Re-checked here rather than
  * trusted, because the payload crosses the network from whatever ai-coach
- * version is deployed. Anything that is not an object means "not new".
+ * version is deployed. Anything that is not an object, or an object with none
+ * of the three template fields, means "not new": an empty `{}` must not turn a
+ * plain catalog name into an invention.
  */
 export function parseNewExercise(raw: unknown): NewExerciseDef | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const r = raw as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
-  return normalizeNewExercise(str(r.muscle_group), str(r.category), str(r.metric_type));
+  const muscle = str(r.muscle_group), equipment = str(r.category), measured = str(r.metric_type);
+  if (muscle === undefined && equipment === undefined && measured === undefined) return undefined;
+  return normalizeNewExercise(muscle, equipment, measured);
 }
 
 /**
@@ -58,9 +62,9 @@ const NON_REP_UNIT = /^(s|secs?|seconds?|min|mins|minutes?|m|meters?|metres?|km|
  * fills reps_min/reps_max as before, and so does the rep part of "10-12/side"
  * or "6-8 each", whose extra words then lead the cue. A time ("45s", "20min"),
  * a distance ("500m"), calories ("15cal") or a target with no number
- * ("AMRAP") has no column to live in, so it rides
- * at the front of the cue instead of being dropped, and the reps fall back to
- * the table's own defaults.
+ * ("AMRAP") has no column to live in, so it rides at the front of the cue
+ * instead of being dropped, and the reps fall back to the table's own
+ * defaults.
  */
 export function planRepsAndNote(reps: string, note?: string | null): {
   reps_min: number;

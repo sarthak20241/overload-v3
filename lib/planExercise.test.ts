@@ -22,6 +22,7 @@ Deno.test('a plain catalog name keeps the bare insert', () => {
 
 Deno.test('a malformed template from an older server is re-checked, not trusted', () => {
   assertEquals(parseNewExercise('duration'), undefined);
+  assertEquals(parseNewExercise({}), undefined);
   assertEquals(parseNewExercise({ metric_type: 'not_a_type', muscle_group: 42 }), {
     muscle_group: 'Other',
     category: 'Other',

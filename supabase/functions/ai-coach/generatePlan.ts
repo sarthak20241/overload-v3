@@ -172,7 +172,8 @@ Rules:
 - <reps> is a plain range like 6-10, or a single number like 5. For a timed
   exercise (planks, carries, holds, stretches) write seconds as a number
   followed by s, e.g. 45s. For cardio done for time write minutes followed
-  by min, e.g. 20min.
+  by min, e.g. 20min. For a carry or sled pushed for distance write meters
+  followed by m, e.g. 20m.
 - <coaching cue> is a short phrase on intent or execution. Omit the trailing
   " | <cue>" entirely if the exercise needs no cue.
 - Never use the | character inside a field value.`;
@@ -187,11 +188,13 @@ const cell = (s: string | undefined) => (s ?? "").trim();
 export const MAX_NEW_NAME = 60;
 
 /**
- * Cut a runaway invented name at a word boundary. Catalog names never get
- * near this; a NEW name past it is the model rambling, and it would otherwise
- * be stored as a permanent custom exercise.
+ * Clean an invented name before it can become a permanent custom exercise:
+ * drop control characters, then cut a runaway name at a word boundary.
+ * Catalog names never get near the cap; a NEW name past it is the model
+ * rambling.
  */
-function capName(n: string): string {
+function capName(raw: string): string {
+  const n = raw.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
   if (n.length <= MAX_NEW_NAME) return n;
   const cut = n.slice(0, MAX_NEW_NAME);
   const space = cut.lastIndexOf(" ");
@@ -332,6 +335,7 @@ export function buildWorkout(
   const fallbackReps = (def: NewExerciseDef | undefined) =>
     def?.metric_type === "duration" || def?.metric_type === "duration_weight" ? "30s"
     : def?.metric_type === "distance_duration" || def?.metric_type === "resistance_duration" ? "10min"
+    : def?.metric_type === "weight_distance" ? "20m"
     : "8-12";
   return {
     name: day.name,
@@ -391,7 +395,11 @@ function measureHint(slots: string[], defs: PlanSkeleton["new_exercises"]): stri
     const m = templateOf(defs, s)?.metric_type;
     return m === "duration" || m === "duration_weight" || m === "distance_duration" || m === "resistance_duration";
   });
-  return timed.length ? `Measured by time, not reps: ${timed.join(", ")}.` : "";
+  const far = slots.filter((s) => templateOf(defs, s)?.metric_type === "weight_distance");
+  return [
+    timed.length ? `Measured by time, not reps: ${timed.join(", ")}.` : "",
+    far.length ? `Measured by distance, not reps: ${far.join(", ")}.` : "",
+  ].filter(Boolean).join("\n");
 }
 
 function skeletonText(s: PlanSkeleton): string {
