@@ -26,6 +26,7 @@ import { track } from '@/lib/analytics';
 import { normalizeFuelDays, type FuelDay } from '@/lib/fuelDays';
 import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from '@/lib/targetHistory';
 import { readSwapOptions, type SwapOption } from '@/lib/variantSwap';
+import { relogColumns, type RelogLabels } from '@/lib/foodPatterns';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
@@ -672,7 +673,7 @@ export interface ParsedMealItem {
    *  the day before's meal). Its original logged_via and tier are written
    *  back unchanged: the food memory trusts 'manual' lines as the user's own
    *  numbers, so labelling a copied AI estimate 'manual' would promote it. */
-  relog?: { logged_via: 'ai' | 'manual' | null; tier: string | null };
+  relog?: RelogLabels;
 
   /** Other variants the user also logs, priced from their own numbers, for the
    *  one-tap swap chip (lib/variantSwap). Only on lines Drona answered from
@@ -1362,11 +1363,11 @@ async function logSection(
     fiber_g: it.fiber_g == null ? null : r1(it.fiber_g),
     sugar_g: null, sat_fat_g: null, sodium_mg: null,
     position: base + idx,
-    // A re-logged line keeps its original label and tier (see `relog`).
-    // Every row names `tier`, null when unknown, so the bulk insert's columns
-    // agree; a null tier still lets the stamp trigger fill it as before.
-    logged_via: it.relog ? it.relog.logged_via : 'ai',
-    tier: it.relog ? it.relog.tier : null,
+    // A re-logged line keeps its original label and tier (see `relog` and
+    // relogColumns). Every row names `tier`, null when unknown, so the bulk
+    // insert's columns agree; the BEFORE INSERT stamp trigger only skips a
+    // non-null tier, so a null one is still filled as before.
+    ...relogColumns(it.source, it.relog),
     // Where the macros came from (catalog / off / web / estimate) so the diary can
     // later tell a real label/web hit from a pure estimate (migration 0076).
     source: it.source,

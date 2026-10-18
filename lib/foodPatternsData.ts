@@ -17,7 +17,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { latestLogDay } from '@/lib/logDay';
 import { logParsedMeal, ymd, type LoggedParseRef, type ParsedMeal, type ParsedMealItem } from '@/lib/dietData';
-import { PATTERN_WINDOW_DAYS, type HistoryEntry } from '@/lib/foodPatterns';
+import { PATTERN_WINDOW_DAYS, relogLabels, type HistoryEntry } from '@/lib/foodPatterns';
 import type { MealType } from '@/lib/foods';
 
 type Supa = NonNullable<ReturnType<typeof useSupabaseClient>>;
@@ -129,12 +129,7 @@ export function lineAsItem(e: Omit<HistoryEntry, 'dayIso'>, mealType: MealType):
     assumption: null,
     confidence: 'high',
     meal_type: mealType,
-    // ai_auto means the server wrote the row itself; this copy is the
-    // client's, so it goes back as plain 'ai'. Same trust either way.
-    relog: {
-      logged_via: e.logged_via === 'manual' ? 'manual' : e.logged_via === 'ai' || e.logged_via === 'ai_auto' ? 'ai' : null,
-      tier: e.tier ?? null,
-    },
+    relog: relogLabels(e),
   };
 }
 

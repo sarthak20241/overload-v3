@@ -486,7 +486,8 @@ export default function NutritionScreen() {
   // having to re-render it. Only an hour change re-renders.
   const [clockHour, setClockHour] = useState(() => new Date().getHours());
   useEffect(() => {
-    const tick = () => setClockHour((h) => { const now = new Date().getHours(); return now === h ? h : now; });
+    // React skips the render when the hour is unchanged.
+    const tick = () => setClockHour(new Date().getHours());
     const id = setInterval(tick, 60_000);
     const sub = AppState.addEventListener('change', (next) => { if (next === 'active') tick(); });
     return () => { clearInterval(id); sub.remove(); };
@@ -1303,10 +1304,10 @@ export default function NutritionScreen() {
       supabase, { ...flow.meal, meal_type: flow.mealType }, viewDate,
       flow.origin === 'pattern' ? 'pattern' : 'ai',
     );
-    if (flow.origin === 'pattern' && !error) {
+    if (flow.origin === 'pattern') {
       track('food_suggestion_logged', {
         meal_type: flow.mealType, item_count: flow.meal.items.length, all: false,
-        edited: editCountRef.current > 0, is_today: isToday, write_failed: false,
+        edited: editCountRef.current > 0, is_today: isToday, write_failed: !!error,
       });
     }
     setAdding(false);

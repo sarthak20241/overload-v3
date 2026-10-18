@@ -5,7 +5,7 @@
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
-  copyableFromDay, learnPatterns, mealsToSuggest,
+  copyableFromDay, learnPatterns, mealsToSuggest, relogColumns, relogLabels,
   type FoodSuggestion, type HistoryEntry, type PatternMeal,
 } from "./foodPatterns.ts";
 
@@ -158,4 +158,22 @@ Deno.test("copy skips what is already in today's meal", () => {
   const prev = [{ food_name: "Eggs" }, { food_name: "Toast" }, { food_name: "Coffee" }];
   assertEquals(copyableFromDay(prev, [{ food_name: "toast" }]), [0, 2]);
   assertEquals(copyableFromDay(prev, []), [0, 1, 2]);
+});
+
+// ── Re-log labels ────────────────────────────────────────────────────────────
+
+Deno.test("a copied line keeps its label: an AI estimate is never promoted to manual", () => {
+  assertEquals(relogLabels({ logged_via: "ai", tier: "fast" }), { logged_via: "ai", tier: "fast" });
+  assertEquals(relogLabels({ logged_via: "ai_auto", tier: "thorough" }), { logged_via: "ai", tier: "thorough" });
+  assertEquals(relogLabels({ logged_via: "manual", tier: null }), { logged_via: "manual", tier: null });
+  assertEquals(relogLabels({ logged_via: null }), { logged_via: null, tier: null });
+  assertEquals(relogLabels({ logged_via: "something new" }), { logged_via: null, tier: null });
+});
+
+Deno.test("columns written: fresh parse, unedited copy, edited copy", () => {
+  const copy = relogLabels({ logged_via: "ai", tier: "fast" });
+  assertEquals(relogColumns("estimate", undefined), { logged_via: "ai", tier: null });
+  assertEquals(relogColumns("estimate", copy), { logged_via: "ai", tier: "fast" });
+  // Changed in the review card: the numbers are the user's now.
+  assertEquals(relogColumns("manual", copy), { logged_via: "manual", tier: null });
 });
