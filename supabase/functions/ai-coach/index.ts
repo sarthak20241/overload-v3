@@ -30,6 +30,8 @@ import { AI_LIMITS } from "../_shared/aiLimits.ts";
 import { isTimeZone } from "../_shared/wallClock.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
+import { withPhaseActivity } from "./programActivity.ts";
+import { weekStartOf } from "../_shared/dronaCards.ts";
 import type { DayTargetRow } from "../_shared/targetHistory.ts";
 import {
   type CandidateFood,
@@ -4446,6 +4448,9 @@ Deno.serve(async (req) => {
   //   - each program phase's PLANNED fuel days, added to user_context.program
   //     (get_user_coach_context lists phases without them). Without these,
   //     "Adjust with Drona" rebuilt every phase guessing its fuel days.
+  // The active program id read here is reused by 4d' below.
+  // undefined = not read (that block threw first); null = no active program.
+  let activeProgramId: string | null | undefined = undefined;
   try {
     const { data: fuelRow, error: fuelError } = await userClient
       .from("user_profiles")
@@ -4485,6 +4490,7 @@ Deno.serve(async (req) => {
         .select("id")
         .eq("status", "active")
         .maybeSingle();
+      activeProgramId = active?.id ?? null;
       if (active?.id) {
         const { data: rows, error: phaseFuelError } = await userClient
           .from("coach_program_phases")
@@ -4496,6 +4502,54 @@ Deno.serve(async (req) => {
     }
   } catch (e) {
     console.log("[ai-coach] fuel-days fetch threw:", String(e));
+  }
+
+  // 4d'. Activity goals (20261018120000): each phase's step and cardio goals,
+  // and this week's numbers from drona_week_facts on the current phase. Its own
+  // reads, so a database without the columns costs only these keys, never the
+  // fuel days above.
+  try {
+    const ctx = userContext as Record<string, unknown> | null;
+    if (ctx && ctx.program && typeof ctx.program === "object") {
+      // 4d already read it; read again only if that block threw first.
+      const programId = activeProgramId !== undefined ? activeProgramId : (await userClient
+        .from("coach_programs")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("status", "active")
+        .maybeSingle()).data?.id ?? null;
+      if (programId) {
+        // THIS week's row only, by the user's own date (4c). Newest-first
+        // would hand last week's numbers to the current phase right after
+        // Monday, before the cron has written the new week. Read alongside
+        // the phases, not after them.
+        const todayDate = (ctx.today as { date?: string } | undefined)?.date;
+        const weekStart = todayDate ? weekStartOf(todayDate) : null;
+        const [phasesRes, weekRes] = await Promise.all([
+          userClient
+            .from("coach_program_phases")
+            .select("seq, activity_steps_target, cardio_sessions_per_week")
+            .eq("user_id", userId)
+            .eq("program_id", programId),
+          weekStart
+            ? userClient
+              .from("drona_week_facts")
+              .select("a_as_of, a_steps_days, a_steps_days_met, a_cardio_sessions, r_steps_avg")
+              .eq("user_id", userId)
+              .eq("week_start", weekStart)
+              .maybeSingle()
+            : Promise.resolve(null),
+        ]);
+        if (phasesRes.error) console.log("[ai-coach] phase activity error:", phasesRes.error.message);
+        else if (phasesRes.data && phasesRes.data.length > 0) {
+          if (weekRes?.error) console.log("[ai-coach] week activity error:", weekRes.error.message);
+          const week = weekRes && !weekRes.error ? weekRes.data : null;
+          ctx.program = withPhaseActivity(ctx.program, phasesRes.data, week);
+        }
+      }
+    }
+  } catch (e) {
+    console.log("[ai-coach] activity fetch threw:", String(e));
   }
 
   // 4e. What the coach carries between conversations (coach-enhancement plan,

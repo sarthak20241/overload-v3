@@ -42,6 +42,7 @@ import { AICoachModal } from '@/components/ai/AICoachModal';
 import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
 import { useNutritionTargets } from '@/lib/dietData';
 import { DAY_NAMES, WEEK_ORDER, fuelDaysText, fuelOn, kcalOnDow } from '@/lib/fuelDays';
+import { activityText } from '@/lib/activityGoals';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { Colors, Spacing, Radius, FontSize, FontWeight, colorWithAlpha } from '@/constants/theme';
 
@@ -431,6 +432,21 @@ export default function GoalPlanScreen() {
               </Text>
             </View>
           )}
+
+        {/* The phase's movement goals, when Drona set any. Progress lives on
+            the home screen; this says what the phase asks for. */}
+        {(ph.activity_steps_target != null || ph.cardio_sessions_per_week != null) && (
+          <View style={styles.fuelPlanned}>
+            <Feather name="activity" size={11} color={C.accentText} />
+            <Text style={[styles.fuelLegendText, { color: C.mutedFg }]}>
+              <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>Move </Text>
+              {activityText({
+                steps_per_day: ph.activity_steps_target,
+                cardio_sessions_per_week: ph.cardio_sessions_per_week,
+              })}
+            </Text>
+          </View>
+        )}
 
         {renderWeekStrip(ph)}
 
