@@ -1,6 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
   MAX_NEW_NAME,
+  MAX_NEW_PER_DAY,
   assemblePlan,
   groundSkeleton,
   parseSkeleton,
@@ -152,4 +153,16 @@ Deno.test("the first template for an invented name wins", () => {
 Deno.test("two spellings of one catalog exercise in a day leave it there once", () => {
   const s = groundSkeleton(parseSkeleton("DAY | A | b\nSLOT | T Bar Row\nSLOT | Bench Press\nSLOT | T-Bar Row")!, CATALOG);
   assertEquals(s.days[0].slots, ["T-Bar Row", "Bench Press"]);
+});
+
+Deno.test("a day keeps at most MAX_NEW_PER_DAY invented exercises", () => {
+  const news = Array.from({ length: MAX_NEW_PER_DAY + 3 }, (_, i) => `NEW | Stretch ${i + 1} | Hip Flexors | Bodyweight | duration`);
+  const s = groundSkeleton(parseSkeleton(["DAY | A | b", "SLOT | Bench Press", ...news, "NEW | plank | Core | Bodyweight | duration"].join("\n"))!, CATALOG);
+  const day = s.days[0].slots;
+  // The catalog lift and the folded "plank" stay; only real inventions count.
+  assertEquals(day.includes("Bench Press"), true);
+  assertEquals(day.includes("Plank"), true);
+  assertEquals(day.filter((n) => n.startsWith("Stretch")).length, MAX_NEW_PER_DAY);
+  // Dropped inventions leave no template behind.
+  assertEquals(Object.keys(s.new_exercises ?? {}).length, MAX_NEW_PER_DAY);
 });
