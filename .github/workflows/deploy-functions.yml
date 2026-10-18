@@ -127,6 +127,7 @@ jobs:
           deno test --allow-all lib/coachErrors.test.ts
           deno test --allow-all lib/servingSize.test.ts
           deno test --allow-all lib/fitnessGoals.test.ts
+          deno test --allow-all lib/missingColumn.test.ts
           deno test --allow-all --unstable-sloppy-imports lib/planExercise.test.ts
 
       - name: Pick functions
