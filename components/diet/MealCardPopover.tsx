@@ -5,9 +5,14 @@
  * It is a morph, not a new screen: the frame starts on the exact rect the
  * inline card occupied and springs to its larger home, so the card reads as
  * having popped out of its place. Closing runs it back into the same spot.
- * The children are the SAME ParsedMealCard with the same callbacks, laid out
- * to fill the frame, so the footer stays pinned while the list grows into the
- * new room. Nothing is snapshotted, so nothing can go stale mid-flight.
+ * The children are the SAME ParsedMealCard with the same callbacks.
+ *
+ * The animation only ever moves and CLIPS the frame. The card inside is laid
+ * out once, by React, at its final size, and the frame reveals it. Animating
+ * the size of a box whose children lay themselves out (flex) left stale
+ * layout behind on the new architecture: after a resize the meal chips came
+ * out twice their height with Add drawn over them, and Discard vanished,
+ * until some unrelated tap made React lay the card out again.
  *
  * When the card has no home to return to (Add finished, Discard, the words
  * went back to the box) it fades out where it stands instead, holding the last
@@ -208,7 +213,15 @@ function PopoverBody({ origin, naturalHeight, bottomEdge, open, onRequestClose, 
         // children it held, whose callbacks (Add, Discard) are stale.
         pointerEvents={open ? 'auto' : 'none'}
       >
-        {lastChildren.current}
+        {/* The clip is its own layer so iOS still draws the frame's shadow
+            (overflow hidden on the shadowed view would cut it off). */}
+        <View style={[StyleSheet.absoluteFill, styles.clip]}>
+          {/* Fixed size from React, not from the animated frame: nothing in
+              here is laid out by the animation, so nothing can go stale. */}
+          <View style={{ position: 'absolute', top: 0, left: 0, width: dstW, height: dstH }}>
+            {lastChildren.current}
+          </View>
+        </View>
       </Animated.View>
     </View>
   );
@@ -216,6 +229,7 @@ function PopoverBody({ origin, naturalHeight, bottomEdge, open, onRequestClose, 
 
 const styles = StyleSheet.create({
   backdrop: { position: 'absolute', top: 0, left: 0, right: 0, overflow: 'hidden' },
+  clip: { borderRadius: Radius.lg, overflow: 'hidden' },
   frame: {
     position: 'absolute',
     shadowColor: '#000',

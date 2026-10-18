@@ -48,6 +48,8 @@ import type { MealType } from '@/lib/foods';
 import { formatServing, formatMacroGrams } from '@/lib/foods';
 import { optionAt, swapLabel } from '@/lib/variantSwap';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { copyToClipboard } from '@/lib/clipboard';
+import { haptics } from '@/lib/haptics';
 
 /** One more state for "Just log it": `sent` (the stream dropped after the
  *  request left; the diary will show what happened). A SUCCESSFUL auto-log has
@@ -262,9 +264,30 @@ export function ParsedMealCard({
   }, [expanded, onNaturalHeight, natural]);
 
 
-  // Your own words: two lines by default, all of them on a tap.
+  // Your own words: two lines by default. A tap shows the rest; once all of
+  // it is showing (or it always fit), a tap copies it. The line count comes
+  // from an invisible, unclamped copy of the text at the same width, since a
+  // clamped Text only reports the lines it drew.
   const [wordsOpen, setWordsOpen] = useState(false);
-  useEffect(() => { setWordsOpen(false); }, [rawText]);
+  const [wordsLines, setWordsLines] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => () => {
+    mounted.current = false;
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+  }, []);
+  useEffect(() => { setWordsOpen(false); setCopied(false); }, [rawText]);
+  const wordsCut = !wordsOpen && wordsLines > 2;
+  const onWordsPress = async () => {
+    if (wordsCut) { setWordsOpen(true); return; }
+    const ok = await copyToClipboard(rawText);
+    if (!ok || !mounted.current) return;
+    haptics.tick();
+    setCopied(true);
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(false), 1500);
+  };
   const isCollapsed = collapsible && !!minimized;
 
   // A fresh reply opens big: wait for the first full layout so the popover
@@ -476,13 +499,29 @@ export function ParsedMealCard({
           {!!rawText && (
             <View style={s.rawGrow}>
               <Pressable
-                onPress={() => setWordsOpen((v) => !v)}
+                onPress={onWordsPress}
                 style={({ pressed }) => [s.youBubble, pressed && s.itemPressed]}
                 accessibilityRole="button"
-                accessibilityLabel={`You said: ${rawText}`}
-                accessibilityHint={wordsOpen ? 'Shows less' : 'Shows your whole message'}
+                accessibilityLabel={copied ? 'Copied' : `You said: ${rawText}`}
+                accessibilityHint={wordsCut ? 'Shows your whole message' : 'Copies your message'}
               >
                 <Text style={s.youTxt} numberOfLines={wordsOpen ? undefined : 2}>{rawText}</Text>
+                <Text
+                  style={[s.youTxt, s.youMeasure]}
+                  onTextLayout={(e) => setWordsLines(e.nativeEvent.lines.length)}
+                  accessible={false}
+                  importantForAccessibility="no"
+                >
+                  {rawText}
+                </Text>
+                {/* The tick sits on the bubble's corner, next to what was
+                    copied, and never moves the text. Same idea as the copy
+                    button under a Drona chat bubble. */}
+                {copied && (
+                  <View style={s.youCopied} pointerEvents="none">
+                    <Feather name="check" size={11} color={C.background} />
+                  </View>
+                )}
               </Pressable>
             </View>
           )}
@@ -924,6 +963,13 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
       paddingVertical: 6, paddingHorizontal: 10, marginBottom: Spacing.sm,
     },
     youTxt: { fontSize: FontSize.sm, lineHeight: 18, color: C.foreground },
+    // Invisible twin of the text, same width as the bubble's text, unclamped.
+    youMeasure: { position: 'absolute', top: 6, left: 10, right: 10, opacity: 0 },
+    youCopied: {
+      position: 'absolute', right: -6, bottom: -6,
+      width: 18, height: 18, borderRadius: 9,
+      backgroundColor: C.accentText, alignItems: 'center', justifyContent: 'center',
+    },
     // The header icons sit level with the bubble's first line (its 6pt top
     // padding plus half the line), not below it, so they cost no height.
     rawRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm },
@@ -982,7 +1028,12 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     },
     actionsFirst: { marginTop: 0 },
 
-    notice: { padding: Spacing.sm, flexShrink: 1 },
+    // A near-zero shrink weight, not zero: when room runs short the food list
+    // gives way first (down to its floor) and the notice keeps its words. Yoga
+    // weights shrink by basis, so at an equal weight the long list and the
+    // short notice gave way together and the notice ended up a single line.
+    // Only once the list is at its floor does the notice start to scroll.
+    notice: { padding: Spacing.sm, flexShrink: 0.01 },
     // One line always shows; the rest scrolls when the card is short.
     noticeScroll: { flexGrow: 0, flexShrink: 1, minHeight: 18 },
     noticeHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
