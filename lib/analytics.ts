@@ -196,6 +196,7 @@ export type AnalyticsEvent =
   | 'coach_new_chat_started'
   | 'coach_generation_stopped'
   | 'coach_message_copied'
+  | 'food_text_reused'
   | 'coach_message_select_opened'
   | 'coach_history_opened'
   | 'coach_conversation_opened'

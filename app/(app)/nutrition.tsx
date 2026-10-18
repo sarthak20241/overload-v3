@@ -14,9 +14,9 @@
  * v1 renders with sample data so the layout is verifiable on-device; the Supabase
  * day-load + the NL parse (Drona edge fn) wire in next.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, ScrollView, Pressable, TextInput, StyleSheet, useWindowDimensions, AppState, Keyboard,
+  View, Text, ScrollView, FlatList, Pressable, TextInput, StyleSheet, useWindowDimensions, AppState, Keyboard,
   type NativeScrollEvent, type NativeSyntheticEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -103,6 +103,10 @@ type ParseFlow =
       // is weaker evidence than a choice the user already made - without this
       // flag their pick silently reverts on the next message.
       mealTypePicked?: boolean;
+      // Everything the user wrote for this meal, follow-ups joined ("1 apple;
+      // make it a small one"). `raw` keeps only a correction's own words, so
+      // the card's return arrow sends this instead. Absent: same as `raw`.
+      words?: string;
       notice?: string | null;
       // Researched numbers that disagree with what is shown, offered as a
       // choice. Applying is local, so picking costs no round trip.
@@ -117,6 +121,8 @@ type ParseFlow =
   | {
       status: 'error'; raw: string; message: string; meal?: ParsedMeal; mealType?: MealType;
       clientId?: string; logDate?: string;
+      /** The reviewed card's `words`, kept so Retry rebuilds it whole. */
+      words?: string;
     }
   // The user asked to SAVE a food or meal, and Drona drafted it. Nothing is
   // written until the card is tapped; `result` is what came back from that tap.
@@ -207,6 +213,9 @@ const SPEED_CHIP: Record<ParseSpeed, { icon: 'zap' | 'target' | 'award'; label: 
 
 const round = (n: number) => Math.round(n);
 
+/** Local midnight of the Sunday that starts `d`'s calendar week. */
+const sundayOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay());
+
 export default function NutritionScreen() {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
@@ -220,13 +229,26 @@ export default function NutritionScreen() {
   const isToday = viewIso === todayIso;
   const latestIso = ymd(latestLogDay());
   const atLatest = viewIso >= latestIso;
-  // The strip shows the Sunday-start calendar week containing viewDate, so the
-  // columns (S M T W T F S) never shuffle — only the highlight moves. Jumping
-  // to another week via the calendar swaps the whole row in place.
-  const weekStart = new Date(viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate() - viewDate.getDay());
+  // The strip shows Sunday-start calendar weeks, so the columns (S M T W T F S)
+  // never shuffle — only the highlight moves. It pages a week per swipe: back
+  // two years (further if the calendar went there) and ahead to the week of the
+  // last loggable day. The page on screen is always the week holding viewDate.
+  const weekStart = sundayOf(viewDate);
   const weekStartIso = ymd(weekStart);
-  const weekDays = Array.from({ length: 7 }, (_, i) =>
-    new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + i));
+  const latestWeekIso = ymd(sundayOf(dateFromYmd(latestIso)));
+  const floorWeekIso = ymd(sundayOf(new Date(new Date().getFullYear() - 2, new Date().getMonth(), new Date().getDate())));
+  const firstWeekIso = weekStartIso < floorWeekIso ? weekStartIso : floorWeekIso;
+  const weekStarts = useMemo(() => {
+    const out: Date[] = [];
+    const first = dateFromYmd(firstWeekIso);
+    for (let i = 0; ; i++) {
+      const w = new Date(first.getFullYear(), first.getMonth(), first.getDate() + i * 7);
+      if (ymd(w) > latestWeekIso) break;
+      out.push(w);
+    }
+    return out;
+  }, [firstWeekIso, latestWeekIso]);
+  const weekIndex = weekStarts.findIndex((w) => ymd(w) === weekStartIso);
   const { byMeal, totals, totalsDayIso, loading, failedDayIso, reload } = useDayNutrition(viewIso);
   // The numbers on screen belong to `totalsDayIso`. On a day switch that lags
   // `viewIso` by a fetch, and the old day's ring, macros and food sat under the
@@ -244,7 +266,7 @@ export default function NutritionScreen() {
   const supabase = useSupabaseClient();
   const { isSignedIn } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();
-  const { height: winH } = useWindowDimensions();
+  const { width: winW, height: winH } = useWindowDimensions();
   // Bottom edge of the calorie ring + macro bars, in the day scroll's CONTENT
   // coordinates, plus how far that content is currently scrolled. Subtracting
   // the second from the first is what turns it into a position on screen — the
@@ -300,6 +322,7 @@ export default function NutritionScreen() {
   // the commit and the SERVER writes the diary, so the user can close the app.
   // Undo lives on the receipt strip and on each diary row Drona added.
   const [text, setText] = useState('');
+  const inputRef = useRef<TextInput>(null);
   const [flow, setFlow] = useState<ParseFlow>({ status: 'idle' });
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).
@@ -453,13 +476,17 @@ export default function NutritionScreen() {
   useEffect(() => {
     let alive = true;
     (async () => {
-      const rows = await loadNutritionRange(supabase, dateFromYmd(weekStartIso), 7);
+      // The weeks either side too, so a swipe lands on rings already drawn.
+      // Merged, not replaced: weeks swiped past keep their rings.
+      const ws = dateFromYmd(weekStartIso);
+      const from = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() - 7);
+      const rows = await loadNutritionRange(supabase, from, 21);
       if (!alive) return;
       const map: Record<string, number> = {};
       for (const r of rows) map[r.dayIso] = r.kcal;
-      setWeekKcal(() => {
+      setWeekKcal((prev) => {
         const p = livePatch.current;
-        return p ? { ...map, [p.day]: p.kcal } : map;
+        return p ? { ...prev, ...map, [p.day]: p.kcal } : { ...prev, ...map };
       });
     })();
     return () => { alive = false; };
@@ -485,6 +512,38 @@ export default function NutritionScreen() {
       return ymd(next) > ymd(latestLogDay()) ? d : next;
     });
   }, []);
+
+  // A swipe to another week keeps the weekday: Wednesday stays Wednesday,
+  // except past the last loggable day, which is as far as a day can go.
+  const weekListRef = useRef<FlatList<Date>>(null);
+  // The week a swipe already moved to, so the drag-end and momentum-end
+  // callbacks for one swipe count once. Cleared when the week changes.
+  const swipedWeek = useRef<string | null>(null);
+  const onWeekSwipe = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const ws = weekStarts[Math.round(e.nativeEvent.contentOffset.x / winW)];
+    if (!ws || ymd(ws) === weekStartIso || ymd(ws) === swipedWeek.current) return;
+    swipedWeek.current = ymd(ws);
+    track('nutrition_day_changed', { direction: ymd(ws) > weekStartIso ? 'forward' : 'back' });
+    const next = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + viewDate.getDay());
+    setViewDate(ymd(next) > latestIso ? latestLogDay() : next);
+  };
+  // A slow drag released right on a page boundary settles with no momentum,
+  // so onMomentumScrollEnd never fires. Count it here, only when it is
+  // already resting on a page (mid-page, the momentum end handles it).
+  const onWeekDragEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const x = e.nativeEvent.contentOffset.x;
+    if (Math.abs(x - Math.round(x / winW) * winW) < 1) onWeekSwipe(e);
+  };
+  // ‹ ›, the calendar and "for tomorrow" logs move viewDate without a swipe;
+  // bring the strip to its week. A one-week move slides, a jump snaps.
+  const lastWeekIndex = useRef(weekIndex);
+  useEffect(() => {
+    if (weekIndex < 0) return;
+    const animated = Math.abs(weekIndex - lastWeekIndex.current) === 1;
+    lastWeekIndex.current = weekIndex;
+    swipedWeek.current = null;
+    weekListRef.current?.scrollToOffset({ offset: weekIndex * winW, animated });
+  }, [weekIndex, winW]);
 
   /** `retry`: re-send a "Just log it" send with its ORIGINAL id and day (from
    *  the error card or a "Drona didn't get" line). Forces auto mode even if the
@@ -746,6 +805,7 @@ export default function NutritionScreen() {
     // disagreement; the head is stamped back so a later fallback agrees too.
     const headOf = (its: ParsedMealItem[]): MealType =>
       its[0]?.meal_type ?? res.meal.meal_type;
+    const words = pending ? `${prevReview?.words ?? pending.text}; ${t}` : undefined;
     // A follow-up either CORRECTS the pending meal (replace its lines) or ADDS
     // to it (append) — appending is what keeps "and a dosa" from silently
     // dropping the samosa the user already reviewed.
@@ -756,6 +816,7 @@ export default function NutritionScreen() {
           return {
             status: 'review',
             raw: `${pending.text}; ${t}`,
+            words,
             meal: { ...res.meal, items, meal_type: head },
             mealType: head,
             mealTypePicked: prevReview?.mealTypePicked,
@@ -766,6 +827,7 @@ export default function NutritionScreen() {
           return {
             status: 'review',
             raw: res.meal.continued_pending && pendingMeal ? `${pendingMeal.text}; ${t}` : t,
+            words,
             meal: { ...res.meal, meal_type: head },
             mealType: head,
             mealTypePicked: prevReview?.mealTypePicked,
@@ -1092,7 +1154,7 @@ export default function NutritionScreen() {
     if (!error) editCountRef.current = 0;
     if (error) {
       // Keep the reviewed meal so Retry re-attempts the write (see onRetry).
-      setFlow({ status: 'error', raw: flow.raw, message: 'Could not add that. Try again.', meal: flow.meal, mealType: flow.mealType });
+      setFlow({ status: 'error', raw: flow.raw, message: 'Could not add that. Try again.', meal: flow.meal, mealType: flow.mealType, words: flow.words });
       return;
     }
     reload();
@@ -1107,7 +1169,7 @@ export default function NutritionScreen() {
     // A write failure kept the meal → re-show the review card (tapping Add re-writes
     // it, to the current day). Only re-run the AI parse if the meal is gone.
     if (flow.meal && flow.mealType) {
-      setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.mealType });
+      setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.mealType, words: flow.words });
     } else {
       // A failed "Just log it" send retries under its ORIGINAL id (see ParseFlow).
       void runParse(
@@ -1135,12 +1197,10 @@ export default function NutritionScreen() {
     }
   }, [flow, supabase, viewDate, reload]);
 
-  const onDismiss = useCallback(() => {
-    track('parse_proposal_rejected', {
-      flow_status: flow.status,
-      item_count: flow.status === 'review' ? flow.meal.items.length : null,
-      edit_count: editCountRef.current,
-    });
+  /** Close the card with no verdict on it. Discard calls this after counting a
+   *  rejection; editing your words calls it without one, since taking the words
+   *  back to change them is not a no to the meal. */
+  const clearCard = useCallback(() => {
     editCountRef.current = 0;
     setChecking(null);
     setCardMinimized(false);
@@ -1151,7 +1211,16 @@ export default function NutritionScreen() {
     parseAbortRef.current?.abort();
     turnsRef.current = [];
     setFlow({ status: 'idle' });
-  }, [flow]);
+  }, []);
+
+  const onDismiss = useCallback(() => {
+    track('parse_proposal_rejected', {
+      flow_status: flow.status,
+      item_count: flow.status === 'review' ? flow.meal.items.length : null,
+      edit_count: editCountRef.current,
+    });
+    clearCard();
+  }, [flow, clearCard]);
 
   /** Undo from a diary row's "Added by Drona" chip: the whole send that row
    *  came from, which is the action being undone. Removing one line is what
@@ -1232,51 +1301,106 @@ export default function NutritionScreen() {
           )}
         </View>
 
-        {/* Week strip — the calendar week around the viewed day; tap a bubble to
-            jump straight there. Each day wears a thin ring showing how much of
-            the calorie goal is logged for that day, planned days included.
+        {/* Week strip — calendar weeks, swipe for the one before or after; tap a
+            bubble to jump straight there. Each day wears a ring showing how
+            much of the calorie goal is logged for that day, planned days
+            included. Over goal it overflows like the hero MacroRing: the ring
+            stays full and the surplus laps it again in the same hue, its rounded
+            cap set in a small background-colored gap so the lap's end shows.
             Only days past latestLogDay() are dimmed/locked. */}
-        <View style={s.weekStrip}>
-          {weekDays.map((d) => {
-            const iso = ymd(d);
-            const selected = iso === viewIso;
-            const locked = iso > latestIso;
-            const pct = Math.min((weekKcal[iso] ?? 0) / (targetsOn(d).kcal || 1), 1);
-            const R = 16, CIRC = 2 * Math.PI * R;
-            return (
-              <Pressable
-                key={iso}
-                onPress={() => setViewDate(d)}
-                disabled={locked}
-                style={[s.weekDay, locked && { opacity: 0.35 }]}
-                accessibilityLabel={`Go to ${dayLabel(d)}`}
-              >
-                <Text style={[s.weekDayName, selected && { color: C.foreground }]}>
-                  {d.toLocaleDateString(undefined, { weekday: 'narrow' })}
-                </Text>
-                <View style={s.weekDayRing}>
-                  <Svg width={36} height={36} style={StyleSheet.absoluteFill}>
-                    <Circle cx={18} cy={18} r={R} stroke={C.borderSubtle} strokeWidth={2} fill="none" />
-                    {!locked && pct > 0 && (
-                      <Circle
-                        cx={18} cy={18} r={R}
-                        stroke={C.macro.calories} strokeWidth={2} fill="none"
-                        strokeLinecap="round"
-                        strokeDasharray={`${pct * CIRC} ${CIRC}`}
-                        transform="rotate(-90 18 18)"
-                      />
-                    )}
-                  </Svg>
-                  <View style={[s.weekDayNum, selected && s.weekDayNumSelected]}>
-                    <Text style={[s.weekDayNumTxt, selected && s.weekDayNumTxtSelected]}>
-                      {d.getDate()}
+        <FlatList
+          ref={weekListRef}
+          data={weekStarts}
+          keyExtractor={(w) => ymd(w)}
+          horizontal
+          pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          getItemLayout={(_, i) => ({ length: winW, offset: winW * i, index: i })}
+          initialScrollIndex={Math.max(weekIndex, 0)}
+          initialNumToRender={1}
+          windowSize={3}
+          extraData={{ weekKcal, viewIso, latestIso, targetsOn, C }}
+          onMomentumScrollEnd={onWeekSwipe}
+          onScrollEndDrag={onWeekDragEnd}
+          style={s.weekList}
+          renderItem={({ item: ws }) => (
+            <View style={[s.weekStrip, { width: winW }]}>
+              {Array.from({ length: 7 }, (_, i) => {
+                const d = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + i);
+                const iso = ymd(d);
+                const selected = iso === viewIso;
+                const locked = iso > latestIso;
+                const kcal = weekKcal[iso] ?? 0;
+                const goal = targetsOn(d).kcal;
+                const frac = kcal / (goal || 1);
+                const pct = Math.min(frac, 1);
+                // No goal set means nothing to be over.
+                const over = goal > 0 && frac > 1;
+                const R = 16, CIRC = 2 * Math.PI * R;
+                const SW = 3;
+                // The seam, as on the hero ring: a background-colored disc punched
+                // into the ring at the lap's tip. The moat is wider than the hero's
+                // or it vanishes on a line this thin.
+                const HOLE = 3.6;
+                const holeFrac = HOLE / CIRC;
+                // A whole extra goal (2x, 3x) leaves no remainder; draw it as a
+                // near-full lap, not the minimum stub.
+                const rem = (frac - 1) % 1;
+                const lapFrac = !over ? 0 : rem === 0 ? 1 - holeFrac * 1.25 : Math.max(rem, holeFrac * 1.25);
+                const tipA = (lapFrac * 360 - 90) * (Math.PI / 180);
+                return (
+                  <Pressable
+                    key={iso}
+                    onPress={() => setViewDate(d)}
+                    disabled={locked}
+                    style={[s.weekDay, locked && { opacity: 0.35 }]}
+                    accessibilityLabel={over
+                      ? `Go to ${dayLabel(d)}, ${round(kcal - goal)} calories over`
+                      : `Go to ${dayLabel(d)}`}
+                  >
+                    <Text style={[s.weekDayName, selected && { color: C.foreground }]}>
+                      {d.toLocaleDateString(undefined, { weekday: 'narrow' })}
                     </Text>
-                  </View>
-                </View>
-              </Pressable>
-            );
-          })}
-        </View>
+                    <View style={s.weekDayRing}>
+                      <Svg width={36} height={36} style={StyleSheet.absoluteFill}>
+                        <Circle cx={18} cy={18} r={R} stroke={C.borderSubtle} strokeWidth={SW} fill="none" />
+                        {!locked && pct > 0 && (
+                          <Circle
+                            cx={18} cy={18} r={R}
+                            stroke={C.macro.calories} strokeWidth={SW} fill="none"
+                            strokeLinecap="round"
+                            strokeDasharray={`${pct * CIRC} ${CIRC}`}
+                            transform="rotate(-90 18 18)"
+                          />
+                        )}
+                        {!locked && over && (
+                          <>
+                            <Circle
+                              cx={18 + R * Math.cos(tipA)} cy={18 + R * Math.sin(tipA)} r={HOLE}
+                              fill={C.background}
+                            />
+                            <Circle
+                              cx={18} cy={18} r={R}
+                              stroke={C.macro.calories} strokeWidth={SW} fill="none"
+                              strokeLinecap="round"
+                              strokeDasharray={`${lapFrac * CIRC} ${CIRC}`}
+                              transform="rotate(-90 18 18)"
+                            />
+                          </>
+                        )}
+                      </Svg>
+                      <View style={[s.weekDayNum, selected && s.weekDayNumSelected]}>
+                        <Text style={[s.weekDayNumTxt, selected && s.weekDayNumTxtSelected]}>
+                          {d.getDate()}
+                        </Text>
+                      </View>
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+        />
 
         {/* Summary — calorie hero ring (LEFT + eaten/goal caption below + same-hue
             overshoot) and three macro bars carrying target + signed over. */}
@@ -1495,6 +1619,23 @@ export default function NutritionScreen() {
               onSave={flow.status === 'review' ? () => setSaveItems(flow.meal.items) : undefined}
               onRetry={flow.status === 'error' ? onRetry : undefined}
               onDismiss={onDismiss}
+              // Editing the words starts this meal over: a send while a card is
+              // in review would be read as a correction to it.
+              // Not on 'sent', nor on a "Just log it" send that failed in transport
+              // (it carries a clientId): the server may already be writing that
+              // meal. Retry keeps the id and is safe; resending the words is not.
+              // Nor while Add is writing, nor after Add failed (the error card
+              // keeps the meal): the write may still have landed, and the words
+              // left in the box could log the meal twice. Retry is the safe path.
+              onEditWords={parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && (!!flow.clientId || !!flow.meal)) ? undefined : () => {
+                // The whole conversation, not just a correction's own words.
+                const raw = flow.status === 'review' && flow.words ? flow.words : flow.raw;
+                track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
+                clearCard();
+                // Keep a half-typed follow-up: it rides after the words, not over them.
+                setText((cur) => (cur.trim() ? `${raw}, ${cur.trim()}` : raw));
+                inputRef.current?.focus();
+              }}
               minimized={cardMinimized}
               onToggleMinimize={() => setCardMinimized((v) => !v)}
             />
@@ -1507,6 +1648,7 @@ export default function NutritionScreen() {
               <Feather name="search" size={16} color={C.textSecondary} />
             </Pressable>
             <TextInput
+              ref={inputRef}
               style={s.inputText}
               value={text}
               onChangeText={setText}
@@ -1672,7 +1814,8 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     streak: { flexDirection: 'row', alignItems: 'center', gap: 3, marginLeft: 'auto' },
     streakTxt: { fontSize: FontSize.sm, color: C.textSecondary, fontVariant: ['tabular-nums'], fontWeight: FontWeight.semibold },
 
-    weekStrip: { flexDirection: 'row', paddingHorizontal: Spacing.xl, marginTop: Spacing.xs, gap: 4 },
+    weekList: { marginTop: Spacing.xs, flexGrow: 0 },
+    weekStrip: { flexDirection: 'row', paddingHorizontal: Spacing.xl, gap: 4 },
     weekDay: { flex: 1, alignItems: 'center', gap: 5, paddingVertical: 4 },
     weekDayName: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, color: C.textMuted, letterSpacing: LetterSpacing.eyebrow },
     weekDayRing: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },

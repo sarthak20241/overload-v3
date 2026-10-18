@@ -722,7 +722,7 @@ export const GENERATE_PROGRAM_TOOL: AnthropicTool = {
     properties: {
       title: { type: 'string', description: 'Short program name, e.g. "12-Week Lean Cut", "Off-Season Hypertrophy Block".' },
       objective: { type: 'string', description: '1-2 sentence plain-language goal narrative in your coach voice, e.g. "Drop to 78kg lean while holding your big lifts, then ease into a slow lean bulk." No em dashes.' },
-      goal: { type: 'string', enum: ['hypertrophy', 'strength', 'fat_loss', 'endurance', 'general'], description: 'Closest matching training-goal category for the profile.' },
+      goal: { type: 'string', enum: ['hypertrophy', 'strength', 'fat_loss', 'endurance', 'general'], description: 'What THIS program does, not a copy of the profile goal. fat_loss when target_weight_kg is below their current weight, even if their profile goal is muscle or strength (muscle is kept by the training, not by this label). Never fat_loss for a program that gains weight. Without a weight change, the closest training goal.' },
       target_weight_kg: { type: 'number', description: 'Target bodyweight in kg if the goal is weight-based. Omit if not applicable.' },
       target_date: { type: 'string', description: 'Target completion date as YYYY-MM-DD if there is a deadline. Omit if open-ended.' },
       start_date: { type: 'string', description: 'Program start date as YYYY-MM-DD. Default to today unless the user asked to start later.' },

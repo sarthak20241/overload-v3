@@ -117,6 +117,9 @@ interface Props {
   onSave?: () => void;                        // save this parse as a meal/recipe
   onRetry?: () => void;
   onDismiss?: () => void;
+  /** Put the user's own words back in the food box to edit and resend. The
+   *  screen owns what that does to this card. Absent while a parse runs. */
+  onEditWords?: () => void;
   /** Collapsed to the summary line. Owned by the screen so a fresh parse can
    *  reopen it: a new meal the user has not seen yet must never arrive hidden. */
   minimized?: boolean;
@@ -176,7 +179,7 @@ function provenance(source: ParsedMealItem['source']): string | null {
 export function ParsedMealCard({
   state, streamingRows, rawText, maxHeight, meal, mealType, message, adding, saved, notice, proposalLabel,
   checkingIndex, onCheckItem,
-  onMealTypeChange, onMoveGroup, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onSwapItem, onAdd, onSave, onRetry, onDismiss,
+  onMealTypeChange, onMoveGroup, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onSwapItem, onAdd, onSave, onRetry, onDismiss, onEditWords,
   minimized, onToggleMinimize,
   autoLogging, statusLabel,
 }: Props) {
@@ -365,6 +368,21 @@ export function ParsedMealCard({
       {(!!rawText || collapsible) && (
         <View style={s.rawRow}>
           {!!rawText && <Text style={[s.raw, s.rawGrow]} numberOfLines={2}>{rawText}</Text>}
+          {/* The user's own words, one tap from the box again. A return arrow,
+              not a pencil: the pencils on the lines below edit one food, this
+              sends the whole message back down to the box. Same size and weight
+              as the copy icon under a Drona chat bubble. */}
+          {!!rawText && !!onEditWords && (
+            <Pressable
+              onPress={onEditWords}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Edit what you wrote"
+              accessibilityHint="Puts your words back in the box to change and send again"
+            >
+              <Feather name="corner-down-left" size={12} color={C.textMuted} style={{ marginTop: 2 }} />
+            </Pressable>
+          )}
           {collapsible && (
             <Pressable
               onPress={onToggleMinimize}
