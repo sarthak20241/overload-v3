@@ -538,7 +538,6 @@ export default function NutritionScreen() {
     if (!supabase || relogBusyRef.current || items.length === 0) return;
     relogBusyRef.current = true;
     setRelogBusy(all ? '*' : items[0].key);
-    haptics.success();
     // finally: a throw (not just an {error}) must not leave every later tap ignored.
     let res: Awaited<ReturnType<typeof relogLines>>;
     try {
@@ -554,6 +553,7 @@ export default function NutritionScreen() {
       meal_type: meal, item_count: items.length, all, edited: false, is_today: isToday, write_failed: !!error,
     });
     if (error || !ref) { haptics.warning(); return; }
+    haptics.success();
     rememberRelog(ref, all ? 'Your usual' : 'From your usual');
     reload();
   }, [supabase, viewDate, isToday, rememberRelog, reload]);

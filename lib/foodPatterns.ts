@@ -228,7 +228,13 @@ export function relogLabels(e: { logged_via?: string | null; tier?: string | nul
 /** logged_via + tier to write for one line. A fresh parse is 'ai' with no
  *  tier (the stamp trigger fills it). A re-log keeps its labels, unless the
  *  user changed it in the review card (source 'manual'): then the numbers are
- *  theirs, and no parse tier describes them. */
+ *  theirs, and no parse tier describes them.
+ *
+ *  An 'ai' re-log with no tier can still be stamped by the trigger, when a
+ *  parse in the last 6 hours produced the same food at the same kcal. That
+ *  tier describes those exact numbers, so it is a fair label, and it can
+ *  never make the line 'manual'. What this guarantees is the trust level:
+ *  an estimate is never promoted to the user's own number. */
 export function relogColumns(source: string | null | undefined, relog: RelogLabels | undefined): RelogLabels {
   if (!relog) return { logged_via: 'ai', tier: null };
   if (source === 'manual') return { logged_via: 'manual', tier: null };
