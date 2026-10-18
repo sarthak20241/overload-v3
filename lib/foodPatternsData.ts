@@ -108,11 +108,14 @@ export function useFoodHistory(version: string | null, anchorIso: string): { his
       // and stale ones from this morning are still this user's habits.
       if (cancelled || !fresh) return;
       _mem = { key, entries: fresh };
-      writeCache<HistoryCache>('foodHistory', user.id, _mem);
+      // Disk holds one slot, and a cold start always opens on today, so only
+      // today's window is worth keeping there. Browsing past days would
+      // otherwise overwrite it on every day change.
+      if (anchorIso === ymd(new Date())) writeCache<HistoryCache>('foodHistory', user.id, _mem);
       setHistory(fresh);
     })().catch(() => {});
     return () => { cancelled = true; };
-  }, [supabase, user?.id, key, version]);
+  }, [supabase, user?.id, key, version, anchorIso]);
 
   return { history };
 }
