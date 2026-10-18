@@ -36,11 +36,15 @@ export interface DronaCardPayload {
   from_carb_g?: number | null;
   from_fat_g?: number | null;
   phase_id?: string | null;
+  /** apply_targets from the calorie check-in: the future phases that move with it. */
+  phases?: { id: string; name?: string; from_kcal: number; to_kcal: number }[];
 }
 
 export interface SavedDronaCard {
   id: string;
   week_start: string;
+  /** 'weekly' = the one Drona card a week; 'calories' = the calorie check-in, its own card. */
+  slot: 'weekly' | 'calories';
   kind: DronaCardKind;
   topic: string;
   title: string;
@@ -58,7 +62,7 @@ export interface SavedDronaCard {
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const CARD_COLUMNS =
-  'id, week_start, kind, topic, title, body, evidence, payload, status, deferred_at, expires_at, decided_at, created_at';
+  'id, week_start, slot, kind, topic, title, body, evidence, payload, status, deferred_at, expires_at, decided_at, created_at';
 const KINDS: DronaCardKind[] = ['request', 'notice', 'act', 'talk'];
 
 /** The Monday of the device's current local week. */
@@ -71,6 +75,7 @@ const asCard = (row: any): SavedDronaCard | null =>
     ? {
         id: row.id,
         week_start: String(row.week_start ?? ''),
+        slot: row.slot === 'calories' ? 'calories' : 'weekly',
         kind: row.kind,
         topic: String(row.topic ?? ''),
         title: String(row.title ?? ''),
@@ -91,16 +96,25 @@ const asCard = (row: any): SavedDronaCard | null =>
  * `undefined` = the read failed (offline, or the table is not there yet): do
  * not treat that as "no card", or every blip re-requests.
  */
-export async function readWeeklyCard(
+export const readWeeklyCard = (supabase: SupabaseClient, clerkId: string, now: Date = new Date()) =>
+  readSlotCard(supabase, clerkId, 'weekly', now);
+
+/** The calorie check-in: its own card a week, apart from the weekly one. */
+export const readCheckinCard = (supabase: SupabaseClient, clerkId: string, now: Date = new Date()) =>
+  readSlotCard(supabase, clerkId, 'calories', now);
+
+async function readSlotCard(
   supabase: SupabaseClient,
   clerkId: string,
-  now: Date = new Date(),
+  slot: SavedDronaCard['slot'],
+  now: Date,
 ): Promise<SavedDronaCard | null | undefined> {
   try {
     const { data, error } = await supabase
       .from('drona_cards')
       .select(CARD_COLUMNS)
       .eq('user_id', clerkId)
+      .eq('slot', slot)
       .order('week_start', { ascending: false })
       .limit(3);
     if (error) return undefined;

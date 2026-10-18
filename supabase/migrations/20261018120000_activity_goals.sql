@@ -18,9 +18,9 @@
 --    isCardioSet. Steps come from drona_recovery_day_facts.
 -- 3. drona_rebuild_activity_facts writes them; drona_rebuild_all_facts runs it
 --    last of the domains, after 'plan' (it reads p_phase_id) and 'recovery'
---    (it reads steps). The live drona_rebuild_all_facts is ahead of the repo
---    ('steering', 'energy', signals, behaviours), so this edits its live text
---    in place rather than replacing it with a copy.
+--    (it reads steps). Like 20261018093136, this edits the function's live
+--    text in place rather than replacing it with a copy, so nothing another
+--    migration changed in it is reverted.
 --
 -- Additive. Old clients never select or send the columns, and the new client
 -- retries without them on PGRST204 / 42703, so the app can ship first.
@@ -137,9 +137,9 @@ revoke all on function public.drona_rebuild_activity_facts(text, date, date) fro
 grant execute on function public.drona_rebuild_activity_facts(text, date, date) to service_role;
 
 -- Add 'activity' to the LIVE drona_rebuild_all_facts by editing its own text,
--- not by pasting a copy: prod is ahead of the repo here, and a pasted copy
--- would silently revert anything changed on prod since. Stops the migration if
--- the domain list is not where it is expected, so a human looks.
+-- not by pasting a copy, which would silently revert anything another
+-- migration changed in it. Stops the migration if the domain list is not where
+-- it is expected, so a human looks.
 do $$
 declare
   v_def text := pg_get_functiondef('public.drona_rebuild_all_facts(text,date,date)'::regprocedure);
