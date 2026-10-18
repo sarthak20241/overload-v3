@@ -18,17 +18,19 @@ const date = new Date(2026, 8, 27);
 function fixture({ error = null, data = { id: 'entry' }, count = 0, countError = null, rpcError = { code: 'PGRST202' } as null | { code: string } } = {}) {
   const calls: unknown[] = [];
   const client = {
-  rpc(name: string, args: unknown) { calls.push(['rpc', name, args]); return Promise.resolve({ data: !rpcError, error: rpcError }); },
-  from(table: string) {
-    const q = {
-      update(patch: unknown) { calls.push(['update', table, patch]); return q; },
-      eq(key: string, value: unknown) { calls.push(['eq', key, value]); return q; },
-      select(...args: unknown[]) { calls.push(['select', ...args]); return q; },
-      single() { return Promise.resolve({ data, error }); },
-      delete() { calls.push(['delete', table]); return q; },
-      then(resolve: (v: unknown) => unknown) { return Promise.resolve({ count, error: countError }).then(resolve); },
-    }; return q;
-  } };
+    rpc(name: string, args: unknown) { calls.push(['rpc', name, args]); return Promise.resolve({ data: !rpcError, error: rpcError }); },
+    from(table: string) {
+      const q = {
+        update(patch: unknown) { calls.push(['update', table, patch]); return q; },
+        eq(key: string, value: unknown) { calls.push(['eq', key, value]); return q; },
+        select(...args: unknown[]) { calls.push(['select', ...args]); return q; },
+        single() { return Promise.resolve({ data, error }); },
+        delete() { calls.push(['delete', table]); return q; },
+        then(resolve: (v: unknown) => unknown) { return Promise.resolve({ count, error: countError }).then(resolve); },
+      };
+      return q;
+    },
+  };
   const findMeal = async (meal: string, day: Date) => { calls.push(['findMeal', meal, day]); return { id: 'new-meal' }; };
   return { client, calls, findMeal };
 }
