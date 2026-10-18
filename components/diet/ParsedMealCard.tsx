@@ -35,7 +35,7 @@
  * the screen's callbacks, which run once.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
+import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView, type ViewStyle } from 'react-native';
 import Animated, {
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, Easing,
   useReducedMotion, FadeIn,
@@ -254,12 +254,14 @@ export function ParsedMealCard({
   const [reviewY, setReviewY] = useState(0);
   const [footerBottom, setFooterBottom] = useState(0);
   const hasList = state === 'review' && !!meal;
-  // Two layout assumptions hold this sum together: the footer is a direct
-  // child of the review body (its y is in that body's frame), and the tail
-  // is s.card's paddingBottom (Spacing.md) plus its 1pt border. Move the
-  // footer into a wrapper or change that padding and this must follow.
+  // The footer must stay a direct child of the review body (its y is in
+  // that body's frame). The tail below it is read off s.card itself, so a
+  // padding or border change there carries through.
   // footerBottom is 0 until the footer has laid out, and falls back to cardH.
-  const contentH = footerBottom > 0 ? bodyY + reviewY + footerBottom + Spacing.md + 1 : cardH;
+  const cardStyle: ViewStyle = StyleSheet.flatten(s.card);
+  const cardTail = Number(cardStyle.paddingBottom ?? cardStyle.padding ?? 0)
+    + Number(cardStyle.borderBottomWidth ?? cardStyle.borderWidth ?? 0);
+  const contentH = footerBottom > 0 ? bodyY + reviewY + footerBottom + cardTail : cardH;
   // What the card needs at the least: everything that does not scroll (the
   // card minus the list's viewport), plus the list at its floor. If the
   // polite cap is below that, everything else would overflow the card's
