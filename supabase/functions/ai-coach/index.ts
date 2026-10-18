@@ -4448,6 +4448,9 @@ Deno.serve(async (req) => {
   //   - each program phase's PLANNED fuel days, added to user_context.program
   //     (get_user_coach_context lists phases without them). Without these,
   //     "Adjust with Drona" rebuilt every phase guessing its fuel days.
+  // The active program id read here is reused by 4d' below.
+  // undefined = not read (that block threw first); null = no active program.
+  let activeProgramId: string | null | undefined = undefined;
   try {
     const { data: fuelRow, error: fuelError } = await userClient
       .from("user_profiles")
@@ -4487,6 +4490,7 @@ Deno.serve(async (req) => {
         .select("id")
         .eq("status", "active")
         .maybeSingle();
+      activeProgramId = active?.id ?? null;
       if (active?.id) {
         const { data: rows, error: phaseFuelError } = await userClient
           .from("coach_program_phases")
@@ -4507,13 +4511,14 @@ Deno.serve(async (req) => {
   try {
     const ctx = userContext as Record<string, unknown> | null;
     if (ctx && ctx.program && typeof ctx.program === "object") {
-      const { data: active } = await userClient
+      // 4d already read it; read again only if that block threw first.
+      const programId = activeProgramId !== undefined ? activeProgramId : (await userClient
         .from("coach_programs")
         .select("id")
         .eq("user_id", userId)
         .eq("status", "active")
-        .maybeSingle();
-      if (active?.id) {
+        .maybeSingle()).data?.id ?? null;
+      if (programId) {
         // THIS week's row only, by the user's own date (4c). Newest-first
         // would hand last week's numbers to the current phase right after
         // Monday, before the cron has written the new week. Read alongside
@@ -4525,7 +4530,7 @@ Deno.serve(async (req) => {
             .from("coach_program_phases")
             .select("seq, activity_steps_target, cardio_sessions_per_week")
             .eq("user_id", userId)
-            .eq("program_id", active.id),
+            .eq("program_id", programId),
           weekStart
             ? userClient
               .from("drona_week_facts")
