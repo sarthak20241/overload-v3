@@ -27,6 +27,7 @@ import { normalizeFuelDays, type FuelDay } from '@/lib/fuelDays';
 import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from '@/lib/targetHistory';
 import { readSwapOptions, type SwapOption } from '@/lib/variantSwap';
 import { relogColumns, type RelogLabels } from '@/lib/foodPatterns';
+import { deleteMealIfEmpty } from '@/lib/mealCleanup';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
@@ -1378,7 +1379,7 @@ async function logSection(
   if (error) {
     // If we created an empty meal and the entries failed, don't leave the
     // orphan meal behind.
-    if (createdMeal) await supabase.from('meals').delete().eq('id', mealId);
+    if (createdMeal) await deleteMealIfEmpty(supabase, mealId);
     return { error: error.message };
   }
   const entryIds = (inserted ?? []).map((r: any) => String(r.id));
@@ -1401,12 +1402,7 @@ export async function undoParsedMeal(supabase: Supa, ref: LoggedParseRef): Promi
     // into one meal undone in turn would otherwise strand an empty row (the
     // first add created it, the last undo did not). An empty meal still
     // counts as a logged day for the streak. Same rule as deleteMealEntry.
-    // Known gap, shared with deleteMealEntry: count-then-delete is two
-    // requests, and meal_entries cascades on meal delete, so a line another
-    // device adds to this meal between them would go with it.
-    const { count } = await supabase
-      .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', s.mealId);
-    if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', s.mealId);
+    await deleteMealIfEmpty(supabase, s.mealId);
   }
   return failed ? { error: failed } : {};
 }
@@ -1937,7 +1933,7 @@ export async function logSavedMeal(
     });
   }
   if (error) {
-    if (createdMeal) await supabase.from('meals').delete().eq('id', mealId);
+    if (createdMeal) await deleteMealIfEmpty(supabase, mealId);
     return { error: error.message };
   }
   return {};
@@ -1999,9 +1995,7 @@ export async function deleteMealEntry(
 ): Promise<{ error?: string }> {
   const { error } = await supabase.from('meal_entries').delete().eq('id', entry.id);
   if (error) return { error: error.message };
-  const { count } = await supabase
-    .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', entry.meal_id);
-  if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', entry.meal_id);
+  await deleteMealIfEmpty(supabase, entry.meal_id);
   return {};
 }
 
@@ -2057,9 +2051,7 @@ export async function moveEntry(
   const targetMealId = m.id;
   const { error } = await supabase.from('meal_entries').update({ meal_id: targetMealId }).eq('id', entry.id);
   if (error) return { error: error.message };
-  const { count } = await supabase
-    .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', entry.meal_id);
-  if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', entry.meal_id);
+  await deleteMealIfEmpty(supabase, entry.meal_id);
   return {};
 }
 
@@ -2220,7 +2212,7 @@ export async function logQuickAdd(
     logged_via: 'manual',
   });
   if (error) {
-    if (createdMeal) await supabase.from('meals').delete().eq('id', mealId);
+    if (createdMeal) await deleteMealIfEmpty(supabase, mealId);
     return { error: error.message };
   }
   track('meal_logged', {

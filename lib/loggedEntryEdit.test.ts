@@ -1,4 +1,4 @@
-// Run with: deno test --no-check lib/loggedEntryEdit.test.ts
+// Run with: deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts
 import { assertEquals, assert } from 'jsr:@std/assert@1';
 import { persistLoggedEntryEdit } from './loggedEntryEdit.ts';
 
@@ -13,9 +13,13 @@ const item = {
   fiber_g: null, source: 'manual', assumption: null, confidence: 'high', meal_type: 'lunch',
 };
 const date = new Date(2026, 8, 27);
-function fixture({ error = null, data = { id: 'entry' }, count = 0, countError = null } = {}) {
+// rpcError: the delete_meal_if_empty RPC's answer. Missing by default, so the
+// tests below exercise the client-side fallback they were written against.
+function fixture({ error = null, data = { id: 'entry' }, count = 0, countError = null, rpcError = { code: 'PGRST202' } as null | { code: string } } = {}) {
   const calls: unknown[] = [];
-  const client = { from(table: string) {
+  const client = {
+  rpc(name: string, args: unknown) { calls.push(['rpc', name, args]); return Promise.resolve({ data: !rpcError, error: rpcError }); },
+  from(table: string) {
     const q = {
       update(patch: unknown) { calls.push(['update', table, patch]); return q; },
       eq(key: string, value: unknown) { calls.push(['eq', key, value]); return q; },
@@ -115,4 +119,11 @@ Deno.test('an unchanged name is not rewritten, and a blank name is rejected', as
   const blank = fixture();
   assert((await persistLoggedEntryEdit(blank.client, entry, { ...item, food_name: '  ' }, date, blank.findMeal)).error);
   assertEquals(blank.calls, []);
+});
+
+Deno.test('with the RPC live, a move leaves the old meal to the database, no client delete', async () => {
+  const f = fixture({ rpcError: null });
+  assertEquals(await persistLoggedEntryEdit(f.client, entry, item, date, f.findMeal), {});
+  assert(f.calls.some(c => c[0] === 'rpc' && c[1] === 'delete_meal_if_empty'));
+  assert(!f.calls.some(c => c[0] === 'delete'));
 });
