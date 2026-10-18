@@ -63,8 +63,8 @@ const ordered = (a: number, b: number) => ({ reps_min: Math.min(a, b), reps_max:
 
 /** "3x10", "3 x 8-12", "3-4x10", "3 sets of 10": the leading part is sets, the rest is reps. */
 const SETS_X_REPS = /^\s*\d+(?:\s*[-\u2013]\s*\d+)?\s*(?:[x\u00d7]|sets?\s+of)\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*$/i;
-/** A suffix that makes the number a time, a distance or calories, not a rep count. */
-const NON_REP_UNIT = /^(s|secs?|seconds?|min|mins|minutes?|m|meters?|metres?|km|mi|miles?|yd|yards?|cals?|kcals?)\b/i;
+/** A suffix that makes the number a time, a distance, calories or a set count, not a rep count. */
+const NON_REP_UNIT = /^(s|secs?|seconds?|min|mins|minutes?|m|meters?|metres?|km|mi|miles?|yd|yards?|cals?|kcals?|sets?)\b/i;
 
 /**
  * Rep range and cue for a routine_exercises row. A rep target ("8-12", "5")
