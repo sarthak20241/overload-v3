@@ -187,11 +187,22 @@ export function parseEditorDuration(text: string | null | undefined): number {
 }
 
 /**
+ * The routine editor's Km field in meters: a plain number, with a dot or a
+ * comma for decimals ("5", "1.5", "1,5"). Anything else is 0, never a guess:
+ * parseDistanceKm alone read "1,5" as 1 km and "5abc" as 5 km.
+ */
+export function parseEditorDistance(text: string | null | undefined): number {
+  const t = (text ?? '').trim();
+  if (!/^\d+(?:[.,]\d+)?$/.test(t)) return 0;
+  return parseDistanceKm(t.replace(',', '.'));
+}
+
+/**
  * Routine editor fields back to targets. A field the exercise does not log
  * saves nothing, so picking a lift over a stretch drops the stretch's time.
  * An unknown metric type (a row from a cache without it) keeps what was
- * loaded rather than guess it away. The time field is read by
- * parseEditorDuration; distance is km.
+ * loaded rather than guess it away. The fields are read by
+ * parseEditorDuration and parseEditorDistance (km).
  */
 export function targetsFromEditor(
   metricType: string | null | undefined,
@@ -199,7 +210,7 @@ export function targetsFromEditor(
 ): RoutineTargets {
   const known = metricType != null;
   const secs = !known || takesDurationTarget(metricType) ? parseEditorDuration(text.duration) : 0;
-  const meters = !known || takesDistanceTarget(metricType) ? parseDistanceKm(text.distance ?? '') : 0;
+  const meters = !known || takesDistanceTarget(metricType) ? parseEditorDistance(text.distance) : 0;
   // Past the column bounds is a typo: kept, it would show locally and then
   // be dropped at sync, so it is dropped here (and the label says so).
   return {

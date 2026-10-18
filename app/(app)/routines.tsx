@@ -46,6 +46,7 @@ import {
   takesDurationTarget,
   MAX_TARGET_METERS,
   MAX_TARGET_SECONDS,
+  parseEditorDistance,
   parseEditorDuration,
   targetEditorText,
   targetsFromEditor,
@@ -65,7 +66,7 @@ import ReorderableList, {
   type ReorderableListReorderEvent,
 } from 'react-native-reorderable-list';
 import { metricTypeOf, usesReps, type ExerciseDef, type MetricType } from '@/lib/exercises';
-import { formatDuration, parseDistanceKm } from '@/lib/format';
+import { formatDuration } from '@/lib/format';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -1448,7 +1449,7 @@ function timeLabel(text: string): { text: string; bad: boolean } {
 function distanceLabel(text: string): { text: string; bad: boolean } {
   const t = text.trim();
   if (!t) return { text: 'Km', bad: false };
-  const meters = parseDistanceKm(t);
+  const meters = parseEditorDistance(t);
   if (!meters) return { text: 'Km as a number', bad: true };
   return meters > MAX_TARGET_METERS ? { text: 'Km too far', bad: true } : { text: 'Km', bad: false };
 }

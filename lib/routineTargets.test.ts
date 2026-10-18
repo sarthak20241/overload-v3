@@ -3,6 +3,7 @@ import {
   bareMAsMinutes,
   formatRoutineTarget,
   missingTargetColumn,
+  parseEditorDistance,
   parseEditorDuration,
   parseTimedTarget,
   readRoutineTargets,
@@ -225,4 +226,17 @@ Deno.test('the client bounds match the migration CHECK bounds', async () => {
   );
   assertEquals(new RegExp(`target_duration_seconds between 1 and ${MAX_TARGET_SECONDS}\\b`).test(sql), true);
   assertEquals(new RegExp(`target_distance_m <= ${MAX_TARGET_METERS}\\b`).test(sql), true);
+});
+
+Deno.test('the editor Km field takes a comma decimal and never guesses', () => {
+  assertEquals(parseEditorDistance('5'), 5000);
+  assertEquals(parseEditorDistance('1.5'), 1500);
+  assertEquals(parseEditorDistance('1,5'), 1500);
+  assertEquals(parseEditorDistance('5abc'), 0);
+  assertEquals(parseEditorDistance('1.5.2'), 0);
+  assertEquals(parseEditorDistance(''), 0);
+  assertEquals(targetsFromEditor('distance_duration', { distance: '1,5' }), {
+    target_duration_seconds: null,
+    target_distance_m: 1500,
+  });
 });
