@@ -382,7 +382,20 @@ export default function NutritionScreen() {
     // Measure again: the keyboard may have come or gone, which moved the card.
     const el = parseCardRef.current;
     if (!el) { setPop((p) => p && { ...p, origin: null }); setPopOpen(false); return; }
+    // A close must always close. If the measure never calls back (the view
+    // detached mid-measure), fade out in place after a beat instead of
+    // leaving the backdrop up over the day.
+    let settled = false;
+    const fallback = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      setPop((p) => p && { ...p, origin: null });
+      setPopOpen(false);
+    }, 150);
     el.measureInWindow((x, y, width, height) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(fallback);
       // Async, like openPop: if Add or Discard landed meanwhile, that rect is
       // a spot the card no longer has, so fade out in place instead.
       const st = flowRef.current.status;
