@@ -141,9 +141,15 @@ Deno.test('a time on an exercise that does not log time stays in the cue', () =>
   });
 });
 
-Deno.test('a bare m with no metric type stays in the cue: meters or minutes?', () => {
+Deno.test('a bare m with no metric type stays in the cue, and is minutes on a hold', () => {
   assertEquals(planRepsAndNote('5m'), { reps_min: 8, reps_max: 12, note: 'Aim for 5m.' });
-  assertEquals(planRepsAndNote('5m', null, { metricType: 'duration' }), { reps_min: 8, reps_max: 12, note: 'Aim for 5m.' });
+  // On a time-only exercise a bare m can only be minutes.
+  assertEquals(planRepsAndNote('5m', null, { metricType: 'duration' }), {
+    reps_min: 8,
+    reps_max: 12,
+    note: null,
+    target_duration_seconds: 300,
+  });
 });
 
 Deno.test('a bare m on a run is meters only from 100 up', () => {

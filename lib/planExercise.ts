@@ -13,6 +13,7 @@ import {
   type NewExerciseDef,
 } from '../supabase/functions/_shared/exerciseVocab';
 import {
+  bareMAsMinutes,
   parseTimedTarget,
   takesDistanceTarget,
   takesDurationTarget,
@@ -99,7 +100,8 @@ export function planRepsAndNote(
   if (!target) return { reps_min: 8, reps_max: 12, note: cue || null };
   // Time and distance first: "5km" and "400m" also start with a number, and
   // the rep reading below would take them for 5 and 400 reps.
-  const timed = opts.targetColumns === false ? null : parseTimedTarget(target);
+  const parsed = opts.targetColumns === false ? null : parseTimedTarget(target);
+  const timed = parsed && bareMAsMinutes(parsed, opts.metricType);
   // A time on an exercise that does not log time (Drona timed a lift) would
   // land in a column nothing shows, so it stays in the cue instead.
   // A bare "m" could be meters or minutes; trustDistanceUnit decides.

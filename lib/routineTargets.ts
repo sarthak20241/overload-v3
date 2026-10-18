@@ -123,6 +123,17 @@ export function trustDistanceUnit(t: TimedTarget, metricType: string | null | un
   return !takesDurationTarget(metricType) || (t.distance_m ?? 0) >= BARE_M_MIN_METERS_ON_TIMED;
 }
 
+/**
+ * A bare "m" on an exercise that logs time but not distance (a hold, a
+ * stretch) can only be minutes, so read it that way: "5m" is 300 s. Any other
+ * target comes back as it was.
+ */
+export function bareMAsMinutes(t: TimedTarget, metricType: string | null | undefined): TimedTarget {
+  if (!t.bareM || metricType == null) return t;
+  if (!takesDurationTarget(metricType) || takesDistanceTarget(metricType)) return t;
+  return { duration_seconds: Math.round((t.distance_m ?? 0) * 60), range: t.range };
+}
+
 /** A short label for a target: "0:45", "20:00", "5 km". Null when there is none. */
 export function formatRoutineTarget(t: RoutineTargets): string | null {
   const parts: string[] = [];

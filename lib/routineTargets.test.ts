@@ -1,5 +1,6 @@
 import { assertEquals } from 'jsr:@std/assert@1';
 import {
+  bareMAsMinutes,
   formatRoutineTarget,
   missingTargetColumn,
   parseEditorDuration,
@@ -202,4 +203,13 @@ Deno.test('the editor drops a target past the column bounds instead of showing i
     target_duration_seconds: 86400,
     target_distance_m: 1_000_000,
   });
+});
+
+Deno.test('a bare m on a time-only exercise reads as minutes', () => {
+  const t = parseTimedTarget('5m')!;
+  assertEquals(bareMAsMinutes(t, 'duration'), { duration_seconds: 300, range: false });
+  assertEquals(bareMAsMinutes(t, 'distance_duration'), t);
+  assertEquals(bareMAsMinutes(t, 'weight_distance'), t);
+  assertEquals(bareMAsMinutes(t, null), t);
+  assertEquals(bareMAsMinutes(parseTimedTarget('5km')!, 'duration'), { distance_m: 5000, range: false });
 });
