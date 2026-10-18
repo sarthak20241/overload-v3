@@ -92,6 +92,7 @@ import {
   writeAutoLog,
 } from "./autoLog.ts";
 import type { PreciseCacheRow } from "./preciseCache.ts";
+import { preciseAliasStore } from "./preciseAlias.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
@@ -2868,6 +2869,7 @@ function makeParseDeps(
   opts: { brandWeb?: boolean } = {},
 ): ParseMealDeps {
   let searchCountryP: Promise<string | null> | undefined;
+  const aliases = preciseAliasStore(admin, userId);
   return {
     anthropicApiKey: ANTHROPIC_API_KEY!,
     model: PARSE_MEAL_MODEL,
@@ -2906,10 +2908,12 @@ function makeParseDeps(
           return null;
         }
         if (data) return data as PreciseCacheRow;
-        // Not a row's own key: maybe a phrase that already led to a row (0141).
-        // A missing function (migration not applied) is simply a miss.
-        const alias = await admin.rpc("precise_cache_by_alias", { p_key: key }).maybeSingle();
-        return (alias.error ? null : (alias.data as PreciseCacheRow | null)) ?? null;
+        // Not a row's own key: maybe a phrase of THIS user's that already led
+        // to a row. Other users' phrases are never an exact hit (preciseAlias.ts).
+        // A row's own key is also an alias with no owner, which the alias path
+        // can never hit; that is fine, because precise_cache_get above already
+        // answered it.
+        return await aliases.lookup(key);
       }
       : undefined,
     // Service role again, and upsert on cache_key so a re-verification refreshes
@@ -2945,14 +2949,8 @@ function makeParseDeps(
         return written?.id ?? null;
       }
       : undefined,
-    preciseAliasPut: async (aliasKey: string, rowId: string, confidence: number | null, source: "jev" | "lookup" = "jev") => {
-      // ignoreDuplicates: the first mapping of a phrase wins and is never repointed.
-      const { error } = await admin.from("precise_alias").upsert(
-        { alias_key: aliasKey, row_id: rowId, source, confidence },
-        { onConflict: "alias_key", ignoreDuplicates: true },
-      );
-      if (error) console.log(`[parse_meal] precise_alias upsert failed: ${error.message}`);
-    },
+    // Wrapped, not passed bare, so it keeps working if put ever uses `this`.
+    preciseAliasPut: (aliasKey, rowId, confidence, source) => aliases.put(aliasKey, rowId, confidence, source),
     webLookup: PRECISE_WEB_PROVIDER,
     searchRewrite: SEARCH_REWRITE,
     tavily: TAVILY_API_KEY ? { apiKey: TAVILY_API_KEY, timeoutMs: 20_000, log: (m) => console.log(m) } : undefined,
