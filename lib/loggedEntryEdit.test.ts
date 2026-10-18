@@ -1,4 +1,7 @@
 // Run with: deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts
+// --no-check: the module's type imports (dietData, supabase-js) pull in app
+// code Deno cannot type-check. --unstable-sloppy-imports: the app imports
+// ./mealCleanup without the .ts extension Deno otherwise requires.
 import { assertEquals, assert } from 'jsr:@std/assert@1';
 import { persistLoggedEntryEdit } from './loggedEntryEdit.ts';
 
