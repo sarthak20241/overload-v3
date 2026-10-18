@@ -7,7 +7,7 @@
  * twice never doubles the food. Each line keeps its own portion and numbers:
  * this is the same food, not a fresh estimate. Portal sheet, no typing.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { View, Text, Pressable, TouchableOpacity, ScrollView, StyleSheet, BackHandler, Keyboard } from 'react-native';
 import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -35,14 +35,23 @@ interface Props {
 export function CopyMealSheet({ open, title, subtitle, lines, current, busy, onClose, onCopy }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
-  const fresh = useMemo(() => new Set(copyableFromDay(lines, current)), [lines, current]);
-  const [picked, setPicked] = useState<Set<number>>(fresh);
-
-  // Reset the ticks when the sheet opens (or switches meal), and only then.
-  // `fresh` also changes on any reload of the day behind the sheet, and
-  // resetting on that would silently undo what the user just unticked.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (open) setPicked(new Set(fresh)); }, [open, title]);
+  // The list is frozen when the sheet opens (or switches meal). Ticks are row
+  // indexes, so a reload of the day behind an open sheet must not swap the
+  // rows under them, and must not reset what the user just unticked either.
+  // Taken during render, React's derive-on-key-change pattern, so the first
+  // frame of a newly opened sheet already shows the right rows.
+  const openKey = open ? title : '';
+  const [snapKey, setSnapKey] = useState('');
+  const [snap, setSnap] = useState<{ lines: HistoryEntry[]; fresh: Set<number> }>({ lines: [], fresh: new Set() });
+  const [picked, setPicked] = useState<Set<number>>(new Set());
+  if (openKey !== snapKey) {
+    const fresh = new Set(copyableFromDay(lines, current));
+    setSnapKey(openKey);
+    setSnap({ lines, fresh });
+    setPicked(new Set(fresh));
+  }
+  const shown = openKey === snapKey ? snap : { lines, fresh: new Set(copyableFromDay(lines, current)) };
+  const fresh = shown.fresh;
   useEffect(() => { if (open) Keyboard.dismiss(); }, [open]);
   useEffect(() => {
     if (!open) return;
@@ -52,7 +61,7 @@ export function CopyMealSheet({ open, title, subtitle, lines, current, busy, onC
 
   if (!open) return <Portal>{null}</Portal>;
 
-  const chosen = lines.filter((_, i) => picked.has(i));
+  const chosen = shown.lines.filter((_, i) => picked.has(i));
   const kcal = Math.round(chosen.reduce((t, l) => t + l.kcal, 0));
   const protein = Math.round(chosen.reduce((t, l) => t + l.protein_g, 0));
   const toggle = (i: number) => setPicked((p) => {
@@ -82,7 +91,7 @@ export function CopyMealSheet({ open, title, subtitle, lines, current, busy, onC
             </View>
 
             <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} showsVerticalScrollIndicator={false}>
-              {lines.map((l, i) => {
+              {shown.lines.map((l, i) => {
                 const on = picked.has(i);
                 const already = !fresh.has(i);
                 return (
