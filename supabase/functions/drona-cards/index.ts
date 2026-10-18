@@ -14,9 +14,9 @@
 //   3. the permanent swap
 //   4. the behaviour pick: last week's behaviours plus the word behaviours, in
 //      fixed words (get_drona_pick_facts + _shared/dronaPick.ts)
-//   5. the older P0 rules (get_drona_facts + _shared/dronaCards.ts) The calorie check-in is a second,
-// separate card per week (slot 'calories', _shared/dronaEnergy.ts). Nothing to
-// say writes nothing, which is most weeks. B1 (the model's calorie card) is
+//   5. the older P0 rules (get_drona_facts + _shared/dronaCards.ts)
+// Nothing to say writes nothing, which is most weeks. The calorie check-in is
+// a second, separate card per week (slot 'calories', _shared/dronaEnergy.ts). B1 (the model's calorie card) is
 // retired here: the check-in owns calories (.planning/drona-cards-pick.md).
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
@@ -226,7 +226,12 @@ async function wordStep(
   // One more try for the texts that failed: one flaky call must not hold a
   // chatty person's whole week. Still failing: the week fails (a missing text
   // could be the one that says "travelling").
-  for (let i = 0; i < texts.length; i++) if (!answers[i].ok) answers[i] = await ask(texts[i]);
+  const failed = texts.map((_, i) => i).filter((i) => !answers[i].ok);
+  for (let k = 0; k < failed.length; k += JEV_CONCURRENCY) {
+    const batch = failed.slice(k, k + JEV_CONCURRENCY);
+    const again = await Promise.all(batch.map((i) => ask(texts[i])));
+    batch.forEach((i, j) => { answers[i] = again[j]; });
+  }
   const readings = [];
   let model: string | null = null;
   for (let i = 0; i < texts.length; i++) {

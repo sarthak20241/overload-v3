@@ -13,7 +13,8 @@
  * (drona_word_signals), and the signals become behaviour rows that join the
  * weekly pick (_shared/dronaPick.ts writes the words).
  *
- * Pure: no imports but types, no network, no Date. Tested in dronaWords.test.ts;
+ * Pure: no imports but types, no network, no clock (dates are parsed from their
+ * YYYY-MM-DD parts only). Tested in dronaWords.test.ts;
  * the questions are measured in scripts/drona-words/eval.mts.
  */
 import type { JevQuestion } from '../ai-coach/jev.ts';
