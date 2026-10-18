@@ -471,15 +471,27 @@ export default function NutritionScreen() {
   // The diary's recent weeks, refetched whenever the day on screen changes
   // shape (an add, an edit, a delete), so what was logged a minute ago can be
   // copied or learned from without a restart. Signed-in only, like parsing.
+  // Portion and numbers ride along with the ids: a portion edit keeps the
+  // row's id, and the copy sheet and the usual portion must still see it.
   const diaryVersion = useMemo(
-    () => `${totalsDayIso}|${MEALS.map((m) => byMeal[m.type].map((e) => e.id).join(',')).join('|')}`,
+    () => `${totalsDayIso}|${MEALS.map((m) => byMeal[m.type].map((e) => `${e.id}:${e.quantity}:${e.kcal}`).join(',')).join('|')}`,
     [byMeal, totalsDayIso],
   );
   const { history } = useFoodHistory(isSignedIn ? diaryVersion : 'guest');
   const patterns = useMemo(() => learnPatterns(isSignedIn ? history : [], viewIso), [history, viewIso, isSignedIn]);
   // Today runs on the clock (breakfast in the morning, and still at lunch if
   // it was skipped). Any other day is backfill or planning: every meal open.
-  const suggestHour = isToday ? new Date().getHours() : null;
+  // Held in state and ticked each minute, so a screen left open moves on with
+  // the clock (breakfast stops being offered at 4pm) without anything else
+  // having to re-render it. Only an hour change re-renders.
+  const [clockHour, setClockHour] = useState(() => new Date().getHours());
+  useEffect(() => {
+    const tick = () => setClockHour((h) => { const now = new Date().getHours(); return now === h ? h : now; });
+    const id = setInterval(tick, 60_000);
+    const sub = AppState.addEventListener('change', (next) => { if (next === 'active') tick(); });
+    return () => { clearInterval(id); sub.remove(); };
+  }, []);
+  const suggestHour = isToday ? clockHour : null;
   const suggestions = useMemo(
     () => mealsToSuggest(patterns, byMeal, suggestHour),
     [patterns, byMeal, suggestHour],
