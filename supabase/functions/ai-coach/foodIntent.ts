@@ -73,6 +73,9 @@ export interface FoodIntentDecision {
   /** With a meal waiting, what this message does with it. Null when nothing
    *  was waiting or Jev did not answer. */
   pendingAction?: PendingAction | null;
+  /** The answer to a question the FOOD AGENT asked: send it back to the agent,
+   *  which can read the diary again, not to the parse. */
+  resumeAgent?: boolean;
 }
 
 /**
@@ -527,6 +530,19 @@ export async function routeFoodIntent(
         const sureElse = !!choice && (choice.choice === "other" || choice.choice === "create" || choice.choice === "steps") &&
           choice.confidence >= INTENT_SURE && pc.confidence < 0.5;
         if (pendingAction === "proceed" && sureElse) pendingAction = "unrelated";
+        if (pendingAction === "proceed" && context?.pendingMeal?.origin === "agent") {
+          deps.log?.(`[food_intent] pending=proceed conf=${pc.confidence.toFixed(2)} -> agent`);
+          return {
+            intent: "steps",
+            source: "jev",
+            confidence: pc.confidence,
+            note: `jev ${res.response.model} pending=proceed resume=agent`,
+            savedMatch,
+            hasFood,
+            pendingAction,
+            resumeAgent: true,
+          };
+        }
         if (pendingAction === "proceed") {
           deps.log?.(`[food_intent] pending=proceed conf=${pc.confidence.toFixed(2)}`);
           return {
@@ -649,6 +665,9 @@ export interface FoodActionInputs {
  *  parse that decideFoodAction also looks at has finished. The agent can end in
  *  a save card, so it needs a client that can draw one. */
 export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreate: boolean): boolean {
+  // An answer to the agent's own question goes back to it at any confidence
+  // that cleared "proceed": the agent asked, so it is the one that can finish.
+  if (d?.resumeAgent) return clientSupportsCreate;
   return !!d && clientSupportsCreate && d.intent === "steps" && d.source === "jev" &&
     d.confidence !== null && d.confidence >= STEPS_ACTION_FLOOR;
 }
@@ -832,16 +851,17 @@ export function readDraftResult(
  */
 export function withPendingMeal<D extends { message: string; cleared?: boolean; pending_meal?: PendingFoodMeal }>(
   declined: D | null,
-  a: { decision: FoodIntentDecision | null; incoming: PendingFoodMeal | null; text: string },
+  a: { decision: FoodIntentDecision | null; incoming: PendingFoodMeal | null; text: string; fromAgent?: boolean },
 ): (D & { pending_meal?: PendingFoodMeal }) | null {
   if (!declined || declined.cleared) return declined;
   const pending = declined.pending_meal ?? carryPendingMeal({
     incoming: a.incoming,
     cancelled: a.decision?.pendingAction === "cancel",
-    continued: a.decision?.intent === "continue",
+    continued: a.decision?.intent === "continue" || !!a.decision?.resumeAgent,
     text: a.text,
     hasFood: (a.decision?.hasFood ?? 0) >= HAS_FOOD_FLOOR,
     shown: declined.message,
+    fromAgent: a.fromAgent,
   });
   return pending ? { ...declined, pending_meal: pending } : declined;
 }

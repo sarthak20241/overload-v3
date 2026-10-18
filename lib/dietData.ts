@@ -723,6 +723,9 @@ export interface PendingFoodMeal {
   status: 'awaiting_clarification';
   text: string;
   question: string;
+  /** 'agent': the food agent asked, so the server sends the answer back to it.
+   *  Copied through untouched; the app never reads it. */
+  origin?: 'agent';
 }
 
 export type ParseMealResult =
@@ -878,7 +881,12 @@ function toParseResult(data: any): ParseMealResult {
       cleared: data.declined.cleared === true,
       pendingMeal: data.declined.pending_meal?.status === 'awaiting_clarification' &&
           typeof data.declined.pending_meal.text === 'string' && typeof data.declined.pending_meal.question === 'string'
-        ? { status: 'awaiting_clarification', text: data.declined.pending_meal.text.slice(0, 2000), question: data.declined.pending_meal.question.slice(0, 400) }
+        ? {
+            status: 'awaiting_clarification',
+            text: data.declined.pending_meal.text.slice(0, 2000),
+            question: data.declined.pending_meal.question.slice(0, 400),
+            ...(data.declined.pending_meal.origin === 'agent' ? { origin: 'agent' as const } : {}),
+          }
         : null,
     };
   }

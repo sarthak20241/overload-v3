@@ -69,7 +69,7 @@ import {
   shouldRouteFoodIntent,
   wantsFoodAgent,
 } from "./foodIntent.ts";
-import { readFoodContext, type FoodConversationContext } from "./foodContext.ts";
+import { readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
 import { startHeartbeat } from "./streamHeartbeat.ts";
@@ -618,6 +618,8 @@ function startFoodAgent(args: {
   admin: any;
   userId: string;
   recentTurns: { role: "user" | "drona"; text: string }[];
+  /** The meal waiting on a question; handed to the agent when it asked it. */
+  pendingMeal: PendingFoodMeal | null;
   brandWeb: boolean;
   onStatus?: (label: string) => void;
 }): Promise<FoodAgentOutcome | null> {
@@ -631,6 +633,9 @@ function startFoodAgent(args: {
         defaultMeal: args.mealHint ?? mealForHour(args.localHour),
         today: todayLabel(args.localDate),
         recentTurns: args.recentTurns,
+        answering: d?.resumeAgent && args.pendingMeal
+          ? { text: args.pendingMeal.text, question: args.pendingMeal.question }
+          : null,
       },
       {
         model: MODEL,
@@ -3525,7 +3530,8 @@ async function handleParseMealRequest(args: {
         void intentP.then((d) => { settledIntent = d; });
         const agentP = startFoodAgent({
           intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary,
-          contextPromise, userClient, admin, userId, recentTurns, brandWeb: !parseFreeTier,
+          contextPromise, userClient, admin, userId, recentTurns, pendingMeal: foodContext.pendingMeal,
+          brandWeb: !parseFreeTier,
           // Builds that do not know this event skip it (dietData ignores
           // unknown events), so this needs no capability of its own.
           onStatus: (label) => send("status", { label }),
@@ -3586,7 +3592,7 @@ async function handleParseMealRequest(args: {
               // The existing decline channel, which every build already draws.
               send("end", {
                 parsed: null,
-                declined: withPendingMeal({ message: outcome.reply! }, { decision: outcome.decision, incoming: foodContext.pendingMeal, text }),
+                declined: withPendingMeal({ message: outcome.reply! }, { decision: outcome.decision, incoming: foodContext.pendingMeal, text, fromAgent: !!outcome.agent }),
                 proposal: null,
               });
             } else {
@@ -3750,7 +3756,8 @@ async function handleParseMealRequest(args: {
     const agentP = startFoodAgent({
       intentP, supportsCreate, text, mealHint, localHour, localDate,
       mode: wantsSuper ? "super" : wantsFast ? "fast" : null,
-      savedMealsP, readDiary, contextPromise, userClient, admin, userId, recentTurns, brandWeb: !parseFreeTier,
+      savedMealsP, readDiary, contextPromise, userClient, admin, userId, recentTurns,
+      pendingMeal: foodContext.pendingMeal, brandWeb: !parseFreeTier,
     });
     const work = (async () => {
       const pendingMeal = foodContext.pendingMeal && (await intentP)?.intent === "continue"
@@ -3878,7 +3885,7 @@ async function handleParseMealRequest(args: {
       return respond(
         {
           parsed: null,
-          declined: withPendingMeal({ message: outcome.reply! }, { decision: outcome.decision, incoming: foodContext.pendingMeal, text }),
+          declined: withPendingMeal({ message: outcome.reply! }, { decision: outcome.decision, incoming: foodContext.pendingMeal, text, fromAgent: !!outcome.agent }),
           proposal: null,
           usage: result.usage,
           tool_calls: result.tool_calls,

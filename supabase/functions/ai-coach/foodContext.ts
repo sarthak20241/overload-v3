@@ -8,6 +8,12 @@ export interface PendingFoodMeal {
   status: "awaiting_clarification";
   text: string;
   question: string;
+  /** "agent": the food agent asked this question, so the answer goes back to
+   *  the agent, which can read the diary again. Absent: the parse asked it.
+   *  Live, 2026-10-18: the agent read yesterday's logs and asked which meal;
+   *  the answer went to the parse, which cannot see the diary, and re-guessed
+   *  the amounts. */
+  origin?: "agent";
 }
 
 export interface FoodConversationContext {
@@ -31,7 +37,15 @@ export function readFoodContext(turns: unknown, pending: unknown): FoodConversat
     : [];
   const p = pending as Partial<PendingFoodMeal> | null;
   if (p?.status === "awaiting_clarification" && typeof p.text === "string" && typeof p.question === "string" && p.text.trim() && p.question.trim()) {
-    return { recentTurns, pendingMeal: { status: "awaiting_clarification", text: p.text.trim().slice(0, 2000), question: p.question.trim().slice(0, 400) } };
+    return {
+      recentTurns,
+      pendingMeal: {
+        status: "awaiting_clarification",
+        text: p.text.trim().slice(0, 2000),
+        question: p.question.trim().slice(0, 400),
+        ...(p.origin === "agent" ? { origin: "agent" as const } : {}),
+      },
+    };
   }
   // Compatibility for installed clients: only our known blocking question
   // establishes pending food. Ordinary replies must never resurrect a meal.
@@ -83,6 +97,8 @@ export function carryPendingMeal(a: {
   hasFood: boolean;
   /** What Drona said back, which becomes the question being answered. */
   shown: string;
+  /** The food agent said it, so the answer must go back to the agent. */
+  fromAgent?: boolean;
 }): PendingFoodMeal | null {
   if (a.cancelled) return null;
   const question = a.shown.trim().slice(0, 400);
@@ -91,12 +107,19 @@ export function carryPendingMeal(a: {
     // Answers are appended, so a long thread is trimmed in the MIDDLE: the
     // meal at the start and the newest answer at the end both survive.
     const joined = continuationText(a.text.trim(), a.incoming);
+    const origin = a.fromAgent || a.incoming.origin === "agent" ? { origin: "agent" as const } : {};
     return {
       status: "awaiting_clarification",
       text: joined.length <= 2000 ? joined : `${joined.slice(0, 1200)}\n...\n${joined.slice(-795)}`,
       question: question || a.incoming.question,
+      ...origin,
     };
   }
   if (!a.hasFood || !a.text.trim() || !question) return null;
-  return { status: "awaiting_clarification", text: a.text.trim().slice(0, 2000), question };
+  return {
+    status: "awaiting_clarification",
+    text: a.text.trim().slice(0, 2000),
+    question,
+    ...(a.fromAgent ? { origin: "agent" as const } : {}),
+  };
 }

@@ -55,6 +55,25 @@ export interface FoodAgentInput {
    *  "log the same meal in snacks too" has no meal and "yes" has no question:
    *  seen live, both got a blank stare. */
   recentTurns?: { role: "user" | "drona"; text: string }[];
+  /** The agent asked the user a question last turn and this text is the
+   *  answer. Said again in the opening message, so the answer is read against
+   *  the agent's own question even when the app sent no history. */
+  answering?: { text: string; question: string } | null;
+}
+
+/** The opening user message: the date, then (when this answers the agent's
+ *  question) what was asked, then the user's words. */
+export function openingText(input: Pick<FoodAgentInput, "text" | "answering">, days: string | null): string {
+  const parts: string[] = [];
+  if (days) parts.push(`(${days})`);
+  if (input.answering) {
+    parts.push(
+      `(This answers your question "${input.answering.question}" about the user's message "${input.answering.text}". ` +
+        "Finish that request. When it is about food already in the diary, read the diary again and copy the logged lines.)",
+    );
+  }
+  parts.push(input.text);
+  return parts.join("\n");
 }
 
 export interface AgentTurn {
@@ -285,10 +304,7 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
   const turns: AgentTurn[] = [];
   // An undated `today` still goes in as written rather than being dropped.
   const days = input.today ? recentDays(input.today) ?? `Today is ${input.today}.` : null;
-  const messages: unknown[] = historyMessages(
-    input.recentTurns,
-    days ? `(${days})\n${input.text}` : input.text,
-  );
+  const messages: unknown[] = historyMessages(input.recentTurns, openingText(input, days));
   // Every food line a read returned, by name, with the calories it carried.
   // A line the agent says it COPIED is checked against this: the model is told
   // never to invent numbers, and this is how the code knows whether it did.
