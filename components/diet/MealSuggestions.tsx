@@ -129,6 +129,8 @@ const s = StyleSheet.create({
   why: { fontSize: FontSize.xs, fontWeight: FontWeight.medium, flexShrink: 0 },
   kcal: { fontSize: FontSize.xs, fontVariant: ['tabular-nums'] },
   plus: { width: 26, height: 26, borderRadius: 13, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  more: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingTop: Spacing.sm, paddingLeft: 2 },
+  // A full-height row, not a line of text: "Add to <meal>" sits right below
+  // with its own hitSlop, and a short target here lost taps to it.
+  more: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 36, marginTop: 2, marginBottom: Spacing.xs, paddingLeft: 2 },
   moreTxt: { fontSize: FontSize.xs },
 });
