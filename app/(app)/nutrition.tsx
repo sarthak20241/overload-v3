@@ -490,6 +490,9 @@ export default function NutritionScreen() {
   const prevLabel = dayLabel(prevDate) === 'Yesterday' ? 'Yesterday' : prevDate.toLocaleDateString(undefined, { weekday: 'long' });
   const [copyMeal, setCopyMeal] = useState<MealType | null>(null);
   const [relogBusy, setRelogBusy] = useState<string | null>(null);
+  // The guard itself. State lags a render, so two quick taps could both read
+  // "not busy" and log the food twice; a ref is set before the first await.
+  const relogBusyRef = useRef(false);
   // Lines just added from a suggestion or a copy, so each wears a quiet Undo
   // until the screen goes away. Entry id -> the whole add, like the Drona chip.
   const [relogged, setRelogged] = useState<Map<string, { ref: LoggedParseRef; label: string }>>(() => new Map());
@@ -519,10 +522,12 @@ export default function NutritionScreen() {
   }, []);
 
   const onAddSuggestions = useCallback(async (meal: MealType, items: FoodSuggestion[], all: boolean) => {
-    if (!supabase || relogBusy || items.length === 0) return;
+    if (!supabase || relogBusyRef.current || items.length === 0) return;
+    relogBusyRef.current = true;
     setRelogBusy(all ? '*' : items[0].key);
     haptics.success();
     const { ref, error } = await relogLines(supabase, items, meal, viewDate, 'pattern');
+    relogBusyRef.current = false;
     setRelogBusy(null);
     track('food_suggestion_logged', {
       meal_type: meal, item_count: items.length, all, edited: false, is_today: isToday, write_failed: !!error,
@@ -530,7 +535,7 @@ export default function NutritionScreen() {
     if (error || !ref) { haptics.warning(); return; }
     rememberRelog(ref, all ? 'Your usual' : 'From your usual');
     reload();
-  }, [supabase, relogBusy, viewDate, isToday, rememberRelog, reload]);
+  }, [supabase, viewDate, isToday, rememberRelog, reload]);
 
   // Change the portion first: the line opens in the review card, the same
   // editor a typed meal gets, and Add writes it. Only from an idle box, so a
@@ -551,10 +556,12 @@ export default function NutritionScreen() {
   }, [isToday]);
 
   const onCopyLines = useCallback(async (lines: HistoryEntry[]) => {
-    if (!supabase || !copyMeal || relogBusy) return;
+    if (!supabase || !copyMeal || relogBusyRef.current) return;
     const meal = copyMeal;
+    relogBusyRef.current = true;
     setRelogBusy('*');
     const { ref, error } = await relogLines(supabase, lines, meal, viewDate, 'copy_day');
+    relogBusyRef.current = false;
     setRelogBusy(null);
     track('meal_copied', {
       meal_type: meal, item_count: lines.length, of_count: prevLines[meal].length,
@@ -565,7 +572,7 @@ export default function NutritionScreen() {
     rememberRelog(ref, `Copied from ${prevLabel === 'Yesterday' ? 'yesterday' : prevLabel}`);
     setCopyMeal(null);
     reload();
-  }, [supabase, copyMeal, relogBusy, viewDate, prevLines, prevLabel, isToday, rememberRelog, reload]);
+  }, [supabase, copyMeal, viewDate, prevLines, prevLabel, isToday, rememberRelog, reload]);
 
   const onUndoRelog = useCallback(async (ref: LoggedParseRef) => {
     if (!supabase) return;
@@ -1649,6 +1656,9 @@ export default function NutritionScreen() {
                 // still one tap from gone. Cleared by the next app launch.
                 const dronaRef = addedByDronaRef(e.id);
                 const relog = relogged.get(e.id);
+                // Undo takes back the whole add (a copy or Add all can be
+                // several lines), so the chip says so when there is more than one.
+                const relogCount = relog ? relog.ref.sections.reduce((t, sec) => t + sec.entryIds.length, 0) : 0;
                 return (
                   // Undo is a SIBLING of the row, not nested in it. A Pressable
                   // is accessible by default, so VoiceOver and TalkBack can fold
@@ -1691,9 +1701,9 @@ export default function NutritionScreen() {
                           onPress={() => { void onUndoRelog(relog.ref); }}
                           hitSlop={8}
                           accessibilityRole="button"
-                          accessibilityLabel={`Undo ${e.food_name}`}
+                          accessibilityLabel={relogCount > 1 ? `Undo all ${relogCount} foods added together` : `Undo ${e.food_name}`}
                         >
-                          <Text style={s.dronaChipUndo}>Undo</Text>
+                          <Text style={s.dronaChipUndo}>{relogCount > 1 ? 'Undo all' : 'Undo'}</Text>
                         </Pressable>
                       </View>
                     )}

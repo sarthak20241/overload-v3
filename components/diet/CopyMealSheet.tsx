@@ -38,7 +38,11 @@ export function CopyMealSheet({ open, title, subtitle, lines, current, busy, onC
   const fresh = useMemo(() => new Set(copyableFromDay(lines, current)), [lines, current]);
   const [picked, setPicked] = useState<Set<number>>(fresh);
 
-  useEffect(() => { if (open) setPicked(new Set(fresh)); }, [open, fresh]);
+  // Reset the ticks when the sheet opens (or switches meal), and only then.
+  // `fresh` also changes on any reload of the day behind the sheet, and
+  // resetting on that would silently undo what the user just unticked.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (open) setPicked(new Set(fresh)); }, [open, title]);
   useEffect(() => { if (open) Keyboard.dismiss(); }, [open]);
   useEffect(() => {
     if (!open) return;
