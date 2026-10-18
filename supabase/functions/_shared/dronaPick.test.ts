@@ -1,6 +1,6 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import { decideCard, type DronaFacts } from "./dronaCards.ts";
-import { ASKS, askedLately, type BehaviourRow, decidePick, hushed, mutedTopics, type PickFacts, WORDS } from "./dronaPick.ts";
+import { ASKS, askedLately, type BehaviourRow, decidePick, hushed, mutedTopics, PICK_ASKS, type PickFacts, WORDS } from "./dronaPick.ts";
 
 const WEEK = "2026-10-19";
 const facts = (cards: DronaFacts["cards"] = []): DronaFacts => ({ week_start: WEEK, cards });
@@ -91,6 +91,24 @@ Deno.test("the old P0 cards still use the topics ASKS maps their actions to", ()
   const seen = cases.map((f) => decideCard(f)).map((c) => [c.payload.action, c.topic]);
   assertEquals(seen, [["start_session", "due_session"], ["log_weight", "weigh_in"], ["log_food", "log_food"]]);
   for (const [action, topic] of seen) assertEquals(ASKS[action!], topic);
+});
+
+Deno.test("every pick card that always asks is in PICK_ASKS, with the topic ASKS gives its action", () => {
+  // One sample row per behaviour with words; lift_stall varies by cause and is checked apart.
+  const samples: BehaviourRow[] = [goals, onTrack, notLanding, scale,
+    row("logs_partial_days", 11, "request", { avg_kcal: 416.7, target_kcal: 1800, days_logged: 3 }),
+    row("drifting_away", 21, "talk", { sessions: 0, planned: 5, last_week_sessions: 0, last_week_planned: 5 }),
+    row("own_way", 22, "talk", { muscles_left_out: [] }),
+    row("plan_too_big", 24, "talk", { planned: 6, avg_sessions: 4 }),
+    row("exercise_skipped", 25, "talk", { exercises: [{ exercise: "Shrugs", why: "routine_skip", planned: 6, skipped: 5 }] })];
+  assertEquals(samples.map((r) => r.behaviour).sort(), Object.keys(WORDS).filter((b) => b !== "lift_stall").sort());
+  for (const r of samples) {
+    const action = decidePick(pf(r), facts())!.payload.action;
+    const asks = action ? ASKS[action] : undefined;
+    assertEquals(PICK_ASKS[r.behaviour], asks, r.behaviour);
+  }
+  // lift_stall asks only when it cannot tell why: not a standing ask.
+  assertEquals(PICK_ASKS.lift_stall, undefined);
 });
 
 Deno.test("not hearing Drona: the pick is said as a notice, no ask", () => {

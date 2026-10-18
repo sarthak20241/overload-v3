@@ -196,8 +196,10 @@ async function generate(
     db.rpc("get_drona_pick_facts", { p_user_id: userId, p_as_of: localDay })
   );
   if (pickErr) {
+    // Its own kind, so the cron summary counts it: a read that keeps failing
+    // would otherwise silence every weekly card with only a log line to show.
     console.error("[drona-cards] pick facts:", pickErr.message);
-    return { kind: "hold", saved: false };
+    return { kind: "pick_failed", saved: false };
   }
   const pf = pick as PickFacts | null;
   const picked = newUser ? null : decidePick(pf, facts as DronaFacts);
@@ -283,6 +285,7 @@ async function runCron(): Promise<Response> {
 
     let saved = 0;
     let held = 0;
+    let pickFailed = 0;
     let checkins = 0;
     const failures: string[] = [];
     for (let i = 0; i < due.length; i += CRON_CONCURRENCY) {
@@ -300,11 +303,12 @@ async function runCron(): Promise<Response> {
         if (!g) return;
         if (g.saved) saved += 1;
         else if (g.kind === "hold") held += 1;
+        else if (g.kind === "pick_failed") pickFailed += 1;
         else failures.push(`${batch[j].userId.slice(0, 12)}: ${g.error ?? "not saved"}`);
       });
     }
 
-    return json({ users: weeks.length, due: due.length, saved, held, checkins, failures: failures.slice(0, 20) });
+    return json({ users: weeks.length, due: due.length, saved, held, checkins, pick_failed: pickFailed, failures: failures.slice(0, 20) });
   } finally {
     // Settled on every path: the runtime may stop the worker once the response
     // is out, and an abandoned delete may never land.

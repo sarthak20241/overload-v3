@@ -55,8 +55,13 @@ export const CHECKIN_BEHAVIOURS = ['finding_maintenance', 'calories_off'];
 /** What a card's button asks for, as the topic the older cards used, so a mute or a cooldown covers both. */
 export const ASKS: Record<string, string> = { log_weight: 'weigh_in', log_food: 'log_food', start_session: 'due_session' };
 
-/** The pick cards that are always an ask, and the older topic they ask for. */
-const PICK_ASKS: Record<string, string> = { scale_untrusted: 'weigh_in', logs_partial_days: 'log_food' };
+/**
+ * The pick cards that are always an ask, and the older topic they ask for.
+ * Kept in step with WORDS by a test (dronaPick.test.ts): a new ask must be
+ * listed here, or the shared cooldown misses it. lift_stall is left out on
+ * purpose: only one of its six causes asks for anything.
+ */
+export const PICK_ASKS: Record<string, string> = { scale_untrusted: 'weigh_in', logs_partial_days: 'log_food' };
 
 // ── Formatting ───────────────────────────────────────────────────────────────
 
