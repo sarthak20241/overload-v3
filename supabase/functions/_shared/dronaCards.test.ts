@@ -119,6 +119,16 @@ Deno.test("a topic on cooldown steps aside for the next case", () => {
   assertEquals(decideCard(facts).topic, "log_food");
 });
 
+Deno.test("a muted topic steps aside too (topic_not_landing: stop asking for what never comes)", () => {
+  const facts = steady({
+    weight: { weigh_ins_14d: 0, weigh_ins_28d: 0 },
+    nutrition: { days_logged_14d: 0, target_kcal: 2250 },
+  });
+  assertEquals(decideCard(facts).topic, "weigh_in");
+  assertEquals(decideCard(facts, signalsFrom(facts), new Set(["weigh_in"])).topic, "log_food");
+  assertEquals(decideCard(facts, signalsFrom(facts), new Set(["weigh_in", "log_food"])).kind, "hold");
+});
+
 Deno.test("the worst case wins when several fire", () => {
   const facts = steady({
     training: { sessions_14d: 0, planned_14d: 8, days_since_last_session: 20 },

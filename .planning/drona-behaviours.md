@@ -18,9 +18,9 @@ non-meta row by priority. If a meta row exists that week, the pick is said as a
 `notice`. `mutes` gathers every row's mutes for the week.
 
 Notes for the cards layer (PR #253 review): a week whose only row is a meta
-behaviour has no pick, which means "say nothing", not an error. `mutes` is
-only recorded: the calorie check-in honours `topic:<x>` mutes, but nothing yet
-filters `weight_wrong_way` or `protein_short` by the signal mutes; the cards
+behaviour has no pick, which means "say nothing", not an error. `mutes`: the calorie check-in and the weekly card (2026-10-18) honour `topic:<x>`
+mutes; nothing yet filters `weight_wrong_way` or `protein_short` by the signal
+mutes (no card reads those signals yet); the cards
 layer must. Behaviours are skipped (logged as `behaviours: skipped`) when the
 signals rebuild failed, so `on_track` never stands on missing signals.
 
@@ -138,4 +138,5 @@ after the history fix (the first run called a change backfired on one food day).
 
 - The word behaviours (with Jev): life got in the way, trains but does not log,
   hurting, already asked for a change.
-- Cards read `drona_behaviour_pick`.
+- ~~Cards read `drona_behaviour_pick`.~~ Built 2026-10-18: the worker reads the
+  rows itself (`get_drona_pick_facts`, `_shared/dronaPick.ts`), see `.planning/drona-cards-pick.md`.
