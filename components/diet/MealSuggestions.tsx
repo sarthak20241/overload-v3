@@ -32,13 +32,15 @@ interface Props {
   mealLabel: string;
   /** Weekday of the day on screen, for "Usual on Sundays". */
   weekday: number;
+  /** The day before, as said mid-sentence: "yesterday" or "Monday". */
+  fromWord: string;
   /** A key currently being written, so its + shows progress and cannot double-log. */
   busyKey: string | null;
   onAdd: (items: FoodSuggestion[], all: boolean) => void;
   onEdit: (item: FoodSuggestion) => void;
 }
 
-export function MealSuggestions({ items, mealLogged, mealLabel, weekday, busyKey, onAdd, onEdit }: Props) {
+export function MealSuggestions({ items, mealLogged, mealLabel, weekday, fromWord, busyKey, onAdd, onEdit }: Props) {
   const { C } = useTheme();
   const [expanded, setExpanded] = useState(false);
   if (items.length === 0) return null;
@@ -48,7 +50,11 @@ export function MealSuggestions({ items, mealLogged, mealLabel, weekday, busyKey
   const usual = items.filter((s) => s.usual);
   const usualKcal = Math.round(usual.reduce((t, s) => t + s.kcal, 0));
   const busy = busyKey != null;
-  const title = mealLogged ? 'You usually have this too' : `Your usual ${mealLabel.toLowerCase()}`;
+  // No habit yet: the rows are the day before's meal, and the title says so.
+  const fromPrev = items.every((s) => s.reason === 'previous_day');
+  const title = fromPrev
+    ? `From ${fromWord}`
+    : mealLogged ? 'You usually have this too' : `Your usual ${mealLabel.toLowerCase()}`;
 
   return (
     <Animated.View entering={FadeIn.duration(220)} exiting={FadeOut.duration(150)} layout={LinearTransition.duration(200)} style={s.wrap}>
@@ -62,7 +68,9 @@ export function MealSuggestions({ items, mealLogged, mealLabel, weekday, busyKey
             disabled={busy}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel={`Add all ${usual.length} usual foods, ${usualKcal} calories`}
+            accessibilityLabel={fromPrev
+              ? `Add all ${usual.length} foods from ${fromWord}, ${usualKcal} calories`
+              : `Add all ${usual.length} usual foods, ${usualKcal} calories`}
           >
             <Text style={[s.addAll, { color: C.accentText, opacity: busy ? 0.4 : 1 }]}>
               {`Add all · ${usualKcal}`}

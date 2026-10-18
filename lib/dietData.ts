@@ -1386,18 +1386,19 @@ async function logSection(
 }
 
 /** Undo an AI-logged meal: delete the inserted entries in every section it
- *  wrote, and each meal row too if we created it for this log and it is now
- *  empty. Best-effort. */
+ *  wrote, and each meal row too once it is empty. Best-effort. */
 export async function undoParsedMeal(supabase: Supa, ref: LoggedParseRef): Promise<void> {
   for (const s of ref.sections) {
     if (s.entryIds.length > 0) {
       await supabase.from('meal_entries').delete().in('id', s.entryIds);
     }
-    if (s.createdMeal) {
-      const { count } = await supabase
-        .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', s.mealId);
-      if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', s.mealId);
-    }
+    // Any meal row left empty goes, not only one this add created: two adds
+    // into one meal undone in turn would otherwise strand an empty row (the
+    // first add created it, the last undo did not). An empty meal still
+    // counts as a logged day for the streak. Same rule as deleteMealEntry.
+    const { count } = await supabase
+      .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', s.mealId);
+    if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', s.mealId);
   }
 }
 

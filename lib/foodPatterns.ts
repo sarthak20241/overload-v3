@@ -22,6 +22,10 @@
  * have with it"). Another day than today (backfill or planning ahead) has no
  * clock, so every meal is open.
  *
+ * No habit yet (habits need two days, so every new user starts here): a meal
+ * is offered the day before's food for it instead, labelled as such
+ * (withPreviousDay). It leaves as soon as the meal has food.
+ *
  * No imports, so Deno tests it directly: deno test --allow-all lib/foodPatterns.test.ts
  */
 
@@ -63,8 +67,10 @@ export interface FoodSuggestion {
   tier: string | null;
   /** 0..1, the larger of the daily and weekday rates. Sorts the list. */
   score: number;
-  /** 'weekday' when the habit belongs to this weekday more than to every day. */
-  reason: 'daily' | 'weekday';
+  /** 'weekday' when the habit belongs to this weekday more than to every day.
+   *  'previous_day': not a habit at all, the day before's line, offered only
+   *  while the meal has no learned habits yet (see withPreviousDay). */
+  reason: 'daily' | 'weekday' | 'previous_day';
   /** Had in more than half of this meal's logged days: part of "your usual". */
   usual: boolean;
 }
@@ -200,11 +206,49 @@ export function mealsToSuggest(
     const have = new Set((logged[meal] ?? []).map((e) => nameKey(e.food_name)));
     const missing = patterns[meal].filter((s) => !have.has(nameKey(s.food_name)));
     if (have.size > 0) {
-      out[meal] = missing.filter((s) => s.usual).slice(0, LOGGED_MEAL_LEFTOVERS);
+      // "You usually have this too" is a habit's claim; the day before's
+      // food makes no such claim, so it leaves once the meal has food.
+      out[meal] = missing.filter((s) => s.usual && s.reason !== 'previous_day').slice(0, LOGGED_MEAL_LEFTOVERS);
       continue;
     }
     if (h != null && (h < OPENS[meal] || h >= STALE[meal])) continue;
     out[meal] = missing;
+  }
+  return out;
+}
+
+/**
+ * Fill a meal that has no learned habits with the day before's lines for it,
+ * so a new user (habits need two days) or a meal with no steady pattern still
+ * starts from something. A meal with any habit keeps its habits only: the day
+ * before's food is a weaker guess than a pattern. Each line is offered in its
+ * own portion with its own numbers, in diary order, one row per food name.
+ * They count as `usual`, so "Add all" logs the whole meal again.
+ */
+export function withPreviousDay(
+  patterns: Record<PatternMeal, FoodSuggestion[]>,
+  previous: Record<PatternMeal, HistoryEntry[]>,
+): Record<PatternMeal, FoodSuggestion[]> {
+  const out = { ...patterns };
+  for (const meal of MEALS) {
+    if (patterns[meal].length > 0) continue;
+    const seen = new Set<string>();
+    const rows: FoodSuggestion[] = [];
+    for (const e of previous[meal] ?? []) {
+      const k = nameKey(e.food_name);
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      rows.push({
+        key: `${meal}:${k}`,
+        meal_type: meal,
+        food_id: e.food_id, food_name: e.food_name.trim(),
+        quantity: e.quantity, serving_unit: e.serving_unit, grams_logged: e.grams_logged,
+        kcal: e.kcal, protein_g: e.protein_g, carb_g: e.carb_g, fat_g: e.fat_g, fiber_g: e.fiber_g,
+        source: e.source ?? null, logged_via: e.logged_via ?? null, tier: e.tier ?? null,
+        score: 0, reason: 'previous_day', usual: true,
+      });
+    }
+    out[meal] = rows.slice(0, MAX_PER_MEAL);
   }
   return out;
 }

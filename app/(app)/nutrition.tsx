@@ -75,7 +75,7 @@ import { swapToAlternative } from '@/lib/variantSwap';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { MealSuggestions } from '@/components/diet/MealSuggestions';
 import { CopyMealSheet } from '@/components/diet/CopyMealSheet';
-import { learnPatterns, mealsToSuggest, copyableFromDay, type FoodSuggestion, type HistoryEntry } from '@/lib/foodPatterns';
+import { learnPatterns, mealsToSuggest, copyableFromDay, withPreviousDay, type FoodSuggestion, type HistoryEntry } from '@/lib/foodPatterns';
 import { useFoodHistory, useDayMealLines, relogLines, lineAsItem } from '@/lib/foodPatternsData';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
@@ -494,14 +494,17 @@ export default function NutritionScreen() {
     return () => { clearInterval(id); sub.remove(); };
   }, []);
   const suggestHour = isToday ? clockHour : null;
-  const suggestions = useMemo(
-    () => mealsToSuggest(patterns, byMeal, suggestHour),
-    [patterns, byMeal, suggestHour],
-  );
   const prevDate = new Date(viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate() - 1);
   const prevIso = ymd(prevDate);
   const prevLines = useDayMealLines(history, prevIso);
   const prevLabel = dayLabel(prevDate) === 'Yesterday' ? 'Yesterday' : prevDate.toLocaleDateString(undefined, { weekday: 'long' });
+  // "yesterday" mid-sentence; a weekday keeps its capital.
+  const prevWord = prevLabel === 'Yesterday' ? 'yesterday' : prevLabel;
+  // A meal with no habit yet starts from the day before's food for it.
+  const suggestions = useMemo(
+    () => mealsToSuggest(withPreviousDay(patterns, prevLines), byMeal, suggestHour),
+    [patterns, prevLines, byMeal, suggestHour],
+  );
   const [copyMeal, setCopyMeal] = useState<MealType | null>(null);
   const [relogBusy, setRelogBusy] = useState<string | null>(null);
   // The guard itself. State lags a render, so two quick taps could both read
@@ -522,6 +525,7 @@ export default function NutritionScreen() {
       track('food_suggestions_shown', {
         meal_type: m.type, count: list.length, usual_count: list.filter((x) => x.usual).length,
         weekday_count: list.filter((x) => x.reason === 'weekday').length,
+        previous_day_count: list.filter((x) => x.reason === 'previous_day').length,
         meal_logged: byMeal[m.type].length > 0, is_today: isToday,
       });
     }
@@ -539,10 +543,11 @@ export default function NutritionScreen() {
     if (!supabase || relogBusyRef.current || items.length === 0) return;
     relogBusyRef.current = true;
     setRelogBusy(all ? '*' : items[0].key);
+    const fromPrev = items.every((x) => x.reason === 'previous_day');
     // finally: a throw (not just an {error}) must not leave every later tap ignored.
     let res: Awaited<ReturnType<typeof relogLines>>;
     try {
-      res = await relogLines(supabase, items, meal, viewDate, 'pattern');
+      res = await relogLines(supabase, items, meal, viewDate, fromPrev ? 'copy_day' : 'pattern');
     } catch (e) {
       res = { error: e instanceof Error ? e.message : 'Could not add that' };
     } finally {
@@ -552,12 +557,13 @@ export default function NutritionScreen() {
     const { ref, error } = res;
     track('food_suggestion_logged', {
       meal_type: meal, item_count: items.length, all, edited: false, is_today: isToday, write_failed: !!error,
+      from_previous_day: fromPrev,
     });
     if (error || !ref) { haptics.warning(); return; }
     haptics.success();
-    rememberRelog(ref, all ? 'Your usual' : 'From your usual');
+    rememberRelog(ref, fromPrev ? `Copied from ${prevWord}` : all ? 'Your usual' : 'From your usual');
     reload();
-  }, [supabase, viewDate, isToday, rememberRelog, reload]);
+  }, [supabase, viewDate, isToday, rememberRelog, reload, prevWord]);
 
   // Change the portion first: the line opens in the review card, the same
   // editor a typed meal gets, and Add writes it. Only from an idle box, so a
@@ -571,11 +577,13 @@ export default function NutritionScreen() {
       meal: {
         meal_type: meal,
         items: [lineAsItem(item, meal)],
-        drona_line: 'Your usual. Change the portion if today was different.',
+        drona_line: item.reason === 'previous_day'
+          ? `From ${prevWord}. Change the portion if today was different.`
+          : 'Your usual. Change the portion if today was different.',
       },
       mealType: meal, mealTypePicked: true, origin: 'pattern',
     });
-  }, [isToday]);
+  }, [isToday, prevWord]);
 
   const onCopyLines = useCallback(async (lines: HistoryEntry[]) => {
     if (!supabase || !copyMeal || relogBusyRef.current) return;
@@ -1658,8 +1666,11 @@ export default function NutritionScreen() {
           const sub = entries.reduce((a, e) => ({ kcal: a.kcal + e.kcal, protein: a.protein + e.protein_g }), { kcal: 0, protein: 0 });
           // Copy the day before's meal: offered while that meal holds anything
           // this one does not have yet.
-          const canCopy = isSignedIn && !dayUnknown && copyableFromDay(prevLines[m.type], entries).length > 0;
           const usual = dayUnknown ? [] : suggestions[m.type];
+          // The day before's rows already ARE the copy, so the icon would say
+          // the same thing twice. It comes back once the meal has food.
+          const showingPrev = usual.length > 0 && usual.every((x) => x.reason === 'previous_day');
+          const canCopy = isSignedIn && !dayUnknown && !showingPrev && copyableFromDay(prevLines[m.type], entries).length > 0;
           return (
             <View key={m.type} style={s.section}>
               <View style={s.sectionHead}>
@@ -1753,6 +1764,7 @@ export default function NutritionScreen() {
                 mealLogged={entries.length > 0}
                 mealLabel={m.label}
                 weekday={viewDate.getDay()}
+                fromWord={prevWord}
                 busyKey={relogBusy}
                 onAdd={(items, all) => { void onAddSuggestions(m.type, items, all); }}
                 onEdit={(item) => onEditSuggestion(m.type, item)}
