@@ -16,6 +16,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { useExerciseNotes } from '@/hooks/useExerciseNotes';
 import { usesReps } from '@/lib/exercises';
+import { readRoutineTargets, slotTargetLabel } from '@/lib/routineTargets';
 
 // Shared routine-detail / session-preview sheet. Used by the Routines screen
 // (tap a routine) and by the dashboard's "today" card (tap the suggestion).
@@ -37,6 +38,9 @@ export interface RoutineExerciseRaw {
   // Superset grouping ordinal (migration 0060). Members share a value and are
   // contiguous by `order`; null = solo. Drives the bracket/accent below.
   superset_group?: number | null;
+  // Time / distance target (lib/routineTargets.ts); absent before its migration.
+  target_duration_seconds?: number | null;
+  target_distance_m?: number | null;
   exercises: {
     id: string;
     name: string;
@@ -64,6 +68,16 @@ interface Props {
   onStartWorkout: () => void;
   onEdit?: () => void;
   onAskCoach?: () => void;
+}
+
+/** "0:45 · " for a timed slot with a target, "8-12 reps · " for a rep slot, and
+ *  nothing for a timed slot without one (its stored 8-12 reps is only the
+ *  table default, not a prescription). */
+function routineSlotLabel(re: RoutineExerciseRaw): string {
+  const target = slotTargetLabel(re.exercises?.metric_type, readRoutineTargets(re));
+  if (target) return `${target} · `;
+  if (!usesReps(re.exercises?.metric_type)) return '';
+  return `${re.reps_min === re.reps_max ? re.reps_min : `${re.reps_min}-${re.reps_max}`} reps · `;
 }
 
 export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, onAskCoach }: Props) {
@@ -166,9 +180,7 @@ export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, o
                         {re.exercises?.name || 'Unknown'}
                       </Text>
                       <Text style={[s.detailExMeta, { color: C.textMuted }]}>
-                        {re.sets} sets · {usesReps(re.exercises?.metric_type)
-                          ? `${re.reps_min === re.reps_max ? re.reps_min : `${re.reps_min}-${re.reps_max}`} reps · `
-                          : ''}{re.rest_seconds}s rest
+                        {re.sets} sets · {routineSlotLabel(re)}{re.rest_seconds}s rest
                       </Text>
                       {re.note ? (
                         <Text style={[s.detailExNote, { color: C.accentText }]} numberOfLines={3}>

@@ -53,7 +53,17 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
 import { roundVolume, abbreviateNumber, formatWeight, formatDuration, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
-import { metricTypeOf, metricTypeDef } from '@/lib/exercises';
+import { metricTypeOf, metricTypeDef, usesReps } from '@/lib/exercises';
+import {
+  nextSetInputs,
+  readRoutineTargets,
+  slotTargetLabel,
+  targetColumns,
+  targetsFor,
+  withoutTargetColumns,
+  writeWithTargetFallback,
+  type RoutineTargets,
+} from '@/lib/routineTargets';
 import { setVolumeKg } from '@/lib/sets';
 import type { ExerciseDef, MetricAxis } from '@/lib/exercises';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
@@ -103,6 +113,30 @@ type SupersetStep =
   | { kind: 'advance'; idx: number }
   | { kind: 'round'; idx: number; restTarget: number }
   | { kind: 'groupDone' };
+
+/** The targets a session slot hands to a routine row: only the keys that are
+ *  set, and only for the axes the exercise logs. */
+function sessionTargets(ex: ActiveWorkoutExercise): Partial<RoutineTargets> {
+  return targetColumns(targetsFor(ex.exercise.metric_type, {
+    target_duration_seconds: ex.targetDurationSeconds,
+    target_distance_m: ex.targetDistanceM,
+  }));
+}
+
+/**
+ * The per-set target after "3 sets" in the exercise header: " × 0:45" for a
+ * timed slot with a target, " × 8-12 reps" for a rep slot, and nothing for a
+ * timed slot without one (its stored 8-12 reps is only the table default).
+ */
+function headerTarget(ex: ActiveWorkoutExercise): string {
+  const target = slotTargetLabel(ex.exercise.metric_type, {
+    target_duration_seconds: ex.targetDurationSeconds ?? null,
+    target_distance_m: ex.targetDistanceM ?? null,
+  });
+  if (target) return ` × ${target}`;
+  if (!usesReps(ex.exercise.metric_type)) return '';
+  return ` × ${ex.repsMin === ex.repsMax ? ex.repsMin : `${ex.repsMin}-${ex.repsMax}`} reps`;
+}
 
 function nextSupersetStep(exs: ActiveWorkoutExercise[], fromIdx: number, finished: boolean[]): SupersetStep {
   const g = exs[fromIdx]?.supersetGroup;
@@ -172,6 +206,8 @@ interface RoutineSyncAdd {
   reps_max: number;
   rest_seconds: number;
   order: number;
+  /** Time / distance target the session slot carried (only the axes it logs). */
+  targets: Partial<RoutineTargets>;
 }
 
 interface RoutineSyncOffer {
@@ -736,6 +772,7 @@ export default function ActiveWorkoutScreen() {
           .sort((a: any, b: any) => a.order - b.order)
           .map((re: any) => {
             const prev = prevPerf[re.exercises?.name];
+            const target = readRoutineTargets(re);
             return {
               exercise: re.exercises,
               sets: Array.from({ length: re.sets }, (_, i) => ({
@@ -749,6 +786,8 @@ export default function ActiveWorkoutScreen() {
               targetSets: re.sets,
               repsMin: re.reps_min,
               repsMax: re.reps_max,
+              targetDurationSeconds: target.target_duration_seconds,
+              targetDistanceM: target.target_distance_m,
               restSeconds: re.rest_seconds ?? 90,
               supersetGroup: typeof re.superset_group === 'number' ? re.superset_group : null,
             };
@@ -1153,6 +1192,22 @@ export default function ActiveWorkoutScreen() {
     }
   }, [workout.isPaused]);
 
+  // The next set's time / distance into the logger's fields: the last logged
+  // set's value when there is one ("held 50s on a 45s target, the next set
+  // shows 50s"), else the routine target (lib/routineTargets nextSetInputs).
+  // The stopwatch is left alone: pressing ▶ still times the hold from zero,
+  // and logging without it records the value as typed.
+  const seedTargetInputs = (ex: ActiveWorkoutExercise) => {
+    const next = nextSetInputs({
+      metricType: ex.exercise.metric_type,
+      targetDurationSeconds: ex.targetDurationSeconds,
+      targetDistanceM: ex.targetDistanceM,
+      sets: ex.sets,
+    });
+    if (next.durationSeconds) setInputDuration(formatDuration(next.durationSeconds));
+    if (next.distanceM) setInputDistance(formatDistanceKm(next.distanceM));
+  };
+
   // Seed the shared inputs for whichever exercise is now open — on arrival
   // (navigation, a superset hop, a remount after minimizing) and when its
   // previous performance resolves in the background. This runs for exercises
@@ -1205,6 +1260,13 @@ export default function ActiveWorkoutScreen() {
       setInputWeight('0');
       setInputReps(String(currentEx.sets[0]?.reps || 10));
     }
+    // The last logged time / distance, or the routine's target ("hold 45s",
+    // "run 5 km"), seeds the fields the index-change effect just cleared. Only the axes this exercise
+    // logs, so a slot swapped from a stretch to a lift ignores its old time.
+    // Never over a typed value: typing or starting the stopwatch calls
+    // markEdited, and the guard at the top of this effect then returns before
+    // any seeding, including a late previous-performance re-run.
+    seedTargetInputs(currentEx);
     // exercise.id, so a session restored from a snapshot (or an ad-hoc exercise
     // whose real row resolves late) seeds once its exercise actually lands —
     // currentIdx alone can stay 0 across that whole transition.
@@ -1406,6 +1468,9 @@ export default function ActiveWorkoutScreen() {
       resetStopwatch();
       setInputDuration('0:00');
     }
+    // The next set opens on the time just logged (or the target): back into
+    // the cleared field. `ex` already holds the set that was just logged.
+    seedTargetInputs(ex);
 
     if (willAdvance) {
       // Hop the pager to the next member; the index-change effects prefill the new
@@ -2124,6 +2189,8 @@ export default function ActiveWorkoutScreen() {
         reps_min: Math.min(...reps),
         reps_max: Math.max(...reps),
         rest_seconds: ex.restSeconds ?? 90,
+        // A slot that came from a routine with a time / distance target keeps it.
+        ...sessionTargets(ex),
       };
     };
 
@@ -2150,6 +2217,7 @@ export default function ActiveWorkoutScreen() {
             name: ex.exercise.name,
             muscle_group: ex.exercise.muscle_group || 'Other',
             category: ex.exercise.category || 'Custom',
+            ...(ex.exercise.metric_type ? { metric_type: ex.exercise.metric_type } : {}),
           },
         })),
       } as any);
@@ -2177,6 +2245,7 @@ export default function ActiveWorkoutScreen() {
             name: ex.exercise.name,
             muscle_group: ex.exercise.muscle_group || 'Other',
             category: ex.exercise.category || 'Custom',
+            ...(ex.exercise.metric_type ? { metric_type: ex.exercise.metric_type } : {}),
           },
           resolvedExerciseId: String(ex.exercise.id).startsWith('temp-') ? null : ex.exercise.id,
           order: i,
@@ -2184,6 +2253,8 @@ export default function ActiveWorkoutScreen() {
           reps_min: r.reps_min,
           reps_max: r.reps_max,
           rest_seconds: r.rest_seconds,
+          target_duration_seconds: r.target_duration_seconds ?? null,
+          target_distance_m: r.target_distance_m ?? null,
           note: null,
           // Carry the superset grouping into the saved routine (migration 0060).
           superset_group: ex.supersetGroup ?? null,
@@ -2256,11 +2327,13 @@ export default function ActiveWorkoutScreen() {
         reps_min: ex.repsMin,
         reps_max: ex.repsMax,
         rest_seconds: ex.restSeconds ?? 90,
+        ...sessionTargets(ex),
         exercises: {
           id: ex.exercise.id,
           name: ex.exercise.name,
           muscle_group: ex.exercise.muscle_group || 'Other',
           category: ex.exercise.category || 'Custom',
+          ...(ex.exercise.metric_type ? { metric_type: ex.exercise.metric_type } : {}),
         },
       })),
     ];
@@ -2340,6 +2413,7 @@ export default function ActiveWorkoutScreen() {
         reps_max: ex.repsMax,
         rest_seconds: ex.restSeconds ?? 90,
         order: nextOrder + i,
+        targets: sessionTargets(ex),
       })),
       guestExercises: null,
     };
@@ -2396,17 +2470,20 @@ export default function ActiveWorkoutScreen() {
     const alreadyPresent = new Set(current.map((re) => re.exercise_id));
     const toInsert = resolved.filter((a) => !alreadyPresent.has(a.exerciseId));
     if (toInsert.length > 0) {
-      const { error } = await supabase.from('routine_exercises').insert(
-        toInsert.map((a) => ({
-          routine_id: offer.routineId,
-          exercise_id: a.exerciseId,
-          sets: a.sets,
-          reps_min: a.reps_min,
-          reps_max: a.reps_max,
-          rest_seconds: a.rest_seconds,
-          order: a.order,
-        })),
-      );
+      const rows = toInsert.map((a) => ({
+        routine_id: offer.routineId,
+        exercise_id: a.exerciseId,
+        sets: a.sets,
+        reps_min: a.reps_min,
+        reps_max: a.reps_max,
+        rest_seconds: a.rest_seconds,
+        order: a.order,
+        ...a.targets,
+      }));
+      // A database from before the target columns: keep the exercises, drop
+      // the targets (same fallback as the routine queue).
+      const error = await writeWithTargetFallback((cols) =>
+        supabase.from('routine_exercises').insert(cols ? rows : rows.map(withoutTargetColumns)));
       if (error) throw error;
     }
 
@@ -2441,6 +2518,7 @@ export default function ActiveWorkoutScreen() {
                     reps_min: a.reps_min,
                     reps_max: a.reps_max,
                     rest_seconds: a.rest_seconds,
+                    ...a.targets,
                     note: null,
                     superset_group: null,
                     exercises: {
@@ -2448,6 +2526,7 @@ export default function ActiveWorkoutScreen() {
                       name: a.def.name,
                       muscle_group: a.def.muscle_group,
                       category: a.def.category,
+                      ...(a.def.metric_type ? { metric_type: a.def.metric_type } : {}),
                     },
                   })),
                 ],
@@ -3105,7 +3184,7 @@ export default function ActiveWorkoutScreen() {
                   {currentEx.exercise.name}
                 </Text>
                 <Text style={[styles.exerciseMeta, { color: C.textMuted }]}>
-                  {currentEx.targetSets} sets × {currentEx.repsMin === currentEx.repsMax ? currentEx.repsMin : `${currentEx.repsMin}-${currentEx.repsMax}`} reps{currentEx.restSeconds > 0 ? ` · ${currentEx.restSeconds}s rest` : ''}
+                  {currentEx.targetSets} sets{headerTarget(currentEx)}{currentEx.restSeconds > 0 ? ` · ${currentEx.restSeconds}s rest` : ''}
                 </Text>
                 {(() => {
                   // Supersets: name the group + the members so the back-to-back flow is

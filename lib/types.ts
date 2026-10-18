@@ -136,6 +136,11 @@ export interface ActiveWorkoutExercise {
   targetSets: number;
   repsMin: number;
   repsMax: number;
+  // Time / distance target carried from the routine slot
+  // (routine_exercises.target_duration_seconds / target_distance_m). Prefills
+  // the logger for an exercise measured by time or distance; ignored otherwise.
+  targetDurationSeconds?: number | null;
+  targetDistanceM?: number | null;
   restSeconds: number;
   // Supersets (migration 0060). Grouping ordinal carried from the routine (or set
   // ad-hoc mid-session). Members of one superset share a value, NULL = solo. Drives
