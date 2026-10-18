@@ -240,6 +240,15 @@ export function ParsedMealCard({
   const [noticeContentH, setNoticeContentH] = useState(0);
   const [bodyH, setBodyH] = useState(0);
   const hasList = state === 'review' && !!meal;
+  // The card stays mounted across a follow-up (review -> analysing -> review)
+  // while the list unmounts in between. Forget the old list's sizes then, so
+  // the next auto-expand waits for the new list instead of sizing the popover
+  // from the last meal.
+  useEffect(() => {
+    if (hasList) return;
+    setListH(0);
+    setListContentH(0);
+  }, [hasList]);
   // With a list, only two things squeeze: the list and a notice's words.
   // Swap each one's squeezed viewport for its full content and what is left
   // is the uncapped height. That holds at any frame height, which is why the
