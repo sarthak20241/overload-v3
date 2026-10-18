@@ -3982,6 +3982,9 @@ export function AICoachModal({
         // equipment, how it is measured); anything else keeps the bare insert,
         // which takes the table default. The stored metric_type is read back
         // rather than assumed, so the fit check sees what the row holds.
+        // Only reached when no row has this name: if the user already owns an
+        // exercise called this, findByName reused it above and Drona's
+        // template is ignored on purpose, so their own settings win.
         const { data: newEx, error: insErr } = await supabase
           .from('exercises')
           .insert(planExerciseInsert(ex))
