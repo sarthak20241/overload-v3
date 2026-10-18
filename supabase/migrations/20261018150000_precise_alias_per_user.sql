@@ -26,6 +26,8 @@
 --
 -- GRANTS. Service role only, as in 0141. Revoke first (0102/0103).
 --
+-- REQUIRES Postgres 15+ (unique nulls not distinct). Live is 17.6.
+--
 -- Reversible: recreate the one-argument function, drop the two-argument one,
 -- drop the constraint and column, restore the alias_key primary key (after
 -- removing duplicate phrases).
