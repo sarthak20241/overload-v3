@@ -223,7 +223,7 @@ Deno.test('a bare m reads as minutes on a hold, and on a run below 100', () => {
 // them. Keep the two in step: this reads the migration itself.
 Deno.test('the client bounds match the migration CHECK bounds', async () => {
   const sql = await Deno.readTextFile(
-    new URL('../supabase/migrations/20261018120000_routine_exercise_targets.sql', import.meta.url),
+    new URL('../supabase/migrations/20261018130000_routine_exercise_targets.sql', import.meta.url),
   );
   assertEquals(new RegExp(`target_duration_seconds between 1 and ${MAX_TARGET_SECONDS}\\b`).test(sql), true);
   assertEquals(new RegExp(`target_distance_m <= ${MAX_TARGET_METERS}\\b`).test(sql), true);
