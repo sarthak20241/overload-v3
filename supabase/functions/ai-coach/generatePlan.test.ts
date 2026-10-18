@@ -133,4 +133,6 @@ Deno.test("a carry measured by distance falls back to meters and its fill is tol
 Deno.test("control characters never reach a saved exercise name", () => {
   const s = parseSkeleton("DAY | A | b\nNEW | Couch\u0007 Stretch\u001b | Hip Flexors | Bodyweight | duration")!;
   assertEquals(s.days[0].slots, ["Couch Stretch"]);
+  const star = parseSkeleton("DAY | A | b\nNEW | Couch*Stretch | Hip Flexors | Bodyweight | duration")!;
+  assertEquals(star.days[0].slots, ["CouchStretch"]);
 });

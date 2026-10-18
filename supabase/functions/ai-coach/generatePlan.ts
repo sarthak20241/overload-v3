@@ -189,12 +189,14 @@ export const MAX_NEW_NAME = 60;
 
 /**
  * Clean an invented name before it can become a permanent custom exercise:
- * drop control characters, then cut a runaway name at a word boundary.
+ * drop control characters and *, then cut a runaway name at a word boundary.
+ * The * goes because PostgREST reads it as a wildcard in the app's ILIKE
+ * lookup, which escapes only % and _.
  * Catalog names never get near the cap; a NEW name past it is the model
  * rambling.
  */
 function capName(raw: string): string {
-  const n = raw.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
+  const n = raw.replace(/[\u0000-\u001f\u007f*]/g, "").replace(/\s+/g, " ").trim();
   if (n.length <= MAX_NEW_NAME) return n;
   const cut = n.slice(0, MAX_NEW_NAME);
   const space = cut.lastIndexOf(" ");
