@@ -57,7 +57,7 @@ import { MessageCopyButton } from '@/components/coach/MessageCopyButton';
 import { PastChatsList } from '@/components/coach/PastChatsList';
 import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
 import { withChangeSource } from '@/lib/planChangeSource';
-import { parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
+import { ilikeExact, parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 import {
   describeCoachEditOp,
@@ -3953,12 +3953,13 @@ export function AICoachModal({
     await Promise.all(workout.exercises.map(async (ex, i) => {
       // Case-insensitive find, oldest row first — .single() would error when a
       // global library row and a same-named custom both match (legal scopes
-      // under migration 0037's unique indexes).
+      // under migration 0037's unique indexes). Escaped so a Drona-invented
+      // name with % or _ matches only itself.
       const findByName = async () => {
         const { data } = await supabase
           .from('exercises')
           .select('id')
-          .ilike('name', ex.name)
+          .ilike('name', ilikeExact(ex.name))
           .order('created_at', { ascending: true })
           .limit(1);
         return data?.[0]?.id;

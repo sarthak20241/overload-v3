@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert@1';
-import { parseNewExercise, planExerciseInsert, planRepsAndNote } from './planExercise.ts';
+import { ilikeExact, parseNewExercise, planExerciseInsert, planRepsAndNote } from './planExercise.ts';
 import { usesReps } from './exercises.ts';
 
 Deno.test('an invented exercise is inserted with its own template, not Other', () => {
@@ -62,6 +62,7 @@ Deno.test('a timed target is kept in the cue instead of turning into 8-12 reps',
   assertEquals(planRepsAndNote('500m'), { reps_min: 8, reps_max: 12, note: 'Aim for 500m.' });
   assertEquals(planRepsAndNote('2 km'), { reps_min: 8, reps_max: 12, note: 'Aim for 2 km.' });
   assertEquals(planRepsAndNote('15cal'), { reps_min: 8, reps_max: 12, note: 'Aim for 15cal.' });
+  assertEquals(planRepsAndNote('20 cals'), { reps_min: 8, reps_max: 12, note: 'Aim for 20 cals.' });
 });
 
 // A timed row stores the table's default 8-12 reps (no time column yet), so the
@@ -73,4 +74,11 @@ Deno.test('only exercises counted in reps show a rep target', () => {
   assertEquals(usesReps('weight_reps'), true);
   assertEquals(usesReps('bodyweight_reps'), true);
   assertEquals(usesReps(undefined), true);
+});
+
+// ILIKE reads % and _ as wildcards: an invented name must match only itself.
+Deno.test('a name used for the ILIKE lookup has its wildcards escaped', () => {
+  assertEquals(ilikeExact('Band_Pull 100%'), 'Band\\_Pull 100\\%');
+  assertEquals(ilikeExact('a\\b'), 'a\\\\b');
+  assertEquals(ilikeExact('Couch Stretch'), 'Couch Stretch');
 });

@@ -290,6 +290,10 @@ async function main() {
   const untimed = scorePlan(mob, planWith([stretch('S1', '8-12')]), { catalog: catalogNames });
   check('a duration stretch on 8-12 reps does not satisfy the mobility ask',
     untimed.failures.some((f) => f.includes('mobility')), untimed.failures);
+  const counted = { ...stretch('Weighted Dip Hold', '45s'), new_exercise: { muscle_group: 'Triceps', category: 'Bodyweight', metric_type: 'weighted_bodyweight' } };
+  const notTimed = scorePlan(mob, planWith([counted]), { catalog: catalogNames });
+  check('a rep-counted type with a 45s target does not satisfy the mobility ask',
+    notTimed.failures.some((f) => f.includes('mobility')), notTimed.failures);
 }
 
 // ── report ────────────────────────────────────────────────────────────────
