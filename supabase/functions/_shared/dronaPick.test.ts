@@ -1,6 +1,8 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import { decideCard, type DronaFacts } from "./dronaCards.ts";
-import { ASKS, askedLately, type BehaviourRow, decidePick, hushed, mutedTopics, PICK_ASKS, type PickFacts, WORDS } from "./dronaPick.ts";
+import {
+  ASKS, askedLately, type BehaviourRow, decidePick, hushed, mutedTopics, painFirst, PICK_ASKS, type PickFacts, WORDS,
+} from "./dronaPick.ts";
 
 const WEEK = "2026-10-19";
 const facts = (cards: DronaFacts["cards"] = []): DronaFacts => ({ week_start: WEEK, cards });
@@ -23,6 +25,13 @@ const notLanding = row("topic_not_landing", 13, "talk",
   { topics: [{ topic: "weigh_in", cards: 2, not_followed: 2 }] }, { mutes: ["topic:weigh_in"] });
 const scale = row("scale_untrusted", 10, "request", { readings: 2, typical_swing_kg: 15 },
   { mutes: ["weight_wrong_way"] });
+// The word behaviours, as _shared/dronaWords.ts writes their rows.
+const WORD_ROWS: BehaviourRow[] = [
+  row("hurting", 5, "talk", { area: "knee", day: "2026-10-14" }),
+  row("asked_for_a_change", 15, "talk", { change: "training_days", day: "2026-10-13" }),
+  row("life_got_in_the_way", 18, "talk", { reason: "travel", sessions: 1, planned: 4 }),
+  row("trains_not_logging", 19, "notice", { day: "2026-10-14" }),
+];
 
 Deno.test("nothing judged: no card", () => {
   assertEquals(decidePick(null, facts()), null);
@@ -100,7 +109,8 @@ Deno.test("every pick card that always asks is in PICK_ASKS, with the topic ASKS
     row("drifting_away", 21, "talk", { sessions: 0, planned: 5, last_week_sessions: 0, last_week_planned: 5 }),
     row("own_way", 22, "talk", { muscles_left_out: [] }),
     row("plan_too_big", 24, "talk", { planned: 6, avg_sessions: 4 }),
-    row("exercise_skipped", 25, "talk", { exercises: [{ exercise: "Shrugs", why: "routine_skip", planned: 6, skipped: 5 }] })];
+    row("exercise_skipped", 25, "talk", { exercises: [{ exercise: "Shrugs", why: "routine_skip", planned: 6, skipped: 5 }] }),
+    ...WORD_ROWS];
   assertEquals(samples.map((r) => r.behaviour).sort(), Object.keys(WORDS).filter((b) => b !== "lift_stall").sort());
   for (const r of samples) {
     const action = decidePick(pf(r), facts())!.payload.action;
@@ -196,7 +206,7 @@ Deno.test("chips stay short: big type is made for numbers", () => {
     row("own_way", 22, "talk", { muscles_left_out: ["Calves", "Hamstrings", "Forearms"] }),
     row("plan_too_big", 24, "talk", { planned: 6, avg_sessions: 4.125 }),
     row("exercise_skipped", 25, "talk", { exercises: [{ exercise: "Chest Supported Kelso Shrugs", why: "routine_skip", planned: 6, skipped: 5 }] }),
-    row("logs_partial_days", 11, "request", { avg_kcal: 416.7, target_kcal: 1800, days_logged: 3 })];
+    row("logs_partial_days", 11, "request", { avg_kcal: 416.7, target_kcal: 1800, days_logged: 3 }), ...WORD_ROWS];
   for (const r of all) {
     for (const e of decidePick(pf(r), facts())?.evidence ?? []) assertEquals(e.value.length <= 10, true, `${r.behaviour}: ${e.value}`);
   }
@@ -210,18 +220,60 @@ Deno.test("every hushed card is a notice that asks nothing, or nothing at all", 
     row("drifting_away", 21, "talk", { sessions: 0, planned: 5, last_week_sessions: 0, last_week_planned: 5 }),
     row("own_way", 22, "talk", { muscles_left_out: ["Calves"] }),
     row("plan_too_big", 24, "talk", { planned: 6, avg_sessions: 4 }),
-    row("exercise_skipped", 25, "talk", { exercises: [{ exercise: "Shrugs", why: "never_done", phase_weeks: 4 }] })];
+    row("exercise_skipped", 25, "talk", { exercises: [{ exercise: "Shrugs", why: "never_done", phase_weeks: 4 }] }),
+    ...WORD_ROWS, row("life_got_in_the_way", 18, "notice", { reason: "illness" })];
   for (const r of all) {
     const c = decidePick(pf(meta, r), facts());
     if (!c) continue;
     assertEquals(c.kind, "notice", r.behaviour);
-    assertEquals(/\?|Tell me|Log |Weigh in|Time to|first\.|is the first/.test(c.body), false, `${r.behaviour}: ${c.body}`);
+    assertEquals(/\?|Tell me|Log |Weigh in|Time to|Consistency first|is the first/.test(c.body), false, `${r.behaviour}: ${c.body}`);
+  }
+});
+
+Deno.test("the word cards: what each says, and the professional line on every hurting card", () => {
+  const [hurt, asked, life, trained] = WORD_ROWS.map((r) => decidePick(pf(r), facts())!);
+  assertEquals([hurt.kind, hurt.title], ["talk", "Look after that knee"]);
+  assertEquals(hurt.body.includes("get it checked by a professional"), true);
+  assertEquals(hurt.payload.prompt, "I mentioned knee pain. Which exercises should I swap or ease off until it settles?");
+  const unknownArea = decidePick(pf(row("hurting", 5, "talk", { area: "other" })), facts())!;
+  assertEquals([unknownArea.title, unknownArea.body.startsWith("You mentioned pain.")], ["Look after that injury", true]);
+  const meta = row("not_hearing_drona", 12, "notice", {}, { meta: true });
+  assertEquals(decidePick(pf(meta, WORD_ROWS[0]), facts())!.body.includes("get it checked by a professional"), true);
+
+  assertEquals(asked.body, "You asked to change your training days. Your plan has not changed yet. Want to sort it out now?");
+  assertEquals(decidePick(pf(row("asked_for_a_change", 15, "talk", { change: "calories" })), facts())!.body.startsWith(
+    "You asked to change your calories. Your targets have not changed yet."), true);
+
+  assertEquals([life.kind, life.title, life.payload.action], ["talk", "Training on the road", "talk"]);
+  const ill = decidePick(pf(row("life_got_in_the_way", 18, "notice", { reason: "illness" })), facts())!;
+  assertEquals([ill.kind, ill.payload], ["notice", {}]);
+
+  assertEquals(trained.body.startsWith("You said you trained on Wednesday, but no session is logged that day."), true);
+  assertEquals(decidePick(pf(row("trains_not_logging", 19, "notice", { day: "bad" })), facts()), null);
+});
+
+Deno.test("painFirst: the hurting card alone, before everything; nothing when there is none or it waits", () => {
+  // A new user with a few days of data still hears about pain (the worker runs this before the new-user notice).
+  const card = painFirst(pf(goals, WORD_ROWS[0], onTrack), facts())!;
+  assertEquals([card.topic, card.kind], ["hurting", "talk"]);
+  assertEquals(painFirst(pf(goals, onTrack), facts()), null);
+  assertEquals(painFirst(pf(WORD_ROWS[0]), facts([{ week_start: "2026-10-12", topic: "hurting", status: "pending" }])), null);
+  // Hushed: still said, as a notice that keeps the professional line.
+  const quiet = painFirst(pf(row("not_hearing_drona", 12, "notice", {}, { meta: true }), WORD_ROWS[0]), facts())!;
+  assertEquals([quiet.kind, quiet.body.includes("professional")], ["notice", true]);
+  // A hushed card with nothing quiet to say is a hold, and a hold is not a pain card.
+  const real = WORDS.hurting;
+  WORDS.hurting = () => ({ kind: "talk", title: "t", body: "b?", evidence: [], payload: { action: "talk" } });
+  try {
+    assertEquals(painFirst(pf(row("not_hearing_drona", 12, "notice", {}, { meta: true }), WORD_ROWS[0]), facts()), null);
+  } finally {
+    WORDS.hurting = real;
   }
 });
 
 Deno.test("no words use an em dash", () => {
   const all = [goals, stall("real_plateau"), stall("recovery"), stall("under_fuelled"), stall("inconsistent_training"),
-    onTrack, notLanding, scale];
+    onTrack, notLanding, scale, ...WORD_ROWS];
   for (const r of all) {
     const c = decidePick(pf(r), facts());
     if (!c) continue;
