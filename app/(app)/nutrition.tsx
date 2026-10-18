@@ -300,14 +300,25 @@ export default function NutritionScreen() {
     const y = Math.max(0, Math.round(e.nativeEvent.contentOffset.y / 16) * 16);
     setDayScrollY((prev) => (prev === y ? prev : y));
   }, []);
+  // Top of the food box on screen, so the popover and its blur stop above it.
+  // The bar's bottom padding lives here once: the bar's style uses it, and so
+  // does the popover's edge, so the two cannot drift apart. Computed rather
+  // than measured because the bar rides the keyboard by `bottom`, which
+  // fires no onLayout on the row inside it.
+  const barPadBottom = kbHeight > 0 ? Spacing.sm : insets.bottom + 12;
+  const [inputRowH, setInputRowH] = useState(52);
+  const popBottomEdge = winH - kbHeight - barPadBottom - inputRowH;
   // Cap the parse card so a long meal never runs past the top of the screen
   // (the card is pinned above the input, outside the day scroll — the lines
-  // scroll INSIDE it instead). 96 ≈ the input bar plus its gap.
+  // scroll INSIDE it instead).
   //
   // `hardAvail` is the whole gap between the safe area and the input bar. It is
   // the ceiling in both states, so the card's own header — and the minimize
-  // control in it — is always on screen.
-  const hardAvail = winH - kbHeight - insets.top - 96;
+  // control in it — is always on screen. Measured from the food box's real
+  // top edge, less the card's gap above it: a fixed 96 for the bar assumed
+  // one line of text at the default size, and a taller box (large text,
+  // a second line) let the card's footer slide under it again.
+  const hardAvail = popBottomEdge - Spacing.sm - insets.top;
 
   // Keyboard UP: take all of it. The keyboard already hides the day, so holding
   // the card short only buys blank space nobody can read behind — it costs the
@@ -446,14 +457,6 @@ export default function NutritionScreen() {
       setAutoPopKey((k) => k + 1);
     }
   }, [flow.status, popOpen]);
-  // Top of the food box on screen, so the popover and its blur stop above it.
-  // The bar's bottom padding lives here once: the bar's style uses it, and so
-  // does the popover's edge, so the two cannot drift apart. Computed rather
-  // than measured because the bar rides the keyboard by `bottom`, which
-  // fires no onLayout on the row inside it.
-  const barPadBottom = kbHeight > 0 ? Spacing.sm : insets.bottom + 12;
-  const [inputRowH, setInputRowH] = useState(52);
-  const popBottomEdge = winH - kbHeight - barPadBottom - inputRowH;
   // Parse tier (Quick default / Thorough opt-in / Precise for Pro). A ref
   // mirrors the state so onSend reads the CURRENT choice, matching the flowRef
   // idiom above.
