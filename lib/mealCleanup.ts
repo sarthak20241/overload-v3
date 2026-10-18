@@ -20,8 +20,11 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-/** PostgREST (PGRST202) or Postgres (42883): no such function. */
-const MISSING_FUNCTION = new Set(['PGRST202', '42883']);
+/** PostgREST PGRST202: the RPC is not in its schema cache, i.e. the migration
+ *  is not live. Not Postgres 42883: from a deployed function that means its
+ *  body is broken (a missing helper), a real error, and the unsafe path is
+ *  never the answer to one. */
+const MISSING_FUNCTION = new Set(['PGRST202']);
 
 export async function deleteMealIfEmpty(supabase: SupabaseClient, mealId: string): Promise<void> {
   const { error } = await supabase.rpc('delete_meal_if_empty', { p_meal_id: mealId });

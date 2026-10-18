@@ -258,16 +258,24 @@ export function withPreviousDay(
 /** How a re-logged line is labelled. The food memory trusts 'manual' lines as
  *  the user's own numbers, so a copy must carry its original label or a
  *  copied AI estimate would be promoted. */
-export interface RelogLabels { logged_via: 'ai' | 'manual' | null; tier: string | null }
+export interface RelogLabels {
+  logged_via: 'ai' | 'manual' | null;
+  tier: string | null;
+  /** The original line's source. An edit in the review card sets source to
+   *  'manual'; comparing with this tells that edit apart from a line that
+   *  was already 'manual' (corrected when it was first logged). */
+  source?: string | null;
+}
 
 /** The labels a past line carries into its copy. ai_auto means the server
  *  wrote the row itself; the copy is the client's, so it goes back as 'ai'.
  *  Anything unknown is null, the same as a picker log. */
-export function relogLabels(e: { logged_via?: string | null; tier?: string | null }): RelogLabels {
+export function relogLabels(e: { logged_via?: string | null; tier?: string | null; source?: string | null }): RelogLabels {
   const v = e.logged_via;
   return {
     logged_via: v === 'manual' ? 'manual' : v === 'ai' || v === 'ai_auto' ? 'ai' : null,
     tier: e.tier ?? null,
+    source: e.source ?? null,
   };
 }
 
@@ -283,8 +291,10 @@ export function relogLabels(e: { logged_via?: string | null; tier?: string | nul
  *  an estimate is never promoted to the user's own number. */
 export function relogColumns(source: string | null | undefined, relog: RelogLabels | undefined): RelogLabels {
   if (!relog) return { logged_via: 'ai', tier: null };
-  if (source === 'manual') return { logged_via: 'manual', tier: null };
-  return relog;
+  // Edited in this card: the card turned the source to 'manual'. A line that
+  // was already 'manual' keeps its own labels.
+  if (source === 'manual' && relog.source !== 'manual') return { logged_via: 'manual', tier: null };
+  return { logged_via: relog.logged_via, tier: relog.tier };
 }
 
 /** The previous day's lines for one meal that are not already in it today,

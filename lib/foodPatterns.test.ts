@@ -173,11 +173,11 @@ Deno.test("copy skips what is already in today's meal", () => {
 // ── Re-log labels ────────────────────────────────────────────────────────────
 
 Deno.test("a copied line keeps its label: an AI estimate is never promoted to manual", () => {
-  assertEquals(relogLabels({ logged_via: "ai", tier: "fast" }), { logged_via: "ai", tier: "fast" });
-  assertEquals(relogLabels({ logged_via: "ai_auto", tier: "thorough" }), { logged_via: "ai", tier: "thorough" });
-  assertEquals(relogLabels({ logged_via: "manual", tier: null }), { logged_via: "manual", tier: null });
-  assertEquals(relogLabels({ logged_via: null }), { logged_via: null, tier: null });
-  assertEquals(relogLabels({ logged_via: "something new" }), { logged_via: null, tier: null });
+  assertEquals(relogLabels({ logged_via: "ai", tier: "fast" }), { logged_via: "ai", tier: "fast", source: null });
+  assertEquals(relogLabels({ logged_via: "ai_auto", tier: "thorough" }), { logged_via: "ai", tier: "thorough", source: null });
+  assertEquals(relogLabels({ logged_via: "manual", tier: null }), { logged_via: "manual", tier: null, source: null });
+  assertEquals(relogLabels({ logged_via: null }), { logged_via: null, tier: null, source: null });
+  assertEquals(relogLabels({ logged_via: "something new" }), { logged_via: null, tier: null, source: null });
 });
 
 Deno.test("columns written: fresh parse, unedited copy, edited copy", () => {
@@ -186,6 +186,12 @@ Deno.test("columns written: fresh parse, unedited copy, edited copy", () => {
   assertEquals(relogColumns("estimate", copy), { logged_via: "ai", tier: "fast" });
   // Changed in the review card: the numbers are the user's now.
   assertEquals(relogColumns("manual", copy), { logged_via: "manual", tier: null });
+});
+
+Deno.test("a line corrected when first logged keeps its labels when copied unedited", () => {
+  // First logged as an AI parse the user fixed in the card: source manual, logged_via ai.
+  const copy = relogLabels({ logged_via: "ai", tier: "thorough", source: "manual" });
+  assertEquals(relogColumns("manual", copy), { logged_via: "ai", tier: "thorough" });
 });
 
 // ── The day before, when there is no habit yet ───────────────────────────────

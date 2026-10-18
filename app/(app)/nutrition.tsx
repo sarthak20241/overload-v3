@@ -133,6 +133,8 @@ type ParseFlow =
       clientId?: string; logDate?: string;
       /** The reviewed card's `words`, kept so Retry rebuilds it whole. */
       words?: string;
+      /** A suggestion's origin, kept so a retried Add is still reported as one. */
+      origin?: 'pattern' | 'copy_day';
     }
   // The user asked to SAVE a food or meal, and Drona drafted it. Nothing is
   // written until the card is tapped; `result` is what came back from that tap.
@@ -482,7 +484,9 @@ export default function NutritionScreen() {
   );
   // null while the day is still loading: its empty first render would
   // otherwise count as a change and fetch the history twice per open.
-  const { history } = useFoodHistory(!isSignedIn ? 'guest' : dayUnknown ? null : diaryVersion);
+  // Counted back from the day on screen when it is in the past, else today.
+  const historyAnchor = viewIso < todayIso ? viewIso : todayIso;
+  const { history } = useFoodHistory(!isSignedIn ? 'guest' : dayUnknown ? null : diaryVersion, historyAnchor);
   const patterns = useMemo(() => learnPatterns(isSignedIn ? history : [], viewIso, todayIso), [history, viewIso, todayIso, isSignedIn]);
   // Today runs on the clock (breakfast in the morning, and still at lunch if
   // it was skipped). Any other day is backfill or planning: every meal open.
@@ -1351,7 +1355,7 @@ export default function NutritionScreen() {
     if (!error) editCountRef.current = 0;
     if (error) {
       // Keep the reviewed meal so Retry re-attempts the write (see onRetry).
-      setFlow({ status: 'error', raw: flow.raw, message: 'Could not add that. Try again.', meal: flow.meal, mealType: flow.mealType, words: flow.words });
+      setFlow({ status: 'error', raw: flow.raw, message: 'Could not add that. Try again.', meal: flow.meal, mealType: flow.mealType, words: flow.words, origin: flow.origin });
       return;
     }
     reload();
@@ -1366,7 +1370,7 @@ export default function NutritionScreen() {
     // A write failure kept the meal → re-show the review card (tapping Add re-writes
     // it, to the current day). Only re-run the AI parse if the meal is gone.
     if (flow.meal && flow.mealType) {
-      setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.mealType, words: flow.words });
+      setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.mealType, words: flow.words, origin: flow.origin });
     } else {
       // A failed "Just log it" send retries under its ORIGINAL id (see ParseFlow).
       void runParse(

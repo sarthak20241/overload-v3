@@ -23,14 +23,24 @@ import type { MealType } from '@/lib/foods';
 type Supa = NonNullable<ReturnType<typeof useSupabaseClient>>;
 const num = (v: unknown) => (v == null ? 0 : Number(v));
 
-/** Days of history before today. One extra so "yesterday" of the oldest
- *  pattern day is still in hand. */
+/** Days of history before the anchor day. One extra so "yesterday" of the
+ *  oldest pattern day is still in hand. */
 const BACK_DAYS = PATTERN_WINDOW_DAYS + 1;
 
-async function fetchHistory(supabase: Supa): Promise<HistoryEntry[] | null> {
+/**
+ * The window counts back from `anchorIso`: today, or the day on screen when
+ * that is in the past, so a day looked at months later still gets its own
+ * four weeks and its day before. From today it runs ahead to latestLogDay
+ * (planned days, for copying while planning); from a past day it stops at
+ * that day, since nothing after it can teach it.
+ */
+async function fetchHistory(supabase: Supa, anchorIso: string): Promise<HistoryEntry[] | null> {
   const now = new Date();
-  const first = new Date(now.getFullYear(), now.getMonth(), now.getDate() - BACK_DAYS, 0, 0, 0, 0);
-  const last = latestLogDay(now);
+  const [y, m, d] = anchorIso.split('-').map(Number);
+  const anchor = new Date(y, (m || 1) - 1, d || 1);
+  const past = anchorIso < ymd(now);
+  const first = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() - BACK_DAYS, 0, 0, 0, 0);
+  const last = past ? anchor : latestLogDay(now);
   const end = new Date(last.getFullYear(), last.getMonth(), last.getDate(), 23, 59, 59, 999);
   const { data, error } = await supabase
     .from('meals')
@@ -72,12 +82,12 @@ let _mem: HistoryCache | null = null;
  * that changes when the diary does (the day's entry ids): a change refetches,
  * so a food logged a minute ago can be copied tomorrow without a restart.
  */
-export function useFoodHistory(version: string | null): { history: HistoryEntry[] } {
+export function useFoodHistory(version: string | null, anchorIso: string): { history: HistoryEntry[] } {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
   // v2: entries carry logged_via + tier. An older cache without them would
   // re-log with no label, so it is not read at all.
-  const key = `v2:${user?.id ?? 'anon'}:${ymd(new Date())}`;
+  const key = `v2:${user?.id ?? 'anon'}:${ymd(new Date())}:${anchorIso}`;
   const seed = _mem && _mem.key === key ? _mem.entries : null;
   const [history, setHistory] = useState<HistoryEntry[]>(seed ?? []);
 
@@ -93,7 +103,7 @@ export function useFoodHistory(version: string | null): { history: HistoryEntry[
       }
       // null: the caller's diary is mid-load. Paint from cache, fetch once it lands.
       if (!supabase || version === null) return;
-      const fresh = await fetchHistory(supabase);
+      const fresh = await fetchHistory(supabase, anchorIso);
       // A failed fetch keeps what is on screen: no suggestions beats wrong ones,
       // and stale ones from this morning are still this user's habits.
       if (cancelled || !fresh) return;

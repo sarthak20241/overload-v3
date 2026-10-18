@@ -30,12 +30,16 @@ Deno.test('the database does it in one step: no client-side count or delete', as
 });
 
 Deno.test('before the migration is live, it falls back to count then delete', async () => {
-  for (const code of ['PGRST202', '42883']) {
-    const f = fake({ rpcError: { code } });
-    await deleteMealIfEmpty(f.client, 'meal-1');
-    assert(f.calls.some((c) => c[0] === 'select' && c[1] === 'meal_entries'), code);
-    assert(f.calls.some((c) => c[0] === 'delete' && c[1] === 'meals'), code);
-  }
+  const f = fake({ rpcError: { code: 'PGRST202' } });
+  await deleteMealIfEmpty(f.client, 'meal-1');
+  assert(f.calls.some((c) => c[0] === 'select' && c[1] === 'meal_entries'));
+  assert(f.calls.some((c) => c[0] === 'delete' && c[1] === 'meals'));
+});
+
+Deno.test('a broken deployed function (42883 inside it) never falls back', async () => {
+  const f = fake({ rpcError: { code: '42883' } });
+  await deleteMealIfEmpty(f.client, 'meal-1');
+  assertEquals(f.calls.length, 1);
 });
 
 Deno.test('the fallback keeps a meal that still has food', async () => {
