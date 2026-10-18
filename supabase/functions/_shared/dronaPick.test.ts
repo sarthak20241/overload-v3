@@ -91,13 +91,14 @@ Deno.test("goals_unclear: both sides in words, and the opening line carries them
   assertEquals(card.body,
     "Your profile says: build muscle, hold at 72.5 kg. Your program, 9-Week Six-Pack Cut, says: lose fat, down to 69 kg. Tell me which one is right.");
   assertEquals(card.payload.action, "talk");
+  assertEquals(card.evidence.map((e) => e.value), ["72.5 kg", "69 kg"]);
   assertEquals(card.payload.prompt?.includes("lose fat, down to 69 kg"), true);
 });
 
 Deno.test("lift_stall: the cause picks the words and the kind", () => {
   const plateau = decidePick(pf(stall("real_plateau")), facts())!;
   assertEquals([plateau.kind, plateau.title], ["talk", "Rear delt machine has stopped moving"]);
-  assertEquals(plateau.evidence, [{ label: "Rear delt machine, best estimated max", value: "50.4 kg, now 49.2 kg" }]);
+  assertEquals(plateau.evidence, [{ label: "Best max, 3 weeks ago", value: "50.4 kg" }, { label: "Best max now", value: "49.2 kg" }]);
   const cut = decidePick(pf(stall("expected_on_cut")), facts())!;
   assertEquals([cut.kind, cut.payload], ["notice", {}]);
   const blind = decidePick(pf(stall("cant_tell")), facts())!;
@@ -140,6 +141,17 @@ Deno.test("a detail too thin for honest words is skipped, not said wrong", () =>
   assertEquals(decidePick(pf(row("goals_unclear", 20, "talk", { profile_goal: "hypertrophy" }), onTrack), facts())?.topic,
     "on_track");
   assertEquals(decidePick(pf(row("unknown_behaviour", 1, "talk", {})), facts()), null);
+});
+
+Deno.test("chips stay short: big type is made for numbers", () => {
+  const all = [goals, stall("real_plateau"), onTrack, notLanding, scale,
+    row("own_way", 22, "talk", { muscles_left_out: ["Calves", "Hamstrings", "Forearms"] }),
+    row("plan_too_big", 24, "talk", { planned: 6, avg_sessions: 4.125 }),
+    row("exercise_skipped", 25, "talk", { exercises: [{ exercise: "Chest Supported Kelso Shrugs", why: "routine_skip", planned: 6, skipped: 5 }] }),
+    row("logs_partial_days", 11, "request", { avg_kcal: 416.7, target_kcal: 1800, days_logged: 3 })];
+  for (const r of all) {
+    for (const e of decidePick(pf(r), facts())?.evidence ?? []) assertEquals(e.value.length <= 10, true, `${r.behaviour}: ${e.value}`);
+  }
 });
 
 Deno.test("no words use an em dash", () => {

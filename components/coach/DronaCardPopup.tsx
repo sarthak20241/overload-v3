@@ -162,6 +162,8 @@ function primaryLabelFor(payload: SavedDronaCard['payload']): string {
       return 'See what is due';
     case 'apply_swap':
       return 'Make it the plan';
+    case 'talk':
+      return 'Talk it through';
     default:
       return 'Open';
   }

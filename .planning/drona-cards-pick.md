@@ -121,7 +121,7 @@ weeks, so they would see it every 2 weeks, or every 4 after "Skip".
 - `get_drona_pick_facts` live (migration `20261018114836_drona_pick_facts`).
   Service role only: anon is refused (42501). Same "rebuild first when today
   is not done" step as `get_drona_energy_facts`.
-- `_shared/dronaPick.ts` + `dronaPick.test.ts` (14 tests). Each skip rule was
+- `_shared/dronaPick.ts` + `dronaPick.test.ts` (15 tests). Each skip rule was
   broken on purpose and a test failed: check-in skip, steer skip, cooldown, the
   mute on what a card asks for, the meta notice, the priority order, the one-side
   goals detail, the "most skipped" choice, "twice", `hushed`.
@@ -146,4 +146,18 @@ Dry run (cards each Monday would have shown):
 | 2026-09-28 | goals_unclear 3, lift_stall 1, on_track 1 | watching 2 |
 
 Ship order: OTA (the `talk` button) first, then deploy `drona-cards`.
+
+## Simulator check (2026-10-18)
+
+On the demo account (`user_3HKAcd0G...`, Pro), its week-of-12-Oct card was
+turned into the real `goals_unclear` talk card the new code writes for it, then
+restored exactly (facts md5 unchanged).
+
+- The popup and From Drona both show it. "Talk it through" opens the coach chat
+  and sends the opening line; the coach read the data and answered (it picked
+  the cut, and pointed out 11 weeks with no sessions or weigh-ins).
+- It found two bugs, both fixed: the popup has its own button-label list
+  (`DronaCardPopup.primaryLabelFor`) and said "Open"; and the chips showed whole
+  phrases in big type. Chips now hold short numbers only (a test checks every
+  behaviour's chips stay 10 characters or less).
 

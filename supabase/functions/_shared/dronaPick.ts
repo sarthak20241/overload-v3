@@ -137,7 +137,11 @@ function goalsUnclear(d: Record<string, unknown>): Words {
     kind: 'talk',
     title: 'Your goal and your program disagree',
     body: `Your profile says: ${profile}. Your program${name ? `, ${name},` : ''} says: ${program}. Tell me which one is right.`,
-    evidence: [{ label: 'Profile', value: profile }, { label: 'Program', value: program }],
+    // Chips are big type made for numbers: the goal weights, when both are known.
+    evidence: num(d.profile_goal_kg) != null && num(d.program_target_kg) != null
+      ? [{ label: 'Profile goal', value: `${kg(num(d.profile_goal_kg)!)} kg` },
+         { label: 'Program target', value: `${kg(num(d.program_target_kg)!)} kg` }]
+      : [],
     payload: {
       action: 'talk',
       prompt: `My profile goal and my program do not agree. My profile says: ${profile}. My program says: ${program}. Help me pick the right one.`,
@@ -171,7 +175,7 @@ function ownWay(d: Record<string, unknown>): Words {
     title: 'You train your own way',
     body: `Most days you pick your own session, not the one that is due.${left ? ` ${left} got left out.` : ''} `
       + 'Want a plan built around how you train?',
-    evidence: left ? [{ label: 'Left out', value: left }] : [],
+    evidence: [],
     payload: {
       action: 'talk',
       prompt: `I keep picking my own sessions instead of the one that is due${left ? `, and ${left} got left out` : ''}. Can you shape my plan around how I actually train?`,
@@ -231,7 +235,7 @@ function liftStall(d: Record<string, unknown>): Words {
     title: s.title(name),
     body: s.body(name),
     evidence: from != null && now != null
-      ? [{ label: `${name}, best estimated max`, value: `${kg(from)} kg, now ${kg(now)} kg` }]
+      ? [{ label: 'Best max, 3 weeks ago', value: `${kg(from)} kg` }, { label: 'Best max now', value: `${kg(now)} kg` }]
       : [],
     payload: s.kind === 'talk'
       ? { action: 'talk', prompt: `My ${name} has not gone up in three weeks. You think the cause is ${s.why}. What should I change?` }
@@ -274,7 +278,7 @@ function exerciseSkipped(d: Record<string, unknown>): Words {
     body: routine
       ? `You skipped ${name}${more} in ${skipped} of ${planned} sessions. Want something you will do instead?`
       : `${name}${more} is in your plan, and you have not done it this phase. Want something you will do instead?`,
-    evidence: routine ? [{ label: `${name} skipped`, value: `${skipped} of ${planned}` }] : [],
+    evidence: routine ? [{ label: 'Sessions skipped', value: `${skipped} of ${planned}` }] : [],
     payload: {
       action: 'talk',
       prompt: `I keep skipping ${name} in my plan. Can you suggest something I would actually do instead?`,
