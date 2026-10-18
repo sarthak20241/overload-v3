@@ -8,8 +8,9 @@
 //         so the Monday run can be reading a stale scale for someone who was
 //         away; the app path is how that user still gets a card.
 //
-// The weekly card, first match wins: the new-user notice, the permanent swap,
-// the behaviour pick (get_drona_pick_facts + _shared/dronaPick.ts: what last
+// The weekly card, first match wins: pain the person told Drona about (the
+// word step, _shared/dronaWords.ts), the new-user notice, the permanent swap,
+// the behaviour pick (with the word behaviours in it) (get_drona_pick_facts + _shared/dronaPick.ts: what last
 // week's behaviours found, in fixed words), then the older P0 rules
 // (get_drona_facts + _shared/dronaCards.ts). The calorie check-in is a second,
 // separate card per week (slot 'calories', _shared/dronaEnergy.ts). Nothing to
@@ -22,12 +23,19 @@ import { decideCard, type DronaFacts, onCooldown, signalsFrom, weekStartOf } fro
 import { decideSwap, type SwapFacts, swapCard } from "../_shared/dronaSwap.ts";
 import { checkinCooldown, decideEnergyCard, type EnergyFacts } from "../_shared/dronaEnergy.ts";
 import { askedLately, decidePick, hushed, mutedTopics, type PickFacts } from "../_shared/dronaPick.ts";
+import {
+  chooseTexts, QUESTIONS, questionKey, readText, stateFor, type StoredSignal, type WordFacts, wordBehaviours, wordSignals,
+} from "../_shared/dronaWords.ts";
+import { askJev } from "../ai-coach/jev.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const CLERK_ISSUER = Deno.env.get("CLERK_ISSUER") ?? "";
+const JEV_API_KEY = Deno.env.get("JEV_API_KEY") ?? "";
+/** Per text; all texts go at once, so this is about the whole word step. */
+const JEV_TIMEOUT_MS = 6000;
 const JWKS = createRemoteJWKSet(new URL(`${CLERK_ISSUER}/.well-known/jwks.json`));
 
 const USER_PAGE = 1000;
@@ -168,6 +176,55 @@ async function checkin(
   return { kind: card.kind, saved: !insErr };
 }
 
+type WordsState = "none" | "stored" | "asked" | "failed";
+
+/**
+ * The word step (.planning/drona-word-behaviours.md): what the person told
+ * Drona in the week that just ended. Stored answers are reused, so Jev is asked
+ * once per person per week; a week with no texts costs nothing. Code picks the
+ * texts and decides; Jev only answers yes/no (and which) about each text.
+ * Never throws: a failure means no word behaviours this week, and the numbers
+ * cards run as before.
+ */
+async function wordStep(
+  db: SupabaseClient,
+  userId: string,
+  localDay: string,
+): Promise<{ signals: StoredSignal[]; state: WordsState }> {
+  const { data, error } = await retried(() =>
+    db.rpc("get_drona_word_facts", { p_user_id: userId, p_as_of: localDay })
+  );
+  if (error || !data) {
+    if (error) console.error("[drona-cards] word facts:", error.message);
+    return { signals: [], state: "failed" };
+  }
+  const f = data as WordFacts;
+  if ((f.stored ?? []).length > 0) return { signals: f.stored!, state: "stored" };
+  const texts = chooseTexts(f);
+  if (texts.length === 0) return { signals: [], state: "none" };
+
+  // One call per text, all at once: each text's answers stay tied to its day.
+  const questions = Object.fromEntries(Object.entries(QUESTIONS).map(([q, v]) => [questionKey(0, q), v]));
+  const deps = { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, log: (m: string) => console.error(`[drona-cards] ${m}`) };
+  const answers = await Promise.all(texts.map((t) => askJev(stateFor(t, texts), questions, deps)));
+  const readings = [];
+  let model: string | null = null;
+  for (let i = 0; i < texts.length; i++) {
+    const a = answers[i];
+    if (!a.ok) return { signals: [], state: "failed" };
+    model = a.response.model ?? model;
+    readings.push(readText(texts[i], 0, a.response.answers as Record<string, unknown>));
+  }
+  const signals = wordSignals(f, readings);
+  const { error: upErr } = await retried(() =>
+    db.from("drona_word_signals").upsert(signals.map((s) => ({
+      user_id: userId, week_start: f.week_start, signal: s.signal, fired: s.fired, detail: s.detail ?? {}, model,
+    })), { onConflict: "user_id,week_start,signal" })
+  );
+  if (upErr) console.error("[drona-cards] word signals write:", upErr.message);
+  return { signals, state: "asked" };
+}
+
 /** Read one user's facts, decide, and write the card. A hold writes nothing. */
 async function generate(
   db: SupabaseClient,
@@ -175,19 +232,13 @@ async function generate(
   localDay: string,
   weekStart: string,
   source: "cron" | "app",
-): Promise<{ kind: string; saved: boolean; error?: string }> {
+): Promise<{ kind: string; saved: boolean; error?: string; words?: WordsState }> {
   const { data: facts, error } = await retried(() =>
     db.rpc("get_drona_facts", { p_user_id: userId, p_as_of: localDay, p_week_start: weekStart })
   );
   if (error) return { kind: "none", saved: false, error: error.message };
   if (!facts) return { kind: "none", saved: false, error: "no facts" };
-
-  // Too new to read a habit, and a swap just asked about waits its turn.
   const newUser = signalsFrom(facts as DronaFacts).new_user;
-  if (!newUser && !onCooldown("swap", facts as DronaFacts)) {
-    const swap = await swapFirst(db, userId, localDay, weekStart, source);
-    if (swap) return swap;
-  }
 
   // A new user gets the "I am reading" notice (decideCard): no pick, so no read.
   // Otherwise the behaviour pick: what last week's behaviours found. A failed
@@ -208,13 +259,47 @@ async function generate(
     }
     pf = pick as PickFacts | null;
   }
-  const picked = newUser ? null : decidePick(pf, facts as DronaFacts);
-  const skip = new Set([...mutedTopics(pf), ...askedLately(facts as DronaFacts)]);
-  const card = picked ?? hushed(decideCard(facts as DronaFacts, undefined, skip), pf);
-  if (card.kind === "hold") return { kind: "hold", saved: false };
 
-  // Insert, never upsert: the cron and the app can race for the same week, and
-  // the first card written is the one that stands.
+  // Words beat numbers: what they told Drona joins the pick, above the number
+  // behaviours, and quiets the cards it would argue with.
+  const words = await wordStep(db, userId, localDay);
+  const all: PickFacts = { ...(pf ?? {}), behaviours: [...(pf?.behaviours ?? []), ...wordBehaviours(words.signals)] };
+  const tagged = <T extends object>(r: T) => ({ ...r, words: words.state });
+
+  // Pain comes first: before the swap, and for new users too.
+  const hurt = decidePick(
+    { ...all, behaviours: (all.behaviours ?? []).filter((r) => r.behaviour === "hurting" || r.meta) },
+    facts as DronaFacts,
+  );
+  if (hurt && hurt.kind !== "hold") return tagged(await insertWeekly(db, userId, weekStart, hurt, facts, all, source));
+
+  // Too new to read a habit, and a swap just asked about waits its turn.
+  if (!newUser && !onCooldown("swap", facts as DronaFacts)) {
+    const swap = await swapFirst(db, userId, localDay, weekStart, source);
+    if (swap) return tagged(swap);
+  }
+
+  const picked = newUser ? null : decidePick(all, facts as DronaFacts);
+  const skip = new Set([...mutedTopics(all), ...askedLately(facts as DronaFacts)]);
+  const card = picked ?? hushed(decideCard(facts as DronaFacts, undefined, skip), all);
+  if (card.kind === "hold") return tagged({ kind: "hold", saved: false });
+  return tagged(await insertWeekly(db, userId, weekStart, card, facts, picked ? all : null, source));
+}
+
+/**
+ * Insert, never upsert: the cron and the app can race for the same week, and
+ * the first card written is the one that stands. The pick rows, when a pick
+ * made the card, are kept with it: the audit of why it was said.
+ */
+async function insertWeekly(
+  db: SupabaseClient,
+  userId: string,
+  weekStart: string,
+  card: { kind: string; topic: string; title: string; body: string; evidence: unknown; payload: unknown; signals: string[] },
+  facts: unknown,
+  pick: PickFacts | null,
+  source: "cron" | "app",
+): Promise<{ kind: string; saved: boolean; error?: string }> {
   const { error: insErr } = await retried(() =>
     db.from("drona_cards").insert({
       user_id: userId,
@@ -226,7 +311,7 @@ async function generate(
       evidence: card.evidence,
       payload: card.payload,
       signals: card.signals,
-      facts: picked ? { ...(facts as Record<string, unknown>), pick: pf } : facts,
+      facts: pick ? { ...(facts as Record<string, unknown>), pick } : facts,
       source,
     })
   );
@@ -292,6 +377,8 @@ async function runCron(): Promise<Response> {
     let saved = 0;
     let held = 0;
     let pickFailed = 0;
+    let wordsFailed = 0;
+    let wordsAsked = 0;
     let checkins = 0;
     const failures: string[] = [];
     for (let i = 0; i < due.length; i += CRON_CONCURRENCY) {
@@ -307,6 +394,8 @@ async function runCron(): Promise<Response> {
         if (c?.saved) checkins += 1;
         else if (c?.error) failures.push(`${batch[j].userId.slice(0, 12)} check-in: ${c.error}`);
         if (!g) return;
+        if ("words" in g && g.words === "failed") wordsFailed += 1;
+        if ("words" in g && g.words === "asked") wordsAsked += 1;
         if (g.saved) saved += 1;
         else if (g.kind === "hold") held += 1;
         else if (g.kind === "pick_failed") pickFailed += 1;
@@ -314,7 +403,8 @@ async function runCron(): Promise<Response> {
       });
     }
 
-    return json({ users: weeks.length, due: due.length, saved, held, checkins, pick_failed: pickFailed, failures: failures.slice(0, 20) });
+    return json({ users: weeks.length, due: due.length, saved, held, checkins, pick_failed: pickFailed,
+      words_asked: wordsAsked, words_failed: wordsFailed, failures: failures.slice(0, 20) });
   } finally {
     // Settled on every path: the runtime may stop the worker once the response
     // is out, and an abandoned delete may never land.

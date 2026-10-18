@@ -36,7 +36,8 @@ export interface PickFacts {
   behaviours?: BehaviourRow[] | null;
 }
 
-export type PickKind = 'request' | 'notice' | 'talk';
+/** 'hold' only from `hushed`: a quiet week with nothing quiet to say. */
+export type PickKind = 'request' | 'notice' | 'talk' | 'hold';
 
 export interface PickCard {
   kind: PickKind;
@@ -351,8 +352,112 @@ function onTrack(d: Record<string, unknown>): Words {
   };
 }
 
+// ── The word behaviours (_shared/dronaWords.ts reads the words; these say them) ──
+
+const AREA_WORDS: Record<string, string> = {
+  knee: 'knee', shoulder: 'shoulder', back: 'back', elbow_or_wrist: 'elbow or wrist', hip: 'hip',
+  ankle_or_foot: 'ankle or foot', neck: 'neck',
+};
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const weekday = (day: unknown): string | null => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof day === 'string' ? day : '');
+  return m ? WEEKDAYS[new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).getUTCDay()] : null;
+};
+const PROFESSIONAL = 'If it is sharp, swelling, or not getting better, get it checked by a professional.';
+
+function hurting(d: Record<string, unknown>): Words {
+  const area = AREA_WORDS[str(d.area) ?? ''] ?? null;
+  const pain = area ? `${area} pain` : 'pain';
+  return {
+    kind: 'talk',
+    title: area ? `Look after that ${area}` : 'Look after that injury',
+    body: `You mentioned ${pain}. We can work out which moves to swap or ease off until it settles. ${PROFESSIONAL}`,
+    quiet: `You mentioned ${pain}. ${PROFESSIONAL}`,
+    evidence: [],
+    payload: {
+      action: 'talk',
+      prompt: `I mentioned ${area ? `${area} pain` : 'some pain'}. Which exercises should I swap or ease off until it settles?`,
+    },
+  };
+}
+
+const CHANGE_WORDS: Record<string, { you: string; me: string; what: string }> = {
+  training_days: { you: 'change your training days', me: 'change my training days', what: 'Your plan has' },
+  exercises: { you: 'swap some exercises', me: 'swap some exercises', what: 'Your plan has' },
+  goal_or_weight: { you: 'change your goal', me: 'change my goal', what: 'Your plan has' },
+  calories: { you: 'change your calories', me: 'change my calories', what: 'Your targets have' },
+  other: { you: 'change your plan', me: 'change my plan', what: 'Your plan has' },
+};
+
+function askedForAChange(d: Record<string, unknown>): Words {
+  const w = CHANGE_WORDS[str(d.change) ?? ''] ?? CHANGE_WORDS.other;
+  const seen = `You asked to ${w.you}. ${w.what} not changed yet.`;
+  return {
+    kind: 'talk',
+    title: 'You asked for a change',
+    body: `${seen} Want to sort it out now?`,
+    quiet: seen,
+    evidence: [],
+    payload: { action: 'talk', prompt: `I asked to ${w.me} and it has not happened yet. Can we do it now?` },
+  };
+}
+
+const LIFE_WORDS: Record<string, { kind: PickKind; title: string; seen: string; ask?: string; prompt?: string }> = {
+  travel: {
+    kind: 'talk', title: 'Training on the road', seen: 'You mentioned travelling.',
+    ask: 'Want a short plan you can do anywhere until you are back?',
+    prompt: 'I am travelling. Can you give me a short plan I can do anywhere until I am back?',
+  },
+  illness: {
+    kind: 'notice', title: 'Get well first',
+    seen: 'You mentioned being unwell. Rest first. When you feel better, we will ease back in.',
+  },
+  work_or_study: {
+    kind: 'talk', title: 'A busy stretch', seen: 'You mentioned a busy stretch.',
+    ask: 'Want a lighter plan until it eases?',
+    prompt: 'I have a busy stretch. Can you give me a lighter plan until it eases?',
+  },
+  other: {
+    kind: 'talk', title: 'Life comes first', seen: 'Sounds like life got in the way.',
+    ask: 'Want a lighter plan for now?',
+    prompt: 'Life got in the way of training. Can we make a lighter plan for now?',
+  },
+};
+
+function lifeGotInTheWay(d: Record<string, unknown>): Words {
+  const w = LIFE_WORDS[str(d.reason) ?? ''] ?? LIFE_WORDS.other;
+  const sessions = num(d.sessions);
+  const planned = num(d.planned);
+  return {
+    kind: w.kind,
+    title: w.title,
+    body: w.ask ? `${w.seen} ${w.ask}` : w.seen,
+    quiet: w.seen,
+    evidence: sessions != null && planned != null ? [{ label: 'Sessions last week', value: `${sessions} of ${planned}` }] : [],
+    payload: w.kind === 'talk' && w.prompt ? { action: 'talk', prompt: w.prompt } : {},
+  };
+}
+
+function trainsNotLogging(d: Record<string, unknown>): Words {
+  const day = weekday(d.day);
+  if (!day) return null;
+  const seen = `You said you trained on ${day}, but no session is logged that day.`;
+  return {
+    kind: 'notice',
+    title: 'Log the sessions you do',
+    body: `${seen} Logged sessions are how I see your progress.`,
+    quiet: `${seen} Logged sessions are how I see your progress.`,
+    evidence: [],
+    payload: {},
+  };
+}
+
 /** Exported for the tests only. */
 export const WORDS: Record<string, (d: Record<string, unknown>) => Words> = {
+  hurting,
+  asked_for_a_change: askedForAChange,
+  life_got_in_the_way: lifeGotInTheWay,
+  trains_not_logging: trainsNotLogging,
   scale_untrusted: scaleUntrusted,
   logs_partial_days: logsPartialDays,
   goals_unclear: goalsUnclear,

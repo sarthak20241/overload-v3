@@ -136,7 +136,7 @@ after the history fix (the first run called a change backfired on one food day).
 
 ## Next
 
-- The word behaviours (with Jev): life got in the way, trains but does not log,
-  hurting, already asked for a change.
+- ~~The word behaviours (with Jev)~~ Built 2026-10-18: hurting, life got in the
+  way, trains but does not log, asked for a change. See `.planning/drona-word-behaviours.md`.
 - ~~Cards read `drona_behaviour_pick`.~~ Built 2026-10-18: the worker reads the
   rows itself (`get_drona_pick_facts`, `_shared/dronaPick.ts`), see `.planning/drona-cards-pick.md`.
