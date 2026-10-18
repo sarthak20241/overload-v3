@@ -147,8 +147,8 @@ declare
   v_old text := '''steering'', ''energy'']';
   v_new text := '''steering'', ''energy'', ''activity'']';
 begin
-  if position('''activity''' in v_def) > 0 then
-    return;  -- already there
+  if position(v_new in v_def) > 0 then
+    return;  -- already there (the exact list, not any mention of 'activity')
   end if;
   -- Exactly once: replace() changes every occurrence.
   if (length(v_def) - length(replace(v_def, v_old, ''))) / length(v_old) <> 1 then
