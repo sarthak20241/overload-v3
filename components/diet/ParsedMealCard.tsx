@@ -229,15 +229,18 @@ export function ParsedMealCard({
   const [cardH, setCardH] = useState(0);
   const [listH, setListH] = useState(0);
   const [listContentH, setListContentH] = useState(0);
+  const [noticeH, setNoticeH] = useState(0);
+  const [noticeContentH, setNoticeContentH] = useState(0);
   const [bodyH, setBodyH] = useState(0);
   const hasList = state === 'review' && !!meal;
-  // With a list, everything but the list is fixed height, so
-  // (card - list viewport) is the fixed part whatever the list is squeezed
-  // to, and adding the list's full content gives the uncapped height. That
-  // holds at any frame height, which is why the popover can resize the card
-  // without the number moving under it.
+  // With a list, only two things squeeze: the list and a notice's words.
+  // Swap each one's squeezed viewport for its full content and what is left
+  // is the uncapped height. That holds at any frame height, which is why the
+  // popover can resize the card without the number moving under it.
+  const shownNotice = state === 'review' && !!notice;
   const natural = hasList
     ? cardH - listH + listContentH
+      + (shownNotice ? noticeContentH - noticeH : 0)
     // No list to stretch: the body is its own size. Padding + hairline border.
     : bodyH + Spacing.md * 2 + 2;
   const expand = expandable ? () => onExpand!(natural) : undefined;
@@ -663,7 +666,13 @@ export function ParsedMealCard({
                   keyboard is up, a long answer), so the notice gives way
                   alongside the list instead of pushing it out. The choice
                   buttons below stay put. */}
-              <ScrollView style={s.noticeScroll} bounces={false} nestedScrollEnabled>
+              <ScrollView
+                style={s.noticeScroll}
+                bounces={false}
+                nestedScrollEnabled
+                onLayout={(e) => setNoticeH(e.nativeEvent.layout.height)}
+                onContentSizeChange={(_w, h) => setNoticeContentH(h)}
+              >
                 <View style={s.noticeHead}>
                   <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
                   <Text style={s.noticeTxt}>{notice}</Text>

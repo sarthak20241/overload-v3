@@ -396,7 +396,9 @@ export default function NutritionScreen() {
   // NOT this - the conversation carries on in the popover.
   const cardGone = flow.status === 'idle' || flow.status === 'create';
   useEffect(() => {
-    if (!cardGone || !pop || (!pop.origin && !popOpen)) return;
+    // Only while open. A return trip already in flight just finishes: cutting
+    // its origin mid-flight would snap the frame back to the big rect.
+    if (!cardGone || !pop || !popOpen) return;
     setPop((p) => p && { ...p, origin: null });
     setPopOpen(false);
   }, [cardGone, pop, popOpen]);
