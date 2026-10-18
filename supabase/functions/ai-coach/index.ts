@@ -2910,6 +2910,9 @@ function makeParseDeps(
         if (data) return data as PreciseCacheRow;
         // Not a row's own key: maybe a phrase of THIS user's that already led
         // to a row. Other users' phrases are never an exact hit (preciseAlias.ts).
+        // A row's own key is also an alias with no owner, which the alias path
+        // can never hit; that is fine, because precise_cache_get above already
+        // answered it.
         return await aliases.lookup(key);
       }
       : undefined,
@@ -2946,7 +2949,8 @@ function makeParseDeps(
         return written?.id ?? null;
       }
       : undefined,
-    preciseAliasPut: aliases.put,
+    // Wrapped, not passed bare, so it keeps working if put ever uses `this`.
+    preciseAliasPut: (aliasKey, rowId, confidence, source) => aliases.put(aliasKey, rowId, confidence, source),
     webLookup: PRECISE_WEB_PROVIDER,
     searchRewrite: SEARCH_REWRITE,
     tavily: TAVILY_API_KEY ? { apiKey: TAVILY_API_KEY, timeoutMs: 20_000, log: (m) => console.log(m) } : undefined,
