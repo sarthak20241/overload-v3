@@ -68,6 +68,9 @@ function parseRepsOk(reps: unknown): boolean {
   return false;
 }
 
+/** Metric types that log a time per set. Everything else is counted, not timed. */
+const TIMED_METRICS = new Set(['duration', 'duration_weight', 'distance_duration', 'resistance_duration']);
+
 /** True when a reps value is a time in seconds ("45s") or minutes ("20min"). */
 export function isTimedReps(reps: unknown): boolean {
   return typeof reps === 'string' && /^\d{1,3}\s*(-\s*\d{1,3})?\s*(s|min)$/i.test(reps.trim());
@@ -222,7 +225,7 @@ export function scorePlan(
   // Timed by BOTH its template and its prescription: a duration stretch left
   // on the 8-12 rep fallback has no time target and does not count.
   const timedNew = newExercises.filter(
-    (n) => n.metric_type !== 'weight_reps' && n.metric_type !== 'bodyweight_reps' && isTimedReps(n.reps),
+    (n) => TIMED_METRICS.has(n.metric_type) && isTimedReps(n.reps),
   );
   if (e.mobility === 'required' && timedNew.length === 0) {
     failures.push('asked for mobility/stretching but the plan has no timed new exercise with a time target');

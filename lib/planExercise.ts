@@ -56,6 +56,15 @@ export function planExerciseInsert(ex: { name: string; new_exercise?: NewExercis
   return { name: ex.name, muscle_group: def.muscle_group, category: def.category, metric_type: def.metric_type };
 }
 
+/**
+ * A name as an ILIKE pattern that matches only itself. ILIKE reads % and _ as
+ * wildcards and the backslash as their escape, so an invented "Band_Pull" would
+ * otherwise also match "Band Pull" or "BandXPull" and reuse that exercise.
+ */
+export function ilikeExact(name: string): string {
+  return name.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
 /** Leading rep count or range ("8-12", "12 to 15"), and whatever follows it ("/side", "s", "min"). */
 const LEADING_REPS = /^\s*(\d+)\s*(?:(?:[-\u2013]|to\b)\s*(\d+))?\s*(.*)$/;
 /** A range written high-to-low ("12-8") still stores min <= max. */
@@ -64,7 +73,7 @@ const ordered = (a: number, b: number) => ({ reps_min: Math.min(a, b), reps_max:
 /** "3x10", "3 x 8-12", "3-4x10": the leading part is sets, the rest is reps. */
 const SETS_X_REPS = /^\s*\d+(?:\s*[-\u2013]\s*\d+)?\s*[x\u00d7]\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*$/i;
 /** A suffix that makes the number a time, a distance or calories, not a rep count. */
-const NON_REP_UNIT = /^(s|secs?|seconds?|min|mins|minutes?|m|meters?|metres?|km|mi|miles?|yd|yards?|cal|kcal)\b/i;
+const NON_REP_UNIT = /^(s|secs?|seconds?|min|mins|minutes?|m|meters?|metres?|km|mi|miles?|yd|yards?|cals?|kcals?)\b/i;
 
 export interface PlanRoutineRow extends Partial<RoutineTargets> {
   reps_min: number;

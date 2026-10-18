@@ -57,7 +57,7 @@ import { MessageCopyButton } from '@/components/coach/MessageCopyButton';
 import { PastChatsList } from '@/components/coach/PastChatsList';
 import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
 import { withChangeSource } from '@/lib/planChangeSource';
-import { parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
+import { ilikeExact, parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
 import { writeWithTargetFallback } from '@/lib/routineTargets';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 import {
@@ -3954,7 +3954,8 @@ export function AICoachModal({
     await Promise.all(workout.exercises.map(async (ex, i) => {
       // Case-insensitive find, oldest row first — .single() would error when a
       // global library row and a same-named custom both match (legal scopes
-      // under migration 0037's unique indexes).
+      // under migration 0037's unique indexes). Escaped so a Drona-invented
+      // name with % or _ matches only itself.
       // It also returns how the row is measured, so a time on a lift stays in
       // the cue rather than landing in a target column nothing shows. A row
       // with no metric_type predates the column and is weight_reps.
@@ -3962,7 +3963,7 @@ export function AICoachModal({
         const { data } = await supabase
           .from('exercises')
           .select('id, metric_type')
-          .ilike('name', ex.name)
+          .ilike('name', ilikeExact(ex.name))
           .order('created_at', { ascending: true })
           .limit(1);
         const row = data?.[0];
