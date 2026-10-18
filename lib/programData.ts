@@ -24,6 +24,7 @@ import {
   clampCardioSessions, clampStepsTarget, hasActivityGoals, normalizeActivityGoals, type ActivityGoals,
 } from '@/lib/activityGoals';
 import { track } from '@/lib/analytics';
+import { missingColumn, withoutColumns } from '@/lib/missingColumn';
 import { programGoalFor } from '@/lib/fitnessGoals';
 
 // ── Client shapes ────────────────────────────────────────────────────────────
@@ -195,19 +196,6 @@ function activityOf(v: unknown): { activity?: ActivityGoals } {
 // The activity goal columns (migration 20261018120000). The app ships before
 // the migration, so every read and write of them falls back without them.
 const ACTIVITY_COLS = ['activity_steps_target', 'cardio_sessions_per_week'] as const;
-
-/**
- * Is this error a database that does not have one of `cols` yet? 42703 is
- * Postgres "undefined column" (a select); PGRST204 is PostgREST "column not in
- * the schema cache" (an insert). Only when the message names one of them, so
- * an unrelated failure is never swallowed as a missing column.
- */
-export function missingColumn(err: unknown, cols: readonly string[]): boolean {
-  const e = err as { code?: string; message?: string } | null;
-  if (!e || (e.code !== '42703' && e.code !== 'PGRST204')) return false;
-  const msg = e.message ?? '';
-  return cols.some((c) => msg.includes(c));
-}
 
 export function structuredToProgram(input: Record<string, unknown>): GeneratedProgram {
   const phases = Array.isArray(input.phases)
@@ -527,12 +515,7 @@ export async function saveProgram(
   // rather than failing it. The goals come back with the next program built.
   if (phErr && missingColumn(phErr, ACTIVITY_COLS)) {
     console.warn('[programs] activity goal columns missing; saving without them');
-    ({ data: phaseInserted, error: phErr } = await insertPhases(phaseRows.map((r) => {
-      const { activity_steps_target: _s, cardio_sessions_per_week: _c, ...rest } = r as typeof r & {
-        activity_steps_target?: unknown; cardio_sessions_per_week?: unknown;
-      };
-      return rest as typeof r;
-    })));
+    ({ data: phaseInserted, error: phErr } = await insertPhases(withoutColumns(phaseRows, ACTIVITY_COLS)));
   }
   if (phErr) {
     // A phase-less active program is worse than none: loadActiveProgram would
