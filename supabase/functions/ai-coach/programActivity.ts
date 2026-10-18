@@ -9,7 +9,7 @@
  * days, so the heavy shared RPC stays as it is.
  *
  *   - each phase: activity { steps_per_day, cardio_sessions_per_week }
- *   - current_phase also gets this_week, from the running week's row in
+ *   - current_phase also gets activity_this_week, from the running week's row in
  *     drona_week_facts (rebuilt by pg_cron, so it can be up to ~15 minutes old)
  */
 import {

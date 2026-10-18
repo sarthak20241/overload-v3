@@ -652,7 +652,7 @@ export async function loadActiveProgram(
   }
   // 42703 = undefined column: a database from before 0139. Read the rest, so
   // Goal & Plan and the phase reconcile keep working without fuel days.
-  if (phaseErr && (phaseErr as { code?: string }).code === '42703') {
+  if (phaseErr && missingColumn(phaseErr, ['diet_fuel_days'])) {
     ({ data: phaseData, error: phaseErr } = await readPhases(PHASE_COLS));
   }
   if (phaseErr) throw phaseErr;
