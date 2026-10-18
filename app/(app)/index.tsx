@@ -17,6 +17,7 @@ import { getGuestWorkoutsDetailed, getGuestRoutines, getGuestProfile } from '@/l
 import type { Workout } from '@/lib/types';
 import { getLevelInfo, getXpForWorkout, isMaxLevel } from '@/lib/xp';
 import { ReadinessCard } from '@/components/ui/ReadinessCard';
+import { ActivityGoalsCard } from '@/components/program/ActivityGoalsCard';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { BuildSplitPrompt } from '@/components/program/BuildSplitPrompt';
 import { hasCompletedOnboarding } from '@/lib/onboarding';
@@ -1084,6 +1085,10 @@ export default function DashboardScreen() {
           {/* Readiness card (muscle breakdown moved to Analytics). */}
           <ReadinessCard />
         </View>
+
+        {/* Steps today and cardio this week vs the phase's movement goals.
+            Renders nothing unless the current phase has one. */}
+        {!isGuestSession && <ActivityGoalsCard />}
 
         {/* Proactive insights — "Coach noticed" */}
         <InsightsStrip

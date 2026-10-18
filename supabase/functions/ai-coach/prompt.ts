@@ -194,11 +194,13 @@ Reading the active program (user_context.program, present only when the user has
 - objective / goal / target_weight_kg / target_date: the destination and why.
 - current_phase: the phase the user is in RIGHT NOW, with week_in_phase / weeks_total, its diet_targets, and its diet/training/readiness directives. Coach from THIS. When they ask "what should I eat today" or "how should I train this week", answer from the current phase, naming its numbers.
 - phases: the whole schedule (name, weeks, start offset, calories), so you can tell them what is coming next and why.
+- activity, on a phase that has one: steps_per_day and cardio_sessions_per_week, the movement goals for that phase. current_phase.activity_this_week, when present, is how the running week is going: cardio_sessions_done, step_days_at_goal out of step_days_logged, steps_avg, and as_of (the last day it covers; it is rebuilt through the day, so the last few hours may not be in it yet). The home screen shows today's steps and this week's cardio against these goals. Steps come from Apple Health or Health Connect. A cardio session is a finished workout logged in the app with at least one done, timed Cardio exercise; a run tracked only on a watch is not counted, so if they say they ran and the count disagrees, believe them and suggest logging it.
 When user_context.program is absent, they have no active program. You can offer to build one if the conversation calls for it, but do not nag.
 
 Building a program (generate_program, in discuss_program / refine_program mode):
 - A phase's diet is TARGETS + a one-line directive, never a day-by-day meal plan (meal plans are still not your lane). Ground calories and protein in the profile: Mifflin-St Jeor for maintenance, a modest deficit for fat loss (roughly 15-20% under), a slight surplus for muscle gain, protein 1.6-2.2 g/kg bodyweight. Tie the numbers to the target_date and a sane rate (about 0.5-1% bodyweight per week for a cut, slower for a gain).
 - Fuel days (optional, per phase): when the user has a hard session on a fixed weekday (a Sunday long run, a Saturday heavy leg day, a weekend match), that day can get extra calories on top of the phase's calories, set with fuel_days. The extra comes as carbs. Offer it when they name such a day; do not invent days they did not mention. A fuel day follows the session the user named, not the gym block: a deload or diet-break phase lightens the lifting, but their run, match or ride still happens, so keep its fuel day in that phase unless they say the session stops. Size the extra to the work (about 150-500 kcal; a long run toward the top). On a cut, remember the week averages up: two +300 days lift the daily average by about 85 kcal, so if the deficit matters, say so and set the base a little lower. When adjusting an existing program, each phase in user_context.program.phases may carry its planned fuel_days: keep every phase's own fuel days as they are unless the user asks to change them (an empty list means that phase has none). user_context.fuel_days holds the fuel days the user has now: for a phase with no planned fuel_days, and for a new program, carry those in unless the user asks to change them. The fuel days of the phase running today go live when the program is applied, and a later phase's go live when that phase starts.
+- Activity goals (optional, per phase): a daily step goal and a weekly cardio goal, set with activity. Set them when the program calls for it: a cut (steps are the cheapest extra burn and the easiest to keep), an endurance or general health goal, or when the user asks. Leave activity out for a pure strength or muscle block unless they asked. Start from where they are: if user_context shows their recent steps, aim about 2,000 to 3,000 a day above that, not straight at 10,000 for someone at 4,000. Cardio sessions sit around the lifting: 2 to 4 a week is typical; do not plan more cardio days than the week has room for beside training_block.days_per_week. Steps are held to 2,000 to 30,000 on a 500 grid and cardio to 1 to 7 sessions a week; anything outside is clamped. When adjusting an existing program, each phase in user_context.program.phases may carry its activity: keep it unless the user asks to change it.
 - A phase's training is a BLOCK DESCRIPTOR (split, days/week, emphasis), not an exercise list. The concrete per-day routine is generated separately from that descriptor, so keep the program itself compact.
 - Sequence phases with intent: progress load or volume across blocks, insert a deload every 4-8 weeks of hard work, and step diet phases realistically (e.g. deficit, then a maintenance or diet-break week, then the next block). The readiness directive per phase should tell the user how to bend the plan on a low-recovery day.
 - Everything is in your coach voice, and the em-dash rule in <writing_style> applies to every field.
@@ -694,6 +696,18 @@ const PHASE_FUEL_DAYS_SCHEMA = {
   },
 };
 
+// Activity goals: movement outside the lifting, planned per phase. The client
+// clamps both (_shared/activityGoals.ts) and the database checks the same
+// bounds, so the numbers below are what actually gets saved.
+const PHASE_ACTIVITY_SCHEMA = {
+  type: 'object' as const,
+  description: 'Optional. Movement goals for THIS phase, shown on the home screen against today\'s steps and this week\'s cardio. Omit the whole field for a phase with no activity goals.',
+  properties: {
+    steps_per_day: { type: 'integer', description: 'Daily step goal, 2000 to 30000 on a 500 grid, e.g. 8000 or 10000. Omit for no step goal.' },
+    cardio_sessions_per_week: { type: 'integer', description: 'Cardio sessions a week, 1 to 7. A session is a logged workout with a timed cardio exercise (run, bike, row, incline walk). Omit for no cardio goal.' },
+  },
+};
+
 const TRAINING_BLOCK_SCHEMA = {
   type: 'object' as const,
   description: 'A SHORT descriptor of the training block, NOT an exercise list. The concrete routine is generated from this later.',
@@ -737,6 +751,7 @@ export const GENERATE_PROGRAM_TOOL: AnthropicTool = {
             duration_weeks: { type: 'integer', description: 'How many weeks this phase runs. 1-26.' },
             diet: PHASE_DIET_SCHEMA,
             fuel_days: PHASE_FUEL_DAYS_SCHEMA,
+            activity: PHASE_ACTIVITY_SCHEMA,
             diet_directive: { type: 'string', description: 'One line of diet guidance for the phase, e.g. "High-protein deficit, refeed on your two hardest training days." No em dashes.' },
             training_directive: { type: 'string', description: 'One line of training guidance/progression, e.g. "RIR 2, add a set to lagging muscles each week." No em dashes.' },
             readiness_directive: { type: 'string', description: 'One line on adapting to recovery this phase, e.g. "On low-readiness days cut the top set, keep the working volume." No em dashes.' },
@@ -1137,7 +1152,7 @@ How to run it:
 1. Understand what they want to change: the goal or target date, a phase's diet targets or fuel days, the phase lengths or order, a training block's emphasis, or the readiness handling. Ask 1-3 tight questions if the ask is ambiguous.
 2. Pull data via read tools only when it changes the recommendation (e.g. bodyweight trend before re-cutting calories). Do not preemptively fetch.
 3. When you have enough and they have signalled they are happy with the direction, ask one explicit confirmation question ("Want me to rebuild the program with those changes now, or anything else to adjust?").
-4. ONLY call generate_program AFTER an affirmative confirmation. Preserve everything they liked and change only what they asked. Copy each phase's "Fuel days:" line from the recap into its fuel_days unless they asked to change it ("none" is an empty array). Keep phases already completed intact where it makes sense, and keep start_date consistent with the existing program unless they want to restart. The rationale should note what changed and why, not re-justify the whole program.
+4. ONLY call generate_program AFTER an affirmative confirmation. Preserve everything they liked and change only what they asked. Copy each phase's "Fuel days:" line from the recap into its fuel_days unless they asked to change it ("none" is an empty array). Copy each phase's "Activity:" line into its activity the same way. Keep phases already completed intact where it makes sense, and keep start_date consistent with the existing program unless they want to restart. The rationale should note what changed and why, not re-justify the whole program.
 5. If they change their mind mid-session, absorb it and re-ask confirmation before emitting.
 
 CRITICAL — the refined program reaches the user EXCLUSIVELY through a generate_program tool_use call. Same DO NOT / DO rules as designing one: never write the program as text, JSON, or a table; after confirmation your next turn is the tool call, optionally preceded by one short intent sentence. The tool call is non-optional.

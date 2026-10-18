@@ -20,6 +20,7 @@ import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
 import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
 import { fuelDaysText } from '@/lib/fuelDays';
+import { activityText } from '@/lib/activityGoals';
 import { track } from '@/lib/analytics';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -1983,6 +1984,8 @@ function programToText(p: GeneratedProgram): string {
     // Same reason as the Week line: without it a refine about anything else
     // would drop the long-run Sunday the user already settled.
     if (ph.fuel_days !== undefined) lines.push(`  Fuel days: ${fuelDaysText(ph.fuel_days)}`);
+    // Same again for the step and cardio goals the user already agreed to.
+    if (ph.activity) lines.push(`  Activity: ${activityText(ph.activity)}`);
     if (ph.diet_directive) lines.push(`  Diet note: ${ph.diet_directive}`);
     if (ph.training_block) {
       const b = ph.training_block;
@@ -2663,6 +2666,14 @@ function GenerateProgramScreen({
                   <Feather name="zap" size={11} color={C.accentText} />
                   <Text style={{ color: C.accentText, fontSize: FontSize.sm, flexShrink: 1 }}>
                     {fuelDaysText(ph.fuel_days)}
+                  </Text>
+                </View>
+              )}
+              {ph.activity && (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 }}>
+                  <Feather name="activity" size={11} color={C.accentText} />
+                  <Text style={{ color: C.accentText, fontSize: FontSize.sm, flexShrink: 1 }}>
+                    {activityText(ph.activity)}
                   </Text>
                 </View>
               )}

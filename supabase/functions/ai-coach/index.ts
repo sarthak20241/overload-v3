@@ -30,6 +30,7 @@ import { AI_LIMITS } from "../_shared/aiLimits.ts";
 import { isTimeZone } from "../_shared/wallClock.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
+import { withPhaseActivity } from "./programActivity.ts";
 import type { DayTargetRow } from "../_shared/targetHistory.ts";
 import {
   type CandidateFood,
@@ -4496,6 +4497,41 @@ Deno.serve(async (req) => {
     }
   } catch (e) {
     console.log("[ai-coach] fuel-days fetch threw:", String(e));
+  }
+
+  // 4d'. Activity goals (20261018120000): each phase's step and cardio goals,
+  // and this week's numbers from drona_week_facts on the current phase. Its own
+  // reads, so a database without the columns costs only these keys, never the
+  // fuel days above.
+  try {
+    const ctx = userContext as Record<string, unknown> | null;
+    if (ctx && ctx.program && typeof ctx.program === "object") {
+      const { data: active } = await userClient
+        .from("coach_programs")
+        .select("id")
+        .eq("status", "active")
+        .maybeSingle();
+      if (active?.id) {
+        const { data: rows, error: actError } = await userClient
+          .from("coach_program_phases")
+          .select("seq, activity_steps_target, cardio_sessions_per_week")
+          .eq("program_id", active.id);
+        if (actError) console.log("[ai-coach] phase activity error:", actError.message);
+        else if (rows && rows.length > 0) {
+          // The running week's row, newest first: the cron writes it.
+          const { data: week, error: weekError } = await userClient
+            .from("drona_week_facts")
+            .select("a_as_of, a_steps_days, a_steps_days_met, a_cardio_sessions, r_steps_avg")
+            .order("week_start", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (weekError) console.log("[ai-coach] week activity error:", weekError.message);
+          ctx.program = withPhaseActivity(ctx.program, rows, weekError ? null : week);
+        }
+      }
+    }
+  } catch (e) {
+    console.log("[ai-coach] activity fetch threw:", String(e));
   }
 
   // 4e. What the coach carries between conversations (coach-enhancement plan,

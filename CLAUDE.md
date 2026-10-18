@@ -35,6 +35,10 @@ EVAL_VIA_CLI=1 npx tsx scripts/program-fuel-eval/run.mts
 # goals_disagree signal reads coach_programs.goal). Same CLI rule.
 EVAL_VIA_CLI=1 npx tsx scripts/program-goal-eval/run.mts
 
+# Program activity goals: a cut gets a step goal, an asked-for run gets a cardio
+# goal, a gain or strength hold with no ask gets neither. Same CLI rule.
+EVAL_VIA_CLI=1 npx tsx scripts/program-activity-eval/run.mts
+
 # Edge function unit tests (the one real test suite).
 deno test --allow-all supabase/functions/ai-coach/
 deno test --allow-all supabase/functions/revenuecat-webhook/
