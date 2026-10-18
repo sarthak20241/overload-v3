@@ -75,6 +75,8 @@ async function fetchHistory(supabase: Supa, anchorIso: string): Promise<HistoryE
 }
 
 interface HistoryCache { key: string; entries: HistoryEntry[] }
+/** One shared empty list, so an empty history keeps its identity. */
+const NO_ENTRIES: HistoryEntry[] = [];
 let _mem: HistoryCache | null = null;
 
 /**
@@ -89,7 +91,12 @@ export function useFoodHistory(version: string | null, anchorIso: string): { his
   // re-log with no label, so it is not read at all.
   const key = `v2:${user?.id ?? 'anon'}:${ymd(new Date())}:${anchorIso}`;
   const seed = _mem && _mem.key === key ? _mem.entries : null;
-  const [history, setHistory] = useState<HistoryEntry[]>(seed ?? []);
+  // Entries are kept with the window they belong to. On a day change the old
+  // window's entries are never shown for the new one, so no suggestion from
+  // the wrong four weeks flashes up while the new window loads.
+  const [state, setState] = useState<HistoryCache>({ key, entries: seed ?? [] });
+  const setHistory = (entries: HistoryEntry[]) => setState({ key, entries });
+  const history = state.key === key ? state.entries : seed ?? NO_ENTRIES;
 
   useEffect(() => {
     let cancelled = false;
