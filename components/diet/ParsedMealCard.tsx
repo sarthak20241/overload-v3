@@ -523,12 +523,12 @@ export function ParsedMealCard({
                 >
                   {rawText}
                 </Text>
-                {/* The tick sits on the bubble's corner, next to what was
-                    copied, and never moves the text. Same idea as the copy
-                    button under a Drona chat bubble. */}
+                {/* A clipboard on the bubble's corner says what just happened
+                    (a tick would only say "done"), next to what was copied,
+                    without moving the text. */}
                 {copied && (
                   <View style={s.youCopied} pointerEvents="none">
-                    <Feather name="check" size={11} color={C.background} />
+                    <Feather name="clipboard" size={10} color={C.background} />
                   </View>
                 )}
               </Pressable>
