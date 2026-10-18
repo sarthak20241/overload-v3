@@ -153,3 +153,41 @@ export function activityText(g: ActivityGoals): string {
   }
   return parts.length > 0 ? parts.join(", ") : "none";
 }
+
+/**
+ * Today's step progress from the day's reading, or null when there is no
+ * reading yet. No row is not "0 steps": a user without Health sync, or whose
+ * sync has not run today, would read 0 all day.
+ */
+export function stepsProgressFromReading(reading: unknown, target: number | null | undefined): GoalProgress | null {
+  const v = typeof reading === "number" ? reading : typeof reading === "string" ? Number(reading) : NaN;
+  if (!Number.isFinite(v)) return null;
+  return goalProgress(v, target);
+}
+
+/** One workout as the dashboard reads it: workouts with workout_sets(..., exercises(...)). */
+export interface WorkoutWithSets {
+  id: string;
+  workout_sets?: Array<{
+    completed?: boolean | null;
+    set_type?: string | null;
+    exercises?: { muscle_group?: string | null; metric_type?: string | null } | null;
+  }> | null;
+}
+
+/** Flatten nested workouts into the rows countCardioSessions reads. */
+export function cardioRowsFromWorkouts(workouts: WorkoutWithSets[]): CardioSetRow[] {
+  const rows: CardioSetRow[] = [];
+  for (const w of workouts) {
+    for (const s of w.workout_sets ?? []) {
+      rows.push({
+        workout_id: w.id,
+        completed: s.completed ?? null,
+        set_type: s.set_type ?? null,
+        muscle_group: s.exercises?.muscle_group ?? null,
+        metric_type: s.exercises?.metric_type ?? null,
+      });
+    }
+  }
+  return rows;
+}

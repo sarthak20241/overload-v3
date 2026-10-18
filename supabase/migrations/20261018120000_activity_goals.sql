@@ -17,10 +17,10 @@
 --    distance_duration, resistance_duration), the same rule as
 --    isCardioSet. Steps come from drona_recovery_day_facts.
 -- 3. drona_rebuild_activity_facts writes them; drona_rebuild_all_facts runs it
---    after 'plan' (it reads p_phase_id) and 'recovery' (it reads steps). The
---    rest of drona_rebuild_all_facts is copied from the LIVE definition
---    (2026-10-18), which is ahead of the repo ('steering', 'energy', signals,
---    behaviours).
+--    last of the domains, after 'plan' (it reads p_phase_id) and 'recovery'
+--    (it reads steps). The live drona_rebuild_all_facts is ahead of the repo
+--    ('steering', 'energy', signals, behaviours), so this edits its live text
+--    in place rather than replacing it with a copy.
 --
 -- Additive. Old clients never select or send the columns, and the new client
 -- retries without them on PGRST204 / 42703, so the app can ship first.
@@ -44,7 +44,7 @@ alter table public.coach_program_phases
 alter table public.drona_week_facts
   add column if not exists a_as_of            date,   -- the last day these facts cover
   add column if not exists a_steps_target     int,    -- the phase's step goal; null = none
-  add column if not exists a_steps_days       int,    -- whole days with a step reading
+  add column if not exists a_steps_days       int,    -- days with a reading: whole, or already at the goal
   add column if not exists a_steps_days_met   int,    -- days at or over the goal; null = no goal
   add column if not exists a_cardio_target    int,    -- the phase's cardio sessions a week; null = none
   add column if not exists a_cardio_sessions  int,    -- cardio sessions done that week (counted with or without a goal)
@@ -82,7 +82,10 @@ begin
   ),
   steps as (
     select wk.week_start,
-           count(d.day) filter (where d.steps is not null and not coalesce(d.steps_partial, false)) as days,
+           -- A day counts once it is whole, or once it reached the goal (today
+           -- can hit 10k before it ends). So met is never more than days.
+           count(d.day) filter (where d.steps is not null and (not coalesce(d.steps_partial, false)
+                                  or (g.steps_target is not null and d.steps >= g.steps_target))) as days,
            count(d.day) filter (where g.steps_target is not null and d.steps >= g.steps_target) as met
       from wk
       join goal g on g.week_start = wk.week_start
@@ -133,52 +136,23 @@ $function$;
 revoke all on function public.drona_rebuild_activity_facts(text, date, date) from public, anon, authenticated;
 grant execute on function public.drona_rebuild_activity_facts(text, date, date) to service_role;
 
-create or replace function public.drona_rebuild_all_facts(p_user_id text, p_from date, p_to date)
-returns jsonb
-language plpgsql
-security definer
-set search_path = public, pg_temp
-as $function$
+-- Add 'activity' to the LIVE drona_rebuild_all_facts by editing its own text,
+-- not by pasting a copy: prod is ahead of the repo here, and a pasted copy
+-- would silently revert anything changed on prod since. Stops the migration if
+-- the domain list is not where it is expected, so a human looks.
+do $$
 declare
-  v_errors jsonb := '{}';
-  d text;
+  v_def text := pg_get_functiondef('public.drona_rebuild_all_facts(text,date,date)'::regprocedure);
+  v_old text := '''steering'', ''energy'']';
+  v_new text := '''steering'', ''energy'', ''activity'']';
 begin
-  -- 'activity' reads plan (p_phase_id) and recovery (steps), so it runs after both.
-  foreach d in array array['weight', 'food', 'training', 'recovery', 'plan', 'word', 'card', 'steering', 'energy', 'activity'] loop
-    begin
-      execute format('select public.drona_rebuild_%s_facts($1, $2, $3)', d) using p_user_id, p_from, p_to;
-    exception when others then
-      v_errors := v_errors || jsonb_build_object(d, sqlerrm);
-    end;
-  end loop;
-  -- Signals read the facts just rebuilt, so they run last, in their own block.
-  begin
-    perform public.drona_rebuild_signals(p_user_id, p_from, p_to);
-  exception when others then
-    v_errors := v_errors || jsonb_build_object('signals', sqlerrm);
-  end;
-  -- Steering signals read the steering facts and scale_untrusted.
-  begin
-    perform public.drona_rebuild_steering_signals(p_user_id, p_from, p_to);
-  exception when others then
-    v_errors := v_errors || jsonb_build_object('steering_signals', sqlerrm);
-  end;
-  -- Behaviours read the signals just rebuilt, so they wait when those failed:
-  -- with no signal rows, on_track would fire for any week the sessions were done.
-  if v_errors ? 'signals' or v_errors ? 'steering_signals' then
-    v_errors := v_errors || jsonb_build_object('behaviours', 'skipped: the signals failed');
-  else
-    begin
-      perform public.drona_rebuild_behaviours(p_user_id, p_from, p_to);
-    exception when others then
-      v_errors := v_errors || jsonb_build_object('behaviours', sqlerrm);
-    end;
+  if position('''activity''' in v_def) > 0 then
+    return;  -- already there
   end if;
-  return v_errors;
-end;
-$function$;
-
-revoke all on function public.drona_rebuild_all_facts(text, date, date) from public, anon, authenticated;
-grant execute on function public.drona_rebuild_all_facts(text, date, date) to service_role;
+  if position(v_old in v_def) = 0 then
+    raise exception 'drona_rebuild_all_facts: domain list not found, add ''activity'' by hand';
+  end if;
+  execute replace(v_def, v_old, v_new);
+end $$;
 
 notify pgrst, 'reload schema';

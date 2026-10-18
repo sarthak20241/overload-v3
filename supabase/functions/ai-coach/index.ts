@@ -31,6 +31,7 @@ import { isTimeZone } from "../_shared/wallClock.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
 import { withPhaseActivity } from "./programActivity.ts";
+import { weekStartOf } from "../_shared/dronaCards.ts";
 import type { DayTargetRow } from "../_shared/targetHistory.ts";
 import {
   type CandidateFood,
@@ -4518,15 +4519,22 @@ Deno.serve(async (req) => {
           .eq("program_id", active.id);
         if (actError) console.log("[ai-coach] phase activity error:", actError.message);
         else if (rows && rows.length > 0) {
-          // The running week's row, newest first: the cron writes it.
-          const { data: week, error: weekError } = await userClient
-            .from("drona_week_facts")
-            .select("a_as_of, a_steps_days, a_steps_days_met, a_cardio_sessions, r_steps_avg")
-            .order("week_start", { ascending: false })
-            .limit(1)
-            .maybeSingle();
-          if (weekError) console.log("[ai-coach] week activity error:", weekError.message);
-          ctx.program = withPhaseActivity(ctx.program, rows, weekError ? null : week);
+          // THIS week's row only, by the user's own date (4c). Newest-first
+          // would hand last week's numbers to the current phase right after
+          // Monday, before the cron has written the new week.
+          const todayDate = (ctx.today as { date?: string } | undefined)?.date;
+          const weekStart = todayDate ? weekStartOf(todayDate) : null;
+          let week = null;
+          if (weekStart) {
+            const { data, error: weekError } = await userClient
+              .from("drona_week_facts")
+              .select("a_as_of, a_steps_days, a_steps_days_met, a_cardio_sessions, r_steps_avg")
+              .eq("week_start", weekStart)
+              .maybeSingle();
+            if (weekError) console.log("[ai-coach] week activity error:", weekError.message);
+            else week = data;
+          }
+          ctx.program = withPhaseActivity(ctx.program, rows, week);
         }
       }
     }

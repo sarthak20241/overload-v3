@@ -1,6 +1,8 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
   activityText,
+  cardioRowsFromWorkouts,
+  stepsProgressFromReading,
   cardioLine,
   clampCardioSessions,
   clampStepsTarget,
@@ -102,4 +104,29 @@ Deno.test("one line per phase for the recap and the card", () => {
   assertEquals(activityText({ steps_per_day: null, cardio_sessions_per_week: 1 }), "1 cardio session a week");
   assertEquals(activityText({ steps_per_day: 8500, cardio_sessions_per_week: null }), "8,500 steps a day");
   assertEquals(activityText({ steps_per_day: null, cardio_sessions_per_week: null }), "none");
+});
+
+Deno.test("no step reading today hides the bar; a reading of 0 is real", () => {
+  assertEquals(stepsProgressFromReading(undefined, 10000), null);
+  assertEquals(stepsProgressFromReading(null, 10000), null);
+  assertEquals(stepsProgressFromReading(0, 10000)?.done, 0);
+  // PostgREST sends numeric columns as strings.
+  assertEquals(stepsProgressFromReading("6240", 10000)?.left, 3760);
+  assertEquals(stepsProgressFromReading("n/a", 10000), null);
+  assertEquals(stepsProgressFromReading(6240, null), null);
+});
+
+Deno.test("nested workouts flatten into cardio rows", () => {
+  const rows = cardioRowsFromWorkouts([
+    { id: "w1", workout_sets: [
+      { completed: true, set_type: "normal", exercises: { muscle_group: "Cardio", metric_type: "distance_duration" } },
+      { completed: true, set_type: "normal", exercises: { muscle_group: "Quads", metric_type: "weight_reps" } },
+    ] },
+    { id: "w2", workout_sets: null },
+    { id: "w3", workout_sets: [{ completed: true, exercises: null }] },
+  ]);
+  assertEquals(rows.length, 3);
+  assertEquals(rows[0], { workout_id: "w1", completed: true, set_type: "normal", muscle_group: "Cardio", metric_type: "distance_duration" });
+  assertEquals(rows[2].muscle_group, null);
+  assertEquals(countCardioSessions(rows), 1);
 });

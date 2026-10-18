@@ -8,8 +8,8 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
-  clampCardioSessions, clampStepsTarget, countCardioSessions, goalProgress,
-  type CardioSetRow, type GoalProgress,
+  cardioRowsFromWorkouts, clampCardioSessions, clampStepsTarget, countCardioSessions, goalProgress,
+  stepsProgressFromReading, type GoalProgress, type WorkoutWithSets,
 } from '@/lib/activityGoals';
 import { computeActivePhaseSeq, todayLocalISO } from '@/lib/programData';
 
@@ -20,7 +20,11 @@ export interface ActivityProgress {
   cardio: GoalProgress | null;
 }
 
-/** Local midnight on the Monday of this week, as a Date. */
+/**
+ * Local midnight on the Monday of this week, as a Date. The DEVICE's week, like
+ * every other dashboard read (todayLocalISO). The weekly facts use the stored
+ * profile time zone, so the two can differ for a few hours after travel.
+ */
 function localWeekStart(now: Date = new Date()): Date {
   const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
@@ -50,9 +54,10 @@ export async function loadActivityProgress(
     if (phErr || !phases || phases.length === 0) return null;
 
     const today = todayLocalISO();
-    const seq = computeActivePhaseSeq(String((prog as { start_date: string }).start_date), phases, today);
-    if (seq == null) return null;
-    const phase = phases[seq] as { activity_steps_target: unknown; cardio_sessions_per_week: unknown };
+    // An index into `phases` (ordered by seq), not a seq value.
+    const idx = computeActivePhaseSeq(String((prog as { start_date: string }).start_date), phases, today);
+    if (idx == null) return null;
+    const phase = phases[idx] as { activity_steps_target: unknown; cardio_sessions_per_week: unknown };
     const stepsTarget = clampStepsTarget(phase.activity_steps_target);
     const cardioTarget = clampCardioSessions(phase.cardio_sessions_per_week);
     if (stepsTarget == null && cardioTarget == null) return null;
@@ -72,29 +77,17 @@ export async function loadActivityProgress(
         .not('finished_at', 'is', null)
         .gte('started_at', localWeekStart().toISOString()),
     ]);
-    // A failed read hides that half rather than showing 0 done.
+    // A failed read hides that half rather than showing 0 done, and so does
+    // no step reading yet today (no Health sync, or it has not run).
     const steps = stepsRes && !stepsRes.error
-      ? goalProgress(stepsRes.data ? Number((stepsRes.data as { value: unknown }).value) : 0, stepsTarget)
+      ? stepsProgressFromReading((stepsRes.data as { value?: unknown } | null)?.value, stepsTarget)
       : null;
-    let cardio: GoalProgress | null = null;
-    if (cardioRes && !cardioRes.error) {
-      const rows: CardioSetRow[] = [];
-      for (const w of (cardioRes.data ?? []) as unknown as Array<{
-        id: string;
-        workout_sets: Array<{ completed: boolean | null; set_type: string | null; exercises: { muscle_group: string | null; metric_type: string | null } | null }> | null;
-      }>) {
-        for (const s of w.workout_sets ?? []) {
-          rows.push({
-            workout_id: w.id,
-            completed: s.completed,
-            set_type: s.set_type,
-            muscle_group: s.exercises?.muscle_group ?? null,
-            metric_type: s.exercises?.metric_type ?? null,
-          });
-        }
-      }
-      cardio = goalProgress(countCardioSessions(rows), cardioTarget);
-    }
+    const cardio = cardioRes && !cardioRes.error
+      ? goalProgress(
+          countCardioSessions(cardioRowsFromWorkouts((cardioRes.data ?? []) as unknown as WorkoutWithSets[])),
+          cardioTarget,
+        )
+      : null;
     if (!steps && !cardio) return null;
     return { steps, cardio };
   } catch (e) {
