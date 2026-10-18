@@ -67,13 +67,12 @@ let _mem: HistoryCache | null = null;
  * that changes when the diary does (the day's entry ids): a change refetches,
  * so a food logged a minute ago can be copied tomorrow without a restart.
  */
-export function useFoodHistory(version: string): { history: HistoryEntry[]; ready: boolean } {
+export function useFoodHistory(version: string): { history: HistoryEntry[] } {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
   const key = `${user?.id ?? 'anon'}:${ymd(new Date())}`;
   const seed = _mem && _mem.key === key ? _mem.entries : null;
   const [history, setHistory] = useState<HistoryEntry[]>(seed ?? []);
-  const [ready, setReady] = useState(!!seed);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,7 +82,7 @@ export function useFoodHistory(version: string): { history: HistoryEntry[]; read
         await hydrateCache(user.id);
         if (cancelled) return;
         const disk = readCache<HistoryCache>('foodHistory', user.id);
-        if (disk && disk.key === key) { _mem = disk; setHistory(disk.entries); setReady(true); }
+        if (disk && disk.key === key) { _mem = disk; setHistory(disk.entries); }
       }
       if (!supabase) return;
       const fresh = await fetchHistory(supabase);
@@ -93,12 +92,11 @@ export function useFoodHistory(version: string): { history: HistoryEntry[]; read
       _mem = { key, entries: fresh };
       writeCache<HistoryCache>('foodHistory', user.id, _mem);
       setHistory(fresh);
-      setReady(true);
     })().catch(() => {});
     return () => { cancelled = true; };
   }, [supabase, user?.id, key, version]);
 
-  return { history, ready };
+  return { history };
 }
 
 /** The lines of `dayIso`'s `meal`, in diary order. */

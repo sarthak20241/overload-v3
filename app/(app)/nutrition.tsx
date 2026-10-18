@@ -1278,7 +1278,8 @@ export default function NutritionScreen() {
     );
     if (flow.origin === 'pattern' && !error) {
       track('food_suggestion_logged', {
-        meal_type: flow.mealType, item_count: flow.meal.items.length, edited: editCountRef.current > 0, is_today: isToday,
+        meal_type: flow.mealType, item_count: flow.meal.items.length, all: false,
+        edited: editCountRef.current > 0, is_today: isToday, write_failed: false,
       });
     }
     setAdding(false);
