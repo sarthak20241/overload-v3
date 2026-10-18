@@ -185,6 +185,13 @@ export type AnalyticsEvent =
   | 'fuel_days_opened'
   | 'program_calories_from_goal_sheet'
   | 'nutrition_day_changed'
+  // Suggestions from the user's own logging habits, and "copy yesterday's
+  // meal". Shown vs logged is the read on whether the guesses are any good.
+  | 'food_suggestions_shown'
+  | 'food_suggestion_logged'
+  | 'food_suggestion_edited'
+  | 'meal_copy_opened'
+  | 'meal_copied'
   // ── Coach Drona ──────────────────────────────────────────────────────────
   | 'coach_opened'
   | 'coach_closed'

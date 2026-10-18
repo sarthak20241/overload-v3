@@ -47,6 +47,7 @@ deno test --allow-all lib/servingSize.test.ts # food editor portion <-> stored s
 deno test --allow-all lib/logDay.test.ts      # "2 eggs for tomorrow" -> which day a food log lands on
 deno test --allow-all lib/fitnessGoals.test.ts
 deno test --allow-all lib/maintenance.test.ts   # the Nutrition screen's maintenance row and sheet
+deno test --allow-all lib/foodPatterns.test.ts  # usual foods per meal, and when each meal is offered
 ```
 
 There are no configured lint or build scripts.

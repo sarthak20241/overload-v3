@@ -25,7 +25,8 @@ export type CacheEntity =
   | 'nutritionTargets'
   | 'dayNutrition'
   | 'activeProgram'
-  | 'todayPick';
+  | 'todayPick'
+  | 'foodHistory';
 
 const ENTITIES: CacheEntity[] = [
   'routines',
@@ -41,6 +42,7 @@ const ENTITIES: CacheEntity[] = [
   'dayNutrition',
   'activeProgram',
   'todayPick',
+  'foodHistory',
 ];
 const KEY = (entity: CacheEntity, userId: string) => `cache_${entity}_v1::${userId}`;
 

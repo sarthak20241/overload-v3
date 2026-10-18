@@ -1300,13 +1300,17 @@ export async function logParsedMeal(
   meal: ParsedMeal,
   date: Date = getLogDate(),
   /** How the user got here. Food detail reuses this writer for a single
-   *  catalog item, which is a search log, not an AI parse. */
-  via: 'ai' | 'search' | 'drona_search' = 'ai',
+   *  catalog item, which is a search log, not an AI parse. 'pattern' (a
+   *  suggestion from the user's own habits) and 'copy_day' (copied from the
+   *  day before) re-log lines the user already logged once, so nothing was
+   *  parsed: they are written as manual entries. */
+  via: 'ai' | 'search' | 'drona_search' | 'pattern' | 'copy_day' = 'ai',
 ): Promise<{ ref?: LoggedParseRef; error?: string }> {
   const done: LoggedSectionRef[] = [];
+  const loggedVia = via === 'pattern' || via === 'copy_day' ? 'manual' : 'ai';
   for (const section of sectionsOf(meal)) {
     const lines = meal.items.filter((it) => (it.meal_type ?? meal.meal_type) === section);
-    const r = await logSection(supabase, section, lines, date);
+    const r = await logSection(supabase, section, lines, date, loggedVia);
     if (r.error || !r.ref) {
       await undoParsedMeal(supabase, { sections: done });
       return { error: r.error ?? 'Could not add that' };
@@ -1328,6 +1332,7 @@ async function logSection(
   mealType: MealType,
   items: ParsedMealItem[],
   date: Date,
+  loggedVia: 'ai' | 'manual' = 'ai',
 ): Promise<{ ref?: LoggedSectionRef; error?: string }> {
   const m = await findOrCreateMeal(supabase, mealType, date);
   if (m.error || !m.id) return { error: m.error ?? 'Could not create the meal' };
@@ -1353,7 +1358,7 @@ async function logSection(
     fiber_g: it.fiber_g == null ? null : r1(it.fiber_g),
     sugar_g: null, sat_fat_g: null, sodium_mg: null,
     position: base + idx,
-    logged_via: 'ai',
+    logged_via: loggedVia,
     // Where the macros came from (catalog / off / web / estimate) so the diary can
     // later tell a real label/web hit from a pure estimate (migration 0076).
     source: it.source,

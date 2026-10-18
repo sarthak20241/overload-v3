@@ -73,6 +73,10 @@ import type { MealType } from '@/lib/foods';
 import { formatServing, formatMacroGrams } from '@/lib/foods';
 import { swapToAlternative } from '@/lib/variantSwap';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { MealSuggestions } from '@/components/diet/MealSuggestions';
+import { CopyMealSheet } from '@/components/diet/CopyMealSheet';
+import { learnPatterns, mealsToSuggest, copyableFromDay, type FoodSuggestion, type HistoryEntry } from '@/lib/foodPatterns';
+import { useFoodHistory, useDayMealLines, relogLines, lineAsItem } from '@/lib/foodPatternsData';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
  *  'review' holds a parsed-but-UNLOGGED meal: nothing is written until the user
@@ -112,6 +116,9 @@ type ParseFlow =
       // Researched numbers that disagree with what is shown, offered as a
       // choice. Applying is local, so picking costs no round trip.
       proposal?: { items: ParsedMealItem[]; note: string } | null;
+      // 'pattern': a usual food opened here to change its portion first.
+      // Nothing was parsed, so Add writes it as a manual line.
+      origin?: 'pattern';
     }
   | { status: 'declined'; raw: string; message: string; pendingMeal?: PendingFoodMeal | null }
   // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
@@ -213,6 +220,8 @@ const SPEED_CHIP: Record<ParseSpeed, { icon: 'zap' | 'target' | 'award'; label: 
 };
 
 const round = (n: number) => Math.round(n);
+/** One shared empty list, so the copy sheet's inputs keep their identity. */
+const NO_LINES: never[] = [];
 
 /** Local midnight of the Sunday that starts `d`'s calendar week. */
 const sundayOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay());
@@ -457,6 +466,122 @@ export default function NutritionScreen() {
   const [savedListOpen, setSavedListOpen] = useState(false);
   const nowMeal = mealForNow();
   const nowMealLabel = MEALS.find((m) => m.type === nowMeal)?.label ?? 'this meal';
+
+  // ── Usual foods + copy the day before ──────────────────────────────────────
+  // The diary's recent weeks, refetched whenever the day on screen changes
+  // shape (an add, an edit, a delete), so what was logged a minute ago can be
+  // copied or learned from without a restart. Signed-in only, like parsing.
+  const diaryVersion = useMemo(
+    () => `${totalsDayIso}|${MEALS.map((m) => byMeal[m.type].map((e) => e.id).join(',')).join('|')}`,
+    [byMeal, totalsDayIso],
+  );
+  const { history } = useFoodHistory(isSignedIn ? diaryVersion : 'guest');
+  const patterns = useMemo(() => learnPatterns(isSignedIn ? history : [], viewIso), [history, viewIso, isSignedIn]);
+  // Today runs on the clock (breakfast in the morning, and still at lunch if
+  // it was skipped). Any other day is backfill or planning: every meal open.
+  const suggestHour = isToday ? new Date().getHours() : null;
+  const suggestions = useMemo(
+    () => mealsToSuggest(patterns, byMeal, suggestHour),
+    [patterns, byMeal, suggestHour],
+  );
+  const prevDate = new Date(viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate() - 1);
+  const prevIso = ymd(prevDate);
+  const prevLines = useDayMealLines(history, prevIso);
+  const prevLabel = dayLabel(prevDate) === 'Yesterday' ? 'Yesterday' : prevDate.toLocaleDateString(undefined, { weekday: 'long' });
+  const [copyMeal, setCopyMeal] = useState<MealType | null>(null);
+  const [relogBusy, setRelogBusy] = useState<string | null>(null);
+  // Lines just added from a suggestion or a copy, so each wears a quiet Undo
+  // until the screen goes away. Entry id -> the whole add, like the Drona chip.
+  const [relogged, setRelogged] = useState<Map<string, { ref: LoggedParseRef; label: string }>>(() => new Map());
+  // Each meal's suggestions count as shown once per day, not once per render.
+  const shownRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (dayUnknown) return;
+    for (const m of MEALS) {
+      const list = suggestions[m.type];
+      const k = `${viewIso}:${m.type}`;
+      if (list.length === 0 || shownRef.current.has(k)) continue;
+      shownRef.current.add(k);
+      track('food_suggestions_shown', {
+        meal_type: m.type, count: list.length, usual_count: list.filter((x) => x.usual).length,
+        weekday_count: list.filter((x) => x.reason === 'weekday').length,
+        meal_logged: byMeal[m.type].length > 0, is_today: isToday,
+      });
+    }
+  }, [suggestions, dayUnknown, viewIso, byMeal, isToday]);
+
+  const rememberRelog = useCallback((ref: LoggedParseRef, label: string) => {
+    setRelogged((cur) => {
+      const next = new Map(cur);
+      for (const sec of ref.sections) for (const id of sec.entryIds) next.set(id, { ref, label });
+      return next;
+    });
+  }, []);
+
+  const onAddSuggestions = useCallback(async (meal: MealType, items: FoodSuggestion[], all: boolean) => {
+    if (!supabase || relogBusy || items.length === 0) return;
+    setRelogBusy(all ? '*' : items[0].key);
+    haptics.success();
+    const { ref, error } = await relogLines(supabase, items, meal, viewDate, 'pattern');
+    setRelogBusy(null);
+    track('food_suggestion_logged', {
+      meal_type: meal, item_count: items.length, all, edited: false, is_today: isToday, write_failed: !!error,
+    });
+    if (error || !ref) { haptics.warning(); return; }
+    rememberRelog(ref, all ? 'Your usual' : 'From your usual');
+    reload();
+  }, [supabase, relogBusy, viewDate, isToday, rememberRelog, reload]);
+
+  // Change the portion first: the line opens in the review card, the same
+  // editor a typed meal gets, and Add writes it. Only from an idle box, so a
+  // meal the user is still reviewing is never thrown away for a suggestion.
+  const onEditSuggestion = useCallback((meal: MealType, item: FoodSuggestion) => {
+    if (flowRef.current.status !== 'idle') { haptics.warning(); return; }
+    track('food_suggestion_edited', { meal_type: meal, reason: item.reason, is_today: isToday });
+    setCardMinimized(false);
+    setFlow({
+      status: 'review', raw: item.food_name, words: item.food_name,
+      meal: {
+        meal_type: meal,
+        items: [lineAsItem(item, meal)],
+        drona_line: 'Your usual. Change the portion if today was different.',
+      },
+      mealType: meal, mealTypePicked: true, origin: 'pattern',
+    });
+  }, [isToday]);
+
+  const onCopyLines = useCallback(async (lines: HistoryEntry[]) => {
+    if (!supabase || !copyMeal || relogBusy) return;
+    const meal = copyMeal;
+    setRelogBusy('*');
+    const { ref, error } = await relogLines(supabase, lines, meal, viewDate, 'copy_day');
+    setRelogBusy(null);
+    track('meal_copied', {
+      meal_type: meal, item_count: lines.length, of_count: prevLines[meal].length,
+      from_yesterday: prevLabel === 'Yesterday', is_today: isToday, write_failed: !!error,
+    });
+    if (error || !ref) { haptics.warning(); return; }
+    haptics.success();
+    rememberRelog(ref, `Copied from ${prevLabel === 'Yesterday' ? 'yesterday' : prevLabel}`);
+    setCopyMeal(null);
+    reload();
+  }, [supabase, copyMeal, relogBusy, viewDate, prevLines, prevLabel, isToday, rememberRelog, reload]);
+
+  const onUndoRelog = useCallback(async (ref: LoggedParseRef) => {
+    if (!supabase) return;
+    track('meal_undone', {
+      section_count: ref.sections.length,
+      entry_count: ref.sections.reduce((t, sec) => t + sec.entryIds.length, 0),
+      via: 'relog',
+    });
+    await undoParsedMeal(supabase, ref);
+    setRelogged((cur) => {
+      const next = new Map(cur);
+      for (const sec of ref.sections) for (const id of sec.entryIds) next.delete(id);
+      return next;
+    });
+    reload();
+  }, [supabase, reload]);
 
   // Keep the log-date store synced to the viewed day so every log/edit path
   // (parse bar, food-search, saved meals, entry move) writes to that day. Mirror
@@ -1142,9 +1267,15 @@ export default function NutritionScreen() {
     // server's response looks like.
     const { error } = await logParsedMeal(
       supabase, { ...flow.meal, meal_type: flow.mealType }, viewDate,
+      flow.origin === 'pattern' ? 'pattern' : 'ai',
     );
+    if (flow.origin === 'pattern' && !error) {
+      track('food_suggestion_logged', {
+        meal_type: flow.mealType, item_count: flow.meal.items.length, edited: editCountRef.current > 0, is_today: isToday,
+      });
+    }
     setAdding(false);
-    track('parse_proposal_accepted', {
+    if (flow.origin !== 'pattern') track('parse_proposal_accepted', {
       item_count: flow.meal.items.length,
       section_count: sectionsOf(flow.meal).length,
       edit_count: editCountRef.current,
@@ -1481,6 +1612,10 @@ export default function NutritionScreen() {
         {MEALS.map((m) => {
           const entries = dayUnknown ? [] : byMeal[m.type];
           const sub = entries.reduce((a, e) => ({ kcal: a.kcal + e.kcal, protein: a.protein + e.protein_g }), { kcal: 0, protein: 0 });
+          // Copy the day before's meal: offered while that meal holds anything
+          // this one does not have yet.
+          const canCopy = isSignedIn && !dayUnknown && copyableFromDay(prevLines[m.type], entries).length > 0;
+          const usual = dayUnknown ? [] : suggestions[m.type];
           return (
             <View key={m.type} style={s.section}>
               <View style={s.sectionHead}>
@@ -1489,6 +1624,20 @@ export default function NutritionScreen() {
                 <View style={{ flex: 1 }} />
                 {entries.length > 0 && (
                   <Text style={s.sectionSub}>{formatMacroGrams(sub.protein)}g P · {round(sub.kcal)}</Text>
+                )}
+                {canCopy && (
+                  <Pressable
+                    onPress={() => {
+                      track('meal_copy_opened', { meal_type: m.type, is_today: isToday });
+                      setCopyMeal(m.type);
+                    }}
+                    hitSlop={10}
+                    style={s.copyBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Copy ${prevLabel.toLowerCase() === 'yesterday' ? "yesterday's" : `${prevLabel}'s`} ${m.label.toLowerCase()}`}
+                  >
+                    <Feather name="clipboard" size={13} color={C.textMuted} />
+                  </Pressable>
                 )}
               </View>
 
@@ -1499,6 +1648,7 @@ export default function NutritionScreen() {
                 // chip with Undo, so a meal logged while the app was closed is
                 // still one tap from gone. Cleared by the next app launch.
                 const dronaRef = addedByDronaRef(e.id);
+                const relog = relogged.get(e.id);
                 return (
                   // Undo is a SIBLING of the row, not nested in it. A Pressable
                   // is accessible by default, so VoiceOver and TalkBack can fold
@@ -1532,9 +1682,34 @@ export default function NutritionScreen() {
                         </Pressable>
                       </View>
                     )}
+                    {!dronaRef && relog && (
+                      <View style={s.dronaChip}>
+                        <Feather name="check" size={10} color={C.textMuted} />
+                        <Text style={s.dronaChipTxt}>{relog.label}</Text>
+                        <Text style={s.dronaChipTxt}>·</Text>
+                        <Pressable
+                          onPress={() => { void onUndoRelog(relog.ref); }}
+                          hitSlop={8}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Undo ${e.food_name}`}
+                        >
+                          <Text style={s.dronaChipUndo}>Undo</Text>
+                        </Pressable>
+                      </View>
+                    )}
                   </View>
                 );
               })}
+
+              <MealSuggestions
+                items={usual}
+                mealLogged={entries.length > 0}
+                mealLabel={m.label}
+                weekday={viewDate.getDay()}
+                busyKey={relogBusy}
+                onAdd={(items, all) => { void onAddSuggestions(m.type, items, all); }}
+                onEdit={(item) => onEditSuggestion(m.type, item)}
+              />
 
               <Pressable style={s.add} hitSlop={8} onPress={() => openSearch(m.type)}>
                 <Feather name="plus" size={14} color={C.accentText} />
@@ -1784,6 +1959,18 @@ export default function NutritionScreen() {
         onLogged={reload}
       />
 
+      {/* Copy one meal from the day before into the day on screen. */}
+      <CopyMealSheet
+        open={copyMeal != null}
+        title={copyMeal ? `${prevLabel}'s ${MEALS.find((x) => x.type === copyMeal)?.label.toLowerCase()}` : ''}
+        subtitle={copyMeal ? `Copies into ${isToday ? "today's" : `${dayLabel(viewDate)}'s`} ${MEALS.find((x) => x.type === copyMeal)?.label.toLowerCase()}` : ''}
+        lines={copyMeal ? prevLines[copyMeal] : NO_LINES}
+        current={copyMeal ? byMeal[copyMeal] : NO_LINES}
+        busy={relogBusy != null}
+        onClose={() => setCopyMeal(null)}
+        onCopy={(lines) => { void onCopyLines(lines); }}
+      />
+
       {/* Jump the diary to any past day, or ahead to plan one. */}
       <ParseSpeedSheet
         open={speedSheetOpen}
@@ -1865,6 +2052,7 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     analysingTxt: { fontSize: FontSize.sm, color: C.textSecondary },
 
     add: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: Spacing.sm, paddingLeft: 2 },
+    copyBtn: { marginLeft: Spacing.sm, padding: 2 },
     addTxt: { fontSize: FontSize.sm, color: C.accentText, fontWeight: FontWeight.medium },
 
     // "Just log it". The chip is a receipt line under the row, muted except for
