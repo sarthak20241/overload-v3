@@ -5,6 +5,7 @@ import { EXERCISE_LIBRARY, metricTypeOf } from '@/lib/exercises';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import { readCache, writeCache } from '@/lib/localCache';
 import { normalizeExerciseName } from '@/lib/workoutCoachEdit';
+import { ilikeExact } from '@/lib/planExercise';
 
 /** Row shape stored in the 'exercises' localCache (matches DbExercise). */
 export interface CachedExercise {
@@ -138,7 +139,9 @@ export async function resolveExerciseRow(
       const { data } = await supabase
         .from('exercises')
         .select('*')
-        .ilike('name', lib.name)
+        // Escaped: ILIKE reads % and _ as wildcards, so "Band_Pull" would
+        // otherwise match "Band Pull" and log sets onto the wrong exercise.
+        .ilike('name', ilikeExact(lib.name))
         .order('created_at', { ascending: true })
         .limit(1);
       return data && data.length > 0 ? (data[0] as Exercise) : null;

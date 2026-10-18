@@ -39,6 +39,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { newClientId } from '@/lib/syncQueue';
 import { enqueueRoutine, applyRoutineToCache, mergePendingRoutines, type PendingRoutine } from '@/lib/routineQueue';
+import { ilikeExact } from '@/lib/planExercise';
 import { useSync } from '@/components/SyncProvider';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
@@ -1357,7 +1358,8 @@ async function findOrCreateExercise(ex: EditorExercise): Promise<string> {
     const { data } = await supabase
       .from('exercises')
       .select('id')
-      .ilike('name', name)
+      // Escaped so a name with % or _ matches only itself.
+      .ilike('name', ilikeExact(name))
       .order('created_at', { ascending: true })
       .limit(1);
     return data && data.length > 0 ? data[0].id : null;
