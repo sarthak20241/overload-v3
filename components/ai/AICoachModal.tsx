@@ -57,6 +57,7 @@ import { MessageCopyButton } from '@/components/coach/MessageCopyButton';
 import { PastChatsList } from '@/components/coach/PastChatsList';
 import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
 import { withChangeSource } from '@/lib/planChangeSource';
+import { ilikeExact, parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 import {
   describeCoachEditOp,
@@ -98,6 +99,9 @@ interface GeneratedExercise {
   // Phase 2.5: coaching cue. Examples: "RIR 2", "Go heavy, control eccentric",
   // "Hams-focused, push hips back", "Last set to failure".
   note?: string;
+  // Set when Drona invented this exercise because the catalog had nothing
+  // that fit (a stretch, a mobility drill). Saved as the user's own custom.
+  new_exercise?: NewExerciseDef;
 }
 
 interface GeneratedWorkout {
@@ -130,6 +134,7 @@ function structuredToWorkout(input: Record<string, unknown>): GeneratedWorkout {
         reps: String(e.reps ?? '8-12'),
         rest: typeof e.rest_seconds === 'number' ? `${e.rest_seconds}s` : '90s',
         note: typeof e.note === 'string' && e.note.length > 0 ? e.note : undefined,
+        new_exercise: parseNewExercise(e.new_exercise),
       }))
     : [];
   return {
@@ -3904,24 +3909,23 @@ export function AICoachModal({
         color: undefined as any,
         created_at: new Date().toISOString(),
         routine_exercises: workout.exercises.map((ex, i) => {
-          const repsArr = ex.reps.split('-').map(Number);
+          const def = planExerciseInsert(ex);
           return {
             id: `gre-${Date.now()}-${i}`,
             exercise_id: `gex-${Date.now()}-${i}`,
             order: i,
             sets: ex.sets,
-            reps_min: repsArr[0] || 8,
-            reps_max: repsArr[1] || repsArr[0] || 12,
             rest_seconds: parseInt(ex.rest) || 60,
             // Parity with the authenticated branch — guest users keep
             // their cues too. Otherwise the routine renders without
             // notes the moment they save it.
-            note: ex.note ?? null,
+            ...planRepsAndNote(ex.reps, ex.note),
             exercises: {
               id: `gex-${Date.now()}-${i}`,
               name: ex.name,
-              muscle_group: 'Other',
-              category: 'Other',
+              muscle_group: def.muscle_group,
+              category: def.category,
+              ...(def.metric_type ? { metric_type: def.metric_type } : {}),
             },
           };
         }),
@@ -3949,12 +3953,13 @@ export function AICoachModal({
     await Promise.all(workout.exercises.map(async (ex, i) => {
       // Case-insensitive find, oldest row first — .single() would error when a
       // global library row and a same-named custom both match (legal scopes
-      // under migration 0037's unique indexes).
+      // under migration 0037's unique indexes). Escaped so % and _ in the
+      // name are literal (see ilikeExact for *).
       const findByName = async () => {
         const { data } = await supabase
           .from('exercises')
           .select('id')
-          .ilike('name', ex.name)
+          .ilike('name', ilikeExact(ex.name))
           .order('created_at', { ascending: true })
           .limit(1);
         return data?.[0]?.id;
@@ -3962,9 +3967,14 @@ export function AICoachModal({
 
       let exerciseId = await findByName();
       if (!exerciseId) {
+        // A Drona-invented exercise carries its own template (muscle group,
+        // equipment, how it is measured); anything else keeps the bare insert.
+        // Only reached when no row has this name: if the user already owns an
+        // exercise called this, findByName reused it above and Drona's
+        // template is ignored on purpose, so their own settings win.
         const { data: newEx, error: insErr } = await supabase
           .from('exercises')
-          .insert({ name: ex.name, muscle_group: 'Other', category: 'Other' })
+          .insert(planExerciseInsert(ex))
           .select('id')
           .single();
         // 23505: lost the create race to another session — take the winner.
@@ -3972,19 +3982,17 @@ export function AICoachModal({
       }
       if (!exerciseId) return;
 
-      const repsArr = ex.reps.split('-').map(Number);
       const { error: linkErr } = await withChangeSource(supabase, 'chat').from('routine_exercises').insert({
         routine_id: routine.id,
         exercise_id: exerciseId,
         sets: ex.sets,
-        reps_min: repsArr[0] || 8,
-        reps_max: repsArr[1] || repsArr[0] || 12,
         rest_seconds: parseInt(ex.rest) || 60,
         order: i,
         // Phase 2.5 (from PR #6): persist the coach's per-exercise cue
         // (e.g. "RIR 2", "Hams-focused"). Routines created via the editor
-        // don't set this.
-        note: ex.note ?? null,
+        // don't set this. A timed target ("45s") has no column, so
+        // planRepsAndNote carries it at the front of the cue.
+        ...planRepsAndNote(ex.reps, ex.note),
       });
       if (linkErr) throw linkErr;
     }));

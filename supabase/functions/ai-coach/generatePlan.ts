@@ -33,9 +33,26 @@
  * clock, versus 63% for text. Lines are what make progressive rendering
  * possible at all.
  *
+ * NEW EXERCISES
+ * The catalog has no stretches or mobility drills and only basic cardio. When
+ * nothing in it fits, the skeleton may write a NEW line instead of a SLOT line,
+ * carrying the same template the app's custom exercise form fills: muscle
+ * group, equipment, and how it is measured. The code, not the model, checks
+ * each field against _shared/exerciseVocab.ts, and a NEW name that is really a
+ * catalog exercise under another spelling is folded back to the catalog row so
+ * its history is not split across two rows.
+ *
  * Runtime-agnostic on purpose (same pattern as parseMeal.ts): all I/O is
  * injected, so tools/plan-eval can drive this exact code from Node.
  */
+
+import {
+  ALL_MUSCLE_GROUPS,
+  CATEGORIES,
+  METRIC_TYPE_VALUES,
+  normalizeNewExercise,
+  type NewExerciseDef,
+} from "../_shared/exerciseVocab.ts";
 
 export interface PlanExercise {
   name: string;
@@ -43,6 +60,12 @@ export interface PlanExercise {
   reps: string;
   rest_seconds: number;
   note?: string;
+  /**
+   * Set only on an exercise Drona invented because the catalog had nothing
+   * that fit. The client saves it as the user's own custom exercise with this
+   * template instead of the bare "Other" a name-only insert gets.
+   */
+  new_exercise?: NewExerciseDef;
 }
 
 export interface PlanWorkout {
@@ -65,6 +88,8 @@ export interface PlanSkeleton {
   split_type?: string;
   days_per_week?: number;
   days: { name: string; note?: string; slots: string[] }[];
+  /** Template for each NEW slot, keyed by its exact slot name. */
+  new_exercises?: Record<string, NewExerciseDef>;
 }
 
 /** One text-completion call. Injected so the eval can drive the real code. */
@@ -122,13 +147,19 @@ PLAN | <plan name> | <split type> | <days per week>
 DAY | <workout name> | <one-line focus for this session>
 SLOT | <exact exercise name from the catalog>
 SLOT | <exact exercise name from the catalog>
+NEW | <new exercise name> | <muscle group> | <equipment> | <measured by>
 DAY | <next workout name> | <focus>
 SLOT | ...
 
 Rules:
-- One SLOT line per exercise, in the order they should be performed, compounds first.
+- One SLOT or NEW line per exercise, in the order they should be performed, compounds first.
 - SLOT carries ONLY the exercise name. No sets, no reps, no rest, no cue.
 - Every SLOT name must be copied character-for-character from the catalog.
+- NEW is for an exercise the catalog does not have, such as a stretch, a mobility drill, or a cardio or conditioning piece. Prefer the catalog: never write NEW for an exercise the catalog already has under any spelling.
+- A NEW name is a plain, specific exercise name a lifter would recognise.
+- <muscle group> is one of: ${ALL_MUSCLE_GROUPS.join(", ")}.
+- <equipment> is one of: ${CATEGORIES.join(", ")}.
+- <measured by> is one of: ${METRIC_TYPE_VALUES.join(", ")}. A stretch, hold, or mobility drill is duration. Cardio covering ground is distance_duration; cardio on a machine set to a level is resistance_duration.
 - Never use the | character inside a field value.`;
 
 export const FILL_FORMAT_SPEC = `Emit ONLY EX lines, one per exercise, in the order given. No JSON, no markdown, no commentary, no DAY line.
@@ -139,8 +170,10 @@ Rules:
 - One EX line per assigned exercise, same order, same names. Do not add, drop, rename, or reorder exercises.
 - <sets> is a plain integer 1-6. <rest seconds> is a plain integer 30-300.
 - <reps> is a plain range like 6-10, or a single number like 5. For a timed
-  exercise (planks, carries, holds) write seconds as a number followed by s,
-  e.g. 45s.
+  exercise (planks, carries, holds, stretches) write seconds as a number
+  followed by s, e.g. 45s. For cardio done for time write minutes followed
+  by min, e.g. 20min. For a carry or sled pushed for distance write meters
+  followed by m, e.g. 20m.
 - <coaching cue> is a short phrase on intent or execution. Omit the trailing
   " | <cue>" entirely if the exercise needs no cue.
 - Never use the | character inside a field value.`;
@@ -150,6 +183,41 @@ Rules:
 // so every field has a fallback and unparseable lines are skipped.
 
 const cell = (s: string | undefined) => (s ?? "").trim();
+
+/** Longest name an invented exercise may carry into the exercises table. */
+export const MAX_NEW_NAME = 60;
+
+/**
+ * Most invented exercises one day may keep. Each one becomes a permanent
+ * custom exercise when the plan is saved, so a rambling model, or text in the
+ * user's context steering it, must not be able to fill the library. The
+ * prompt asks for one or two per session; this is the ceiling the code holds.
+ */
+export const MAX_NEW_PER_DAY = 3;
+
+/**
+ * Most DISTINCT invented exercises one plan may keep. The per-day cap alone
+ * still lets a 7-day plan create 21 library rows. Repeating an invention on
+ * another day costs nothing here, since it is one row. In the CLI eval a
+ * mobility plan used at most six.
+ */
+export const MAX_NEW_PER_PLAN = 8;
+
+/**
+ * Clean an invented name before it can become a permanent custom exercise:
+ * drop control characters and *, then cut a runaway name at a word boundary.
+ * The * goes because PostgREST reads it as a wildcard in the app's ILIKE
+ * lookup, which escapes only % and _.
+ * Catalog names never get near the cap; a NEW name past it is the model
+ * rambling.
+ */
+function capName(raw: string): string {
+  const n = raw.replace(/[\u0000-\u001f\u007f*]/g, "").replace(/\s+/g, " ").trim();
+  if (n.length <= MAX_NEW_NAME) return n;
+  const cut = n.slice(0, MAX_NEW_NAME);
+  const space = cut.lastIndexOf(" ");
+  return (space > 20 ? cut.slice(0, space) : cut).trim();
+}
 
 function toInt(s: string | undefined, fallback: number, lo: number, hi: number): number {
   const n = parseInt(cell(s), 10);
@@ -162,6 +230,9 @@ export function parseSkeleton(raw: string): PlanSkeleton | null {
   let name = "";
   let split_type: string | undefined;
   let days_per_week: number | undefined;
+  // Keyed by model-written names, so no prototype: "constructor" must not
+  // read as a template, and "__proto__" must be a plain key.
+  const new_exercises: Record<string, NewExerciseDef> = Object.create(null);
 
   for (const line of raw.split("\n")) {
     const parts = line.trim().replace(/^[`*\-\s]+/, "").split("|");
@@ -175,13 +246,25 @@ export function parseSkeleton(raw: string): PlanSkeleton | null {
       days.push({ name: cell(parts[1]) || `Day ${days.length + 1}`, note: cell(parts[2]) || undefined, slots: [] });
     } else if (tag === "SLOT") {
       if (days.length === 0) continue;
-      const n = cell(parts[1]);
+      // Cleaned like a NEW name: a SLOT the catalog does not know is saved
+      // under this name too. Safe for real catalog names (longest is 58
+      // chars, none has a * or a control character).
+      const n = capName(cell(parts[1]));
       if (n) days[days.length - 1].slots.push(n);
+    } else if (tag === "NEW") {
+      if (days.length === 0) continue;
+      const n = capName(cell(parts[1]));
+      if (!n) continue;
+      days[days.length - 1].slots.push(n);
+      // First template wins, the same rule as a catalog-name collision.
+      if (!Object.hasOwn(new_exercises, n)) new_exercises[n] = normalizeNewExercise(parts[2], parts[3], parts[4]);
     }
   }
 
   if (days.length === 0 || days.every((d) => d.slots.length === 0)) return null;
-  return { name: name || "Training Plan", split_type, days_per_week, days };
+  const out: PlanSkeleton = { name: name || "Training Plan", split_type, days_per_week, days };
+  if (Object.keys(new_exercises).length > 0) out.new_exercises = new_exercises;
+  return out;
 }
 
 export function parseFill(raw: string): PlanExercise[] {
@@ -204,6 +287,65 @@ export function parseFill(raw: string): PlanExercise[] {
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
 
+/** Own-key template lookup; never an inherited property. */
+function templateOf(defs: PlanSkeleton["new_exercises"], slot: string): NewExerciseDef | undefined {
+  return defs && Object.hasOwn(defs, slot) ? defs[slot] : undefined;
+}
+
+/** Loose key for catalog matching: the catalog is inconsistently punctuated. */
+const catalogKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+/** Looser still: also ignores spacing, so "TBar Row" finds "T-Bar Row". */
+const squashedKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+
+/**
+ * Hold the skeleton to the catalog. Any slot, SLOT or NEW, whose name is a
+ * catalog exercise under a different spelling ("T Bar Row" for "T-Bar Row")
+ * takes the catalog's spelling and loses any NEW template. Saving the model's
+ * spelling instead creates a near-duplicate row whose history is split from
+ * the real one. Mutates and returns the skeleton.
+ */
+export function groundSkeleton(skeleton: PlanSkeleton, catalog: string[]): PlanSkeleton {
+  const byKey = new Map(catalog.map((c) => [catalogKey(c), c]));
+  // First catalog row wins a squashed-key collision, matching the earlier
+  // passes' preference for the catalog's own spelling.
+  const bySquashed = new Map<string, string>();
+  for (const c of catalog) if (!bySquashed.has(squashedKey(c))) bySquashed.set(squashedKey(c), c);
+  const defs = skeleton.new_exercises ?? {};
+  for (const day of skeleton.days) {
+    day.slots = day.slots.map((slot) => {
+      const hit = byKey.get(catalogKey(slot)) ?? bySquashed.get(squashedKey(slot));
+      if (!hit) return slot;
+      // Templates are keyed by name, not by day, so one delete covers every
+      // day that used this name; a later day finding it gone is a no-op.
+      delete defs[slot];
+      return hit;
+    });
+    // Folding can turn two spellings of one exercise ("T Bar Row" and
+    // "T-Bar Row") into the same slot twice in a day. Keep the first.
+    day.slots = day.slots.filter((slot, i) => day.slots.indexOf(slot) === i);
+    // Counted AFTER folding, so a NEW line that was really a catalog row does
+    // not use up the day's allowance. Extra inventions are dropped whole.
+    let invented = 0;
+    day.slots = day.slots.filter((slot) => !Object.hasOwn(defs, slot) || ++invented <= MAX_NEW_PER_DAY);
+  }
+  // Plan-wide ceiling on distinct inventions, in plan order: the first eight
+  // names keep every day they appear on, later names are dropped everywhere.
+  const allowed = new Set<string>();
+  for (const day of skeleton.days) {
+    day.slots = day.slots.filter((slot) => {
+      if (!Object.hasOwn(defs, slot) || allowed.has(slot)) return true;
+      if (allowed.size >= MAX_NEW_PER_PLAN) return false;
+      allowed.add(slot);
+      return true;
+    });
+  }
+  // A template whose every slot was dropped would otherwise linger unused.
+  const kept = new Set(skeleton.days.flatMap((d) => d.slots));
+  for (const name of Object.keys(defs)) if (!kept.has(name)) delete defs[name];
+  if (skeleton.new_exercises && Object.keys(defs).length === 0) delete skeleton.new_exercises;
+  return skeleton;
+}
+
 /**
  * Stitch skeleton + fills + rationale. The skeleton is the source of truth for
  * structure and naming: a fill that renamed or dropped an exercise is
@@ -219,29 +361,41 @@ export function assemblePlan(
     split_type: skeleton.split_type,
     days_per_week: skeleton.days_per_week,
     rationale: rationale.trim(),
-    workouts: skeleton.days.map((day, i) => buildWorkout(day, fills[i])),
+    workouts: skeleton.days.map((day, i) => buildWorkout(day, fills[i], skeleton.new_exercises)),
   };
 }
 
 export function buildWorkout(
   day: PlanSkeleton["days"][number],
   filled: PlanExercise[] | null,
+  newExercises?: Record<string, NewExerciseDef>,
 ): PlanWorkout {
   const list = filled ?? [];
   const byName = new Map(list.map((e) => [norm(e.name), e]));
+  // A dead or short fill falls back to 3 x 8-12. For an exercise held for
+  // time that is a rep target on something nobody counts in reps, so a timed
+  // invention falls back to a time instead.
+  const fallbackReps = (def: NewExerciseDef | undefined) =>
+    def?.metric_type === "duration" || def?.metric_type === "duration_weight" ? "30s"
+    : def?.metric_type === "distance_duration" || def?.metric_type === "resistance_duration" ? "10min"
+    : def?.metric_type === "weight_distance" ? "20m"
+    : "8-12";
   return {
     name: day.name,
     note: day.note,
     exercises: day.slots.map((slot, j) => {
       // Positional fallback covers a fill that kept order but drifted on name.
       const hit = byName.get(norm(slot)) ?? list[j];
-      return {
+      const ex: PlanExercise = {
         name: slot,
         sets: hit?.sets ?? 3,
-        reps: hit?.reps ?? "8-12",
+        reps: hit?.reps ?? fallbackReps(templateOf(newExercises, slot)),
         rest_seconds: hit?.rest_seconds ?? 90,
         note: hit?.note,
       };
+      const def = templateOf(newExercises, slot);
+      if (def) ex.new_exercise = def;
+      return ex;
     }),
   };
 }
@@ -271,7 +425,25 @@ const stripRationaleDirective = (msg: string) =>
   msg.replace(/\n- The rationale should read like[^\n]*/g, "");
 
 const VARIANT_RULE =
-  `Design the STRUCTURE only. Assign the specific exercise for every slot yourself: across days that train the same muscle, deliberately pick complementary variants (for example a flat press on one day and an incline press on another, a squat pattern on one day and a hinge pattern on another). Do not repeat the same exercise on two different days unless the program genuinely calls for it.`;
+  `Design the STRUCTURE only. Assign the specific exercise for every slot yourself: across days that train the same muscle, deliberately pick complementary variants (for example a flat press on one day and an incline press on another, a squat pattern on one day and a hinge pattern on another). Do not repeat the same exercise on two different days unless the program genuinely calls for it.
+
+Not every slot has to be a lift. When the lifter's goals, preferences, or limitations call for it (fat loss or endurance, a stiff or tight area, a mobility or flexibility goal, a request for cardio), add cardio, conditioning, mobility, or stretching slots: usually a short warm-up drill at the start of a session or a finisher or cool-down at the end. Keep it to one or two such slots per session, so the session still fits its length. When nothing calls for it, keep the plan to lifting.`;
+
+/**
+ * The fill never sees the catalog or the NEW template, so without this it has
+ * no way to know a new stretch is held for time, and writes 3 x 8-12 for it.
+ */
+function measureHint(slots: string[], defs: PlanSkeleton["new_exercises"]): string {
+  const timed = slots.filter((s) => {
+    const m = templateOf(defs, s)?.metric_type;
+    return m === "duration" || m === "duration_weight" || m === "distance_duration" || m === "resistance_duration";
+  });
+  const far = slots.filter((s) => templateOf(defs, s)?.metric_type === "weight_distance");
+  return [
+    timed.length ? `Measured by time, not reps: ${timed.join(", ")}.` : "",
+    far.length ? `Measured by distance, not reps: ${far.join(", ")}.` : "",
+  ].filter(Boolean).join("\n");
+}
 
 function skeletonText(s: PlanSkeleton): string {
   return s.days
@@ -336,7 +508,8 @@ export async function runGeneratePlan(
     return { plan: null, error: `skeleton call failed: ${String(e).slice(0, 200)}`, usage, calls, stages };
   }
 
-  const skeleton = parseSkeleton(skelText);
+  const parsed = parseSkeleton(skelText);
+  const skeleton = parsed && groundSkeleton(parsed, deps.catalog);
   if (!skeleton) {
     const head = skelText.replace(/\s+/g, " ").trim().slice(0, 200) || "<empty>";
     return { plan: null, error: `skeleton parse failed: "${head}"`, usage, calls, stages };
@@ -361,6 +534,10 @@ export async function runGeneratePlan(
           ``,
           `Exercises for D${i + 1}, in order:`,
           ...day.slots.map((s) => `- ${s}`),
+          ...(() => {
+            const hint = measureHint(day.slots, skeleton.new_exercises);
+            return hint ? [``, hint] : [];
+          })(),
           ``,
           FILL_FORMAT_SPEC,
         ].join("\n"),
@@ -426,7 +603,7 @@ export async function runGeneratePlan(
     });
     if (kind === "fill") {
       fills[index] = parseFill(text);
-      deps.onDay?.(index, buildWorkout(skeleton.days[index], fills[index]));
+      deps.onDay?.(index, buildWorkout(skeleton.days[index], fills[index], skeleton.new_exercises));
     } else {
       rationale = text.trim();
     }
