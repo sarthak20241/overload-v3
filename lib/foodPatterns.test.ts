@@ -104,6 +104,16 @@ Deno.test("names match regardless of case and spacing", () => {
   assertEquals(learnPatterns(h, TODAY).breakfast.length, 1);
 });
 
+Deno.test("the shown name comes from the same row as the portion", () => {
+  const h = [
+    entry(daysAgo(1), "breakfast", "WHOLE MILK", { quantity: 1, serving_unit: "cup", kcal: 150 }),
+    entry(daysAgo(2), "breakfast", "Whole milk", { quantity: 2, serving_unit: "cup", kcal: 300 }),
+    entry(daysAgo(3), "breakfast", "Whole milk", { quantity: 2, serving_unit: "cup", kcal: 300 }),
+  ];
+  const s = learnPatterns(h, TODAY).breakfast[0];
+  assertEquals([s.food_name, s.quantity, s.kcal], ["Whole milk", 2, 300]);
+});
+
 Deno.test("a dropped habit ranks below a current one", () => {
   const h: HistoryEntry[] = [];
   for (let i = 15; i <= 28; i++) h.push(entry(daysAgo(i), "breakfast", "Cornflakes"));

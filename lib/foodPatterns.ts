@@ -161,7 +161,9 @@ export function learnPatterns(
         key: `${meal}:${k}`,
         meal_type: meal,
         food_id: best.food_id,
-        food_name: latestFirst[0].food_name.trim(),
+        // Label and numbers from the same row, so a name that differs only in
+        // case or spacing can never sit over another row's portion.
+        food_name: best.food_name.trim(),
         quantity: best.quantity,
         serving_unit: best.serving_unit,
         grams_logged: best.grams_logged,

@@ -107,7 +107,11 @@ export function useFoodHistory(version: string | null): { history: HistoryEntry[
   return { history };
 }
 
-/** The lines of `dayIso`'s `meal`, in diary order. */
+/** The lines of `dayIso`'s `meal`, in diary order. History runs ahead to
+ *  latestLogDay, so when the day on screen is two or more days out, the day
+ *  before it is a planned day and these are planned lines. That is on purpose:
+ *  planning a week means copying the day you just planned. Learning never
+ *  reads planned days (learnPatterns stops at today). */
 export function useDayMealLines(history: HistoryEntry[], dayIso: string) {
   return useMemo(() => {
     const by: Record<MealType, HistoryEntry[]> = { breakfast: [], lunch: [], dinner: [], snack: [] };

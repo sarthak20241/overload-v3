@@ -1428,7 +1428,18 @@ export default function NutritionScreen() {
       section_count: ref.sections.length,
       entry_count: ref.sections.reduce((t, s) => t + s.entryIds.length, 0),
     });
-    await undoParsedMeal(supabase, ref);
+    // A failed delete keeps the chip, so Undo can be tried again.
+    let failed = false;
+    try {
+      failed = !!(await undoParsedMeal(supabase, ref)).error;
+    } catch {
+      failed = true;
+    }
+    if (failed) {
+      haptics.warning();
+      reload();
+      return;
+    }
     forgetAddedByDrona(ref);
     reload();
   }, [supabase, reload]);
