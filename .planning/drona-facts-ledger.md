@@ -491,6 +491,50 @@ To rebuild everything by hand (for example after a formula change):
 `select public.drona_rebuild_all_facts(user_id, current_date - 182, current_date)`
 per person. A rebuild further back than 85 days keeps the old chat rows.
 
+## Step 8 is live (2026-10-16): steering facts
+
+Migrations `20261016135023_drona_steering_facts` + `20261016143425_drona_steering_facts_span`.
+Owner's question: "what would you watch to steer their plan?" Six facts, still
+counting only. Domain `steering` in the daily job, after cards, before signals.
+
+| Fact | Where | Notes |
+|---|---|---|
+| pace to goal | `g_*` on the week | 28-day window ending on the week's last day (yesterday for the running week). Weigh-ins, the days they cover (`g_span_days`), least-squares kg/week, weight now (the trend line at the last weigh-in), goal (program target, else profile) and date (program, else profile now), kg to go, weeks left, kg/week needed, arrival in weeks and date (only while the trend moves toward the goal) |
+| estimated maintenance | `e_*` on the week | same window: food days, days under half the target, average kcal on all logged days and on whole days, maintenance = average + (kg lost a week x 1100), both ways |
+| real training weekdays | `t_weekdays`, `t_weekday_weeks_8w`, `t_weeks_trained_8w` | weekdays trained this week (1 = Mon); per weekday, how many of the last 8 weeks had a session on it; weeks with any session |
+| per-exercise habits | `drona_exercise_habit_week_facts` | per week and exercise: custom, in the running phase's routines, sessions, sets, routine sessions that planned it / did it / skipped it, sessions it was added to, freestyle sessions |
+| change outcome | `drona_change_outcome_facts` | per plan change: the 14 days before and after (the change day in neither): sessions, training days, sets, TODAY match, food days, kcal, target, protein, weigh-ins, weight. Other changes the same day, before and after are counted, not hidden. Rebuilt 15 days back so the after window fills |
+| card answers by topic | `c_by_topic_to_date` | per topic up to the week: cards, applied, dismissed, expired, waiting, other, followed, not followed |
+
+Proved on a made-up person, 24 checks, every number worked by hand
+(`scripts/drona-facts/steering.mts`). Moving the 14-day line to 15 live made
+the change check fail; restored. `schedule.mts` now expects 8 domains.
+
+What the steering facts show:
+- **A trend from 2 weigh-ins is noise.** Two readings a day apart made a 3.5 kg
+  a week "trend", the broken scale 137 kg. Hence `g_span_days`.
+- **People stopped weighing.** Only 3 people ever had 8+ weigh-ins over 21+
+  days in a window, none recently, and none with a target date at the same
+  time. Pace and maintenance are built and waiting for data.
+- **One real maintenance estimate**: about 1,820 kcal for a person whose target
+  is 2,250 and who gained 0.27 kg a week. Consistent: the facts work.
+- **Two kinds of trainer.** One person trains Mon to Wed 8 of 8 weeks and Thu,
+  Fri 6 of 8: a fixed-day plan fits. The owner averages 4.4 sessions a week but
+  on no steady day: a rolling plan fits, pinned weekdays would not.
+- **Favourites are custom.** One person has 17 exercises done 6+ of 8 weeks,
+  most of them their own custom ones, none in a program.
+- **Plan changes come in bursts.** 205 changes, average 4 to 10 on the same day
+  (onboarding writes goal, targets, program, phases and routines together).
+  Only 1 of 153 finished changes stands alone with history before it. Change
+  outcomes cannot be judged yet.
+- **Weigh-in cards do not land.** Two people got 2 weigh-in cards each and
+  weighed in after neither.
+- **The exercise facts were stale for one person**: workouts that arrived after
+  their weeks were built never reached the old weeks, because the daily job only
+  rebuilds this week and last. A full 26-week rebuild fixed it (sets now equal
+  in all three tables: 11,045). Late history (imports, offline sync) needs its
+  own trigger; open.
+
 ## Build order
 
 1. **Weight** (this step): table, weight columns, compute function, backfill 8

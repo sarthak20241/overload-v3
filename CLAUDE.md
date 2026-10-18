@@ -48,6 +48,7 @@ deno test --allow-all lib/logDay.test.ts      # "2 eggs for tomorrow" -> which d
 deno test --allow-all lib/fitnessGoals.test.ts
 deno test --allow-all --unstable-sloppy-imports lib/planExercise.test.ts # Drona plan exercise -> exercises + routine rows
 deno test --allow-all --unstable-sloppy-imports lib/routineTargets.test.ts # "45s" / "5km" -> routine time + distance targets
+deno test --allow-all lib/maintenance.test.ts   # the Nutrition screen's maintenance row and sheet
 ```
 
 There are no configured lint or build scripts.
