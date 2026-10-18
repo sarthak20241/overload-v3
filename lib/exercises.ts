@@ -69,6 +69,17 @@ export function metricTypeDef(value: string | null | undefined): MetricTypeDef {
 }
 
 /**
+ * Whether a routine row's rep target means anything for this exercise. False
+ * for ones measured by time or distance alone (planks, stretches, cardio),
+ * whose routine_exercises row still carries the table's default 8-12 reps
+ * because there is no time or distance column, so showing it reads as a
+ * prescription nobody wrote.
+ */
+export function usesReps(value: string | null | undefined): boolean {
+  return metricTypeDef(value).axes.includes('reps');
+}
+
+/**
  * 1RM is only meaningful for rep-based loaded lifts. Wall-sits, carries, planks,
  * and pure cardio must never generate a phantom 1RM (plan: stats semantics).
  */

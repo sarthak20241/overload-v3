@@ -51,6 +51,7 @@ deno test --allow-all lib/servingSize.test.ts # food editor portion <-> stored s
 deno test --allow-all lib/logDay.test.ts      # "2 eggs for tomorrow" -> which day a food log lands on
 deno test --allow-all lib/fitnessGoals.test.ts
 deno test --allow-all lib/missingColumn.test.ts # app-before-migration column fallbacks
+deno test --allow-all --unstable-sloppy-imports lib/planExercise.test.ts # Drona plan exercise -> exercises + routine rows
 deno test --allow-all lib/maintenance.test.ts   # the Nutrition screen's maintenance row and sheet
 ```
 
