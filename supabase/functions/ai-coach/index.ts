@@ -4514,30 +4514,32 @@ Deno.serve(async (req) => {
         .eq("status", "active")
         .maybeSingle();
       if (active?.id) {
-        const { data: rows, error: actError } = await userClient
-          .from("coach_program_phases")
-          .select("seq, activity_steps_target, cardio_sessions_per_week")
-          .eq("user_id", userId)
-          .eq("program_id", active.id);
-        if (actError) console.log("[ai-coach] phase activity error:", actError.message);
-        else if (rows && rows.length > 0) {
-          // THIS week's row only, by the user's own date (4c). Newest-first
-          // would hand last week's numbers to the current phase right after
-          // Monday, before the cron has written the new week.
-          const todayDate = (ctx.today as { date?: string } | undefined)?.date;
-          const weekStart = todayDate ? weekStartOf(todayDate) : null;
-          let week = null;
-          if (weekStart) {
-            const { data, error: weekError } = await userClient
+        // THIS week's row only, by the user's own date (4c). Newest-first
+        // would hand last week's numbers to the current phase right after
+        // Monday, before the cron has written the new week. Read alongside
+        // the phases, not after them.
+        const todayDate = (ctx.today as { date?: string } | undefined)?.date;
+        const weekStart = todayDate ? weekStartOf(todayDate) : null;
+        const [phasesRes, weekRes] = await Promise.all([
+          userClient
+            .from("coach_program_phases")
+            .select("seq, activity_steps_target, cardio_sessions_per_week")
+            .eq("user_id", userId)
+            .eq("program_id", active.id),
+          weekStart
+            ? userClient
               .from("drona_week_facts")
               .select("a_as_of, a_steps_days, a_steps_days_met, a_cardio_sessions, r_steps_avg")
               .eq("user_id", userId)
               .eq("week_start", weekStart)
-              .maybeSingle();
-            if (weekError) console.log("[ai-coach] week activity error:", weekError.message);
-            else week = data;
-          }
-          ctx.program = withPhaseActivity(ctx.program, rows, week);
+              .maybeSingle()
+            : Promise.resolve(null),
+        ]);
+        if (phasesRes.error) console.log("[ai-coach] phase activity error:", phasesRes.error.message);
+        else if (phasesRes.data && phasesRes.data.length > 0) {
+          if (weekRes?.error) console.log("[ai-coach] week activity error:", weekRes.error.message);
+          const week = weekRes && !weekRes.error ? weekRes.data : null;
+          ctx.program = withPhaseActivity(ctx.program, phasesRes.data, week);
         }
       }
     }
