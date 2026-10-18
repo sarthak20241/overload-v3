@@ -13,6 +13,8 @@ import {
   targetsFor,
   targetEditorText,
   targetsFromEditor,
+  MAX_TARGET_METERS,
+  MAX_TARGET_SECONDS,
   trustDistanceUnit,
   withoutTargetColumns,
   writeWithTargetFallback,
@@ -205,11 +207,22 @@ Deno.test('the editor drops a target past the column bounds instead of showing i
   });
 });
 
-Deno.test('a bare m on a time-only exercise reads as minutes', () => {
+Deno.test('a bare m reads as minutes on a hold, and on a run below 100', () => {
   const t = parseTimedTarget('5m')!;
   assertEquals(bareMAsMinutes(t, 'duration'), { duration_seconds: 300, range: false });
-  assertEquals(bareMAsMinutes(t, 'distance_duration'), t);
+  assertEquals(bareMAsMinutes(t, 'distance_duration'), { duration_seconds: 300, range: false });
+  assertEquals(bareMAsMinutes(parseTimedTarget('400m')!, 'distance_duration'), parseTimedTarget('400m'));
   assertEquals(bareMAsMinutes(t, 'weight_distance'), t);
   assertEquals(bareMAsMinutes(t, null), t);
   assertEquals(bareMAsMinutes(parseTimedTarget('5km')!, 'duration'), { distance_m: 5000, range: false });
+});
+
+// The client drops a target past the CHECK bounds so a write can never fail on
+// them. Keep the two in step: this reads the migration itself.
+Deno.test('the client bounds match the migration CHECK bounds', async () => {
+  const sql = await Deno.readTextFile(
+    new URL('../supabase/migrations/20261016140000_routine_exercise_targets.sql', import.meta.url),
+  );
+  assertEquals(new RegExp(`target_duration_seconds between 1 and ${MAX_TARGET_SECONDS}\\b`).test(sql), true);
+  assertEquals(new RegExp(`target_distance_m <= ${MAX_TARGET_METERS}\\b`).test(sql), true);
 });

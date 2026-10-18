@@ -114,6 +114,9 @@ export function planRepsAndNote(
   // A time on an exercise that does not log time (Drona timed a lift) would
   // land in a column nothing shows, so it stays in the cue instead.
   // A bare "m" could be meters or minutes; trustDistanceUnit decides.
+  // An unknown metric type (null) is permissive on purpose: the target is
+  // stored, and every reader hides it unless the exercise logs that axis
+  // (targetsFor), so a wrong guess shows nowhere.
   const fits = timed && trustDistanceUnit(timed, opts.metricType) && (opts.metricType == null
     || (timed.duration_seconds != null ? takesDurationTarget(opts.metricType) : takesDistanceTarget(opts.metricType)));
   if (timed && fits) {

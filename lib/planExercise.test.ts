@@ -155,11 +155,12 @@ Deno.test('a bare m with no metric type stays in the cue, and is minutes on a ho
   });
 });
 
-Deno.test('a bare m on a run is meters only from 100 up', () => {
+Deno.test('a bare m on a run is meters only from 100 up, minutes below', () => {
   assertEquals(planRepsAndNote('5m', null, { metricType: 'distance_duration' }), {
     reps_min: 8,
     reps_max: 12,
-    note: 'Aim for 5m.',
+    note: null,
+    target_duration_seconds: 300,
   });
   assertEquals(planRepsAndNote('20m', null, { metricType: 'weight_distance' }), {
     reps_min: 8,

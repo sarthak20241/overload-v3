@@ -124,13 +124,14 @@ export function trustDistanceUnit(t: TimedTarget, metricType: string | null | un
 }
 
 /**
- * A bare "m" on an exercise that logs time but not distance (a hold, a
- * stretch) can only be minutes, so read it that way: "5m" is 300 s. Any other
- * target comes back as it was.
+ * A bare "m" read as minutes where meters make no sense: on an exercise that
+ * logs time but not distance (a hold, a stretch), and on one that logs both
+ * (a run) below BARE_M_MIN_METERS_ON_TIMED. "5m" is then 300 s. Any other
+ * target comes back as it was, for trustDistanceUnit to judge.
  */
 export function bareMAsMinutes(t: TimedTarget, metricType: string | null | undefined): TimedTarget {
-  if (!t.bareM || metricType == null) return t;
-  if (!takesDurationTarget(metricType) || takesDistanceTarget(metricType)) return t;
+  if (!t.bareM || metricType == null || !takesDurationTarget(metricType)) return t;
+  if (takesDistanceTarget(metricType) && (t.distance_m ?? 0) >= BARE_M_MIN_METERS_ON_TIMED) return t;
   return { duration_seconds: Math.round((t.distance_m ?? 0) * 60), range: t.range };
 }
 
