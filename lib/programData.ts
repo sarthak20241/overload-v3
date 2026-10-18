@@ -20,7 +20,11 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { fillMissingMacros, DEFAULT_TARGETS } from '@/lib/dietData';
 import { normalizeWeekPattern } from '@/lib/weekPattern';
 import { fuelDaysFromCoach, normalizeFuelDays, type FuelDay } from '@/lib/fuelDays';
+import {
+  clampCardioSessions, clampStepsTarget, hasActivityGoals, normalizeActivityGoals, type ActivityGoals,
+} from '@/lib/activityGoals';
 import { track } from '@/lib/analytics';
+import { missingColumn, withoutColumns } from '@/lib/missingColumn';
 import { programGoalFor } from '@/lib/fitnessGoals';
 
 // ── Client shapes ────────────────────────────────────────────────────────────
@@ -54,6 +58,11 @@ export interface ProgramPhase {
    * the phase says nothing, so the user's live fuel days are kept; [] = none.
    */
   fuel_days?: FuelDay[];
+  /**
+   * Steps a day and cardio sessions a week (lib/activityGoals), set by the
+   * coach when the goal calls for it. Undefined = no activity goals this phase.
+   */
+  activity?: ActivityGoals;
 }
 
 /** The coach's emitted program (from the generate_program terminal tool). */
@@ -174,8 +183,19 @@ function normalizePhase(v: unknown, i: number): ProgramPhase {
     readiness_directive: strOrUndef(p.readiness_directive),
     training_block: normalizeBlock(p.training_block),
     fuel_days: fuelDaysFromCoach(p.fuel_days),
+    ...activityOf(p.activity),
   };
 }
+
+/** The phase's activity goals, clamped; no key at all when it set none. */
+function activityOf(v: unknown): { activity?: ActivityGoals } {
+  const a = normalizeActivityGoals(v);
+  return hasActivityGoals(a) ? { activity: a } : {};
+}
+
+// The activity goal columns (migration 20261018120000). The app ships before
+// the migration, so every read and write of them falls back without them.
+const ACTIVITY_COLS = ['activity_steps_target', 'cardio_sessions_per_week'] as const;
 
 export function structuredToProgram(input: Record<string, unknown>): GeneratedProgram {
   const phases = Array.isArray(input.phases)
@@ -480,11 +500,23 @@ export async function saveProgram(
     // Only sent when the coach planned fuel days, so a program without them
     // still saves on a database from before 0139.
     ...(ph.fuel_days !== undefined ? { diet_fuel_days: ph.fuel_days } : {}),
+    // Same for activity goals. Clamped again here: this is the one write.
+    ...(ph.activity ? {
+      activity_steps_target: clampStepsTarget(ph.activity.steps_per_day),
+      cardio_sessions_per_week: clampCardioSessions(ph.activity.cardio_sessions_per_week),
+    } : {}),
   }));
-  const { data: phaseInserted, error: phErr } = await supabase
+  const insertPhases = (rows: typeof phaseRows) => supabase
     .from('coach_program_phases')
-    .insert(phaseRows)
+    .insert(rows)
     .select('id, seq');
+  let { data: phaseInserted, error: phErr } = await insertPhases(phaseRows);
+  // A database from before the activity goals: save the program without them
+  // rather than failing it. The goals come back with the next program built.
+  if (phErr && missingColumn(phErr, ACTIVITY_COLS)) {
+    console.warn('[programs] activity goal columns missing; saving without them');
+    ({ data: phaseInserted, error: phErr } = await insertPhases(withoutColumns(phaseRows, ACTIVITY_COLS)));
+  }
   if (phErr) {
     // A phase-less active program is worse than none: loadActiveProgram would
     // return it with an empty timeline, and reconcileActiveProgram cannot even
@@ -544,6 +576,10 @@ export interface ActiveProgramPhaseRow {
   training_block: ProgramTrainingBlock | null;
   /** The coach's planned fuel days for this phase; null = none planned (see ProgramPhase.fuel_days). */
   diet_fuel_days: FuelDay[] | null;
+  /** Steps a day this phase; null = no step goal (or a database from before it). */
+  activity_steps_target: number | null;
+  /** Cardio sessions a week this phase; null = no cardio goal. */
+  cardio_sessions_per_week: number | null;
   routine_id: string | null;
   // Routines built for this phase (linked via routines.program_phase_id).
   // Populated by loadActiveProgram; empty until a split is built.
@@ -591,16 +627,28 @@ export async function loadActiveProgram(
     .select(cols)
     .eq('program_id', (prog as { id: string }).id)
     .order('seq', { ascending: true });
-  let { data: phaseData, error: phaseErr } = await readPhases(`${PHASE_COLS}, diet_fuel_days`);
+  // Keep diet_fuel_days BEFORE the activity columns. Postgres names only the
+  // first missing column, and the two fallbacks below rely on that order: a
+  // database missing both reports diet_fuel_days, and the second one catches it.
+  let { data: phaseData, error: phaseErr } = await readPhases(`${PHASE_COLS}, diet_fuel_days, ${ACTIVITY_COLS.join(', ')}`);
+  // A database from before the activity goals: read the rest, so the program
+  // still loads and simply shows no activity goals.
+  if (phaseErr && missingColumn(phaseErr, ACTIVITY_COLS)) {
+    ({ data: phaseData, error: phaseErr } = await readPhases(`${PHASE_COLS}, diet_fuel_days`));
+  }
   // 42703 = undefined column: a database from before 0139. Read the rest, so
-  // Goal & Plan and the phase reconcile keep working without fuel days.
-  if (phaseErr && (phaseErr as { code?: string }).code === '42703') {
+  // Goal & Plan and the phase reconcile keep working without fuel days. This
+  // drops the activity columns too; a database has 0139 long before it can
+  // have 20261018120000, so none has the one without the other.
+  if (phaseErr && missingColumn(phaseErr, ['diet_fuel_days'])) {
     ({ data: phaseData, error: phaseErr } = await readPhases(PHASE_COLS));
   }
   if (phaseErr) throw phaseErr;
   const phases = ((phaseData ?? []) as unknown as ActiveProgramPhaseRow[]).map((ph) => ({
     ...ph,
     diet_fuel_days: ph.diet_fuel_days == null ? null : normalizeFuelDays(ph.diet_fuel_days),
+    activity_steps_target: clampStepsTarget(ph.activity_steps_target),
+    cardio_sessions_per_week: clampCardioSessions(ph.cardio_sessions_per_week),
   }));
   // An active program with no phases is corruption, not a real state:
   // saveProgram rejects zero-phase programs, so the only way to get one is a

@@ -1083,13 +1083,15 @@ export interface ParseMealDeps {
     mode: "off" | "shadow" | "on";
     findCandidates(item: MatchItem): Promise<Array<{ food: CandidateFood; meta: MatchCandidate }>>;
   };
-  /** Remember that these words (cacheKey form) mean this Precise cache row, so
-   *  the next person typing them gets an exact hit with no Jev call and no web
-   *  lookup (migration 0141's precise_alias; first mapping wins). Called only
-   *  when PRECISE_MATCH_MODE=on serves a cache row: in shadow it would change
-   *  what users are served. Also called with source "lookup" when the search
-   *  rewrite found the label under another name: the user's words become an
-   *  alias of the row saved under the product's own name. */
+  /** Remember that THIS USER's words (cacheKey form) mean this Precise cache
+   *  row, so their next log of them gets an exact hit with no Jev call and no
+   *  web lookup (precise_alias, per user since 20261018150000; first mapping
+   *  wins). Other users only meet the row as a search candidate Jev must
+   *  accept. Called only when PRECISE_MATCH_MODE=on serves a cache row: in
+   *  shadow it would change what users are served. Also called with source
+   *  "lookup" when the search rewrite found the label under another name: the
+   *  user's words become an alias of the row saved under the product's own
+   *  name. */
   preciseAliasPut?(aliasKey: string, rowId: string, confidence: number | null, source?: "jev" | "lookup"): Promise<void>;
 
   /** Super only: store what a lookup cost us to learn, so the next person asking
@@ -3338,8 +3340,8 @@ export async function superLookupOne(
 
   // Found under a rewritten name: the row is saved under THAT name, which is
   // what the label is for, and the user's words become an alias pointing at it
-  // (0141's precise_alias). So "<nickname>" and "<real name>" both hit one row,
-  // and the row's name never claims to be the nickname.
+  // (precise_alias, per user). So this user's "<nickname>" and everyone's
+  // "<real name>" hit one row, and the row's name never claims to be the nickname.
   const rowKey = finding.searched_as ? cacheKey(finding.searched_as, item.brand) : cacheKey(item.name, item.brand);
   if (deps.preciseCachePut) {
     // Never let a cache write cost the user their meal: the lookup already

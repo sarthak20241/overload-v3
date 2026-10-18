@@ -20,6 +20,7 @@ import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
 import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
 import { fuelDaysText } from '@/lib/fuelDays';
+import { activityText } from '@/lib/activityGoals';
 import { track } from '@/lib/analytics';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -57,6 +58,9 @@ import { MessageCopyButton } from '@/components/coach/MessageCopyButton';
 import { PastChatsList } from '@/components/coach/PastChatsList';
 import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
 import { withChangeSource } from '@/lib/planChangeSource';
+import { ilikeExact, parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
+import { writeWithTargetFallback } from '@/lib/routineTargets';
+import { findCatalogExerciseByName } from '@/lib/exerciseResolve';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 import {
   describeCoachEditOp,
@@ -98,6 +102,9 @@ interface GeneratedExercise {
   // Phase 2.5: coaching cue. Examples: "RIR 2", "Go heavy, control eccentric",
   // "Hams-focused, push hips back", "Last set to failure".
   note?: string;
+  // Set when Drona invented this exercise because the catalog had nothing
+  // that fit (a stretch, a mobility drill). Saved as the user's own custom.
+  new_exercise?: NewExerciseDef;
 }
 
 interface GeneratedWorkout {
@@ -130,6 +137,7 @@ function structuredToWorkout(input: Record<string, unknown>): GeneratedWorkout {
         reps: String(e.reps ?? '8-12'),
         rest: typeof e.rest_seconds === 'number' ? `${e.rest_seconds}s` : '90s',
         note: typeof e.note === 'string' && e.note.length > 0 ? e.note : undefined,
+        new_exercise: parseNewExercise(e.new_exercise),
       }))
     : [];
   return {
@@ -1983,6 +1991,8 @@ function programToText(p: GeneratedProgram): string {
     // Same reason as the Week line: without it a refine about anything else
     // would drop the long-run Sunday the user already settled.
     if (ph.fuel_days !== undefined) lines.push(`  Fuel days: ${fuelDaysText(ph.fuel_days)}`);
+    // Same again for the step and cardio goals the user already agreed to.
+    if (ph.activity) lines.push(`  Activity: ${activityText(ph.activity)}`);
     if (ph.diet_directive) lines.push(`  Diet note: ${ph.diet_directive}`);
     if (ph.training_block) {
       const b = ph.training_block;
@@ -2663,6 +2673,14 @@ function GenerateProgramScreen({
                   <Feather name="zap" size={11} color={C.accentText} />
                   <Text style={{ color: C.accentText, fontSize: FontSize.sm, flexShrink: 1 }}>
                     {fuelDaysText(ph.fuel_days)}
+                  </Text>
+                </View>
+              )}
+              {ph.activity && (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 }}>
+                  <Feather name="activity" size={11} color={C.accentText} />
+                  <Text style={{ color: C.accentText, fontSize: FontSize.sm, flexShrink: 1 }}>
+                    {activityText(ph.activity)}
                   </Text>
                 </View>
               )}
@@ -3904,24 +3922,28 @@ export function AICoachModal({
         color: undefined as any,
         created_at: new Date().toISOString(),
         routine_exercises: workout.exercises.map((ex, i) => {
-          const repsArr = ex.reps.split('-').map(Number);
+          const def = planExerciseInsert(ex);
+          // A library exercise: how it is measured comes from the device's
+          // catalog, as the signed-in branch reads it from the row. Without it
+          // a guest's "Plank 45s" would store a time no screen shows.
+          const lib = ex.new_exercise ? null : findCatalogExerciseByName(ex.name, null);
+          const metricType = def.metric_type ?? lib?.metric_type;
           return {
             id: `gre-${Date.now()}-${i}`,
             exercise_id: `gex-${Date.now()}-${i}`,
             order: i,
             sets: ex.sets,
-            reps_min: repsArr[0] || 8,
-            reps_max: repsArr[1] || repsArr[0] || 12,
             rest_seconds: parseInt(ex.rest) || 60,
             // Parity with the authenticated branch — guest users keep
             // their cues too. Otherwise the routine renders without
             // notes the moment they save it.
-            note: ex.note ?? null,
+            ...planRepsAndNote(ex.reps, ex.note, { metricType }),
             exercises: {
               id: `gex-${Date.now()}-${i}`,
               name: ex.name,
-              muscle_group: 'Other',
-              category: 'Other',
+              muscle_group: lib?.muscle_group ?? def.muscle_group,
+              category: lib?.category ?? def.category,
+              ...(metricType ? { metric_type: metricType } : {}),
             },
           };
         }),
@@ -3949,43 +3971,60 @@ export function AICoachModal({
     await Promise.all(workout.exercises.map(async (ex, i) => {
       // Case-insensitive find, oldest row first — .single() would error when a
       // global library row and a same-named custom both match (legal scopes
-      // under migration 0037's unique indexes).
-      const findByName = async () => {
+      // under migration 0037's unique indexes). Escaped so % and _ in the
+      // name are literal (see ilikeExact for *).
+      // It also returns how the row is measured, so a time on a lift stays in
+      // the cue rather than landing in a target column nothing shows. A row
+      // with no metric_type predates the column and is weight_reps.
+      const findByName = async (): Promise<{ id: string; metricType: string } | undefined> => {
         const { data } = await supabase
           .from('exercises')
-          .select('id')
-          .ilike('name', ex.name)
+          .select('id, metric_type')
+          .ilike('name', ilikeExact(ex.name))
           .order('created_at', { ascending: true })
           .limit(1);
-        return data?.[0]?.id;
+        const row = data?.[0];
+        return row ? { id: row.id, metricType: row.metric_type ?? 'weight_reps' } : undefined;
       };
 
-      let exerciseId = await findByName();
-      if (!exerciseId) {
+      let found = await findByName();
+      if (!found) {
+        // A Drona-invented exercise carries its own template (muscle group,
+        // equipment, how it is measured); anything else keeps the bare insert,
+        // which takes the table default. The stored metric_type is read back
+        // rather than assumed, so the fit check sees what the row holds.
+        // Only reached when no row has this name: if the user already owns an
+        // exercise called this, findByName reused it above and Drona's
+        // template is ignored on purpose, so their own settings win.
         const { data: newEx, error: insErr } = await supabase
           .from('exercises')
-          .insert({ name: ex.name, muscle_group: 'Other', category: 'Other' })
-          .select('id')
+          .insert(planExerciseInsert(ex))
+          .select('id, metric_type')
           .single();
         // 23505: lost the create race to another session — take the winner.
-        exerciseId = newEx?.id ?? (insErr?.code === '23505' ? await findByName() : undefined);
+        found = newEx?.id
+          ? { id: newEx.id, metricType: newEx.metric_type ?? 'weight_reps' }
+          : insErr?.code === '23505' ? await findByName() : undefined;
       }
+      const exerciseId = found?.id;
+      const metricType = found?.metricType;
       if (!exerciseId) return;
 
-      const repsArr = ex.reps.split('-').map(Number);
-      const { error: linkErr } = await withChangeSource(supabase, 'chat').from('routine_exercises').insert({
+      const link = (targetColumns: boolean) => withChangeSource(supabase, 'chat').from('routine_exercises').insert({
         routine_id: routine.id,
         exercise_id: exerciseId,
         sets: ex.sets,
-        reps_min: repsArr[0] || 8,
-        reps_max: repsArr[1] || repsArr[0] || 12,
         rest_seconds: parseInt(ex.rest) || 60,
         order: i,
         // Phase 2.5 (from PR #6): persist the coach's per-exercise cue
         // (e.g. "RIR 2", "Hams-focused"). Routines created via the editor
-        // don't set this.
-        note: ex.note ?? null,
+        // don't set this. A time or distance target ("45s", "5km") goes to
+        // its own column; planRepsAndNote only names that column when set.
+        ...planRepsAndNote(ex.reps, ex.note, { targetColumns, metricType }),
       });
+      // A database from before the target columns: save the target in the cue
+      // instead, as the app did before they existed.
+      const linkErr = await writeWithTargetFallback(link);
       if (linkErr) throw linkErr;
     }));
   };

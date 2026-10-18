@@ -48,6 +48,8 @@ export interface ScoreResult {
     /** Names not present in the scoring catalog. Kept for diagnosis: the
      *  earlier wrong-denominator bug was invisible without these. */
     unresolvedNames: string[];
+    /** Exercises Drona invented (NEW lines), with how each is measured. */
+    newExercises: { name: string; metric_type: string; reps: unknown }[];
   };
 }
 
@@ -60,8 +62,21 @@ function parseRepsOk(reps: unknown): boolean {
   // Timed work: "45s", "30-45s". Legal ONLY because the compact format asks
   // for it explicitly and assembly can route it by the catalog's metric_type.
   if (/^\d{1,3}\s*(-\s*\d{1,3})?\s*s$/i.test(t)) return true;
+  // Cardio for time: "20min", "15-20min".
+  if (/^\d{1,3}\s*(-\s*\d{1,3})?\s*min$/i.test(t)) return true;
+  // Carries and sled work for distance: "20m", "20-40m". The fill spec asks
+  // for it, and assembly falls back to it for a weight_distance invention.
+  if (/^\d{1,4}\s*(-\s*\d{1,4})?\s*m$/i.test(t)) return true;
   if (/^(amrap|to failure)$/i.test(t)) return true;
   return false;
+}
+
+/** Metric types that log a time per set. Everything else is counted, not timed. */
+const TIMED_METRICS = new Set(['duration', 'duration_weight', 'distance_duration', 'resistance_duration']);
+
+/** True when a reps value is a time in seconds ("45s") or minutes ("20min"). */
+export function isTimedReps(reps: unknown): boolean {
+  return typeof reps === 'string' && /^\d{1,3}\s*(-\s*\d{1,3})?\s*(s|min)$/i.test(reps.trim());
 }
 
 /** True when a reps value is a duration rather than a rep count. */
@@ -91,13 +106,14 @@ export function scorePlan(
   const warnings: string[] = [];
   const setsByMuscle: Record<string, number> = {};
   const unresolvedNames: string[] = [];
+  const newExercises: { name: string; metric_type: string; reps: unknown }[] = [];
   const dayCountByExercise = new Map<string, number>();
   let exercisesTotal = 0, exercisesResolved = 0, weeklySets = 0;
 
   const empty: ScoreResult['metrics'] = {
     workouts: 0, exercisesTotal: 0, exercisesResolved: 0, catalogResolution: 0,
     weeklySets: 0, setsByMuscle: {}, rationaleChars: 0, distinctRatio: 0,
-    crossDayRepeats: [], unresolvedNames: [],
+    crossDayRepeats: [], unresolvedNames: [], newExercises: [],
   };
 
   if (!plan) return { failures: ['no plan emitted'], warnings, metrics: empty };
@@ -140,7 +156,7 @@ export function scorePlan(
     exs.forEach((rawEx, xi) => {
       exercisesTotal++;
       if (typeof rawEx !== 'object' || rawEx === null) { failures.push(`workout[${wi}].exercise[${xi}] is not an object`); return; }
-      const ex = rawEx as { name?: unknown; sets?: unknown; reps?: unknown; rest_seconds?: unknown };
+      const ex = rawEx as { name?: unknown; sets?: unknown; reps?: unknown; rest_seconds?: unknown; new_exercise?: { metric_type?: unknown } };
       const name = typeof ex.name === 'string' ? ex.name.trim() : '';
       if (!name) { failures.push(`workout[${wi}].exercise[${xi}] has no name`); return; }
 
@@ -152,6 +168,12 @@ export function scorePlan(
         const mg = MUSCLE_BY_NAME.get(norm(name));
         const sets = typeof ex.sets === 'number' ? ex.sets : 0;
         if (mg) setsByMuscle[mg] = (setsByMuscle[mg] ?? 0) + sets;
+      } else if (ex.new_exercise && typeof ex.new_exercise === 'object') {
+        // A deliberate invention with a template, saved as a custom exercise.
+        // NOT a catalog match, so it stays out of exercisesResolved; it is
+        // also not junk, so it stays out of unresolvedNames. Tracked on its
+        // own for the invention cap and the mobility check.
+        newExercises.push({ name, metric_type: String(ex.new_exercise.metric_type ?? ''), reps: ex.reps });
       } else {
         unresolvedNames.push(name);
       }
@@ -173,10 +195,15 @@ export function scorePlan(
     for (const n of seenInWorkout) dayCountByExercise.set(n, (dayCountByExercise.get(n) ?? 0) + 1);
   });
 
+  // catalogResolution is the honest catalog share. The floor, though, guards
+  // against JUNK: names that are neither a catalog row nor a templated
+  // invention, which save as muscle group "Other". Inventions are bounded by
+  // their own cap below, so they count as grounded here, not as catalog.
   const resolution = exercisesTotal === 0 ? 0 : exercisesResolved / exercisesTotal;
-  if (resolution < e.minCatalogResolution) {
+  const grounded = exercisesTotal === 0 ? 0 : (exercisesResolved + newExercises.length) / exercisesTotal;
+  if (grounded < e.minCatalogResolution) {
     failures.push(
-      `catalog resolution ${(resolution * 100).toFixed(0)}% (${exercisesTotal - exercisesResolved}/${exercisesTotal} unresolved), floor ${(e.minCatalogResolution * 100).toFixed(0)}%` +
+      `grounded share ${(grounded * 100).toFixed(0)}% (${unresolvedNames.length}/${exercisesTotal} unresolved), floor ${(e.minCatalogResolution * 100).toFixed(0)}%` +
       (unresolvedNames.length ? ` [${unresolvedNames.slice(0, 4).join(', ')}${unresolvedNames.length > 4 ? ', ...' : ''}]` : ''),
     );
   }
@@ -198,6 +225,21 @@ export function scorePlan(
     warnings.push(`"${name}" repeats on ${days} days`);
   }
 
+  // Timed by BOTH its template and its prescription: a duration stretch left
+  // on the 8-12 rep fallback has no time target and does not count.
+  const timedNew = newExercises.filter(
+    (n) => TIMED_METRICS.has(n.metric_type) && isTimedReps(n.reps),
+  );
+  if (e.mobility === 'required' && timedNew.length === 0) {
+    failures.push('asked for mobility/stretching but the plan has no timed new exercise with a time target');
+  }
+  if (!e.mobility && newExercises.length > 0) {
+    warnings.push(`invented ${newExercises.length} exercise(s) nobody asked for: ${newExercises.map((n) => n.name).join(', ')}`);
+  }
+  if (newExercises.length > exercisesTotal / 3) {
+    failures.push(`${newExercises.length}/${exercisesTotal} exercises are invented; the catalog should carry most of the plan`);
+  }
+
   for (const [muscle, sets] of Object.entries(setsByMuscle)) {
     if (sets > 32) warnings.push(`${muscle}: ${sets} sets/week across the plan looks high`);
   }
@@ -210,7 +252,7 @@ export function scorePlan(
     metrics: {
       workouts: workouts.length, exercisesTotal, exercisesResolved,
       catalogResolution: resolution, weeklySets, setsByMuscle,
-      rationaleChars: rationale.length, distinctRatio, crossDayRepeats, unresolvedNames,
+      rationaleChars: rationale.length, distinctRatio, crossDayRepeats, unresolvedNames, newExercises,
     },
   };
 }

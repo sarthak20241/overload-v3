@@ -8,25 +8,26 @@
 //         so the Monday run can be reading a stale scale for someone who was
 //         away; the app path is how that user still gets a card.
 //
-// The numbers come from get_drona_facts (service role only), the decision from
-// the shared rules in _shared/dronaCards.ts. The calorie check-in is a second,
-// separate card per week (slot 'calories', _shared/dronaEnergy.ts). P0 writes only request and notice
-// cards; a hold writes nothing, which is most weeks.
+// The weekly card, first match wins: the new-user notice, the permanent swap,
+// the behaviour pick (get_drona_pick_facts + _shared/dronaPick.ts: what last
+// week's behaviours found, in fixed words), then the older P0 rules
+// (get_drona_facts + _shared/dronaCards.ts). The calorie check-in is a second,
+// separate card per week (slot 'calories', _shared/dronaEnergy.ts). Nothing to
+// say writes nothing, which is most weeks. B1 (the model's calorie card) is
+// retired here: the check-in owns calories (.planning/drona-cards-pick.md).
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 import { decideCard, type DronaFacts, onCooldown, signalsFrom, weekStartOf } from "../_shared/dronaCards.ts";
 import { decideSwap, type SwapFacts, swapCard } from "../_shared/dronaSwap.ts";
-import { calorieGate, caloriesCard, type DietFacts, uglyChecks, validateTargets } from "../_shared/dronaCalories.ts";
 import { checkinCooldown, decideEnergyCard, type EnergyFacts } from "../_shared/dronaEnergy.ts";
-import { askCaloriesModel, DRONA_CARD_MODEL } from "../_shared/dronaModel.ts";
+import { askedLately, decidePick, hushed, mutedTopics, type PickFacts } from "../_shared/dronaPick.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const CLERK_ISSUER = Deno.env.get("CLERK_ISSUER") ?? "";
-const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 const JWKS = createRemoteJWKSet(new URL(`${CLERK_ISSUER}/.well-known/jwks.json`));
 
 const USER_PAGE = 1000;
@@ -126,12 +127,6 @@ async function swapFirst(
   return { kind: card.kind, saved: true };
 }
 
-type CardRow = {
-  user_id: string; week_start: string; kind: string; topic: string; title: string; body: string;
-  evidence: unknown; payload: unknown; signals: string[]; facts: unknown; source: string;
-  status?: string; rejected?: unknown;
-};
-
 /**
  * The calorie check-in (20261018091823_drona_calorie_checkin): its own card
  * slot ('calories'), apart from the weekly Drona card, so a calorie step is
@@ -173,68 +168,6 @@ async function checkin(
   return { kind: card.kind, saved: !insErr };
 }
 
-/**
- * B1, the first card the MODEL decides (plan section 3). The rules gate the
- * week and set the anchor; the model reads the series and the diary and
- * answers with one tool call; the validator has the last word. A refused
- * answer is stored as a HOLD with the refusal attached, so the audit can say
- * why, and nothing is retried. Model failures write nothing at all.
- *
- * Returns the row to insert, or null when the week holds.
- */
-async function caloriesFirst(
-  db: SupabaseClient,
-  userId: string,
-  localDay: string,
-  weekStart: string,
-  facts: DronaFacts,
-  source: "cron" | "app",
-): Promise<CardRow | null> {
-  if (!ANTHROPIC_API_KEY) return null;
-  const { data: diet, error } = await retried(() =>
-    db.rpc("get_drona_diet_facts", { p_user_id: userId, p_as_of: localDay })
-  );
-  if (error || !diet) return null;
-
-  const gate = calorieGate(facts, diet as DietFacts);
-  if (!gate.eligible || !gate.anchor) return null;
-
-  const started = Date.now();
-  const answer = await askCaloriesModel(
-    { facts, diet: diet as DietFacts, anchor: gate.anchor, memory: facts.cards ?? [] },
-    ANTHROPIC_API_KEY,
-  );
-  // COST: every call lands in token_usage under its own pipeline, whatever it answered.
-  await db.rpc("log_token_usage", {
-    p_pipeline: "drona_card",
-    p_provider: "anthropic",
-    p_model: DRONA_CARD_MODEL,
-    p_input_tokens: answer.usage.input_tokens,
-    p_output_tokens: answer.usage.output_tokens,
-    p_cache_read_tokens: answer.usage.cache_read_tokens,
-    p_cache_creation_tokens: answer.usage.cache_creation_tokens,
-    p_metadata: { topic: "calories", tool: answer.tool, user: userId.slice(0, 12) },
-    p_latency_ms: Date.now() - started,
-    p_status: answer.tool === "none" ? "error" : "success",
-    p_error_message: answer.error ?? null,
-  }).then(({ error: e }) => { if (e) console.error("[drona-cards] token usage:", e.message); });
-
-  const base = { user_id: userId, week_start: weekStart, facts: { ...facts, diet, gate }, source };
-  if (answer.tool === "none") return null;
-  if (answer.tool === "hold") {
-    return { ...base, kind: "hold", topic: "calories", title: "", body: "", evidence: [], payload: {},
-      signals: ["model_hold"], status: "held", rejected: { reason: String(answer.input.reason ?? "") } };
-  }
-  const checked = validateTargets(answer.input, { ...gate.anchor, checks: uglyChecks(facts, diet as DietFacts) });
-  if (!checked.ok) {
-    return { ...base, kind: "hold", topic: "calories", title: "", body: "", evidence: [], payload: {},
-      signals: ["validator_refused"], status: "held", rejected: { reason: checked.reason, input: answer.input } };
-  }
-  const card = caloriesCard(facts, diet as DietFacts, checked.kcal, checked.rationale);
-  return { ...base, kind: card.kind, topic: card.topic, title: card.title, body: card.body,
-    evidence: card.evidence, payload: card.payload, signals: card.signals };
-}
-
 /** Read one user's facts, decide, and write the card. A hold writes nothing. */
 async function generate(
   db: SupabaseClient,
@@ -256,27 +189,28 @@ async function generate(
     if (swap) return swap;
   }
 
-  // B1 (Pro, model-decided). A model hold is written as a held row so the
-  // week is settled and the audit keeps the reason; a model failure writes
-  // nothing and the rules below get their turn. Never in a week the calorie
-  // check-in spoke: two calorie systems must not talk at once.
-  // A failed lookup counts as "it spoke": better no B1 than two calorie cards.
-  const { data: checkinRow, error: checkinErr } = await retried(() =>
-    db.from("drona_cards").select("id").eq("user_id", userId).eq("week_start", weekStart)
-      .eq("slot", "calories").maybeSingle()
-  );
-  if (!newUser && !checkinErr && !checkinRow && !onCooldown("calories", facts as DronaFacts)) {
-    const row = await caloriesFirst(db, userId, localDay, weekStart, facts as DronaFacts, source);
-    if (row) {
-      const { error: insErr } = await retried(() => db.from("drona_cards").insert(row));
-      if (insErr && (insErr as { code?: string }).code !== "23505") {
-        return { kind: row.kind, saved: false, error: insErr.message };
-      }
-      return { kind: row.kind, saved: !insErr };
+  // A new user gets the "I am reading" notice (decideCard): no pick, so no read.
+  // Otherwise the behaviour pick: what last week's behaviours found. A failed
+  // read says nothing this week: without it the mutes and the "not hearing
+  // Drona" hush are unknown, and asking someone who muted a topic is worse
+  // than silence.
+  let pf: PickFacts | null = null;
+  if (!newUser) {
+    const { data: pick, error: pickErr } = await retried(() =>
+      db.rpc("get_drona_pick_facts", { p_user_id: userId, p_as_of: localDay })
+    );
+    if (pickErr) {
+      // Its own kind, so the cron summary counts it: a read that keeps failing
+      // would otherwise silence every weekly card with only a log line to
+      // show. The app path just gets no card back (`card` is null).
+      console.error("[drona-cards] pick facts:", pickErr.message);
+      return { kind: "pick_failed", saved: false };
     }
+    pf = pick as PickFacts | null;
   }
-
-  const card = decideCard(facts as DronaFacts);
+  const picked = newUser ? null : decidePick(pf, facts as DronaFacts);
+  const skip = new Set([...mutedTopics(pf), ...askedLately(facts as DronaFacts)]);
+  const card = picked ?? hushed(decideCard(facts as DronaFacts, undefined, skip), pf);
   if (card.kind === "hold") return { kind: "hold", saved: false };
 
   // Insert, never upsert: the cron and the app can race for the same week, and
@@ -292,7 +226,7 @@ async function generate(
       evidence: card.evidence,
       payload: card.payload,
       signals: card.signals,
-      facts,
+      facts: picked ? { ...(facts as Record<string, unknown>), pick: pf } : facts,
       source,
     })
   );
@@ -357,6 +291,7 @@ async function runCron(): Promise<Response> {
 
     let saved = 0;
     let held = 0;
+    let pickFailed = 0;
     let checkins = 0;
     const failures: string[] = [];
     for (let i = 0; i < due.length; i += CRON_CONCURRENCY) {
@@ -374,11 +309,12 @@ async function runCron(): Promise<Response> {
         if (!g) return;
         if (g.saved) saved += 1;
         else if (g.kind === "hold") held += 1;
+        else if (g.kind === "pick_failed") pickFailed += 1;
         else failures.push(`${batch[j].userId.slice(0, 12)}: ${g.error ?? "not saved"}`);
       });
     }
 
-    return json({ users: weeks.length, due: due.length, saved, held, checkins, failures: failures.slice(0, 20) });
+    return json({ users: weeks.length, due: due.length, saved, held, checkins, pick_failed: pickFailed, failures: failures.slice(0, 20) });
   } finally {
     // Settled on every path: the runtime may stop the worker once the response
     // is out, and an abandoned delete may never land.

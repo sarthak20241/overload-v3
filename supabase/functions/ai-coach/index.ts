@@ -30,6 +30,8 @@ import { AI_LIMITS } from "../_shared/aiLimits.ts";
 import { isTimeZone } from "../_shared/wallClock.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
+import { withPhaseActivity } from "./programActivity.ts";
+import { weekStartOf } from "../_shared/dronaCards.ts";
 import type { DayTargetRow } from "../_shared/targetHistory.ts";
 import {
   type CandidateFood,
@@ -90,6 +92,7 @@ import {
   writeAutoLog,
 } from "./autoLog.ts";
 import type { PreciseCacheRow } from "./preciseCache.ts";
+import { preciseAliasStore } from "./preciseAlias.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
@@ -2866,6 +2869,7 @@ function makeParseDeps(
   opts: { brandWeb?: boolean } = {},
 ): ParseMealDeps {
   let searchCountryP: Promise<string | null> | undefined;
+  const aliases = preciseAliasStore(admin, userId);
   return {
     anthropicApiKey: ANTHROPIC_API_KEY!,
     model: PARSE_MEAL_MODEL,
@@ -2904,10 +2908,12 @@ function makeParseDeps(
           return null;
         }
         if (data) return data as PreciseCacheRow;
-        // Not a row's own key: maybe a phrase that already led to a row (0141).
-        // A missing function (migration not applied) is simply a miss.
-        const alias = await admin.rpc("precise_cache_by_alias", { p_key: key }).maybeSingle();
-        return (alias.error ? null : (alias.data as PreciseCacheRow | null)) ?? null;
+        // Not a row's own key: maybe a phrase of THIS user's that already led
+        // to a row. Other users' phrases are never an exact hit (preciseAlias.ts).
+        // A row's own key is also an alias with no owner, which the alias path
+        // can never hit; that is fine, because precise_cache_get above already
+        // answered it.
+        return await aliases.lookup(key);
       }
       : undefined,
     // Service role again, and upsert on cache_key so a re-verification refreshes
@@ -2943,14 +2949,8 @@ function makeParseDeps(
         return written?.id ?? null;
       }
       : undefined,
-    preciseAliasPut: async (aliasKey: string, rowId: string, confidence: number | null, source: "jev" | "lookup" = "jev") => {
-      // ignoreDuplicates: the first mapping of a phrase wins and is never repointed.
-      const { error } = await admin.from("precise_alias").upsert(
-        { alias_key: aliasKey, row_id: rowId, source, confidence },
-        { onConflict: "alias_key", ignoreDuplicates: true },
-      );
-      if (error) console.log(`[parse_meal] precise_alias upsert failed: ${error.message}`);
-    },
+    // Wrapped, not passed bare, so it keeps working if put ever uses `this`.
+    preciseAliasPut: (aliasKey, rowId, confidence, source) => aliases.put(aliasKey, rowId, confidence, source),
     webLookup: PRECISE_WEB_PROVIDER,
     searchRewrite: SEARCH_REWRITE,
     tavily: TAVILY_API_KEY ? { apiKey: TAVILY_API_KEY, timeoutMs: 20_000, log: (m) => console.log(m) } : undefined,
@@ -4446,6 +4446,9 @@ Deno.serve(async (req) => {
   //   - each program phase's PLANNED fuel days, added to user_context.program
   //     (get_user_coach_context lists phases without them). Without these,
   //     "Adjust with Drona" rebuilt every phase guessing its fuel days.
+  // The active program id read here is reused by 4d' below.
+  // undefined = not read (that block threw first); null = no active program.
+  let activeProgramId: string | null | undefined = undefined;
   try {
     const { data: fuelRow, error: fuelError } = await userClient
       .from("user_profiles")
@@ -4485,6 +4488,7 @@ Deno.serve(async (req) => {
         .select("id")
         .eq("status", "active")
         .maybeSingle();
+      activeProgramId = active?.id ?? null;
       if (active?.id) {
         const { data: rows, error: phaseFuelError } = await userClient
           .from("coach_program_phases")
@@ -4496,6 +4500,54 @@ Deno.serve(async (req) => {
     }
   } catch (e) {
     console.log("[ai-coach] fuel-days fetch threw:", String(e));
+  }
+
+  // 4d'. Activity goals (20261018120000): each phase's step and cardio goals,
+  // and this week's numbers from drona_week_facts on the current phase. Its own
+  // reads, so a database without the columns costs only these keys, never the
+  // fuel days above.
+  try {
+    const ctx = userContext as Record<string, unknown> | null;
+    if (ctx && ctx.program && typeof ctx.program === "object") {
+      // 4d already read it; read again only if that block threw first.
+      const programId = activeProgramId !== undefined ? activeProgramId : (await userClient
+        .from("coach_programs")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("status", "active")
+        .maybeSingle()).data?.id ?? null;
+      if (programId) {
+        // THIS week's row only, by the user's own date (4c). Newest-first
+        // would hand last week's numbers to the current phase right after
+        // Monday, before the cron has written the new week. Read alongside
+        // the phases, not after them.
+        const todayDate = (ctx.today as { date?: string } | undefined)?.date;
+        const weekStart = todayDate ? weekStartOf(todayDate) : null;
+        const [phasesRes, weekRes] = await Promise.all([
+          userClient
+            .from("coach_program_phases")
+            .select("seq, activity_steps_target, cardio_sessions_per_week")
+            .eq("user_id", userId)
+            .eq("program_id", programId),
+          weekStart
+            ? userClient
+              .from("drona_week_facts")
+              .select("a_as_of, a_steps_days, a_steps_days_met, a_cardio_sessions, r_steps_avg")
+              .eq("user_id", userId)
+              .eq("week_start", weekStart)
+              .maybeSingle()
+            : Promise.resolve(null),
+        ]);
+        if (phasesRes.error) console.log("[ai-coach] phase activity error:", phasesRes.error.message);
+        else if (phasesRes.data && phasesRes.data.length > 0) {
+          if (weekRes?.error) console.log("[ai-coach] week activity error:", weekRes.error.message);
+          const week = weekRes && !weekRes.error ? weekRes.data : null;
+          ctx.program = withPhaseActivity(ctx.program, phasesRes.data, week);
+        }
+      }
+    }
+  } catch (e) {
+    console.log("[ai-coach] activity fetch threw:", String(e));
   }
 
   // 4e. What the coach carries between conversations (coach-enhancement plan,

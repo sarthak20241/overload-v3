@@ -1,0 +1,152 @@
+/**
+ * How one exercise of a Drona-generated plan becomes database rows.
+ *
+ * Pure, so the deno suite can pin it: the save path in AICoachModal is the
+ * only writer of a generated plan, and both of these used to be inline there,
+ * where they quietly lost data. A NEW exercise was inserted as muscle group
+ * "Other", equipment "Other", measured by weight and reps, whatever Drona
+ * meant. A timed target like "45s" or "20min" parsed to NaN and fell back to
+ * 8-12 reps; it now goes to the routine row's own time or distance column.
+ */
+import {
+  normalizeNewExercise,
+  type NewExerciseDef,
+} from '../supabase/functions/_shared/exerciseVocab';
+import {
+  bareMAsMinutes,
+  parseTimedTarget,
+  takesDistanceTarget,
+  takesDurationTarget,
+  targetColumns,
+  trustDistanceUnit,
+  type RoutineTargets,
+} from './routineTargets';
+
+export type { NewExerciseDef };
+
+/**
+ * Read the template off a plan exercise payload. Re-checked here rather than
+ * trusted, because the payload crosses the network from whatever ai-coach
+ * version is deployed. Anything that is not an object, or an object with none
+ * of the three template fields, means "not new": an empty `{}` must not turn a
+ * plain catalog name into an invention.
+ */
+export function parseNewExercise(raw: unknown): NewExerciseDef | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+  const muscle = str(r.muscle_group), equipment = str(r.category), measured = str(r.metric_type);
+  if (muscle === undefined && equipment === undefined && measured === undefined) return undefined;
+  return normalizeNewExercise(muscle, equipment, measured);
+}
+
+/**
+ * The exercises row to insert when no row with this name exists yet. A plain
+ * catalog name the lookup somehow missed keeps the old bare insert, and the
+ * DB default (weight_reps) for its metric type.
+ */
+export function planExerciseInsert(ex: { name: string; new_exercise?: NewExerciseDef }): {
+  name: string;
+  muscle_group: string;
+  category: string;
+  metric_type?: NewExerciseDef['metric_type'];
+} {
+  const def = ex.new_exercise;
+  if (!def) return { name: ex.name, muscle_group: 'Other', category: 'Other' };
+  return { name: ex.name, muscle_group: def.muscle_group, category: def.category, metric_type: def.metric_type };
+}
+
+/**
+ * A name as an ILIKE pattern in which % and _ are literal. ILIKE reads them as
+ * wildcards and the backslash as their escape, so "Band_Pull" would otherwise
+ * also match "Band Pull" or "BandXPull" and reuse that exercise. Used by every
+ * find-by-name exercise lookup: the Drona plan save, resolveExerciseRow
+ * (workout sync, live add, imports) and the routine editor.
+ *
+ * NOT covered: PostgREST also reads * as a wildcard in ilike, and it cannot be
+ * escaped here. Drona's plan names have * stripped server side (capName); a
+ * user-typed name with * can still match loosely. No catalog name has one.
+ */
+export function ilikeExact(name: string): string {
+  return name.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
+/** Leading rep count or range ("8-12", "12 to 15"), and whatever follows it ("/side", "s", "min"). */
+const LEADING_REPS = /^\s*(\d+)\s*(?:(?:[-\u2013]|to\b)\s*(\d+))?\s*(.*)$/;
+/** A range written high-to-low ("12-8") still stores min <= max. */
+const ordered = (a: number, b: number) => ({ reps_min: Math.min(a, b), reps_max: Math.max(a, b) });
+
+/** "3x10", "3 x 8-12", "3-4x10", "3 sets of 10": the leading part is sets, the rest is reps. */
+const SETS_X_REPS = /^\s*\d+(?:\s*[-\u2013]\s*\d+)?\s*(?:[x\u00d7]|sets?\s+of)\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*$/i;
+/** A suffix that makes the number a time, a distance, calories or a set count, not a rep count. */
+const NON_REP_UNIT = /^(s|secs?|seconds?|min|mins|minutes?|m|meters?|metres?|km|mi|miles?|yd|yards?|cals?|kcals?|sets?)\b/i;
+
+export interface PlanRoutineRow extends Partial<RoutineTargets> {
+  reps_min: number;
+  reps_max: number;
+  note: string | null;
+}
+
+/**
+ * Rep range, cue, and time or distance target for a routine_exercises row.
+ *
+ * A rep target ("8-12", "5") fills reps_min/reps_max, and so does the rep part
+ * of "10-12/side" or "6-8 each", whose extra words then lead the cue. A time or
+ * distance ("45s", "20min", "5km") goes to target_duration_seconds /
+ * target_distance_m, and the reps fall back to the table's own defaults. A
+ * range ("30-45s") stores its low end and keeps the range in front of the cue,
+ * so the ceiling is not lost. Calories ("15cal") or a target with no number
+ * ("AMRAP") has no column, so it rides in the cue.
+ *
+ * targetColumns: false is the shape for a database from before the target
+ * columns (see missingTargetColumn): every time target rides in the cue. The
+ * target keys are only present when set, so a rep row never names the new
+ * columns at all. metricType, when known, keeps a time or distance the
+ * exercise does not log in the cue, where it is still seen.
+ */
+export function planRepsAndNote(
+  reps: string,
+  note?: string | null,
+  opts: { targetColumns?: boolean; metricType?: string | null } = {},
+): PlanRoutineRow {
+  const target = (reps ?? '').trim();
+  const cue = (note ?? '').trim();
+  const withTarget = cue ? `Aim for ${target}. ${cue}` : `Aim for ${target}.`;
+  if (!target) return { reps_min: 8, reps_max: 12, note: cue || null };
+  // Time and distance first: "5km" and "400m" also start with a number, and
+  // the rep reading below would take them for 5 and 400 reps.
+  const parsed = opts.targetColumns === false ? null : parseTimedTarget(target);
+  const timed = parsed && bareMAsMinutes(parsed, opts.metricType);
+  // A time on an exercise that does not log time (Drona timed a lift) would
+  // land in a column nothing shows, so it stays in the cue instead.
+  // A bare "m" could be meters or minutes; trustDistanceUnit decides.
+  // An unknown metric type (null) is permissive on purpose: the target is
+  // stored, and every reader hides it unless the exercise logs that axis
+  // (targetsFor), so a wrong guess shows nowhere.
+  const fits = timed && trustDistanceUnit(timed, opts.metricType) && (opts.metricType == null
+    || (timed.duration_seconds != null ? takesDurationTarget(opts.metricType) : takesDistanceTarget(opts.metricType)));
+  if (timed && fits) {
+    return {
+      reps_min: 8,
+      reps_max: 12,
+      note: timed.range ? withTarget : cue || null,
+      ...targetColumns({ target_duration_seconds: timed.duration_seconds, target_distance_m: timed.distance_m }),
+    };
+  }
+  if (timed) return { reps_min: 8, reps_max: 12, note: withTarget };
+  // "3x10" / "3 x 8-12" is sets x reps: the reps are the part after the x.
+  const sxr = SETS_X_REPS.exec(target);
+  if (sxr) {
+    const lo = Number(sxr[1]) || 8;
+    return { ...ordered(lo, Number(sxr[2]) || lo), note: withTarget };
+  }
+  const m = LEADING_REPS.exec(target);
+  // A decimal ("1.5min") is never a rep count, whatever follows it.
+  if (m && !NON_REP_UNIT.test(m[3]) && !/^[.,]\d/.test(m[3])) {
+    const lo = Number(m[1]) || 8;
+    const rest = m[3].trim();
+    const plain = rest === '' || /^reps?$/i.test(rest);
+    return { ...ordered(lo, Number(m[2]) || lo), note: plain ? cue || null : withTarget };
+  }
+  return { reps_min: 8, reps_max: 12, note: withTarget };
+}

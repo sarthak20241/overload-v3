@@ -35,6 +35,10 @@ EVAL_VIA_CLI=1 npx tsx scripts/program-fuel-eval/run.mts
 # goals_disagree signal reads coach_programs.goal). Same CLI rule.
 EVAL_VIA_CLI=1 npx tsx scripts/program-goal-eval/run.mts
 
+# Program activity goals: a cut gets a step goal, an asked-for run gets a cardio
+# goal, a gain or strength hold with no ask gets neither. Same CLI rule.
+EVAL_VIA_CLI=1 npx tsx scripts/program-activity-eval/run.mts
+
 # Edge function unit tests (the one real test suite).
 deno test --allow-all supabase/functions/ai-coach/
 deno test --allow-all supabase/functions/revenuecat-webhook/
@@ -46,6 +50,9 @@ deno test --allow-all lib/coachErrors.test.ts  # which bucket a failure lands in
 deno test --allow-all lib/servingSize.test.ts # food editor portion <-> stored serving
 deno test --allow-all lib/logDay.test.ts      # "2 eggs for tomorrow" -> which day a food log lands on
 deno test --allow-all lib/fitnessGoals.test.ts
+deno test --allow-all lib/missingColumn.test.ts # app-before-migration column fallbacks
+deno test --allow-all --unstable-sloppy-imports lib/planExercise.test.ts # Drona plan exercise -> exercises + routine rows
+deno test --allow-all --unstable-sloppy-imports lib/routineTargets.test.ts # "45s" / "5km" -> routine time + distance targets
 deno test --allow-all lib/maintenance.test.ts   # the Nutrition screen's maintenance row and sheet
 deno test --allow-all lib/foodPatterns.test.ts  # usual foods per meal, and when each meal is offered
 deno test --allow-all lib/mealCleanup.test.ts   # empty meal rows go in one safe database step

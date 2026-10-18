@@ -17,6 +17,7 @@ import { getGuestWorkoutsDetailed, getGuestRoutines, getGuestProfile } from '@/l
 import type { Workout } from '@/lib/types';
 import { getLevelInfo, getXpForWorkout, isMaxLevel } from '@/lib/xp';
 import { ReadinessCard } from '@/components/ui/ReadinessCard';
+import { ActivityGoalsCard } from '@/components/program/ActivityGoalsCard';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { BuildSplitPrompt } from '@/components/program/BuildSplitPrompt';
 import { hasCompletedOnboarding } from '@/lib/onboarding';
@@ -602,6 +603,15 @@ export default function DashboardScreen() {
       return;
     }
     void setCardStatus(supabase, popupCard.id, 'applied');
+    if (action === 'talk') {
+      // A talk card opens the chat on its own opening line, which carries the
+      // numbers the card showed, so the coach starts from the same facts.
+      setAiCoachPrompt(popupCard.payload.prompt || undefined);
+      setAiCoachInitialScreen('chat');
+      setAiCoachSource('drona_card');
+      setAiCoachOpen(true);
+      return;
+    }
     if (action === 'start_session') {
       // The session that is due is exactly what the TODAY card opens.
       handleTodayPress();
@@ -1116,6 +1126,10 @@ export default function DashboardScreen() {
           {/* Readiness card (muscle breakdown moved to Analytics). */}
           <ReadinessCard />
         </View>
+
+        {/* Steps today and cardio this week vs the phase's movement goals.
+            Renders nothing unless the current phase has one. */}
+        {!isGuestSession && <ActivityGoalsCard />}
 
         {/* Proactive insights — "Coach noticed" */}
         <InsightsStrip

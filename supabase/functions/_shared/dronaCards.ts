@@ -224,9 +224,14 @@ const on = (s: Signal): boolean => s === true;
 
 /**
  * The card for this week, or a hold. The first case that fires wins; a topic
- * on cooldown is skipped and the next case gets its turn.
+ * on cooldown, or muted, is skipped and the next case gets its turn.
  */
-export function decideCard(facts: DronaFacts, signals: DronaSignals = signalsFrom(facts)): DronaCard {
+export function decideCard(
+  facts: DronaFacts,
+  signals: DronaSignals = signalsFrom(facts),
+  /** 'topic:<x>' mutes from last week's behaviours (dronaPick.mutedTopics): never ask about these. */
+  muted: ReadonlySet<string> = new Set(),
+): DronaCard {
   const t = facts.training ?? {};
   const w = facts.weight ?? {};
   const f = facts.nutrition ?? {};
@@ -319,7 +324,7 @@ export function decideCard(facts: DronaFacts, signals: DronaSignals = signalsFro
   }
 
   for (const card of candidates) {
-    if (!onCooldown(card.topic, facts)) return card;
+    if (!onCooldown(card.topic, facts) && !muted.has(card.topic)) return card;
   }
   return {
     kind: 'hold',
