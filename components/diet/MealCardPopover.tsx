@@ -33,7 +33,7 @@ import { requireOptionalNativeModule } from 'expo-modules-core';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Portal } from '@/components/ui/Portal';
 import { useTheme } from '@/hooks/useTheme';
-import { Spacing } from '@/constants/theme';
+import { Spacing, Radius } from '@/constants/theme';
 
 export interface CardRect { x: number; y: number; width: number; height: number }
 
@@ -193,7 +193,10 @@ function PopoverBody({ origin, naturalHeight, bottomEdge, open, onRequestClose, 
         />
       </Animated.View>
       <Animated.View
-        style={[styles.frame, frame]}
+        // Filled and rounded like the card it holds: Android draws an
+        // elevation shadow from the view's own background, and a clear frame
+        // gives it nothing (or a square) to cast from.
+        style={[styles.frame, { backgroundColor: C.card, borderRadius: Radius.lg }, frame]}
         // Not modal for VoiceOver: the food box below is meant to stay reachable.
         pointerEvents={open ? 'auto' : 'none'}
       >
