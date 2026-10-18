@@ -254,7 +254,11 @@ export function ParsedMealCard({
   const [reviewY, setReviewY] = useState(0);
   const [footerBottom, setFooterBottom] = useState(0);
   const hasList = state === 'review' && !!meal;
-  // Bottom padding plus the hairline border, below the footer.
+  // Two layout assumptions hold this sum together: the footer is a direct
+  // child of the review body (its y is in that body's frame), and the tail
+  // is s.card's paddingBottom (Spacing.md) plus its 1pt border. Move the
+  // footer into a wrapper or change that padding and this must follow.
+  // footerBottom is 0 until the footer has laid out, and falls back to cardH.
   const contentH = footerBottom > 0 ? bodyY + reviewY + footerBottom + Spacing.md + 1 : cardH;
   // What the card needs at the least: everything that does not scroll (the
   // card minus the list's viewport), plus the list at its floor. If the
@@ -274,6 +278,7 @@ export function ParsedMealCard({
     if (hasList) return;
     setListH(0);
     setListContentH(0);
+    setFooterBottom(0);
   }, [hasList]);
   // With a list, only two things squeeze: the list and a notice's words.
   // Swap each one's squeezed viewport for its full content and what is left
