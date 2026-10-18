@@ -26,13 +26,17 @@ export type { NewExerciseDef };
 /**
  * Read the template off a plan exercise payload. Re-checked here rather than
  * trusted, because the payload crosses the network from whatever ai-coach
- * version is deployed. Anything that is not an object means "not new".
+ * version is deployed. Anything that is not an object, or an object with none
+ * of the three template fields, means "not new": an empty `{}` must not turn a
+ * plain catalog name into an invention.
  */
 export function parseNewExercise(raw: unknown): NewExerciseDef | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const r = raw as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
-  return normalizeNewExercise(str(r.muscle_group), str(r.category), str(r.metric_type));
+  const muscle = str(r.muscle_group), equipment = str(r.category), measured = str(r.metric_type);
+  if (muscle === undefined && equipment === undefined && measured === undefined) return undefined;
+  return normalizeNewExercise(muscle, equipment, measured);
 }
 
 /**

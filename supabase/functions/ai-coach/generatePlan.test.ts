@@ -112,3 +112,25 @@ Deno.test("a runaway invented name is cut at a word boundary before it is saved"
   assertEquals(long.startsWith(name), true);
   assertEquals(s.new_exercises?.[name]?.metric_type, "duration");
 });
+
+Deno.test("a carry measured by distance falls back to meters and its fill is told so", async () => {
+  const skel = "DAY | A | b\nSLOT | Bench Press\nNEW | Sandbag Carry | Grip | Other | weight_distance";
+  const s = groundSkeleton(parseSkeleton(skel)!, CATALOG);
+  assertEquals(assemblePlan(s, [null], "why").workouts[0].exercises[1].reps, "20m");
+  const prompts: string[] = [];
+  const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+  const call: TextCaller = ({ label, messages }) => {
+    prompts.push(`${label}::${String(messages[0].content)}`);
+    if (label === "skeleton") return Promise.resolve({ text: skel, usage });
+    if (label === "rationale") return Promise.resolve({ text: "Because.", usage });
+    return Promise.resolve({ text: "EX | Bench Press | 3 | 5 | 120", usage });
+  };
+  await runGeneratePlan("Build me a plan.", { call, catalog: CATALOG, system: [] });
+  const d1 = prompts.find((p) => p.startsWith("fill:d1::"))!;
+  assertEquals(d1.includes("Measured by distance, not reps: Sandbag Carry."), true);
+});
+
+Deno.test("control characters never reach a saved exercise name", () => {
+  const s = parseSkeleton("DAY | A | b\nNEW | Couch\u0007 Stretch\u001b | Hip Flexors | Bodyweight | duration")!;
+  assertEquals(s.days[0].slots, ["Couch Stretch"]);
+});
