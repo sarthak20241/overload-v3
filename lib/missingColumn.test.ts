@@ -33,3 +33,17 @@ Deno.test("the retry rows drop only the named columns", () => {
   // The originals are untouched: the first attempt's rows are not mutated.
   assertEquals(rows[0].activity_steps_target, 10000);
 });
+
+// loadActiveProgram selects diet_fuel_days BEFORE the activity columns, and
+// Postgres names only the first missing column. These pin the two cases.
+Deno.test("both missing: the activity fallback passes, the fuel-days fallback catches it", () => {
+  const err = { code: "42703", message: "column coach_program_phases.diet_fuel_days does not exist" };
+  assertEquals(missingColumn(err, COLS), false);
+  assertEquals(missingColumn(err, ["diet_fuel_days"]), true);
+});
+
+Deno.test("only activity missing: the activity fallback catches it, fuel days stay", () => {
+  const err = { code: "42703", message: "column coach_program_phases.activity_steps_target does not exist" };
+  assertEquals(missingColumn(err, COLS), true);
+  assertEquals(missingColumn(err, ["diet_fuel_days"]), false);
+});
