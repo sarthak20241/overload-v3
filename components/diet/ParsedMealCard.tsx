@@ -308,12 +308,14 @@ export function ParsedMealCard({
     // not saved for later: popping open minutes afterwards, when the user
     // reopens the strip, would be a surprise.
     if (!expand || isCollapsed) { handledKey.current = autoExpandKey; return; }
-    if (cardH <= 0 || listContentH <= 0) return;
+    // All three: the list's own viewport too. Its content size can land
+    // before its layout, and natural would then count the list twice.
+    if (cardH <= 0 || listH <= 0 || listContentH <= 0) return;
     handledKey.current = autoExpandKey;
     expand();
     // expand is rebuilt every render; what decides whether to fire is here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoExpandKey, cardH, listContentH, isCollapsed, expandable]);
+  }, [autoExpandKey, cardH, listH, listContentH, isCollapsed, expandable]);
   const items = state === 'review' && meal ? meal.items : [];
   const sum = items.reduce(
     (a, it) => ({ kcal: a.kcal + it.kcal, p: a.p + it.protein_g, c: a.c + it.carb_g, f: a.f + it.fat_g }),

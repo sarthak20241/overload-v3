@@ -1418,6 +1418,10 @@ export default function NutritionScreen() {
   return (
     <View style={[s.root, { backgroundColor: C.background }]}>
       <ScrollView
+        // The blurred day behind the open card is out of the screen-reader
+        // tree too; the card and the food box (outside this list) stay in it.
+        accessibilityElementsHidden={popOpen}
+        importantForAccessibility={popOpen ? 'no-hide-descendants' : 'auto'}
         contentContainerStyle={{ paddingTop: insets.top + Spacing.sm, paddingBottom: 150 }}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
