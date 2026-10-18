@@ -84,6 +84,8 @@ interface Props {
 
 const OPEN_SPRING = { damping: 22, stiffness: 240, mass: 0.9 };
 const CLOSE_TIMING = { duration: 220, easing: Easing.out(Easing.cubic) };
+// Header, a line and the footer: the smallest the open card is allowed to be.
+const MIN_FRAME = 200;
 // Close to the iOS keyboard curve, so the card rides up with the box.
 const FOLLOW_TIMING = { duration: 250, easing: Easing.out(Easing.cubic) };
 
@@ -113,7 +115,11 @@ function PopoverBody({ origin, naturalHeight, bottomEdge, open, onRequestClose, 
   const top = insets.top + Spacing.lg;
   const bottom = Math.min(winH - insets.bottom - Spacing.lg, bottomEdge - Spacing.sm);
   const room = Math.max(0, bottom - top);
-  const dstH = Math.min(room, naturalHeight > 0 ? naturalHeight : src.height);
+  // Never squeezed below a usable card. On a short phone with the keyboard
+  // up the room above the box can be close to nothing; a card that runs up
+  // under the status bar still works, a zero-height one over a blur does not.
+  const want = naturalHeight > 0 ? naturalHeight : src.height;
+  const dstH = Math.max(Math.min(want, MIN_FRAME), Math.min(room, want));
   const dstX = Spacing.lg;
   const dstW = winW - Spacing.lg * 2;
 
