@@ -14,6 +14,8 @@ Deno.test("the line as eaten carries amount, unit and preparation", () => {
   // A preparation already in the name is not said twice.
   assertEquals(eatenLabel({ name: "boiled chana", quantity: 100, unit: "g", prep: "boiled" }), "100 g boiled chana");
   assertEquals(eatenLabel({ name: "ramen", quantity: 3, unit: "fork", prep: null }), "3 fork ramen");
+  // Whole words only: "raw" is not already in "strawberry".
+  assertEquals(eatenLabel({ name: "strawberry", quantity: 100, unit: "g", prep: "raw" }), "100 g raw strawberry");
 });
 
 Deno.test("a cooked serving and the dry product are different cache rows", () => {

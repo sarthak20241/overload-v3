@@ -220,7 +220,11 @@ export function foodLabel(item: WebFoodItem): string {
 export function withPrep(name: string, prep: string | null | undefined): string {
   const n = name.trim();
   const p = prep?.trim() ?? "";
-  return p && !n.toLowerCase().includes(p.toLowerCase()) ? `${p} ${n}` : n;
+  if (!p) return n;
+  // Whole words: "raw" is not already in "strawberry".
+  const words = (x: string) => x.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const have = new Set(words(n));
+  return words(p).every((w) => have.has(w)) ? n : `${p} ${n}`;
 }
 
 export function searchQueries(item: WebFoodItem): string[] {
