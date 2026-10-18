@@ -1600,6 +1600,7 @@ export default function NutritionScreen() {
         state={flow.status as ParseCardState}
         rawText={flow.raw}
         maxHeight={cardMaxHeight}
+        hardMaxHeight={Math.max(0, hardAvail)}
         // Fast mode's settling window: real names, shimmering numbers.
         streamingRows={flow.status === 'streaming' ? flow.rows : null}
         meal={flow.status === 'review' ? flow.meal : null}
