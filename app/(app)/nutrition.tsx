@@ -383,7 +383,11 @@ export default function NutritionScreen() {
     const el = parseCardRef.current;
     if (!el) { setPop((p) => p && { ...p, origin: null }); setPopOpen(false); return; }
     el.measureInWindow((x, y, width, height) => {
-      setPop((p) => p && { ...p, origin: { x, y, width, height } });
+      // Async, like openPop: if Add or Discard landed meanwhile, that rect is
+      // a spot the card no longer has, so fade out in place instead.
+      const st = flowRef.current.status;
+      const gone = st === 'idle' || st === 'create';
+      setPop((p) => p && { ...p, origin: gone ? null : { x, y, width, height } });
       setPopOpen(false);
     });
   }, []);

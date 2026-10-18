@@ -24,7 +24,7 @@
  * and save sheets, so those still open on top of it.
  */
 import React, { useEffect, useRef } from 'react';
-import { View, Pressable, StyleSheet, BackHandler, useWindowDimensions } from 'react-native';
+import { View, Pressable, StyleSheet, BackHandler, Platform, useWindowDimensions } from 'react-native';
 import Animated, {
   useSharedValue, useAnimatedStyle, withSpring, withTiming, Easing,
   interpolate, Extrapolation, runOnJS, useReducedMotion,
@@ -50,6 +50,10 @@ const BlurView: React.ComponentType<{
   intensity?: number; tint?: 'light' | 'dark'; style?: object;
 }> | null = (() => {
   try {
+    // iOS only. On Android expo-blur draws nothing without its experimental
+    // blur method, which it warns can cost performance and draw glitches,
+    // so Android takes the darker scrim instead of a faint one.
+    if (Platform.OS !== 'ios') return null;
     if (!requireOptionalNativeModule('ExpoBlurView')) return null;
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     return require('expo-blur').BlurView;

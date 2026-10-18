@@ -219,7 +219,10 @@ export function ParsedMealCard({
   // which is the same race onEditItem/onRemoveItem are already frozen for.
   const collapsible = state === 'review' && !!meal && !!onToggleMinimize
     && !adding && !busyChecking && !expanded;
-  const expandable = state === 'review' && !!meal && !!onExpand && !expanded;
+  // Frozen while Add writes or a double-check runs, same as minimize: the
+  // card should not move under a tap whose result is still landing.
+  const expandable = state === 'review' && !!meal && !!onExpand && !expanded
+    && !adding && !busyChecking;
   // What the card would measure with no cap: its laid-out height, minus the
   // list's squeezed viewport, plus everything the list holds.
   // State, not refs: the popover follows this number as the content changes.
@@ -228,6 +231,11 @@ export function ParsedMealCard({
   const [listContentH, setListContentH] = useState(0);
   const [bodyH, setBodyH] = useState(0);
   const hasList = state === 'review' && !!meal;
+  // With a list, everything but the list is fixed height, so
+  // (card - list viewport) is the fixed part whatever the list is squeezed
+  // to, and adding the list's full content gives the uncapped height. That
+  // holds at any frame height, which is why the popover can resize the card
+  // without the number moving under it.
   const natural = hasList
     ? cardH - listH + listContentH
     // No list to stretch: the body is its own size. Padding + hairline border.
