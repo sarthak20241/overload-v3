@@ -30,6 +30,7 @@ import {
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMealCard';
+import { MealCardPopover, type CardRect } from '@/components/diet/MealCardPopover';
 import { DayLoadFailed, DaySummaryLoading, MealRowsLoading } from '@/components/diet/DayLoading';
 import { ParsedItemEditor } from '@/components/diet/ParsedItemEditor';
 import { EntryEditSheet } from '@/components/diet/EntryEditSheet';
@@ -358,6 +359,57 @@ export default function NutritionScreen() {
   // parse can force it open: a meal the user has not seen yet must never
   // arrive already hidden behind a summary line.
   const [cardMinimized, setCardMinimized] = useState(false);
+  // The parse card lifted into the bigger view (MealCardPopover). `pop` keeps
+  // it mounted through the return trip; `popOpen` is which way it is heading.
+  // origin null = nowhere to go back to, so it fades out where it is.
+  // Drona's reply opens it by default, and it stays up through follow-ups
+  // typed in the food box below it; the user puts it back when they want the
+  // day in view.
+  const parseCardRef = useRef<View>(null);
+  const [pop, setPop] = useState<{ origin: CardRect | null; natural: number } | null>(null);
+  const [popOpen, setPopOpen] = useState(false);
+  const openPop = useCallback((natural: number) => {
+    parseCardRef.current?.measureInWindow((x, y, width, height) => {
+      haptics.tap();
+      setPop({ origin: { x, y, width, height }, natural });
+      setPopOpen(true);
+    });
+  }, []);
+  const closePop = useCallback(() => {
+    // Measure again: the keyboard may have come or gone, which moved the card.
+    const el = parseCardRef.current;
+    if (!el) { setPop((p) => p && { ...p, origin: null }); setPopOpen(false); return; }
+    el.measureInWindow((x, y, width, height) => {
+      setPop((p) => p && { ...p, origin: { x, y, width, height } });
+      setPopOpen(false);
+    });
+  }, []);
+  // The card went (Add landed, Discard, words back to the box): there is no
+  // spot to return to, so it fades where it is. A follow-up being read is
+  // NOT this - the conversation carries on in the popover.
+  const cardGone = flow.status === 'idle' || flow.status === 'create';
+  useEffect(() => {
+    if (!cardGone || !pop || (!pop.origin && !popOpen)) return;
+    setPop((p) => p && { ...p, origin: null });
+    setPopOpen(false);
+  }, [cardGone, pop, popOpen]);
+  const onPopNatural = useCallback((natural: number) => {
+    setPop((p) => (p && p.natural !== natural ? { ...p, natural } : p));
+  }, []);
+  // A reply landing (reading/streaming -> review) opens the card big. The
+  // card itself lifts off once laid out, from wherever it first appeared.
+  const [autoPopKey, setAutoPopKey] = useState(0);
+  const prevStatus = useRef(flow.status);
+  useEffect(() => {
+    const was = prevStatus.current;
+    prevStatus.current = flow.status;
+    if (flow.status === 'review' && (was === 'analysing' || was === 'streaming') && !pop) {
+      setAutoPopKey((k) => k + 1);
+    }
+  }, [flow.status, pop]);
+  // Top of the food box on screen, so the popover and its blur stop above it.
+  const [inputRowH, setInputRowH] = useState(52);
+  const popBottomEdge = winH - kbHeight - (kbHeight > 0 ? Spacing.sm : insets.bottom + 12) - inputRowH;
   // Parse tier (Quick default / Thorough opt-in / Precise for Pro). A ref
   // mirrors the state so onSend reads the CURRENT choice, matching the flowRef
   // idiom above.
@@ -1261,6 +1313,92 @@ export default function NutritionScreen() {
 
   const s = makeStyles(C);
 
+  /** The parse card, once, for both places it shows: pinned above the food
+   *  bar and lifted into the popover. Same props and callbacks in both, so a
+   *  change made in the bigger view is the change on the card. */
+  const renderParseCard = (extra: Partial<React.ComponentProps<typeof ParsedMealCard>>) => {
+    if (flow.status === 'idle' || flow.status === 'create') return null;
+    return (
+      <ParsedMealCard
+        state={flow.status as ParseCardState}
+        rawText={flow.raw}
+        maxHeight={cardMaxHeight}
+        // Fast mode's settling window: real names, shimmering numbers.
+        streamingRows={flow.status === 'streaming' ? flow.rows : null}
+        meal={flow.status === 'review' ? flow.meal : null}
+        mealType={flow.status === 'review' ? flow.mealType : undefined}
+        adding={adding}
+        message={
+          flow.status === 'declined' || flow.status === 'error' || flow.status === 'sent' ? flow.message : null
+        }
+        autoLogging={(flow.status === 'analysing' || flow.status === 'streaming') && !!flow.auto}
+        statusLabel={flow.status === 'analysing' ? flow.statusLabel ?? null : null}
+        onMealTypeChange={onMealTypeChange}
+        onMoveGroup={flow.status === 'review' ? onMoveGroup : undefined}
+        notice={flow.status === 'review' ? flow.notice ?? null : null}
+        proposalLabel={flow.status === 'review' ? flow.proposal?.note ?? null : null}
+        onAcceptProposal={() => setFlow((f) => {
+          if (f.status !== 'review' || !f.proposal) return f;
+          // The proposal replaces the LINES, never their placement. Each
+          // incoming line inherits the section of the line it stands in
+          // for, matched by name and falling back to position, so
+          // accepting better numbers for a breakfast item cannot move it.
+          // POSITION first, then name. A name-keyed map cannot tell two
+          // same-named lines in different sections apart - the later key
+          // overwrites the earlier - and a proposal is a positional
+          // replacement of the same list, so the index is the stronger
+          // handle. The name is the fallback for a reordered list.
+          const key = (n: string) => n.trim().toLowerCase();
+          const bySection = new Map(f.meal.items.map((it) => [key(it.food_name), it.meal_type]));
+          const items = f.proposal.items.map((it, i) => {
+            const atIdx = f.meal.items[i];
+            const positional = atIdx && key(atIdx.food_name) === key(it.food_name)
+              ? atIdx.meal_type
+              : undefined;
+            return {
+              ...it,
+              meal_type: it.meal_type ?? positional ?? bySection.get(key(it.food_name)) ?? f.mealType,
+            };
+          });
+          return { ...f, meal: { ...f.meal, items }, notice: null, proposal: null };
+        })}
+        onDismissNotice={() => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f))}
+        // Frozen while a check is in flight: editing or removing a line
+        // mid-lookup shifts indices and races the write below.
+        onEditItem={flow.status === 'review' && checkingIndex === null ? onEditItem : undefined}
+        checkingIndex={flow.status === 'review' ? checkingIndex : null}
+        onCheckItem={flow.status === 'review' ? onCheckItem : undefined}
+        onRemoveItem={flow.status === 'review' && checkingIndex === null ? onRemoveItem : undefined}
+        onSwapItem={flow.status === 'review' && checkingIndex === null ? onSwapItem : undefined}
+        saved={flow.status === 'review' && savedReview}
+        onAdd={flow.status === 'review' ? onAdd : undefined}
+        onSave={flow.status === 'review' ? () => setSaveItems(flow.meal.items) : undefined}
+        onRetry={flow.status === 'error' ? onRetry : undefined}
+        onDismiss={onDismiss}
+        // Editing the words starts this meal over: a send while a card is
+        // in review would be read as a correction to it.
+        // Not on 'sent', nor on a "Just log it" send that failed in transport
+        // (it carries a clientId): the server may already be writing that
+        // meal. Retry keeps the id and is safe; resending the words is not.
+        // Nor while Add is writing, nor after Add failed (the error card
+        // keeps the meal): the write may still have landed, and the words
+        // left in the box could log the meal twice. Retry is the safe path.
+        onEditWords={parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && (!!flow.clientId || !!flow.meal)) ? undefined : () => {
+          // The whole conversation, not just a correction's own words.
+          const raw = flow.status === 'review' && flow.words ? flow.words : flow.raw;
+          track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
+          clearCard();
+          // Keep a half-typed follow-up: it rides after the words, not over them.
+          setText((cur) => (cur.trim() ? `${raw}, ${cur.trim()}` : raw));
+          inputRef.current?.focus();
+        }}
+        minimized={cardMinimized}
+        onToggleMinimize={() => setCardMinimized((v) => !v)}
+        {...extra}
+      />
+    );
+  };
+
   return (
     <View style={[s.root, { backgroundColor: C.background }]}>
       <ScrollView
@@ -1562,88 +1700,27 @@ export default function NutritionScreen() {
           </View>
         )}
         {flow.status !== 'idle' && flow.status !== 'create' && (
-          <View style={{ marginBottom: Spacing.sm }}>
-            <ParsedMealCard
-              state={flow.status as ParseCardState}
-              rawText={flow.raw}
-              maxHeight={cardMaxHeight}
-              // Fast mode's settling window: real names, shimmering numbers.
-              streamingRows={flow.status === 'streaming' ? flow.rows : null}
-              meal={flow.status === 'review' ? flow.meal : null}
-              mealType={flow.status === 'review' ? flow.mealType : undefined}
-              adding={adding}
-              message={
-                flow.status === 'declined' || flow.status === 'error' || flow.status === 'sent' ? flow.message : null
-              }
-              autoLogging={(flow.status === 'analysing' || flow.status === 'streaming') && !!flow.auto}
-              statusLabel={flow.status === 'analysing' ? flow.statusLabel ?? null : null}
-              onMealTypeChange={onMealTypeChange}
-              onMoveGroup={flow.status === 'review' ? onMoveGroup : undefined}
-              notice={flow.status === 'review' ? flow.notice ?? null : null}
-              proposalLabel={flow.status === 'review' ? flow.proposal?.note ?? null : null}
-              onAcceptProposal={() => setFlow((f) => {
-                if (f.status !== 'review' || !f.proposal) return f;
-                // The proposal replaces the LINES, never their placement. Each
-                // incoming line inherits the section of the line it stands in
-                // for, matched by name and falling back to position, so
-                // accepting better numbers for a breakfast item cannot move it.
-                // POSITION first, then name. A name-keyed map cannot tell two
-                // same-named lines in different sections apart - the later key
-                // overwrites the earlier - and a proposal is a positional
-                // replacement of the same list, so the index is the stronger
-                // handle. The name is the fallback for a reordered list.
-                const key = (n: string) => n.trim().toLowerCase();
-                const bySection = new Map(f.meal.items.map((it) => [key(it.food_name), it.meal_type]));
-                const items = f.proposal.items.map((it, i) => {
-                  const atIdx = f.meal.items[i];
-                  const positional = atIdx && key(atIdx.food_name) === key(it.food_name)
-                    ? atIdx.meal_type
-                    : undefined;
-                  return {
-                    ...it,
-                    meal_type: it.meal_type ?? positional ?? bySection.get(key(it.food_name)) ?? f.mealType,
-                  };
-                });
-                return { ...f, meal: { ...f.meal, items }, notice: null, proposal: null };
-              })}
-              onDismissNotice={() => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f))}
-              // Frozen while a check is in flight: editing or removing a line
-              // mid-lookup shifts indices and races the write below.
-              onEditItem={flow.status === 'review' && checkingIndex === null ? onEditItem : undefined}
-              checkingIndex={flow.status === 'review' ? checkingIndex : null}
-              onCheckItem={flow.status === 'review' ? onCheckItem : undefined}
-              onRemoveItem={flow.status === 'review' && checkingIndex === null ? onRemoveItem : undefined}
-              onSwapItem={flow.status === 'review' && checkingIndex === null ? onSwapItem : undefined}
-              saved={flow.status === 'review' && savedReview}
-              onAdd={flow.status === 'review' ? onAdd : undefined}
-              onSave={flow.status === 'review' ? () => setSaveItems(flow.meal.items) : undefined}
-              onRetry={flow.status === 'error' ? onRetry : undefined}
-              onDismiss={onDismiss}
-              // Editing the words starts this meal over: a send while a card is
-              // in review would be read as a correction to it.
-              // Not on 'sent', nor on a "Just log it" send that failed in transport
-              // (it carries a clientId): the server may already be writing that
-              // meal. Retry keeps the id and is safe; resending the words is not.
-              // Nor while Add is writing, nor after Add failed (the error card
-              // keeps the meal): the write may still have landed, and the words
-              // left in the box could log the meal twice. Retry is the safe path.
-              onEditWords={parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && (!!flow.clientId || !!flow.meal)) ? undefined : () => {
-                // The whole conversation, not just a correction's own words.
-                const raw = flow.status === 'review' && flow.words ? flow.words : flow.raw;
-                track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
-                clearCard();
-                // Keep a half-typed follow-up: it rides after the words, not over them.
-                setText((cur) => (cur.trim() ? `${raw}, ${cur.trim()}` : raw));
-                inputRef.current?.focus();
-              }}
-              minimized={cardMinimized}
-              onToggleMinimize={() => setCardMinimized((v) => !v)}
-            />
+          <View
+            ref={parseCardRef}
+            collapsable={false}
+            // While the popover is up it IS this card, so the original steps
+            // aside rather than showing twice through the blur.
+            style={{ marginBottom: Spacing.sm, opacity: pop ? 0 : 1 }}
+            pointerEvents={pop ? 'none' : 'auto'}
+          >
+            {renderParseCard({
+              // A standing notice (a question answered, a saved meal offered)
+              // is a decision moment: give the card the whole gap so the foods
+              // keep their room under it rather than being squeezed out.
+              maxHeight: flow.status === 'review' && flow.notice ? Math.max(0, hardAvail) : cardMaxHeight,
+              onExpand: openPop,
+              autoExpandKey: autoPopKey,
+            })}
           </View>
         )}
 
         {isSignedIn ? (
-          <View style={s.input}>
+          <View style={s.input} onLayout={(e) => setInputRowH(e.nativeEvent.layout.height)}>
             <Pressable onPress={() => openSearch(mealForNow())} hitSlop={8} style={s.iconBox}>
               <Feather name="search" size={16} color={C.textSecondary} />
             </Pressable>
@@ -1754,6 +1831,20 @@ export default function NutritionScreen() {
         onClose={() => setFuelOpen(false)}
         onSaved={(saved) => { setFuelOpen(false); applyFuelDays(saved); }}
       />
+
+      {/* The review card, bigger. Declared BEFORE the line editor and save
+          sheets: portal order is paint order, so those open on top of it. */}
+      <MealCardPopover
+        visible={!!pop}
+        open={popOpen}
+        origin={pop?.origin ?? null}
+        naturalHeight={pop?.natural ?? 0}
+        bottomEdge={popBottomEdge}
+        onRequestClose={closePop}
+        onClosed={() => setPop(null)}
+      >
+        {renderParseCard({ expanded: true, onCollapse: closePop, onToggleMinimize: undefined, onNaturalHeight: onPopNatural })}
+      </MealCardPopover>
 
       {/* Correct a parsed line (serving / quantity / macros) before adding it. */}
       <ParsedItemEditor

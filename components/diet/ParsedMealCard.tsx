@@ -29,7 +29,7 @@
  * meal section underneath. Numbers carry receipts: catalog lines are silent,
  * sourced/estimated lines say where they came from.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
 import Animated, {
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, Easing,
@@ -131,7 +131,31 @@ interface Props {
   /** What Drona is doing on a multi-step message ("Checking yesterday's
    *  breakfast"), shown in place of "Drona is reading that". */
   statusLabel?: string | null;
+  /** Lift the review card into the bigger popover. Gets the card's height with
+   *  nothing capping it, so the popover can grow to fit instead of to a fixed
+   *  block. Offered on `review` only. */
+  onExpand?: (naturalHeight: number) => void;
+  /** This instance IS the popover: it fills its frame, swaps the minimize and
+   *  expand controls for one that puts it back, and skips the mount fade so
+   *  the morph starts from a card that is already there. */
+  expanded?: boolean;
+  onCollapse?: () => void;
+  /** Popover only: the card's height with nothing capping it, reported as it
+   *  changes (a notice lands, a line goes, a follow-up is being read) so the
+   *  frame can follow its content. */
+  onNaturalHeight?: (h: number) => void;
+  /** Bumped by the screen when Drona's reply lands. Each new value lifts the
+   *  card into the popover once it has laid out, so a reply arrives big by
+   *  default rather than as a strip the user has to open. */
+  autoExpandKey?: number;
 }
+
+/** The item list never squeezes below this (or below its own content, when
+ *  shorter). Without a floor a notice, a proposal and the pinned footer could
+ *  take every pixel under the card's cap and leave the foods a zero-height
+ *  strip, which read as the note sitting on top of them. About a row and a
+ *  half: the first line whole, the next one peeking to say the list scrolls. */
+const ITEM_FLOOR = 88;
 
 const r0 = (n: number) => Math.round(n);
 
@@ -182,6 +206,7 @@ export function ParsedMealCard({
   onMealTypeChange, onMoveGroup, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onSwapItem, onAdd, onSave, onRetry, onDismiss, onEditWords,
   minimized, onToggleMinimize,
   autoLogging, statusLabel,
+  onExpand, expanded, onCollapse, onNaturalHeight, autoExpandKey,
 }: Props) {
   const busyChecking = checkingIndex !== null && checkingIndex !== undefined;
   const { C } = useTheme();
@@ -193,7 +218,46 @@ export function ParsedMealCard({
   // or checking status and leave Discard as the one live control on the strip,
   // which is the same race onEditItem/onRemoveItem are already frozen for.
   const collapsible = state === 'review' && !!meal && !!onToggleMinimize
-    && !adding && !busyChecking;
+    && !adding && !busyChecking && !expanded;
+  const expandable = state === 'review' && !!meal && !!onExpand && !expanded;
+  // What the card would measure with no cap: its laid-out height, minus the
+  // list's squeezed viewport, plus everything the list holds.
+  // State, not refs: the popover follows this number as the content changes.
+  const [cardH, setCardH] = useState(0);
+  const [listH, setListH] = useState(0);
+  const [listContentH, setListContentH] = useState(0);
+  const [bodyH, setBodyH] = useState(0);
+  const hasList = state === 'review' && !!meal;
+  const natural = hasList
+    ? cardH - listH + listContentH
+    // No list to stretch: the body is its own size. Padding + hairline border.
+    : bodyH + Spacing.md * 2 + 2;
+  const expand = expandable ? () => onExpand!(natural) : undefined;
+
+  const reported = useRef(0);
+  useEffect(() => {
+    if (!expanded || !onNaturalHeight || natural <= 0) return;
+    // The card's two measurements land in separate layout events, so a
+    // half-updated pair can read a few points off. Small wobble is not a
+    // change worth moving the frame for.
+    if (Math.abs(natural - reported.current) < 4) return;
+    reported.current = natural;
+    onNaturalHeight(natural);
+  }, [expanded, onNaturalHeight, natural]);
+
+  // A fresh reply opens big: wait for the first full layout so the popover
+  // starts from the card's real rect and knows how tall to grow.
+  const handledKey = useRef(autoExpandKey ?? 0);
+  useEffect(() => {
+    if (!autoExpandKey || autoExpandKey === handledKey.current) return;
+    if (!expand || cardH <= 0 || listContentH <= 0) return;
+    handledKey.current = autoExpandKey;
+    expand();
+  });
+
+  // Your own words: two lines by default, all of them on a tap.
+  const [wordsOpen, setWordsOpen] = useState(false);
+  useEffect(() => { setWordsOpen(false); }, [rawText]);
   const isCollapsed = collapsible && !!minimized;
   const items = state === 'review' && meal ? meal.items : [];
   const sum = items.reduce(
@@ -364,10 +428,41 @@ export function ParsedMealCard({
   }
 
   return (
-    <Animated.View entering={FadeIn.duration(160)} style={[s.card, maxHeight != null && { maxHeight }]}>
-      {(!!rawText || collapsible) && (
+    <Animated.View
+      entering={expanded ? undefined : FadeIn.duration(160)}
+      style={[s.card, expanded ? s.cardFill : maxHeight != null && { maxHeight }]}
+      onLayout={(e) => setCardH(e.nativeEvent.layout.height)}
+    >
+      {/* A tap on the card's own surface (totals, words, the Drona line,
+          padding) lifts it out. Every control inside is its own Pressable and
+          answers first, so a tap on a line still opens that line's editor.
+          Not accessible itself: it would swallow the controls for VoiceOver,
+          and the expand button in the header is the labelled route. */}
+      <Pressable
+        onPress={expand}
+        disabled={!expand}
+        accessible={false}
+        style={expanded && hasList ? s.fill : s.shrink}
+        onLayout={(e) => setBodyH(e.nativeEvent.layout.height)}
+      >
+      {(!!rawText || collapsible || expandable || (expanded && !!onCollapse)) && (
         <View style={s.rawRow}>
-          {!!rawText && <Text style={[s.raw, s.rawGrow]} numberOfLines={2}>{rawText}</Text>}
+          {/* What the user said, set apart as theirs: its own bubble in the
+              input's colour, full-strength text. Everything below it is
+              Drona's answer, so the two never read as one block. */}
+          {!!rawText && (
+            <View style={s.rawGrow}>
+              <Pressable
+                onPress={() => setWordsOpen((v) => !v)}
+                style={({ pressed }) => [s.youBubble, pressed && s.itemPressed]}
+                accessibilityRole="button"
+                accessibilityLabel={`You said: ${rawText}`}
+                accessibilityHint={wordsOpen ? 'Shows less' : 'Shows your whole message'}
+              >
+                <Text style={s.youTxt} numberOfLines={wordsOpen ? undefined : 2}>{rawText}</Text>
+              </Pressable>
+            </View>
+          )}
           {/* The user's own words, one tap from the box again. A return arrow,
               not a pencil: the pencils on the lines below edit one food, this
               sends the whole message back down to the box. Same size and weight
@@ -380,7 +475,29 @@ export function ParsedMealCard({
               accessibilityLabel="Edit what you wrote"
               accessibilityHint="Puts your words back in the box to change and send again"
             >
-              <Feather name="corner-down-left" size={12} color={C.textMuted} style={{ marginTop: 2 }} />
+              <Feather name="corner-down-left" size={12} color={C.textMuted} style={{ marginTop: 9 }} />
+            </Pressable>
+          )}
+          {expandable && (
+            <Pressable
+              onPress={expand}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Open bigger"
+              accessibilityHint="Lifts this meal into a bigger view to look it over"
+            >
+              <Feather name="maximize-2" size={12} color={C.textMuted} style={{ marginTop: 9 }} />
+            </Pressable>
+          )}
+          {expanded && !!onCollapse && (
+            <Pressable
+              onPress={onCollapse}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Put it back"
+              accessibilityHint="Returns this meal to the food bar"
+            >
+              <Feather name="minimize-2" size={13} color={C.textMuted} style={{ marginTop: 8 }} />
             </Pressable>
           )}
           {collapsible && (
@@ -392,7 +509,7 @@ export function ParsedMealCard({
               accessibilityLabel="Minimize"
               accessibilityHint="Keeps this meal waiting while you browse the day"
             >
-              <Feather name="chevron-down" size={15} color={C.textMuted} />
+              <Feather name="chevron-down" size={15} color={C.textMuted} style={{ marginTop: 7 }} />
             </Pressable>
           )}
         </View>
@@ -424,50 +541,47 @@ export function ParsedMealCard({
       )}
 
       {state === 'review' && meal && (
-        <View style={s.reviewBody}>
-          {/* Drona answering a question about these lines. The meal stays. */}
-          {!!notice && (
-            <View style={s.notice}>
-              <View style={s.noticeHead}>
-                <Feather name="info" size={12} color={C.accentText} style={{ marginTop: 2 }} />
-                <Text style={s.noticeTxt}>{notice}</Text>
-                <Pressable onPress={onDismissNotice} hitSlop={8} accessibilityLabel="Dismiss">
-                  <Feather name="x" size={13} color={C.textMuted} />
-                </Pressable>
-              </View>
-              {/* A researched alternative: the user decides, we never swap
-                  silently. Both choices are local, so neither costs a wait. */}
-              {!!proposalLabel && (
-                <View style={s.proposalRow}>
-                  <Pressable onPress={onDismissNotice} hitSlop={6} style={s.keepBtn}>
-                    <Text style={s.keepTxt}>Keep mine</Text>
-                  </Pressable>
-                  <Pressable onPress={onAcceptProposal} hitSlop={6} style={s.useBtn}>
-                    <Text style={s.useTxt}>{proposalLabel}</Text>
-                  </Pressable>
-                </View>
-              )}
-            </View>
-          )}
+        <View style={[s.reviewBody, expanded && s.fill]}>
+          {/* The card reads top to bottom in five zones, each with its own
+              look so they never run together: 1. what you said (the bubble
+              above), 2. the meal total, 3. the foods, 4. Drona, 5. the
+              controls. */}
 
-          {/* Meal totals, pinned above the scrolling lines: the whole-meal
-              read stays visible however long the list is. Single-line meals
-              skip it — the line IS the total. */}
+          {/* 2. The meal total, pinned above the scrolling lines so the whole
+              read stays visible however long the list is. A labelled block
+              with the calories at headline size. Single-line meals skip it:
+              the line IS the total. */}
           {items.length > 1 && (
-            <View style={s.totals}>
-              <Text style={[s.totalNum, { color: C.foreground }]}>{r0(sum.kcal)}</Text>
-              <Text style={[s.totalNum, { color: C.macro.protein }]}>{formatMacroGrams(sum.p)}g P</Text>
-              <Text style={[s.totalNum, { color: C.macro.carbs }]}>{formatMacroGrams(sum.c)}g C</Text>
-              <Text style={[s.totalNum, { color: C.macro.fat }]}>{formatMacroGrams(sum.f)}g F</Text>
-              <Text style={s.totalCount}>{items.length} items</Text>
+            <View style={s.totals} accessibilityLabel={`Total ${r0(sum.kcal)} calories, ${items.length} items`}>
+              <View style={s.totalsHead}>
+                <Text style={s.eyebrow}>Meal total</Text>
+                <Text style={s.totalCount}>{items.length} items</Text>
+              </View>
+              <View style={s.totalsRow}>
+                <Text style={s.totalKcal}>
+                  {r0(sum.kcal)}<Text style={s.totalKcalUnit}> kcal</Text>
+                </Text>
+                <View style={s.totalMacros}>
+                  <Text style={[s.totalNum, { color: C.macro.protein }]}>{formatMacroGrams(sum.p)}g P</Text>
+                  <Text style={[s.totalNum, { color: C.macro.carbs }]}>{formatMacroGrams(sum.c)}g C</Text>
+                  <Text style={[s.totalNum, { color: C.macro.fat }]}>{formatMacroGrams(sum.f)}g F</Text>
+                </View>
+              </View>
             </View>
           )}
 
-          {/* Only the lines scroll; totals above and section/actions below
-              stay pinned. Dragging the list also drops the keyboard, which
-              buys back the space it was taking. */}
+          {/* 3. The foods. Only this scrolls; the totals above and Drona and
+              the controls below stay pinned. Dragging the list also drops the
+              keyboard, which buys back the space it was taking. */}
           <ScrollView
-            style={s.itemsScroll}
+            style={[
+              s.itemsScroll,
+              items.length > 1 && s.itemsAfterTotals,
+              expanded && s.fill,
+              { minHeight: Math.min(listContentH, ITEM_FLOOR) },
+            ]}
+            onLayout={(e) => setListH(e.nativeEvent.layout.height)}
+            onContentSizeChange={(_w, h) => setListContentH(h)}
             bounces={false}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
@@ -524,9 +638,49 @@ export function ParsedMealCard({
             : meal.items.map((it, i) => renderRow(it, i, i > 0)))}
           </ScrollView>
 
-          {/* Section selector — the user decides where this meal goes. A
-              multi-section meal has no single answer, so the chip row yields
-              to the group headers above. */}
+          {/* 4. Drona. A notice (an answer about these lines, a saved meal on
+              offer) or his one-liner, never both: two Drona lines at once is
+              noise, and it is room the foods need. Both sit in the same
+              tinted block with his mark, so his voice always looks like his. */}
+          {!!notice ? (
+            <View style={[s.coach, s.notice]}>
+              {/* The words scroll inside the notice when room runs short (the
+                  keyboard is up, a long answer), so the notice gives way
+                  alongside the list instead of pushing it out. The choice
+                  buttons below stay put. */}
+              <ScrollView style={s.noticeScroll} bounces={false} nestedScrollEnabled>
+                <View style={s.noticeHead}>
+                  <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
+                  <Text style={s.noticeTxt}>{notice}</Text>
+                  <Pressable onPress={onDismissNotice} hitSlop={8} accessibilityLabel="Dismiss">
+                    <Feather name="x" size={13} color={C.textMuted} style={{ marginTop: 3 }} />
+                  </Pressable>
+                </View>
+              </ScrollView>
+              {/* A researched alternative: the user decides, we never swap
+                  silently. Both choices are local, so neither costs a wait. */}
+              {!!proposalLabel && (
+                <View style={s.proposalRow}>
+                  <Pressable onPress={onDismissNotice} hitSlop={6} style={s.keepBtn}>
+                    <Text style={s.keepTxt}>Keep mine</Text>
+                  </Pressable>
+                  <Pressable onPress={onAcceptProposal} hitSlop={6} style={s.useBtn}>
+                    <Text style={s.useTxt}>{proposalLabel}</Text>
+                  </Pressable>
+                </View>
+              )}
+            </View>
+          ) : meal.drona_line ? (
+            <View style={[s.coach, s.coachRow]}>
+              <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
+              <Text style={s.dronaTxt} numberOfLines={expanded ? undefined : 2}>{meal.drona_line}</Text>
+            </View>
+          ) : null}
+
+          {/* 5. The controls, behind a rule: where it goes, then what to do.
+              A multi-section meal has no single "where", so its chip row
+              yields to the group headers in the list. */}
+          <View style={s.footer}>
           {!multi && (
           <View style={s.sectionRow}>
             {MEAL_OPTIONS.map((o) => {
@@ -545,14 +699,7 @@ export function ParsedMealCard({
           </View>
           )}
 
-          {meal.drona_line ? (
-            <View style={s.dronaRow}>
-              <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
-              <Text style={s.dronaTxt} numberOfLines={2}>{meal.drona_line}</Text>
-            </View>
-          ) : null}
-
-          <View style={s.actions}>
+          <View style={[s.actions, multi && s.actionsFirst]}>
             {saved ? (
               <View style={s.savedChip} accessibilityLabel="Saved for next time">
                 <Feather name="check" size={13} color={C.accentText} />
@@ -577,6 +724,7 @@ export function ParsedMealCard({
               <Feather name="plus" size={14} color={C.background} />
               <Text style={s.addTxt}>{adding ? 'Adding...' : `Add to ${destination}`}</Text>
             </Pressable>
+          </View>
           </View>
         </View>
       )}
@@ -609,6 +757,7 @@ export function ParsedMealCard({
           )}
         </View>
       )}
+      </Pressable>
     </Animated.View>
   );
 }
@@ -738,9 +887,16 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
       backgroundColor: C.card, borderRadius: Radius.lg, borderWidth: 1,
       borderColor: C.borderSubtle, padding: Spacing.md, ...Shadow.card,
     },
-    raw: { fontSize: FontSize.sm, color: C.textDim, marginBottom: Spacing.sm },
-    // The chevron sits on the first line of the raw text, not below it, so
-    // minimizing costs the card no extra height while it is open.
+    // The user's message. Sits left like the start of a thread, hugs its
+    // text, and wears the input's fill so it reads as "what I typed".
+    youBubble: {
+      alignSelf: 'flex-start', maxWidth: '100%',
+      backgroundColor: C.inputBg, borderRadius: Radius.md,
+      paddingVertical: 6, paddingHorizontal: 10, marginBottom: Spacing.sm,
+    },
+    youTxt: { fontSize: FontSize.sm, lineHeight: 18, color: C.foreground },
+    // The header icons sit level with the bubble's first line (its 6pt top
+    // padding plus half the line), not below it, so they cost no height.
     rawRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm },
     rawGrow: { flex: 1 },
 
@@ -758,19 +914,48 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     // flexShrink on the body + the scroll is what makes the maxHeight cap
     // squeeze the LIST rather than push the footer off the card.
     reviewBody: { flexShrink: 1 },
+    shrink: { flexShrink: 1 },
+    // Popover: the frame sets the height, the card fills it, and the list
+    // takes whatever the frame grows by so the footer stays at the bottom.
+    cardFill: { flex: 1 },
+    fill: { flexGrow: 1, flexShrink: 1 },
     itemsScroll: { flexGrow: 0, flexShrink: 1 },
 
+    // Zone 2: a summary, not another row. Labelled, calories at headline
+    // size, ruled off from the foods below.
     totals: {
-      flexDirection: 'row', alignItems: 'baseline', gap: Spacing.md,
-      paddingBottom: Spacing.sm, borderBottomWidth: 1, borderBottomColor: C.borderSubtle,
+      paddingBottom: Spacing.sm + 2, borderBottomWidth: 1, borderBottomColor: C.border,
     },
-    totalNum: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, fontVariant: ['tabular-nums'] },
+    totalsHead: { flexDirection: 'row', alignItems: 'center', marginBottom: 2 },
+    eyebrow: {
+      fontSize: FontSize.xs, color: C.textMuted, fontWeight: FontWeight.semibold,
+      letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase',
+    },
+    totalsRow: { flexDirection: 'row', alignItems: 'baseline', gap: Spacing.md },
+    totalKcal: {
+      fontSize: FontSize.xxl, fontWeight: FontWeight.semibold, color: C.foreground,
+      letterSpacing: LetterSpacing.snug, fontVariant: ['tabular-nums'],
+    },
+    totalKcalUnit: { fontSize: FontSize.sm, fontWeight: FontWeight.medium, color: C.textMuted, letterSpacing: 0 },
+    totalMacros: { flexDirection: 'row', gap: Spacing.md, marginLeft: 'auto' },
+    totalNum: { fontSize: FontSize.md, fontWeight: FontWeight.semibold, fontVariant: ['tabular-nums'] },
     totalCount: { marginLeft: 'auto', fontSize: FontSize.xs, color: C.textMuted },
+    itemsAfterTotals: { marginTop: Spacing.xs },
 
-    notice: {
-      backgroundColor: C.primarySubtle, borderRadius: Radius.md,
-      padding: Spacing.sm, marginBottom: Spacing.sm,
+    // Zone 4: Drona's voice, a tinted block with his mark, notice or line.
+    coach: { backgroundColor: C.primarySubtle, borderRadius: Radius.md, marginTop: Spacing.md },
+    coachRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: Spacing.sm },
+
+    // Zone 5: the controls, ruled off from everything above them.
+    footer: {
+      marginTop: Spacing.md, paddingTop: Spacing.md,
+      borderTopWidth: 1, borderTopColor: C.border,
     },
+    actionsFirst: { marginTop: 0 },
+
+    notice: { padding: Spacing.sm, flexShrink: 1 },
+    // One line always shows; the rest scrolls when the card is short.
+    noticeScroll: { flexGrow: 0, flexShrink: 1, minHeight: 18 },
     noticeHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
     proposalRow: { flexDirection: 'row', gap: 8, marginTop: Spacing.sm, justifyContent: 'flex-end' },
     keepBtn: { paddingVertical: 7, paddingHorizontal: Spacing.md },
@@ -817,10 +1002,7 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     },
     swapTxt: { fontSize: FontSize.xs, color: C.foreground, fontWeight: FontWeight.medium },
 
-    sectionRow: {
-      flexDirection: 'row', gap: 6, marginTop: Spacing.md,
-      paddingTop: Spacing.md, borderTopWidth: 1, borderTopColor: C.borderSubtle,
-    },
+    sectionRow: { flexDirection: 'row', gap: 6 },
     // Full-day message: one small header per section above its lines. Reads as
     // a label, not a control, until the chevron says it opens.
     groupHead: {
