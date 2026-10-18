@@ -68,7 +68,7 @@ export function openingText(input: Pick<FoodAgentInput, "text" | "answering">, d
   if (days) parts.push(`(${days})`);
   if (input.answering) {
     parts.push(
-      `(This answers your question "${input.answering.question}" about the user's message "${input.answering.text}". ` +
+      `(This answers your question ${JSON.stringify(input.answering.question)} about the user's message ${JSON.stringify(input.answering.text)}. ` +
         "Finish that request. When it is about food already in the diary, read the diary again and copy the logged lines.)",
     );
   }

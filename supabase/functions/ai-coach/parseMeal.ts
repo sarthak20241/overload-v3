@@ -44,7 +44,7 @@ import {
   type SourceReading,
   VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
-import { foodLabel, parseSuggestion, runTavilyLookup, suggestSearchPayload } from "./tavilyLookup.ts";
+import { foodLabel, parseSuggestion, runTavilyLookup, suggestSearchPayload, withPrep } from "./tavilyLookup.ts";
 import { otherBrandRows } from "./brandCheck.ts";
 import { matchOurSources } from "./ourSources.ts";
 import { applyJudgement, judgeThorough, type ThoroughMatchMode, wantsBrandWeb } from "./thoroughMatch.ts";
@@ -3285,20 +3285,15 @@ async function webFindingFor(
 
 /** The line as eaten, for the web judges: "1 katori cooked arhar dal". */
 export function eatenLabel(item: Pick<ExtractedItem, "name" | "quantity" | "unit" | "prep">): string {
-  const name = item.name.trim();
-  const prep = item.prep?.trim() ?? "";
-  const withPrep = prep && !name.toLowerCase().includes(prep.toLowerCase()) ? `${prep} ${name}` : name;
   const qty = Number.isFinite(item.quantity) && item.quantity > 0 ? String(item.quantity) : "";
-  return [qty, item.unit?.trim() ?? "", withPrep].filter(Boolean).join(" ");
+  return [qty, item.unit?.trim() ?? "", withPrep(item.name, item.prep)].filter(Boolean).join(" ");
 }
 
 /** The Precise cache key for a line: its name with its preparation, so a
  *  cooked serving and the dry product are different rows. Before this, "arhar
  *  dal" held a raw panel that every cooked katori then reused. */
 export function itemCacheKey(item: Pick<ExtractedItem, "name" | "brand" | "prep">): string {
-  const name = item.name.trim();
-  const prep = item.prep?.trim() ?? "";
-  return cacheKey(prep && !name.toLowerCase().includes(prep.toLowerCase()) ? `${prep} ${name}` : name, item.brand);
+  return cacheKey(withPrep(item.name, item.prep), item.brand);
 }
 
 export async function superLookupOne(

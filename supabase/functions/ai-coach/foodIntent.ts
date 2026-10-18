@@ -664,6 +664,13 @@ export interface FoodActionInputs {
  *  because the agent is STARTED as soon as the router answers, long before the
  *  parse that decideFoodAction also looks at has finished. The agent can end in
  *  a save card, so it needs a client that can draw one. */
+/** This message answers the waiting meal. A resumed agent turn counts too, so
+ *  the parse running beside the agent (the fallback when the agent cannot
+ *  answer) also sees the meal. */
+export function continuesPendingMeal(d: FoodIntentDecision | null): boolean {
+  return d?.intent === "continue" || !!d?.resumeAgent;
+}
+
 export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreate: boolean): boolean {
   // An answer to the agent's own question goes back to it at any confidence
   // that cleared "proceed": the agent asked, so it is the one that can finish.
@@ -689,6 +696,9 @@ export function decideFoodAction(i: FoodActionInputs): FoodAction {
 
   if (intent === "steps") {
     if (wantsFoodAgent(i.decision, i.clientSupportsCreate)) return "agent";
+    // An answer to the agent's question on a client that cannot take the
+    // agent's work: the parse finishes the meal, as before origin existed.
+    if (i.decision.resumeAgent) return "log";
     // Not confident enough to spend the agent. Unsure 'steps' sits beside
     // questions about earlier food ("how many calories was yesterday's
     // breakfast" came back at 49%), so a message with no food in it gets a
@@ -857,7 +867,7 @@ export function withPendingMeal<D extends { message: string; cleared?: boolean; 
   const pending = declined.pending_meal ?? carryPendingMeal({
     incoming: a.incoming,
     cancelled: a.decision?.pendingAction === "cancel",
-    continued: a.decision?.intent === "continue" || !!a.decision?.resumeAgent,
+    continued: continuesPendingMeal(a.decision),
     text: a.text,
     hasFood: (a.decision?.hasFood ?? 0) >= HAS_FOOD_FLOOR,
     shown: declined.message,

@@ -214,12 +214,19 @@ export function foodLabel(item: WebFoodItem): string {
   return `${brand} ${name}`;
 }
 
+/** "cooked arhar dal" from name "arhar dal" and prep "cooked". A preparation
+ *  already in the name is not said twice. Shared by the search queries and the
+ *  Precise cache key, so the two cannot drift apart. */
+export function withPrep(name: string, prep: string | null | undefined): string {
+  const n = name.trim();
+  const p = prep?.trim() ?? "";
+  return p && !n.toLowerCase().includes(p.toLowerCase()) ? `${p} ${n}` : n;
+}
+
 export function searchQueries(item: WebFoodItem): string[] {
-  const base = foodLabel(item);
-  const prep = item.prep?.trim() ?? "";
   // "cooked arhar dal", not "arhar dal": the bare name mostly finds the dry
   // product's panel.
-  const label = prep && !base.toLowerCase().includes(prep.toLowerCase()) ? `${prep} ${base}` : base;
+  const label = withPrep(foodLabel(item), item.prep);
   return [
     `${label} nutrition facts per 100g`,
     `${label} calories protein carbohydrate fat`,

@@ -9,7 +9,14 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import { openingText } from "./foodAgent.ts";
 import { type PendingFoodMeal, readFoodContext } from "./foodContext.ts";
-import { type FoodIntentDecision, routeFoodIntent, wantsFoodAgent, withPendingMeal } from "./foodIntent.ts";
+import {
+  continuesPendingMeal,
+  decideFoodAction,
+  type FoodIntentDecision,
+  routeFoodIntent,
+  wantsFoodAgent,
+  withPendingMeal,
+} from "./foodIntent.ts";
 import type { ParseMealDeps } from "./parseMeal.ts";
 
 const oats: PendingFoodMeal = {
@@ -62,6 +69,26 @@ Deno.test("the failure this prevents: the answer to the agent's question went to
   const again = withPendingMeal({ message: "Which bowl size?" }, { decision: d, incoming: fromAgent, text: "the breakfast one", fromAgent: true });
   assertEquals(again?.pending_meal?.origin, "agent");
   assert(again!.pending_meal!.text.endsWith("the breakfast one"));
+});
+
+Deno.test("whoever asks the next question owns its answer", async () => {
+  const d = await route(fromAgent, 0.6);
+  // The agent could not finish and the parse asked instead: the parse's answer.
+  const parseAsked = withPendingMeal({ message: "How many grams of oats?" }, { decision: d, incoming: fromAgent, text: "the breakfast one" });
+  assertEquals(parseAsked?.pending_meal?.origin, undefined);
+  // A turn that does not touch the meal keeps it, and who asked, as it was.
+  const aside = withPendingMeal(
+    { message: "You have 40 g protein left." },
+    { decision: { intent: "other", source: "jev", confidence: 0.95, note: "t", savedMatch: null, pendingAction: "unrelated", hasFood: 0 }, incoming: fromAgent, text: "protein left?" },
+  );
+  assertEquals(aside?.pending_meal, fromAgent);
+});
+
+Deno.test("an app that cannot take the agent's work finishes the meal with the parse", async () => {
+  const d = await route(fromAgent, 0.6);
+  assert(continuesPendingMeal(d), "the parse beside the agent must see the waiting meal");
+  assertEquals(decideFoodAction({ decision: d, mode: "on", parseFoundFood: false, clientSupportsCreate: false }), "log");
+  assertEquals(decideFoodAction({ decision: d, mode: "on", parseFoundFood: false, clientSupportsCreate: true }), "agent");
 });
 
 Deno.test("a question the parse asked still goes to the parse", async () => {

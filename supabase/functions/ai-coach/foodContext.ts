@@ -107,7 +107,9 @@ export function carryPendingMeal(a: {
     // Answers are appended, so a long thread is trimmed in the MIDDLE: the
     // meal at the start and the newest answer at the end both survive.
     const joined = continuationText(a.text.trim(), a.incoming);
-    const origin = a.fromAgent || a.incoming.origin === "agent" ? { origin: "agent" as const } : {};
+    // Whoever asked THIS question owns the answer. Not inherited: if the parse
+    // asks the next question, its answer goes to the parse.
+    const origin = a.fromAgent ? { origin: "agent" as const } : {};
     return {
       status: "awaiting_clarification",
       text: joined.length <= 2000 ? joined : `${joined.slice(0, 1200)}\n...\n${joined.slice(-795)}`,

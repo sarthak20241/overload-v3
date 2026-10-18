@@ -67,6 +67,7 @@ import {
   skippedFollowup,
   type FoodAction,
   shouldRouteFoodIntent,
+  continuesPendingMeal,
   wantsFoodAgent,
 } from "./foodIntent.ts";
 import { readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
@@ -3544,7 +3545,7 @@ async function handleParseMealRequest(args: {
           // the two can leave the interval running.
           const stopHeartbeat = startHeartbeat((frame) => controller.enqueue(enc.encode(frame)));
           try {
-            const pendingMeal = foodContext.pendingMeal && (await intentP)?.intent === "continue"
+            const pendingMeal = foodContext.pendingMeal && continuesPendingMeal(await intentP)
               ? foodContext.pendingMeal : null;
             const firstParse = await runParseMeal(
               {
@@ -3760,7 +3761,7 @@ async function handleParseMealRequest(args: {
       pendingMeal: foodContext.pendingMeal, brandWeb: !parseFreeTier,
     });
     const work = (async () => {
-      const pendingMeal = foodContext.pendingMeal && (await intentP)?.intent === "continue"
+      const pendingMeal = foodContext.pendingMeal && continuesPendingMeal(await intentP)
         ? foodContext.pendingMeal : null;
       const firstParse = await runParseMeal(
         makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier }),
