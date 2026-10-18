@@ -122,6 +122,19 @@ broken once). The first rebuild found a learning calorie card on a 25 kcal gap
 so with two cards in a week they could show either. Ship the app (OTA) first,
 then deploy `drona-cards`.
 
+## The maintenance line (2026-10-18)
+
+Learning is daily, changing is weekly. The running week's estimate is rebuilt
+every day; `components/diet/MaintenanceLine.tsx` shows it under the ring on the
+Nutrition screen ("Maintenance about 2,290 kcal · Learning", what it has from
+the last 4 weeks against what a read needs, and a bar for how far the learning
+has got: 3 data weeks = measured). Words in `lib/maintenance.ts`
+(`lib/maintenance.test.ts`, 6; moving the 10-day stale line to 11 fails one).
+Shown to every signed-in person with an estimate. JS only, so it can ship by OTA.
+On 2026-10-18: 40 people would see a first guess, 1 learning, 1 measured.
+Not checked on a simulator: the only booted one was mid-way through someone
+else's food log, and a fresh one needs a sign-in.
+
 ## Open
 
 - B1 (the model's cut card) still runs when this one holds; they share the
