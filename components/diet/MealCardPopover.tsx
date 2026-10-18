@@ -42,7 +42,9 @@ export interface CardRect { x: number; y: number; width: number; height: number 
  * landed has no ExpoBlurView, and requiring the JS side there warns and draws
  * nothing, so look for the native half first and fall back to a plain scrim.
  * This keeps the feature safe to ship over the air: the blur simply arrives
- * with the next native build.
+ * with the next native build. 'ExpoBlurView' is the Expo module's own Name()
+ * on iOS and Android, the same name expo-blur's JS hands
+ * requireNativeViewManager, so it is present exactly when the view is.
  */
 const BlurView: React.ComponentType<{
   intensity?: number; tint?: 'light' | 'dark'; style?: object;

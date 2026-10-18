@@ -370,6 +370,9 @@ export default function NutritionScreen() {
   const [popOpen, setPopOpen] = useState(false);
   const openPop = useCallback((natural: number) => {
     parseCardRef.current?.measureInWindow((x, y, width, height) => {
+      // The measure is async: Add or Discard may have landed meanwhile, and
+      // opening then would flash a popover for a card that is already gone.
+      if (flowRef.current.status !== 'review') return;
       haptics.tap();
       setPop({ origin: { x, y, width, height }, natural });
       setPopOpen(true);
@@ -1707,6 +1710,10 @@ export default function NutritionScreen() {
             // aside rather than showing twice through the blur.
             style={{ marginBottom: Spacing.sm, opacity: pop ? 0 : 1 }}
             pointerEvents={pop ? 'none' : 'auto'}
+            // Hidden from screen readers too, or every control (Add, Discard)
+            // would be in the tree twice while the popover is up.
+            accessibilityElementsHidden={!!pop}
+            importantForAccessibility={pop ? 'no-hide-descendants' : 'auto'}
           >
             {renderParseCard({
               // A standing notice (a question answered, a saved meal offered)

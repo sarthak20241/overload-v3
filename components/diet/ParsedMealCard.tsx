@@ -250,7 +250,11 @@ export function ParsedMealCard({
   const handledKey = useRef(autoExpandKey ?? 0);
   useEffect(() => {
     if (!autoExpandKey || autoExpandKey === handledKey.current) return;
-    if (!expand || cardH <= 0 || listContentH <= 0) return;
+    // A reply that lands while the card is collapsed to its strip is dropped,
+    // not saved for later: popping open minutes afterwards, when the user
+    // reopens the strip, would be a surprise.
+    if (!expand || isCollapsed) { handledKey.current = autoExpandKey; return; }
+    if (cardH <= 0 || listContentH <= 0) return;
     handledKey.current = autoExpandKey;
     expand();
   });
