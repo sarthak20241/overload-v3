@@ -116,9 +116,11 @@ type ParseFlow =
       // Researched numbers that disagree with what is shown, offered as a
       // choice. Applying is local, so picking costs no round trip.
       proposal?: { items: ParsedMealItem[]; note: string } | null;
-      // 'pattern': a usual food opened here to change its portion first.
-      // Nothing was parsed, so Add writes it as a manual line.
-      origin?: 'pattern';
+      // A line opened here to change its portion first, nothing parsed:
+      // 'pattern' is a usual food, 'copy_day' the day before's food offered
+      // while the meal has no habit. Add keeps the line's original labels
+      // (relogColumns) and reports which one it was.
+      origin?: 'pattern' | 'copy_day';
     }
   | { status: 'declined'; raw: string; message: string; pendingMeal?: PendingFoodMeal | null }
   // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
@@ -583,7 +585,8 @@ export default function NutritionScreen() {
           ? `From ${prevWord}. Change the portion if today was different.`
           : 'Your usual. Change the portion if today was different.',
       },
-      mealType: meal, mealTypePicked: true, origin: 'pattern',
+      mealType: meal, mealTypePicked: true,
+      origin: item.reason === 'previous_day' ? 'copy_day' : 'pattern',
     });
   }, [isToday, prevWord]);
 
@@ -1325,16 +1328,17 @@ export default function NutritionScreen() {
     // server's response looks like.
     const { error } = await logParsedMeal(
       supabase, { ...flow.meal, meal_type: flow.mealType }, viewDate,
-      flow.origin === 'pattern' ? 'pattern' : 'ai',
+      flow.origin ?? 'ai',
     );
-    if (flow.origin === 'pattern') {
+    if (flow.origin) {
       track('food_suggestion_logged', {
         meal_type: flow.mealType, item_count: flow.meal.items.length, all: false,
         edited: editCountRef.current > 0, is_today: isToday, write_failed: !!error,
+        from_previous_day: flow.origin === 'copy_day',
       });
     }
     setAdding(false);
-    if (flow.origin !== 'pattern') {
+    if (!flow.origin) {
       track('parse_proposal_accepted', {
         item_count: flow.meal.items.length,
         section_count: sectionsOf(flow.meal).length,

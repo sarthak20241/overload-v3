@@ -26,7 +26,12 @@ const MISSING_FUNCTION = new Set(['PGRST202', '42883']);
 export async function deleteMealIfEmpty(supabase: SupabaseClient, mealId: string): Promise<void> {
   const { error } = await supabase.rpc('delete_meal_if_empty', { p_meal_id: mealId });
   if (!error) return;
-  if (!MISSING_FUNCTION.has(String((error as { code?: string }).code ?? ''))) return;
+  if (!MISSING_FUNCTION.has(String((error as { code?: string }).code ?? ''))) {
+    // Safe to stop, but a meal left behind still counts as a logged day for
+    // the streak, so leave a trace to find it by.
+    console.warn('delete_meal_if_empty failed; the empty meal row stays', mealId, error);
+    return;
+  }
   const { count, error: countError } = await supabase
     .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', mealId);
   // A failed count is not "empty": never delete on a guess.

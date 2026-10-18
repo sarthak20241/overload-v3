@@ -49,7 +49,7 @@ deno test --allow-all lib/fitnessGoals.test.ts
 deno test --allow-all lib/maintenance.test.ts   # the Nutrition screen's maintenance row and sheet
 deno test --allow-all lib/foodPatterns.test.ts  # usual foods per meal, and when each meal is offered
 deno test --allow-all lib/mealCleanup.test.ts   # empty meal rows go in one safe database step
-deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts
+deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
 ```
 
 There are no configured lint or build scripts.

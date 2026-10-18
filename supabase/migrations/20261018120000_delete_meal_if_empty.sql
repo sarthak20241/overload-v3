@@ -26,7 +26,7 @@
 -- meal was deleted.
 --
 -- Additive. The client falls back to the old two-step path while this is not
--- live (lib/dietData.ts deleteMealIfEmpty). Apply to live via Supabase MCP
+-- live (lib/mealCleanup.ts deleteMealIfEmpty). Apply to live via Supabase MCP
 -- apply_migration, then `notify pgrst, 'reload schema'`.
 
 create or replace function public.delete_meal_if_empty(p_meal_id uuid)
