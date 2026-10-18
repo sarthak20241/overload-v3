@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { LoggedEntry, ParsedMealItem } from './dietData';
+import { deleteMealIfEmpty } from './mealCleanup';
 
 /** Save the edited snapshot and meal assignment in one row update. */
 export async function persistLoggedEntryEdit(
@@ -32,11 +33,7 @@ export async function persistLoggedEntryEdit(
     ...(nutritionChanged ? { source: 'manual', fiber_g: null, sugar_g: null, sat_fat_g: null, sodium_mg: null } : {}),
   }).eq('id', entry.id).select('id').single();
   if (error || !data) return { error: error?.message ?? 'This food could not be updated. Try again.' };
-  if (mealId !== entry.meal_id) {
-    const { count, error: countError } = await supabase.from('meal_entries')
-      .select('id', { count: 'exact', head: true }).eq('meal_id', entry.meal_id);
-    if (!countError && count === 0) await supabase.from('meals').delete().eq('id', entry.meal_id);
-  }
+  if (mealId !== entry.meal_id) await deleteMealIfEmpty(supabase, entry.meal_id);
   return {};
 }
 

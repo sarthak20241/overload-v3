@@ -26,6 +26,8 @@ import { track } from '@/lib/analytics';
 import { normalizeFuelDays, type FuelDay } from '@/lib/fuelDays';
 import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from '@/lib/targetHistory';
 import { readSwapOptions, type SwapOption } from '@/lib/variantSwap';
+import { relogColumns, type RelogLabels } from '@/lib/foodPatterns';
+import { deleteMealIfEmpty } from '@/lib/mealCleanup';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
@@ -668,6 +670,12 @@ export interface ParsedMealItem {
    *  instead of "edited": the numbers are the user's, from My Meals. */
   saved_meal?: string | null;
 
+  /** Set on a line copied from one the user logged before (a usual food, or
+   *  the day before's meal). Its original logged_via and tier are written
+   *  back unchanged: the food memory trusts 'manual' lines as the user's own
+   *  numbers, so labelling a copied AI estimate 'manual' would promote it. */
+  relog?: RelogLabels;
+
   /** Other variants the user also logs, priced from their own numbers, for the
    *  one-tap swap chip (lib/variantSwap). Only on lines Drona answered from
    *  the user's memory; absent from an older server build. */
@@ -1300,8 +1308,11 @@ export async function logParsedMeal(
   meal: ParsedMeal,
   date: Date = getLogDate(),
   /** How the user got here. Food detail reuses this writer for a single
-   *  catalog item, which is a search log, not an AI parse. */
-  via: 'ai' | 'search' | 'drona_search' = 'ai',
+   *  catalog item, which is a search log, not an AI parse. 'pattern' (a
+   *  suggestion from the user's own habits) and 'copy_day' (copied from the
+   *  day before) re-log earlier lines; those carry `relog` and keep their
+   *  original labels. */
+  via: 'ai' | 'search' | 'drona_search' | 'pattern' | 'copy_day' = 'ai',
 ): Promise<{ ref?: LoggedParseRef; error?: string }> {
   const done: LoggedSectionRef[] = [];
   for (const section of sectionsOf(meal)) {
@@ -1353,7 +1364,11 @@ async function logSection(
     fiber_g: it.fiber_g == null ? null : r1(it.fiber_g),
     sugar_g: null, sat_fat_g: null, sodium_mg: null,
     position: base + idx,
-    logged_via: 'ai',
+    // A re-logged line keeps its original label and tier (see `relog` and
+    // relogColumns). Every row names `tier`, null when unknown, so the bulk
+    // insert's columns agree; the BEFORE INSERT stamp trigger only skips a
+    // non-null tier, so a null one is still filled as before.
+    ...relogColumns(it.source, it.relog),
     // Where the macros came from (catalog / off / web / estimate) so the diary can
     // later tell a real label/web hit from a pure estimate (migration 0076).
     source: it.source,
@@ -1364,7 +1379,7 @@ async function logSection(
   if (error) {
     // If we created an empty meal and the entries failed, don't leave the
     // orphan meal behind.
-    if (createdMeal) await supabase.from('meals').delete().eq('id', mealId);
+    if (createdMeal) await deleteMealIfEmpty(supabase, mealId);
     return { error: error.message };
   }
   const entryIds = (inserted ?? []).map((r: any) => String(r.id));
@@ -1372,19 +1387,24 @@ async function logSection(
 }
 
 /** Undo an AI-logged meal: delete the inserted entries in every section it
- *  wrote, and each meal row too if we created it for this log and it is now
- *  empty. Best-effort. */
-export async function undoParsedMeal(supabase: Supa, ref: LoggedParseRef): Promise<void> {
+ *  wrote, and each meal row too once it is empty. Returns the first failed
+ *  entry delete, so a caller can keep its Undo on screen; callers that only
+ *  roll back may ignore it, as before. */
+export async function undoParsedMeal(supabase: Supa, ref: LoggedParseRef): Promise<{ error?: string }> {
+  let failed: string | undefined;
   for (const s of ref.sections) {
     if (s.entryIds.length > 0) {
-      await supabase.from('meal_entries').delete().in('id', s.entryIds);
+      const { error } = await supabase.from('meal_entries').delete().in('id', s.entryIds);
+      // The lines are still there, so the meal is not empty: skip the cleanup.
+      if (error) { failed = failed ?? error.message; continue; }
     }
-    if (s.createdMeal) {
-      const { count } = await supabase
-        .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', s.mealId);
-      if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', s.mealId);
-    }
+    // Any meal row left empty goes, not only one this add created: two adds
+    // into one meal undone in turn would otherwise strand an empty row (the
+    // first add created it, the last undo did not). An empty meal still
+    // counts as a logged day for the streak. Same rule as deleteMealEntry.
+    await deleteMealIfEmpty(supabase, s.mealId);
   }
+  return failed ? { error: failed } : {};
 }
 
 // ── Daily targets (the lifter framing: protein ring + calorie band) ─────────
@@ -1913,7 +1933,7 @@ export async function logSavedMeal(
     });
   }
   if (error) {
-    if (createdMeal) await supabase.from('meals').delete().eq('id', mealId);
+    if (createdMeal) await deleteMealIfEmpty(supabase, mealId);
     return { error: error.message };
   }
   return {};
@@ -1975,9 +1995,7 @@ export async function deleteMealEntry(
 ): Promise<{ error?: string }> {
   const { error } = await supabase.from('meal_entries').delete().eq('id', entry.id);
   if (error) return { error: error.message };
-  const { count } = await supabase
-    .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', entry.meal_id);
-  if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', entry.meal_id);
+  await deleteMealIfEmpty(supabase, entry.meal_id);
   return {};
 }
 
@@ -2033,9 +2051,7 @@ export async function moveEntry(
   const targetMealId = m.id;
   const { error } = await supabase.from('meal_entries').update({ meal_id: targetMealId }).eq('id', entry.id);
   if (error) return { error: error.message };
-  const { count } = await supabase
-    .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', entry.meal_id);
-  if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', entry.meal_id);
+  await deleteMealIfEmpty(supabase, entry.meal_id);
   return {};
 }
 
@@ -2196,7 +2212,7 @@ export async function logQuickAdd(
     logged_via: 'manual',
   });
   if (error) {
-    if (createdMeal) await supabase.from('meals').delete().eq('id', mealId);
+    if (createdMeal) await deleteMealIfEmpty(supabase, mealId);
     return { error: error.message };
   }
   track('meal_logged', {
