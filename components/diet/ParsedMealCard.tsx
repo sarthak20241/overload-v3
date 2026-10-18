@@ -35,7 +35,7 @@
  * the screen's callbacks, which run once.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
+import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView, type ViewStyle } from 'react-native';
 import Animated, {
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, Easing,
   useReducedMotion, FadeIn,
@@ -90,6 +90,12 @@ interface Props {
    *  the item list scrolls inside this cap while the totals row and the
    *  section/actions footer stay pinned and always reachable. */
   maxHeight?: number;
+  /** The most the card may ever take: the whole gap above the food box.
+   *  `maxHeight` is the polite cap that leaves the day's summary readable;
+   *  when the card's fixed parts plus a usable list do not fit under it (a
+   *  short phone), the card grows past it up to this, rather than pushing
+   *  its own Add button down under the food box. */
+  hardMaxHeight?: number;
   meal?: ParsedMeal | null;
   mealType?: MealType;                       // currently selected section (review)
   message?: string | null;
@@ -208,7 +214,7 @@ function provenance(source: ParsedMealItem['source']): string | null {
 }
 
 export function ParsedMealCard({
-  state, streamingRows, rawText, maxHeight, meal, mealType, message, adding, saved, notice, proposalLabel,
+  state, streamingRows, rawText, maxHeight, hardMaxHeight, meal, mealType, message, adding, saved, notice, proposalLabel,
   checkingIndex, onCheckItem,
   onMealTypeChange, onMoveGroup, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onSwapItem, onAdd, onSave, onRetry, onDismiss, onEditWords,
   minimized, onToggleMinimize,
@@ -239,7 +245,39 @@ export function ParsedMealCard({
   const [noticeH, setNoticeH] = useState(0);
   const [noticeContentH, setNoticeContentH] = useState(0);
   const [bodyH, setBodyH] = useState(0);
+  // Where the content really ends. A capped card reports its CAPPED height,
+  // so once its parts overflow (a short phone) cardH stops growing and any
+  // math on it says "fits". The footer's bottom edge does not lie: Yoga
+  // still places it, below the card if it has to, so body y + review body y
+  // + footer bottom is the height the content takes.
+  const [bodyY, setBodyY] = useState(0);
+  const [reviewY, setReviewY] = useState(0);
+  const [footerBottom, setFooterBottom] = useState(0);
   const hasList = state === 'review' && !!meal;
+  // The footer must stay a direct child of the review body (its y is in
+  // that body's frame). The tail below it is read off s.card itself, so a
+  // padding or border change there carries through.
+  // footerBottom is 0 until the footer has laid out, and falls back to cardH.
+  const cardStyle: ViewStyle = StyleSheet.flatten(s.card);
+  // Only plain numbers count: a string or percentage value here would turn
+  // the whole sum into NaN, so treat anything else as 0.
+  const num = (v: unknown) => (typeof v === 'number' ? v : 0);
+  const cardTail = num(cardStyle.paddingBottom ?? cardStyle.paddingVertical ?? cardStyle.padding)
+    + num(cardStyle.borderBottomWidth ?? cardStyle.borderWidth);
+  const contentH = footerBottom > 0 ? bodyY + reviewY + footerBottom + cardTail : cardH;
+  // What the card needs at the least: everything that does not scroll (the
+  // card minus the list's viewport), plus the list at its floor. If the
+  // polite cap is below that, everything else would overflow the card's
+  // bottom, which is under the food box: on a short phone the meal chips,
+  // Discard and Add disappeared there. Grow to the need, never past the gap.
+  const minNeeded = contentH - listH + Math.min(listContentH, ITEM_FLOOR);
+  const cap = maxHeight == null ? undefined
+    // Gated on the footer having laid out and the list having content, not
+    // on the list's viewport: under a tight cap that viewport can be 0, and
+    // waiting for it would leave the card stuck in the very case this fixes.
+    : hasList && hardMaxHeight != null && footerBottom > 0 && listContentH > 0
+      ? Math.min(hardMaxHeight, Math.max(maxHeight, minNeeded))
+      : maxHeight;
   // The card stays mounted across a follow-up (review -> analysing -> review)
   // while the list unmounts in between. Forget the old list's sizes then, so
   // the next auto-expand waits for the new list instead of sizing the popover
@@ -248,6 +286,7 @@ export function ParsedMealCard({
     if (hasList) return;
     setListH(0);
     setListContentH(0);
+    setFooterBottom(0);
   }, [hasList]);
   // With a list, only two things squeeze: the list and a notice's words.
   // Swap each one's squeezed viewport for its full content and what is left
@@ -255,7 +294,7 @@ export function ParsedMealCard({
   // popover can resize the card without the number moving under it.
   const shownNotice = state === 'review' && !!notice;
   const natural = hasList
-    ? cardH - listH + listContentH
+    ? contentH - listH + listContentH
       + (shownNotice ? noticeContentH - noticeH : 0)
     // No list to stretch: the body is its own size. Padding + hairline border.
     : bodyH + Spacing.md * 2 + 2;
@@ -493,7 +532,7 @@ export function ParsedMealCard({
   return (
     <Animated.View
       entering={expanded ? undefined : FadeIn.duration(160)}
-      style={[s.card, expanded ? s.cardFill : maxHeight != null && { maxHeight }]}
+      style={[s.card, expanded ? s.cardFill : cap != null && { maxHeight: cap }]}
       onLayout={(e) => setCardH(e.nativeEvent.layout.height)}
     >
       {/* A tap on the card's own surface (totals, words, the Drona line,
@@ -506,7 +545,7 @@ export function ParsedMealCard({
         disabled={!expand}
         accessible={false}
         style={expanded && hasList ? s.fill : s.shrink}
-        onLayout={(e) => setBodyH(e.nativeEvent.layout.height)}
+        onLayout={(e) => { setBodyH(e.nativeEvent.layout.height); setBodyY(e.nativeEvent.layout.y); }}
       >
       {(!!rawText || collapsible || expandable || (expanded && !!onCollapse)) && (
         <View style={s.rawRow}>
@@ -622,7 +661,10 @@ export function ParsedMealCard({
       )}
 
       {state === 'review' && meal && (
-        <View style={[s.reviewBody, expanded && s.fill]}>
+        <View
+          style={[s.reviewBody, expanded && s.fill]}
+          onLayout={(e) => setReviewY(e.nativeEvent.layout.y)}
+        >
           {/* The card reads top to bottom in five zones, each with its own
               look so they never run together: 1. what you said (the bubble
               above), 2. the meal total, 3. the foods, 4. Drona, 5. the
@@ -767,7 +809,10 @@ export function ParsedMealCard({
           {/* 5. The controls, behind a rule: where it goes, then what to do.
               A multi-section meal has no single "where", so its chip row
               yields to the group headers in the list. */}
-          <View style={s.footer}>
+          <View
+            style={s.footer}
+            onLayout={(e) => setFooterBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height)}
+          >
           {!multi && (
           <View style={s.sectionRow}>
             {MEAL_OPTIONS.map((o) => {
