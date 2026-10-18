@@ -259,8 +259,11 @@ export function ParsedMealCard({
   // padding or border change there carries through.
   // footerBottom is 0 until the footer has laid out, and falls back to cardH.
   const cardStyle: ViewStyle = StyleSheet.flatten(s.card);
-  const cardTail = Number(cardStyle.paddingBottom ?? cardStyle.padding ?? 0)
-    + Number(cardStyle.borderBottomWidth ?? cardStyle.borderWidth ?? 0);
+  // Only plain numbers count: a string or percentage value here would turn
+  // the whole sum into NaN, so treat anything else as 0.
+  const num = (v: unknown) => (typeof v === 'number' ? v : 0);
+  const cardTail = num(cardStyle.paddingBottom ?? cardStyle.padding)
+    + num(cardStyle.borderBottomWidth ?? cardStyle.borderWidth);
   const contentH = footerBottom > 0 ? bodyY + reviewY + footerBottom + cardTail : cardH;
   // What the card needs at the least: everything that does not scroll (the
   // card minus the list's viewport), plus the list at its floor. If the
