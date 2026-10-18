@@ -627,6 +627,9 @@ export async function loadActiveProgram(
     .select(cols)
     .eq('program_id', (prog as { id: string }).id)
     .order('seq', { ascending: true });
+  // Keep diet_fuel_days BEFORE the activity columns. Postgres names only the
+  // first missing column, and the two fallbacks below rely on that order: a
+  // database missing both reports diet_fuel_days, and the second one catches it.
   let { data: phaseData, error: phaseErr } = await readPhases(`${PHASE_COLS}, diet_fuel_days, ${ACTIVITY_COLS.join(', ')}`);
   // A database from before the activity goals: read the rest, so the program
   // still loads and simply shows no activity goals.
