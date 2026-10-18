@@ -106,10 +106,14 @@ Deno.test("one line per phase for the recap and the card", () => {
   assertEquals(activityText({ steps_per_day: null, cardio_sessions_per_week: null }), "none");
 });
 
-Deno.test("no step reading today hides the bar; a reading of 0 is real", () => {
+Deno.test("no step reading today hides the bar, and 0 is no reading", () => {
   assertEquals(stepsProgressFromReading(undefined, 10000), null);
   assertEquals(stepsProgressFromReading(null, 10000), null);
-  assertEquals(stepsProgressFromReading(0, 10000)?.done, 0);
+  // Health Connect writes 0 for a day with no data (0142 steps_zero), so 0 is
+  // not "0 steps walked".
+  assertEquals(stepsProgressFromReading(0, 10000), null);
+  assertEquals(stepsProgressFromReading("0", 10000), null);
+  assertEquals(stepsProgressFromReading(1, 10000)?.done, 1);
   // PostgREST sends numeric columns as strings.
   assertEquals(stepsProgressFromReading("6240", 10000)?.left, 3760);
   assertEquals(stepsProgressFromReading("n/a", 10000), null);

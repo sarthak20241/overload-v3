@@ -157,11 +157,12 @@ export function activityText(g: ActivityGoals): string {
 /**
  * Today's step progress from the day's reading, or null when there is no
  * reading yet. No row is not "0 steps": a user without Health sync, or whose
- * sync has not run today, would read 0 all day.
+ * sync has not run today, would read 0 all day. A reading of 0 is no reading
+ * too: Health Connect writes 0 for a day with no data (the facts' steps_zero).
  */
 export function stepsProgressFromReading(reading: unknown, target: number | null | undefined): GoalProgress | null {
   const v = typeof reading === "number" ? reading : typeof reading === "string" ? Number(reading) : NaN;
-  if (!Number.isFinite(v)) return null;
+  if (!Number.isFinite(v) || v <= 0) return null;
   return goalProgress(v, target);
 }
 

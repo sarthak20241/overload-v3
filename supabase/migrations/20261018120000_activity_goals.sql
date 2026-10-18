@@ -44,7 +44,7 @@ alter table public.coach_program_phases
 alter table public.drona_week_facts
   add column if not exists a_as_of            date,   -- the last day these facts cover
   add column if not exists a_steps_target     int,    -- the phase's step goal; null = none
-  add column if not exists a_steps_days       int,    -- days with a reading: whole, or already at the goal
+  add column if not exists a_steps_days       int,    -- days with a non-zero reading: whole, or already at the goal
   add column if not exists a_steps_days_met   int,    -- days at or over the goal; null = no goal
   add column if not exists a_cardio_target    int,    -- the phase's cardio sessions a week; null = none
   add column if not exists a_cardio_sessions  int,    -- cardio sessions done that week (counted with or without a goal)
@@ -83,8 +83,9 @@ begin
   steps as (
     select wk.week_start,
            -- A day counts once it is whole, or once it reached the goal (today
-           -- can hit 10k before it ends). So met is never more than days.
-           count(d.day) filter (where d.steps is not null and (not coalesce(d.steps_partial, false)
+           -- can hit 10k before it ends). So met is never more than days. A 0
+           -- reading is no data, not a rest day (0142 steps_zero).
+           count(d.day) filter (where d.steps > 0 and (not coalesce(d.steps_partial, false)
                                   or (g.steps_target is not null and d.steps >= g.steps_target))) as days,
            count(d.day) filter (where g.steps_target is not null and d.steps >= g.steps_target) as met
       from wk
@@ -149,8 +150,9 @@ begin
   if position('''activity''' in v_def) > 0 then
     return;  -- already there
   end if;
-  if position(v_old in v_def) = 0 then
-    raise exception 'drona_rebuild_all_facts: domain list not found, add ''activity'' by hand';
+  -- Exactly once: replace() changes every occurrence.
+  if (length(v_def) - length(replace(v_def, v_old, ''))) / length(v_old) <> 1 then
+    raise exception 'drona_rebuild_all_facts: domain list not found once, add ''activity'' by hand';
   end if;
   execute replace(v_def, v_old, v_new);
 end $$;
