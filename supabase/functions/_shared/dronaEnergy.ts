@@ -18,6 +18,12 @@
  * data is already fresh enough. A topic on cooldown, or muted because its
  * cards stopped landing (topic_not_landing), is skipped.
  *
+ * The calorie check-in (2026-10-18) is its own slot, apart from the weekly
+ * Drona card, with its own cooldown (checkinCooldown): a calorie change can
+ * come every week while the estimate is learning, a data ask at most every two
+ * weeks. A calorie change also moves the program's future phases by what the
+ * estimate learned since they were set (phaseMoves), on the same tap.
+ *
  * Pure: no imports beyond the tier rule, no Date. Unit-tested in dronaEnergy.test.ts.
  */
 import { isProTier } from './dronaCalories.ts';
@@ -37,7 +43,35 @@ export interface EnergyFacts {
   tier_expires_at?: string | null;
   targets?: { kcal?: number | null; protein_g?: number | null; carb_g?: number | null; fat_g?: number | null } | null;
   phase_id?: string | null;
+  /** Last week's maintenance estimate and resting-energy floor. */
+  estimate_kcal?: number | null;
+  floor_kcal?: number | null;
+  /** The running program: the maintenance its phases assume, and the phases still to come. */
+  program?: { id?: string; basis_kcal?: number | null; phases?: FuturePhase[] | null } | null;
+  /** Recent cards of every slot, newest first. */
+  cards?: { week_start?: string; slot?: string; topic?: string; kind?: string; status?: string }[] | null;
   behaviours?: EnergyBehaviour[] | null;
+}
+
+export interface FuturePhase {
+  id: string;
+  seq?: number;
+  name?: string | null;
+  starts_on?: string;
+  kcal?: number | null;
+  protein_g?: number | null;
+  carb_g?: number | null;
+  fat_g?: number | null;
+}
+
+export interface PhaseMove {
+  id: string;
+  name: string;
+  from_kcal: number;
+  to_kcal: number;
+  from_protein_g: number | null;
+  from_carb_g: number | null;
+  from_fat_g: number | null;
 }
 
 export interface EnergyCard {
@@ -74,6 +108,57 @@ export function nextTarget(live: number | null, suggested: number | null, floor:
   return to === live ? null : to;
 }
 
+/**
+ * How the program's future phases move with the estimate. Each keeps its
+ * purpose (a cut stays a cut, a diet break stays at maintenance); only the base
+ * moves, by what the estimate learned since the phases were set. Never under
+ * the floor. Null when nothing moves by 25 kcal or more.
+ */
+export function phaseMoves(f: EnergyFacts, estimate: number | null, floor: number | null):
+  { moves: PhaseMove[]; basis_from: number; basis_to: number } | null {
+  const basis = n(f.program?.basis_kcal);
+  if (estimate == null || basis == null) return null;
+  const delta = Math.round((estimate - basis) / GRID) * GRID;
+  if (Math.abs(delta) < GRID) return null;
+  const floorGrid = floor != null ? Math.ceil(floor / GRID) * GRID : null;
+  const moves: PhaseMove[] = [];
+  for (const ph of f.program?.phases ?? []) {
+    const kcal = n(ph.kcal);
+    if (!ph.id || kcal == null) continue;
+    let to = Math.round((kcal + delta) / GRID) * GRID;
+    if (floorGrid != null) to = Math.max(to, floorGrid);
+    if (to === kcal) continue;
+    moves.push({
+      id: ph.id, name: ph.name?.trim() || `Phase ${ph.seq ?? ''}`.trim(), from_kcal: kcal, to_kcal: to,
+      from_protein_g: n(ph.protein_g), from_carb_g: n(ph.carb_g), from_fat_g: n(ph.fat_g),
+    });
+  }
+  return moves.length ? { moves, basis_from: basis, basis_to: Math.round(estimate) } : null;
+}
+
+const MS_WEEK = 7 * 86_400_000;
+function weeksBetween(from: string | undefined, to: string | undefined): number | null {
+  const a = Date.parse(`${from}T00:00:00Z`);
+  const b = Date.parse(`${to}T00:00:00Z`);
+  return Number.isFinite(a) && Number.isFinite(b) ? Math.round((b - a) / MS_WEEK) : null;
+}
+
+/**
+ * The check-in's own cooldown, from recent cards of every slot. A calorie
+ * change may come every week (the behaviour already decides how often), but
+ * not twice in a week, and not within two weeks of a "keep the plan". A data
+ * ask waits two weeks after the same ask, four after a "no thanks".
+ */
+export function checkinCooldown(cards: EnergyFacts['cards'], weekStart: string): (topic: string) => boolean {
+  return (topic: string) => (cards ?? []).some((c) => {
+    if (c.topic !== topic) return false;
+    const weeks = weeksBetween(c.week_start, weekStart);
+    if (weeks == null || weeks < 0) return false;
+    if (topic === 'calories') return weeks < 1 || (c.status === 'dismissed' && weeks < 2);
+    return weeks < (c.status === 'dismissed' ? 4 : 2);
+  });
+}
+
 function caloriesCard(f: EnergyFacts, d: Record<string, unknown>, live: number, to: number): EnergyCard {
   const est = n(d.estimate_kcal);
   const suggested = n(d.suggested_kcal);
@@ -88,6 +173,12 @@ function caloriesCard(f: EnergyFacts, d: Record<string, unknown>, live: number, 
     parts.push(`About ${suggested} kcal would move you toward ${goal} kg at ${Math.abs(pace).toFixed(2)} kg a week.`);
   }
   if (suggested != null && to !== suggested) parts.push(`${to} is a careful first step.`);
+  const phases = phaseMoves(f, n(f.estimate_kcal) ?? est, n(d.floor_kcal));
+  if (phases) {
+    const named = phases.moves.slice(0, 2).map((m) => `${m.name} ${m.from_kcal} to ${m.to_kcal}`).join(', ');
+    const more = phases.moves.length > 2 ? ` and ${phases.moves.length - 2} more` : '';
+    parts.push(`Your next ${phases.moves.length === 1 ? 'phase moves' : 'phases move'} with it: ${named}${more}.`);
+  }
 
   return {
     kind: 'act',
@@ -107,6 +198,12 @@ function caloriesCard(f: EnergyFacts, d: Record<string, unknown>, live: number, 
       from_carb_g: n(f.targets?.carb_g),
       from_fat_g: n(f.targets?.fat_g),
       phase_id: f.phase_id ?? null,
+      ...(phases ? {
+        program_id: f.program?.id ?? null,
+        basis_from_kcal: phases.basis_from,
+        basis_to_kcal: phases.basis_to,
+        phases: phases.moves,
+      } : {}),
     },
     signals: ['calories_off', String(d.source ?? '')].filter(Boolean),
   };

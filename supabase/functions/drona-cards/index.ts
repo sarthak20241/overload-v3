@@ -9,7 +9,8 @@
 //         away; the app path is how that user still gets a card.
 //
 // The numbers come from get_drona_facts (service role only), the decision from
-// the shared rules in _shared/dronaCards.ts. P0 writes only request and notice
+// the shared rules in _shared/dronaCards.ts. The calorie check-in is a second,
+// separate card per week (slot 'calories', _shared/dronaEnergy.ts). P0 writes only request and notice
 // cards; a hold writes nothing, which is most weeks.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
@@ -17,7 +18,7 @@ import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 import { decideCard, type DronaFacts, onCooldown, signalsFrom, weekStartOf } from "../_shared/dronaCards.ts";
 import { decideSwap, type SwapFacts, swapCard } from "../_shared/dronaSwap.ts";
 import { calorieGate, caloriesCard, type DietFacts, uglyChecks, validateTargets } from "../_shared/dronaCalories.ts";
-import { decideEnergyCard, type EnergyFacts } from "../_shared/dronaEnergy.ts";
+import { checkinCooldown, decideEnergyCard, type EnergyFacts } from "../_shared/dronaEnergy.ts";
 import { askCaloriesModel, DRONA_CARD_MODEL } from "../_shared/dronaModel.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
@@ -132,35 +133,44 @@ type CardRow = {
 };
 
 /**
- * The adaptive calories cards (20261017115750_drona_energy_facts). The
- * database keeps a maintenance estimate that starts at the app's formula and
- * moves toward the person's real number as weigh-ins and whole food days
- * arrive; last week's behaviours say whether to ask for that data or to move
- * the calorie target. get_drona_energy_facts rebuilds the facts first when the
- * daily job has not reached this person yet today, so a Monday card reads the
- * week that just ended. Rules only, no model.
- *
- * Returns the row to insert, or null to let the next step have its turn.
+ * The calorie check-in (20261018091823_drona_calorie_checkin): its own card
+ * slot ('calories'), apart from the weekly Drona card, so a calorie step is
+ * never pushed out by a lift-stall or a swap. The database keeps a maintenance
+ * estimate that starts at the app's formula and moves toward the person's real
+ * number as weigh-ins and whole food days arrive; last week's behaviours say
+ * whether to ask for that data or to move the calorie target (and the
+ * program's future phases with it). get_drona_energy_facts rebuilds the facts
+ * first when the daily job has not reached this person yet today, so a Monday
+ * check-in reads the week that just ended. Rules only, no model. Nothing to say
+ * writes nothing.
  */
-async function energyFirst(
+async function checkin(
   db: SupabaseClient,
   userId: string,
   localDay: string,
   weekStart: string,
-  facts: DronaFacts,
   source: "cron" | "app",
-): Promise<CardRow | null> {
+): Promise<{ kind: string; saved: boolean; error?: string }> {
   const { data, error } = await retried(() =>
     db.rpc("get_drona_energy_facts", { p_user_id: userId, p_as_of: localDay })
   );
-  if (error || !data) return null;
-  const card = decideEnergyCard(data as EnergyFacts, (topic) => onCooldown(topic, facts));
-  if (!card) return null;
-  return {
-    user_id: userId, week_start: weekStart, kind: card.kind, topic: card.topic, title: card.title,
-    body: card.body, evidence: card.evidence, payload: card.payload, signals: card.signals,
-    facts: { ...facts, energy: data }, source,
-  };
+  if (error) return { kind: "none", saved: false, error: error.message };
+  if (!data) return { kind: "hold", saved: false };
+  const f = data as EnergyFacts;
+  const card = decideEnergyCard(f, checkinCooldown(f.cards, weekStart));
+  if (!card) return { kind: "hold", saved: false };
+  const { error: insErr } = await retried(() =>
+    db.from("drona_cards").insert({
+      user_id: userId, week_start: weekStart, slot: "calories", kind: card.kind, topic: card.topic,
+      title: card.title, body: card.body, evidence: card.evidence, payload: card.payload,
+      signals: card.signals, facts: { energy: data }, source,
+    })
+  );
+  // 23505: this week's check-in already exists. Not a failure.
+  if (insErr && (insErr as { code?: string }).code !== "23505") {
+    return { kind: card.kind, saved: false, error: insErr.message };
+  }
+  return { kind: card.kind, saved: !insErr };
 }
 
 /**
@@ -246,23 +256,15 @@ async function generate(
     if (swap) return swap;
   }
 
-  // The adaptive calories cards: ask for the weigh-ins or food days the
-  // maintenance estimate is missing, or move the target toward it.
-  if (!newUser) {
-    const row = await energyFirst(db, userId, localDay, weekStart, facts as DronaFacts, source);
-    if (row) {
-      const { error: insErr } = await retried(() => db.from("drona_cards").insert(row));
-      if (insErr && (insErr as { code?: string }).code !== "23505") {
-        return { kind: row.kind, saved: false, error: insErr.message };
-      }
-      return { kind: row.kind, saved: !insErr };
-    }
-  }
-
   // B1 (Pro, model-decided). A model hold is written as a held row so the
   // week is settled and the audit keeps the reason; a model failure writes
-  // nothing and the rules below get their turn.
-  if (!newUser && !onCooldown("calories", facts as DronaFacts)) {
+  // nothing and the rules below get their turn. Never in a week the calorie
+  // check-in spoke: two calorie systems must not talk at once.
+  const { data: checkinRow } = await retried(() =>
+    db.from("drona_cards").select("id").eq("user_id", userId).eq("week_start", weekStart)
+      .eq("slot", "calories").maybeSingle()
+  );
+  if (!newUser && !checkinRow && !onCooldown("calories", facts as DronaFacts)) {
     const row = await caloriesFirst(db, userId, localDay, weekStart, facts as DronaFacts, source);
     if (row) {
       const { error: insErr } = await retried(() => db.from("drona_cards").insert(row));
@@ -328,36 +330,54 @@ async function runCron(): Promise<Response> {
       })
       .filter((u): u is { userId: string; day: string; week: string } => !!u.week);
 
-    // Who already has this week's card (from an earlier run, or the app).
+    // Who already has this week's card, per slot (from an earlier run, or the
+    // app): the weekly Drona card and the calorie check-in are due apart.
     const weekStarts = [...new Set(weeks.map((w) => w.week))];
     const have = new Set<string>();
     if (weekStarts.length > 0) {
       for (let from = 0; ; from += USER_PAGE) {
         const { data: rows, error: rowsErr } = await retried(() =>
-          db.from("drona_cards").select("user_id, week_start").in("week_start", weekStarts)
-            .order("user_id", { ascending: true }).range(from, from + USER_PAGE - 1)
+          db.from("drona_cards").select("user_id, week_start, slot").in("week_start", weekStarts)
+            .order("user_id", { ascending: true }).order("slot", { ascending: true })
+            .range(from, from + USER_PAGE - 1)
         );
         if (rowsErr) return json({ error: rowsErr.message, stage: "existing" }, 500);
-        for (const r of rows ?? []) have.add(`${r.user_id}|${r.week_start}`);
+        for (const r of rows ?? []) have.add(`${r.user_id}|${r.week_start}|${r.slot ?? "weekly"}`);
         if (!rows || rows.length < USER_PAGE) break;
       }
     }
-    const due = weeks.filter((w) => !have.has(`${w.userId}|${w.week}`));
+    const due = weeks
+      .map((w) => ({
+        ...w,
+        checkin: !have.has(`${w.userId}|${w.week}|calories`),
+        weekly: !have.has(`${w.userId}|${w.week}|weekly`),
+      }))
+      .filter((w) => w.checkin || w.weekly);
 
     let saved = 0;
     let held = 0;
+    let checkins = 0;
     const failures: string[] = [];
     for (let i = 0; i < due.length; i += CRON_CONCURRENCY) {
       const batch = due.slice(i, i + CRON_CONCURRENCY);
-      const results = await Promise.all(batch.map((w) => generate(db, w.userId, w.day, w.week, "cron")));
-      results.forEach((r, j) => {
-        if (r.saved) saved += 1;
-        else if (r.kind === "hold") held += 1;
-        else failures.push(`${batch[j].userId.slice(0, 12)}: ${r.error ?? "not saved"}`);
+      const results = await Promise.all(batch.map(async (w) => {
+        // The check-in first, so the weekly card sees it and does not ask for
+        // the same weigh-in or food days again.
+        const c = w.checkin ? await checkin(db, w.userId, w.day, w.week, "cron") : null;
+        const g = w.weekly ? await generate(db, w.userId, w.day, w.week, "cron") : null;
+        return { c, g };
+      }));
+      results.forEach(({ c, g }, j) => {
+        if (c?.saved) checkins += 1;
+        else if (c?.error) failures.push(`${batch[j].userId.slice(0, 12)} check-in: ${c.error}`);
+        if (!g) return;
+        if (g.saved) saved += 1;
+        else if (g.kind === "hold") held += 1;
+        else failures.push(`${batch[j].userId.slice(0, 12)}: ${g.error ?? "not saved"}`);
       });
     }
 
-    return json({ users: weeks.length, due: due.length, saved, held, failures: failures.slice(0, 20) });
+    return json({ users: weeks.length, due: due.length, saved, held, checkins, failures: failures.slice(0, 20) });
   } finally {
     // Settled on every path: the runtime may stop the worker once the response
     // is out, and an abandoned delete may never land.
@@ -387,13 +407,19 @@ async function runApp(req: Request, body: Record<string, unknown>): Promise<Resp
   const week = weekStartOf(day);
   if (!week) return json({ error: "bad day" }, 500);
 
+  // The check-in first (it writes nothing when it has nothing to say, or when
+  // this week's already exists), then the weekly card.
+  const check = await checkin(db, userId, day, week, "app");
+  if (check.error) console.error("[drona-cards] check-in:", check.error);
   const result = await generate(db, userId, day, week, "app");
   if (!result.saved && result.error) return json({ error: result.error }, 500);
 
-  const { data: row } = await retried(() =>
-    db.from("drona_cards").select("*").eq("user_id", userId).eq("week_start", week).maybeSingle()
+  const { data: rows } = await retried(() =>
+    db.from("drona_cards").select("*").eq("user_id", userId).eq("week_start", week)
   );
-  return json({ week_start: week, kind: result.kind, card: row ?? null });
+  const row = (rows ?? []).find((r) => (r.slot ?? "weekly") === "weekly") ?? null;
+  const checkinRow = (rows ?? []).find((r) => r.slot === "calories") ?? null;
+  return json({ week_start: week, kind: result.kind, card: row, checkin: checkinRow });
 }
 
 Deno.serve(async (req: Request) => {

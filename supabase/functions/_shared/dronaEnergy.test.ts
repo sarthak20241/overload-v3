@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { decideEnergyCard, type EnergyFacts, nextTarget } from "./dronaEnergy.ts";
+import { checkinCooldown, decideEnergyCard, type EnergyFacts, nextTarget, phaseMoves } from "./dronaEnergy.ts";
 
 const never = () => false;
 
@@ -117,3 +117,65 @@ Deno.test("no card promises what the code does not do, and none uses an em dash"
     assertEquals(/\bi will\b|\bcheck back\b|\bnext week i\b/i.test(text), false, text);
   }
 });
+
+// ── The calorie check-in (2026-10-18): future phases and its own cooldown ──
+const program = (basis: number | null) => ({
+  id: "prog1", basis_kcal: basis,
+  phases: [
+    { id: "p2", seq: 2, name: "Diet break", kcal: 2300, protein_g: 150, carb_g: 250, fat_g: 70 },
+    { id: "p3", seq: 3, name: "Cut 2", kcal: 1800, protein_g: 160, carb_g: 160, fat_g: 55 },
+  ],
+});
+
+Deno.test("phases move by what the estimate learned, each keeping its purpose", () => {
+  // the plan assumed 2500; the body says 2250: every future phase moves -250
+  const m = phaseMoves(facts([], { program: program(2500) }), 2250, 1500)!;
+  assertEquals(m.basis_from, 2500);
+  assertEquals(m.basis_to, 2250);
+  assertEquals(m.moves.map((x) => [x.id, x.from_kcal, x.to_kcal]), [["p2", 2300, 2050], ["p3", 1800, 1550]]);
+});
+
+Deno.test("phases: under 25 kcal learned, nothing moves; no basis, nothing moves", () => {
+  assertEquals(phaseMoves(facts([], { program: program(2500) }), 2488, 1500), null);
+  assertEquals(phaseMoves(facts([], { program: program(null) }), 2250, 1500), null);
+});
+
+Deno.test("phases never go under the floor", () => {
+  const m = phaseMoves(facts([], { program: program(2500) }), 2000, 1690)!;
+  // 1800 - 500 = 1300, floor 1690 -> 1700
+  assertEquals(m.moves.find((x) => x.id === "p3")?.to_kcal, 1700);
+});
+
+Deno.test("the calorie card carries the phases, and says so", () => {
+  const card = decideEnergyCard(facts([caloriesOff()], { program: program(2500), estimate_kcal: 2294 }), never)!;
+  // 2294 - 2500 = -206 -> -200 on the 25 grid
+  assertEquals(card.payload.program_id, "prog1");
+  assertEquals(card.payload.basis_from_kcal, 2500);
+  assertEquals(card.payload.basis_to_kcal, 2294);
+  assertEquals((card.payload.phases as { to_kcal: number }[]).map((p) => p.to_kcal), [2100, 1700]);
+  assertEquals(card.body.includes("Your next phases move with it: Diet break 2300 to 2100, Cut 2 1800 to 1700."), true, card.body);
+});
+
+Deno.test("no future phases: the payload has no phase fields", () => {
+  const card = decideEnergyCard(facts([caloriesOff()]), never)!;
+  assertEquals("phases" in card.payload, false);
+  assertEquals(card.body.includes("phase"), false);
+});
+
+Deno.test("check-in cooldown: calories weekly, never twice a week, two weeks after a no", () => {
+  const cd = (cards: EnergyFacts["cards"]) => checkinCooldown(cards, "2026-10-19");
+  assertEquals(cd([{ week_start: "2026-10-12", topic: "calories", status: "applied" }])("calories"), false);
+  assertEquals(cd([{ week_start: "2026-10-19", topic: "calories", status: "pending" }])("calories"), true);
+  assertEquals(cd([{ week_start: "2026-10-12", topic: "calories", status: "dismissed" }])("calories"), true);
+  assertEquals(cd([{ week_start: "2026-10-05", topic: "calories", status: "dismissed" }])("calories"), false);
+});
+
+Deno.test("check-in cooldown: a data ask waits two weeks, four after a no", () => {
+  const cd = (cards: EnergyFacts["cards"]) => checkinCooldown(cards, "2026-10-19");
+  assertEquals(cd([{ week_start: "2026-10-12", topic: "weigh_in", status: "applied" }])("weigh_in"), true);
+  assertEquals(cd([{ week_start: "2026-10-05", topic: "weigh_in", status: "applied" }])("weigh_in"), false);
+  assertEquals(cd([{ week_start: "2026-09-28", topic: "weigh_in", status: "dismissed" }])("weigh_in"), true);
+  assertEquals(cd([{ week_start: "2026-09-21", topic: "weigh_in", status: "dismissed" }])("weigh_in"), false);
+  assertEquals(cd([{ week_start: "2026-10-12", topic: "weigh_in", status: "applied" }])("log_food"), false);
+});
+

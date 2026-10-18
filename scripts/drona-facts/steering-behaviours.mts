@@ -19,6 +19,8 @@
  *   W6  13 days since the last target change: not judged (it settles 14)
  *   W7  last weigh-in 11 days before the window ends: stale, not judged
  *   W8  the estimate is still the formula guess: not judged
+ *   W9  learning, exactly 7 days after a change (rule_version 3): judged, 2050
+ *       against 2200 is off, and a learning estimate is a card the FIRST week
  * Finding maintenance, rule_version 2 (goal 76; asks the first week):
  *   W6  13 whole days: missing whole days (1 more) -> finding_maintenance at once
  *   W7  weigh-ins over 20 days and stale: missing weigh-ins and stale
@@ -91,7 +93,7 @@ const rows: Record<string, unknown>[] = [
   { week_start: W[6], ...trend, ...m(6, { m_whole_days_28: 13, m_data_weight: 0.93 }), p_kcal_target: 2500, p_days_since_target_change: 13 },
   { week_start: W[7], ...trend, ...m(7, { m_span_days: 20, m_data_weight: 0.95, m_last_weigh_in: addDays(W[7], -5) }), p_kcal_target: 2500 },
   { week_start: W[8], ...trend, ...m(8, { m_readings_28: 7, m_data_weight: 0.88, m_source: 'guess', m_data_weeks: 0 }), p_kcal_target: 2500 },
-  { week_start: W[9], ...trend, ...m(9, { m_readings_28: 2, m_outliers_28: 3, m_data_weight: 0 }) },
+  { week_start: W[9], ...trend, ...m(9, { m_readings_28: 2, m_outliers_28: 3, m_data_weight: 0, m_source: 'learning', m_data_weeks: 1.5 }), p_kcal_target: 2200, p_days_since_target_change: 7 },
   { week_start: W[10], ...trend, ...m(10, { m_trend_kg: 76.4 }), g_now_kg: 76.4, g_kg_to_go: -0.4, t_weeks_trained_8w: 6, t_weekday_weeks_8w: { 1: 6, 2: 5, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0 }, t_planned_sessions: 4 },
   { week_start: W[11], g_goal_kg: 76, ...m(11, { m_trend_kg: null, m_readings_28: 0, m_span_days: null, m_last_weigh_in: null, m_whole_days_28: 0, m_data_weight: 0 }), e_food_days: 2, t_weeks_trained_8w: 5, t_weekday_weeks_8w: { 1: 5 }, c_card_id: randomUUID(), c_topic: 'weigh_in' },
   { week_start: W[12], g_goal_kg: 76, ...m(12, { m_trend_kg: null, m_readings_28: 0, m_outliers_28: 1, m_span_days: null, m_last_weigh_in: null, m_whole_days_28: 0, m_data_weight: 0 }), e_food_days: 3, t_weeks_trained_8w: 6, t_weekday_weeks_8w: { 1: 6, 2: 0, 3: 6, 4: 0, 5: 6, 6: 0, 7: 0 }, t_planned_sessions: 3, c_card_id: randomUUID(), c_topic: 'due_session' },
@@ -158,7 +160,7 @@ ok('W4 the date passed', s('off_pace', 4)?.detail?.reason === 'date_passed');
 ok('W5 no date: pace not judged', s('off_pace', 5) === undefined);
 ok('W1 estimate 2500, pace -0.8 -> 1625; target exactly 100 away: calories off',
   s('calories_off', 1)?.fired === true && s('calories_off', 1)?.detail?.suggested_kcal === 1625 && s('calories_off', 1)?.detail?.gap_kcal === 100, s('calories_off', 1)?.detail);
-ok('W2 again: calories_off, an act card', b('calories_off', 2)?.card_kind === 'act' && b('calories_off', 2)?.rule_version === 2);
+ok('W2 measured: two weeks running makes the card', b('calories_off', 2)?.card_kind === 'act' && b('calories_off', 1) === undefined);
 ok('W3 floor 1690 -> 1700; target 99 away: not off', s('calories_off', 3)?.fired === false && s('calories_off', 3)?.detail?.suggested_kcal === 1700, s('calories_off', 3)?.detail);
 ok('W4 no kcal target: calories not judged, no maintenance_found', s('calories_off', 4) === undefined && b('maintenance_found', 4) === undefined);
 ok('W5 default pace -0.4 -> 2060 -> 2050 = the target', s('calories_off', 5)?.fired === false && s('calories_off', 5)?.detail?.suggested_kcal === 2050 && s('calories_off', 5)?.detail?.pace_from === 'default', s('calories_off', 5)?.detail);
@@ -174,7 +176,12 @@ ok('W10 0.4 kg from the goal, W11 not trying yet: not judged', s('maintenance_un
 ok('W12 3 food days, profile weight 90, one outlier alone is not a broken scale', s('maintenance_unknown', 12)?.fired === true
   && Number(s('maintenance_unknown', 12)?.detail?.weight_kg) === 90
   && JSON.stringify(s('maintenance_unknown', 12)?.detail?.missing) === '["weigh_ins","stale","whole_days"]', s('maintenance_unknown', 12)?.detail);
-ok('the two changed signals carry rule_version 2', ['maintenance_unknown', 'calories_off'].every((x) => sigs.filter((r) => r.signal === x).every((r) => r.rule_version === 2)));
+ok('W9 learning, 7 days after a change: off, and a card the first week (W8 was not judged)',
+  s('calories_off', 9)?.fired === true && s('calories_off', 9)?.pattern === false && b('calories_off', 9)?.card_kind === 'act', s('calories_off', 9)?.detail);
+ok('maintenance_unknown carries rule_version 2, calories_off 3',
+  sigs.filter((r) => r.signal === 'maintenance_unknown').every((r) => r.rule_version === 2)
+  && sigs.filter((r) => r.signal === 'calories_off').every((r) => r.rule_version === 3)
+  && behs.filter((r) => r.behaviour === 'calories_off').every((r) => r.rule_version === 3));
 
 ok('W10 3.0 a week, 1 steady day: trains_any_day (steer)', s('trains_any_day', 10)?.fired === true && b('trains_any_day', 10)?.card_kind === 'steer');
 ok('W10 planned 4 vs 3.0: too big', s('plan_too_big', 10)?.fired === true);

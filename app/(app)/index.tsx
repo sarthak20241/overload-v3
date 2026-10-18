@@ -31,7 +31,7 @@ import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { DronaCardPopup } from '@/components/coach/DronaCardPopup';
 import { useToast } from '@/components/ui/Toast';
 import {
-  currentWeekStart, deferCard, movesFor, readWeeklyCard, requestWeeklyCard, setCardStatus,
+  currentWeekStart, deferCard, movesFor, readCheckinCard, readWeeklyCard, requestWeeklyCard, setCardStatus,
   type SavedDronaCard,
 } from '@/lib/dronaCard';
 import { useWorkout } from '@/hooks/useWorkout';
@@ -450,6 +450,9 @@ export default function DashboardScreen() {
   // asked for only when the week has none, at most once per app run, and never
   // for a guest.
   const [weeklyCard, setWeeklyCard] = useState<SavedDronaCard | null>(null);
+  // The calorie check-in: its own card a week (slot 'calories'), apart from the
+  // weekly one. When it is waiting it pops up first; the weekly card follows.
+  const [checkinCard, setCheckinCard] = useState<SavedDronaCard | null>(null);
   // Two popups must never stack: BuildSplitPrompt reports when it is up, and
   // the card waits. Later or a tap outside marks the card deferred, which is
   // what keeps it from coming straight back on the next focus.
@@ -525,6 +528,7 @@ export default function DashboardScreen() {
     const clerkId = user?.id;
     if (isGuestSession || !clerkId) {
       setWeeklyCard(null);
+      setCheckinCard(null);
       return;
     }
     let live = true;
@@ -532,8 +536,10 @@ export default function DashboardScreen() {
     // the server's call (readWeeklyCard -> pickCurrentCard).
     const week = currentWeekStart();
     (async () => {
-      const row = await readWeeklyCard(supabase, clerkId);
+      const [row, check] = await Promise.all([readWeeklyCard(supabase, clerkId), readCheckinCard(supabase, clerkId)]);
       if (!live) return;
+      if (check !== undefined) setCheckinCard(check);
+      if (check && check.status === 'pending') track('drona_card_shown', { kind: check.kind, topic: check.topic });
       if (row !== undefined) setWeeklyCard(row);
       if (row && row.status === 'pending') track('drona_card_shown', { kind: row.kind, topic: row.topic });
       // undefined = the read failed. Leave it: a blip must not trigger a
@@ -545,31 +551,42 @@ export default function DashboardScreen() {
           setWeeklyCard(made);
           if (made.status === 'pending') track('drona_card_shown', { kind: made.kind, topic: made.topic });
         }
+        // The same request writes this week's check-in when it has something to say.
+        const madeCheck = live && !check ? await readCheckinCard(supabase, clerkId) : undefined;
+        if (live && madeCheck) {
+          setCheckinCard(madeCheck);
+          if (madeCheck.status === 'pending') track('drona_card_shown', { kind: madeCheck.kind, topic: madeCheck.topic });
+        }
       }
     })();
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isGuestSession, user?.id, focusTick]);
 
+  // One popup at a time: a waiting check-in first, the weekly card after.
+  const checkinWaiting = !!checkinCard && checkinCard.status === 'pending' && !checkinCard.deferred_at;
+  const popupCard = checkinWaiting ? checkinCard : weeklyCard;
+  const setPopupCard = checkinWaiting ? setCheckinCard : setWeeklyCard;
+
   const handleCardAct = () => {
-    if (!weeklyCard) return;
-    const action = weeklyCard.payload.action;
-    track('drona_card_acted', { kind: weeklyCard.kind, topic: weeklyCard.topic, action: action ?? null });
-    setWeeklyCard(null);
+    if (!popupCard) return;
+    const action = popupCard.payload.action;
+    track('drona_card_acted', { kind: popupCard.kind, topic: popupCard.topic, action: action ?? null });
+    setPopupCard(null);
     const moves = movesFor(action);
     if (moves && action !== 'undo_swap') {
       // The database makes the change and moves the card's status, so the
       // plan can only change while it still holds what the card claims.
       const done = action === 'apply_targets'
-        ? `${weeklyCard.payload.to_kcal ?? 'The new target'} kcal is your target now.`
-        : `${weeklyCard.payload.to_name ?? 'The swap'} is in the plan.`;
-      void moves.apply(supabase, weeklyCard.id).then((result) => {
+        ? `${popupCard.payload.to_kcal ?? 'The new target'} kcal is your target now.`
+        : `${popupCard.payload.to_name ?? 'The swap'} is in the plan.`;
+      void moves.apply(supabase, popupCard.id).then((result) => {
         toast.success(result === 'ok' ? done : 'That has changed since. Nothing was touched.');
         setFocusTick((t) => t + 1);
       });
       return;
     }
-    void setCardStatus(supabase, weeklyCard.id, 'applied');
+    void setCardStatus(supabase, popupCard.id, 'applied');
     if (action === 'start_session') {
       // The session that is due is exactly what the TODAY card opens.
       handleTodayPress();
@@ -582,25 +599,25 @@ export default function DashboardScreen() {
   };
 
   const handleCardDismiss = () => {
-    if (!weeklyCard) return;
-    track('drona_card_dismissed', { kind: weeklyCard.kind, topic: weeklyCard.topic });
-    setWeeklyCard(null);
-    void setCardStatus(supabase, weeklyCard.id, 'dismissed');
+    if (!popupCard) return;
+    track('drona_card_dismissed', { kind: popupCard.kind, topic: popupCard.topic });
+    setPopupCard(null);
+    void setCardStatus(supabase, popupCard.id, 'dismissed');
   };
 
   // Later, or a tap outside: the card leaves the dashboard and waits on the
   // From Drona screen until its week ends. Still pending, so its buttons work
   // there. Nothing is decided.
   const handleCardLater = () => {
-    if (!weeklyCard) return;
-    track('drona_card_deferred', { kind: weeklyCard.kind, topic: weeklyCard.topic });
-    const before = weeklyCard;
-    setWeeklyCard({ ...weeklyCard, deferred_at: new Date().toISOString() });
-    void deferCard(supabase, weeklyCard.id).then((result) => {
+    if (!popupCard) return;
+    track('drona_card_deferred', { kind: popupCard.kind, topic: popupCard.topic });
+    const before = popupCard;
+    setPopupCard({ ...popupCard, deferred_at: new Date().toISOString() });
+    void deferCard(supabase, popupCard.id).then((result) => {
       // Not saved: the server row is still undeferred, so the popup would be
       // back on the next open with no explanation. Say so now instead.
       if (result !== 'ok') {
-        setWeeklyCard(before);
+        setPopupCard(before);
         toast.error('Could not save that for later. Try again.');
       }
     });
@@ -609,16 +626,16 @@ export default function DashboardScreen() {
   // Undo on a change Drona made by itself. The card closes either way: the
   // user has answered, even when their own edit already moved the slot on.
   const handleCardUndo = () => {
-    if (!weeklyCard) return;
+    if (!popupCard) return;
     // A calories card puts a NUMBER back, not an exercise: say which.
-    const undone = weeklyCard.payload.from_kcal != null
-      ? `Back to ${weeklyCard.payload.from_kcal} kcal.`
-      : `${weeklyCard.payload.from_name ?? 'The old exercise'} is back in the plan.`;
-    track('drona_card_undone', { kind: weeklyCard.kind, topic: weeklyCard.topic });
-    setWeeklyCard(null);
-    const moves = movesFor(weeklyCard.payload.action);
+    const undone = popupCard.payload.from_kcal != null
+      ? `Back to ${popupCard.payload.from_kcal} kcal.`
+      : `${popupCard.payload.from_name ?? 'The old exercise'} is back in the plan.`;
+    track('drona_card_undone', { kind: popupCard.kind, topic: popupCard.topic });
+    setPopupCard(null);
+    const moves = movesFor(popupCard.payload.action);
     if (!moves) return;
-    void moves.undo(supabase, weeklyCard.id).then((result) => {
+    void moves.undo(supabase, popupCard.id).then((result) => {
       toast.info(
         result === 'ok' ? undone : 'That has changed since. Nothing was touched.',
       );
@@ -1345,15 +1362,15 @@ export default function DashboardScreen() {
       {/* Drona's card for the week, as a popup (every kind; owner's call
           2026-09-18). Never over BuildSplitPrompt, never mid-workout, and not
           once the user has said Later. */}
-      {weeklyCard
-        && weeklyCard.status === 'pending'
-        && !weeklyCard.deferred_at
+      {popupCard
+        && popupCard.status === 'pending'
+        && !popupCard.deferred_at
         && screenFocused
         && !splitPromptShowing
         && !workoutActive
         && (
           <DronaCardPopup
-            card={weeklyCard}
+            card={popupCard}
             onAct={handleCardAct}
             onDismiss={handleCardDismiss}
             onUndo={handleCardUndo}

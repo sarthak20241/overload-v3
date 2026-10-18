@@ -82,10 +82,53 @@ the SQL is live, the edge function needs `deploy:yes` or a manual run.
 - `calories_off` fired once in 26 weeks (fresh data is rare): the owner, 17
   Aug, 1,800 to 1,700.
 
+## The calorie check-in (2026-10-18, owner's option A)
+
+Migrations `20261018091823_drona_calorie_checkin` + `20261018091913_drona_calories_off_fired`.
+
+- **Its own card.** `drona_cards.slot`: 'weekly' (the one Drona card) or
+  'calories' (the check-in), one per user, week and slot. The worker runs the
+  check-in first every Monday, then the weekly card, so the weekly card never
+  asks for the same weigh-in again (topic cooldown sees it), and B1 is skipped
+  in any week the check-in spoke. Card facts read only the weekly slot.
+- **Still asks first.** An act card: "Set X kcal" or "Keep the plan", Undo for 7 days.
+- **Faster while learning.** The estimate's weekly step is capped at 250 kcal
+  while it is a guess or learning (under 3 data weeks), 150 once measured.
+  calories_off (rule_version 3) settles 7 days after a target change while
+  learning, 14 once measured, and the behaviour is a card the first week while
+  learning (two weeks running once measured).
+- **Phases follow.** `coach_programs.maintenance_basis_kcal` = the maintenance
+  the phases assume (before the first check-in: the formula guess of the week
+  the program was made). On the tap, every FUTURE phase moves by estimate -
+  basis (on 25, never under the floor) and the basis becomes the estimate. A
+  phase edited by hand is left alone. Undo puts all of it back. Without this,
+  `reconcileActiveProgram` would copy the next phase's old calories onto the
+  profile when it starts.
+- **Its own cooldown** (`checkinCooldown`): a calorie card at most once a week
+  and not within 2 weeks of "keep the plan"; a data ask every 2 weeks, 4 after a "no".
+- **App** (`lib/dronaCard.ts`, `app/(app)/index.tsx`): reads each slot apart;
+  a waiting check-in pops up first, the weekly card after. JS only: an OTA.
+
+Proof: `scripts/drona-facts/checkin.mts`, 17 checks, signed in as the person:
+the read, the card, the slot, the tap moving profile + running phase + future
+phases + basis, a hand-edited phase left alone, Undo restoring all, card facts
+on the weekly slot. Removing the hand-edit guard live made 2 fail.
+`energy.mts` now 16 (both caps bind; setting the learning cap to 150 made 8
+fail). `dronaEnergy.test.ts` 21 (the phase floor and the weekly cooldown each
+broken once). The first rebuild found a learning calorie card on a 25 kcal gap
+(the fired check had been dropped); fixed in `..091913`.
+
+**Ship order matters.** Old app builds read "this week's card" without a slot,
+so with two cards in a week they could show either. Ship the app (OTA) first,
+then deploy `drona-cards`.
+
 ## Open
 
 - B1 (the model's cut card) still runs when this one holds; they share the
   `calories` cooldown. Retire B1 once this one has run a few weeks?
 - Macros on a calorie change scale with the old split (`macros_for_kcal`), so
-  protein drops on a cut. A protein-first split would be better.
+  protein drops on a cut (2200 -> 2050 took protein 150 -> 146). A protein-first split would be better.
+- Phases move only on a calorie card. If the target is fine but the estimate
+  moved, future phases wait for the next card.
+- Check-in answers are not in the card facts yet (only the weekly slot is).
 - A "day complete" tap in the food log (needs an app build).

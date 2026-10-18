@@ -1,5 +1,5 @@
 /**
- * What the adaptive calories cards would say this week, for every person, with
+ * What the calorie check-in would say this week, for every person, with
  * nothing written: last week's behaviours, the live targets and the recent
  * cards go through the same decideEnergyCard the card worker calls.
  *
@@ -9,8 +9,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
-import { decideEnergyCard } from '../../supabase/functions/_shared/dronaEnergy.ts';
-import { onCooldown, type DronaFacts } from '../../supabase/functions/_shared/dronaCards.ts';
+import { checkinCooldown, decideEnergyCard } from '../../supabase/functions/_shared/dronaEnergy.ts';
 
 const env = Object.fromEntries(readFileSync(new URL('../../.env.local', import.meta.url), 'utf8').split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1).trim()]));
 const db = createClient(env.EXPO_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
@@ -26,15 +25,14 @@ let shown = 0;
 for (const u of users) {
   const { data: p } = await db.from('user_profiles')
     .select('tier, tier_expires_at, daily_calorie_target, protein_target_g, carb_target_g, fat_target_g').eq('clerk_user_id', u).maybeSingle();
-  const { data: cards } = await db.from('drona_cards').select('week_start, kind, topic, status').eq('user_id', u).order('week_start', { ascending: false }).limit(8);
-  const facts: DronaFacts = { week_start: thisWeek, cards: cards ?? [] };
+  const { data: cards } = await db.from('drona_cards').select('week_start, slot, kind, topic, status').eq('user_id', u).order('week_start', { ascending: false }).limit(12);
   const card = decideEnergyCard({
     as_of: new Date().toISOString().slice(0, 10), week_start: lastWeek, tier: p?.tier, tier_expires_at: p?.tier_expires_at,
     targets: { kcal: p?.daily_calorie_target, protein_g: p?.protein_target_g, carb_g: p?.carb_target_g, fat_g: p?.fat_target_g },
     behaviours: (behs ?? []).filter((b) => b.user_id === u),
-  }, (topic) => onCooldown(topic, facts));
+  }, checkinCooldown(cards ?? [], thisWeek));
   if (!card) continue;
   shown++;
   console.log(`\n${u.slice(0, 13)}  [${card.kind} / ${card.topic}]  ${card.title}\n  ${card.body}\n  ${card.evidence.map((e) => `${e.label}: ${e.value}`).join(' | ')}`);
 }
-console.log(`\n${shown} of ${users.length} people with behaviours last week (${lastWeek}) would get an adaptive calories card.`);
+console.log(`\n${shown} of ${users.length} people with behaviours last week (${lastWeek}) would get a calorie check-in.`);
