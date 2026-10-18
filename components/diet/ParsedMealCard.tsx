@@ -262,7 +262,7 @@ export function ParsedMealCard({
   // Only plain numbers count: a string or percentage value here would turn
   // the whole sum into NaN, so treat anything else as 0.
   const num = (v: unknown) => (typeof v === 'number' ? v : 0);
-  const cardTail = num(cardStyle.paddingBottom ?? cardStyle.padding)
+  const cardTail = num(cardStyle.paddingBottom ?? cardStyle.paddingVertical ?? cardStyle.padding)
     + num(cardStyle.borderBottomWidth ?? cardStyle.borderWidth);
   const contentH = footerBottom > 0 ? bodyY + reviewY + footerBottom + cardTail : cardH;
   // What the card needs at the least: everything that does not scroll (the
