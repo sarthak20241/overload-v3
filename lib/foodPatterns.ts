@@ -208,6 +208,9 @@ export function mealsToSuggest(
     const have = new Set((logged[meal] ?? []).map((e) => nameKey(e.food_name)));
     const missing = patterns[meal].filter((s) => !have.has(nameKey(s.food_name)));
     if (have.size > 0) {
+      // Past the meal's time, a logged meal is done: "you usually have oats
+      // too" at 9pm about this morning's breakfast is noise, not help.
+      if (h != null && h >= STALE[meal]) continue;
       // "You usually have this too" is a habit's claim; the day before's
       // food makes no such claim, so it leaves once the meal has food.
       out[meal] = missing.filter((s) => s.usual && s.reason !== 'previous_day').slice(0, LOGGED_MEAL_LEFTOVERS);

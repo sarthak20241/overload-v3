@@ -42,6 +42,7 @@ import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
 import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
 import Svg, { Circle } from 'react-native-svg';
+import Animated, { FadeInDown, LinearTransition } from 'react-native-reanimated';
 import { ParseSpeedSheet } from '@/components/diet/ParseSpeedSheet';
 import {
   getParseSpeed, setParseSpeed, effectiveParseSpeed, type ParseSpeed,
@@ -515,9 +516,27 @@ export default function NutritionScreen() {
   );
   const [copyMeal, setCopyMeal] = useState<MealType | null>(null);
   const [relogBusy, setRelogBusy] = useState<string | null>(null);
-  // The guard itself. State lags a render, so two quick taps could both read
-  // "not busy" and log the food twice; a ref is set before the first await.
+  // The copy sheet's guard. State lags a render, so two quick taps could both
+  // read "not busy" and copy twice; a ref is set before the first await.
   const relogBusyRef = useRef(false);
+  // Suggestions tapped and shown as "Added" before their write lands. The
+  // ref is the double-tap guard (same reason as above); the state draws it.
+  // A key leaves when its row does (the diary caught up) or its write fails.
+  const addedRef = useRef<Set<string>>(new Set());
+  const [addedKeys, setAddedKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const markAdded = useCallback((keys: string[], on: boolean) => {
+    for (const k of keys) { if (on) addedRef.current.add(k); else addedRef.current.delete(k); }
+    setAddedKeys(new Set(addedRef.current));
+  }, []);
+  // Writes run one after another, so tapping three rows quickly logs all
+  // three instead of dropping the two that came while the first was saving,
+  // and two adds can never race to create the same meal row twice.
+  const relogChain = useRef<Promise<unknown>>(Promise.resolve());
+  const enqueue = useCallback(<T,>(job: () => Promise<T>): Promise<T> => {
+    const run = relogChain.current.then(job, job);
+    relogChain.current = run.catch(() => {});
+    return run;
+  }, []);
   // Lines just added from a suggestion or a copy, so each wears a quiet Undo
   // until the screen goes away. Entry id -> the whole add, like the Drona chip.
   const [relogged, setRelogged] = useState<Map<string, { ref: LoggedParseRef; label: string }>>(() => new Map());
@@ -547,31 +566,48 @@ export default function NutritionScreen() {
     });
   }, []);
 
-  const onAddSuggestions = useCallback(async (meal: MealType, items: FoodSuggestion[], all: boolean) => {
-    if (!supabase || relogBusyRef.current || items.length === 0) return;
-    relogBusyRef.current = true;
-    setRelogBusy(all ? '*' : items[0].key);
+  const onAddSuggestions = useCallback((meal: MealType, picked: FoodSuggestion[], all: boolean) => {
+    if (!supabase) return;
+    const items = picked.filter((x) => !addedRef.current.has(x.key));
+    if (items.length === 0) return;
+    const keys = items.map((x) => x.key);
+    // Answer the tap now: the rows read "Added" while the write is under way.
+    markAdded(keys, true);
+    haptics.tap();
     const fromPrev = items.every((x) => x.reason === 'previous_day');
-    // finally: a throw (not just an {error}) must not leave every later tap ignored.
-    let res: Awaited<ReturnType<typeof relogLines>>;
-    try {
-      res = await relogLines(supabase, items, meal, viewDate, fromPrev ? 'copy_day' : 'pattern');
-    } catch (e) {
-      res = { error: e instanceof Error ? e.message : 'Could not add that' };
-    } finally {
-      relogBusyRef.current = false;
-      setRelogBusy(null);
-    }
-    const { ref, error } = res;
-    track('food_suggestion_logged', {
-      meal_type: meal, item_count: items.length, all, edited: false, is_today: isToday, write_failed: !!error,
-      from_previous_day: fromPrev,
+    void enqueue(async () => {
+      // A throw (not just an {error}) must still give the rows back.
+      let res: Awaited<ReturnType<typeof relogLines>>;
+      try {
+        res = await relogLines(supabase, items, meal, viewDate, fromPrev ? 'copy_day' : 'pattern');
+      } catch (e) {
+        res = { error: e instanceof Error ? e.message : 'Could not add that' };
+      }
+      const { ref, error } = res;
+      track('food_suggestion_logged', {
+        meal_type: meal, item_count: items.length, all, edited: false, is_today: isToday, write_failed: !!error,
+        from_previous_day: fromPrev,
+      });
+      if (error || !ref) {
+        markAdded(keys, false);
+        haptics.warning();
+        return;
+      }
+      haptics.success();
+      rememberRelog(ref, fromPrev ? `Copied from ${prevWord}` : all ? 'Your usual' : 'From your usual');
+      reload();
     });
-    if (error || !ref) { haptics.warning(); return; }
-    haptics.success();
-    rememberRelog(ref, fromPrev ? `Copied from ${prevWord}` : all ? 'Your usual' : 'From your usual');
-    reload();
-  }, [supabase, viewDate, isToday, rememberRelog, reload, prevWord]);
+  }, [supabase, viewDate, isToday, rememberRelog, reload, prevWord, markAdded, enqueue]);
+
+  // A key is "Added" only until its row leaves: once the diary shows the
+  // line, mealsToSuggest drops the suggestion and the key goes with it, so an
+  // Undo brings the suggestion back as a fresh, tappable row.
+  useEffect(() => {
+    if (addedRef.current.size === 0) return;
+    const live = new Set(MEALS.flatMap((m) => suggestions[m.type].map((x) => x.key)));
+    const gone = [...addedRef.current].filter((k) => !live.has(k));
+    if (gone.length > 0) markAdded(gone, false);
+  }, [suggestions, markAdded]);
 
   // Change the portion first: the line opens in the review card, the same
   // editor a typed meal gets, and Add writes it. Only from an idle box, so a
@@ -601,7 +637,7 @@ export default function NutritionScreen() {
     setRelogBusy('*');
     let res: Awaited<ReturnType<typeof relogLines>>;
     try {
-      res = await relogLines(supabase, lines, meal, viewDate, 'copy_day');
+      res = await enqueue(() => relogLines(supabase, lines, meal, viewDate, 'copy_day'));
     } catch (e) {
       res = { error: e instanceof Error ? e.message : 'Could not copy that' };
     } finally {
@@ -618,7 +654,7 @@ export default function NutritionScreen() {
     rememberRelog(ref, `Copied from ${prevLabel === 'Yesterday' ? 'yesterday' : prevLabel}`);
     setCopyMeal(null);
     reload();
-  }, [supabase, copyMeal, viewDate, prevLines, prevLabel, isToday, rememberRelog, reload]);
+  }, [supabase, copyMeal, viewDate, prevLines, prevLabel, isToday, rememberRelog, reload, enqueue]);
 
   const onUndoRelog = useCallback(async (ref: LoggedParseRef) => {
     if (!supabase) return;
@@ -1741,7 +1777,15 @@ export default function NutritionScreen() {
                   // a nested one into the outer button and leave Undo with no
                   // way to reach it. Same structure ParsedMealCard already uses
                   // for its collapsed strip, and for the same reason.
-                  <View key={e.id} style={s.entryWrap}>
+                  // A line that just came from a suggestion or a copy slides in,
+                  // the end of the beat its suggestion row started. Lines that
+                  // were already there mount still, so a day load never ripples.
+                  <Animated.View
+                    key={e.id}
+                    style={s.entryWrap}
+                    entering={relog ? FadeInDown.duration(280).springify().damping(16) : undefined}
+                    layout={LinearTransition.duration(220)}
+                  >
                     <Pressable style={s.entry} onPress={() => setEditEntry(e)}>
                       <Text style={s.entryName}>
                         {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit)}</Text>
@@ -1783,7 +1827,7 @@ export default function NutritionScreen() {
                         </Pressable>
                       </View>
                     )}
-                  </View>
+                  </Animated.View>
                 );
               })}
 
@@ -1793,7 +1837,7 @@ export default function NutritionScreen() {
                 mealLabel={m.label}
                 weekday={viewDate.getDay()}
                 fromWord={prevWord}
-                busyKey={relogBusy}
+                addedKeys={addedKeys}
                 onAdd={(items, all) => { void onAddSuggestions(m.type, items, all); }}
                 onEdit={(item) => onEditSuggestion(m.type, item)}
               />

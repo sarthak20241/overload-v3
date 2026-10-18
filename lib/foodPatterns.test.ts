@@ -160,6 +160,12 @@ Deno.test("a logged meal keeps only its missing usuals", () => {
   assertEquals(names(r.breakfast), ["Coffee"]); // banana is not a usual; oats is in
 });
 
+Deno.test("a logged meal stops offering its leftovers once its time is over", () => {
+  const logged = { ...none(), breakfast: [{ food_name: "oats" }] };
+  assertEquals(names(mealsToSuggest(patterns(), logged, 21).breakfast), []);
+  assertEquals(names(mealsToSuggest(patterns(), logged, 9).breakfast), ["Coffee"]);
+});
+
 Deno.test("another day has no clock: every meal is open", () => {
   assertEquals(open(mealsToSuggest(patterns(), none(), null)), ["breakfast", "lunch", "dinner", "snack"]);
 });
