@@ -459,6 +459,12 @@ export default function DashboardScreen() {
   const [splitPromptShowing, setSplitPromptShowing] = useState(false);
   const { isActive: workoutActive } = useWorkout();
   const requestedWeeks = useRef(new Set<string>());
+  // The check-in is asked for on its own guard: the weekly card can exist while
+  // this week's check-in was never written.
+  const requestedCheckins = useRef(new Set<string>());
+  // drona_card_shown once per card per app run, and only for a card that can
+  // pop up (pending, not put off with Later).
+  const shownCards = useRef(new Set<string>());
   const [savedPick, setSavedPick] = useState<SavedSuggestion | null>(null);
   const [savedRead, setSavedRead] = useState(false);
   const [requestingPick, setRequestingPick] = useState(false);
@@ -535,28 +541,37 @@ export default function DashboardScreen() {
     // Only the request guard uses the phone's week; which card is current is
     // the server's call (readWeeklyCard -> pickCurrentCard).
     const week = currentWeekStart();
+    const shown = (card: SavedDronaCard | null | undefined) => {
+      if (!card || card.status !== 'pending' || card.deferred_at || shownCards.current.has(card.id)) return;
+      shownCards.current.add(card.id);
+      track('drona_card_shown', { kind: card.kind, topic: card.topic });
+    };
     (async () => {
       const [row, check] = await Promise.all([readWeeklyCard(supabase, clerkId), readCheckinCard(supabase, clerkId)]);
       if (!live) return;
       if (check !== undefined) setCheckinCard(check);
-      if (check && check.status === 'pending') track('drona_card_shown', { kind: check.kind, topic: check.topic });
+      shown(check);
       if (row !== undefined) setWeeklyCard(row);
-      if (row && row.status === 'pending') track('drona_card_shown', { kind: row.kind, topic: row.topic });
+      shown(row);
       // undefined = the read failed. Leave it: a blip must not trigger a
-      // request, and the card can wait for the next open.
-      if (row === null && !requestedWeeks.current.has(`${clerkId}|${week}`)) {
-        requestedWeeks.current.add(`${clerkId}|${week}`);
-        const made = await requestWeeklyCard(deviceTimeZone());
-        if (live && made) {
-          setWeeklyCard(made);
-          if (made.status === 'pending') track('drona_card_shown', { kind: made.kind, topic: made.topic });
-        }
-        // The same request writes this week's check-in when it has something to say.
-        const madeCheck = live && !check ? await readCheckinCard(supabase, clerkId) : undefined;
-        if (live && madeCheck) {
-          setCheckinCard(madeCheck);
-          if (madeCheck.status === 'pending') track('drona_card_shown', { kind: madeCheck.kind, topic: madeCheck.topic });
-        }
+      // request, and the card can wait for the next open. Each slot is asked
+      // for at most once a week per app run; one request makes both (the
+      // server writes the check-in first, and skips a weekly card it has).
+      const key = `${clerkId}|${week}`;
+      const needWeekly = row === null && !requestedWeeks.current.has(key);
+      const needCheck = check === null && !requestedCheckins.current.has(key);
+      if (!needWeekly && !needCheck) return;
+      if (needWeekly) requestedWeeks.current.add(key);
+      if (needCheck) requestedCheckins.current.add(key);
+      const made = await requestWeeklyCard(deviceTimeZone());
+      if (live && needWeekly && made) {
+        setWeeklyCard(made);
+        shown(made);
+      }
+      const madeCheck = live && needCheck ? await readCheckinCard(supabase, clerkId) : undefined;
+      if (live && madeCheck) {
+        setCheckinCard(madeCheck);
+        shown(madeCheck);
       }
     })();
     return () => { live = false; };

@@ -412,8 +412,16 @@ async function runApp(req: Request, body: Record<string, unknown>): Promise<Resp
   // this week's already exists), then the weekly card.
   const check = await checkin(db, userId, day, week, "app");
   if (check.error) console.error("[drona-cards] check-in:", check.error);
-  const result = await generate(db, userId, day, week, "app");
-  if (!result.saved && result.error) return json({ error: result.error }, 500);
+  // The app also asks when only the check-in is missing. A weekly card that
+  // already exists is never decided again: B1 would pay for a model call whose
+  // card the insert then refuses.
+  const { data: hasWeekly } = await retried(() =>
+    db.from("drona_cards").select("id").eq("user_id", userId).eq("week_start", week).eq("slot", "weekly").maybeSingle()
+  );
+  const result = hasWeekly
+    ? { kind: "existing", saved: false }
+    : await generate(db, userId, day, week, "app");
+  if (!result.saved && "error" in result && result.error) return json({ error: result.error }, 500);
 
   const { data: rows } = await retried(() =>
     db.from("drona_cards").select("*").eq("user_id", userId).eq("week_start", week)
