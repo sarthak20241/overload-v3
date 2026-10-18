@@ -12,6 +12,10 @@
 import { metricTypeDef } from './exercises';
 import { formatDistanceKm, formatDuration, parseDistanceKm, parseDuration } from './format';
 
+/** The migration's CHECK bounds: a set is at most a day and 1000 km. */
+export const MAX_TARGET_SECONDS = 86400;
+export const MAX_TARGET_METERS = 1_000_000;
+
 export interface RoutineTargets {
   target_duration_seconds: number | null;
   target_distance_m: number | null;
@@ -203,10 +207,6 @@ export function targetsFromEditor(
     target_distance_m: meters > 0 && meters <= MAX_TARGET_METERS ? meters : null,
   };
 }
-
-/** The migration's CHECK bounds: a set is at most a day and 1000 km. */
-export const MAX_TARGET_SECONDS = 86400;
-export const MAX_TARGET_METERS = 1_000_000;
 
 /**
  * Only the target keys that are set. A write sends these and nothing else, so
