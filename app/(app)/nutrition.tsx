@@ -474,7 +474,8 @@ export default function NutritionScreen() {
   // Portion and numbers ride along with the ids: a portion edit keeps the
   // row's id, and the copy sheet and the usual portion must still see it.
   const diaryVersion = useMemo(
-    () => `${totalsDayIso}|${MEALS.map((m) => byMeal[m.type].map((e) => `${e.id}:${e.quantity}:${e.kcal}`).join(',')).join('|')}`,
+    () => `${totalsDayIso}|${MEALS.map((m) => byMeal[m.type].map((e) =>
+      `${e.id}:${e.quantity}:${e.serving_unit}:${e.kcal}:${e.protein_g}:${e.carb_g}:${e.fat_g}`).join(',')).join('|')}`,
     [byMeal, totalsDayIso],
   );
   const { history } = useFoodHistory(isSignedIn ? diaryVersion : 'guest');
@@ -609,7 +610,14 @@ export default function NutritionScreen() {
       entry_count: ref.sections.reduce((t, sec) => t + sec.entryIds.length, 0),
       via: 'relog',
     });
-    await undoParsedMeal(supabase, ref);
+    try {
+      await undoParsedMeal(supabase, ref);
+    } catch {
+      // Keep the chip: the lines may still be there, and Undo can be tried again.
+      haptics.warning();
+      reload();
+      return;
+    }
     setRelogged((cur) => {
       const next = new Map(cur);
       for (const sec of ref.sections) for (const id of sec.entryIds) next.delete(id);

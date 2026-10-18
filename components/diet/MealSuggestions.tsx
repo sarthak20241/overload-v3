@@ -103,7 +103,7 @@ export function MealSuggestions({ items, mealLogged, mealLabel, weekday, busyKey
         );
       })}
 
-      {(hidden > 0 || expanded) && items.length > FIRST_SHOWN && (
+      {items.length > FIRST_SHOWN && (
         <Pressable onPress={() => setExpanded((e) => !e)} hitSlop={8} style={s.more} accessibilityRole="button">
           <Text style={[s.moreTxt, { color: C.textMuted }]}>{expanded ? 'Show less' : `${hidden} more you have here`}</Text>
           <Feather name={expanded ? 'chevron-up' : 'chevron-down'} size={12} color={C.textMuted} />
