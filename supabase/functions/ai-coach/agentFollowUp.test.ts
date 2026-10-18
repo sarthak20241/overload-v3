@@ -98,6 +98,13 @@ Deno.test("only a reply the agent wrote is the agent's question; a failed turn i
   assertEquals(agentAsked(undefined), false);
 });
 
+Deno.test("an unsure answer to the agent's question still goes to the agent", async () => {
+  // Below the floor a fresh "steps" message needs: the agent asked, so it finishes.
+  const d = await route(fromAgent, 0.3);
+  assertEquals(d.resumeAgent, true);
+  assert(wantsFoodAgent(d, true), "an answer the router let through must reach the agent");
+});
+
 Deno.test("a question the parse asked still goes to the parse", async () => {
   const d = await route(oats, 0.6);
   assertEquals([d.intent, d.resumeAgent ?? false], ["continue", false]);
