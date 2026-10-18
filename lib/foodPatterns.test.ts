@@ -76,6 +76,15 @@ Deno.test("the portion offered is the one logged most, with that entry's numbers
   assertEquals([s.quantity, s.serving_unit, s.kcal], [2, "cup", 300]);
 });
 
+Deno.test("a suggestion keeps how its line was logged, so an estimate stays one", () => {
+  const h = [
+    entry(daysAgo(1), "lunch", "Dal", { logged_via: "ai", tier: "fast", source: "estimate" }),
+    entry(daysAgo(2), "lunch", "Dal", { logged_via: "ai", tier: "fast", source: "estimate" }),
+  ];
+  const s = learnPatterns(h, TODAY).lunch[0];
+  assertEquals([s.logged_via, s.tier, s.source], ["ai", "fast", "estimate"]);
+});
+
 Deno.test("names match regardless of case and spacing", () => {
   const h = [
     entry(daysAgo(1), "breakfast", "Black coffee"),
@@ -96,6 +105,7 @@ Deno.test("a dropped habit ranks below a current one", () => {
 const sug = (meal: PatternMeal, name: string, usual = true): FoodSuggestion => ({
   key: `${meal}:${name}`, meal_type: meal, food_id: null, food_name: name, quantity: 1, serving_unit: "serving",
   grams_logged: null, kcal: 100, protein_g: 5, carb_g: 10, fat_g: 3, fiber_g: null, source: null,
+  logged_via: null, tier: null,
   score: usual ? 0.8 : 0.35, reason: "daily", usual,
 });
 const patterns = () => ({

@@ -41,6 +41,10 @@ export interface HistoryEntry {
   kcal: number; protein_g: number; carb_g: number; fat_g: number;
   fiber_g: number | null;
   source?: string | null;
+  /** How the original line was written, and the tier its numbers came from.
+   *  A re-log carries both over, so an estimate stays an estimate. */
+  logged_via?: string | null;
+  tier?: string | null;
 }
 
 export interface FoodSuggestion {
@@ -55,6 +59,8 @@ export interface FoodSuggestion {
   kcal: number; protein_g: number; carb_g: number; fat_g: number;
   fiber_g: number | null;
   source: string | null;
+  logged_via: string | null;
+  tier: string | null;
   /** 0..1, the larger of the daily and weekday rates. Sorts the list. */
   score: number;
   /** 'weekday' when the habit belongs to this weekday more than to every day. */
@@ -148,6 +154,8 @@ export function learnPatterns(
         kcal: best.kcal, protein_g: best.protein_g, carb_g: best.carb_g, fat_g: best.fat_g,
         fiber_g: best.fiber_g,
         source: best.source ?? null,
+        logged_via: best.logged_via ?? null,
+        tier: best.tier ?? null,
         score,
         reason: weeklyHabit && weekdayRate > dailyRate + 0.15 ? 'weekday' : 'daily',
         usual: score >= USUAL_RATE,

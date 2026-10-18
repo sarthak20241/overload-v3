@@ -34,7 +34,7 @@ async function fetchHistory(supabase: Supa): Promise<HistoryEntry[] | null> {
   const end = new Date(last.getFullYear(), last.getMonth(), last.getDate(), 23, 59, 59, 999);
   const { data, error } = await supabase
     .from('meals')
-    .select('meal_type, logged_at, meal_entries(food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, source, position)')
+    .select('meal_type, logged_at, meal_entries(food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, source, logged_via, tier, position)')
     .gte('logged_at', first.toISOString())
     .lte('logged_at', end.toISOString());
   if (error || !data) return null;
@@ -50,6 +50,8 @@ async function fetchHistory(supabase: Supa): Promise<HistoryEntry[] | null> {
         kcal: num(e.kcal), protein_g: num(e.protein_g), carb_g: num(e.carb_g), fat_g: num(e.fat_g),
         fiber_g: e.fiber_g == null ? null : num(e.fiber_g),
         source: e.source ?? null,
+        logged_via: e.logged_via ?? null,
+        tier: e.tier ?? null,
         position: num(e.position),
       });
     }
@@ -70,7 +72,9 @@ let _mem: HistoryCache | null = null;
 export function useFoodHistory(version: string): { history: HistoryEntry[] } {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
-  const key = `${user?.id ?? 'anon'}:${ymd(new Date())}`;
+  // v2: entries carry logged_via + tier. An older cache without them would
+  // re-log with no label, so it is not read at all.
+  const key = `v2:${user?.id ?? 'anon'}:${ymd(new Date())}`;
   const seed = _mem && _mem.key === key ? _mem.entries : null;
   const [history, setHistory] = useState<HistoryEntry[]>(seed ?? []);
 
@@ -122,6 +126,12 @@ export function lineAsItem(e: Omit<HistoryEntry, 'dayIso'>, mealType: MealType):
     assumption: null,
     confidence: 'high',
     meal_type: mealType,
+    // ai_auto means the server wrote the row itself; this copy is the
+    // client's, so it goes back as plain 'ai'. Same trust either way.
+    relog: {
+      logged_via: e.logged_via === 'manual' ? 'manual' : e.logged_via === 'ai' || e.logged_via === 'ai_auto' ? 'ai' : null,
+      tier: e.tier ?? null,
+    },
   };
 }
 

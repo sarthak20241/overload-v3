@@ -668,6 +668,12 @@ export interface ParsedMealItem {
    *  instead of "edited": the numbers are the user's, from My Meals. */
   saved_meal?: string | null;
 
+  /** Set on a line copied from one the user logged before (a usual food, or
+   *  the day before's meal). Its original logged_via and tier are written
+   *  back unchanged: the food memory trusts 'manual' lines as the user's own
+   *  numbers, so labelling a copied AI estimate 'manual' would promote it. */
+  relog?: { logged_via: 'ai' | 'manual' | null; tier: string | null };
+
   /** Other variants the user also logs, priced from their own numbers, for the
    *  one-tap swap chip (lib/variantSwap). Only on lines Drona answered from
    *  the user's memory; absent from an older server build. */
@@ -1302,15 +1308,14 @@ export async function logParsedMeal(
   /** How the user got here. Food detail reuses this writer for a single
    *  catalog item, which is a search log, not an AI parse. 'pattern' (a
    *  suggestion from the user's own habits) and 'copy_day' (copied from the
-   *  day before) re-log lines the user already logged once, so nothing was
-   *  parsed: they are written as manual entries. */
+   *  day before) re-log earlier lines; those carry `relog` and keep their
+   *  original labels. */
   via: 'ai' | 'search' | 'drona_search' | 'pattern' | 'copy_day' = 'ai',
 ): Promise<{ ref?: LoggedParseRef; error?: string }> {
   const done: LoggedSectionRef[] = [];
-  const loggedVia = via === 'pattern' || via === 'copy_day' ? 'manual' : 'ai';
   for (const section of sectionsOf(meal)) {
     const lines = meal.items.filter((it) => (it.meal_type ?? meal.meal_type) === section);
-    const r = await logSection(supabase, section, lines, date, loggedVia);
+    const r = await logSection(supabase, section, lines, date);
     if (r.error || !r.ref) {
       await undoParsedMeal(supabase, { sections: done });
       return { error: r.error ?? 'Could not add that' };
@@ -1332,7 +1337,6 @@ async function logSection(
   mealType: MealType,
   items: ParsedMealItem[],
   date: Date,
-  loggedVia: 'ai' | 'manual' = 'ai',
 ): Promise<{ ref?: LoggedSectionRef; error?: string }> {
   const m = await findOrCreateMeal(supabase, mealType, date);
   if (m.error || !m.id) return { error: m.error ?? 'Could not create the meal' };
@@ -1358,7 +1362,11 @@ async function logSection(
     fiber_g: it.fiber_g == null ? null : r1(it.fiber_g),
     sugar_g: null, sat_fat_g: null, sodium_mg: null,
     position: base + idx,
-    logged_via: loggedVia,
+    // A re-logged line keeps its original label and tier (see `relog`).
+    // Every row names `tier`, null when unknown, so the bulk insert's columns
+    // agree; a null tier still lets the stamp trigger fill it as before.
+    logged_via: it.relog ? it.relog.logged_via : 'ai',
+    tier: it.relog ? it.relog.tier : null,
     // Where the macros came from (catalog / off / web / estimate) so the diary can
     // later tell a real label/web hit from a pure estimate (migration 0076).
     source: it.source,
