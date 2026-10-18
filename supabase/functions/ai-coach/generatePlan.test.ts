@@ -136,3 +136,15 @@ Deno.test("control characters never reach a saved exercise name", () => {
   const star = parseSkeleton("DAY | A | b\nNEW | Couch*Stretch | Hip Flexors | Bodyweight | duration")!;
   assertEquals(star.days[0].slots, ["CouchStretch"]);
 });
+
+Deno.test("an unknown SLOT name is cleaned like a NEW name", () => {
+  const s = parseSkeleton("DAY | A | b\nSLOT | Odd*Row\u0007")!;
+  assertEquals(s.days[0].slots, ["OddRow"]);
+});
+
+Deno.test("the first template for an invented name wins", () => {
+  const s = parseSkeleton(
+    "DAY | A | b\nNEW | Couch Stretch | Hip Flexors | Bodyweight | duration\nDAY | B | c\nNEW | Couch Stretch | Quads | Other | weight_reps",
+  )!;
+  assertEquals(s.new_exercises?.["Couch Stretch"]?.metric_type, "duration");
+});

@@ -230,14 +230,18 @@ export function parseSkeleton(raw: string): PlanSkeleton | null {
       days.push({ name: cell(parts[1]) || `Day ${days.length + 1}`, note: cell(parts[2]) || undefined, slots: [] });
     } else if (tag === "SLOT") {
       if (days.length === 0) continue;
-      const n = cell(parts[1]);
+      // Cleaned like a NEW name: a SLOT the catalog does not know is saved
+      // under this name too. Safe for real catalog names (longest is 58
+      // chars, none has a * or a control character).
+      const n = capName(cell(parts[1]));
       if (n) days[days.length - 1].slots.push(n);
     } else if (tag === "NEW") {
       if (days.length === 0) continue;
       const n = capName(cell(parts[1]));
       if (!n) continue;
       days[days.length - 1].slots.push(n);
-      new_exercises[n] = normalizeNewExercise(parts[2], parts[3], parts[4]);
+      // First template wins, the same rule as a catalog-name collision.
+      if (!Object.hasOwn(new_exercises, n)) new_exercises[n] = normalizeNewExercise(parts[2], parts[3], parts[4]);
     }
   }
 

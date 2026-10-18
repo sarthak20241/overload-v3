@@ -58,8 +58,10 @@ export function planExerciseInsert(ex: { name: string; new_exercise?: NewExercis
 
 /**
  * A name as an ILIKE pattern that matches only itself. ILIKE reads % and _ as
- * wildcards and the backslash as their escape, so an invented "Band_Pull" would
- * otherwise also match "Band Pull" or "BandXPull" and reuse that exercise.
+ * wildcards and the backslash as their escape, so "Band_Pull" would otherwise
+ * also match "Band Pull" or "BandXPull" and reuse that exercise. Used by every
+ * find-by-name exercise lookup: the Drona plan save, resolveExerciseRow
+ * (workout sync, live add, imports) and the routine editor.
  */
 export function ilikeExact(name: string): string {
   return name.replace(/[\\%_]/g, (c) => `\\${c}`);
@@ -72,8 +74,8 @@ const ordered = (a: number, b: number) => ({ reps_min: Math.min(a, b), reps_max:
 
 /** "3x10", "3 x 8-12", "3-4x10", "3 sets of 10": the leading part is sets, the rest is reps. */
 const SETS_X_REPS = /^\s*\d+(?:\s*[-\u2013]\s*\d+)?\s*(?:[x\u00d7]|sets?\s+of)\s*(\d+)\s*(?:[-\u2013]\s*(\d+))?\s*$/i;
-/** A suffix that makes the number a time, a distance or calories, not a rep count. */
-const NON_REP_UNIT = /^(s|secs?|seconds?|min|mins|minutes?|m|meters?|metres?|km|mi|miles?|yd|yards?|cals?|kcals?)\b/i;
+/** A suffix that makes the number a time, a distance, calories or a set count, not a rep count. */
+const NON_REP_UNIT = /^(s|secs?|seconds?|min|mins|minutes?|m|meters?|metres?|km|mi|miles?|yd|yards?|cals?|kcals?|sets?)\b/i;
 
 export interface PlanRoutineRow extends Partial<RoutineTargets> {
   reps_min: number;
