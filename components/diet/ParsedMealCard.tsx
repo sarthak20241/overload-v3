@@ -253,6 +253,12 @@ export function ParsedMealCard({
     onNaturalHeight(natural);
   }, [expanded, onNaturalHeight, natural]);
 
+
+  // Your own words: two lines by default, all of them on a tap.
+  const [wordsOpen, setWordsOpen] = useState(false);
+  useEffect(() => { setWordsOpen(false); }, [rawText]);
+  const isCollapsed = collapsible && !!minimized;
+
   // A fresh reply opens big: wait for the first full layout so the popover
   // starts from the card's real rect and knows how tall to grow.
   const handledKey = useRef(autoExpandKey ?? 0);
@@ -265,12 +271,9 @@ export function ParsedMealCard({
     if (cardH <= 0 || listContentH <= 0) return;
     handledKey.current = autoExpandKey;
     expand();
-  });
-
-  // Your own words: two lines by default, all of them on a tap.
-  const [wordsOpen, setWordsOpen] = useState(false);
-  useEffect(() => { setWordsOpen(false); }, [rawText]);
-  const isCollapsed = collapsible && !!minimized;
+    // expand is rebuilt every render; what decides whether to fire is here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoExpandKey, cardH, listContentH, isCollapsed, expandable]);
   const items = state === 'review' && meal ? meal.items : [];
   const sum = items.reduce(
     (a, it) => ({ kcal: a.kcal + it.kcal, p: a.p + it.protein_g, c: a.c + it.carb_g, f: a.f + it.fat_g }),

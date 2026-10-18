@@ -176,7 +176,9 @@ function PopoverBody({ origin, naturalHeight, bottomEdge, open, onRequestClose, 
     // box-none: the root lets touches through to the food box below the
     // backdrop; only the backdrop and the card take them.
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-      <Animated.View style={[styles.backdrop, backdrop]}>
+      {/* Lets taps through while it fades out, so a quick tap on the day
+          right after closing is not eaten. */}
+      <Animated.View style={[styles.backdrop, backdrop]} pointerEvents={open ? 'auto' : 'none'}>
         {BlurView && (
           <BlurView intensity={28} tint={mode === 'dark' ? 'dark' : 'light'} style={StyleSheet.absoluteFill} />
         )}
