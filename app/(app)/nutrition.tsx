@@ -407,15 +407,17 @@ export default function NutritionScreen() {
   }, []);
   // A reply landing (reading/streaming -> review) opens the card big. The
   // card itself lifts off once laid out, from wherever it first appeared.
+  // Keyed on popOpen, not pop: a reply that lands during the return trip
+  // reopens the card rather than being left small.
   const [autoPopKey, setAutoPopKey] = useState(0);
   const prevStatus = useRef(flow.status);
   useEffect(() => {
     const was = prevStatus.current;
     prevStatus.current = flow.status;
-    if (flow.status === 'review' && (was === 'analysing' || was === 'streaming') && !pop) {
+    if (flow.status === 'review' && (was === 'analysing' || was === 'streaming') && !popOpen) {
       setAutoPopKey((k) => k + 1);
     }
-  }, [flow.status, pop]);
+  }, [flow.status, popOpen]);
   // Top of the food box on screen, so the popover and its blur stop above it.
   // The bar's bottom padding lives here once: the bar's style uses it, and so
   // does the popover's edge, so the two cannot drift apart. Computed rather

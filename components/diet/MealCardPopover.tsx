@@ -198,6 +198,8 @@ function PopoverBody({ origin, naturalHeight, bottomEdge, open, onRequestClose, 
         // gives it nothing (or a square) to cast from.
         style={[styles.frame, { backgroundColor: C.card, borderRadius: Radius.lg }, frame]}
         // Not modal for VoiceOver: the food box below is meant to stay reachable.
+        // 'none' while closing is load-bearing: a fade-out shows the last
+        // children it held, whose callbacks (Add, Discard) are stale.
         pointerEvents={open ? 'auto' : 'none'}
       >
         {lastChildren.current}

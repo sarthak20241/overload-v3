@@ -28,6 +28,11 @@
  * The user picks the section and confirms; only then do the entries land in that
  * meal section underneath. Numbers carry receipts: catalog lines are silent,
  * sourced/estimated lines say where they came from.
+ *
+ * Two instances can be mounted at once: the inline card (hidden) and the one
+ * in MealCardPopover. Keep this component free of side effects - no
+ * analytics, no writes in effects - or they would fire twice. Those belong in
+ * the screen's callbacks, which run once.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
