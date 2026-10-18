@@ -140,7 +140,8 @@ export async function resolveExerciseRow(
         .from('exercises')
         .select('*')
         // Escaped: ILIKE reads % and _ as wildcards, so "Band_Pull" would
-        // otherwise match "Band Pull" and log sets onto the wrong exercise.
+        // otherwise match "Band Pull" and log sets onto the wrong exercise
+        // (see ilikeExact for the * it cannot cover).
         .ilike('name', ilikeExact(lib.name))
         .order('created_at', { ascending: true })
         .limit(1);

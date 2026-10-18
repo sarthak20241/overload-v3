@@ -1493,7 +1493,7 @@ async function findOrCreateExercise(ex: EditorExercise): Promise<string> {
     const { data } = await supabase
       .from('exercises')
       .select('id')
-      // Escaped so a name with % or _ matches only itself.
+      // Escaped so % and _ in a name are literal (see ilikeExact for *).
       .ilike('name', ilikeExact(name))
       .order('created_at', { ascending: true })
       .limit(1);

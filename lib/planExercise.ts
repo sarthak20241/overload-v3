@@ -57,11 +57,15 @@ export function planExerciseInsert(ex: { name: string; new_exercise?: NewExercis
 }
 
 /**
- * A name as an ILIKE pattern that matches only itself. ILIKE reads % and _ as
+ * A name as an ILIKE pattern in which % and _ are literal. ILIKE reads them as
  * wildcards and the backslash as their escape, so "Band_Pull" would otherwise
  * also match "Band Pull" or "BandXPull" and reuse that exercise. Used by every
  * find-by-name exercise lookup: the Drona plan save, resolveExerciseRow
  * (workout sync, live add, imports) and the routine editor.
+ *
+ * NOT covered: PostgREST also reads * as a wildcard in ilike, and it cannot be
+ * escaped here. Drona's plan names have * stripped server side (capName); a
+ * user-typed name with * can still match loosely. No catalog name has one.
  */
 export function ilikeExact(name: string): string {
   return name.replace(/[\\%_]/g, (c) => `\\${c}`);

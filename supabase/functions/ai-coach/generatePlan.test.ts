@@ -148,3 +148,8 @@ Deno.test("the first template for an invented name wins", () => {
   )!;
   assertEquals(s.new_exercises?.["Couch Stretch"]?.metric_type, "duration");
 });
+
+Deno.test("two spellings of one catalog exercise in a day leave it there once", () => {
+  const s = groundSkeleton(parseSkeleton("DAY | A | b\nSLOT | T Bar Row\nSLOT | Bench Press\nSLOT | T-Bar Row")!, CATALOG);
+  assertEquals(s.days[0].slots, ["T-Bar Row", "Bench Press"]);
+});

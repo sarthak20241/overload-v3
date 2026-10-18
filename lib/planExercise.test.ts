@@ -177,7 +177,7 @@ Deno.test('a bare m on a run is meters only from 100 up, minutes below', () => {
   });
 });
 
-// ILIKE reads % and _ as wildcards: an invented name must match only itself.
+// ILIKE reads % and _ as wildcards: in a lookup they must be literal.
 Deno.test('a name used for the ILIKE lookup has its wildcards escaped', () => {
   assertEquals(ilikeExact('Band_Pull 100%'), 'Band\\_Pull 100\\%');
   assertEquals(ilikeExact('a\\b'), 'a\\\\b');
