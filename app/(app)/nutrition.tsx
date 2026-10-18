@@ -34,7 +34,7 @@ import { DayLoadFailed, DaySummaryLoading, MealRowsLoading } from '@/components/
 import { ParsedItemEditor } from '@/components/diet/ParsedItemEditor';
 import { EntryEditSheet } from '@/components/diet/EntryEditSheet';
 import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
-import { MaintenanceLine } from '@/components/diet/MaintenanceLine';
+import { MaintenanceRow } from '@/components/diet/MaintenanceRow';
 import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
 import { fuelOn } from '@/lib/fuelDays';
 import { goalDayFor, latestLogDay, readLogDayPhrase } from '@/lib/logDay';
@@ -1444,11 +1444,11 @@ export default function NutritionScreen() {
             </View>
           </View>
           )}
+          {/* What Drona has learned this body burns: one quiet row at the foot of
+              the card, details on tap. Moves daily; the target itself only moves
+              on the weekly check-in. */}
+          {isSignedIn && <MaintenanceRow />}
         </View>
-
-        {/* What Drona has learned this body burns: moves daily as weigh-ins and
-            whole food days land; the target itself moves on the weekly check-in. */}
-        {isSignedIn && <MaintenanceLine />}
 
         {/* Drona line. Hidden while the day loads: it is a sentence ABOUT the
             totals, so showing the old day's verdict over a shimmering ring is
