@@ -15,7 +15,7 @@
 import { readFileSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
 import { decideCard, type DronaFacts, signalsFrom } from '../../supabase/functions/_shared/dronaCards.ts';
-import { decidePick, hushed, mutedTopics, type PickFacts } from '../../supabase/functions/_shared/dronaPick.ts';
+import { askedLately, decidePick, hushed, mutedTopics, type PickFacts } from '../../supabase/functions/_shared/dronaPick.ts';
 
 const env = Object.fromEntries(readFileSync(new URL('../../.env.local', import.meta.url), 'utf8').split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1).trim()]));
 const db = createClient(env.EXPO_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
@@ -42,7 +42,7 @@ for (const u of users) {
   const pf: PickFacts = { week_start: judged, behaviours: (behs ?? []).filter((b) => b.user_id === u) };
   const newUser = signalsFrom(f).new_user;
   const picked = newUser ? null : decidePick(pf, f);
-  const card = picked ?? hushed(decideCard(f, undefined, mutedTopics(pf)), pf);
+  const card = picked ?? hushed(decideCard(f, undefined, new Set([...mutedTopics(pf), ...askedLately(f)])), pf);
   const from = picked ? 'pick' : card.kind === 'hold' ? 'hold' : 'P0';
   tally[`${from}:${card.topic}`] = (tally[`${from}:${card.topic}`] ?? 0) + 1;
   const had = pf.behaviours!.map((b) => `${b.behaviour}${b.card_kind === 'steer' ? '(steer)' : ''}`).join(', ');

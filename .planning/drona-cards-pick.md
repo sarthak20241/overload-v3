@@ -121,7 +121,7 @@ weeks, so they would see it every 2 weeks, or every 4 after "Skip".
 - `get_drona_pick_facts` live (migration `20261018114836_drona_pick_facts`).
   Service role only: anon is refused (42501). Same "rebuild first when today
   is not done" step as `get_drona_energy_facts`.
-- `_shared/dronaPick.ts` + `dronaPick.test.ts` (15 tests). Each skip rule was
+- `_shared/dronaPick.ts` + `dronaPick.test.ts` (16 tests). Each skip rule was
   broken on purpose and a test failed: check-in skip, steer skip, cooldown, the
   mute on what a card asks for, the meta notice, the priority order, the one-side
   goals detail, the "most skipped" choice, "twice", `hushed`.
@@ -160,4 +160,18 @@ restored exactly (facts md5 unchanged).
   (`DronaCardPopup.primaryLabelFor`) and said "Open"; and the chips showed whole
   phrases in big type. Chips now hold short numbers only (a test checks every
   behaviour's chips stay 10 characters or less).
+
+## Review fixes (claude[bot], PR #264)
+
+- One cooldown across old and new cards: a pick ask waits after the same ask
+  from an old P0 card (`weigh_in`, `log_food`, `due_session`), and the P0
+  fallback skips a topic a pick card asked for lately (`askedLately`).
+- A failed pick read says nothing that week. Without it, the mutes and the
+  hush are unknown.
+- Kept on purpose: B1's shared code (`dronaEnergy.ts` and the eval scripts
+  still import `dronaCalories.ts`/`dronaModel.ts`); `facts.pick` on the card
+  row (the audit of why that card was said); the rebuild in
+  `get_drona_pick_facts` has no lock, the same as `get_drona_energy_facts`. In
+  the worker the check-in runs first and sets `last_day_done`, so the pick read
+  does not rebuild again.
 

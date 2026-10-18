@@ -52,8 +52,11 @@ export interface PickCard {
 /** The calorie check-in owns these (slot 'calories', _shared/dronaEnergy.ts). */
 export const CHECKIN_BEHAVIOURS = ['finding_maintenance', 'calories_off'];
 
-/** What a card's button asks for, as the topic the older cards used, so a 'topic:' mute covers both. */
+/** What a card's button asks for, as the topic the older cards used, so a mute or a cooldown covers both. */
 const ASKS: Record<string, string> = { log_weight: 'weigh_in', log_food: 'log_food', start_session: 'due_session' };
+
+/** The pick cards that are always an ask, and the older topic they ask for. */
+const PICK_ASKS: Record<string, string> = { scale_untrusted: 'weigh_in', logs_partial_days: 'log_food' };
 
 // ── Formatting ───────────────────────────────────────────────────────────────
 
@@ -356,6 +359,18 @@ export function hushed<C extends { kind: string; payload: object; signals: strin
 }
 
 /**
+ * The older topics a pick card asked for lately (a pick card's topic is its
+ * behaviour, so the P0 rules' cooldown would not see it). The worker adds
+ * these to the P0 fallback's skip list, so "log whole days" is not followed by
+ * "log food more often" the next week.
+ */
+export function askedLately(facts: DronaFacts): Set<string> {
+  const out = new Set<string>();
+  for (const [behaviour, asks] of Object.entries(PICK_ASKS)) if (onCooldown(behaviour, facts)) out.add(asks);
+  return out;
+}
+
+/**
  * The weekly card from the behaviours, or null when none is left to say.
  * `facts` is get_drona_facts, read only for the cooldown (its recent weekly cards).
  */
@@ -372,7 +387,7 @@ export function decidePick(pf: PickFacts | null | undefined, facts: DronaFacts):
     const topic = row.behaviour;
     const asks = ASKS[words.payload.action ?? ''];
     if (muted.has(topic) || (asks && muted.has(asks))) continue;
-    if (onCooldown(topic, facts)) continue;
+    if (onCooldown(topic, facts) || (asks && onCooldown(asks, facts))) continue;
     // Two cards in a row went unanswered: say it, ask nothing.
     return hushed({ ...words, topic, signals: [`behaviour:${row.behaviour}`] } as PickCard, pf);
   }

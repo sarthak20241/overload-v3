@@ -21,7 +21,7 @@ import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 import { decideCard, type DronaFacts, onCooldown, signalsFrom, weekStartOf } from "../_shared/dronaCards.ts";
 import { decideSwap, type SwapFacts, swapCard } from "../_shared/dronaSwap.ts";
 import { checkinCooldown, decideEnergyCard, type EnergyFacts } from "../_shared/dronaEnergy.ts";
-import { decidePick, hushed, mutedTopics, type PickFacts } from "../_shared/dronaPick.ts";
+import { askedLately, decidePick, hushed, mutedTopics, type PickFacts } from "../_shared/dronaPick.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
 
@@ -189,15 +189,20 @@ async function generate(
     if (swap) return swap;
   }
 
-  // The behaviour pick: what last week's behaviours found. A failed read
-  // falls through to the P0 rules (without mutes: they are not known then).
+  // The behaviour pick: what last week's behaviours found. A failed read says
+  // nothing this week: without it the mutes and the "not hearing Drona" hush
+  // are unknown, and asking someone who muted a topic is worse than silence.
   const { data: pick, error: pickErr } = await retried(() =>
     db.rpc("get_drona_pick_facts", { p_user_id: userId, p_as_of: localDay })
   );
-  if (pickErr) console.error("[drona-cards] pick facts:", pickErr.message);
-  const pf = pickErr ? null : (pick as PickFacts | null);
+  if (pickErr) {
+    console.error("[drona-cards] pick facts:", pickErr.message);
+    return { kind: "hold", saved: false };
+  }
+  const pf = pick as PickFacts | null;
   const picked = newUser ? null : decidePick(pf, facts as DronaFacts);
-  const card = picked ?? hushed(decideCard(facts as DronaFacts, undefined, mutedTopics(pf)), pf);
+  const skip = new Set([...mutedTopics(pf), ...askedLately(facts as DronaFacts)]);
+  const card = picked ?? hushed(decideCard(facts as DronaFacts, undefined, skip), pf);
   if (card.kind === "hold") return { kind: "hold", saved: false };
 
   // Insert, never upsert: the cron and the app can race for the same week, and

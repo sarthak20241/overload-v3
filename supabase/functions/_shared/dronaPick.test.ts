@@ -1,6 +1,6 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import type { DronaFacts } from "./dronaCards.ts";
-import { type BehaviourRow, decidePick, hushed, mutedTopics, type PickFacts, WORDS } from "./dronaPick.ts";
+import { askedLately, type BehaviourRow, decidePick, hushed, mutedTopics, type PickFacts, WORDS } from "./dronaPick.ts";
 
 const WEEK = "2026-10-19";
 const facts = (cards: DronaFacts["cards"] = []): DronaFacts => ({ week_start: WEEK, cards });
@@ -65,6 +65,15 @@ Deno.test("a 'topic:' mute skips a card that asks for that topic", () => {
   assertEquals(decidePick(pf(scale, steer, onTrack), facts())?.topic, "on_track");
   // A signal mute is not a topic mute.
   assertEquals(decidePick(pf(scale), facts())?.topic, "scale_untrusted");
+});
+
+Deno.test("one cooldown across old and new cards: an ask waits after the same ask in either", () => {
+  // An old P0 weigh-in card last week: the scale card waits.
+  assertEquals(decidePick(pf(scale, onTrack), facts([{ week_start: "2026-10-12", topic: "weigh_in", status: "pending" }]))?.topic,
+    "on_track");
+  // A pick food ask last week: the P0 food ask waits (the worker adds this to its skip list).
+  assertEquals([...askedLately(facts([{ week_start: "2026-10-12", topic: "logs_partial_days", status: "applied" }]))], ["log_food"]);
+  assertEquals([...askedLately(facts([{ week_start: "2026-09-21", topic: "logs_partial_days", status: "applied" }]))], []);
 });
 
 Deno.test("not hearing Drona: the pick is said as a notice, no ask", () => {
