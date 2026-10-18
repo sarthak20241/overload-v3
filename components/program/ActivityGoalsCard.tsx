@@ -66,7 +66,7 @@ export function ActivityGoalsCard() {
     <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
       <PressableScale
         haptic="tap"
-        onPress={() => router.push('/goal-plan' as any)}
+        onPress={() => router.push('/goal-plan')}
         style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
         accessibilityRole="button"
         accessibilityLabel="Movement goals for this phase"

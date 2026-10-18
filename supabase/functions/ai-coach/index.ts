@@ -4510,12 +4510,14 @@ Deno.serve(async (req) => {
       const { data: active } = await userClient
         .from("coach_programs")
         .select("id")
+        .eq("user_id", userId)
         .eq("status", "active")
         .maybeSingle();
       if (active?.id) {
         const { data: rows, error: actError } = await userClient
           .from("coach_program_phases")
           .select("seq, activity_steps_target, cardio_sessions_per_week")
+          .eq("user_id", userId)
           .eq("program_id", active.id);
         if (actError) console.log("[ai-coach] phase activity error:", actError.message);
         else if (rows && rows.length > 0) {
