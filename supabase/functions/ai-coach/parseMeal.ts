@@ -44,7 +44,7 @@ import {
   type SourceReading,
   VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
-import { foodLabel, parseSuggestion, runTavilyLookup, suggestSearchPayload } from "./tavilyLookup.ts";
+import { foodLabel, parseSuggestion, runTavilyLookup, suggestSearchPayload, withPrep } from "./tavilyLookup.ts";
 import { otherBrandRows } from "./brandCheck.ts";
 import { matchOurSources } from "./ourSources.ts";
 import { applyJudgement, judgeThorough, type ThoroughMatchMode, wantsBrandWeb } from "./thoroughMatch.ts";
@@ -2620,6 +2620,7 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
 <candidate_rules>
 - Choose the candidate that IS the food, not one merely similar. For generic Indian foods prefer the curated staples (Roti, Toor Dal, Curd, Toned Milk) over obscure branded rows. For a plain whole food ("chicken breast", "rice", "milk") prefer the plain/cooked/generic row over processed, fat-free, dried, deli, or flavored variants unless the user named that variant.
 - Respect the item's prep state: never log a roasted/dried/fried item against a cooked/boiled candidate (2-3x density difference). If only a wrong-state candidate exists, estimate instead.
+- Check a candidate's NUMBERS against the food as the user ate it, not only its name. A row named only by the food can still hold the dry or raw values. Foods that absorb water when cooked (pulses, grains, rice, pasta, noodles, oats) have far fewer calories per 100 g cooked than dry, so when the user ate a cooked or served portion (a katori, bowl, plate, forkful) and a candidate's per_100 is the dry form's, that candidate is the wrong state. Use another candidate that fits; if none fits, estimate the food as eaten (food_id null, source "estimate") and say so in assumption.
 - Indian beverage defaults: unqualified "tea" or "chai" means MILK tea (the Chai / Milk Tea row, ~45 kcal/100 ml), and unqualified "coffee" means milk coffee. Herbal, black, green, or lemon tea ONLY when the user says so; picking a 1-2 kcal plain-tea row for unqualified "tea" is wrong. Any such default is never confidence high; name it in assumption.
 - ACCEPTABLE means: eating the candidate instead of what the user described would move the macros less than ~10%. Judge the WORDS THE USER USED, not how similar the names look.
   DROP these words and match the row anyway, they do not change the food: brand on a food fixed by standard or nature (toned milk is 3% fat by regulation, so Amul = Mother Dairy; likewise curd, plain paneer, ghee, oil, atta, rice, dal, eggs); marketing words (fresh, farm, pure, natural, homemade, packet, tetra pack); regional synonyms (doodh = milk, dahi = curd, chawal = rice).
@@ -3266,7 +3267,7 @@ async function webFindingFor(
         onUsage(r.data);
         return parseSuggestion(r.data);
       },
-    }, { name: item.name, brand: item.brand ?? null });
+    }, { name: item.name, brand: item.brand ?? null, prep: item.prep ?? null, eaten: eatenLabel(item) });
     if (out.renamed) onRenamed?.(out.renamed);
     if (out.searchedNoLabel) onNoLabel?.();
     // Counted through the same accumulator as tokens, so the credits land in
@@ -3280,6 +3281,19 @@ async function webFindingFor(
   }
   const found = await runSuperLookup(deps, [item], onUsage, onCall);
   return found?.get(item.name) ?? (found ? [...found.values()][0] : undefined);
+}
+
+/** The line as eaten, for the web judges: "1 katori cooked arhar dal". */
+export function eatenLabel(item: Pick<ExtractedItem, "name" | "quantity" | "unit" | "prep">): string {
+  const qty = Number.isFinite(item.quantity) && item.quantity > 0 ? String(item.quantity) : "";
+  return [qty, item.unit?.trim() ?? "", withPrep(item.name, item.prep)].filter(Boolean).join(" ");
+}
+
+/** The Precise cache key for a line: its name with its preparation, so a
+ *  cooked serving and the dry product are different rows. Before this, "arhar
+ *  dal" held a raw panel that every cooked katori then reused. */
+export function itemCacheKey(item: Pick<ExtractedItem, "name" | "brand" | "prep">): string {
+  return cacheKey(withPrep(item.name, item.prep), item.brand);
 }
 
 export async function superLookupOne(
@@ -3342,7 +3356,11 @@ export async function superLookupOne(
   // what the label is for, and the user's words become an alias pointing at it
   // (precise_alias, per user). So this user's "<nickname>" and everyone's
   // "<real name>" hit one row, and the row's name never claims to be the nickname.
-  const rowKey = finding.searched_as ? cacheKey(finding.searched_as, item.brand) : cacheKey(item.name, item.brand);
+  // A rewritten search keeps the line's preparation in its key too, or a cooked
+  // and a dry line rewritten to the same name would share one row again.
+  const rowKey = finding.searched_as
+    ? itemCacheKey({ name: finding.searched_as, brand: item.brand, prep: item.prep })
+    : itemCacheKey(item);
   if (deps.preciseCachePut) {
     // Never let a cache write cost the user their meal: the lookup already
     // succeeded and the line is good whether or not the row lands.
@@ -3360,7 +3378,7 @@ export async function superLookupOne(
       verified,
       source_note: finding.source_note,
     }).catch((e) => { deps.log?.(`[parse_meal] precise_cache write failed: ${String(e).slice(0, 120)}`); return null; });
-    const userKey = cacheKey(item.name, item.brand);
+    const userKey = itemCacheKey(item);
     if (finding.searched_as && rowId && userKey !== rowKey && deps.preciseAliasPut) {
       await deps.preciseAliasPut(userKey, rowId, null, "lookup")
         .catch((e) => deps.log?.(`[parse_meal] precise_alias write failed: ${String(e).slice(0, 120)}`));
@@ -3368,7 +3386,7 @@ export async function superLookupOne(
   }
 
   return {
-    food_id: `${EPHEMERAL_ID_PREFIX}web_${cacheKey(item.name, item.brand)}`,
+    food_id: `${EPHEMERAL_ID_PREFIX}web_${itemCacheKey(item)}`,
     name: display,
     brand,
     base_unit: "g",
@@ -3450,7 +3468,7 @@ async function resolveOneItem(
   // spoon anchors are derived from the row's own cup serving and a cached row
   // deserves them as much as a catalog one.
   if (deps.preciseCacheGet) {
-    const key = cacheKey(item.name, item.brand);
+    const key = itemCacheKey(item);
     const tCache0 = Date.now();
     const cached = await deps.preciseCacheGet(key).catch(() => null);
     if (cached) {
@@ -3493,7 +3511,7 @@ async function resolveOneItem(
       if (r.match) {
         toolCalls.push("our_sources_match");
         if (r.match.meta.source === "precise" && deps.preciseAliasPut) {
-          await deps.preciseAliasPut(cacheKey(item.name, item.brand), r.match.meta.id, r.match.confidence)
+          await deps.preciseAliasPut(itemCacheKey(item), r.match.meta.id, r.match.confidence)
             .catch((e) => deps.log?.(`[parse_meal] precise_alias write failed: ${String(e).slice(0, 120)}`));
         }
         return { ...item, candidates: [synthesizeVolumeAnchors(r.match.food)], resolvedIdentity: true };

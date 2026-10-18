@@ -73,6 +73,9 @@ export interface FoodIntentDecision {
   /** With a meal waiting, what this message does with it. Null when nothing
    *  was waiting or Jev did not answer. */
   pendingAction?: PendingAction | null;
+  /** The answer to a question the FOOD AGENT asked: send it back to the agent,
+   *  which can read the diary again, not to the parse. */
+  resumeAgent?: boolean;
 }
 
 /**
@@ -527,6 +530,19 @@ export async function routeFoodIntent(
         const sureElse = !!choice && (choice.choice === "other" || choice.choice === "create" || choice.choice === "steps") &&
           choice.confidence >= INTENT_SURE && pc.confidence < 0.5;
         if (pendingAction === "proceed" && sureElse) pendingAction = "unrelated";
+        if (pendingAction === "proceed" && context?.pendingMeal?.origin === "agent") {
+          deps.log?.(`[food_intent] pending=proceed conf=${pc.confidence.toFixed(2)} -> agent`);
+          return {
+            intent: "steps",
+            source: "jev",
+            confidence: pc.confidence,
+            note: `jev ${res.response.model} pending=proceed resume=agent`,
+            savedMatch,
+            hasFood,
+            pendingAction,
+            resumeAgent: true,
+          };
+        }
         if (pendingAction === "proceed") {
           deps.log?.(`[food_intent] pending=proceed conf=${pc.confidence.toFixed(2)}`);
           return {
@@ -636,6 +652,20 @@ export interface FoodActionInputs {
   clientSupportsCreate: boolean;
 }
 
+/** The agent itself wrote this reply, so a question in it is the agent's.
+ *  A failed agent turn also replies, with a canned "try it as two messages":
+ *  that is no question of the agent's, and its answer belongs to the parse. */
+export function agentAsked(agent: { kind: string } | null | undefined): boolean {
+  return agent?.kind === "reply";
+}
+
+/** This message answers the waiting meal. A resumed agent turn counts too, so
+ *  the parse running beside the agent (the fallback when the agent cannot
+ *  answer) also sees the meal. */
+export function continuesPendingMeal(d: FoodIntentDecision | null): boolean {
+  return d?.intent === "continue" || !!d?.resumeAgent;
+}
+
 /**
  * Decide what the food bar does. Pure, so every rule below is pinned by a test
  * rather than by hoping nobody reorders the ifs in index.ts.
@@ -649,6 +679,9 @@ export interface FoodActionInputs {
  *  parse that decideFoodAction also looks at has finished. The agent can end in
  *  a save card, so it needs a client that can draw one. */
 export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreate: boolean): boolean {
+  // An answer to the agent's own question goes back to it at any confidence
+  // that cleared "proceed": the agent asked, so it is the one that can finish.
+  if (d?.resumeAgent) return clientSupportsCreate;
   return !!d && clientSupportsCreate && d.intent === "steps" && d.source === "jev" &&
     d.confidence !== null && d.confidence >= STEPS_ACTION_FLOOR;
 }
@@ -670,6 +703,9 @@ export function decideFoodAction(i: FoodActionInputs): FoodAction {
 
   if (intent === "steps") {
     if (wantsFoodAgent(i.decision, i.clientSupportsCreate)) return "agent";
+    // An answer to the agent's question on a client that cannot take the
+    // agent's work: the parse finishes the meal, as before origin existed.
+    if (i.decision.resumeAgent) return "log";
     // Not confident enough to spend the agent. Unsure 'steps' sits beside
     // questions about earlier food ("how many calories was yesterday's
     // breakfast" came back at 49%), so a message with no food in it gets a
@@ -832,16 +868,17 @@ export function readDraftResult(
  */
 export function withPendingMeal<D extends { message: string; cleared?: boolean; pending_meal?: PendingFoodMeal }>(
   declined: D | null,
-  a: { decision: FoodIntentDecision | null; incoming: PendingFoodMeal | null; text: string },
+  a: { decision: FoodIntentDecision | null; incoming: PendingFoodMeal | null; text: string; fromAgent?: boolean },
 ): (D & { pending_meal?: PendingFoodMeal }) | null {
   if (!declined || declined.cleared) return declined;
   const pending = declined.pending_meal ?? carryPendingMeal({
     incoming: a.incoming,
     cancelled: a.decision?.pendingAction === "cancel",
-    continued: a.decision?.intent === "continue",
+    continued: continuesPendingMeal(a.decision),
     text: a.text,
     hasFood: (a.decision?.hasFood ?? 0) >= HAS_FOOD_FLOOR,
     shown: declined.message,
+    fromAgent: a.fromAgent,
   });
   return pending ? { ...declined, pending_meal: pending } : declined;
 }

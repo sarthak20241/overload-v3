@@ -29,7 +29,34 @@ import type { ReadingPer100, SourceReading } from "./preciseCache.ts";
 export interface WebFoodItem {
   name: string;
   brand: string | null;
+  /** The preparation the user ate it in ("cooked", "fried"), when they said or
+   *  implied one. Searched for, so a cooked dish does not find its dry form. */
+  prep?: string | null;
+  /** The line as the user ate it ("1 katori cooked arhar dal"). Jev and the
+   *  page reader judge pages against THIS, not the bare name: a page for the
+   *  raw or dry form is a different food from a cooked serving, and the bare
+   *  name alone cannot say which one was eaten (live, 2026-10-18: a cooked
+   *  katori of dal was logged from a raw-dal panel at 3x its calories). */
+  eaten?: string | null;
 }
+
+/** The food as Jev and the reader see it: the name, the brand, and how it was
+ *  eaten when we know. */
+function foodState(item: WebFoodItem): Record<string, unknown> {
+  return {
+    name: item.name,
+    brand: item.brand,
+    ...(item.eaten?.trim() ? { as_eaten: item.eaten.trim() } : {}),
+  };
+}
+
+/** Said once, to Jev and to the reader: a page must match the food in the
+ *  state it was eaten, judged by its numbers as well as its words. */
+const AS_EATEN_RULE =
+  'food.as_eaten, when present, is how the user ate it. A page or panel for a different state of the food ' +
+  "is not this food: foods that absorb water when cooked (pulses, grains, rice, pasta, noodles, oats) have " +
+  "far fewer calories per 100 g cooked than dry, so a panel with the dry or raw values is not a cooked or " +
+  "served portion, whatever the page title says. Judge by the numbers as well as the words.";
 
 /** Same shape as parseMeal's SuperFinding, restated so this file stays
  *  import-free of parseMeal. */
@@ -187,8 +214,23 @@ export function foodLabel(item: WebFoodItem): string {
   return `${brand} ${name}`;
 }
 
+/** "cooked arhar dal" from name "arhar dal" and prep "cooked". A preparation
+ *  already in the name is not said twice. Shared by the search queries and the
+ *  Precise cache key, so the two cannot drift apart. */
+export function withPrep(name: string, prep: string | null | undefined): string {
+  const n = name.trim();
+  const p = prep?.trim() ?? "";
+  if (!p) return n;
+  // Whole words: "raw" is not already in "strawberry".
+  const words = (x: string) => x.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const have = new Set(words(n));
+  return words(p).every((w) => have.has(w)) ? n : `${p} ${n}`;
+}
+
 export function searchQueries(item: WebFoodItem): string[] {
-  const label = foodLabel(item);
+  // "Amul cooked arhar dal", not "Amul arhar dal": the bare name mostly finds
+  // the dry product's panel. The prep goes on the food, the brand in front.
+  const label = foodLabel({ ...item, name: withPrep(item.name, item.prep) });
   return [
     `${label} nutrition facts per 100g`,
     `${label} calories protein carbohydrate fat`,
@@ -262,9 +304,10 @@ export function findPanelText(text: string | null | undefined, maxChars = PANEL_
 /** One Jev yes/no per result, all in one request. */
 export function relevanceQuestions(item: WebFoodItem, ids: string[]): Record<string, JevQuestion> {
   const branded = !!item.brand?.trim();
-  const rule = branded
+  const rule = (branded
     ? "Same brand, same product and same variant (flavour, fat level, sugar-free, size when it changes the numbers)."
-    : "The same food in the same preparation state (raw is not cooked, fried is not boiled).";
+    : "The same food in the same preparation state (raw is not cooked, fried is not boiled).") +
+    (item.eaten?.trim() ? ` ${AS_EATEN_RULE}` : "");
   const out: Record<string, JevQuestion> = {};
   for (const id of ids) {
     out[id] = {
@@ -455,7 +498,9 @@ const READ_SYSTEM =
   "kcal goes in kcal and energy in kJ goes in energy_kj, each only if printed. Read only the column " +
   "for THIS food: ignore columns that compare it to other foods or a category average, and % daily " +
   "value or %RDA columns. A text may hold two parts separated by ---; use the part for this food. " +
-  "Set same_food false for a page about a different brand, variant or food.";
+  "Set same_food false for a page about a different brand, variant or food. " +
+  "food.as_eaten, when present, is how the user ate it: set same_food false when the numbers you would copy are " +
+  "for a different state of the food (the dry or raw panel of a food eaten cooked, or the reverse).";
 
 // ── Orchestration ───────────────────────────────────────────────────────────
 
@@ -528,7 +573,7 @@ async function askFirstLook(
 ): Promise<{ model: string; p: Array<number | null> } | null> {
   const ids = cands.map((_, i) => `r${i + 1}`);
   const state = {
-    food: { name: item.name, brand: item.brand },
+    food: foodState(item),
     results: cands.map((c, i) => ({
       id: ids[i],
       title: c.r.title,
@@ -543,7 +588,7 @@ async function askFirstLook(
 }
 
 /** One "which piece" choice per page. Option keys are p1..pN and none. */
-export function pieceQuestions(ids: string[], pieceCounts: number[]): Record<string, JevQuestion> {
+export function pieceQuestions(ids: string[], pieceCounts: number[], eaten?: string | null): Record<string, JevQuestion> {
   const out: Record<string, JevQuestion> = {};
   ids.forEach((id, i) => {
     const criteria: Record<string, string> = {};
@@ -554,7 +599,8 @@ export function pieceQuestions(ids: string[], pieceCounts: number[]): Record<str
       instructions:
         `Which piece of result ${id} holds the nutrition numbers (calories, protein, carbohydrate, fat) ` +
         'for exactly the food in "food"? A piece about a different product or variant, a "similar ' +
-        'products" or "you may also like" box, or a recipe is not it. Answer none when no piece is.',
+        'products" or "you may also like" box, or a recipe is not it. Answer none when no piece is.' +
+        (eaten?.trim() ? ` ${AS_EATEN_RULE}` : ""),
       criteria,
     };
   });
@@ -571,7 +617,7 @@ async function askSecondLook(
 ): Promise<Array<{ p: number | null; piece: string | null; pieceConf: number; probs: Record<string, number> }> | null> {
   const ids = cands.map((_, i) => `r${i + 1}`);
   const state = {
-    food: { name: item.name, brand: item.brand },
+    food: foodState(item),
     results: cands.map((c, i) => ({
       id: ids[i],
       title: c.r.title,
@@ -580,7 +626,10 @@ async function askSecondLook(
       pieces: c.pieces.map((text, k) => ({ id: `p${k + 1}`, text })),
     })),
   };
-  const questions = { ...relevanceQuestions(item, ids), ...pieceQuestions(ids, cands.map((c) => c.pieces.length)) };
+  const questions = {
+    ...relevanceQuestions(item, ids),
+    ...pieceQuestions(ids, cands.map((c) => c.pieces.length), item.eaten),
+  };
   const res = await askJev(state, questions, jev).catch(() => null);
   if (!res || !res.ok) return null;
   return ids.map((id) => {
@@ -812,7 +861,7 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
       messages: [{
         role: "user",
         content: JSON.stringify({
-          food: { name: as.name, brand: as.brand },
+          food: foodState(as),
           pages: withPanel.map((p, i) => ({ page_id: `p${i + 1}`, site: hostOf(p.r.url), title: p.r.title, text: p.panel })),
         }),
       }],
@@ -884,7 +933,7 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
   // Judged and read as the rewritten name, with the user's brand: Jev's "same
   // brand, same product, same variant" is then asked of the product the rewrite
   // believes they ate, and a page for any other one still fails it.
-  const as: WebFoodItem = { name: rewrite.name, brand: item.brand };
+  const as: WebFoodItem = { ...item, name: rewrite.name, brand: item.brand };
   let ran = false;
   for (const q of rewrite.queries) {
     const found = await attempt(q, as);
@@ -980,7 +1029,7 @@ export function suggestSearchPayload(model: string, item: WebFoodItem, seen: See
     messages: [{
       role: "user",
       content: JSON.stringify({
-        food: { name: item.name, brand: item.brand },
+        food: foodState(item),
         results: seen.map((r) => ({ title: r.title, site: r.site })),
       }),
     }],
