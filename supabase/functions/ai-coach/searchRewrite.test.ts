@@ -640,3 +640,13 @@ Deno.test("found under the user's own words: one row under those words, no alias
   assertEquals(rows.map((r) => r.cache_key), [cacheKey("vanilla wafer protein bar", "Fitzo")]);
   assertEquals(aliases, []);
 });
+
+Deno.test("found under the sold name: a prepared line keeps its preparation in the row's key", async () => {
+  // Without it, a cooked and a dry line rewritten to one name share a row.
+  const rows: Array<{ cache_key: string; display_name: string }> = [];
+  const aliases: unknown[][] = [];
+  const item = { name: "biscotti protein bar", brand: "Fitzo", quantity: 1, unit: "piece", prep: "toasted" };
+  await superLookupOne(cacheDeps(rows, aliases), item, () => {}, () => {});
+  assertEquals(rows.map((r) => r.cache_key), [cacheKey(`toasted ${SOLD_AS}`, "Fitzo")]);
+  assertEquals(aliases.map((a) => a[0]), [cacheKey("toasted biscotti protein bar", "Fitzo")]);
+});

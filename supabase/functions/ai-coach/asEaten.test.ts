@@ -26,6 +26,9 @@ Deno.test("a cooked serving and the dry product are different cache rows", () =>
 Deno.test("the search names the preparation", () => {
   const qs = searchQueries({ name: "Arhar dal", brand: null, prep: "cooked" });
   assert(qs.every((q) => q.toLowerCase().startsWith("cooked arhar dal")), qs.join(" | "));
+  // A brand stays in front of the prepared food.
+  const branded = searchQueries({ name: "arhar dal", brand: "Tata Sampann", prep: "cooked" });
+  assert(branded.every((q) => q.startsWith("Tata Sampann cooked arhar dal")), branded.join(" | "));
   // No preparation: the queries are as before.
   assert(searchQueries({ name: "Arhar dal", brand: null }).every((q) => q.startsWith("Arhar dal")));
 });

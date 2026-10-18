@@ -3356,7 +3356,11 @@ export async function superLookupOne(
   // what the label is for, and the user's words become an alias pointing at it
   // (precise_alias, per user). So this user's "<nickname>" and everyone's
   // "<real name>" hit one row, and the row's name never claims to be the nickname.
-  const rowKey = finding.searched_as ? cacheKey(finding.searched_as, item.brand) : itemCacheKey(item);
+  // A rewritten search keeps the line's preparation in its key too, or a cooked
+  // and a dry line rewritten to the same name would share one row again.
+  const rowKey = finding.searched_as
+    ? itemCacheKey({ name: finding.searched_as, brand: item.brand, prep: item.prep })
+    : itemCacheKey(item);
   if (deps.preciseCachePut) {
     // Never let a cache write cost the user their meal: the lookup already
     // succeeded and the line is good whether or not the row lands.

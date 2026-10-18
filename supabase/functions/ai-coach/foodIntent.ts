@@ -652,6 +652,13 @@ export interface FoodActionInputs {
   clientSupportsCreate: boolean;
 }
 
+/** This message answers the waiting meal. A resumed agent turn counts too, so
+ *  the parse running beside the agent (the fallback when the agent cannot
+ *  answer) also sees the meal. */
+export function continuesPendingMeal(d: FoodIntentDecision | null): boolean {
+  return d?.intent === "continue" || !!d?.resumeAgent;
+}
+
 /**
  * Decide what the food bar does. Pure, so every rule below is pinned by a test
  * rather than by hoping nobody reorders the ifs in index.ts.
@@ -664,13 +671,6 @@ export interface FoodActionInputs {
  *  because the agent is STARTED as soon as the router answers, long before the
  *  parse that decideFoodAction also looks at has finished. The agent can end in
  *  a save card, so it needs a client that can draw one. */
-/** This message answers the waiting meal. A resumed agent turn counts too, so
- *  the parse running beside the agent (the fallback when the agent cannot
- *  answer) also sees the meal. */
-export function continuesPendingMeal(d: FoodIntentDecision | null): boolean {
-  return d?.intent === "continue" || !!d?.resumeAgent;
-}
-
 export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreate: boolean): boolean {
   // An answer to the agent's own question goes back to it at any confidence
   // that cleared "proceed": the agent asked, so it is the one that can finish.

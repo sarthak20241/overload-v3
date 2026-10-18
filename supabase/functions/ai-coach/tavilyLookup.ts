@@ -226,7 +226,8 @@ export function withPrep(name: string, prep: string | null | undefined): string 
 export function searchQueries(item: WebFoodItem): string[] {
   // "cooked arhar dal", not "arhar dal": the bare name mostly finds the dry
   // product's panel.
-  const label = withPrep(foodLabel(item), item.prep);
+  // The prep goes on the food, then the brand in front: "Amul cooked arhar dal".
+  const label = foodLabel({ ...item, name: withPrep(item.name, item.prep) });
   return [
     `${label} nutrition facts per 100g`,
     `${label} calories protein carbohydrate fat`,
