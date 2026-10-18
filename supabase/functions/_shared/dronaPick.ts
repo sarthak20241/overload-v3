@@ -53,7 +53,7 @@ export interface PickCard {
 export const CHECKIN_BEHAVIOURS = ['finding_maintenance', 'calories_off'];
 
 /** What a card's button asks for, as the topic the older cards used, so a mute or a cooldown covers both. */
-const ASKS: Record<string, string> = { log_weight: 'weigh_in', log_food: 'log_food', start_session: 'due_session' };
+export const ASKS: Record<string, string> = { log_weight: 'weigh_in', log_food: 'log_food', start_session: 'due_session' };
 
 /** The pick cards that are always an ask, and the older topic they ask for. */
 const PICK_ASKS: Record<string, string> = { scale_untrusted: 'weigh_in', logs_partial_days: 'log_food' };
@@ -382,8 +382,14 @@ export function decidePick(pf: PickFacts | null | undefined, facts: DronaFacts):
     .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999));
 
   for (const row of ordered) {
-    const words = WORDS[row.behaviour]?.(row.detail ?? {});
-    if (!words) continue;
+    const known = Object.hasOwn(WORDS, row.behaviour);
+    const words = known ? WORDS[row.behaviour](row.detail ?? {}) : null;
+    if (!words) {
+      // A behaviour we have words for, but its detail is too thin to say them
+      // honestly: skip it, and leave a trace so bad data is visible.
+      if (known) console.warn(`[dronaPick] ${row.behaviour}: detail too thin for words, skipped`);
+      continue;
+    }
     const topic = row.behaviour;
     const asks = ASKS[words.payload.action ?? ''];
     if (muted.has(topic) || (asks && muted.has(asks))) continue;

@@ -121,7 +121,7 @@ weeks, so they would see it every 2 weeks, or every 4 after "Skip".
 - `get_drona_pick_facts` live (migration `20261018114836_drona_pick_facts`).
   Service role only: anon is refused (42501). Same "rebuild first when today
   is not done" step as `get_drona_energy_facts`.
-- `_shared/dronaPick.ts` + `dronaPick.test.ts` (16 tests). Each skip rule was
+- `_shared/dronaPick.ts` + `dronaPick.test.ts` (17 tests). Each skip rule was
   broken on purpose and a test failed: check-in skip, steer skip, cooldown, the
   mute on what a card asks for, the meta notice, the priority order, the one-side
   goals detail, the "most skipped" choice, "twice", `hushed`.
@@ -174,4 +174,8 @@ restored exactly (facts md5 unchanged).
   `get_drona_pick_facts` has no lock, the same as `get_drona_energy_facts`. In
   the worker the check-in runs first and sets `last_day_done`, so the pick read
   does not rebuild again.
+- Second review: a test pins the P0 topics that `ASKS` maps to (`weigh_in`,
+  `log_food`, `due_session`), and a behaviour with words but a too-thin detail
+  now logs a `console.warn` when it is skipped. The advisory lock for the two
+  fact reads is left for later: it is wasted work at worst, not wrong data.
 

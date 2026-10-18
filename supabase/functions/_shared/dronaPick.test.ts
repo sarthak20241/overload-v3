@@ -1,6 +1,6 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import type { DronaFacts } from "./dronaCards.ts";
-import { askedLately, type BehaviourRow, decidePick, hushed, mutedTopics, type PickFacts, WORDS } from "./dronaPick.ts";
+import { decideCard, type DronaFacts } from "./dronaCards.ts";
+import { ASKS, askedLately, type BehaviourRow, decidePick, hushed, mutedTopics, type PickFacts, WORDS } from "./dronaPick.ts";
 
 const WEEK = "2026-10-19";
 const facts = (cards: DronaFacts["cards"] = []): DronaFacts => ({ week_start: WEEK, cards });
@@ -74,6 +74,23 @@ Deno.test("one cooldown across old and new cards: an ask waits after the same as
   // A pick food ask last week: the P0 food ask waits (the worker adds this to its skip list).
   assertEquals([...askedLately(facts([{ week_start: "2026-10-12", topic: "logs_partial_days", status: "applied" }]))], ["log_food"]);
   assertEquals([...askedLately(facts([{ week_start: "2026-09-21", topic: "logs_partial_days", status: "applied" }]))], []);
+});
+
+Deno.test("the old P0 cards still use the topics ASKS maps their actions to", () => {
+  // Mutes and the shared cooldown match these strings exactly.
+  const settled = { week_start: WEEK, cards: [], tenure: { days_since_first_session: 200, sessions_total: 60 },
+    goal: { goal: "fat_loss", goal_weight_kg: 70 }, recovery: {} } as DronaFacts;
+  const cases: DronaFacts[] = [
+    { ...settled, training: { sessions_14d: 0, planned_14d: 8, days_since_last_session: 11 },
+      nutrition: { days_logged_14d: 12, target_kcal: 2000 }, weight: { weigh_ins_14d: 10, weigh_ins_28d: 20 } },
+    { ...settled, training: { sessions_14d: 8, planned_14d: 8, days_since_last_session: 1 },
+      nutrition: { days_logged_14d: 12, target_kcal: 2000 }, weight: { weigh_ins_14d: 0, weigh_ins_28d: 0 } },
+    { ...settled, training: { sessions_14d: 8, planned_14d: 8, days_since_last_session: 1 },
+      nutrition: { days_logged_14d: 0, target_kcal: 2000 }, weight: { weigh_ins_14d: 10, weigh_ins_28d: 20 } },
+  ];
+  const seen = cases.map((f) => decideCard(f)).map((c) => [c.payload.action, c.topic]);
+  assertEquals(seen, [["start_session", "due_session"], ["log_weight", "weigh_in"], ["log_food", "log_food"]]);
+  for (const [action, topic] of seen) assertEquals(ASKS[action!], topic);
 });
 
 Deno.test("not hearing Drona: the pick is said as a notice, no ask", () => {
