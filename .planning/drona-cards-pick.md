@@ -190,4 +190,8 @@ restored exactly (facts md5 unchanged).
   right.") with no button to answer. Each card now carries a quiet body (what
   Drona saw, no ask); hushed uses it, and a card without one says nothing. A
   test checks every behaviour's hushed body for an ask.
+- Sixth review: a new user skips the pick read (they get the "I am reading"
+  notice, which needs no pick), so a failed read can no longer hide it, and no
+  rebuild runs for nothing. The app ignores the response's `kind`, so
+  `pick_failed` only shows in the cron summary.
 

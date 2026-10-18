@@ -189,19 +189,25 @@ async function generate(
     if (swap) return swap;
   }
 
-  // The behaviour pick: what last week's behaviours found. A failed read says
-  // nothing this week: without it the mutes and the "not hearing Drona" hush
-  // are unknown, and asking someone who muted a topic is worse than silence.
-  const { data: pick, error: pickErr } = await retried(() =>
-    db.rpc("get_drona_pick_facts", { p_user_id: userId, p_as_of: localDay })
-  );
-  if (pickErr) {
-    // Its own kind, so the cron summary counts it: a read that keeps failing
-    // would otherwise silence every weekly card with only a log line to show.
-    console.error("[drona-cards] pick facts:", pickErr.message);
-    return { kind: "pick_failed", saved: false };
+  // A new user gets the "I am reading" notice (decideCard): no pick, so no read.
+  // Otherwise the behaviour pick: what last week's behaviours found. A failed
+  // read says nothing this week: without it the mutes and the "not hearing
+  // Drona" hush are unknown, and asking someone who muted a topic is worse
+  // than silence.
+  let pf: PickFacts | null = null;
+  if (!newUser) {
+    const { data: pick, error: pickErr } = await retried(() =>
+      db.rpc("get_drona_pick_facts", { p_user_id: userId, p_as_of: localDay })
+    );
+    if (pickErr) {
+      // Its own kind, so the cron summary counts it: a read that keeps failing
+      // would otherwise silence every weekly card with only a log line to
+      // show. The app path just gets no card back (`card` is null).
+      console.error("[drona-cards] pick facts:", pickErr.message);
+      return { kind: "pick_failed", saved: false };
+    }
+    pf = pick as PickFacts | null;
   }
-  const pf = pick as PickFacts | null;
   const picked = newUser ? null : decidePick(pf, facts as DronaFacts);
   const skip = new Set([...mutedTopics(pf), ...askedLately(facts as DronaFacts)]);
   const card = picked ?? hushed(decideCard(facts as DronaFacts, undefined, skip), pf);
