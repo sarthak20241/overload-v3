@@ -220,6 +220,38 @@ export function targetsFromEditor(
 }
 
 /**
+ * What the logger's time / distance fields open with for the next set: the
+ * last completed set's value when there is one ("held 50s on a 45s target,
+ * the next set shows 50s"), else the routine target. Only the axes the
+ * exercise logs. Null means leave the field as it is.
+ */
+export function nextSetInputs(ex: {
+  metricType: string | null | undefined;
+  targetDurationSeconds?: number | null;
+  targetDistanceM?: number | null;
+  sets: { completed: boolean; duration_seconds?: number | null; distance_m?: number | null }[];
+}): { durationSeconds: number | null; distanceM: number | null } {
+  const target = targetsFor(ex.metricType, {
+    target_duration_seconds: ex.targetDurationSeconds ?? null,
+    target_distance_m: ex.targetDistanceM ?? null,
+  });
+  const done = ex.sets.filter((s) => s.completed);
+  const lastOf = (pick: (s: (typeof done)[number]) => number | null | undefined) => {
+    for (let i = done.length - 1; i >= 0; i--) {
+      const v = positive(pick(done[i]));
+      if (v != null) return v;
+    }
+    return null;
+  };
+  return {
+    durationSeconds: takesDurationTarget(ex.metricType)
+      ? lastOf((s) => s.duration_seconds) ?? target.target_duration_seconds
+      : null,
+    distanceM: takesDistanceTarget(ex.metricType) ? lastOf((s) => s.distance_m) ?? target.target_distance_m : null,
+  };
+}
+
+/**
  * Only the target keys that are set. A write sends these and nothing else, so
  * a rep-based row never names the new columns and keeps working against a
  * database that predates them. A value past the column's CHECK bound is

@@ -3,6 +3,7 @@ import {
   bareMAsMinutes,
   formatRoutineTarget,
   missingTargetColumn,
+  nextSetInputs,
   parseEditorDistance,
   parseEditorDuration,
   parseTimedTarget,
@@ -238,5 +239,33 @@ Deno.test('the editor Km field takes a comma decimal and never guesses', () => {
   assertEquals(targetsFromEditor('distance_duration', { distance: '1,5' }), {
     target_duration_seconds: null,
     target_distance_m: 1500,
+  });
+});
+
+Deno.test('the next set keeps the time just logged, else the target', () => {
+  const hold = { metricType: 'duration', targetDurationSeconds: 45, sets: [] as { completed: boolean; duration_seconds?: number | null }[] };
+  // Nothing logged yet: the target.
+  assertEquals(nextSetInputs({ ...hold, sets: [{ completed: false }] }), { durationSeconds: 45, distanceM: null });
+  // Held 50s on a 45s target: the next set shows 50s.
+  assertEquals(nextSetInputs({ ...hold, sets: [{ completed: true, duration_seconds: 50 }, { completed: false }] }), {
+    durationSeconds: 50,
+    distanceM: null,
+  });
+  // The latest logged set wins; a set with no time is skipped.
+  assertEquals(nextSetInputs({
+    ...hold,
+    sets: [{ completed: true, duration_seconds: 50 }, { completed: true, duration_seconds: 40 }, { completed: true, duration_seconds: 0 }],
+  }), { durationSeconds: 40, distanceM: null });
+  // A run keeps both its distance and its time.
+  assertEquals(nextSetInputs({
+    metricType: 'distance_duration',
+    targetDurationSeconds: 1500,
+    targetDistanceM: 5000,
+    sets: [{ completed: true, duration_seconds: 1440, distance_m: 5200 }],
+  }), { durationSeconds: 1440, distanceM: 5200 });
+  // A lift never gets a time.
+  assertEquals(nextSetInputs({ metricType: 'weight_reps', targetDurationSeconds: 45, sets: [] }), {
+    durationSeconds: null,
+    distanceM: null,
   });
 });

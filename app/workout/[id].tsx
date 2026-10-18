@@ -55,6 +55,7 @@ import { haptics } from '@/lib/haptics';
 import { roundVolume, abbreviateNumber, formatWeight, formatDuration, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
 import { metricTypeOf, metricTypeDef, usesReps } from '@/lib/exercises';
 import {
+  nextSetInputs,
   readRoutineTargets,
   slotTargetLabel,
   targetColumns,
@@ -1191,13 +1192,20 @@ export default function ActiveWorkoutScreen() {
     }
   }, [workout.isPaused]);
 
-  // A routine slot's time / distance target into the logger's fields. The
-  // stopwatch is left alone: pressing ▶ still times the hold from zero, and
-  // logging without it records the target as typed.
+  // The next set's time / distance into the logger's fields: the last logged
+  // set's value when there is one ("held 50s on a 45s target, the next set
+  // shows 50s"), else the routine target (lib/routineTargets nextSetInputs).
+  // The stopwatch is left alone: pressing ▶ still times the hold from zero,
+  // and logging without it records the value as typed.
   const seedTargetInputs = (ex: ActiveWorkoutExercise) => {
-    const axes = metricTypeDef(metricTypeOf(ex.exercise)).axes;
-    if (axes.includes('duration') && ex.targetDurationSeconds) setInputDuration(formatDuration(ex.targetDurationSeconds));
-    if (axes.includes('distance') && ex.targetDistanceM) setInputDistance(formatDistanceKm(ex.targetDistanceM));
+    const next = nextSetInputs({
+      metricType: ex.exercise.metric_type,
+      targetDurationSeconds: ex.targetDurationSeconds,
+      targetDistanceM: ex.targetDistanceM,
+      sets: ex.sets,
+    });
+    if (next.durationSeconds) setInputDuration(formatDuration(next.durationSeconds));
+    if (next.distanceM) setInputDistance(formatDistanceKm(next.distanceM));
   };
 
   // Seed the shared inputs for whichever exercise is now open — on arrival
@@ -1252,8 +1260,8 @@ export default function ActiveWorkoutScreen() {
       setInputWeight('0');
       setInputReps(String(currentEx.sets[0]?.reps || 10));
     }
-    // The routine's time / distance target ("hold 45s", "run 5 km") seeds the
-    // fields the index-change effect just cleared. Only the axes this exercise
+    // The last logged time / distance, or the routine's target ("hold 45s",
+    // "run 5 km"), seeds the fields the index-change effect just cleared. Only the axes this exercise
     // logs, so a slot swapped from a stretch to a lift ignores its old time.
     // Never over a typed value: typing or starting the stopwatch calls
     // markEdited, and the guard at the top of this effect then returns before
@@ -1460,8 +1468,9 @@ export default function ActiveWorkoutScreen() {
       resetStopwatch();
       setInputDuration('0:00');
     }
-    // The next set aims for the same target: put it back in the cleared field.
-    seedTargetInputs(currentEx);
+    // The next set opens on the time just logged (or the target): back into
+    // the cleared field. `ex` already holds the set that was just logged.
+    seedTargetInputs(ex);
 
     if (willAdvance) {
       // Hop the pager to the next member; the index-change effects prefill the new
