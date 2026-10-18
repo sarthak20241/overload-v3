@@ -3969,6 +3969,9 @@ export function AICoachModal({
       if (!exerciseId) {
         // A Drona-invented exercise carries its own template (muscle group,
         // equipment, how it is measured); anything else keeps the bare insert.
+        // Only reached when no row has this name: if the user already owns an
+        // exercise called this, findByName reused it above and Drona's
+        // template is ignored on purpose, so their own settings win.
         const { data: newEx, error: insErr } = await supabase
           .from('exercises')
           .insert(planExerciseInsert(ex))

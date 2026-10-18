@@ -196,6 +196,14 @@ export const MAX_NEW_NAME = 60;
 export const MAX_NEW_PER_DAY = 3;
 
 /**
+ * Most DISTINCT invented exercises one plan may keep. The per-day cap alone
+ * still lets a 7-day plan create 21 library rows. Repeating an invention on
+ * another day costs nothing here, since it is one row. In the CLI eval a
+ * mobility plan used at most six.
+ */
+export const MAX_NEW_PER_PLAN = 8;
+
+/**
  * Clean an invented name before it can become a permanent custom exercise:
  * drop control characters and *, then cut a runaway name at a word boundary.
  * The * goes because PostgREST reads it as a wildcard in the app's ILIKE
@@ -319,6 +327,17 @@ export function groundSkeleton(skeleton: PlanSkeleton, catalog: string[]): PlanS
     // not use up the day's allowance. Extra inventions are dropped whole.
     let invented = 0;
     day.slots = day.slots.filter((slot) => !Object.hasOwn(defs, slot) || ++invented <= MAX_NEW_PER_DAY);
+  }
+  // Plan-wide ceiling on distinct inventions, in plan order: the first eight
+  // names keep every day they appear on, later names are dropped everywhere.
+  const allowed = new Set<string>();
+  for (const day of skeleton.days) {
+    day.slots = day.slots.filter((slot) => {
+      if (!Object.hasOwn(defs, slot) || allowed.has(slot)) return true;
+      if (allowed.size >= MAX_NEW_PER_PLAN) return false;
+      allowed.add(slot);
+      return true;
+    });
   }
   // A template whose every slot was dropped would otherwise linger unused.
   const kept = new Set(skeleton.days.flatMap((d) => d.slots));

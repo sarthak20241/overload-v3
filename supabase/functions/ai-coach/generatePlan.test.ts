@@ -2,6 +2,7 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   MAX_NEW_NAME,
   MAX_NEW_PER_DAY,
+  MAX_NEW_PER_PLAN,
   assemblePlan,
   groundSkeleton,
   parseSkeleton,
@@ -165,4 +166,21 @@ Deno.test("a day keeps at most MAX_NEW_PER_DAY invented exercises", () => {
   assertEquals(day.filter((n) => n.startsWith("Stretch")).length, MAX_NEW_PER_DAY);
   // Dropped inventions leave no template behind.
   assertEquals(Object.keys(s.new_exercises ?? {}).length, MAX_NEW_PER_DAY);
+});
+
+Deno.test("a plan keeps at most MAX_NEW_PER_PLAN distinct invented exercises", () => {
+  const lines: string[] = [];
+  let n = 0;
+  for (let d = 0; d < 6; d++) {
+    lines.push(`DAY | D${d + 1} | x`, "SLOT | Bench Press");
+    for (let k = 0; k < 2; k++) lines.push(`NEW | Drill ${++n} | Hip Flexors | Bodyweight | duration`);
+  }
+  // A repeat of an early invention on the last day must survive the cap.
+  lines.push("NEW | Drill 1 | Hip Flexors | Bodyweight | duration");
+  const s = groundSkeleton(parseSkeleton(lines.join("\n"))!, CATALOG);
+  const names = new Set(s.days.flatMap((d) => d.slots).filter((x) => x.startsWith("Drill")));
+  assertEquals(names.size, MAX_NEW_PER_PLAN);
+  assertEquals(s.days[5].slots.includes("Drill 1"), true);
+  assertEquals(names.has(`Drill ${MAX_NEW_PER_PLAN + 1}`), false);
+  assertEquals(Object.keys(s.new_exercises ?? {}).length, MAX_NEW_PER_PLAN);
 });
