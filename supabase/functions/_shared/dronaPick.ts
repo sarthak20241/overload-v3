@@ -510,6 +510,17 @@ export function askedLately(facts: DronaFacts): Set<string> {
 }
 
 /**
+ * Pain first: the hurting card on its own (with the hush, if any), before the
+ * swap and the new-user notice. Null when there is no pain card to say this
+ * week (none, on cooldown, or hushed to nothing).
+ */
+export function painFirst(pf: PickFacts | null | undefined, facts: DronaFacts): PickCard | null {
+  const rows = (pf?.behaviours ?? []).filter((r) => r?.behaviour === 'hurting' || r?.meta === true);
+  const card = decidePick({ ...(pf ?? {}), behaviours: rows }, facts);
+  return card && card.kind !== 'hold' ? card : null;
+}
+
+/**
  * The weekly card from the behaviours, or null when none is left to say.
  * `facts` is get_drona_facts, read only for the cooldown (its recent weekly cards).
  */

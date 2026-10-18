@@ -1,6 +1,8 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import { decideCard, type DronaFacts } from "./dronaCards.ts";
-import { ASKS, askedLately, type BehaviourRow, decidePick, hushed, mutedTopics, PICK_ASKS, type PickFacts, WORDS } from "./dronaPick.ts";
+import {
+  ASKS, askedLately, type BehaviourRow, decidePick, hushed, mutedTopics, painFirst, PICK_ASKS, type PickFacts, WORDS,
+} from "./dronaPick.ts";
 
 const WEEK = "2026-10-19";
 const facts = (cards: DronaFacts["cards"] = []): DronaFacts => ({ week_start: WEEK, cards });
@@ -248,6 +250,25 @@ Deno.test("the word cards: what each says, and the professional line on every hu
 
   assertEquals(trained.body.startsWith("You said you trained on Wednesday, but no session is logged that day."), true);
   assertEquals(decidePick(pf(row("trains_not_logging", 19, "notice", { day: "bad" })), facts()), null);
+});
+
+Deno.test("painFirst: the hurting card alone, before everything; nothing when there is none or it waits", () => {
+  // A new user with a few days of data still hears about pain (the worker runs this before the new-user notice).
+  const card = painFirst(pf(goals, WORD_ROWS[0], onTrack), facts())!;
+  assertEquals([card.topic, card.kind], ["hurting", "talk"]);
+  assertEquals(painFirst(pf(goals, onTrack), facts()), null);
+  assertEquals(painFirst(pf(WORD_ROWS[0]), facts([{ week_start: "2026-10-12", topic: "hurting", status: "pending" }])), null);
+  // Hushed: still said, as a notice that keeps the professional line.
+  const quiet = painFirst(pf(row("not_hearing_drona", 12, "notice", {}, { meta: true }), WORD_ROWS[0]), facts())!;
+  assertEquals([quiet.kind, quiet.body.includes("professional")], ["notice", true]);
+  // A hushed card with nothing quiet to say is a hold, and a hold is not a pain card.
+  const real = WORDS.hurting;
+  WORDS.hurting = () => ({ kind: "talk", title: "t", body: "b?", evidence: [], payload: { action: "talk" } });
+  try {
+    assertEquals(painFirst(pf(row("not_hearing_drona", 12, "notice", {}, { meta: true }), WORD_ROWS[0]), facts()), null);
+  } finally {
+    WORDS.hurting = real;
+  }
 });
 
 Deno.test("no words use an em dash", () => {

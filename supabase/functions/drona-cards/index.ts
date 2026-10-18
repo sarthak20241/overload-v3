@@ -8,11 +8,13 @@
 //         so the Monday run can be reading a stale scale for someone who was
 //         away; the app path is how that user still gets a card.
 //
-// The weekly card, first match wins: pain the person told Drona about (the
-// word step, _shared/dronaWords.ts), the new-user notice, the permanent swap,
-// the behaviour pick (with the word behaviours in it) (get_drona_pick_facts + _shared/dronaPick.ts: what last
-// week's behaviours found, in fixed words), then the older P0 rules
-// (get_drona_facts + _shared/dronaCards.ts). The calorie check-in is a second,
+// The weekly card, first match wins:
+//   1. pain the person told Drona about (the word step, _shared/dronaWords.ts)
+//   2. the new-user notice
+//   3. the permanent swap
+//   4. the behaviour pick: last week's behaviours plus the word behaviours, in
+//      fixed words (get_drona_pick_facts + _shared/dronaPick.ts)
+//   5. the older P0 rules (get_drona_facts + _shared/dronaCards.ts) The calorie check-in is a second,
 // separate card per week (slot 'calories', _shared/dronaEnergy.ts). Nothing to
 // say writes nothing, which is most weeks. B1 (the model's calorie card) is
 // retired here: the check-in owns calories (.planning/drona-cards-pick.md).
@@ -22,9 +24,10 @@ import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 import { decideCard, type DronaFacts, onCooldown, signalsFrom, weekStartOf } from "../_shared/dronaCards.ts";
 import { decideSwap, type SwapFacts, swapCard } from "../_shared/dronaSwap.ts";
 import { checkinCooldown, decideEnergyCard, type EnergyFacts } from "../_shared/dronaEnergy.ts";
-import { askedLately, decidePick, hushed, mutedTopics, type PickFacts } from "../_shared/dronaPick.ts";
+import { askedLately, decidePick, hushed, mutedTopics, painFirst, type PickFacts } from "../_shared/dronaPick.ts";
 import {
-  chooseTexts, QUESTIONS, questionKey, readText, stateFor, type StoredSignal, type WordFacts, wordBehaviours, wordSignals,
+  chooseTexts, QUESTIONS, questionKey, readText, stateFor, type StoredSignal, type WordFacts, type WordText,
+  wordBehaviours, wordSignals,
 } from "../_shared/dronaWords.ts";
 import { askJev } from "../ai-coach/jev.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
@@ -214,12 +217,16 @@ async function wordStep(
   // One call per text, a few at a time: each text's answers stay tied to its day.
   const questions = Object.fromEntries(Object.entries(QUESTIONS).map(([q, v]) => [questionKey(0, q), v]));
   const deps = { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, log: (m: string) => console.error(`[drona-cards] ${m}`) };
+  // Every text carries the same questions under index 0 (one call per text).
+  const ask = (t: WordText) => askJev(stateFor(t, texts), questions, deps);
   const answers: Awaited<ReturnType<typeof askJev>>[] = [];
   for (let i = 0; i < texts.length; i += JEV_CONCURRENCY) {
-    answers.push(...await Promise.all(
-      texts.slice(i, i + JEV_CONCURRENCY).map((t) => askJev(stateFor(t, texts), questions, deps)),
-    ));
+    answers.push(...await Promise.all(texts.slice(i, i + JEV_CONCURRENCY).map(ask)));
   }
+  // One more try for the texts that failed: one flaky call must not hold a
+  // chatty person's whole week. Still failing: the week fails (a missing text
+  // could be the one that says "travelling").
+  for (let i = 0; i < texts.length; i++) if (!answers[i].ok) answers[i] = await ask(texts[i]);
   const readings = [];
   let model: string | null = null;
   for (let i = 0; i < texts.length; i++) {
@@ -293,11 +300,8 @@ async function generate(
   const tagged = <T extends object>(r: T) => ({ ...r, words: words.state });
 
   // Pain comes first: before the swap, and for new users too.
-  const hurt = decidePick(
-    { ...all, behaviours: (all.behaviours ?? []).filter((r) => r.behaviour === "hurting" || r.meta) },
-    facts as DronaFacts,
-  );
-  if (hurt && hurt.kind !== "hold") return tagged(await insertWeekly(db, userId, weekStart, hurt, facts, all, source));
+  const hurt = painFirst(all, facts as DronaFacts);
+  if (hurt) return tagged(await insertWeekly(db, userId, weekStart, hurt, facts, all, source));
 
   // Too new to read a habit, and a swap just asked about waits its turn.
   if (!newUser && !onCooldown("swap", facts as DronaFacts)) {
@@ -425,7 +429,7 @@ async function runCron(): Promise<Response> {
         if (g.saved) saved += 1;
         else if (g.kind === "hold") held += 1;
         else if (g.kind === "pick_failed") pickFailed += 1;
-        else if (g.kind === "words_failed") { /* counted in words_failed; retried next run */ }
+        else if (g.kind === "words_failed") failures.push(`${batch[j].userId.slice(0, 12)}: words failed, card held for a retry`);
         else failures.push(`${batch[j].userId.slice(0, 12)}: ${g.error ?? "not saved"}`);
       });
     }

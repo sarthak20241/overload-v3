@@ -193,4 +193,11 @@ Ship: server only (merge + deploy `drona-cards`). No OTA needed.
   were already live, so they stay two. `coach_traces.tool_calls` is `text[]`
   (checked live), so `&&` is right. Jev already reads food text in the coach;
   `JEV_API_KEY` is a project secret, shared by every function.
+- Second review: a failed Jev text gets one more try before the week fails; a
+  held card is listed in the cron `failures` (so it alerts), not only counted.
+  `hurting` is cancelled by a LATER text that says the same place is fine now
+  (an unplaced "fine" does not cancel). `painFirst` (pure, tested) picks the
+  pain card before the swap and the new-user notice. The worker never runs the
+  word step when this week's card exists (`runApp` checks first), so app opens
+  do not repeat the Jev spend.
 

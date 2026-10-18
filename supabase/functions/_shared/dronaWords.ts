@@ -242,7 +242,12 @@ export function wordSignals(f: WordFacts, readings: TextReading[]): StoredSignal
   // The newest reading wins each signal: it is what is true now.
   const last = <T>(xs: T[]) => xs[xs.length - 1];
 
-  const pain = last(readings.filter((r) => yes(r.pain)));
+  // Pain, unless a LATER text about the same place says it is fine now ("knee
+  // feels fine"): the newest word on a body part stands.
+  const painAt = readings.map((r, i) => (yes(r.pain) ? i : -1)).filter((i) => i >= 0).at(-1);
+  const recovered = painAt != null && readings.slice(painAt + 1).some((r) =>
+    r.pain != null && r.pain <= 1 - YES && r.area != null && r.area !== 'other' && r.area === readings[painAt].area);
+  const pain = painAt != null && !recovered ? readings[painAt] : undefined;
   const life = last(readings.filter((r) => yes(r.life)));
   // "Trained" also reads soreness the morning after ("quads destroyed after leg
   // day"), so a session logged the day before answers it too (held-out eval).

@@ -83,6 +83,19 @@ Deno.test("asked for a change: answered only by a matching change on or after th
     [reading({ ask: 0.9, change: null, day: "2026-10-14" })]).asked_for_a_change, false);
 });
 
+Deno.test("hurting: a later 'fine now' about the SAME place cancels it; another place does not", () => {
+  const hurt = reading({ pain: 0.9, area: "knee", day: "2026-10-13" });
+  assertEquals(fired(facts(), [hurt, reading({ pain: 0.05, area: "knee", day: "2026-10-15" })]).hurting, false);
+  assertEquals(fired(facts(), [hurt, reading({ pain: 0.05, area: "shoulder", day: "2026-10-15" })]).hurting, true);
+  assertEquals(fired(facts(), [hurt, reading({ pain: 0.05, area: "other", day: "2026-10-15" })]).hurting, true);
+  // "Somewhere" is not a place: an unplaced pain is not cancelled by an unplaced "fine".
+  assertEquals(fired(facts(), [reading({ pain: 0.9, area: "other" }), reading({ pain: 0.05, area: "other" })]).hurting, true);
+  // Unsure is not "fine".
+  assertEquals(fired(facts(), [hurt, reading({ pain: 0.5, area: "knee", day: "2026-10-15" })]).hurting, true);
+  // An earlier "fine" does not cancel a later pain.
+  assertEquals(fired(facts(), [reading({ pain: 0.05, area: "knee", day: "2026-10-12" }), hurt]).hurting, true);
+});
+
 Deno.test("the newest reading speaks for the week", () => {
   const s = wordSignals(facts(), [reading({ pain: 0.9, area: "back", day: "2026-10-13" }),
     reading({ pain: 0.9, area: "knee", day: "2026-10-16" })]).find((x) => x.signal === "hurting")!;
