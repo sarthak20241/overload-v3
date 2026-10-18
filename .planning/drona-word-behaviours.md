@@ -178,3 +178,19 @@ signals in these weeks.
 
 Ship: server only (merge + deploy `drona-cards`). No OTA needed.
 
+### Review fixes (claude[bot], PR #265)
+
+- **A failed word step no longer locks in a numbers card.** The weekly card is
+  written once and cannot be replaced, so on Monday and Tuesday a Jev or facts
+  failure holds the card (`words_failed`); the cron retries every 15 minutes
+  and the app on its next launch. From Wednesday the numbers speak alone, so a
+  long Jev outage cannot silence the week.
+- Jev calls per person are capped at 5 in flight (the cron already runs 4
+  people at once).
+- Kept: the word step runs before the swap (pain outranks it), costing one Jev
+  pass for swap users too; `hurting` repeats only after the usual cooldown
+  (2 weeks, 4 after "Skip") and only from the week just ended. Both migrations
+  were already live, so they stay two. `coach_traces.tool_calls` is `text[]`
+  (checked live), so `&&` is right. Jev already reads food text in the coach;
+  `JEV_API_KEY` is a project secret, shared by every function.
+

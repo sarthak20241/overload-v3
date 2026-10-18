@@ -34,8 +34,16 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const CLERK_ISSUER = Deno.env.get("CLERK_ISSUER") ?? "";
 const JEV_API_KEY = Deno.env.get("JEV_API_KEY") ?? "";
-/** Per text; all texts go at once, so this is about the whole word step. */
+/** Per Jev call (one per text). */
 const JEV_TIMEOUT_MS = 6000;
+/** Jev calls in flight per person: the cron already runs CRON_CONCURRENCY people at once. */
+const JEV_CONCURRENCY = 5;
+/**
+ * A failed word step holds the weekly card (it is written once a week and
+ * cannot be replaced, so a numbers card would lock out what the person told
+ * Drona) for this many days into the week; after that the numbers speak alone.
+ */
+const WORDS_RETRY_DAYS = 2;
 const JWKS = createRemoteJWKSet(new URL(`${CLERK_ISSUER}/.well-known/jwks.json`));
 
 const USER_PAGE = 1000;
@@ -203,10 +211,15 @@ async function wordStep(
   const texts = chooseTexts(f);
   if (texts.length === 0) return { signals: [], state: "none" };
 
-  // One call per text, all at once: each text's answers stay tied to its day.
+  // One call per text, a few at a time: each text's answers stay tied to its day.
   const questions = Object.fromEntries(Object.entries(QUESTIONS).map(([q, v]) => [questionKey(0, q), v]));
   const deps = { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, log: (m: string) => console.error(`[drona-cards] ${m}`) };
-  const answers = await Promise.all(texts.map((t) => askJev(stateFor(t, texts), questions, deps)));
+  const answers: Awaited<ReturnType<typeof askJev>>[] = [];
+  for (let i = 0; i < texts.length; i += JEV_CONCURRENCY) {
+    answers.push(...await Promise.all(
+      texts.slice(i, i + JEV_CONCURRENCY).map((t) => askJev(stateFor(t, texts), questions, deps)),
+    ));
+  }
   const readings = [];
   let model: string | null = null;
   for (let i = 0; i < texts.length; i++) {
@@ -223,6 +236,13 @@ async function wordStep(
   );
   if (upErr) console.error("[drona-cards] word signals write:", upErr.message);
   return { signals, state: "asked" };
+}
+
+/** Whole days from the week's Monday to the local day (0 on Monday). */
+function daysInto(weekStart: string, localDay: string): number {
+  const a = Date.parse(`${weekStart}T00:00:00Z`);
+  const b = Date.parse(`${localDay}T00:00:00Z`);
+  return Number.isFinite(a) && Number.isFinite(b) ? Math.round((b - a) / 86_400_000) : 0;
 }
 
 /** Read one user's facts, decide, and write the card. A hold writes nothing. */
@@ -263,6 +283,12 @@ async function generate(
   // Words beat numbers: what they told Drona joins the pick, above the number
   // behaviours, and quiets the cards it would argue with.
   const words = await wordStep(db, userId, localDay);
+  // A failed word step early in the week holds the card, so a retry (the cron,
+  // or the next app open) can still say what they told Drona. Later in the
+  // week the numbers speak alone rather than leave the week silent.
+  if (words.state === "failed" && daysInto(weekStart, localDay) < WORDS_RETRY_DAYS) {
+    return { kind: "words_failed", saved: false, words: words.state };
+  }
   const all: PickFacts = { ...(pf ?? {}), behaviours: [...(pf?.behaviours ?? []), ...wordBehaviours(words.signals)] };
   const tagged = <T extends object>(r: T) => ({ ...r, words: words.state });
 
@@ -399,6 +425,7 @@ async function runCron(): Promise<Response> {
         if (g.saved) saved += 1;
         else if (g.kind === "hold") held += 1;
         else if (g.kind === "pick_failed") pickFailed += 1;
+        else if (g.kind === "words_failed") { /* counted in words_failed; retried next run */ }
         else failures.push(`${batch[j].userId.slice(0, 12)}: ${g.error ?? "not saved"}`);
       });
     }
