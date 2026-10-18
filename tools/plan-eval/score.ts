@@ -64,6 +64,9 @@ function parseRepsOk(reps: unknown): boolean {
   if (/^\d{1,3}\s*(-\s*\d{1,3})?\s*s$/i.test(t)) return true;
   // Cardio for time: "20min", "15-20min".
   if (/^\d{1,3}\s*(-\s*\d{1,3})?\s*min$/i.test(t)) return true;
+  // Carries and sled work for distance: "20m", "20-40m". The fill spec asks
+  // for it, and assembly falls back to it for a weight_distance invention.
+  if (/^\d{1,4}\s*(-\s*\d{1,4})?\s*m$/i.test(t)) return true;
   if (/^(amrap|to failure)$/i.test(t)) return true;
   return false;
 }

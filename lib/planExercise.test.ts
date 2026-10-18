@@ -49,6 +49,7 @@ Deno.test('a rep range with extra words keeps its numbers and its words', () => 
   assertEquals(planRepsAndNote('3x10'), { reps_min: 10, reps_max: 10, note: 'Aim for 3x10.' });
   assertEquals(planRepsAndNote('3 x 8-12'), { reps_min: 8, reps_max: 12, note: 'Aim for 3 x 8-12.' });
   assertEquals(planRepsAndNote('3-4x10'), { reps_min: 10, reps_max: 10, note: 'Aim for 3-4x10.' });
+  assertEquals(planRepsAndNote('3 sets of 10'), { reps_min: 10, reps_max: 10, note: 'Aim for 3 sets of 10.' });
   assertEquals(planRepsAndNote('1.5min'), { reps_min: 8, reps_max: 12, note: 'Aim for 1.5min.' });
 });
 

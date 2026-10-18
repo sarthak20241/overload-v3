@@ -292,6 +292,10 @@ async function main() {
     untimed.failures.some((f) => f.includes('mobility')), untimed.failures);
   const counted = { ...stretch('Weighted Dip Hold', '45s'), new_exercise: { muscle_group: 'Triceps', category: 'Bodyweight', metric_type: 'weighted_bodyweight' } };
   const notTimed = scorePlan(mob, planWith([counted]), { catalog: catalogNames });
+  const carry = { name: 'Sandbag Carry', sets: 3, reps: '20m', rest_seconds: 90,
+    new_exercise: { muscle_group: 'Grip', category: 'Other', metric_type: 'weight_distance' } };
+  const carried = scorePlan(mob, planWith([stretch('S1', '45s'), carry]), { catalog: catalogNames });
+  eq('a 20m carry is a usable prescription', carried.failures.filter((f) => f.includes('Sandbag Carry')).length, 0);
   check('a rep-counted type with a 45s target does not satisfy the mobility ask',
     notTimed.failures.some((f) => f.includes('mobility')), notTimed.failures);
 }
