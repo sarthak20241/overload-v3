@@ -652,6 +652,13 @@ export interface FoodActionInputs {
   clientSupportsCreate: boolean;
 }
 
+/** The agent itself wrote this reply, so a question in it is the agent's.
+ *  A failed agent turn also replies, with a canned "try it as two messages":
+ *  that is no question of the agent's, and its answer belongs to the parse. */
+export function agentAsked(agent: { kind: string } | null | undefined): boolean {
+  return agent?.kind === "reply";
+}
+
 /** This message answers the waiting meal. A resumed agent turn counts too, so
  *  the parse running beside the agent (the fallback when the agent cannot
  *  answer) also sees the meal. */

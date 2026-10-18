@@ -67,6 +67,7 @@ import {
   skippedFollowup,
   type FoodAction,
   shouldRouteFoodIntent,
+  agentAsked,
   continuesPendingMeal,
   wantsFoodAgent,
 } from "./foodIntent.ts";
@@ -3593,7 +3594,7 @@ async function handleParseMealRequest(args: {
               // The existing decline channel, which every build already draws.
               send("end", {
                 parsed: null,
-                declined: withPendingMeal({ message: outcome.reply! }, { decision: outcome.decision, incoming: foodContext.pendingMeal, text, fromAgent: !!outcome.agent }),
+                declined: withPendingMeal({ message: outcome.reply! }, { decision: outcome.decision, incoming: foodContext.pendingMeal, text, fromAgent: agentAsked(outcome.agent) }),
                 proposal: null,
               });
             } else {
@@ -3886,7 +3887,7 @@ async function handleParseMealRequest(args: {
       return respond(
         {
           parsed: null,
-          declined: withPendingMeal({ message: outcome.reply! }, { decision: outcome.decision, incoming: foodContext.pendingMeal, text, fromAgent: !!outcome.agent }),
+          declined: withPendingMeal({ message: outcome.reply! }, { decision: outcome.decision, incoming: foodContext.pendingMeal, text, fromAgent: agentAsked(outcome.agent) }),
           proposal: null,
           usage: result.usage,
           tool_calls: result.tool_calls,

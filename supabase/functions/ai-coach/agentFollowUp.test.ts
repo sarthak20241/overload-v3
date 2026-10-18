@@ -10,6 +10,7 @@ import { assert, assertEquals } from "jsr:@std/assert@1";
 import { openingText } from "./foodAgent.ts";
 import { type PendingFoodMeal, readFoodContext } from "./foodContext.ts";
 import {
+  agentAsked,
   continuesPendingMeal,
   decideFoodAction,
   type FoodIntentDecision,
@@ -89,6 +90,12 @@ Deno.test("an app that cannot take the agent's work finishes the meal with the p
   assert(continuesPendingMeal(d), "the parse beside the agent must see the waiting meal");
   assertEquals(decideFoodAction({ decision: d, mode: "on", parseFoundFood: false, clientSupportsCreate: false }), "log");
   assertEquals(decideFoodAction({ decision: d, mode: "on", parseFoundFood: false, clientSupportsCreate: true }), "agent");
+});
+
+Deno.test("only a reply the agent wrote is the agent's question; a failed turn is not", () => {
+  assertEquals(agentAsked({ kind: "reply" }), true);
+  assertEquals(agentAsked({ kind: "failed" }), false);
+  assertEquals(agentAsked(undefined), false);
 });
 
 Deno.test("a question the parse asked still goes to the parse", async () => {
