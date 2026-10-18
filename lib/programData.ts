@@ -634,7 +634,9 @@ export async function loadActiveProgram(
     ({ data: phaseData, error: phaseErr } = await readPhases(`${PHASE_COLS}, diet_fuel_days`));
   }
   // 42703 = undefined column: a database from before 0139. Read the rest, so
-  // Goal & Plan and the phase reconcile keep working without fuel days.
+  // Goal & Plan and the phase reconcile keep working without fuel days. This
+  // drops the activity columns too; a database has 0139 long before it can
+  // have 20261018120000, so none has the one without the other.
   if (phaseErr && missingColumn(phaseErr, ['diet_fuel_days'])) {
     ({ data: phaseData, error: phaseErr } = await readPhases(PHASE_COLS));
   }
