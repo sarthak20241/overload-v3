@@ -538,9 +538,17 @@ export default function NutritionScreen() {
     relogBusyRef.current = true;
     setRelogBusy(all ? '*' : items[0].key);
     haptics.success();
-    const { ref, error } = await relogLines(supabase, items, meal, viewDate, 'pattern');
-    relogBusyRef.current = false;
-    setRelogBusy(null);
+    // finally: a throw (not just an {error}) must not leave every later tap ignored.
+    let res: Awaited<ReturnType<typeof relogLines>>;
+    try {
+      res = await relogLines(supabase, items, meal, viewDate, 'pattern');
+    } catch (e) {
+      res = { error: e instanceof Error ? e.message : 'Could not add that' };
+    } finally {
+      relogBusyRef.current = false;
+      setRelogBusy(null);
+    }
+    const { ref, error } = res;
     track('food_suggestion_logged', {
       meal_type: meal, item_count: items.length, all, edited: false, is_today: isToday, write_failed: !!error,
     });
@@ -572,9 +580,16 @@ export default function NutritionScreen() {
     const meal = copyMeal;
     relogBusyRef.current = true;
     setRelogBusy('*');
-    const { ref, error } = await relogLines(supabase, lines, meal, viewDate, 'copy_day');
-    relogBusyRef.current = false;
-    setRelogBusy(null);
+    let res: Awaited<ReturnType<typeof relogLines>>;
+    try {
+      res = await relogLines(supabase, lines, meal, viewDate, 'copy_day');
+    } catch (e) {
+      res = { error: e instanceof Error ? e.message : 'Could not copy that' };
+    } finally {
+      relogBusyRef.current = false;
+      setRelogBusy(null);
+    }
+    const { ref, error } = res;
     track('meal_copied', {
       meal_type: meal, item_count: lines.length, of_count: prevLines[meal].length,
       from_yesterday: prevLabel === 'Yesterday', is_today: isToday, write_failed: !!error,
