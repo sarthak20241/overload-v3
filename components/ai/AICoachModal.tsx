@@ -3953,8 +3953,8 @@ export function AICoachModal({
     await Promise.all(workout.exercises.map(async (ex, i) => {
       // Case-insensitive find, oldest row first — .single() would error when a
       // global library row and a same-named custom both match (legal scopes
-      // under migration 0037's unique indexes). Escaped so a Drona-invented
-      // name with % or _ matches only itself.
+      // under migration 0037's unique indexes). Escaped so % and _ in the
+      // name are literal (see ilikeExact for *).
       const findByName = async () => {
         const { data } = await supabase
           .from('exercises')

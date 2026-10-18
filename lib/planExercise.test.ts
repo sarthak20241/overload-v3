@@ -78,7 +78,7 @@ Deno.test('only exercises counted in reps show a rep target', () => {
   assertEquals(usesReps(undefined), true);
 });
 
-// ILIKE reads % and _ as wildcards: an invented name must match only itself.
+// ILIKE reads % and _ as wildcards: in a lookup they must be literal.
 Deno.test('a name used for the ILIKE lookup has its wildcards escaped', () => {
   assertEquals(ilikeExact('Band_Pull 100%'), 'Band\\_Pull 100\\%');
   assertEquals(ilikeExact('a\\b'), 'a\\\\b');

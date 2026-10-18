@@ -304,6 +304,9 @@ export function groundSkeleton(skeleton: PlanSkeleton, catalog: string[]): PlanS
       delete defs[slot];
       return hit;
     });
+    // Folding can turn two spellings of one exercise ("T Bar Row" and
+    // "T-Bar Row") into the same slot twice in a day. Keep the first.
+    day.slots = day.slots.filter((slot, i) => day.slots.indexOf(slot) === i);
   }
   if (skeleton.new_exercises && Object.keys(defs).length === 0) delete skeleton.new_exercises;
   return skeleton;
