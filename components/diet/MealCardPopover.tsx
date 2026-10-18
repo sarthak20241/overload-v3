@@ -121,8 +121,8 @@ function PopoverBody({ origin, naturalHeight, bottomEdge, open, onRequestClose, 
   const bottom = Math.min(winH - insets.bottom - Spacing.lg, bottomEdge - Spacing.sm);
   const room = Math.max(0, bottom - top);
   // Never squeezed below a usable card. On a short phone with the keyboard
-  // up the room above the box can be close to nothing; a card that runs up
-  // under the status bar still works, a zero-height one over a blur does not.
+  // up the room above the box can be close to nothing; a card that runs over
+  // the food box still works, a zero-height one over a blur does not.
   const want = naturalHeight > 0 ? naturalHeight : src.height;
   const dstH = Math.max(Math.min(want, MIN_FRAME), Math.min(room, want));
   const dstX = Spacing.lg;
@@ -168,7 +168,11 @@ function PopoverBody({ origin, naturalHeight, bottomEdge, open, onRequestClose, 
     const lerp = (from: number, to: number) => from + (to - from) * t;
     return {
       left: lerp(src.x, dstX),
-      top: lerp(src.y, b.value - h.value),
+      // Never above the safe area: on a short phone with the keyboard up the
+      // floor height can exceed the room, and then the card runs DOWN over
+      // the food box rather than up under the notch, where its header (and
+      // the put-back control in it) could not be reached.
+      top: lerp(src.y, Math.max(b.value - h.value, top)),
       width: lerp(src.width, dstW),
       height: lerp(src.height, h.value),
       opacity: fadeOnly ? interpolate(p.value, [0, 1], [0, 1], Extrapolation.CLAMP) : 1,
