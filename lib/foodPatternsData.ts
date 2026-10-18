@@ -72,7 +72,7 @@ let _mem: HistoryCache | null = null;
  * that changes when the diary does (the day's entry ids): a change refetches,
  * so a food logged a minute ago can be copied tomorrow without a restart.
  */
-export function useFoodHistory(version: string): { history: HistoryEntry[] } {
+export function useFoodHistory(version: string | null): { history: HistoryEntry[] } {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
   // v2: entries carry logged_via + tier. An older cache without them would
@@ -91,7 +91,8 @@ export function useFoodHistory(version: string): { history: HistoryEntry[] } {
         const disk = readCache<HistoryCache>('foodHistory', user.id);
         if (disk && disk.key === key) { _mem = disk; setHistory(disk.entries); }
       }
-      if (!supabase) return;
+      // null: the caller's diary is mid-load. Paint from cache, fetch once it lands.
+      if (!supabase || version === null) return;
       const fresh = await fetchHistory(supabase);
       // A failed fetch keeps what is on screen: no suggestions beats wrong ones,
       // and stale ones from this morning are still this user's habits.

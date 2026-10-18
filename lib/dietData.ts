@@ -1386,20 +1386,29 @@ async function logSection(
 }
 
 /** Undo an AI-logged meal: delete the inserted entries in every section it
- *  wrote, and each meal row too once it is empty. Best-effort. */
-export async function undoParsedMeal(supabase: Supa, ref: LoggedParseRef): Promise<void> {
+ *  wrote, and each meal row too once it is empty. Returns the first failed
+ *  entry delete, so a caller can keep its Undo on screen; callers that only
+ *  roll back may ignore it, as before. */
+export async function undoParsedMeal(supabase: Supa, ref: LoggedParseRef): Promise<{ error?: string }> {
+  let failed: string | undefined;
   for (const s of ref.sections) {
     if (s.entryIds.length > 0) {
-      await supabase.from('meal_entries').delete().in('id', s.entryIds);
+      const { error } = await supabase.from('meal_entries').delete().in('id', s.entryIds);
+      // The lines are still there, so the meal is not empty: skip the cleanup.
+      if (error) { failed = failed ?? error.message; continue; }
     }
     // Any meal row left empty goes, not only one this add created: two adds
     // into one meal undone in turn would otherwise strand an empty row (the
     // first add created it, the last undo did not). An empty meal still
     // counts as a logged day for the streak. Same rule as deleteMealEntry.
+    // Known gap, shared with deleteMealEntry: count-then-delete is two
+    // requests, and meal_entries cascades on meal delete, so a line another
+    // device adds to this meal between them would go with it.
     const { count } = await supabase
       .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', s.mealId);
     if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', s.mealId);
   }
+  return failed ? { error: failed } : {};
 }
 
 // ── Daily targets (the lifter framing: protein ring + calorie band) ─────────

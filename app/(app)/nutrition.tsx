@@ -478,7 +478,9 @@ export default function NutritionScreen() {
       `${e.id}:${e.quantity}:${e.serving_unit}:${e.kcal}:${e.protein_g}:${e.carb_g}:${e.fat_g}`).join(',')).join('|')}`,
     [byMeal, totalsDayIso],
   );
-  const { history } = useFoodHistory(isSignedIn ? diaryVersion : 'guest');
+  // null while the day is still loading: its empty first render would
+  // otherwise count as a change and fetch the history twice per open.
+  const { history } = useFoodHistory(!isSignedIn ? 'guest' : dayUnknown ? null : diaryVersion);
   const patterns = useMemo(() => learnPatterns(isSignedIn ? history : [], viewIso, todayIso), [history, viewIso, todayIso, isSignedIn]);
   // Today runs on the clock (breakfast in the morning, and still at lunch if
   // it was skipped). Any other day is backfill or planning: every meal open.
@@ -618,10 +620,15 @@ export default function NutritionScreen() {
       entry_count: ref.sections.reduce((t, sec) => t + sec.entryIds.length, 0),
       via: 'relog',
     });
+    // A throw or a failed delete keeps the chip: the lines may still be
+    // there, and Undo can be tried again.
+    let failed = false;
     try {
-      await undoParsedMeal(supabase, ref);
+      failed = !!(await undoParsedMeal(supabase, ref)).error;
     } catch {
-      // Keep the chip: the lines may still be there, and Undo can be tried again.
+      failed = true;
+    }
+    if (failed) {
       haptics.warning();
       reload();
       return;
@@ -1327,14 +1334,16 @@ export default function NutritionScreen() {
       });
     }
     setAdding(false);
-    if (flow.origin !== 'pattern') track('parse_proposal_accepted', {
-      item_count: flow.meal.items.length,
-      section_count: sectionsOf(flow.meal).length,
-      edit_count: editCountRef.current,
-      meal_type_picked: !!flow.mealTypePicked,
-      is_today: isToday,
-      write_failed: !!error,
-    });
+    if (flow.origin !== 'pattern') {
+      track('parse_proposal_accepted', {
+        item_count: flow.meal.items.length,
+        section_count: sectionsOf(flow.meal).length,
+        edit_count: editCountRef.current,
+        meal_type_picked: !!flow.mealTypePicked,
+        is_today: isToday,
+        write_failed: !!error,
+      });
+    }
     if (!error) editCountRef.current = 0;
     if (error) {
       // Keep the reviewed meal so Retry re-attempts the write (see onRetry).
