@@ -14,6 +14,7 @@ import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
   type CandidateFood,
   checkRememberedPiece,
+  sameFoodName,
   copiesCardLines,
   type ExtractedItem,
   gramsPerUnit,
@@ -255,10 +256,22 @@ Deno.test("when both remembered numbers are wrong, the catalog's numbers are use
   assert(check!.note.endsWith("and the catalog's numbers"), check!.note);
 });
 
+Deno.test("a catalog row is the remembered food only when it names all of it", () => {
+  assert(sameFoodName("dried fig", "Fig, dried"));
+  assert(sameFoodName("dried fig", "Figs, dried, uncooked"));
+  assertEquals(sameFoodName("dried fig", "Fig newtons"), false);
+  assertEquals(sameFoodName("fig", "Fig newtons bar"), false);
+});
+
 Deno.test("a sane piece weight, or a typed weight, leaves the memory alone", async () => {
   const sane = fig(250, 10);
   const a = await checkRememberedPiece(search, { unit: "piece" }, sane);
   assertEquals([a.food, a.check?.replaced], [sane, false]);
+  // "1 cup" is an amount: a piece weight has nothing to say about it.
+  assertEquals((await checkRememberedPiece(search, { unit: "cup" }, fig(250, 50))).check, null);
+  // A row for another food is no reference: a fig bar does not weigh what a fig does.
+  const bars: CandidateFood[] = [{ ...FIG_ROWS[0], name: "Fig newtons bar", servings: [{ label: "1 bar", grams: 40 }] }];
+  assertEquals((await checkRememberedPiece({ searchFoods: async () => bars }, { unit: "piece" }, fig(250, 10))).check?.replaced, false);
   // The user typed grams: the remembered piece weight is not used at all.
   const b = await checkRememberedPiece(search, { unit: "g" }, fig(250, 50));
   assertEquals(b.check, null);

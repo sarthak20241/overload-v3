@@ -74,7 +74,6 @@ import {
   memoryInputName,
   alsoSentence,
   memoryNote,
-  nameSimilarity,
 } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 
@@ -4530,6 +4529,18 @@ export function forSwapChips(it: ParsedItem): ParsedItem {
  *  fall well inside that; a dried fig at 50 g against 8 g does not. */
 export const PIECE_RATIO_LIMIT = 2.5;
 
+/** A catalog row is the remembered food when it names every word of it and
+ *  at most one more ("dried fig" -> "Fig, dried" and "Figs, dried, uncooked";
+ *  not "Fig bar" or "Fig newtons" for "dried fig"). Plurals count as one word. */
+export function sameFoodName(remembered: string, row: string): boolean {
+  const words = (x: string) => x.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+    .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w));
+  const mine = new Set(words(remembered));
+  const theirs = new Set(words(row));
+  if (mine.size === 0 || ![...mine].every((w) => theirs.has(w))) return false;
+  return [...theirs].filter((w) => !mine.has(w)).length <= 1;
+}
+
 /** The catalog search behind the piece check may take this long, no more. */
 export const PIECE_CHECK_TIMEOUT_MS = 1500;
 
@@ -4559,7 +4570,10 @@ export async function checkRememberedPiece(
 ): Promise<{ food: MemoryFood; check: { memory_g: number; catalog_g: number | null; row?: string; replaced: boolean; note: string; kept?: string } | null }> {
   const sv = food.serving;
   const unit = (item.unit ?? "").trim().toLowerCase();
-  if (!sv || !(sv.grams > 0) || MASS_UNITS.has(unit) || !namesAPiece({ label: sv.label, grams: sv.grams })) {
+  // Pieces only, on both sides: "1 cup" of a food remembered by the piece
+  // is an amount, and a piece weight has nothing to say about it.
+  const unitIsAmount = MASS_UNITS.has(unit) || unit.split(/[^a-z]+/).some((w) => MEASURE_WORDS.has(w));
+  if (!sv || !(sv.grams > 0) || unitIsAmount || !namesAPiece({ label: sv.label, grams: sv.grams })) {
     return { food, check: null };
   }
   // Bounded: this sits on the memory path, and a slow search must cost at most
@@ -4573,7 +4587,7 @@ export async function checkRememberedPiece(
   clearTimeout(timer);
   const pieces: { grams: number; label: string; row: string; kcal100: number; cand: CandidateFood }[] = [];
   for (const row of rows.slice(0, 5)) {
-    if (nameSimilarity(row.name, food.name) < 0.4) continue;
+    if (!sameFoodName(food.name, row.name)) continue;
     const one = row.servings.map(perOneServing).find((s) =>
       s.grams > 0 && !isBasisServing(s) && namesAPiece(s) && !/\b(cup|tbsp|tsp|serving)\b/i.test(s.label)
     );
