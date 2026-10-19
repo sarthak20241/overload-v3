@@ -30,6 +30,7 @@ import {
   wordBehaviours, wordSignals,
 } from "../_shared/dronaWords.ts";
 import { askJev } from "../ai-coach/jev.ts";
+import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "../_shared/dronaMemory.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
 
@@ -37,6 +38,15 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const CLERK_ISSUER = Deno.env.get("CLERK_ISSUER") ?? "";
 const JEV_API_KEY = Deno.env.get("JEV_API_KEY") ?? "";
+const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
+/** The sweep reads texts from this many days back (the zones differ; seen ones are skipped). */
+const SWEEP_DAYS = 3;
+/**
+ * Stop starting new texts after this long. The cron call times out at 55 s and
+ * one text can take Jev (6 s) plus the writer (15 s) plus the mark, so the last
+ * text started must still finish inside it.
+ */
+const SWEEP_BUDGET_MS = 25_000;
 /** Per Jev call (one per text). */
 const JEV_TIMEOUT_MS = 6000;
 /** Jev calls in flight per person: the cron already runs CRON_CONCURRENCY people at once. */
@@ -449,6 +459,71 @@ async function runCron(): Promise<Response> {
   }
 }
 
+/**
+ * The daily memory sweep (.planning/drona-memory-catch.md): every text from the
+ * last few days that no pass has read yet (notes, and any message whose
+ * after-reply pass failed), through the same catch as ai-coach. One person's
+ * texts in order, so a fact saved from one is in memory for the next. Stops
+ * starting texts near the cron's time limit; the rest wait for tomorrow.
+ */
+async function runMemorySweep(): Promise<Response> {
+  // The same kill switch as the after-reply pass. Missing keys stop the run
+  // BEFORE any text is read: otherwise every text fails, uses up a try, and
+  // after three nights is never read again.
+  if (Deno.env.get("MEMORY_CATCH") === "off") return json({ skipped: "MEMORY_CATCH=off" });
+  if (!JEV_API_KEY || !ANTHROPIC_API_KEY) return json({ error: "JEV_API_KEY or ANTHROPIC_API_KEY missing" }, 503);
+  const db = admin();
+  const started = Date.now();
+  const since = new Date(started - SWEEP_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const { data, error } = await retried(() => db.rpc("get_drona_memory_unseen", { p_since: since, p_limit: 300 }));
+  if (error) return json({ error: error.message, stage: "unseen" }, 500);
+  const texts = (data ?? []) as { user_id: string; id: string; kind: string; text: string }[];
+  const byUser = new Map<string, typeof texts>();
+  for (const t of texts) byUser.set(t.user_id, [...(byUser.get(t.user_id) ?? []), t]);
+
+  // saved counts facts; the rest count texts. `left` is the backlog for tomorrow: watch it.
+  const tally = { texts: texts.length, read: 0, saved: 0, no: 0, nothing: 0, failed: 0, left: 0 };
+  const today = new Date(started).toISOString().slice(0, 10);
+  const people = [...byUser.entries()];
+  for (let i = 0; i < people.length; i += CRON_CONCURRENCY) {
+    await Promise.all(people.slice(i, i + CRON_CONCURRENCY).map(async ([userId, mine]) => {
+      const logs: PromiseLike<unknown>[] = [];
+      for (const t of mine) {
+        if (Date.now() - started > SWEEP_BUDGET_MS) { tally.left += 1; continue; }
+        const r = await catchMemory(t.text, t.kind, {
+          jev: { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS },
+          anthropicKey: ANTHROPIC_API_KEY,
+          today,
+          readMemory: () => readMemoryRows(db as never, userId),
+          saveFact: async (f) => {
+            const { data: res, error: e } = await db.rpc("coach_remember_fact_for", {
+              p_user_id: userId, p_category: f.category, p_key: f.key, p_value: f.value, p_source: "sweep",
+            });
+            return saveResult(res, e);
+          },
+          logUsage: (u) => {
+            logs.push(db.rpc("log_token_usage", {
+              p_pipeline: "drona_memory", p_provider: "anthropic", p_model: MEMORY_WRITER_MODEL,
+              p_input_tokens: u.input_tokens, p_output_tokens: u.output_tokens, p_cache_read_tokens: 0,
+              p_cache_creation_tokens: 0, p_metadata: { via: "sweep", kind: t.kind }, p_latency_ms: u.latency_ms,
+              p_status: u.status, p_error_message: u.error ?? null,
+            }));
+          },
+        });
+        await retried(() => db.rpc("drona_memory_mark_seen", {
+          p_user_id: userId, p_source_id: t.id, p_outcome: r.outcome, p_facts: r.saved, p_gate: r.gate, p_via: "sweep",
+        }));
+        tally.read += 1;
+        if (r.outcome === "saved") tally.saved += r.saved; // facts, not texts
+        else tally[r.outcome] += 1;
+      }
+      // Settled before the response: the isolate may stop once it is sent.
+      await Promise.allSettled(logs);
+    }));
+  }
+  return json(tally);
+}
+
 async function runApp(req: Request, body: Record<string, unknown>): Promise<Response> {
   const userId = await clerkUserId(req.headers.get("Authorization"));
   if (!userId) return json({ error: "Unauthorized" }, 401);
@@ -509,6 +584,13 @@ Deno.serve(async (req: Request) => {
     if (ok !== true) return json({ error: "Unauthorized" }, 401);
     return runCron();
   }
+  if (body.mode === "memory_sweep") {
+    const secret = req.headers.get("x-cron-secret") ?? "";
+    const { data: ok, error } = await retried(() => admin().rpc("drona_cards_cron_ok", { p_secret: secret }));
+    if (error) return json({ error: error.message }, 500);
+    if (ok !== true) return json({ error: "Unauthorized" }, 401);
+    return runMemorySweep();
+  }
   if (body.mode === "app") return runApp(req, body);
-  return json({ error: "mode must be cron or app" }, 400);
+  return json({ error: "mode must be cron, memory_sweep or app" }, 400);
 });

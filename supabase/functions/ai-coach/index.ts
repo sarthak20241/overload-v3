@@ -32,6 +32,7 @@ import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
 import { withPhaseActivity } from "./programActivity.ts";
 import { weekStartOf } from "../_shared/dronaCards.ts";
+import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "../_shared/dronaMemory.ts";
 import type { DayTargetRow } from "../_shared/targetHistory.ts";
 import {
   type CandidateFood,
@@ -1002,6 +1003,13 @@ function newTrace(): CoachTrace {
   };
 }
 
+/**
+ * The person's whole message for a trace: the memory catch reads it after the
+ * reply (the trace itself keeps only a 200-character preview). Kept beside the
+ * trace, never written to it.
+ */
+const FULL_USER_TEXT = new WeakMap<CoachTrace, string>();
+
 function preview(text: string | null | undefined): string | null {
   if (!text) return null;
   return text.length > PREVIEW_MAX_CHARS ? text.slice(0, PREVIEW_MAX_CHARS) : text;
@@ -1068,6 +1076,66 @@ async function logTokenUsage(
   }
 }
 
+/** Requests whose words the memory catch reads: chat, its conversational modes, and food logging (mode null). */
+const MEMORY_MODES = new Set<string | null>([
+  null, "chat", "discuss_workout", "discuss_plan", "discuss_program", "refine_workout", "refine_plan",
+  "refine_program", "live_workout",
+]);
+// Also in SQL (get_drona_word_facts, get_drona_memory_unseen): change both together.
+const FOOD_TOOLS = ["estimate_meal", "extract_meal", "food_agent", "log_meal"];
+
+/**
+ * The memory catch (.planning/drona-memory-catch.md): after the reply, never
+ * before it. The chat coach has remember_fact in-loop but never used it, so
+ * every chat and food-log message also goes through _shared/dronaMemory.ts:
+ * one Jev yes/no, and only on a yes a small model that saves the facts. The
+ * text is marked seen (coach_memory_seen) so the daily sweep skips it, or
+ * retries it when this failed. MEMORY_CATCH=off turns it off.
+ */
+function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId: string): void {
+  const text = FULL_USER_TEXT.get(trace);
+  const userId = trace.user_id;
+  if (!text || !userId || trace.status !== "success") return;
+  if (!MEMORY_MODES.has(trace.mode ?? null)) return;
+  if (Deno.env.get("MEMORY_CATCH") === "off" || !JEV_API_KEY || !ANTHROPIC_API_KEY) return;
+  // Runs even when the coach called remember_fact itself this turn: that call
+  // can be refused, and the writer sees current memory (including what the
+  // coach just saved), so it updates rather than copies.
+
+  const kind = trace.tool_calls.some((t) => FOOD_TOOLS.includes(t)) ? "food_log" : "chat";
+  keepAlive((async () => {
+    try {
+      const result = await catchMemory(text, kind, {
+        jev: { apiKey: JEV_API_KEY, timeoutMs: 6000, log: (m) => console.log(`[ai-coach] memory ${m}`) },
+        anthropicKey: ANTHROPIC_API_KEY,
+        today: new Date().toISOString().slice(0, 10),
+        readMemory: () => readMemoryRows(admin as never, userId),
+        saveFact: async (f) => {
+          const { data, error } = await admin.rpc("coach_remember_fact_for", {
+            p_user_id: userId, p_category: f.category, p_key: f.key, p_value: f.value, p_source: kind,
+          });
+          if (error) console.log("[ai-coach] memory save:", error.message.slice(0, 160));
+          return saveResult(data, error);
+        },
+        logUsage: (u) => void logTokenUsage(admin, {
+          pipeline: "drona_memory", provider: "anthropic", model: MEMORY_WRITER_MODEL,
+          input_tokens: u.input_tokens, output_tokens: u.output_tokens, latency_ms: u.latency_ms,
+          status: u.status, error_message: u.error, metadata: { via: "reply", kind },
+        }),
+      });
+      const { error } = await admin.rpc("drona_memory_mark_seen", {
+        // The same id drona_word_facts gives this message (kind:source_id), so the sweep skips it.
+        p_user_id: userId, p_source_id: `chat_message:${traceId}`, p_outcome: result.outcome,
+        p_facts: result.saved, p_gate: result.gate, p_via: "reply",
+      });
+      if (error) console.log("[ai-coach] memory seen:", error.message.slice(0, 160));
+      if (result.outcome === "failed") console.log("[ai-coach] memory catch failed:", result.error);
+    } catch (e) {
+      console.log("[ai-coach] memory catch threw:", String(e).slice(0, 160));
+    }
+  })());
+}
+
 async function recordTrace(
   admin: SupabaseClient,
   trace: CoachTrace,
@@ -1078,8 +1146,14 @@ async function recordTrace(
     // supabase-js v2 returns { error } and does NOT throw on backend errors,
     // so the bare try/catch this replaced caught nothing: every failed trace
     // insert was silently discarded. Same trap logTokenUsage already documents.
-    const { error } = await admin.from("coach_traces").insert(row);
-    if (!error) return;
+    const { data: inserted, error } = await admin.from("coach_traces").insert(row).select("id").maybeSingle();
+    if (!error) {
+      if (inserted?.id) catchMemoryAfterReply(admin, trace, String(inserted.id));
+      // The memory pass is keyed by the trace id: without one this message is
+      // not read for memory (and the sweep cannot find it either).
+      else if (trace.user_id) console.log("[ai-coach] trace saved without an id: memory pass skipped");
+      return;
+    }
 
     // Deploy-order resilience. `mode` and `spans` arrive in migration 0080; if
     // the function ships before the migration is applied, PostgREST rejects
@@ -1096,7 +1170,8 @@ async function recordTrace(
         retrieval_rewrite_error: _rre,
         ...legacy
       } = row;
-      const { error: retryErr } = await admin.from("coach_traces").insert(legacy);
+      const { data: legacyRow, error: retryErr } = await admin.from("coach_traces").insert(legacy).select("id").maybeSingle();
+      if (!retryErr && legacyRow?.id) catchMemoryAfterReply(admin, trace, String(legacyRow.id));
       console.log(
         retryErr
           ? `[ai-coach] trace insert failed after legacy retry: ${(retryErr.message ?? "").slice(0, 200)}`
@@ -3141,6 +3216,7 @@ async function handleParseMealRequest(args: {
   }
   trace.model = PARSE_MEAL_MODEL;
   trace.last_user_message_preview = preview(text);
+  FULL_USER_TEXT.set(trace, text);
   trace.message_count = 1;
 
   // Tier check (paywall v3): parse runs for every signed-in user, but free
@@ -4657,6 +4733,7 @@ Deno.serve(async (req) => {
   trace.message_count = incomingMessages.length;
   const lastUser = [...incomingMessages].reverse().find((m) => m.role === "user");
   trace.last_user_message_preview = preview(lastUser?.content ?? null);
+  if (typeof lastUser?.content === "string") FULL_USER_TEXT.set(trace, lastUser.content);
 
   // Generate-flow routing (Phase 2.5): client sets `force_tool` to one of
   // 'generate_workout' | 'generate_plan'. We narrow the toolkit to that
