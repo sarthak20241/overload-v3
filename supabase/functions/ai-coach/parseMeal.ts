@@ -4228,8 +4228,11 @@ export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousIt
   // "piece" / "pieces", "puri" / "puries", "box" / "boxes", "berry" /
   // "berries": one is the other plus a plural ending, and nothing else, so
   // "can" never matches "candy".
+  // A stored label often carries its own "1" ("1 piece", "1 cup, cooked")
+  // where the copied line says "piece": the count is the quantity, not the unit.
+  const bare = (u: string) => norm(u).replace(/^1 /, "");
   const sameUnit = (a: string, b: string) => {
-    const x = norm(a), y = norm(b);
+    const x = bare(a), y = bare(b);
     if (x === y) return true;
     const [short, long] = x.length <= y.length ? [x, y] : [y, x];
     return long === `${short}s` || long === `${short}es` ||
