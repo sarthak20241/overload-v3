@@ -33,7 +33,9 @@ it never slows or changes the reply:
      a decision.
    - No: what they ate or did just now, food amounts, a one-off state (today's
      soreness, mood, hunger), a question, a request to the coach.
-   - A yes needs 0.75 or more, the same line as the word behaviours.
+   - A yes needs 0.5 or more (built; the plan said 0.75). The gate only saves
+     money, and the writer still decides; on the tuning set every "no" scored
+     0.16 or less and every real fact 0.65 or more.
 2. **Only on a yes, Drona writes the fact** with the same `remember_fact` tool.
    This is one small model call (Haiku 5.5), with the person's current memory in
    front of it, so it updates a fact instead of making a second one. It saves 0
@@ -141,4 +143,14 @@ pass has read yet:
 
 - **The live pass needs `ai-coach` deployed.** Main also holds #266 (another session's food change, merged, not deployed: live `ai-coach` is v215 = `b9a9e8f`). Deploying the coach ships #266 too. That is the owner's call.
 - **The sweep needs `drona-cards` deployed,** plus the 2 runtime_config rows. Then re-run the DO block in `20261019053659`.
+
+### Review fixes (claude[bot], PR #268)
+
+- The catch also runs when the trace insert falls back to the legacy columns.
+- A turn where the coach already called `remember_fact` is marked read, so the
+  sweep does not read it again.
+- The sweep stops starting texts at 25 s (was 45 s), so the last one still ends
+  inside the cron's 55 s; its token-usage writes are awaited.
+- Known, left as is: `tries` counts every pass, not only failures; the 60-fact
+  cap prunes by `updated_at`, the same as the chat save.
 

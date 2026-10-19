@@ -1096,9 +1096,16 @@ function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId
   const userId = trace.user_id;
   if (!text || !userId || trace.status !== "success") return;
   if (!MEMORY_MODES.has(trace.mode ?? null)) return;
-  // The coach saved something itself this turn: it already read this message.
-  if (trace.tool_calls.includes("remember_fact")) return;
   if (Deno.env.get("MEMORY_CATCH") === "off" || !JEV_API_KEY || !ANTHROPIC_API_KEY) return;
+  // The coach saved something itself this turn: it already read this message.
+  // Marked read, so the daily sweep does not read it again.
+  if (trace.tool_calls.includes("remember_fact")) {
+    keepAlive(Promise.resolve(admin.rpc("drona_memory_mark_seen", {
+      p_user_id: userId, p_source_id: `chat_message:${traceId}`, p_outcome: "saved", p_facts: 0, p_gate: null,
+      p_via: "reply",
+    })).then(({ error }) => { if (error) console.log("[ai-coach] memory seen:", error.message.slice(0, 160)); }));
+    return;
+  }
 
   const kind = trace.tool_calls.some((t) => FOOD_TOOLS.includes(t)) ? "food_log" : "chat";
   keepAlive((async () => {
@@ -1168,7 +1175,8 @@ async function recordTrace(
         retrieval_rewrite_error: _rre,
         ...legacy
       } = row;
-      const { error: retryErr } = await admin.from("coach_traces").insert(legacy);
+      const { data: legacyRow, error: retryErr } = await admin.from("coach_traces").insert(legacy).select("id").single();
+      if (!retryErr && legacyRow?.id) catchMemoryAfterReply(admin, trace, String(legacyRow.id));
       console.log(
         retryErr
           ? `[ai-coach] trace insert failed after legacy retry: ${(retryErr.message ?? "").slice(0, 200)}`

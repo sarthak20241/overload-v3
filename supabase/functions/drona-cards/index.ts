@@ -41,8 +41,12 @@ const JEV_API_KEY = Deno.env.get("JEV_API_KEY") ?? "";
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 /** The sweep reads texts from this many days back (the zones differ; seen ones are skipped). */
 const SWEEP_DAYS = 3;
-/** Stop starting new texts after this long: the cron call times out at 55 s. */
-const SWEEP_BUDGET_MS = 45_000;
+/**
+ * Stop starting new texts after this long. The cron call times out at 55 s and
+ * one text can take Jev (6 s) plus the writer (15 s) plus the mark, so the last
+ * text started must still finish inside it.
+ */
+const SWEEP_BUDGET_MS = 25_000;
 /** Per Jev call (one per text). */
 const JEV_TIMEOUT_MS = 6000;
 /** Jev calls in flight per person: the cron already runs CRON_CONCURRENCY people at once. */
@@ -477,6 +481,7 @@ async function runMemorySweep(): Promise<Response> {
   const people = [...byUser.entries()];
   for (let i = 0; i < people.length; i += CRON_CONCURRENCY) {
     await Promise.all(people.slice(i, i + CRON_CONCURRENCY).map(async ([userId, mine]) => {
+      const logs: PromiseLike<unknown>[] = [];
       for (const t of mine) {
         if (Date.now() - started > SWEEP_BUDGET_MS) { tally.left += 1; continue; }
         const r = await catchMemory(t.text, t.kind, {
@@ -495,12 +500,12 @@ async function runMemorySweep(): Promise<Response> {
             return !e && (res as { saved?: boolean } | null)?.saved === true;
           },
           logUsage: (u) => {
-            void db.rpc("log_token_usage", {
+            logs.push(db.rpc("log_token_usage", {
               p_pipeline: "drona_memory", p_provider: "anthropic", p_model: MEMORY_WRITER_MODEL,
               p_input_tokens: u.input_tokens, p_output_tokens: u.output_tokens, p_cache_read_tokens: 0,
               p_cache_creation_tokens: 0, p_metadata: { via: "sweep", kind: t.kind }, p_latency_ms: u.latency_ms,
               p_status: u.status, p_error_message: u.error ?? null,
-            });
+            }));
           },
         });
         await retried(() => db.rpc("drona_memory_mark_seen", {
@@ -510,6 +515,8 @@ async function runMemorySweep(): Promise<Response> {
         tally[r.outcome] += 1;
         if (r.outcome === "saved") tally.saved += r.saved - 1; // count facts, not texts
       }
+      // Settled before the response: the isolate may stop once it is sent.
+      await Promise.allSettled(logs);
     }));
   }
   return json(tally);
