@@ -121,4 +121,10 @@ was tapped.
 - **A PR waits 3 days before another PR card (7 after "Skip"), not 14.** It is good news, and the workout id already stops repeats. A test fails with the old rule.
 - **Measured:** `get_drona_moment_candidates` takes about 1.3 s per 15-minute run at 49 people. Most of it is reading the time zone list (`pg_timezone_names`), which happens once per run, not once per person.
 - **Left as is:** `drona_moment_asks.status = 'done'` is never set. An ask with a matching change is skipped by the read and ages out after 7 days.
+- Second review: an ask counts as answered only by a change the person or
+  Drona made, not the app's own automatic edits (`20261019163247_drona_moments_asks_source`);
+  the reply path says nothing when it cannot read the card history (it cannot
+  check the cooldown); `momentRow` guards a missing week. Kept on purpose: the
+  pain cooldown is per topic, not per body part (a second injury within two
+  weeks waits); with two PR workouts in two days the second one may age out.
 

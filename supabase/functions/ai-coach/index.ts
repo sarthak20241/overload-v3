@@ -1190,8 +1190,13 @@ async function momentsFromReply(
 
   if (painYes) {
     const since = new Date(now.getTime() - 60 * 86_400_000).toISOString();
-    const { data: rows } = await admin.from("drona_cards")
+    const { data: rows, error: cardsErr } = await admin.from("drona_cards")
       .select("slot, topic, status, moment_day, created_at, deferred_at").eq("user_id", userId).gte("created_at", since);
+    // Without the history the cooldown cannot be checked: say nothing rather than repeat.
+    if (cardsErr) {
+      console.log("[ai-coach] pain moment cards:", cardsErr.message.slice(0, 160));
+      return;
+    }
     const cards = (rows ?? []).map((r) => ({
       slot: r.slot, topic: r.topic, status: r.status, moment_day: r.moment_day, deferred: !!r.deferred_at,
       created_day: (wallClock(r.created_at, tz) ?? String(r.created_at)).slice(0, 10),

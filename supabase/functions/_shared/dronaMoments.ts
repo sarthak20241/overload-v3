@@ -200,7 +200,7 @@ export function momentRow(
   userId: string, today: string, card: PickCard, candidate: MomentCandidate | null, source: 'cron' | 'reply', nowMs: number,
 ) {
   return {
-    user_id: userId, week_start: weekStartOf(today), slot: 'moment', moment_day: today,
+    user_id: userId, week_start: weekStartOf(today) ?? today, slot: 'moment', moment_day: today,
     kind: card.kind, topic: card.topic, title: card.title, body: card.body, evidence: card.evidence,
     payload: card.payload, signals: card.signals, facts: { moment: candidate }, source,
     expires_at: new Date(nowMs + MOMENT_HOURS * 3_600_000).toISOString(),
