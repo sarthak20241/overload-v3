@@ -306,8 +306,13 @@ export function ParsedMealCard({
   // not be trusted to share out a box shorter than the content (see
   // lib/mealCardSplit). So the popover's card sizes the list and the note
   // itself, from what it measured. Everything else in the card is fixed, so
-  // the split does not move the numbers it is made from.
-  const sized = expanded && hasList && cardH > 0 && footerBottom > 0 && listContentH > 0
+  // the split does not move the numbers it is made from: contentH is read off
+  // the footer's bottom edge, which sits under the list and the note, so it
+  // carries their measured heights, and taking them back out leaves only the
+  // fixed parts. Seen settle in one pass on Android with the keyboard up.
+  // footerBottom > 0 is that edge having laid out at all; without it contentH
+  // falls back to cardH and the space would read as nothing.
+  const sized =expanded && hasList && cardH > 0 && footerBottom > 0 && listContentH > 0
     && (!shownNotice || noticeContentH > 0);
   const split = splitCardSpace({
     space: cardH - (contentH - listH - (shownNotice ? noticeH : 0)),
