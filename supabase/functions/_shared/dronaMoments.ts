@@ -55,6 +55,12 @@ export const WEEK_CAP = 3;
 export const MOMENT_HOURS = 48;
 const COOLDOWN_DAYS = 14;
 const DISMISSED_COOLDOWN_DAYS = 28;
+/**
+ * A PR is good news and the workout id already stops repeats: a short wait, so
+ * someone setting bests often still hears about them (not every one).
+ */
+const PR_COOLDOWN_DAYS = 3;
+const PR_DISMISSED_COOLDOWN_DAYS = 7;
 
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
@@ -146,7 +152,11 @@ function onCooldown(topic: string, cards: MomentCardRow[], today: string): boole
     if (c.topic !== topic) return false;
     const ago = daysBetween(c.created_day ?? c.moment_day, today);
     if (ago == null) return false;
-    return ago < (c.status === 'dismissed' ? DISMISSED_COOLDOWN_DAYS : COOLDOWN_DAYS);
+    const pr = topic === 'pr';
+    const limit = c.status === 'dismissed'
+      ? (pr ? PR_DISMISSED_COOLDOWN_DAYS : DISMISSED_COOLDOWN_DAYS)
+      : (pr ? PR_COOLDOWN_DAYS : COOLDOWN_DAYS);
+    return ago < limit;
   });
 }
 

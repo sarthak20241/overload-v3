@@ -53,6 +53,13 @@ Deno.test("cooldown: 2 weeks, 4 after Skip, any slot; then the next moment gets 
   assertEquals(decideMoment(person([pain], [weeklyPain])), null);
 });
 
+Deno.test("a PR waits only 3 days (7 after Skip): good news, and the workout id already stops repeats", () => {
+  assertEquals(decideMoment(person([pr], [moment("pr", "2026-10-17")])), null);
+  assertEquals(decideMoment(person([pr], [moment("pr", "2026-10-16")]))?.topic, "pr");
+  assertEquals(decideMoment(person([pr], [moment("pr", "2026-10-13", "dismissed")])), null);
+  assertEquals(decideMoment(person([pr], [moment("pr", "2026-10-12", "dismissed")]))?.topic, "pr");
+});
+
 Deno.test("a 'topic:' mute and the quiet week are obeyed", () => {
   assertEquals(decideMoment(person([missed, food], [], { mutes: ["topic:missed_sessions"] }))?.topic, "food_off");
   const quiet = decideMoment(person([missed], [], { hushed: true }))!;

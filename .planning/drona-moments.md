@@ -114,3 +114,11 @@ it popped up on its own, with no restart, in front of the waiting weekly card
 the app went back to the real weekly card untouched. Nothing on the real card
 was tapped.
 
+### Review fixes (claude[bot], PR #270)
+
+- **The pain moment from a reply now obeys mutes and the quiet week.** It reads last week's behaviours, the same way the cron's read does. Before, a person who had muted the topic, or who was in a quiet week, still got it.
+- **The pain and ask questions are only asked about chat messages,** not about food logs, which never make those moments.
+- **A PR waits 3 days before another PR card (7 after "Skip"), not 14.** It is good news, and the workout id already stops repeats. A test fails with the old rule.
+- **Measured:** `get_drona_moment_candidates` takes about 1.3 s per 15-minute run at 49 people. Most of it is reading the time zone list (`pg_timezone_names`), which happens once per run, not once per person.
+- **Left as is:** `drona_moment_asks.status = 'done'` is never set. An ask with a matching change is skipped by the read and ages out after 7 days.
+

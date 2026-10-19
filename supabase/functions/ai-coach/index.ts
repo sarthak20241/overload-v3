@@ -30,7 +30,7 @@ import { AI_LIMITS } from "../_shared/aiLimits.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { QUESTIONS as WORD_QUESTIONS, YES as WORD_YES } from "../_shared/dronaWords.ts";
 import { decideMoment, type MomentCandidate, momentRow } from "../_shared/dronaMoments.ts";
-import { asNoul } from "./jev.ts";
+import { asNoul, type JevAnswer } from "./jev.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
 import { withPhaseActivity } from "./programActivity.ts";
@@ -1109,10 +1109,13 @@ function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId
   keepAlive((async () => {
     try {
       const result = await catchMemory(text, kind, {
-        // The moments' questions ride the same Jev call (.planning/drona-moments.md).
-        extraQuestions: {
-          pain: WORD_QUESTIONS.pain, area: WORD_QUESTIONS.area, ask: WORD_QUESTIONS.ask, change: WORD_QUESTIONS.change,
-        },
+        // The moments' questions ride the same Jev call (.planning/drona-moments.md),
+        // chat only: a food log never makes a pain or an ask moment.
+        ...(kind === "chat"
+          ? { extraQuestions: {
+              pain: WORD_QUESTIONS.pain, area: WORD_QUESTIONS.area, ask: WORD_QUESTIONS.ask, change: WORD_QUESTIONS.change,
+            } }
+          : {}),
         jev: { apiKey: JEV_API_KEY, timeoutMs: 6000, log: (m) => console.log(`[ai-coach] memory ${m}`) },
         anthropicKey: ANTHROPIC_API_KEY,
         today: new Date().toISOString().slice(0, 10),
@@ -1144,6 +1147,12 @@ function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId
   })());
 }
 
+/** The Monday of the week before a YYYY-MM-DD (the finished week the behaviours judge). */
+function lastWeekStart(day: string): string {
+  const monday = weekStartOf(day) ?? day;
+  return new Date(Date.parse(`${monday}T00:00:00Z`) - 7 * 86_400_000).toISOString().slice(0, 10);
+}
+
 /**
  * Moments from one message (.planning/drona-moments.md), from the answers the
  * memory catch already got:
@@ -1156,8 +1165,8 @@ function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId
 async function momentsFromReply(
   admin: SupabaseClient, userId: string, traceId: string, kind: string, answers: Record<string, unknown>,
 ): Promise<void> {
-  const pain = asNoul(answers.pain as never);
-  const ask = asNoul(answers.ask as never);
+  const pain = asNoul(answers.pain as JevAnswer | undefined);
+  const ask = asNoul(answers.ask as JevAnswer | undefined);
   // Chat only: a food log's "stomach ache" is not a training injury.
   const painYes = kind === "chat" && pain != null && pain >= WORD_YES;
   const askYes = kind === "chat" && ask != null && ask >= WORD_YES;
@@ -1187,9 +1196,14 @@ async function momentsFromReply(
       slot: r.slot, topic: r.topic, status: r.status, moment_day: r.moment_day, deferred: !!r.deferred_at,
       created_day: (wallClock(r.created_at, tz) ?? String(r.created_at)).slice(0, 10),
     }));
+    // Last week's mutes and quiet-week flag, as get_drona_moment_candidates reads them for the cron.
+    const { data: behs } = await admin.from("drona_behaviours").select("mutes, meta")
+      .eq("user_id", userId).eq("week_start", lastWeekStart(today));
+    const mutes = [...new Set((behs ?? []).flatMap((b) => (b.mutes ?? []) as string[]))];
+    const hushedWeek = (behs ?? []).some((b) => b.meta === true);
     const area = String(choice("area") ?? "other");
     const candidate: MomentCandidate = { type: "hurting", detail: { area, day: today, source: sourceId, score: pain } };
-    const card = decideMoment({ user_id: userId, today, candidates: [candidate], cards });
+    const card = decideMoment({ user_id: userId, today, candidates: [candidate], cards, mutes, hushed: hushedWeek });
     if (!card) return;
     const { error } = await admin.from("drona_cards").insert(momentRow(userId, today, card, candidate, "reply", now.getTime()));
     // 23505: a pain moment already made today. Not a failure.
