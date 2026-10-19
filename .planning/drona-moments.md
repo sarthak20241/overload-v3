@@ -156,4 +156,9 @@ was tapped.
   list. Checked: an expired moment in state drops within a minute (the minute
   read returns none); `workout_sets(exercise_id)` and `workouts(user_id)` are
   indexed (the PR scan uses both).
+- Ninth review: `get_drona_facts` now lists the 40 newest cards (was 8), so
+  moments (up to 3 a week) cannot push a weekly topic out of the weekly
+  cooldown (`20261019171727_drona_facts_cards_window`). Checked: the card
+  stats (`drona_rebuild_card_facts`) already count the weekly slot only; every
+  plan change Drona makes carries `x-change-source`, so it is never 'system'.
 
