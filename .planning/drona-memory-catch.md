@@ -186,4 +186,11 @@ pass has read yet:
   sweep reads food logs too (labelled `food_log`), because the owner's idea is
   exactly that food logs can carry facts; in normal running the reply pass has
   already read them, so they are not in the sweep's list.
+- Seventh review: at the 60-fact cap, injury, diet and constraint facts are
+  dropped last (`20261019061719_drona_memory_cap_safety`; checked live in a
+  rolled-back transaction: an allergy 400 days old survived 60 newer facts);
+  a trace saved without an id now logs that its memory pass was skipped. Known:
+  a reply pass still running at 21:00 UTC can be read by the sweep too (a paid
+  duplicate, saves are upserts); a forgotten fact could come back under a
+  different key (the writer is told not to; it is not enforced).
 

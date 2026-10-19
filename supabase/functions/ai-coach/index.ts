@@ -1149,6 +1149,9 @@ async function recordTrace(
     const { data: inserted, error } = await admin.from("coach_traces").insert(row).select("id").maybeSingle();
     if (!error) {
       if (inserted?.id) catchMemoryAfterReply(admin, trace, String(inserted.id));
+      // The memory pass is keyed by the trace id: without one this message is
+      // not read for memory (and the sweep cannot find it either).
+      else if (trace.user_id) console.log("[ai-coach] trace saved without an id: memory pass skipped");
       return;
     }
 
