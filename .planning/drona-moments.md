@@ -136,4 +136,10 @@ was tapped.
 - CodeRabbit: a moment's `drona_card_shown` fires from an effect on the moment
   actually in state (the minute check can keep an older one on screen); the
   reply pain path also stops when the behaviours read fails, like the cards read.
+- Fifth review: within a type the newest candidate wins (two PR workouts in two
+  days: the latest best is said and its workout stored); a test fails without
+  it. The pain cooldown applies to any body part on purpose (comment added).
+  Left: the ask filter is a blocklist (`system`, `auto`); an allowlist would be
+  safer if new sources appear. The next change to `get_drona_moment_candidates`
+  should start from `20261019163247`, the latest full copy.
 

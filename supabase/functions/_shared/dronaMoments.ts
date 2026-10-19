@@ -146,7 +146,12 @@ export function momentWords(c: MomentCandidate): Words {
   }
 }
 
-/** Shown, or skipped, too recently? Any slot counts: a weekly card on the same topic waits it out too. */
+/**
+ * Shown, or skipped, too recently? Any slot counts: a weekly card on the same
+ * topic waits it out too. Pain too, on purpose: one pain card per two weeks,
+ * whatever the body part, so a person mentioning aches often is not told to
+ * see a professional every week (the per-day unique index is only a backstop).
+ */
 function onCooldown(topic: string, cards: MomentCardRow[], today: string): boolean {
   return cards.some((c) => {
     if (c.topic !== topic) return false;
@@ -175,7 +180,10 @@ export function decideMoment(p: MomentPerson): PickCard | null {
   );
   const meta = p.hushed ? [{ behaviour: 'not_hearing_drona', priority: 12, card_kind: 'notice', meta: true }] : [];
 
-  const ordered = [...(p.candidates ?? [])].sort((a, b) => (PRIORITY[a.type] ?? 9) - (PRIORITY[b.type] ?? 9));
+  // Most important first; within a type the newest (two PR workouts in two days: the latest best).
+  const day = (c: MomentCandidate) => String(c.detail?.day ?? '');
+  const ordered = [...(p.candidates ?? [])].sort((a, b) =>
+    (PRIORITY[a.type] ?? 9) - (PRIORITY[b.type] ?? 9) || day(b).localeCompare(day(a)));
   for (const c of ordered) {
     const words = momentWords(c);
     if (!words) continue;
@@ -192,7 +200,9 @@ export function decideMoment(p: MomentPerson): PickCard | null {
 
 /** The candidate a decided moment came from (its detail goes into the card's facts). */
 export function candidateFor(p: MomentPerson, card: PickCard): MomentCandidate | null {
-  return (p.candidates ?? []).find((c) => c.type === card.topic) ?? null;
+  // The same choice decideMoment made: within a type, the newest.
+  const same = (p.candidates ?? []).filter((c) => c.type === card.topic);
+  return same.sort((a, b) => String(b.detail?.day ?? '').localeCompare(String(a.detail?.day ?? '')))[0] ?? null;
 }
 
 /** The drona_cards row for a moment. One per person, day and topic (a unique index). */

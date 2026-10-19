@@ -1,5 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { decideMoment, type MomentCandidate, type MomentCardRow, type MomentPerson, momentWords } from "./dronaMoments.ts";
+import {
+  candidateFor, decideMoment, type MomentCandidate, type MomentCardRow, type MomentPerson, momentWords,
+} from "./dronaMoments.ts";
 
 const TODAY = "2026-10-19";
 const missed: MomentCandidate = { type: "missed_sessions", detail: { gap_days: 5, planned_per_week: 4, last_session_day: "2026-10-14" } };
@@ -86,4 +88,15 @@ Deno.test("no words use an em dash, and chips stay short", () => {
     assertEquals(/—/.test(`${w.title} ${w.body} ${w.quiet ?? ""} ${w.payload.prompt ?? ""}`), false);
     for (const e of w.evidence) assertEquals(e.value.length <= 10, true, `${c.type}: ${e.value}`);
   }
+});
+
+Deno.test("two PR workouts in two days: the newest best is the one said, and its workout is the one stored", () => {
+  const older: MomentCandidate = { type: "pr", detail: { workout_id: "w-old", day: "2026-10-18",
+    prs: [{ exercise: "Squat", weight_kg: 100, reps: 5, prev_best_kg: 97.5 }] } };
+  const newer: MomentCandidate = { type: "pr", detail: { workout_id: "w-new", day: "2026-10-19",
+    prs: [{ exercise: "Bench Press", weight_kg: 80, reps: 6, prev_best_kg: 77.5 }] } };
+  const p = person([older, newer]);
+  const card = decideMoment(p)!;
+  assertEquals(card.title, "New best: Bench Press");
+  assertEquals(candidateFor(p, card)?.detail.workout_id, "w-new");
 });
