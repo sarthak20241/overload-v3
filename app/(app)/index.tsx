@@ -32,7 +32,7 @@ import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { DronaCardPopup } from '@/components/coach/DronaCardPopup';
 import { useToast } from '@/components/ui/Toast';
 import {
-  currentWeekStart, deferCard, movesFor, readCheckinCard, readWeeklyCard, requestWeeklyCard, setCardStatus,
+  currentWeekStart, deferCard, movesFor, readCheckinCard, readMomentCard, readWeeklyCard, requestWeeklyCard, setCardStatus,
   type SavedDronaCard,
 } from '@/lib/dronaCard';
 import { useWorkout } from '@/hooks/useWorkout';
@@ -454,6 +454,10 @@ export default function DashboardScreen() {
   // The calorie check-in: its own card a week (slot 'calories'), apart from the
   // weekly one. When it is waiting it pops up first; the weekly card follows.
   const [checkinCard, setCheckinCard] = useState<SavedDronaCard | null>(null);
+  // A moment: a card about something that just happened (.planning/drona-moments.md).
+  // Made on the server as soon as it is found; read on focus and every minute
+  // while the dashboard is open, so it pops up without a restart.
+  const [momentCard, setMomentCard] = useState<SavedDronaCard | null>(null);
   // Two popups must never stack: BuildSplitPrompt reports when it is up, and
   // the card waits. Later or a tap outside marks the card deferred, which is
   // what keeps it from coming straight back on the next focus.
@@ -536,6 +540,7 @@ export default function DashboardScreen() {
     if (isGuestSession || !clerkId) {
       setWeeklyCard(null);
       setCheckinCard(null);
+      setMomentCard(null);
       return;
     }
     let live = true;
@@ -545,11 +550,15 @@ export default function DashboardScreen() {
     const shown = (card: SavedDronaCard | null | undefined) => {
       if (!card || card.status !== 'pending' || card.deferred_at || shownCards.current.has(card.id)) return;
       shownCards.current.add(card.id);
-      track('drona_card_shown', { kind: card.kind, topic: card.topic });
+      track('drona_card_shown', { kind: card.kind, topic: card.topic, slot: card.slot });
     };
     (async () => {
-      const [row, check] = await Promise.all([readWeeklyCard(supabase, clerkId), readCheckinCard(supabase, clerkId)]);
+      const [row, check, moment] = await Promise.all([
+        readWeeklyCard(supabase, clerkId), readCheckinCard(supabase, clerkId), readMomentCard(supabase, clerkId),
+      ]);
       if (!live) return;
+      if (moment !== undefined) setMomentCard(moment);
+      shown(moment);
       if (check !== undefined) setCheckinCard(check);
       shown(check);
       if (row !== undefined) setWeeklyCard(row);
@@ -579,10 +588,31 @@ export default function DashboardScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isGuestSession, user?.id, focusTick]);
 
-  // One popup at a time: a waiting check-in first, the weekly card after.
+  // While the dashboard is open, look for a new moment every minute: one can be
+  // made while the person is here (a PR just synced, a pain message in chat).
+  useEffect(() => {
+    const clerkId = user?.id;
+    if (isGuestSession || !clerkId || !screenFocused) return;
+    let live = true;
+    const timer = setInterval(() => {
+      void readMomentCard(supabase, clerkId).then((m) => {
+        if (!live || m === undefined) return;
+        setMomentCard((prev) => (prev?.id === m?.id ? prev : m));
+        if (m && m.status === 'pending' && !m.deferred_at && !shownCards.current.has(m.id)) {
+          shownCards.current.add(m.id);
+          track('drona_card_shown', { kind: m.kind, topic: m.topic, slot: m.slot });
+        }
+      });
+    }, 60_000);
+    return () => { live = false; clearInterval(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isGuestSession, user?.id, screenFocused]);
+
+  // One popup at a time: a waiting check-in first, then a moment, then the weekly card.
   const checkinWaiting = !!checkinCard && checkinCard.status === 'pending' && !checkinCard.deferred_at;
-  const popupCard = checkinWaiting ? checkinCard : weeklyCard;
-  const setPopupCard = checkinWaiting ? setCheckinCard : setWeeklyCard;
+  const momentWaiting = !checkinWaiting && !!momentCard && momentCard.status === 'pending' && !momentCard.deferred_at;
+  const popupCard = checkinWaiting ? checkinCard : momentWaiting ? momentCard : weeklyCard;
+  const setPopupCard = checkinWaiting ? setCheckinCard : momentWaiting ? setMomentCard : setWeeklyCard;
 
   const handleCardAct = () => {
     if (!popupCard) return;
@@ -1397,6 +1427,7 @@ export default function DashboardScreen() {
         && screenFocused
         && !splitPromptShowing
         && !workoutActive
+        && !aiCoachOpen
         && (
           <DronaCardPopup
             card={popupCard}

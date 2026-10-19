@@ -174,6 +174,12 @@ export interface CatchDeps {
    */
   saveFact: (fact: MemoryFactIn) => Promise<SaveResult>;
   logUsage?: (u: { input_tokens: number; output_tokens: number; latency_ms: number; status: 'success' | 'error'; error?: string }) => void;
+  /**
+   * More questions about the same text on the same Jev call (the moments ask
+   * "pain now" and "asks for a change" here). Their answers come back in
+   * CatchResult.answers whatever the gate said.
+   */
+  extraQuestions?: Record<string, JevQuestion>;
 }
 
 export type CatchOutcome = 'no' | 'nothing' | 'saved' | 'failed';
@@ -193,6 +199,8 @@ export interface CatchResult {
   saved: number;
   facts?: MemoryFactIn[];
   error?: string;
+  /** Jev's answers to extraQuestions, keyed by their names. */
+  answers?: Record<string, unknown>;
 }
 
 /** One text through both steps. Never throws. */
@@ -200,11 +208,16 @@ export async function catchMemory(text: string, kind: string, deps: CatchDeps): 
   const t = (text ?? '').trim().slice(0, TEXT_CAP);
   if (t.length < 3) return { outcome: 'no', gate: null, saved: 0 };
 
-  const gate = await askJev({ text: t, written_in: WHERE[kind] ?? 'a note' }, { lasting: MEMORY_GATE }, deps.jev);
+  const gate = await askJev(
+    { text: t, written_in: WHERE[kind] ?? 'a note' },
+    { ...(deps.extraQuestions ?? {}), lasting: MEMORY_GATE },
+    deps.jev,
+  );
   if (!gate.ok) return { outcome: 'failed', gate: null, saved: 0, error: `jev ${gate.failure}` };
+  const answers = gate.response.answers as Record<string, unknown>;
   const score = asNoul(gate.response.answers.lasting);
-  if (score == null) return { outcome: 'failed', gate: null, saved: 0, error: 'jev answer missing' };
-  if (score < GATE_YES) return { outcome: 'no', gate: score, saved: 0 };
+  if (score == null) return { outcome: 'failed', gate: null, saved: 0, error: 'jev answer missing', answers };
+  if (score < GATE_YES) return { outcome: 'no', gate: score, saved: 0, answers };
 
   let memory: MemoryRow[] = [];
   try {
@@ -238,13 +251,13 @@ export async function catchMemory(text: string, kind: string, deps: CatchDeps): 
     if (!res.ok) {
       const error = `writer HTTP ${res.status}`;
       deps.logUsage?.({ input_tokens: 0, output_tokens: 0, latency_ms: Date.now() - started, status: 'error', error });
-      return { outcome: 'failed', gate: score, saved: 0, error };
+      return { outcome: 'failed', gate: score, saved: 0, error, answers };
     }
     data = await res.json();
   } catch (e) {
     const error = `writer ${String(e).slice(0, 120)}`;
     deps.logUsage?.({ input_tokens: 0, output_tokens: 0, latency_ms: Date.now() - started, status: 'error', error });
-    return { outcome: 'failed', gate: score, saved: 0, error };
+    return { outcome: 'failed', gate: score, saved: 0, error, answers };
   } finally {
     clearTimeout(timer);
   }
@@ -268,5 +281,5 @@ export async function catchMemory(text: string, kind: string, deps: CatchDeps): 
   // A save that could not happen is a failure (the sweep tries again); a save
   // refused on purpose (forgotten by the person) is "nothing to keep".
   const outcome: CatchOutcome = saved > 0 ? 'saved' : errors > 0 ? 'failed' : 'nothing';
-  return { outcome, gate: score, saved, facts, ...(outcome === 'failed' ? { error: 'no fact saved' } : {}) };
+  return { outcome, gate: score, saved, facts, answers, ...(outcome === 'failed' ? { error: 'no fact saved' } : {}) };
 }
