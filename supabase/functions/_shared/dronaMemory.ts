@@ -59,7 +59,8 @@ export const MEMORY_GATE: JevQuestion = {
   },
 };
 
-const WHERE: Record<string, string> = {
+/** Where a text was written, as Jev and the writer are told it. Exported so the eval sends the same label. */
+export const WHERE: Record<string, string> = {
   chat: 'a chat message to their coach',
   food_log: 'a message typed while logging food',
   workout_note: 'a note on a logged workout',

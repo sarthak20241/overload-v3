@@ -113,15 +113,15 @@ pass has read yet:
     - the sweep cron, which is NOT scheduled: it needs the 2 runtime_config rows
   - `20261019053812_drona_memory_mark_seen`: counts tries, and never downgrades a read text to failed
 - **`_shared/dronaMemory.ts`:** the Jev gate, the writer (Haiku 5.5, the `remember_fact` tool, current memory shown) and `catchMemory`.
-- **`dronaMemory.test.ts`:** 7 tests. 9 rules were each broken once, and a test failed every time.
+- **`dronaMemory.test.ts`:** 10 tests (7 at first, 3 added in review). Every rule was broken once, and a test failed every time.
 - **`ai-coach`:** `recordTrace` now returns the trace id and runs the catch after every successful chat or food-log reply, in `keepAlive`.
   - It never delays the reply.
-  - It is skipped when the coach already called `remember_fact` that turn.
+  - It runs even when the coach already called `remember_fact` that turn (that call can be refused).
   - Turn it off with `MEMORY_CATCH=off`.
 - **`drona-cards`:** a `memory_sweep` mode, behind the same cron secret.
-  - It reads the last 3 days of unread texts.
-  - It keeps each person's texts in order.
-  - It stops starting new texts after 45 s.
+  - The sweep reads the last 3 days of unread texts.
+  - Each person's texts are read in order.
+  - The sweep stops starting new texts after 25 s.
 
 **The gate line is 0.5, not 0.75.** On the tuning set every "no" scored 0.16 or less, and every real fact 0.65 or more. The gate only saves money; the writer still decides.
 
@@ -193,4 +193,12 @@ pass has read yet:
   a reply pass still running at 21:00 UTC can be read by the sweep too (a paid
   duplicate, saves are upserts); a forgotten fact could come back under a
   different key (the writer is told not to; it is not enforced).
+- CodeRabbit: the Built section now matches the code (10 tests, the pass also
+  runs after an in-loop save, a 25 s sweep budget); the gate-only eval sends
+  the production `written_in` label (exported `WHERE`). Re-run gate-only on the
+  tuning set with that label, at the 0.5 line: 40 of 40. (The 37 of 40 at 0.75
+  above was measured with the raw kind as the label.) Not changed: the sweep
+  reads `drona_word_facts` as is, because the daily facts job (pg_cron, every
+  15 minutes) already rebuilds it, and a text it has not reached yet is read
+  on a later night within the 3-day window.
 

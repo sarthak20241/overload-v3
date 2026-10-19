@@ -17,7 +17,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { askJev, asNoul } from '../../supabase/functions/ai-coach/jev.ts';
 import {
-  catchMemory, GATE_YES, MEMORY_GATE, type MemoryFactIn,
+  catchMemory, GATE_YES, MEMORY_GATE, type MemoryFactIn, WHERE,
 } from '../../supabase/functions/_shared/dronaMemory.ts';
 
 const env = Object.fromEntries(readFileSync(new URL('../../.env.local', import.meta.url), 'utf8').split('\n')
@@ -99,7 +99,8 @@ const jev = { apiKey: env.JEV_API_KEY ?? '', timeoutMs: 20_000, fetchFn: fetch }
 async function run(c: Case) {
   const kind = c.kind ?? 'chat';
   if (!withWriter) {
-    const r = await askJev({ text: c.text, written_in: kind }, { lasting: MEMORY_GATE }, jev);
+    // The same state catchMemory sends in production.
+    const r = await askJev({ text: c.text, written_in: WHERE[kind] ?? 'a note' }, { lasting: MEMORY_GATE }, jev);
     const gate = r.ok ? asNoul(r.response.answers.lasting) : null;
     return { c, gate, saved: [] as MemoryFactIn[], error: r.ok ? undefined : r.failure };
   }
