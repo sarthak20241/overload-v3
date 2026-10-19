@@ -167,6 +167,14 @@ function onCooldown(topic: string, cards: MomentCardRow[], today: string): boole
 
 /** The one moment to make for this person now, or null. */
 export function decideMoment(p: MomentPerson): PickCard | null {
+  return pickMoment(p)?.card ?? null;
+}
+
+/**
+ * The one moment to make now, with the exact candidate its words came from
+ * (stored in the card's facts; for a PR, the workout it names).
+ */
+export function pickMoment(p: MomentPerson): { card: PickCard; candidate: MomentCandidate } | null {
   const cards = p.cards ?? [];
   const muted = new Set((p.mutes ?? []).filter((m) => m.startsWith('topic:')).map((m) => m.slice(6)));
   const moments = cards.filter((c) => c.slot === 'moment' && c.topic !== 'hurting');
@@ -189,20 +197,15 @@ export function decideMoment(p: MomentPerson): PickCard | null {
     if (!words) continue;
     const topic = c.type;
     if (muted.has(topic) || onCooldown(topic, cards, p.today)) continue;
-    // Pain is never held back by the caps or a waiting weekly card.
+    // Pain is never held back by the caps or a waiting weekly card. Every other
+    // moment shares the caps, so the first one capped means all are: stop. This
+    // relies on pain sorting first (PRIORITY 0); keep it first.
     if (topic !== 'hurting' && (today >= DAY_CAP || week >= WEEK_CAP || weeklyWaiting)) return null;
     const card = hushed({ ...words, topic, signals: [`moment:${topic}`] } as PickCard, { behaviours: meta });
     if (card.kind === 'hold') continue;
-    return card;
+    return { card, candidate: c };
   }
   return null;
-}
-
-/** The candidate a decided moment came from (its detail goes into the card's facts). */
-export function candidateFor(p: MomentPerson, card: PickCard): MomentCandidate | null {
-  // The same choice decideMoment made: within a type, the newest.
-  const same = (p.candidates ?? []).filter((c) => c.type === card.topic);
-  return same.sort((a, b) => String(b.detail?.day ?? '').localeCompare(String(a.detail?.day ?? '')))[0] ?? null;
 }
 
 /** The drona_cards row for a moment. One per person, day and topic (a unique index). */

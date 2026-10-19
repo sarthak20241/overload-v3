@@ -147,4 +147,8 @@ was tapped.
   `momentsFromReply` and `runMoments` have no unit tests (their rules are in the
   tested `decideMoment`; the SQL rules are checked by the dry run), and an
   "other" ask is answered by any real plan change.
+- Seventh review: `pickMoment` returns the card AND the candidate it was
+  written from, so the card's words and its stored facts (a PR's workout) can
+  never come from two different candidates; `candidateFor` is gone. A comment
+  marks that the early stop on a cap relies on pain sorting first.
 

@@ -31,7 +31,7 @@ import {
 } from "../_shared/dronaWords.ts";
 import { askJev } from "../ai-coach/jev.ts";
 import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "../_shared/dronaMemory.ts";
-import { candidateFor, decideMoment, type MomentPerson, momentRow } from "../_shared/dronaMoments.ts";
+import { type MomentPerson, momentRow, pickMoment } from "../_shared/dronaMoments.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
 
@@ -384,9 +384,9 @@ async function runMoments(db: SupabaseClient, nowMs: number): Promise<{ made: nu
   let made = 0;
   let failed = 0;
   for (const p of (data ?? []) as MomentPerson[]) {
-    const card = decideMoment(p);
-    if (!card) continue;
-    const candidate = candidateFor(p, card);
+    const picked = pickMoment(p);
+    if (!picked) continue;
+    const { card, candidate } = picked;
     const { error: insErr } = await retried(() => db.from("drona_cards").insert(momentRow(p.user_id, p.today, card, candidate, "cron", nowMs)));
     if (insErr) {
       // 23505: this moment was already made today. Not a failure.

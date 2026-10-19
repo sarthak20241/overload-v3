@@ -1,6 +1,6 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
-  candidateFor, decideMoment, type MomentCandidate, type MomentCardRow, type MomentPerson, momentWords,
+  decideMoment, type MomentCandidate, type MomentCardRow, type MomentPerson, momentWords, pickMoment,
 } from "./dronaMoments.ts";
 
 const TODAY = "2026-10-19";
@@ -95,8 +95,12 @@ Deno.test("two PR workouts in two days: the newest best is the one said, and its
     prs: [{ exercise: "Squat", weight_kg: 100, reps: 5, prev_best_kg: 97.5 }] } };
   const newer: MomentCandidate = { type: "pr", detail: { workout_id: "w-new", day: "2026-10-19",
     prs: [{ exercise: "Bench Press", weight_kg: 80, reps: 6, prev_best_kg: 77.5 }] } };
-  const p = person([older, newer]);
-  const card = decideMoment(p)!;
-  assertEquals(card.title, "New best: Bench Press");
-  assertEquals(candidateFor(p, card)?.detail.workout_id, "w-new");
+  const picked = pickMoment(person([older, newer]))!;
+  assertEquals(picked.card.title, "New best: Bench Press");
+  assertEquals(picked.candidate.detail.workout_id, "w-new");
+  // Same day: the words and the stored workout still come from one candidate.
+  const twin: MomentCandidate = { ...newer, detail: { ...newer.detail, workout_id: "w-twin",
+    prs: [{ exercise: "Deadlift", weight_kg: 150, reps: 3, prev_best_kg: 145 }] } };
+  const same = pickMoment(person([newer, twin]))!;
+  assertEquals(same.card.title.endsWith((same.candidate.detail.prs as { exercise: string }[])[0].exercise), true);
 });
