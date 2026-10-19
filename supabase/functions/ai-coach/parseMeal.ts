@@ -2628,6 +2628,7 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
   The same phrase shape gives opposite answers: "amul toned milk" -> plain toned milk row is fine, "quest protein bar" -> a generic protein bar row is NOT.
 - grade_not_stocked on an item means we checked every candidate in CODE and none of them stock the grade the user asked for. Do NOT take one of those rows. ESTIMATE the product they actually named, and say so in assumption ("No low fat paneer row, so these are estimated"). A generic row's macros are more wrong than a careful estimate: low fat paneer is ~190 kcal/100 g against plain paneer's 283, double toned milk ~42 against toned's 58.
 - sources_disagree_pct on a candidate means we read that food's calories from several places and they did not agree, by roughly that percentage. Its per_100 is the middle of what we found, not a settled fact. Still pick the candidate if it is the right food, but never mark that line confidence high, and say the doubt out loud in assumption in Drona's voice ("Sources vary on this one, so treat it as a ballpark"). A candidate with no such flag agreed with itself; say nothing about sourcing there.
+- earlier_text, on a correction, is the message that first described this meal. Take what each food IS (the dish, how it was cooked) from it as well as from user_text; user_text says what to change.
 - looked_up_as on an item means the user's words found no label as written, and from what the search returned the product is most likely sold under that name. A candidate that is the looked_up_as product is the user's food; say in assumption which product you took it as.
 - similar_products on an item are other companies' products we found. They are NEVER the food: do not log one, and do not copy its numbers. Use them, with what you know of the user's brand and its range, only to keep your estimate in a sensible range.
 - label_not_found on an item means the web was searched for this product's label and none was found. If no candidate is acceptable, say so in assumption ("Couldn't find this exact label, so this is my estimate").
@@ -4261,12 +4262,17 @@ export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousIt
 export function rejectedFood(item: Pick<ExtractedItem, "name" | "correctsFoodName">, prevItems: PreviousItem[]): string | null {
   const target = item.correctsFoodName?.trim();
   if (!target) return null;
-  const words = (x: string) => new Set(x.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+  const words = (x: string) => new Set(foodNameKey(x).split(" ").filter(Boolean));
   const a = words(item.name), b = words(target);
   const within = (x: Set<string>, y: Set<string>) => [...x].every((w) => y.has(w));
   if (a.size === 0 || b.size === 0 || within(a, b) || within(b, a)) return null;
-  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  return prevItems.find((p) => norm(p.food_name) === norm(target))?.food_name ?? target;
+  return prevItems.find((p) => foodNameKey(p.food_name) === foodNameKey(target))?.food_name ?? target;
+}
+
+/** A food name as compared here: lower case, letters and digits of any script
+ *  ("चना" too), single spaces. */
+function foodNameKey(x: string): string {
+  return x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
 
 /** Drop what is named exactly as the rejected food (or is its catalog row). */
@@ -4277,11 +4283,10 @@ export function withoutRejected<T>(
   prevItems: PreviousItem[] = [],
 ): T[] {
   if (!rejected) return list;
-  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  const key = norm(rejected);
-  const id = prevItems.find((p) => norm(p.food_name) === key)?.food_id ?? null;
+  const key = foodNameKey(rejected);
+  const id = prevItems.find((p) => foodNameKey(p.food_name) === key)?.food_id ?? null;
   return list.filter((t) => {
-    if (norm(nameOf(t)) === key) return false;
+    if (foodNameKey(nameOf(t)) === key) return false;
     const fid = (t as { food_id?: string | null }).food_id;
     return !(id && fid && fid === id);
   });

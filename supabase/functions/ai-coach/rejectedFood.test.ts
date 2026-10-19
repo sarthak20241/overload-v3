@@ -19,6 +19,8 @@ Deno.test("a swap rejects the old food; an edit of the same food does not", () =
   // Same food, more words: an edit.
   assertEquals(rejectedFood({ name: "3 egg omelette", correctsFoodName: "omelette" }, []), null);
   assertEquals(rejectedFood({ name: "chana", correctsFoodName: "boiled chana" }, CARD), null);
+  // Any script: a Hindi name is compared too.
+  assertEquals(rejectedFood({ name: "नवरात्रि चना", correctsFoodName: "उबले चने" }, []), "उबले चने");
   // Untouched line.
   assertEquals(rejectedFood({ name: "poori", correctsFoodName: null }, CARD), null);
 });
