@@ -558,7 +558,6 @@ export default function DashboardScreen() {
       ]);
       if (!live) return;
       if (moment !== undefined) setMomentCard(moment);
-      shown(moment);
       if (check !== undefined) setCheckinCard(check);
       shown(check);
       if (row !== undefined) setWeeklyCard(row);
@@ -605,15 +604,21 @@ export default function DashboardScreen() {
           const prevWaiting = !!prev && prev.status === 'pending' && !prev.deferred_at;
           return m && prevWaiting ? prev : m;
         });
-        if (m && m.status === 'pending' && !m.deferred_at && !shownCards.current.has(m.id)) {
-          shownCards.current.add(m.id);
-          track('drona_card_shown', { kind: m.kind, topic: m.topic, slot: m.slot });
-        }
       });
     }, 60_000);
     return () => { live = false; clearInterval(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isGuestSession, user?.id, screenFocused]);
+
+  // drona_card_shown for a moment once it is the one in state (the minute check
+  // can keep an older moment on screen, so the read alone is not an impression).
+  useEffect(() => {
+    const m = momentCard;
+    if (!m || m.status !== 'pending' || m.deferred_at || shownCards.current.has(m.id)) return;
+    shownCards.current.add(m.id);
+    track('drona_card_shown', { kind: m.kind, topic: m.topic, slot: m.slot });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [momentCard?.id, momentCard?.status, momentCard?.deferred_at]);
 
   // One popup at a time: a waiting check-in first, then a moment, then the weekly card.
   const checkinWaiting = !!checkinCard && checkinCard.status === 'pending' && !checkinCard.deferred_at;

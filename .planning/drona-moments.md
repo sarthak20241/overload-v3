@@ -133,4 +133,7 @@ was tapped.
   Onboarding changes still answer an "other" ask (rare right after an ask). A
   missed-sessions card can reach someone on a deliberate break (once, then the
   cooldown; 28 days after "Skip").
+- CodeRabbit: a moment's `drona_card_shown` fires from an effect on the moment
+  actually in state (the minute check can keep an older one on screen); the
+  reply pain path also stops when the behaviours read fails, like the cards read.
 

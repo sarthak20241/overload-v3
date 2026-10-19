@@ -1202,8 +1202,13 @@ async function momentsFromReply(
       created_day: (wallClock(r.created_at, tz) ?? String(r.created_at)).slice(0, 10),
     }));
     // Last week's mutes and quiet-week flag, as get_drona_moment_candidates reads them for the cron.
-    const { data: behs } = await admin.from("drona_behaviours").select("mutes, meta")
+    const { data: behs, error: behsErr } = await admin.from("drona_behaviours").select("mutes, meta")
       .eq("user_id", userId).eq("week_start", lastWeekStart(today));
+    // Without the mutes and the quiet-week flag, say nothing rather than ignore them.
+    if (behsErr) {
+      console.log("[ai-coach] pain moment behaviours:", behsErr.message.slice(0, 160));
+      return;
+    }
     const mutes = [...new Set((behs ?? []).flatMap((b) => (b.mutes ?? []) as string[]))];
     const hushedWeek = (behs ?? []).some((b) => b.meta === true);
     const area = String(choice("area") ?? "other");
