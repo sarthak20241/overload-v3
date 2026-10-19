@@ -105,3 +105,12 @@ moments that earned it: pain, and missed sessions.
 
 Server first is safe. The current app shows a moment only in From Drona, and does not pop it up. Then the OTA, so moments pop up.
 
+### Simulator check (2026-10-19)
+
+The simulator was signed in as the owner's main account. A clearly labelled
+TEST moment was added on the server while the app was open. Within a minute
+it popped up on its own, with no restart, in front of the waiting weekly card
+(the order is check-in, moment, weekly). It was deleted a minute later, and
+the app went back to the real weekly card untouched. Nothing on the real card
+was tapped.
+
