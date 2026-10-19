@@ -51,6 +51,8 @@ Deno.test("a real addition is still an addition", () => {
   assertEquals(copiesCardLines([line("poori", 1, "piece")], CARD), false);
   // A plural unit is the same unit, "es" endings too.
   assert(copiesCardLines([line("juice", 1, "boxes"), line("suji halwa", 40, "g")], [prev("juice", 1, "box", 200, 90), CARD[2]]));
+  // A plural ending only: "can" is not "candy".
+  assertEquals(copiesCardLines([line("cola", 1, "candy"), line("suji halwa", 40, "g")], [prev("cola", 1, "can", 330, 140), CARD[2]]), false);
   // Only one line copied exactly: could be the same food again.
   assertEquals(copiesCardLines([line("poori", 3, "piece"), line("dosa", 1, "piece")], CARD), false);
   // A line with the user's own numbers is an edit, never a copy.

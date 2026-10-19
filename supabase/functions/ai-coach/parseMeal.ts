@@ -2844,9 +2844,9 @@ export function isOneCupLabel(label: string): boolean {
 }
 
 /**
- * "2 each - 4 4/5\" diameter" at 72 g is TWO pieces. Restated as one piece at
- * 36 g ("1 piece - 4 4/5\" diameter"), so neither the decide model nor the code can multiply the pair by the
- * user's count. Live, 2026-10-19: a correction read the 72 g as one poori and
+ * "2 each - 4 4/5\" diameter" at 72 g is TWO pieces. It is restated as one
+ * piece, "1 piece - 4 4/5\" diameter" at 36 g, so neither the decide model nor
+ * the code can multiply the pair by the user's count. Live, 2026-10-19: a correction read the 72 g as one poori and
  * logged 3 pooris as 216 g / 639 kcal; the model's own note said "the 2-each
  * serving scaled to 3".
  *
@@ -4216,13 +4216,15 @@ export function scopeCorrection(
  */
 export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousItem[]): boolean {
   const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  // "piece" / "pieces", "puri" / "puries", "box" / "boxes": one is the other
-  // plus an ending. Three letters at least, so "g" never matches "glass".
+  // "piece" / "pieces", "puri" / "puries", "box" / "boxes", "berry" /
+  // "berries": one is the other plus a plural ending, and nothing else, so
+  // "can" never matches "candy".
   const sameUnit = (a: string, b: string) => {
     const x = norm(a), y = norm(b);
     if (x === y) return true;
     const [short, long] = x.length <= y.length ? [x, y] : [y, x];
-    return short.length >= 3 && long.startsWith(short) && long.length - short.length <= 2;
+    return long === `${short}s` || long === `${short}es` ||
+      (short.endsWith("y") && long === `${short.slice(0, -1)}ies`);
   };
   const copies = extItems.filter((it) =>
     !it.stated && prevItems.some((p) =>
