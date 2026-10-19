@@ -312,7 +312,7 @@ export function ParsedMealCard({
   // fixed parts. Seen settle in one pass on Android with the keyboard up.
   // footerBottom > 0 is that edge having laid out at all; without it contentH
   // falls back to cardH and the space would read as nothing.
-  const sized =expanded && hasList && cardH > 0 && footerBottom > 0 && listContentH > 0
+  const sized = expanded && hasList && cardH > 0 && footerBottom > 0 && listContentH > 0
     && (!shownNotice || noticeContentH > 0);
   const split = splitCardSpace({
     space: cardH - (contentH - listH - (shownNotice ? noticeH : 0)),
