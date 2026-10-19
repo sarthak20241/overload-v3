@@ -2880,7 +2880,12 @@ export function perOneServing(sv: ServingOption): ServingOption {
   words[words.length - 1] = last === "each" || last === "pieces" ? "piece"
     : last.endsWith("s") && !/(ss|ies|oes|xes|shes|ches|zes)$/.test(last) ? last.slice(0, -1)
     : last;
-  const rest = m[3].replace(/\(\s*[\d.]+\s*(g|gm|grams?|ml)\s*\)/gi, "").replace(/\s+/g, " ").trimEnd();
+  // The group's weight goes from the text, in brackets or not: left in, it
+  // would contradict the divided grams ("1 biscuit 30g" at 10 g).
+  const rest = m[3]
+    .replace(/\(\s*[\d.]+\s*(g|gm|grams?|ml)\s*\)/gi, "")
+    .replace(/\b[\d.]+\s*(g|gm|grams?|ml)\b/gi, "")
+    .replace(/\s+/g, " ").trimEnd();
   return { ...sv, label: `1 ${words.join(" ")}${rest}`, grams: round1(sv.grams / n) };
 }
 
@@ -4593,7 +4598,8 @@ export async function checkRememberedPiece(
   clearTimeout(timer);
   const pieces: { grams: number; label: string; row: string; kcal100: number; cand: CandidateFood }[] = [];
   for (const row of rows.slice(0, 5)) {
-    if (!sameFoodName(food.name, row.name)) continue;
+    // Per 100 g on both sides: a per-100 ml row is not comparable.
+    if (row.base_unit !== "g" || !sameFoodName(food.name, row.name)) continue;
     const one = row.servings.map(perOneServing).find((s) =>
       s.grams > 0 && !isBasisServing(s) && namesAPiece(s) && !/\b(cup|tbsp|tsp|serving)\b/i.test(s.label)
     );
@@ -6110,7 +6116,8 @@ async function runParseMealCore(
   // gives an amount or size, and on a yes the extract is asked once more with
   // that said plainly. Live, 2026-10-19: "I had just 3 puris they were small"
   // got the stock "my own estimate" answer twice and the line never changed.
-  // Costs nothing on any other turn: a bare question with no items only.
+  // Cost: one Jev call on a bare question about the card, plus one extract
+  // call when Jev says yes. Nothing on any other turn.
   const bareQuestion = hasPrevious && !fastMode && ext.asks_about_previous === true && ext.corrects_previous !== true &&
     !(Array.isArray(ext.items) && ext.items.length > 0) &&
     !(Array.isArray(ext.removed_food_names) && ext.removed_food_names.length > 0);

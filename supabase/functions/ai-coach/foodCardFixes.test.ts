@@ -102,6 +102,8 @@ Deno.test("a serving for two pieces is restated as one piece", () => {
   assertEquals(perOneServing({ label: '2 each - 4 4/5" diameter', grams: 72 }), { label: '1 piece - 4 4/5" diameter', grams: 36 });
   assertEquals(perOneServing({ label: "2 pooris (72 g)", grams: 72 }), { label: "1 poori", grams: 36 });
   assertEquals(perOneServing({ label: "3 biscuits", grams: 30 }), { label: "1 biscuit", grams: 10 });
+  // A weight outside brackets goes too, or the label would say 30g at 10 g.
+  assertEquals(perOneServing({ label: "3 biscuits 30g", grams: 30 }), { label: "1 biscuit", grams: 10 });
   // The noun is the last word, after any size word.
   assertEquals(perOneServing({ label: "2 large eggs", grams: 100 }), { label: "1 large egg", grams: 50 });
   // A slice is a piece: two slices at 60 g are 30 g each.
@@ -296,6 +298,9 @@ Deno.test("a sane piece weight, or a typed weight, leaves the memory alone", asy
   assertEquals([a.food, a.check?.replaced], [sane, false]);
   // "1 cup" is an amount: a piece weight has nothing to say about it.
   assertEquals((await checkRememberedPiece(search, { unit: "cup" }, fig(250, 50))).check, null);
+  // A per-100 ml row is no reference for a food remembered per 100 g.
+  const ml: CandidateFood[] = [{ ...FIG_ROWS[0], base_unit: "ml" }];
+  assertEquals((await checkRememberedPiece({ searchFoods: async () => ml }, { unit: "piece" }, fig(250, 50))).check?.replaced, false);
   // A row for another food is no reference: a fig bar does not weigh what a fig does.
   const bars: CandidateFood[] = [{ ...FIG_ROWS[0], name: "Fig newtons bar", servings: [{ label: "1 bar", grams: 40 }] }];
   assertEquals((await checkRememberedPiece({ searchFoods: async () => bars }, { unit: "piece" }, fig(250, 10))).check?.replaced, false);
