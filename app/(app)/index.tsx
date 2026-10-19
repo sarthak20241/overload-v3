@@ -597,7 +597,14 @@ export default function DashboardScreen() {
     const timer = setInterval(() => {
       void readMomentCard(supabase, clerkId).then((m) => {
         if (!live || m === undefined) return;
-        setMomentCard((prev) => (prev?.id === m?.id ? prev : m));
+        // Never swap a moment under the person while it is still waiting on
+        // screen: a newer one waits its turn. Gone on the server (acted on,
+        // expired): drop it.
+        setMomentCard((prev) => {
+          if (prev?.id === m?.id) return prev;
+          const prevWaiting = !!prev && prev.status === 'pending' && !prev.deferred_at;
+          return m && prevWaiting ? prev : m;
+        });
         if (m && m.status === 'pending' && !m.deferred_at && !shownCards.current.has(m.id)) {
           shownCards.current.add(m.id);
           track('drona_card_shown', { kind: m.kind, topic: m.topic, slot: m.slot });

@@ -127,4 +127,10 @@ was tapped.
   check the cooldown); `momentRow` guards a missing week. Kept on purpose: the
   pain cooldown is per topic, not per body part (a second injury within two
   weeks waits); with two PR workouts in two days the second one may age out.
+- Third review: the dashboard's minute check never swaps a newer moment in
+  while one is still waiting on screen. Checked and kept: `pg_timezone_names`
+  is read once per run (a hash join in the plan), not once per person.
+  Onboarding changes still answer an "other" ask (rare right after an ask). A
+  missed-sessions card can reach someone on a deliberate break (once, then the
+  cooldown; 28 days after "Skip").
 
