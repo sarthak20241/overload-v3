@@ -594,6 +594,8 @@ export default function DashboardScreen() {
     if (isGuestSession || !clerkId || !screenFocused) return;
     let live = true;
     const timer = setInterval(() => {
+      // Nobody can see a popup from the background: no read until the app is back.
+      if (AppState.currentState !== 'active') return;
       void readMomentCard(supabase, clerkId).then((m) => {
         if (!live || m === undefined) return;
         // Never swap a moment under the person while it is still waiting on

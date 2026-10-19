@@ -1201,7 +1201,8 @@ async function momentsFromReply(
       slot: r.slot, topic: r.topic, status: r.status, moment_day: r.moment_day, deferred: !!r.deferred_at,
       created_day: (wallClock(r.created_at, tz) ?? String(r.created_at)).slice(0, 10),
     }));
-    // Last week's mutes and quiet-week flag, as get_drona_moment_candidates reads them for the cron.
+    // Last week's mutes and quiet-week flag, as get_drona_moment_candidates reads them for the cron
+    // (its 'mutes' and 'hushed' fields): change both together.
     const { data: behs, error: behsErr } = await admin.from("drona_behaviours").select("mutes, meta")
       .eq("user_id", userId).eq("week_start", lastWeekStart(today));
     // Without the mutes and the quiet-week flag, say nothing rather than ignore them.

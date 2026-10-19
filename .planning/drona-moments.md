@@ -142,4 +142,9 @@ was tapped.
   Left: the ask filter is a blocklist (`system`, `auto`); an allowlist would be
   safer if new sources appear. The next change to `get_drona_moment_candidates`
   should start from `20261019163247`, the latest full copy.
+- Sixth review: the dashboard's minute check skips while the app is in the
+  background; the reply path's mutes read notes it mirrors the SQL read. Known:
+  `momentsFromReply` and `runMoments` have no unit tests (their rules are in the
+  tested `decideMoment`; the SQL rules are checked by the dry run), and an
+  "other" ask is answered by any real plan change.
 
