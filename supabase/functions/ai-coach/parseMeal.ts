@@ -2878,7 +2878,7 @@ export function perOneServing(sv: ServingOption): ServingOption {
   // contain the user's unit, and the plural still does.
   const last = words[words.length - 1];
   words[words.length - 1] = last === "each" || last === "pieces" ? "piece"
-    : last.endsWith("s") && !/(ss|ies|oes|xes|shes|ches|zes)$/.test(last) ? last.slice(0, -1)
+    : last.endsWith("s") && !/(ss|ies|oes|xes|shes|ches|zes|ves)$/.test(last) ? last.slice(0, -1)
     : last;
   // The group's weight goes from the text, in brackets or not: left in, it
   // would contradict the divided grams ("1 biscuit 30g" at 10 g).
@@ -7045,7 +7045,13 @@ async function runParseMealCore(
   // judgment, the code fill IS the answer and this whole call is skipped.
   // One place, after every source has answered and before anything reads a
   // serving: decide, the code fill and verify all see one piece per label.
-  resolved = resolved.map((r) => ({ ...r, candidates: r.candidates.map(perOneServings) }));
+  // Not a remembered food: its serving is already one of what the user logged
+  // (grams / quantity, labelled with their unit), so "2 pieces" there is ONE
+  // unit and dividing it would halve the user's own portion.
+  resolved = resolved.map((r) => ({
+    ...r,
+    candidates: r.candidates.map((c) => (c.food_id?.startsWith(`${EPHEMERAL_ID_PREFIX}mem_`) ? c : perOneServings(c))),
+  }));
   const candidatePer100 = per100ForItems(resolved);
 
 

@@ -111,6 +111,7 @@ Deno.test("a serving for two pieces is restated as one piece", () => {
   // No guessed singular: the plural still contains what the user types ("cookie").
   assertEquals(perOneServing({ label: "2 cookies", grams: 22 }), { label: "1 cookies", grams: 11 });
   assertEquals(perOneServing({ label: "2 potatoes", grams: 300 }), { label: "1 potatoes", grams: 150 });
+  assertEquals(perOneServing({ label: "2 leaves", grams: 2 }), { label: "1 leaves", grams: 1 });
   // Left alone: a weight, a fraction, one piece already, and amounts that are not pieces.
   for (const sv of [
     { label: "100 g", grams: 100 }, { label: "1/2 cup", grams: 120 }, { label: "1 piece", grams: 36 },
@@ -174,6 +175,38 @@ Deno.test("a hand-made line's own serving is not divided again in a fast correct
   });
   assert(r.tool_calls.includes("fast_correction"), r.tool_calls.join(","));
   assertEquals(r.parsed!.items[0].grams, 180);
+});
+
+Deno.test("a remembered portion is the user's one unit, never divided", async () => {
+  // Memory holds "2 pieces" at 100 g as ONE unit of what they logged.
+  const bodies: string[] = [];
+  const memoryEntry = {
+    food_name: "Ghar ke momos", food_id: null, kcal: 200, protein_g: 8, carb_g: 26, fat_g: 7, fiber_g: null,
+    grams: 100, quantity: 1, serving_unit: "2 pieces", source: "catalog", logged_via: "ai", tier: "precise", logged_at: "2026-10-18T08:00:00Z",
+  };
+  const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init!.body));
+    if (String(url).includes("typesafe.ai")) {
+      const answers = Object.fromEntries(Object.keys(body.questions).map((k) => [k, { type: "score", probabilities: { "0": 0.01, "1": 0.01, "2": 0.98 } }]));
+      return Response.json({ model: "jev-test", usage: {}, answers });
+    }
+    const tool = body.tool_choice?.name;
+    if (tool === "extract_meal") {
+      return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name: tool, input: { declined: false, meal_type_from_text: null, items: [{ name: "ghar ke momos", brand: null, quantity: 1, unit: "2 pieces", prep: null }] } }] });
+    }
+    bodies.push(String(body.messages[0].content));
+    return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name: tool, input: { meal_type: "snack", drona_line: "ok", items: [] } }] });
+  }) as typeof fetch;
+  const deps: ParseMealDeps = {
+    anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: false,
+    searchFoods: async () => [], backfillOffFood: async () => null, getFoodPer100: async () => null,
+    fetchFn, jev: { apiKey: "j", timeoutMs: 1000, fetchFn },
+    userMemory: { load: async () => ({ entries: [memoryEntry], timeZone: "Asia/Kolkata" }), lookupAliases: async () => [] },
+  } as ParseMealDeps;
+  const r = await runParseMeal(deps, { text: "2 pieces ghar ke momos", localHour: 17, mealHint: null, recentFoods: [], todayTotals: null, targets: null });
+  assert(r.tool_calls.includes("user_memory_match"), r.tool_calls.join(","));
+  assertEquals(bodies.length, 1);
+  assert(bodies[0].includes('"label":"2 pieces","grams":100'), bodies[0].slice(0, 500));
 });
 
 // ── 3. A complaint that states the fix changes the line ─────────────────────
