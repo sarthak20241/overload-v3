@@ -1,0 +1,239 @@
+// Run with: deno test --allow-all supabase/functions/ai-coach/foodCardFixes.test.ts
+//
+// One real thread, 2026-10-19, and the four things that went wrong in it:
+//   "i had 3 pooris and chana navratri vaale in lunch and some 40g halwa"
+//   "i think I had just 75g of chana ..."  -> card showed poori and halwa twice
+//   "still suji halwa is duplicated ..."   -> 3 pooris became 216 g / 639 kcal
+//   "u say puri is 640 cals? what?"        -> stock answer, "no label behind it"
+//   "I had just 3 puris they were small"   -> the same stock answer again
+// and, for another user the same morning, "1 dried fig" at 125 kcal because
+// food memory copied a past log that had one fig at 50 g.
+// Nothing here calls a real model, Jev or the database.
+
+import { assert, assertEquals } from "jsr:@std/assert@1";
+import {
+  type CandidateFood,
+  checkRememberedPiece,
+  copiesCardLines,
+  type ExtractedItem,
+  gramsPerUnit,
+  type ParseMealDeps,
+  perOneServing,
+  perOneServings,
+  type PreviousItem,
+  runParseMeal,
+  STATES_FIX_NOTE,
+} from "./parseMeal.ts";
+import type { MemoryFood } from "./userFoodMemory.ts";
+import type { PreciseCacheRow } from "./preciseCache.ts";
+
+const line = (name: string, quantity: number, unit: string, extra: Partial<ExtractedItem> = {}): ExtractedItem =>
+  ({ name, brand: null, quantity, unit, prep: null, ...extra }) as ExtractedItem;
+const prev = (food_name: string, quantity: number, serving_label: string, grams: number, kcal: number, source = "catalog"): PreviousItem =>
+  ({ food_id: null, food_name, quantity, serving_label, grams, kcal, protein_g: 0, carb_g: 0, fat_g: 0, source }) as PreviousItem;
+
+const CARD: PreviousItem[] = [
+  prev("poori", 3, "piece", 108, 321),
+  prev("boiled chana", 1, "1 cup, cooked (164g)", 164, 269),
+  prev("Suji halwa", 40, "g", 40, 180, "estimate"),
+];
+
+// ── 1. A copied card is a correction, not an addition ───────────────────────
+
+Deno.test("the failure this prevents: lines copied back from the card were added a second time", () => {
+  // The real turn: poori and halwa came back unchanged, chana changed.
+  assert(copiesCardLines([line("poori", 3, "piece"), line("Navratri chana", 75, "g"), line("suji halwa", 40, "g")], CARD));
+});
+
+Deno.test("a real addition is still an addition", () => {
+  // "and another poori": one line, a different amount.
+  assertEquals(copiesCardLines([line("poori", 1, "piece")], CARD), false);
+  // Only one line copied exactly: could be the same food again.
+  assertEquals(copiesCardLines([line("poori", 3, "piece"), line("dosa", 1, "piece")], CARD), false);
+  // A line with the user's own numbers is an edit, never a copy.
+  assertEquals(copiesCardLines([
+    line("poori", 3, "piece"),
+    line("suji halwa", 40, "g", { stated: { kcal: 120 } } as Partial<ExtractedItem>),
+  ], CARD), false);
+});
+
+Deno.test("the parse marks a copied card as a correction, so the app replaces the card", async () => {
+  const deps: ParseMealDeps = {
+    anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: false,
+    searchFoods: async () => [], backfillOffFood: async () => null, getFoodPer100: async () => null,
+    fetchFn: (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init!.body));
+      const tool = body.tool_choice?.name;
+      const input = tool === "extract_meal"
+        ? { declined: false, corrects_previous: false, meal_type_from_text: null, items: [
+          { name: "poori", brand: null, quantity: 3, unit: "piece", prep: null },
+          { name: "boiled chana", brand: null, quantity: 75, unit: "g", prep: null, corrects_food_name: "boiled chana" },
+          { name: "Suji halwa", brand: null, quantity: 40, unit: "g", prep: null },
+        ] }
+        : { meal_type: "lunch", drona_line: "ok", items: [] };
+      return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name: tool, input }] });
+    }) as typeof fetch,
+  };
+  const r = await runParseMeal(deps, {
+    text: "i think I had just 75g of chana", previousText: "3 pooris, chana, 40g halwa", previousItems: CARD,
+    localHour: 18, mealHint: "lunch", recentFoods: [], todayTotals: null, targets: null,
+  });
+  assert(r.steps.some((s) => s.tool === "correction_inferred"));
+  assertEquals(r.parsed?.corrects_previous, true);
+  // One poori line, one halwa line: nothing doubled.
+  assertEquals(r.parsed!.items.filter((i) => i.food_name === "poori").length, 1);
+});
+
+// ── 2. "2 each = 72 g" is two pieces ────────────────────────────────────────
+
+const POORI_ROW: PreciseCacheRow = {
+  id: "row-poori", cache_key: "poori", display_name: "poori", brand: null, base_unit: "g",
+  kcal: 296, protein_g: 6, carb_g: 40, fat_g: 13, fiber_g: null,
+  servings: [{ label: '2 each - 4 4/5" diameter', grams: 72 }],
+  evidence: [], verified: true, source_note: null, last_verified_at: "2026-10-18T00:00:00Z",
+};
+
+Deno.test("a serving for two pieces is restated as one piece", () => {
+  assertEquals(perOneServing({ label: '2 each - 4 4/5" diameter', grams: 72 }), { label: '1 piece - 4 4/5" diameter', grams: 36 });
+  assertEquals(perOneServing({ label: "2 pooris (72 g)", grams: 72 }), { label: "1 poori", grams: 36 });
+  assertEquals(perOneServing({ label: "3 biscuits", grams: 30 }), { label: "1 biscuit", grams: 10 });
+  // Left alone: a weight, a fraction, one piece already.
+  for (const sv of [{ label: "100 g", grams: 100 }, { label: "1/2 cup", grams: 120 }, { label: "1 piece", grams: 36 }]) {
+    assertEquals(perOneServing(sv), sv);
+  }
+});
+
+Deno.test("3 pooris from a '2 each' row are 108 g in code, not 216 g", () => {
+  const cand: CandidateFood = {
+    food_id: "f", name: "poori", brand: null, base_unit: "g", kcal: 296, protein_g: 6, carb_g: 40, fat_g: 13, fiber_g: null,
+    servings: POORI_ROW.servings, source: "catalog",
+  };
+  assertEquals(gramsPerUnit("piece", perOneServings(cand))?.grams, 36);
+});
+
+Deno.test("the failure this prevents: decide saw the 72 g pair and read it as one poori", async () => {
+  const decideBodies: string[] = [];
+  const deps: ParseMealDeps = {
+    anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: false,
+    searchFoods: async () => [], backfillOffFood: async () => null, getFoodPer100: async () => null,
+    preciseCacheGet: async () => POORI_ROW,
+    fetchFn: (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init!.body));
+      const tool = body.tool_choice?.name;
+      if (tool === "extract_meal") {
+        return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name: tool, input: { declined: false, meal_type_from_text: null, items: [{ name: "poori", brand: null, quantity: 3, unit: "piece", prep: null }] } }] });
+      }
+      decideBodies.push(String(body.messages[0].content));
+      return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name: tool, input: { meal_type: "lunch", drona_line: "ok", items: [] } }] });
+    }) as typeof fetch,
+  };
+  await runParseMeal(deps, { text: "3 pooris", localHour: 13, mealHint: null, mode: "super", recentFoods: [], todayTotals: null, targets: null });
+  assertEquals(decideBodies.length, 1);
+  assert(decideBodies[0].includes('"label":"1 piece - 4 4/5\\" diameter","grams":36'), decideBodies[0].slice(0, 600));
+  assert(!decideBodies[0].includes('"grams":72'), "the pair weight must not reach decide");
+});
+
+// ── 3. A complaint that states the fix changes the line ─────────────────────
+
+function challengeDeps(statesFix: number, log: { systems: string[]; jev: string[][] }): ParseMealDeps {
+  let extracts = 0;
+  const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init!.body));
+    if (String(url).includes("typesafe.ai")) {
+      log.jev.push(Object.keys(body.questions));
+      return Response.json({ model: "jev-test", usage: {}, answers: { states_fix: { type: "noul", noul: statesFix } } });
+    }
+    const tool = body.tool_choice?.name;
+    if (tool === "extract_meal") {
+      extracts++;
+      log.systems.push(JSON.stringify(body.system));
+      const input = extracts === 1
+        ? { declined: false, asks_about_previous: true, meal_type_from_text: null, items: [] }
+        : {
+          declined: false, corrects_previous: true, meal_type_from_text: null, items: [
+            { name: "poori", brand: null, quantity: 3, unit: "small piece", prep: null, corrects_food_name: "poori" },
+            { name: "boiled chana", brand: null, quantity: 75, unit: "g", prep: null, corrects_food_name: null },
+            { name: "Suji halwa", brand: null, quantity: 40, unit: "g", prep: null, corrects_food_name: null },
+          ],
+        };
+      return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name: tool, input }] });
+    }
+    return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name: tool, input: { meal_type: "lunch", drona_line: "Updated.", items: [] } }] });
+  }) as typeof fetch;
+  return {
+    anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: false,
+    searchFoods: async () => [], backfillOffFood: async () => null, getFoodPer100: async () => null,
+    fetchFn, jev: { apiKey: "j", timeoutMs: 1000, fetchFn },
+  };
+}
+
+const BIG_CARD: PreviousItem[] = [prev("poori", 3, "piece", 216, 639.4), CARD[1], CARD[2]];
+const challenge = (text: string) => ({
+  text, previousText: "3 pooris, chana, 40g halwa", previousItems: BIG_CARD,
+  localHour: 18, mealHint: "lunch" as const, recentFoods: [], todayTotals: null, targets: null,
+});
+
+Deno.test("the failure this prevents: 'they were small' got the stock answer and the line never changed", async () => {
+  const log = { systems: [] as string[], jev: [] as string[][] };
+  const r = await runParseMeal(challengeDeps(0.92, log), challenge("I had just 3 puris they were small"));
+  assertEquals(log.jev, [["states_fix"]]);
+  assertEquals(log.systems.length, 2, "the extract is asked once more");
+  assert(log.systems[1].includes(STATES_FIX_NOTE.trim().slice(0, 60)));
+  const step = r.steps.find((s) => s.tool === "challenge_states_fix");
+  assertEquals((step?.result as { applied: boolean }).applied, true);
+  assertEquals(r.declined, null, `still the stock answer: ${r.declined?.message}`);
+});
+
+Deno.test("a bare question is still answered, now with the real numbers", async () => {
+  const log = { systems: [] as string[], jev: [] as string[][] };
+  const r = await runParseMeal(challengeDeps(0.1, log), challenge("u say puri is 640 cals? what?"));
+  assertEquals(log.systems.length, 1, "no second extract for a question with no amount or size");
+  const msg = r.declined?.message ?? "";
+  assert(msg.includes("poori: 639 kcal for 216 g, which is 296 kcal per 100 g."), msg);
+  // Only a line that really is an estimate says so.
+  assert(msg.includes("Suji halwa: 180 kcal for 40 g, which is 450 kcal per 100 g, my own estimate."), msg);
+  assert(!msg.includes("no label behind it"), msg);
+});
+
+// ── 4. A remembered piece weight is checked against the catalog ─────────────
+
+const FIG_ROWS: CandidateFood[] = [
+  { food_id: "u1", name: "Fig, dried", brand: null, base_unit: "g", kcal: 277, protein_g: 3.3, carb_g: 64, fat_g: 0.9, fiber_g: 9.8, source: "catalog",
+    servings: [{ label: "100 g", grams: 100 }, { label: "1 cup", grams: 160 }, { label: "1 fig", grams: 8 }] },
+  { food_id: "u2", name: "Figs, dried, uncooked", brand: null, base_unit: "g", kcal: 249, protein_g: 3.3, carb_g: 64, fat_g: 0.9, fiber_g: 9.8, source: "catalog",
+    servings: [{ label: "1 fig", grams: 8.4 }, { label: "1 cup", grams: 149 }, { label: "100 g", grams: 100 }] },
+];
+const fig = (kcal100: number, grams: number): MemoryFood => ({
+  key: "dried fig", name: "dried fig", food_id: null,
+  per100: { kcal: kcal100, protein_g: 3, carb_g: 60, fat_g: 1, fiber_g: 9 },
+  serving: { label: "1 piece", grams }, source: "catalog", level: "precise", times: 1, last_logged_at: "2026-10-14T04:29:00Z",
+});
+const search = { searchFoods: async () => FIG_ROWS };
+
+Deno.test("the failure this prevents: memory copied one dried fig at 50 g", async () => {
+  // Oct 14's log: 50 g, 125 kcal. The per-100 numbers were right; the weight was not.
+  const { food, check } = await checkRememberedPiece(search, { unit: "piece" }, fig(250, 50));
+  assertEquals(check?.replaced, true);
+  assertEquals(food.serving?.grams, 8);
+  assertEquals(food.per100.kcal, 250);
+  assertEquals(Math.round(food.per100.kcal * food.serving!.grams / 100), 20);
+});
+
+Deno.test("when the calories for one piece were the right part, they are kept", async () => {
+  // "1 dried fig (25 cals)" saved at 50 g: 50 kcal per 100 g, far from a fig's ~250.
+  const { food, check } = await checkRememberedPiece(search, { unit: "piece" }, fig(50, 50));
+  assertEquals([check?.replaced, check?.kept], [true, "kcal_per_piece"]);
+  assertEquals(Math.round(food.per100.kcal * food.serving!.grams / 100), 25);
+});
+
+Deno.test("a sane piece weight, or a typed weight, leaves the memory alone", async () => {
+  const sane = fig(250, 10);
+  const a = await checkRememberedPiece(search, { unit: "piece" }, sane);
+  assertEquals([a.food, a.check?.replaced], [sane, false]);
+  // The user typed grams: the remembered piece weight is not used at all.
+  const b = await checkRememberedPiece(search, { unit: "g" }, fig(250, 50));
+  assertEquals(b.check, null);
+  // The catalog search failing keeps the memory.
+  const c = await checkRememberedPiece({ searchFoods: () => Promise.reject(new Error("down")) }, { unit: "piece" }, fig(250, 50));
+  assertEquals(c.food.serving?.grams, 50);
+});
