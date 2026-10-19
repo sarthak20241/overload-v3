@@ -4609,6 +4609,8 @@ export async function checkRememberedPiece(
     return { food, check: { memory_g: sv.grams, catalog_g: null, replaced: false, note: "" } };
   }
   pieces.sort((a, b) => a.grams - b.grams);
+  // The middle row; with an even count, the lighter of the two middle ones.
+  // Deliberate: a wrong replacement toward a lighter piece over-counts less.
   const ref = pieces[Math.floor((pieces.length - 1) / 2)];
   const ratio = sv.grams / ref.grams;
   if (ratio <= PIECE_RATIO_LIMIT && ratio >= 1 / PIECE_RATIO_LIMIT) {
@@ -5481,8 +5483,10 @@ async function answerAboutPrevious(
       // (live, 2026-10-19: a 216 g poori from a checked web row).
       if (p.kcal !== undefined && p.grams > 0) {
         const per100 = Math.round((p.kcal / p.grams) * 100);
+        // A drink logged by volume keeps its unit: grams holds millilitres there.
+        const u = /\bml\b/i.test(p.serving_label) ? "ml" : "g";
         parts.push(
-          `${p.food_name}: ${Math.round(p.kcal)} kcal for ${round1(p.grams)} g, which is ${per100} kcal per 100 g` +
+          `${p.food_name}: ${Math.round(p.kcal)} kcal for ${round1(p.grams)} ${u}, which is ${per100} kcal per 100 ${u}` +
             (p.source === "estimate" ? ", my own estimate." : "."),
         );
       } else {
@@ -6145,7 +6149,13 @@ async function runParseMealCore(
       iter: 0,
       tool: "challenge_states_fix",
       input: { p, floor: STATES_FIX_FLOOR },
-      result: { retried: retry, applied: !!retried, items: Array.isArray(retried?.items) ? retried!.items.length : 0 },
+      result: {
+        retried: retry,
+        applied: !!retried,
+        items: Array.isArray(retried?.items) ? retried!.items.length : 0,
+        // Why a retry did not apply: the call failed (status) or came back empty.
+        ...(again && !again.ok ? { status: again.status } : {}),
+      },
     });
   }
   let extItems: ExtractedItem[] = (Array.isArray(ext.items) ? ext.items : [])

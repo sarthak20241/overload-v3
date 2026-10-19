@@ -117,7 +117,7 @@ Deno.test("a serving for two pieces is restated as one piece", () => {
     { label: "100 g", grams: 100 }, { label: "1/2 cup", grams: 120 }, { label: "1 piece", grams: 36 },
     { label: "2 cups", grams: 300 }, { label: "12 fl oz", grams: 355 }, { label: "2 tbsp", grams: 30 },
     { label: "8 oz", grams: 227 }, { label: "10 inch", grams: 400 }, { label: "12 inch pizza", grams: 900 },
-    { label: "12 count box", grams: 360 }, { label: "6 pack", grams: 1980 },
+    { label: "12 count box", grams: 360 }, { label: "6 pack", grams: 1980 }, { label: "2 1/2 cups", grams: 375 },
   ]) {
     assertEquals(perOneServing(sv), sv);
   }
