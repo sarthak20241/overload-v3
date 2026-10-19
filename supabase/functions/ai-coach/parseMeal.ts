@@ -2846,9 +2846,11 @@ export function isOneCupLabel(label: string): boolean {
 /**
  * "2 each - 4 4/5\" diameter" at 72 g is TWO pieces. It is restated as one
  * piece, "1 piece - 4 4/5\" diameter" at 36 g, so neither the decide model nor
- * the code can multiply the pair by the user's count. Live, 2026-10-19: a correction read the 72 g as one poori and
- * logged 3 pooris as 216 g / 639 kcal; the model's own note said "the 2-each
- * serving scaled to 3".
+ * the code can multiply the pair by the user's count.
+ *
+ * Live, 2026-10-19: a correction read the 72 g as one poori and logged 3
+ * pooris as 216 g / 639 kcal; the model's own note said "the 2-each serving
+ * scaled to 3".
  *
  * Only a whole leading count above 1 followed by a word that is not a mass
  * ("2 each", "2 pieces", "3 biscuits"). "100 g", "1/2 cup" and "1 piece" are
