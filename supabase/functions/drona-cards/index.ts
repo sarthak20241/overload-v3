@@ -30,7 +30,7 @@ import {
   wordBehaviours, wordSignals,
 } from "../_shared/dronaWords.ts";
 import { askJev } from "../ai-coach/jev.ts";
-import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows } from "../_shared/dronaMemory.ts";
+import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "../_shared/dronaMemory.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
 
@@ -499,7 +499,7 @@ async function runMemorySweep(): Promise<Response> {
             const { data: res, error: e } = await db.rpc("coach_remember_fact_for", {
               p_user_id: userId, p_category: f.category, p_key: f.key, p_value: f.value, p_source: "sweep",
             });
-            return !e && (res as { saved?: boolean } | null)?.saved === true;
+            return saveResult(res, e);
           },
           logUsage: (u) => {
             logs.push(db.rpc("log_token_usage", {

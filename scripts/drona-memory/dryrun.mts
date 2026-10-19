@@ -33,7 +33,7 @@ for (let i = 0; i < texts.length; i += 5) {
       jev: { apiKey: env.JEV_API_KEY ?? '', timeoutMs: 20_000, fetchFn: fetch },
       anthropicKey: env.ANTHROPIC_API_KEY ?? '', fetchFn: fetch, today: new Date().toISOString().slice(0, 10),
       readMemory: async () => [],
-      saveFact: async (f) => { facts.push(f); return true; },
+      saveFact: async (f) => { facts.push(f); return 'saved' as const; },
     });
     outcomes[r.outcome] = (outcomes[r.outcome] ?? 0) + 1;
     for (const f of facts) {

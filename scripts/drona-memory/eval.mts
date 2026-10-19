@@ -107,7 +107,7 @@ async function run(c: Case) {
   const res = await catchMemory(c.text, kind, {
     jev, anthropicKey: env.ANTHROPIC_API_KEY ?? '', fetchFn: fetch, today: '2026-10-19',
     readMemory: async () => [],
-    saveFact: async (f) => { saved.push(f); return true; },
+    saveFact: async (f) => { saved.push(f); return 'saved' as const; },
   });
   return { c, gate: res.gate, saved, error: res.outcome === 'failed' ? res.error : undefined };
 }

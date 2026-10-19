@@ -1,6 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
-  catchMemory, type CatchDeps, GATE_YES, MAX_FACTS, type MemoryFactIn, readMemoryRows, readWriterCalls, writerSystem,
+  catchMemory, type CatchDeps, GATE_YES, MAX_FACTS, type MemoryFactIn, readMemoryRows, readWriterCalls, saveResult,
+  writerSystem,
 } from "./dronaMemory.ts";
 
 const tool = (input: Record<string, unknown>) => ({ type: "tool_use", name: "remember_fact", input });
@@ -50,7 +51,7 @@ function deps(gate: number | null, writer: unknown[] | number, saved: MemoryFact
   const d: CatchDeps = {
     jev: { apiKey: "k", timeoutMs: 1000, fetchFn }, anthropicKey: "a", fetchFn, today: "2026-10-19",
     readMemory: async () => [],
-    saveFact: async (f) => { saved.push(f); return true; },
+    saveFact: async (f) => { saved.push(f); return "saved" as const; },
     ...over,
   };
   return { d, calls };
@@ -126,7 +127,17 @@ Deno.test("catchMemory: the time limit covers the reply body, not only the heade
   const started = Date.now();
   const r = await catchMemory("i'm vegetarian", "chat", {
     jev: { apiKey: "k", timeoutMs: 1000, fetchFn }, anthropicKey: "a", fetchFn, timeoutMs: 50, today: "2026-10-19",
-    readMemory: async () => [], saveFact: async () => true,
+    readMemory: async () => [], saveFact: async () => "saved" as const,
   });
   assertEquals([r.outcome, Date.now() - started < 2000], ["failed", true]);
+});
+
+Deno.test("a save refused on purpose is nothing to keep (no retry); a save that could not happen is a failure", async () => {
+  const fact = [tool({ category: "diet", key: "diet type", value: "Vegan." })];
+  assertEquals((await catchMemory("i'm vegan", "chat", deps(0.9, fact, [], { saveFact: async () => "refused" }).d)).outcome, "nothing");
+  assertEquals((await catchMemory("i'm vegan", "chat", deps(0.9, fact, [], { saveFact: async () => "error" }).d)).outcome, "failed");
+  assertEquals(saveResult({ saved: true, id: "x" }, null), "saved");
+  assertEquals(saveResult({ saved: false, reason: "the person asked to forget this" }, null), "refused");
+  assertEquals(saveResult(null, { message: "db down" }), "error");
+  assertEquals(saveResult(null, null), "error");
 });

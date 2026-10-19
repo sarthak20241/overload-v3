@@ -32,7 +32,7 @@ import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
 import { withPhaseActivity } from "./programActivity.ts";
 import { weekStartOf } from "../_shared/dronaCards.ts";
-import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows } from "../_shared/dronaMemory.ts";
+import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "../_shared/dronaMemory.ts";
 import type { DayTargetRow } from "../_shared/targetHistory.ts";
 import {
   type CandidateFood,
@@ -1115,7 +1115,7 @@ function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId
             p_user_id: userId, p_category: f.category, p_key: f.key, p_value: f.value, p_source: kind,
           });
           if (error) console.log("[ai-coach] memory save:", error.message.slice(0, 160));
-          return !error && (data as { saved?: boolean } | null)?.saved === true;
+          return saveResult(data, error);
         },
         logUsage: (u) => void logTokenUsage(admin, {
           pipeline: "drona_memory", provider: "anthropic", model: MEMORY_WRITER_MODEL,

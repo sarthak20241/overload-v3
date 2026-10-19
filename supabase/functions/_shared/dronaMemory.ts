@@ -167,12 +167,24 @@ export interface CatchDeps {
   timeoutMs?: number;
   today: string;
   readMemory: () => Promise<MemoryRow[]>;
-  /** Saves one fact; true when it was saved. */
-  saveFact: (fact: MemoryFactIn) => Promise<boolean>;
+  /**
+   * Saves one fact. 'refused' = the database said no on purpose (the person
+   * asked to forget it): nothing to retry. 'error' = it could not save: retry.
+   */
+  saveFact: (fact: MemoryFactIn) => Promise<SaveResult>;
   logUsage?: (u: { input_tokens: number; output_tokens: number; latency_ms: number; status: 'success' | 'error'; error?: string }) => void;
 }
 
 export type CatchOutcome = 'no' | 'nothing' | 'saved' | 'failed';
+export type SaveResult = 'saved' | 'refused' | 'error';
+
+/** What coach_remember_fact_for's answer means for a retry. */
+export function saveResult(data: unknown, error: unknown): SaveResult {
+  if (error) return 'error';
+  const d = data as { saved?: boolean; reason?: string } | null;
+  if (d?.saved === true) return 'saved';
+  return d && typeof d.reason === 'string' ? 'refused' : 'error';
+}
 
 export interface CatchResult {
   outcome: CatchOutcome;
@@ -242,14 +254,18 @@ export async function catchMemory(text: string, kind: string, deps: CatchDeps): 
 
   const facts = readWriterCalls(data?.content);
   let saved = 0;
+  let errors = 0;
   for (const f of facts) {
     try {
-      if (await deps.saveFact(f)) saved += 1;
+      const r = await deps.saveFact(f);
+      if (r === 'saved') saved += 1;
+      else if (r === 'error') errors += 1;
     } catch {
-      // One failed save must not lose the others.
+      errors += 1; // one failed save must not lose the others
     }
   }
-  // Facts written but none saved is a failure (the sweep tries again), not "nothing to keep".
-  const outcome: CatchOutcome = saved > 0 ? 'saved' : facts.length > 0 ? 'failed' : 'nothing';
+  // A save that could not happen is a failure (the sweep tries again); a save
+  // refused on purpose (forgotten by the person) is "nothing to keep".
+  const outcome: CatchOutcome = saved > 0 ? 'saved' : errors > 0 ? 'failed' : 'nothing';
   return { outcome, gate: score, saved, facts, ...(outcome === 'failed' ? { error: 'no fact saved' } : {}) };
 }

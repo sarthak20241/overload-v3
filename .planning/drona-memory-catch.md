@@ -180,4 +180,10 @@ pass has read yet:
   word facts to coach_traces on that id matched), and food logs carry mode
   null, so the reply pass reads them. Left for later: the 60-fact cap could
   evict automatic facts before ones the person stated.
+- Sixth review: a save the database refuses on purpose (the person asked to
+  forget it) is "nothing to keep", not a failure, so the sweep does not pay to
+  retry it; only a save that could not happen is retried. Kept on purpose: the
+  sweep reads food logs too (labelled `food_log`), because the owner's idea is
+  exactly that food logs can carry facts; in normal running the reply pass has
+  already read them, so they are not in the sweep's list.
 
