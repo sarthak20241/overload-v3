@@ -99,6 +99,8 @@ Deno.test("a serving for two pieces is restated as one piece", () => {
   assertEquals(perOneServing({ label: '2 each - 4 4/5" diameter', grams: 72 }), { label: '1 piece - 4 4/5" diameter', grams: 36 });
   assertEquals(perOneServing({ label: "2 pooris (72 g)", grams: 72 }), { label: "1 poori", grams: 36 });
   assertEquals(perOneServing({ label: "3 biscuits", grams: 30 }), { label: "1 biscuit", grams: 10 });
+  // A slice is a piece: two slices at 60 g are 30 g each.
+  assertEquals(perOneServing({ label: "2 slices (60 g)", grams: 60 }), { label: "1 slice", grams: 30 });
   // No guessed singular: the plural still contains what the user types ("cookie").
   assertEquals(perOneServing({ label: "2 cookies", grams: 22 }), { label: "1 cookies", grams: 11 });
   assertEquals(perOneServing({ label: "2 potatoes", grams: 300 }), { label: "1 potatoes", grams: 150 });
@@ -106,6 +108,7 @@ Deno.test("a serving for two pieces is restated as one piece", () => {
   for (const sv of [
     { label: "100 g", grams: 100 }, { label: "1/2 cup", grams: 120 }, { label: "1 piece", grams: 36 },
     { label: "2 cups", grams: 300 }, { label: "12 fl oz", grams: 355 }, { label: "2 tbsp", grams: 30 },
+    { label: "8 oz", grams: 227 }, { label: "10 inch", grams: 400 }, { label: "12 inch pizza", grams: 900 },
   ]) {
     assertEquals(perOneServing(sv), sv);
   }
@@ -143,7 +146,7 @@ Deno.test("the failure this prevents: decide saw the 72 g pair and read it as on
 
 // ── 3. A complaint that states the fix changes the line ─────────────────────
 
-function challengeDeps(statesFix: number, log: { systems: string[]; jev: string[][] }): ParseMealDeps {
+function challengeDeps(statesFix: number, log: { systems: string[]; jev: string[][] }, retryFlag = true): ParseMealDeps {
   let extracts = 0;
   const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init!.body));
@@ -158,7 +161,7 @@ function challengeDeps(statesFix: number, log: { systems: string[]; jev: string[
       const input = extracts === 1
         ? { declined: false, asks_about_previous: true, meal_type_from_text: null, items: [] }
         : {
-          declined: false, corrects_previous: true, meal_type_from_text: null, items: [
+          declined: false, corrects_previous: retryFlag, meal_type_from_text: null, items: [
             { name: "poori", brand: null, quantity: 3, unit: "small piece", prep: null, corrects_food_name: "poori" },
             { name: "boiled chana", brand: null, quantity: 75, unit: "g", prep: null, corrects_food_name: null },
             { name: "Suji halwa", brand: null, quantity: 40, unit: "g", prep: null, corrects_food_name: null },
@@ -190,6 +193,13 @@ Deno.test("the failure this prevents: 'they were small' got the stock answer and
   const step = r.steps.find((s) => s.tool === "challenge_states_fix");
   assertEquals((step?.result as { applied: boolean }).applied, true);
   assertEquals(r.declined, null, `still the stock answer: ${r.declined?.message}`);
+});
+
+Deno.test("the retry edits the card even when the model tags it as an addition", async () => {
+  const log = { systems: [] as string[], jev: [] as string[][] };
+  const r = await runParseMeal(challengeDeps(0.92, log, false), challenge("I had just 3 puris they were small"));
+  assertEquals(log.systems.length, 2);
+  assertEquals(r.parsed?.corrects_previous, true);
 });
 
 Deno.test("a bare question is still answered, now with the real numbers", async () => {

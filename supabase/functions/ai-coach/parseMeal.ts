@@ -2856,6 +2856,8 @@ export function isOneCupLabel(label: string): boolean {
  * left alone. A weight printed in the label is dropped from it, since it is
  * the weight of the whole group.
  */
+const SIZE_WORDS = new Set(["inch", "inches", "in", "cm", "mm", "ft", "foot", "feet", "diameter"]);
+
 export function perOneServing(sv: ServingOption): ServingOption {
   const m = sv.label.match(/^\s*(\d+)\s+([a-z]+)\b(.*)$/i);
   if (!m || !(sv.grams > 0)) return sv;
@@ -2863,13 +2865,14 @@ export function perOneServing(sv: ServingOption): ServingOption {
   const word = m[2].toLowerCase();
   // Pieces only: "2 cups" or "12 fl oz" are amounts, and their labels stay as
   // the catalog wrote them.
-  if (!(n > 1) || MASS_UNITS.has(word) || !namesAPiece(sv)) return sv;
+  // A size is not a count: "10 inch" is one pizza, not ten.
+  if (!(n > 1) || MASS_UNITS.has(word) || SIZE_WORDS.has(word) || !namesAPiece(sv)) return sv;
   // "1 each" is a label-database word; the card reads "3 × 1 piece". Otherwise
-  // only a plain trailing "s" goes ("pooris", "biscuits"): "cookies" and
-  // "potatoes" keep their word, since a guessed singular ("cooky") would no
+  // a plain trailing "s" goes ("pooris", "slices"), but not from endings where
+  // the singular is a guess ("cookies", "potatoes", "boxes"): those keep their word, since a guessed singular ("cooky") would no
   // longer contain the user's unit, and the plural still does.
   const one = word === "each" || word === "pieces" ? "piece"
-    : word.endsWith("s") && !word.endsWith("ss") && !word.endsWith("es") ? word.slice(0, -1)
+    : word.endsWith("s") && !/(ss|ies|oes|xes|shes|ches|zes)$/.test(word) ? word.slice(0, -1)
     : word;
   const rest = m[3].replace(/\(\s*[\d.]+\s*(g|gm|grams?|ml)\s*\)/gi, "").replace(/\s+/g, " ").trimEnd();
   return { ...sv, label: `1 ${one}${rest}`, grams: round1(sv.grams / n) };
@@ -6087,7 +6090,12 @@ async function runParseMealCore(
       const blk = ((again.data.content ?? []) as Array<Record<string, any>>)
         .find((b) => b.type === "tool_use" && b.name === "extract_meal");
       const items = blk?.input?.items;
-      if (again.data?.stop_reason !== "max_tokens" && Array.isArray(items) && items.length > 0) retried = blk!.input;
+      // Forced to a correction: this turn questions the card, so whatever it
+      // lists edits the card. Tagged as an addition, "3 small puris" on a
+      // one-line card would sit beside the old poori instead of replacing it.
+      if (again.data?.stop_reason !== "max_tokens" && Array.isArray(items) && items.length > 0) {
+        retried = { ...blk!.input, corrects_previous: true };
+      }
     }
     if (retried) ext = retried;
     steps.push({
@@ -6889,7 +6897,10 @@ async function runParseMealCore(
           if (check) steps.push({ iter: 1, tool: "memory_piece_check", input: { item: item.name }, result: check });
           const cand = memoryCandidate(remembered);
           const stamp = memoryStamp(remembered, memTimeZone, memoryInputName({ name: memoryLineName(item), brand: item.brand ?? null }));
-          memoryByFood.set(cand.food_id as string, check?.replaced ? { ...stamp, note: `${stamp.note}. ${check.note}` } : stamp);
+          const note = check?.replaced
+            ? [stamp.note.trim().replace(/\.$/, ""), check.note].filter(Boolean).join(". ")
+            : stamp.note;
+          memoryByFood.set(cand.food_id as string, { ...stamp, note });
           return { ...item, candidates: [cand], resolvedIdentity: true } as ResolvedItem;
         });
       }
