@@ -99,6 +99,8 @@ Deno.test("a serving for two pieces is restated as one piece", () => {
   assertEquals(perOneServing({ label: '2 each - 4 4/5" diameter', grams: 72 }), { label: '1 piece - 4 4/5" diameter', grams: 36 });
   assertEquals(perOneServing({ label: "2 pooris (72 g)", grams: 72 }), { label: "1 poori", grams: 36 });
   assertEquals(perOneServing({ label: "3 biscuits", grams: 30 }), { label: "1 biscuit", grams: 10 });
+  // The noun is the last word, after any size word.
+  assertEquals(perOneServing({ label: "2 large eggs", grams: 100 }), { label: "1 large egg", grams: 50 });
   // A slice is a piece: two slices at 60 g are 30 g each.
   assertEquals(perOneServing({ label: "2 slices (60 g)", grams: 60 }), { label: "1 slice", grams: 30 });
   // No guessed singular: the plural still contains what the user types ("cookie").
@@ -260,6 +262,9 @@ Deno.test("a sane piece weight, or a typed weight, leaves the memory alone", asy
   // The user typed grams: the remembered piece weight is not used at all.
   const b = await checkRememberedPiece(search, { unit: "g" }, fig(250, 50));
   assertEquals(b.check, null);
+  // A search that hangs keeps the memory once the time limit passes.
+  const slow = await checkRememberedPiece({ searchFoods: () => new Promise<CandidateFood[]>(() => {}) }, { unit: "piece" }, fig(250, 50));
+  assertEquals(slow.food.serving?.grams, 50);
   // The catalog search failing keeps the memory.
   const c = await checkRememberedPiece({ searchFoods: () => Promise.reject(new Error("down")) }, { unit: "piece" }, fig(250, 50));
   assertEquals(c.food.serving?.grams, 50);

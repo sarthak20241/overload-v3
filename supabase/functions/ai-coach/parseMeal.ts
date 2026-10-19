@@ -2859,23 +2859,26 @@ export function isOneCupLabel(label: string): boolean {
 const SIZE_WORDS = new Set(["inch", "inches", "in", "cm", "mm", "ft", "foot", "feet", "diameter"]);
 
 export function perOneServing(sv: ServingOption): ServingOption {
-  const m = sv.label.match(/^\s*(\d+)\s+([a-z]+)\b(.*)$/i);
+  // The words after the count, up to the first non-word ("each" in "2 each -
+  // 4 4/5\" diameter", "large eggs" in "2 large eggs").
+  const m = sv.label.match(/^\s*(\d+)\s+([a-z]+(?:\s+[a-z]+)*)(.*)$/i);
   if (!m || !(sv.grams > 0)) return sv;
   const n = Number(m[1]);
-  const word = m[2].toLowerCase();
+  const words = m[2].toLowerCase().split(/\s+/);
   // Pieces only: "2 cups" or "12 fl oz" are amounts, and their labels stay as
-  // the catalog wrote them.
-  // A size is not a count: "10 inch" is one pizza, not ten.
-  if (!(n > 1) || MASS_UNITS.has(word) || SIZE_WORDS.has(word) || !namesAPiece(sv)) return sv;
-  // "1 each" is a label-database word; the card reads "3 × 1 piece". Otherwise
-  // a plain trailing "s" goes ("pooris", "slices"), but not from endings where
-  // the singular is a guess ("cookies", "potatoes", "boxes"): those keep their word, since a guessed singular ("cooky") would no
-  // longer contain the user's unit, and the plural still does.
-  const one = word === "each" || word === "pieces" ? "piece"
-    : word.endsWith("s") && !/(ss|ies|oes|xes|shes|ches|zes)$/.test(word) ? word.slice(0, -1)
-    : word;
+  // the catalog wrote them. A size is not a count: "10 inch" is one pizza.
+  if (!(n > 1) || MASS_UNITS.has(words[0]) || words.some((w) => SIZE_WORDS.has(w)) || !namesAPiece(sv)) return sv;
+  // The noun is the last word ("2 large eggs" -> "1 large egg"). "1 each" is a
+  // label-database word; the card reads "3 × 1 piece". A plain trailing "s"
+  // goes ("pooris", "slices"), but not where the singular is a guess
+  // ("cookies", "potatoes", "boxes"): a guessed "cooky" would no longer
+  // contain the user's unit, and the plural still does.
+  const last = words[words.length - 1];
+  words[words.length - 1] = last === "each" || last === "pieces" ? "piece"
+    : last.endsWith("s") && !/(ss|ies|oes|xes|shes|ches|zes)$/.test(last) ? last.slice(0, -1)
+    : last;
   const rest = m[3].replace(/\(\s*[\d.]+\s*(g|gm|grams?|ml)\s*\)/gi, "").replace(/\s+/g, " ").trimEnd();
-  return { ...sv, label: `1 ${one}${rest}`, grams: round1(sv.grams / n) };
+  return { ...sv, label: `1 ${words.join(" ")}${rest}`, grams: round1(sv.grams / n) };
 }
 
 /** Every serving of a candidate restated per one piece (perOneServing). */
@@ -4527,6 +4530,9 @@ export function forSwapChips(it: ParsedItem): ParsedItem {
  *  fall well inside that; a dried fig at 50 g against 8 g does not. */
 export const PIECE_RATIO_LIMIT = 2.5;
 
+/** The catalog search behind the piece check may take this long, no more. */
+export const PIECE_CHECK_TIMEOUT_MS = 1500;
+
 /**
  * A remembered weight for ONE piece, checked against what the catalog says one
  * piece of that food weighs. The per-100 numbers are kept either way: only the
@@ -4556,7 +4562,14 @@ export async function checkRememberedPiece(
   if (!sv || !(sv.grams > 0) || MASS_UNITS.has(unit) || !namesAPiece({ label: sv.label, grams: sv.grams })) {
     return { food, check: null };
   }
-  const rows = await deps.searchFoods(food.name).catch(() => [] as CandidateFood[]);
+  // Bounded: this sits on the memory path, and a slow search must cost at most
+  // this long before the memory is used as it was.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const rows = await Promise.race([
+    deps.searchFoods(food.name).catch(() => [] as CandidateFood[]),
+    new Promise<CandidateFood[]>((res) => { timer = setTimeout(() => res([]), PIECE_CHECK_TIMEOUT_MS); }),
+  ]);
+  clearTimeout(timer);
   const pieces: { grams: number; label: string; row: string; kcal100: number; cand: CandidateFood }[] = [];
   for (const row of rows.slice(0, 5)) {
     if (nameSimilarity(row.name, food.name) < 0.4) continue;
