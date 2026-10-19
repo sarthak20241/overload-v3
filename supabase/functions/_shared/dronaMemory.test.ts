@@ -141,3 +141,21 @@ Deno.test("a save refused on purpose is nothing to keep (no retry); a save that 
   assertEquals(saveResult(null, { message: "db down" }), "error");
   assertEquals(saveResult(null, null), "error");
 });
+
+Deno.test("catchMemory: extra questions ride the same Jev call, and their answers come back even on a 'no'", async () => {
+  let asked: string[] = [];
+  const fetchFn = (async (url: string | URL, init?: RequestInit) => {
+    if (String(url).includes("typesafe.ai")) {
+      asked = Object.keys(JSON.parse(String(init?.body)).questions);
+      return Response.json({ model: "j", answers: { lasting: { type: "noul", noul: 0.1 }, pain: { type: "noul", noul: 0.9 } }, usage: {} });
+    }
+    return Response.json({ content: [] });
+  }) as typeof fetch;
+  const r = await catchMemory("my knee hurts", "chat", {
+    jev: { apiKey: "k", timeoutMs: 1000, fetchFn }, anthropicKey: "a", fetchFn, today: "2026-10-19",
+    readMemory: async () => [], saveFact: async () => "saved" as const,
+    extraQuestions: { pain: { type: "noul", instructions: "pain?" } },
+  });
+  assertEquals(asked.sort(), ["lasting", "pain"]);
+  assertEquals([r.outcome, (r.answers?.pain as { noul: number }).noul], ["no", 0.9]);
+});

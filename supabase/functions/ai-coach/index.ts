@@ -27,7 +27,10 @@ import {
 import { envInt } from "../_shared/envInt.ts";
 import { requireTool, retryTool, SONNET_MODEL, SONNET_SETTINGS, sonnetSettings } from "../_shared/sonnet.ts";
 import { AI_LIMITS } from "../_shared/aiLimits.ts";
-import { isTimeZone } from "../_shared/wallClock.ts";
+import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
+import { AREAS as WORD_AREAS, QUESTIONS as WORD_QUESTIONS, YES as WORD_YES } from "../_shared/dronaWords.ts";
+import { decideMoment, type MomentCandidate, momentRow } from "../_shared/dronaMoments.ts";
+import { asNoul, type JevAnswer } from "./jev.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
 import { withPhaseActivity } from "./programActivity.ts";
@@ -1106,6 +1109,13 @@ function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId
   keepAlive((async () => {
     try {
       const result = await catchMemory(text, kind, {
+        // The moments' questions ride the same Jev call (.planning/drona-moments.md),
+        // chat only: a food log never makes a pain or an ask moment.
+        ...(kind === "chat"
+          ? { extraQuestions: {
+              pain: WORD_QUESTIONS.pain, area: WORD_QUESTIONS.area, ask: WORD_QUESTIONS.ask, change: WORD_QUESTIONS.change,
+            } }
+          : {}),
         jev: { apiKey: JEV_API_KEY, timeoutMs: 6000, log: (m) => console.log(`[ai-coach] memory ${m}`) },
         anthropicKey: ANTHROPIC_API_KEY,
         today: new Date().toISOString().slice(0, 10),
@@ -1130,10 +1140,87 @@ function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId
       });
       if (error) console.log("[ai-coach] memory seen:", error.message.slice(0, 160));
       if (result.outcome === "failed") console.log("[ai-coach] memory catch failed:", result.error);
+      if (result.answers) await momentsFromReply(admin, userId, traceId, kind, result.answers);
     } catch (e) {
       console.log("[ai-coach] memory catch threw:", String(e).slice(0, 160));
     }
   })());
+}
+
+/** The Monday of the week before a YYYY-MM-DD (the finished week the behaviours judge). */
+function lastWeekStart(day: string): string {
+  const monday = weekStartOf(day) ?? day;
+  return new Date(Date.parse(`${monday}T00:00:00Z`) - 7 * 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * Moments from one message (.planning/drona-moments.md), from the answers the
+ * memory catch already got:
+ *   pain now (chat only)      -> a pain moment at once (never held back by the
+ *                                moment caps; the cooldown still applies)
+ *   asks for a plan change    -> noted in drona_moment_asks; the card worker
+ *   (chat only)                  makes the moment tomorrow if the plan did not
+ *                                follow
+ */
+async function momentsFromReply(
+  admin: SupabaseClient, userId: string, traceId: string, kind: string, answers: Record<string, unknown>,
+): Promise<void> {
+  const pain = asNoul(answers.pain as JevAnswer | undefined);
+  const ask = asNoul(answers.ask as JevAnswer | undefined);
+  // Chat only: a food log's "stomach ache" is not a training injury.
+  const painYes = kind === "chat" && pain != null && pain >= WORD_YES;
+  const askYes = kind === "chat" && ask != null && ask >= WORD_YES;
+  if (!painYes && !askYes) return;
+
+  const { data: profile } = await admin.from("user_profiles").select("timezone").eq("clerk_user_id", userId).maybeSingle();
+  const tz = isTimeZone(profile?.timezone) ? profile!.timezone as string : "UTC";
+  const now = new Date();
+  const today = (wallClock(now, tz) ?? now.toISOString()).slice(0, 10);
+  const choice = (k: string) => (answers[k] as { choice?: unknown } | undefined)?.choice;
+  const sourceId = `chat_message:${traceId}`;
+
+  if (askYes) {
+    const change = ["training_days", "exercises", "goal_or_weight", "calories", "other"].includes(String(choice("change")))
+      ? String(choice("change")) : "other";
+    const { error } = await admin.from("drona_moment_asks").upsert(
+      { user_id: userId, source_id: sourceId, day: today, change }, { onConflict: "user_id,source_id", ignoreDuplicates: true },
+    );
+    if (error) console.log("[ai-coach] moment ask:", error.message.slice(0, 160));
+  }
+
+  if (painYes) {
+    const since = new Date(now.getTime() - 60 * 86_400_000).toISOString();
+    const { data: rows, error: cardsErr } = await admin.from("drona_cards")
+      .select("slot, topic, status, moment_day, created_at, deferred_at").eq("user_id", userId).gte("created_at", since);
+    // Without the history the cooldown cannot be checked: say nothing rather than repeat.
+    if (cardsErr) {
+      console.log("[ai-coach] pain moment cards:", cardsErr.message.slice(0, 160));
+      return;
+    }
+    const cards = (rows ?? []).map((r) => ({
+      slot: r.slot, topic: r.topic, status: r.status, moment_day: r.moment_day, deferred: !!r.deferred_at,
+      created_day: (wallClock(r.created_at, tz) ?? String(r.created_at)).slice(0, 10),
+    }));
+    // Last week's mutes and quiet-week flag, as get_drona_moment_candidates reads them for the cron
+    // (its 'mutes' and 'hushed' fields): change both together.
+    const { data: behs, error: behsErr } = await admin.from("drona_behaviours").select("mutes, meta")
+      .eq("user_id", userId).eq("week_start", lastWeekStart(today));
+    // Without the mutes and the quiet-week flag, say nothing rather than ignore them.
+    if (behsErr) {
+      console.log("[ai-coach] pain moment behaviours:", behsErr.message.slice(0, 160));
+      return;
+    }
+    const mutes = [...new Set((behs ?? []).flatMap((b) => (b.mutes ?? []) as string[]))];
+    const hushedWeek = (behs ?? []).some((b) => b.meta === true);
+    const areaChoice = String(choice("area") ?? "other");
+    const area = (WORD_AREAS as readonly string[]).includes(areaChoice) ? areaChoice : "other";
+    const candidate: MomentCandidate = { type: "hurting", detail: { area, day: today, source: sourceId, score: pain } };
+    const card = decideMoment({ user_id: userId, today, candidates: [candidate], cards, mutes, hushed: hushedWeek });
+    if (!card) return;
+    const { error } = await admin.from("drona_cards").insert(momentRow(userId, today, card, candidate, "reply", now.getTime()));
+    // 23505: a pain moment already made today. Not a failure.
+    if (error && (error as { code?: string }).code !== "23505") console.log("[ai-coach] pain moment:", error.message.slice(0, 160));
+  }
 }
 
 async function recordTrace(

@@ -31,6 +31,7 @@ import {
 } from "../_shared/dronaWords.ts";
 import { askJev } from "../ai-coach/jev.ts";
 import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "../_shared/dronaMemory.ts";
+import { type MomentPerson, momentRow, pickMoment } from "../_shared/dronaMoments.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
 
@@ -367,6 +368,40 @@ async function insertWeekly(
   return { kind: card.kind, saved: !insErr };
 }
 
+/**
+ * Drona moments (.planning/drona-moments.md): every 15-minute run, everyone
+ * with something worth saying now (get_drona_moment_candidates: missed
+ * sessions, food far off, an ask the plan did not follow, a fresh PR) gets at
+ * most one moment, under the caps and cooldowns in _shared/dronaMoments.ts.
+ * Pain moments are made by ai-coach right after the message. Never throws.
+ */
+async function runMoments(db: SupabaseClient, nowMs: number): Promise<{ made: number; failed: number }> {
+  const { data, error } = await retried(() => db.rpc("get_drona_moment_candidates", { p_now: new Date(nowMs).toISOString() }));
+  if (error) {
+    console.error("[drona-cards] moment candidates:", error.message);
+    return { made: 0, failed: 1 };
+  }
+  let made = 0;
+  let failed = 0;
+  for (const p of (data ?? []) as MomentPerson[]) {
+    const picked = pickMoment(p);
+    if (!picked) continue;
+    const { card, candidate } = picked;
+    const { error: insErr } = await retried(() => db.from("drona_cards").insert(momentRow(p.user_id, p.today, card, candidate, "cron", nowMs)));
+    if (insErr) {
+      // 23505: this moment was already made today. Not a failure.
+      if ((insErr as { code?: string }).code !== "23505") { failed += 1; console.error("[drona-cards] moment:", insErr.message); }
+      continue;
+    }
+    made += 1;
+    if (card.topic === "asked_for_a_change" && typeof candidate?.detail?.source === "string") {
+      await retried(() => db.from("drona_moment_asks").update({ status: "carded" })
+        .eq("user_id", p.user_id).eq("source_id", candidate.detail.source as string));
+    }
+  }
+  return { made, failed };
+}
+
 async function runCron(): Promise<Response> {
   const db = admin();
   const now = new Date();
@@ -449,8 +484,12 @@ async function runCron(): Promise<Response> {
       });
     }
 
+    // Moments after the weekly cards: a weekly card written this run is waiting,
+    // so the moment rules leave that person alone today.
+    const moments = await runMoments(db, now.getTime());
     return json({ users: weeks.length, due: due.length, saved, held, checkins, pick_failed: pickFailed,
-      words_asked: wordsAsked, words_failed: wordsFailed, failures: failures.slice(0, 20) });
+      words_asked: wordsAsked, words_failed: wordsFailed, moments_made: moments.made, moments_failed: moments.failed,
+      failures: failures.slice(0, 20) });
   } finally {
     // Settled on every path: the runtime may stop the worker once the response
     // is out, and an abandoned delete may never land.

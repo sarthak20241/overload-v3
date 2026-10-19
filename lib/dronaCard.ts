@@ -45,8 +45,11 @@ export interface DronaCardPayload {
 export interface SavedDronaCard {
   id: string;
   week_start: string;
-  /** 'weekly' = the one Drona card a week; 'calories' = the calorie check-in, its own card. */
-  slot: 'weekly' | 'calories';
+  /**
+   * 'weekly' = the one Drona card a week; 'calories' = the calorie check-in;
+   * 'moment' = a card about something that just happened (expires in 2 days).
+   */
+  slot: 'weekly' | 'calories' | 'moment';
   kind: DronaCardKind;
   topic: string;
   title: string;
@@ -77,7 +80,7 @@ const asCard = (row: any): SavedDronaCard | null =>
     ? {
         id: row.id,
         week_start: String(row.week_start ?? ''),
-        slot: row.slot === 'calories' ? 'calories' : 'weekly',
+        slot: row.slot === 'calories' || row.slot === 'moment' ? row.slot : 'weekly',
         kind: row.kind,
         topic: String(row.topic ?? ''),
         title: String(row.title ?? ''),
@@ -104,6 +107,35 @@ export const readWeeklyCard = (supabase: SupabaseClient, clerkId: string, now: D
 /** The calorie check-in: its own card a week, apart from the weekly one. */
 export const readCheckinCard = (supabase: SupabaseClient, clerkId: string, now: Date = new Date()) =>
   readSlotCard(supabase, clerkId, 'calories', now);
+
+/**
+ * The newest moment still waiting: pending, not put off with Later, not past
+ * its expiry (.planning/drona-moments.md). Moments are made on the server the
+ * moment something happens, so the dashboard reads this on focus and every
+ * minute while it is open. `undefined` = the read failed.
+ */
+export async function readMomentCard(
+  supabase: SupabaseClient,
+  clerkId: string,
+  now: Date = new Date(),
+): Promise<SavedDronaCard | null | undefined> {
+  try {
+    const { data, error } = await supabase
+      .from('drona_cards')
+      .select(CARD_COLUMNS)
+      .eq('user_id', clerkId)
+      .eq('slot', 'moment')
+      .eq('status', 'pending')
+      .is('deferred_at', null)
+      .gt('expires_at', now.toISOString())
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (error) return undefined;
+    return asCard((data ?? [])[0] ?? null);
+  } catch {
+    return undefined;
+  }
+}
 
 async function readSlotCard(
   supabase: SupabaseClient,
