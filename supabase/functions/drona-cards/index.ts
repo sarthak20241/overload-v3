@@ -30,7 +30,7 @@ import {
   wordBehaviours, wordSignals,
 } from "../_shared/dronaWords.ts";
 import { askJev } from "../ai-coach/jev.ts";
-import { catchMemory, MEMORY_WRITER_MODEL } from "../_shared/dronaMemory.ts";
+import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows } from "../_shared/dronaMemory.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
 
@@ -481,6 +481,7 @@ async function runMemorySweep(): Promise<Response> {
   const byUser = new Map<string, typeof texts>();
   for (const t of texts) byUser.set(t.user_id, [...(byUser.get(t.user_id) ?? []), t]);
 
+  // saved counts facts; the rest count texts. `left` is the backlog for tomorrow: watch it.
   const tally = { texts: texts.length, read: 0, saved: 0, no: 0, nothing: 0, failed: 0, left: 0 };
   const today = new Date(started).toISOString().slice(0, 10);
   const people = [...byUser.entries()];
@@ -493,16 +494,7 @@ async function runMemorySweep(): Promise<Response> {
           jev: { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS },
           anthropicKey: ANTHROPIC_API_KEY,
           today,
-          readMemory: async () => {
-            // Active and forgotten read apart: many forgotten facts must not crowd out the live ones.
-            const [live, gone] = await Promise.all([
-              db.from("coach_memory").select("category, key, value, status").eq("user_id", userId)
-                .eq("status", "active").order("updated_at", { ascending: false }).limit(60),
-              db.from("coach_memory").select("category, key, value, status").eq("user_id", userId)
-                .eq("status", "dismissed").order("updated_at", { ascending: false }).limit(40),
-            ]);
-            return [...(live.data ?? []), ...(gone.data ?? [])] as { category: string; key: string; value: string; status: string }[];
-          },
+          readMemory: () => readMemoryRows(db as never, userId),
           saveFact: async (f) => {
             const { data: res, error: e } = await db.rpc("coach_remember_fact_for", {
               p_user_id: userId, p_category: f.category, p_key: f.key, p_value: f.value, p_source: "sweep",
@@ -522,8 +514,8 @@ async function runMemorySweep(): Promise<Response> {
           p_user_id: userId, p_source_id: t.id, p_outcome: r.outcome, p_facts: r.saved, p_gate: r.gate, p_via: "sweep",
         }));
         tally.read += 1;
-        tally[r.outcome] += 1;
-        if (r.outcome === "saved") tally.saved += r.saved - 1; // count facts, not texts
+        if (r.outcome === "saved") tally.saved += r.saved; // facts, not texts
+        else tally[r.outcome] += 1;
       }
       // Settled before the response: the isolate may stop once it is sent.
       await Promise.allSettled(logs);

@@ -133,6 +133,32 @@ export function readWriterCalls(content: unknown): MemoryFactIn[] {
   return out;
 }
 
+/** The little of supabase-js the memory read needs (kept loose: this file imports no client). */
+interface MemoryReader {
+  from(table: string): {
+    select(cols: string): {
+      eq(c: string, v: string): {
+        eq(c: string, v: string): {
+          order(c: string, o: { ascending: boolean }): { limit(n: number): PromiseLike<{ data: unknown[] | null }> };
+        };
+      };
+    };
+  };
+}
+
+/**
+ * A person's memory for the writer: the live facts and the forgotten ones,
+ * read apart so many forgotten facts cannot crowd out the live ones. Used by
+ * the after-reply pass (ai-coach) and the sweep (drona-cards).
+ */
+export async function readMemoryRows(db: MemoryReader, userId: string): Promise<MemoryRow[]> {
+  const read = (status: string, n: number) =>
+    db.from('coach_memory').select('category, key, value, status').eq('user_id', userId)
+      .eq('status', status).order('updated_at', { ascending: false }).limit(n);
+  const [live, gone] = await Promise.all([read('active', 60), read('dismissed', 40)]);
+  return [...(live.data ?? []), ...(gone.data ?? [])] as MemoryRow[];
+}
+
 export interface CatchDeps {
   jev: JevDeps;
   anthropicKey: string;

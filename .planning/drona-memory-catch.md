@@ -167,4 +167,10 @@ pass has read yet:
   and forgotten facts are read apart (60 + 40). The modes match without a SQL
   filter: drona_word_facts already leaves out the generate and onboarding
   requests. The food-tool list is noted in both places.
+- Fourth review: the memory read is one shared helper (`readMemoryRows`); the
+  trace read-back uses `maybeSingle`. Kept on purpose: a forgotten (category,
+  key) blocks only the AUTOMATIC save; the person can still tell the chat
+  coach, whose save re-learns a forgotten fact when the value is new. No new
+  third party: the coach and the food logger already send these messages to
+  Anthropic, and the food logger already sends them to Jev.
 

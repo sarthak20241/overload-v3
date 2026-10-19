@@ -32,7 +32,7 @@ import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
 import { withPhaseActivity } from "./programActivity.ts";
 import { weekStartOf } from "../_shared/dronaCards.ts";
-import { catchMemory, MEMORY_WRITER_MODEL } from "../_shared/dronaMemory.ts";
+import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows } from "../_shared/dronaMemory.ts";
 import type { DayTargetRow } from "../_shared/targetHistory.ts";
 import {
   type CandidateFood,
@@ -1109,16 +1109,7 @@ function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId
         jev: { apiKey: JEV_API_KEY, timeoutMs: 6000, log: (m) => console.log(`[ai-coach] memory ${m}`) },
         anthropicKey: ANTHROPIC_API_KEY,
         today: new Date().toISOString().slice(0, 10),
-        readMemory: async () => {
-          // Active and forgotten read apart: many forgotten facts must not crowd out the live ones.
-            const [live, gone] = await Promise.all([
-              admin.from("coach_memory").select("category, key, value, status").eq("user_id", userId)
-                .eq("status", "active").order("updated_at", { ascending: false }).limit(60),
-              admin.from("coach_memory").select("category, key, value, status").eq("user_id", userId)
-                .eq("status", "dismissed").order("updated_at", { ascending: false }).limit(40),
-            ]);
-            return [...(live.data ?? []), ...(gone.data ?? [])] as { category: string; key: string; value: string; status: string }[];
-        },
+        readMemory: () => readMemoryRows(admin as never, userId),
         saveFact: async (f) => {
           const { data, error } = await admin.rpc("coach_remember_fact_for", {
             p_user_id: userId, p_category: f.category, p_key: f.key, p_value: f.value, p_source: kind,
@@ -1155,7 +1146,7 @@ async function recordTrace(
     // supabase-js v2 returns { error } and does NOT throw on backend errors,
     // so the bare try/catch this replaced caught nothing: every failed trace
     // insert was silently discarded. Same trap logTokenUsage already documents.
-    const { data: inserted, error } = await admin.from("coach_traces").insert(row).select("id").single();
+    const { data: inserted, error } = await admin.from("coach_traces").insert(row).select("id").maybeSingle();
     if (!error) {
       if (inserted?.id) catchMemoryAfterReply(admin, trace, String(inserted.id));
       return;
@@ -1176,7 +1167,7 @@ async function recordTrace(
         retrieval_rewrite_error: _rre,
         ...legacy
       } = row;
-      const { data: legacyRow, error: retryErr } = await admin.from("coach_traces").insert(legacy).select("id").single();
+      const { data: legacyRow, error: retryErr } = await admin.from("coach_traces").insert(legacy).select("id").maybeSingle();
       if (!retryErr && legacyRow?.id) catchMemoryAfterReply(admin, trace, String(legacyRow.id));
       console.log(
         retryErr

@@ -1,5 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { catchMemory, type CatchDeps, GATE_YES, MAX_FACTS, type MemoryFactIn, readWriterCalls, writerSystem } from "./dronaMemory.ts";
+import {
+  catchMemory, type CatchDeps, GATE_YES, MAX_FACTS, type MemoryFactIn, readMemoryRows, readWriterCalls, writerSystem,
+} from "./dronaMemory.ts";
 
 const tool = (input: Record<string, unknown>) => ({ type: "tool_use", name: "remember_fact", input });
 
@@ -85,4 +87,27 @@ Deno.test("catchMemory: failures are 'failed' (the sweep retries them), never th
 Deno.test("catchMemory: under 3 characters is never asked about", async () => {
   const { d, calls } = deps(0.9, []);
   assertEquals([(await catchMemory(" ok ", "chat", d)).outcome, calls.jev], ["no", 0]);
+});
+
+Deno.test("readMemoryRows: live facts (60) and forgotten ones (40) read apart, live first", async () => {
+  const asked: string[] = [];
+  const db = {
+    from: (table: string) => ({
+      select: (_c: string) => ({
+        eq: (_c1: string, user: string) => ({
+          eq: (_c2: string, status: string) => ({
+            order: () => ({
+              limit: (n: number) => {
+                asked.push(`${table}:${user}:${status}:${n}`);
+                return Promise.resolve({ data: [{ category: "diet", key: status, value: "v", status }] });
+              },
+            }),
+          }),
+        }),
+      }),
+    }),
+  };
+  const rows = await readMemoryRows(db, "u1");
+  assertEquals(asked.sort(), ["coach_memory:u1:active:60", "coach_memory:u1:dismissed:40"]);
+  assertEquals(rows.map((r) => r.status), ["active", "dismissed"]);
 });
