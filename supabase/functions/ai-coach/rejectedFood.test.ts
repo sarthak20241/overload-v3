@@ -7,7 +7,7 @@
 // Nothing here calls a real model, Jev or the database.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { type ParseMealDeps, type PreviousItem, rejectedFood, runParseMeal } from "./parseMeal.ts";
+import { type ParseMealDeps, type PreviousItem, rejectedFood, runParseMeal, withoutRejected } from "./parseMeal.ts";
 
 const prev = (food_name: string, quantity: number, serving_label: string, grams: number, kcal: number, food_id: string | null = null): PreviousItem =>
   ({ food_id, food_name, quantity, serving_label, grams, kcal, protein_g: 5, carb_g: 20, fat_g: 3, source: "catalog" }) as PreviousItem;
@@ -21,6 +21,12 @@ Deno.test("a swap rejects the old food; an edit of the same food does not", () =
   assertEquals(rejectedFood({ name: "chana", correctsFoodName: "boiled chana" }, CARD), null);
   // Any script: a Hindi name is compared too.
   assertEquals(rejectedFood({ name: "नवरात्रि चना", correctsFoodName: "उबले चने" }, []), "उबले चने");
+  // A grade, variant or new preparation changes the product even when one name
+  // holds the other: these are swaps.
+  assertEquals(rejectedFood({ name: "double toned milk", correctsFoodName: "toned milk" }, []), "toned milk");
+  assertEquals(rejectedFood({ name: "fried egg", correctsFoodName: "egg" }, []), "egg");
+  // Two foods sharing only one word: a swap.
+  assertEquals(rejectedFood({ name: "chana masala", correctsFoodName: "boiled chana" }, []), "boiled chana");
   // Untouched line.
   assertEquals(rejectedFood({ name: "poori", correctsFoodName: null }, CARD), null);
 });
@@ -82,6 +88,11 @@ Deno.test("the failure this prevents: memory put boiled chana back after the use
     "i had 3 pooris and chana navratri vaale in lunch and some 40g halwa suji vaala");
   // And the card does not get the old line back.
   assertEquals((r.parsed?.items ?? []).filter((i) => i.food_name === "boiled chana").length, 0);
+});
+
+Deno.test("the same food named in another word order is the same rejected food", () => {
+  const rows = [{ name: "Chana, boiled" }, { name: "Chole (Chana Masala)" }, { name: "boiled chana" }];
+  assertEquals(withoutRejected(rows, "boiled chana", (r) => r.name).map((r) => r.name), ["Chole (Chana Masala)"]);
 });
 
 Deno.test("a first log carries no earlier_text", async () => {

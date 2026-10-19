@@ -4265,7 +4265,15 @@ export function rejectedFood(item: Pick<ExtractedItem, "name" | "correctsFoodNam
   const words = (x: string) => new Set(foodNameKey(x).split(" ").filter(Boolean));
   const a = words(item.name), b = words(target);
   const within = (x: Set<string>, y: Set<string>) => [...x].every((w) => y.has(w));
-  if (a.size === 0 || b.size === 0 || within(a, b) || within(b, a)) return null;
+  if (a.size === 0 || b.size === 0) return null;
+  // Containment is an edit ("omelette" -> "3 egg omelette"), unless the words
+  // that differ change the product: a grade or variant ("toned milk" ->
+  // "double toned milk") or a preparation the old line did not have ("egg" ->
+  // "fried egg"). Those are swaps, and the old row must stay out.
+  const newPrep = prepStateOf(item.name);
+  const changesProduct = !!variantClash(item.name, target) || !!variantClash(target, item.name) ||
+    (newPrep !== null && newPrep !== prepStateOf(target));
+  if (!changesProduct && (within(a, b) || within(b, a))) return null;
   return prevItems.find((p) => foodNameKey(p.food_name) === foodNameKey(target))?.food_name ?? target;
 }
 
@@ -4284,9 +4292,11 @@ export function withoutRejected<T>(
 ): T[] {
   if (!rejected) return list;
   const key = foodNameKey(rejected);
+  // Word order does not make another food: "Chana, boiled" is "boiled chana".
+  const sorted = (x: string) => foodNameKey(x).split(" ").sort().join(" ");
   const id = prevItems.find((p) => foodNameKey(p.food_name) === key)?.food_id ?? null;
   return list.filter((t) => {
-    if (foodNameKey(nameOf(t)) === key) return false;
+    if (sorted(nameOf(t)) === sorted(rejected)) return false;
     const fid = (t as { food_id?: string | null }).food_id;
     return !(id && fid && fid === id);
   });
