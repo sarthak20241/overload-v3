@@ -114,6 +114,7 @@ Deno.test("a serving for two pieces is restated as one piece", () => {
     { label: "100 g", grams: 100 }, { label: "1/2 cup", grams: 120 }, { label: "1 piece", grams: 36 },
     { label: "2 cups", grams: 300 }, { label: "12 fl oz", grams: 355 }, { label: "2 tbsp", grams: 30 },
     { label: "8 oz", grams: 227 }, { label: "10 inch", grams: 400 }, { label: "12 inch pizza", grams: 900 },
+    { label: "12 count box", grams: 360 }, { label: "6 pack", grams: 1980 },
   ]) {
     assertEquals(perOneServing(sv), sv);
   }
@@ -147,6 +148,30 @@ Deno.test("the failure this prevents: decide saw the 72 g pair and read it as on
   assertEquals(decideBodies.length, 1);
   assert(decideBodies[0].includes('"label":"1 piece - 4 4/5\\" diameter","grams":36'), decideBodies[0].slice(0, 600));
   assert(!decideBodies[0].includes('"grams":72'), "the pair weight must not reach decide");
+});
+
+Deno.test("a hand-made line's own serving is not divided again in a fast correction", async () => {
+  // "2 pieces" at 60 g a unit, typed by the user: 3 of them is 180 g, not 90 g.
+  const deps: ParseMealDeps = {
+    anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: false,
+    searchFoods: async () => [], backfillOffFood: async () => null, getFoodPer100: async () => null,
+    fetchFn: (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init!.body));
+      const tool = body.tool_choice?.name;
+      const input = tool === "extract_meal"
+        ? { declined: false, corrects_previous: true, meal_type_from_text: null, items: [
+          { name: "momos", brand: null, quantity: 3, unit: "2 pieces", prep: null, corrects_food_name: "momos" },
+        ] }
+        : { meal_type: "snack", drona_line: "ok", items: [] };
+      return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name: tool, input }] });
+    }) as typeof fetch,
+  };
+  const r = await runParseMeal(deps, {
+    text: "make it 3", previousText: "momos", localHour: 18, mealHint: "snack", recentFoods: [], todayTotals: null, targets: null,
+    previousItems: [{ food_id: null, food_name: "momos", quantity: 1, serving_label: "2 pieces", grams: 60, kcal: 120, protein_g: 5, carb_g: 16, fat_g: 4, source: "manual" } as PreviousItem],
+  });
+  assert(r.tool_calls.includes("fast_correction"), r.tool_calls.join(","));
+  assertEquals(r.parsed!.items[0].grams, 180);
 });
 
 // ── 3. A complaint that states the fix changes the line ─────────────────────

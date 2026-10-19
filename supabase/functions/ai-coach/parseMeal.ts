@@ -2858,6 +2858,7 @@ export function isOneCupLabel(label: string): boolean {
  * the weight of the whole group.
  */
 const SIZE_WORDS = new Set(["inch", "inches", "in", "cm", "mm", "ft", "foot", "feet", "diameter"]);
+const PACK_WORDS = new Set(["count", "ct", "pack", "packs", "packet", "packets", "box", "boxes", "carton", "case", "bag", "tub", "jar"]);
 
 export function perOneServing(sv: ServingOption): ServingOption {
   // The words after the count, up to the first non-word ("each" in "2 each -
@@ -2868,7 +2869,8 @@ export function perOneServing(sv: ServingOption): ServingOption {
   const words = m[2].toLowerCase().split(/\s+/);
   // Pieces only: "2 cups" or "12 fl oz" are amounts, and their labels stay as
   // the catalog wrote them. A size is not a count: "10 inch" is one pizza.
-  if (!(n > 1) || MASS_UNITS.has(words[0]) || words.some((w) => SIZE_WORDS.has(w)) || !namesAPiece(sv)) return sv;
+  // A pack is one thing bought, not a count of pieces: "12 count box" stays.
+  if (!(n > 1) || MASS_UNITS.has(words[0]) || words.some((w) => SIZE_WORDS.has(w) || PACK_WORDS.has(w)) || !namesAPiece(sv)) return sv;
   // The noun is the last word ("2 large eggs" -> "1 large egg"). "1 each" is a
   // label-database word; the card reads "3 × 1 piece". A plain trailing "s"
   // goes ("pooris", "slices"), but not where the singular is a guess
@@ -5698,10 +5700,12 @@ export async function tryFastCorrection(
       grams = item.quantity;
       servingLabel = massUnit === "ml" ? "ml" : "g";
     } else {
-      const servings = prev.source === "manual" && prev.grams > 0 && prev.quantity > 0
+      // The line's own serving is already one unit (grams / quantity), so only
+      // catalog servings are restated per piece: dividing it again would halve
+      // a hand-made "2 pieces" line.
+      const perOne = prev.source === "manual" && prev.grams > 0 && prev.quantity > 0
         ? [{ label: prev.serving_label, grams: prev.grams / prev.quantity }]
-        : prev.food_id ? await deps.getFoodServings?.(prev.food_id) ?? [] : [];
-      const perOne = servings.map(perOneServing);
+        : (prev.food_id ? await deps.getFoodServings?.(prev.food_id) ?? [] : []).map(perOneServing);
       const sv = matchServing(perOne, item.unit)
         // "make it 2" keeps the serving and only changes the count.
         ?? (item.unit === "serving" ? matchServing(perOne, prev.serving_label) : null);
