@@ -41,8 +41,8 @@ it never slows or changes the reply:
    front of it, so it updates a fact instead of making a second one. It saves 0
    to 3 facts.
 
-- **Chat:** the pass is skipped when the coach already saved something in that
-  turn. The in-chat tool stays.
+- **Chat:** the in-chat tool stays. The pass runs even when the coach already
+  saved something in that turn (that call can be refused).
 - **Food logging:** every path runs the pass: Quick, Balanced, Precise and the
   food agent. Most food texts are just food, so Jev says no and that costs about
   $0.0001.
@@ -160,4 +160,11 @@ pass has read yet:
   conflict, so the reply pass and the sweep cannot collide. Checked live in a
   transaction that rolled itself back: new, update, forgotten refused, bad
   category refused, unknown user refused.
+- Third review: the sweep obeys `MEMORY_CATCH=off` and stops before reading
+  any text when a key is missing (so no try is used up); the after-reply pass
+  now also runs when the coach called `remember_fact` itself (that call can be
+  refused; the writer sees current memory, so it updates, not copies); active
+  and forgotten facts are read apart (60 + 40). The modes match without a SQL
+  filter: drona_word_facts already leaves out the generate and onboarding
+  requests. The food-tool list is noted in both places.
 

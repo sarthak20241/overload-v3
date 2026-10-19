@@ -467,6 +467,11 @@ async function runCron(): Promise<Response> {
  * starting texts near the cron's time limit; the rest wait for tomorrow.
  */
 async function runMemorySweep(): Promise<Response> {
+  // The same kill switch as the after-reply pass. Missing keys stop the run
+  // BEFORE any text is read: otherwise every text fails, uses up a try, and
+  // after three nights is never read again.
+  if (Deno.env.get("MEMORY_CATCH") === "off") return json({ skipped: "MEMORY_CATCH=off" });
+  if (!JEV_API_KEY || !ANTHROPIC_API_KEY) return json({ error: "JEV_API_KEY or ANTHROPIC_API_KEY missing" }, 503);
   const db = admin();
   const started = Date.now();
   const since = new Date(started - SWEEP_DAYS * 86_400_000).toISOString().slice(0, 10);
@@ -489,9 +494,14 @@ async function runMemorySweep(): Promise<Response> {
           anthropicKey: ANTHROPIC_API_KEY,
           today,
           readMemory: async () => {
-            const { data: rows } = await db.from("coach_memory").select("category, key, value, status")
-              .eq("user_id", userId).in("status", ["active", "dismissed"]).order("updated_at", { ascending: false }).limit(80);
-            return (rows ?? []) as { category: string; key: string; value: string; status: string }[];
+            // Active and forgotten read apart: many forgotten facts must not crowd out the live ones.
+            const [live, gone] = await Promise.all([
+              db.from("coach_memory").select("category, key, value, status").eq("user_id", userId)
+                .eq("status", "active").order("updated_at", { ascending: false }).limit(60),
+              db.from("coach_memory").select("category, key, value, status").eq("user_id", userId)
+                .eq("status", "dismissed").order("updated_at", { ascending: false }).limit(40),
+            ]);
+            return [...(live.data ?? []), ...(gone.data ?? [])] as { category: string; key: string; value: string; status: string }[];
           },
           saveFact: async (f) => {
             const { data: res, error: e } = await db.rpc("coach_remember_fact_for", {

@@ -1081,6 +1081,7 @@ const MEMORY_MODES = new Set<string | null>([
   null, "chat", "discuss_workout", "discuss_plan", "discuss_program", "refine_workout", "refine_plan",
   "refine_program", "live_workout",
 ]);
+// Also in SQL (get_drona_word_facts, get_drona_memory_unseen): change both together.
 const FOOD_TOOLS = ["estimate_meal", "extract_meal", "food_agent", "log_meal"];
 
 /**
@@ -1097,15 +1098,9 @@ function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId
   if (!text || !userId || trace.status !== "success") return;
   if (!MEMORY_MODES.has(trace.mode ?? null)) return;
   if (Deno.env.get("MEMORY_CATCH") === "off" || !JEV_API_KEY || !ANTHROPIC_API_KEY) return;
-  // The coach saved something itself this turn: it already read this message.
-  // Marked read, so the daily sweep does not read it again.
-  if (trace.tool_calls.includes("remember_fact")) {
-    keepAlive(Promise.resolve(admin.rpc("drona_memory_mark_seen", {
-      p_user_id: userId, p_source_id: `chat_message:${traceId}`, p_outcome: "saved", p_facts: 0, p_gate: null,
-      p_via: "reply",
-    })).then(({ error }) => { if (error) console.log("[ai-coach] memory seen:", error.message.slice(0, 160)); }));
-    return;
-  }
+  // Runs even when the coach called remember_fact itself this turn: that call
+  // can be refused, and the writer sees current memory (including what the
+  // coach just saved), so it updates rather than copies.
 
   const kind = trace.tool_calls.some((t) => FOOD_TOOLS.includes(t)) ? "food_log" : "chat";
   keepAlive((async () => {
@@ -1115,9 +1110,14 @@ function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId
         anthropicKey: ANTHROPIC_API_KEY,
         today: new Date().toISOString().slice(0, 10),
         readMemory: async () => {
-          const { data } = await admin.from("coach_memory").select("category, key, value, status")
-            .eq("user_id", userId).in("status", ["active", "dismissed"]).order("updated_at", { ascending: false }).limit(80);
-          return (data ?? []) as { category: string; key: string; value: string; status: string }[];
+          // Active and forgotten read apart: many forgotten facts must not crowd out the live ones.
+            const [live, gone] = await Promise.all([
+              admin.from("coach_memory").select("category, key, value, status").eq("user_id", userId)
+                .eq("status", "active").order("updated_at", { ascending: false }).limit(60),
+              admin.from("coach_memory").select("category, key, value, status").eq("user_id", userId)
+                .eq("status", "dismissed").order("updated_at", { ascending: false }).limit(40),
+            ]);
+            return [...(live.data ?? []), ...(gone.data ?? [])] as { category: string; key: string; value: string; status: string }[];
         },
         saveFact: async (f) => {
           const { data, error } = await admin.rpc("coach_remember_fact_for", {
@@ -1133,6 +1133,7 @@ function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId
         }),
       });
       const { error } = await admin.rpc("drona_memory_mark_seen", {
+        // The same id drona_word_facts gives this message (kind:source_id), so the sweep skips it.
         p_user_id: userId, p_source_id: `chat_message:${traceId}`, p_outcome: result.outcome,
         p_facts: result.saved, p_gate: result.gate, p_via: "reply",
       });
