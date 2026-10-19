@@ -50,6 +50,7 @@ import { optionAt, swapLabel } from '@/lib/variantSwap';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { copyToClipboard } from '@/lib/clipboard';
 import { haptics } from '@/lib/haptics';
+import { splitCardSpace } from '@/lib/mealCardSplit';
 
 /** One more state for "Just log it": `sent` (the stream dropped after the
  *  request left; the diary will show what happened). A SUCCESSFUL auto-log has
@@ -169,8 +170,7 @@ interface Props {
  *  strip, which read as the note sitting on top of them. About a row and a
  *  half: the first line whole, the next one peeking to say the list scrolls. */
 const ITEM_FLOOR = 88;
-/** The note's floor in the popover: its first line. Same as noticeScroll's
- *  minHeight. */
+/** The note's floor: its first line. noticeScroll's minHeight is this. */
 const NOTICE_FLOOR = 18;
 
 const r0 = (n: number) => Math.round(n);
@@ -302,32 +302,29 @@ export function ParsedMealCard({
     // No list to stretch: the body is its own size. Padding + hairline border.
     : bodyH + Spacing.md * 2 + 2;
 
-  // The popover lays the card out in a box of fixed height. When the content
-  // is taller (the keyboard is up, a long note on a short phone) the list and
-  // the note have to give way, and Yoga cannot be trusted to split that: with
-  // the list held at its floor and the note on a tiny shrink weight, its
-  // second pass divided by almost nothing. It laid the list out billions of
-  // points tall, or left it near full height, and the note, the meal chips,
-  // Discard and Add went off the bottom of the card. So the popover's card
-  // sizes the two itself, from what it measured. Everything else in the card
-  // is fixed, so the split does not move the numbers it is made from.
+  // The popover lays the card out in a box of fixed height, and Yoga could
+  // not be trusted to share out a box shorter than the content (see
+  // lib/mealCardSplit). So the popover's card sizes the list and the note
+  // itself, from what it measured. Everything else in the card is fixed, so
+  // the split does not move the numbers it is made from.
   const sized = expanded && hasList && cardH > 0 && footerBottom > 0 && listContentH > 0
     && (!shownNotice || noticeContentH > 0);
-  const noticeFull = shownNotice ? noticeContentH : 0;
-  const space = cardH - (contentH - listH - (shownNotice ? noticeH : 0));
-  // The list takes what the note leaves, down to its floor. It may run past
-  // its own content to fill a taller frame, which keeps the footer at the
-  // bottom of the card.
-  const listSized = Math.max(Math.min(listContentH, ITEM_FLOOR), space - noticeFull);
-  // The note keeps all its words when it can, one line when it cannot.
-  const noticeSized = Math.max(Math.min(noticeFull, NOTICE_FLOOR), Math.min(noticeFull, space - listSized));
+  const split = splitCardSpace({
+    space: cardH - (contentH - listH - (shownNotice ? noticeH : 0)),
+    listContent: listContentH,
+    noticeContent: shownNotice ? noticeContentH : 0,
+    listFloor: ITEM_FLOOR,
+    noticeFloor: NOTICE_FLOOR,
+  });
   const expand = expandable ? () => onExpand!(natural) : undefined;
 
   const reported = useRef(0);
   // A follow-up is being read: the reply is coming back into this frame.
   const inFlight = state === 'analysing' || state === 'streaming';
   useEffect(() => {
-    if (!expanded || !onNaturalHeight || natural <= 0) return;
+    // A fresh open starts the hold over, not from the last time it was up.
+    if (!expanded) { reported.current = 0; return; }
+    if (!onNaturalHeight || natural <= 0) return;
     // Hold the frame while a follow-up is read; never shrink it to the one
     // "reading" line. The popover lays the card out in a box of the size
     // reported here, so a shrink meant the reply's whole meal first landed in
@@ -735,7 +732,7 @@ export function ParsedMealCard({
               items.length > 1 && s.itemsAfterTotals,
               expanded && s.fill,
               { minHeight: Math.min(listContentH, ITEM_FLOOR) },
-              sized && { height: listSized, minHeight: 0, flexGrow: 0, flexShrink: 0 },
+              sized && { height: split.list, minHeight: 0, flexGrow: 0, flexShrink: 0 },
             ]}
             onLayout={(e) => setListH(e.nativeEvent.layout.height)}
             onContentSizeChange={(_w, h) => setListContentH(h)}
@@ -806,7 +803,7 @@ export function ParsedMealCard({
                   alongside the list instead of pushing it out. The choice
                   buttons below stay put. */}
               <ScrollView
-                style={[s.noticeScroll, sized && { height: noticeSized, flexShrink: 0 }]}
+                style={[s.noticeScroll, sized && { height: split.notice, minHeight: 0, flexShrink: 0 }]}
                 bounces={false}
                 nestedScrollEnabled
                 onLayout={(e) => setNoticeH(e.nativeEvent.layout.height)}
@@ -1135,7 +1132,7 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     // Only once the list is at its floor does the notice start to scroll.
     notice: { padding: Spacing.sm, flexShrink: 0.01 },
     // One line always shows; the rest scrolls when the card is short.
-    noticeScroll: { flexGrow: 0, flexShrink: 1, minHeight: 18 },
+    noticeScroll: { flexGrow: 0, flexShrink: 1, minHeight: NOTICE_FLOOR },
     noticeHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
     proposalRow: { flexDirection: 'row', gap: 8, marginTop: Spacing.sm, justifyContent: 'flex-end' },
     keepBtn: { paddingVertical: 7, paddingHorizontal: Spacing.md },

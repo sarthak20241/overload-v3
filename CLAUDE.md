@@ -56,6 +56,7 @@ deno test --allow-all --unstable-sloppy-imports lib/routineTargets.test.ts # "45
 deno test --allow-all lib/maintenance.test.ts   # the Nutrition screen's maintenance row and sheet
 deno test --allow-all lib/foodPatterns.test.ts  # usual foods per meal, and when each meal is offered
 deno test --allow-all lib/mealCleanup.test.ts   # empty meal rows go in one safe database step
+deno test --allow-all lib/mealCardSplit.test.ts # big food card: list vs note when the box is short
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
 ```
 
