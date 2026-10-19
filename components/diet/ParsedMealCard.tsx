@@ -169,6 +169,9 @@ interface Props {
  *  strip, which read as the note sitting on top of them. About a row and a
  *  half: the first line whole, the next one peeking to say the list scrolls. */
 const ITEM_FLOOR = 88;
+/** The note's floor in the popover: its first line. Same as noticeScroll's
+ *  minHeight. */
+const NOTICE_FLOOR = 18;
 
 const r0 = (n: number) => Math.round(n);
 
@@ -298,18 +301,48 @@ export function ParsedMealCard({
       + (shownNotice ? noticeContentH - noticeH : 0)
     // No list to stretch: the body is its own size. Padding + hairline border.
     : bodyH + Spacing.md * 2 + 2;
+
+  // The popover lays the card out in a box of fixed height. When the content
+  // is taller (the keyboard is up, a long note on a short phone) the list and
+  // the note have to give way, and Yoga cannot be trusted to split that: with
+  // the list held at its floor and the note on a tiny shrink weight, its
+  // second pass divided by almost nothing. It laid the list out billions of
+  // points tall, or left it near full height, and the note, the meal chips,
+  // Discard and Add went off the bottom of the card. So the popover's card
+  // sizes the two itself, from what it measured. Everything else in the card
+  // is fixed, so the split does not move the numbers it is made from.
+  const sized = expanded && hasList && cardH > 0 && footerBottom > 0 && listContentH > 0
+    && (!shownNotice || noticeContentH > 0);
+  const noticeFull = shownNotice ? noticeContentH : 0;
+  const space = cardH - (contentH - listH - (shownNotice ? noticeH : 0));
+  // The list takes what the note leaves, down to its floor. It may run past
+  // its own content to fill a taller frame, which keeps the footer at the
+  // bottom of the card.
+  const listSized = Math.max(Math.min(listContentH, ITEM_FLOOR), space - noticeFull);
+  // The note keeps all its words when it can, one line when it cannot.
+  const noticeSized = Math.max(Math.min(noticeFull, NOTICE_FLOOR), Math.min(noticeFull, space - listSized));
   const expand = expandable ? () => onExpand!(natural) : undefined;
 
   const reported = useRef(0);
+  // A follow-up is being read: the reply is coming back into this frame.
+  const inFlight = state === 'analysing' || state === 'streaming';
   useEffect(() => {
     if (!expanded || !onNaturalHeight || natural <= 0) return;
+    // Hold the frame while a follow-up is read; never shrink it to the one
+    // "reading" line. The popover lays the card out in a box of the size
+    // reported here, so a shrink meant the reply's whole meal first landed in
+    // a box a fifth of its size. Yoga's answer for that overflow was garbage
+    // (a list billions of points tall), and it stuck: the notice, the meal
+    // chips, Discard and Add all sat off the bottom of the card, and on
+    // Android the chips came back zero height after it grew again.
+    const next = inFlight ? Math.max(natural, reported.current) : natural;
     // The card's two measurements land in separate layout events, so a
     // half-updated pair can read a few points off. Small wobble is not a
     // change worth moving the frame for.
-    if (Math.abs(natural - reported.current) < 4) return;
-    reported.current = natural;
-    onNaturalHeight(natural);
-  }, [expanded, onNaturalHeight, natural]);
+    if (Math.abs(next - reported.current) < 4) return;
+    reported.current = next;
+    onNaturalHeight(next);
+  }, [expanded, onNaturalHeight, natural, inFlight]);
 
 
   // Your own words: two lines by default. A tap shows the rest; once all of
@@ -702,6 +735,7 @@ export function ParsedMealCard({
               items.length > 1 && s.itemsAfterTotals,
               expanded && s.fill,
               { minHeight: Math.min(listContentH, ITEM_FLOOR) },
+              sized && { height: listSized, minHeight: 0, flexGrow: 0, flexShrink: 0 },
             ]}
             onLayout={(e) => setListH(e.nativeEvent.layout.height)}
             onContentSizeChange={(_w, h) => setListContentH(h)}
@@ -766,13 +800,13 @@ export function ParsedMealCard({
               noise, and it is room the foods need. Both sit in the same
               tinted block with his mark, so his voice always looks like his. */}
           {!!notice ? (
-            <View style={[s.coach, s.notice]}>
+            <View style={[s.coach, s.notice, sized && { flexShrink: 0 }]}>
               {/* The words scroll inside the notice when room runs short (the
                   keyboard is up, a long answer), so the notice gives way
                   alongside the list instead of pushing it out. The choice
                   buttons below stay put. */}
               <ScrollView
-                style={s.noticeScroll}
+                style={[s.noticeScroll, sized && { height: noticeSized, flexShrink: 0 }]}
                 bounces={false}
                 nestedScrollEnabled
                 onLayout={(e) => setNoticeH(e.nativeEvent.layout.height)}
