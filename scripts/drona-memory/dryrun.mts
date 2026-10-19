@@ -4,7 +4,7 @@
  *
  *   DAYS=3 npx tsx scripts/drona-memory/dryrun.mts
  *
- * Prints facts in full only for OWNER_IDS (the owner's own accounts); everyone
+ * Prints facts in full only for OWNER_IDS (id prefixes of the owner's own accounts); everyone
  * else is counts by category. Messages are never printed.
  */
 import { readFileSync } from 'node:fs';
@@ -14,7 +14,8 @@ import { catchMemory, type MemoryFactIn } from '../../supabase/functions/_shared
 const env = Object.fromEntries(readFileSync(new URL('../../.env.local', import.meta.url), 'utf8').split('\n')
   .filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1).trim()]));
 const db = createClient(env.EXPO_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
-const OWNER_PREFIXES = (process.env.OWNER_IDS ?? 'user_3HgbHlVP,user_3HKAcd0G').split(',');
+// The owner's own account id prefixes, comma separated. None given: everyone is counts only.
+const OWNER_PREFIXES = (process.env.OWNER_IDS ?? '').split(',').filter(Boolean);
 
 const since = new Date(Date.now() - Number(process.env.DAYS ?? 3) * 86_400_000).toISOString().slice(0, 10);
 const { data, error } = await db.rpc('get_drona_memory_unseen', { p_since: since, p_limit: 300 });

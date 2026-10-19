@@ -489,9 +489,9 @@ async function runMemorySweep(): Promise<Response> {
           anthropicKey: ANTHROPIC_API_KEY,
           today,
           readMemory: async () => {
-            const { data: rows } = await db.from("coach_memory").select("category, key, value")
-              .eq("user_id", userId).eq("status", "active").order("updated_at", { ascending: false }).limit(60);
-            return (rows ?? []) as { category: string; key: string; value: string }[];
+            const { data: rows } = await db.from("coach_memory").select("category, key, value, status")
+              .eq("user_id", userId).in("status", ["active", "dismissed"]).order("updated_at", { ascending: false }).limit(80);
+            return (rows ?? []) as { category: string; key: string; value: string; status: string }[];
           },
           saveFact: async (f) => {
             const { data: res, error: e } = await db.rpc("coach_remember_fact_for", {

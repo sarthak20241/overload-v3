@@ -1115,9 +1115,9 @@ function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId
         anthropicKey: ANTHROPIC_API_KEY,
         today: new Date().toISOString().slice(0, 10),
         readMemory: async () => {
-          const { data } = await admin.from("coach_memory").select("category, key, value")
-            .eq("user_id", userId).eq("status", "active").order("updated_at", { ascending: false }).limit(60);
-          return (data ?? []) as { category: string; key: string; value: string }[];
+          const { data } = await admin.from("coach_memory").select("category, key, value, status")
+            .eq("user_id", userId).in("status", ["active", "dismissed"]).order("updated_at", { ascending: false }).limit(80);
+          return (data ?? []) as { category: string; key: string; value: string; status: string }[];
         },
         saveFact: async (f) => {
           const { data, error } = await admin.rpc("coach_remember_fact_for", {

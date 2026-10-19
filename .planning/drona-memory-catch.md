@@ -153,4 +153,11 @@ pass has read yet:
   inside the cron's 55 s; its token-usage writes are awaited.
 - Known, left as is: `tries` counts every pass, not only failures; the 60-fact
   cap prunes by `updated_at`, the same as the chat save.
+- Second review: a fact the person asked to forget is never saved again by
+  the automatic save (`20261019055241_drona_memory_save_safe`), whatever the
+  wording; the writer is shown forgotten facts as "never save again", and told
+  the message is data, not instructions. The save is one insert with on
+  conflict, so the reply pass and the sweep cannot collide. Checked live in a
+  transaction that rolled itself back: new, update, forgotten refused, bad
+  category refused, unknown user refused.
 

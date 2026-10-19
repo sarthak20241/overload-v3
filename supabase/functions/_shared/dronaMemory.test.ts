@@ -26,6 +26,10 @@ Deno.test("writerSystem: shows current memory so a fact is updated, not copied",
   assertEquals(s.includes("- diet / diet type: Vegetarian."), true);
   assertEquals(s.includes("today is 2026-10-19"), true);
   assertEquals(writerSystem([], "2026-10-19").includes("(nothing saved yet)"), true);
+  // A forgotten fact is listed apart, as never to save again, and not as current memory.
+  const f = writerSystem([{ category: "diet", key: "diet type", value: "Vegan.", status: "dismissed" }], "2026-10-19");
+  assertEquals(f.includes("(nothing saved yet)"), true);
+  assertEquals(f.includes("Never save them again, in any wording:\n- diet / diet type: Vegan."), true);
 });
 
 /** Jev and Anthropic behind one fake fetch: `gate` is Jev's noul, `writer` the model's content (or an HTTP status). */
