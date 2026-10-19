@@ -4248,6 +4248,45 @@ export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousIt
   return copies.length >= 2;
 }
 
+/**
+ * The food a correction swapped out of a line, or null when the line was not a
+ * swap. "why are u taking boiled chana, when I said navratri chana" tags the
+ * new line with corrects_food_name "boiled chana": that food is rejected for
+ * this line. An EDIT that keeps the food ("omelette" -> "3 egg omelette") is
+ * not a swap: every word of one name is in the other.
+ *
+ * Live, 2026-10-19: the swap was understood, then food memory matched "boiled
+ * chana" again and put it straight back.
+ */
+export function rejectedFood(item: Pick<ExtractedItem, "name" | "correctsFoodName">, prevItems: PreviousItem[]): string | null {
+  const target = item.correctsFoodName?.trim();
+  if (!target) return null;
+  const words = (x: string) => new Set(x.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+  const a = words(item.name), b = words(target);
+  const within = (x: Set<string>, y: Set<string>) => [...x].every((w) => y.has(w));
+  if (a.size === 0 || b.size === 0 || within(a, b) || within(b, a)) return null;
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return prevItems.find((p) => norm(p.food_name) === norm(target))?.food_name ?? target;
+}
+
+/** Drop what is named exactly as the rejected food (or is its catalog row). */
+export function withoutRejected<T>(
+  list: T[],
+  rejected: string | null,
+  nameOf: (t: T) => string,
+  prevItems: PreviousItem[] = [],
+): T[] {
+  if (!rejected) return list;
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const key = norm(rejected);
+  const id = prevItems.find((p) => norm(p.food_name) === key)?.food_id ?? null;
+  return list.filter((t) => {
+    if (norm(nameOf(t)) === key) return false;
+    const fid = (t as { food_id?: string | null }).food_id;
+    return !(id && fid && fid === id);
+  });
+}
+
 export function unchangedInCorrection(
   item: ExtractedItem,
   previous: PreviousItem[],
@@ -6729,7 +6768,7 @@ async function runParseMealCore(
           // with no typed weight falls back to the memory like any line.
           !memoryEligible[idx] || statedFor(it)
             ? Promise.resolve(null)
-            : matchMemory(deps.jev!, foods, { name: memoryLineName(it), brand: it.brand ?? null })
+            : matchMemory(deps.jev!, withoutRejected(foods, rejectedFood(it, prevItems), (f) => f.name), { name: memoryLineName(it), brand: it.brand ?? null })
         ),
       );
       for (const m of matches) if (m) steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: m.trace });
@@ -7065,6 +7104,20 @@ async function runParseMealCore(
     ...r,
     candidates: r.candidates.map((c) => (c.food_id?.startsWith(`${EPHEMERAL_ID_PREFIX}mem_`) ? c : perOneServings(c))),
   }));
+  // A food the user just swapped OUT of a line never comes back as that line's
+  // answer, from memory (filtered above) or from any search. With nothing left
+  // that is the food, decide estimates it.
+  if (correctsPrevious) {
+    resolved = resolved.map((r) => {
+      const gone = rejectedFood(r, prevItems);
+      if (!gone) return r;
+      const kept = withoutRejected(r.candidates, gone, (c) => c.name, prevItems);
+      if (kept.length !== r.candidates.length) {
+        steps.push({ iter: 1, tool: "rejected_food", input: { item: r.name, rejected: gone }, result: { dropped: r.candidates.length - kept.length } });
+      }
+      return kept.length === r.candidates.length ? r : { ...r, candidates: kept };
+    });
+  }
   const candidatePer100 = per100ForItems(resolved);
 
 
@@ -7128,6 +7181,13 @@ async function runParseMealCore(
     // and sections against the user's own words, so feeding it a shorter cut
     // than extract got would make the two stages disagree about what was said.
     user_text: input.pendingMeal ? continuationText(userText.text, input.pendingMeal) : userText.text,
+    // A correction's own words rarely say what the food is ("why are u taking
+    // boiled chana, when I said navaratri chana"). The message that first
+    // described the meal does ("3 pooris and chana navratri vaale in lunch").
+    // Live, 2026-10-19: without it decide read the dish as a dry snack.
+    ...(correctsPrevious && input.previousText?.trim()
+      ? { earlier_text: clampUserText(input.previousText).text }
+      : {}),
     meal_type_from_text: mealFromText,
     items: resolved.map((r) => ({
       name: r.name,
