@@ -48,6 +48,8 @@ Deno.test("the failure this prevents: lines copied back from the card were added
 Deno.test("a real addition is still an addition", () => {
   // "and another poori": one line, a different amount.
   assertEquals(copiesCardLines([line("poori", 1, "piece")], CARD), false);
+  // A plural unit is the same unit, "es" endings too.
+  assert(copiesCardLines([line("juice", 1, "boxes"), line("suji halwa", 40, "g")], [prev("juice", 1, "box", 200, 90), CARD[2]]));
   // Only one line copied exactly: could be the same food again.
   assertEquals(copiesCardLines([line("poori", 3, "piece"), line("dosa", 1, "piece")], CARD), false);
   // A line with the user's own numbers is an edit, never a copy.
@@ -97,8 +99,14 @@ Deno.test("a serving for two pieces is restated as one piece", () => {
   assertEquals(perOneServing({ label: '2 each - 4 4/5" diameter', grams: 72 }), { label: '1 piece - 4 4/5" diameter', grams: 36 });
   assertEquals(perOneServing({ label: "2 pooris (72 g)", grams: 72 }), { label: "1 poori", grams: 36 });
   assertEquals(perOneServing({ label: "3 biscuits", grams: 30 }), { label: "1 biscuit", grams: 10 });
-  // Left alone: a weight, a fraction, one piece already.
-  for (const sv of [{ label: "100 g", grams: 100 }, { label: "1/2 cup", grams: 120 }, { label: "1 piece", grams: 36 }]) {
+  // No guessed singular: the plural still contains what the user types ("cookie").
+  assertEquals(perOneServing({ label: "2 cookies", grams: 22 }), { label: "1 cookies", grams: 11 });
+  assertEquals(perOneServing({ label: "2 potatoes", grams: 300 }), { label: "1 potatoes", grams: 150 });
+  // Left alone: a weight, a fraction, one piece already, and amounts that are not pieces.
+  for (const sv of [
+    { label: "100 g", grams: 100 }, { label: "1/2 cup", grams: 120 }, { label: "1 piece", grams: 36 },
+    { label: "2 cups", grams: 300 }, { label: "12 fl oz", grams: 355 }, { label: "2 tbsp", grams: 30 },
+  ]) {
     assertEquals(perOneServing(sv), sv);
   }
 });
@@ -224,6 +232,15 @@ Deno.test("when the calories for one piece were the right part, they are kept", 
   const { food, check } = await checkRememberedPiece(search, { unit: "piece" }, fig(50, 50));
   assertEquals([check?.replaced, check?.kept], [true, "kcal_per_piece"]);
   assertEquals(Math.round(food.per100.kcal * food.serving!.grams / 100), 25);
+});
+
+Deno.test("when both remembered numbers are wrong, the catalog's numbers are used", async () => {
+  // 50 g at 1000 kcal per 100 g: 500 kcal a fig. Keeping that per piece would
+  // put a fig at ~6000 kcal per 100 g, so the memory is not trusted at all.
+  const { food, check } = await checkRememberedPiece(search, { unit: "piece" }, fig(1000, 50));
+  assertEquals([check?.replaced, check?.kept], [true, "catalog"]);
+  assertEquals([food.serving?.grams, food.per100.kcal], [8, 277]);
+  assert(check!.note.endsWith("and the catalog's numbers"), check!.note);
 });
 
 Deno.test("a sane piece weight, or a typed weight, leaves the memory alone", async () => {

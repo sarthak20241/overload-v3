@@ -2861,12 +2861,15 @@ export function perOneServing(sv: ServingOption): ServingOption {
   if (!m || !(sv.grams > 0)) return sv;
   const n = Number(m[1]);
   const word = m[2].toLowerCase();
-  if (!(n > 1) || MASS_UNITS.has(word)) return sv;
-  // "1 each" is a label-database word; the card reads "3 × 1 piece".
-  const one = word === "each" ? "piece"
-    : word.endsWith("ies") ? `${word.slice(0, -3)}y`
-    : word.endsWith("ches") || word.endsWith("shes") ? word.slice(0, -2)
-    : word.endsWith("s") && !word.endsWith("ss") ? word.slice(0, -1)
+  // Pieces only: "2 cups" or "12 fl oz" are amounts, and their labels stay as
+  // the catalog wrote them.
+  if (!(n > 1) || MASS_UNITS.has(word) || !namesAPiece(sv)) return sv;
+  // "1 each" is a label-database word; the card reads "3 × 1 piece". Otherwise
+  // only a plain trailing "s" goes ("pooris", "biscuits"): "cookies" and
+  // "potatoes" keep their word, since a guessed singular ("cooky") would no
+  // longer contain the user's unit, and the plural still does.
+  const one = word === "each" || word === "pieces" ? "piece"
+    : word.endsWith("s") && !word.endsWith("ss") && !word.endsWith("es") ? word.slice(0, -1)
     : word;
   const rest = m[3].replace(/\(\s*[\d.]+\s*(g|gm|grams?|ml)\s*\)/gi, "").replace(/\s+/g, " ").trimEnd();
   return { ...sv, label: `1 ${one}${rest}`, grams: round1(sv.grams / n) };
@@ -4208,12 +4211,19 @@ export function scopeCorrection(
  */
 export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousItem[]): boolean {
   const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  const unit = (x: string) => norm(x).replace(/s$/, "");
+  // "piece" / "pieces", "puri" / "puries", "box" / "boxes": one is the other
+  // plus an ending. Three letters at least, so "g" never matches "glass".
+  const sameUnit = (a: string, b: string) => {
+    const x = norm(a), y = norm(b);
+    if (x === y) return true;
+    const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+    return short.length >= 3 && long.startsWith(short) && long.length - short.length <= 2;
+  };
   const copies = extItems.filter((it) =>
     !it.stated && prevItems.some((p) =>
       norm(p.food_name) === norm(it.name) &&
       Math.abs((it.quantity || 1) - (p.quantity || 1)) < 0.001 &&
-      unit(it.unit || "serving") === unit(p.serving_label || "serving")
+      sameUnit(it.unit || "serving", p.serving_label || "serving")
     )
   );
   return copies.length >= 2;
@@ -4544,13 +4554,13 @@ export async function checkRememberedPiece(
     return { food, check: null };
   }
   const rows = await deps.searchFoods(food.name).catch(() => [] as CandidateFood[]);
-  const pieces: { grams: number; label: string; row: string; kcal100: number }[] = [];
+  const pieces: { grams: number; label: string; row: string; kcal100: number; cand: CandidateFood }[] = [];
   for (const row of rows.slice(0, 5)) {
     if (nameSimilarity(row.name, food.name) < 0.4) continue;
     const one = row.servings.map(perOneServing).find((s) =>
       s.grams > 0 && !isBasisServing(s) && namesAPiece(s) && !/\b(cup|tbsp|tsp|serving)\b/i.test(s.label)
     );
-    if (one) pieces.push({ grams: one.grams, label: one.label, row: row.name, kcal100: row.kcal });
+    if (one) pieces.push({ grams: one.grams, label: one.label, row: row.name, kcal100: row.kcal, cand: row });
   }
   if (pieces.length === 0) {
     return { food, check: { memory_g: sv.grams, catalog_g: null, replaced: false, note: "" } };
@@ -4565,18 +4575,27 @@ export async function checkRememberedPiece(
   const per100Fits = per100Ratio <= PIECE_RATIO_LIMIT && per100Ratio >= 1 / PIECE_RATIO_LIMIT;
   // Keep the calories for one piece: every per-100 number scales by old/new grams.
   const k = sv.grams / ref.grams;
-  const per100 = per100Fits ? food.per100 : {
+  const scaled = {
     kcal: round1(food.per100.kcal * k),
     protein_g: round1(food.per100.protein_g * k),
     carb_g: round1(food.per100.carb_g * k),
     fat_g: round1(food.per100.fat_g * k),
     fiber_g: food.per100.fiber_g === null ? null : round1(food.per100.fiber_g * k),
   };
+  // Neither remembered number fits: the calories for one piece, carried to the
+  // catalog's weight, are still far from the catalog's per-100. Nothing in the
+  // memory is right, so the catalog row answers.
+  const scaledRatio = ref.kcal100 > 0 ? scaled.kcal / ref.kcal100 : 1;
+  const scaledFits = scaledRatio <= PIECE_RATIO_LIMIT && scaledRatio >= 1 / PIECE_RATIO_LIMIT;
+  const kept = per100Fits ? null : scaledFits ? "kcal_per_piece" : "catalog";
+  const per100 = kept === null ? food.per100 : kept === "kcal_per_piece" ? scaled : {
+    kcal: ref.cand.kcal, protein_g: ref.cand.protein_g, carb_g: ref.cand.carb_g, fat_g: ref.cand.fat_g, fiber_g: ref.cand.fiber_g,
+  };
   const note = `One piece was ${round1(sv.grams)} g there, far from a typical ${round1(ref.grams)} g, so I used ${round1(ref.grams)} g` +
-    (per100Fits ? "" : " and kept your calories for one piece");
+    (kept === "kcal_per_piece" ? " and kept your calories for one piece" : kept === "catalog" ? " and the catalog's numbers" : "");
   return {
     food: { ...food, per100, serving: { label: ref.label, grams: ref.grams } },
-    check: { memory_g: sv.grams, catalog_g: ref.grams, row: ref.row, replaced: true, note, ...(per100Fits ? {} : { kept: "kcal_per_piece" }) },
+    check: { memory_g: sv.grams, catalog_g: ref.grams, row: ref.row, replaced: true, note, ...(kept ? { kept } : {}) },
   };
 }
 
