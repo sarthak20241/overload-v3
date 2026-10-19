@@ -265,6 +265,9 @@ Deno.test("a sane piece weight, or a typed weight, leaves the memory alone", asy
   // A search that hangs keeps the memory once the time limit passes.
   const slow = await checkRememberedPiece({ searchFoods: () => new Promise<CandidateFood[]>(() => {}) }, { unit: "piece" }, fig(250, 50));
   assertEquals(slow.food.serving?.grams, 50);
+  // A search that throws before returning a promise keeps the memory too.
+  const thrown = await checkRememberedPiece({ searchFoods: () => { throw new Error("bad"); } }, { unit: "piece" }, fig(250, 50));
+  assertEquals(thrown.food.serving?.grams, 50);
   // The catalog search failing keeps the memory.
   const c = await checkRememberedPiece({ searchFoods: () => Promise.reject(new Error("down")) }, { unit: "piece" }, fig(250, 50));
   assertEquals(c.food.serving?.grams, 50);

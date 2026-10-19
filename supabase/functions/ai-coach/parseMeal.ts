@@ -4566,7 +4566,8 @@ export async function checkRememberedPiece(
   // this long before the memory is used as it was.
   let timer: ReturnType<typeof setTimeout> | undefined;
   const rows = await Promise.race([
-    deps.searchFoods(food.name).catch(() => [] as CandidateFood[]),
+    // Inside a promise, so a search that throws before returning one is caught too.
+    Promise.resolve().then(() => deps.searchFoods(food.name)).catch(() => [] as CandidateFood[]),
     new Promise<CandidateFood[]>((res) => { timer = setTimeout(() => res([]), PIECE_CHECK_TIMEOUT_MS); }),
   ]);
   clearTimeout(timer);
