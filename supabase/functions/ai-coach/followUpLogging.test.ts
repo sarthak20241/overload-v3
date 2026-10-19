@@ -52,7 +52,8 @@ function harness(options: {
   const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body ?? "{}"));
     if (String(url).includes("typesafe.ai")) {
-      calls.push("jev");
+      // The challenge check is its own question, not a memory lookup.
+      calls.push(Object.keys(body.questions).includes("states_fix") ? "jev:states_fix" : "jev");
       const answers = Object.fromEntries(Object.keys(body.questions).map((key) => [key, {
         type: "score", probabilities: { "0": 0.01, "1": 0.01, "2": 0.98 },
       }]));

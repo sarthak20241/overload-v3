@@ -81,7 +81,7 @@ import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
  *  AFTER the web lookup has answered. Past it the step is recorded unfinished. */
 export const SHADOW_GRACE_MS = 1500;
 import type { TavilyDeps } from "./tavily.ts";
-import type { JevDeps } from "./jev.ts";
+import { asNoul, askJev, type JevDeps } from "./jev.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -2843,6 +2843,58 @@ export function isOneCupLabel(label: string): boolean {
   return prefix === "" || /(^|\s)1$/.test(prefix);
 }
 
+/**
+ * "2 each - 4 4/5\" diameter" at 72 g is TWO pieces. It is restated as one
+ * piece, "1 piece - 4 4/5\" diameter" at 36 g, so neither the decide model nor
+ * the code can multiply the pair by the user's count.
+ *
+ * Live, 2026-10-19: a correction read the 72 g as one poori and logged 3
+ * pooris as 216 g / 639 kcal; the model's own note said "the 2-each serving
+ * scaled to 3".
+ *
+ * Only a whole leading count above 1 followed by a word that is not a mass
+ * ("2 each", "2 pieces", "3 biscuits"). "100 g", "1/2 cup" and "1 piece" are
+ * left alone. A weight printed in the label is dropped from it, since it is
+ * the weight of the whole group.
+ */
+const SIZE_WORDS = new Set(["inch", "inches", "in", "cm", "mm", "ft", "foot", "feet", "diameter"]);
+const PACK_WORDS = new Set(["count", "ct", "pack", "packs", "packet", "packets", "box", "boxes", "carton", "case", "bag", "tub", "jar"]);
+
+export function perOneServing(sv: ServingOption): ServingOption {
+  // The words after the count, up to the first non-word ("each" in "2 each -
+  // 4 4/5\" diameter", "large eggs" in "2 large eggs").
+  const m = sv.label.match(/^\s*(\d+)\s+([a-z]+(?:\s+[a-z]+)*)(.*)$/i);
+  if (!m || !(sv.grams > 0)) return sv;
+  const n = Number(m[1]);
+  const words = m[2].toLowerCase().split(/\s+/);
+  // Pieces only: "2 cups" or "12 fl oz" are amounts, and their labels stay as
+  // the catalog wrote them. A size is not a count: "10 inch" is one pizza.
+  // A pack is one thing bought, not a count of pieces: "12 count box" stays.
+  if (!(n > 1) || MASS_UNITS.has(words[0]) || words.some((w) => SIZE_WORDS.has(w) || PACK_WORDS.has(w)) || !namesAPiece(sv)) return sv;
+  // The noun is the last word ("2 large eggs" -> "1 large egg"). "1 each" is a
+  // label-database word; the card reads "3 × 1 piece". A plain trailing "s"
+  // goes ("pooris", "slices"), but not where the singular is a guess
+  // ("cookies", "potatoes", "boxes"): a guessed "cooky" would no longer
+  // contain the user's unit, and the plural still does.
+  const last = words[words.length - 1];
+  words[words.length - 1] = last === "each" || last === "pieces" ? "piece"
+    : last.endsWith("s") && !/(ss|ies|oes|xes|shes|ches|zes|ves)$/.test(last) ? last.slice(0, -1)
+    : last;
+  // The group's weight goes from the text, in brackets or not: left in, it
+  // would contradict the divided grams ("1 biscuit 30g" at 10 g).
+  const rest = m[3]
+    .replace(/\(\s*[\d.]+\s*(g|gm|grams?|ml)\s*\)/gi, "")
+    .replace(/\b[\d.]+\s*(g|gm|grams?|ml)\b/gi, "")
+    .replace(/\s+/g, " ").trimEnd();
+  return { ...sv, label: `1 ${words.join(" ")}${rest}`, grams: round1(sv.grams / n) };
+}
+
+/** Every serving of a candidate restated per one piece (perOneServing). */
+export function perOneServings(c: CandidateFood): CandidateFood {
+  const servings = c.servings.map(perOneServing);
+  return servings.some((sv, i) => sv !== c.servings[i]) ? { ...c, servings } : c;
+}
+
 function synthesizeVolumeAnchors(c: CandidateFood): CandidateFood {
   if (c.base_unit !== "g") return c;
   const has = (re: RegExp) => c.servings.some((s) => re.test(s.label.toLowerCase()));
@@ -4156,6 +4208,46 @@ export function scopeCorrection(
   };
 }
 
+/**
+ * An "addition" that hands back two or more lines of the card exactly as they
+ * are (same name, amount and unit) is a correction the model mis-flagged. An
+ * addition lists ONLY the new food, so a line copied back unchanged has no
+ * business in it, and two such lines are not a coincidence.
+ *
+ * Live, 2026-10-19: "i think I had just 75g of chana" came back with all three
+ * lines and corrects_previous false. The app appends an addition, so the card
+ * showed poori and halwa twice, and the next correction summed the pooris.
+ *
+ * Two, not one: "another poori" on a card holding "1 poori" is a real
+ * addition that matches one line exactly. The cost of the rule is a user who
+ * really ate the same two lines again in one message; that turn now edits the
+ * card instead of doubling it, which they can see and fix.
+ */
+export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousItem[]): boolean {
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  // "piece" / "pieces", "puri" / "puries", "box" / "boxes", "berry" /
+  // "berries": one is the other plus a plural ending, and nothing else, so
+  // "can" never matches "candy".
+  // A stored label often carries its own "1" ("1 piece", "1 cup, cooked")
+  // where the copied line says "piece": the count is the quantity, not the unit.
+  const bare = (u: string) => norm(u).replace(/^1 /, "");
+  const sameUnit = (a: string, b: string) => {
+    const x = bare(a), y = bare(b);
+    if (x === y) return true;
+    const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+    return long === `${short}s` || long === `${short}es` ||
+      (short.endsWith("y") && long === `${short.slice(0, -1)}ies`);
+  };
+  const copies = extItems.filter((it) =>
+    !it.stated && prevItems.some((p) =>
+      norm(p.food_name) === norm(it.name) &&
+      Math.abs((it.quantity || 1) - (p.quantity || 1)) < 0.001 &&
+      sameUnit(it.unit || "serving", p.serving_label || "serving")
+    )
+  );
+  return copies.length >= 2;
+}
+
 export function unchangedInCorrection(
   item: ExtractedItem,
   previous: PreviousItem[],
@@ -4444,6 +4536,150 @@ export function forSwapChips(it: ParsedItem): ParsedItem {
   if (!it.alternatives?.length || !it.assumption) return it;
   const sentence = alsoSentence(it.alternatives.map((a) => a.food_name));
   return it.assumption.endsWith(sentence) ? { ...it, assumption: it.assumption.slice(0, -sentence.length) } : it;
+}
+
+/** How far a remembered piece may sit from the catalog's before it is not
+ *  trusted: over 2.5x or under 0.4x. A small and a large piece of most foods
+ *  fall well inside that; a dried fig at 50 g against 8 g does not. */
+export const PIECE_RATIO_LIMIT = 2.5;
+
+/** A catalog row is the remembered food when it names every word of it and
+ *  at most one more ("dried fig" -> "Fig, dried" and "Figs, dried, uncooked";
+ *  not "Fig bar" or "Fig newtons" for "dried fig"). Plurals count as one word. */
+export function sameFoodName(remembered: string, row: string): boolean {
+  const words = (x: string) => x.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+    .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w));
+  const mine = new Set(words(remembered));
+  const theirs = new Set(words(row));
+  if (mine.size === 0 || ![...mine].every((w) => theirs.has(w))) return false;
+  return [...theirs].filter((w) => !mine.has(w)).length <= 1;
+}
+
+/** The catalog search behind the piece check may take this long, no more. */
+export const PIECE_CHECK_TIMEOUT_MS = 1500;
+
+/**
+ * A remembered weight for ONE piece, checked against what the catalog says one
+ * piece of that food weighs. The per-100 numbers are kept either way: only the
+ * piece weight is replaced, and only when it is far off.
+ *
+ * Live, 2026-10-19: an earlier AI log had saved "1 dried fig = 50 g". Memory
+ * copied it ("Same as you logged on Oct 14"), so one fig logged 125 kcal. The
+ * catalog's dried fig rows say 8 g a fig.
+ *
+ * Which remembered number is kept follows the catalog too. A wrong piece
+ * weight on its own (the Oct 14 fig: 50 g at 250 kcal per 100 g) keeps the
+ * per-100 numbers. When the per-100 numbers are far off as well, the user's
+ * calories for one piece are the part that was right (the same user then typed
+ * "1 dried fig (25 cals)", saved as 50 g, i.e. 50 kcal per 100 g), so those
+ * calories are kept and the per-100 numbers rescaled to the new weight.
+ *
+ * Runs only when the user counted pieces (no weight typed) and the memory
+ * holds a piece serving. Any failure keeps the memory as it was.
+ */
+export async function checkRememberedPiece(
+  deps: Pick<ParseMealDeps, "searchFoods">,
+  item: Pick<ExtractedItem, "unit">,
+  food: MemoryFood,
+): Promise<{ food: MemoryFood; check: { memory_g: number; catalog_g: number | null; row?: string; replaced: boolean; note: string; kept?: string } | null }> {
+  const sv = food.serving;
+  const unit = (item.unit ?? "").trim().toLowerCase();
+  // Pieces only, on both sides: "1 cup" of a food remembered by the piece
+  // is an amount, and a piece weight has nothing to say about it.
+  const unitIsAmount = MASS_UNITS.has(unit) || unit.split(/[^a-z]+/).some((w) => MEASURE_WORDS.has(w));
+  if (!sv || !(sv.grams > 0) || unitIsAmount || !namesAPiece({ label: sv.label, grams: sv.grams })) {
+    return { food, check: null };
+  }
+  // Bounded: this sits on the memory path, and a slow search must cost at most
+  // this long before the memory is used as it was.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const rows = await Promise.race([
+    // Inside a promise, so a search that throws before returning one is caught too.
+    Promise.resolve().then(() => deps.searchFoods(food.name)).catch(() => [] as CandidateFood[]),
+    new Promise<CandidateFood[]>((res) => { timer = setTimeout(() => res([]), PIECE_CHECK_TIMEOUT_MS); }),
+  ]);
+  clearTimeout(timer);
+  const pieces: { grams: number; label: string; row: string; kcal100: number; cand: CandidateFood }[] = [];
+  for (const row of rows.slice(0, 5)) {
+    // Per 100 g on both sides: a per-100 ml row is not comparable.
+    if (row.base_unit !== "g" || !sameFoodName(food.name, row.name)) continue;
+    const one = row.servings.map(perOneServing).find((s) =>
+      s.grams > 0 && !isBasisServing(s) && namesAPiece(s) && !/\b(cup|tbsp|tsp|serving)\b/i.test(s.label)
+    );
+    if (one) pieces.push({ grams: one.grams, label: one.label, row: row.name, kcal100: row.kcal, cand: row });
+  }
+  if (pieces.length === 0) {
+    return { food, check: { memory_g: sv.grams, catalog_g: null, replaced: false, note: "" } };
+  }
+  pieces.sort((a, b) => a.grams - b.grams);
+  // The middle row; with an even count, the lighter of the two middle ones.
+  // Deliberate: a wrong replacement toward a lighter piece over-counts less.
+  const ref = pieces[Math.floor((pieces.length - 1) / 2)];
+  const ratio = sv.grams / ref.grams;
+  if (ratio <= PIECE_RATIO_LIMIT && ratio >= 1 / PIECE_RATIO_LIMIT) {
+    return { food, check: { memory_g: sv.grams, catalog_g: ref.grams, row: ref.row, replaced: false, note: "" } };
+  }
+  const per100Ratio = ref.kcal100 > 0 ? food.per100.kcal / ref.kcal100 : 1;
+  const per100Fits = per100Ratio <= PIECE_RATIO_LIMIT && per100Ratio >= 1 / PIECE_RATIO_LIMIT;
+  // Keep the calories for one piece: every per-100 number scales by old/new grams.
+  const k = sv.grams / ref.grams;
+  const scaled = {
+    kcal: round1(food.per100.kcal * k),
+    protein_g: round1(food.per100.protein_g * k),
+    carb_g: round1(food.per100.carb_g * k),
+    fat_g: round1(food.per100.fat_g * k),
+    fiber_g: food.per100.fiber_g === null ? null : round1(food.per100.fiber_g * k),
+  };
+  // Neither remembered number fits: the calories for one piece, carried to the
+  // catalog's weight, are still far from the catalog's per-100. Nothing in the
+  // memory is right, so the catalog row answers.
+  const scaledRatio = ref.kcal100 > 0 ? scaled.kcal / ref.kcal100 : 1;
+  const scaledFits = scaledRatio <= PIECE_RATIO_LIMIT && scaledRatio >= 1 / PIECE_RATIO_LIMIT;
+  const kept = per100Fits ? null : scaledFits ? "kcal_per_piece" : "catalog";
+  const per100 = kept === null ? food.per100 : kept === "kcal_per_piece" ? scaled : {
+    kcal: ref.cand.kcal, protein_g: ref.cand.protein_g, carb_g: ref.cand.carb_g, fat_g: ref.cand.fat_g, fiber_g: ref.cand.fiber_g,
+  };
+  const note = `One piece was ${round1(sv.grams)} g there, far from a typical ${round1(ref.grams)} g, so I used ${round1(ref.grams)} g` +
+    (kept === "kcal_per_piece" ? " and kept your calories for one piece" : kept === "catalog" ? " and the catalog's numbers" : "");
+  return {
+    food: { ...food, per100, serving: { label: ref.label, grams: ref.grams } },
+    check: { memory_g: sv.grams, catalog_g: ref.grams, row: ref.row, replaced: true, note, ...(kept ? { kept } : {}) },
+  };
+}
+
+/** Jev's bar for "this challenge also says how much or how big". */
+export const STATES_FIX_FLOOR = 0.6;
+
+/** Said to the extract model on its second try, after Jev found an amount or a
+ *  size in a message it filed as a bare question. */
+export const STATES_FIX_NOTE = "\nThis message questions previous_meal AND says how much or how big something on it was: a count, a weight, or a size word. " +
+  "That is a QUESTION THAT ALSO STATES THE FIX: set corrects_previous true and list every line of previous_meal, with the line it is about corrected to what the user said. " +
+  "A size word with no number (small, tiny, big) changes that line's weight to the smaller or larger portion of that food; keep the count the user gave.";
+
+/** Does a message that challenges the card also say how much or how big a
+ *  line was? Jev's probability, or null when Jev could not answer. */
+export async function statesTheFix(
+  jev: JevDeps,
+  text: string,
+  prev: PreviousItem[],
+  recentTurns?: { role: "user" | "drona"; text: string }[],
+): Promise<number | null> {
+  const res = await askJev(
+    {
+      message: text,
+      card: prev.map((p) => `${p.quantity} ${p.serving_label} ${p.food_name} (${round1(p.grams)} g)`),
+      ...(recentTurns?.length ? { recent_turns: recentTurns.slice(-2).map((t) => ({ [t.role]: t.text.slice(0, 240) })) } : {}),
+    },
+    {
+      states_fix: {
+        type: "noul",
+        instructions:
+          "The user is questioning or complaining about a line on the food card. True when the message also says how much or how big that food was: a count, a weight, or a size word such as small or big, in any language. False when it only questions, complains or asks to check, with no amount or size.",
+      },
+    },
+    jev,
+  );
+  return res.ok ? asNoul(res.response.answers.states_fix) : null;
 }
 
 /** A remembered food as a catalog candidate, for Thorough and Precise. */
@@ -5244,7 +5480,21 @@ async function answerAboutPrevious(
   const parts: string[] = [];
   for (const p of previous.slice(0, 3)) {
     if (!p.food_id) {
-      parts.push(`${p.food_name}: my own estimate for ${round1(p.grams)} g, no label behind it.`);
+      // No catalog row to read, but the line still carries its numbers: show
+      // the arithmetic, so a wrong weight is plain to see. "No label behind
+      // it" was said of every such line, including ones looked up online
+      // (live, 2026-10-19: a 216 g poori from a checked web row).
+      if (p.kcal !== undefined && p.grams > 0) {
+        const per100 = Math.round((p.kcal / p.grams) * 100);
+        // A drink logged by volume keeps its unit: grams holds millilitres there.
+        const u = /\bml\b/i.test(p.serving_label) ? "ml" : "g";
+        parts.push(
+          `${p.food_name}: ${Math.round(p.kcal)} kcal for ${round1(p.grams)} ${u}, which is ${per100} kcal per 100 ${u}` +
+            (p.source === "estimate" ? ", my own estimate." : "."),
+        );
+      } else {
+        parts.push(`${p.food_name}: my own estimate for ${round1(p.grams)} g, no label behind it.`);
+      }
       continue;
     }
     const per100 = await deps.getFoodPer100(p.food_id).catch(() => null);
@@ -5463,12 +5713,15 @@ export async function tryFastCorrection(
       grams = item.quantity;
       servingLabel = massUnit === "ml" ? "ml" : "g";
     } else {
-      const servings = prev.source === "manual" && prev.grams > 0 && prev.quantity > 0
+      // The line's own serving is already one unit (grams / quantity), so only
+      // catalog servings are restated per piece: dividing it again would halve
+      // a hand-made "2 pieces" line.
+      const perOne = prev.source === "manual" && prev.grams > 0 && prev.quantity > 0
         ? [{ label: prev.serving_label, grams: prev.grams / prev.quantity }]
-        : prev.food_id ? await deps.getFoodServings?.(prev.food_id) ?? [] : [];
-      const sv = matchServing(servings, item.unit)
+        : (prev.food_id ? await deps.getFoodServings?.(prev.food_id) ?? [] : []).map(perOneServing);
+      const sv = matchServing(perOne, item.unit)
         // "make it 2" keeps the serving and only changes the count.
-        ?? (item.unit === "serving" ? matchServing(servings, prev.serving_label) : null);
+        ?? (item.unit === "serving" ? matchServing(perOne, prev.serving_label) : null);
       if (!sv || !(sv.grams > 0)) return null;
       grams = sv.grams * item.quantity;
       servingLabel = sv.label;
@@ -5773,7 +6026,7 @@ async function runParseMealCore(
     steps.push({ iter: 0, tool: "pending_meal", input: { status: input.pendingMeal.status, question: input.pendingMeal.question } });
   }
   const extractTool = fastMode ? FAST_EXTRACT_TOOL : EXTRACT_TOOL;
-  const extractRes = await callAnthropicOnce(deps, {
+  const callExtract = (note = "") => callAnthropicOnce(deps, {
     model: deps.model,
     // A cap, not a target: the model emits what the message needs, so a short
     // message costs the same under either number. Both are 5000 now; the
@@ -5797,7 +6050,7 @@ async function runParseMealCore(
             PENDING_MUST_LOG
           : input.mustLog
           ? "\n" + PENDING_MUST_LOG
-          : ""),
+          : "") + note,
     ),
     tools: withToolCache([extractTool]),
     tool_choice: { type: "tool", name: fastMode ? "estimate_meal" : "extract_meal" },
@@ -5828,6 +6081,7 @@ async function runParseMealCore(
         : userText.text + savedMealsBlock(saved),
     }],
   });
+  const extractRes = await callExtract();
   if (extractRes && !extractRes.ok) {
     throw new Error(`anthropic_${extractRes.status}: ${extractRes.body.slice(0, 300)}`);
   }
@@ -5862,7 +6116,51 @@ async function runParseMealCore(
       "That was a long one and I lost the end of it. Send it as two messages and I will log both.",
     );
   }
-  const ext: Record<string, unknown> = extractBlock?.input ?? {};
+  let ext: Record<string, unknown> = extractBlock?.input ?? {};
+  // I6c: a challenge that names an amount or a size ("they were small") is a
+  // QUESTION THAT ALSO STATES THE FIX, and the extract rules say so. When the
+  // model still files it as a bare question, Jev is asked whether the message
+  // gives an amount or size, and on a yes the extract is asked once more with
+  // that said plainly. Live, 2026-10-19: "I had just 3 puris they were small"
+  // got the stock "my own estimate" answer twice and the line never changed.
+  // Cost: one Jev call on a bare question about the card, plus one extract
+  // call when Jev says yes. Nothing on any other turn.
+  const bareQuestion = hasPrevious && !fastMode && ext.asks_about_previous === true && ext.corrects_previous !== true &&
+    !(Array.isArray(ext.items) && ext.items.length > 0) &&
+    !(Array.isArray(ext.removed_food_names) && ext.removed_food_names.length > 0);
+  if (bareQuestion && deps.jev) {
+    const p = await statesTheFix(deps.jev, input.text, prevItems, input.recentTurns).catch(() => null);
+    const retry = p !== null && p >= STATES_FIX_FLOOR;
+    const again = retry ? await callExtract(STATES_FIX_NOTE).catch(() => null) : null;
+    let retried: Record<string, unknown> | null = null;
+    if (again && again.ok) {
+      anthropicCalls++;
+      accumulate(again.data);
+      toolCalls.push("extract_meal__states_fix");
+      const blk = ((again.data.content ?? []) as Array<Record<string, any>>)
+        .find((b) => b.type === "tool_use" && b.name === "extract_meal");
+      const items = blk?.input?.items;
+      // Forced to a correction: this turn questions the card, so whatever it
+      // lists edits the card. Tagged as an addition, "3 small puris" on a
+      // one-line card would sit beside the old poori instead of replacing it.
+      if (again.data?.stop_reason !== "max_tokens" && Array.isArray(items) && items.length > 0) {
+        retried = { ...blk!.input, corrects_previous: true };
+      }
+    }
+    if (retried) ext = retried;
+    steps.push({
+      iter: 0,
+      tool: "challenge_states_fix",
+      input: { p, floor: STATES_FIX_FLOOR },
+      result: {
+        retried: retry,
+        applied: !!retried,
+        items: Array.isArray(retried?.items) ? retried!.items.length : 0,
+        // Why a retry did not apply: the call failed (status) or came back empty.
+        ...(again && !again.ok ? { status: again.status } : {}),
+      },
+    });
+  }
   let extItems: ExtractedItem[] = (Array.isArray(ext.items) ? ext.items : [])
     .slice(0, MAX_ITEMS_PER_PARSE)
     .flatMap((r: unknown): ExtractedItem[] => {
@@ -5936,7 +6234,13 @@ async function runParseMealCore(
     });
   }
   // Only trust the correction flag when a previous meal was actually supplied.
-  const correctsPrevious = hasPrevious && ext.corrects_previous === true;
+  // A turn tagged as an addition that copies card lines back word for word is a
+  // correction whatever the flag says (copiesCardLines).
+  const copiedCard = hasPrevious && ext.corrects_previous !== true && copiesCardLines(extItems, prevItems);
+  if (copiedCard) {
+    steps.push({ iter: 0, tool: "correction_inferred", input: { reason: "copied_card_lines", extracted: extItems.length, previous: prevItems.length } });
+  }
+  const correctsPrevious = hasPrevious && (ext.corrects_previous === true || copiedCard);
   // A request to question/research the existing card must not answer with the
   // very memory being challenged. These branches return before resolution.
   if (hasPrevious && deps.userMemory && deps.jev &&
@@ -6642,12 +6946,19 @@ async function runParseMealCore(
         memoryByFood.set(cand.food_id as string, statedStamp(st, "looked up"));
         return { ...item, candidates: [cand], resolvedIdentity: true } as ResolvedItem;
       }
-      const remembered = memory[idx]?.food;
-      if (remembered) {
+      const found = memory[idx]?.food;
+      if (found) {
         toolCalls.push("user_memory_match");
-        const cand = memoryCandidate(remembered);
-        memoryByFood.set(cand.food_id as string, memoryStamp(remembered, memTimeZone, memoryInputName({ name: memoryLineName(item), brand: item.brand ?? null })));
-        return Promise.resolve({ ...item, candidates: [cand], resolvedIdentity: true } as ResolvedItem);
+        return checkRememberedPiece(deps, item, found).then(({ food: remembered, check }) => {
+          if (check) steps.push({ iter: 1, tool: "memory_piece_check", input: { item: item.name }, result: check });
+          const cand = memoryCandidate(remembered);
+          const stamp = memoryStamp(remembered, memTimeZone, memoryInputName({ name: memoryLineName(item), brand: item.brand ?? null }));
+          const note = check?.replaced
+            ? [stamp.note.trim().replace(/\.$/, ""), check.note].filter(Boolean).join(". ")
+            : stamp.note;
+          memoryByFood.set(cand.food_id as string, { ...stamp, note });
+          return { ...item, candidates: [cand], resolvedIdentity: true } as ResolvedItem;
+        });
       }
       return resolveOneItem(
         deps,
@@ -6745,6 +7056,15 @@ async function runParseMealCore(
   //
   // P3: when every item reranked strongly and its quantity converts without
   // judgment, the code fill IS the answer and this whole call is skipped.
+  // One place, after every source has answered and before anything reads a
+  // serving: decide, the code fill and verify all see one piece per label.
+  // Not a remembered food: its serving is already one of what the user logged
+  // (grams / quantity, labelled with their unit), so "2 pieces" there is ONE
+  // unit and dividing it would halve the user's own portion.
+  resolved = resolved.map((r) => ({
+    ...r,
+    candidates: r.candidates.map((c) => (c.food_id?.startsWith(`${EPHEMERAL_ID_PREFIX}mem_`) ? c : perOneServings(c))),
+  }));
   const candidatePer100 = per100ForItems(resolved);
 
 
