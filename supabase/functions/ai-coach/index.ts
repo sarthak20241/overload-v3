@@ -28,7 +28,7 @@ import { envInt } from "../_shared/envInt.ts";
 import { requireTool, retryTool, SONNET_MODEL, SONNET_SETTINGS, sonnetSettings } from "../_shared/sonnet.ts";
 import { AI_LIMITS } from "../_shared/aiLimits.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
-import { QUESTIONS as WORD_QUESTIONS, YES as WORD_YES } from "../_shared/dronaWords.ts";
+import { AREAS as WORD_AREAS, QUESTIONS as WORD_QUESTIONS, YES as WORD_YES } from "../_shared/dronaWords.ts";
 import { decideMoment, type MomentCandidate, momentRow } from "../_shared/dronaMoments.ts";
 import { asNoul, type JevAnswer } from "./jev.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
@@ -1212,7 +1212,8 @@ async function momentsFromReply(
     }
     const mutes = [...new Set((behs ?? []).flatMap((b) => (b.mutes ?? []) as string[]))];
     const hushedWeek = (behs ?? []).some((b) => b.meta === true);
-    const area = String(choice("area") ?? "other");
+    const areaChoice = String(choice("area") ?? "other");
+    const area = (WORD_AREAS as readonly string[]).includes(areaChoice) ? areaChoice : "other";
     const candidate: MomentCandidate = { type: "hurting", detail: { area, day: today, source: sourceId, score: pain } };
     const card = decideMoment({ user_id: userId, today, candidates: [candidate], cards, mutes, hushed: hushedWeek });
     if (!card) return;

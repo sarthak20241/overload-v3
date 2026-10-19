@@ -137,6 +137,18 @@ function XPBar({ xp }: { xp: number }) {
   );
 }
 
+/**
+ * The moment to keep in state after a read: never swap a moment under the
+ * person while it is still waiting on screen (a newer one waits its turn); gone
+ * on the server (acted on, expired): drop it. Used by the focus read and the
+ * minute check alike.
+ */
+function keepWaitingMoment(prev: SavedDronaCard | null, next: SavedDronaCard | null): SavedDronaCard | null {
+  if (prev?.id === next?.id) return prev;
+  const prevWaiting = !!prev && prev.status === 'pending' && !prev.deferred_at;
+  return next && prevWaiting ? prev : next;
+}
+
 export default function DashboardScreen() {
   const router = useRouter();
   const { C } = useTheme();
@@ -557,7 +569,7 @@ export default function DashboardScreen() {
         readWeeklyCard(supabase, clerkId), readCheckinCard(supabase, clerkId), readMomentCard(supabase, clerkId),
       ]);
       if (!live) return;
-      if (moment !== undefined) setMomentCard(moment);
+      if (moment !== undefined) setMomentCard((prev) => keepWaitingMoment(prev, moment));
       if (check !== undefined) setCheckinCard(check);
       shown(check);
       if (row !== undefined) setWeeklyCard(row);
@@ -598,14 +610,7 @@ export default function DashboardScreen() {
       if (AppState.currentState !== 'active') return;
       void readMomentCard(supabase, clerkId).then((m) => {
         if (!live || m === undefined) return;
-        // Never swap a moment under the person while it is still waiting on
-        // screen: a newer one waits its turn. Gone on the server (acted on,
-        // expired): drop it.
-        setMomentCard((prev) => {
-          if (prev?.id === m?.id) return prev;
-          const prevWaiting = !!prev && prev.status === 'pending' && !prev.deferred_at;
-          return m && prevWaiting ? prev : m;
-        });
+        setMomentCard((prev) => keepWaitingMoment(prev, m));
       });
     }, 60_000);
     return () => { live = false; clearInterval(timer); };

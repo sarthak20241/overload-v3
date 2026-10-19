@@ -151,4 +151,9 @@ was tapped.
   written from, so the card's words and its stored facts (a PR's workout) can
   never come from two different candidates; `candidateFor` is gone. A comment
   marks that the early stop on a cap relies on pain sorting first.
+- Eighth review: the focus read uses the same keep-what-is-on-screen rule as
+  the minute check (`keepWaitingMoment`); the pain area is clamped to the known
+  list. Checked: an expired moment in state drops within a minute (the minute
+  read returns none); `workout_sets(exercise_id)` and `workouts(user_id)` are
+  indexed (the PR scan uses both).
 
