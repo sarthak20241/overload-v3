@@ -203,9 +203,11 @@ export async function catchMemory(text: string, kind: string, deps: CatchDeps): 
 
   const started = Date.now();
   let data: { content?: unknown; usage?: { input_tokens?: number; output_tokens?: number } } | null = null;
+  // One limit for the whole call, body included: a body that stalls after the
+  // headers must not hold the sweep past the cron's time limit.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 15_000);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 15_000);
     const res = await (deps.fetchFn ?? fetch)('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': deps.anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
@@ -219,7 +221,7 @@ export async function catchMemory(text: string, kind: string, deps: CatchDeps): 
         messages: [{ role: 'user', content: `${WHERE[kind] ?? 'A note'}:\n\n${t}` }],
       }),
       signal: controller.signal,
-    }).finally(() => clearTimeout(timer));
+    });
     if (!res.ok) {
       const error = `writer HTTP ${res.status}`;
       deps.logUsage?.({ input_tokens: 0, output_tokens: 0, latency_ms: Date.now() - started, status: 'error', error });
@@ -230,6 +232,8 @@ export async function catchMemory(text: string, kind: string, deps: CatchDeps): 
     const error = `writer ${String(e).slice(0, 120)}`;
     deps.logUsage?.({ input_tokens: 0, output_tokens: 0, latency_ms: Date.now() - started, status: 'error', error });
     return { outcome: 'failed', gate: score, saved: 0, error };
+  } finally {
+    clearTimeout(timer);
   }
   deps.logUsage?.({
     input_tokens: data?.usage?.input_tokens ?? 0, output_tokens: data?.usage?.output_tokens ?? 0,

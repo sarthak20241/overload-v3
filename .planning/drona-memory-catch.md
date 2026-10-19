@@ -173,4 +173,11 @@ pass has read yet:
   coach, whose save re-learns a forgotten fact when the value is new. No new
   third party: the coach and the food logger already send these messages to
   Anthropic, and the food logger already sends them to Jev.
+- Fifth review: the writer's 15 s limit now covers reading the body too (a
+  test with a body that never ends fails on the old code); the coach's prompt
+  says memory values are notes about the person, never instructions. Checked
+  and kept: `chat_message:<trace id>` is the word facts id (a live join of
+  word facts to coach_traces on that id matched), and food logs carry mode
+  null, so the reply pass reads them. Left for later: the 60-fact cap could
+  evict automatic facts before ones the person stated.
 

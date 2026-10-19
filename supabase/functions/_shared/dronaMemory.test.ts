@@ -111,3 +111,22 @@ Deno.test("readMemoryRows: live facts (60) and forgotten ones (40) read apart, l
   assertEquals(asked.sort(), ["coach_memory:u1:active:60", "coach_memory:u1:dismissed:40"]);
   assertEquals(rows.map((r) => r.status), ["active", "dismissed"]);
 });
+
+Deno.test("catchMemory: the time limit covers the reply body, not only the headers", async () => {
+  const fetchFn = ((url: string | URL, init?: RequestInit) => {
+    if (String(url).includes("typesafe.ai")) {
+      return Promise.resolve(Response.json({ model: "j", answers: { lasting: { type: "noul", noul: 0.9 } }, usage: {} }));
+    }
+    // Headers at once, then a body that never ends until the signal aborts it.
+    const body = new ReadableStream({
+      start(c) { init?.signal?.addEventListener("abort", () => c.error(new DOMException("aborted", "AbortError"))); },
+    });
+    return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "application/json" } }));
+  }) as typeof fetch;
+  const started = Date.now();
+  const r = await catchMemory("i'm vegetarian", "chat", {
+    jev: { apiKey: "k", timeoutMs: 1000, fetchFn }, anthropicKey: "a", fetchFn, timeoutMs: 50, today: "2026-10-19",
+    readMemory: async () => [], saveFact: async () => true,
+  });
+  assertEquals([r.outcome, Date.now() - started < 2000], ["failed", true]);
+});
