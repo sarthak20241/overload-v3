@@ -24,7 +24,7 @@
 // passes the deterministic guardrails (density clamp, Atwater, prep-state),
 // so catalog-backed numbers are never model-invented.
 
-import { continuationText, type PendingFoodMeal } from "./foodContext.ts";
+import { continuationText, FOOD_TURN_CHARS, FOOD_TURNS_KEPT, type PendingFoodMeal } from "./foodContext.ts";
 import { nearWord } from "./textMatch.ts";
 import {
   findSavedMeal,
@@ -930,6 +930,11 @@ export interface ParseMealInput {
   mode?: "fast" | "super" | null;
   /** Set only when a parsed-but-unlogged meal is on screen. */
   previousText?: string | null;
+  /** Everything the user wrote for the card on screen, oldest first ("3 pooris
+   *  and chana; just 75g of chana"). previousText is only the last message
+   *  that rebuilt the card, so after a correction the first one is gone from
+   *  it. Absent from older apps: previousText stands in. */
+  previousWords?: string | null;
   previousItems?: PreviousItem[];
   /** Only set after the router identifies a continuation of an unlogged meal. */
   pendingMeal?: PendingFoodMeal | null;
@@ -2628,7 +2633,7 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
   The same phrase shape gives opposite answers: "amul toned milk" -> plain toned milk row is fine, "quest protein bar" -> a generic protein bar row is NOT.
 - grade_not_stocked on an item means we checked every candidate in CODE and none of them stock the grade the user asked for. Do NOT take one of those rows. ESTIMATE the product they actually named, and say so in assumption ("No low fat paneer row, so these are estimated"). A generic row's macros are more wrong than a careful estimate: low fat paneer is ~190 kcal/100 g against plain paneer's 283, double toned milk ~42 against toned's 58.
 - sources_disagree_pct on a candidate means we read that food's calories from several places and they did not agree, by roughly that percentage. Its per_100 is the middle of what we found, not a settled fact. Still pick the candidate if it is the right food, but never mark that line confidence high, and say the doubt out loud in assumption in Drona's voice ("Sources vary on this one, so treat it as a ballpark"). A candidate with no such flag agreed with itself; say nothing about sourcing there.
-- earlier_text, on a correction, is the message that first described this meal. Take what each food IS (the dish, how it was cooked) from it as well as from user_text; user_text says what to change.
+- earlier_text, on a correction, is everything the user wrote for this meal before, oldest first; recent_turns is the latest conversation, the user's words and Drona's replies. Take what each food IS (the dish, how it was cooked) from them as well as from user_text; user_text says what to change.
 - looked_up_as on an item means the user's words found no label as written, and from what the search returned the product is most likely sold under that name. A candidate that is the looked_up_as product is the user's food; say in assumption which product you took it as.
 - similar_products on an item are other companies' products we found. They are NEVER the food: do not log one, and do not copy its numbers. Use them, with what you know of the user's brand and its range, only to keep your estimate in a sensible range.
 - label_not_found on an item means the web was searched for this product's label and none was found. If no candidate is acceptable, say so in assumption ("Couldn't find this exact label, so this is my estimate").
@@ -6151,8 +6156,8 @@ async function runParseMealCore(
         ? JSON.stringify({
           text: userText.text,
           // What was actually SAID, so "yes" / "no, the other one" resolve.
-          recent_turns: (input.recentTurns ?? []).slice(-4).map((t) => ({
-            [t.role === "user" ? "user" : "drona"]: t.text.slice(0, 240),
+          recent_turns: (input.recentTurns ?? []).slice(-FOOD_TURNS_KEPT).map((t) => ({
+            [t.role === "user" ? "user" : "drona"]: t.text.slice(0, FOOD_TURN_CHARS),
           })),
           previous_meal: {
             text: input.previousText ?? "",
@@ -7251,11 +7256,19 @@ async function runParseMealCore(
     // than extract got would make the two stages disagree about what was said.
     user_text: input.pendingMeal ? continuationText(userText.text, input.pendingMeal) : userText.text,
     // A correction's own words rarely say what the food is ("why are u taking
-    // boiled chana, when I said navaratri chana"). The message that first
-    // described the meal does ("3 pooris and chana navratri vaale in lunch").
+    // boiled chana, when I said navaratri chana"). What the user wrote for the
+    // meal before does ("3 pooris and chana navratri vaale in lunch"), and the
+    // conversation holds the rest, Drona's replies included.
     // Live, 2026-10-19: without it decide read the dish as a dry snack.
-    ...(correctsPrevious && input.previousText?.trim()
-      ? { earlier_text: clampUserText(input.previousText).text }
+    ...(correctsPrevious && (input.previousWords ?? input.previousText)?.trim()
+      ? { earlier_text: clampUserText((input.previousWords ?? input.previousText)!).text }
+      : {}),
+    ...(correctsPrevious && input.recentTurns?.length
+      ? {
+        recent_turns: input.recentTurns.slice(-FOOD_TURNS_KEPT).map((t) => ({
+          [t.role === "user" ? "user" : "drona"]: t.text.slice(0, FOOD_TURN_CHARS),
+        })),
+      }
       : {}),
     meal_type_from_text: mealFromText,
     items: resolved.map((r) => ({

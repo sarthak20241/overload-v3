@@ -17,6 +17,7 @@
 //
 // Deps are injected so the loop is testable without the network.
 
+import { FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { sonnetSettings } from "../_shared/sonnet.ts";
 import {
   type AnthropicTool,
@@ -231,8 +232,8 @@ export function statusFor(name: string, input: Record<string, unknown>): string 
  *  number: index.ts already caps `recent_turns` at 4 before this sees them, so
  *  today nothing is trimmed here. It stands for the case where that cap moves,
  *  and keeps the model answering the newest message rather than the history. */
-const MAX_TURNS_SENT = 6;
-const TURN_MAX_CHARS = 400;
+const MAX_TURNS_SENT = FOOD_TURNS_KEPT;
+const TURN_MAX_CHARS = FOOD_TURN_CHARS;
 
 /**
  * The conversation as Messages-API turns, oldest first, with `text` last.

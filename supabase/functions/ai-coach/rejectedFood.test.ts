@@ -123,7 +123,8 @@ Deno.test("a first log carries no earlier_text", async () => {
     text: "75g navratri chana", localHour: 13, mealHint: null, recentFoods: [], todayTotals: null, targets: null,
   });
   assertEquals(log.decide.length, 1);
-  assertEquals(JSON.parse(log.decide[0].split("\n")[0]).earlier_text, undefined);
+  const first = JSON.parse(log.decide[0].split("\n")[0]);
+  assertEquals([first.earlier_text, first.recent_turns], [undefined, undefined]);
 });
 
 Deno.test("a line whose only answer was the rejected food is not a confirmed match", async () => {
@@ -155,4 +156,27 @@ Deno.test("a line whose only answer was the rejected food is not a confirmed mat
   assert(line, JSON.stringify(r.parsed ?? r.declined));
   assert(line!.food_name !== "boiled chana", JSON.stringify(line));
   assert(line!.confidence !== "high", JSON.stringify(line));
+});
+
+Deno.test("a correction's decide sees the card's whole history and the conversation", async () => {
+  const log = { decide: [] as string[] };
+  await runParseMeal(deps(log), {
+    text: "still suji halwa is duplicated and why are u taking boiled chana, when I said navaratri chana",
+    // previous_text is only the last message that rebuilt the card...
+    previousText: "i think I had just 75g of chana",
+    // ...the card's history keeps the first one too.
+    previousWords: "i had 3 pooris and chana navratri vaale in lunch and some 40g halwa suji vaala; i think I had just 75g of chana",
+    previousItems: CARD,
+    recentTurns: [
+      { role: "user", text: "i had 3 pooris and chana navratri vaale in lunch and some 40g halwa suji vaala" },
+      { role: "drona", text: "Logged lunch: poori, boiled chana, suji halwa." },
+      { role: "user", text: "i think I had just 75g of chana" },
+      { role: "drona", text: "Updated." },
+    ],
+    localHour: 18, mealHint: "lunch", recentFoods: [], todayTotals: null, targets: null,
+  });
+  const payload = JSON.parse(log.decide[0].split("\n")[0]);
+  assert(String(payload.earlier_text).startsWith("i had 3 pooris and chana navratri vaale"), payload.earlier_text);
+  assertEquals(payload.recent_turns.length, 4);
+  assertEquals(payload.recent_turns[1], { drona: "Logged lunch: poori, boiled chana, suji halwa." });
 });

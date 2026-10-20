@@ -3418,6 +3418,11 @@ async function handleParseMealRequest(args: {
   const previousText = typeof body.previous_text === "string"
     ? body.previous_text.trim().slice(0, USER_TEXT_MAX_CHARS)
     : null;
+  // The card's whole history (every message that built or changed it). Newer
+  // apps send it; older ones send only previous_text.
+  const previousWords = typeof body.previous_words === "string" && body.previous_words.trim()
+    ? body.previous_words.trim().slice(0, USER_TEXT_MAX_CHARS)
+    : null;
   const foodContext = readFoodContext(body.recent_turns, body.pending_meal);
   const recentTurns = foodContext.recentTurns;
   const previousItems: PreviousItem[] = Array.isArray(body.previous_items)
@@ -3736,6 +3741,7 @@ async function handleParseMealRequest(args: {
                 targets: null,
                 contextPromise,
                 previousText: previousText ?? null,
+                previousWords,
                 previousItems,
                 pendingMeal,
                 recentTurns,
@@ -3945,6 +3951,7 @@ async function handleParseMealRequest(args: {
           targets: null,
           contextPromise,
           previousText,
+          previousWords,
           previousItems,
           pendingMeal,
           recentTurns,

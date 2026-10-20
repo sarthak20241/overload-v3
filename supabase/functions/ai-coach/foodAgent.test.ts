@@ -6,6 +6,7 @@
 //   - numbers are copied or parsed, never taken from the agent
 //   - every finish is a shape the app already draws
 
+import { FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import { FOOD_AGENT_SYSTEM, type FoodAgentDeps, historyMessages, LAST_TURN_NOTE, MAX_TURNS, recentDays, runFoodAgent, statusFor } from "./foodAgent.ts";
 import type { ParseMealResult } from "./parseMeal.ts";
@@ -318,7 +319,8 @@ Deno.test("history: empty turns, and only the last few travel", () => {
   assertEquals(historyMessages([{ role: "user", text: "  " }], "hi"), [{ role: "user", content: "hi" }]);
   const many = Array.from({ length: 20 }, (_, i) => ({ role: (i % 2 ? "drona" : "user") as "user" | "drona", text: `t${i}` }));
   const out = historyMessages(many, "now");
-  assertEquals(out.length <= 7, true);
+  // FOOD_TURNS_KEPT turns, plus the new message.
+  assertEquals(out.length <= FOOD_TURNS_KEPT + 1, true);
   assertEquals(out.at(-1), { role: "user", content: "now" });
   assertEquals(out.some((m) => m.content.includes("t0")), false);
 });

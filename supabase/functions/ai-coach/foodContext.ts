@@ -27,11 +27,19 @@ export function pendingFoodMeal(text: string, question: string): PendingFoodMeal
     : null;
 }
 
+/** Turns of this food conversation kept: the user's and Drona's, newest last.
+ *  The app clears them when a card is added or discarded, so they belong to
+ *  the meal being logged. Ten covers "add in message 3, fix in message 5";
+ *  older words about the card survive in its own history (previous_words). */
+export const FOOD_TURNS_KEPT = 10;
+/** Characters kept per turn. */
+export const FOOD_TURN_CHARS = 400;
+
 export function readFoodContext(turns: unknown, pending: unknown): FoodConversationContext {
   const recentTurns: FoodTurn[] = Array.isArray(turns)
-    ? turns.slice(-4).flatMap((t) => {
+    ? turns.slice(-FOOD_TURNS_KEPT).flatMap((t) => {
       if (!t || (t.role !== "user" && t.role !== "drona") || typeof t.text !== "string") return [];
-      const text = t.text.trim().slice(0, 240);
+      const text = t.text.trim().slice(0, FOOD_TURN_CHARS);
       return text ? [{ role: t.role, text }] : [];
     })
     : [];
