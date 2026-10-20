@@ -45,10 +45,12 @@ export interface MaintenanceView {
   /** 0..1, how far the learning has got: 3 full data weeks make it measured. */
   progress: number;
   /**
-   * The row's two counters ("4/8 weigh-ins", "6/14 full days logged"), each
-   * counted over the last 4 weeks. Empty once measured: nothing left to fill.
+   * The two counters ("4/8 weigh-ins", "6/14 full days logged"), each counted
+   * over the last 4 weeks. The sheet always shows them.
    */
   counters: MaintenanceCounter[];
+  /** Whether the row shows the counters: not once measured, nothing left to fill. */
+  rowCounters: boolean;
 }
 
 export interface MaintenanceCounter {
@@ -94,13 +96,14 @@ export function maintenanceView(f: MaintenanceFacts | null | undefined, todayISO
   const weeks = Number(f?.m_data_weeks ?? 0);
   const since = f?.m_last_weigh_in ? daysBetween(f.m_last_weigh_in, todayISO) : null;
   const stale = since == null || since > STALE_AFTER_DAYS;
-  const counters: MaintenanceCounter[] = source === 'measured' ? [] : [
+  const counters: MaintenanceCounter[] = [
     { key: 'weigh_ins', have: readings, need: WEIGH_INS_FOR_A_READ, label: 'weigh-ins' },
     { key: 'full_days', have: wholeDays, need: WHOLE_DAYS_FOR_A_READ, label: 'full days logged' },
   ];
   const base = {
     kcal, headline: `Maintenance about ${kcal} kcal`,
     guess: guessKcal == null ? null : tens(guessKcal), readings, wholeDays, counters,
+    rowCounters: source !== 'measured',
   };
 
   if (source === 'guess') {

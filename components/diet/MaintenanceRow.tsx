@@ -77,7 +77,8 @@ export function MaintenanceRow() {
 
   // The chip sits over the top line; the line keeps clear of its measured width.
   const chipRoom = chipWidth + Spacing.sm;
-  const counted = view.counters.map((c) => `${c.have} of ${c.need} ${c.label}`).join(', ');
+  const shown = view.rowCounters ? view.counters : [];
+  const counted = shown.map((c) => `${c.have} of ${c.need} ${c.label}`).join(', ');
 
   return (
     <View style={[s.row, { borderTopColor: C.borderSubtle }]}>
@@ -96,11 +97,11 @@ export function MaintenanceRow() {
             <Text style={{ color: C.textDim }}>{`  ${view.label.toLowerCase()}`}</Text>
           </Text>
           {/* Measured: no counters, so the way into the details sits here. */}
-          {view.counters.length === 0 && <Feather name="chevron-right" size={12} color={C.textDim} />}
+          {shown.length === 0 && <Feather name="chevron-right" size={12} color={C.textDim} />}
         </View>
-        {view.counters.length > 0 && (
+        {shown.length > 0 && (
           <View style={s.counters}>
-            {view.counters.map((c) => <Counter key={c.key} c={c} />)}
+            {shown.map((c) => <Counter key={c.key} c={c} />)}
             <Feather name="chevron-right" size={12} color={C.textDim} />
           </View>
         )}

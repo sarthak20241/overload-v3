@@ -37,14 +37,17 @@ Deno.test("learning: what it has, and exactly what would sharpen it", () => {
   assertEquals(Math.round(full.progress * 100), 98);
 });
 
-Deno.test("the row's counters: have over need, capped, gone once measured", () => {
+Deno.test("the counters: have over need, capped; the row drops them once measured, the sheet keeps them", () => {
   const v = maintenanceView(facts(), TODAY)!;
   assertEquals(v.counters.map((c) => `${c.have}/${c.need} ${c.label}`), ["5/8 weigh-ins", "9/14 full days logged"]);
   const full = maintenanceView(facts({ m_readings_28: 20, m_whole_days_28: 28 }), TODAY)!;
   assertEquals(full.counters.map((c) => c.have), [8, 14]);
   assertEquals(maintenanceView(facts({ m_source: "guess", m_readings_28: 0, m_whole_days_28: 0 }), TODAY)!
     .counters.map((c) => c.have), [0, 0]);
-  assertEquals(maintenanceView(facts({ m_source: "measured" }), TODAY)!.counters, []);
+  assertEquals(v.rowCounters, true);
+  const measured = maintenanceView(facts({ m_source: "measured" }), TODAY)!;
+  assertEquals(measured.rowCounters, false);
+  assertEquals(measured.counters.map((c) => `${c.have}/${c.need}`), ["5/8", "9/14"]);
 });
 
 Deno.test("measured, fresh and stale (the engine's 10-day line)", () => {
