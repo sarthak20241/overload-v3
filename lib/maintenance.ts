@@ -5,7 +5,7 @@
  *
  * The number comes from the adaptive estimate (drona_week_facts m_*, migration
  * 20261017115750_drona_energy_facts): it starts at the app's own formula and
- * moves toward the person's real maintenance as weigh-ins and whole food days
+ * moves toward the person's real maintenance as weigh-ins and full days of food
  * arrive. The running week's row is rebuilt every day, so it moves daily;
  * calorie changes themselves stay weekly (the calorie check-in card).
  *
@@ -39,11 +39,26 @@ export interface MaintenanceView {
   next: string;
   /** The formula's own number, on tens, when there is one: what it started from. */
   guess: string | null;
-  /** Weigh-ins and whole food days in the last 4 weeks, each capped at what a read needs. */
+  /** Weigh-ins and full days of food in the last 4 weeks, each capped at what a read needs. */
   readings: number;
   wholeDays: number;
   /** 0..1, how far the learning has got: 3 full data weeks make it measured. */
   progress: number;
+  /**
+   * The two counters ("4/8 weigh-ins", "6/14 full days logged"), each counted
+   * over the last 4 weeks. The sheet always shows them.
+   */
+  counters: MaintenanceCounter[];
+  /** Whether the row shows the counters: not once measured, nothing left to fill. */
+  rowCounters: boolean;
+}
+
+export interface MaintenanceCounter {
+  key: 'weigh_ins' | 'full_days';
+  have: number;
+  need: number;
+  /** Plural, after the "have/need": "weigh-ins", "full days logged". */
+  label: string;
 }
 
 /** The same lines the engine uses, so the words never promise more than it does. */
@@ -81,16 +96,21 @@ export function maintenanceView(f: MaintenanceFacts | null | undefined, todayISO
   const weeks = Number(f?.m_data_weeks ?? 0);
   const since = f?.m_last_weigh_in ? daysBetween(f.m_last_weigh_in, todayISO) : null;
   const stale = since == null || since > STALE_AFTER_DAYS;
+  const counters: MaintenanceCounter[] = [
+    { key: 'weigh_ins', have: readings, need: WEIGH_INS_FOR_A_READ, label: 'weigh-ins' },
+    { key: 'full_days', have: wholeDays, need: WHOLE_DAYS_FOR_A_READ, label: 'full days logged' },
+  ];
   const base = {
     kcal, headline: `Maintenance about ${kcal} kcal`,
-    guess: guessKcal == null ? null : tens(guessKcal), readings, wholeDays,
+    guess: guessKcal == null ? null : tens(guessKcal), readings, wholeDays, counters,
+    rowCounters: source !== 'measured',
   };
 
   if (source === 'guess') {
     return {
       ...base, source, label: 'First guess', progress: 0,
-      detail: 'A first guess from your stats. Your weigh-ins and whole food days will make it your own.',
-      next: 'Weigh in on a few mornings and log whole days. That is where your own number starts.',
+      detail: 'A first guess from your stats. Your weigh-ins and full days of food will make it your own.',
+      next: 'Weigh in on a few mornings and log full days. That is where your own number starts.',
     };
   }
 
@@ -99,7 +119,7 @@ export function maintenanceView(f: MaintenanceFacts | null | undefined, todayISO
     const needDays = WHOLE_DAYS_FOR_A_READ - wholeDays;
     const asks = [
       needWeighIns > 0 ? plural(needWeighIns, 'more weigh-in', 'more weigh-ins') : null,
-      needDays > 0 ? plural(needDays, 'more whole food day', 'more whole food days') : null,
+      needDays > 0 ? plural(needDays, 'more full day of food', 'more full days of food') : null,
     ].filter(Boolean);
     return {
       ...base, source, label: 'Learning',
@@ -107,7 +127,7 @@ export function maintenanceView(f: MaintenanceFacts | null | undefined, todayISO
       detail: 'Learning from your own weigh-ins and food. It moves a little every day.',
       next: asks.length
         ? `Next: ${asks.join(' and ')} in the next few weeks.`
-        : 'Keep weighing in and logging whole days. A few more weeks and it is measured.',
+        : 'Keep weighing in and logging full days. A few more weeks and it is measured.',
     };
   }
 

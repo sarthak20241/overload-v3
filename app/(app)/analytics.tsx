@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
   RefreshControl, BackHandler, Pressable, TextInput, useWindowDimensions,
@@ -430,7 +431,19 @@ function AddEntryModal({
 }) {
   const { C } = useTheme();
   const [value, setValue] = useState(initial);
-  useEffect(() => { if (visible) setValue(initial); }, [visible, initial]);
+  // Seeded from `initial` when the drawer opens, and again if `initial` lands
+  // later (the log can still be loading when a weigh-in link opens it), but
+  // never over a number the user has started typing.
+  const edited = useRef(false);
+  useEffect(() => {
+    if (visible) { edited.current = false; setValue(initial); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+  useEffect(() => {
+    if (visible && !edited.current) setValue(initial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial]);
+  const onChange = (v: string) => { edited.current = true; setValue(v); };
 
   const submit = () => {
     const num = parseFloat(value);
@@ -457,7 +470,7 @@ function AddEntryModal({
         <Text style={[styles.fieldLabel, { color: C.textMuted }]}>{label} ({unit})</Text>
         <TextInput
           value={value}
-          onChangeText={setValue}
+          onChangeText={onChange}
           keyboardType="decimal-pad"
           placeholder={`0 ${unit}`}
           placeholderTextColor={C.textDim}
@@ -1275,6 +1288,15 @@ export default function AnalyticsScreen() {
   // The goal is stored in kg; the chart draws in the chosen unit.
   const goalWeight = ctxGoal != null && ctxGoal > 0 ? fromKg(ctxGoal, weightUnit) : null;
   const [addWeightOpen, setAddWeightOpen] = useState(false);
+  // The Nutrition screen's maintenance row sends people here to weigh in
+  // (?logWeight=<stamp>): open the weight log once per stamp, then clear the
+  // param so a remount cannot open it again (the stamp ref covers the moment
+  // before the cleared param lands). Only once loaded and focused, so the
+  // drawer slides up where the user can see it.
+  const { logWeight } = useLocalSearchParams<{ logWeight?: string }>();
+  const weighInAsked = useRef<string | undefined>(undefined);
+  const [focused, setFocused] = useState(false);
+  useFocusEffect(useCallback(() => { setFocused(true); return () => setFocused(false); }, []));
   const [addBfOpen, setAddBfOpen] = useState(false);
   // Picks the body silhouette in the distribution card. Null just means "not
   // known yet" and falls back to the male drawing — never blocks the card.
@@ -1669,6 +1691,13 @@ export default function AnalyticsScreen() {
   const hasMuscleData = Object.keys(muscleCounts).length > 0;
 
   const hasAny = workouts.length > 0 || weightLog.length > 0 || bodyFatLog.length > 0;
+
+  useEffect(() => {
+    if (!logWeight || loading || !focused || weighInAsked.current === logWeight) return;
+    weighInAsked.current = logWeight;
+    router.setParams({ logWeight: undefined });
+    setAddWeightOpen(true);
+  }, [logWeight, loading, focused]);
 
   if (loading) {
     return (
