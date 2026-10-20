@@ -32,8 +32,12 @@ Deno.test("a swap rejects the old food; an edit of the same food does not", () =
   assertEquals(rejectedFood({ name: "fried egg", correctsFoodName: "egg" }, []), "egg");
   // Two foods sharing only one word: a swap.
   assertEquals(rejectedFood({ name: "chana masala", correctsFoodName: "boiled chana" }, []), "boiled chana");
-  // Known limit, pinned: a dish word added to an ingredient reads as an edit.
-  assertEquals(rejectedFood({ name: "paneer tikka", correctsFoodName: "paneer" }, []), null);
+  // A dish word added to an ingredient is a new food; an amount or size is not.
+  assertEquals(rejectedFood({ name: "paneer butter masala", correctsFoodName: "paneer" }, []), "paneer");
+  assertEquals(rejectedFood({ name: "paneer tikka", correctsFoodName: "paneer" }, []), "paneer");
+  assertEquals(rejectedFood({ name: "large dosa", correctsFoodName: "dosa" }, []), null);
+  // A preparation extract split out of the name still counts.
+  assertEquals(rejectedFood({ name: "egg", prep: "fried", correctsFoodName: "egg" }, []), "egg");
   // Untouched line.
   assertEquals(rejectedFood({ name: "poori", correctsFoodName: null }, CARD), null);
 });
@@ -103,6 +107,12 @@ Deno.test("the failure this prevents: memory put boiled chana back after the use
 Deno.test("the same food named in another word order is the same rejected food", () => {
   const rows = [{ name: "Chana, boiled" }, { name: "Chole (Chana Masala)" }, { name: "boiled chana" }];
   assertEquals(withoutRejected(rows, "boiled chana", (r) => r.name).map((r) => r.name), ["Chole (Chana Masala)"]);
+});
+
+Deno.test("the rejected line's own catalog row goes, whatever the row is called", () => {
+  const card = [prev("boiled chana", 75, "g", 75, 123, "row-7")];
+  const rows = [{ food_id: "row-7", name: "Chickpeas, mature seeds, boiled" }, { food_id: "row-9", name: "Chole" }];
+  assertEquals(withoutRejected(rows, "boiled chana", (r) => r.name, card).map((r) => r.food_id), ["row-9"]);
 });
 
 Deno.test("a first log carries no earlier_text", async () => {

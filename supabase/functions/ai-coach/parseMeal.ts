@@ -4259,27 +4259,52 @@ export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousIt
  * Live, 2026-10-19: the swap was understood, then food memory matched "boiled
  * chana" again and put it straight back.
  */
-export function rejectedFood(item: Pick<ExtractedItem, "name" | "correctsFoodName">, prevItems: PreviousItem[]): string | null {
+export function rejectedFood(
+  item: Pick<ExtractedItem, "name" | "correctsFoodName"> & { prep?: string | null },
+  prevItems: PreviousItem[],
+): string | null {
   const target = item.correctsFoodName?.trim();
   if (!target) return null;
+  // The line as named, with the preparation extract split out of the name
+  // ("egg" + prep "fried" is "fried egg"), the same join memory matching uses.
+  const named = memoryLineName({ name: item.name, prep: item.prep ?? null });
   const words = (x: string) => new Set(foodNameKey(x).split(" ").filter(Boolean));
-  const a = words(item.name), b = words(target);
-  const within = (x: Set<string>, y: Set<string>) => [...x].every((w) => y.has(w));
+  const a = words(named), b = words(target);
   if (a.size === 0 || b.size === 0) return null;
-  // Containment is an edit ("omelette" -> "3 egg omelette"), unless the words
-  // that differ change the product: a grade or variant ("toned milk" ->
-  // "double toned milk") or a preparation the old line did not have ("egg" ->
-  // "fried egg"). Those are swaps, and the old row must stay out.
-  // Dropping a preparation ("boiled chana" -> "chana") stays an edit on
-  // purpose: the user only stopped naming it, which says nothing against the
-  // old food. So does a dish word added to an ingredient ("paneer" ->
-  // "paneer tikka"): words alone cannot tell it from "omelette" -> "3 egg
-  // omelette", and decide's rules already keep a dish off an ingredient row.
-  const newPrep = prepStateOf(item.name);
-  const changesProduct = !!variantClash(item.name, target) || !!variantClash(target, item.name) ||
-    (newPrep !== null && newPrep !== prepStateOf(target));
-  if (!changesProduct && (within(a, b) || within(b, a))) return null;
+  const within = (x: Set<string>, y: Set<string>) => [...x].every((w) => y.has(w));
+  // A grade or variant ("toned milk" -> "double toned milk") or a preparation
+  // the old line did not have ("egg" -> "fried egg") changes the product.
+  const newPrep = prepStateOf(named);
+  if (variantClash(named, target) || variantClash(target, named) || (newPrep !== null && newPrep !== prepStateOf(target))) {
+    return cardName(target, prevItems);
+  }
+  // Words dropped ("boiled chana" -> "chana"): an edit. The user only stopped
+  // naming a detail, which says nothing against the old food.
+  if (within(a, b)) return null;
+  // Words added: an edit only when they are an amount or a size ("omelette" ->
+  // "3 egg omelette", "dosa" -> "large dosa"). Any other added word names a
+  // different food ("paneer" -> "paneer butter masala"), so it is a swap.
+  if (within(b, a) && onlyAmountWords([...a].filter((w) => !b.has(w)), foodNameKey(named))) return null;
+  return cardName(target, prevItems);
+}
+
+/** The card's own spelling of a line, when the target names one. */
+function cardName(target: string, prevItems: PreviousItem[]): string {
   return prevItems.find((p) => foodNameKey(p.food_name) === foodNameKey(target))?.food_name ?? target;
+}
+
+const SIZE_ADJECTIVES = new Set(["small", "medium", "large", "big", "mini", "half", "full", "regular", "extra", "jumbo", "little", "whole"]);
+
+/** Added words that only say how much or how big: numbers, the word right
+ *  after a number ("3 egg"), sizes, measures and portion words. */
+function onlyAmountWords(added: string[], phrase: string): boolean {
+  const tokens = phrase.split(" ");
+  const counted = new Set<string>();
+  tokens.forEach((t, i) => { if (/^\d/.test(t) && tokens[i + 1]) counted.add(tokens[i + 1]); });
+  return added.every((w) =>
+    /^\d/.test(w) || counted.has(w) || SIZE_ADJECTIVES.has(w) || MEASURE_WORDS.has(w) ||
+    MASS_UNITS.has(w) || GENERIC_PORTION_WORDS.has(w)
+  );
 }
 
 /** A food name as compared here: lower case, letters, marks and digits of any
@@ -6794,7 +6819,7 @@ async function runParseMealCore(
           !memoryEligible[idx] || statedFor(it)
             ? Promise.resolve(null)
             : (() => {
-              const gone = rejectedFood(it, prevItems);
+              const gone = correctsPrevious ? rejectedFood(it, prevItems) : null;
               const usable = withoutRejected(foods, gone, (f) => f.name);
               if (usable.length !== foods.length) {
                 steps.push({ iter: 1, tool: "rejected_food", input: { item: it.name, rejected: gone, from: "memory" }, result: { dropped: foods.length - usable.length } });
