@@ -2490,6 +2490,20 @@ const EXTRACT_MAX_TOKENS_SMART = 6500;
  *  limit would only move it. */
 export const USER_TEXT_MAX_CHARS = 2000;
 
+/**
+ * A card's history held to `cap` characters by cutting the MIDDLE. The start
+ * says what the food is ("3 pooris and chana navratri vaale in lunch") and the
+ * end is the newest correction; a plain cut from either side loses one of
+ * them. Messages are joined with "; ", oldest first.
+ */
+export function keepEnds(text: string, cap = USER_TEXT_MAX_CHARS): string {
+  const t = text.trim();
+  if (t.length <= cap) return t;
+  const head = Math.floor(cap * 0.6);
+  const tail = cap - head - 5;
+  return `${t.slice(0, head)} ... ${t.slice(-tail)}`;
+}
+
 /** Trim, then clamp, and report what was lost. `dropped` is characters cut,
  *  0 when the message fitted - the caller uses it to decide whether there is
  *  anything to say. Trimming happens BEFORE measuring so trailing whitespace
@@ -7261,7 +7275,7 @@ async function runParseMealCore(
     // conversation holds the rest, Drona's replies included.
     // Live, 2026-10-19: without it decide read the dish as a dry snack.
     ...(correctsPrevious && (input.previousWords ?? input.previousText)?.trim()
-      ? { earlier_text: clampUserText((input.previousWords ?? input.previousText)!).text }
+      ? { earlier_text: keepEnds((input.previousWords ?? input.previousText)!) }
       : {}),
     ...(correctsPrevious && input.recentTurns?.length
       ? {

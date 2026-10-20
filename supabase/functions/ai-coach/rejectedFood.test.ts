@@ -7,7 +7,7 @@
 // Nothing here calls a real model, Jev or the database.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { foodNameKey, type ParseMealDeps, type PreviousItem, rejectedFood, runParseMeal, withoutRejected } from "./parseMeal.ts";
+import { foodNameKey, keepEnds, type ParseMealDeps, type PreviousItem, rejectedFood, runParseMeal, withoutRejected } from "./parseMeal.ts";
 
 const prev = (food_name: string, quantity: number, serving_label: string, grams: number, kcal: number, food_id: string | null = null): PreviousItem =>
   ({ food_id, food_name, quantity, serving_label, grams, kcal, protein_g: 5, carb_g: 20, fat_g: 3, source: "catalog" }) as PreviousItem;
@@ -179,4 +179,16 @@ Deno.test("a correction's decide sees the card's whole history and the conversat
   assert(String(payload.earlier_text).startsWith("i had 3 pooris and chana navratri vaale"), payload.earlier_text);
   assertEquals(payload.recent_turns.length, 4);
   assertEquals(payload.recent_turns[1], { drona: "Logged lunch: poori, boiled chana, suji halwa." });
+});
+
+Deno.test("a long card history keeps its first message and its newest correction", () => {
+  const first = "i had 3 pooris and chana navratri vaale in lunch";
+  const newest = "why are u taking boiled chana, when I said navaratri chana";
+  const long = [first, ...Array.from({ length: 120 }, (_, i) => `and also item ${i} for later`), newest].join("; ");
+  assert(long.length > 2000, String(long.length));
+  const kept = keepEnds(long);
+  assert(kept.length <= 2000, String(kept.length));
+  assert(kept.startsWith(first), kept.slice(0, 80));
+  assert(kept.endsWith(newest), kept.slice(-80));
+  assertEquals(keepEnds("short"), "short");
 });

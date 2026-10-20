@@ -51,6 +51,7 @@ import {
   type RecentFoodContext,
   cacheRowToCandidate,
   runParseMeal,
+  keepEnds,
   USER_TEXT_MAX_CHARS,
 } from "./parseMeal.ts";
 import {
@@ -3421,7 +3422,7 @@ async function handleParseMealRequest(args: {
   // The card's whole history (every message that built or changed it). Newer
   // apps send it; older ones send only previous_text.
   const previousWords = typeof body.previous_words === "string" && body.previous_words.trim()
-    ? body.previous_words.trim().slice(0, USER_TEXT_MAX_CHARS)
+    ? keepEnds(body.previous_words)
     : null;
   const foodContext = readFoodContext(body.recent_turns, body.pending_meal);
   const recentTurns = foodContext.recentTurns;
