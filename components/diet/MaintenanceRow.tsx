@@ -41,6 +41,8 @@ export function MaintenanceRow() {
   const supabase = useSupabaseClient();
   const [view, setView] = useState<MaintenanceView | null>(null);
   const [open, setOpen] = useState(false);
+  // A first guess until the chip reports its width (about "+ Weigh in" at xs).
+  const [chipWidth, setChipWidth] = useState(76);
 
   useFocusEffect(useCallback(() => {
     let live = true;
@@ -73,6 +75,8 @@ export function MaintenanceRow() {
     router.navigate({ pathname: '/(app)/analytics', params: { logWeight: String(Date.now()) } });
   };
 
+  // The chip sits over the top line; the line keeps clear of its measured width.
+  const chipRoom = chipWidth + Spacing.sm;
   const counted = view.counters.map((c) => `${c.have} of ${c.need} ${c.label}`).join(', ');
 
   return (
@@ -83,7 +87,7 @@ export function MaintenanceRow() {
         accessibilityLabel={`${view.headline}. ${view.label}.${counted ? ` ${counted} in the last 4 weeks.` : ''}`}
         accessibilityHint="Shows what Drona has learned about the calories you burn"
       >
-        <View style={s.topLine}>
+        <View style={[s.topLine, { paddingRight: chipRoom }]}>
           <Text style={[s.kcal, { color: C.foreground }]}>{view.kcal}</Text>
           {/* One line that gives way first: big font scale or a narrow phone
               trims "learning" before it can run under the chip. */}
@@ -91,6 +95,8 @@ export function MaintenanceRow() {
             <Text style={{ color: C.textMuted }}>kcal maintenance</Text>
             <Text style={{ color: C.textDim }}>{`  ${view.label.toLowerCase()}`}</Text>
           </Text>
+          {/* Measured: no counters, so the way into the details sits here. */}
+          {view.counters.length === 0 && <Feather name="chevron-right" size={12} color={C.textDim} />}
         </View>
         {view.counters.length > 0 && (
           <View style={s.counters}>
@@ -103,6 +109,7 @@ export function MaintenanceRow() {
           in it, VoiceOver could not reach it. */}
       <Pressable
         onPress={weighIn}
+        onLayout={(e) => setChipWidth(Math.ceil(e.nativeEvent.layout.width))}
         hitSlop={8}
         style={({ pressed }) => [s.chip, { borderColor: C.border, opacity: pressed ? 0.6 : 1 }]}
         accessibilityRole="button"
@@ -216,8 +223,7 @@ const CHIP_H = 24;
 const s = StyleSheet.create({
   // The row: a hairline under the ring and bars, the number, then two counters.
   row: { marginTop: Spacing.md, paddingTop: Spacing.sm, borderTopWidth: StyleSheet.hairlineWidth },
-  // Room on the right for the chip, which sits over this line.
-  topLine: { flexDirection: 'row', alignItems: 'center', gap: 5, minHeight: CHIP_H, paddingRight: 84 },
+  topLine: { flexDirection: 'row', alignItems: 'center', gap: 5, minHeight: CHIP_H },
   kcal: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, fontVariant: ['tabular-nums'] },
   kcalRest: { flexShrink: 1, fontSize: FontSize.xs },
   chip: {
@@ -228,7 +234,7 @@ const s = StyleSheet.create({
   chipTxt: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
   counters: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg, marginTop: Spacing.sm },
   counter: { flex: 1, gap: 4 },
-  counterLine: { fontSize: 11 },
+  counterLine: { fontSize: FontSize.xs },
   counterNum: { fontWeight: FontWeight.semibold, fontVariant: ['tabular-nums'] },
   counterTrack: { height: 3, borderRadius: 2, overflow: 'hidden' },
   counterFill: { height: 3, borderRadius: 2 },
