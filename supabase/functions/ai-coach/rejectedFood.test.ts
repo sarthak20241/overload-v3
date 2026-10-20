@@ -32,6 +32,8 @@ Deno.test("a swap rejects the old food; an edit of the same food does not", () =
   assertEquals(rejectedFood({ name: "fried egg", correctsFoodName: "egg" }, []), "egg");
   // Two foods sharing only one word: a swap.
   assertEquals(rejectedFood({ name: "chana masala", correctsFoodName: "boiled chana" }, []), "boiled chana");
+  // Known limit, pinned: a dish word added to an ingredient reads as an edit.
+  assertEquals(rejectedFood({ name: "paneer tikka", correctsFoodName: "paneer" }, []), null);
   // Untouched line.
   assertEquals(rejectedFood({ name: "poori", correctsFoodName: null }, CARD), null);
 });
@@ -81,6 +83,9 @@ Deno.test("the failure this prevents: memory put boiled chana back after the use
     localHour: 18, mealHint: "lunch", recentFoods: [], todayTotals: null, targets: null,
   });
   assert(!r.tool_calls.includes("user_memory_match"), r.tool_calls.join(","));
+  // Both drops are in the trace: memory and the catalog rows.
+  const drops = r.steps.filter((s) => s.tool === "rejected_food").map((s) => (s.input as { from?: string }).from ?? "candidates");
+  assertEquals(drops.sort(), ["candidates", "memory"]);
   // Neither memory nor the catalog row named "boiled chana" reaches decide for that line.
   assertEquals(log.decide.length, 1);
   const payload = JSON.parse(log.decide[0].split("\n")[0]) as { items?: Array<{ name: string; candidates?: Array<{ name: string }> }> };

@@ -4272,7 +4272,9 @@ export function rejectedFood(item: Pick<ExtractedItem, "name" | "correctsFoodNam
   // "fried egg"). Those are swaps, and the old row must stay out.
   // Dropping a preparation ("boiled chana" -> "chana") stays an edit on
   // purpose: the user only stopped naming it, which says nothing against the
-  // old food.
+  // old food. So does a dish word added to an ingredient ("paneer" ->
+  // "paneer tikka"): words alone cannot tell it from "omelette" -> "3 egg
+  // omelette", and decide's rules already keep a dish off an ingredient row.
   const newPrep = prepStateOf(item.name);
   const changesProduct = !!variantClash(item.name, target) || !!variantClash(target, item.name) ||
     (newPrep !== null && newPrep !== prepStateOf(target));
@@ -4287,7 +4289,11 @@ export function foodNameKey(x: string): string {
   return x.toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu, " ").trim();
 }
 
-/** Drop what is named exactly as the rejected food (or is its catalog row). */
+/** Drop what is named as the rejected food (same words in any order) or is
+ *  the rejected line's own catalog row. Best effort: the row id is found only
+ *  when corrects_food_name names the card line as the card spells it, and a
+ *  row under a different label ("Chickpeas, mature, boiled") is not caught.
+ *  earlier_text and decide's candidate rules carry the rest. */
 export function withoutRejected<T>(
   list: T[],
   rejected: string | null,
@@ -6787,7 +6793,14 @@ async function runParseMealCore(
           // with no typed weight falls back to the memory like any line.
           !memoryEligible[idx] || statedFor(it)
             ? Promise.resolve(null)
-            : matchMemory(deps.jev!, withoutRejected(foods, rejectedFood(it, prevItems), (f) => f.name), { name: memoryLineName(it), brand: it.brand ?? null })
+            : (() => {
+              const gone = rejectedFood(it, prevItems);
+              const usable = withoutRejected(foods, gone, (f) => f.name);
+              if (usable.length !== foods.length) {
+                steps.push({ iter: 1, tool: "rejected_food", input: { item: it.name, rejected: gone, from: "memory" }, result: { dropped: foods.length - usable.length } });
+              }
+              return matchMemory(deps.jev!, usable, { name: memoryLineName(it), brand: it.brand ?? null });
+            })()
         ),
       );
       for (const m of matches) if (m) steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: m.trace });
