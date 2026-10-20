@@ -7,7 +7,7 @@
 // Nothing here calls a real model, Jev or the database.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { type ParseMealDeps, type PreviousItem, rejectedFood, runParseMeal, withoutRejected } from "./parseMeal.ts";
+import { foodNameKey, type ParseMealDeps, type PreviousItem, rejectedFood, runParseMeal, withoutRejected } from "./parseMeal.ts";
 
 const prev = (food_name: string, quantity: number, serving_label: string, grams: number, kcal: number, food_id: string | null = null): PreviousItem =>
   ({ food_id, food_name, quantity, serving_label, grams, kcal, protein_g: 5, carb_g: 20, fat_g: 3, source: "catalog" }) as PreviousItem;
@@ -19,6 +19,11 @@ Deno.test("a swap rejects the old food; an edit of the same food does not", () =
   // Same food, more words: an edit.
   assertEquals(rejectedFood({ name: "3 egg omelette", correctsFoodName: "omelette" }, []), null);
   assertEquals(rejectedFood({ name: "chana", correctsFoodName: "boiled chana" }, CARD), null);
+  // Vowel signs are part of a word: dropped, "चना" became "चन" and "पानी" broke
+  // into "प न", so different names compared as the same fragments.
+  assertEquals(foodNameKey("चना"), "चना");
+  assertEquals(foodNameKey("उबले चने!"), "उबले चने");
+  assert(foodNameKey("चना") !== foodNameKey("चने"));
   // Any script: a Hindi name is compared too.
   assertEquals(rejectedFood({ name: "नवरात्रि चना", correctsFoodName: "उबले चने" }, []), "उबले चने");
   // A grade, variant or new preparation changes the product even when one name

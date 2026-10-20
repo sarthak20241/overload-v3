@@ -4270,6 +4270,9 @@ export function rejectedFood(item: Pick<ExtractedItem, "name" | "correctsFoodNam
   // that differ change the product: a grade or variant ("toned milk" ->
   // "double toned milk") or a preparation the old line did not have ("egg" ->
   // "fried egg"). Those are swaps, and the old row must stay out.
+  // Dropping a preparation ("boiled chana" -> "chana") stays an edit on
+  // purpose: the user only stopped naming it, which says nothing against the
+  // old food.
   const newPrep = prepStateOf(item.name);
   const changesProduct = !!variantClash(item.name, target) || !!variantClash(target, item.name) ||
     (newPrep !== null && newPrep !== prepStateOf(target));
@@ -4277,10 +4280,11 @@ export function rejectedFood(item: Pick<ExtractedItem, "name" | "correctsFoodNam
   return prevItems.find((p) => foodNameKey(p.food_name) === foodNameKey(target))?.food_name ?? target;
 }
 
-/** A food name as compared here: lower case, letters and digits of any script
- *  ("चना" too), single spaces. */
-function foodNameKey(x: string): string {
-  return x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+/** A food name as compared here: lower case, letters, marks and digits of any
+ *  script, single spaces. Marks matter: Devanagari vowel signs are \p{M}, and
+ *  dropping them turned "चना" (chana) into "चन" and "चने" into "चन" too. */
+export function foodNameKey(x: string): string {
+  return x.toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu, " ").trim();
 }
 
 /** Drop what is named exactly as the rejected food (or is its catalog row). */
