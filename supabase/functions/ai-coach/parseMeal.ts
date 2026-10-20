@@ -6808,6 +6808,16 @@ async function runParseMealCore(
         });
         return toResolve.map(() => null);
       }
+      // The remembered foods a line may match: on a correction, never the food
+      // the user just swapped that line away from (rejectedFood).
+      const memoryFoodsFor = (it: ExtractedItem) => {
+        const gone = correctsPrevious ? rejectedFood(it, prevItems) : null;
+        const usable = withoutRejected(foods, gone, (f) => f.name, prevItems);
+        if (usable.length !== foods.length) {
+          steps.push({ iter: 1, tool: "rejected_food", input: { item: it.name, rejected: gone, from: "memory" }, result: { dropped: foods.length - usable.length } });
+        }
+        return usable;
+      };
       const matches = await Promise.all(
         // prep rides along ("grilled" + "chicken breast"): extract may split a
         // preparation out of the name, and without it Jev compared plain
@@ -6820,14 +6830,7 @@ async function runParseMealCore(
           // with no typed weight falls back to the memory like any line.
           !memoryEligible[idx] || statedFor(it)
             ? Promise.resolve(null)
-            : (() => {
-              const gone = correctsPrevious ? rejectedFood(it, prevItems) : null;
-              const usable = withoutRejected(foods, gone, (f) => f.name, prevItems);
-              if (usable.length !== foods.length) {
-                steps.push({ iter: 1, tool: "rejected_food", input: { item: it.name, rejected: gone, from: "memory" }, result: { dropped: foods.length - usable.length } });
-              }
-              return matchMemory(deps.jev!, usable, { name: memoryLineName(it), brand: it.brand ?? null });
-            })()
+            : matchMemory(deps.jev!, memoryFoodsFor(it), { name: memoryLineName(it), brand: it.brand ?? null })
         ),
       );
       for (const m of matches) if (m) steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: m.trace });
