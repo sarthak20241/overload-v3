@@ -431,7 +431,19 @@ function AddEntryModal({
 }) {
   const { C } = useTheme();
   const [value, setValue] = useState(initial);
-  useEffect(() => { if (visible) setValue(initial); }, [visible, initial]);
+  // Seeded from `initial` when the drawer opens, and again if `initial` lands
+  // later (the log can still be loading when a weigh-in link opens it), but
+  // never over a number the user has started typing.
+  const edited = useRef(false);
+  useEffect(() => {
+    if (visible) { edited.current = false; setValue(initial); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+  useEffect(() => {
+    if (visible && !edited.current) setValue(initial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial]);
+  const onChange = (v: string) => { edited.current = true; setValue(v); };
 
   const submit = () => {
     const num = parseFloat(value);
@@ -458,7 +470,7 @@ function AddEntryModal({
         <Text style={[styles.fieldLabel, { color: C.textMuted }]}>{label} ({unit})</Text>
         <TextInput
           value={value}
-          onChangeText={setValue}
+          onChangeText={onChange}
           keyboardType="decimal-pad"
           placeholder={`0 ${unit}`}
           placeholderTextColor={C.textDim}
