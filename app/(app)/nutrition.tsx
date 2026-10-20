@@ -54,6 +54,7 @@ import {
   type PendingFoodMeal, parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext, sectionsOf,
   loadNutritionRange, dateFromYmd, listSavedMeals, savedMealAsItems, usePrefetchWeek,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
+  FOOD_TURNS_KEPT,
 } from '@/lib/dietData';
 import {
   applyCoachFoodCreate,
@@ -360,7 +361,9 @@ export default function NutritionScreen() {
   const turnsRef = useRef<{ role: 'user' | 'drona'; text: string }[]>([]);
   const pushTurn = useCallback((role: 'user' | 'drona', text: string) => {
     if (!text.trim()) return;
-    turnsRef.current = [...turnsRef.current, { role, text }].slice(-6);
+    // Ten turns, the user's and Drona's, so a fix in message 5 still sees what
+    // message 3 added (lib/dietData.ts sends them all). Cleared with the card.
+    turnsRef.current = [...turnsRef.current, { role, text }].slice(-FOOD_TURNS_KEPT);
   }, []);
   const [adding, setAdding] = useState(false);
   const [editEntry, setEditEntry] = useState<LoggedEntry | null>(null);
@@ -889,9 +892,11 @@ export default function NutritionScreen() {
     // meal, mutating a card the user was still deciding on while the lost send
     // was never re-sent at all. The stored pending record survived, so the miss
     // line simply came back later and the damage looked unrelated to the tap.
+    // `words` is the card's whole history: `raw` is only the last message that
+    // rebuilt it, so after a correction the first one is gone from `raw`.
     const pending = retry || !prevReview
       ? null
-      : { text: prevReview.raw, items: prevReview.meal.items };
+      : { text: prevReview.raw, words: prevReview.words ?? prevReview.raw, items: prevReview.meal.items };
     // Leaving the review this check belonged to. Without this the stale index
     // rides into the NEXT card and freezes Add/Edit/Remove behind a spinner on
     // an unrelated line until the abandoned 5-9s lookup finally settles.

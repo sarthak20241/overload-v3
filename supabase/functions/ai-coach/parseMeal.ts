@@ -24,7 +24,7 @@
 // passes the deterministic guardrails (density clamp, Atwater, prep-state),
 // so catalog-backed numbers are never model-invented.
 
-import { continuationText, type PendingFoodMeal } from "./foodContext.ts";
+import { continuationText, FOOD_TURN_CHARS, FOOD_TURNS_KEPT, type PendingFoodMeal } from "./foodContext.ts";
 import { nearWord } from "./textMatch.ts";
 import {
   findSavedMeal,
@@ -930,6 +930,11 @@ export interface ParseMealInput {
   mode?: "fast" | "super" | null;
   /** Set only when a parsed-but-unlogged meal is on screen. */
   previousText?: string | null;
+  /** Everything the user wrote for the card on screen, oldest first ("3 pooris
+   *  and chana; just 75g of chana"). previousText is only the last message
+   *  that rebuilt the card, so after a correction the first one is gone from
+   *  it. Absent from older apps: previousText stands in. */
+  previousWords?: string | null;
   previousItems?: PreviousItem[];
   /** Only set after the router identifies a continuation of an unlogged meal. */
   pendingMeal?: PendingFoodMeal | null;
@@ -2485,6 +2490,20 @@ const EXTRACT_MAX_TOKENS_SMART = 6500;
  *  limit would only move it. */
 export const USER_TEXT_MAX_CHARS = 2000;
 
+/**
+ * A card's history held to `cap` characters by cutting the MIDDLE. The start
+ * says what the food is ("3 pooris and chana navratri vaale in lunch") and the
+ * end is the newest correction; a plain cut from either side loses one of
+ * them. Messages are joined with "; ", oldest first.
+ */
+export function keepEnds(text: string, cap = USER_TEXT_MAX_CHARS): string {
+  const t = text.trim();
+  if (t.length <= cap) return t;
+  const head = Math.floor(cap * 0.6);
+  const tail = cap - head - 5;
+  return `${t.slice(0, head)} ... ${t.slice(-tail)}`;
+}
+
 /** Trim, then clamp, and report what was lost. `dropped` is characters cut,
  *  0 when the message fitted - the caller uses it to decide whether there is
  *  anything to say. Trimming happens BEFORE measuring so trailing whitespace
@@ -2628,6 +2647,7 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
   The same phrase shape gives opposite answers: "amul toned milk" -> plain toned milk row is fine, "quest protein bar" -> a generic protein bar row is NOT.
 - grade_not_stocked on an item means we checked every candidate in CODE and none of them stock the grade the user asked for. Do NOT take one of those rows. ESTIMATE the product they actually named, and say so in assumption ("No low fat paneer row, so these are estimated"). A generic row's macros are more wrong than a careful estimate: low fat paneer is ~190 kcal/100 g against plain paneer's 283, double toned milk ~42 against toned's 58.
 - sources_disagree_pct on a candidate means we read that food's calories from several places and they did not agree, by roughly that percentage. Its per_100 is the middle of what we found, not a settled fact. Still pick the candidate if it is the right food, but never mark that line confidence high, and say the doubt out loud in assumption in Drona's voice ("Sources vary on this one, so treat it as a ballpark"). A candidate with no such flag agreed with itself; say nothing about sourcing there.
+- earlier_text, on a correction, is everything the user wrote for this meal before, oldest first; recent_turns is the latest conversation, the user's words and Drona's replies. They are context: read them when user_text alone does not say what a food is (a dish named earlier, how it was cooked). user_text says what to change, and a candidate that fits the food still wins over an estimate.
 - looked_up_as on an item means the user's words found no label as written, and from what the search returned the product is most likely sold under that name. A candidate that is the looked_up_as product is the user's food; say in assumption which product you took it as.
 - similar_products on an item are other companies' products we found. They are NEVER the food: do not log one, and do not copy its numbers. Use them, with what you know of the user's brand and its range, only to keep your estimate in a sensible range.
 - label_not_found on an item means the web was searched for this product's label and none was found. If no candidate is acceptable, say so in assumption ("Couldn't find this exact label, so this is my estimate").
@@ -4246,6 +4266,103 @@ export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousIt
     )
   );
   return copies.length >= 2;
+}
+
+/**
+ * The food a correction swapped out of a line, or null when the line was not a
+ * swap. "why are u taking boiled chana, when I said navratri chana" tags the
+ * new line with corrects_food_name "boiled chana": that food is rejected for
+ * this line. An EDIT that keeps the food ("omelette" -> "3 egg omelette") is
+ * not a swap: every word of one name is in the other.
+ *
+ * Live, 2026-10-19: the swap was understood, then food memory matched "boiled
+ * chana" again and put it straight back.
+ */
+export function rejectedFood(
+  item: Pick<ExtractedItem, "name" | "correctsFoodName"> & { prep?: string | null },
+  prevItems: PreviousItem[],
+): string | null {
+  const target = item.correctsFoodName?.trim();
+  if (!target) return null;
+  // The line as named, with the preparation extract split out of the name
+  // ("egg" + prep "fried" is "fried egg"), the same join memory matching uses.
+  const named = memoryLineName({ name: item.name, prep: item.prep ?? null });
+  const words = (x: string) => new Set(foodWords(x));
+  const a = words(named), b = words(target);
+  if (a.size === 0 || b.size === 0) return null;
+  const within = (x: Set<string>, y: Set<string>) => [...x].every((w) => y.has(w));
+  // A grade or variant ("toned milk" -> "double toned milk") or a preparation
+  // the old line did not have ("egg" -> "fried egg") changes the product.
+  const newPrep = prepStateOf(named);
+  if (variantClash(named, target) || variantClash(target, named) || (newPrep !== null && newPrep !== prepStateOf(target))) {
+    return cardName(target, prevItems);
+  }
+  // Words dropped ("boiled chana" -> "chana"): an edit. The user only stopped
+  // naming a detail, which says nothing against the old food.
+  if (within(a, b)) return null;
+  // Words added: an edit only when they are an amount or a size ("omelette" ->
+  // "3 egg omelette", "dosa" -> "large dosa"). Any other added word names a
+  // different food ("paneer" -> "paneer butter masala"), so it is a swap.
+  if (within(b, a) && onlyAmountWords([...a].filter((w) => !b.has(w)), foodWords(named))) return null;
+  return cardName(target, prevItems);
+}
+
+/** The card's own spelling of a line, when the target names one. */
+function cardName(target: string, prevItems: PreviousItem[]): string {
+  return prevItems.find((p) => foodNameKey(p.food_name) === foodNameKey(target))?.food_name ?? target;
+}
+
+// Size only. Not "whole", "full" or "extra": "whole milk", "full cream" and
+// "extra cheese" name a different product, not a bigger portion.
+const SIZE_ADJECTIVES = new Set(["small", "medium", "large", "big", "mini", "half", "regular", "jumbo", "little"]);
+
+/** A name's words with plurals folded ("eggs" is "egg", "rotis" is "roti"),
+ *  the same folding nameKey uses. Without it "make it 3 eggs" on an "Egg" line
+ *  read as a swap and dropped the line's own row. */
+function foodWords(x: string): string[] {
+  return foodNameKey(x).split(" ").filter(Boolean)
+    .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w));
+}
+
+/** Added words that only say how much or how big: numbers, the word right
+ *  after a number ("3 egg"), sizes, measures and portion words. */
+function onlyAmountWords(added: string[], tokens: string[]): boolean {
+  const counted = new Set<string>();
+  tokens.forEach((t, i) => { if (/^\d/.test(t) && tokens[i + 1]) counted.add(tokens[i + 1]); });
+  return added.every((w) =>
+    /^\d/.test(w) || counted.has(w) || SIZE_ADJECTIVES.has(w) || MEASURE_WORDS.has(w) ||
+    MASS_UNITS.has(w) || GENERIC_PORTION_WORDS.has(w)
+  );
+}
+
+/** A food name as compared here: lower case, letters, marks and digits of any
+ *  script, single spaces. Marks matter: Devanagari vowel signs are \p{M}, and
+ *  dropping them turned "चना" (chana) into "चन" and "चने" into "चन" too. */
+export function foodNameKey(x: string): string {
+  return x.toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu, " ").trim();
+}
+
+/** Drop what is named as the rejected food (same words in any order) or is
+ *  the rejected line's own catalog row. Best effort: the row id is found only
+ *  when corrects_food_name names the card line as the card spells it, and a
+ *  row under a different label ("Chickpeas, mature, boiled") is not caught.
+ *  earlier_text and decide's candidate rules carry the rest. */
+export function withoutRejected<T>(
+  list: T[],
+  rejected: string | null,
+  nameOf: (t: T) => string,
+  prevItems: PreviousItem[] = [],
+): T[] {
+  if (!rejected) return list;
+  const key = foodNameKey(rejected);
+  // Word order does not make another food: "Chana, boiled" is "boiled chana".
+  const sorted = (x: string) => foodWords(x).sort().join(" ");
+  const id = prevItems.find((p) => foodNameKey(p.food_name) === key)?.food_id ?? null;
+  return list.filter((t) => {
+    if (sorted(nameOf(t)) === sorted(rejected)) return false;
+    const fid = (t as { food_id?: string | null }).food_id;
+    return !(id && fid && fid === id);
+  });
 }
 
 export function unchangedInCorrection(
@@ -6060,8 +6177,8 @@ async function runParseMealCore(
         ? JSON.stringify({
           text: userText.text,
           // What was actually SAID, so "yes" / "no, the other one" resolve.
-          recent_turns: (input.recentTurns ?? []).slice(-4).map((t) => ({
-            [t.role === "user" ? "user" : "drona"]: t.text.slice(0, 240),
+          recent_turns: (input.recentTurns ?? []).slice(-FOOD_TURNS_KEPT).map((t) => ({
+            [t.role === "user" ? "user" : "drona"]: t.text.slice(0, FOOD_TURN_CHARS),
           })),
           previous_meal: {
             text: input.previousText ?? "",
@@ -6717,6 +6834,16 @@ async function runParseMealCore(
         });
         return toResolve.map(() => null);
       }
+      // The remembered foods a line may match: on a correction, never the food
+      // the user just swapped that line away from (rejectedFood).
+      const memoryFoodsFor = (it: ExtractedItem) => {
+        const gone = correctsPrevious ? rejectedFood(it, prevItems) : null;
+        const usable = withoutRejected(foods, gone, (f) => f.name, prevItems);
+        if (usable.length !== foods.length) {
+          steps.push({ iter: 1, tool: "rejected_food", input: { item: it.name, rejected: gone, from: "memory" }, result: { dropped: foods.length - usable.length } });
+        }
+        return usable;
+      };
       const matches = await Promise.all(
         // prep rides along ("grilled" + "chicken breast"): extract may split a
         // preparation out of the name, and without it Jev compared plain
@@ -6729,7 +6856,7 @@ async function runParseMealCore(
           // with no typed weight falls back to the memory like any line.
           !memoryEligible[idx] || statedFor(it)
             ? Promise.resolve(null)
-            : matchMemory(deps.jev!, foods, { name: memoryLineName(it), brand: it.brand ?? null })
+            : matchMemory(deps.jev!, memoryFoodsFor(it), { name: memoryLineName(it), brand: it.brand ?? null })
         ),
       );
       for (const m of matches) if (m) steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: m.trace });
@@ -7065,6 +7192,27 @@ async function runParseMealCore(
     ...r,
     candidates: r.candidates.map((c) => (c.food_id?.startsWith(`${EPHEMERAL_ID_PREFIX}mem_`) ? c : perOneServings(c))),
   }));
+  // A food the user just swapped OUT of a line never comes back as that line's
+  // answer, from memory (filtered above) or from any search. With nothing left
+  // that is the food, decide estimates it.
+  if (correctsPrevious) {
+    resolved = resolved.map((r) => {
+      const gone = rejectedFood(r, prevItems);
+      if (!gone) return r;
+      const kept = withoutRejected(r.candidates, gone, (c) => c.name, prevItems);
+      if (kept.length !== r.candidates.length) {
+        // card_id: whether the card line carried a row id to match on. Without
+        // one only the name can be matched; the trace says how often that is.
+        const cardId = prevItems.some((p) => foodNameKey(p.food_name) === foodNameKey(gone) && !!p.food_id);
+        steps.push({ iter: 1, tool: "rejected_food", input: { item: r.name, rejected: gone }, result: { dropped: r.candidates.length - kept.length, card_id: cardId } });
+      }
+      if (kept.length === r.candidates.length) return r;
+      // Its only answer was the rejected food: the line is no longer resolved,
+      // so a fallback treats it as an unknown estimate, never as a confirmed
+      // match with nothing behind it (0 kcal at high confidence).
+      return { ...r, candidates: kept, ...(kept.length === 0 ? { resolvedIdentity: false } : {}) };
+    });
+  }
   const candidatePer100 = per100ForItems(resolved);
 
 
@@ -7128,6 +7276,21 @@ async function runParseMealCore(
     // and sections against the user's own words, so feeding it a shorter cut
     // than extract got would make the two stages disagree about what was said.
     user_text: input.pendingMeal ? continuationText(userText.text, input.pendingMeal) : userText.text,
+    // A correction's own words rarely say what the food is ("why are u taking
+    // boiled chana, when I said navaratri chana"). What the user wrote for the
+    // meal before does ("3 pooris and chana navratri vaale in lunch"), and the
+    // conversation holds the rest, Drona's replies included.
+    // Live, 2026-10-19: without it decide read the dish as a dry snack.
+    ...(correctsPrevious && (input.previousWords ?? input.previousText)?.trim()
+      ? { earlier_text: keepEnds((input.previousWords ?? input.previousText)!) }
+      : {}),
+    ...(correctsPrevious && input.recentTurns?.length
+      ? {
+        recent_turns: input.recentTurns.slice(-FOOD_TURNS_KEPT).map((t) => ({
+          [t.role === "user" ? "user" : "drona"]: t.text.slice(0, FOOD_TURN_CHARS),
+        })),
+      }
+      : {}),
     meal_type_from_text: mealFromText,
     items: resolved.map((r) => ({
       name: r.name,

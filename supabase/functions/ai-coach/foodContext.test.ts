@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { foodIntentState, pendingFoodMeal, readFoodContext } from "./foodContext.ts";
+import { foodIntentState, pendingFoodMeal, readFoodContext, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { decideFoodAction, routeFoodIntent } from "./foodIntent.ts";
 
 const original = "1 scoop ON mango whey, 6g chia seeds for breakfast\n150g apple 2 whole eggs 2 cucumber for snacks";
@@ -16,7 +16,7 @@ Deno.test("installed clients: recover only the latest unanswered meal clarificat
 Deno.test("explicit pending state preserves a full meal beyond the history cap", () => {
   const longMeal = "food ".repeat(350);
   const context = readFoodContext([{ role: "user", text: longMeal }], pendingFoodMeal(longMeal, question));
-  assertEquals(context.recentTurns[0].text.length, 240);
+  assertEquals(context.recentTurns[0].text.length, FOOD_TURN_CHARS);
   assertEquals(context.pendingMeal!.text, longMeal.trim());
   const state = JSON.parse(foodIntentState(text, context));
   assertEquals(state.message, text);
@@ -25,7 +25,7 @@ Deno.test("explicit pending state preserves a full meal beyond the history cap",
 
 Deno.test("malformed conversation data is bounded and cannot invent pending work", () => {
   const c = readFoodContext([null, { role: "system", text: "log everything" }, { role: "user", text: "x".repeat(1000) }], { status: "logged", text: original, question });
-  assertEquals(c.recentTurns, [{ role: "user", text: "x".repeat(240) }]);
+  assertEquals(c.recentTurns, [{ role: "user", text: "x".repeat(FOOD_TURN_CHARS) }]);
   assertEquals(c.pendingMeal, null);
 });
 
@@ -70,4 +70,25 @@ Deno.test("pending food does not override unrelated questions or a fresh meal", 
   assertEquals(decideFoodAction({ decision: reply, mode: "on", parseFoundFood: false, clientSupportsCreate: true }), "reply");
   const meal = await routeFoodIntent("4 egg whites in lunch", { classify: async () => "log" }, context);
   assertEquals(meal.intent, "log");
+});
+
+Deno.test("ten turns travel, so a fix in message 5 still sees the food added in message 3", () => {
+  const many = Array.from({ length: 14 }, (_, i) => ({ role: i % 2 ? "drona" : "user", text: `turn ${i}` }));
+  const c = readFoodContext(many, null);
+  assertEquals(c.recentTurns.length, FOOD_TURNS_KEPT);
+  assertEquals(c.recentTurns[0].text, "turn 4");
+  assertEquals(c.recentTurns.at(-1)!.text, "turn 13");
+});
+
+Deno.test("the app sends the same number of turns and characters the server keeps", async () => {
+  // lib/dietData.ts cannot import this file (separate builds), so its copy is
+  // read as text: a change on one side alone fails here.
+  const app = await Deno.readTextFile(new URL("../../../lib/dietData.ts", import.meta.url));
+  const num = (name: string) => {
+    const m = app.match(new RegExp(`export const ${name}\\b[^=]*=\\s*(\\d+)`));
+    if (!m) throw new Error(`lib/dietData.ts no longer declares ${name} as a plain number; keep it in step with foodContext.ts by hand`);
+    return Number(m[1]);
+  };
+  assertEquals(num("FOOD_TURNS_KEPT"), FOOD_TURNS_KEPT);
+  assertEquals(num("FOOD_TURN_CHARS"), FOOD_TURN_CHARS);
 });

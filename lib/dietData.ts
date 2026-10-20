@@ -719,6 +719,12 @@ export type AutoLogSkipped = 'declined' | 'implausible' | 'write_error';
  *  string, not a second flag the server has to learn to read. */
 export const FOOD_BAR_CAPABILITIES = ['food_create', 'variant_swap'] as const;
 
+/** Turns of a food conversation the app keeps and sends, and characters per
+ *  turn. Mirrors FOOD_TURNS_KEPT / FOOD_TURN_CHARS in the ai-coach function's
+ *  foodContext.ts, which caps what it receives to the same numbers. */
+export const FOOD_TURNS_KEPT = 10;
+export const FOOD_TURN_CHARS = 400;
+
 export interface PendingFoodMeal {
   status: 'awaiting_clarification';
   text: string;
@@ -1058,7 +1064,7 @@ export async function parseMealStreaming(
         local_date: localDate,
         ...(args.mealHint ? { meal_hint: args.mealHint } : {}),
         ...(args.turns && args.turns.length > 0
-          ? { recent_turns: args.turns.slice(-4).map((t) => ({ role: t.role, text: t.text.slice(0, 240) })) }
+          ? { recent_turns: args.turns.slice(-FOOD_TURNS_KEPT).map((t) => ({ role: t.role, text: t.text.slice(0, FOOD_TURN_CHARS) })) }
           : {}),
         ...(args.pendingMeal ? { pending_meal: args.pendingMeal } : {}),
         ...autoLogFields(args.autoLog, now),
@@ -1161,7 +1167,7 @@ export async function parseMeal(
      *  ("make it a small one", "actually 2") correct that meal instead of being
      *  read as a brand new one. The server resolves a pure serving/quantity
      *  change without a second model call, so refining is cheaper than parsing. */
-    previous?: { text: string; items: ParsedMealItem[] } | null;
+    previous?: { text: string; words?: string; items: ParsedMealItem[] } | null;
     /** Index in previous.items of the line the user tapped "double check" on.
      *  The server then looks up only that line. */
     researchLine?: number | null;
@@ -1213,13 +1219,15 @@ export async function parseMeal(
         ...(args.speed ? { speed: args.speed } : {}),
         ...(args.mealHint ? { meal_hint: args.mealHint } : {}),
         ...(args.turns && args.turns.length > 0
-          ? { recent_turns: args.turns.slice(-4).map((t) => ({ role: t.role, text: t.text.slice(0, 240) })) }
+          ? { recent_turns: args.turns.slice(-FOOD_TURNS_KEPT).map((t) => ({ role: t.role, text: t.text.slice(0, FOOD_TURN_CHARS) })) }
           : {}),
         ...(args.pendingMeal ? { pending_meal: args.pendingMeal } : {}),
         ...autoLogFields(args.autoLog, now),
         ...(args.previous && args.previous.items.length > 0
           ? {
             previous_text: args.previous.text,
+            // Everything the user wrote for this card; the server prefers it.
+            ...(args.previous.words ? { previous_words: args.previous.words } : {}),
             // Only what the server needs to re-target a line: identity, the
             // amount, and where the numbers came from. Macros stay server-side.
             // Macros ride along so the server can hand an UNTOUCHED line back

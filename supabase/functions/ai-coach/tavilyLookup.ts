@@ -1015,8 +1015,11 @@ export const SUGGEST_SYSTEM =
   "just because it came up: a different flavour or variant is a different product. Never add a size, weight, " +
   "protein amount or pack count the user did not say, even when a title carries one: a brand often sells the " +
   "same flavour in several sizes, and picking one for them guesses the very number they are logging. If you " +
-  "cannot tell, keep the user's words as the name. Then write up to two short searches for that exact " +
-  "product's nutrition facts.";
+  "cannot tell, keep the user's words as the name. " +
+  "A dish can also go by a festival, family or regional name that recipe and nutrition pages rarely print. When " +
+  "the titles show what that dish is, name it the way those pages do, by what it is made of and how it is cooked, " +
+  "never as a plainer or differently cooked form of its main ingredient. " +
+  "Then write up to two short searches for that exact product's nutrition facts.";
 
 /** The forced call the caller sends to its model for a rewrite. */
 export function suggestSearchPayload(model: string, item: WebFoodItem, seen: SeenResult[]): Record<string, unknown> {
