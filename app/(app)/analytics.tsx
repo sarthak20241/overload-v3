@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
   RefreshControl, BackHandler, Pressable, TextInput, useWindowDimensions,
@@ -1277,9 +1277,10 @@ export default function AnalyticsScreen() {
   const goalWeight = ctxGoal != null && ctxGoal > 0 ? fromKg(ctxGoal, weightUnit) : null;
   const [addWeightOpen, setAddWeightOpen] = useState(false);
   // The Nutrition screen's maintenance row sends people here to weigh in
-  // (?logWeight=<stamp>): open the weight log once per stamp, since this tab
-  // stays mounted and the param stays on the route. Only once loaded and
-  // focused, so the drawer slides up where the user can see it.
+  // (?logWeight=<stamp>): open the weight log once per stamp, then clear the
+  // param so a remount cannot open it again (the stamp ref covers the moment
+  // before the cleared param lands). Only once loaded and focused, so the
+  // drawer slides up where the user can see it.
   const { logWeight } = useLocalSearchParams<{ logWeight?: string }>();
   const weighInAsked = useRef<string | undefined>(undefined);
   const [focused, setFocused] = useState(false);
@@ -1682,6 +1683,7 @@ export default function AnalyticsScreen() {
   useEffect(() => {
     if (!logWeight || loading || !focused || weighInAsked.current === logWeight) return;
     weighInAsked.current = logWeight;
+    router.setParams({ logWeight: undefined });
     setAddWeightOpen(true);
   }, [logWeight, loading, focused]);
 
