@@ -79,3 +79,12 @@ Deno.test("ten turns travel, so a fix in message 5 still sees the food added in 
   assertEquals(c.recentTurns[0].text, "turn 4");
   assertEquals(c.recentTurns.at(-1)!.text, "turn 13");
 });
+
+Deno.test("the app sends the same number of turns and characters the server keeps", async () => {
+  // lib/dietData.ts cannot import this file (separate builds), so its copy is
+  // read as text: a change on one side alone fails here.
+  const app = await Deno.readTextFile(new URL("../../../lib/dietData.ts", import.meta.url));
+  const num = (name: string) => Number(app.match(new RegExp(`export const ${name} = (\\d+);`))?.[1]);
+  assertEquals(num("FOOD_TURNS_KEPT"), FOOD_TURNS_KEPT);
+  assertEquals(num("FOOD_TURN_CHARS"), FOOD_TURN_CHARS);
+});
