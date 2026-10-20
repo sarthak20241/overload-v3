@@ -7172,7 +7172,10 @@ async function runParseMealCore(
       if (!gone) return r;
       const kept = withoutRejected(r.candidates, gone, (c) => c.name, prevItems);
       if (kept.length !== r.candidates.length) {
-        steps.push({ iter: 1, tool: "rejected_food", input: { item: r.name, rejected: gone }, result: { dropped: r.candidates.length - kept.length } });
+        // card_id: whether the card line carried a row id to match on. Without
+        // one only the name can be matched; the trace says how often that is.
+        const cardId = prevItems.some((p) => foodNameKey(p.food_name) === foodNameKey(gone) && !!p.food_id);
+        steps.push({ iter: 1, tool: "rejected_food", input: { item: r.name, rejected: gone }, result: { dropped: r.candidates.length - kept.length, card_id: cardId } });
       }
       if (kept.length === r.candidates.length) return r;
       // Its only answer was the rejected food: the line is no longer resolved,
