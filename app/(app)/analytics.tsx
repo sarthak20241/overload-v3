@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
   RefreshControl, BackHandler, Pressable, TextInput, useWindowDimensions,
@@ -1275,6 +1276,14 @@ export default function AnalyticsScreen() {
   // The goal is stored in kg; the chart draws in the chosen unit.
   const goalWeight = ctxGoal != null && ctxGoal > 0 ? fromKg(ctxGoal, weightUnit) : null;
   const [addWeightOpen, setAddWeightOpen] = useState(false);
+  // The Nutrition screen's maintenance row sends people here to weigh in
+  // (?logWeight=<stamp>): open the weight log once per stamp, since this tab
+  // stays mounted and the param stays on the route. Only once loaded and
+  // focused, so the drawer slides up where the user can see it.
+  const { logWeight } = useLocalSearchParams<{ logWeight?: string }>();
+  const weighInAsked = useRef<string | undefined>(undefined);
+  const [focused, setFocused] = useState(false);
+  useFocusEffect(useCallback(() => { setFocused(true); return () => setFocused(false); }, []));
   const [addBfOpen, setAddBfOpen] = useState(false);
   // Picks the body silhouette in the distribution card. Null just means "not
   // known yet" and falls back to the male drawing — never blocks the card.
@@ -1669,6 +1678,12 @@ export default function AnalyticsScreen() {
   const hasMuscleData = Object.keys(muscleCounts).length > 0;
 
   const hasAny = workouts.length > 0 || weightLog.length > 0 || bodyFatLog.length > 0;
+
+  useEffect(() => {
+    if (!logWeight || loading || !focused || weighInAsked.current === logWeight) return;
+    weighInAsked.current = logWeight;
+    setAddWeightOpen(true);
+  }, [logWeight, loading, focused]);
 
   if (loading) {
     return (

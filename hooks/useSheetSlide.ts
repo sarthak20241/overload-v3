@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useWindowDimensions } from 'react-native';
 import {
   Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming,
@@ -41,17 +41,27 @@ export function useSheetSlide(visible: boolean, inDuration = 320, outDuration = 
   // never a flash of the sheet in its resting place.
   const translateY = useSharedValue(height);
   const [mounted, setMounted] = useState(visible);
+  // The close animation's callback lands later, on the JS thread. A sheet that
+  // was opened again in the meantime must not be unmounted by it: that left
+  // `visible` true with nothing drawn, so the sheet could not be opened at
+  // all. It happened to a sheet opened right as its screen first mounted (the
+  // mount's own close ran late) and after a Fast Refresh.
+  const visibleRef = useRef(visible);
+  const unmountIfClosed = useCallback(() => {
+    if (!visibleRef.current) setMounted(false);
+  }, []);
 
   useEffect(() => {
+    visibleRef.current = visible;
     if (visible) {
       setMounted(true);
       translateY.value = withTiming(0, { duration: inDuration, easing: Easing.out(Easing.cubic) });
     } else {
       translateY.value = withTiming(height, { duration: outDuration }, (finished) => {
-        if (finished) runOnJS(setMounted)(false);
+        if (finished) runOnJS(unmountIfClosed)();
       });
     }
-  }, [visible, height, inDuration, outDuration, translateY]);
+  }, [visible, height, inDuration, outDuration, translateY, unmountIfClosed]);
 
   const slideStyle = useAnimatedStyle(() => ({ transform: [{ translateY: translateY.value }] }));
 
