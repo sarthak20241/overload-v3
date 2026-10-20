@@ -6822,7 +6822,7 @@ async function runParseMealCore(
             ? Promise.resolve(null)
             : (() => {
               const gone = correctsPrevious ? rejectedFood(it, prevItems) : null;
-              const usable = withoutRejected(foods, gone, (f) => f.name);
+              const usable = withoutRejected(foods, gone, (f) => f.name, prevItems);
               if (usable.length !== foods.length) {
                 steps.push({ iter: 1, tool: "rejected_food", input: { item: it.name, rejected: gone, from: "memory" }, result: { dropped: foods.length - usable.length } });
               }
@@ -7174,7 +7174,11 @@ async function runParseMealCore(
       if (kept.length !== r.candidates.length) {
         steps.push({ iter: 1, tool: "rejected_food", input: { item: r.name, rejected: gone }, result: { dropped: r.candidates.length - kept.length } });
       }
-      return kept.length === r.candidates.length ? r : { ...r, candidates: kept };
+      if (kept.length === r.candidates.length) return r;
+      // Its only answer was the rejected food: the line is no longer resolved,
+      // so a fallback treats it as an unknown estimate, never as a confirmed
+      // match with nothing behind it (0 kcal at high confidence).
+      return { ...r, candidates: kept, ...(kept.length === 0 ? { resolvedIdentity: false } : {}) };
     });
   }
   const candidatePer100 = per100ForItems(resolved);

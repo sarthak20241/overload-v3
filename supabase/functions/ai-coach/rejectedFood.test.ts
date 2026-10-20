@@ -125,3 +125,34 @@ Deno.test("a first log carries no earlier_text", async () => {
   assertEquals(log.decide.length, 1);
   assertEquals(JSON.parse(log.decide[0].split("\n")[0]).earlier_text, undefined);
 });
+
+Deno.test("a line whose only answer was the rejected food is not a confirmed match", async () => {
+  // A Precise cache hit names the rejected food; decide then leaves the line out.
+  const row = {
+    id: "c1", cache_key: "navratri chana", display_name: "boiled chana", brand: null, base_unit: "g" as const,
+    kcal: 164, protein_g: 9, carb_g: 27, fat_g: 2.6, fiber_g: 7.6, servings: [], evidence: [], verified: true,
+    source_note: null, last_verified_at: "2026-10-18T00:00:00Z",
+  };
+  const fetchFn = (async (_u: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init!.body));
+    const tool = body.tool_choice?.name;
+    const input = tool === "extract_meal"
+      ? { declined: false, corrects_previous: true, meal_type_from_text: null, items: [
+        { name: "Navratri chana", brand: null, quantity: 75, unit: "g", prep: null, corrects_food_name: "boiled chana" },
+      ] }
+      : { meal_type: "lunch", drona_line: "ok", items: [] };
+    return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name: tool, input }] });
+  }) as typeof fetch;
+  const r = await runParseMeal({
+    anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: false,
+    searchFoods: async () => [], backfillOffFood: async () => null, getFoodPer100: async () => null,
+    fetchFn, preciseCacheGet: async () => row,
+  } as ParseMealDeps, {
+    text: "it was navratri chana, not boiled", previousText: "chana navratri vaale", previousItems: [prev("boiled chana", 75, "g", 75, 123)],
+    localHour: 18, mealHint: "lunch", mode: "super", recentFoods: [], todayTotals: null, targets: null,
+  });
+  const line = (r.parsed?.items ?? []).find((i) => /chana/i.test(i.food_name));
+  assert(line, JSON.stringify(r.parsed ?? r.declined));
+  assert(line!.food_name !== "boiled chana", JSON.stringify(line));
+  assert(line!.confidence !== "high", JSON.stringify(line));
+});
