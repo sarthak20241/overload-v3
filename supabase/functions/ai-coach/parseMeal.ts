@@ -4293,7 +4293,9 @@ function cardName(target: string, prevItems: PreviousItem[]): string {
   return prevItems.find((p) => foodNameKey(p.food_name) === foodNameKey(target))?.food_name ?? target;
 }
 
-const SIZE_ADJECTIVES = new Set(["small", "medium", "large", "big", "mini", "half", "full", "regular", "extra", "jumbo", "little", "whole"]);
+// Size only. Not "whole", "full" or "extra": "whole milk", "full cream" and
+// "extra cheese" name a different product, not a bigger portion.
+const SIZE_ADJECTIVES = new Set(["small", "medium", "large", "big", "mini", "half", "regular", "jumbo", "little"]);
 
 /** Added words that only say how much or how big: numbers, the word right
  *  after a number ("3 egg"), sizes, measures and portion words. */

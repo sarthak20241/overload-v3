@@ -36,6 +36,8 @@ Deno.test("a swap rejects the old food; an edit of the same food does not", () =
   assertEquals(rejectedFood({ name: "paneer butter masala", correctsFoodName: "paneer" }, []), "paneer");
   assertEquals(rejectedFood({ name: "paneer tikka", correctsFoodName: "paneer" }, []), "paneer");
   assertEquals(rejectedFood({ name: "large dosa", correctsFoodName: "dosa" }, []), null);
+  // "whole" names a product, not a size.
+  assertEquals(rejectedFood({ name: "whole milk", correctsFoodName: "milk" }, []), "milk");
   // A preparation extract split out of the name still counts.
   assertEquals(rejectedFood({ name: "egg", prep: "fried", correctsFoodName: "egg" }, []), "egg");
   // Untouched line.
