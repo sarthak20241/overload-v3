@@ -12,7 +12,7 @@
  * Owner's call (2026-10-18): the logging screen must not grow another block,
  * and the learning is good news, not a request, so it is never a popup.
  * Learning is daily, changing is weekly: the estimate's running week is
- * rebuilt every day, so this row moves as weigh-ins and whole food days land,
+ * rebuilt every day, so this row moves as weigh-ins and full days of food land,
  * while the calorie target only moves on the weekly check-in card.
  *
  * Reads the newest week row with an estimate (RLS: own rows only), on every
@@ -70,7 +70,7 @@ export function MaintenanceRow() {
   // ask, so a tab that stays mounted still opens it the second time.
   const weighIn = () => {
     haptics.tick();
-    router.navigate({ pathname: '/(app)/analytics', params: { logWeight: String(Date.now()) } } as any);
+    router.navigate({ pathname: '/(app)/analytics', params: { logWeight: String(Date.now()) } });
   };
 
   const counted = view.counters.map((c) => `${c.have} of ${c.need} ${c.label}`).join(', ');
@@ -85,8 +85,12 @@ export function MaintenanceRow() {
       >
         <View style={s.topLine}>
           <Text style={[s.kcal, { color: C.foreground }]}>{view.kcal}</Text>
-          <Text style={[s.kcalUnit, { color: C.textMuted }]}>kcal maintenance</Text>
-          <Text style={[s.state, { color: C.textDim }]}>{view.label.toLowerCase()}</Text>
+          {/* One line that gives way first: big font scale or a narrow phone
+              trims "learning" before it can run under the chip. */}
+          <Text style={s.kcalRest} numberOfLines={1}>
+            <Text style={{ color: C.textMuted }}>kcal maintenance</Text>
+            <Text style={{ color: C.textDim }}>{`  ${view.label.toLowerCase()}`}</Text>
+          </Text>
         </View>
         {view.counters.length > 0 && (
           <View style={s.counters}>
@@ -116,6 +120,7 @@ export function MaintenanceRow() {
 function Counter({ c }: { c: MaintenanceCounter }) {
   const { C } = useTheme();
   const done = c.have >= c.need;
+  const share = c.need > 0 ? Math.min(1, c.have / c.need) : 0;
   return (
     <View style={s.counter}>
       <Text style={s.counterLine} numberOfLines={1}>
@@ -123,7 +128,7 @@ function Counter({ c }: { c: MaintenanceCounter }) {
         <Text style={{ color: C.textMuted }}>{` ${c.label}`}</Text>
       </Text>
       <View style={[s.counterTrack, { backgroundColor: C.muted }]}>
-        <View style={[s.counterFill, { backgroundColor: C.accentText, width: `${Math.round((c.have / c.need) * 100)}%` }]} />
+        <View style={[s.counterFill, { backgroundColor: C.accentText, width: `${Math.round(share * 100)}%` }]} />
       </View>
     </View>
   );
@@ -143,7 +148,7 @@ function MaintenanceSheet({ open, view, onClose }: { open: boolean; view: Mainte
 
   const facts = [
     ...(view.guess ? [{ label: 'Formula guess', value: view.guess }] : []),
-    ...view.counters.map((c) => ({ label: c.label[0].toUpperCase() + c.label.slice(1), value: `${c.have}/${c.need}` })),
+    ...view.counters.map((c) => ({ label: c.label.charAt(0).toUpperCase() + c.label.slice(1), value: `${c.have}/${c.need}` })),
   ];
 
   return (
@@ -214,8 +219,7 @@ const s = StyleSheet.create({
   // Room on the right for the chip, which sits over this line.
   topLine: { flexDirection: 'row', alignItems: 'center', gap: 5, minHeight: CHIP_H, paddingRight: 84 },
   kcal: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, fontVariant: ['tabular-nums'] },
-  kcalUnit: { fontSize: FontSize.xs },
-  state: { fontSize: FontSize.xs },
+  kcalRest: { flexShrink: 1, fontSize: FontSize.xs },
   chip: {
     position: 'absolute', right: 0, top: Spacing.sm, height: CHIP_H,
     flexDirection: 'row', alignItems: 'center', gap: 3,

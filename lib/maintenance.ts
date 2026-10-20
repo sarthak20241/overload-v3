@@ -5,7 +5,7 @@
  *
  * The number comes from the adaptive estimate (drona_week_facts m_*, migration
  * 20261017115750_drona_energy_facts): it starts at the app's own formula and
- * moves toward the person's real maintenance as weigh-ins and whole food days
+ * moves toward the person's real maintenance as weigh-ins and full days of food
  * arrive. The running week's row is rebuilt every day, so it moves daily;
  * calorie changes themselves stay weekly (the calorie check-in card).
  *
@@ -39,7 +39,7 @@ export interface MaintenanceView {
   next: string;
   /** The formula's own number, on tens, when there is one: what it started from. */
   guess: string | null;
-  /** Weigh-ins and whole food days in the last 4 weeks, each capped at what a read needs. */
+  /** Weigh-ins and full days of food in the last 4 weeks, each capped at what a read needs. */
   readings: number;
   wholeDays: number;
   /** 0..1, how far the learning has got: 3 full data weeks make it measured. */
