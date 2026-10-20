@@ -719,6 +719,12 @@ export type AutoLogSkipped = 'declined' | 'implausible' | 'write_error';
  *  string, not a second flag the server has to learn to read. */
 export const FOOD_BAR_CAPABILITIES = ['food_create', 'variant_swap'] as const;
 
+/** Turns of a food conversation the app keeps and sends, and characters per
+ *  turn. Mirrors FOOD_TURNS_KEPT / FOOD_TURN_CHARS in the ai-coach function's
+ *  foodContext.ts, which caps what it receives to the same numbers. */
+export const FOOD_TURNS_KEPT = 10;
+export const FOOD_TURN_CHARS = 400;
+
 export interface PendingFoodMeal {
   status: 'awaiting_clarification';
   text: string;
@@ -1058,7 +1064,7 @@ export async function parseMealStreaming(
         local_date: localDate,
         ...(args.mealHint ? { meal_hint: args.mealHint } : {}),
         ...(args.turns && args.turns.length > 0
-          ? { recent_turns: args.turns.slice(-10).map((t) => ({ role: t.role, text: t.text.slice(0, 400) })) }
+          ? { recent_turns: args.turns.slice(-FOOD_TURNS_KEPT).map((t) => ({ role: t.role, text: t.text.slice(0, FOOD_TURN_CHARS) })) }
           : {}),
         ...(args.pendingMeal ? { pending_meal: args.pendingMeal } : {}),
         ...autoLogFields(args.autoLog, now),
@@ -1213,7 +1219,7 @@ export async function parseMeal(
         ...(args.speed ? { speed: args.speed } : {}),
         ...(args.mealHint ? { meal_hint: args.mealHint } : {}),
         ...(args.turns && args.turns.length > 0
-          ? { recent_turns: args.turns.slice(-10).map((t) => ({ role: t.role, text: t.text.slice(0, 400) })) }
+          ? { recent_turns: args.turns.slice(-FOOD_TURNS_KEPT).map((t) => ({ role: t.role, text: t.text.slice(0, FOOD_TURN_CHARS) })) }
           : {}),
         ...(args.pendingMeal ? { pending_meal: args.pendingMeal } : {}),
         ...autoLogFields(args.autoLog, now),

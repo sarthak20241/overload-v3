@@ -54,6 +54,7 @@ import {
   type PendingFoodMeal, parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext, sectionsOf,
   loadNutritionRange, dateFromYmd, listSavedMeals, savedMealAsItems, usePrefetchWeek,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
+  FOOD_TURNS_KEPT,
 } from '@/lib/dietData';
 import {
   applyCoachFoodCreate,
@@ -362,7 +363,7 @@ export default function NutritionScreen() {
     if (!text.trim()) return;
     // Ten turns, the user's and Drona's, so a fix in message 5 still sees what
     // message 3 added (lib/dietData.ts sends them all). Cleared with the card.
-    turnsRef.current = [...turnsRef.current, { role, text }].slice(-10);
+    turnsRef.current = [...turnsRef.current, { role, text }].slice(-FOOD_TURNS_KEPT);
   }, []);
   const [adding, setAdding] = useState(false);
   const [editEntry, setEditEntry] = useState<LoggedEntry | null>(null);

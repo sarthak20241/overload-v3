@@ -4287,7 +4287,7 @@ export function rejectedFood(
   // The line as named, with the preparation extract split out of the name
   // ("egg" + prep "fried" is "fried egg"), the same join memory matching uses.
   const named = memoryLineName({ name: item.name, prep: item.prep ?? null });
-  const words = (x: string) => new Set(foodNameKey(x).split(" ").filter(Boolean));
+  const words = (x: string) => new Set(foodWords(x));
   const a = words(named), b = words(target);
   if (a.size === 0 || b.size === 0) return null;
   const within = (x: Set<string>, y: Set<string>) => [...x].every((w) => y.has(w));
@@ -4303,7 +4303,7 @@ export function rejectedFood(
   // Words added: an edit only when they are an amount or a size ("omelette" ->
   // "3 egg omelette", "dosa" -> "large dosa"). Any other added word names a
   // different food ("paneer" -> "paneer butter masala"), so it is a swap.
-  if (within(b, a) && onlyAmountWords([...a].filter((w) => !b.has(w)), foodNameKey(named))) return null;
+  if (within(b, a) && onlyAmountWords([...a].filter((w) => !b.has(w)), foodWords(named))) return null;
   return cardName(target, prevItems);
 }
 
@@ -4316,10 +4316,17 @@ function cardName(target: string, prevItems: PreviousItem[]): string {
 // "extra cheese" name a different product, not a bigger portion.
 const SIZE_ADJECTIVES = new Set(["small", "medium", "large", "big", "mini", "half", "regular", "jumbo", "little"]);
 
+/** A name's words with plurals folded ("eggs" is "egg", "rotis" is "roti"),
+ *  the same folding nameKey uses. Without it "make it 3 eggs" on an "Egg" line
+ *  read as a swap and dropped the line's own row. */
+function foodWords(x: string): string[] {
+  return foodNameKey(x).split(" ").filter(Boolean)
+    .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w));
+}
+
 /** Added words that only say how much or how big: numbers, the word right
  *  after a number ("3 egg"), sizes, measures and portion words. */
-function onlyAmountWords(added: string[], phrase: string): boolean {
-  const tokens = phrase.split(" ");
+function onlyAmountWords(added: string[], tokens: string[]): boolean {
   const counted = new Set<string>();
   tokens.forEach((t, i) => { if (/^\d/.test(t) && tokens[i + 1]) counted.add(tokens[i + 1]); });
   return added.every((w) =>
@@ -4349,7 +4356,7 @@ export function withoutRejected<T>(
   if (!rejected) return list;
   const key = foodNameKey(rejected);
   // Word order does not make another food: "Chana, boiled" is "boiled chana".
-  const sorted = (x: string) => foodNameKey(x).split(" ").sort().join(" ");
+  const sorted = (x: string) => foodWords(x).sort().join(" ");
   const id = prevItems.find((p) => foodNameKey(p.food_name) === key)?.food_id ?? null;
   return list.filter((t) => {
     if (sorted(nameOf(t)) === sorted(rejected)) return false;

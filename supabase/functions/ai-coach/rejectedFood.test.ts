@@ -40,6 +40,10 @@ Deno.test("a swap rejects the old food; an edit of the same food does not", () =
   assertEquals(rejectedFood({ name: "whole milk", correctsFoodName: "milk" }, []), "milk");
   // A preparation extract split out of the name still counts.
   assertEquals(rejectedFood({ name: "egg", prep: "fried", correctsFoodName: "egg" }, []), "egg");
+  // Singular and plural are one food: "make it 3 eggs" on an "Egg" line edits it.
+  assertEquals(rejectedFood({ name: "eggs", correctsFoodName: "Egg" }, []), null);
+  assertEquals(rejectedFood({ name: "3 eggs omelette", correctsFoodName: "omelette" }, []), null);
+  assertEquals(rejectedFood({ name: "rotis", correctsFoodName: "roti" }, []), null);
   // Untouched line.
   assertEquals(rejectedFood({ name: "poori", correctsFoodName: null }, CARD), null);
 });
