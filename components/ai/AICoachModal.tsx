@@ -22,6 +22,7 @@ import { Portal } from '@/components/ui/Portal';
 import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
 import { fuelDaysText } from '@/lib/fuelDays';
 import { activityText } from '@/lib/activityGoals';
+import { metricsText } from '@/lib/phaseMetrics';
 import { track } from '@/lib/analytics';
 import { Colors, Spacing, Radius, FontSize, FontWeight, mixHex } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -2442,6 +2443,10 @@ function programToText(p: GeneratedProgram): string {
     if (ph.fuel_days !== undefined) lines.push(`  Fuel days: ${fuelDaysText(ph.fuel_days)}`);
     // Same again for the step and cardio goals the user already agreed to.
     if (ph.activity) lines.push(`  Activity: ${activityText(ph.activity)}`);
+    // And for what the phase is judged on, so a refine about calories keeps
+    // the hero metric and its targets.
+    if (ph.job_text) lines.push(`  Job: ${ph.job_text}`);
+    if (ph.metrics && ph.metrics.length > 0) lines.push(`  Metrics: ${metricsText(ph.metrics)}`);
     if (ph.diet_directive) lines.push(`  Diet note: ${ph.diet_directive}`);
     if (ph.training_block) {
       const b = ph.training_block;

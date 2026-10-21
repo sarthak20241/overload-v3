@@ -24,8 +24,12 @@ import {
   clampCardioSessions, clampStepsTarget, hasActivityGoals, normalizeActivityGoals, type ActivityGoals,
 } from '@/lib/activityGoals';
 import { track } from '@/lib/analytics';
-import { missingColumn, withoutColumns } from '@/lib/missingColumn';
+import { missingColumn, missingTable, withoutColumns } from '@/lib/missingColumn';
 import { programGoalFor } from '@/lib/fitnessGoals';
+import {
+  isMetricDirection, isMetricKind, isMetricStatus, normalizeMetrics, phaseProgress, statusFor,
+  type MetricRef, type PhaseMetricInput, type PhaseMetricRow,
+} from '@/lib/phaseMetrics';
 
 // ── Client shapes ────────────────────────────────────────────────────────────
 export interface ProgramDiet {
@@ -63,6 +67,14 @@ export interface ProgramPhase {
    * coach when the goal calls for it. Undefined = no activity goals this phase.
    */
   activity?: ActivityGoals;
+  /**
+   * What the phase is judged on (lib/phaseMetrics): one hero metric and a few
+   * supporting targets. Undefined or empty = the phase has none (every program
+   * built before this).
+   */
+  metrics?: PhaseMetricInput[];
+  /** The phase's job in one line, e.g. "Bring weight 71.0 to 69.6 kg". */
+  job_text?: string;
 }
 
 /** The coach's emitted program (from the generate_program terminal tool). */
@@ -184,7 +196,15 @@ function normalizePhase(v: unknown, i: number): ProgramPhase {
     training_block: normalizeBlock(p.training_block),
     fuel_days: fuelDaysFromCoach(p.fuel_days),
     ...activityOf(p.activity),
+    ...metricsOf(p.metrics),
+    job_text: strOrUndef(p.job_text)?.slice(0, 80),
   };
+}
+
+/** The phase's metrics, made safe; no key at all when it set none. */
+function metricsOf(v: unknown): { metrics?: PhaseMetricInput[] } {
+  const m = normalizeMetrics(v);
+  return m.length > 0 ? { metrics: m } : {};
 }
 
 /** The phase's activity goals, clamped; no key at all when it set none. */
@@ -196,6 +216,13 @@ function activityOf(v: unknown): { activity?: ActivityGoals } {
 // The activity goal columns (migration 20261018120000). The app ships before
 // the migration, so every read and write of them falls back without them.
 const ACTIVITY_COLS = ['activity_steps_target', 'cardio_sessions_per_week'] as const;
+// The phase metrics columns and tables (migration 20261021120000). Same rule.
+const JOB_COLS = ['job_text', 'coach_line'] as const;
+const METRICS_TABLE = 'coach_program_phase_metrics';
+const METRIC_LOGS_TABLE = 'coach_program_phase_metric_logs';
+// Every optional phase column an insert may have to drop, so a database from
+// before any one of these migrations still takes the program.
+const OPTIONAL_PHASE_COLS = [...ACTIVITY_COLS, ...JOB_COLS] as const;
 
 export function structuredToProgram(input: Record<string, unknown>): GeneratedProgram {
   const phases = Array.isArray(input.phases)
@@ -505,17 +532,24 @@ export async function saveProgram(
       activity_steps_target: clampStepsTarget(ph.activity.steps_per_day),
       cardio_sessions_per_week: clampCardioSessions(ph.activity.cardio_sessions_per_week),
     } : {}),
+    // And the phase's job line, only when the coach wrote one.
+    ...(ph.job_text ? { job_text: ph.job_text } : {}),
   }));
   const insertPhases = (rows: typeof phaseRows) => supabase
     .from('coach_program_phases')
     .insert(rows)
     .select('id, seq');
-  let { data: phaseInserted, error: phErr } = await insertPhases(phaseRows);
-  // A database from before the activity goals: save the program without them
-  // rather than failing it. The goals come back with the next program built.
-  if (phErr && missingColumn(phErr, ACTIVITY_COLS)) {
-    console.warn('[programs] activity goal columns missing; saving without them');
-    ({ data: phaseInserted, error: phErr } = await insertPhases(withoutColumns(phaseRows, ACTIVITY_COLS)));
+  let rows = phaseRows;
+  let { data: phaseInserted, error: phErr } = await insertPhases(rows);
+  // A database from before one of the optional columns (activity goals, the
+  // job line): save the program without that column rather than failing it.
+  // PostgREST names one missing column at a time, so drop them one by one.
+  for (let i = 0; i < OPTIONAL_PHASE_COLS.length && phErr; i++) {
+    const missing = OPTIONAL_PHASE_COLS.filter((c) => missingColumn(phErr, [c]));
+    if (missing.length === 0) break;
+    console.warn(`[programs] column${missing.length > 1 ? 's' : ''} ${missing.join(', ')} missing; saving without`);
+    rows = withoutColumns(rows, missing);
+    ({ data: phaseInserted, error: phErr } = await insertPhases(rows));
   }
   if (phErr) {
     // A phase-less active program is worse than none: loadActiveProgram would
@@ -551,7 +585,96 @@ export async function saveProgram(
   const phaseIds = ((phaseInserted ?? []) as { id: string; seq: number }[])
     .sort((x, y) => x.seq - y.seq)
     .map((r) => r.id);
+
+  // 5. The phase metrics. Non-fatal like step 4: the program and its phases
+  //    are committed, and a program without its metrics still renders (the
+  //    Goal screen falls back to the plain layout for it).
+  try {
+    await saveProgramMetrics(supabase, clerkId, prog.id, program.phases, phaseIds);
+  } catch (e) {
+    console.warn('[programs] metrics save failed; program kept without them', e);
+  }
   return { programId: prog.id, phaseIds };
+}
+
+/**
+ * Write each phase's metrics (coach_program_phase_metrics). A lift metric
+ * names its exercise; the id is looked up by name here (the user's own and the
+ * built-in catalog), so the weekly check can read user_lift_stats by id. A
+ * name that matches nothing keeps the name in `ref`; the check then skips it.
+ * A database without the table (the app before the migration) is a warning,
+ * not an error.
+ */
+async function saveProgramMetrics(
+  supabase: Supa,
+  clerkId: string,
+  programId: string,
+  phases: ProgramPhase[],
+  phaseIds: string[],
+): Promise<void> {
+  const names = new Set<string>();
+  for (const ph of phases) for (const m of ph.metrics ?? []) {
+    if (m.kind === 'lift_e1rm' && m.ref?.exercise_name && !m.ref.exercise_id) names.add(m.ref.exercise_name);
+  }
+  const idByName = new Map<string, string>();
+  if (names.size > 0) {
+    const { data: found, error } = await supabase
+      .from('exercises')
+      .select('id, name, user_id')
+      .in('name', [...names]);
+    if (error) console.warn('[programs] exercise lookup for metrics failed', error.message);
+    for (const e of (found ?? []) as { id: string; name: string; user_id: string | null }[]) {
+      // The user's own exercise of that name beats the catalog's.
+      const key = e.name.toLowerCase();
+      if (!idByName.has(key) || e.user_id === clerkId) idByName.set(key, e.id);
+    }
+    // Second pass, case-insensitive, for names the coach cased differently.
+    const missing = [...names].filter((n) => !idByName.has(n.toLowerCase()));
+    if (missing.length > 0) {
+      const { data: loose } = await supabase
+        .from('exercises')
+        .select('id, name, user_id')
+        .or(missing.map((n) => `name.ilike.${n.replace(/[,().]/g, ' ')}`).join(','));
+      for (const e of (loose ?? []) as { id: string; name: string; user_id: string | null }[]) {
+        const key = e.name.toLowerCase();
+        if (!idByName.has(key) || e.user_id === clerkId) idByName.set(key, e.id);
+      }
+    }
+  }
+  const rows: Record<string, unknown>[] = [];
+  phases.forEach((ph, i) => {
+    const phaseId = phaseIds[i];
+    if (!phaseId) return;
+    (ph.metrics ?? []).forEach((m, seq) => {
+      const ref: MetricRef = { ...(m.ref ?? {}) };
+      if (m.kind === 'lift_e1rm' && !ref.exercise_id && ref.exercise_name) {
+        const id = idByName.get(ref.exercise_name.toLowerCase());
+        if (id) ref.exercise_id = id;
+      }
+      rows.push({
+        program_id: programId,
+        phase_id: phaseId,
+        user_id: clerkId,
+        seq,
+        is_hero: m.is_hero,
+        kind: m.kind,
+        ref: Object.keys(ref).length > 0 ? ref : null,
+        unit: m.unit || null,
+        direction: m.direction,
+        start_value: m.start_value ?? null,
+        target_value: m.target_value,
+      });
+    });
+  });
+  if (rows.length === 0) return;
+  const { error } = await supabase.from(METRICS_TABLE).insert(rows);
+  if (error) {
+    if (missingTable(error, METRICS_TABLE)) {
+      console.warn('[programs] phase metrics table missing; saving the program without metrics');
+      return;
+    }
+    throw error;
+  }
 }
 
 // ── Load + reconcile (used by the Goal & Plan screen and programSync) ─────────
@@ -580,6 +703,12 @@ export interface ActiveProgramPhaseRow {
   activity_steps_target: number | null;
   /** Cardio sessions a week this phase; null = no cardio goal. */
   cardio_sessions_per_week: number | null;
+  /** The phase's job in one line; null = none written (or a database from before it). */
+  job_text: string | null;
+  /** Drona's sentence for this week, from the weekly check; null = none yet. */
+  coach_line: string | null;
+  /** What the phase is judged on; empty = no metrics (a program from before them). */
+  metrics: PhaseMetricRow[];
   routine_id: string | null;
   // Routines built for this phase (linked via routines.program_phase_id).
   // Populated by loadActiveProgram; empty until a split is built.
@@ -627,10 +756,19 @@ export async function loadActiveProgram(
     .select(cols)
     .eq('program_id', (prog as { id: string }).id)
     .order('seq', { ascending: true });
-  // Keep diet_fuel_days BEFORE the activity columns. Postgres names only the
-  // first missing column, and the two fallbacks below rely on that order: a
-  // database missing both reports diet_fuel_days, and the second one catches it.
-  let { data: phaseData, error: phaseErr } = await readPhases(`${PHASE_COLS}, diet_fuel_days, ${ACTIVITY_COLS.join(', ')}`);
+  // Keep the columns in migration order: diet_fuel_days, then the activity
+  // columns, then the job columns. Postgres names only the first missing
+  // column, and the fallbacks below rely on that order: a database missing
+  // everything from the activity goals on reports activity_steps_target, and
+  // the second fallback drops the job columns with it.
+  let { data: phaseData, error: phaseErr } = await readPhases(
+    `${PHASE_COLS}, diet_fuel_days, ${ACTIVITY_COLS.join(', ')}, ${JOB_COLS.join(', ')}`,
+  );
+  // A database from before the phase metrics: read the rest, so the program
+  // still loads and simply has no job line.
+  if (phaseErr && missingColumn(phaseErr, JOB_COLS)) {
+    ({ data: phaseData, error: phaseErr } = await readPhases(`${PHASE_COLS}, diet_fuel_days, ${ACTIVITY_COLS.join(', ')}`));
+  }
   // A database from before the activity goals: read the rest, so the program
   // still loads and simply shows no activity goals.
   if (phaseErr && missingColumn(phaseErr, ACTIVITY_COLS)) {
@@ -649,6 +787,9 @@ export async function loadActiveProgram(
     diet_fuel_days: ph.diet_fuel_days == null ? null : normalizeFuelDays(ph.diet_fuel_days),
     activity_steps_target: clampStepsTarget(ph.activity_steps_target),
     cardio_sessions_per_week: clampCardioSessions(ph.cardio_sessions_per_week),
+    job_text: typeof ph.job_text === 'string' && ph.job_text.length > 0 ? ph.job_text : null,
+    coach_line: typeof ph.coach_line === 'string' && ph.coach_line.length > 0 ? ph.coach_line : null,
+    metrics: [] as PhaseMetricRow[],
   }));
   // An active program with no phases is corruption, not a real state:
   // saveProgram rejects zero-phase programs, so the only way to get one is a
@@ -695,6 +836,22 @@ export async function loadActiveProgram(
       ) + 1
     : null;
 
+  // The phase metrics. A database without the table (the app before the
+  // migration) is a program with no metrics, which the screen renders in the
+  // plain layout. Any other failure throws, like the reads above.
+  const byPhase = await loadProgramMetrics(supabase, String(p.id));
+  for (const ph of phases) {
+    const list = byPhase.get(ph.id) ?? [];
+    // A custom metric reads the latest log live: the weekly check can be days
+    // behind the value the user logged this morning.
+    const progress = ph.seq === currentPhaseSeq ? phaseProgress(weekInPhase, ph.duration_weeks) : 0;
+    ph.metrics = list.map((m) => {
+      if (m.kind !== 'custom' || m.latest_log == null) return m;
+      const current_value = m.latest_log;
+      return { ...m, current_value, status: statusFor({ ...m, current_value, progress }) };
+    });
+  }
+
   return {
     id: String(p.id),
     title: String(p.title),
@@ -709,6 +866,130 @@ export async function loadActiveProgram(
     currentPhaseSeq,
     weekInPhase,
   };
+}
+
+/** One metric row as the table holds it, plus the latest hand-logged value for a custom one. */
+type MetricRowWithLog = PhaseMetricRow & { latest_log: number | null };
+
+/** Every metric of a program, by phase id, in seq order. Empty map when the table is not there yet. */
+async function loadProgramMetrics(supabase: Supa, programId: string): Promise<Map<string, MetricRowWithLog[]>> {
+  const out = new Map<string, MetricRowWithLog[]>();
+  const { data, error } = await supabase
+    .from(METRICS_TABLE)
+    .select('id, phase_id, seq, is_hero, kind, ref, unit, direction, start_value, target_value, current_value, status, status_note, checked_at')
+    .eq('program_id', programId)
+    .order('seq', { ascending: true });
+  if (error) {
+    if (missingTable(error, METRICS_TABLE)) return out;
+    throw error;
+  }
+  const rows: MetricRowWithLog[] = [];
+  for (const r of (data ?? []) as Record<string, unknown>[]) {
+    if (!isMetricKind(r.kind)) continue;
+    const num = (v: unknown): number | null => (v == null ? null : Number.isFinite(Number(v)) ? Number(v) : null);
+    const target = num(r.target_value);
+    if (target == null) continue;
+    rows.push({
+      id: String(r.id),
+      phase_id: String(r.phase_id),
+      seq: Number(r.seq ?? 0),
+      is_hero: r.is_hero === true,
+      kind: r.kind,
+      ref: (r.ref && typeof r.ref === 'object' ? r.ref : undefined) as MetricRef | undefined,
+      unit: typeof r.unit === 'string' ? r.unit : '',
+      direction: isMetricDirection(r.direction) ? r.direction : 'up',
+      start_value: num(r.start_value) ?? undefined,
+      target_value: target,
+      current_value: num(r.current_value),
+      status: isMetricStatus(r.status) ? r.status : 'set',
+      status_note: typeof r.status_note === 'string' ? r.status_note : null,
+      checked_at: typeof r.checked_at === 'string' ? r.checked_at : null,
+      latest_log: null,
+    });
+  }
+  // The latest log per custom metric (one read for all of them).
+  const customIds = rows.filter((r) => r.kind === 'custom').map((r) => r.id);
+  if (customIds.length > 0) {
+    const { data: logs, error: logErr } = await supabase
+      .from(METRIC_LOGS_TABLE)
+      .select('metric_id, value, logged_on')
+      .in('metric_id', customIds)
+      .order('logged_on', { ascending: false });
+    if (logErr && !missingTable(logErr, METRIC_LOGS_TABLE)) throw logErr;
+    const seen = new Set<string>();
+    for (const l of (logs ?? []) as { metric_id: string; value: unknown }[]) {
+      if (seen.has(l.metric_id)) continue;
+      seen.add(l.metric_id);
+      const v = Number(l.value);
+      const row = rows.find((r) => r.id === l.metric_id);
+      if (row && Number.isFinite(v)) row.latest_log = v;
+    }
+  }
+  for (const r of rows) {
+    const list = out.get(r.phase_id) ?? [];
+    list.push(r);
+    out.set(r.phase_id, list);
+  }
+  return out;
+}
+
+export interface MetricLog {
+  logged_on: string;
+  value: number;
+  note: string | null;
+}
+
+/** Every hand-logged value of one custom metric, oldest first. */
+export async function loadMetricLogs(supabase: Supa, metricId: string): Promise<MetricLog[]> {
+  const { data, error } = await supabase
+    .from(METRIC_LOGS_TABLE)
+    .select('logged_on, value, note')
+    .eq('metric_id', metricId)
+    .order('logged_on', { ascending: true });
+  if (error) {
+    if (missingTable(error, METRIC_LOGS_TABLE)) return [];
+    throw error;
+  }
+  return ((data ?? []) as { logged_on: string; value: unknown; note: string | null }[])
+    .map((l) => ({ logged_on: l.logged_on, value: Number(l.value), note: l.note ?? null }))
+    .filter((l) => Number.isFinite(l.value));
+}
+
+/**
+ * Log today's value for a custom metric (one row per metric per local day; a
+ * second log the same day replaces the first) and move the metric's current
+ * value to it, with the status recomputed by the shared rules. The weekly
+ * check will do the same on Monday; this is so the card moves at once.
+ */
+export async function logMetricValue(
+  supabase: Supa,
+  clerkId: string,
+  metric: PhaseMetricRow,
+  value: number,
+  progress: number,
+  note?: string,
+): Promise<void> {
+  if (!Number.isFinite(value)) throw new Error('That is not a number.');
+  const { error } = await supabase
+    .from(METRIC_LOGS_TABLE)
+    .upsert(
+      { metric_id: metric.id, user_id: clerkId, value, logged_on: todayLocalISO(), note: note?.trim() || null },
+      { onConflict: 'metric_id,logged_on' },
+    );
+  if (error) throw error;
+  const status = statusFor({ ...metric, current_value: value, progress });
+  const { error: upErr } = await supabase
+    .from(METRICS_TABLE)
+    .update({
+      current_value: value,
+      status,
+      // The first log of a metric with no start is its start.
+      ...(metric.start_value == null ? { start_value: value } : {}),
+      checked_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', metric.id);
+  if (upErr) throw upErr;
 }
 
 /**

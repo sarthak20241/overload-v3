@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { missingColumn, withoutColumns } from "./missingColumn.ts";
+import { missingColumn, missingTable, withoutColumns } from "./missingColumn.ts";
 
 const COLS = ["activity_steps_target", "cardio_sessions_per_week"];
 
@@ -46,4 +46,24 @@ Deno.test("only activity missing: the activity fallback catches it, fuel days st
   const err = { code: "42703", message: "column coach_program_phases.activity_steps_target does not exist" };
   assertEquals(missingColumn(err, COLS), true);
   assertEquals(missingColumn(err, ["diet_fuel_days"]), false);
+});
+
+// The phase metrics tables (migration 20261021120000): the app ships before
+// the migration, so a read of a table that is not there yet falls back.
+Deno.test("a read of a table the database does not have yet falls back", () => {
+  // PostgREST: the table is not in its schema cache (also what a table created
+  // without a schema reload answers).
+  assertEquals(missingTable({ code: "PGRST205", message: "Could not find the table 'public.coach_program_phase_metrics' in the schema cache" }, "coach_program_phase_metrics"), true);
+  // Postgres: undefined table.
+  assertEquals(missingTable({ code: "42P01", message: "relation \"public.coach_program_phase_metrics\" does not exist" }, "coach_program_phase_metrics"), true);
+});
+
+Deno.test("an unrelated failure is never swallowed as a missing table", () => {
+  // A different table.
+  assertEquals(missingTable({ code: "PGRST205", message: "Could not find the table 'public.other' in the schema cache" }, "coach_program_phase_metrics"), false);
+  // Our table named, but not a missing-table error.
+  assertEquals(missingTable({ code: "42501", message: "permission denied for table coach_program_phase_metrics" }, "coach_program_phase_metrics"), false);
+  // A missing COLUMN on the table is the column fallback's job.
+  assertEquals(missingTable({ code: "42703", message: "column coach_program_phases.job_text does not exist" }, "coach_program_phases"), false);
+  assertEquals(missingTable(null, "coach_program_phase_metrics"), false);
 });

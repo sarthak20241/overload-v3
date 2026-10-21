@@ -34,6 +34,7 @@ import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "..
 import { type MomentPerson, momentRow, pickMoment } from "../_shared/dronaMoments.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
+import { metricsStep } from "./metrics.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -460,6 +461,8 @@ async function runCron(): Promise<Response> {
     let wordsFailed = 0;
     let wordsAsked = 0;
     let checkins = 0;
+    let metricsChecked = 0;
+    let linesWritten = 0;
     const failures: string[] = [];
     for (let i = 0; i < due.length; i += CRON_CONCURRENCY) {
       const batch = due.slice(i, i + CRON_CONCURRENCY);
@@ -484,11 +487,25 @@ async function runCron(): Promise<Response> {
       });
     }
 
+    // The phase metrics check (.planning/phase-metrics/SPEC.md): once a local
+    // week per user with an active program, whether or not a card is due.
+    // metricsStep returns at once for everyone already checked this week.
+    for (let i = 0; i < weeks.length; i += CRON_CONCURRENCY) {
+      const batch = weeks.slice(i, i + CRON_CONCURRENCY);
+      const results = await Promise.all(batch.map((w) => metricsStep(db, w.userId, w.day, w.week, ANTHROPIC_API_KEY)));
+      results.forEach((m, j) => {
+        metricsChecked += m.checked;
+        if (m.line) linesWritten += 1;
+        if (m.error) failures.push(`${batch[j].userId.slice(0, 12)} metrics: ${m.error}`);
+      });
+    }
+
     // Moments after the weekly cards: a weekly card written this run is waiting,
     // so the moment rules leave that person alone today.
     const moments = await runMoments(db, now.getTime());
     return json({ users: weeks.length, due: due.length, saved, held, checkins, pick_failed: pickFailed,
       words_asked: wordsAsked, words_failed: wordsFailed, moments_made: moments.made, moments_failed: moments.failed,
+      metrics_checked: metricsChecked, coach_lines: linesWritten,
       failures: failures.slice(0, 20) });
   } finally {
     // Settled on every path: the runtime may stop the worker once the response

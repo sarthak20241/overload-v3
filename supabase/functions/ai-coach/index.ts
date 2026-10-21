@@ -34,6 +34,7 @@ import { asNoul, type JevAnswer } from "./jev.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
 import { withPhaseActivity } from "./programActivity.ts";
+import { withPhaseMetrics } from "./programMetrics.ts";
 import { weekStartOf } from "../_shared/dronaCards.ts";
 import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "../_shared/dronaMemory.ts";
 import type { DayTargetRow } from "../_shared/targetHistory.ts";
@@ -4728,6 +4729,42 @@ Deno.serve(async (req) => {
     }
   } catch (e) {
     console.log("[ai-coach] activity fetch threw:", String(e));
+  }
+
+  // 4d''. Phase metrics (20261021120000): what each phase is judged on, and
+  // the current phase's weekly numbers. Its own reads, so a database without
+  // the table (or the job columns) costs only these keys.
+  try {
+    const ctx = userContext as Record<string, unknown> | null;
+    if (ctx && ctx.program && typeof ctx.program === "object") {
+      const programId = activeProgramId !== undefined ? activeProgramId : (await userClient
+        .from("coach_programs")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("status", "active")
+        .maybeSingle()).data?.id ?? null;
+      if (programId) {
+        const [phasesRes, metricsRes] = await Promise.all([
+          userClient
+            .from("coach_program_phases")
+            .select("id, seq, job_text")
+            .eq("user_id", userId)
+            .eq("program_id", programId),
+          userClient
+            .from("coach_program_phase_metrics")
+            .select("phase_id, seq, is_hero, kind, ref, unit, direction, start_value, target_value, current_value, status, checked_at")
+            .eq("user_id", userId)
+            .eq("program_id", programId),
+        ]);
+        if (phasesRes.error) console.log("[ai-coach] phase job error:", phasesRes.error.message);
+        else if (metricsRes.error) console.log("[ai-coach] phase metrics error:", metricsRes.error.message);
+        else if (phasesRes.data && phasesRes.data.length > 0) {
+          ctx.program = withPhaseMetrics(ctx.program, phasesRes.data, metricsRes.data ?? []);
+        }
+      }
+    }
+  } catch (e) {
+    console.log("[ai-coach] phase metrics fetch threw:", String(e));
   }
 
   // 4e. What the coach carries between conversations (coach-enhancement plan,

@@ -170,6 +170,7 @@ export function buildAnonProgramMessage(s: SanitizedIntake, todayISO: string): s
     `- Every training_block has days_per_week is ${s.frequency}. Pick the split from my goal, days, experience and notes. Do not default to one style.`,
     `- Every training_block also has week_pattern: 7 entries, Day 1 to Day 7, "Rest" for a day off, with exactly ${s.frequency} training days.`,
     `- objective: 1-2 sentences to me. rationale: 3-4 sentences, plain prose. One line each for the diet, training and readiness directives.`,
+    `- Every phase has metrics (one hero plus 2 to 4 supporting targets, from the app-measured kinds; custom only when nothing the app measures fits my goal) and a one-line job_text. Slice any weight target across the phases.`,
     `This is a fresh account with no history, so skip data-lookup tools and emit generate_program directly.`,
   ]
     .filter(Boolean)
