@@ -138,36 +138,15 @@ const patterns = () => ({
 const open = (r: Record<PatternMeal, FoodSuggestion[]>) =>
   (Object.keys(r) as PatternMeal[]).filter((m) => r[m].length > 0);
 
-Deno.test("morning offers breakfast only", () => {
-  assertEquals(open(mealsToSuggest(patterns(), none(), 8)), ["breakfast"]);
-});
-
-Deno.test("at lunch an unlogged breakfast is still offered beside lunch", () => {
-  assertEquals(open(mealsToSuggest(patterns(), none(), 13)), ["breakfast", "lunch", "snack"]);
-});
-
-Deno.test("by dinner a skipped breakfast is no longer offered", () => {
-  assertEquals(open(mealsToSuggest(patterns(), none(), 19)), ["lunch", "dinner", "snack"]);
-});
-
-Deno.test("after midnight is still the night: no breakfast at 2am", () => {
-  assertEquals(open(mealsToSuggest(patterns(), none(), 2)), ["dinner", "snack"]);
+Deno.test("every unlogged meal is offered, whatever the time", () => {
+  assertEquals(open(mealsToSuggest(patterns(), none())), ["breakfast", "lunch", "dinner", "snack"]);
 });
 
 Deno.test("a logged meal keeps only its missing usuals", () => {
   const logged = { ...none(), breakfast: [{ food_name: "oats" }] };
-  const r = mealsToSuggest(patterns(), logged, 8);
+  const r = mealsToSuggest(patterns(), logged);
   assertEquals(names(r.breakfast), ["Coffee"]); // banana is not a usual; oats is in
-});
-
-Deno.test("a logged meal stops offering its leftovers once its time is over", () => {
-  const logged = { ...none(), breakfast: [{ food_name: "oats" }] };
-  assertEquals(names(mealsToSuggest(patterns(), logged, 21).breakfast), []);
-  assertEquals(names(mealsToSuggest(patterns(), logged, 9).breakfast), ["Coffee"]);
-});
-
-Deno.test("another day has no clock: every meal is open", () => {
-  assertEquals(open(mealsToSuggest(patterns(), none(), null)), ["breakfast", "lunch", "dinner", "snack"]);
+  assertEquals(open(r), ["breakfast", "lunch", "dinner", "snack"]);
 });
 
 Deno.test("copy skips what is already in today's meal", () => {
@@ -229,6 +208,6 @@ Deno.test("a copied-from-yesterday row keeps its portion, numbers and labels", (
 
 Deno.test("once the meal has food, the day before's rows leave", () => {
   const r = withPreviousDay(none(), prevDay());
-  const shown = mealsToSuggest(r, { ...none(), breakfast: [{ food_name: "Eggs" }] }, 8);
+  const shown = mealsToSuggest(r, { ...none(), breakfast: [{ food_name: "Eggs" }] });
   assertEquals(shown.breakfast, []);
 });

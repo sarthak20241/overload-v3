@@ -15,12 +15,11 @@
  * wins a tie, with that entry's own numbers. Nothing is re-derived: a
  * suggestion is a copy of something they really logged.
  *
- * When to offer (mealsToSuggest): a meal opens at its usual hour and stays
- * open until it is logged or two meals later (breakfast is still offered at
- * lunch if it was skipped, but not at dinner). Once a meal has food in it,
- * only its strong usuals that are still missing stay ("the coffee you always
- * have with it"). Another day than today (backfill or planning ahead) has no
- * clock, so every meal is open.
+ * When to offer (mealsToSuggest): every meal, at any hour. People open the
+ * app at odd times (breakfast logged at 9pm, tomorrow's lunch planned at
+ * night), so the clock hides nothing. Once a meal has food in it, only its
+ * strong usuals that are still missing stay ("the coffee you always have
+ * with it").
  *
  * No habit yet (habits need two days, so every new user starts here): a meal
  * is offered the day before's food for it instead, labelled as such
@@ -183,40 +182,28 @@ export function learnPatterns(
   return out;
 }
 
-/** The hour each meal starts being offered, and the hour it goes stale if
- *  it was never logged (the window two meals later opens). Snacks have no
- *  fixed time, so they open mid-morning and stay until the night ends. */
-const OPENS: Record<PatternMeal, number> = { breakfast: 4, lunch: 11, dinner: 16, snack: 10 };
-const STALE: Record<PatternMeal, number> = { breakfast: 16, lunch: 22, dinner: 28, snack: 28 };
 /** How many still-missing usuals a meal that already has food keeps showing. */
 const LOGGED_MEAL_LEFTOVERS = 2;
 
 /**
- * What to show in each meal section right now. `logged` is the day's entries
- * by meal (names only matter); `hour` is the local clock for today, or null
- * for any other day, where every meal is open.
+ * What to show in each meal section. `logged` is the day's entries by meal
+ * (names only matter). An empty meal offers all its suggestions; a meal with
+ * food keeps only its missing usuals.
  */
 export function mealsToSuggest(
   patterns: Record<PatternMeal, FoodSuggestion[]>,
   logged: Record<PatternMeal, { food_name: string }[]>,
-  hour: number | null,
 ): Record<PatternMeal, FoodSuggestion[]> {
   const out: Record<PatternMeal, FoodSuggestion[]> = { breakfast: [], lunch: [], dinner: [], snack: [] };
-  // 00:00-03:59 still belongs to the night before: dinner and snacks, nothing new.
-  const h = hour == null ? null : hour < 4 ? hour + 24 : hour;
   for (const meal of MEALS) {
     const have = new Set((logged[meal] ?? []).map((e) => nameKey(e.food_name)));
     const missing = patterns[meal].filter((s) => !have.has(nameKey(s.food_name)));
     if (have.size > 0) {
-      // Past the meal's time, a logged meal is done: "you usually have oats
-      // too" at 9pm about this morning's breakfast is noise, not help.
-      if (h != null && h >= STALE[meal]) continue;
       // "You usually have this too" is a habit's claim; the day before's
       // food makes no such claim, so it leaves once the meal has food.
       out[meal] = missing.filter((s) => s.usual && s.reason !== 'previous_day').slice(0, LOGGED_MEAL_LEFTOVERS);
       continue;
     }
-    if (h != null && (h < OPENS[meal] || h >= STALE[meal])) continue;
     out[meal] = missing;
   }
   return out;
