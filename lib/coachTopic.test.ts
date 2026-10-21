@@ -87,6 +87,8 @@ Deno.test('opening narration: the lines Drona wrote before his tools are dropped
 
 Deno.test('opening narration: a bare greeting or real content is kept', () => {
   assert(!isOpeningNarration('Hey, your bench stalled.'));
+  assert(!isOpeningNarration('Your bench stalled, worth a look.'));
+  assert(!isOpeningNarration('Hey, time to check in on your pull-ups. Want to review them?'));
   assert(!isOpeningNarration(''));
   assert(!isOpeningNarration('Let me check.\n\nYour bench has been flat for 4 weeks.'));
   assert(!isOpeningNarration(`Let me check ${'x'.repeat(200)}`));

@@ -82,6 +82,9 @@ type Screen = 'menu' | 'chat' | 'plan' | 'workout' | 'program';
 // message is persisted.
 type Citation = CoachCitation;
 type ChatMessage = CoachChatMessage;
+// How a chat opens with Drona speaking first (no user bubble): on a topic's
+// hidden context turn, or on the workout review, whose recap is the opener.
+type ChatOpening = { kind: 'topic'; message: ChatMessage } | { kind: 'review' };
 
 // Sliding window: cap how many recent turns we resend to the edge function each
 // turn. The whole transcript is persisted locally, but a very long thread would
@@ -685,6 +688,7 @@ function createTypewriter(
   let interval: ReturnType<typeof setInterval> | null = null;
   let finished = false;
   let onComplete: (() => void) | null = null;
+  let trimLead = false;   // set by clear(): drop leading whitespace once
 
   // Tick every 35ms (~28fps). Char count per tick is adaptive based on buffer
   // depth so the typewriter catches up when the server is ahead.
@@ -731,9 +735,12 @@ function createTypewriter(
 
   return {
     append(chunk: string) {
-      // An empty bubble never starts on whitespace (the server's paragraph
-      // break after a tool call lands first once clear() has emptied it).
-      if (!displayed && !buffer) chunk = chunk.replace(/^\s+/, '');
+      // After clear() the server's paragraph break (sent after a tool call)
+      // lands first; the emptied bubble must not start on it.
+      if (trimLead) {
+        chunk = chunk.replace(/^\s+/, '');
+        if (chunk) trimLead = false;
+      }
       if (!chunk) return;
       buffer += chunk;
       start();
@@ -748,6 +755,7 @@ function createTypewriter(
       stopTicking();
       buffer = '';
       displayed = '';
+      trimLead = true;
       setMessages(prev => prev.map(m =>
         m.id === messageId ? { ...m, content: '' } : m
       ));
@@ -1135,13 +1143,14 @@ function ChatScreen({
   // Set by a suggestion chip right before it calls handleSend; any other
   // override reads as 'auto'. Openings (topic, review) report 'opening'.
   const sendTriggerRef = useRef<'chip' | 'auto'>('auto');
-  // `opening` set means Drona speaks first: no user bubble. A message is a
-  // topic's hidden context, which starts the chat over as its first turn. Null
-  // is the workout review: its recap already rides in the workout opener, so
-  // Drona's reply just follows the review greeting.
-  const handleSend = useCallback(async (override?: string, opening?: ChatMessage | null) => {
-    const opens = opening !== undefined;
-    const text = opening ? opening.content : (override ?? input).trim();
+  // An opening means Drona speaks first: no user bubble. A topic's hidden
+  // context starts the chat over as its first turn. The workout review adds
+  // no turn: its recap already rides in the workout opener, so Drona's reply
+  // just follows the review greeting.
+  const handleSend = useCallback(async (override?: string, opening?: ChatOpening) => {
+    const opens = !!opening;
+    const topicMsg = opening?.kind === 'topic' ? opening.message : null;
+    const text = topicMsg ? topicMsg.content : opens ? '' : (override ?? input).trim();
     if (loading || (!text && !opens)) return;
 
     // Lock the persisted conversation to this in-progress one so a late disk
@@ -1149,7 +1158,7 @@ function ChatScreen({
     markStarted();
 
     const userMsg: ChatMessage | null = opens
-      ? opening ?? null
+      ? topicMsg
       : { id: Date.now().toString(), role: 'user', content: text };
     // Create an empty placeholder assistant message that streams will fill.
     const assistantId = (Date.now() + 1).toString();
@@ -1158,7 +1167,7 @@ function ChatScreen({
       thinkingPhase: 'Thinking',
     };
     // What the chat holds before this turn. A topic starts from nothing.
-    const fresh = !!opening;
+    const fresh = !!topicMsg;
     const before = fresh ? [] : messages;
     const added = userMsg ? [userMsg] : [];
     setMessages(prev => (fresh ? [...added, placeholder] : [...prev, ...added, placeholder]));
@@ -1431,7 +1440,7 @@ function ChatScreen({
       // A topic stopped before Drona said a word leaves only its hidden turn:
       // nothing to read, so the chat goes back to the greeting and is not
       // kept as a past chat.
-      if (kept.every(m => m.context)) {
+      if (kept.length > 0 && kept.every(m => m.context)) {
         persistMessages([]);
         setMessages([makeStarter()]);
       } else {
@@ -1522,7 +1531,7 @@ function ChatScreen({
     if (reviewSentForRef.current === workoutContext) return;
     if (loading || messages.length !== 1) return;
     reviewSentForRef.current = workoutContext;
-    handleSend(undefined, null);
+    handleSend(undefined, { kind: 'review' });
   }, [workoutContext, messages, loading, handleSend]);
 
   // Topic: opened from something in the app (a Coach noticed card, a Drona
@@ -1540,10 +1549,13 @@ function ChatScreen({
     onTopicOpened?.(topic);
     startNewChat();
     handleSend(undefined, {
-      id: Date.now().toString(),
-      role: 'user',
-      content: coachTopicContext(topic),
-      context: { title: topic.title },
+      kind: 'topic',
+      message: {
+        id: Date.now().toString(),
+        role: 'user',
+        content: coachTopicContext(topic),
+        context: { title: topic.title },
+      },
     });
   }, [topic, workoutContext, hydrated, loading, startNewChat, handleSend, onTopicOpened]);
 
