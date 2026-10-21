@@ -3865,6 +3865,7 @@ export function AICoachModal({
       initial_screen: initialScreen,
       has_workout_context: !!workoutContext,
       workout_kind: workoutContext?.kind ?? null,
+      // Name kept for dashboard continuity: it now means "opened on a topic".
       has_initial_prompt: !!initialTopic,
       topic_source: initialTopic?.source ?? null,
       has_plan_seed: !!planSeed,

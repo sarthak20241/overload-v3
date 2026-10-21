@@ -68,7 +68,7 @@ export function coachTopicContext(topic: CoachTopic): string {
 const NARRATION_MAX = 160;
 // First-person "I am about to look this up", not a word that merely appears
 // in a greeting ("worth a look" stays).
-const NARRATION = /\b(let me|i'll|i will|give me a (sec|second|moment)|i'm (checking|pulling|looking|digging|grabbing|reviewing)|(checking|pulling|looking|digging|grabbing|reviewing) (up|into|at|through|your|the))\b/i;
+const NARRATION = /\b(let me|give me a (sec|second|moment)|i'm (checking|pulling|looking|digging|grabbing|reviewing)|(checking|pulling|looking|digging|grabbing|reviewing) (up|into|at|through|your|the))\b/i;
 
 /**
  * Is this Drona's "let me check your numbers" line, written before his first
