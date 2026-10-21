@@ -158,11 +158,12 @@ function XYChart({ chart }: { chart: ChartBlock }) {
       </>
     );
   } else if (w > 0) {
-    const top = Math.max(...values);
+    // One accent: the first of any tied top bars.
+    const topIdx = values.indexOf(Math.max(...values));
     plot = points.map((p, i) => {
       const y0 = yOf(Math.max(0, lo));
       const y1 = yOf(p.value);
-      const isTop = p.value === top;
+      const isTop = i === topIdx;
       return (
         <Rect
           key={i}
