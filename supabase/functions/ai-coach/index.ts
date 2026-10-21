@@ -4831,6 +4831,8 @@ Deno.serve(async (req) => {
   // workout recap a review opens on): Drona speaks first and the user has said
   // nothing yet. Left out of the preview and the memory catch, so the word
   // facts and the nightly sweep never read app text as the user's words.
+  // Client-asserted, so never a trust signal: setting it on a typed message
+  // only drops that user's own turn from their own memory and preview.
   const openedByApp = (body as { opened_by_app?: unknown }).opened_by_app === true;
   trace.last_user_message_preview = openedByApp ? null : preview(lastUser?.content ?? null);
   if (!openedByApp && typeof lastUser?.content === "string") FULL_USER_TEXT.set(trace, lastUser.content);
@@ -4922,6 +4924,9 @@ Deno.serve(async (req) => {
   } else if (!lastUser?.content) {
     trace.retrieval_status = "skipped_empty_message";
   } else {
+    // An app-opened chat (opened_by_app) retrieves on its hidden context turn
+    // on purpose: it names the topic. It is long, so the rewrite hop turns it
+    // into one search question and the marker line never reaches the embedding.
     const retrievalQuery = await buildRetrievalQuery(lastUser.content, trace, admin);
     const queryEmbedding = await embedQuery(retrievalQuery, admin, userId);
     if (!queryEmbedding) {
