@@ -47,7 +47,7 @@ import {
   workoutCoachStarter,
   workoutCoachSuggestions,
 } from '@/lib/workoutCoach';
-import { coachTopicContext, isOpeningNarration, type CoachTopic } from '@/lib/coachTopic';
+import { coachTopicContext, isOpeningNarration, NARRATION_MAX, type CoachTopic } from '@/lib/coachTopic';
 import { sentTurns } from '@/lib/coachTurns';
 import { useCoachConversation } from '@/hooks/useCoachConversation';
 import { DronaMark, type DronaMarkState } from '@/components/coach/DronaMark';
@@ -682,7 +682,12 @@ function createTypewriter(
   messageId: string,
   setMessages: SetMessagesFn,
   scrollRef: React.RefObject<ScrollView | null>,
+  // An opening holds its first line back until it is clearly not a pre-tool
+  // "let me check" line (a tool call starts, a line break, or it grows past
+  // what that line can be), so the line never flashes on screen.
+  opts: { holdFirstLine?: boolean } = {},
 ) {
+  let held = !!opts.holdFirstLine;
   let buffer = '';        // received-but-not-displayed
   let displayed = '';
   let interval: ReturnType<typeof setInterval> | null = null;
@@ -743,7 +748,13 @@ function createTypewriter(
       }
       if (!chunk) return;
       buffer += chunk;
-      start();
+      if (held && (buffer.includes('\n') || buffer.length > NARRATION_MAX)) held = false;
+      if (!held) start();
+    },
+    // Show what was held back: it turned out to be the real reply.
+    release() {
+      held = false;
+      if (buffer) start();
     },
     // Everything received so far, typed or not.
     text(): string {
@@ -755,6 +766,7 @@ function createTypewriter(
       stopTicking();
       buffer = '';
       displayed = '';
+      held = false;
       trimLead = true;
       setMessages(prev => prev.map(m =>
         m.id === messageId ? { ...m, content: '' } : m
@@ -765,6 +777,7 @@ function createTypewriter(
     // text has finished typing — feels weird if they appear early).
     finish(cb: () => void) {
       finished = true;
+      held = false;
       onComplete = cb;
       // If buffer is already empty, drain has effectively completed.
       if (buffer.length === 0) {
@@ -1257,7 +1270,7 @@ function ChatScreen({
     // if the server delivers in chunky bursts the user sees smooth typing.
     // This is how ChatGPT/Claude.ai/Perplexity all do it: the network is
     // bursty, the animation is smooth.
-    const typewriter = createTypewriter(assistantId, setMessages, scrollRef);
+    const typewriter = createTypewriter(assistantId, setMessages, scrollRef, { holdFirstLine: opens });
     typewriterRef.current = typewriter;
     // Per-invocation flag: did the live `structured` event already deliver this
     // turn's workout edit? Guards the onDone fallback against a double card.
@@ -1333,6 +1346,7 @@ function ChatScreen({
         if (phase === 'tool_use' && !narrationChecked) {
           narrationChecked = true;
           if (isOpeningNarration(typewriter.text())) typewriter.clear();
+          else typewriter.release();
         }
         // Translate server phase tokens into friendly UI labels. The labels
         // show up under the spinner while the message bubble is still empty.

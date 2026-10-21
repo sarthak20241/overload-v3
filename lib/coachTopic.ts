@@ -48,7 +48,10 @@ export const TOPIC_MARKER = '[OPENED FROM THE APP. The user did not type this.]'
 export function coachTopicContext(topic: CoachTopic): string {
   // A fact can come from a row the type says is a string but the database
   // left empty (readiness rationale), so read it defensively.
-  const facts = topic.facts.map((f) => (typeof f === 'string' ? f.trim() : '')).filter(Boolean);
+  const facts = topic.facts
+    .map((f) => (typeof f === 'string' ? f.trim() : ''))
+    .filter(Boolean)
+    .map((f) => (f.length > FACT_MAX ? `${f.slice(0, FACT_MAX - 1)}…` : f));
   return [
     TOPIC_MARKER,
     `The user tapped ${WHERE[topic.source]} and this chat opened. Nothing has been said yet.`,
@@ -67,7 +70,10 @@ export function coachTopicContext(topic: CoachTopic): string {
   ].join('\n');
 }
 
-const NARRATION_MAX = 160;
+/** Longest line isOpeningNarration can match. The chat holds back this much. */
+export const NARRATION_MAX = 160;
+// One fact is a card line or two; this only bounds a runaway row.
+const FACT_MAX = 400;
 // First-person "I am about to look this up", not a word that merely appears
 // in a greeting ("worth a look" stays).
 const NARRATION = /\b(let me (check|pull|look|see|grab|dig|review)|give me a (sec|second|moment)|i'm (checking|pulling|digging|grabbing|reviewing)|(checking|pulling|looking|digging|grabbing|reviewing) (up|into|through))\b/i;

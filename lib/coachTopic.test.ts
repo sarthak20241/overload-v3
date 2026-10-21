@@ -119,3 +119,8 @@ Deno.test('topic context skips a missing fact instead of throwing', () => {
   assert(text.includes('- Readiness today: 72 (moderate).'));
   assert(!text.includes('undefined'));
 });
+
+Deno.test('a runaway fact is cut short', () => {
+  const text = coachTopicContext({ source: 'insight', title: 'T', facts: ['x'.repeat(5000)], ask: 'Why?' });
+  assert(text.length < 2000);
+});
