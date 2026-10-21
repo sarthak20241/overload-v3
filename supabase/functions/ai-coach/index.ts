@@ -76,7 +76,7 @@ import {
   continuesPendingMeal,
   wantsFoodAgent,
 } from "./foodIntent.ts";
-import { readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
+import { type CardLine, readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
 import { startHeartbeat } from "./streamHeartbeat.ts";
@@ -627,11 +627,14 @@ function startFoodAgent(args: {
   recentTurns: { role: "user" | "drona"; text: string }[];
   /** The meal waiting on a question; handed to the agent when it asked it. */
   pendingMeal: PendingFoodMeal | null;
+  /** The card on screen, with what the correction path needs to rework it. */
+  card?: { lines: CardLine[]; previousText: string | null; previousWords: string | null; previousItems: PreviousItem[] } | null;
   brandWeb: boolean;
   onStatus?: (label: string) => void;
 }): Promise<FoodAgentOutcome | null> {
   return args.intentP.then(async (d) => {
-    if (FOOD_INTENT_MODE !== "on" || !wantsFoodAgent(d, args.supportsCreate)) return null;
+    const cardOpen = !!args.card?.lines.length;
+    if (FOOD_INTENT_MODE !== "on" || !wantsFoodAgent(d, args.supportsCreate, cardOpen)) return null;
     if (!ANTHROPIC_API_KEY) return null;
     const t0 = Date.now();
     const out = await runFoodAgent(
@@ -643,6 +646,7 @@ function startFoodAgent(args: {
         answering: d?.resumeAgent && args.pendingMeal
           ? { text: args.pendingMeal.text, question: args.pendingMeal.question }
           : null,
+        card: args.card?.lines ?? null,
       },
       {
         model: MODEL,
@@ -663,6 +667,26 @@ function startFoodAgent(args: {
             targets: null,
             contextPromise: args.contextPromise,
           }),
+        // The correction path against the card: the agent says the change in
+        // words, this reworks the numbers from each line's own figures.
+        correctCard: args.card
+          ? (change) =>
+            runParseMeal(makeParseDeps(args.userClient, args.admin, args.userId, { brandWeb: args.brandWeb }), {
+              text: change,
+              localHour: args.localHour,
+              mealHint: args.mealHint,
+              mode: null,
+              recentFoods: [],
+              savedMeals: args.savedMealsP,
+              todayTotals: null,
+              targets: null,
+              contextPromise: args.contextPromise,
+              previousText: args.card!.previousText,
+              previousWords: args.card!.previousWords,
+              previousItems: args.card!.previousItems,
+              recentTurns: args.recentTurns,
+            })
+          : undefined,
         onStatus: args.onStatus,
         log: (m) => console.log(m),
       },
@@ -706,6 +730,7 @@ async function resolveFoodBarOutcome(args: {
   readDiary?: DiaryReader | null;
   agentP?: Promise<FoodAgentOutcome | null>;
   recentTurns?: { role: "user" | "drona"; text: string }[];
+  cardOpen?: boolean;
 }): Promise<FoodBarOutcome> {
   if (FOOD_INTENT_MODE !== "on") return { action: "log", planned: "log", decision: null };
   const decision = await args.intentP.catch(() => null);
@@ -715,6 +740,7 @@ async function resolveFoodBarOutcome(args: {
     mode: FOOD_INTENT_MODE,
     parseFoundFood,
     clientSupportsCreate: args.supportsCreate,
+    cardOpen: args.cardOpen,
   });
 
   if (action === "agent") {
@@ -724,6 +750,10 @@ async function resolveFoodBarOutcome(args: {
     if (o.kind === "log") return { action: "log", planned: action, decision, result: o.result, agent };
     if (o.kind === "create") return { action: "create", planned: action, decision, create: o.create, agent };
     if (o.kind === "reply") return { action: "reply", planned: action, decision, reply: o.text, agent };
+    // With a card open the parse already edited it from the user's words, so
+    // a failed agent hands that back instead of a canned line: the card is
+    // never lost to the agent's bad turn.
+    if (args.cardOpen) return { action: "log", planned: action, decision, agent };
     return { action: "reply", planned: action, decision, reply: AGENT_FAILED_REPLY, agent };
   }
   if (action === "reply") {
@@ -3424,8 +3454,8 @@ async function handleParseMealRequest(args: {
   const previousWords = typeof body.previous_words === "string" && body.previous_words.trim()
     ? keepEnds(body.previous_words)
     : null;
-  const foodContext = readFoodContext(body.recent_turns, body.pending_meal);
-  const recentTurns = foodContext.recentTurns;
+  const baseFoodContext = readFoodContext(body.recent_turns, body.pending_meal);
+  const recentTurns = baseFoodContext.recentTurns;
   const previousItems: PreviousItem[] = Array.isArray(body.previous_items)
     ? (body.previous_items as Array<Record<string, unknown>>).slice(0, 12).flatMap((r) => {
       const name = typeof r?.food_name === "string" ? r.food_name.trim().slice(0, 120) : "";
@@ -3465,6 +3495,15 @@ async function handleParseMealRequest(args: {
       }];
     })
     : [];
+  // The card on screen, as the router and the agent see it: the lines with
+  // their numbers, so a message beside a card can be an edit, a question, a
+  // save, or new food, and the agent can hand lines back exactly as they were.
+  const card: CardLine[] = previousItems.map((p) => ({
+    food_name: p.food_name, quantity: p.quantity, serving_label: p.serving_label, grams: p.grams,
+    kcal: p.kcal ?? 0, protein_g: p.protein_g, carb_g: p.carb_g, fat_g: p.fat_g,
+    food_id: p.food_id, source: p.source,
+  }));
+  const foodContext: FoodConversationContext = { ...baseFoodContext, card: card.length ? card : null };
 
   // "Just log it" (plan B). Honoured only with a uuid client_id (the
   // idempotency key), and never on a follow-up to a meal under review: a card
@@ -3702,6 +3741,7 @@ async function handleParseMealRequest(args: {
         const agentP = startFoodAgent({
           intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary,
           contextPromise, userClient, admin, userId, recentTurns, pendingMeal: foodContext.pendingMeal,
+          card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
           brandWeb: !parseFreeTier,
           // Builds that do not know this event skip it (dietData ignores
           // unknown events), so this needs no capability of its own.
@@ -3727,7 +3767,7 @@ async function handleParseMealRequest(args: {
                   if (wouldDivertToCreate(settledIntent, supportsCreate)) return;
                   // The agent answers this one; rows from the plain parse would
                   // be a meal it is not going to log.
-                  if (FOOD_INTENT_MODE === "on" && wantsFoodAgent(settledIntent, supportsCreate)) return;
+                  if (FOOD_INTENT_MODE === "on" && wantsFoodAgent(settledIntent, supportsCreate, card.length > 0)) return;
                   send(p.kind, p);
                 },
               },
@@ -3750,7 +3790,7 @@ async function handleParseMealRequest(args: {
               },
             );
             const outcome = await resolveFoodBarOutcome({
-              result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns,
+              result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen: card.length > 0,
             });
             // The agent's meal replaces the first parse when it finished with a log.
             const result = outcome.result ?? firstParse;
@@ -3929,7 +3969,9 @@ async function handleParseMealRequest(args: {
       intentP, supportsCreate, text, mealHint, localHour, localDate,
       mode: wantsSuper ? "super" : wantsFast ? "fast" : null,
       savedMealsP, readDiary, contextPromise, userClient, admin, userId, recentTurns,
-      pendingMeal: foodContext.pendingMeal, brandWeb: !parseFreeTier,
+      pendingMeal: foodContext.pendingMeal,
+      card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
+      brandWeb: !parseFreeTier,
     });
     const work = (async () => {
       const pendingMeal = foodContext.pendingMeal && continuesPendingMeal(await intentP)
@@ -3962,7 +4004,7 @@ async function handleParseMealRequest(args: {
       // Decided before the diary write, for the same reason as the stream: a
       // create or a reply must not log the parsed meal behind the user's back.
       const outcome = await resolveFoodBarOutcome({
-        result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns,
+        result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen: card.length > 0,
       });
       // The agent's meal replaces the first parse when it finished with a log.
       const result = outcome.result ?? firstParse;

@@ -17,7 +17,7 @@
 //
 // Deps are injected so the loop is testable without the network.
 
-import { FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
+import { type CardLine, cardLines, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { sonnetSettings } from "../_shared/sonnet.ts";
 import {
   type AnthropicTool,
@@ -40,6 +40,10 @@ export interface FoodAgentDeps {
   savedMeals(): Promise<SavedMealForParse[]>;
   /** The normal meal parser, in the user's mode. */
   parseFood(text: string): Promise<ParseMealResult>;
+  /** The correction path, run against the card on screen: it rescales from
+   *  each line's own numbers, so the agent decides WHAT changes and the code
+   *  decides the numbers. `text` is the change in plain words. */
+  correctCard?(text: string): Promise<ParseMealResult>;
   /** A line for the user while the agent works. Never awaited. */
   onStatus?(label: string): void;
   log?(msg: string): void;
@@ -60,13 +64,18 @@ export interface FoodAgentInput {
    *  answer. Said again in the opening message, so the answer is read against
    *  the agent's own question even when the app sent no history. */
   answering?: { text: string; question: string } | null;
+  /** The meal card on screen, when there is one: parsed, not yet added. The
+   *  agent can edit it, add to it, remove from it, save it as a meal, or talk
+   *  about it. Its numbers are the user's working copy, never to be re-guessed. */
+  card?: CardLine[] | null;
 }
 
 /** The opening user message: the date, then (when this answers the agent's
  *  question) what was asked, then the user's words. */
-export function openingText(input: Pick<FoodAgentInput, "text" | "answering">, days: string | null): string {
+export function openingText(input: Pick<FoodAgentInput, "text" | "answering" | "card">, days: string | null): string {
   const parts: string[] = [];
   if (days) parts.push(`(${days})`);
+  if (input.card?.length) parts.push(`(card on screen:\n${cardLines(input.card).join("\n")})`);
   if (input.answering) {
     parts.push(
       `(This answers your question ${JSON.stringify(input.answering.question)} about the user's message ${JSON.stringify(input.answering.text)}. ` +
@@ -152,6 +161,55 @@ const LOG_FOOD_TOOL: AnthropicTool = {
   },
 };
 
+const EDIT_CARD_TOOL: AnthropicTool = {
+  name: "edit_card",
+  description:
+    "FINISH: change the meal card on screen. Say the change in plain words, naming the line as the card names it: " +
+    "\"make the roti 2\", \"the chana is navratri chana, not boiled\", \"the paneer sabji already has the onion and tomato " +
+    "in it, remove the separate Tomato and Onion line\", \"the pooris were small\". The app reworks the numbers from " +
+    "each line's own figures; you never do the arithmetic. One call can carry several changes. Lines you do not " +
+    "mention stay as they are.",
+  input_schema: {
+    type: "object",
+    properties: {
+      change: { type: "string", description: "Every change to make, in plain words, naming each line as the card does." },
+      summary: { type: "string", description: "One short line in a coach's voice saying what you changed. No em dashes." },
+    },
+    required: ["change", "summary"],
+  },
+};
+
+const REMOVE_CARD_LINES_TOOL: AnthropicTool = {
+  name: "remove_card_lines",
+  description:
+    "FINISH: take lines off the meal card on screen. Give the line numbers from the card as shown. " +
+    "Use this when the user says a line should not be there at all; use edit_card when a line should change.",
+  input_schema: {
+    type: "object",
+    properties: {
+      lines: { type: "array", items: { type: "integer" }, description: "Card line numbers to remove, 1-based." },
+      summary: { type: "string", description: "One short line saying what came off. No em dashes." },
+    },
+    required: ["lines", "summary"],
+  },
+};
+
+const SAVE_CARD_AS_MEAL_TOOL: AnthropicTool = {
+  name: "save_card_as_meal",
+  description:
+    "FINISH: offer to save the meal card on screen as a reusable saved meal, with every line copied exactly. " +
+    "Use it when the user asks to keep, save, or make a meal of what is on the card. The user taps the card to save.",
+  input_schema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "What to call it, from the user's words or the main foods. Max 80 characters." },
+      log_now: { type: "boolean", description: "True when they also ate it now (the card is a meal they are logging), false to only save it." },
+      summary: { type: "string", description: "One short line written as an OFFER, never as done. No em dashes." },
+    },
+    required: ["name", "log_now", "summary"],
+  },
+};
+
 const REPLY_TOOL: AnthropicTool = {
   name: "reply",
   description:
@@ -165,8 +223,29 @@ const REPLY_TOOL: AnthropicTool = {
   },
 };
 
+const CARD_TOOLS: AnthropicTool[] = [EDIT_CARD_TOOL, REMOVE_CARD_LINES_TOOL, SAVE_CARD_AS_MEAL_TOOL];
 const READ_TOOLS = new Set([LIST_LOGGED_MEALS_TOOL.name, LIST_SAVED_MEALS_TOOL.name, PARSE_FOOD_TOOL.name]);
-const FINISH_TOOLS = new Set([CREATE_CUSTOM_FOOD_TOOL.name, CREATE_CUSTOM_MEAL_TOOL.name, LOG_FOOD_TOOL.name, REPLY_TOOL.name]);
+const FINISH_TOOLS = new Set([
+  CREATE_CUSTOM_FOOD_TOOL.name, CREATE_CUSTOM_MEAL_TOOL.name, LOG_FOOD_TOOL.name, REPLY_TOOL.name,
+  EDIT_CARD_TOOL.name, REMOVE_CARD_LINES_TOOL.name, SAVE_CARD_AS_MEAL_TOOL.name,
+]);
+
+/** The tools for this run: the card tools only when a card is on screen, so a
+ *  first-shot message cannot "edit" nothing. */
+export function toolsFor(card: CardLine[] | null | undefined): AnthropicTool[] {
+  return card?.length ? [...FOOD_AGENT_TOOLS, ...CARD_TOOLS] : FOOD_AGENT_TOOLS;
+}
+
+/** Said to the agent when a card is on screen: what it is and what to do with it. */
+export const CARD_NOTE =
+  "A meal card is on screen, not yet added to the diary. Its lines are numbered in `card`. These numbers are the user's " +
+  "working copy: never re-guess them. What the user says about the card: a change to a line (amount, size, preparation, " +
+  "which food it is) is edit_card; a line that should not be there is remove_card_lines; food not on the card yet is " +
+  "log_food with the new food only, and it is added beside the card; a request to keep or save the card as a meal is " +
+  "save_card_as_meal; a question or complaint about a line, with nothing to change, is reply, and the reply must speak to " +
+  "what they asked using the card's numbers (how a figure was reached, why a line is there), never a canned breakdown. " +
+  "When the user says a dish already contains something listed as a separate line, that is remove_card_lines for the " +
+  "separate line, and edit_card only if the dish's own line must change too.";
 
 export const FOOD_AGENT_TOOLS: AnthropicTool[] = [
   LIST_LOGGED_MEALS_TOOL,
@@ -197,11 +276,12 @@ export const FOOD_AGENT_SYSTEM =
   "matches, reply with one short question.\n" +
   "A card's summary is an offer the user has not tapped: never say saved or logged. No em dashes anywhere.\n" +
   "Act only through the tools. Every turn calls at least one; to talk to the user, use reply. Plain text with no tool " +
-  "call ends the work without an answer.";
+  "call ends the work without an answer.\n" +
+  "Never repeat your previous reply word for word. If the user says you did not answer, answer the specific thing they asked.";
 
 export const LAST_TURN_NOTE =
-  "This is your LAST turn. You must finish now with create_custom_meal, create_custom_food, log_food or reply. " +
-  "Do not call any other tool.";
+  "This is your LAST turn. You must finish now with create_custom_meal, create_custom_food, log_food, reply, or (with a " +
+  "card on screen) edit_card, remove_card_lines or save_card_as_meal. Do not call any other tool.";
 
 // ── Status lines ────────────────────────────────────────────────────────────
 
@@ -223,6 +303,9 @@ export function statusFor(name: string, input: Record<string, unknown>): string 
   }
   if (name === CREATE_CUSTOM_MEAL_TOOL.name || name === CREATE_CUSTOM_FOOD_TOOL.name) return "Building your meal";
   if (name === LOG_FOOD_TOOL.name) return "Getting it ready to log";
+  if (name === EDIT_CARD_TOOL.name) return "Reworking the card";
+  if (name === REMOVE_CARD_LINES_TOOL.name) return "Taking that off the card";
+  if (name === SAVE_CARD_AS_MEAL_TOOL.name) return "Building your meal";
   return null;
 }
 
@@ -333,8 +416,8 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
       model: deps.model,
       // 2000 under Sonnet 4.6; ~30% up for Sonnet 5.5's tokenizer.
       max_tokens: 2600,
-      system: FOOD_AGENT_SYSTEM,
-      tools: FOOD_AGENT_TOOLS,
+      system: input.card?.length ? `${FOOD_AGENT_SYSTEM}\n${CARD_NOTE}` : FOOD_AGENT_SYSTEM,
+      tools: toolsFor(input.card),
       // Always a tool: free text would be a reply that skipped the reply tool's
       // rules, and it would end the loop without saying so. Sonnet 5.5 rejects
       // a forced tool_choice, so the system prompt says it and the code below
@@ -361,7 +444,7 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
     if (finish) {
       const label = statusFor(finish.name, finish.input ?? {});
       if (label) deps.onStatus?.(label);
-      return await finishWith(finish, input, parse, turns, seen);
+      return await finishWith(finish, input, parse, turns, seen, deps);
     }
     const unknown = uses.find((u) => !READ_TOOLS.has(u.name));
     if (unknown) return { kind: "failed", reason: `unknown_tool_${unknown.name}`, turns };
@@ -477,11 +560,75 @@ async function finishWith(
   parse: (text: string) => Promise<ParseMealResult>,
   turns: AgentTurn[],
   seen: Seen,
+  deps: Pick<FoodAgentDeps, "correctCard"> = {},
 ): Promise<FoodAgentOutcome> {
   const args = u.input ?? {};
   if (u.name === REPLY_TOOL.name) {
     const text = clean(typeof args.text === "string" ? args.text : "");
     return text ? { kind: "reply", text, turns } : { kind: "failed", reason: "empty_reply", turns };
+  }
+  const card = input.card ?? [];
+  if (u.name === EDIT_CARD_TOOL.name) {
+    const change = typeof args.change === "string" ? args.change.trim() : "";
+    if (!change || !card.length) return { kind: "failed", reason: "edit_without_card", turns };
+    if (!deps.correctCard) return { kind: "failed", reason: "no_correct_card", turns };
+    const r = await deps.correctCard(change);
+    if (!r.parsed || r.parsed.items.length === 0) return { kind: "failed", reason: "edit_produced_nothing", turns };
+    const summary = clean(typeof args.summary === "string" ? args.summary : "");
+    return {
+      kind: "log",
+      result: { ...r, parsed: { ...r.parsed, corrects_previous: true, drona_line: summary || r.parsed.drona_line }, tool_calls: ["food_agent", ...r.tool_calls] },
+      turns,
+    };
+  }
+  if (u.name === REMOVE_CARD_LINES_TOOL.name) {
+    if (!card.length) return { kind: "failed", reason: "remove_without_card", turns };
+    const nums = Array.isArray(args.lines) ? args.lines.filter((n): n is number => Number.isInteger(n) && n >= 1 && n <= card.length) : [];
+    if (nums.length === 0) return { kind: "failed", reason: "remove_no_lines", turns };
+    const drop = new Set(nums.map((n) => n - 1));
+    const kept = card.filter((_, i) => !drop.has(i));
+    const summary = clean(typeof args.summary === "string" ? args.summary : "");
+    // The kept lines go back as they were: a correction replaces the card.
+    const meal: MealType = input.defaultMeal;
+    return {
+      kind: "log",
+      result: {
+        parsed: {
+          meal_type: meal,
+          items: kept.map((l) => cardLineAsItem(l, meal)),
+          drona_line: summary || "Taken off.",
+          corrects_previous: true,
+          // An empty card is a card with nothing left: the app clears it.
+        },
+        declined: null,
+        usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0 },
+        tool_calls: ["food_agent", "remove_card_lines"],
+        steps: [],
+        iterations: turns.length,
+      },
+      turns,
+    };
+  }
+  if (u.name === SAVE_CARD_AS_MEAL_TOOL.name) {
+    if (!card.length) return { kind: "failed", reason: "save_without_card", turns };
+    const name = clean(typeof args.name === "string" ? args.name : "").slice(0, 80) || "My meal";
+    const summary = clean(typeof args.summary === "string" ? args.summary : "");
+    return {
+      kind: "create",
+      create: {
+        tool: CREATE_CUSTOM_MEAL_TOOL.name,
+        input: {
+          name,
+          items: card.map((l) => ({
+            name: l.food_name, quantity: l.quantity, serving_label: l.serving_label, grams: l.grams,
+            kcal: Math.round(l.kcal), protein_g: l.protein_g ?? 0, carb_g: l.carb_g ?? 0, fat_g: l.fat_g ?? 0, estimated: false,
+          })),
+          log_now: args.log_now === true,
+          summary: summary || `${name}, ${card.length} items. Want it in My Meals?`,
+        },
+      },
+      turns,
+    };
   }
   if (u.name === CREATE_CUSTOM_MEAL_TOOL.name || u.name === CREATE_CUSTOM_FOOD_TOOL.name) {
     return { kind: "create", create: { tool: u.name, input: checkedCreateInput(args, seen) }, turns };
@@ -517,6 +664,26 @@ async function finishWith(
       tier,
     },
     turns,
+  };
+}
+
+/** A card line back as a parsed item, numbers untouched: the user's working copy. */
+function cardLineAsItem(l: CardLine, meal: MealType): ParsedItem {
+  return {
+    food_id: l.food_id ?? null,
+    food_name: l.food_name,
+    quantity: l.quantity,
+    serving_label: l.serving_label,
+    grams: l.grams,
+    kcal: Math.round(l.kcal),
+    protein_g: l.protein_g ?? 0,
+    carb_g: l.carb_g ?? 0,
+    fat_g: l.fat_g ?? 0,
+    fiber_g: null,
+    source: l.source ?? "manual",
+    assumption: null,
+    confidence: "high",
+    meal_type: meal,
   };
 }
 

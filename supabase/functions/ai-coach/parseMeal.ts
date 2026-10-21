@@ -6260,7 +6260,11 @@ async function runParseMealCore(
       // Forced to a correction: this turn questions the card, so whatever it
       // lists edits the card. Tagged as an addition, "3 small puris" on a
       // one-line card would sit beside the old poori instead of replacing it.
-      if (again.data?.stop_reason !== "max_tokens" && Array.isArray(items) && items.length > 0) {
+      // A retry that only REMOVES lines ("why did you add tomato and onion
+      // separately") carries no items and is just as much a fix. Live,
+      // 2026-10-21: such a retry was thrown away and the canned answer sent.
+      const removes = Array.isArray(blk?.input?.removed_food_names) && blk!.input.removed_food_names.length > 0;
+      if (again.data?.stop_reason !== "max_tokens" && ((Array.isArray(items) && items.length > 0) || removes)) {
         retried = { ...blk!.input, corrects_previous: true };
       }
     }
@@ -6668,9 +6672,37 @@ async function runParseMealCore(
   // them to say what they ate - next to the line they just deleted, because a
   // decline keeps the card. Removing the last line by TEXT should behave like
   // removing it with the X button, which already clears the card.
-  if (hasPrevious && extItems.length === 0 && removedNames.length > 0) {
+  // Only when NOTHING survives: a removal that names one line of several
+  // ("why did you add the halwa separately") lists no items either, and must
+  // leave the other lines standing, not clear the card. Live, 2026-10-21.
+  const survivors = hasPrevious && removedNames.length > 0
+    ? prevItems.filter((p) => !removedTargets.has(p.food_name.trim().toLowerCase()))
+    : prevItems;
+  if (hasPrevious && extItems.length === 0 && removedNames.length > 0 && survivors.length === 0) {
     const what = removedNames.length === 1 ? removedNames[0] : "those";
     return declineResult(`Removed ${what}. Nothing left on this one.`, true);
+  }
+  if (hasPrevious && extItems.length === 0 && removedNames.length > 0) {
+    // Hand the survivors back untouched, as a correction: the card is replaced
+    // by itself minus the removed lines. keepUncoveredPrevious is what the
+    // guard uses for exactly this, so one path serves both.
+    const kept = keepUncoveredPrevious([], prevItems, replacedNames);
+    const what = removedNames.length === 1 ? removedNames[0] : "those";
+    T.decide_ms = 0;
+    steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: false } });
+    return {
+      parsed: {
+        meal_type: kept[0]?.meal_type ?? (mealFromText ?? input.mealHint ?? mealForHour(input.localHour)),
+        items: kept,
+        drona_line: `Took ${what} off.`,
+        corrects_previous: true,
+      },
+      declined: null,
+      usage,
+      tool_calls: [...toolCalls, "remove_lines"],
+      steps,
+      iterations: anthropicCalls,
+    };
   }
 
   if (ext.declined === true || extItems.length === 0) {

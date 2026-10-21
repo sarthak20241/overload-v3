@@ -1,0 +1,178 @@
+// Run with: deno test --allow-all supabase/functions/ai-coach/cardRouting.test.ts
+//
+// With a meal card on screen, a message used to skip the router: every one was
+// a correction, so a question got a canned breakdown and "make it a meal" was
+// never heard. The owner's thread, 2026-10-21 (card: rice, paneer sabji,
+// Tomato and Onion, masoor dal):
+//   "shall we make it a meal ... also there is some oil"  -> read as an edit; the save ignored
+//   "how is it 240 cals? also why did u add tomato and onion separately"
+//                                                         -> the canned breakdown
+//   "u didn't even reply to me?"                          -> the SAME canned breakdown
+// Now the router reads the card, and the food agent holds it: edit, remove,
+// save, or answer. Nothing here calls a real model or Jev.
+
+import { assert, assertEquals } from "jsr:@std/assert@1";
+import { type CardLine, cardLines, foodIntentState, readFoodContext } from "./foodContext.ts";
+import { CARD_NOTE, type FoodAgentDeps, openingText, runFoodAgent, toolsFor } from "./foodAgent.ts";
+import {
+  CARD_AGENT_FLOOR,
+  decideFoodAction,
+  type FoodIntentDecision,
+  routeFoodIntent,
+  shouldRouteFoodIntent,
+  wantsFoodAgent,
+} from "./foodIntent.ts";
+import type { ParseMealDeps, ParseMealResult } from "./parseMeal.ts";
+
+const CARD: CardLine[] = [
+  { food_name: "Rice, cooked, NFS", quantity: 150, serving_label: "g", grams: 150, kcal: 194, protein_g: 4, carb_g: 42, fat_g: 0.4, food_id: "r1", source: "catalog" },
+  { food_name: "Milky Mist low fat paneer sabji", quantity: 1, serving_label: "serving", grams: 180, kcal: 240, protein_g: 18, carb_g: 8, fat_g: 14, source: "estimate" },
+  { food_name: "Tomato and Onion", quantity: 1, serving_label: "serving", grams: 60, kcal: 22, protein_g: 1, carb_g: 5, fat_g: 0.2, source: "estimate" },
+  { food_name: "Masoor dal (cooked)", quantity: 1, serving_label: "katori", grams: 150, kcal: 150, protein_g: 9, carb_g: 22, fat_g: 3, source: "catalog" },
+];
+const decision = (d: Partial<FoodIntentDecision>): FoodIntentDecision => ({
+  intent: "other", source: "jev", confidence: 0.9, note: "test", savedMatch: null, ...d,
+});
+
+// ── The router runs with a card open, and sees it ───────────────────────────
+
+Deno.test("the failure this prevents: a message beside a card skipped the router", () => {
+  assertEquals(shouldRouteFoodIntent("on", true), true);
+  assertEquals(shouldRouteFoodIntent("off", true), false);
+});
+
+Deno.test("the router's state carries the card, one numbered line per food", () => {
+  const ctx = { ...readFoodContext([], null), card: CARD };
+  const state = JSON.parse(foodIntentState("remove the dal", ctx));
+  assertEquals(state.card.length, 4);
+  assertEquals(state.card[2], "3. Tomato and Onion: 1 serving, 60 g, 22 kcal");
+  // No card: the state is as it was.
+  assertEquals(foodIntentState("2 eggs", readFoodContext([], null)), "2 eggs");
+});
+
+function jevSays(intent: string, conf: number): ParseMealDeps["fetchFn"] {
+  return (async () => Response.json({
+    model: "jev-test", usage: {},
+    answers: { intent: { type: "choice", choice: intent, confidence: conf, probabilities: { [intent]: conf } }, has_food: { type: "noul", noul: 0.3 } },
+  })) as typeof fetch;
+}
+
+Deno.test("'edit' is an intent only while a card is open", async () => {
+  const deps = { jev: { apiKey: "k", timeoutMs: 1000, fetchFn: jevSays("edit", 0.9) } };
+  const withCard = await routeFoodIntent("they were small", deps, { ...readFoodContext([], null), card: CARD });
+  assertEquals(withCard.intent, "edit");
+  // No card: an 'edit' verdict is unusable and the ladder falls to the floor.
+  const noCard = await routeFoodIntent("they were small", deps, readFoodContext([], null));
+  assertEquals(noCard.intent, "log");
+});
+
+// ── Policy: who handles what beside a card ─────────────────────────────────
+
+Deno.test("beside a card: edit, create and a question go to the agent; new food stays on the parse", () => {
+  const go = (intent: FoodIntentDecision["intent"], conf = 0.9) =>
+    decideFoodAction({ decision: decision({ intent, confidence: conf }), mode: "on", parseFoundFood: true, clientSupportsCreate: true, cardOpen: true });
+  assertEquals(go("edit"), "agent");
+  assertEquals(go("create"), "agent");
+  assertEquals(go("other"), "agent");
+  // The failure this prevents: "u didn't even reply to me?" read as create at
+  // 0.50 and the agent offered a save card. A save keeps the create bar.
+  assertEquals(go("create", 0.5), "log");
+  assertEquals(go("create", 0.69), "log");
+  assertEquals(go("log"), "log");
+  // Unsure: the correction path edits the card from the user's words.
+  assertEquals(go("edit", CARD_AGENT_FLOOR - 0.01), "log");
+  // A client that cannot draw a save card gets the parse, as before.
+  assertEquals(decideFoodAction({ decision: decision({ intent: "edit" }), mode: "on", parseFoundFood: true, clientSupportsCreate: false, cardOpen: true }), "log");
+  // No card: a sure 'other' is still a plain reply, not the agent.
+  assertEquals(wantsFoodAgent(decision({ intent: "other" }), true, false), false);
+  assertEquals(decideFoodAction({ decision: decision({ intent: "other" }), mode: "on", parseFoundFood: false, clientSupportsCreate: true }), "reply");
+});
+
+// ── The agent holds the card ────────────────────────────────────────────────
+
+type Use = { name: string; input: Record<string, unknown> };
+function scripted(script: Use[][], bodies: Record<string, unknown>[] = []): FoodAgentDeps["callModel"] {
+  let n = 0;
+  return async (body) => {
+    bodies.push(JSON.parse(JSON.stringify(body)));
+    const uses = script[Math.min(n, script.length - 1)];
+    n++;
+    return { ok: true, data: { usage: { input_tokens: 1, output_tokens: 1 }, content: uses.map((u, i) => ({ type: "tool_use", id: `t${n}_${i}`, name: u.name, input: u.input })) } };
+  };
+}
+const EMPTY_USAGE = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0 };
+function deps(callModel: FoodAgentDeps["callModel"], corrections: string[] = []): FoodAgentDeps {
+  return {
+    model: "sonnet", callModel,
+    readDiary: async () => [], savedMeals: async () => [],
+    parseFood: async () => ({ parsed: null, declined: { message: "no" }, usage: EMPTY_USAGE, tool_calls: [], steps: [], iterations: 0 }),
+    correctCard: async (change) => {
+      corrections.push(change);
+      const r: ParseMealResult = {
+        parsed: {
+          meal_type: "lunch", drona_line: "Updated.", corrects_previous: true,
+          items: [{ food_id: null, food_name: "Milky Mist low fat paneer sabji", quantity: 1, serving_label: "serving", grams: 120, kcal: 160, protein_g: 14, carb_g: 6, fat_g: 9, fiber_g: null, source: "estimate", assumption: null, confidence: "medium" }],
+        },
+        declined: null, usage: EMPTY_USAGE, tool_calls: ["extract_meal", "log_meal"], steps: [], iterations: 2,
+      };
+      return r;
+    },
+  };
+}
+const INPUT = { text: "x", defaultMeal: "lunch" as const, card: CARD };
+
+Deno.test("the agent is shown the card and gets the card tools only when one is open", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  await runFoodAgent({ ...INPUT, text: "how is it 240 cals?" }, deps(scripted([[{ name: "reply", input: { text: "ok" } }]], bodies)));
+  const names = (bodies[0].tools as { name: string }[]).map((t) => t.name);
+  assert(names.includes("edit_card") && names.includes("remove_card_lines") && names.includes("save_card_as_meal"), names.join(","));
+  assert(String(bodies[0].system).includes(CARD_NOTE.slice(0, 40)));
+  const msgs = bodies[0].messages as { content: string }[];
+  assert(msgs[0].content.includes(cardLines(CARD)[1]), msgs[0].content);
+  assertEquals(toolsFor(null).some((t) => t.name === "edit_card"), false);
+  assertEquals(openingText({ text: "2 eggs" }, null), "2 eggs");
+});
+
+Deno.test("the failure this prevents: 'why did u add tomato and onion separately' removes that line", async () => {
+  const out = await runFoodAgent(
+    { ...INPUT, text: "why did u add tomato and onion as seperate food item as well" },
+    deps(scripted([[{ name: "remove_card_lines", input: { lines: [3], summary: "Took the separate tomato and onion off, they are in the sabji." } }]])),
+  );
+  assert(out.kind === "log", out.kind);
+  const items = out.result.parsed!.items;
+  assertEquals(items.map((i) => i.food_name), ["Rice, cooked, NFS", "Milky Mist low fat paneer sabji", "Masoor dal (cooked)"]);
+  // The kept lines come back exactly as they were, and the card is REPLACED.
+  assertEquals([items[0].kcal, items[0].food_id, items[1].kcal], [194, "r1", 240]);
+  assertEquals(out.result.parsed!.corrects_previous, true);
+});
+
+Deno.test("an edit goes through the correction path and replaces the card", async () => {
+  const corrections: string[] = [];
+  const out = await runFoodAgent(
+    { ...INPUT, text: "i said 65g paneer grilled with onion and tomato, how is it 240" },
+    deps(scripted([[{ name: "edit_card", input: { change: "the paneer sabji is 65 g paneer grilled with onion, tomato and a little oil", summary: "Reworked the sabji from 65 g paneer." } }]]), corrections),
+  );
+  assert(out.kind === "log", out.kind);
+  assertEquals(corrections, ["the paneer sabji is 65 g paneer grilled with onion, tomato and a little oil"]);
+  assertEquals(out.result.parsed!.corrects_previous, true);
+  assertEquals(out.result.parsed!.drona_line, "Reworked the sabji from 65 g paneer.");
+});
+
+Deno.test("'make it a meal' with a card open becomes a save card with every line copied", async () => {
+  const out = await runFoodAgent(
+    { ...INPUT, text: "shall we make it a meal as I will be having this daily" },
+    deps(scripted([[{ name: "save_card_as_meal", input: { name: "Paneer sabji lunch", log_now: true, summary: "Paneer sabji lunch, 4 items. Want it in My Meals?" } }]])),
+  );
+  assert(out.kind === "create", out.kind);
+  assertEquals(out.create.tool, "create_custom_meal");
+  const input = out.create.input as { name: string; log_now: boolean; items: Record<string, unknown>[] };
+  assertEquals([input.name, input.log_now, input.items.length], ["Paneer sabji lunch", true, 4]);
+  assertEquals(input.items[1], { name: "Milky Mist low fat paneer sabji", quantity: 1, serving_label: "serving", grams: 180, kcal: 240, protein_g: 18, carb_g: 8, fat_g: 14, estimated: false });
+});
+
+Deno.test("card tools without a card, or with bad lines, fail honestly", async () => {
+  const noCard = await runFoodAgent({ text: "remove it", defaultMeal: "lunch" }, deps(scripted([[{ name: "remove_card_lines", input: { lines: [1], summary: "x" } }]])));
+  assertEquals(noCard.kind, "failed");
+  const badLine = await runFoodAgent(INPUT, deps(scripted([[{ name: "remove_card_lines", input: { lines: [9], summary: "x" } }]])));
+  assertEquals(badLine.kind, "failed");
+});
