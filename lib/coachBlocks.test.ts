@@ -102,3 +102,19 @@ Deno.test('a fence the model forgot to close keeps the rest of the reply', () =>
   const last = blocks[2];
   assertEquals(last.type === 'paragraph' ? last.text : '', 'That is your week. Rest on Sunday.');
 });
+
+Deno.test('while streaming, a row with no closing pipe yet stays in the table', () => {
+  const partial = '| Date | Top set |\n|---|---|\n| Sep 1 | 80 |\n| Oct 1 | 82';
+  const blocks = parseCoachBlocks(partial, true);
+  assertEquals(blocks.map((b) => b.type), ['table']);
+  const t = blocks[0];
+  assertEquals(t.type === 'table' ? t.rows : [], [['Sep 1', '80']]);
+  // A header still being written is a placeholder, never raw pipes.
+  assertEquals(parseCoachBlocks('Here:\n\n| Date | Top', true).map((b) => b.type), ['paragraph', 'pending']);
+});
+
+Deno.test('a numbered list keeps its own first number; a year is not a list', () => {
+  const blocks = parseCoachBlocks('3. Add a set\n4. Drop the weight\n\n2024. Great year for squats.');
+  assertEquals(blocks[0], { type: 'list', ordered: true, items: ['Add a set', 'Drop the weight'], start: 3 });
+  assertEquals(blocks[1].type, 'paragraph');
+});

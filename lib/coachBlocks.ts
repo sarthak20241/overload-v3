@@ -64,7 +64,7 @@ export interface ProgressItem {
 export type CoachBlock =
   | { type: 'paragraph'; text: string }
   | { type: 'heading'; text: string }
-  | { type: 'list'; ordered: boolean; items: string[] }
+  | { type: 'list'; ordered: boolean; items: string[]; start?: number }
   | { type: 'table'; header: string[]; rows: string[][]; align: ('left' | 'right')[] }
   | ChartBlock
   | { type: 'stats'; items: StatItem[] }
@@ -216,7 +216,7 @@ export function parseCoachBlocks(content: string, streaming = false): CoachBlock
   const lines = content.replace(/\r\n/g, '\n').split('\n');
   const out: CoachBlock[] = [];
   let para: string[] = [];
-  let list: { ordered: boolean; items: string[] } | null = null;
+  let list: { ordered: boolean; items: string[]; start?: number } | null = null;
 
   const flushPara = () => {
     const text = para.join('\n').trim();
@@ -224,7 +224,11 @@ export function parseCoachBlocks(content: string, streaming = false): CoachBlock
     para = [];
   };
   const flushList = () => {
-    if (list && list.items.length) out.push({ type: 'list', ordered: list.ordered, items: list.items });
+    if (list && list.items.length) {
+      out.push(list.start != null && list.start !== 1
+        ? { type: 'list', ordered: list.ordered, items: list.items, start: list.start }
+        : { type: 'list', ordered: list.ordered, items: list.items });
+    }
     list = null;
   };
   const flush = () => { flushPara(); flushList(); };
@@ -275,10 +279,14 @@ export function parseCoachBlocks(content: string, streaming = false): CoachBlock
       continue;
     }
 
-    // Pipe table: a header row, a divider row, then body rows.
-    if (isTableLine(line)) {
+    // Pipe table: a header row, a divider row, then body rows. While a reply
+    // streams, its last line may be a row still being written ("| Sep 1 | 80"),
+    // which has no closing pipe yet: it belongs to the table, not a paragraph.
+    const rowSoFar = (k: number) =>
+      isTableLine(lines[k]) || (streaming && k === lines.length - 1 && lines[k].trim().startsWith('|'));
+    if (rowSoFar(i)) {
       let j = i;
-      while (j < lines.length && isTableLine(lines[j])) j++;
+      while (j < lines.length && rowSoFar(j)) j++;
       const rows = lines.slice(i, j);
       const atEnd = j >= lines.length;
       if (rows.length >= 2 && isDividerLine(rows[1])) {
@@ -309,12 +317,14 @@ export function parseCoachBlocks(content: string, streaming = false): CoachBlock
     }
 
     const bullet = /^[-*•]\s+(.*)$/.exec(trimmed);
-    const numbered = /^(\d+)[.)]\s+(.*)$/.exec(trimmed);
+    // Up to three digits: "2024. Great year" is a sentence, not item 2024.
+    const numbered = /^(\d{1,3})[.)]\s+(.*)$/.exec(trimmed);
     if (bullet || numbered) {
       flushPara();
       const ordered = !!numbered;
       if (list && list.ordered !== ordered) flushList();
-      if (!list) list = { ordered, items: [] };
+      // A numbered list keeps the model's own first number ("3. ..." stays 3).
+      if (!list) list = ordered ? { ordered, items: [], start: Number(numbered![1]) } : { ordered, items: [] };
       list.items.push((bullet ? bullet[1] : numbered![2]).trim());
       i++;
       continue;
@@ -343,7 +353,7 @@ export function coachBlocksPlainText(content: string): string {
         case 'heading':
           return b.text;
         case 'list':
-          return b.items.map((t, n) => (b.ordered ? `${n + 1}. ${t}` : `- ${t}`)).join('\n');
+          return b.items.map((t, n) => (b.ordered ? `${(b.start ?? 1) + n}. ${t}` : `- ${t}`)).join('\n');
         case 'table':
           return [b.header.join(' | '), ...b.rows.map((r) => r.join(' | '))].join('\n');
         case 'chart': {

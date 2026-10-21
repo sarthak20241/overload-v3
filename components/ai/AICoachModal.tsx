@@ -358,7 +358,7 @@ function MessageContent({
               {block.items.map((item, li) => (
                 <View key={li} style={s.mdBulletRow}>
                   <Text style={[block.ordered ? s.mdNumber : s.mdBulletDot, { color: C.accentText }]}>
-                    {block.ordered ? `${li + 1}.` : '•'}
+                    {block.ordered ? `${(block.start ?? 1) + li}.` : '•'}
                   </Text>
                   <Text style={[s.chatText, { color: textColor, flex: 1 }]}>{renderInline(item)}</Text>
                 </View>
@@ -1334,14 +1334,21 @@ function ChatScreen({
     // once, only a short single line, and only one that says it is looking
     // something up: a bare greeting written before the tools stays.
     let narrationChecked = !opens;
+    // The placeholder starts on 'Thinking', so the first words must clear it.
+    let phaseShown = true;
     streamRef.current = callAICoachStreaming(allMessages, token, {
       // Words arriving end any lookup in progress: the orb goes back to
       // writing. Drona often writes a line, looks something up, then writes
       // on, so the status must clear on words, not only before the first.
       onDelta: (chunk) => {
-        setMessages(prev => prev.map(m =>
-          m.id === assistantId && m.thinkingPhase ? { ...m, thinkingPhase: undefined } : m
-        ));
+        // Only after a status set one: a state write per chunk would re-render
+        // the whole thread for nothing.
+        if (phaseShown) {
+          phaseShown = false;
+          setMessages(prev => prev.map(m =>
+            m.id === assistantId && m.thinkingPhase ? { ...m, thinkingPhase: undefined } : m
+          ));
+        }
         typewriter.append(chunk);
       },
       // One handler for both terminal tools this chat can receive. They are
@@ -1428,6 +1435,7 @@ function ChatScreen({
           // Set even mid-reply: a lookup after the first line lifts the orb again.
           m.id === assistantId ? { ...m, thinkingPhase: label } : m
         ));
+        phaseShown = true;
       },
       onDone: ({ citations, structured }) => {
         // Defensive fallback, mirroring the generate screens: if the live
