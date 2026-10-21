@@ -4827,8 +4827,13 @@ Deno.serve(async (req) => {
 
   trace.message_count = incomingMessages.length;
   const lastUser = [...incomingMessages].reverse().find((m) => m.role === "user");
-  trace.last_user_message_preview = preview(lastUser?.content ?? null);
-  if (typeof lastUser?.content === "string") FULL_USER_TEXT.set(trace, lastUser.content);
+  // The app wrote the last user turn (a topic chat's hidden context, or the
+  // workout recap a review opens on): Drona speaks first and the user has said
+  // nothing yet. Left out of the preview and the memory catch, so the word
+  // facts and the nightly sweep never read app text as the user's words.
+  const openedByApp = (body as { opened_by_app?: unknown }).opened_by_app === true;
+  trace.last_user_message_preview = openedByApp ? null : preview(lastUser?.content ?? null);
+  if (!openedByApp && typeof lastUser?.content === "string") FULL_USER_TEXT.set(trace, lastUser.content);
 
   // Generate-flow routing (Phase 2.5): client sets `force_tool` to one of
   // 'generate_workout' | 'generate_plan'. We narrow the toolkit to that

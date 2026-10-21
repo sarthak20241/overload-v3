@@ -43,6 +43,10 @@ export interface CoachChatMessage {
   // Transient UI state while the assistant placeholder waits on first token.
   // Never persisted (stripped on save).
   thinkingPhase?: string;
+  // Set on the hidden user-role turn that opens a topic chat (lib/coachTopic):
+  // the app wrote it, Drona reads it, the chat never shows it. Persisted, so a
+  // follow-up after a restart still carries the topic. `title` names the chat.
+  context?: { title: string };
 }
 
 export interface CoachConversation {
@@ -111,6 +115,10 @@ function newConversation(): CoachConversation {
 function snippet(text: string): string {
   const clean = text.replace(/\s+/g, ' ').trim();
   return clean.length > TITLE_MAX ? `${clean.slice(0, TITLE_MAX - 1)}…` : clean;
+}
+
+function titleOf(m: CoachChatMessage | undefined): string {
+  return snippet(m?.context?.title ?? m?.content ?? '');
 }
 
 // Strip transient fields and the empty streaming placeholder before persisting.
@@ -256,7 +264,7 @@ export function saveActiveMessages(
   convo.updatedAt = Date.now();
   if (!convo.title) {
     const firstUser = clean.find((m) => m.role === 'user');
-    if (firstUser) convo.title = snippet(firstUser.content);
+    if (firstUser) convo.title = titleOf(firstUser);
   }
   evictOldest(store);
 
@@ -300,7 +308,7 @@ export function listConversations(userId: string | null): CoachConversationSumma
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .map((c) => ({
       id: c.id,
-      title: c.title || snippet(c.messages.find((m) => m.role === 'user')?.content ?? ''),
+      title: c.title || titleOf(c.messages.find((m) => m.role === 'user')),
       updatedAt: c.updatedAt,
       messageCount: c.messages.length,
     }));
