@@ -1675,7 +1675,7 @@ function ChatScreen({
   }, [creates, supabase]);
 
   // ─── Drona orb ─────────────────────────────────────────────────────────
-  // One orb, three moments (sketch: .planning/sketches/drona-orb-chat.html).
+  // One orb, three moments (design: claude.ai/artifact/Xx75Wa3C26qtRSKj7kUwzn).
   //  1. Empty chat: the orb sits big in the hero and breathes.
   //  2. First message: it stays big and says what Drona is doing.
   //  3. Words arrive: it flies to the dock and stays there for the chat.

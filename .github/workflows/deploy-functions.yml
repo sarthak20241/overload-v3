@@ -128,6 +128,7 @@ jobs:
           deno test --allow-all lib/servingSize.test.ts
           deno test --allow-all lib/fitnessGoals.test.ts
           deno test --allow-all lib/coachTopic.test.ts
+          deno test --allow-all lib/coachBlocks.test.ts
           deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/coachConversations.test.ts
           deno test --allow-all lib/missingColumn.test.ts
           deno test --allow-all --unstable-sloppy-imports lib/planExercise.test.ts

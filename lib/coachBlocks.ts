@@ -15,10 +15,9 @@
  *   ```
  *
  * A chart is a line (one trend, or two compared via "series"), a bar chart,
- * or a donut (a split of one whole).
- *
- * and ordinary markdown pipe tables. Everything else is a paragraph, a bullet
- * or numbered list, or a heading. Pure TypeScript (no React Native) so the
+ * or a donut (a split of one whole). Drona can also write ordinary markdown
+ * pipe tables. Everything else is a paragraph, a bullet or numbered list, or
+ * a heading. Pure TypeScript (no React Native) so the
  * parser runs under `deno test`.
  *
  * Replies stream in, so the last block may be half written. A table or chart
@@ -241,14 +240,24 @@ export function parseCoachBlocks(content: string, streaming = false): CoachBlock
       const lang = (fence[1] ?? '').toLowerCase();
       let j = i + 1;
       while (j < lines.length && lines[j].trim() !== '```') j++;
-      const closed = j < lines.length;
+      let closed = j < lines.length;
+      // A finished reply whose fence never closed (the model forgot the
+      // closing ```): the block ends at the first blank line, and everything
+      // after it is still the reply. Dropping to the end would lose the answer.
+      let resumeAt = closed ? j + 1 : lines.length;
+      if (!closed && !streaming) {
+        let k = i + 1;
+        while (k < lines.length && lines[k].trim() !== '') k++;
+        j = k;
+        resumeAt = k;
+        closed = true;
+      }
       const inner = lines.slice(i + 1, j).join('\n');
       flush();
       if (FENCES.has(lang)) {
         if (!closed) {
-          // Still arriving. Without streaming it never closed: drop it
-          // rather than show the user raw JSON.
-          if (streaming) out.push({ type: 'pending', what: lang as 'chart' | 'stats' | 'progress' });
+          // Still arriving: a quiet placeholder, never raw JSON.
+          out.push({ type: 'pending', what: lang as 'chart' | 'stats' | 'progress' });
         } else if (lang === 'chart') {
           const c = parseChart(inner);
           if (c) out.push(c);
@@ -262,7 +271,7 @@ export function parseCoachBlocks(content: string, streaming = false): CoachBlock
       } else if (inner.trim()) {
         out.push({ type: 'paragraph', text: inner.trim() });
       }
-      i = closed ? j + 1 : lines.length;
+      i = resumeAt;
       continue;
     }
 

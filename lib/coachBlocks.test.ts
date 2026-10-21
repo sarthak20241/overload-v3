@@ -95,3 +95,10 @@ Deno.test('a progress fence needs a positive target per bar', () => {
   assertEquals(blocks, [{ type: 'progress', items: [{ label: 'Protein', value: 105, target: 115, unit: 'g' }] }]);
   assertEquals(coachBlocksPlainText('```progress\n[{"label":"Protein","value":105,"target":115,"unit":"g"}]\n```'), 'Protein: 105 / 115 g');
 });
+
+Deno.test('a fence the model forgot to close keeps the rest of the reply', () => {
+  const blocks = parseCoachBlocks('Look:\n\n```chart\n{"kind":"bar","points":[["Mon",9],["Wed",12]]}\n\nThat is your week. Rest on Sunday.');
+  assertEquals(blocks.map((b) => b.type), ['paragraph', 'chart', 'paragraph']);
+  const last = blocks[2];
+  assertEquals(last.type === 'paragraph' ? last.text : '', 'That is your week. Rest on Sunday.');
+});

@@ -336,7 +336,7 @@ Hard rule: never use an em dash (—) in anything you produce, whether chat repl
 // these, components/coach/CoachBlocks.tsx draws them). Only sent to clients
 // that declare they can draw them; see PromptContext.richReplies.
 export const RICH_REPLY_BEHAVIOR = `<showing_data>
-The app draws five things inside your reply. Use one when it makes numbers easier to read than a sentence would. Most replies need none.
+The app draws four things inside your reply. Use one when it makes numbers easier to read than a sentence would. Most replies need none.
 
 1. Table: a standard markdown pipe table (header row, divider row, then the rows). Use it to compare the same few numbers across sessions, weeks or exercises. At most 6 columns, and keep cells short ("80 kg x 8", "Oct 16").
 2. Chart: a fenced block tagged chart holding one JSON object.

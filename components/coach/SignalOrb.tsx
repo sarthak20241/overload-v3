@@ -51,7 +51,7 @@ function buildPage(color: [number, number, number], particles: number, state: Si
 </head><body>
 <script>window.SIGNAL_ORB_COLORS=${colors};</script>
 <signal-orb state="${state}" level="${level}" particles="${particles}"></signal-orb>
-<script>${SIGNAL_ORB_JS}</script>
+<script>${SIGNAL_ORB_JS.replace(/<\/script/gi, '<\\/script')}</script>
 <script>window.orb=document.querySelector('signal-orb');window.ReactNativeWebView&&window.ReactNativeWebView.postMessage('ready');</script>
 </body></html>`;
 }
