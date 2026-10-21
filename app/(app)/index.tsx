@@ -19,6 +19,7 @@ import { getLevelInfo, getXpForWorkout, isMaxLevel } from '@/lib/xp';
 import { ReadinessCard } from '@/components/ui/ReadinessCard';
 import { ActivityGoalsCard } from '@/components/program/ActivityGoalsCard';
 import { AICoachModal } from '@/components/ai/AICoachModal';
+import { dronaCardTopic, insightTopic, type CoachTopic } from '@/lib/coachTopic';
 import { BuildSplitPrompt } from '@/components/program/BuildSplitPrompt';
 import { hasCompletedOnboarding } from '@/lib/onboarding';
 import { loadActiveProgram } from '@/lib/programData';
@@ -653,9 +654,9 @@ export default function DashboardScreen() {
     }
     void setCardStatus(supabase, popupCard.id, 'applied');
     if (action === 'talk') {
-      // A talk card opens the chat on its own opening line, which carries the
-      // numbers the card showed, so the coach starts from the same facts.
-      setAiCoachPrompt(popupCard.payload.prompt || undefined);
+      // A talk card opens the chat on the card itself: its numbers and its
+      // question go to Drona as the topic, and Drona speaks first.
+      setAiCoachTopic(dronaCardTopic(popupCard));
       setAiCoachInitialScreen('chat');
       setAiCoachSource('drona_card');
       setAiCoachOpen(true);
@@ -800,7 +801,7 @@ export default function DashboardScreen() {
     } else if (upNext?.kind === 'rest') {
       setDetailRoutine(upNext.next as RoutineRaw);
     } else if (upNext?.kind === 'new') {
-      setAiCoachPrompt(undefined);
+      setAiCoachTopic(undefined);
       setAiCoachInitialScreen('workout');
       setAiCoachSource('today_up_next');
       setAiCoachOpen(true);
@@ -821,7 +822,7 @@ export default function DashboardScreen() {
       workout_count: workouts.length,
     });
     if (todaySuggestion.kind === 'new') {
-      setAiCoachPrompt(undefined);
+      setAiCoachTopic(undefined);
       setAiCoachInitialScreen('workout');
       setAiCoachSource('today_card');
       setAiCoachOpen(true);
@@ -840,12 +841,17 @@ export default function DashboardScreen() {
     }
   };
 
-  // Open Coach Drona to discuss the previewed routine. The prompt reads as the
-  // user asking; the coach already has the user's training as server-side context.
+  // Open Coach Drona on the previewed routine. Drona opens on it; the coach
+  // already has the user's training as server-side context.
   const askCoachAboutRoutine = (routine: RoutineRaw) => {
     setDetailRoutine(null);
     setAiCoachSource('routine_preview');
-    setAiCoachPrompt(`Walk me through my ${routine.name} session and what I should focus on today.`);
+    setAiCoachTopic({
+      source: 'routine_preview',
+      title: routine.name,
+      facts: [`They are looking at their "${routine.name}" session.`],
+      ask: `Walk me through my ${routine.name} session and what I should focus on today.`,
+    });
     setAiCoachInitialScreen('chat');
     setAiCoachOpen(true);
   };
@@ -974,9 +980,10 @@ export default function DashboardScreen() {
     );
   }, []);
   const boltStyle = useAnimatedStyle(() => ({ transform: [{ scale: boltScale.value }] }));
-  // Set when an insight card is tapped — seeds the chat with that insight's
-  // question. Cleared (undefined) for every other coach entry point.
-  const [aiCoachPrompt, setAiCoachPrompt] = useState<string | undefined>(undefined);
+  // Set when the coach opens on a topic (an insight card, a Drona card, a
+  // session preview): Drona opens the chat on it. Cleared (undefined) for
+  // every other coach entry point.
+  const [aiCoachTopic, setAiCoachTopic] = useState<CoachTopic | undefined>(undefined);
 
   // A screen that navigates here and wants the coach open leaves a one-shot
   // request in lib/coachLaunch; pick it up whenever the dashboard gains focus.
@@ -984,7 +991,7 @@ export default function DashboardScreen() {
     useCallback(() => {
       const req = consumeCoachOpen();
       if (!req) return;
-      setAiCoachPrompt(req.prompt);
+      setAiCoachTopic(req.topic);
       setAiCoachInitialScreen(req.screen);
       setAiCoachSource('launch_request');
       setAiCoachOpen(true);
@@ -1079,7 +1086,7 @@ export default function DashboardScreen() {
         <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
           <TouchableOpacity
             activeOpacity={0.85}
-            onPress={() => { setAiCoachPrompt(undefined); setAiCoachInitialScreen('menu'); setAiCoachSource('hero_card'); setAiCoachOpen(true); }}
+            onPress={() => { setAiCoachTopic(undefined); setAiCoachInitialScreen('menu'); setAiCoachSource('hero_card'); setAiCoachOpen(true); }}
             style={[styles.aiCoachCard, { backgroundColor: C.card, borderColor: aiBorderColor }]}
           >
             <View style={styles.aiCoachRow}>
@@ -1118,7 +1125,7 @@ export default function DashboardScreen() {
               ]).map(({ icon, label, screen }) => (
                 <TouchableOpacity
                   key={label}
-                  onPress={() => { setAiCoachPrompt(undefined); setAiCoachInitialScreen(screen); setAiCoachSource('quick_chip'); setAiCoachOpen(true); }}
+                  onPress={() => { setAiCoachTopic(undefined); setAiCoachInitialScreen(screen); setAiCoachSource('quick_chip'); setAiCoachOpen(true); }}
                   style={[styles.aiChip, { backgroundColor: aiChipBg, borderColor: aiChipBorder }]}
                   activeOpacity={0.7}
                 >
@@ -1185,7 +1192,7 @@ export default function DashboardScreen() {
           insights={insights}
           onAsk={(insight) => {
             track('insight_tapped', { insight_kind: insight.id.split(':')[0], priority: insight.priority });
-            setAiCoachPrompt(insight.coachPrompt);
+            setAiCoachTopic(insightTopic(insight));
             setAiCoachInitialScreen('chat');
             setAiCoachSource('insight');
             setAiCoachOpen(true);
@@ -1463,7 +1470,7 @@ export default function DashboardScreen() {
         onClose={() => setAiCoachOpen(false)}
         source={aiCoachSource}
         initialScreen={aiCoachInitialScreen}
-        initialPrompt={aiCoachPrompt}
+        initialTopic={aiCoachTopic}
         onRoutineCreated={() => {}}
       />
     </SafeAreaView>

@@ -47,6 +47,7 @@ import { bandColor, directive, bandPillTextColor, contributorImpact, bandForScor
 import { ReadinessRing } from '@/components/ui/ReadinessRing';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { AICoachModal } from '@/components/ai/AICoachModal';
+import type { CoachTopic } from '@/lib/coachTopic';
 import { SleepLogSheet } from '@/components/health/SleepLogSheet';
 import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 import { haptics } from '@/lib/haptics';
@@ -168,7 +169,7 @@ export default function HealthScreen() {
   const [loadError, setLoadError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
-  const [coachPrompt, setCoachPrompt] = useState<string | undefined>(undefined);
+  const [coachTopic, setCoachTopic] = useState<CoachTopic | undefined>(undefined);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -238,23 +239,34 @@ export default function HealthScreen() {
     setRefreshing(false);
   }, [load]);
 
-  // Open Drona with a personalized question about this metric (its value + the user's usual).
+  // Open Drona on this metric (its value + the user's usual). Drona speaks first.
   function askAboutMetric(def: DailyMetricDef, pts: { date: string; value: number }[]) {
     const latest = pts[pts.length - 1].value;
     const mean = pts.reduce((a, p) => a + p.value, 0) / pts.length;
     const info = METRIC_INFO[def.type];
-    setCoachPrompt(
-      info
+    setCoachTopic({
+      source: 'metric',
+      title: def.label,
+      facts: [`${def.label}: ${def.format(latest)} latest, usual around ${def.format(mean)}.`],
+      ask: info
         ? info.ask(def.format(latest), def.format(mean))
         : `Tell me about my ${def.label.toLowerCase()} and what it means for my training.`,
-    );
+    });
     setCoachOpen(true);
   }
 
-  // The hero "so what" line: open Drona with a band-specific next move.
+  // The hero "so what" line: open Drona on today's readiness and its next move.
   function askAction(r: ReadinessResult) {
     if (!r.band) return;
-    setCoachPrompt(actionLine(r.band).prompt);
+    setCoachTopic({
+      source: 'readiness',
+      title: `Readiness ${r.score ?? ''}`.trim(),
+      facts: [
+        `Readiness today: ${r.score ?? 'no score'} (${r.band}).`,
+        r.rationale,
+      ],
+      ask: actionLine(r.band).prompt,
+    });
     setCoachOpen(true);
   }
 
@@ -612,7 +624,7 @@ export default function HealthScreen() {
         visible={coachOpen}
         onClose={() => setCoachOpen(false)}
         initialScreen="chat"
-        initialPrompt={coachPrompt}
+        initialTopic={coachTopic}
         onRoutineCreated={() => {}}
       />
     </View>

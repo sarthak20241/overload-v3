@@ -47,8 +47,9 @@ import {
   workoutCoachOpener,
   workoutCoachStarter,
   workoutCoachSuggestions,
-  workoutCoachReviewRequest,
 } from '@/lib/workoutCoach';
+import { coachTopicContext, isOpeningNarration, NARRATION_MAX, type CoachTopic } from '@/lib/coachTopic';
+import { sentTurns } from '@/lib/coachTurns';
 import { useCoachConversation } from '@/hooks/useCoachConversation';
 import { DronaMark, type DronaMarkState } from '@/components/coach/DronaMark';
 import { DronaAura } from '@/components/coach/DronaAura';
@@ -87,6 +88,9 @@ type Screen = 'menu' | 'chat' | 'plan' | 'workout' | 'program';
 // message is persisted.
 type Citation = CoachCitation;
 type ChatMessage = CoachChatMessage;
+// How a chat opens with Drona speaking first (no user bubble): on a topic's
+// hidden context turn, or on the workout review, whose recap is the opener.
+type ChatOpening = { kind: 'topic'; message: ChatMessage } | { kind: 'review' };
 
 // Sliding window: cap how many recent turns we resend to the edge function each
 // turn. The whole transcript is persisted locally, but a very long thread would
@@ -94,6 +98,8 @@ type ChatMessage = CoachChatMessage;
 // under a prompt-cache breakpoint). Durable facts from early turns survive in
 // coach memory, so trimming old turns costs little. A no-op for typical chats.
 const MAX_SENT_MESSAGES = 24;
+// The in-workout chat's greeting (workoutCoachStarter). Shown, never sent.
+const WORKOUT_STARTER_ID = 'wc-starter';
 
 interface CoachReply {
   text: string;
@@ -535,6 +541,11 @@ interface StreamingOptions {
   // chat, which is never persisted.
   conversationId?: string;
   clientMsgId?: string;
+  // The last user turn was written by the app (a topic chat's hidden context,
+  // or the workout recap a review opens on), not typed. The server keeps it
+  // out of everything that reads "what the user said": the memory catch and
+  // the word facts.
+  openedByApp?: boolean;
   // The program phase a forced generate_plan is building. The server lets a
   // free user's first phase-1 build through on it (once); for everyone else
   // it is ignored.
@@ -636,6 +647,7 @@ function callAICoachStreaming(
           ...(mode ? { mode } : {}),
           ...(options.conversationId ? { conversation_id: options.conversationId } : {}),
           ...(options.clientMsgId ? { client_msg_id: options.clientMsgId } : {}),
+          ...(options.openedByApp ? { opened_by_app: true } : {}),
           ...(options.phaseId ? { phase_id: options.phaseId } : {}),
         }),
         signal: controller.signal,
@@ -732,12 +744,18 @@ function createTypewriter(
   messageId: string,
   setMessages: SetMessagesFn,
   scrollRef: React.RefObject<ScrollView | null>,
+  // An opening holds its first line back until it is clearly not a pre-tool
+  // "let me check" line (a tool call starts, a line break, or it grows past
+  // what that line can be), so the line never flashes on screen.
+  opts: { holdFirstLine?: boolean } = {},
 ) {
+  let held = !!opts.holdFirstLine;
   let buffer = '';        // received-but-not-displayed
   let displayed = '';
   let interval: ReturnType<typeof setInterval> | null = null;
   let finished = false;
   let onComplete: (() => void) | null = null;
+  let trimLead = false;   // set by clear(): drop leading whitespace once
 
   // Tick every 35ms (~28fps). Char count per tick is adaptive based on buffer
   // depth so the typewriter catches up when the server is ahead.
@@ -784,15 +802,44 @@ function createTypewriter(
 
   return {
     append(chunk: string) {
+      // After clear() the server's paragraph break (sent after a tool call)
+      // lands first; the emptied bubble must not start on it.
+      if (trimLead) {
+        chunk = chunk.replace(/^\s+/, '');
+        if (chunk) trimLead = false;
+      }
       if (!chunk) return;
       buffer += chunk;
-      start();
+      if (held && (buffer.includes('\n') || buffer.length > NARRATION_MAX)) held = false;
+      if (!held) start();
+    },
+    // Show what was held back: it turned out to be the real reply.
+    release() {
+      held = false;
+      if (buffer) start();
+    },
+    // Everything received so far, typed or not.
+    text(): string {
+      return displayed + buffer;
+    },
+    // Drop everything received so far and empty the bubble, so the thinking
+    // indicator shows again. Used once, on an opening's pre-tool line.
+    clear() {
+      stopTicking();
+      buffer = '';
+      displayed = '';
+      held = false;
+      trimLead = true;
+      setMessages(prev => prev.map(m =>
+        m.id === messageId ? { ...m, content: '' } : m
+      ));
     },
     // Mark the stream complete. The typewriter keeps animating until the
     // buffer drains, THEN invokes onComplete (so citations land after the
     // text has finished typing — feels weird if they appear early).
     finish(cb: () => void) {
       finished = true;
+      held = false;
       onComplete = cb;
       // If buffer is already empty, drain has effectively completed.
       if (buffer.length === 0) {
@@ -1016,7 +1063,11 @@ function WorkoutEditCard({
 function ChatScreen({
   onBack,
   onSaveRoutine,
-  initialPrompt,
+  // When set, the chat opens on this topic (lib/coachTopic): a fresh chat in
+  // which Drona speaks first. onTopicOpened tells the sheet it was used, so a
+  // trip back to the menu and into chat again does not open it twice.
+  topic,
+  onTopicOpened,
   // Clerk user id (null for guests). Keys the persisted conversation store so
   // chat survives the sheet unmount and never leaks across accounts.
   userId,
@@ -1041,7 +1092,8 @@ function ChatScreen({
 }: {
   onBack: () => void;
   onSaveRoutine: (name: string) => void;
-  initialPrompt?: string;
+  topic?: CoachTopic;
+  onTopicOpened?: (topic: CoachTopic) => void;
   userId: string | null;
   workoutContext?: WorkoutCoachContext | null;
   onApplyWorkoutEdit?: (ops: CoachWorkoutEditOp[]) => CoachEditApplyResult;
@@ -1057,7 +1109,7 @@ function ChatScreen({
   // The starter (visible greeting) the chat opens on. Tailored to workout mode.
   const makeStarter = (): ChatMessage =>
     workoutContext
-      ? { id: 'wc-starter', role: 'assistant', content: workoutCoachStarter(workoutContext) }
+      ? { id: WORKOUT_STARTER_ID, role: 'assistant', content: workoutCoachStarter(workoutContext) }
       : {
           id: '1',
           role: 'assistant',
@@ -1067,7 +1119,7 @@ function ChatScreen({
   // mode, where the chat is intentionally ephemeral and re-seeded per open.
   const {
     messages, setMessages, markStarted, startNewChat,
-    conversations, activeId, openConversation, deleteConversation, persistMessages,
+    conversations, activeId, openConversation, deleteConversation, persistMessages, hydrated,
   } = useCoachConversation({
     userId,
     enabled: !workoutContext,
@@ -1098,7 +1150,7 @@ function ChatScreen({
   // snapshot's numbering, and the coach will re-propose against the new one.
   useEffect(() => {
     if (!workoutContext) return;
-    setMessages([{ id: 'wc-starter', role: 'assistant', content: workoutCoachStarter(workoutContext) }]);
+    setMessages([{ id: WORKOUT_STARTER_ID, role: 'assistant', content: workoutCoachStarter(workoutContext) }]);
     setEdits([]);
     setCreates([]);
     setInput('');
@@ -1154,62 +1206,68 @@ function ChatScreen({
     return () => sub.remove();
   }, [showHistory]);
 
-  // Set by a suggestion chip right before it calls handleSend; anything else
-  // that passes an override (auto review, insight prompt) reads as 'auto'.
+  // Set by a suggestion chip right before it calls handleSend; any other
+  // override reads as 'auto'. Openings (topic, review) report 'opening'.
   const sendTriggerRef = useRef<'chip' | 'auto'>('auto');
-  const handleSend = useCallback(async (override?: string) => {
-    const text = (override ?? input).trim();
-    if (!text || loading) return;
+  // An opening means Drona speaks first: no user bubble. A topic's hidden
+  // context starts the chat over as its first turn. The workout review adds
+  // no turn: its recap already rides in the workout opener, so Drona's reply
+  // just follows the review greeting.
+  const handleSend = useCallback(async (override?: string, opening?: ChatOpening) => {
+    const opens = !!opening;
+    const topicMsg = opening?.kind === 'topic' ? opening.message : null;
+    const text = topicMsg ? topicMsg.content : opens ? '' : (override ?? input).trim();
+    if (loading || (!text && !opens)) return;
 
     // Lock the persisted conversation to this in-progress one so a late disk
     // hydrate can't overwrite it with a stale stored conversation.
     markStarted();
 
-    const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', content: text };
+    const userMsg: ChatMessage | null = opens
+      ? topicMsg
+      : { id: Date.now().toString(), role: 'user', content: text };
     // Create an empty placeholder assistant message that streams will fill.
     const assistantId = (Date.now() + 1).toString();
     const placeholder: ChatMessage = {
       id: assistantId, role: 'assistant', content: '',
       thinkingPhase: 'Thinking',
     };
-    setMessages(prev => [...prev, userMsg, placeholder]);
+    // What the chat holds before this turn. A topic starts from nothing.
+    const fresh = !!topicMsg;
+    const before = fresh ? [] : messages;
+    const added = userMsg ? [userMsg] : [];
+    setMessages(prev => (fresh ? [...added, placeholder] : [...prev, ...added, placeholder]));
     pendingAssistantIdRef.current = assistantId;
     // The last turn's typewriter is still referenced. Until this turn's own
     // exists (after the token fetch), Stop must see nothing, not the previous
     // reply's text.
     typewriterRef.current = null;
-    setInput('');
+    if (!opens) setInput('');
     setLoading(true);
     const askedAt = Date.now();
     track('coach_message_sent', {
       chars: text.length,
-      turn: messages.filter((m) => m.role === 'user').length + 1,
+      turn: before.filter((m) => m.role === 'user' && !m.context).length + 1,
       mode: workoutContext ? 'live_workout' : 'chat',
       // Chips, the auto-review and insight prompts all arrive as `override`;
       // the ref tells them apart. 'typed' is the user's own words.
-      trigger: override == null ? 'typed' : sendTriggerRef.current,
+      trigger: opens ? 'opening' : override == null ? 'typed' : sendTriggerRef.current,
     });
     sendTriggerRef.current = 'auto';
 
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
 
-    // In workout mode, prepend the live session as a synthetic user turn so
-    // the coach can see what's happening right now (the in-progress sets only
-    // exist in memory — its DB tools can't reach them). The visible assistant
-    // starter follows it, so turns stay validly alternating. Otherwise the
-    // conversation is sent as-is.
-    // Cap the resent history to a sliding window of recent turns (see
-    // MAX_SENT_MESSAGES). No-op for typical chats; bounds tokens on long ones.
-    // messages[0] is the assistant greeting, so the full array alternates from an
-    // assistant turn — a window of an even count can start on an assistant
-    // message. Anthropic requires the first message to be a user turn, so drop a
-    // leading assistant after slicing (the non-workout path sends turns as-is).
-    const rawTurns = [...messages, userMsg].slice(-MAX_SENT_MESSAGES);
-    const turns = (rawTurns[0]?.role === 'assistant' ? rawTurns.slice(1) : rawTurns)
-      .map(m => ({ role: m.role, content: m.content }));
-    const allMessages = workoutContext
-      ? [{ role: 'user' as const, content: workoutCoachOpener(workoutContext) }, ...turns]
-      : turns;
+    // In workout mode, the live session goes first as a synthetic user turn
+    // so the coach can see what's happening right now (the in-progress sets
+    // only exist in memory — its DB tools can't reach them). The workout
+    // greeting is the app's line, not Drona's, so it is never sent: a review
+    // then ends on the opener, which is what asks for the review. A topic
+    // chat's hidden context stays pinned first (lib/coachTurns).
+    const allMessages = sentTurns([...before, ...added], {
+      maxTurns: MAX_SENT_MESSAGES,
+      workoutOpener: workoutContext ? workoutCoachOpener(workoutContext) : null,
+      skipIds: [WORKOUT_STARTER_ID],
+    });
 
     // Demo / fallback path: hit only when the live coach is unreachable.
     //   - !isSupabaseConfigured: guest/demo build, no backend at all.
@@ -1265,11 +1323,17 @@ function ChatScreen({
     // if the server delivers in chunky bursts the user sees smooth typing.
     // This is how ChatGPT/Claude.ai/Perplexity all do it: the network is
     // bursty, the animation is smooth.
-    const typewriter = createTypewriter(assistantId, setMessages, scrollRef);
+    const typewriter = createTypewriter(assistantId, setMessages, scrollRef, { holdFirstLine: opens });
     typewriterRef.current = typewriter;
     // Per-invocation flag: did the live `structured` event already deliver this
     // turn's workout edit? Guards the onDone fallback against a double card.
     let handledEdit = false;
+    // An opening: Drona's "let me check your numbers" line before his first
+    // tool call would sit above the greeting he writes once he has them, so
+    // it is dropped and the bubble shows what he is checking instead. Only
+    // once, only a short single line, and only one that says it is looking
+    // something up: a bare greeting written before the tools stays.
+    let narrationChecked = !opens;
     streamRef.current = callAICoachStreaming(allMessages, token, {
       // Words arriving end any lookup in progress: the orb goes back to
       // writing. Drona often writes a line, looks something up, then writes
@@ -1340,6 +1404,11 @@ function ChatScreen({
         }
       },
       onStatus: (phase, payload) => {
+        if (phase === 'tool_use' && !narrationChecked) {
+          narrationChecked = true;
+          if (isOpeningNarration(typewriter.text())) typewriter.clear();
+          else typewriter.release();
+        }
         // Translate server phase tokens into friendly UI labels. The labels
         // show up under the spinner while the message bubble is still empty.
         let label = 'Thinking';
@@ -1420,7 +1489,8 @@ function ChatScreen({
       // Phase 1: persist this turn server-side under the active conversation
       // (ordinary chat only; the in-workout chat stays ephemeral, so no id).
       conversationId: workoutContext ? undefined : ensureActiveConversationId(userId),
-      clientMsgId: workoutContext ? undefined : userMsg.id,
+      clientMsgId: workoutContext ? undefined : userMsg?.id,
+      ...(opens ? { openedByApp: true } : {}),
     });
   }, [input, loading, messages, supabase, getToken, workoutContext, canEditWorkout, markStarted, setMessages, userId]);
 
@@ -1440,14 +1510,19 @@ function ChatScreen({
     // in this tap can switch chats. `shown` is the typewriter's full text
     // (typed plus buffered), which state may not have caught up to yet.
     if (id) {
-      persistMessages(
-        messagesRef.current
-          .map(m => (m.id === id ? { ...m, content: shown } : m))
-          .filter(m => !(m.id === id && m.content === '')),
-      );
-    }
-    if (!shown && id) {
-      setMessages(prev => prev.filter(m => !(m.id === id && m.content === '')));
+      const kept = messagesRef.current
+        .map(m => (m.id === id ? { ...m, content: shown } : m))
+        .filter(m => !(m.id === id && m.content === ''));
+      // A topic stopped before Drona said a word leaves only its hidden turn:
+      // nothing to read, so the chat goes back to the greeting and is not
+      // kept as a past chat.
+      if (kept.length > 0 && kept.every(m => m.context)) {
+        persistMessages([]);
+        setMessages([makeStarter()]);
+      } else {
+        persistMessages(kept);
+        if (!shown) setMessages(prev => prev.filter(m => !(m.id === id && m.content === '')));
+      }
     }
     setLoading(false);
     haptics.tick();
@@ -1519,8 +1594,9 @@ function ChatScreen({
     }
   }, [targetProposal, applyingTargets, supabase, userId, toast]);
 
-  // Review mode: auto-ask the coach for a session review once the chat opens,
-  // so the user doesn't have to type. Fires exactly once per snapshot — the
+  // Review mode: Drona opens the chat with his review of the session, so the
+  // user doesn't have to type and no question appears in their name. The
+  // recap rides in the workout opener. Fires exactly once per snapshot — the
   // ref latches the snapshot we've already kicked off, and the
   // `messages.length === 1` guard means we only fire while just the starter is
   // present (right after the reset effect above runs). A genuine reopen brings
@@ -1531,21 +1607,33 @@ function ChatScreen({
     if (reviewSentForRef.current === workoutContext) return;
     if (loading || messages.length !== 1) return;
     reviewSentForRef.current = workoutContext;
-    handleSend(workoutCoachReviewRequest(workoutContext));
+    handleSend(undefined, { kind: 'review' });
   }, [workoutContext, messages, loading, handleSend]);
 
-  // Insight seeding: when opened from a dashboard "Coach noticed" card, the
-  // card's question rides in as `initialPrompt` and is auto-asked once, exactly
-  // like review mode above. Skipped in workout mode (it has its own seeding).
-  const seededPromptRef = useRef<string | null>(null);
+  // Topic: opened from something in the app (a Coach noticed card, a Drona
+  // card, readiness). Always a fresh chat, so the topic never lands in the
+  // middle of an old conversation, and Drona speaks first from the hidden
+  // context. Waits for the stored chats to load: starting a conversation
+  // before that would let the next write replace every past chat. Skipped in
+  // workout mode (it has its own opener).
+  const openedTopicRef = useRef<CoachTopic | null>(null);
   useEffect(() => {
-    if (workoutContext) return;
-    if (!initialPrompt) return;
-    if (seededPromptRef.current === initialPrompt) return;
-    if (loading || messages.length !== 1) return;
-    seededPromptRef.current = initialPrompt;
-    handleSend(initialPrompt);
-  }, [initialPrompt, workoutContext, loading, messages, handleSend]);
+    if (workoutContext || !topic) return;
+    if (openedTopicRef.current === topic) return;
+    if (!hydrated || loading) return;
+    openedTopicRef.current = topic;
+    onTopicOpened?.(topic);
+    startNewChat();
+    handleSend(undefined, {
+      kind: 'topic',
+      message: {
+        id: Date.now().toString(),
+        role: 'user',
+        content: coachTopicContext(topic),
+        context: { title: topic.title },
+      },
+    });
+  }, [topic, workoutContext, hydrated, loading, startNewChat, handleSend, onTopicOpened]);
 
   // Apply one proposed edit to the live session. The screen owns the actual
   // mutation (and the toast); we only record what came back so a card whose
@@ -1899,6 +1987,8 @@ function ChatScreen({
         {messages.map((msg, idx) => {
           // The ordinary chat's stored greeting is replaced by the hero.
           if (idx === 0 && !workoutContext && msg.role === 'assistant') return null;
+          // A topic's hidden context: Drona reads it, the chat never shows it.
+          if (msg.context) return null;
           // A workout edit proposed on this turn renders under its bubble, so
           // the coach's sentence and the change it describes stay together.
           const edit = edits.find((e) => e.messageId === msg.id);
@@ -4078,7 +4168,7 @@ export function AICoachModal({
   onRoutineCreated,
   onProgramApplied,
   initialScreen = 'menu',
-  initialPrompt,
+  initialTopic,
   planSeed,
   programDraft,
   linkRoutinesToPhaseId,
@@ -4096,9 +4186,11 @@ export function AICoachModal({
   // onClose reads the DB before the new program lands and renders stale data.
   onProgramApplied?: () => void;
   initialScreen?: Screen;
-  // When set (from a dashboard insight card), the chat auto-asks this question
-  // once on open. Pass initialScreen="chat" alongside it.
-  initialPrompt?: string;
+  // When set (a Coach noticed card, a Drona card, readiness...), the chat
+  // opens fresh on this topic and Drona speaks first (lib/coachTopic). Pass
+  // initialScreen="chat" alongside it. Used once per object: pass a new one
+  // for each tap, and a stale one left set is not opened again.
+  initialTopic?: CoachTopic;
   // When set (from the Goal & Plan screen "Build workout split"), pre-seeds the
   // plan generator's form + prompt to a specific program phase. Pass
   // initialScreen="plan" alongside it.
@@ -4152,6 +4244,14 @@ export function AICoachModal({
     if (visible) void refreshAccess();
   }, [visible, refreshAccess]);
 
+  // The topic the chat already opened on. The sheet stays mounted while the
+  // chat screen comes and goes (back to the menu, into chat again), so the
+  // latch lives here: one topic, one opening.
+  const usedTopicRef = useRef<CoachTopic | null>(null);
+  const markTopicUsed = useCallback((t: CoachTopic) => {
+    usedTopicRef.current = t;
+  }, []);
+
   const coachOpenedAt = useRef(Date.now());
   useEffect(() => {
     if (!visible) return;
@@ -4161,7 +4261,9 @@ export function AICoachModal({
       initial_screen: initialScreen,
       has_workout_context: !!workoutContext,
       workout_kind: workoutContext?.kind ?? null,
-      has_initial_prompt: !!initialPrompt,
+      // Name kept for dashboard continuity: it now means "opened on a topic".
+      has_initial_prompt: !!initialTopic,
+      topic_source: initialTopic?.source ?? null,
       has_plan_seed: !!planSeed,
       access_state: access.state,
     });
@@ -4726,7 +4828,8 @@ export function AICoachModal({
                   // detour mid-workout); otherwise it returns to the menu.
                   onBack={workoutContext ? handleClose : () => setScreen('menu')}
                   onSaveRoutine={(name) => handleSaveRoutine({ name, exercises: [] })}
-                  initialPrompt={initialPrompt}
+                  topic={initialTopic && usedTopicRef.current !== initialTopic ? initialTopic : undefined}
+                  onTopicOpened={markTopicUsed}
                   userId={user?.id ?? null}
                   workoutContext={workoutContext}
                   onApplyWorkoutEdit={handleApplyWorkoutEdit}

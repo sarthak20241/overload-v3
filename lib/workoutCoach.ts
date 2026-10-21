@@ -282,6 +282,7 @@ export function workoutCoachOpener(ctx: WorkoutCoachContext): string {
       workoutCoachContextToText(ctx),
       '',
       'How to reply:',
+      '- The chat opens on your review: you speak first, so lead with it.',
       '- Give a tight, specific read — what went well and what to adjust.',
       '- Call out progression vs. last session wherever you can see it in the numbers.',
       '- Finish with 1-2 concrete things to change next time.',
@@ -305,15 +306,6 @@ export function workoutCoachOpener(ctx: WorkoutCoachContext): string {
     "- Don't repeat this summary back to me.",
     '- Reading the recap: each set shows its value then (set type, RPE) in parens. Warmups are excluded from set counts and volume. RPE is 1 to 10 (RIR = 10 minus RPE). Times are m:ss, distance is km. A unilateral (L+R) set logs both sides as ONE set; reps read left/right and its volume counts both sides. Exercises tagged [Superset X] are trained back to back as one group with no rest between them, resting only after each round.',
   ].join('\n');
-}
-
-/**
- * The user turn auto-sent when the review chat opens, so the coach delivers
- * its read without the user having to type. The full session rides in the
- * synthetic opener above; this is the explicit ask the user "made".
- */
-export function workoutCoachReviewRequest(_ctx: WorkoutCoachContext): string {
-  return 'How did this session go? Did I progress vs. last time, and what should I focus on or change next session?';
 }
 
 function shorten(name: string, max = 18): string {

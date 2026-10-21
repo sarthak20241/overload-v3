@@ -6,7 +6,7 @@
  *   - Detection is FREE and ungated. It's pure arithmetic over the workouts the
  *     dashboard already loads, so every user gets it instantly with no LLM cost.
  *   - The EXPLANATION is the paid product. Each insight carries a `coachPrompt`
- *     that seeds a Coach Drona chat ("why is this happening, how do I fix it") —
+ *     that Drona opens a chat on ("why is this happening, how do I fix it") —
  *     tapping a card funnels the user into the coach (and, for free users, the
  *     paywall gate that owns the modal body).
  *
@@ -40,7 +40,11 @@ export interface Insight {
   title: string;
   /** The "why"/detail — one or two lines, plain language. */
   body: string;
-  /** First-person question that seeds the Coach Drona chat when the card is tapped. */
+  /**
+   * The question the card raises, in the user's voice. Tapping the card opens
+   * Drona on it as a topic (lib/coachTopic): Drona reads it and speaks first;
+   * it never appears as something the user said.
+   */
   coachPrompt: string;
   /** Higher = nearer the front of the strip. */
   priority: number;

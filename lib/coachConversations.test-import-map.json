@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "@/lib/syncQueue": "./test-shims/syncQueue.ts",
+    "@/": "../",
+    "@react-native-async-storage/async-storage": "./test-shims/asyncStorage.ts"
+  }
+}
