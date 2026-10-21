@@ -105,3 +105,14 @@ Deno.test('a window that starts on a user turn keeps the context first', () => {
   ];
   assertEquals(sentTurns(chat, { maxTurns: 2 }).map((t) => t.content), ['CONTEXT', 'first', 'second']);
 });
+
+Deno.test('topic context skips a missing fact instead of throwing', () => {
+  const text = coachTopicContext({
+    source: 'readiness',
+    title: 'Readiness 72',
+    facts: ['Readiness today: 72 (moderate).', undefined as unknown as string],
+    ask: 'Should I train as planned?',
+  });
+  assert(text.includes('- Readiness today: 72 (moderate).'));
+  assert(!text.includes('undefined'));
+});

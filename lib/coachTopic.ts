@@ -46,7 +46,9 @@ export const TOPIC_MARKER = '[OPENED FROM THE APP. The user did not type this.]'
 
 /** The hidden user-role turn that opens a topic chat. */
 export function coachTopicContext(topic: CoachTopic): string {
-  const facts = topic.facts.map((f) => f.trim()).filter(Boolean);
+  // A fact can come from a row the type says is a string but the database
+  // left empty (readiness rationale), so read it defensively.
+  const facts = topic.facts.map((f) => (typeof f === 'string' ? f.trim() : '')).filter(Boolean);
   return [
     TOPIC_MARKER,
     `The user tapped ${WHERE[topic.source]} and this chat opened. Nothing has been said yet.`,
