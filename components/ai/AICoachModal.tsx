@@ -47,7 +47,7 @@ import {
   workoutCoachStarter,
   workoutCoachSuggestions,
 } from '@/lib/workoutCoach';
-import { coachTopicContext, type CoachTopic } from '@/lib/coachTopic';
+import { coachTopicContext, isOpeningNarration, type CoachTopic } from '@/lib/coachTopic';
 import { sentTurns } from '@/lib/coachTurns';
 import { useCoachConversation } from '@/hooks/useCoachConversation';
 import { DronaMark, type DronaMarkState } from '@/components/coach/DronaMark';
@@ -91,8 +91,6 @@ type ChatMessage = CoachChatMessage;
 const MAX_SENT_MESSAGES = 24;
 // The in-workout chat's greeting (workoutCoachStarter). Shown, never sent.
 const WORKOUT_STARTER_ID = 'wc-starter';
-// Longest pre-tool line an opening drops ("Let me pull your history first.").
-const OPENING_NARRATION_MAX = 160;
 
 interface CoachReply {
   text: string;
@@ -1257,8 +1255,9 @@ function ChatScreen({
     let handledEdit = false;
     // An opening: Drona's "let me check your numbers" line before his first
     // tool call would sit above the greeting he writes once he has them, so
-    // it is dropped and the bubble shows what he is checking instead. Only a
-    // short single line, and only once: real content is never thrown away.
+    // it is dropped and the bubble shows what he is checking instead. Only
+    // once, only a short single line, and only one that says it is looking
+    // something up: a bare greeting written before the tools stays.
     let narrationChecked = !opens;
     streamRef.current = callAICoachStreaming(allMessages, token, {
       onDelta: (chunk) => typewriter.append(chunk),
@@ -1324,8 +1323,7 @@ function ChatScreen({
       onStatus: (phase, payload) => {
         if (phase === 'tool_use' && !narrationChecked) {
           narrationChecked = true;
-          const said = typewriter.text().trim();
-          if (said.length <= OPENING_NARRATION_MAX && !said.includes('\n')) typewriter.clear();
+          if (isOpeningNarration(typewriter.text())) typewriter.clear();
         }
         // Translate server phase tokens into friendly UI labels. The labels
         // show up under the spinner while the message bubble is still empty.
@@ -1406,7 +1404,7 @@ function ChatScreen({
       // Phase 1: persist this turn server-side under the active conversation
       // (ordinary chat only; the in-workout chat stays ephemeral, so no id).
       conversationId: workoutContext ? undefined : ensureActiveConversationId(userId),
-      clientMsgId: workoutContext ? undefined : (userMsg ?? placeholder).id,
+      clientMsgId: workoutContext ? undefined : userMsg?.id,
       ...(opens ? { openedByApp: true } : {}),
     });
   }, [input, loading, messages, supabase, getToken, workoutContext, canEditWorkout, markStarted, setMessages, userId]);
@@ -1427,14 +1425,19 @@ function ChatScreen({
     // in this tap can switch chats. `shown` is the typewriter's full text
     // (typed plus buffered), which state may not have caught up to yet.
     if (id) {
-      persistMessages(
-        messagesRef.current
-          .map(m => (m.id === id ? { ...m, content: shown } : m))
-          .filter(m => !(m.id === id && m.content === '')),
-      );
-    }
-    if (!shown && id) {
-      setMessages(prev => prev.filter(m => !(m.id === id && m.content === '')));
+      const kept = messagesRef.current
+        .map(m => (m.id === id ? { ...m, content: shown } : m))
+        .filter(m => !(m.id === id && m.content === ''));
+      // A topic stopped before Drona said a word leaves only its hidden turn:
+      // nothing to read, so the chat goes back to the greeting and is not
+      // kept as a past chat.
+      if (kept.every(m => m.context)) {
+        persistMessages([]);
+        setMessages([makeStarter()]);
+      } else {
+        persistMessages(kept);
+        if (!shown) setMessages(prev => prev.filter(m => !(m.id === id && m.content === '')));
+      }
     }
     setLoading(false);
     haptics.tick();

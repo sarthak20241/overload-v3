@@ -310,7 +310,8 @@ export function listConversations(userId: string | null): CoachConversationSumma
       id: c.id,
       title: c.title || titleOf(c.messages.find((m) => m.role === 'user')),
       updatedAt: c.updatedAt,
-      messageCount: c.messages.length,
+      // What the chat shows: a topic's hidden first turn is not a message.
+      messageCount: c.messages.filter((m) => !m.context).length,
     }));
 }
 

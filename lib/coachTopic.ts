@@ -65,6 +65,20 @@ export function coachTopicContext(topic: CoachTopic): string {
   ].join('\n');
 }
 
+const NARRATION_MAX = 160;
+const NARRATION = /\b(let me|i'll|give me|check|checking|pull|pulling|look|looking|dig|digging|grab|review|reviewing|see what)\b/i;
+
+/**
+ * Is this Drona's "let me check your numbers" line, written before his first
+ * tool call? An opening drops it, since he writes his greeting once he has
+ * the numbers. One short line that says he is looking something up; a bare
+ * greeting written before the tools is kept.
+ */
+export function isOpeningNarration(text: string): boolean {
+  const said = text.trim();
+  return said.length > 0 && said.length <= NARRATION_MAX && !said.includes('\n') && NARRATION.test(said);
+}
+
 /** A "Coach noticed" card. Its question is the card's own `coachPrompt`. */
 export function insightTopic(insight: { title: string; body: string; coachPrompt: string }): CoachTopic {
   return {

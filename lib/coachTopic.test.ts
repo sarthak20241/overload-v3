@@ -1,6 +1,6 @@
 // deno test --allow-all lib/coachTopic.test.ts
 import { assert, assertEquals } from 'https://deno.land/std@0.224.0/assert/mod.ts';
-import { coachTopicContext, dronaCardTopic, insightTopic, TOPIC_MARKER } from './coachTopic.ts';
+import { coachTopicContext, dronaCardTopic, insightTopic, isOpeningNarration, TOPIC_MARKER } from './coachTopic.ts';
 import { sentTurns, type ChatTurn } from './coachTurns.ts';
 
 Deno.test('topic context: Drona is told the user did not type it and speaks first', () => {
@@ -75,4 +75,30 @@ Deno.test('live workout is unchanged: recap then the typed question', () => {
   ];
   const sent = sentTurns(chat, { maxTurns: 24, workoutOpener: 'RECAP', skipIds: ['wc-starter'] });
   assertEquals(sent.map((t) => t.content), ['RECAP', 'go heavier?']);
+});
+
+Deno.test('opening narration: the lines Drona wrote before his tools are dropped', () => {
+  // Seen on the simulator, 2026-10-21.
+  assert(isOpeningNarration('Let me pull the actual history before I say anything.'));
+  assert(isOpeningNarration('Let me check the numbers first.'));
+  assert(isOpeningNarration('Five PRs in one week is worth a look, so let me pull up what actually moved.'));
+  assert(isOpeningNarration("Coach Drona here. I saw the Weighted Pull Ups stall, so I'm pulling your history to check what changed."));
+});
+
+Deno.test('opening narration: a bare greeting or real content is kept', () => {
+  assert(!isOpeningNarration('Hey, your bench stalled.'));
+  assert(!isOpeningNarration(''));
+  assert(!isOpeningNarration('Let me check.\n\nYour bench has been flat for 4 weeks.'));
+  assert(!isOpeningNarration(`Let me check ${'x'.repeat(200)}`));
+});
+
+Deno.test('a window that starts on a user turn keeps the context first', () => {
+  // A stopped turn can leave two user turns in a row; the API merges them.
+  const chat: ChatTurn[] = [
+    ctx,
+    { id: 'a', role: 'assistant', content: 'Hi' },
+    { id: 'u1', role: 'user', content: 'first' },
+    { id: 'u2', role: 'user', content: 'second' },
+  ];
+  assertEquals(sentTurns(chat, { maxTurns: 2 }).map((t) => t.content), ['CONTEXT', 'first', 'second']);
 });
