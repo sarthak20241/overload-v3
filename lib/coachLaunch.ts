@@ -9,13 +9,15 @@
  * dashboard (the user landed somewhere else and wandered back minutes later)
  * doesn't pop the coach open out of nowhere.
  */
+import type { CoachTopic } from '@/lib/coachTopic';
+
 // Mirrors AICoachModal's `initialScreen` union (not exported from there).
 export type CoachScreen = 'menu' | 'chat' | 'plan' | 'workout';
 
 export interface CoachLaunchRequest {
   screen: CoachScreen;
-  /** Auto-sent as the first message when provided. */
-  prompt?: string;
+  /** The chat opens fresh on this topic and Drona speaks first. */
+  topic?: CoachTopic;
 }
 
 const TTL_MS = 15_000;

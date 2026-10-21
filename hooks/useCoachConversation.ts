@@ -53,6 +53,12 @@ export interface UseCoachConversationReturn {
    * the streaming debounce, so it also survives the app being killed.
    */
   persistMessages: (list: CoachChatMessage[]) => void;
+  /**
+   * True once the stored chats are loaded. A topic chat waits for it: starting
+   * a new conversation before the disk load would leave the load nothing to
+   * merge into, and the next write would replace every past chat.
+   */
+  hydrated: boolean;
 }
 
 export function useCoachConversation(opts: {
@@ -162,6 +168,6 @@ export function useCoachConversation(opts: {
 
   return {
     messages, setMessages, markStarted, startNewChat,
-    conversations, activeId, openConversation, deleteConversation, persistMessages,
+    conversations, activeId, openConversation, deleteConversation, persistMessages, hydrated,
   };
 }
