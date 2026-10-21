@@ -35,6 +35,10 @@ export interface PromptContext {
   // lets the TARGET_CHANGE_BEHAVIOR block and the tool derive from the SAME
   // predicate instead of two layers that can drift.
   freeTier?: boolean;
+  // The client draws tables, charts and stat tiles (it sent ui: blocks_v1).
+  // Only then is Drona taught the format: an older app would show the raw
+  // fenced JSON, so the teaching rides on what the client says it can draw.
+  richReplies?: boolean;
 }
 
 export interface ResearchSnippet {
@@ -327,6 +331,39 @@ const WRITING_STYLE = `<writing_style>
 Write the way a coach texts a client: plain, direct, second person, short sentences.
 Hard rule: never use an em dash (—) in anything you produce, whether chat replies, exercise cues or notes, plan summaries, or day names. Use a comma, a period, or parentheses instead. (Hyphens in ranges like "3-5g" or "6-8 reps" are fine.)
 </writing_style>`;
+
+// Tables, charts and stat tiles in a reply (client: lib/coachBlocks.ts parses
+// these, components/coach/CoachBlocks.tsx draws them). Only sent to clients
+// that declare they can draw them; see PromptContext.richReplies.
+export const RICH_REPLY_BEHAVIOR = `<showing_data>
+The app draws five things inside your reply. Use one when it makes numbers easier to read than a sentence would. Most replies need none.
+
+1. Table: a standard markdown pipe table (header row, divider row, then the rows). Use it to compare the same few numbers across sessions, weeks or exercises. At most 6 columns, and keep cells short ("80 kg x 8", "Oct 16").
+2. Chart: a fenced block tagged chart holding one JSON object.
+\`\`\`chart
+{"kind":"line","title":"Bench press top set","unit":"kg","points":[["Sep 1",80],["Sep 15",82.5],["Oct 16",82.5]]}
+\`\`\`
+kind is one of:
+- "line" for a trend over time (4 or more points). points are [label, number] pairs in order, with short labels. An optional "goal" number draws a dashed reference line, named by an optional "goal_label".
+- "line" with "series" instead of "points" to compare two lines on one scale (this month vs last month, calories eaten vs target). The first series is the main one.
+  {"kind":"line","title":"Daily calories","unit":"kcal","series":[{"name":"Eaten","points":[["Mon",2100],["Tue",2400]]},{"name":"Target","points":[["Mon",2350],["Tue",2350]]}]}
+- "bar" to compare amounts side by side (sets per muscle, calories per day).
+- "donut" for how one whole splits into 2 to 6 parts (calories from protein, carbs and fat; sets by muscle). Values must be parts of the same total.
+3. Stats: a fenced block tagged stats holding a JSON array of 2 to 4 headline numbers.
+\`\`\`stats
+[{"label":"Volume","value":"4,915 kg","note":"up from last week"},{"label":"Sets","value":"18"}]
+\`\`\`
+4. Progress: a fenced block tagged progress holding a JSON array of 1 to 4 bars toward a target (protein so far today, steps, sessions this week). Each has label, value, target (above 0) and an optional unit.
+\`\`\`progress
+[{"label":"Protein","value":105,"target":115,"unit":"g"}]
+\`\`\`
+
+Rules:
+- Every number in a table, chart, stats or progress block comes from your tools or user_context in this conversation. Never estimate or fill a gap to make a chart look complete. With fewer points than a chart needs, write a sentence instead.
+- Write a sentence before the block that says what it shows, and give the takeaway after it. The block supports your answer; it is not the answer.
+- At most one chart and one table per reply. Inside a fence put valid JSON only, on its own lines.
+- A one-line lookup answer never gets a block.
+</showing_data>`;
 
 // In-chat target changes (P4). Teaches the coach to route any calorie/macro
 // target change through the propose_targets tool (an apply card) rather than
@@ -1292,7 +1329,10 @@ export function buildSystemPrompt(ctx: PromptContext): {
   const forcedMode = mode === 'generate_workout' || mode === 'generate_plan' ||
     mode === 'generate_program';
   const foodBlock = forcedMode ? '' : `\n\n${FOOD_LOGGING_BEHAVIOR}`;
-  const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${APP_FEATURES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${PROGRAM_COACHING}${targetBlock}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${MEMORY}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${foodBlock}${behaviorBlock}`;
+  // Drawn blocks only where the reply is shown as a chat message, and only to
+  // a client that can draw them.
+  const richBlock = ctx.richReplies && !forcedMode ? `\n\n${RICH_REPLY_BEHAVIOR}` : '';
+  const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${APP_FEATURES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${PROGRAM_COACHING}${targetBlock}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${MEMORY}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${richBlock}${foodBlock}${behaviorBlock}`;
   const blocks: AnthropicSystemBlock[] = [
     {
       type: 'text',

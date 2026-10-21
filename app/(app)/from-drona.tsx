@@ -25,6 +25,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useToast } from '@/components/ui/Toast';
 import { track } from '@/lib/analytics';
 import { DronaCardView } from '@/components/coach/DronaCardView';
+import { OrbStage } from '@/components/coach/OrbStage';
 import { ACTION_ROUTES } from '@/lib/dronaRules';
 import { requestCoachOpen } from '@/lib/coachLaunch';
 import { bucketOf, canUndo } from '@/lib/dronaInbox';
@@ -160,7 +161,7 @@ export default function FromDronaScreen() {
           <Text style={[s.empty, { color: C.mutedFg }]}>Could not load this right now. Pull back in a moment.</Text>
         )}
         {cards === null && !failed && (
-          <Text style={[s.empty, { color: C.mutedFg }]}>Reading your cards...</Text>
+          <OrbStage state="searching" label="Reading your cards" size={96} style={{ marginTop: Spacing.xxl }} />
         )}
 
         {cards !== null && (<>

@@ -38,7 +38,7 @@ interface MiniAreaChartProps {
 
 // Monotone cubic interpolation (Fritsch-Carlson): a smooth curve through every
 // point with no overshoot, so it never invents values between sparse samples.
-function monotonePath(pts: { x: number; y: number }[]): string {
+export function monotonePath(pts: { x: number; y: number }[]): string {
   const n = pts.length;
   if (n < 2) return n === 1 ? `M ${pts[0].x},${pts[0].y}` : '';
   if (n === 2) return `M ${pts[0].x},${pts[0].y} L ${pts[1].x},${pts[1].y}`;

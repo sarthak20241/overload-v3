@@ -1,0 +1,742 @@
+<title>Drona Orb Chat</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: the phone (the real thing) on the left, a quiet spec sheet with controls on the right. Stacks on phones. */
+:root {
+  --bg: #ecebe6;
+  --fg: #171815;
+  --muted: #5f6159;
+  --line: rgba(23, 24, 21, 0.12);
+  --surface: #f6f5f1;
+  --accent: #4d7a00;
+  --btn-bg: #171815;
+  --btn-fg: #f6f5f1;
+  --font-ui: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f100e; --fg: #ecede6; --muted: #9a9c92; --line: rgba(236, 237, 230, 0.12);
+    --surface: #171815; --accent: #c8ff00; --btn-bg: #ecede6; --btn-fg: #0f100e; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f100e; --fg: #ecede6; --muted: #9a9c92; --line: rgba(236, 237, 230, 0.12);
+  --surface: #171815; --accent: #c8ff00; --btn-bg: #ecede6; --btn-fg: #0f100e; color-scheme: dark;
+}
+
+body { background: var(--bg); color: var(--fg); font-family: var(--font-ui); }
+* { box-sizing: border-box; }
+
+.wrap {
+  max-width: 1080px; margin: 0 auto;
+  padding-block: 40px 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; grid-template-columns: minmax(0, 375px) minmax(0, 1fr);
+  gap: 64px; align-items: start;
+}
+.stage { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); }
+@media (max-width: 860px) {
+  .wrap { grid-template-columns: minmax(0, 1fr); gap: 36px; padding-block: 20px 56px; }
+  .stage { position: static; justify-self: center; width: 100%; max-width: 375px; }
+}
+
+/* ── Spec sheet ─────────────────────────────────────────── */
+.panel { min-width: 0; padding-top: 8px; }
+.kicker { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0 0 14px; }
+h1 { font-size: clamp(30px, 4vw, 40px); line-height: 1.05; letter-spacing: -0.035em; font-weight: 600; margin: 0 0 14px; text-wrap: balance; }
+.lede { font-size: 16px; line-height: 1.55; color: var(--muted); margin: 0 0 32px; max-width: 54ch; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 36px; }
+.btn { font: inherit; font-size: 14px; font-weight: 500; border-radius: 999px; padding: 10px 18px; cursor: pointer; border: 1px solid var(--line); background: transparent; color: var(--fg); }
+.btn.primary { background: var(--btn-bg); color: var(--btn-fg); border-color: var(--btn-bg); }
+.btn:focus-visible, .seg label:has(input:focus-visible), .state-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.steps { list-style: none; margin: 0 0 36px; padding: 0; display: grid; gap: 0; border-top: 1px solid var(--line); }
+.steps li { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 4px 12px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.steps .n { font-family: var(--font-mono); font-size: 12px; color: var(--muted); padding-top: 3px; }
+.steps b { font-weight: 600; font-size: 15px; display: block; margin-bottom: 3px; }
+.steps span.t { font-size: 14px; line-height: 1.5; color: var(--muted); }
+
+.group { margin-bottom: 28px; }
+.group h3 { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 500; margin: 0 0 10px; }
+.seg { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 999px; gap: 2px; }
+.seg label { position: relative; padding: 7px 16px; border-radius: 999px; font-size: 14px; cursor: pointer; color: var(--muted); }
+.seg input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
+.seg label:has(input:checked) { background: var(--btn-bg); color: var(--btn-fg); }
+.hint { font-size: 14px; line-height: 1.5; color: var(--muted); margin: 10px 0 0; max-width: 54ch; }
+
+.states { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.state-btn { font: inherit; text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; cursor: pointer; color: var(--fg); }
+.state-btn b { display: block; font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+.state-btn span { font-size: 12.5px; line-height: 1.4; color: var(--muted); }
+.state-btn.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+
+.also { font-size: 14px; line-height: 1.55; color: var(--muted); border-left: 2px solid var(--line); padding-left: 14px; margin: 8px 0 0; max-width: 58ch; }
+.note { font-family: var(--font-mono); font-size: 11px; color: var(--muted); margin-top: 14px; text-align: center; }
+
+/* ── The phone: app tokens copied from constants/theme.ts ─────────── */
+.phone {
+  --a-bg: #0a0a0a; --a-fg: #ffffff; --a-card: #1c1c1e; --a-muted: #242428; --a-mutedfg: #a1a1aa;
+  --a-dim: #6a6a72; --a-line: rgba(255, 255, 255, 0.10); --a-handle: rgba(255, 255, 255, 0.20);
+  --a-accent: #c8ff00; --a-user: #242428;
+  --a-orb-ink: #eef3e0; --a-orb-accent: #c8ff00;
+  position: relative; width: 100%; height: 760px; border-radius: 40px; overflow: hidden;
+  background: var(--a-bg); color: var(--a-fg);
+  border: 1px solid var(--line);
+  box-shadow: 0 40px 90px -40px rgba(0, 0, 0, 0.45);
+  display: flex; flex-direction: column; isolation: isolate;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.phone[data-app-theme="light"] {
+  --a-bg: #f7f6f1; --a-fg: #1a1a1a; --a-card: #ffffff; --a-muted: #efeee8; --a-mutedfg: #6b6b6b;
+  --a-dim: #9a9a94; --a-line: rgba(0, 0, 0, 0.07); --a-handle: rgba(0, 0, 0, 0.15);
+  --a-user: #e9e8e1;
+  --a-orb-ink: #23251c; --a-orb-accent: #5b8f00;
+}
+@media (max-width: 520px) { .phone { height: 680px; border-radius: 32px; } }
+
+.grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--a-handle); margin: 10px auto 4px; flex: none; }
+.a-head { display: flex; align-items: center; gap: 10px; padding: 6px 16px 12px; flex: none; position: relative; z-index: 6; }
+.a-head::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: var(--a-line); opacity: 0; transition: opacity 0.4s; }
+.phone[data-stage="chat"] .a-head::after { opacity: 1; }
+.icon-btn { width: 32px; height: 32px; border-radius: 16px; background: var(--a-muted); border: 0; color: var(--a-fg); display: grid; place-items: center; cursor: pointer; flex: none; padding: 0; }
+.icon-btn:focus-visible, .chip:focus-visible, .send:focus-visible, .mini:focus-visible { outline: 2px solid var(--a-accent); outline-offset: 2px; }
+.head-slot { width: 0; height: 32px; flex: none; margin-right: -10px; transition: width 0.55s cubic-bezier(0.2, 0.8, 0.2, 1), margin 0.55s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.phone[data-stage="chat"][data-variant="header"] .head-slot { width: 32px; margin-right: 0; }
+.head-text { flex: 1; min-width: 0; }
+.head-title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.head-sub { font-size: 12px; color: var(--a-mutedfg); height: 16px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.head-sub #subStatus { display: none; }
+.phone[data-busy="1"][data-stage="chat"][data-variant="header"] .head-sub #subStatus { display: inline; }
+.phone[data-busy="1"][data-stage="chat"][data-variant="header"] .head-sub #subDefault { display: none; }
+.head-actions { display: flex; gap: 8px; }
+
+.chat { flex: 1; overflow-y: auto; scrollbar-width: none; padding: 0 18px 20px; position: relative; overscroll-behavior: contain; }
+.chat::-webkit-scrollbar { display: none; }
+
+.hero { display: flex; flex-direction: column; align-items: center; text-align: center; padding-top: 34px; max-height: 560px; overflow: hidden;
+  transition: max-height 0.65s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.35s ease, padding 0.65s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.phone[data-stage="chat"] .hero { max-height: 0; opacity: 0; padding-top: 0; }
+.hero-slot { width: 168px; height: 168px; flex: none; }
+.hero-text { position: relative; height: 70px; width: 100%; margin-top: 10px; }
+.hero-greet, .hero-status { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; transition: opacity 0.35s ease, transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.eyebrow { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--a-dim); margin: 0 0 6px; font-weight: 500; }
+.hero h2 { font-size: 23px; line-height: 1.2; font-weight: 600; letter-spacing: -0.02em; margin: 0; text-wrap: balance; }
+.hero-status { opacity: 0; transform: translateY(8px); padding-top: 14px; font-size: 16px; font-weight: 500; }
+.phone[data-stage="first"] .hero-greet { opacity: 0; transform: translateY(-8px); }
+.phone[data-stage="first"] .hero-status { opacity: 1; transform: none; }
+
+.chips { width: 100%; display: flex; flex-direction: column; gap: 8px; margin-top: 22px; max-height: 240px; overflow: hidden; transition: max-height 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.25s, margin 0.5s; }
+.phone:not([data-stage="empty"]) .chips { max-height: 0; opacity: 0; margin-top: 0; }
+.chip { display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; padding: 13px 14px; border-radius: 14px; background: var(--a-card); border: 1px solid var(--a-line); color: var(--a-fg); font: inherit; font-size: 14px; cursor: pointer; }
+.chip svg { color: var(--a-dim); flex: none; }
+
+.thread { display: flex; flex-direction: column; gap: 20px; padding-top: 20px; }
+.msg.user { align-self: flex-end; max-width: 82%; background: var(--a-user); padding: 10px 14px; border-radius: 18px 18px 6px 18px; font-size: 15px; line-height: 1.4; animation: rise 0.35s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.msg.assistant { font-size: 15px; line-height: 1.55; }
+.row { display: flex; align-items: center; gap: 8px; height: 26px; max-height: 26px; margin-bottom: 8px; overflow: hidden; transition: max-height 0.45s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s, margin 0.45s; }
+.row-slot { width: 26px; height: 26px; flex: none; }
+.row-label { font-size: 13px; font-weight: 500; color: var(--a-mutedfg); }
+.phone[data-variant="header"] .row,
+.phone[data-stage="first"] .row,
+.msg.assistant:not(.live) .row { max-height: 0; opacity: 0; margin-bottom: 0; }
+.body p { margin: 0 0 10px; }
+.body ul { margin: 0 0 10px; padding-left: 18px; }
+.body li { margin: 0 0 5px; }
+.body li::marker { color: var(--a-dim); }
+.body .stopped { color: var(--a-dim); }
+.w { animation: wordIn 0.4s ease both; }
+.msg-actions { display: flex; gap: 4px; opacity: 0; transition: opacity 0.3s; margin-top: -2px; }
+.msg.done .msg-actions { opacity: 1; }
+.mini { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: 0; color: var(--a-dim); padding: 4px 6px 4px 0; cursor: pointer; font: inherit; font-size: 12px; }
+
+.composer { flex: none; padding: 8px 14px 16px; }
+.field { display: flex; align-items: center; gap: 8px; background: var(--a-card); border: 1px solid var(--a-line); border-radius: 24px; padding: 6px 6px 6px 16px; transition: border-color 0.2s; }
+.field:focus-within { border-color: color-mix(in srgb, var(--a-fg) 22%, transparent); }
+.field input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--a-fg); font: inherit; font-size: 15px; outline: none; padding: 6px 0; }
+.field input::placeholder { color: var(--a-dim); }
+.send { width: 34px; height: 34px; border-radius: 17px; border: 0; background: var(--a-accent); color: #0a0a0a; display: grid; place-items: center; cursor: pointer; transition: opacity 0.2s, transform 0.2s, background 0.2s; flex: none; padding: 0; }
+.send:disabled { opacity: 0.3; cursor: default; }
+.send .i-stop { display: none; }
+.phone[data-busy="1"] .send { background: var(--a-fg); color: var(--a-bg); }
+.phone[data-busy="1"] .send .i-stop { display: block; }
+.phone[data-busy="1"] .send .i-send { display: none; }
+
+/* Dock: the orb lives in the composer while you read, and rises above it while you wait. */
+.composer { position: relative; }
+.field-slot { width: 0; height: 34px; flex: none; margin-left: 0; margin-right: -8px; transition: width 0.55s cubic-bezier(0.2, 0.8, 0.2, 1), margin 0.55s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.phone[data-stage="chat"][data-variant="dock"] .field-slot { width: 34px; margin-left: -10px; margin-right: 0; }
+.lift { position: absolute; left: 0; right: 0; bottom: 100%; display: flex; flex-direction: column; align-items: center; gap: 2px; padding-bottom: 6px; pointer-events: none; opacity: 0; transform: translateY(10px); transition: opacity 0.4s ease, transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.lift-slot { width: 104px; height: 104px; }
+.lift-label { font-size: 14px; font-weight: 500; height: 20px; }
+.phone[data-lift="1"] .lift { opacity: 1; transform: none; }
+.aura { position: absolute; left: -10%; right: -10%; bottom: 0; height: 320px; pointer-events: none; z-index: 1; opacity: 0; transition: opacity 0.8s ease;
+  background: radial-gradient(60% 70% at 50% 100%, rgba(200, 255, 0, 0.13), rgba(200, 255, 0, 0.04) 55%, transparent 80%); }
+.phone[data-app-theme="light"] .aura { background: radial-gradient(60% 70% at 50% 100%, rgba(150, 210, 0, 0.20), rgba(150, 210, 0, 0.06) 55%, transparent 80%); }
+.phone[data-lift="1"] .aura { opacity: 1; animation: auraBreath 3.2s ease-in-out infinite; }
+.phone[data-variant="dock"][data-stage="chat"] .chat { transition: padding-bottom 0.6s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.phone[data-lift="1"] .chat { padding-bottom: 150px; }
+.phone[data-variant="dock"] .row { max-height: 0; opacity: 0; margin-bottom: 0; }
+.a-head, .chat, .composer { position: relative; z-index: 2; }
+.a-head { z-index: 6; }
+@keyframes auraBreath { 0%, 100% { opacity: 0.75; } 50% { opacity: 1; } }
+
+.orb-layer { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 7; will-change: transform; }
+.orb-layer canvas { width: 100%; height: 100%; display: block; }
+
+.shimmer {
+  background: linear-gradient(90deg, var(--a-dim) 0%, var(--a-dim) 35%, var(--a-fg) 50%, var(--a-dim) 65%, var(--a-dim) 100%);
+  background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: shimmer 1.8s linear infinite;
+}
+.swap { animation: statusIn 0.35s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.shimmer.swap { animation: statusIn 0.35s cubic-bezier(0.2, 0.8, 0.2, 1), shimmer 1.8s linear infinite; }
+
+@keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0% 0; } }
+@keyframes statusIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes rise { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes wordIn { from { opacity: 0; filter: blur(3px); } to { opacity: 1; filter: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .shimmer, .shimmer.swap { animation: none; color: var(--a-mutedfg); background: none; }
+  .w, .msg.user, .swap { animation: none; }
+}
+</style>
+
+<main class="wrap">
+  <section class="stage" aria-label="Coach chat demo">
+    <div class="phone" id="phone" data-app-theme="dark" data-variant="dock" data-stage="empty" data-busy="0" data-lift="0">
+      <div class="grabber" aria-hidden="true"></div>
+      <header class="a-head">
+        <button class="icon-btn" type="button" aria-label="Back">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <div class="head-slot" id="headSlot" data-size="36"></div>
+        <div class="head-text">
+          <div class="head-title">Coach Drona</div>
+          <div class="head-sub"><span id="subDefault">Strength, food and recovery</span><span id="subStatus" class="shimmer"></span></div>
+        </div>
+        <div class="head-actions">
+          <button class="icon-btn" type="button" aria-label="Past chats">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          </button>
+          <button class="icon-btn" type="button" id="newChat" aria-label="Start a new chat">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="chat" id="chat">
+        <section class="hero" id="hero">
+          <div class="hero-slot" id="heroSlot" data-size="168"></div>
+          <div class="hero-text">
+            <div class="hero-greet">
+              <p class="eyebrow">Coach Drona</p>
+              <h2>What are we working on today?</h2>
+            </div>
+            <div class="hero-status" aria-live="polite"><span id="heroStatusText" class="shimmer">Thinking</span></div>
+          </div>
+          <div class="chips" id="chips">
+            <button class="chip" type="button" data-q="My bench is stuck at 80 kg. What should I change?">My bench is stuck at 80 kg
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M8 7h9v9"/></svg></button>
+            <button class="chip" type="button" data-q="Plan my training week">Plan my training week
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M8 7h9v9"/></svg></button>
+            <button class="chip" type="button" data-q="How much protein do I still need today?">How much protein do I still need?
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M8 7h9v9"/></svg></button>
+          </div>
+        </section>
+        <div class="thread" id="thread" aria-live="polite"></div>
+      </div>
+
+      <div class="aura" aria-hidden="true"></div>
+      <form class="composer" id="composerForm">
+        <div class="lift" aria-live="polite">
+          <div class="lift-slot" id="liftSlot" data-size="104"></div>
+          <span class="lift-label shimmer" id="liftStatus">Thinking</span>
+        </div>
+        <div class="field">
+          <div class="field-slot" id="fieldSlot" data-size="34"></div>
+          <input id="composer" autocomplete="off" placeholder="Ask Drona anything" aria-label="Message Coach Drona">
+          <button type="submit" class="send" id="sendBtn" aria-label="Send" disabled>
+            <svg class="i-send" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+            <svg class="i-stop" width="11" height="11" viewBox="0 0 12 12"><rect width="12" height="12" rx="2.5" fill="currentColor"/></svg>
+          </button>
+        </div>
+      </form>
+
+      <div class="orb-layer" id="orbEl" aria-hidden="true"><canvas id="orbCanvas"></canvas></div>
+    </div>
+    <p class="note">Example conversation. Not your data.</p>
+  </section>
+
+  <aside class="panel">
+    <p class="kicker">Overload · Coach chat sketch</p>
+    <h1>One orb, three moments</h1>
+    <p class="lede">Drona gets a living orb. It is big while you wait for an answer, and small while you read one. Press play, or type in the phone yourself.</p>
+
+    <div class="actions">
+      <button class="btn primary" type="button" id="playBtn">Play the demo</button>
+      <button class="btn" type="button" id="resetBtn">Reset</button>
+    </div>
+
+    <ol class="steps">
+      <li><span class="n">1</span><div><b>Empty chat</b><span class="t">The orb sits large at the top and breathes slowly. Start typing and it wakes up.</span></div></li>
+      <li><span class="n">2</span><div><b>First message</b><span class="t">The orb stays large and says what Drona is doing: thinking, looking up your sets, checking your trends.</span></div></li>
+      <li><span class="n">3</span><div><b>Words arrive</b><span class="t">The moment the reply starts, the orb shrinks and flies out of the way. The words get the room. It keeps showing status on every later turn, from its small spot.</span></div></li>
+    </ol>
+
+    <div class="group">
+      <h3>Where the small orb lives</h3>
+      <div class="seg" role="radiogroup" aria-label="Where the small orb lives">
+        <label><input type="radio" name="variant" id="vDock" value="dock" checked>Dock</label>
+        <label><input type="radio" name="variant" id="vHeader" value="header">Header</label>
+        <label><input type="radio" name="variant" id="vInline" value="inline">Inline</label>
+      </div>
+      <p class="hint" id="variantHint">While you wait, the orb rises big above the text box with the status under it, and a soft light comes up from below. When words arrive, it drops into the text box and pulses with each word.</p>
+    </div>
+
+    <div class="group">
+      <h3>App theme</h3>
+      <div class="seg" role="radiogroup" aria-label="App theme">
+        <label><input type="radio" name="apptheme" id="tDark" value="dark" checked>Dark</label>
+        <label><input type="radio" name="apptheme" id="tLight" value="light">Light</label>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Orb states, tap to preview</h3>
+      <div class="states" id="states">
+        <button class="state-btn on" type="button" data-state="idle"><b>Idle</b><span>Slow turn, soft breath.</span></button>
+        <button class="state-btn" type="button" data-state="listening"><b>Listening</b><span>Brighter, ripples as you type.</span></button>
+        <button class="state-btn" type="button" data-state="thinking"><b>Thinking</b><span>Pulls in and twists.</span></button>
+        <button class="state-btn" type="button" data-state="searching"><b>Searching</b><span>A lime band sweeps your data.</span></button>
+        <button class="state-btn" type="button" data-state="writing"><b>Writing</b><span>Pulses with each word.</span></button>
+        <button class="state-btn" type="button" data-state="done"><b>Done</b><span>One ring goes out, then rest.</span></button>
+      </div>
+    </div>
+
+    <p class="also">Also in this pass: your messages sit on a quiet grey bubble, Drona's replies are plain text with no box, and words fade in as they stream. Lime shows up in two places only: the send button and the orb.</p>
+  </aside>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const phone = $('phone'), chat = $('chat'), thread = $('thread');
+  const heroSlot = $('heroSlot'), headSlot = $('headSlot');
+  const orbEl = $('orbEl'), cv = $('orbCanvas'), ctx = cv.getContext('2d');
+  const composer = $('composer'), sendBtn = $('sendBtn');
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const liftSlot = $('liftSlot'), fieldSlot = $('fieldSlot');
+  const app = { stage: 'empty', variant: 'dock', busy: false, runId: 0, phase: 'idle' };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // ── Orb engine ──────────────────────────────────────────────
+  const PTS = (() => {
+    const n = 820, ga = Math.PI * (3 - Math.sqrt(5)), a = [];
+    for (let i = 0; i < n; i++) {
+      const y = 1 - ((i + 0.5) / n) * 2, r = Math.sqrt(1 - y * y), th = ga * i;
+      a.push({ x: Math.cos(th) * r, y, z: Math.sin(th) * r, s: Math.random() });
+    }
+    return a;
+  })();
+  const STATES = {
+    idle:      { speed: 0.22, noise: 0.022, twist: 0,   band: 0, glow: 0.16, scale: 1.0,  bright: 0.78, accent: 0.05 },
+    listening: { speed: 0.36, noise: 0.045, twist: 0,   band: 0, glow: 0.30, scale: 1.05, bright: 1.0,  accent: 0.10 },
+    thinking:  { speed: 0.85, noise: 0.085, twist: 1.5, band: 0, glow: 0.46, scale: 0.92, bright: 1.0,  accent: 0.20 },
+    searching: { speed: 0.50, noise: 0.030, twist: 0,   band: 1, glow: 0.34, scale: 1.0,  bright: 0.9,  accent: 0.08 },
+    writing:   { speed: 0.42, noise: 0.040, twist: 0.3, band: 0, glow: 0.40, scale: 1.0,  bright: 1.0,  accent: 0.14 },
+  };
+  const orb = {
+    P: { ...STATES.idle }, T: { ...STATES.idle }, state: 'idle', rot: 0, t: 0, pulse: 0, ring: -1,
+    set(st) {
+      if (st === 'done') { this.ring = 0; st = 'idle'; markState('done'); }
+      else markState(st);
+      if (!STATES[st]) return;
+      this.state = st; this.T = { ...STATES[st] };
+    },
+    kick(a) { this.pulse = Math.min(1, this.pulse + a); },
+  };
+  let ink = '#eef3e0', acc = '#c8ff00', glowMul = 0.55;
+  function readColors() {
+    const cs = getComputedStyle(phone);
+    ink = cs.getPropertyValue('--a-orb-ink').trim() || ink;
+    acc = cs.getPropertyValue('--a-orb-accent').trim() || acc;
+    glowMul = phone.dataset.appTheme === 'light' ? 0.75 : 0.55;
+  }
+  const inkBuf = [], accBuf = [];
+  function drawBuf(b, col) {
+    ctx.fillStyle = col;
+    for (let i = 0; i < b.length; i += 4) {
+      ctx.globalAlpha = b[i + 3];
+      const s = b[i + 2];
+      ctx.fillRect(b[i] - s / 2, b[i + 1] - s / 2, s, s);
+    }
+    ctx.globalAlpha = 1;
+  }
+  function drawOrb(dt, css) {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const W = Math.max(2, Math.round(css * dpr));
+    if (cv.width !== W) { cv.width = W; cv.height = W; }
+    const tm = reduce ? 0.35 : 1;
+    orb.t += dt * tm;
+    const k = 1 - Math.exp(-dt * 3.5);
+    for (const key in orb.T) orb.P[key] += (orb.T[key] - orb.P[key]) * k;
+    const P = orb.P, t = orb.t;
+    orb.rot += dt * P.speed * tm;
+    orb.pulse *= Math.exp(-dt * 5);
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, W, W);
+    const c = W / 2;
+    const R = W * 0.36 * P.scale * (1 + Math.sin(t * 1.2) * 0.014);
+    const gm = glowMul * (css < 60 ? 1.6 : 1);
+
+    const g = ctx.createRadialGradient(c, c, 0, c, c, R * 1.38);
+    g.addColorStop(0, `rgba(200,255,0,${Math.min(0.9, P.glow * gm)})`);
+    g.addColorStop(0.55, `rgba(200,255,0,${P.glow * gm * 0.32})`);
+    g.addColorStop(1, 'rgba(200,255,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, W);
+
+    // Small orbs get denser dots, brighter particles and a stronger glow so they still read at 26-36px.
+    const small = css < 60;
+    const stride = small ? 2 : 1;
+    const dot = (small ? 1.05 : Math.max(0.9, Math.min(1.7, css / 115))) * dpr;
+    const boost = small ? 1.3 : 1;
+    const cosR = Math.cos(orb.rot), sinR = Math.sin(orb.rot);
+    const tilt = 0.38 + Math.sin(t * 0.35) * 0.08, cosT = Math.cos(tilt), sinT = Math.sin(tilt);
+    const bandY = Math.sin(t * 1.5) * 0.82;
+    inkBuf.length = 0; accBuf.length = 0;
+    for (let i = 0; i < PTS.length; i += stride) {
+      const p = PTS[i];
+      let x = p.x, y = p.y, z = p.z;
+      const a = P.twist * y * Math.sin(t * 0.8 + p.s * 0.6);
+      if (a !== 0) { const ca = Math.cos(a), sa = Math.sin(a); const nx = x * ca - z * sa; z = x * sa + z * ca; x = nx; }
+      const n = Math.sin(x * 3.1 + t * 1.6 + p.s * 6.28) * Math.cos(y * 2.6 - t * 1.2) * Math.sin(z * 2.2 + t * 0.9 + p.s);
+      const bh = P.band * Math.max(0, 1 - Math.abs(y - bandY) / 0.16);
+      const r = 1 + P.noise * n * 2.2 + orb.pulse * 0.08 * (0.4 + 0.6 * Math.sin(p.s * 40 + t * 5)) + bh * 0.08;
+      x *= r; y *= r; z *= r;
+      const rx = x * cosR - z * sinR; let rz = x * sinR + z * cosR;
+      const ry = y * cosT - rz * sinT; rz = y * sinT + rz * cosT;
+      const dep = (rz / r + 1) / 2;
+      const alpha = Math.min(1, ((0.12 + 0.88 * dep) * P.bright + bh * 0.7) * boost);
+      const size = dot * (0.55 + 0.85 * dep) * (1 + bh * 0.7);
+      (p.s < P.accent + bh * 0.9 ? accBuf : inkBuf).push(c + rx * R, c + ry * R, size, alpha);
+    }
+    drawBuf(inkBuf, ink);
+    drawBuf(accBuf, acc);
+
+    if (orb.ring >= 0) {
+      orb.ring += dt / 0.9;
+      if (orb.ring >= 1) orb.ring = -1;
+      else {
+        ctx.strokeStyle = acc;
+        ctx.globalAlpha = (1 - orb.ring) * 0.7;
+        ctx.lineWidth = Math.max(1, 1.2 * dpr);
+        ctx.beginPath();
+        ctx.arc(c, c, R * (1 + orb.ring * 0.5), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  // ── The orb flies between slots ─────────────────────────────
+  const pos = { x: 0, y: 0, s: 168 };
+  const fl = { slot: null, from: null, t: 1 };
+  const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+  function targetSlot() {
+    if (app.stage !== 'chat') return heroSlot;
+    if (app.variant === 'dock') return phone.dataset.lift === '1' ? liftSlot : fieldSlot;
+    if (app.variant === 'header') return headSlot;
+    return thread.querySelector('.msg.assistant.live .row-slot') || headSlot;
+  }
+  function slotRect(slot, pr) {
+    const r = slot.getBoundingClientRect(), s = +slot.dataset.size;
+    return { x: r.left - pr.left + r.width / 2 - s / 2, y: r.top - pr.top + r.height / 2 - s / 2, s };
+  }
+  function track(dt) {
+    const pr = phone.getBoundingClientRect();
+    const slot = targetSlot();
+    const tg = slotRect(slot, pr);
+    if (slot !== fl.slot) {
+      fl.from = fl.slot ? { ...pos } : tg;
+      fl.t = fl.slot ? 0 : 1;
+      fl.slot = slot;
+    }
+    if (fl.t < 1) fl.t = Math.min(1, fl.t + dt / (reduce ? 0.2 : 0.75));
+    const e = ease(fl.t);
+    pos.x = fl.from.x + (tg.x - fl.from.x) * e;
+    pos.y = fl.from.y + (tg.y - fl.from.y) * e;
+    pos.s = fl.from.s + (tg.s - fl.from.s) * e;
+    orbEl.style.transform = `translate3d(${pos.x}px, ${pos.y}px, 0)`;
+    orbEl.style.width = orbEl.style.height = pos.s + 'px';
+    // Inside the chat, clip the orb to the scroll area so it never rides over the header.
+    if (chat.contains(slot) && fl.t >= 1) {
+      const cr = chat.getBoundingClientRect();
+      const top = Math.max(0, cr.top - pr.top - pos.y);
+      const bot = Math.max(0, pos.y + pos.s - (cr.bottom - pr.top));
+      orbEl.style.clipPath = `inset(${top}px 0 ${bot}px 0)`;
+    } else {
+      orbEl.style.clipPath = 'none';
+    }
+  }
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    track(dt);
+    drawOrb(dt, pos.s);
+    requestAnimationFrame(frame);
+  }
+
+  // ── Chat ────────────────────────────────────────────────────
+  const SCRIPTS = {
+    bench: {
+      steps: [['thinking', 'Thinking', 1100], ['searching', 'Looking up your bench sets', 1600], ['searching', 'Checking your volume trends', 1200]],
+      reply: 'You have hit 80 kg for 3 sets of 5 in your last four sessions, and the last reps got slower each time. That is a plateau, not lost strength.\n\nFor the next three weeks:\n• Drop to 72.5 kg and do 4 sets of 6 with a 2 second pause on the chest.\n• Add 3 sets of close-grip bench on your second push day.\n• Retest 80 kg in week 4. Aim for 3 sets of 6.\n\nWant me to put this into your program?',
+    },
+    week: {
+      steps: [['thinking', 'Thinking', 1000], ['searching', 'Pulling your recent workouts', 1500], ['thinking', 'Thinking', 900]],
+      reply: 'You trained four days last week, but legs got only one session. Here is a more even week:\n• Monday: upper push\n• Tuesday: lower, squat focus\n• Thursday: upper pull\n• Saturday: lower, hinge focus\n\nOn the other days, walk 8,000 steps. Should I build it?',
+    },
+    protein: {
+      steps: [['thinking', 'Thinking', 900], ['searching', 'Checking your food log', 1400]],
+      reply: 'You have had 92 g of protein today. Your target is 150 g, so 58 g to go.\n• A 200 g tub of Greek yogurt gives about 20 g.\n• 150 g of chicken breast gives about 46 g.\n\nBoth together finish the day.',
+    },
+    pause: {
+      steps: [['thinking', 'Thinking', 1400]],
+      reply: 'The pause takes away the bounce off your chest. You press from a dead stop, which builds strength at the bottom, where your reps slow down. Keep it short and tight, about 2 seconds.',
+    },
+    other: {
+      steps: [['thinking', 'Thinking', 1300]],
+      reply: 'Good question. Is this about training, food or recovery? Tell me which, and I will look at the right part of your log.',
+    },
+  };
+  function pickScript(text) {
+    const s = text.toLowerCase();
+    if (s.includes('bench') || s.includes('stuck')) return SCRIPTS.bench;
+    if (s.includes('week') || s.includes('plan')) return SCRIPTS.week;
+    if (s.includes('protein')) return SCRIPTS.protein;
+    if (s.includes('pause') || s.includes('why')) return SCRIPTS.pause;
+    return SCRIPTS.other;
+  }
+
+  function setStage(s) { app.stage = s; phone.dataset.stage = s; syncLift(); }
+  function setBusy(b) { app.busy = b; phone.dataset.busy = b ? '1' : '0'; if (!b) app.phase = 'idle'; syncSend(); syncLift(); }
+  function setPhase(p) { app.phase = p; syncLift(); }
+  // Dock: big while you wait, small while you read.
+  function syncLift() {
+    const lift = app.variant === 'dock' && app.stage === 'chat' && app.busy && app.phase === 'wait';
+    const was = phone.dataset.lift === '1';
+    phone.dataset.lift = lift ? '1' : '0';
+    if (lift && !was) { setTimeout(() => followScroll(true), 60); setTimeout(() => followScroll(true), 650); }
+    composer.placeholder = app.variant === 'dock' && app.busy && app.phase === 'write' ? 'Drona is writing' : 'Ask Drona anything';
+  }
+  function syncSend() {
+    sendBtn.disabled = !app.busy && !composer.value.trim();
+    sendBtn.setAttribute('aria-label', app.busy ? 'Stop' : 'Send');
+  }
+  function swapText(el, t) {
+    if (el.textContent === t) return;
+    el.textContent = t;
+    el.classList.remove('swap');
+    void el.offsetWidth;
+    el.classList.add('swap');
+  }
+  function setStatus(label, a) {
+    if (label) { swapText($('heroStatusText'), label); swapText($('liftStatus'), label); }
+    swapText($('subStatus'), label || '');
+    if (a) {
+      const rl = a.querySelector('.row-label');
+      if (label) { rl.classList.add('shimmer'); swapText(rl, label); }
+      else { rl.classList.remove('shimmer'); swapText(rl, 'Drona'); }
+    }
+  }
+  function followScroll(force) {
+    const gap = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
+    if (force || gap < 140) chat.scrollTo({ top: chat.scrollHeight, behavior: force && !reduce ? 'smooth' : 'auto' });
+  }
+  function addUser(text) {
+    const d = document.createElement('div');
+    d.className = 'msg user';
+    d.textContent = text;
+    thread.appendChild(d);
+  }
+  function addAssistant() {
+    const a = document.createElement('div');
+    a.className = 'msg assistant live pending';
+    a.innerHTML = '<div class="row"><div class="row-slot" data-size="26"></div><span class="row-label shimmer">Thinking</span></div><div class="body"></div>'
+      + '<div class="msg-actions"><button class="mini" type="button" aria-label="Copy reply"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>Copy</span></button></div>';
+    const btn = a.querySelector('.mini');
+    btn.addEventListener('click', () => {
+      const label = btn.querySelector('span');
+      const done = () => { label.textContent = 'Copied'; setTimeout(() => { label.textContent = 'Copy'; }, 1400); };
+      try { navigator.clipboard.writeText(a.querySelector('.body').innerText).then(done, () => {}); } catch (e) { /* clipboard refused */ }
+    });
+    thread.appendChild(a);
+    return a;
+  }
+  async function stream(text, body, my) {
+    let list = null;
+    for (const line of text.split('\n')) {
+      if (!line.trim()) { list = null; continue; }
+      let el;
+      if (line.startsWith('• ')) {
+        if (!list) { list = document.createElement('ul'); body.appendChild(list); }
+        el = document.createElement('li'); list.appendChild(el);
+      } else {
+        list = null;
+        el = document.createElement('p'); body.appendChild(el);
+      }
+      for (const w of line.replace(/^• /, '').split(' ')) {
+        if (my !== app.runId) return false;
+        const sp = document.createElement('span');
+        sp.className = 'w';
+        sp.textContent = w + ' ';
+        el.appendChild(sp);
+        orb.kick(0.2);
+        followScroll(false);
+        await sleep(reduce ? 6 : 26 + Math.random() * 38);
+      }
+    }
+    return true;
+  }
+
+  async function send(raw) {
+    const text = (raw || '').trim();
+    if (!text || app.busy) return;
+    const my = app.runId;
+    const script = pickScript(text);
+    composer.value = '';
+    setBusy(true);
+    if (app.stage === 'empty') setStage('first');
+    thread.querySelectorAll('.msg.assistant.live').forEach((m) => m.classList.remove('live'));
+    addUser(text);
+    const a = addAssistant();
+    setPhase('wait');
+    requestAnimationFrame(() => followScroll(true));
+    for (const [st, label, ms] of script.steps) {
+      if (my !== app.runId) return;
+      orb.set(st);
+      setStatus(label, a);
+      await sleep(ms);
+    }
+    if (my !== app.runId) return;
+    if (app.stage === 'first') setStage('chat');
+    setPhase('write');
+    orb.set('writing');
+    setStatus('Writing', a);
+    a.classList.remove('pending');
+    await sleep(app.stage === 'chat' ? 120 : 0);
+    const ok = await stream(script.reply, a.querySelector('.body'), my);
+    if (!ok || my !== app.runId) return;
+    orb.set('done');
+    setStatus(null, a);
+    a.classList.add('done');
+    setBusy(false);
+  }
+
+  function stop() {
+    if (!app.busy) return;
+    app.runId++;
+    const a = thread.querySelector('.msg.assistant.live');
+    if (a) {
+      const b = a.querySelector('.body');
+      if (!b.textContent.trim()) b.innerHTML = '<p class="stopped">Stopped.</p>';
+      a.classList.remove('pending');
+      a.classList.add('done');
+      setStatus(null, a);
+    }
+    if (app.stage === 'first') setStage('chat');
+    orb.set('idle');
+    setBusy(false);
+  }
+
+  function reset() {
+    app.runId++;
+    thread.innerHTML = '';
+    composer.value = '';
+    setStage('empty');
+    setBusy(false);
+    setStatus(null, null);
+    $('heroStatusText').textContent = 'Thinking';
+    orb.set('idle');
+    chat.scrollTop = 0;
+  }
+
+  async function typeInto(text, my) {
+    composer.focus({ preventScroll: true });
+    for (const ch of text) {
+      if (my !== app.runId) return false;
+      composer.value += ch;
+      composer.dispatchEvent(new Event('input'));
+      await sleep(reduce ? 5 : 32 + Math.random() * 48);
+    }
+    return true;
+  }
+  async function play() {
+    reset();
+    const my = app.runId;
+    await sleep(800);
+    if (!(await typeInto('My bench is stuck at 80 kg. What should I change?', my))) return;
+    await sleep(350);
+    if (my !== app.runId) return;
+    await send(composer.value);
+    if (my !== app.runId) return;
+    await sleep(1800);
+    if (!(await typeInto('Why the pause on the chest?', my))) return;
+    await sleep(350);
+    if (my !== app.runId) return;
+    await send(composer.value);
+    composer.blur();
+  }
+
+  // ── Wiring ──────────────────────────────────────────────────
+  $('composerForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (app.busy) stop(); else send(composer.value);
+  });
+  composer.addEventListener('input', () => {
+    syncSend();
+    if (app.busy) return;
+    if (composer.value.trim()) { if (orb.state !== 'listening') orb.set('listening'); orb.kick(0.18); }
+    else orb.set('idle');
+  });
+  composer.addEventListener('blur', () => { if (!app.busy && !composer.value.trim()) orb.set('idle'); });
+  document.querySelectorAll('.chip').forEach((b) => b.addEventListener('click', () => send(b.dataset.q)));
+  $('newChat').addEventListener('click', reset);
+  $('resetBtn').addEventListener('click', reset);
+  $('playBtn').addEventListener('click', play);
+
+  const HINTS = {
+    dock: 'While you wait, the orb rises big above the text box with the status under it, and a soft light comes up from below. When words arrive, it drops into the text box and pulses with each word.',
+    header: "Next to Drona's name. The status is a line under the name. The chat itself stays pure text.",
+    inline: 'At the top of the newest reply, with the status beside it. On each new turn the orb travels down to the next reply.',
+  };
+  document.querySelectorAll('input[name="variant"]').forEach((r) => r.addEventListener('change', () => {
+    app.variant = r.value;
+    phone.dataset.variant = r.value;
+    $('variantHint').textContent = HINTS[r.value];
+    syncLift();
+  }));
+  document.querySelectorAll('input[name="apptheme"]').forEach((r) => r.addEventListener('change', () => {
+    phone.dataset.appTheme = r.value;
+    readColors();
+  }));
+  function markState(st) {
+    document.querySelectorAll('.state-btn').forEach((b) => b.classList.toggle('on', b.dataset.state === st));
+  }
+  document.querySelectorAll('.state-btn').forEach((b) => b.addEventListener('click', () => orb.set(b.dataset.state)));
+
+  readColors();
+  requestAnimationFrame((now) => { last = now; frame(now); });
+})();
+</script>
