@@ -576,20 +576,6 @@ export default function NutritionScreen() {
   const historyAnchor = viewIso < todayIso ? viewIso : todayIso;
   const { history } = useFoodHistory(!isSignedIn ? 'guest' : dayUnknown ? null : diaryVersion, historyAnchor);
   const patterns = useMemo(() => learnPatterns(isSignedIn ? history : [], viewIso, todayIso), [history, viewIso, todayIso, isSignedIn]);
-  // Today runs on the clock (breakfast in the morning, and still at lunch if
-  // it was skipped). Any other day is backfill or planning: every meal open.
-  // Held in state and ticked each minute, so a screen left open moves on with
-  // the clock (breakfast stops being offered at 4pm) without anything else
-  // having to re-render it. Only an hour change re-renders.
-  const [clockHour, setClockHour] = useState(() => new Date().getHours());
-  useEffect(() => {
-    // React skips the render when the hour is unchanged.
-    const tick = () => setClockHour(new Date().getHours());
-    const id = setInterval(tick, 60_000);
-    const sub = AppState.addEventListener('change', (next) => { if (next === 'active') tick(); });
-    return () => { clearInterval(id); sub.remove(); };
-  }, []);
-  const suggestHour = isToday ? clockHour : null;
   const prevDate = new Date(viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate() - 1);
   const prevIso = ymd(prevDate);
   const prevLines = useDayMealLines(history, prevIso);
@@ -598,8 +584,8 @@ export default function NutritionScreen() {
   const prevWord = prevLabel === 'Yesterday' ? 'yesterday' : prevLabel;
   // A meal with no habit yet starts from the day before's food for it.
   const suggestions = useMemo(
-    () => mealsToSuggest(withPreviousDay(patterns, prevLines), byMeal, suggestHour),
-    [patterns, prevLines, byMeal, suggestHour],
+    () => mealsToSuggest(withPreviousDay(patterns, prevLines), byMeal),
+    [patterns, prevLines, byMeal],
   );
   const [copyMeal, setCopyMeal] = useState<MealType | null>(null);
   const [relogBusy, setRelogBusy] = useState<string | null>(null);
