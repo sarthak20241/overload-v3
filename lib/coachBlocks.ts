@@ -69,13 +69,18 @@ export type CoachBlock =
   | ChartBlock
   | { type: 'stats'; items: StatItem[] }
   | { type: 'progress'; items: ProgressItem[] }
-  | { type: 'pending'; what: 'chart' | 'stats' | 'table' | 'progress' };
+  | { type: 'pending'; what: 'chart' | 'stats' | 'table' | 'progress' }
+  // A block Drona wrote that could not be read (bad JSON). Shown as a quiet
+  // note so the sentence pointing at it is not left pointing at nothing.
+  | { type: 'broken'; what: 'chart' | 'stats' | 'progress' };
 
 // Limits keep a malformed or oversized block from wrecking the layout.
 const MAX_POINTS = 60;
 const MAX_STATS = 4;
 const MAX_PROGRESS = 4;
 const MAX_SLICES = 6;
+// More bars than this do not fit a phone-width chart.
+const MAX_BARS = 16;
 const MAX_TABLE_COLS = 6;
 const MAX_TABLE_ROWS = 40;
 const FENCES = new Set(['chart', 'stats', 'progress']);
@@ -139,6 +144,7 @@ function parseChart(raw: string): ChartBlock | null {
       if (series[1]) compare = { name: series[1].name, points: series[1].points };
     }
   }
+  if (kind === 'bar') points = points.slice(0, MAX_BARS);
   // A line needs two points to be a line; one bar is still a fact.
   if (points.length < (kind === 'line' ? 2 : 1)) return null;
   const goal = Number(o.goal);
@@ -249,7 +255,7 @@ export function parseCoachBlocks(content: string, streaming = false): CoachBlock
       // closing ```): the block ends at the first blank line, and everything
       // after it is still the reply. Dropping to the end would lose the answer.
       let resumeAt = closed ? j + 1 : lines.length;
-      if (!closed && !streaming) {
+      if (!closed && !streaming && FENCES.has(lang)) {
         let k = i + 1;
         while (k < lines.length && lines[k].trim() !== '') k++;
         j = k;
@@ -264,13 +270,13 @@ export function parseCoachBlocks(content: string, streaming = false): CoachBlock
           out.push({ type: 'pending', what: lang as 'chart' | 'stats' | 'progress' });
         } else if (lang === 'chart') {
           const c = parseChart(inner);
-          if (c) out.push(c);
+          out.push(c ?? { type: 'broken', what: 'chart' });
         } else if (lang === 'progress') {
           const items = parseProgress(inner);
-          if (items) out.push({ type: 'progress', items });
+          out.push(items ? { type: 'progress', items } : { type: 'broken', what: 'progress' });
         } else {
           const items = parseStats(inner);
-          if (items) out.push({ type: 'stats', items });
+          out.push(items ? { type: 'stats', items } : { type: 'broken', what: 'stats' });
         }
       } else if (inner.trim()) {
         out.push({ type: 'paragraph', text: inner.trim() });
@@ -370,6 +376,7 @@ export function coachBlocksPlainText(content: string): string {
         case 'stats':
           return b.items.map((s) => `${s.label}: ${s.value}${s.note ? ` (${s.note})` : ''}`).join('\n');
         case 'pending':
+        case 'broken':
           return '';
       }
     })

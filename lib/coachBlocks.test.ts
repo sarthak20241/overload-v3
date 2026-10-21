@@ -39,9 +39,9 @@ Deno.test('a stats fence becomes stat tiles', () => {
   ] }]);
 });
 
-Deno.test('broken chart JSON is dropped, never shown as raw JSON', () => {
+Deno.test('broken chart JSON becomes a quiet note, never raw JSON', () => {
   const blocks = parseCoachBlocks('Look:\n\n```chart\n{"kind":"line","points":[["a",1]\n```\n\nDone.');
-  assertEquals(blocks.map((b) => b.type), ['paragraph', 'paragraph']);
+  assertEquals(blocks.map((b) => b.type), ['paragraph', 'broken', 'paragraph']);
   assertEquals(blocks.some((b) => b.type === 'paragraph' && b.text.includes('{')), false);
 });
 
@@ -86,8 +86,9 @@ Deno.test('a two-series line keeps both series, first one leading', () => {
 Deno.test('a donut keeps only positive slices and needs two', () => {
   const ok = parseCoachBlocks('```chart\n{"kind":"donut","unit":"g","points":[["Protein",105],["Carbs",172],["Fat",0]]}\n```');
   assertEquals(ok[0].type === 'chart' && ok[0].kind === 'donut' ? ok[0].points.length : -1, 2);
+  // One slice is not a split: a quiet note, not a full ring.
   const one = parseCoachBlocks('```chart\n{"kind":"donut","points":[["Protein",105]]}\n```');
-  assertEquals(one.length, 0);
+  assertEquals(one.map((b) => b.type), ['broken']);
 });
 
 Deno.test('a progress fence needs a positive target per bar', () => {
@@ -117,4 +118,12 @@ Deno.test('a numbered list keeps its own first number; a year is not a list', ()
   const blocks = parseCoachBlocks('3. Add a set\n4. Drop the weight\n\n2024. Great year for squats.');
   assertEquals(blocks[0], { type: 'list', ordered: true, items: ['Add a set', 'Drop the weight'], start: 3 });
   assertEquals(blocks[1].type, 'paragraph');
+});
+
+Deno.test('a bar chart is capped at what fits a phone; an unclosed code fence keeps its blank lines', () => {
+  const many = Array.from({ length: 40 }, (_, i) => `["d${i}",${i + 1}]`).join(',');
+  const bar = parseCoachBlocks('```chart\n{"kind":"bar","points":[' + many + ']}\n```')[0];
+  assertEquals(bar.type === 'chart' ? bar.points.length : -1, 16);
+  const code = parseCoachBlocks('```ts\nconst a = 1;\n\nconst b = 2;');
+  assertEquals(code, [{ type: 'paragraph', text: 'const a = 1;\n\nconst b = 2;' }]);
 });

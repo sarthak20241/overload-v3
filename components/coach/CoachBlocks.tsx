@@ -6,7 +6,7 @@
  * bar), numbers in tabular figures. Everything takes its colors from the
  * theme so it reads in both light and dark.
  */
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import Svg, { Circle, Defs, Line, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
 import { FontSize, FontWeight, Radius, Spacing } from '@/constants/theme';
@@ -87,6 +87,8 @@ export function ChartView({ chart }: { chart: ChartBlock }) {
 function XYChart({ chart }: { chart: ChartBlock }) {
   const { C } = useTheme();
   const [w, setW] = useState(0);
+  // Each chart owns its gradient, so two charts on one screen never share one.
+  const fillId = `coachChartFill${useId().replace(/[^a-zA-Z0-9]/g, '')}`;
   const { points, unit, goal, compare } = chart;
   const values = points.map((p) => p.value);
   // The scale covers both lines, so the comparison is honest.
@@ -142,12 +144,12 @@ function XYChart({ chart }: { chart: ChartBlock }) {
           <Path d={cmp} stroke={C.foreground} strokeOpacity={0.45} strokeWidth={1.75} strokeDasharray="5 4" fill="none" strokeLinejoin="round" />
         )}
         <Defs>
-          <LinearGradient id="coachChartFill" x1="0" y1="0" x2="0" y2="1">
+          <LinearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
             <Stop offset="0" stopColor={accent} stopOpacity={0.22} />
             <Stop offset="1" stopColor={accent} stopOpacity={0} />
           </LinearGradient>
         </Defs>
-        <Path d={area} fill="url(#coachChartFill)" />
+        <Path d={area} fill={`url(#${fillId})`} />
         <Path d={d} stroke={accent} strokeWidth={2} fill="none" strokeLinejoin="round" strokeLinecap="round" />
         {pts.length <= 16 && pts.slice(0, -1).map((p, i) => (
           <Circle key={i} cx={p.x} cy={p.y} r={2.5} fill={C.background} stroke={accent} strokeWidth={1.5} />
@@ -436,6 +438,19 @@ export function PendingBlock({ what }: { what: keyof typeof PENDING_LABEL }) {
   );
 }
 
+const BROKEN_LABEL = {
+  chart: "Drona's chart didn't come through.",
+  stats: "Drona's numbers didn't come through.",
+  progress: "Drona's progress bars didn't come through.",
+};
+
+function BrokenBlock({ what }: { what: keyof typeof BROKEN_LABEL }) {
+  const { C } = useTheme();
+  return (
+    <Text style={[s.brokenText, { color: C.textMuted }]}>{BROKEN_LABEL[what]} Ask him to show it again.</Text>
+  );
+}
+
 /** One rich block. Text blocks stay with the caller (they need its inline renderer). */
 export function RichBlock({ block, inline }: { block: CoachBlock; inline: Inline }) {
   switch (block.type) {
@@ -449,6 +464,8 @@ export function RichBlock({ block, inline }: { block: CoachBlock; inline: Inline
       return <ProgressView items={block.items} />;
     case 'pending':
       return <PendingBlock what={block.what} />;
+    case 'broken':
+      return <BrokenBlock what={block.what} />;
     default:
       return null;
   }
@@ -507,5 +524,6 @@ const s = StyleSheet.create({
   statNote: { fontSize: 12, marginTop: 4, fontWeight: FontWeight.medium },
 
   pending: { height: 88, alignItems: 'center', justifyContent: 'center' },
+  brokenText: { fontSize: FontSize.sm, fontStyle: 'italic' },
   pendingText: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
 });
