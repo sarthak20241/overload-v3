@@ -22,6 +22,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Spacing, Radius, FontSize, FontWeight, LetterSpacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
+import { coachBlocksPlainText } from '@/lib/coachBlocks';
 
 export interface MessageSheetTarget {
   role: 'user' | 'assistant';
@@ -38,7 +39,8 @@ export interface MessageSheetTarget {
  * applies, citation numbers kept.
  */
 export function coachPlainText(content: string): string {
-  return content
+  // Tables, charts and stat tiles first become readable lines.
+  return coachBlocksPlainText(content)
     .split('\n')
     .map((line) => line.replace(/^#{1,6}\s+/, ''))
     .join('\n')

@@ -35,6 +35,8 @@
  * the screen's callbacks, which run once.
  */
 import React, { useEffect, useRef, useState } from 'react';
+import { SignalOrb, signalOrbColor, type SignalOrbState } from '@/components/coach/SignalOrb';
+import { orbWebBox } from '@/components/coach/OrbStage';
 import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView, type ViewStyle } from 'react-native';
 import Animated, {
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, Easing,
@@ -1024,6 +1026,9 @@ function useSettling(target: number | null): number {
   return shown;
 }
 
+// The orb beside "Drona is reading that": small, one per card, never in a list.
+const ANALYSING_ORB = 28;
+
 function Analysing({ C, autoLogging, label }: { C: ReturnType<typeof useTheme>['C']; autoLogging: boolean; label: string | null }) {
   const s = makeStyles(C);
   const pulse = useSharedValue(0.4);
@@ -1038,14 +1043,31 @@ function Analysing({ C, autoLogging, label }: { C: ReturnType<typeof useTheme>['
   }, [reduced, pulse]);
 
   const style = useAnimatedStyle(() => ({ opacity: pulse.value }));
+  const { mode } = useTheme();
+  // Looking things up (the log, saved meals) is the orb's searching shape;
+  // working the food out is its thinking shape.
+  const orbState: SignalOrbState = label && /^(Checking|Looking)/.test(label) ? 'searching' : 'thinking';
+  const web = orbWebBox(ANALYSING_ORB);
 
   return (
-    <Animated.View style={[s.dronaRow, style]}>
-      <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
-      <Text style={s.dronaTxt}>
+    <View style={s.dronaRow}>
+      <View style={s.orbSlot} pointerEvents="none">
+        <View style={{ position: 'absolute', left: (ANALYSING_ORB - web) / 2, top: (ANALYSING_ORB - web) / 2 }}>
+          <SignalOrb
+            size={web}
+            state={orbState}
+            level={0.4}
+            particles={650}
+            brightness={1.8}
+            color={signalOrbColor(mode)}
+            placeholder={<View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>}
+          />
+        </View>
+      </View>
+      <Animated.Text style={[s.dronaTxt, style]}>
         {label ? `${label}...` : autoLogging ? 'Drona is adding that...' : 'Drona is reading that...'}
-      </Text>
-    </Animated.View>
+      </Animated.Text>
+    </View>
   );
 }
 
@@ -1218,6 +1240,8 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
       width: 20, height: 20, borderRadius: 10, backgroundColor: C.primarySubtle,
       alignItems: 'center', justifyContent: 'center',
     },
+    // Drona's orb while the food is read. Its WebView hangs centered on this.
+    orbSlot: { width: ANALYSING_ORB, height: ANALYSING_ORB },
     dronaTxt: { flex: 1, fontSize: FontSize.sm, lineHeight: 18, color: C.textSecondary },
 
     actions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.md },

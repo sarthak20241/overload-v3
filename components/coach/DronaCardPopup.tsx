@@ -4,7 +4,7 @@ import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
-import { DronaMark } from '@/components/coach/DronaMark';
+import { OrbStage } from '@/components/coach/OrbStage';
 import type { SavedDronaCard } from '@/lib/dronaCard';
 
 // The week's card from Drona, as a centred popup over the dashboard.
@@ -95,8 +95,10 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater }: Prop
         >
           {/* Who is talking */}
           <View style={s.head}>
-            <View style={[s.mark, { backgroundColor: C.muted }]}>
-              <DronaMark size={16} state="static" />
+            {/* Drona's orb, resting: the same face as the coach chat. One
+                popup at a time, so one live orb. */}
+            <View style={s.mark}>
+              <OrbStage size={32} state="listening" level={0.15} />
             </View>
             <Text style={[s.kicker, { color: C.textMuted }]}>{kickerFor(card, undoable)}</Text>
           </View>

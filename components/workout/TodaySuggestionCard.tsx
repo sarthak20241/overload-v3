@@ -4,6 +4,7 @@ import { Spacing, Radius, FontSize, FontWeight, IconSize } from '@/constants/the
 import { useTheme } from '@/hooks/useTheme';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { OrbStage } from '@/components/coach/OrbStage';
 
 // Element 2: the coach's suggestion for today, and the dashboard's PRIMARY action
 // (it leads above the coach card). A LEAN row highlighted by a soft lime TINT fill
@@ -45,8 +46,9 @@ export function TodaySuggestionCard({ suggestion, onPress }: Props) {
         style={[s.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
         accessibilityLabel="Just a moment. Setting up today's session."
       >
-        <View style={[s.iconWrap, { backgroundColor: C.muted }]}>
-          <DronaMark size={IconSize.sm} color={C.accentText} state="thinking" />
+        {/* Drona's orb, thinking: the pick is being made right now. */}
+        <View style={s.iconWrap}>
+          <OrbStage size={28} state="thinking" />
         </View>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={[s.eyebrow, { color: C.textMuted }]}>TODAY</Text>

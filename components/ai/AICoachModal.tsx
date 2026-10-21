@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import Animated, {
   SlideInDown, SlideOutDown, FadeIn, FadeInDown, Easing,
+  useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming,
 } from 'react-native-reanimated';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -22,7 +23,7 @@ import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
 import { fuelDaysText } from '@/lib/fuelDays';
 import { activityText } from '@/lib/activityGoals';
 import { track } from '@/lib/analytics';
-import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
+import { Colors, Spacing, Radius, FontSize, FontWeight, mixHex } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser, hasClerkKey } from '@/hooks/useClerkUser';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
@@ -51,6 +52,11 @@ import { coachTopicContext, isOpeningNarration, NARRATION_MAX, type CoachTopic }
 import { sentTurns } from '@/lib/coachTurns';
 import { useCoachConversation } from '@/hooks/useCoachConversation';
 import { DronaMark, type DronaMarkState } from '@/components/coach/DronaMark';
+import { DronaAura } from '@/components/coach/DronaAura';
+import { RichBlock } from '@/components/coach/CoachBlocks';
+import { parseCoachBlocks } from '@/lib/coachBlocks';
+import { SignalOrb, SIGNAL_ORB_SPHERE, signalOrbColor, type SignalOrbState } from '@/components/coach/SignalOrb';
+import { OrbStage, PulsingStatus, orbWebBox } from '@/components/coach/OrbStage';
 import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 import { ensureActiveConversationId } from '@/lib/coachConversations';
 import { haptics } from '@/lib/haptics';
@@ -209,6 +215,50 @@ function ThinkingIndicator({ phase }: { phase: string }) {
   );
 }
 
+// ─── Drona orb geometry (ChatScreen) ─────────────────────────────────────────
+// Sizes of the orb's three homes. A size is the orb's visual box; the sphere
+// fills about 72% of it and the halo the rest.
+const HERO_ORB = 168;
+const FIELD_ORB = 34;
+const LIFT_ORB = 104;
+const HERO_WEB = orbWebBox(HERO_ORB);
+// The dock orb is ONE WebView that never resizes (a resize re-lays out the
+// page); it moves and scales instead. Sized so the lift is close to 1:1.
+const DOCK_WEB = 200;
+// Lifted orb center, above the input wrapper's top edge; the label sits under it.
+const LIFT_CENTER_Y = -(LIFT_ORB / 2 + 34);
+const LIFT_SPACE = 150;
+const ORB_EASE = Easing.bezier(0.65, 0, 0.35, 1);
+const ORB_FLIGHT = { duration: 650, easing: ORB_EASE };
+// One-tap openers on the empty chat. Each one Drona can answer from the log.
+const HERO_PROMPTS = [
+  'How did my last workout go?',
+  'Plan my training week',
+  'How much protein do I still need today?',
+];
+
+// ─── Generation status (plan + workout builders) ─────────────────────────────
+// What the orb says while a plan or workout is built: server phases and tool
+// calls turned into words, and the orb shape that goes with each.
+type GenStatus = { label: string; state: SignalOrbState };
+const GEN_START: GenStatus = { label: 'Reading your training', state: 'thinking' };
+function genStatusFor(phase: string, payload: Record<string, unknown>): GenStatus | null {
+  if (phase === 'tool_use') {
+    const tools = Array.isArray(payload.tools) ? (payload.tools as string[]) : [];
+    let label = 'Checking your data';
+    if (tools.some((t) => t.includes('exercise_history'))) label = 'Looking up your sets';
+    else if (tools.some((t) => t.includes('recent_workouts'))) label = 'Pulling your recent workouts';
+    else if (tools.some((t) => t.includes('muscle_volume'))) label = 'Checking your volume trends';
+    else if (tools.some((t) => t.includes('exercise_catalog'))) label = 'Finding the right exercises';
+    else if (tools.some((t) => t.includes('query_sql'))) label = 'Querying your training data';
+    return { label, state: 'searching' };
+  }
+  if (phase === 'generating_plan') return { label: 'Building your plan', state: 'thinking' };
+  if (phase === 'generating_workout') return { label: 'Building your workout', state: 'thinking' };
+  if (phase === 'thinking') return { label: 'Thinking', state: 'thinking' };
+  return null;
+}
+
 // ─── Citation List (Phase 2.3) ───────────────────────────────────────────────
 // ─── MessageContent (Phase 2.6+) ─────────────────────────────────────────────
 // Renders the assistant's markdown-flavored output: paragraphs, bullet lists,
@@ -219,7 +269,8 @@ function MessageContent({
   content: rawContent,
   citations,
   textColor,
-}: { content: string; citations?: Citation[]; textColor: string }) {
+  streaming = false,
+}: { content: string; citations?: Citation[]; textColor: string; streaming?: boolean }) {
   const { C } = useTheme();
   // No em dashes in the coach's voice (user preference): the model still emits
   // them despite the system-prompt rule, so normalize at the render boundary.
@@ -280,34 +331,42 @@ function MessageContent({
     return out;
   };
 
-  // Split into blocks on blank lines. Each block is either a bullet list or
-  // a paragraph.
-  const blocks = content.split(/\n\n+/);
+  // Paragraphs, headings and lists are text; tables, charts and stat tiles
+  // are drawn (components/coach/CoachBlocks). A block still streaming in
+  // shows as a quiet placeholder rather than raw pipes or JSON.
+  const blocks = parseCoachBlocks(content, streaming);
   return (
-    <View>
+    <View style={{ gap: 8 }}>
       {blocks.map((block, bi) => {
-        const lines = block.split('\n').filter((l) => l.length > 0);
-        const allBullets = lines.length > 0 && lines.every((l) => /^[\-\*•]\s+/.test(l));
-        if (allBullets) {
+        if (block.type === 'paragraph') {
+          return (
+            <Text key={bi} style={[s.chatText, { color: textColor }]}>
+              {renderInline(block.text)}
+            </Text>
+          );
+        }
+        if (block.type === 'heading') {
+          return (
+            <Text key={bi} style={[s.mdHeading, { color: textColor }]}>
+              {renderInline(block.text.replace(/\*\*/g, ''))}
+            </Text>
+          );
+        }
+        if (block.type === 'list') {
           return (
             <View key={bi} style={s.mdList}>
-              {lines.map((line, li) => (
+              {block.items.map((item, li) => (
                 <View key={li} style={s.mdBulletRow}>
-                  <Text style={[s.mdBulletDot, { color: C.accentText }]}>•</Text>
-                  <Text style={[s.chatText, { color: textColor, flex: 1 }]}>
-                    {renderInline(line.replace(/^[\-\*•]\s+/, ''))}
+                  <Text style={[block.ordered ? s.mdNumber : s.mdBulletDot, { color: C.accentText }]}>
+                    {block.ordered ? `${(block.start ?? 1) + li}.` : '•'}
                   </Text>
+                  <Text style={[s.chatText, { color: textColor, flex: 1 }]}>{renderInline(item)}</Text>
                 </View>
               ))}
             </View>
           );
         }
-        // Plain paragraph (preserve single-newline soft breaks)
-        return (
-          <Text key={bi} style={[s.chatText, { color: textColor, marginBottom: bi < blocks.length - 1 ? 8 : 0 }]}>
-            {renderInline(block)}
-          </Text>
-        );
+        return <RichBlock key={bi} block={block} inline={(t) => renderInline(t)} />;
       })}
     </View>
   );
@@ -581,6 +640,9 @@ function callAICoachStreaming(
         body: JSON.stringify({
           messages,
           stream: true,
+          // This app draws tables, charts and stat tiles (lib/coachBlocks).
+          // The server teaches Drona the format only when this is present.
+          ui: ['blocks_v1'],
           ...(options.forceTool ? { force_tool: options.forceTool } : {}),
           ...(mode ? { mode } : {}),
           ...(options.conversationId ? { conversation_id: options.conversationId } : {}),
@@ -1111,15 +1173,6 @@ function ChatScreen({
   // rolling window means a fresh open may have slots again, and the server
   // re-answers regardless.
   const [capHit, setCapHit] = useState<null | 'cap' | 'pro'>(null);
-  // Header mark: traces while waiting on the coach, releases when the reply
-  // lands, static until the first send.
-  const everLoadedRef = useRef(false);
-  // Set after commit, not during render: React may discard a render pass, and
-  // a ref written there would keep the flag from a pass the user never saw.
-  useEffect(() => {
-    if (loading) everLoadedRef.current = true;
-  }, [loading]);
-  const headerMarkState: DronaMarkState = loading ? 'thinking' : everLoadedRef.current ? 'answer' : 'static';
   const scrollRef = useRef<ScrollView>(null);
   // Tracks the in-flight stream so we can abort it on screen dismiss /
   // unmount and avoid late callbacks firing into an unmounted component
@@ -1281,8 +1334,23 @@ function ChatScreen({
     // once, only a short single line, and only one that says it is looking
     // something up: a bare greeting written before the tools stays.
     let narrationChecked = !opens;
+    // The placeholder starts on 'Thinking', so the first words must clear it.
+    let phaseShown = true;
     streamRef.current = callAICoachStreaming(allMessages, token, {
-      onDelta: (chunk) => typewriter.append(chunk),
+      // Words arriving end any lookup in progress: the orb goes back to
+      // writing. Drona often writes a line, looks something up, then writes
+      // on, so the status must clear on words, not only before the first.
+      onDelta: (chunk) => {
+        // Only after a status set one: a state write per chunk would re-render
+        // the whole thread for nothing.
+        if (phaseShown) {
+          phaseShown = false;
+          setMessages(prev => prev.map(m =>
+            m.id === assistantId && m.thinkingPhase ? { ...m, thinkingPhase: undefined } : m
+          ));
+        }
+        typewriter.append(chunk);
+      },
       // One handler for both terminal tools this chat can receive. They are
       // mutually exclusive by `name`: propose_targets (nutrition change, P4)
       // and edit_active_workout (live-session edit). The merge that brought
@@ -1364,8 +1432,10 @@ function ChatScreen({
           else label = 'Checking your data';
         }
         setMessages(prev => prev.map(m =>
-          m.id === assistantId && m.content === '' ? { ...m, thinkingPhase: label } : m
+          // Set even mid-reply: a lookup after the first line lifts the orb again.
+          m.id === assistantId ? { ...m, thinkingPhase: label } : m
         ));
+        phaseShown = true;
       },
       onDone: ({ citations, structured }) => {
         // Defensive fallback, mirroring the generate screens: if the live
@@ -1612,20 +1682,217 @@ function ChatScreen({
     );
   }, [creates, supabase]);
 
+  // ─── Drona orb ─────────────────────────────────────────────────────────
+  // One orb, three moments (design: claude.ai/artifact/Xx75Wa3C26qtRSKj7kUwzn).
+  //  1. Empty chat: the orb sits big in the hero and breathes.
+  //  2. First message: it stays big and says what Drona is doing.
+  //  3. Words arrive: it flies to the dock and stays there for the chat.
+  // In the dock it lives inside the input while you read, and lifts big above
+  // it while you wait. Big while waiting, small while reading. Everything here
+  // is derived from `messages` + `loading`, so a reopened chat lands right.
+  const { mode: themeMode } = useTheme();
+  const orbColor = signalOrbColor(themeMode);
+  const userTurns = messages.reduce((n, m) => n + (m.role === 'user' ? 1 : 0), 0);
+  const lastMsg = messages[messages.length - 1];
+  // Waiting: no words yet, or Drona stopped mid-reply to look something up
+  // (thinkingPhase is set by status events and cleared by the next words).
+  const pendingMsg = loading && lastMsg?.role === 'assistant' && (lastMsg.content === '' || !!lastMsg.thinkingPhase)
+    ? lastMsg : null;
+  const writingMsg = loading && lastMsg?.role === 'assistant' && lastMsg.content !== '' && !lastMsg.thinkingPhase
+    ? lastMsg : null;
+  // The workout chat has no hero: its opener is a real message about the set.
+  const stage: 'empty' | 'first' | 'chat' = workoutContext
+    ? 'chat'
+    : userTurns === 0 ? 'empty' : userTurns === 1 && pendingMsg && pendingMsg.content === '' ? 'first' : 'chat';
+  const statusLabel = pendingMsg?.thinkingPhase ?? 'Thinking';
+  const lifted = stage === 'chat' && !!pendingMsg;
+  // A reply that just finished shows the orb's tick for a moment.
+  const [showTick, setShowTick] = useState(false);
+  const wasLoadingRef = useRef(false);
+  useEffect(() => {
+    const finished = wasLoadingRef.current && !loading;
+    wasLoadingRef.current = loading;
+    if (!finished) return;
+    setShowTick(true);
+    const t = setTimeout(() => setShowTick(false), 1600);
+    return () => clearTimeout(t);
+  }, [loading]);
+  // Drona's state as a Signal Orb shape. Resting and writing are the
+  // listening sphere: calm when idle, rippling while you type, rippling hard
+  // while words land.
+  const orbShape: SignalOrbState = pendingMsg
+    ? (statusLabel === 'Thinking' ? 'thinking' : 'searching')
+    : writingMsg ? 'listening' : showTick ? 'done' : 'listening';
+  const orbLevel = writingMsg ? 0.85 : input.trim() ? 0.55 : 0.12;
+
+  // Dock geometry, in the input wrapper's coordinates. The orb layer is a child
+  // of that wrapper, so a growing multiline input or the keyboard moving the
+  // sheet carries it along for free.
+  const wrapRef = useRef<View>(null);
+  const heroOrbRef = useRef<View>(null);
+  const wrapWidthRef = useRef(0);
+  const boxLayoutRef = useRef<{ x: number; y: number; h: number } | null>(null);
+  const [layoutTick, setLayoutTick] = useState(0);
+  const liftedRef = useRef(lifted);
+  liftedRef.current = lifted;
+  const dockTarget = useCallback((): { x: number; y: number; s: number } | null => {
+    const b = boxLayoutRef.current;
+    if (!b || !wrapWidthRef.current) return null;
+    if (liftedRef.current) return { x: wrapWidthRef.current / 2, y: LIFT_CENTER_Y, s: LIFT_ORB };
+    // Field slot: border 1 + box padding 12 + slot margin -4, then half the slot.
+    return { x: b.x + 1 + Spacing.md - 4 + FIELD_ORB / 2, y: b.y + b.h - 1 - 6 - 18, s: FIELD_ORB };
+  }, []);
+
+  const cx = useSharedValue(0);
+  const cy = useSharedValue(0);
+  const sz = useSharedValue(FIELD_ORB);
+  const dockO = useSharedValue(0);
+  const heroLeave = useSharedValue(0);
+  const heroH = useSharedValue(0);
+  const fieldW = useSharedValue(stage === 'chat' ? FIELD_ORB : 0);
+  const liftSpace = useSharedValue(0);
+  const liftLabelO = useSharedValue(0);
+  const auraO = useSharedValue(0);
+  const auraBreath = useSharedValue(1);
+  const [heroVisible, setHeroVisible] = useState(stage !== 'chat');
+  const dockPlacedRef = useRef(false);
+  const flightRef = useRef(false);
+  const prevStageRef = useRef(stage);
+
+  // Stage changes. Declared before the placement effect so a hero flight
+  // claims the dock before placement would snap it.
+  useEffect(() => {
+    const prev = prevStageRef.current;
+    prevStageRef.current = stage;
+    fieldW.value = withTiming(stage === 'chat' ? FIELD_ORB : 0, { duration: 450, easing: ORB_EASE });
+    if (stage !== 'chat') {
+      // New chat: the hero owns the orb again.
+      dockO.value = 0;
+      dockPlacedRef.current = false;
+      heroLeave.value = 0;
+      setHeroVisible(true);
+      // The old thread's scroll offset would cut the hero's top off.
+      scrollRef.current?.scrollTo({ y: 0, animated: false });
+      return;
+    }
+    if (prev !== 'first') {
+      setHeroVisible(false);
+      return;
+    }
+    // First words arrived: the hero orb hands over to the dock orb at the
+    // exact spot it sits, then the dock orb flies down while the hero folds.
+    flightRef.current = true;
+    const fold = () => {
+      flightRef.current = false;
+      heroLeave.value = withTiming(1, { duration: 520, easing: ORB_EASE });
+      setTimeout(() => setHeroVisible(false), 560);
+    };
+    const hero = heroOrbRef.current;
+    const wrap = wrapRef.current;
+    if (!hero || !wrap) { fold(); return; }
+    hero.measureInWindow((hx, hy, hw, hh) => {
+      wrap.measureInWindow((wx, wy) => {
+        const t = dockTarget();
+        if (t && hw > 0) {
+          cx.value = hx + hw / 2 - wx;
+          cy.value = hy + hh / 2 - wy;
+          sz.value = HERO_ORB;
+          dockO.value = 1;
+          dockPlacedRef.current = true;
+          cx.value = withTiming(t.x, ORB_FLIGHT);
+          cy.value = withTiming(t.y, ORB_FLIGHT);
+          sz.value = withTiming(t.s, ORB_FLIGHT);
+        }
+        fold();
+      });
+    });
+  }, [stage]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keep the dock orb on its slot: lift while waiting, back into the input
+  // while reading, and follow the input as it grows.
+  useEffect(() => {
+    if (stage !== 'chat' || flightRef.current) return;
+    const t = dockTarget();
+    if (!t) return;
+    if (!dockPlacedRef.current) {
+      cx.value = t.x;
+      cy.value = t.y;
+      sz.value = t.s;
+      dockPlacedRef.current = true;
+      dockO.value = withTiming(1, { duration: 300 });
+      return;
+    }
+    cx.value = withTiming(t.x, ORB_FLIGHT);
+    cy.value = withTiming(t.y, ORB_FLIGHT);
+    sz.value = withTiming(t.s, ORB_FLIGHT);
+  }, [stage, lifted, layoutTick, dockTarget]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // While lifted: room under the last message, the status label, and a soft
+  // light rising from the bottom of the sheet.
+  useEffect(() => {
+    liftSpace.value = withTiming(lifted ? LIFT_SPACE : 0, { duration: 600, easing: ORB_EASE });
+    liftLabelO.value = withTiming(lifted ? 1 : 0, { duration: lifted ? 450 : 200 });
+    auraO.value = withTiming(lifted ? 1 : 0, { duration: 800 });
+    auraBreath.value = lifted
+      ? withRepeat(withSequence(withTiming(0.7, { duration: 1600 }), withTiming(1, { duration: 1600 })), -1)
+      : withTiming(1, { duration: 300 });
+    if (lifted) {
+      const a = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
+      const b = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 650);
+      return () => { clearTimeout(a); clearTimeout(b); };
+    }
+  }, [lifted]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const dockStyle = useAnimatedStyle(() => ({
+    opacity: dockO.value,
+    transform: [
+      { translateX: cx.value - DOCK_WEB / 2 },
+      { translateY: cy.value - DOCK_WEB / 2 },
+      { scale: (sz.value * 0.72) / SIGNAL_ORB_SPHERE / DOCK_WEB },
+    ],
+  }));
+  const heroStyle = useAnimatedStyle(() => (heroLeave.value > 0
+    ? { height: heroH.value * (1 - heroLeave.value), opacity: 1 - Math.min(1, heroLeave.value * 1.6) }
+    : { height: 'auto' as const, opacity: 1 }));
+  const heroOrbStyle = useAnimatedStyle(() => ({ opacity: heroLeave.value > 0 ? 0 : 1 }));
+  const fieldSlotStyle = useAnimatedStyle(() => ({
+    width: fieldW.value,
+    marginLeft: -4 * (fieldW.value / FIELD_ORB),
+    marginRight: -8 + 8 * (fieldW.value / FIELD_ORB),
+  }));
+  const liftSpaceStyle = useAnimatedStyle(() => ({ height: liftSpace.value }));
+  const liftLabelStyle = useAnimatedStyle(() => ({
+    opacity: liftLabelO.value,
+    transform: [{ translateY: (1 - liftLabelO.value) * 6 }],
+  }));
+  const auraStyle = useAnimatedStyle(() => ({ opacity: auraO.value * auraBreath.value }));
+  const [auraSize, setAuraSize] = useState({ w: 0, h: 0 });
+  const userBubbleBg = themeMode === 'light' ? mixHex(C.background, C.foreground, 0.07) : C.muted;
+
   // Note: keyboard avoidance is handled by AICoachModal's sheet sizing — the
   // parent shrinks the sheet and lifts it via marginBottom (both platforms)
   // so the input naturally sits above the keyboard. No KeyboardAvoidingView
   // here (it doesn't work reliably inside a transparent Modal).
   return (
     <View style={{ flex: 1 }}>
-      {/* Header */}
-      <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
+      {/* Lift light: a soft glow rising from the bottom while Drona works.
+          First child, so it paints under the thread and the input. */}
+      <Animated.View
+        pointerEvents="none"
+        style={[s.aura, auraStyle]}
+        onLayout={(e) => setAuraSize({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}
+      >
+        {auraSize.w > 0 && <DronaAura width={auraSize.w} height={auraSize.h} mode={themeMode} fadeTo={C.background} />}
+      </Animated.View>
+
+      {/* Header. The orb is Drona's face now, so no mark here; the hairline
+          only shows once there is a conversation to separate from. */}
+      <View style={[s.screenHeader, { borderColor: stage === 'chat' ? C.borderSubtle : 'transparent' }]}>
         <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
           <Feather name="arrow-left" size={16} color={C.foreground} />
         </TouchableOpacity>
-        <SparkleIcon size={16} color={C.accentText} state={headerMarkState} />
         <Text style={[s.screenTitle, { color: C.foreground }]}>
-          {workoutContext ? 'Coach Drona · Live session' : 'Chat with Coach Drona'}
+          {workoutContext ? 'Coach Drona · Live session' : 'Coach Drona'}
         </Text>
         {/* New chat: reset to a fresh conversation. Only in ordinary chat (the
             workout chat is per-session) and once there's a conversation to
@@ -1675,7 +1942,59 @@ function ChatScreen({
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
+        {/* Hero: the empty chat and the first wait. Folds away (height to 0)
+            once the first words arrive and the orb has left for the dock. */}
+        {heroVisible && !workoutContext && (
+          <Animated.View
+            style={[s.hero, heroStyle]}
+            onLayout={(e) => { if (heroLeave.value === 0) heroH.value = e.nativeEvent.layout.height; }}
+          >
+            <Animated.View ref={heroOrbRef} collapsable={false} style={[s.heroOrbSlot, heroOrbStyle]} pointerEvents="none">
+              <View style={s.heroOrbCanvas}>
+                <SignalOrb
+                  size={HERO_WEB}
+                  state={orbShape}
+                  level={orbLevel}
+                  particles={2200}
+                  color={orbColor}
+                  paused={showHistory}
+                />
+              </View>
+            </Animated.View>
+            <View style={s.heroText}>
+              {stage === 'empty' ? (
+                <Animated.View key="greet" entering={FadeIn.duration(300)} style={s.heroTextInner}>
+                  <Text style={[s.heroEyebrow, { color: C.textDim }]}>COACH DRONA</Text>
+                  <Text style={[s.heroGreeting, { color: C.foreground }]}>What are we working on today?</Text>
+                </Animated.View>
+              ) : stage === 'first' ? (
+                <Animated.View key="status" entering={FadeIn.duration(350)} style={s.heroTextInner}>
+                  <PulsingStatus label={statusLabel} color={C.foreground} style={s.heroStatus} />
+                </Animated.View>
+              ) : null /* folding away: the words have started */}
+            </View>
+            {stage === 'empty' && (
+              <View style={s.heroChips}>
+                {HERO_PROMPTS.map((prompt) => (
+                  <TouchableOpacity
+                    key={prompt}
+                    onPress={() => { sendTriggerRef.current = 'chip'; handleSend(prompt); }}
+                    style={[s.heroChip, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+                    activeOpacity={0.7}
+                    accessibilityRole="button"
+                  >
+                    <Text style={[s.heroChipText, { color: C.foreground }]}>{prompt}</Text>
+                    <Feather name="arrow-up-right" size={13} color={C.textDim} />
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+          </Animated.View>
+        )}
+
         {messages.map((msg, idx) => {
+          // The ordinary chat's stored greeting is replaced by the hero.
+          if (idx === 0 && !workoutContext && msg.role === 'assistant') return null;
           // A topic's hidden context: Drona reads it, the chat never shows it.
           if (msg.context) return null;
           // A workout edit proposed on this turn renders under its bubble, so
@@ -1687,6 +2006,9 @@ function ChatScreen({
           const create = creates.find((c) => c.messageId === msg.id);
           const bubbleOnlyHoldsTheCard = msg.role === 'assistant' && msg.content === ''
             && (!!edit || !!create);
+          // A reply with no words yet: the orb says what Drona is doing, so
+          // the thread shows nothing until the first word lands.
+          if (msg.role === 'assistant' && msg.content === '' && !edit && !create) return null;
           // No copy icon under a reply still being written: it would copy half
           // a sentence. It appears the moment the turn finishes.
           // While a turn runs, its assistant bubble is always the last message.
@@ -1700,27 +2022,23 @@ function ChatScreen({
                 onLongPress={() => openSelectSheet(msg)}
                 delayLongPress={350}
                 accessibilityHint="Press and hold to select text"
-                style={[
-                  s.chatBubble,
+                style={
                   msg.role === 'user'
-                    ? [s.userBubble, { backgroundColor: Colors.primary }]
-                    : [s.assistantBubble, { backgroundColor: C.card, borderColor: C.borderSubtle }],
-                ]}
+                    ? [s.chatBubble, s.userBubble, { backgroundColor: userBubbleBg }]
+                    // Drona's replies are plain text on the page, no box.
+                    : s.assistantPlain
+                }
               >
-                {msg.role === 'assistant' && msg.content === '' ? (
-                  // Streaming placeholder: phase text + animated dots while we
-                  // wait on first token. Replaces the bare spinner with something
-                  // informative ("Thinking", "Checking your data", etc).
-                  <ThinkingIndicator phase={msg.thinkingPhase ?? 'Thinking'} />
-                ) : msg.role === 'assistant' ? (
+                {msg.role === 'assistant' ? (
                   // Markdown-flavored rendering: bold, bullet lists, citation pills
                   <MessageContent
                     content={msg.content}
                     citations={msg.citations}
                     textColor={C.foreground}
+                    streaming={streaming}
                   />
                 ) : (
-                  <Text style={[s.chatText, { color: Colors.primaryFg }]}>{msg.content}</Text>
+                  <Text style={[s.chatText, { color: C.foreground }]}>{msg.content}</Text>
                 )}
                 {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
                   <CitationList citations={msg.citations} />
@@ -1758,6 +2076,8 @@ function ChatScreen({
             </View>
           );
         })}
+        {/* Room for the lifted orb, so it never sits on the last message. */}
+        <Animated.View style={liftSpaceStyle} />
       </ScrollView>
 
       {/* Quick-question chips (workout mode only). Shown until the user's
@@ -1847,13 +2167,31 @@ function ChatScreen({
         </View>
       )}
 
-      {/* Input */}
-      <View style={[s.chatInputWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
-        <View style={[s.chatInputBox, { backgroundColor: C.inputBg, borderColor: C.border }]}>
+      {/* Input. Also the orb's dock: the orb layer below is positioned in this
+          wrapper's coordinates, inside the field while reading and lifted
+          above it while waiting. */}
+      <View
+        ref={wrapRef}
+        collapsable={false}
+        style={[s.chatInputWrap, { borderTopWidth: 0 }]}
+        onLayout={(e) => {
+          wrapWidthRef.current = e.nativeEvent.layout.width;
+          setLayoutTick((n) => n + 1);
+        }}
+      >
+        <View
+          style={[s.chatInputBox, { backgroundColor: C.inputBg, borderColor: C.border }]}
+          onLayout={(e) => {
+            const { x, y, height } = e.nativeEvent.layout;
+            boxLayoutRef.current = { x, y, h: height };
+            setLayoutTick((n) => n + 1);
+          }}
+        >
+          <Animated.View style={[s.fieldOrbSlot, fieldSlotStyle]} />
           <TextInput
             value={input}
             onChangeText={setInput}
-            placeholder={workoutContext ? 'Ask about this set, a swap, form…' : 'Ask Coach Drona anything...'}
+            placeholder={writingMsg ? 'Drona is writing' : workoutContext ? 'Ask about this set, a swap, form…' : 'Ask Drona anything'}
             placeholderTextColor={C.textMuted}
             style={[s.chatInput, { color: C.foreground }]}
             multiline
@@ -1884,11 +2222,32 @@ function ChatScreen({
               accessibilityRole="button"
               accessibilityLabel="Send"
             >
-              <Feather name="send" size={16} color={input.trim() ? Colors.primaryFg : C.textMuted} />
+              <Feather name="arrow-up" size={17} color={input.trim() ? Colors.primaryFg : C.textMuted} />
             </TouchableOpacity>
           )}
         </View>
         <MedicalDisclaimer variant="short" style={{ marginTop: Spacing.sm }} />
+
+        {/* What Drona is doing, under the lifted orb. */}
+        <Animated.View style={[s.liftLabel, liftLabelStyle]} pointerEvents="none">
+          {lifted && <PulsingStatus label={statusLabel} color={C.foreground} style={s.liftLabelText} />}
+        </Animated.View>
+        {/* The dock orb. Mounted from the start (hidden, paused) so the page
+            is warm when the hero hands over; it moves and scales, never
+            resizes. */}
+        <Animated.View style={[s.dockOrb, dockStyle]} pointerEvents="none">
+          <SignalOrb
+            size={DOCK_WEB}
+            state={orbShape}
+            level={orbLevel}
+            // In the input the orb is drawn at a quarter size: fewer, bolder,
+            // brighter dots keep it readable there.
+            particles={lifted || stage !== 'chat' ? 2200 : 650}
+            brightness={lifted || stage !== 'chat' ? 1 : 1.8}
+            color={orbColor}
+            paused={stage !== 'chat' || showHistory}
+          />
+        </Animated.View>
       </View>
 
       {/* Past chats: an overlay over the whole chat, header included, so the
@@ -2135,6 +2494,10 @@ function GeneratePlanScreen({
   // if a future caller passes isRefine=true to runGeneration.
   const [refining, setRefining] = useState(false);
   const [coachIntent, setCoachIntent] = useState('');
+  // What the orb says on the wait screen.
+  const [genStatus, setGenStatus] = useState<GenStatus>(GEN_START);
+  // Day count from the plan skeleton, for "Filling in day 2 of 4".
+  const planDaysRef = useRef(0);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [result, setResult] = useState<GeneratedPlan | null>(null);
   // Toggled by the "Refine with AI" button on the result view. When true
@@ -2202,6 +2565,7 @@ function GeneratePlanScreen({
     const runId = ++runIdRef.current;
     setErrorText(null);
     setCoachIntent('');
+    setGenStatus(GEN_START);
     if (isRefine) setRefining(true);
     else setLoading(true);
 
@@ -2264,6 +2628,24 @@ function GeneratePlanScreen({
       token,
       {
         onDelta: (chunk) => setCoachIntent((prev) => prev + chunk),
+        onStatus: (phase, payload) => {
+          const next = genStatusFor(phase, payload);
+          if (next && runIdRef.current === runId) setGenStatus(next);
+        },
+        // The plan's shape lands first (~5s), then each day fills in.
+        onPlanSkeleton: (sk) => {
+          if (runIdRef.current !== runId) return;
+          planDaysRef.current = sk.days.length;
+          setGenStatus({ label: 'Laying out your week', state: 'thinking' });
+        },
+        onPlanDay: (index) => {
+          if (runIdRef.current !== runId) return;
+          const total = planDaysRef.current;
+          setGenStatus({
+            label: total > 0 ? `Filling in day ${Math.min(index + 1, total)} of ${total}` : 'Filling in your days',
+            state: 'searching',
+          });
+        },
         onStructured: ({ name, input }) => {
           if (name === 'generate_plan') {
             handledStructured = true;
@@ -2492,11 +2874,11 @@ function GeneratePlanScreen({
           <Text style={[s.screenTitle, { color: C.foreground }]}>Generating…</Text>
         </View>
         <View style={s.loadingWrap}>
-          <ActivityIndicator size="small" color={C.accentText} />
-          <Text style={[s.loadingHeader, { color: C.foreground }]}>Coach Drona is designing your plan</Text>
-          <Text style={[s.loadingIntent, { color: C.mutedFg }]}>
-            {coachIntent || 'Reviewing your training history and matching split, volume, and progression…'}
-          </Text>
+          <OrbStage
+            state={genStatus.state}
+            label={genStatus.label}
+            detail={coachIntent || 'Coach Drona is designing your plan'}
+          />
           <TouchableOpacity
             onPress={handleStopGeneration}
             style={[s.loadingStopBtn, { borderColor: C.border }]}
@@ -2833,6 +3215,8 @@ function GenerateWorkoutScreen({
   // if a future caller passes isRefine=true to runGeneration.
   const [refining, setRefining] = useState(false);
   const [coachIntent, setCoachIntent] = useState('');
+  // What the orb says on the wait screen.
+  const [genStatus, setGenStatus] = useState<GenStatus>(GEN_START);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [result, setResult] = useState<GeneratedWorkout | null>(null);
   // Toggled by the "Refine with AI" button on the result view. When true
@@ -2887,6 +3271,7 @@ function GenerateWorkoutScreen({
     const runId = ++runIdRef.current;
     setErrorText(null);
     setCoachIntent('');
+    setGenStatus(GEN_START);
     if (isRefine) setRefining(true);
     else setLoading(true);
 
@@ -2928,6 +3313,10 @@ function GenerateWorkoutScreen({
       token,
       {
         onDelta: (chunk) => setCoachIntent((prev) => prev + chunk),
+        onStatus: (phase, payload) => {
+          const next = genStatusFor(phase, payload);
+          if (next && runIdRef.current === runId) setGenStatus(next);
+        },
         onStructured: ({ name, input }) => {
           if (name === 'generate_workout') {
             handledStructured = true;
@@ -3100,11 +3489,11 @@ function GenerateWorkoutScreen({
           <Text style={[s.screenTitle, { color: C.foreground }]}>Generating…</Text>
         </View>
         <View style={s.loadingWrap}>
-          <ActivityIndicator size="small" color={C.accentText} />
-          <Text style={[s.loadingHeader, { color: C.foreground }]}>Coach Drona is designing your workout</Text>
-          <Text style={[s.loadingIntent, { color: C.mutedFg }]}>
-            {coachIntent || 'Pulling your training data and matching exercises…'}
-          </Text>
+          <OrbStage
+            state={genStatus.state}
+            label={genStatus.label}
+            detail={coachIntent || 'Coach Drona is designing your workout'}
+          />
           <TouchableOpacity
             onPress={handleStopGeneration}
             style={[s.loadingStopBtn, { borderColor: C.border }]}
@@ -3710,6 +4099,7 @@ function RefineChatScreen({
                   content={msg.content}
                   citations={msg.citations}
                   textColor={C.foreground}
+                  streaming={streaming}
                 />
               ) : (
                 <Text style={[s.chatText, { color: Colors.primaryFg }]}>{msg.content}</Text>
@@ -4680,6 +5070,107 @@ const s = StyleSheet.create({
     fontSize: FontSize.base,
     lineHeight: 20,
   },
+  // Drona's reply in the coach chat: plain text on the page, full width.
+  assistantPlain: {
+    alignSelf: 'stretch',
+    paddingVertical: 2,
+  },
+
+  // Drona orb (ChatScreen). See the geometry constants above ChatScreen.
+  aura: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 340,
+  },
+  hero: {
+    alignItems: 'center',
+    paddingTop: Spacing.xl,
+    overflow: 'hidden',
+  },
+  heroOrbSlot: {
+    width: HERO_ORB,
+    height: HERO_ORB,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // The canvas is wider than the slot (glow room) and hangs centered on it.
+  heroOrbCanvas: {
+    position: 'absolute',
+    left: (HERO_ORB - HERO_WEB) / 2,
+    top: (HERO_ORB - HERO_WEB) / 2,
+  },
+  heroText: {
+    height: 64,
+    alignSelf: 'stretch',
+    marginTop: Spacing.sm,
+  },
+  heroTextInner: {
+    alignItems: 'center',
+  },
+  heroEyebrow: {
+    fontSize: 11,
+    fontWeight: FontWeight.semibold,
+    letterSpacing: 1,
+    marginBottom: 6,
+  },
+  heroGreeting: {
+    fontSize: 22,
+    lineHeight: 27,
+    fontWeight: FontWeight.semibold,
+    letterSpacing: -0.4,
+    textAlign: 'center',
+  },
+  heroStatus: {
+    fontSize: 16,
+    fontWeight: FontWeight.medium,
+    marginTop: 10,
+  },
+  heroChips: {
+    alignSelf: 'stretch',
+    gap: 8,
+    marginTop: Spacing.md,
+    marginBottom: Spacing.sm,
+  },
+  heroChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  heroChipText: {
+    flex: 1,
+    fontSize: FontSize.base,
+  },
+  // The orb's spot inside the input. Height matches the send button; width
+  // animates open once the orb moves in.
+  fieldOrbSlot: {
+    height: 36,
+  },
+  dockOrb: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    width: DOCK_WEB,
+    height: DOCK_WEB,
+  },
+  liftLabel: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: LIFT_CENTER_Y + LIFT_ORB / 2 + 4,
+    height: 22,
+    alignItems: 'center',
+  },
+  liftLabelText: {
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.medium,
+  },
   thinkingRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -4706,6 +5197,19 @@ const s = StyleSheet.create({
     lineHeight: 20,
     fontWeight: FontWeight.bold,
     width: 10,
+  },
+  mdNumber: {
+    fontSize: FontSize.base,
+    lineHeight: 20,
+    fontWeight: FontWeight.semibold,
+    minWidth: 16,
+    fontVariant: ['tabular-nums'],
+  },
+  mdHeading: {
+    fontSize: FontSize.lg,
+    lineHeight: 22,
+    fontWeight: FontWeight.bold,
+    marginTop: 4,
   },
   citationList: {
     marginTop: Spacing.md,

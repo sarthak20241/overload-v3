@@ -1,8 +1,8 @@
 /**
- * The build moment (Phase 4): Drona visibly assembling the plan. The mark
- * runs its thinking trace while checklist lines tick in sequence, a Space
- * Grotesk percent counts up, and the mark releases (answer state) when the
- * plan is ready.
+ * The build moment (Phase 4): Drona visibly assembling the plan. Drona's orb
+ * (the same one as the coach chat) thinks and searches in turn while
+ * checklist lines tick in sequence, a Space Grotesk percent counts up, and
+ * the orb draws its tick when the plan is ready.
  *
  * v1 staging: the deterministic engine is instant, so the ticks are paced by
  * timers over REAL artifacts (the lines describe what was actually built).
@@ -18,7 +18,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { FontFamily, FontSize, IconSize, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
-import { DronaMark } from '@/components/coach/DronaMark';
+import { OrbStage } from '@/components/coach/OrbStage';
 
 // Once the plan is ready, remaining lines tick through briskly.
 const READY_STEP_MS = 700;
@@ -83,7 +83,9 @@ export function BuildMoment({
 
   return (
     <View style={b.wrap}>
-      <DronaMark size={64} state={finished ? 'answer' : 'thinking'} />
+      {/* Alternates thinking and searching per line, so each tick reads as
+          a new step; the tick shape lands with "Your plan is ready." */}
+      <OrbStage size={120} state={finished ? 'done' : ticked % 2 === 0 ? 'thinking' : 'searching'} />
       <Text style={[b.pct, { color: C.foreground }]}>{pct}%</Text>
       <Text style={[b.title, { color: C.textSecondary }]}>
         {finished ? 'Your plan is ready.' : 'Building your plan'}

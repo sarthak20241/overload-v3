@@ -4969,7 +4969,11 @@ Deno.serve(async (req) => {
     }
   }
 
-  let { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode, freeTier });
+  // The client says which drawn blocks it can show (ui: ["blocks_v1"]). An
+  // older app sends nothing and keeps getting plain markdown.
+  const clientUi = (body as { ui?: unknown }).ui;
+  const richReplies = Array.isArray(clientUi) && clientUi.includes("blocks_v1");
+  let { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode, freeTier, richReplies });
   // Free tier is chat-only: strip the terminal generation tools (plan /
   // workout emission is Pro) and tell Drona so it answers in coach voice
   // instead of attempting a tool that isn't there. Appended AFTER the

@@ -107,3 +107,16 @@ Deno.test("withExerciseCatalog: catalog sits after the static block and the cach
   assertEquals(withExerciseCatalog(system, []), system);
   assert(CATALOG_MODES.has("refine_plan") && !CATALOG_MODES.has("chat") && !CATALOG_MODES.has("generate_program"));
 });
+
+// Drawn blocks (tables, charts, stat tiles): taught only to a client that
+// says it can draw them. An older app would show the raw fenced JSON.
+Deno.test("showing_data is taught only when the client can draw it", () => {
+  const withUi = (mode: Mode) =>
+    buildSystemPrompt({ userContext: null, mode, richReplies: true }).system[0].text;
+  assert(withUi("chat").includes("<showing_data>"), "chat with ui gets the format");
+  assert(withUi("live_workout").includes("<showing_data>"), "live workout chat gets the format");
+  assert(!staticBlock("chat").includes("<showing_data>"), "no ui flag, no format");
+  for (const forced of ["generate_workout", "generate_plan", "generate_program"] as Mode[]) {
+    assert(!withUi(forced).includes("<showing_data>"), `${forced} replies are not chat messages`);
+  }
+});
