@@ -91,6 +91,7 @@ Deno.test('opening narration: a bare greeting or real content is kept', () => {
   assert(!isOpeningNarration("I'll keep this short: your bench stalled."));
   assert(!isOpeningNarration('Looking at your bench, it has stalled.'));
   assert(!isOpeningNarration("I'm looking at your bench and it stalled."));
+  assert(!isOpeningNarration('Let me say it plainly: your bench stalled.'));
   assert(!isOpeningNarration('Hey, time to check in on your pull-ups. Want to review them?'));
   assert(!isOpeningNarration(''));
   assert(!isOpeningNarration('Let me check.\n\nYour bench has been flat for 4 weeks.'));
