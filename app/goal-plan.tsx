@@ -37,7 +37,7 @@ import {
 } from '@/lib/programData';
 import {
   chartKindOf, focusLine, formatMetricValue, heroCapsLabel, heroOf, heroStatusLine, isWeeklyKind, jobFraction,
-  phaseProgress, STATUS_LABEL, statusTone, type MetricStatus,
+  metricLabel, phaseProgress, STATUS_LABEL, statusTone, type MetricKind, type MetricStatus,
 } from '@/lib/phaseMetrics';
 import { loadMetricSeries, type MetricSeries } from '@/lib/phaseMetricSeries';
 import { MetricBarsChart, MetricLineChart } from '@/components/program/PhaseMetricChart';
@@ -61,31 +61,58 @@ function addDaysISO(iso: string, delta: number): string {
   return `${dt.getFullYear()}-${mm}-${dd}`;
 }
 
-const STATUS_WORRY: Record<MetricStatus, number> = { behind: 5, slipping: 4, due: 3, close: 2, set: 1, on_track: 0, done: 0 };
+/** The one supporting metric a plan row shows, in order of preference per pillar. */
+const ROW_METRIC_PREFERENCE: Record<Pillar, MetricKind[]> = {
+  train: ['sessions_per_week', 'steps', 'cardio_sessions', 'sets_per_muscle', 'lift_e1rm', 'distance', 'duration', 'custom'],
+  eat: ['protein_days', 'bodyweight'],
+  recover: ['sleep_hours'],
+};
 
-/** A plan row's text: the plan, the pillar's most pressing supporting metric, and its status. */
-function pillarSummary(ph: ActiveProgramPhaseRow, pillar: Pillar): { plan: string; metricText: string | null; status: MetricStatus | null } {
+/** A subtitle at 14pt beside an icon and a chevron fits about this many characters on a 402pt screen. */
+const SUBTITLE_MAX_CHARS = 36;
+
+/**
+ * A plan row's subtitle: ONE metric with its status when the pillar has one,
+ * else the plan text. Never more than a line: a Train row with a metric drops
+ * the split and day count, an Eat row drops its calories when the line would
+ * not fit.
+ */
+function pillarSummary(ph: ActiveProgramPhaseRow, pillar: Pillar, readinessToday: number | null): { text: string; status: MetricStatus | null } {
   const hero = heroOf(ph.metrics);
-  const metric = ph.metrics
-    .filter((m) => m.id !== hero?.id && PILLAR_OF[m.kind] === pillar)
-    .sort((a, b) => STATUS_WORRY[b.status] - STATUS_WORRY[a.status])[0] ?? null;
-  let plan = '';
+  const candidates = ph.metrics.filter((m) => m.id !== hero?.id && PILLAR_OF[m.kind] === pillar);
+  const metric = ROW_METRIC_PREFERENCE[pillar].map((k) => candidates.find((m) => m.kind === k)).find((m) => m != null) ?? null;
+  const metricText = (m: typeof metric) => {
+    if (!m) return '';
+    const { value, rest } = rowValue(m);
+    if (!value) return rest;
+    switch (m.kind) {
+      case 'sessions_per_week': return `${value} sessions`;
+      case 'steps': return `Steps ${value}`;
+      case 'cardio_sessions': return `Cardio ${value}`;
+      case 'protein_days': return `Protein ${value} days`;
+      case 'sleep_hours': return `${value.replace(/h$/, '')} h sleep`;
+      default: return `${metricLabel(m)} ${value}`;
+    }
+  };
   if (pillar === 'train') {
+    if (metric) return { text: metricText(metric), status: metric.status };
     const week = weekPatternFor(ph.training_block);
     const days = ph.training_block?.days_per_week ?? (week ? week.filter((d) => d !== REST).length : null);
-    plan = [ph.training_block?.split_type, days ? `${days} days` : null].filter(Boolean).join(' · ') || 'Training plan';
-  } else if (pillar === 'eat') {
-    plan = ph.diet_calorie_target != null ? `${ph.diet_calorie_target.toLocaleString('en-US')} kcal` : 'Daily targets';
-    if (!metric && ph.diet_protein_g != null) plan += ` · ${ph.diet_protein_g} g protein`;
-  } else {
-    plan = ph.readiness_directive ? ph.readiness_directive : 'Readiness rule';
+    return { text: [ph.training_block?.split_type, days ? `${days} days` : null].filter(Boolean).join(' · ') || 'Training plan', status: null };
   }
-  if (!metric) return { plan, metricText: null, status: null };
-  const { value, rest } = rowValue(metric);
-  const label = metric.kind === 'protein_days' ? 'Protein ' : metric.kind === 'cardio_sessions' ? 'Cardio ' : metric.kind === 'steps' ? 'Steps ' : '';
-  const tail = metric.kind === 'sessions_per_week' ? ' sessions' : metric.kind === 'sleep_hours' ? ' sleep' : metric.kind === 'protein_days' ? ' days' : '';
-  const text = value ? `${label}${value}${tail}` : rest;
-  return { plan, metricText: text.trim(), status: metric.status };
+  if (pillar === 'eat') {
+    const kcal = ph.diet_calorie_target != null ? `${ph.diet_calorie_target.toLocaleString('en-US')} kcal` : null;
+    if (!metric) {
+      return { text: [kcal, ph.diet_protein_g != null ? `${ph.diet_protein_g} g protein` : null].filter(Boolean).join(' · ') || 'Daily targets', status: null };
+    }
+    const m = metricText(metric);
+    const full = kcal ? `${kcal} · ${m}` : m;
+    // The status word still follows; keep the calories only when the whole line fits.
+    const fits = full.length + 3 + STATUS_LABEL[metric.status].length <= SUBTITLE_MAX_CHARS;
+    return { text: fits ? full : m, status: metric.status };
+  }
+  if (metric) return { text: metricText(metric), status: metric.status };
+  return { text: readinessToday != null ? `Readiness ${Math.round(readinessToday)} today` : 'Sleep and readiness', status: null };
 }
 
 export default function GoalPlanScreen() {
@@ -115,6 +142,8 @@ export default function GoalPlanScreen() {
   const [series, setSeries] = useState<{ id: string; data: MetricSeries } | null>(null);
   // Today's weight, for a program with no hero metric.
   const [weightKg, setWeightKg] = useState<number | null>(null);
+  // Today's readiness, for a Recover row with no sleep metric.
+  const [readinessToday, setReadinessToday] = useState<number | null>(null);
   const [logOpen, setLogOpen] = useState(false);
   const [logging, setLogging] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
@@ -204,6 +233,22 @@ export default function GoalPlanScreen() {
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase, clerkId, program?.id, hero?.id]);
+
+  // Today's readiness score, for the Recover row when the phase tracks no sleep.
+  useEffect(() => {
+    if (!supabase || !clerkId || !program) { setReadinessToday(null); return; }
+    let live = true;
+    supabase
+      .from('daily_metrics')
+      .select('value')
+      .eq('user_id', clerkId)
+      .eq('metric_type', 'readiness_score')
+      .eq('metric_date', todayLocalISO())
+      .maybeSingle()
+      .then(({ data }) => { if (live) setReadinessToday(data?.value != null && Number.isFinite(Number(data.value)) ? Number(data.value) : null); });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase, clerkId, program?.id]);
 
   const buildSplitFor = useCallback((ph: ActiveProgramPhaseRow) => {
     const b = ph.training_block;
@@ -453,7 +498,7 @@ export default function GoalPlanScreen() {
         <Text style={[styles.sectionTitle, { color: C.foreground }]}>Your plan</Text>
         <View style={[styles.divider, { backgroundColor: C.borderSubtle }]} />
         {rows.map(({ pillar, icon, title }) => {
-          const s = pillarSummary(shownPhase, pillar);
+          const s = pillarSummary(shownPhase, pillar, readinessToday);
           return (
             <View key={pillar}>
               <Pressable onPress={() => openPhase(pillar)} style={styles.planRow} accessibilityRole="button" accessibilityLabel={`Open ${title}`}>
@@ -461,9 +506,8 @@ export default function GoalPlanScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.planTitle, { color: C.foreground }]}>{title}</Text>
                   <Text style={[styles.planSub, { color: C.mutedFg }]} numberOfLines={1}>
-                    {s.plan}
-                    {s.metricText ? `  ·  ${s.metricText}` : ''}
-                    {s.status ? <Text style={{ color: statusColor(s.status), fontWeight: FontWeight.semibold }}>{`  ·  ${STATUS_LABEL[s.status]}`}</Text> : null}
+                    {s.text}
+                    {s.status ? <Text style={{ color: statusColor(s.status), fontWeight: FontWeight.semibold }}>{` · ${STATUS_LABEL[s.status]}`}</Text> : null}
                   </Text>
                 </View>
                 <Feather name="chevron-right" size={18} color={C.textMuted} />
