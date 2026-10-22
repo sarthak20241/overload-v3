@@ -141,6 +141,9 @@ export default function GoalPlanScreen() {
   // Bumped on every focus, so the small reads below (weight, readiness)
   // follow a value logged on another screen.
   const [focusTick, setFocusTick] = useState(0);
+  // Bumped after a log is saved here, so the chart refetches even when the
+  // logged value equals the last one (the keys below would not move).
+  const [seriesTick, setSeriesTick] = useState(0);
   // The hero metric's readings for the chart, keyed by metric id.
   const [series, setSeries] = useState<{ id: string; data: MetricSeries } | null>(null);
   // Today's weight, for a program with no hero metric.
@@ -218,7 +221,7 @@ export default function GoalPlanScreen() {
       .catch((e) => { console.warn('[programs] metric series failed', e); if (live) setSeries(null); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supabase, clerkId, program?.id, hero?.id, hero?.current_value, hero?.checked_at, currentPhase?.diet_protein_g]);
+  }, [supabase, clerkId, program?.id, hero?.id, hero?.current_value, hero?.checked_at, currentPhase?.diet_protein_g, seriesTick]);
 
   // No hero metric (a program from before them): today's weight is the top number.
   useEffect(() => {
@@ -347,6 +350,7 @@ export default function GoalPlanScreen() {
       setLogOpen(false);
       toast.success('Logged.');
       await load();
+      setSeriesTick((t) => t + 1);
     } catch (e) {
       console.warn('[programs] metric log failed', e);
       toast.error('Could not log that. Check your connection and try again.');
