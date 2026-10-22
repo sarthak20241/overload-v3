@@ -489,9 +489,22 @@ async function runCron(): Promise<Response> {
 
     // The phase metrics check (.planning/phase-metrics/SPEC.md): once a local
     // week per user with an active program, whether or not a card is due.
-    // metricsStep returns at once for everyone already checked this week.
-    for (let i = 0; i < weeks.length; i += CRON_CONCURRENCY) {
-      const batch = weeks.slice(i, i + CRON_CONCURRENCY);
+    // One read finds who has a program at all, so the users without one cost
+    // nothing; metricsStep returns after its own reads for anyone already
+    // checked this week.
+    const withProgram = new Set<string>();
+    for (let from = 0; ; from += USER_PAGE) {
+      const { data: progs, error: progsErr } = await retried(() =>
+        db.from("coach_programs").select("user_id").eq("status", "active")
+          .order("user_id", { ascending: true }).range(from, from + USER_PAGE - 1)
+      );
+      if (progsErr) { failures.push(`metrics: programs read: ${progsErr.message}`); break; }
+      for (const p of progs ?? []) if (p.user_id) withProgram.add(String(p.user_id));
+      if (!progs || progs.length < USER_PAGE) break;
+    }
+    const metricUsers = weeks.filter((w) => withProgram.has(w.userId));
+    for (let i = 0; i < metricUsers.length; i += CRON_CONCURRENCY) {
+      const batch = metricUsers.slice(i, i + CRON_CONCURRENCY);
       const results = await Promise.all(batch.map((w) => metricsStep(db, w.userId, w.day, w.week, ANTHROPIC_API_KEY)));
       results.forEach((m, j) => {
         metricsChecked += m.checked;

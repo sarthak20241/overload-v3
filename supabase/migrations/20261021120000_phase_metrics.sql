@@ -80,14 +80,27 @@ drop policy if exists "coach_program_phase_metrics_owner_read" on public.coach_p
 create policy "coach_program_phase_metrics_owner_read" on public.coach_program_phase_metrics
   for select to authenticated using (user_id = current_clerk_user_id());
 
+-- A row must hang off the caller's OWN phase: user_id alone would let a
+-- caller attach a metric to another user's phase id, which the weekly job
+-- reads by phase id with the service role.
 drop policy if exists "coach_program_phase_metrics_owner_insert" on public.coach_program_phase_metrics;
 create policy "coach_program_phase_metrics_owner_insert" on public.coach_program_phase_metrics
-  for insert to authenticated with check (user_id = current_clerk_user_id());
+  for insert to authenticated with check (
+    user_id = current_clerk_user_id()
+    and exists (select 1 from public.coach_program_phases p
+                 where p.id = coach_program_phase_metrics.phase_id
+                   and p.program_id = coach_program_phase_metrics.program_id
+                   and p.user_id = current_clerk_user_id()));
 
 drop policy if exists "coach_program_phase_metrics_owner_update" on public.coach_program_phase_metrics;
 create policy "coach_program_phase_metrics_owner_update" on public.coach_program_phase_metrics
   for update to authenticated using (user_id = current_clerk_user_id())
-  with check (user_id = current_clerk_user_id());
+  with check (
+    user_id = current_clerk_user_id()
+    and exists (select 1 from public.coach_program_phases p
+                 where p.id = coach_program_phase_metrics.phase_id
+                   and p.program_id = coach_program_phase_metrics.program_id
+                   and p.user_id = current_clerk_user_id()));
 
 drop policy if exists "coach_program_phase_metrics_owner_delete" on public.coach_program_phase_metrics;
 create policy "coach_program_phase_metrics_owner_delete" on public.coach_program_phase_metrics
@@ -122,14 +135,23 @@ drop policy if exists "coach_program_phase_metric_logs_owner_read" on public.coa
 create policy "coach_program_phase_metric_logs_owner_read" on public.coach_program_phase_metric_logs
   for select to authenticated using (user_id = current_clerk_user_id());
 
+-- Same rule: a log must belong to the caller's own metric.
 drop policy if exists "coach_program_phase_metric_logs_owner_insert" on public.coach_program_phase_metric_logs;
 create policy "coach_program_phase_metric_logs_owner_insert" on public.coach_program_phase_metric_logs
-  for insert to authenticated with check (user_id = current_clerk_user_id());
+  for insert to authenticated with check (
+    user_id = current_clerk_user_id()
+    and exists (select 1 from public.coach_program_phase_metrics m
+                 where m.id = coach_program_phase_metric_logs.metric_id
+                   and m.user_id = current_clerk_user_id()));
 
 drop policy if exists "coach_program_phase_metric_logs_owner_update" on public.coach_program_phase_metric_logs;
 create policy "coach_program_phase_metric_logs_owner_update" on public.coach_program_phase_metric_logs
   for update to authenticated using (user_id = current_clerk_user_id())
-  with check (user_id = current_clerk_user_id());
+  with check (
+    user_id = current_clerk_user_id()
+    and exists (select 1 from public.coach_program_phase_metrics m
+                 where m.id = coach_program_phase_metric_logs.metric_id
+                   and m.user_id = current_clerk_user_id()));
 
 drop policy if exists "coach_program_phase_metric_logs_owner_delete" on public.coach_program_phase_metric_logs;
 create policy "coach_program_phase_metric_logs_owner_delete" on public.coach_program_phase_metric_logs

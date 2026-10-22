@@ -81,10 +81,12 @@ export async function metricsStep(
     if (idx == null) return none;
     const phase = phases[idx];
 
+    // By user id as well as phase id: the service role sees every row, and
+    // RLS only guards the client's writes.
     const { data: metricRows, error: mErr } = await retried(() =>
       db.from("coach_program_phase_metrics")
         .select("id, seq, is_hero, kind, ref, unit, direction, start_value, target_value, current_value, status, checked_at")
-        .eq("phase_id", phase.id).order("seq", { ascending: true })
+        .eq("user_id", userId).eq("phase_id", phase.id).order("seq", { ascending: true })
     );
     if (mErr) return { ...none, error: `metrics: ${mErr.message}` };
     const rows = (metricRows ?? []) as Record<string, unknown>[];
@@ -106,15 +108,21 @@ export async function metricsStep(
     }
     if (metrics.length === 0) return none;
 
-    const readings = await gatherReadings(db, userId, localDay, weekStart, metrics, phase.diet_protein_g);
+    const phaseStart = addDays(String(prog.start_date), phase.start_offset_weeks * 7);
+    const { readings, failed } = await gatherReadings(db, userId, localDay, weekStart, phaseStart, metrics, phase.diet_protein_g);
     const weekIn = weekInPhaseOn(String(prog.start_date), phase, localDay);
     const progress = phaseProgress(weekIn, phase.duration_weeks);
     // In the phase's first week "last whole week" is the phase before: weekly
     // kinds are not judged against the new target on it (checkMetric).
-    const checks = checkMetrics(metrics, readings, progress, weekIn <= 1);
+    // A metric whose source read FAILED is not checked at all this run: it
+    // keeps its row as it was (no checked_at), so the next run tries again
+    // rather than writing "due" over a database hiccup.
+    const readable = metrics.filter((m) => !failed.has(m.kind));
+    const checks = checkMetrics(readable, readings, progress, weekIn <= 1);
 
     const now = new Date().toISOString();
     let checked = 0;
+    const writeErrors: string[] = [];
     for (const c of checks) {
       const { error } = await retried(() =>
         db.from("coach_program_phase_metrics").update({
@@ -125,8 +133,14 @@ export async function metricsStep(
           updated_at: now,
         }).eq("id", c.id)
       );
-      if (error) return { checked, line: false, error: `write ${c.id.slice(0, 8)}: ${error.message}` };
-      checked += 1;
+      // Keep going: a row left unstamped makes the group due again on the
+      // next run (checkDue), and every write here is idempotent.
+      if (error) writeErrors.push(`write ${c.id.slice(0, 8)}: ${error.message}`);
+      else checked += 1;
+    }
+    if (writeErrors.length > 0 || readable.length < metrics.length) {
+      const why = [...writeErrors, ...(readable.length < metrics.length ? [`read failed for ${[...failed].join(", ")}`] : [])];
+      return { checked, line: false, error: why.join("; ") };
     }
 
     // The line, from the numbers just written. No key, no line.
@@ -151,7 +165,7 @@ export async function metricsStep(
       program_title: String(prog.title ?? "Your program"),
       phase_name: phase.name,
       job_text: phase.job_text,
-      week_in_phase: weekInPhaseOn(String(prog.start_date), phase, localDay),
+      week_in_phase: weekIn,
       weeks_total: phase.duration_weeks,
       metrics: lineMetrics,
     }, anthropicKey, fetchFn);
@@ -169,27 +183,37 @@ export async function metricsStep(
   }
 }
 
-/** This week's numbers, read only for the kinds the phase has. */
+/**
+ * This week's numbers, read only for the kinds the phase has. `failed` names
+ * the kinds whose read errored: those metrics are not checked this run.
+ */
 async function gatherReadings(
   db: SupabaseClient,
   userId: string,
   localDay: string,
   weekStart: string,
+  phaseStart: string,
   metrics: MetricToCheck[],
   phaseProteinG: number | null,
-): Promise<WeeklyReadings> {
+): Promise<{ readings: WeeklyReadings; failed: Set<MetricToCheck["kind"]> }> {
   const kinds = new Set(metrics.map((m) => m.kind));
   const prevWeek = addDays(weekStart, -7);
   const r: WeeklyReadings = { ...EMPTY_READINGS, e1rm_by_exercise: {}, sets_by_muscle: {}, custom_latest: {} };
+  const failed = new Set<MetricToCheck["kind"]>();
+  const fail = (why: string, ...ks: MetricToCheck["kind"][]) => {
+    console.log(`[drona-cards] metric read failed (${ks.join(", ")}): ${why}`);
+    for (const k of ks) if (kinds.has(k)) failed.add(k);
+  };
   const jobs: Promise<void>[] = [];
 
   if (kinds.has("bodyweight")) {
     jobs.push((async () => {
-      const { data } = await retried(() =>
+      const { data, error } = await retried(() =>
         db.from("daily_metrics").select("value").eq("user_id", userId).eq("metric_type", "bodyweight_kg")
           .gte("metric_date", addDays(localDay, -14)).lte("metric_date", localDay)
           .order("metric_date", { ascending: false }).limit(1).maybeSingle()
       );
+      if (error) return fail(error.message, "bodyweight");
       r.bodyweight = num(data?.value);
     })());
   }
@@ -197,9 +221,10 @@ async function gatherReadings(
     const ids = metrics.filter((m) => m.kind === "lift_e1rm" && m.ref?.exercise_id).map((m) => m.ref!.exercise_id!);
     if (ids.length > 0) {
       jobs.push((async () => {
-        const { data } = await retried(() =>
+        const { data, error } = await retried(() =>
           db.from("user_lift_stats").select("exercise_id, estimated_1rm").eq("user_id", userId).in("exercise_id", ids)
         );
+        if (error) return fail(error.message, "lift_e1rm");
         for (const row of data ?? []) {
           const v = num(row.estimated_1rm);
           if (v != null) r.e1rm_by_exercise[String(row.exercise_id)] = v;
@@ -209,9 +234,10 @@ async function gatherReadings(
   }
   if (kinds.has("sets_per_muscle")) {
     jobs.push((async () => {
-      const { data } = await retried(() =>
+      const { data, error } = await retried(() =>
         db.from("user_volume_stats").select("muscle_group, set_count").eq("user_id", userId).eq("week_start", prevWeek)
       );
+      if (error) return fail(error.message, "sets_per_muscle");
       for (const row of data ?? []) {
         const v = num(row.set_count);
         if (v != null) r.sets_by_muscle[String(row.muscle_group)] = v;
@@ -221,10 +247,11 @@ async function gatherReadings(
   if (kinds.has("sessions_per_week") || kinds.has("cardio_sessions") || kinds.has("steps") || kinds.has("sleep_hours")) {
     jobs.push((async () => {
       // Last whole week's facts, rebuilt by pg_cron (drona_rebuild_all_facts).
-      const { data } = await retried(() =>
+      const { data, error } = await retried(() =>
         db.from("drona_week_facts").select("t_sessions, a_cardio_sessions, r_steps_avg, r_sleep_avg_min")
           .eq("user_id", userId).eq("week_start", prevWeek).maybeSingle()
       );
+      if (error) return fail(error.message, "sessions_per_week", "cardio_sessions", "steps", "sleep_hours");
       r.sessions = num(data?.t_sessions);
       r.cardio_sessions = num(data?.a_cardio_sessions);
       r.steps_avg = num(data?.r_steps_avg);
@@ -236,10 +263,11 @@ async function gatherReadings(
     // The facts row can be missing for a week the cron has not reached:
     // read the days themselves as the fallback.
     jobs.push((async () => {
-      const { data } = await retried(() =>
+      const { data, error } = await retried(() =>
         db.from("daily_metrics").select("metric_type, value").eq("user_id", userId)
           .in("metric_type", ["steps", "sleep_minutes"]).gte("metric_date", prevWeek).lt("metric_date", weekStart)
       );
+      if (error) return fail(error.message, "steps", "sleep_hours");
       const steps = meanPositive((data ?? []).filter((d) => d.metric_type === "steps").map((d) => num(d.value)));
       const sleep = meanPositive((data ?? []).filter((d) => d.metric_type === "sleep_minutes").map((d) => num(d.value)));
       if (r.steps_avg == null && steps != null) r.steps_avg = Math.round(steps);
@@ -250,24 +278,31 @@ async function gatherReadings(
     jobs.push((async () => {
       let target = phaseProteinG;
       if (target == null) {
-        const { data: prof } = await retried(() =>
+        const { data: prof, error: profErr } = await retried(() =>
           db.from("user_profiles").select("protein_target_g").eq("clerk_user_id", userId).maybeSingle()
         );
+        if (profErr) return fail(profErr.message, "protein_days");
         target = num(prof?.protein_target_g);
       }
-      const { data } = await retried(() =>
+      const { data, error } = await retried(() =>
         db.from("user_nutrition_stats").select("protein_g").eq("user_id", userId)
           .gte("day", prevWeek).lt("day", weekStart).or("kcal.gt.0,protein_g.gt.0")
       );
+      if (error) return fail(error.message, "protein_days");
       r.protein_days = proteinDaysOf((data ?? []).map((d) => ({ protein_g: num(d.protein_g) })), target);
     })());
   }
   if (kinds.has("distance") || kinds.has("duration")) {
     jobs.push((async () => {
-      const { data } = await retried(() =>
+      // The best set since the phase began, so a quiet fortnight does not
+      // pull the number back (a progress kind keeps its best). Only sets with
+      // a distance or a time, so the row cap (1000) is never near.
+      const { data, error } = await retried(() =>
         db.from("workout_sets").select("distance_m, duration_seconds, completed, workouts!inner(user_id, started_at)")
-          .eq("workouts.user_id", userId).gte("workouts.started_at", `${addDays(localDay, -14)}T00:00:00Z`)
+          .eq("workouts.user_id", userId).gte("workouts.started_at", `${phaseStart}T00:00:00Z`)
+          .or("distance_m.gt.0,duration_seconds.gt.0").limit(1000)
       );
+      if (error) return fail(error.message, "distance", "duration");
       const best = bestOfSets((data ?? []).map((s) => ({
         distance_m: num(s.distance_m), duration_seconds: num(s.duration_seconds), completed: s.completed as boolean | null,
       })));
@@ -278,10 +313,12 @@ async function gatherReadings(
   if (kinds.has("custom")) {
     const ids = metrics.filter((m) => m.kind === "custom").map((m) => m.id);
     jobs.push((async () => {
-      const { data } = await retried(() =>
-        db.from("coach_program_phase_metric_logs").select("metric_id, value, logged_on").in("metric_id", ids)
+      const { data, error } = await retried(() =>
+        db.from("coach_program_phase_metric_logs").select("metric_id, value, logged_on")
+          .eq("user_id", userId).in("metric_id", ids)
           .order("logged_on", { ascending: false })
       );
+      if (error) return fail(error.message, "custom");
       for (const row of data ?? []) {
         const id = String(row.metric_id);
         if (id in r.custom_latest) continue;
@@ -290,8 +327,7 @@ async function gatherReadings(
       }
     })());
   }
-  // A failed read leaves its kind empty (null): the metric reads due or keeps
-  // its last number, never a wrong one.
-  await Promise.all(jobs.map((j) => j.catch((e) => console.log("[drona-cards] metric read failed:", String(e)))));
-  return r;
+  // A read that threw is a failed read too: the caller skips those kinds.
+  await Promise.all(jobs.map((j) => j.catch((e) => fail(String(e), ...kinds))));
+  return { readings: r, failed };
 }
