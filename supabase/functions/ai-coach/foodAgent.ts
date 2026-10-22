@@ -592,12 +592,14 @@ async function finishWith(
   if (u.name === REMOVE_CARD_LINES_TOOL.name) {
     if (!card.length) return { kind: "failed", reason: "remove_without_card", turns };
     const asked = Array.isArray(args.lines) ? args.lines : [];
-    const nums = asked.filter((n): n is number => Number.isInteger(n) && n >= 1 && n <= card.length);
+    // Deduped: [2, 2] names one line, so the summary names it once and
+    // "skipped" counts only numbers the card does not have.
+    const nums = [...new Set(asked.filter((n): n is number => Number.isInteger(n) && n >= 1 && n <= card.length))];
     if (nums.length === 0) return { kind: "failed", reason: "remove_no_lines", turns };
     // A line number the card does not have is a model slip. The valid ones go,
     // but the summary must not claim a removal that did not happen: the user
     // reads that line, so it says what really came off.
-    const skipped = asked.length - nums.length;
+    const skipped = new Set(asked).size - nums.length;
     const drop = new Set(nums.map((n) => n - 1));
     const kept = card.filter((_, i) => !drop.has(i));
     const removedNames = nums.map((n) => card[n - 1].food_name).join(", ");

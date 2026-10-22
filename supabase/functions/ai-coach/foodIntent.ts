@@ -584,10 +584,12 @@ export async function routeFoodIntent(
         }
       }
 
-      // A bare ack beside a card is accepting the card, not asking to save it
-      // or to talk: Jev calls it create at 0.46-0.75 (see isBareAck). Read as
-      // 'other' under the bar, so it falls to the parse and nothing is drafted.
-      if (choice && context?.card?.length && isBareAck(trimmed) && (choice.choice === "create" || choice.choice === "other")) {
+      // A bare ack beside a card is accepting the card, not asking to save it,
+      // edit it, or talk: Jev calls "ok" create at 0.46-0.75 (see isBareAck),
+      // and could as well call it edit or log. Whatever the verdict, it is
+      // read as 'other' under the bar, so it falls to the parse and nothing is
+      // drafted or started.
+      if (choice && context?.card?.length && isBareAck(trimmed)) {
         deps.log?.(`[food_intent] bare ack beside a card (jev=${choice.choice} @ ${choice.confidence.toFixed(2)}), read as other under the bar`);
         return { intent: "other", source: "jev", confidence: 0, note: `jev ${res.response.model} bare_ack`, savedMatch, hasFood, pendingAction };
       }
@@ -704,14 +706,15 @@ export function isBareAck(text: string): boolean {
   // not words, so they are dropped before the count.
   const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").trim().split(/\s+/).filter((w) => w.length > 1 || w === "k");
   if (words.length === 0 || words.length > 4) return false;
-  // No question words, and no verbs that ask for a check: "is it right" and
-  // "is that all" are questions for the agent, not acks.
-  const ACK = new Set([
+  // At least one word that MEANS yes or thanks, and nothing outside the
+  // list. Filler alone ("it good", "that all") is not an ack, and a question
+  // word anywhere ("is", "right", "go") is not an ack either.
+  const STRONG = new Set([
     "ok", "okay", "k", "kk", "yes", "yep", "yeah", "ya", "yup", "sure", "fine", "cool", "good", "great", "nice",
-    "perfect", "thanks", "thank", "thx", "ty", "you", "done", "alright", "looks", "that", "thats", "it", "all",
-    "noted", "got", "sounds",
+    "perfect", "thanks", "thank", "thx", "ty", "done", "alright", "noted", "got",
   ]);
-  return words.every((w) => ACK.has(w));
+  const FILLER = new Set(["you", "looks", "that", "thats", "it", "all", "sounds"]);
+  return words.some((w) => STRONG.has(w)) && words.every((w) => STRONG.has(w) || FILLER.has(w));
 }
 
 /**

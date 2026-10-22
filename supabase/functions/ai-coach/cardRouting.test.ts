@@ -82,6 +82,12 @@ Deno.test("the failure this prevents: a bare 'ok' beside a card was read as a sa
   assertEquals(save.intent, "create");
   // No card: the ack rule does not apply, and Jev's verdict stands.
   assertEquals((await routeFoodIntent("ok", deps, readFoodContext([], null))).intent, "create");
+  // The rule covers EVERY verdict: Jev calling "ok" an edit at 0.9 would
+  // otherwise start the agent on a message with nothing to change.
+  const asEdit = { jev: { apiKey: "k", timeoutMs: 1000, fetchFn: jevSays("edit", 0.9) } };
+  const e = await routeFoodIntent("ok", asEdit, ctx);
+  assertEquals([e.intent, e.confidence], ["other", 0]);
+  assertEquals(wantsFoodAgent(e, true, true), false);
 });
 
 Deno.test("isBareAck: stock words only, never a message with content", () => {
@@ -89,6 +95,10 @@ Deno.test("isBareAck: stock words only, never a message with content", () => {
   for (const t of ["", "ok make it 2", "thanks, remove the dal", "yes it was navratri chana", "ok but how is it 240"]) assertEquals(isBareAck(t), false, t);
   // A short question is a question for the agent, never an ack.
   for (const t of ["is it right", "is that all", "right?", "go ahead?"]) assertEquals(isBareAck(t), false, t);
+  // Filler alone is not an ack: at least one word must mean yes or thanks.
+  // ("it good" IS one: "good" means yes.)
+  for (const t of ["that all", "you that", "looks it", "it that all"]) assertEquals(isBareAck(t), false, t);
+  assertEquals(isBareAck("it good"), true);
 });
 
 Deno.test("the failure this prevents: the card-question trace flag was always false", () => {
@@ -287,6 +297,18 @@ Deno.test("a removal naming a line the card lacks says only what really came off
   assert(out.kind === "log", out.kind);
   assertEquals(out.result.parsed!.items.length, 3);
   // The model's summary claimed two removals; only one happened, so it is replaced.
+  assertEquals(out.result.parsed!.drona_line, "Took off Tomato and Onion.");
+});
+
+Deno.test("a duplicated line number is named once in an honest summary", async () => {
+  // [3, 3, 99]: 99 is not on the card, so the honest summary runs, and it must
+  // name the tomato ONCE. Without the dedupe the old code named it twice.
+  const out = await runFoodAgent(
+    { ...INPUT, text: "remove the tomato and the kheer" },
+    deps(scripted([[{ name: "remove_card_lines", input: { lines: [3, 3, 99], summary: "Took the tomato and the kheer off." } }]])),
+  );
+  assert(out.kind === "log", out.kind);
+  assertEquals(out.result.parsed!.items.length, 3);
   assertEquals(out.result.parsed!.drona_line, "Took off Tomato and Onion.");
 });
 
