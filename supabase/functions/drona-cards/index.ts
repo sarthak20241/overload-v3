@@ -34,7 +34,7 @@ import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "..
 import { type MomentPerson, momentRow, pickMoment } from "../_shared/dronaMoments.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
-import { metricsStep } from "./metrics.ts";
+import { type Db as MetricsDb, metricsStep } from "./metrics.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -505,7 +505,8 @@ async function runCron(): Promise<Response> {
     const metricUsers = weeks.filter((w) => withProgram.has(w.userId));
     for (let i = 0; i < metricUsers.length; i += CRON_CONCURRENCY) {
       const batch = metricUsers.slice(i, i + CRON_CONCURRENCY);
-      const results = await Promise.all(batch.map((w) => metricsStep(db, w.userId, w.day, w.week, ANTHROPIC_API_KEY)));
+      // The real client is structurally the little Db the step types against.
+      const results = await Promise.all(batch.map((w) => metricsStep(db as unknown as MetricsDb, w.userId, w.day, w.week, ANTHROPIC_API_KEY)));
       results.forEach((m, j) => {
         metricsChecked += m.checked;
         if (m.line) linesWritten += 1;

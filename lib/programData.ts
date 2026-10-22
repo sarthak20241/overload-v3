@@ -1001,7 +1001,8 @@ export async function logMetricValue(
       status,
       // The first log of a metric with no start is its start.
       ...(metric.start_value == null ? { start_value: value } : {}),
-      checked_at: new Date().toISOString(),
+      // Not checked_at: that is the weekly job's stamp (and the client's
+      // grant leaves the column out), so logging never skips a week's check.
       updated_at: new Date().toISOString(),
     })
     .eq('id', metric.id);

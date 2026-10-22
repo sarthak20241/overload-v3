@@ -110,7 +110,12 @@ create policy "coach_program_phase_metrics_owner_delete" on public.coach_program
 -- on every new public table. Narrow to what the app needs; service_role (the
 -- weekly job) keeps its own grant.
 revoke all on table public.coach_program_phase_metrics from anon, authenticated;
-grant select, insert, update, delete on table public.coach_program_phase_metrics to authenticated;
+grant select, insert, delete on table public.coach_program_phase_metrics to authenticated;
+-- Every column but checked_at: the app moves current_value and status the
+-- moment a custom metric is logged, but only the weekly job stamps a check,
+-- so a client cannot suppress its own week's check.
+grant update (seq, is_hero, ref, unit, direction, start_value, target_value, current_value, status, status_note, updated_at)
+  on table public.coach_program_phase_metrics to authenticated;
 
 -- ── 3. coach_program_phase_metric_logs ───────────────────────────────────────
 create table if not exists public.coach_program_phase_metric_logs (

@@ -12,7 +12,6 @@
  * Nothing here throws: a failed read or write comes back as `error` for the
  * cron summary, and a failed model call keeps last week's line.
  */
-import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import {
   isMetricDirection, isMetricKind, isMetricStatus, phaseProgress, type MetricRef, type MetricStatus,
 } from "../_shared/phaseMetrics.ts";
@@ -22,6 +21,37 @@ import {
 } from "../_shared/phaseMetricsWeekly.ts";
 import { askCoachLine, type LineMetric } from "../_shared/phaseMetricsLine.ts";
 import { retried } from "../_shared/retried.ts";
+
+/**
+ * The little of supabase-js the check needs: a chainable builder that resolves
+ * to {data, error}. Structural like autoLog.ts, so this file imports no client
+ * and the tests run against an in-memory fake; index.ts passes the real one.
+ */
+// deno-lint-ignore no-explicit-any
+type Row = Record<string, any>;
+export interface DbResult {
+  // deno-lint-ignore no-explicit-any
+  data: any;
+  error: { message: string; status?: number } | null;
+  status?: number;
+}
+export interface DbQuery extends PromiseLike<DbResult> {
+  select(columns: string): DbQuery;
+  eq(column: string, value: unknown): DbQuery;
+  in(column: string, values: unknown[]): DbQuery;
+  gte(column: string, value: unknown): DbQuery;
+  lte(column: string, value: unknown): DbQuery;
+  lt(column: string, value: unknown): DbQuery;
+  gt(column: string, value: unknown): DbQuery;
+  or(filters: string): DbQuery;
+  order(column: string, options?: { ascending?: boolean; nullsFirst?: boolean }): DbQuery;
+  limit(count: number): DbQuery;
+  maybeSingle(): DbQuery;
+  update(values: Record<string, unknown>): DbQuery;
+}
+export interface Db {
+  from(table: string): DbQuery;
+}
 
 export interface MetricsStepResult {
   /** Metrics written this run (0 when nothing was due). */
@@ -55,7 +85,7 @@ const addDays = (iso: string, days: number): string =>
  * own (the cron computes them from the profile time zone).
  */
 export async function metricsStep(
-  db: SupabaseClient,
+  db: Db,
   userId: string,
   localDay: string,
   weekStart: string,
@@ -188,7 +218,7 @@ export async function metricsStep(
  * the kinds whose read errored: those metrics are not checked this run.
  */
 async function gatherReadings(
-  db: SupabaseClient,
+  db: Db,
   userId: string,
   localDay: string,
   weekStart: string,
@@ -268,8 +298,8 @@ async function gatherReadings(
           .in("metric_type", ["steps", "sleep_minutes"]).gte("metric_date", prevWeek).lt("metric_date", weekStart)
       );
       if (error) return fail(error.message, "steps", "sleep_hours");
-      const steps = meanPositive((data ?? []).filter((d) => d.metric_type === "steps").map((d) => num(d.value)));
-      const sleep = meanPositive((data ?? []).filter((d) => d.metric_type === "sleep_minutes").map((d) => num(d.value)));
+      const steps = meanPositive((data ?? []).filter((d: Row) => d.metric_type === "steps").map((d: Row) => num(d.value)));
+      const sleep = meanPositive((data ?? []).filter((d: Row) => d.metric_type === "sleep_minutes").map((d: Row) => num(d.value)));
       if (r.steps_avg == null && steps != null) r.steps_avg = Math.round(steps);
       if (r.sleep_avg_h == null && sleep != null) r.sleep_avg_h = Math.round((sleep / 60) * 10) / 10;
     })());
@@ -289,27 +319,29 @@ async function gatherReadings(
           .gte("day", prevWeek).lt("day", weekStart).or("kcal.gt.0,protein_g.gt.0")
       );
       if (error) return fail(error.message, "protein_days");
-      r.protein_days = proteinDaysOf((data ?? []).map((d) => ({ protein_g: num(d.protein_g) })), target);
+      r.protein_days = proteinDaysOf((data ?? []).map((d: Row) => ({ protein_g: num(d.protein_g) })), target);
     })());
   }
-  if (kinds.has("distance") || kinds.has("duration")) {
-    jobs.push((async () => {
-      // The best set since the phase began, so a quiet fortnight does not
-      // pull the number back (a progress kind keeps its best). Only sets with
-      // a distance or a time, so the row cap (1000) is never near.
-      const { data, error } = await retried(() =>
-        db.from("workout_sets").select("distance_m, duration_seconds, completed, workouts!inner(user_id, started_at)")
-          .eq("workouts.user_id", userId).gte("workouts.started_at", `${phaseStart}T00:00:00Z`)
-          .or("distance_m.gt.0,duration_seconds.gt.0").limit(1000)
-      );
-      if (error) return fail(error.message, "distance", "duration");
-      const best = bestOfSets((data ?? []).map((s) => ({
-        distance_m: num(s.distance_m), duration_seconds: num(s.duration_seconds), completed: s.completed as boolean | null,
-      })));
-      r.distance_best_km = best.distance_best_km;
-      r.duration_best_min = best.duration_best_min;
-    })());
-  }
+  // The best set since the phase began, so a quiet fortnight does not pull
+  // the number back (a progress kind keeps its best). One read per kind,
+  // longest first, so the cap can never hide the best set.
+  const bestSet = (kind: "distance" | "duration") => async () => {
+    const col = kind === "distance" ? "distance_m" : "duration_seconds";
+    const { data, error } = await retried(() =>
+      db.from("workout_sets").select("distance_m, duration_seconds, completed, workouts!inner(user_id, started_at)")
+        .eq("workouts.user_id", userId).gte("workouts.started_at", `${phaseStart}T00:00:00Z`)
+        .gt(col, 0).eq("completed", true)
+        .order(col, { ascending: false }).limit(50)
+    );
+    if (error) return fail(error.message, kind);
+    const best = bestOfSets((data ?? []).map((s: Row) => ({
+      distance_m: num(s.distance_m), duration_seconds: num(s.duration_seconds), completed: s.completed as boolean | null,
+    })));
+    if (kind === "distance") r.distance_best_km = best.distance_best_km;
+    else r.duration_best_min = best.duration_best_min;
+  };
+  if (kinds.has("distance")) jobs.push(bestSet("distance")());
+  if (kinds.has("duration")) jobs.push(bestSet("duration")());
   if (kinds.has("custom")) {
     const ids = metrics.filter((m) => m.kind === "custom").map((m) => m.id);
     jobs.push((async () => {

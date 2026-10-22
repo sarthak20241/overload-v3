@@ -43,6 +43,7 @@ EVAL_VIA_CLI=1 npx tsx scripts/program-activity-eval/run.mts
 deno test --allow-all supabase/functions/ai-coach/
 deno test --allow-all supabase/functions/revenuecat-webhook/
 deno test --allow-all supabase/functions/_shared/   # TODAY pick rules, shared by app + daily-suggestion
+deno test --allow-all supabase/functions/drona-cards/ # weekly phase metrics check, against a fake database
 deno test --allow-all lib/xp.test.ts
 deno test --allow-all lib/tiers.test.ts
 deno test --unstable-sloppy-imports --import-map=lib/test-import-map.json lib/readiness.test.ts
