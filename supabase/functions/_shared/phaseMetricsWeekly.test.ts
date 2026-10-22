@@ -57,6 +57,17 @@ Deno.test("a weekly kind with nothing this week drops its stale number and reads
   assertEquals(checkMetric(steps, readings({ steps_avg: 8100 }), 0.5), { id: "m1", current_value: 8100, status: "on_track" });
 });
 
+Deno.test("in the phase's first week a weekly kind is not judged on the week before", () => {
+  const steps = metric({ kind: "steps", target_value: 8000 });
+  // Last week belonged to the previous phase (or no program): no verdict yet.
+  assertEquals(checkMetric(steps, readings({ steps_avg: 4000 }), 0, true), { id: "m1", current_value: null, status: "set" });
+  // A progress kind still takes its reading: the scale is the scale.
+  const bw = metric({ kind: "bodyweight", direction: "down", start_value: 71, target_value: 69.6 });
+  assertEquals(checkMetric(bw, readings({ bodyweight: 70.9 }), 0, true).current_value, 70.9);
+  // After the first week the same reading is judged.
+  assertEquals(checkMetric(steps, readings({ steps_avg: 4000 }), 0.3, false).status, "behind");
+});
+
 Deno.test("a progress kind with no weigh-in this week keeps its last reading", () => {
   const bw = metric({ kind: "bodyweight", direction: "down", start_value: 71, target_value: 69.6, current_value: 70.4 });
   assertEquals(checkMetric(bw, readings({ bodyweight: null }), 0.5), { id: "m1", current_value: 70.4, status: "on_track" });

@@ -107,8 +107,11 @@ export async function metricsStep(
     if (metrics.length === 0) return none;
 
     const readings = await gatherReadings(db, userId, localDay, weekStart, metrics, phase.diet_protein_g);
-    const progress = phaseProgress(weekInPhaseOn(String(prog.start_date), phase, localDay), phase.duration_weeks);
-    const checks = checkMetrics(metrics, readings, progress);
+    const weekIn = weekInPhaseOn(String(prog.start_date), phase, localDay);
+    const progress = phaseProgress(weekIn, phase.duration_weeks);
+    // In the phase's first week "last whole week" is the phase before: weekly
+    // kinds are not judged against the new target on it (checkMetric).
+    const checks = checkMetrics(metrics, readings, progress, weekIn <= 1);
 
     const now = new Date().toISOString();
     let checked = 0;

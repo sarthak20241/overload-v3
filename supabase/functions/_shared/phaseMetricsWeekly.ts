@@ -113,10 +113,15 @@ export interface MetricCheck {
  * with nothing this week keeps no stale number: current_value goes null and
  * the status says due. A progress kind with nothing this week keeps its last
  * reading (the scale did not move because nobody stood on it).
+ *
+ * `firstWeek`: the phase began this week, so "last whole week" is the phase
+ * before (or no program at all). A weekly kind is not judged against the new
+ * target on that: it reads `set` with no number until the phase has a week.
  */
-export function checkMetric(m: MetricToCheck, r: WeeklyReadings, progress: number): MetricCheck {
-  const fresh = currentValueFor(m, r);
+export function checkMetric(m: MetricToCheck, r: WeeklyReadings, progress: number, firstWeek = false): MetricCheck {
   const weekly = isWeeklyKind(m.kind);
+  if (weekly && firstWeek) return { id: m.id, current_value: null, status: 'set' };
+  const fresh = currentValueFor(m, r);
   const current = fresh ?? (weekly ? null : m.current_value);
   const out: MetricCheck = {
     id: m.id,
@@ -131,8 +136,8 @@ export function checkMetric(m: MetricToCheck, r: WeeklyReadings, progress: numbe
   return out;
 }
 
-export function checkMetrics(list: MetricToCheck[], r: WeeklyReadings, progress: number): MetricCheck[] {
-  return list.map((m) => checkMetric(m, r, progress));
+export function checkMetrics(list: MetricToCheck[], r: WeeklyReadings, progress: number, firstWeek = false): MetricCheck[] {
+  return list.map((m) => checkMetric(m, r, progress, firstWeek));
 }
 
 // ── Readings from rows ───────────────────────────────────────────────────────

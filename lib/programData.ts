@@ -617,28 +617,38 @@ async function saveProgramMetrics(
     if (m.kind === 'lift_e1rm' && m.ref?.exercise_name && !m.ref.exercise_id) names.add(m.ref.exercise_name);
   }
   const idByName = new Map<string, string>();
+  // The winner for a name: the user's own exercise of that name, else the
+  // first catalog row by id, so two catalog rows with one name always pick
+  // the same one.
+  const ownIds = new Set<string>();
+  const keep = (rows: { id: string; name: string; user_id: string | null }[]) => {
+    for (const e of [...rows].sort((a, b) => (a.id < b.id ? -1 : 1))) {
+      const key = e.name.toLowerCase();
+      const have = idByName.get(key);
+      const haveIsOwn = have != null && ownIds.has(have);
+      if (e.user_id === clerkId) ownIds.add(e.id);
+      if (have == null || (e.user_id === clerkId && !haveIsOwn)) idByName.set(key, e.id);
+    }
+  };
   if (names.size > 0) {
     const { data: found, error } = await supabase
       .from('exercises')
       .select('id, name, user_id')
       .in('name', [...names]);
     if (error) console.warn('[programs] exercise lookup for metrics failed', error.message);
-    for (const e of (found ?? []) as { id: string; name: string; user_id: string | null }[]) {
-      // The user's own exercise of that name beats the catalog's.
-      const key = e.name.toLowerCase();
-      if (!idByName.has(key) || e.user_id === clerkId) idByName.set(key, e.id);
-    }
-    // Second pass, case-insensitive, for names the coach cased differently.
+    keep((found ?? []) as { id: string; name: string; user_id: string | null }[]);
+    // Second pass, case-insensitive, for names the coach cased differently:
+    // one ilike per name, with the model's text escaped so `%` and `_` in a
+    // name cannot act as wildcards and match a different lift.
     const missing = [...names].filter((n) => !idByName.has(n.toLowerCase()));
-    if (missing.length > 0) {
+    for (const n of missing) {
+      const escaped = n.replace(/[\\%_]/g, (c) => `\\${c}`).replace(/[,()]/g, ' ').trim();
+      if (!escaped) continue;
       const { data: loose } = await supabase
         .from('exercises')
         .select('id, name, user_id')
-        .or(missing.map((n) => `name.ilike.${n.replace(/[,().]/g, ' ')}`).join(','));
-      for (const e of (loose ?? []) as { id: string; name: string; user_id: string | null }[]) {
-        const key = e.name.toLowerCase();
-        if (!idByName.has(key) || e.user_id === clerkId) idByName.set(key, e.id);
-      }
+        .ilike('name', escaped);
+      keep((loose ?? []) as { id: string; name: string; user_id: string | null }[]);
     }
   }
   const rows: Record<string, unknown>[] = [];
@@ -960,6 +970,12 @@ export async function loadMetricLogs(supabase: Supa, metricId: string): Promise<
  * second log the same day replaces the first) and move the metric's current
  * value to it, with the status recomputed by the shared rules. The weekly
  * check will do the same on Monday; this is so the card moves at once.
+ *
+ * Two writes, no transaction: if the metric update fails after the log
+ * landed, the log still exists and loadActiveProgram reads the latest log
+ * live for a custom metric, so the card shows the logged number anyway and
+ * the weekly check sets the status. `progress` is the current phase's: the
+ * Goal screen offers logging only on the current phase's hero.
  */
 export async function logMetricValue(
   supabase: Supa,
