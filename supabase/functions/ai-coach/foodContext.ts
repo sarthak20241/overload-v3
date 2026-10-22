@@ -68,8 +68,11 @@ export function cardMayBeCut(card: CardLine[] | null | undefined): boolean {
 
 /** The card for a model's eyes: short, numbered, one line per food. */
 export function cardLines(card: CardLine[] | null | undefined): string[] {
+  // Whitespace collapsed: a newline in a client-supplied name would otherwise
+  // forge an extra numbered line in the prompt.
+  const flat = (x: string) => x.replace(/\s+/g, " ").trim();
   return (card ?? []).slice(0, CARD_MAX_LINES).map((l, i) =>
-    `${i + 1}. ${l.food_name}: ${l.quantity} ${l.serving_label}, ${Math.round(l.grams)} g, ${Math.round(l.kcal)} kcal`
+    `${i + 1}. ${flat(l.food_name)}: ${l.quantity} ${flat(l.serving_label)}, ${Math.round(l.grams)} g, ${Math.round(l.kcal)} kcal`
   );
 }
 

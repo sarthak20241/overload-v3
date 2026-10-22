@@ -591,11 +591,19 @@ async function finishWith(
   }
   if (u.name === REMOVE_CARD_LINES_TOOL.name) {
     if (!card.length) return { kind: "failed", reason: "remove_without_card", turns };
-    const nums = Array.isArray(args.lines) ? args.lines.filter((n): n is number => Number.isInteger(n) && n >= 1 && n <= card.length) : [];
+    const asked = Array.isArray(args.lines) ? args.lines : [];
+    const nums = asked.filter((n): n is number => Number.isInteger(n) && n >= 1 && n <= card.length);
     if (nums.length === 0) return { kind: "failed", reason: "remove_no_lines", turns };
+    // A line number the card does not have is a model slip. The valid ones go,
+    // but the summary must not claim a removal that did not happen: the user
+    // reads that line, so it says what really came off.
+    const skipped = asked.length - nums.length;
     const drop = new Set(nums.map((n) => n - 1));
     const kept = card.filter((_, i) => !drop.has(i));
-    const summary = clean(typeof args.summary === "string" ? args.summary : "");
+    const removedNames = nums.map((n) => card[n - 1].food_name).join(", ");
+    const summary = skipped > 0
+      ? `Took off ${removedNames}.`
+      : clean(typeof args.summary === "string" ? args.summary : "");
     const emptyUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0 };
     if (kept.length === 0) {
       // Nothing left: the card is cleared, the way removing the last line with
@@ -622,7 +630,6 @@ async function finishWith(
           items: kept.map((l) => cardLineAsItem(l, input.defaultMeal)),
           drona_line: summary || "Taken off.",
           corrects_previous: true,
-          // An empty card is a card with nothing left: the app clears it.
         },
         declined: null,
         usage: emptyUsage,

@@ -76,7 +76,7 @@ import {
   continuesPendingMeal,
   wantsFoodAgent,
 } from "./foodIntent.ts";
-import { CARD_MAX_LINES, type CardLine, readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
+import { CARD_MAX_LINES, type CardLine, cardMayBeCut, readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
 import { startHeartbeat } from "./streamHeartbeat.ts";
@@ -634,7 +634,8 @@ function startFoodAgent(args: {
   onStatus?: (label: string) => void;
 }): Promise<FoodAgentOutcome | null> {
   return args.intentP.then(async (d) => {
-    const cardOpen = !!args.card?.lines.length;
+    // Open AND whole, the same rule index.ts applies (see `cardOpen` there).
+    const cardOpen = !!args.card?.lines.length && !cardMayBeCut(args.card.lines);
     if (FOOD_INTENT_MODE !== "on" || !wantsFoodAgent(d, args.supportsCreate, cardOpen)) return null;
     if (!ANTHROPIC_API_KEY) return null;
     const t0 = Date.now();
@@ -3525,6 +3526,12 @@ async function handleParseMealRequest(args: {
     ...(p.said_name ? { said_name: p.said_name } : {}),
   }));
   const foodContext: FoodConversationContext = { ...baseFoodContext, card: card.length ? card : null };
+  // THE switch for the agent-beside-a-card path. A card that may be cut at the
+  // cap (cardMayBeCut) does not count as open: the agent would hold only part
+  // of it, and with its card tools withheld an edit could only land as a
+  // duplicate log_food line. Such a card stays on the parse path, exactly as a
+  // message with no card does. Every check below reads this one value.
+  const cardOpen = card.length > 0 && !cardMayBeCut(card);
 
   // "Just log it" (plan B). Honoured only with a uuid client_id (the
   // idempotency key), and never on a follow-up to a meal under review: a card
@@ -3788,7 +3795,7 @@ async function handleParseMealRequest(args: {
                   if (wouldDivertToCreate(settledIntent, supportsCreate)) return;
                   // The agent answers this one; rows from the plain parse would
                   // be a meal it is not going to log.
-                  if (FOOD_INTENT_MODE === "on" && wantsFoodAgent(settledIntent, supportsCreate, card.length > 0)) return;
+                  if (FOOD_INTENT_MODE === "on" && wantsFoodAgent(settledIntent, supportsCreate, cardOpen)) return;
                   send(p.kind, p);
                 },
               },
@@ -3811,7 +3818,7 @@ async function handleParseMealRequest(args: {
               },
             );
             const outcome = await resolveFoodBarOutcome({
-              result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen: card.length > 0,
+              result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen,
             });
             // The agent's meal replaces the first parse when it finished with a log.
             const result = outcome.result ?? firstParse;
@@ -4025,7 +4032,7 @@ async function handleParseMealRequest(args: {
       // Decided before the diary write, for the same reason as the stream: a
       // create or a reply must not log the parsed meal behind the user's back.
       const outcome = await resolveFoodBarOutcome({
-        result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen: card.length > 0,
+        result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen,
       });
       // The agent's meal replaces the first parse when it finished with a log.
       const result = outcome.result ?? firstParse;
