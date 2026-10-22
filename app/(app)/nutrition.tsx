@@ -81,7 +81,7 @@ import { CopyMealSheet } from '@/components/diet/CopyMealSheet';
 import { learnPatterns, mealsToSuggest, copyableFromDay, withPreviousDay, type FoodSuggestion, type HistoryEntry } from '@/lib/foodPatterns';
 import { useFoodHistory, useDayMealLines, relogLines, lineAsItem } from '@/lib/foodPatternsData';
 import { FoodBoxTourTip } from '@/components/diet/FoodBoxTourTip';
-import { shouldOfferTour, tourEndReason, tourNext, tourSignalForFlow, TOUR_COPY, type TourEvent, type TourStep } from '@/lib/foodBoxTour';
+import { shouldOfferTour, tourEndReason, tourNext, tourSignalForFlow, TOUR_COPY, type TourEndReason, type TourEvent, type TourStep } from '@/lib/foodBoxTour';
 import { getFoodBoxTourDone, setFoodBoxTourDone } from '@/lib/foodBoxTourStore';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
@@ -611,6 +611,9 @@ export default function NutritionScreen() {
   const userId = user?.id ?? null;
   const [tourDone, setTourDone] = useState<boolean | null>(null);
   const [tourStep, setTourStep] = useState<TourStep | null>(null);
+  // Nutrition is a retained tab: it loads, and could start the tour, while
+  // the user is somewhere else. The tour only starts while it is on screen.
+  const [screenFocused, setScreenFocused] = useState(false);
   const tourStepRef = useRef<TourStep | null>(null);
   tourStepRef.current = tourStep;
   useEffect(() => {
@@ -625,7 +628,7 @@ export default function NutritionScreen() {
     if (userId) void setFoodBoxTourDone(userId);
   }, [userId]);
   /** Ends it before the last step: Skip, or the user went elsewhere. */
-  const endTour = useCallback((how: 'skipped' | 'left', reason?: string) => {
+  const endTour = useCallback((how: 'skipped' | 'left', reason?: TourEndReason) => {
     const step = tourStepRef.current;
     if (!step || step === 'done') { tourStepRef.current = null; setTourStep(null); return; }
     tourStepRef.current = null;
@@ -649,7 +652,7 @@ export default function NutritionScreen() {
   }, [markTourDone]);
   const offerTour = shouldOfferTour({
     signedIn: !!isSignedIn, done: tourDone, isToday, dayReady: !dayUnknown,
-    flowIdle: flow.status === 'idle', historyLoaded, history,
+    flowIdle: flow.status === 'idle', historyLoaded, focused: screenFocused, history,
   });
   // While it points at the box: moved off today, or history landed showing
   // they already type meals. Either way the tip no longer fits.
@@ -680,9 +683,13 @@ export default function NutritionScreen() {
   endTourRef.current = endTour;
   // A tap on search (the icon in the box, a meal's Add row) leaves the screen
   // too; say so, since search is what the tour is up against.
-  useFocusEffect(useCallback(() => () => endTourRef.current(
-    'left', Date.now() - lastSearchOpenAt < 1500 ? 'search' : 'screen',
-  ), []));
+  useFocusEffect(useCallback(() => {
+    setScreenFocused(true);
+    return () => {
+      setScreenFocused(false);
+      endTourRef.current('left', Date.now() - lastSearchOpenAt < 1500 ? 'search' : 'screen');
+    };
+  }, []));
   // Set by onAdd right before the card closes, so "the card went away after
   // Add" can be told apart from Discard.
   const tourAddedRef = useRef(false);
@@ -712,6 +719,8 @@ export default function NutritionScreen() {
     tourEvent('focused');
   }, [tourEvent]);
   const lastBoxSendAt = useRef(0);
+  const abandonTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (abandonTimer.current) clearTimeout(abandonTimer.current); }, []);
   const textRef = useRef(text);
   textRef.current = text;
   const onBoxBlur = useCallback(() => {
@@ -723,7 +732,9 @@ export default function NutritionScreen() {
     // box too. The tap and the blur land in either order, so look a beat
     // later and say which it was: switching to search is not giving up.
     // Also catches a send whose tap blurred the box before onSend ran.
-    setTimeout(() => {
+    if (abandonTimer.current) clearTimeout(abandonTimer.current);
+    abandonTimer.current = setTimeout(() => {
+      abandonTimer.current = null;
       if (Date.now() - lastBoxSendAt.current < 1500) return;
       track('food_box_abandoned', { had_text: hadText, to_search: Date.now() - lastSearchOpenAt < 1500 });
     }, 300);
@@ -2184,6 +2195,8 @@ export default function NutritionScreen() {
       {tourStep === 'type' && (
         <View
           pointerEvents="none"
+          // C.overlay is already translucent (0.70 dark, 0.40 light); 0.75 of it
+          // is meant: the day stays readable behind the tip. Checked on device.
           style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay, opacity: 0.75 }]}
         />
       )}

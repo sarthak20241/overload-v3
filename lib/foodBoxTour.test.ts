@@ -12,6 +12,7 @@ const ready = {
   dayReady: true,
   flowIdle: true,
   historyLoaded: true,
+  focused: true,
   history: [{ logged_via: null }, { logged_via: "manual" }],
 };
 
@@ -37,6 +38,11 @@ Deno.test("waits for the day to load, for today, for the box to be free, and for
 
 Deno.test("done is unknown until storage answers, and unknown is not an offer", () => {
   assert(!shouldOfferTour({ ...ready, done: null }));
+});
+
+Deno.test("never starts while the user is on another tab", () => {
+  // Nutrition is a retained tab: it loads in the background.
+  assert(!shouldOfferTour({ ...ready, focused: false }));
 });
 
 Deno.test("an empty history that has not loaded yet is not 'never typed a meal'", () => {

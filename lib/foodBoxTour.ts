@@ -54,6 +54,12 @@ export function tourNext(step: TourStep, event: TourEvent): TourStep {
   }
 }
 
+/** Why a tour ended early, as it goes to analytics (food_tour_left). */
+export type TourEndReason =
+  | 'idle' | 'create' | 'sent' | 'discarded' // the card went another way
+  | 'not_today' | 'uses_drona'               // tourEndReason
+  | 'screen' | 'search';                     // left the screen, or for search
+
 /** The food box flow statuses the tour reads (the screen's ParseFlow). */
 export type FlowStatus = 'idle' | 'analysing' | 'streaming' | 'sent' | 'review' | 'declined' | 'error' | 'create';
 
@@ -67,7 +73,7 @@ export function tourSignalForFlow(
   was: { status: FlowStatus; auto?: boolean },
   now: FlowStatus,
   added: boolean,
-): { event: TourEvent } | { end: string } | null {
+): { event: TourEvent } | { end: TourEndReason } | null {
   if (was.status === now) return null;
   const reading = (st: FlowStatus) => st === 'analysing' || st === 'streaming';
   if (reading(now)) return reading(was.status) ? null : { event: 'sent' };
@@ -100,6 +106,9 @@ export interface TourGate {
   /** `history` came from the server, not just a cold cache. An empty list
    *  before that is "not here yet", never "has not typed a meal". */
   historyLoaded: boolean;
+  /** The Nutrition screen is the one on screen. It is a retained tab that
+   *  loads in the background; a tour started there would wait unseen. */
+  focused: boolean;
   history: LoggedLine[];
 }
 
@@ -109,7 +118,7 @@ const usesDrona = (history: LoggedLine[]) => history.some((l) => (l.logged_via ?
  *  line Drona read is logged_via 'ai' (review then Add) or 'ai_auto' ("Just
  *  log it"). */
 export function shouldOfferTour(g: TourGate): boolean {
-  if (!g.signedIn || g.done !== false || !g.isToday || !g.dayReady || !g.flowIdle || !g.historyLoaded) return false;
+  if (!g.signedIn || g.done !== false || !g.focused || !g.isToday || !g.dayReady || !g.flowIdle || !g.historyLoaded) return false;
   return !usesDrona(g.history);
 }
 
@@ -120,7 +129,7 @@ export function shouldOfferTour(g: TourGate): boolean {
 export function tourEndReason(
   step: TourStep,
   now: { isToday: boolean; history: LoggedLine[] },
-): 'not_today' | 'uses_drona' | null {
+): Extract<TourEndReason, 'not_today' | 'uses_drona'> | null {
   if (step !== 'type' && step !== 'write' && step !== 'retry') return null;
   if (!now.isToday) return 'not_today';
   if (usesDrona(now.history)) return 'uses_drona';
