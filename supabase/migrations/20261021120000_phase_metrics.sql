@@ -140,8 +140,10 @@ grant insert (id, program_id, phase_id, user_id, seq, is_hero, kind, ref, unit, 
 -- On update the app may also move current_value and status (it does so the
 -- moment a custom metric is logged), but never checked_at or checked_week:
 -- only the weekly job stamps a check, so a client cannot mark its own week
--- as checked.
-grant update (seq, is_hero, ref, unit, direction, start_value, target_value, current_value, status, status_note, updated_at)
+-- as checked. seq and is_hero are not updatable either: the app never
+-- reorders or re-heroes rows, and the unique constraints on both are not
+-- deferrable, so a swap by updates could fail halfway.
+grant update (ref, unit, direction, start_value, target_value, current_value, status, status_note, updated_at)
   on table public.coach_program_phase_metrics to authenticated;
 
 -- ── 3. coach_program_phase_metric_logs ───────────────────────────────────────

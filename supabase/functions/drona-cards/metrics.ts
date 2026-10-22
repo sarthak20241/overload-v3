@@ -512,23 +512,20 @@ async function gatherReadings(
     if (ofKind.some((m) => !m.ref?.exercise_id)) jobs.push(bestSet(kind, null)());
   }
   if (kinds.has("custom")) {
-    const ids = metrics.filter((m) => m.kind === "custom").map((m) => m.id);
-    jobs.push((async () => {
-      // Newest first; one log a day per metric, so a few weeks per metric is
-      // plenty to find the latest and keeps the read far from the row cap.
-      const { data, error } = await retried(() =>
-        db.from("coach_program_phase_metric_logs").select("metric_id, value, logged_on")
-          .eq("user_id", userId).in("metric_id", ids)
-          .order("logged_on", { ascending: false }).limit(ids.length * 30)
-      );
-      if (error) return fail(error.message, "custom");
-      for (const row of data ?? []) {
-        const id = String(row.metric_id);
-        if (id in r.custom_latest) continue;
-        const v = num(row.value);
-        if (v != null) r.custom_latest[id] = v;
-      }
-    })());
+    // The latest log of each custom metric, one read per metric (a phase
+    // has one or two), so no metric's latest can be cut off by another's.
+    for (const m of metrics.filter((m) => m.kind === "custom")) {
+      jobs.push((async () => {
+        const { data, error } = await retried(() =>
+          db.from("coach_program_phase_metric_logs").select("metric_id, value, logged_on")
+            .eq("user_id", userId).eq("metric_id", m.id)
+            .order("logged_on", { ascending: false }).limit(1)
+        );
+        if (error) return fail(error.message, "custom");
+        const v = num((data ?? [])[0]?.value);
+        if (v != null) r.custom_latest[m.id] = v;
+      })());
+    }
   }
   // A read that threw is a failed read too: the caller skips those kinds.
   await Promise.all(jobs.map((j) => j.catch((e) => fail(String(e), ...kinds))));

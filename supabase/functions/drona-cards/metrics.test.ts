@@ -372,6 +372,25 @@ Deno.test("a failed line is retried next run and a clean line then clears the le
   assertEquals(run3.writes.length, 0);
 });
 
+Deno.test("each custom metric reads its own latest log", async () => {
+  const a = { id: "m-a", seq: 0, is_hero: true, kind: "custom", ref: { name: "Hold" }, unit: "s", direction: "up", start_value: 5, target_value: 20, current_value: 9, status: "on_track", checked_week: null };
+  const b = { id: "m-b", seq: 1, is_hero: false, kind: "custom", ref: { name: "Pull-ups" }, unit: "reps", direction: "up", start_value: 3, target_value: 10, current_value: 4, status: "on_track", checked_week: null };
+  const { db, reads, writes } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: [a, b], error: null }],
+    coach_program_phase_metric_logs: [
+      { data: [{ metric_id: "m-a", value: 12, logged_on: "2026-10-20" }], error: null },
+      { data: [{ metric_id: "m-b", value: 6, logged_on: "2026-10-18" }], error: null },
+    ],
+  });
+  assertEquals(await metricsStep(db, "user-1", DAY, WEEK, ""), { checked: 2, line: false });
+  const logReads = reads.filter((r) => r.table === "coach_program_phase_metric_logs");
+  assertEquals(logReads.map((r) => r.eq), [[["user_id", "user-1"], ["metric_id", "m-a"]], [["user_id", "user-1"], ["metric_id", "m-b"]]]);
+  const values = writes.filter((w) => "status" in w.patch).map((w) => [w.eq[0][1], w.patch.current_value]);
+  assertEquals(values, [["m-a", 12], ["m-b", 6]]);
+});
+
 Deno.test("the metrics read is scoped to the user as well as the phase", async () => {
   const { db, reads } = fakeDb({
     coach_programs: [{ data: program, error: null }],
