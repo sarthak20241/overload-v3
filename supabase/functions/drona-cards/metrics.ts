@@ -43,6 +43,7 @@ export interface DbQuery extends PromiseLike<DbResult> {
   lte(column: string, value: unknown): DbQuery;
   lt(column: string, value: unknown): DbQuery;
   gt(column: string, value: unknown): DbQuery;
+  ilike(column: string, value: unknown): DbQuery;
   or(filters: string): DbQuery;
   order(column: string, options?: { ascending?: boolean; nullsFirst?: boolean }): DbQuery;
   limit(count: number): DbQuery;
@@ -140,6 +141,9 @@ export async function metricsStep(
         current_value: num(r.current_value),
       });
     }
+    // No claim between runs: the cron runs every 15 minutes with a 55 s
+    // timeout, so two runs do not overlap in practice; if they ever did, the
+    // writes are idempotent and the only cost is a second model call.
     if (metrics.length === 0 || !checkDue(readableRows, weekStart)) return none;
 
     const phaseStart = addDays(String(prog.start_date), phase.start_offset_weeks * 7);
@@ -172,6 +176,11 @@ export async function metricsStep(
       if (error) writeErrors.push(`write ${c.id.slice(0, 8)}: ${error.message}`);
       else checked += 1;
     }
+    // A run with any failed read or write writes no line: the line is Drona's
+    // sentence on the whole phase and must not come from half the numbers.
+    // The unstamped rows make the phase due again next run, which retries
+    // the reads and writes the line once they all succeed. While a source
+    // stays down the phase keeps last week's line.
     if (writeErrors.length > 0 || readable.length < metrics.length) {
       const why = [...writeErrors, ...(readable.length < metrics.length ? [`read failed for ${[...failed].join(", ")}`] : [])];
       return { checked, line: false, error: why.join("; ") };
@@ -252,19 +261,40 @@ async function gatherReadings(
     })());
   }
   if (kinds.has("lift_e1rm")) {
-    const ids = metrics.filter((m) => m.kind === "lift_e1rm" && m.ref?.exercise_id).map((m) => m.ref!.exercise_id!);
-    if (ids.length > 0) {
-      jobs.push((async () => {
-        const { data, error } = await retried(() =>
-          db.from("user_lift_stats").select("exercise_id, estimated_1rm").eq("user_id", userId).in("exercise_id", ids)
+    jobs.push((async () => {
+      const lifts = metrics.filter((m) => m.kind === "lift_e1rm");
+      // The app resolves the exercise id when it saves the program. A lift
+      // whose name matched nothing then (or a row written another way) is
+      // looked up by name here, and the id is kept on the row so the chart
+      // and the next check read it directly.
+      for (const m of lifts) {
+        if (m.ref?.exercise_id || !m.ref?.exercise_name) continue;
+        const escaped = m.ref.exercise_name.replace(/[\\%_]/g, (c) => `\\${c}`).trim();
+        if (!escaped) continue;
+        const { data: found, error: findErr } = await retried(() =>
+          db.from("exercises").select("id, user_id").ilike("name", escaped).order("id", { ascending: true }).limit(20)
         );
-        if (error) return fail(error.message, "lift_e1rm");
-        for (const row of data ?? []) {
-          const v = num(row.estimated_1rm);
-          if (v != null) r.e1rm_by_exercise[String(row.exercise_id)] = v;
-        }
-      })());
-    }
+        if (findErr) return fail(findErr.message, "lift_e1rm");
+        const own = (found ?? []).find((e: Row) => e.user_id === userId);
+        const id = own?.id ?? (found ?? [])[0]?.id;
+        if (!id) continue;
+        m.ref = { ...m.ref, exercise_id: String(id) };
+        const { error: refErr } = await retried(() =>
+          db.from("coach_program_phase_metrics").update({ ref: m.ref }).eq("id", m.id)
+        );
+        if (refErr) console.log(`[drona-cards] could not keep the exercise id on ${m.id.slice(0, 8)}: ${refErr.message}`);
+      }
+      const ids = lifts.filter((m) => m.ref?.exercise_id).map((m) => m.ref!.exercise_id!);
+      if (ids.length === 0) return;
+      const { data, error } = await retried(() =>
+        db.from("user_lift_stats").select("exercise_id, estimated_1rm").eq("user_id", userId).in("exercise_id", ids)
+      );
+      if (error) return fail(error.message, "lift_e1rm");
+      for (const row of data ?? []) {
+        const v = num(row.estimated_1rm);
+        if (v != null) r.e1rm_by_exercise[String(row.exercise_id)] = v;
+      }
+    })());
   }
   if (kinds.has("sets_per_muscle")) {
     jobs.push((async () => {

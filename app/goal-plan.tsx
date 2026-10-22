@@ -104,7 +104,13 @@ const PILLAR_OF: Record<MetricKind, 'train' | 'eat' | 'recover'> = {
 /** The value column of a tracked row: the number and what it is of. */
 function rowValue(m: PhaseMetricRow): { value: string; rest: string } {
   const cur = m.current_value;
-  if (cur == null) return { value: '', rest: m.kind === 'custom' ? 'Not logged yet' : 'No reading yet' };
+  if (cur == null) {
+    // A source with no data at all: say what would feed it.
+    if (m.kind === 'custom') return { value: '', rest: 'Not logged yet' };
+    if ((m.kind === 'steps' || m.kind === 'sleep_hours') && m.status === 'due') return { value: '', rest: 'Needs Health sync' };
+    if (m.kind === 'lift_e1rm' && m.status === 'set') return { value: '', rest: 'Log the lift to start' };
+    return { value: '', rest: 'No reading yet' };
+  }
   const v = formatMetricValue(m.kind, cur, m.unit);
   const t = formatMetricValue(m.kind, m.target_value, m.unit);
   switch (m.kind) {

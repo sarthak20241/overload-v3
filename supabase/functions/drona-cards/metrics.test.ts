@@ -21,6 +21,7 @@ function fakeDb(script: Record<string, Answer[]>) {
     for (const m of ["select", "in", "gte", "lte", "lt", "gt", "or", "order", "limit", "maybeSingle", "not", "range"]) b[m] = self;
     b.eq = (k: string, v: unknown) => { eqs.push([k, v]); return b; };
     b.update = (p: Record<string, unknown>) => { patch = p; return b; };
+    b.ilike = (k: string, v: unknown) => { eqs.push([`ilike:${k}`, v]); return b; };
     b.then = (resolve: (a: Answer) => unknown) => {
       if (patch) {
         writes.push({ table, patch, eq: [...eqs] });
@@ -122,6 +123,26 @@ Deno.test("a row the check cannot read never keeps the phase due", async () => {
   assertEquals(await metricsStep(db, "user-1", DAY, WEEK, "key", fetchFn), { checked: 0, line: false });
   assertEquals(writes.length, 0);
   assertEquals(modelCalls, 0);
+});
+
+Deno.test("a lift metric with only a name is resolved to an exercise id, kept, and read", async () => {
+  const lift = { id: "m-lift", seq: 0, is_hero: true, kind: "lift_e1rm", ref: { exercise_name: "Barbell Bench Press" }, unit: "kg", direction: "up", start_value: null, target_value: 110, current_value: null, status: "set", checked_at: null };
+  const { db, writes, reads } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: [lift], error: null }],
+    exercises: [{ data: [{ id: "ex-catalog", user_id: null }, { id: "ex-mine", user_id: "user-1" }], error: null }],
+    user_lift_stats: [{ data: [{ exercise_id: "ex-mine", estimated_1rm: 101.5 }], error: null }],
+  });
+  const out = await metricsStep(db, "user-1", DAY, WEEK, "");
+  assertEquals(out, { checked: 1, line: false });
+  // The user's own exercise wins, the id is kept on the row, and the lift's
+  // first reading becomes its start.
+  assertEquals(reads.find((r) => r.table === "exercises")?.eq, [["ilike:name", "Barbell Bench Press"]]);
+  const refWrite = writes.find((w) => w.table === "coach_program_phase_metrics" && "ref" in w.patch);
+  assertEquals(refWrite?.patch.ref, { exercise_name: "Barbell Bench Press", exercise_id: "ex-mine" });
+  const check = writes.find((w) => w.table === "coach_program_phase_metrics" && "status" in w.patch);
+  assertEquals([check?.patch.current_value, check?.patch.start_value, check?.patch.status], [101.5, 101.5, "on_track"]);
 });
 
 Deno.test("the metrics read is scoped to the user as well as the phase", async () => {
