@@ -1528,7 +1528,7 @@ function ChatScreen({
       conversationId: workoutContext ? undefined : ensureActiveConversationId(userId),
       clientMsgId: workoutContext ? undefined : userMsg?.id,
       ...(opens ? { openedByApp: true } : {}),
-      freshToken: () => getToken({ skipCache: true }),
+      freshToken: () => getToken?.({ skipCache: true }) ?? Promise.resolve(null),
     });
   }, [input, loading, messages, supabase, getToken, workoutContext, canEditWorkout, markStarted, setMessages, userId]);
 
@@ -2732,7 +2732,7 @@ function GeneratePlanScreen({
       {
         forceTool: 'generate_plan',
         phaseId: isRefine ? undefined : phaseId,
-        freshToken: () => getToken!({ skipCache: true }),
+        freshToken: () => getToken?.({ skipCache: true }) ?? Promise.resolve(null),
       },
     );
   };
@@ -3396,7 +3396,7 @@ function GenerateWorkoutScreen({
           onRequestUpgrade?.(kind);
         },
       },
-      { forceTool: 'generate_workout', freshToken: () => getToken!({ skipCache: true }) },
+      { forceTool: 'generate_workout', freshToken: () => getToken?.({ skipCache: true }) ?? Promise.resolve(null) },
     );
   };
 
@@ -4044,7 +4044,7 @@ function RefineChatScreen({
       // which is true for all refine_*+generate_* and discuss_*+generate_*
       // combinations.
       ...(shouldForceTool ? { forceTool: forceToolName } : {}),
-      freshToken: () => getToken!({ skipCache: true }),
+      freshToken: () => getToken?.({ skipCache: true }) ?? Promise.resolve(null),
     });
   }, [input, loading, messages, getToken, recapText, starterText, mode, kind, handleStructured, onRequestUpgrade]);
 

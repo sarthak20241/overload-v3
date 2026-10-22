@@ -28,7 +28,7 @@ export function isExpiredTokenReply(status: number, body: string): boolean {
   if (status !== 401) return false;
   // `exp\\?"` because the edge function's reason arrives inside a JSON string,
   // where its quotes are escaped: `\"exp\" claim`.
-  return /exp\\?" claim|jwt expired|token (is )?expired/i.test(body);
+  return /exp\\?" claim|jwt expired/i.test(body);
 }
 
 /**
