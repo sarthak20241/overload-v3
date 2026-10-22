@@ -178,6 +178,21 @@ export const ACTION_ROUTES: Record<string, string> = {
   // start_session has no route: the dashboard opens today's session preview.
 };
 
+/**
+ * The screen a card's button opens: its ACTION_ROUTES path, plus params the
+ * screen reads. A log_food card with focus 'ai' opens Nutrition with the
+ * "Tell Drona what you ate" box focused. A build without this ignores `focus`
+ * and still lands on Nutrition, so such a card is safe to send to anyone.
+ */
+export function actionTarget(
+  payload: { action?: string; focus?: string },
+): { pathname: string; params?: Record<string, string> } | null {
+  const pathname = payload.action ? ACTION_ROUTES[payload.action] : undefined;
+  if (!pathname) return null;
+  if (payload.action === 'log_food' && payload.focus === 'ai') return { pathname, params: { focus: 'ai' } };
+  return { pathname };
+}
+
 export type CardKind = 'request' | 'notice' | 'hold';
 
 export interface DronaCard {
@@ -188,7 +203,7 @@ export interface DronaCard {
   /** The numbers the card rests on, shown as chips so the user can check them. */
   evidence: { label: string; value: string }[];
   /** Where the button goes, and what it asks for. Empty for a notice. */
-  payload: { action?: string; route?: string };
+  payload: { action?: string; route?: string; focus?: 'ai' };
   signals: string[];
 }
 

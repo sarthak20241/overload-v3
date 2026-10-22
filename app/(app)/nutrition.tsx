@@ -21,7 +21,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import { router, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import {
@@ -369,6 +369,24 @@ export default function NutritionScreen() {
   // Undo lives on the receipt strip and on each diary row Drona added.
   const [text, setText] = useState('');
   const inputRef = useRef<TextInput>(null);
+
+  // A Drona card's "Try it" lands here with focus=ai: open the keyboard on the
+  // box. This tab stays mounted, so clear the param once used, or the next
+  // visit would focus it again and a second card could not. A focus effect, not
+  // a plain one: leaving the tab before the timer fires must cancel it, or the
+  // hidden box would raise the keyboard over another screen.
+  const { focus } = useLocalSearchParams<{ focus?: string }>();
+  useFocusEffect(useCallback(() => {
+    if (focus !== 'ai' || !isSignedIn) return;
+    // After the tab switch settles; focusing mid-transition drops the keyboard.
+    // Cleared after, not before: clearing re-runs this effect, whose cleanup
+    // would cancel the pending focus.
+    const t = setTimeout(() => {
+      inputRef.current?.focus();
+      router.setParams({ focus: undefined });
+    }, 350);
+    return () => clearTimeout(t);
+  }, [focus, isSignedIn]));
   const [flow, setFlow] = useState<ParseFlow>({ status: 'idle' });
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).

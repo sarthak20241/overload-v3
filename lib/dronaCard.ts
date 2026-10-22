@@ -40,6 +40,8 @@ export interface DronaCardPayload {
   phases?: { id: string; name?: string; from_kcal: number; to_kcal: number }[];
   /** talk: the opening line sent for the person when they tap "Talk it through". */
   prompt?: string;
+  /** log_food: 'ai' opens Nutrition with the "Tell Drona what you ate" box focused. */
+  focus?: 'ai';
 }
 
 export interface SavedDronaCard {

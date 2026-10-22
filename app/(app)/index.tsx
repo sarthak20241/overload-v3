@@ -37,7 +37,7 @@ import {
   type SavedDronaCard,
 } from '@/lib/dronaCard';
 import { useWorkout } from '@/hooks/useWorkout';
-import { ACTION_ROUTES } from '@/lib/dronaRules';
+import { actionTarget } from '@/lib/dronaRules';
 import { todayReason } from '@/lib/todayReason';
 import { pickUpNext, resolveToday, type PickProgram } from '@/lib/todayPick';
 import { deviceTimeZone, localDayISO, readSavedSuggestion, requestSuggestion, type SavedSuggestion } from '@/lib/dailySuggestion';
@@ -669,8 +669,8 @@ export default function DashboardScreen() {
     }
     // Route by action, never by a stored path: a renamed screen must not strand
     // a card written before the rename.
-    const route = action ? ACTION_ROUTES[action] : undefined;
-    if (route) router.push(route as any);
+    const target = actionTarget(popupCard.payload);
+    if (target) router.push(target as any);
   };
 
   const handleCardDismiss = () => {

@@ -26,7 +26,7 @@ import { useToast } from '@/components/ui/Toast';
 import { track } from '@/lib/analytics';
 import { DronaCardView } from '@/components/coach/DronaCardView';
 import { OrbStage } from '@/components/coach/OrbStage';
-import { ACTION_ROUTES } from '@/lib/dronaRules';
+import { actionTarget } from '@/lib/dronaRules';
 import { requestCoachOpen } from '@/lib/coachLaunch';
 import { dronaCardTopic } from '@/lib/coachTopic';
 import { bucketOf, canUndo } from '@/lib/dronaInbox';
@@ -105,8 +105,8 @@ export default function FromDronaScreen() {
       router.replace('/(app)');
       return;
     }
-    const route = action ? ACTION_ROUTES[action] : undefined;
-    if (route) router.push(route as any);
+    const target = actionTarget(card.payload);
+    if (target) router.push(target as any);
   };
 
   const dismiss = (card: SavedDronaCard) => {
