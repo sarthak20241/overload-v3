@@ -49,7 +49,7 @@ export function GoalMetricsCard({ chartWidth }: Props) {
     if (!supabase || !clerkId) { setProgram(null); setItems([]); return; }
     try {
       const p = await loadActiveProgram(supabase, clerkId);
-      const phase = p && p.currentPhaseSeq != null ? p.phases[p.currentPhaseSeq] : null;
+      const phase = p && p.currentPhaseSeq != null ? p.phases.find((ph) => ph.seq === p.currentPhaseSeq) ?? null : null;
       if (!p || !phase || phase.metrics.length === 0) { if (fresh()) { setProgram(null); setItems([]); } return; }
       const hero = heroOf(phase.metrics);
       const picks = phase.metrics.filter((m) => m.id === hero?.id || m.kind === 'custom');
@@ -71,7 +71,8 @@ export function GoalMetricsCard({ chartWidth }: Props) {
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   if (!program || items.length === 0) return null;
-  const phase = program.phases[program.currentPhaseSeq!];
+  const phase = program.phases.find((ph) => ph.seq === program.currentPhaseSeq);
+  if (!phase) return null;
   const weeks = programWeeks(program);
   const daysIn = daysBetweenISO(program.start_date, todayLocalISO());
   const curWeek = Math.max(1, Math.min(weeks, Math.floor(daysIn / 7) + 1));

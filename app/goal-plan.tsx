@@ -255,14 +255,15 @@ export default function GoalPlanScreen() {
   // rather than staying pinned to the phase the user last tapped.
   useEffect(() => { setViewSeq(null); }, [program?.id, program?.currentPhaseSeq]);
 
-  const currentPhaseForSeries = program != null && program.currentPhaseSeq != null ? program.phases[program.currentPhaseSeq] : null;
+  const currentPhaseForSeries = program != null && program.currentPhaseSeq != null ? program.phases.find((ph) => ph.seq === program.currentPhaseSeq) ?? null : null;
   const heroForSeries = currentPhaseForSeries ? heroOf(currentPhaseForSeries.metrics) : null;
   // The chart's readings: reloaded when the program, the hero, or its latest
   // value changes (a fresh log moves the line at once). The keys are the
-  // program id and the hero's id, value and check stamp on purpose: `program`
-  // and `currentPhaseForSeries` are new objects on every load(), and keying
-  // on them would refetch the series on every focus. Everything the loader
-  // reads changes one of those keys when it changes.
+  // program id, the hero's id, value and check stamp, and the phase's
+  // protein target, on purpose: `program` and `currentPhaseForSeries` are
+  // new objects on every load(), and keying on them would refetch the series
+  // on every focus. The loader also reads the program's start date and the
+  // phase's weeks, which only change with the program id.
   useEffect(() => {
     if (!supabase || !clerkId || !program || !currentPhaseForSeries || !heroForSeries) { setSeries(null); return; }
     let live = true;
@@ -338,8 +339,9 @@ export default function GoalPlanScreen() {
     : 0;
   const endDateISO = program ? addDaysISO(program.start_date, totalDays) : null;
 
+  // By seq, not array index, like the stepper's lookup.
   const currentPhase = program != null && program.currentPhaseSeq != null
-    ? program.phases[program.currentPhaseSeq]
+    ? program.phases.find((ph) => ph.seq === program.currentPhaseSeq) ?? null
     : null;
 
   // Open the build flow for the user the dashboard sent here, but only while
@@ -646,6 +648,9 @@ export default function GoalPlanScreen() {
       await logMetricValue(supabase, clerkId, hero, value, curProgress, note);
       track('program_metric_logged', { kind: hero.kind, phase_seq: currentPhase.seq });
       setLogOpen(false);
+      // The log is saved whatever the reload does (load() keeps the last
+      // good program on a failed read), so say so.
+      toast.success('Logged.');
       await load();
     } catch (e) {
       console.warn('[programs] metric log failed', e);
