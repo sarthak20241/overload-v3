@@ -57,10 +57,11 @@ export default function GoalPlanPhaseScreen() {
     } catch {
       /* keep what we had */
     } finally {
-      setLoading(false);
+      // Only the newest load clears the spinner.
+      if (n === loadSeq.current) setLoading(false);
     }
   }, [supabase, clerkId]);
-  useEffect(() => { load(); }, [load]);
+  // Focus fires on mount too, so one effect is enough.
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   useEffect(() => {

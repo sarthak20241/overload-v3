@@ -186,10 +186,12 @@ export default function GoalPlanScreen() {
     } catch {
       /* keep whatever we had */
     } finally {
-      setLoading(false);
+      // Only the newest load clears the spinner: a superseded one returning
+      // early must not drop it while the newer one is still in flight.
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [supabase, clerkId]);
-  useEffect(() => { load(); }, [load]);
+  // Focus fires on mount too, so one effect is enough.
   useFocusEffect(useCallback(() => { load(); setFocusTick((t) => t + 1); }, [load]));
 
   // ── Derived ────────────────────────────────────────────────────────────────
@@ -215,10 +217,13 @@ export default function GoalPlanScreen() {
   // on every load() and keying on it would refetch on every focus.
   useEffect(() => {
     if (!supabase || !clerkId || !program || !currentPhase || !hero) { setSeries(null); return; }
+    // The previous series stays on screen until the new one arrives (the
+    // chart only draws a series whose id matches the hero), so a fresh log
+    // refills the line without a blank frame.
     let live = true;
     loadMetricSeries(supabase, clerkId, program, hero, currentPhase.diet_protein_g)
       .then((data) => { if (live) setSeries({ id: hero.id, data }); })
-      .catch((e) => { console.warn('[programs] metric series failed', e); if (live) setSeries(null); });
+      .catch((e) => { console.warn('[programs] metric series failed', e); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase, clerkId, program?.id, hero?.id, hero?.current_value, hero?.checked_at, currentPhase?.diet_protein_g, seriesTick]);
@@ -298,6 +303,9 @@ export default function GoalPlanScreen() {
     setCoachOpen(true);
   }, [dronaParam, kcalParam, loading]);
 
+  // Stop following the program. Confirmed, because it cannot be undone from
+  // here: the user rebuilds with Drona if they change their mind. Targets are
+  // left exactly where they are, so nothing about today's food changes.
   const confirmEnd = useCallback(() => {
     Alert.alert(
       'End this program?',
