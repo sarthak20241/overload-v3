@@ -372,9 +372,11 @@ export default function NutritionScreen() {
 
   // A Drona card's "Try it" lands here with focus=ai: open the keyboard on the
   // box. This tab stays mounted, so clear the param once used, or the next
-  // visit would focus it again and a second card could not.
+  // visit would focus it again and a second card could not. A focus effect, not
+  // a plain one: leaving the tab before the timer fires must cancel it, or the
+  // hidden box would raise the keyboard over another screen.
   const { focus } = useLocalSearchParams<{ focus?: string }>();
-  useEffect(() => {
+  useFocusEffect(useCallback(() => {
     if (focus !== 'ai' || !isSignedIn) return;
     // After the tab switch settles; focusing mid-transition drops the keyboard.
     // Cleared after, not before: clearing re-runs this effect, whose cleanup
@@ -384,7 +386,7 @@ export default function NutritionScreen() {
       router.setParams({ focus: undefined });
     }, 350);
     return () => clearTimeout(t);
-  }, [focus, isSignedIn]);
+  }, [focus, isSignedIn]));
   const [flow, setFlow] = useState<ParseFlow>({ status: 'idle' });
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).
