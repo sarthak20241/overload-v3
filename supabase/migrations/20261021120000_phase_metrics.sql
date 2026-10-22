@@ -212,3 +212,28 @@ commit;
 
 -- Run after applying (new tables are invisible to PostgREST until it reloads):
 -- notify pgrst, 'reload schema';
+--
+-- Then VERIFY the grants rather than assume them (a project default grant
+-- that survived would be invisible otherwise). Both should list only the
+-- columns granted above, with no 'checked_at', 'checked_week', 'retry_tries',
+-- 'retry_week' for authenticated and nothing for anon:
+--
+--   select table_name, grantee, privilege_type, column_name
+--     from information_schema.column_privileges
+--    where table_name in ('coach_program_phase_metrics', 'coach_program_phase_metric_logs')
+--      and grantee in ('authenticated', 'anon')
+--    order by 1, 2, 3, 4;
+--
+-- And the real test, as a user, in one transaction that is rolled back:
+--
+--   begin;
+--   set local role authenticated;
+--   set local request.jwt.claims = '{"sub":"<a clerk id with an active program>"}';
+--   -- must fail with 42501 (permission denied): a client stamping its own check
+--   update coach_program_phase_metrics set checked_week = current_date where user_id = '<that id>';
+--   -- must update 0 rows: an app-measured row is not client-updatable
+--   update coach_program_phase_metrics set status = 'done' where user_id = '<that id>' and kind = 'bodyweight';
+--   -- must fail: a metric on another user's phase
+--   insert into coach_program_phase_metrics (program_id, phase_id, user_id, kind, target_value)
+--     values ('<their program>', '<their phase>', '<that id>', 'steps', 8000);
+--   rollback;
