@@ -39,6 +39,9 @@ const TICKET_WAIT_MS = 9000;
 const SWAP_MAX_MS = 30000;
 const TICKET_FETCH_MS = 8000;
 
+/** Null when the request never got an answer (offline, aborted): a skip.
+ *  Throws when the server answered with an error, so a broken deploy (no
+ *  CLERK_SECRET_KEY, a verifier bug) shows up as a failure, not a skip. */
 async function fetchTicket(token: string): Promise<{ ticket: string; userId: string } | null> {
   const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -46,7 +49,9 @@ async function fetchTicket(token: string): Promise<{ ticket: string; userId: str
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TICKET_FETCH_MS);
   try {
-    const res = await fetch(`${url}/functions/v1/session-refresh`, {
+    let res: Response;
+    try {
+      res = await fetch(`${url}/functions/v1/session-refresh`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -55,8 +60,11 @@ async function fetchTicket(token: string): Promise<{ ticket: string; userId: str
       },
       body: '{}',
       signal: controller.signal,
-    });
-    if (!res.ok) return null;
+      });
+    } catch {
+      return null;
+    }
+    if (!res.ok) throw new Error(`session-refresh: HTTP ${res.status}`);
     const body = (await res.json()) as { ticket?: string | null; user_id?: string };
     return body.ticket && body.user_id ? { ticket: body.ticket, userId: body.user_id } : null;
   } finally {
@@ -121,13 +129,15 @@ export function SessionRefreshGate({ children }: { children: ReactNode }) {
     runSessionRefresh({
       currentUserId: userId,
       fetchTicket: async () => {
-        // Any failure here means "no ticket", which changes nothing.
+        // No token is a skip. A server error throws on to runSessionRefresh,
+        // which reports it as ticket_error. Neither signs anyone out.
+        let token: string | null = null;
         try {
-          const token = await getToken();
-          return token ? await fetchTicket(token) : null;
+          token = await getToken();
         } catch {
           return null;
         }
+        return token ? fetchTicket(token) : null;
       },
       beforeSignOut: () => {
         if (settled) return false; // the gate already gave up and moved on

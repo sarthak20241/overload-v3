@@ -39,7 +39,8 @@ export function shouldRefreshSession(expireAt: Date | null | undefined, now: num
 }
 
 export interface RefreshSteps {
-  /** The ticket for the signed-in user, or null when there is none to use. */
+  /** The ticket for the signed-in user, or null when there is none to use.
+   *  Throws when the server answered with an error. */
   fetchTicket: () => Promise<{ ticket: string; userId: string } | null>;
   /** The user signed in right now. A ticket for anyone else is not used. */
   currentUserId: string;
@@ -58,6 +59,8 @@ export type RefreshOutcome =
   | 'refreshed'
   /** Nothing changed; the old session is still active. */
   | 'no_ticket'
+  /** Nothing changed, but the ticket server answered with an error. */
+  | 'ticket_error'
   | 'ticket_user_mismatch'
   /** The caller stopped waiting before the sign-out; nothing changed. */
   | 'abandoned'
@@ -85,7 +88,9 @@ export async function runSessionRefresh(steps: RefreshSteps): Promise<RefreshOut
   try {
     got = await steps.fetchTicket();
   } catch {
-    got = null;
+    // The server answered with an error. Nothing changes for the user, but
+    // unlike no ticket this is something to fix, so it is its own outcome.
+    return 'ticket_error';
   }
   if (!got) return 'no_ticket';
   if (got.userId !== steps.currentUserId) return 'ticket_user_mismatch';

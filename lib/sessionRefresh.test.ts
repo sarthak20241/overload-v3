@@ -63,12 +63,14 @@ Deno.test("the ticket comes first, then sign-out, then the ticket sign-in", asyn
   assertEquals(log, ["fetchTicket", "signOut", "signIn:t1"]);
 });
 
-Deno.test("no ticket, or a failed fetch: nobody is signed out", async () => {
-  for (const fetchTicket of [async () => null, async () => { throw new Error("offline"); }]) {
-    const { s, log } = steps({ fetchTicket: fetchTicket as RefreshSteps["fetchTicket"] });
-    assertEquals(await runSessionRefresh(s), "no_ticket");
-    assertEquals(log.includes("signOut"), false);
-  }
+Deno.test("no ticket, or a server error: nobody is signed out", async () => {
+  const none = steps({ fetchTicket: async () => null });
+  assertEquals(await runSessionRefresh(none.s), "no_ticket");
+  assertEquals(none.log.includes("signOut"), false);
+
+  const broken = steps({ fetchTicket: async () => { throw new Error("session-refresh: HTTP 503"); } });
+  assertEquals(await runSessionRefresh(broken.s), "ticket_error");
+  assertEquals(broken.log.includes("signOut"), false);
 });
 
 Deno.test("a ticket for another user is never used", async () => {
@@ -127,7 +129,7 @@ Deno.test("only outcomes that changed nothing count as skipped", async () => {
     assertEquals(SKIPPED_OUTCOMES.includes(await runSessionRefresh(s)), true);
   }
   // These are real failures and must not hide among the skips.
-  for (const outcome of ["sign_in_failed", "sign_out_failed", "ticket_user_mismatch", "refreshed", "swap_timed_out", "error"] as const) {
+  for (const outcome of ["sign_in_failed", "sign_out_failed", "ticket_user_mismatch", "ticket_error", "refreshed", "swap_timed_out", "error"] as const) {
     assertEquals(SKIPPED_OUTCOMES.includes(outcome), false);
   }
 });
