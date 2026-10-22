@@ -234,9 +234,12 @@ export async function metricsStep(
           .update(giveUp ? { ...ledger, checked_at: now, checked_week: weekStart } : ledger)
           .eq("user_id", userId).eq("phase_id", phase.id)
       );
+      // A ledger that cannot be written is said out loud in the summary: the
+      // tries would not advance, so the give-up could never land.
       if (ledgerErr) console.log(`[drona-cards] could not record the tries: ${ledgerErr.message}`);
-      if (giveUp) await stampOthers(phase.id);
-      return { checked, line: false, error: `${why.join("; ")}${giveUp ? `, gave up for the week after ${tries} tries` : ", retry next run"}` };
+      if (giveUp && !ledgerErr) await stampOthers(phase.id);
+      const ledgerNote = ledgerErr ? `; ledger write failed: ${ledgerErr.message}` : "";
+      return { checked, line: false, error: `${why.join("; ")}${giveUp ? `, gave up for the week after ${tries} tries` : ", retry next run"}${ledgerNote}` };
     }
 
     await stampOthers(phase.id);
@@ -285,14 +288,14 @@ export async function metricsStep(
           db.from("coach_program_phase_metrics").update(ledger).eq("user_id", userId).eq("phase_id", phase.id)
         );
         if (noteErr) console.log(`[drona-cards] could not record the line tries: ${noteErr.message}`);
-        return { checked, line: false, error: `line: ${answer.error ?? "no line"}, gave up for the week after ${tries} tries` };
+        return { checked, line: false, error: `line: ${answer.error ?? "no line"}, gave up for the week after ${tries} tries${noteErr ? `; ledger write failed: ${noteErr.message}` : ""}` };
       }
       console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} not written: ${answer.error ?? "no line"}; retry next run (${tries} of ${TRIES_PER_WEEK})`);
       const { error: unstampErr } = await retried(() =>
         db.from("coach_program_phase_metrics").update({ checked_week: null, ...ledger }).eq("user_id", userId).eq("phase_id", phase.id)
       );
       if (unstampErr) console.log(`[drona-cards] could not mark the line for retry: ${unstampErr.message}`);
-      return { checked, line: false, error: `line: ${answer.error ?? "no line"}, retry next run` };
+      return { checked, line: false, error: `line: ${answer.error ?? "no line"}, retry next run${unstampErr ? `; ledger write failed: ${unstampErr.message}` : ""}` };
     }
     const { error: lineErr } = await retried(() =>
       db.from("coach_program_phases").update({ coach_line: answer.line }).eq("id", phase.id)

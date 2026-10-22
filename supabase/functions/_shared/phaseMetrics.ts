@@ -101,7 +101,10 @@ const TARGET_BOUNDS: Record<MetricKind, readonly [number, number]> = {
   protein_days: [1, 7],
   distance: [0.1, 500],
   duration: [1, 1440],
-  custom: [-1e9, 1e9],
+  // A custom metric is a quantity the user logs (a hold in seconds, reps, a
+  // tape measure): never negative, like its logs (the logs table checks the
+  // same bounds).
+  custom: [0, 1e6],
 };
 
 /** A metric's pointer at what it measures. */
