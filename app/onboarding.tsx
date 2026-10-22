@@ -417,6 +417,7 @@ export default function OnboardingScreen() {
           phases = applyProgram(
             await requestDronaOnboardingProgram({
               token,
+              freshToken: () => getToken({ skipCache: true }),
               message: buildOnboardingProgramMessage(answers, programExtras),
             }),
           );

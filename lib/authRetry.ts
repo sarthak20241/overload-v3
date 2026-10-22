@@ -37,8 +37,9 @@ export function isExpiredTokenReply(status: number, body: string): boolean {
  * Null for anything but an expired-token 401, when Clerk cannot produce a
  * token, and when it hands back the same token (resending it would only fail
  * again). Callers retry at most once, so a dead session fails on the second
- * 401 and reaches the sign-in copy. Both retry paths decide here: the fetch
- * wrapper through `sendWithFreshTokenRetry`, the coach stream directly.
+ * 401 and reaches the sign-in copy. Every retry path decides here: plain
+ * fetches through `sendWithFreshTokenRetry`, the meal parse stream through
+ * `sendStreamWithFreshTokenRetry`, the coach stream directly.
  */
 export async function freshTokenAfterExpiry(
   status: number,
@@ -85,6 +86,31 @@ export async function sendWithFreshTokenRetry(
     await first.body?.cancel();
   } catch { /* already closed, or no stream body: nothing to release */ }
   return send(next);
+}
+
+/**
+ * `sendWithFreshTokenRetry` for a reply the caller reads as a stream.
+ *
+ * expo/fetch, which the meal parse uses for a readable body, has no clone(),
+ * so the 401's body is read in place to see why it failed. A 401 handed back
+ * from here may therefore have a spent body: callers treat any non-2xx as a
+ * failure and do not read it. A 2xx is never touched.
+ */
+export async function sendStreamWithFreshTokenRetry<R extends { status: number; text(): Promise<string> }>(
+  send: (token: string) => Promise<R>,
+  token: string,
+  freshToken: () => Promise<string | null>,
+): Promise<R> {
+  const first = await send(token);
+  if (first.status !== 401) return first;
+  let body = '';
+  try {
+    body = await first.text();
+  } catch {
+    return first;
+  }
+  const next = await freshTokenAfterExpiry(first.status, body, token, freshToken);
+  return next ? send(next) : first;
 }
 
 /**

@@ -7,7 +7,7 @@
 // limits that keep a really signed-out user from looping.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { freshTokenAfterExpiry, isExpiredTokenReply, sendWithFreshTokenRetry, sharedInFlight, tokenWithin, tokenWithinTimed } from "./authRetry.ts";
+import { freshTokenAfterExpiry, isExpiredTokenReply, sendStreamWithFreshTokenRetry, sendWithFreshTokenRetry, sharedInFlight, tokenWithin, tokenWithinTimed } from "./authRetry.ts";
 
 // The exact bodies the two servers send for an expired token.
 const EDGE_EXPIRED = JSON.stringify({
@@ -156,4 +156,44 @@ Deno.test("tokenWithinTimed: says whether the null came from the timeout", async
   assertEquals(await tokenWithinTimed(() => Promise.resolve("t"), 50), { token: "t", timedOut: false });
   assertEquals(await tokenWithinTimed(() => new Promise<string | null>(() => {}), 20), { token: null, timedOut: true });
   assertEquals(await tokenWithinTimed(() => Promise.resolve(null), 50), { token: null, timedOut: false });
+});
+
+// The meal parse stream (lib/dietData.ts) reads its reply through expo/fetch,
+// which has no clone(): the stream form reads the 401 in place.
+Deno.test("stream: an expired token is replaced and the request sent again, once", async () => {
+  const { seen, send } = server("fresh");
+  const res = await sendStreamWithFreshTokenRetry(send, "stale", () => Promise.resolve("fresh"));
+  assertEquals(res.status, 200);
+  assertEquals(await res.text(), "ok");
+  assertEquals(seen, ["stale", "fresh"]);
+
+  const dead = server("never");
+  const again = await sendStreamWithFreshTokenRetry(dead.send, "stale", () => Promise.resolve("also-stale"));
+  assertEquals(again.status, 401);
+  assertEquals(dead.seen, ["stale", "also-stale"]);
+});
+
+Deno.test("stream: no retry without a new token, or for another 401", async () => {
+  for (const fresh of [null, "stale"]) {
+    const { seen, send } = server("never");
+    const res = await sendStreamWithFreshTokenRetry(send, "stale", () => Promise.resolve(fresh));
+    assertEquals(res.status, 401);
+    assertEquals(seen, ["stale"]);
+  }
+  const other = server("fresh", JSON.stringify({ error: "Unauthorized", debug: "no auth header" }));
+  let asked = 0;
+  const res = await sendStreamWithFreshTokenRetry(other.send, "stale", () => {
+    asked++;
+    return Promise.resolve("fresh");
+  });
+  assertEquals(res.status, 401);
+  assertEquals(other.seen, ["stale"]);
+  assertEquals(asked, 0);
+});
+
+Deno.test("stream: a 2xx comes back unread", async () => {
+  const { send } = server("good");
+  const res = await sendStreamWithFreshTokenRetry(send, "good", () => Promise.resolve("fresh"));
+  assertEquals(res.bodyUsed, false);
+  assertEquals(await res.text(), "ok");
 });

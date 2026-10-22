@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "@/lib/supabase": "./test-shims/supabase.ts",
+    "@/": "../"
+  }
+}
