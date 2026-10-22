@@ -94,14 +94,29 @@ export function SessionRefreshGate({ children }: { children: ReactNode }) {
   const started = useRef(false);
 
   // Clerk may never load (offline cold start). Don't hold the app for it.
+  const clerkTimedOut = useRef(false);
+  const lateLoadSeen = useRef(false);
   useEffect(() => {
     const t = setTimeout(() => {
-      if (!started.current) setDone(true);
+      if (!started.current) {
+        clerkTimedOut.current = true;
+        setDone(true);
+      }
     }, CLERK_LOAD_WAIT_MS);
     return () => clearTimeout(t);
   }, []);
 
   useEffect(() => {
+    // Clerk loaded after the gate had given up waiting. The swap can't run
+    // under a mounted app, but a user it would have refreshed is worth
+    // counting: a slow start every launch would let the session run out.
+    if (done && clerkTimedOut.current && isLoaded && !lateLoadSeen.current) {
+      lateLoadSeen.current = true;
+      if (isSignedIn && shouldRefreshSession(session?.expireAt ?? null, Date.now())) {
+        track('session_refresh_skipped', { outcome: 'clerk_load_timed_out' });
+      }
+      return;
+    }
     if (done || started.current || !isLoaded) return;
     started.current = true;
     const expireAt: Date | null = session?.expireAt ?? null;

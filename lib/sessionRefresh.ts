@@ -72,11 +72,21 @@ export type RefreshOutcome =
  *  offline, not due, gave up waiting. `ticket_user_mismatch` also changes
  *  nothing but is left out on purpose: a ticket for the wrong user is a bug
  *  to see, so it counts as a failure. */
-export const SKIPPED_OUTCOMES: readonly GateOutcome[] = ['no_ticket', 'abandoned', 'ticket_timed_out'];
+export const SKIPPED_OUTCOMES: readonly GateOutcome[] = [
+  'no_ticket',
+  'abandoned',
+  'ticket_timed_out',
+  'clerk_load_timed_out',
+];
 
 /** Everything SessionRefreshGate can report: the run's own outcomes plus its
  *  timeouts and an unexpected throw. One union, so a typo fails the build. */
-export type GateOutcome = RefreshOutcome | 'ticket_timed_out' | 'swap_timed_out' | 'error';
+export type GateOutcome =
+  | RefreshOutcome
+  | 'clerk_load_timed_out'
+  | 'ticket_timed_out'
+  | 'swap_timed_out'
+  | 'error';
 
 /** Waits before the 2nd and 3rd ticket sign-in attempts. */
 const SIGN_IN_RETRY_MS = [500, 1500];
