@@ -356,6 +356,8 @@ async function gatherReadings(
   // coach named the one exercise that counts.
   const named = metrics.filter((m) => (m.kind === "lift_e1rm" || m.kind === "distance" || m.kind === "duration") && !m.ref?.exercise_id && m.ref?.exercise_name);
   if (named.length > 0) {
+    // Degrades like every other source: a throw here fails the named kinds
+    // for this run, never the whole step.
     await (async () => {
       for (const m of named) {
         if (m.ref?.exercise_id || !m.ref?.exercise_name) continue;
@@ -385,7 +387,7 @@ async function gatherReadings(
         );
         if (refErr) console.log(`[drona-cards] could not keep the exercise id on ${m.id.slice(0, 8)}: ${refErr.message}`);
       }
-    })();
+    })().catch((e) => fail(String(e), ...new Set(named.map((m) => m.kind))));
   }
   if (kinds.has("lift_e1rm")) {
     jobs.push((async () => {

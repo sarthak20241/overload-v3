@@ -64,14 +64,17 @@ const JWKS = createRemoteJWKSet(new URL(`${CLERK_ISSUER}/.well-known/jwks.json`)
 const USER_PAGE = 1000;
 const CRON_CONCURRENCY = 4;
 /**
- * Stop starting phase metric checks this long after the run began: the cron
- * call times out at 55 s, the cards and check-ins run first, and the moments
- * pass must still get its turn. The budget is checked before each batch, and
- * a batch can hold one model call per user (20 s timeout each, in parallel),
- * so the last batch started inside the budget ends by about 40 s, leaving
- * the moments pass its share of the 55 s. What is left waits for the next run.
+ * Stop starting phase metric checks this long after the metrics pass began,
+ * and in any case once the run is METRICS_LATEST_MS old: the cron call times
+ * out at 55 s, the cards and check-ins run first, and the moments pass must
+ * still get its turn. The budget is checked before each batch (the first
+ * batch always runs, so a busy card pass cannot push the metrics out of
+ * every run), and a batch can hold one model call per user (20 s timeout
+ * each, in parallel), so the last batch started inside the budget ends by
+ * about 40 s. What is left waits for the next run.
  */
 const METRICS_BUDGET_MS = 20_000;
+const METRICS_LATEST_MS = 22_000;
 /** Cards older than this are history nobody reads; the facts window is 8 weeks. */
 const KEEP_WEEKS = 26;
 
@@ -532,8 +535,10 @@ async function runCron(): Promise<Response> {
     const rotate = dueUsers.length > 0 ? Math.floor(now.getTime() / 900_000) % dueUsers.length : 0;
     const metricUsers = [...dueUsers.slice(rotate), ...dueUsers.slice(0, rotate)];
     let metricsSkipped = 0;
+    const metricsStart = Date.now();
+    const metricsDeadline = Math.min(metricsStart + METRICS_BUDGET_MS, now.getTime() + METRICS_LATEST_MS);
     for (let i = 0; i < metricUsers.length; i += CRON_CONCURRENCY) {
-      if (Date.now() - now.getTime() > METRICS_BUDGET_MS) {
+      if (i > 0 && Date.now() > metricsDeadline) {
         metricsSkipped = metricUsers.length - i;
         failures.push(`metrics: out of time, ${metricsSkipped} left for the next run`);
         break;
