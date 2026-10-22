@@ -478,11 +478,14 @@ Deno.test("the failure this prevents: the router's pick is offered, the parsed a
 
 Deno.test("the parse never waits for the router: no pointer when it is still out, the offer once it is back", async () => {
   const seen: string[] = [];
-  // The router answers 20 ms in: after the prompt is built (the stub answers
-  // at once), before the offer step gives up.
-  const late = new Promise<SavedMealHint | null>((r) => setTimeout(() => r(HINT), 20));
+  // The router answers the moment the model is called: the prompt is already
+  // built by then, and the offer step runs after. No clock involved.
+  let answer: (h: SavedMealHint | null) => void = () => {};
+  const late = new Promise<SavedMealHint | null>((r) => { answer = r; });
+  const base = stub([], [{ ...OATMEAL_ITEM, name: "kesar pista oats" }], seen);
+  const deps = { ...base, fetchFn: ((...a: Parameters<typeof fetch>) => { answer(HINT); return base.fetchFn!(...a); }) as typeof fetch };
   const r = await runParseMeal(
-    stub([], [{ ...OATMEAL_ITEM, name: "kesar pista oats" }], seen),
+    deps,
     { ...INPUT, text: "yesterday's oat meal in breakfast", mode: "fast", savedMeals: [OATS], savedHint: late },
   );
   assert(!seen[0].includes("router read"), seen[0]);
@@ -501,6 +504,20 @@ Deno.test("a router that never answers holds no log: no offer, and the trace say
   assertEquals(r.parsed!.items.map((i) => i.food_name), ["kesar pista oats"]);
   assertEquals(r.saved_suggestions, undefined);
   assertEquals(r.steps.find((s) => s.tool === "saved_hint"), { iter: 0, tool: "saved_hint", input: null, result: "pending" });
+});
+
+Deno.test("no wait for the router when no offer could come of it", async () => {
+  const never = new Promise<SavedMealHint | null>(() => {});
+  // The words turn saved meals down: an offer is impossible, so the parse
+  // must not sit out the cap (1000 ms here) for a router that never answers.
+  const t0 = Date.now();
+  const r = await runParseMeal(
+    stub([], [{ ...OATMEAL_ITEM, name: "kesar pista oats" }]),
+    { ...INPUT, text: "kesar pista oats, not from my saved meals", mode: "fast", savedMeals: [OATS], savedHint: never },
+  );
+  assert(Date.now() - t0 < 300, `waited ${Date.now() - t0} ms`);
+  assertEquals(r.parsed!.items.map((i) => i.food_name), ["kesar pista oats"]);
+  assertEquals(r.saved_suggestions, undefined);
 });
 
 

@@ -71,7 +71,10 @@ export interface FoodAgentInput {
   /** The router's read of the message: which saved meal it names, and how
    *  sure (0-1). One line in the opening message, so the agent can fetch that
    *  one meal with list_saved_meals instead of reading them all. A pointer,
-   *  not a verdict: the amount and the day in the message win. */
+   *  not a verdict: the amount and the day in the message win. Not checked
+   *  against the saved list here, unlike the parse's swap offer: the router
+   *  picked it from that same list, and the agent must list_saved_meals
+   *  before it copies a line anyway, so a stale pick simply comes back empty. */
   savedHint?: { id: string; name: string; confidence: number } | null;
 }
 

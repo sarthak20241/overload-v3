@@ -6575,16 +6575,18 @@ async function runParseMealCore(
     // the line that shares its words, never a log. The user taps if they
     // meant the saved meal; the parsed line stands if they did not. Lines
     // already on the card are the correction paths' to keep.
+    // Lines an offer could sit on: new ones, not the card's own.
+    const fresh = extItems.filter((it) =>
+      !(correctsPrevious && prevItems.some((p) => memoryKey(p.food_name) === memoryKey(it.name)))
+    );
     // Extraction is back, so the router has had that long to answer; a slow
-    // router is waited on only up to the cap, never a log held for it.
-    const pick = await hint.wait(Math.min(deps.timeoutMs, HINT_WAIT_MS));
-    if (
-      pick && !hits.some((h) => h.meal.id === pick.id) && !suggestions.some((s) => s.saved_id === pick.id) &&
-      !rejectsSavedMeal(input.text)
-    ) {
-      const fresh = extItems.filter((it) =>
-        !(correctsPrevious && prevItems.some((p) => memoryKey(p.food_name) === memoryKey(it.name)))
-      );
+    // router is waited on only up to the cap, never a log held for it, and
+    // only when an offer could come of it: a line to put it on, and words
+    // that do not turn saved meals down.
+    const pick = fresh.length > 0 && !rejectsSavedMeal(input.text)
+      ? await hint.wait(Math.min(deps.timeoutMs, HINT_WAIT_MS))
+      : null;
+    if (pick && !hits.some((h) => h.meal.id === pick.id) && !suggestions.some((s) => s.saved_id === pick.id)) {
       const target = hintOfferTarget(pick, saved, fresh.map((it) => it.name));
       if (target) suggestions.push({ food_name: target, saved_id: pick.id, saved_name: pick.name });
     }
