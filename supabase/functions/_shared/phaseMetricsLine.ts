@@ -49,17 +49,24 @@ export const COACH_LINE_TOOL = {
 
 export const COACH_LINE_SYSTEM = `You are Coach Drona, the coach inside OVERLOAD. Direct, knowledgeable, never sycophantic. You write one sentence for the top of the user's Goal screen each week. The status words were decided by the app's rules from the numbers; do not argue with them, explain them in plain words. Call the phase_line tool exactly once. No em dashes.`;
 
+/** User-chosen text (a custom metric's name, an exercise name) made safe for the prompt: one line, capped. */
+const MAX_NAME = 60;
+export function safeName(v: string): string {
+  return v.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_NAME);
+}
+
 /** The facts for the prompt: every number the line may name. */
 export function linePrompt(p: LinePack): string {
   const lines = p.metrics.map((m) => {
-    const label = metricLabel(m) + (m.is_hero ? ' (hero)' : '');
-    const cur = m.current_value == null ? 'no reading' : `${formatMetricValue(m.kind, m.current_value, m.unit)}${m.unit ? ` ${m.unit}` : ''}`;
+    const label = safeName(metricLabel(m)) + (m.is_hero ? ' (hero)' : '');
+    const unit = m.unit ? ` ${safeName(m.unit).slice(0, 12)}` : '';
+    const cur = m.current_value == null ? 'no reading' : `${formatMetricValue(m.kind, m.current_value, m.unit)}${unit}`;
     const start = m.start_value == null ? '' : `, started ${formatMetricValue(m.kind, m.start_value, m.unit)}`;
-    return `- ${label}: now ${cur}, target ${formatMetricValue(m.kind, m.target_value, m.unit)}${m.unit ? ` ${m.unit}` : ''}${start}, ${m.direction}, status ${STATUS_LABEL[m.status]}`;
+    return `- ${label}: now ${cur}, target ${formatMetricValue(m.kind, m.target_value, m.unit)}${unit}${start}, ${m.direction}, status ${STATUS_LABEL[m.status]}`;
   });
   return [
-    `Program: ${p.program_title}. Phase: ${p.phase_name}, week ${p.week_in_phase} of ${p.weeks_total}.`,
-    p.job_text ? `This phase's job: ${p.job_text}.` : '',
+    `Program: ${safeName(p.program_title)}. Phase: ${safeName(p.phase_name)}, week ${p.week_in_phase} of ${p.weeks_total}.`,
+    p.job_text ? `This phase's job: ${safeName(p.job_text).slice(0, 80)}.` : '',
     `This week's check:`,
     ...lines,
     `Write the line.`,

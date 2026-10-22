@@ -1000,7 +1000,7 @@ export async function logMetricValue(
     );
   if (error) throw error;
   const status = statusFor({ ...metric, current_value: value, progress });
-  const { error: upErr } = await supabase
+  const { data: moved, error: upErr } = await supabase
     .from(METRICS_TABLE)
     .update({
       current_value: value,
@@ -1011,8 +1011,12 @@ export async function logMetricValue(
       // grant leaves the column out), so logging never skips a week's check.
       updated_at: new Date().toISOString(),
     })
-    .eq('id', metric.id);
+    .eq('id', metric.id)
+    .select('id');
   if (upErr) throw upErr;
+  // The update policy lets a client move a custom metric only; an update
+  // that matched no row is reported, never swallowed as a save.
+  if ((moved?.length ?? 0) === 0) throw new Error('That metric is not one you log by hand.');
 }
 
 /**

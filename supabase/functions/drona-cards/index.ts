@@ -66,9 +66,12 @@ const CRON_CONCURRENCY = 4;
 /**
  * Stop starting phase metric checks this long after the run began: the cron
  * call times out at 55 s, the cards and check-ins run first, and the moments
- * pass must still get its turn. What is left waits for the next run.
+ * pass must still get its turn. The budget is checked between batches, and a
+ * batch can hold one model call per user (20 s timeout each, in parallel),
+ * so the last batch started inside the budget still ends well under 55 s.
+ * What is left waits for the next run.
  */
-const METRICS_BUDGET_MS = 35_000;
+const METRICS_BUDGET_MS = 25_000;
 /** Cards older than this are history nobody reads; the facts window is 8 weeks. */
 const KEEP_WEEKS = 26;
 
@@ -496,13 +499,14 @@ async function runCron(): Promise<Response> {
     // The phase metrics check (.planning/phase-metrics/SPEC.md): once a local
     // week per user with an active program, whether or not a card is due.
     // One read finds who has a metric row not yet checked this LOCAL week
-    // (checked_week, the local Monday the job wrote; the earliest of this
-    // run's week starts, so no zone is missed); everyone else costs nothing,
-    // and metricsStep then reads the phase itself.
+    // (checked_week, the local Monday the job wrote). The bound is the LATEST
+    // week start of this run's zones, so the read is a superset: a zone
+    // already on the next week is listed at once, and metricsStep's own
+    // checkDue filters per user. Everyone else costs nothing.
     // A time budget keeps the moments pass below from being starved.
-    const earliestWeek = weekStarts.length > 0 ? [...weekStarts].sort()[0] : null;
+    const latestWeek = weekStarts.length > 0 ? [...weekStarts].sort().pop()! : null;
     const due_metrics = new Set<string>();
-    if (earliestWeek) {
+    if (latestWeek) {
       for (let from = 0; ; from += USER_PAGE) {
         // Active programs only, rows the check can read (a target), and a
         // stable page key (user_id, id) so no row straddles a page edge.
@@ -510,7 +514,7 @@ async function runCron(): Promise<Response> {
           db.from("coach_program_phase_metrics").select("user_id, coach_programs!inner(status)")
             .eq("coach_programs.status", "active")
             .not("target_value", "is", null)
-            .or(`checked_week.is.null,checked_week.lt.${earliestWeek}`)
+            .or(`checked_week.is.null,checked_week.lt.${latestWeek}`)
             .order("user_id", { ascending: true }).order("id", { ascending: true })
             .range(from, from + USER_PAGE - 1)
         );
