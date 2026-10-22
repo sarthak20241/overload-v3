@@ -56,6 +56,11 @@ export interface Db {
   from(table: string): DbQuery;
 }
 
+/** A failed coach line is retried this many times in a week, then the old line stays. */
+export const LINE_TRIES_PER_WEEK = 3;
+/** The retry ledger on the phase's first metric row: `line_retry:<week>:<tries>`. */
+const LINE_TRY_NOTE = /^line_retry:(\d{4}-\d{2}-\d{2}):(\d+)$/;
+
 export interface MetricsStepResult {
   /** Metrics written this run (0 when nothing was due). */
   checked: number;
@@ -140,7 +145,7 @@ export async function metricsStep(
     // RLS only guards the client's writes.
     const { data: metricRows, error: mErr } = await retried(() =>
       db.from("coach_program_phase_metrics")
-        .select("id, seq, is_hero, kind, ref, unit, direction, start_value, target_value, current_value, status, checked_week")
+        .select("id, seq, is_hero, kind, ref, unit, direction, start_value, target_value, current_value, status, status_note, checked_week")
         .eq("user_id", userId).eq("phase_id", phase.id).order("seq", { ascending: true })
     );
     if (mErr) return { ...none, error: `metrics: ${mErr.message}` };
@@ -245,12 +250,26 @@ export async function metricsStep(
       metrics: lineMetrics,
     }, anthropicKey, fetchFn);
     if (!answer.line) {
-      // The line is retried this week: one row of the phase is un-stamped,
-      // so the cron lists the user again and the next run re-checks the
-      // phase (idempotent) and asks the model once more.
-      console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} not written: ${answer.error ?? "no line"}; retry next run`);
+      // The line is retried this week, up to LINE_TRIES_PER_WEEK: one row of
+      // the phase is un-stamped, so the cron lists the user again and the
+      // next run re-checks the phase (idempotent) and asks the model once
+      // more. The tries are counted on that row's status_note, so a model
+      // that keeps failing (a bad key, a 4xx) costs at most three calls a
+      // week and the phase keeps last week's line.
+      const note = rows.find((r) => String(r.id) === metrics[0].id)?.status_note;
+      const m = typeof note === "string" ? note.match(LINE_TRY_NOTE) : null;
+      const tries = (m && m[1] === weekStart ? Number(m[2]) : 0) + 1;
+      if (tries >= LINE_TRIES_PER_WEEK) {
+        console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} failed ${tries} times this week (${answer.error ?? "no line"}); keeping last week's line`);
+        const { error: noteErr } = await retried(() =>
+          db.from("coach_program_phase_metrics").update({ status_note: `line_retry:${weekStart}:${tries}` }).eq("id", metrics[0].id)
+        );
+        if (noteErr) console.log(`[drona-cards] could not record the line tries: ${noteErr.message}`);
+        return { checked, line: false, error: `line: ${answer.error ?? "no line"}, gave up for the week after ${tries} tries` };
+      }
+      console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} not written: ${answer.error ?? "no line"}; retry next run (${tries} of ${LINE_TRIES_PER_WEEK})`);
       const { error: unstampErr } = await retried(() =>
-        db.from("coach_program_phase_metrics").update({ checked_week: null }).eq("id", metrics[0].id)
+        db.from("coach_program_phase_metrics").update({ checked_week: null, status_note: `line_retry:${weekStart}:${tries}` }).eq("id", metrics[0].id)
       );
       if (unstampErr) console.log(`[drona-cards] could not mark the line for retry: ${unstampErr.message}`);
       return { checked, line: false, error: `line: ${answer.error ?? "no line"}, retry next run` };
@@ -259,6 +278,11 @@ export async function metricsStep(
       db.from("coach_program_phases").update({ coach_line: answer.line }).eq("id", phase.id)
     );
     if (lineErr) return { checked, line: false, error: `line: ${lineErr.message}` };
+    // A clean line clears the retry ledger.
+    const ledger = rows.find((r) => String(r.id) === metrics[0].id)?.status_note;
+    if (typeof ledger === "string" && LINE_TRY_NOTE.test(ledger)) {
+      await retried(() => db.from("coach_program_phase_metrics").update({ status_note: null }).eq("id", metrics[0].id));
+    }
     return { checked, line: true };
   } catch (e) {
     return { ...none, error: String(e).slice(0, 200) };

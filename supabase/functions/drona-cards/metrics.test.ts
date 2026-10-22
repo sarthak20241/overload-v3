@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { type Db, metricsStep } from "./metrics.ts";
+import { type Db, LINE_TRIES_PER_WEEK, metricsStep } from "./metrics.ts";
 
 /**
  * A fake PostgREST client: every chained call returns the builder, and
@@ -237,7 +237,53 @@ Deno.test("a failed coach line un-stamps one row, so the week retries it", async
   assertEquals(out.error?.startsWith("line: 500"), true);
   const unstamp = writes.find((w) => w.patch.checked_week === null);
   assertEquals(unstamp?.eq, [["id", "m-bw"]]);
+  assertEquals(unstamp?.patch.status_note, `line_retry:${WEEK}:1`);
   assertEquals(writes.some((w) => w.table === "coach_program_phases"), false);
+});
+
+Deno.test("after the week's last allowed try the line gives up and the phase stays stamped", async () => {
+  // The ledger says two tries already this week.
+  const tried = rows.map((r, i) => (i === 0 ? { ...r, status_note: `line_retry:${WEEK}:${LINE_TRIES_PER_WEEK - 1}` } : r));
+  const { db, writes } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: tried, error: null }],
+    daily_metrics: [{ data: { value: 71.4 }, error: null }],
+    user_nutrition_stats: [{ data: [{ protein_g: 155 }], error: null }],
+  });
+  const fetchFn = (() => Promise.resolve(new Response("{}", { status: 401 }))) as unknown as typeof fetch;
+  const out = await metricsStep(db, "user-1", DAY, WEEK, "key", fetchFn);
+  assertEquals(out.line, false);
+  assertEquals(out.error?.includes("gave up for the week"), true);
+  // No row is un-stamped: the user leaves the due list until next week.
+  assertEquals(writes.some((w) => w.patch.checked_week === null), false);
+  assertEquals(writes.find((w) => typeof w.patch.status_note === "string")?.patch.status_note, `line_retry:${WEEK}:${LINE_TRIES_PER_WEEK}`);
+  // A ledger from an earlier week does not count.
+  const stale = rows.map((r, i) => (i === 0 ? { ...r, status_note: "line_retry:2026-10-12:2" } : r));
+  const fresh = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: stale, error: null }],
+    daily_metrics: [{ data: { value: 71.4 }, error: null }],
+    user_nutrition_stats: [{ data: [{ protein_g: 155 }], error: null }],
+  });
+  assertEquals((await metricsStep(fresh.db, "user-1", DAY, WEEK, "key", fetchFn)).error?.endsWith("retry next run"), true);
+});
+
+Deno.test("a clean line clears the retry ledger", async () => {
+  const tried = rows.map((r, i) => (i === 0 ? { ...r, status_note: `line_retry:${WEEK}:1` } : r));
+  const { db, writes } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: tried, error: null }],
+    daily_metrics: [{ data: { value: 71.4 }, error: null }],
+    user_nutrition_stats: [{ data: [{ protein_g: 155 }], error: null }],
+  });
+  const fetchFn = (() => Promise.resolve(new Response(JSON.stringify({
+    content: [{ type: "tool_use", name: "phase_line", input: { line: "On pace. Keep the protein up on rest days and the scale follows." } }],
+  }), { status: 200 }))) as unknown as typeof fetch;
+  assertEquals(await metricsStep(db, "user-1", DAY, WEEK, "key", fetchFn), { checked: 2, line: true });
+  assertEquals(writes.some((w) => w.patch.status_note === null && w.eq[0][1] === "m-bw"), true);
 });
 
 Deno.test("the metrics read is scoped to the user as well as the phase", async () => {

@@ -77,6 +77,10 @@ create index if not exists idx_coach_program_phase_metrics_user
   on public.coach_program_phase_metrics (user_id, program_id);
 create index if not exists idx_coach_program_phase_metrics_phase
   on public.coach_program_phase_metrics (phase_id);
+-- One hero per phase: the app's normalizer guarantees it, and this holds a
+-- hand-written row to the same rule.
+create unique index if not exists coach_program_phase_metrics_one_hero
+  on public.coach_program_phase_metrics (phase_id) where is_hero;
 
 alter table public.coach_program_phase_metrics enable row level security;
 
@@ -153,14 +157,16 @@ drop policy if exists "coach_program_phase_metric_logs_owner_read" on public.coa
 create policy "coach_program_phase_metric_logs_owner_read" on public.coach_program_phase_metric_logs
   for select to authenticated using (user_id = current_clerk_user_id());
 
--- Same rule: a log must belong to the caller's own metric.
+-- Same rule: a log must belong to the caller's own metric, and only a custom
+-- metric is logged by hand (the app-measured kinds are read by the job).
 drop policy if exists "coach_program_phase_metric_logs_owner_insert" on public.coach_program_phase_metric_logs;
 create policy "coach_program_phase_metric_logs_owner_insert" on public.coach_program_phase_metric_logs
   for insert to authenticated with check (
     user_id = current_clerk_user_id()
     and exists (select 1 from public.coach_program_phase_metrics m
                  where m.id = coach_program_phase_metric_logs.metric_id
-                   and m.user_id = current_clerk_user_id()));
+                   and m.user_id = current_clerk_user_id()
+                   and m.kind = 'custom'));
 
 drop policy if exists "coach_program_phase_metric_logs_owner_update" on public.coach_program_phase_metric_logs;
 create policy "coach_program_phase_metric_logs_owner_update" on public.coach_program_phase_metric_logs
@@ -169,7 +175,8 @@ create policy "coach_program_phase_metric_logs_owner_update" on public.coach_pro
     user_id = current_clerk_user_id()
     and exists (select 1 from public.coach_program_phase_metrics m
                  where m.id = coach_program_phase_metric_logs.metric_id
-                   and m.user_id = current_clerk_user_id()));
+                   and m.user_id = current_clerk_user_id()
+                   and m.kind = 'custom'));
 
 drop policy if exists "coach_program_phase_metric_logs_owner_delete" on public.coach_program_phase_metric_logs;
 create policy "coach_program_phase_metric_logs_owner_delete" on public.coach_program_phase_metric_logs
