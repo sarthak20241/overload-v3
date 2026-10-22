@@ -271,12 +271,16 @@ async function gatherReadings(
         if (m.ref?.exercise_id || !m.ref?.exercise_name) continue;
         const escaped = m.ref.exercise_name.replace(/[\\%_]/g, (c) => `\\${c}`).trim();
         if (!escaped) continue;
+        // Only the catalog and the user's own exercises: this runs with the
+        // service role, and another user's custom exercise must never be
+        // picked. Own row first, then the lowest catalog id.
         const { data: found, error: findErr } = await retried(() =>
-          db.from("exercises").select("id, user_id").ilike("name", escaped).order("id", { ascending: true }).limit(20)
+          db.from("exercises").select("id, user_id").ilike("name", escaped)
+            .or(`user_id.is.null,user_id.eq.${userId}`).order("id", { ascending: true }).limit(50)
         );
         if (findErr) return fail(findErr.message, "lift_e1rm");
         const own = (found ?? []).find((e: Row) => e.user_id === userId);
-        const id = own?.id ?? (found ?? [])[0]?.id;
+        const id = own?.id ?? (found ?? []).find((e: Row) => e.user_id == null)?.id;
         if (!id) continue;
         m.ref = { ...m.ref, exercise_id: String(id) };
         const { error: refErr } = await retried(() =>

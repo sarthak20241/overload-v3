@@ -63,6 +63,12 @@ const JWKS = createRemoteJWKSet(new URL(`${CLERK_ISSUER}/.well-known/jwks.json`)
 
 const USER_PAGE = 1000;
 const CRON_CONCURRENCY = 4;
+/**
+ * Stop starting phase metric checks this long after the run began: the cron
+ * call times out at 55 s, the cards and check-ins run first, and the moments
+ * pass must still get its turn. What is left waits for the next run.
+ */
+const METRICS_BUDGET_MS = 35_000;
 /** Cards older than this are history nobody reads; the facts window is 8 weeks. */
 const KEEP_WEEKS = 26;
 
@@ -489,21 +495,32 @@ async function runCron(): Promise<Response> {
 
     // The phase metrics check (.planning/phase-metrics/SPEC.md): once a local
     // week per user with an active program, whether or not a card is due.
-    // One read finds who has a program at all, so the users without one cost
-    // nothing; metricsStep returns after its own reads for anyone already
-    // checked this week.
-    const withProgram = new Set<string>();
-    for (let from = 0; ; from += USER_PAGE) {
-      const { data: progs, error: progsErr } = await retried(() =>
-        db.from("coach_programs").select("user_id").eq("status", "active")
-          .order("user_id", { ascending: true }).range(from, from + USER_PAGE - 1)
-      );
-      if (progsErr) { failures.push(`metrics: programs read: ${progsErr.message}`); break; }
-      for (const p of progs ?? []) if (p.user_id) withProgram.add(String(p.user_id));
-      if (!progs || progs.length < USER_PAGE) break;
+    // One read finds who has a metric row not yet checked this week (the
+    // earliest of this run's week starts, so no zone is missed); everyone
+    // else costs nothing, and metricsStep then reads the phase itself.
+    // A time budget keeps the moments pass below from being starved.
+    const earliestWeek = weekStarts.length > 0 ? [...weekStarts].sort()[0] : null;
+    const due_metrics = new Set<string>();
+    if (earliestWeek) {
+      for (let from = 0; ; from += USER_PAGE) {
+        const { data: unchecked, error: uncheckedErr } = await retried(() =>
+          db.from("coach_program_phase_metrics").select("user_id")
+            .or(`checked_at.is.null,checked_at.lt.${earliestWeek}`)
+            .order("user_id", { ascending: true }).range(from, from + USER_PAGE - 1)
+        );
+        if (uncheckedErr) { failures.push(`metrics: due read: ${uncheckedErr.message}`); break; }
+        for (const m of unchecked ?? []) if (m.user_id) due_metrics.add(String(m.user_id));
+        if (!unchecked || unchecked.length < USER_PAGE) break;
+      }
     }
-    const metricUsers = weeks.filter((w) => withProgram.has(w.userId));
+    const metricUsers = weeks.filter((w) => due_metrics.has(w.userId));
+    let metricsSkipped = 0;
     for (let i = 0; i < metricUsers.length; i += CRON_CONCURRENCY) {
+      if (Date.now() - now.getTime() > METRICS_BUDGET_MS) {
+        metricsSkipped = metricUsers.length - i;
+        failures.push(`metrics: out of time, ${metricsSkipped} left for the next run`);
+        break;
+      }
       const batch = metricUsers.slice(i, i + CRON_CONCURRENCY);
       // The real client is structurally the little Db the step types against.
       const results = await Promise.all(batch.map((w) => metricsStep(db as unknown as MetricsDb, w.userId, w.day, w.week, ANTHROPIC_API_KEY)));
@@ -519,7 +536,7 @@ async function runCron(): Promise<Response> {
     const moments = await runMoments(db, now.getTime());
     return json({ users: weeks.length, due: due.length, saved, held, checkins, pick_failed: pickFailed,
       words_asked: wordsAsked, words_failed: wordsFailed, moments_made: moments.made, moments_failed: moments.failed,
-      metrics_checked: metricsChecked, coach_lines: linesWritten,
+      metrics_checked: metricsChecked, coach_lines: linesWritten, metrics_skipped: metricsSkipped,
       failures: failures.slice(0, 20) });
   } finally {
     // Settled on every path: the runtime may stop the worker once the response

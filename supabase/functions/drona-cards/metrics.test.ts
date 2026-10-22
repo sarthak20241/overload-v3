@@ -18,10 +18,11 @@ function fakeDb(script: Record<string, Answer[]>) {
     const eqs: [string, unknown][] = [];
     const b: Record<string, unknown> = {};
     const self = () => b;
-    for (const m of ["select", "in", "gte", "lte", "lt", "gt", "or", "order", "limit", "maybeSingle", "not", "range"]) b[m] = self;
+    for (const m of ["select", "in", "gte", "lte", "lt", "gt", "order", "limit", "maybeSingle", "not", "range"]) b[m] = self;
     b.eq = (k: string, v: unknown) => { eqs.push([k, v]); return b; };
     b.update = (p: Record<string, unknown>) => { patch = p; return b; };
     b.ilike = (k: string, v: unknown) => { eqs.push([`ilike:${k}`, v]); return b; };
+    b.or = (f: string) => { eqs.push(["or", f]); return b; };
     b.then = (resolve: (a: Answer) => unknown) => {
       if (patch) {
         writes.push({ table, patch, eq: [...eqs] });
@@ -138,11 +139,28 @@ Deno.test("a lift metric with only a name is resolved to an exercise id, kept, a
   assertEquals(out, { checked: 1, line: false });
   // The user's own exercise wins, the id is kept on the row, and the lift's
   // first reading becomes its start.
-  assertEquals(reads.find((r) => r.table === "exercises")?.eq, [["ilike:name", "Barbell Bench Press"]]);
+  // Only the catalog and the user's own exercises are candidates.
+  assertEquals(reads.find((r) => r.table === "exercises")?.eq, [["ilike:name", "Barbell Bench Press"], ["or", "user_id.is.null,user_id.eq.user-1"]]);
   const refWrite = writes.find((w) => w.table === "coach_program_phase_metrics" && "ref" in w.patch);
   assertEquals(refWrite?.patch.ref, { exercise_name: "Barbell Bench Press", exercise_id: "ex-mine" });
   const check = writes.find((w) => w.table === "coach_program_phase_metrics" && "status" in w.patch);
   assertEquals([check?.patch.current_value, check?.patch.start_value, check?.patch.status], [101.5, 101.5, "on_track"]);
+});
+
+Deno.test("another user's custom exercise is never picked for a lift", async () => {
+  const lift = { id: "m-lift", seq: 0, is_hero: true, kind: "lift_e1rm", ref: { exercise_name: "Bench" }, unit: "kg", direction: "up", start_value: null, target_value: 110, current_value: null, status: "set", checked_at: null };
+  const { db, writes } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: [lift], error: null }],
+    // The filter keeps these out on the real database; the fake returns them
+    // anyway to prove the code does not take one.
+    exercises: [{ data: [{ id: "ex-theirs", user_id: "user-2" }], error: null }],
+  });
+  assertEquals(await metricsStep(db, "user-1", DAY, WEEK, ""), { checked: 1, line: false });
+  assertEquals(writes.some((w) => "ref" in w.patch), false);
+  const check = writes.find((w) => w.table === "coach_program_phase_metrics");
+  assertEquals([check?.patch.current_value, check?.patch.status], [null, "set"]);
 });
 
 Deno.test("the metrics read is scoped to the user as well as the phase", async () => {
