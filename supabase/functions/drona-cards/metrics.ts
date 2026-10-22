@@ -243,9 +243,11 @@ export async function metricsStep(
 
     // The line, from the numbers just written. No key, no line.
     if (!anthropicKey) return { checked, line: false };
+    // Every metric has a check here: the early return above guarantees
+    // readable.length === metrics.length, so the lookup cannot miss.
     const byId = new Map(checks.map((c) => [c.id, c]));
     const lineMetrics: LineMetric[] = metrics.map((m) => {
-      const c = byId.get(m.id)!;
+      const c = byId.get(m.id) ?? { id: m.id, current_value: m.current_value, status: "set" as MetricStatus };
       const row = rows.find((r) => String(r.id) === m.id);
       return {
         kind: m.kind,
