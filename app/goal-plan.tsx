@@ -17,9 +17,9 @@
  * split" opens the plan generator seeded to that phase (cadence comes from the
  * phase's training directive). Fully theme-aware, coach-voice copy.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { track, markWorkoutSource } from '@/lib/analytics';
-import { View, Text, Pressable, ScrollView, ActivityIndicator, StyleSheet, Alert } from 'react-native';
+import { View, Text, Pressable, ScrollView, ActivityIndicator, StyleSheet, Alert, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -32,11 +32,20 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import {
   loadActiveProgram,
   endActiveProgram,
+  logMetricValue,
   daysBetweenISO,
   todayLocalISO,
   type ActiveProgram,
   type ActiveProgramPhaseRow,
 } from '@/lib/programData';
+import {
+  chartKindOf, defaultJobText, formatMetricValue, heroOf, isWeeklyKind, jobFraction, metricLabel, metricRowName,
+  phaseProgress, STATUS_LABEL, statusTone, type MetricKind, type PhaseMetricRow,
+} from '@/lib/phaseMetrics';
+import { loadMetricSeries, programWeeks, type MetricSeries } from '@/lib/phaseMetricSeries';
+import { MetricBarsChart, MetricLineChart } from '@/components/program/PhaseMetricChart';
+import { MetricLogSheet } from '@/components/program/MetricLogSheet';
+import { useToast } from '@/components/ui/Toast';
 import { weekPatternFor, shortDayLabel, REST } from '@/lib/weekPattern';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
@@ -69,6 +78,63 @@ function addDaysISO(iso: string, delta: number): string {
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 
+const GOAL_PILL: Record<string, string> = {
+  hypertrophy: 'Muscle',
+  strength: 'Strength',
+  fat_loss: 'Fat loss',
+  endurance: 'Endurance',
+  general: 'Fitness',
+};
+
+/** Which card a supporting target sits in. */
+const PILLAR_OF: Record<MetricKind, 'train' | 'eat' | 'recover'> = {
+  bodyweight: 'eat',
+  lift_e1rm: 'train',
+  sets_per_muscle: 'train',
+  steps: 'train',
+  sessions_per_week: 'train',
+  cardio_sessions: 'train',
+  sleep_hours: 'recover',
+  protein_days: 'eat',
+  distance: 'train',
+  duration: 'train',
+  custom: 'train',
+};
+
+/** The value column of a tracked row: the number and what it is of. */
+function rowValue(m: PhaseMetricRow): { value: string; rest: string } {
+  const cur = m.current_value;
+  if (cur == null) return { value: '', rest: m.kind === 'custom' ? 'Not logged yet' : 'No reading yet' };
+  const v = formatMetricValue(m.kind, cur, m.unit);
+  const t = formatMetricValue(m.kind, m.target_value, m.unit);
+  switch (m.kind) {
+    case 'sessions_per_week': return { value: `${v} of ${t}`, rest: 'last week' };
+    case 'cardio_sessions': return { value: `${v} of ${t}`, rest: 'last week' };
+    case 'protein_days': return { value: `${v} of 7`, rest: 'days hit' };
+    case 'sleep_hours': return { value: `${v}h`, rest: 'a night' };
+    case 'steps': return { value: v, rest: 'avg' };
+    case 'sets_per_muscle': return { value: v, rest: 'sets last week' };
+    default: return { value: `${v}${m.unit ? ` ${m.unit}` : ''}`, rest: m.direction === 'hold' ? 'now' : `of ${t}` };
+  }
+}
+
+/** The line under the hero number. */
+function heroSub(m: PhaseMetricRow, goalTarget: number | null): string {
+  const cur = m.current_value;
+  if (isWeeklyKind(m.kind)) {
+    if (cur == null) return m.status === 'set' ? 'No number to chase yet. Drona tracks the habit first.' : 'Nothing logged last week. This week counts.';
+    const t = formatMetricValue(m.kind, m.target_value, m.unit);
+    const v = formatMetricValue(m.kind, cur, m.unit);
+    return cur >= m.target_value ? `${v} of ${t} last week. Target met.` : `${v} of ${t} last week.`;
+  }
+  if (cur == null) return m.kind === 'custom' ? 'Log your first number to start the line.' : 'No reading yet. Weigh in or log a session to start the line.';
+  const toPhase = Math.abs(m.target_value - cur);
+  const unit = m.unit ? ` ${m.unit}` : '';
+  const parts = [`${formatMetricValue(m.kind, toPhase, m.unit)}${unit} to this phase's target`];
+  if (goalTarget != null && goalTarget !== m.target_value) parts.push(`${formatMetricValue(m.kind, Math.abs(goalTarget - cur), m.unit)} to the goal`);
+  return parts.join(' · ');
+}
+
 export default function GoalPlanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -87,6 +153,14 @@ export default function GoalPlanScreen() {
   const clerkId = user?.id ?? null;
 
   const [program, setProgram] = useState<ActiveProgram | null>(null);
+  const { width: winW } = useWindowDimensions();
+  const toast = useToast();
+  // The phase the phase card shows (the stepper moves it); null = the current one.
+  const [viewSeq, setViewSeq] = useState<number | null>(null);
+  // The hero metric's readings for the chart, keyed by metric id.
+  const [series, setSeries] = useState<{ id: string; data: MetricSeries } | null>(null);
+  const [logOpen, setLogOpen] = useState(false);
+  const [logging, setLogging] = useState(false);
   // Cards waiting on From Drona: they are about this plan, so the door is here too.
   const [dronaWaiting, setDronaWaiting] = useState(0);
   useFocusEffect(useCallback(() => {
@@ -159,6 +233,19 @@ export default function GoalPlanScreen() {
   // Reload when returning to the screen (e.g. after applying a program or
   // building a split in the coach modal).
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const currentPhaseForSeries = program != null && program.currentPhaseSeq != null ? program.phases[program.currentPhaseSeq] : null;
+  const heroForSeries = currentPhaseForSeries ? heroOf(currentPhaseForSeries.metrics) : null;
+  // The chart's readings: reloaded when the program, the hero, or its latest
+  // value changes (a fresh log moves the line at once).
+  useEffect(() => {
+    if (!supabase || !clerkId || !program || !currentPhaseForSeries || !heroForSeries) { setSeries(null); return; }
+    let live = true;
+    loadMetricSeries(supabase, clerkId, program, heroForSeries, currentPhaseForSeries.diet_protein_g)
+      .then((data) => { if (live) setSeries({ id: heroForSeries.id, data }); });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase, clerkId, program?.id, heroForSeries?.id, heroForSeries?.current_value, heroForSeries?.checked_at]);
 
   // Open the plan generator pre-seeded to a phase's training block, so the
   // generated split matches that phase. The training_directive carries the
@@ -515,6 +602,363 @@ export default function GoalPlanScreen() {
     );
   };
 
+  // ── Phase metrics layout (.planning/phase-metrics/SPEC.md section 5) ──────
+  // A program built before metrics has none: it keeps the classic layout.
+  const hasMetrics = program != null && program.phases.some((ph) => ph.metrics.length > 0);
+  const viewed: ActiveProgramPhaseRow | null = program
+    ? (viewSeq != null ? program.phases.find((ph) => ph.seq === viewSeq) ?? null : null) ?? currentPhase ?? program.phases[0] ?? null
+    : null;
+  const hero = currentPhase ? heroOf(currentPhase.metrics) : null;
+  const chartWidth = Math.max(200, winW - Spacing.xl * 2 - 18 * 2);
+  const curProgress = currentPhase ? phaseProgress(program?.weekInPhase, currentPhase.duration_weeks) : 0;
+
+  const saveLog = async (value: number, note: string) => {
+    if (!supabase || !clerkId || !hero || !currentPhase) return;
+    setLogging(true);
+    try {
+      await logMetricValue(supabase, clerkId, hero, value, curProgress, note);
+      track('program_metric_logged', { kind: hero.kind, phase_seq: currentPhase.seq });
+      setLogOpen(false);
+      await load();
+    } catch (e) {
+      toast.error(`Could not log that${(e as Error)?.message ? ` (${String((e as Error).message).slice(0, 60)})` : ''}`);
+    } finally {
+      setLogging(false);
+    }
+  };
+
+  const statusColor = (m: PhaseMetricRow) => {
+    const tone = statusTone(m.status);
+    return tone === 'ok' ? C.accentText : tone === 'warn' ? C.warningText : C.textDim;
+  };
+
+  // One tracked target as a row on the shared 3-column grid: name / value / status.
+  const renderMetricRow = (m: PhaseMetricRow, last: boolean) => {
+    const { value, rest } = rowValue(m);
+    return (
+      <View key={m.id} style={[styles.trackRow, !last && { borderBottomWidth: StyleSheet.hairlineWidth, borderColor: C.borderSubtle }]}>
+        <Text style={[styles.trackName, { color: C.foreground }]} numberOfLines={1}>{metricRowName(m)}</Text>
+        <Text style={[styles.trackValue, { color: C.mutedFg }]} numberOfLines={1}>
+          {value ? <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>{value} </Text> : null}
+          {rest}
+        </Text>
+        <Text style={[styles.trackStatus, { color: statusColor(m) }]} numberOfLines={1}>{STATUS_LABEL[m.status]}</Text>
+      </View>
+    );
+  };
+
+  const renderGoalCard = () => {
+    if (!program) return null;
+    const goalTarget = hero?.kind === 'bodyweight' ? program.target_weight_kg : null;
+    const chart = series && hero && series.id === hero.id ? series.data : null;
+    const phaseEndWeek = currentPhase ? currentPhase.start_offset_weeks + currentPhase.duration_weeks : totalWeeks;
+    return (
+      <Animated.View entering={FadeInDown.duration(300)} style={[styles.card, styles.cardFlat, { backgroundColor: C.card }]}>
+        <View style={styles.goalRow}>
+          <Text style={[styles.goalTitle, { color: C.foreground }]} numberOfLines={1}>{program.title}</Text>
+          {program.goal && (
+            <View style={[styles.goalPill, { backgroundColor: C.primaryMuted }]}>
+              <Text style={[styles.goalPillText, { color: C.accentText }]}>{(GOAL_PILL[program.goal] ?? program.goal).toUpperCase()}</Text>
+            </View>
+          )}
+        </View>
+        <Text style={[styles.goalWhen, { color: C.mutedFg }]}>
+          {notStarted ? `Starts ${fmtShortISO(program.start_date)}` : ended ? 'Program complete' : (
+            <>Week <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>{weekOverall}</Text> of {totalWeeks}</>
+          )}
+          {'  ·  '}ends {fmtShortISO(program.target_date ?? endDateISO!)}
+        </Text>
+
+        {hero && currentPhase ? (
+          <>
+            <Text style={[styles.heroLabel, { color: C.mutedFg }]}>
+              PHASE METRIC  ·  <Text style={{ color: C.foreground, fontWeight: FontWeight.bold }}>{metricLabel(hero).toUpperCase()}</Text>
+            </Text>
+            <View style={styles.heroRow}>
+              <View style={styles.heroNumWrap}>
+                <Text style={[styles.heroNum, { color: C.foreground }]}>
+                  {hero.current_value == null ? '–' : formatMetricValue(hero.kind, hero.current_value, hero.unit)}
+                </Text>
+                <Text style={[styles.heroUnit, { color: C.mutedFg }]}>
+                  {isWeeklyKind(hero.kind) && hero.current_value != null ? `of ${formatMetricValue(hero.kind, hero.target_value, hero.unit)}` : hero.unit}
+                </Text>
+                {hero.kind === 'custom' && (
+                  <View style={[styles.heroTag, { backgroundColor: C.muted }]}>
+                    <Text style={[styles.heroTagText, { color: C.mutedFg }]}>You log it</Text>
+                  </View>
+                )}
+              </View>
+              {hero.kind === 'custom' && (
+                <Pressable
+                  onPress={() => setLogOpen(true)}
+                  style={[styles.logBtn, { backgroundColor: Colors.primary }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Log ${metricLabel(hero)}`}
+                >
+                  <Text style={[styles.logBtnText, { color: Colors.primaryFg }]}>+ Log</Text>
+                </Pressable>
+              )}
+            </View>
+            <Text style={[styles.heroSub, { color: C.mutedFg }]}>{heroSub(hero, goalTarget)}</Text>
+
+            <View style={styles.chartWrap}>
+              {chart && chartKindOf(hero.kind) === 'line' && (chart.points.length > 0 || hero.current_value != null) && (
+                <MetricLineChart
+                  width={chartWidth}
+                  points={chart.points.length > 0 ? chart.points : [{ x: Math.max(0, daysIn / 7), y: hero.current_value! }]}
+                  weeks={totalWeeks}
+                  phaseEndWeek={phaseEndWeek}
+                  phaseTarget={hero.target_value}
+                  phaseTargetLabel={`${formatMetricValue(hero.kind, hero.target_value, hero.unit)} by wk ${phaseEndWeek}`}
+                  goalTarget={goalTarget}
+                  goalLabel={goalTarget != null ? `${formatMetricValue(hero.kind, goalTarget, hero.unit)} ${hero.unit}` : undefined}
+                />
+              )}
+              {chart && chartKindOf(hero.kind) === 'bars' && (
+                <MetricBarsChart
+                  width={chartWidth}
+                  values={chart.weekly}
+                  weeks={totalWeeks}
+                  curWeek={weekOverall}
+                  target={hero.target_value}
+                  targetLabel={hero.kind === 'steps' ? `${formatMetricValue('steps', hero.target_value)} a day` : `${formatMetricValue(hero.kind, hero.target_value, hero.unit)} a week`}
+                />
+              )}
+            </View>
+          </>
+        ) : (
+          program.objective ? <Text style={[styles.objective, { color: C.mutedFg }]}>{program.objective}</Text> : null
+        )}
+
+        {/* Segmented phase bar: one segment per phase, sized by weeks. */}
+        <View style={[styles.barTrack, { marginTop: 12 }]}>
+          {program.phases.map((ph) => {
+            const isPast = program.currentPhaseSeq != null ? ph.seq < program.currentPhaseSeq : ended;
+            const isCur = ph.seq === program.currentPhaseSeq;
+            const frac = isCur ? clamp01((daysIn - ph.start_offset_weeks * 7) / (ph.duration_weeks * 7)) : 0;
+            return (
+              <View key={ph.id} style={[styles.barSegment, { flex: ph.duration_weeks, backgroundColor: isPast ? colorWithAlpha(Colors.primary, 0.35) : C.muted, height: 6 }]}>
+                {isCur && <View style={[styles.barFill, { width: `${Math.max(6, frac * 100)}%`, backgroundColor: Colors.primary }]} />}
+              </View>
+            );
+          })}
+        </View>
+        <View style={styles.barCaptionRow}>
+          <Text style={[styles.goalCap, { color: C.mutedFg }]} numberOfLines={1}>
+            {currentPhase ? (
+              <>Phase {currentPhase.seq + 1}  ·  <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>{currentPhase.name}</Text></>
+            ) : notStarted ? 'Locked in. We start soon.' : ended ? 'Done. Talk to Drona about what is next.' : 'Between phases'}
+          </Text>
+          {currentPhase && program.weekInPhase != null && (
+            <Text style={[styles.goalCap, { color: C.mutedFg }]}>wk {program.weekInPhase} of {currentPhase.duration_weeks}</Text>
+          )}
+        </View>
+      </Animated.View>
+    );
+  };
+
+  const renderPhaseCard = () => {
+    if (!program || !viewed) return null;
+    const ph = viewed;
+    const isCur = ph.seq === program.currentPhaseSeq;
+    const phHero = heroOf(ph.metrics);
+    const wkStart = ph.start_offset_weeks + 1;
+    const wkEnd = ph.start_offset_weeks + ph.duration_weeks;
+    const job = ph.job_text ?? (phHero ? defaultJobText(phHero) : null);
+    const pct = phHero ? Math.round(jobFraction(phHero) * 100) : 0;
+    const line = isCur ? (ph.coach_line ?? ph.training_directive) : (ph.training_directive ?? ph.diet_directive);
+    return (
+      <Animated.View entering={FadeInDown.duration(300).delay(70)} style={[styles.card, styles.cardFlat, { backgroundColor: C.card }]}>
+        {/* Stepper: past ticks, the current phase as a named pill, the rest as numbers. */}
+        <View style={styles.steps}>
+          {program.phases.map((p, i) => {
+            const past = program.currentPhaseSeq != null ? p.seq < program.currentPhaseSeq : ended;
+            const cur = p.seq === program.currentPhaseSeq;
+            const sel = p.seq === ph.seq;
+            return (
+              <View key={p.id} style={[styles.stepWrap, i === program.phases.length - 1 && { flex: 0 }]}>
+                <Pressable
+                  onPress={() => { setViewSeq(p.seq); track('program_phase_viewed', { seq: p.seq, current: cur }); }}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel={`View ${p.name}`}
+                  style={[
+                    styles.step,
+                    cur
+                      ? { backgroundColor: Colors.primary, borderColor: Colors.primary, width: undefined, paddingHorizontal: 10 }
+                      : past
+                        ? { backgroundColor: C.primaryMuted, borderColor: 'transparent' }
+                        : { borderColor: sel ? C.foreground : C.border },
+                  ]}
+                >
+                  {cur && <View style={[styles.stepDot, { backgroundColor: Colors.primaryFg }]} />}
+                  {past && !cur ? (
+                    <Feather name="check" size={12} color={C.accentText} />
+                  ) : (
+                    <Text style={[styles.stepText, cur ? { color: Colors.primaryFg, fontWeight: FontWeight.bold, fontSize: 13 } : { color: sel ? C.foreground : C.textDim }]} numberOfLines={1}>
+                      {cur ? p.name : i + 1}
+                    </Text>
+                  )}
+                </Pressable>
+                {i < program.phases.length - 1 && (
+                  <View style={[styles.stepLine, { backgroundColor: past ? colorWithAlpha(Colors.primary, 0.35) : C.border }]} />
+                )}
+              </View>
+            );
+          })}
+        </View>
+
+        <View style={styles.phaseTitleRow}>
+          <Text style={[styles.phaseName, { color: C.foreground }]} numberOfLines={1}>{ph.name}</Text>
+          <Text style={[styles.phaseWeeks, { color: C.mutedFg }]}>
+            {wkStart === wkEnd ? `Week ${wkStart}` : `Weeks ${wkStart}-${wkEnd}`}
+            {isCur && program.weekInPhase != null ? `  ·  wk ${program.weekInPhase} of ${ph.duration_weeks}` : ''}
+          </Text>
+        </View>
+
+        {job && (
+          <View style={[styles.job, { backgroundColor: C.muted }]}>
+            <View style={styles.jobTop}>
+              <Text style={[styles.jobText, { color: C.foreground }]} numberOfLines={1}>{job}</Text>
+              {isCur && phHero && <Text style={[styles.jobPct, { color: C.accentText }]}>{pct}%</Text>}
+            </View>
+            {isCur && phHero && (
+              <View style={[styles.jobBar, { backgroundColor: C.borderSubtle }]}>
+                <View style={[styles.jobFill, { width: `${Math.max(2, pct)}%`, backgroundColor: Colors.primary }]} />
+              </View>
+            )}
+          </View>
+        )}
+
+        {line && (
+          <View style={styles.coachRow}>
+            <View style={[styles.coachAv, { backgroundColor: Colors.primary }]}>
+              <Feather name="navigation" size={10} color={Colors.primaryFg} />
+            </View>
+            <Text style={[styles.coachText, { color: C.foreground }]}>{line}</Text>
+          </View>
+        )}
+      </Animated.View>
+    );
+  };
+
+  const renderPillars = () => {
+    if (!program || !viewed) return null;
+    const ph = viewed;
+    const phHero = heroOf(ph.metrics);
+    const rows = ph.metrics.filter((m) => m.id !== phHero?.id);
+    const by = (pillar: 'train' | 'eat' | 'recover') => rows.filter((m) => PILLAR_OF[m.kind] === pillar);
+    const train = by('train');
+    const eat = by('eat');
+    const recover = by('recover');
+    const week = weekPatternFor(ph.training_block);
+    const days = ph.training_block?.days_per_week ?? (week ? week.filter((d) => d !== REST).length : null);
+    const fuel = ph.diet_fuel_days && ph.diet_fuel_days.length > 0 ? ph.diet_fuel_days : null;
+    const kcal = ph.diet_calorie_target;
+    const pG = ph.diet_protein_g; const cG = ph.diet_carb_g; const fG = ph.diet_fat_g;
+    const macroTotal = (pG ?? 0) * 4 + (cG ?? 0) * 4 + (fG ?? 0) * 9;
+    const header = (label: string, right: React.ReactNode) => (
+      <View style={styles.pillarHead}>
+        <Text style={[styles.pillarKey, { color: C.accentText }]}>{label}</Text>
+        <Text style={[styles.pillarRight, { color: C.mutedFg }]} numberOfLines={1}>{right}</Text>
+      </View>
+    );
+    return (
+      <>
+        {/* TRAIN */}
+        <Animated.View entering={FadeInDown.duration(300).delay(120)} style={[styles.pillar, { backgroundColor: C.card }]}>
+          {header('TRAIN', (
+            <>{ph.training_block?.split_type ?? 'Training'}{days ? <>  ·  <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>{days} days</Text></> : null}</>
+          ))}
+          {week && (
+            <View style={[styles.plan, { borderColor: C.borderSubtle }]}>
+              <View style={styles.strip}>
+                {week.map((label, i) => {
+                  const rest = label === REST;
+                  return (
+                    <View key={i} style={styles.dc}>
+                      <Text style={[styles.dcDay, { color: C.textDim }]}>D{i + 1}</Text>
+                      <Text style={[styles.dcName, { color: rest ? C.textDim : C.foreground, fontWeight: rest ? FontWeight.medium : FontWeight.semibold }]} numberOfLines={1}>
+                        {shortDayLabel(label)}
+                      </Text>
+                      <View style={[styles.dcBar, { backgroundColor: rest ? 'transparent' : C.border }]} />
+                    </View>
+                  );
+                })}
+              </View>
+              {fuel && (
+                <View style={styles.note}>
+                  <View style={[styles.noteMark, { backgroundColor: Colors.primary }]} />
+                  <Text style={[styles.noteText, { color: C.mutedFg }]} numberOfLines={1}>Fuel day  {fuelDaysText(fuel)}</Text>
+                </View>
+              )}
+            </View>
+          )}
+          {train.map((m, i) => renderMetricRow(m, i === train.length - 1))}
+          <View style={[styles.rr, { borderTopWidth: StyleSheet.hairlineWidth, borderColor: C.borderSubtle }]}>
+            <Text style={[styles.trackName, { color: C.foreground }]}>Routines</Text>
+            {ph.routines.length > 0 ? (
+              <View style={styles.routineChips}>
+                {ph.routines.map((r) => (
+                  <Pressable key={r.id} onPress={() => openRoutinePreview(r.id)} hitSlop={4} accessibilityRole="button" accessibilityLabel={`Preview ${r.name}`}>
+                    <Text style={[styles.routineChip, { color: C.mutedFg }]} numberOfLines={1}>{r.name}</Text>
+                  </Pressable>
+                ))}
+                <Pressable onPress={() => buildSplitFor(ph)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Rebuild the workout split for ${ph.name}`}>
+                  <Feather name="refresh-cw" size={12} color={C.textDim} />
+                </Pressable>
+              </View>
+            ) : (
+              <Pressable onPress={() => buildSplitFor(ph)} style={styles.buildInline} accessibilityRole="button" accessibilityLabel={`Build the workout split for ${ph.name}`}>
+                <Feather name="plus" size={12} color={C.accentText} />
+                <Text style={[styles.buildInlineText, { color: C.accentText }]}>Build split</Text>
+              </Pressable>
+            )}
+          </View>
+          {ph.training_directive && ph.coach_line && (
+            <Text style={[styles.rule, { color: C.mutedFg, borderColor: C.borderSubtle }]}>{ph.training_directive}</Text>
+          )}
+        </Animated.View>
+
+        {/* EAT */}
+        <Animated.View entering={FadeInDown.duration(300).delay(160)} style={[styles.pillar, { backgroundColor: C.card }]}>
+          {header('EAT', kcal != null ? <><Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>{kcal.toLocaleString('en-US')}</Text> kcal a day</> : 'Daily targets')}
+          {macroTotal > 0 && (
+            <View style={[styles.plan, { borderColor: C.borderSubtle }]}>
+              <View style={styles.stack}>
+                {pG != null && <View style={{ flex: (pG * 4) / macroTotal, backgroundColor: C.macro.protein, borderRadius: 3 }} />}
+                {cG != null && <View style={{ flex: (cG * 4) / macroTotal, backgroundColor: C.macro.carbs, borderRadius: 3 }} />}
+                {fG != null && <View style={{ flex: (fG * 9) / macroTotal, backgroundColor: C.macro.fat, borderRadius: 3 }} />}
+              </View>
+              <View style={styles.leg}>
+                {([['protein', pG, C.macro.protein], ['carbs', cG, C.macro.carbs], ['fat', fG, C.macro.fat]] as const).map(([name, g, color]) => g != null && (
+                  <View key={name} style={styles.legItem}>
+                    <View style={[styles.legDot, { backgroundColor: color }]} />
+                    <Text style={[styles.legText, { color: C.mutedFg }]}><Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>{g}g</Text> {name}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          )}
+          {eat.map((m, i) => renderMetricRow(m, i === eat.length - 1))}
+          {ph.diet_directive && (
+            <Text style={[styles.rule, { color: C.mutedFg, borderColor: C.borderSubtle }]}>{ph.diet_directive}</Text>
+          )}
+        </Animated.View>
+
+        {/* RECOVER */}
+        <Animated.View entering={FadeInDown.duration(300).delay(200)} style={[styles.pillar, { backgroundColor: C.card }]}>
+          {header('RECOVER', recover.length > 0 ? 'Sleep and readiness' : 'Readiness')}
+          <View style={{ height: 4 }} />
+          {recover.map((m, i) => renderMetricRow(m, i === recover.length - 1))}
+          {ph.readiness_directive && (
+            <Text style={[styles.rule, { color: C.mutedFg, borderColor: C.borderSubtle }]}>{ph.readiness_directive}</Text>
+          )}
+        </Animated.View>
+      </>
+    );
+  };
+
   return (
     <View style={[styles.root, { backgroundColor: C.background, paddingTop: insets.top }]}>
       {/* Header */}
@@ -572,6 +1016,12 @@ export default function GoalPlanScreen() {
         </View>
       ) : (
         <ScrollView contentContainerStyle={{ padding: Spacing.xl, paddingBottom: insets.bottom + 96 }}>
+          {hasMetrics && renderGoalCard()}
+          {hasMetrics && renderPhaseCard()}
+          {hasMetrics && renderPillars()}
+
+          {/* ── Classic layout: a program built before phase metrics ───────── */}
+          {!hasMetrics && (<>
           {/* ── HERO: the goal + where you are ─────────────────────────────── */}
           <Animated.View
             entering={FadeInDown.duration(300)}
@@ -743,6 +1193,7 @@ export default function GoalPlanScreen() {
               })}
             </View>
           </Animated.View>
+          </>)}
 
           {/* Adjust with Drona */}
           <Pressable
@@ -796,6 +1247,14 @@ export default function GoalPlanScreen() {
             router.push(`/workout/${id}` as any);
           }
         }}
+      />
+
+      <MetricLogSheet
+        visible={logOpen}
+        metric={hero?.kind === 'custom' ? hero : null}
+        saving={logging}
+        onSave={saveLog}
+        onClose={() => setLogOpen(false)}
       />
 
       <FuelDaysSheet
@@ -945,6 +1404,72 @@ const styles = StyleSheet.create({
   nowPillSmall: { borderRadius: Radius.full, paddingHorizontal: 7, paddingVertical: 2 },
   nowPillSmallText: { fontSize: 9, fontWeight: FontWeight.bold, letterSpacing: 0.8 },
   railSub: { fontSize: FontSize.xs, marginTop: 2 },
+
+  // ── Phase metrics layout: flat cards, no border, radius 22 like the demo ──
+  cardFlat: { borderWidth: 0, borderRadius: 22, paddingHorizontal: 18, paddingTop: 16, paddingBottom: 14, marginBottom: 8 },
+  goalRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  goalTitle: { fontSize: 24, lineHeight: 28, fontWeight: FontWeight.bold, letterSpacing: -0.6, flexShrink: 1 },
+  goalWhen: { marginTop: 4, fontSize: 13.5, fontWeight: FontWeight.medium },
+  heroLabel: { marginTop: 16, fontSize: 11.5, fontWeight: FontWeight.semibold, letterSpacing: 0.8 },
+  heroRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 },
+  heroNumWrap: { flexDirection: 'row', alignItems: 'baseline', gap: 6, flexShrink: 1 },
+  heroNum: { fontSize: 40, lineHeight: 44, fontWeight: FontWeight.bold, letterSpacing: -1.2, fontVariant: ['tabular-nums'] },
+  heroUnit: { fontSize: 17, fontWeight: FontWeight.medium },
+  heroTag: { marginLeft: 10, alignSelf: 'center', paddingHorizontal: 7, paddingVertical: 2, borderRadius: Radius.full },
+  heroTagText: { fontSize: 11, fontWeight: FontWeight.semibold },
+  logBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: Radius.full },
+  logBtnText: { fontSize: 13, fontWeight: FontWeight.semibold },
+  heroSub: { marginTop: 1, fontSize: 13.5, lineHeight: 18, fontWeight: FontWeight.medium },
+  chartWrap: { marginTop: 6 },
+  goalCap: { fontSize: 13, fontWeight: FontWeight.medium, flexShrink: 1 },
+
+  steps: { flexDirection: 'row', alignItems: 'center' },
+  stepWrap: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  step: { height: 26, minWidth: 26, borderRadius: 13, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 7 },
+  stepDot: { width: 7, height: 7, borderRadius: 4 },
+  stepText: { fontSize: 12, fontWeight: FontWeight.semibold },
+  stepLine: { flex: 1, height: 1.5, minWidth: 6, marginHorizontal: 6 },
+  phaseTitleRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 14, gap: 8 },
+  phaseName: { fontSize: 20, lineHeight: 24, fontWeight: FontWeight.bold, letterSpacing: -0.4, flexShrink: 1 },
+  phaseWeeks: { fontSize: 13, fontWeight: FontWeight.medium },
+  job: { marginTop: 8, borderRadius: 14, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 11 },
+  jobTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  jobText: { fontSize: 13, fontWeight: FontWeight.semibold, flexShrink: 1 },
+  jobPct: { fontSize: 13, fontWeight: FontWeight.semibold },
+  jobBar: { height: 5, borderRadius: 3, marginTop: 8, overflow: 'hidden' },
+  jobFill: { height: '100%', borderRadius: 3 },
+  coachRow: { flexDirection: 'row', gap: 10, alignItems: 'flex-start', marginTop: 10 },
+  coachAv: { width: 22, height: 22, borderRadius: 6, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
+  coachText: { flex: 1, fontSize: 13.5, lineHeight: 18, fontWeight: FontWeight.medium },
+
+  pillar: { borderRadius: 22, paddingHorizontal: 18, paddingTop: 14, paddingBottom: 6, marginBottom: 8 },
+  pillarHead: { height: 22, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  pillarKey: { fontSize: 11.5, fontWeight: FontWeight.bold, letterSpacing: 0.9 },
+  pillarRight: { fontSize: 13, fontWeight: FontWeight.medium, flexShrink: 1 },
+  plan: { paddingTop: 8, paddingBottom: 10, borderBottomWidth: StyleSheet.hairlineWidth },
+  strip: { flexDirection: 'row', justifyContent: 'space-between' },
+  dc: { flex: 1, alignItems: 'center', gap: 3 },
+  dcDay: { fontSize: 10, fontWeight: FontWeight.semibold, letterSpacing: 0.4 },
+  dcName: { fontSize: 12.5, textAlign: 'center' },
+  dcBar: { width: 26, height: 4, borderRadius: 2, marginTop: 2 },
+  note: { marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  noteMark: { width: 14, height: 4, borderRadius: 2 },
+  noteText: { fontSize: 12, fontWeight: FontWeight.medium, flexShrink: 1 },
+  stack: { flexDirection: 'row', gap: 3, height: 6 },
+  leg: { flexDirection: 'row', gap: 16, marginTop: 8 },
+  legItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  legDot: { width: 6, height: 6, borderRadius: 3 },
+  legText: { fontSize: 12.5, fontWeight: FontWeight.medium },
+  trackRow: { flexDirection: 'row', alignItems: 'center', gap: 8, height: 40 },
+  trackName: { width: 118, fontSize: 13.5, fontWeight: FontWeight.semibold },
+  trackValue: { flex: 1, textAlign: 'right', fontSize: 13, fontWeight: FontWeight.medium },
+  trackStatus: { width: 68, textAlign: 'right', fontSize: 11.5, fontWeight: FontWeight.semibold },
+  rr: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', minHeight: 40, gap: 8 },
+  routineChips: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1, flexWrap: 'wrap', justifyContent: 'flex-end' },
+  routineChip: { fontSize: 13, fontWeight: FontWeight.medium },
+  buildInline: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  buildInlineText: { fontSize: 13, fontWeight: FontWeight.semibold },
+  rule: { paddingTop: 10, paddingBottom: 8, fontSize: 12, lineHeight: 16, fontWeight: FontWeight.medium, borderTopWidth: StyleSheet.hairlineWidth },
 
   secondaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: Radius.lg, paddingVertical: 12 },
   secondaryBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },

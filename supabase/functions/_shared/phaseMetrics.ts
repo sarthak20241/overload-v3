@@ -299,9 +299,9 @@ export function statusTone(s: MetricStatus): 'ok' | 'warn' | 'dim' {
 export interface StatusInput {
   kind: MetricKind;
   direction: MetricDirection;
-  start_value: number | null | undefined;
+  start_value?: number | null;
   target_value: number;
-  current_value: number | null | undefined;
+  current_value?: number | null;
   /** How far through the phase the check is, 0 (not started) to 1 (over). */
   progress: number;
 }
