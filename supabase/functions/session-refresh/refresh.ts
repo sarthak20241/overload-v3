@@ -13,9 +13,12 @@
 //     id the request names
 //   - only when that JWT's own session (`sid`) is still active at Clerk and
 //     belongs to that same user
-//   - only inside the last REFRESH_WITHIN_MS of that session, so a stolen
-//     60-second session token cannot be turned into a fresh 7-day session
-//     at will, and a client calling in a loop gets nothing
+//   - only inside the last REFRESH_WITHIN_MS of that session. This limits
+//     WHEN a ticket can be had, not how often: inside the window every call
+//     with a valid JWT mints a new 120s ticket, and anyone holding a stolen
+//     60-second session token then can turn it into a fresh 7-day session.
+//     That is the accepted trade for staying on the Hobby plan. A per-user
+//     rate limit would need a table; there is none yet.
 // No dependencies, so the rules are tested directly (refresh.test.ts).
 
 /** Mint only when the session ends within this window. The app uses the same

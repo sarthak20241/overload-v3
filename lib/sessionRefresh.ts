@@ -65,7 +65,10 @@ export type RefreshOutcome =
   /** Signed out and the ticket never signed in: the user must sign in. */
   | 'sign_in_failed';
 
-/** Outcomes that leave the user as they were: nothing to fix, only to count. */
+/** Outcomes that leave the user as they were AND point to nothing wrong:
+ *  offline, not due, gave up waiting. `ticket_user_mismatch` also changes
+ *  nothing but is left out on purpose: a ticket for the wrong user is a bug
+ *  to see, so it counts as a failure. */
 export const SKIPPED_OUTCOMES: readonly string[] = ['no_ticket', 'abandoned', 'ticket_timed_out'];
 
 /** Waits before the 2nd and 3rd ticket sign-in attempts. */
