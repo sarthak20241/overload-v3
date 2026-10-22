@@ -349,14 +349,15 @@ async function gatherReadings(
       r.bodyweight = num(data?.value);
     })());
   }
-  if (kinds.has("lift_e1rm")) {
-    jobs.push((async () => {
-      const lifts = metrics.filter((m) => m.kind === "lift_e1rm");
-      // The app resolves the exercise id when it saves the program. A lift
-      // whose name matched nothing then (or a row written another way) is
-      // looked up by name here, and the id is kept on the row so the chart
-      // and the next check read it directly.
-      for (const m of lifts) {
+  // The app resolves an exercise id when it saves the program. A metric whose
+  // name matched nothing then (or a row written another way) is looked up by
+  // name here, and the id is kept on the row so the chart and the next check
+  // read it directly. Lifts need it; distance and duration use it when the
+  // coach named the one exercise that counts.
+  const named = metrics.filter((m) => (m.kind === "lift_e1rm" || m.kind === "distance" || m.kind === "duration") && !m.ref?.exercise_id && m.ref?.exercise_name);
+  if (named.length > 0) {
+    await (async () => {
+      for (const m of named) {
         if (m.ref?.exercise_id || !m.ref?.exercise_name) continue;
         const escaped = escapeIlike(m.ref.exercise_name);
         if (!escaped) continue;
@@ -382,6 +383,11 @@ async function gatherReadings(
         );
         if (refErr) console.log(`[drona-cards] could not keep the exercise id on ${m.id.slice(0, 8)}: ${refErr.message}`);
       }
+    })();
+  }
+  if (kinds.has("lift_e1rm")) {
+    jobs.push((async () => {
+      const lifts = metrics.filter((m) => m.kind === "lift_e1rm");
       const ids = lifts.filter((m) => m.ref?.exercise_id).map((m) => m.ref!.exercise_id!);
       if (ids.length === 0) return;
       const { data, error } = await retried(() =>
@@ -474,12 +480,14 @@ async function gatherReadings(
   // side, which is accepted for a best-since-start number.
   const bestSet = (kind: "distance" | "duration") => async () => {
     const col = kind === "distance" ? "distance_m" : "duration_seconds";
-    const { data, error } = await retried(() =>
-      db.from("workout_sets").select("distance_m, duration_seconds, completed, workouts!inner(user_id, started_at)")
-        .eq("workouts.user_id", userId).gte("workouts.started_at", `${phaseStart}T00:00:00Z`)
-        .gt(col, 0).eq("completed", true)
-        .order(col, { ascending: false }).limit(50)
-    );
+    // When the metric names an exercise, only its sets count (a run's
+    // distance, a plank's time); the name was resolved to an id above.
+    const exerciseId = metrics.find((m) => m.kind === kind)?.ref?.exercise_id ?? null;
+    let q = db.from("workout_sets").select("distance_m, duration_seconds, completed, workouts!inner(user_id, started_at)")
+      .eq("workouts.user_id", userId).gte("workouts.started_at", `${phaseStart}T00:00:00Z`)
+      .gt(col, 0).eq("completed", true);
+    if (exerciseId) q = q.eq("exercise_id", exerciseId);
+    const { data, error } = await retried(() => q.order(col, { ascending: false }).limit(50));
     if (error) return fail(error.message, kind);
     const best = bestOfSets((data ?? []).map((s: Row) => ({
       distance_m: num(s.distance_m), duration_seconds: num(s.duration_seconds), completed: s.completed as boolean | null,

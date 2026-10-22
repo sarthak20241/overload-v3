@@ -328,6 +328,50 @@ Deno.test("a clean line clears the retry ledger", async () => {
   assertEquals(cleared?.eq, [["user_id", "user-1"], ["phase_id", "ph0"]]);
 });
 
+Deno.test("a duration metric that names an exercise counts only that exercise's sets", async () => {
+  const plank = { id: "m-plank", seq: 0, is_hero: true, kind: "duration", ref: { exercise_name: "Plank", exercise_id: "ex-plank" }, unit: "min", direction: "up", start_value: null, target_value: 3, current_value: null, status: "set", checked_week: null };
+  const { db, reads, writes } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: [plank], error: null }],
+    workout_sets: [{ data: [{ duration_seconds: 150, completed: true }], error: null }],
+  });
+  assertEquals(await metricsStep(db, "user-1", DAY, WEEK, ""), { checked: 1, line: false });
+  const setsRead = reads.find((r) => r.table === "workout_sets");
+  assertEquals(setsRead?.eq.some(([k, v]) => k === "exercise_id" && v === "ex-plank"), true);
+  const check = writes.find((w) => w.table === "coach_program_phase_metrics" && "status" in w.patch);
+  assertEquals(check?.patch.current_value, 2.5);
+});
+
+Deno.test("a failed line is retried next run and a clean line then clears the ledger", async () => {
+  const script = () => ({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    daily_metrics: [{ data: { value: 71.4 }, error: null }],
+    user_nutrition_stats: [{ data: [{ protein_g: 155 }], error: null }],
+  });
+  // Run 1: the model fails.
+  const run1 = fakeDb({ ...script(), coach_program_phase_metrics: [{ data: rows, error: null }] });
+  const fail = (() => Promise.resolve(new Response("{}", { status: 500 }))) as unknown as typeof fetch;
+  const out1 = await metricsStep(run1.db, "user-1", DAY, WEEK, "key", fail);
+  assertEquals([out1.checked, out1.line, out1.error], [2, false, "line: 500: {}, retry next run"]);
+  const after1 = run1.writes.find((w) => w.patch.checked_week === null)!.patch;
+  // Run 2: the rows are as run 1 left them (un-stamped, ledger 1); the model answers.
+  const rows2 = rows.map((r) => ({ ...r, checked_week: null, retry_tries: after1.retry_tries, retry_week: after1.retry_week }));
+  const run2 = fakeDb({ ...script(), coach_program_phase_metrics: [{ data: rows2, error: null }] });
+  const ok = (() => Promise.resolve(new Response(JSON.stringify({
+    content: [{ type: "tool_use", name: "phase_line", input: { line: "On pace. Protein on the rest days is the one thing to fix." } }],
+  }), { status: 200 }))) as unknown as typeof fetch;
+  assertEquals(await metricsStep(run2.db, "user-1", DAY, WEEK, "key", ok), { checked: 2, line: true });
+  assertEquals(run2.writes.find((w) => w.table === "coach_program_phases")?.patch.coach_line, "On pace. Protein on the rest days is the one thing to fix.");
+  assertEquals(run2.writes.find((w) => w.patch.retry_tries === 0)?.patch, { retry_tries: 0, retry_week: WEEK });
+  // Run 3: everything stamped, nothing due.
+  const rows3 = rows.map((r) => ({ ...r, checked_week: WEEK, retry_tries: 0, retry_week: WEEK }));
+  const run3 = fakeDb({ ...script(), coach_program_phase_metrics: [{ data: rows3, error: null }] });
+  assertEquals(await metricsStep(run3.db, "user-1", DAY, WEEK, "key", ok), { checked: 0, line: false });
+  assertEquals(run3.writes.length, 0);
+});
+
 Deno.test("the metrics read is scoped to the user as well as the phase", async () => {
   const { db, reads } = fakeDb({
     coach_programs: [{ data: program, error: null }],

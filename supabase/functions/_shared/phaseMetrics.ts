@@ -69,8 +69,8 @@ export const KIND_SOURCE: Record<MetricKind, string> = {
   cardio_sessions: 'finished workouts with a timed cardio exercise in a week',
   sleep_hours: 'hours asleep a night, averaged over the week',
   protein_days: 'days in the week at or above the protein target',
-  distance: 'the longest distance logged in one set (km), a run or a row',
-  duration: 'the longest time logged in one set (minutes)',
+  distance: 'the longest distance logged in one set (km), a run or a row; of one named exercise when the metric names it',
+  duration: 'the longest time logged in one set (minutes); of one named exercise when the metric names it',
   custom: 'a number the user logs by hand',
 };
 
@@ -183,6 +183,15 @@ export function normalizeMetric(v: unknown): PhaseMetricInput | null {
     ref.exercise_name = name;
     const id = text((m.ref as MetricRef | undefined)?.exercise_id ?? m.exercise_id);
     if (id) ref.exercise_id = id;
+  } else if (kind === 'distance' || kind === 'duration') {
+    // Optional: name the one exercise that counts (a run, a plank). Without
+    // it any set with a distance or a time counts.
+    const name = text(m.exercise ?? m.exercise_name ?? (m.ref as MetricRef | undefined)?.exercise_name);
+    if (name) {
+      ref.exercise_name = name;
+      const id = text((m.ref as MetricRef | undefined)?.exercise_id ?? m.exercise_id);
+      if (id) ref.exercise_id = id;
+    }
   } else if (kind === 'sets_per_muscle') {
     const muscle = text(m.muscle ?? (m.ref as MetricRef | undefined)?.muscle);
     if (!muscle) return null;
@@ -244,8 +253,8 @@ export function metricLabel(m: { kind: MetricKind; ref?: MetricRef | null }): st
     case 'cardio_sessions': return 'Cardio a week';
     case 'sleep_hours': return 'Sleep';
     case 'protein_days': return 'Protein days';
-    case 'distance': return 'Distance';
-    case 'duration': return 'Duration';
+    case 'distance': return m.ref?.exercise_name ? `${m.ref.exercise_name} distance` : 'Distance';
+    case 'duration': return m.ref?.exercise_name ? `${m.ref.exercise_name} time` : 'Duration';
     case 'custom': return m.ref?.name ?? 'Your metric';
   }
 }
@@ -448,7 +457,7 @@ export function defaultJobText(m: { kind: MetricKind; ref?: MetricRef | null; di
  * 110 kg", "steps: 8,000 a week", "custom Handstand hold: 10 to 15 s, up".
  */
 export function metricText(m: { kind: MetricKind; is_hero: boolean; ref?: MetricRef | null; unit: string; direction: MetricDirection; start_value?: number | null; target_value: number }): string {
-  const who = m.kind === 'lift_e1rm' ? ` ${m.ref?.exercise_name ?? ''}`
+  const who = m.kind === 'lift_e1rm' || ((m.kind === 'distance' || m.kind === 'duration') && m.ref?.exercise_name) ? ` ${m.ref?.exercise_name ?? ''}`
     : m.kind === 'sets_per_muscle' ? ` ${m.ref?.muscle ?? ''}`
     : m.kind === 'custom' ? ` ${m.ref?.name ?? ''}`
     : '';

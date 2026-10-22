@@ -767,7 +767,7 @@ const PHASE_METRICS_SCHEMA = {
       target: { type: 'number', description: 'The value to reach by the end of this phase (number kinds) or to hit each week (weekly kinds), in the kind\'s unit.' },
       start: { type: 'number', description: 'Today\'s value when you know it (the profile weight, a top lift\'s estimated_1rm_kg). Number kinds only.' },
       direction: { type: 'string', enum: ['up', 'down', 'hold'], description: 'bodyweight and custom only: which way the number should move. Every other kind goes up.' },
-      exercise: { type: 'string', description: 'lift_e1rm only: the exercise name as the app knows it (from top_lifts or active_routines), e.g. "Barbell Bench Press".' },
+      exercise: { type: 'string', description: 'lift_e1rm: the exercise name as the app knows it (from top_lifts or active_routines), e.g. "Barbell Bench Press". distance and duration: optional, the one exercise that counts (a run, a plank); without it any set with a distance or a time counts.' },
       muscle: { type: 'string', enum: ['Chest', 'Back', 'Shoulders', 'Quads', 'Hamstrings', 'Glutes', 'Biceps', 'Triceps', 'Calves', 'Core'], description: 'sets_per_muscle only.' },
       name: { type: 'string', description: 'custom only: what to call it, under 30 characters, e.g. "Handstand hold".' },
       unit: { type: 'string', description: 'custom only: the unit the user logs in, e.g. "s", "reps", "cm", "km".' },

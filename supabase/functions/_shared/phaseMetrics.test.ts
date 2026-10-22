@@ -154,6 +154,16 @@ Deno.test("bodyweight takes its direction from the start and target; custom carr
   });
 });
 
+Deno.test("a distance or duration metric may name the one exercise that counts", () => {
+  assertEquals(normalizeMetric({ kind: "duration", exercise: "Plank", target: 3 }), {
+    kind: "duration", is_hero: false, direction: "up", unit: "min", target_value: 3, ref: { exercise_name: "Plank" },
+  });
+  // Without a name, any set with the measure counts.
+  assertEquals(normalizeMetric({ kind: "distance", target: 5 }), { kind: "distance", is_hero: false, direction: "up", unit: "km", target_value: 5 });
+  assertEquals(metricLabel({ kind: "duration", ref: { exercise_name: "Plank" } }), "Plank time");
+  assertEquals(metricLabel({ kind: "distance", ref: { exercise_name: "Run" } }), "Run distance");
+});
+
 Deno.test("a metric with no way to read it is dropped", () => {
   assertEquals(normalizeMetric({ kind: "lift_e1rm", target: 110 }), null);          // which lift?
   assertEquals(normalizeMetric({ kind: "sets_per_muscle", target: 12 }), null);     // which muscle?
