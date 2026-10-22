@@ -107,10 +107,11 @@ jobs:
       # The repo has no other test CI, so this is the only automated gate
       # between a bad commit and production, and the deploy is blocked on it
       # deliberately. Be clear about its reach though: these suites cover
-      # ai-coach, _shared, revenuecat-webhook and session-refresh. delete-account and form-check
-      # have no tests at all, and daily-suggestion is covered only indirectly,
-      # through the _shared rules it calls. All six are deployable, so a green
-      # run here is not a statement about every function it can ship.
+      # ai-coach, _shared, revenuecat-webhook and session-refresh.
+      # delete-account and form-check have no tests at all, and
+      # daily-suggestion is covered only indirectly, through the _shared rules
+      # it calls. All six are deployable, so a green run here is not a
+      # statement about every function it can ship.
       - name: Test
         run: |
           set -euo pipefail

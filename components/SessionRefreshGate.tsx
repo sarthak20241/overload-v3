@@ -117,9 +117,21 @@ export function SessionRefreshGate({ children }: { children: ReactNode }) {
     let createdSessionId: string | null = null;
     let ticketTimer: ReturnType<typeof setTimeout> | undefined;
     let swapTimer: ReturnType<typeof setTimeout> | undefined;
+    let timedOutMidSwap = false;
     const finish = (outcome: GateOutcome) => {
-      if (settled) return;
+      if (settled) {
+        // The swap ended after the 30s cap had already mounted the app. Say
+        // how it really ended, so swap_timed_out is not the whole story.
+        if (timedOutMidSwap && outcome !== 'swap_timed_out') {
+          track(outcome === 'refreshed' ? 'session_refreshed' : 'session_refresh_failed', {
+            outcome,
+            late: true,
+          });
+        }
+        return;
+      }
       settled = true;
+      if (outcome === 'swap_timed_out') timedOutMidSwap = true;
       clearTimeout(ticketTimer);
       clearTimeout(swapTimer);
       // Three buckets, so the failure count means something: a new session,
