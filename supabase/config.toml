@@ -30,6 +30,10 @@ verify_jwt = false
 [functions.delete-account]
 verify_jwt = false
 
+# Verifies the Clerk JWT itself (the gateway rejects Clerk JWTs).
+[functions.session-refresh]
+verify_jwt = false
+
 [functions.form-check]
 verify_jwt = false
 
