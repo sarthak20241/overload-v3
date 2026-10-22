@@ -24,6 +24,16 @@ const metric = (over: Partial<MetricToCheck> & { kind: MetricToCheck["kind"] }):
   id: "m1", direction: "up", start_value: null, target_value: 1, current_value: null, ...over,
 });
 
+Deno.test("a distance or duration metric with only an exercise id reads that exercise, not any exercise", () => {
+  const r = readings({ distance_best_km: 9.9, duration_best_min: 99, best_by_metric: { "m-run": 5.1, "m-row": 20 } });
+  assertEquals(currentValueFor(metric({ id: "m-run", kind: "distance", ref: { exercise_id: "ex-run" } }), r), 5.1);
+  assertEquals(currentValueFor(metric({ id: "m-row", kind: "duration", ref: { exercise_id: "ex-row" } }), r), 20);
+  // Its own read found nothing: no reading, never the any-exercise best.
+  assertEquals(currentValueFor(metric({ id: "m-none", kind: "distance", ref: { exercise_id: "ex-swim" } }), r), null);
+  // No exercise at all: the best of any exercise, as before.
+  assertEquals(currentValueFor(metric({ id: "m-any", kind: "distance" }), r), 9.9);
+});
+
 Deno.test("each kind reads its own source", () => {
   const r = readings({
     bodyweight: 70.4,

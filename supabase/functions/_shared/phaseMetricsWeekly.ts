@@ -83,6 +83,13 @@ export function setsForMuscle(setsByMuscle: Record<string, number>, muscle: stri
   return any ? total : null;
 }
 
+/** Whether a metric counts one exercise: it carries its id, or a name still to resolve. */
+export function ownExercise(m: { ref?: MetricRef | null }): boolean {
+  return !!(m.ref?.exercise_id || m.ref?.exercise_name);
+}
+const ownBest = (m: MetricToCheck, r: WeeklyReadings): number | null =>
+  Number.isFinite(r.best_by_metric[m.id]) ? r.best_by_metric[m.id] : null;
+
 /** This week's number for one metric, or null when its source had nothing. */
 export function currentValueFor(m: MetricToCheck, r: WeeklyReadings): number | null {
   switch (m.kind) {
@@ -97,11 +104,11 @@ export function currentValueFor(m: MetricToCheck, r: WeeklyReadings): number | n
     case 'cardio_sessions': return r.cardio_sessions;
     case 'sleep_hours': return r.sleep_avg_h;
     case 'protein_days': return r.protein_days;
-    // A metric that names its exercise reads that exercise's best, and
-    // nothing at all while the name is unresolved; only one that names no
-    // exercise reads the best of any exercise.
-    case 'distance': return m.ref?.exercise_name ? (Number.isFinite(r.best_by_metric[m.id]) ? r.best_by_metric[m.id] : null) : r.distance_best_km;
-    case 'duration': return m.ref?.exercise_name ? (Number.isFinite(r.best_by_metric[m.id]) ? r.best_by_metric[m.id] : null) : r.duration_best_min;
+    // A metric tied to an exercise (by id, or by a name not resolved yet)
+    // reads that exercise's best, and nothing at all while it has none; only
+    // one tied to no exercise reads the best of any exercise.
+    case 'distance': return ownExercise(m) ? ownBest(m, r) : r.distance_best_km;
+    case 'duration': return ownExercise(m) ? ownBest(m, r) : r.duration_best_min;
     case 'custom': return Number.isFinite(r.custom_latest[m.id]) ? r.custom_latest[m.id] : null;
   }
 }

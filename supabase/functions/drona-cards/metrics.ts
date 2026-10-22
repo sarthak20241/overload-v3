@@ -16,7 +16,7 @@ import {
   escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, phaseProgress, type MetricRef, type MetricStatus,
 } from "../_shared/phaseMetrics.ts";
 import {
-  activePhaseIndex, addDays, bestOfSets, checkDue, checkMetrics, EMPTY_READINGS, meanPositive, proteinDaysOf,
+  activePhaseIndex, addDays, bestOfSets, checkDue, checkMetrics, EMPTY_READINGS, meanPositive, ownExercise, proteinDaysOf,
   stampWeekFor, weekInPhaseOn, type MetricToCheck, type WeeklyReadings,
 } from "../_shared/phaseMetricsWeekly.ts";
 import { askCoachLine, type LineMetric } from "../_shared/phaseMetricsLine.ts";
@@ -537,10 +537,10 @@ async function gatherReadings(
     if (!kinds.has(kind)) continue;
     const ofKind = metrics.filter((m) => m.kind === kind);
     for (const m of ofKind.filter((m) => m.ref?.exercise_id)) jobs.push(bestSet(kind, m)());
-    // The any-exercise read is only for metrics that name no exercise. A
-    // named metric whose name matched nothing gets no reading at all rather
-    // than another exercise's best (currentValueFor reads it the same way).
-    if (ofKind.some((m) => !m.ref?.exercise_name)) jobs.push(bestSet(kind, null)());
+    // The any-exercise read is only for metrics tied to no exercise (no id,
+    // no name). A metric tied to one whose read found nothing gets no reading
+    // rather than another exercise's best (currentValueFor reads it the same way).
+    if (ofKind.some((m) => !ownExercise(m))) jobs.push(bestSet(kind, null)());
   }
   if (kinds.has("custom")) {
     // The latest log of each custom metric, one read per metric (a phase
