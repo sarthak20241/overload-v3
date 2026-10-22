@@ -285,3 +285,24 @@ Deno.test("a coach line is kept only when it reads as one", () => {
   assertEquals(cleanLine("x".repeat(200)), null);
   assertEquals(cleanLine(42), null);
 });
+
+Deno.test("every saved field fits the table, so one long value cannot sink the whole insert", () => {
+  // The table holds unit <= 24 chars and ref <= 2000 bytes; the save is one
+  // insert for the whole program, so a value past those caps would drop
+  // every metric. The normalizer cuts to fit instead.
+  const long = "x".repeat(200);
+  const out = normalizeMetrics([
+    { kind: "custom", name: long, unit: long, target: 10, hero: true },
+    { kind: "distance", exercise: long, target: 5 },
+    { kind: "sets_per_muscle", muscle: long, target: 12 },
+  ]);
+  assertEquals(out.length, 3);
+  for (const m of out) {
+    assertEquals((m.unit ?? "").length <= 24, true);
+    assertEquals(new TextEncoder().encode(JSON.stringify(m.ref ?? {})).length <= 2000, true);
+  }
+  // Never more than five a phase, one hero: seq 0..4 sits inside the 0..7 check.
+  const many = normalizeMetrics(Array.from({ length: 12 }, () => ({ kind: "steps", target: 8000, hero: true })));
+  assertEquals(many.length, 5);
+  assertEquals(many.filter((m) => m.is_hero).length, 1);
+});

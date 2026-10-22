@@ -140,6 +140,8 @@ export interface PhaseMetricRow extends PhaseMetricInput {
 
 const MAX_METRICS = 5;
 const MAX_TEXT = 60;
+/** The table's own cap on unit (char_length <= 24); one longer unit would fail the program's whole metrics insert. */
+const MAX_UNIT = 24;
 
 const finite = (v: unknown): number | null =>
   typeof v === 'number' && Number.isFinite(v) ? v : null;
@@ -209,7 +211,7 @@ export function normalizeMetric(v: unknown): PhaseMetricInput | null {
     // Bodyweight and custom: the start and target say which way, else hold.
     direction = start != null && start !== target ? (target < start ? 'down' : 'up') : 'hold';
   }
-  const unit = kind === 'custom' ? (text(m.unit) ?? '') : KIND_UNIT[kind];
+  const unit = kind === 'custom' ? (text(m.unit) ?? '').slice(0, MAX_UNIT).trim() : KIND_UNIT[kind];
   const out: PhaseMetricInput = { kind, is_hero: m.hero === true || m.is_hero === true, direction, unit, target_value: target };
   if (start != null) out.start_value = start;
   if (Object.keys(ref).length > 0) out.ref = ref;
