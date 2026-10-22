@@ -875,11 +875,14 @@ export async function loadActiveProgram(
   }
   for (const ph of phases) {
     const list = byPhase.get(ph.id) ?? [];
-    // A custom metric reads the latest log live: the weekly check can be days
-    // behind the value the user logged this morning.
-    const progress = activePhase && ph.id === activePhase.id ? phaseProgress(weekInPhase, ph.duration_weeks) : 0;
+    // A custom metric of the ACTIVE phase reads the latest log live: the
+    // weekly check can be days behind the value the user logged this
+    // morning. Any other phase keeps what the job wrote: its progress is not
+    // today's, so a live recompute would disagree with the stored status.
+    const isActive = activePhase != null && ph.id === activePhase.id;
+    const progress = isActive ? phaseProgress(weekInPhase, ph.duration_weeks) : 0;
     ph.metrics = list.map((m) => {
-      if (m.kind !== 'custom' || m.latest_log == null) return m;
+      if (!isActive || m.kind !== 'custom' || m.latest_log == null) return m;
       const current_value = m.latest_log;
       return { ...m, current_value, status: statusFor({ ...m, current_value, progress }) };
     });
