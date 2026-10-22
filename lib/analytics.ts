@@ -88,6 +88,7 @@ export type AnalyticsEvent =
   | 'auth_failed'
   // Silent re-sign-in before Clerk's 7-day session end (SessionRefreshGate).
   | 'session_refreshed'
+  | 'session_refresh_skipped'
   | 'session_refresh_failed'
   | 'account_deleted'
   | 'guest_mode_entered'

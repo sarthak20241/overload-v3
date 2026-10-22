@@ -65,6 +65,9 @@ export type RefreshOutcome =
   /** Signed out and the ticket never signed in: the user must sign in. */
   | 'sign_in_failed';
 
+/** Outcomes that leave the user as they were: nothing to fix, only to count. */
+export const SKIPPED_OUTCOMES: readonly string[] = ['no_ticket', 'abandoned', 'ticket_timed_out'];
+
 /** Waits before the 2nd and 3rd ticket sign-in attempts. */
 const SIGN_IN_RETRY_MS = [500, 1500];
 
@@ -85,8 +88,10 @@ export async function runSessionRefresh(steps: RefreshSteps): Promise<RefreshOut
     await steps.signOut();
   } catch {
     // A sign-out can throw after it has already cleared the session. One
-    // ticket attempt covers that case; if the old session is in fact still
-    // active, Clerk refuses the ticket and nothing has changed.
+    // ticket attempt covers that case. If the old session is in fact still
+    // active, single-session mode should make Clerk refuse the ticket
+    // (session_exists), leaving things as they were. That refusal is Clerk's
+    // documented single-session rule, not something these tests can show.
     try {
       await steps.signInWithTicket(got.ticket);
       return 'refreshed';

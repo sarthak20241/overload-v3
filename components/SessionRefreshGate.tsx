@@ -25,7 +25,7 @@
  * Phones end background apps far sooner than that in practice.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { REFRESH_WITHIN_MS, runSessionRefresh, shouldRefreshSession } from '@/lib/sessionRefresh';
+import { REFRESH_WITHIN_MS, runSessionRefresh, shouldRefreshSession, SKIPPED_OUTCOMES } from '@/lib/sessionRefresh';
 import { track } from '@/lib/analytics';
 
 const CLERK_LOAD_WAIT_MS = 4000;
@@ -95,7 +95,13 @@ export function SessionRefreshGate({ children }: { children: ReactNode }) {
       settled = true;
       clearTimeout(ticketTimer);
       clearTimeout(swapTimer);
-      track(outcome === 'refreshed' ? 'session_refreshed' : 'session_refresh_failed', {
+      // Three buckets, so the failure count means something: a new session,
+      // nothing changed (offline, server down, gave up waiting), or a real
+      // failure (sign-out or ticket sign-in went wrong, or a swap hung).
+      const event = outcome === 'refreshed'
+        ? 'session_refreshed'
+        : SKIPPED_OUTCOMES.includes(outcome) ? 'session_refresh_skipped' : 'session_refresh_failed';
+      track(event, {
         outcome,
         days_left: daysLeft,
         window_days: REFRESH_WITHIN_MS / 86_400_000,

@@ -10,6 +10,7 @@ import {
   type RefreshSteps,
   runSessionRefresh,
   shouldRefreshSession,
+  SKIPPED_OUTCOMES,
 } from "./sessionRefresh.ts";
 import { REFRESH_WITHIN_MS as SERVER_WINDOW } from "../supabase/functions/session-refresh/refresh.ts";
 
@@ -114,4 +115,19 @@ Deno.test("beforeSignOut runs once, after the ticket and before the sign-out", a
   });
   assertEquals(await runSessionRefresh(s), "refreshed");
   assertEquals(order, ["commit after fetchTicket"]);
+});
+
+Deno.test("only outcomes that changed nothing count as skipped", async () => {
+  // Each of these leaves the old session in place.
+  for (const over of [
+    { fetchTicket: async () => null },
+    { beforeSignOut: () => false },
+  ] as Partial<RefreshSteps>[]) {
+    const { s } = steps(over);
+    assertEquals(SKIPPED_OUTCOMES.includes(await runSessionRefresh(s)), true);
+  }
+  // These are real failures and must not hide among the skips.
+  for (const outcome of ["sign_in_failed", "sign_out_failed", "ticket_user_mismatch", "refreshed"]) {
+    assertEquals(SKIPPED_OUTCOMES.includes(outcome), false);
+  }
 });
