@@ -255,8 +255,10 @@ export function metricRowName(m: { kind: MetricKind; ref?: MetricRef | null; tar
   const t = formatMetricValue(m.kind, m.target_value, m.unit);
   switch (m.kind) {
     case 'steps': return `Steps ${t}`;
-    case 'sessions_per_week': return `Sessions ${t} a week`;
-    case 'cardio_sessions': return `Cardio ${t} a week`;
+    // The weekly target reads in the value column ("3 of 4 last week"), so
+    // the name stays short enough for the row.
+    case 'sessions_per_week': return 'Sessions';
+    case 'cardio_sessions': return 'Cardio';
     case 'sleep_hours': return `Sleep ${t}h${m.direction === 'up' ? '+' : ''}`;
     case 'protein_days': return `Protein ${t} days`;
     case 'sets_per_muscle': return `${metricLabel(m)} ${t}`;

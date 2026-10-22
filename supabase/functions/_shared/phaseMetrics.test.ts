@@ -189,7 +189,8 @@ Deno.test("labels and row names read like the card", () => {
   assertEquals(metricLabel({ kind: "custom", ref: { name: "Handstand hold" } }), "Handstand hold");
   assertEquals(metricRowName({ kind: "steps", target_value: 8000, unit: "steps", direction: "up" }), "Steps 8,000");
   assertEquals(metricRowName({ kind: "sleep_hours", target_value: 7, unit: "h", direction: "up" }), "Sleep 7h+");
-  assertEquals(metricRowName({ kind: "cardio_sessions", target_value: 2, unit: "sessions", direction: "up" }), "Cardio 2 a week");
+  assertEquals(metricRowName({ kind: "cardio_sessions", target_value: 2, unit: "sessions", direction: "up" }), "Cardio");
+  assertEquals(metricRowName({ kind: "sessions_per_week", target_value: 4, unit: "sessions", direction: "up" }), "Sessions");
 });
 
 Deno.test("values print in the kind's precision", () => {

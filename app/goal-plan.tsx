@@ -786,8 +786,10 @@ export default function GoalPlanScreen() {
     const line = isCur ? (ph.coach_line ?? ph.training_directive) : (ph.training_directive ?? ph.diet_directive);
     return (
       <Animated.View entering={FadeInDown.duration(300).delay(70)} style={[styles.card, styles.cardFlat, { backgroundColor: C.card }]}>
-        {/* Stepper: past ticks, the current phase as a named pill, the rest as numbers. */}
-        <View style={styles.steps}>
+        {/* Stepper: past ticks, the current phase as a named pill, the rest as
+            numbers. The named pill takes the width it needs; with many phases
+            or a long name the row scrolls sideways rather than ellipsize. */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.steps} style={{ flexGrow: 0 }}>
           {program.phases.map((p, i) => {
             const past = program.currentPhaseSeq != null ? p.seq < program.currentPhaseSeq : ended;
             const cur = p.seq === program.currentPhaseSeq;
@@ -812,7 +814,7 @@ export default function GoalPlanScreen() {
                   {past && !cur ? (
                     <Feather name="check" size={12} color={C.accentText} />
                   ) : (
-                    <Text style={[styles.stepText, cur ? { color: Colors.primaryFg, fontWeight: FontWeight.bold, fontSize: 13 } : { color: sel ? C.foreground : C.textDim }]} numberOfLines={1}>
+                    <Text style={[styles.stepText, cur ? { color: Colors.primaryFg, fontWeight: FontWeight.bold, fontSize: 13 } : { color: sel ? C.foreground : C.textDim }]}>
                       {cur ? p.name : i + 1}
                     </Text>
                   )}
@@ -823,7 +825,7 @@ export default function GoalPlanScreen() {
               </View>
             );
           })}
-        </View>
+        </ScrollView>
 
         <View style={styles.phaseTitleRow}>
           <Text style={[styles.phaseName, { color: C.foreground }]} numberOfLines={1}>{ph.name}</Text>
@@ -1440,12 +1442,12 @@ const styles = StyleSheet.create({
   chartWrap: { marginTop: 6 },
   goalCap: { fontSize: 13, fontWeight: FontWeight.medium, flexShrink: 1 },
 
-  steps: { flexDirection: 'row', alignItems: 'center' },
-  stepWrap: { flexDirection: 'row', alignItems: 'center', flex: 1 },
-  step: { height: 26, minWidth: 26, borderRadius: 13, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 7 },
+  steps: { flexDirection: 'row', alignItems: 'center', minWidth: '100%' },
+  stepWrap: { flexDirection: 'row', alignItems: 'center', flexGrow: 1, flexShrink: 0 },
+  step: { height: 26, minWidth: 26, borderRadius: 13, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 7, flexShrink: 0 },
   stepDot: { width: 7, height: 7, borderRadius: 4 },
   stepText: { fontSize: 12, fontWeight: FontWeight.semibold },
-  stepLine: { flex: 1, height: 1.5, minWidth: 6, marginHorizontal: 6 },
+  stepLine: { flexGrow: 1, height: 1.5, minWidth: 10, marginHorizontal: 6 },
   phaseTitleRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 14, gap: 8 },
   phaseName: { fontSize: 20, lineHeight: 24, fontWeight: FontWeight.bold, letterSpacing: -0.4, flexShrink: 1 },
   phaseWeeks: { fontSize: 13, fontWeight: FontWeight.medium },
@@ -1478,8 +1480,8 @@ const styles = StyleSheet.create({
   legDot: { width: 6, height: 6, borderRadius: 3 },
   legText: { fontSize: 12.5, fontWeight: FontWeight.medium },
   trackRow: { flexDirection: 'row', alignItems: 'center', gap: 8, height: 40 },
-  trackName: { width: 118, fontSize: 13.5, fontWeight: FontWeight.semibold },
-  trackValue: { flex: 1, textAlign: 'right', fontSize: 13, fontWeight: FontWeight.medium },
+  trackName: { minWidth: 118, flexShrink: 0, fontSize: 13.5, fontWeight: FontWeight.semibold },
+  trackValue: { flex: 1, flexShrink: 1, textAlign: 'right', fontSize: 13, fontWeight: FontWeight.medium },
   trackStatus: { width: 68, textAlign: 'right', fontSize: 11.5, fontWeight: FontWeight.semibold },
   rr: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', minHeight: 40, gap: 8 },
   routineChips: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1, flexWrap: 'wrap', justifyContent: 'flex-end' },

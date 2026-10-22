@@ -23,6 +23,9 @@ const PAD_BOTTOM = 22;
 const X0 = 4;
 const X1_INSET = 16;
 const LABEL_FONT = 10.5;
+/** Half a label's width: a label centred nearer an edge than this is pulled in. */
+const LABEL_HALF = 26;
+const clampLabelX = (x: number, width: number) => Math.max(LABEL_HALF, Math.min(width - LABEL_HALF, x));
 
 export interface LinePoint {
   /** Program weeks from the start (fractional). */
@@ -89,7 +92,7 @@ export function MetricLineChart({ width, points, weeks, phaseEndWeek, phaseTarge
           </>
         )}
         <Circle cx={px} cy={py} r={4} fill={C.card} stroke={Colors.primary} strokeWidth={2} />
-        <SvgText x={px} y={py + 20} textAnchor="middle" fontSize={LABEL_FONT} fontWeight="600" fill={C.accentText}>
+        <SvgText x={clampLabelX(px, width)} y={py + 20} textAnchor="middle" fontSize={LABEL_FONT} fontWeight="600" fill={C.accentText}>
           {phaseTargetLabel}
         </SvgText>
         {ty != null && (
@@ -99,7 +102,7 @@ export function MetricLineChart({ width, points, weeks, phaseEndWeek, phaseTarge
           </G>
         )}
         {ty != null && goalLabel && (
-          <SvgText x={tx} y={goalLabelAbove ? ty - 14 : ty + 22} textAnchor="middle" fontSize={LABEL_FONT} fontWeight="600" fill={C.mutedFg}>
+          <SvgText x={clampLabelX(tx, width)} y={goalLabelAbove ? ty - 14 : ty + 22} textAnchor="middle" fontSize={LABEL_FONT} fontWeight="600" fill={C.mutedFg}>
             {goalLabel}
           </SvgText>
         )}
