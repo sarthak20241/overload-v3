@@ -96,11 +96,15 @@ create policy "coach_program_phase_metrics_owner_insert" on public.coach_program
                    and p.program_id = coach_program_phase_metrics.program_id
                    and p.user_id = current_clerk_user_id()));
 
+-- A client updates only a custom metric (the one it logs by hand); every
+-- app-measured kind is written by the weekly job alone, so a client cannot
+-- set a bodyweight or lift status it did not earn.
 drop policy if exists "coach_program_phase_metrics_owner_update" on public.coach_program_phase_metrics;
 create policy "coach_program_phase_metrics_owner_update" on public.coach_program_phase_metrics
-  for update to authenticated using (user_id = current_clerk_user_id())
+  for update to authenticated using (user_id = current_clerk_user_id() and kind = 'custom')
   with check (
     user_id = current_clerk_user_id()
+    and kind = 'custom'
     and exists (select 1 from public.coach_program_phases p
                  where p.id = coach_program_phase_metrics.phase_id
                    and p.program_id = coach_program_phase_metrics.program_id

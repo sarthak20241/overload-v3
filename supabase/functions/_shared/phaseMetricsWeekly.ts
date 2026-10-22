@@ -191,6 +191,33 @@ export function weekInPhaseOn(startDate: string, phase: { start_offset_weeks: nu
   return Math.floor((daysBetween(startDate, day) - phase.start_offset_weeks * 7) / 7) + 1;
 }
 
+/** The Monday on or before a local ISO day. */
+export function mondayOf(iso: string): string {
+  const t = Date.parse(`${iso}T00:00:00Z`);
+  if (!Number.isFinite(t)) return iso;
+  const dow = new Date(t).getUTCDay(); // 0 Sunday
+  const back = (dow + 6) % 7;
+  return new Date(t - back * 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * The `checked_week` a phase's rows get when another phase was checked this
+ * week. A past or running phase: this week, so it is not revisited. A phase
+ * that has not started: the Monday BEFORE the week it starts in, so the
+ * cron lists it again from its start week on and its first check is not
+ * pushed a week back when it begins mid-week.
+ */
+export function stampWeekFor(startDate: string, phase: { start_offset_weeks: number }, weekStart: string): string {
+  const phaseStart = addDays(startDate, phase.start_offset_weeks * 7);
+  if (phaseStart <= weekStart) return weekStart;
+  return addDays(mondayOf(phaseStart), -7);
+}
+
+/** The whole-day ISO date `days` after `iso`, no time zone. */
+export function addDays(iso: string, days: number): string {
+  return new Date(Date.parse(`${iso}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+}
+
 /** Whole days from a to b (b - a). */
 export function daysBetween(aISO: string, bISO: string): number {
   const a = Date.parse(`${aISO}T00:00:00Z`);

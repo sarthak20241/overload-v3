@@ -43,6 +43,8 @@ function fakeDb(script: Record<string, Answer[]>) {
 const program = { id: "prog", title: "Summer Cut", start_date: "2026-10-05" };
 const phases = [
   { id: "ph0", seq: 0, name: "Foundation", duration_weeks: 4, start_offset_weeks: 0, diet_protein_g: 150, job_text: "Bring weight 72 to 71 kg" },
+  // Starts Monday Nov 2, after the Oct 19 week.
+  { id: "ph1", seq: 1, name: "Strength", duration_weeks: 4, start_offset_weeks: 4, diet_protein_g: 150, job_text: null },
 ];
 const rows = [
   { id: "m-bw", seq: 0, is_hero: true, kind: "bodyweight", ref: null, unit: "kg", direction: "down", start_value: 72, target_value: 71, current_value: 71.8, status: "on_track", checked_week: "2026-10-12" },
@@ -183,7 +185,7 @@ Deno.test("with no own exercise the catalog is asked, with the user filter on ea
   assertEquals([check?.patch.current_value, check?.patch.status], [null, "set"]);
 });
 
-Deno.test("a clean check also stamps the program's other phases, numbers untouched", async () => {
+Deno.test("a clean check also stamps the other phases: a phase to come with the week before its start", async () => {
   const { db, writes } = fakeDb({
     coach_programs: [{ data: program, error: null }],
     coach_program_phases: [{ data: phases, error: null }],
@@ -192,12 +194,50 @@ Deno.test("a clean check also stamps the program's other phases, numbers untouch
     user_nutrition_stats: [{ data: [{ protein_g: 155 }], error: null }],
   });
   await metricsStep(db, "user-1", DAY, WEEK, "", fetch, "2026-10-20T09:00:00.000Z");
-  const others = writes.find((w) => w.eq.some(([k]) => k === "neq:phase_id"));
-  assertEquals(others?.patch, { checked_at: "2026-10-20T09:00:00.000Z", checked_week: WEEK });
-  assertEquals(others?.eq, [["user_id", "user-1"], ["program_id", "prog"], ["neq:phase_id", "ph0"]]);
+  // Phase 1 starts Nov 2: stamped Oct 26, so it is listed from its start week
+  // on and its first check is not pushed back a week.
+  const other = writes.find((w) => w.eq.some(([k, v]) => k === "phase_id" && v === "ph1"));
+  assertEquals(other?.patch, { checked_at: "2026-10-20T09:00:00.000Z", checked_week: "2026-10-26" });
+  assertEquals(other?.eq, [["user_id", "user-1"], ["phase_id", "ph1"]]);
   // Every stamp of the run is the run's own clock.
   const stamped = writes.filter((w) => w.table === "coach_program_phase_metrics").map((w) => w.patch.checked_at);
   assertEquals(new Set(stamped), new Set(["2026-10-20T09:00:00.000Z"]));
+});
+
+Deno.test("a program past its end, or not started, is stamped so it leaves the due list", async () => {
+  // Day after the last phase ends (phase 1 ends Nov 29).
+  const over = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+  });
+  assertEquals(await metricsStep(over.db, "user-1", "2026-12-01", "2026-11-30", "key"), { checked: 0, line: false });
+  assertEquals(over.writes.map((w) => [w.eq[1][1], w.patch.checked_week]), [["ph0", "2026-11-30"], ["ph1", "2026-11-30"]]);
+  // Not started yet (program starts Oct 5; today is Sep 29, week of Sep 28):
+  // the first phase is stamped the Monday before its start week.
+  const early = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+  });
+  assertEquals(await metricsStep(early.db, "user-1", "2026-09-29", "2026-09-28", "key"), { checked: 0, line: false });
+  assertEquals(early.writes.map((w) => [w.eq[1][1], w.patch.checked_week]), [["ph0", "2026-09-28"], ["ph1", "2026-10-26"]]);
+});
+
+Deno.test("a failed coach line un-stamps one row, so the week retries it", async () => {
+  const { db, writes } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: rows, error: null }],
+    daily_metrics: [{ data: { value: 71.4 }, error: null }],
+    user_nutrition_stats: [{ data: [{ protein_g: 155 }], error: null }],
+  });
+  const fetchFn = (() => Promise.resolve(new Response("{}", { status: 500 }))) as unknown as typeof fetch;
+  const out = await metricsStep(db, "user-1", DAY, WEEK, "key", fetchFn);
+  assertEquals(out.checked, 2);
+  assertEquals(out.line, false);
+  assertEquals(out.error?.startsWith("line: 500"), true);
+  const unstamp = writes.find((w) => w.patch.checked_week === null);
+  assertEquals(unstamp?.eq, [["id", "m-bw"]]);
+  assertEquals(writes.some((w) => w.table === "coach_program_phases"), false);
 });
 
 Deno.test("the metrics read is scoped to the user as well as the phase", async () => {

@@ -633,10 +633,13 @@ async function saveProgramMetrics(
     }
   };
   if (names.size > 0) {
+    // The catalog and the user's own exercises, said explicitly rather than
+    // left to the exercises RLS.
     const { data: found, error } = await supabase
       .from('exercises')
       .select('id, name, user_id')
-      .in('name', [...names]);
+      .in('name', [...names])
+      .or(`user_id.is.null,user_id.eq.${clerkId}`);
     if (error) console.warn('[programs] exercise lookup for metrics failed', error.message);
     keep((found ?? []) as { id: string; name: string; user_id: string | null }[]);
     // Second pass, case-insensitive, for names the coach cased differently:
@@ -649,7 +652,8 @@ async function saveProgramMetrics(
       const { data: loose } = await supabase
         .from('exercises')
         .select('id, name, user_id')
-        .ilike('name', escaped);
+        .ilike('name', escaped)
+        .or(`user_id.is.null,user_id.eq.${clerkId}`);
       keep((loose ?? []) as { id: string; name: string; user_id: string | null }[]);
     }
   }

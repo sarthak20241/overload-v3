@@ -266,8 +266,12 @@ export function metricRowName(m: { kind: MetricKind; ref?: MetricRef | null; tar
   }
 }
 
-/** A number in the kind's own precision, with thousands for steps. */
-export function formatMetricValue(kind: MetricKind, v: number, unit?: string): string {
+/**
+ * A number in the kind's own precision, with thousands for steps. The kind
+ * decides the precision; `unit` is accepted so every call site can pass the
+ * metric's (kind, value, unit) triple without a special case for custom.
+ */
+export function formatMetricValue(kind: MetricKind, v: number, _unit?: string): string {
   if (!Number.isFinite(v)) return '';
   if (kind === 'steps') return Math.round(v).toLocaleString('en-US');
   if (kind === 'bodyweight') return (Math.round(v * 10) / 10).toFixed(1);
@@ -275,7 +279,6 @@ export function formatMetricValue(kind: MetricKind, v: number, unit?: string): s
     const r = Math.round(v * 10) / 10;
     return Number.isInteger(r) ? String(r) : r.toFixed(1);
   }
-  void unit;
   return String(Math.round(v));
 }
 

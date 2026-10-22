@@ -16,8 +16,8 @@ import {
   escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, phaseProgress, type MetricRef, type MetricStatus,
 } from "../_shared/phaseMetrics.ts";
 import {
-  activePhaseIndex, bestOfSets, checkDue, checkMetrics, EMPTY_READINGS, meanPositive, proteinDaysOf,
-  weekInPhaseOn, type MetricToCheck, type WeeklyReadings,
+  activePhaseIndex, addDays, bestOfSets, checkDue, checkMetrics, EMPTY_READINGS, meanPositive, proteinDaysOf,
+  stampWeekFor, weekInPhaseOn, type MetricToCheck, type WeeklyReadings,
 } from "../_shared/phaseMetricsWeekly.ts";
 import { askCoachLine, type LineMetric } from "../_shared/phaseMetricsLine.ts";
 import { retried } from "../_shared/retried.ts";
@@ -80,9 +80,6 @@ const num = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
-const addDays = (iso: string, days: number): string =>
-  new Date(Date.parse(`${iso}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
-
 /**
  * Check one user's current phase. `localDay` and `weekStart` are the user's
  * own (the cron computes them from the profile time zone).
@@ -112,8 +109,31 @@ export async function metricsStep(
     );
     if (phErr) return { ...none, error: `phases: ${phErr.message}` };
     const phases = (phaseRows ?? []) as PhaseRow[];
-    const idx = activePhaseIndex(String(prog.start_date), phases, localDay);
-    if (idx == null) return none;
+    const startDate = String(prog.start_date);
+    const now = nowISO;
+
+    // Stamp every phase but `except` with the week its rows belong to
+    // (stampWeekFor): past and running phases this week, phases to come the
+    // week before they start. Numbers are never touched. Without this a row
+    // the check never reaches keeps its user on the cron's due list for ever.
+    const stampOthers = async (except: string | null) => {
+      for (const ph of phases) {
+        if (ph.id === except) continue;
+        const { error } = await retried(() =>
+          db.from("coach_program_phase_metrics").update({ checked_at: now, checked_week: stampWeekFor(startDate, ph, weekStart) })
+            .eq("user_id", userId).eq("phase_id", ph.id)
+        );
+        if (error) console.log(`[drona-cards] stamping phase ${ph.id.slice(0, 8)} for ${userId.slice(0, 12)}: ${error.message}`);
+      }
+    };
+
+    const idx = activePhaseIndex(startDate, phases, localDay);
+    if (idx == null) {
+      // Past the last phase, or not started: nothing to check, but the rows
+      // must not read as due every run.
+      await stampOthers(null);
+      return none;
+    }
     const phase = phases[idx];
 
     // By user id as well as phase id: the service role sees every row, and
@@ -148,7 +168,13 @@ export async function metricsStep(
     // No claim between runs: the cron runs every 15 minutes with a 55 s
     // timeout, so two runs do not overlap in practice; if they ever did, the
     // writes are idempotent and the only cost is a second model call.
-    if (metrics.length === 0 || !checkDue(readableRows, weekStart)) return none;
+    if (metrics.length === 0) {
+      // Nothing the check can read in this phase: the other phases still get
+      // their stamp, so the user leaves the due list.
+      await stampOthers(phase.id);
+      return none;
+    }
+    if (!checkDue(readableRows, weekStart)) return none;
 
     const phaseStart = addDays(String(prog.start_date), phase.start_offset_weeks * 7);
     const { readings, failed } = await gatherReadings(db, userId, localDay, weekStart, phaseStart, metrics, phase.diet_protein_g);
@@ -162,7 +188,6 @@ export async function metricsStep(
     const readable = metrics.filter((m) => !failed.has(m.kind));
     const checks = checkMetrics(readable, readings, progress, weekIn <= 1);
 
-    const now = nowISO;
     let checked = 0;
     const writeErrors: string[] = [];
     for (const c of checks) {
@@ -191,15 +216,7 @@ export async function metricsStep(
       return { checked, line: false, error: why.join("; ") };
     }
 
-    // The program's other phases (past and future) get the same stamp, and
-    // nothing else: their numbers are not touched. Without this a finished
-    // phase's rows read as "unchecked" to the cron's pre-filter for ever and
-    // the user would be visited every run.
-    const { error: othersErr } = await retried(() =>
-      db.from("coach_program_phase_metrics").update({ checked_at: now, checked_week: weekStart })
-        .eq("user_id", userId).eq("program_id", prog.id).neq("phase_id", phase.id)
-    );
-    if (othersErr) console.log(`[drona-cards] stamping other phases for ${userId.slice(0, 12)}: ${othersErr.message}`);
+    await stampOthers(phase.id);
 
     // The line, from the numbers just written. No key, no line.
     if (!anthropicKey) return { checked, line: false };
@@ -228,8 +245,15 @@ export async function metricsStep(
       metrics: lineMetrics,
     }, anthropicKey, fetchFn);
     if (!answer.line) {
-      console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} not written: ${answer.error ?? "no line"}`);
-      return { checked, line: false };
+      // The line is retried this week: one row of the phase is un-stamped,
+      // so the cron lists the user again and the next run re-checks the
+      // phase (idempotent) and asks the model once more.
+      console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} not written: ${answer.error ?? "no line"}; retry next run`);
+      const { error: unstampErr } = await retried(() =>
+        db.from("coach_program_phase_metrics").update({ checked_week: null }).eq("id", metrics[0].id)
+      );
+      if (unstampErr) console.log(`[drona-cards] could not mark the line for retry: ${unstampErr.message}`);
+      return { checked, line: false, error: `line: ${answer.error ?? "no line"}, retry next run` };
     }
     const { error: lineErr } = await retried(() =>
       db.from("coach_program_phases").update({ coach_line: answer.line }).eq("id", phase.id)

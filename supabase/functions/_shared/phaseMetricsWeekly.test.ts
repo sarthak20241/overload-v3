@@ -1,7 +1,10 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
   activePhaseIndex,
+  addDays,
   bestOfSets,
+  mondayOf,
+  stampWeekFor,
   checkDue,
   checkMetric,
   checkMetrics,
@@ -111,6 +114,24 @@ Deno.test("the running phase and its week, from the start date", () => {
   assertEquals(activePhaseIndex("2026-10-05", phases, "2026-10-19"), 1);
   assertEquals(activePhaseIndex("2026-10-05", phases, "2026-11-09"), null);
   assertEquals(weekInPhaseOn("2026-10-05", phases[1], "2026-10-26"), 2);
+});
+
+Deno.test("the Monday of a day, and the week another phase's rows are stamped with", () => {
+  assertEquals(mondayOf("2026-10-22"), "2026-10-19"); // a Thursday
+  assertEquals(mondayOf("2026-10-19"), "2026-10-19"); // a Monday
+  assertEquals(mondayOf("2026-10-25"), "2026-10-19"); // a Sunday
+  assertEquals(addDays("2026-10-31", 1), "2026-11-01");
+  // Program starts Monday 2026-10-05. Phase 0: weeks 1-4 (to Nov 1).
+  // Phase 1 starts Monday Nov 2; phase 2 starts Monday Nov 23.
+  const start = "2026-10-05";
+  // This week is Oct 19. The running phase and any past phase: this week.
+  assertEquals(stampWeekFor(start, { start_offset_weeks: 0 }, "2026-10-19"), "2026-10-19");
+  // A phase that starts Nov 2: the Monday before its start week, Oct 26, so
+  // it reads as due from the week of Nov 2 on, not before.
+  assertEquals(stampWeekFor(start, { start_offset_weeks: 4 }, "2026-10-19"), "2026-10-26");
+  // A program that starts mid-week (Thursday Oct 29): its first phase is
+  // stamped Oct 19, so the week of Oct 26 (which holds the start) lists it.
+  assertEquals(stampWeekFor("2026-10-29", { start_offset_weeks: 0 }, "2026-10-19"), "2026-10-19");
 });
 
 Deno.test("a check is due once a local week, whatever the UTC clock says", () => {
