@@ -198,7 +198,13 @@ export function daysBetween(aISO: string, bISO: string): number {
   return Number.isFinite(a) && Number.isFinite(b) ? Math.round((b - a) / 86_400_000) : 0;
 }
 
-/** Is a check due this week: nothing checked yet, or the last check before the week began. */
-export function checkDue(rows: readonly { checked_at: string | null }[], weekStart: string): boolean {
-  return rows.length > 0 && rows.some((r) => !r.checked_at || r.checked_at.slice(0, 10) < weekStart);
+/**
+ * Is a check due this week: nothing checked yet, or the last check belongs
+ * to an earlier LOCAL week. `checked_week` is the local Monday the job wrote
+ * with the check; comparing the UTC date of `checked_at` with a local Monday
+ * would read as "not yet" for hours after midnight east of UTC and re-run
+ * the check (and the model) every 15 minutes until UTC caught up.
+ */
+export function checkDue(rows: readonly { checked_week: string | null }[], weekStart: string): boolean {
+  return rows.length > 0 && rows.some((r) => !r.checked_week || r.checked_week < weekStart);
 }

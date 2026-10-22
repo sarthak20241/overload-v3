@@ -120,7 +120,7 @@ export async function metricsStep(
     // RLS only guards the client's writes.
     const { data: metricRows, error: mErr } = await retried(() =>
       db.from("coach_program_phase_metrics")
-        .select("id, seq, is_hero, kind, ref, unit, direction, start_value, target_value, current_value, status, checked_at")
+        .select("id, seq, is_hero, kind, ref, unit, direction, start_value, target_value, current_value, status, checked_week")
         .eq("user_id", userId).eq("phase_id", phase.id).order("seq", { ascending: true })
     );
     if (mErr) return { ...none, error: `metrics: ${mErr.message}` };
@@ -130,11 +130,11 @@ export async function metricsStep(
     // is never stamped, so it must not count toward "due" either, or the
     // group would re-check (and re-ask the model) every run for ever.
     const metrics: MetricToCheck[] = [];
-    const readableRows: { checked_at: string | null }[] = [];
+    const readableRows: { checked_week: string | null }[] = [];
     for (const r of rows) {
       const target = num(r.target_value);
       if (!isMetricKind(r.kind) || target == null) continue;
-      readableRows.push({ checked_at: typeof r.checked_at === "string" ? r.checked_at : null });
+      readableRows.push({ checked_week: typeof r.checked_week === "string" ? r.checked_week : null });
       metrics.push({
         id: String(r.id),
         kind: r.kind,
@@ -172,6 +172,7 @@ export async function metricsStep(
           status: c.status,
           ...(c.start_value != null ? { start_value: c.start_value } : {}),
           checked_at: now,
+          checked_week: weekStart,
           updated_at: now,
         }).eq("id", c.id)
       );
@@ -195,7 +196,7 @@ export async function metricsStep(
     // phase's rows read as "unchecked" to the cron's pre-filter for ever and
     // the user would be visited every run.
     const { error: othersErr } = await retried(() =>
-      db.from("coach_program_phase_metrics").update({ checked_at: now })
+      db.from("coach_program_phase_metrics").update({ checked_at: now, checked_week: weekStart })
         .eq("user_id", userId).eq("program_id", prog.id).neq("phase_id", phase.id)
     );
     if (othersErr) console.log(`[drona-cards] stamping other phases for ${userId.slice(0, 12)}: ${othersErr.message}`);

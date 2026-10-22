@@ -45,8 +45,8 @@ const phases = [
   { id: "ph0", seq: 0, name: "Foundation", duration_weeks: 4, start_offset_weeks: 0, diet_protein_g: 150, job_text: "Bring weight 72 to 71 kg" },
 ];
 const rows = [
-  { id: "m-bw", seq: 0, is_hero: true, kind: "bodyweight", ref: null, unit: "kg", direction: "down", start_value: 72, target_value: 71, current_value: 71.8, status: "on_track", checked_at: "2026-10-12T06:00:00Z" },
-  { id: "m-pd", seq: 1, is_hero: false, kind: "protein_days", ref: null, unit: "days", direction: "up", start_value: null, target_value: 5, current_value: 4, status: "close", checked_at: "2026-10-12T06:00:00Z" },
+  { id: "m-bw", seq: 0, is_hero: true, kind: "bodyweight", ref: null, unit: "kg", direction: "down", start_value: 72, target_value: 71, current_value: 71.8, status: "on_track", checked_week: "2026-10-12" },
+  { id: "m-pd", seq: 1, is_hero: false, kind: "protein_days", ref: null, unit: "days", direction: "up", start_value: null, target_value: 5, current_value: 4, status: "close", checked_week: "2026-10-12" },
 ];
 // Week 3 of the phase: Monday 2026-10-19.
 const DAY = "2026-10-20";
@@ -70,7 +70,7 @@ Deno.test("a clean week writes every metric and the coach line", async () => {
     ["m-bw", 71.4, "on_track"],   // 0.6 of 1 kg gone at half the phase: on pace
     ["m-pd", 3, "slipping"],      // 3 of 5 days: 60%
   ]);
-  assertEquals(metricWrites.every((w) => typeof w.patch.checked_at === "string"), true);
+  assertEquals(metricWrites.every((w) => typeof w.patch.checked_at === "string" && w.patch.checked_week === WEEK), true);
   const line = writes.find((w) => w.table === "coach_program_phases");
   assertEquals(line?.patch.coach_line, "On pace. Protein is the one slipping; three of five days hit.");
   assertEquals(line?.eq, [["id", "ph0"]]);
@@ -107,15 +107,25 @@ Deno.test("nothing to do: no program, or every metric already checked this week"
   const done = fakeDb({
     coach_programs: [{ data: program, error: null }],
     coach_program_phases: [{ data: phases, error: null }],
-    coach_program_phase_metrics: [{ data: rows.map((r) => ({ ...r, checked_at: "2026-10-19T06:00:00Z" })), error: null }],
+    coach_program_phase_metrics: [{ data: rows.map((r) => ({ ...r, checked_week: WEEK })), error: null }],
   });
   assertEquals(await metricsStep(done.db, "user-1", DAY, WEEK, "key"), { checked: 0, line: false });
   assertEquals(done.writes.length, 0);
+
+  // Checked at 00:30 Monday in Kolkata: the UTC stamp still says Sunday, but
+  // the local week is this one, so nothing is due again.
+  const east = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: rows.map((r) => ({ ...r, checked_at: "2026-10-18T19:00:00Z", checked_week: WEEK })), error: null }],
+  });
+  assertEquals(await metricsStep(east.db, "user-1", "2026-10-19", WEEK, "key"), { checked: 0, line: false });
+  assertEquals(east.writes.length, 0);
 });
 
 Deno.test("a row the check cannot read never keeps the phase due", async () => {
-  const checked = rows.map((r) => ({ ...r, checked_at: "2026-10-19T06:00:00Z" }));
-  const bad = { id: "m-bad", seq: 2, is_hero: false, kind: "steps", ref: null, unit: "steps", direction: "up", start_value: null, target_value: null, current_value: null, status: "set", checked_at: null };
+  const checked = rows.map((r) => ({ ...r, checked_week: WEEK }));
+  const bad = { id: "m-bad", seq: 2, is_hero: false, kind: "steps", ref: null, unit: "steps", direction: "up", start_value: null, target_value: null, current_value: null, status: "set", checked_week: null };
   const { db, writes } = fakeDb({
     coach_programs: [{ data: program, error: null }],
     coach_program_phases: [{ data: phases, error: null }],
@@ -129,7 +139,7 @@ Deno.test("a row the check cannot read never keeps the phase due", async () => {
 });
 
 Deno.test("a lift metric with only a name is resolved to an exercise id, kept, and read", async () => {
-  const lift = { id: "m-lift", seq: 0, is_hero: true, kind: "lift_e1rm", ref: { exercise_name: "Barbell Bench Press" }, unit: "kg", direction: "up", start_value: null, target_value: 110, current_value: null, status: "set", checked_at: null };
+  const lift = { id: "m-lift", seq: 0, is_hero: true, kind: "lift_e1rm", ref: { exercise_name: "Barbell Bench Press" }, unit: "kg", direction: "up", start_value: null, target_value: 110, current_value: null, status: "set", checked_week: null };
   const { db, writes, reads } = fakeDb({
     coach_programs: [{ data: program, error: null }],
     coach_program_phases: [{ data: phases, error: null }],
@@ -151,7 +161,7 @@ Deno.test("a lift metric with only a name is resolved to an exercise id, kept, a
 });
 
 Deno.test("with no own exercise the catalog is asked, with the user filter on each read", async () => {
-  const lift = { id: "m-lift", seq: 0, is_hero: true, kind: "lift_e1rm", ref: { exercise_name: "Bench (wide)" }, unit: "kg", direction: "up", start_value: null, target_value: 110, current_value: null, status: "set", checked_at: null };
+  const lift = { id: "m-lift", seq: 0, is_hero: true, kind: "lift_e1rm", ref: { exercise_name: "Bench (wide)" }, unit: "kg", direction: "up", start_value: null, target_value: 110, current_value: null, status: "set", checked_week: null };
   const { db, writes, reads } = fakeDb({
     coach_programs: [{ data: program, error: null }],
     coach_program_phases: [{ data: phases, error: null }],
@@ -183,7 +193,7 @@ Deno.test("a clean check also stamps the program's other phases, numbers untouch
   });
   await metricsStep(db, "user-1", DAY, WEEK, "", fetch, "2026-10-20T09:00:00.000Z");
   const others = writes.find((w) => w.eq.some(([k]) => k === "neq:phase_id"));
-  assertEquals(others?.patch, { checked_at: "2026-10-20T09:00:00.000Z" });
+  assertEquals(others?.patch, { checked_at: "2026-10-20T09:00:00.000Z", checked_week: WEEK });
   assertEquals(others?.eq, [["user_id", "user-1"], ["program_id", "prog"], ["neq:phase_id", "ph0"]]);
   // Every stamp of the run is the run's own clock.
   const stamped = writes.filter((w) => w.table === "coach_program_phase_metrics").map((w) => w.patch.checked_at);

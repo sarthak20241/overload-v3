@@ -495,9 +495,10 @@ async function runCron(): Promise<Response> {
 
     // The phase metrics check (.planning/phase-metrics/SPEC.md): once a local
     // week per user with an active program, whether or not a card is due.
-    // One read finds who has a metric row not yet checked this week (the
-    // earliest of this run's week starts, so no zone is missed); everyone
-    // else costs nothing, and metricsStep then reads the phase itself.
+    // One read finds who has a metric row not yet checked this LOCAL week
+    // (checked_week, the local Monday the job wrote; the earliest of this
+    // run's week starts, so no zone is missed); everyone else costs nothing,
+    // and metricsStep then reads the phase itself.
     // A time budget keeps the moments pass below from being starved.
     const earliestWeek = weekStarts.length > 0 ? [...weekStarts].sort()[0] : null;
     const due_metrics = new Set<string>();
@@ -509,7 +510,7 @@ async function runCron(): Promise<Response> {
           db.from("coach_program_phase_metrics").select("user_id, coach_programs!inner(status)")
             .eq("coach_programs.status", "active")
             .not("target_value", "is", null)
-            .or(`checked_at.is.null,checked_at.lt.${earliestWeek}`)
+            .or(`checked_week.is.null,checked_week.lt.${earliestWeek}`)
             .order("user_id", { ascending: true }).order("id", { ascending: true })
             .range(from, from + USER_PAGE - 1)
         );

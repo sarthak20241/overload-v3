@@ -113,9 +113,12 @@ Deno.test("the running phase and its week, from the start date", () => {
   assertEquals(weekInPhaseOn("2026-10-05", phases[1], "2026-10-26"), 2);
 });
 
-Deno.test("a check is due once a week", () => {
-  assertEquals(checkDue([{ checked_at: null }], "2026-10-19"), true);
-  assertEquals(checkDue([{ checked_at: "2026-10-12T06:00:00Z" }], "2026-10-19"), true);
-  assertEquals(checkDue([{ checked_at: "2026-10-19T06:00:00Z" }], "2026-10-19"), false);
+Deno.test("a check is due once a local week, whatever the UTC clock says", () => {
+  assertEquals(checkDue([{ checked_week: null }], "2026-10-19"), true);
+  assertEquals(checkDue([{ checked_week: "2026-10-12" }], "2026-10-19"), true);
+  assertEquals(checkDue([{ checked_week: "2026-10-19" }], "2026-10-19"), false);
+  // A check made at 00:30 Monday in Kolkata is stamped Sunday 19:00 UTC; it
+  // belongs to the local week all the same and is not due again.
+  assertEquals(checkDue([{ checked_week: "2026-10-19" }], "2026-10-19"), false);
   assertEquals(checkDue([], "2026-10-19"), false);
 });
