@@ -101,6 +101,7 @@ import {
   PurchaseCancelledError,
   PurchasesUnavailableError,
   STORE_ACCOUNT,
+  STORE_MANAGE_HINT,
   STORE_NAME,
   type PlanKey,
   type RevenueCatPackage,
@@ -584,10 +585,8 @@ export default function UpgradeScreen() {
               - horizontal 3-dot timeline (killed the vertical card)
               - benefits collapsed to two tight lines (was 4 rows of 24pt tiles)
               - only annual + monthly rendered inline; founding hidden behind a
-                small "See all plans" toggle both to declutter and because the
-                Founding non-consumable IAP isn't provisioned in App Store
-                Connect yet (per .planning/paywall-plan.md ship-state) — a
-                surfaced-but-broken option is worse than a hidden one
+                small "See all plans" toggle to declutter (the Founding
+                non-consumable now exists in both App Store Connect and Play)
               - sticky footer with the CTA + trust check + delayed skip link
           */}
           <View style={u.topBar}>
@@ -759,7 +758,7 @@ export default function UpgradeScreen() {
                 )}
                 {!purchasesUsable && (
                   <Text style={[u.expoGoText, { color: C.mutedFg }]}>
-                    In-app purchases require a TestFlight build.
+                    In-app purchases need the {STORE_NAME} version of Overload.
                   </Text>
                 )}
               </View>
@@ -833,7 +832,7 @@ export default function UpgradeScreen() {
                   and the trust line above already says "One payment, no
                   renewals" — claiming it auto-renews contradicts that and is
                   exactly the kind of billing copy App Review reads. */}
-              {selectedPlan !== 'founding_lifetime' && 'Auto-renews until cancelled. '}
+              {selectedPlan !== 'founding_lifetime' && `Auto-renews until cancelled. ${STORE_MANAGE_HINT} `}
               <Text style={u.legalLink} onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}>
                 Terms
               </Text>

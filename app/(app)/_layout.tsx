@@ -300,7 +300,7 @@ export default function AppLayout() {
           // their plan is saved; /upgrade routes to the reveal choice's
           // destination when they finish or skip. Guests aren't sold to (no
           // Clerk id for the RC webhook to attribute a purchase to).
-          if (isSignedIn && Platform.OS !== 'web') {
+          if (isSignedIn && (Platform.OS === 'ios' || Platform.OS === 'android')) {
             router.replace({
               pathname: '/upgrade',
               params: {
