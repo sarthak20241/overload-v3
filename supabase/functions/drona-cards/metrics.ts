@@ -65,6 +65,8 @@ export interface Db {
  * rebuilt mid-week starts a fresh count with its fresh rows.
  */
 export const TRIES_PER_WEEK = 3;
+/** Under this much time left in the run, the coach line waits for the next run. */
+export const MIN_LINE_MS = 5_000;
 
 export interface MetricsStepResult {
   /** Metrics written this run (0 when nothing was due). */
@@ -103,6 +105,14 @@ export async function metricsStep(
   fetchFn: typeof fetch = fetch,
   /** The run's own clock, so every stamp of one run compares as one. */
   nowISO: string = new Date().toISOString(),
+  /**
+   * Epoch ms the cron run must be done by. The model call's timeout is cut
+   * to fit, and with less than MIN_LINE_MS left there is no call at all:
+   * the phase is un-stamped for the next run, and no try is spent, since the
+   * model never failed. The database reads before it are short and retried
+   * a bounded number of times (retried: three tries, under 2 s of waits).
+   */
+  stopBy: number | null = null,
 ): Promise<MetricsStepResult> {
   const none: MetricsStepResult = { checked: 0, line: false };
   try {
@@ -264,6 +274,15 @@ export async function metricsStep(
         status: isMetricStatus(c.status) ? c.status : ("set" as MetricStatus),
       };
     });
+    const left = stopBy == null ? Infinity : stopBy - Date.now();
+    if (left < MIN_LINE_MS) {
+      console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} skipped: out of time; retry next run`);
+      const { error: unstampErr } = await retried(() =>
+        db.from("coach_program_phase_metrics").update({ checked_week: null }).eq("user_id", userId).eq("phase_id", phase.id)
+      );
+      if (unstampErr) console.log(`[drona-cards] could not mark the line for retry: ${unstampErr.message}`);
+      return { checked, line: false, error: `line: out of time, retry next run${unstampErr ? `; ledger write failed: ${unstampErr.message}` : ""}` };
+    }
     const answer = await askCoachLine({
       program_title: String(prog.title ?? "Your program"),
       phase_name: phase.name,
@@ -271,7 +290,7 @@ export async function metricsStep(
       week_in_phase: weekIn,
       weeks_total: phase.duration_weeks,
       metrics: lineMetrics,
-    }, anthropicKey, fetchFn);
+    }, anthropicKey, fetchFn, undefined, Number.isFinite(left) ? left : undefined);
     if (!answer.line) {
       // The line is retried this week, up to TRIES_PER_WEEK: every row of
       // the phase is un-stamped, so the cron lists the user again and the

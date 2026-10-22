@@ -78,6 +78,8 @@ const CRON_CONCURRENCY = 4;
 const METRICS_BUDGET_MS = 20_000;
 const METRICS_LATEST_MS = 25_000;
 const METRICS_FIRST_BATCH_BY_MS = 33_000;
+/** Every metrics step is done by this point in the run: model calls are cut to fit, 3 s inside the 55 s limit. */
+const METRICS_HARD_STOP_MS = 52_000;
 /** Cards older than this are history nobody reads; the facts window is 8 weeks. */
 const KEEP_WEEKS = 26;
 
@@ -554,7 +556,7 @@ async function runCron(): Promise<Response> {
       }
       const batch = metricUsers.slice(i, i + CRON_CONCURRENCY);
       // The real client is structurally the little Db the step types against.
-      const results = await Promise.all(batch.map((w) => metricsStep(db as unknown as MetricsDb, w.userId, w.day, w.week, ANTHROPIC_API_KEY, fetch, now.toISOString())));
+      const results = await Promise.all(batch.map((w) => metricsStep(db as unknown as MetricsDb, w.userId, w.day, w.week, ANTHROPIC_API_KEY, fetch, now.toISOString(), now.getTime() + METRICS_HARD_STOP_MS)));
       results.forEach((m, j) => {
         metricsChecked += m.checked;
         if (m.line) linesWritten += 1;

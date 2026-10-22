@@ -753,6 +753,18 @@ export interface ActiveProgram {
   weekInPhase: number | null;
 }
 
+/**
+ * The phase a screen shows: the one asked for by seq, else the current one,
+ * else the first (before the program starts). One helper, so the phase,
+ * pillar and phase-card screens can never resolve it differently.
+ */
+export function phaseFor(program: ActiveProgram | null, seq: number | null): ActiveProgramPhaseRow | null {
+  if (!program) return null;
+  return (seq != null ? program.phases.find((p) => p.seq === seq) ?? null : null)
+    ?? (program.currentPhaseSeq != null ? program.phases.find((p) => p.seq === program.currentPhaseSeq) ?? null : null)
+    ?? program.phases[0] ?? null;
+}
+
 /** Read the user's active program + phases, with the current phase computed. */
 export async function loadActiveProgram(
   supabase: Supa,

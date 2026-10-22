@@ -48,7 +48,7 @@ import { MetricLogSheet } from '@/components/program/MetricLogSheet';
 import { PlanRows } from '@/components/program/PlanRows';
 import { loadLiveReadings } from '@/lib/pillarData';
 import type { LiveReadings } from '@/lib/phaseMetricHeadline';
-import { ScreenSkeleton, SectionLabel, Stagger, S, T } from '@/components/program/finish';
+import { LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T } from '@/components/program/finish';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { Colors, Radius, FontWeight } from '@/constants/theme';
@@ -116,6 +116,7 @@ export default function GoalPlanScreen() {
   // Today's readiness, for a Recover row with no sleep metric.
   const [readinessToday, setReadinessToday] = useState<number | null>(null);
   const [live, setLive] = useState<LiveReadings | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
   const [logging, setLogging] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
@@ -141,6 +142,7 @@ export default function GoalPlanScreen() {
       if (seq !== loadSeq.current) return;
       setProgram(p);
       setLive(lv);
+      setLoadFailed(false);
       if (!viewedRef.current) {
         viewedRef.current = true;
         track('program_viewed', {
@@ -150,8 +152,11 @@ export default function GoalPlanScreen() {
           total_weeks: p?.total_weeks ?? null,
         });
       }
-    } catch {
-      /* keep whatever we had */
+    } catch (e) {
+      // Keep whatever we had; with nothing yet, say the load failed rather
+      // than show the "no program" empty state over a network error.
+      console.warn('[programs] goal load failed', e);
+      if (seq === loadSeq.current) setLoadFailed(true);
     } finally {
       // Only the newest load clears the spinner: a superseded one returning
       // early must not drop it while the newer one is still in flight.
@@ -504,6 +509,8 @@ export default function GoalPlanScreen() {
       >
         {loading ? (
           <ScreenSkeleton variant="goal" />
+        ) : !program && loadFailed ? (
+          <LoadFailed onRetry={() => { setLoading(true); load(); }} />
         ) : !program ? (
           <View style={styles.empty}>
             <View style={[styles.emptyIconWrap, { backgroundColor: C.primarySubtle }]}>

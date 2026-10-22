@@ -21,9 +21,9 @@ import { useTheme } from '@/hooks/useTheme';
 import { track, markWorkoutSource } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { loadActiveProgram, daysBetweenISO, todayLocalISO, type ActiveProgram, type ActiveProgramPhaseRow } from '@/lib/programData';
+import { loadActiveProgram, phaseFor, daysBetweenISO, todayLocalISO, type ActiveProgram, type ActiveProgramPhaseRow } from '@/lib/programData';
 import {
-  formatMetricValue, heroOf, STATUS_LABEL, statusTone, type MetricStatus, type PhaseMetricRow,
+  formatMetricValue, heroOf, STATUS_LABEL, statusTone, type MetricKind, type MetricStatus, type PhaseMetricRow,
 } from '@/lib/phaseMetrics';
 import { headlineText, liveFrom, metricHeadline } from '@/lib/phaseMetricHeadline';
 import { useNutritionTargets, useTodayNutrition } from '@/lib/dietData';
@@ -35,7 +35,7 @@ import { getHealthConnectionStatus } from '@/lib/healthSync';
 import { weekPatternFor, shortDayLabel, REST } from '@/lib/weekPattern';
 import { WEEK_ORDER, fuelOn } from '@/lib/fuelDays';
 import { PILLAR_OF, type Pillar } from '@/components/program/PhaseDetail';
-import { CoachTip, Row, ScreenSkeleton, SectionLabel, Stagger, S, T, useStatusColor } from '@/components/program/finish';
+import { CoachTip, LoadFailed, Row, ScreenSkeleton, SectionLabel, Stagger, S, T, useStatusColor } from '@/components/program/finish';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { Colors, FontWeight } from '@/constants/theme';
@@ -43,6 +43,29 @@ import { haptics } from '@/lib/haptics';
 
 const TITLE: Record<Pillar, string> = { train: 'Train', eat: 'Eat', recover: 'Recover' };
 const SLEEP_TARGET_H = 7;
+
+/** A TARGETS row's name per kind; the ref carries the muscle, lift or custom name. */
+const ROW_NAME: Record<MetricKind, (m: PhaseMetricRow) => string> = {
+  steps: () => 'Steps',
+  cardio_sessions: () => 'Cardio',
+  sessions_per_week: () => 'Sessions',
+  protein_days: () => 'Protein days',
+  sleep_hours: () => 'Sleep',
+  sets_per_muscle: (m) => `${m.ref?.muscle ?? 'Muscle'} sets`,
+  lift_e1rm: (m) => `${m.ref?.exercise_name ?? 'Lift'} e1RM`,
+  custom: (m) => m.ref?.name ?? 'Your metric',
+  bodyweight: () => 'Weight',
+  distance: () => 'Distance',
+  duration: () => 'Duration',
+};
+
+/** What a TARGETS row's value is of: "of 7", "of 7 h", "of 10,000", "of 80 kg". */
+function rowRest(m: PhaseMetricRow, target: string): string {
+  if (m.kind === 'protein_days') return 'of 7';
+  if (m.kind === 'sleep_hours') return `of ${target} h`;
+  const bare = m.kind === 'steps' || m.kind === 'sessions_per_week' || m.kind === 'cardio_sessions';
+  return `of ${target}${!bare && m.unit ? ` ${m.unit}` : ''}`;
+}
 
 export default function GoalPlanPillarScreen() {
   const insets = useSafeAreaInsets();
@@ -63,6 +86,7 @@ export default function GoalPlanPillarScreen() {
   const [vitals, setVitals] = useState<TodayVitals | null>(null);
   const [healthConnected, setHealthConnected] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
   const [buildSeed, setBuildSeed] = useState<{ goal?: string; note?: string } | null>(null);
@@ -77,7 +101,8 @@ export default function GoalPlanPillarScreen() {
       const p = await loadActiveProgram(supabase, clerkId);
       if (n !== loadSeq.current) return;
       setProgram(p);
-      const ph = p ? (seqAsked != null ? p.phases.find((x) => x.seq === seqAsked) : null) ?? (p.currentPhaseSeq != null ? p.phases.find((x) => x.seq === p.currentPhaseSeq) : null) ?? p.phases[0] ?? null : null;
+      setLoadFailed(false);
+      const ph = phaseFor(p, seqAsked);
       if (pillar === 'train') {
         const [w, r] = await Promise.all([loadWeekSessions(supabase, clerkId), loadRoutineSummaries(supabase, ph?.routines.map((x) => x.id) ?? [])]);
         if (n !== loadSeq.current) return;
@@ -92,7 +117,9 @@ export default function GoalPlanPillarScreen() {
         }
       }
     } catch (e) {
+      // Keep what we had; with nothing yet, say the load failed rather than "no program".
       console.warn('[programs] pillar load failed', e);
+      if (n === loadSeq.current) setLoadFailed(true);
     } finally {
       if (n === loadSeq.current) { setLoading(false); setRefreshing(false); }
     }
@@ -100,11 +127,7 @@ export default function GoalPlanPillarScreen() {
   useFocusEffect(useCallback(() => { load(); }, [load]));
   useEffect(() => { track('program_pillar_viewed', { pillar, seq: seqAsked }); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
-  const phase: ActiveProgramPhaseRow | null = program
-    ? (seqAsked != null ? program.phases.find((x) => x.seq === seqAsked) : null)
-      ?? (program.currentPhaseSeq != null ? program.phases.find((x) => x.seq === program.currentPhaseSeq) : null)
-      ?? program.phases[0] ?? null
-    : null;
+  const phase = phaseFor(program, seqAsked);
   const isCur = program != null && phase != null && phase.seq === program.currentPhaseSeq;
   const today = todayLocalISO();
   const todayIdx = weekdayIndex(today);
@@ -151,8 +174,8 @@ export default function GoalPlanPillarScreen() {
     const status = metricHeadline(m, null).status;
     const t = formatMetricValue(m.kind, m.target_value, m.unit);
     const v = cur == null ? null : formatMetricValue(m.kind, cur, m.unit);
-    const name = m.kind === 'steps' ? 'Steps' : m.kind === 'cardio_sessions' ? 'Cardio' : m.kind === 'sessions_per_week' ? 'Sessions' : m.kind === 'protein_days' ? 'Protein days' : m.kind === 'sleep_hours' ? 'Sleep' : m.kind === 'sets_per_muscle' ? `${m.ref?.muscle ?? 'Muscle'} sets` : m.kind === 'lift_e1rm' ? `${m.ref?.exercise_name ?? 'Lift'} e1RM` : m.kind === 'custom' ? (m.ref?.name ?? 'Your metric') : m.kind === 'bodyweight' ? 'Weight' : m.kind === 'distance' ? 'Distance' : 'Duration';
-    const rest = m.kind === 'protein_days' ? 'of 7' : m.kind === 'sleep_hours' ? `of ${t} h` : `of ${t}${m.kind === 'steps' ? '' : m.unit && m.kind !== 'sessions_per_week' && m.kind !== 'cardio_sessions' ? ` ${m.unit}` : ''}`;
+    const name = ROW_NAME[m.kind](m);
+    const rest = rowRest(m, t);
     return (
       <Row
         key={m.id}
@@ -473,7 +496,9 @@ export default function GoalPlanPillarScreen() {
         ) : !program || !phase ? (
           <View style={{ paddingTop: S.xl }}>
             <Text style={[T.title, { color: C.foreground }]}>{TITLE[pillar]}</Text>
-            <Text style={[T.body, { color: C.mutedFg, marginTop: S.md }]}>No program yet. Build one from Goal & Plan and this screen fills in.</Text>
+            {loadFailed && !program
+              ? <LoadFailed onRetry={() => { setLoading(true); load(); }} />
+              : <Text style={[T.body, { color: C.mutedFg, marginTop: S.md }]}>No program yet. Build one from Goal & Plan and this screen fills in.</Text>}
           </View>
         ) : (
           <>

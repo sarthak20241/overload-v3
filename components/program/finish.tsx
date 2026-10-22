@@ -112,6 +112,24 @@ export function Row({ title, value, valueRest, status, onPress, icon, subtitle, 
   );
 }
 
+/** A load that failed with nothing to show yet: one calm line and a retry, not the "no program" empty state. */
+export function LoadFailed({ onRetry }: { onRetry: () => void }) {
+  const { C } = useTheme();
+  return (
+    <View style={{ paddingTop: S.xl, gap: S.md }}>
+      <Text style={[T.body, { color: C.mutedFg }]}>I could not load your program just now. Check the connection and try again.</Text>
+      <Pressable
+        onPress={() => { haptics.selection(); onRetry(); }}
+        style={({ pressed }) => [styles.retry, { backgroundColor: C.muted, opacity: pressed ? 0.85 : 1 }]}
+        accessibilityRole="button"
+        accessibilityLabel="Try again"
+      >
+        <Text style={[T.rowTitle, { color: C.foreground, fontWeight: FontWeight.semibold }]}>Try again</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 /** The coach's tip at the bottom of a screen: a quote with a 3px lime bar. */
 export function CoachTip({ text }: { text: string | null | undefined }) {
   const { C } = useTheme();
@@ -171,6 +189,7 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', minHeight: 52, paddingVertical: S.sm },
   rowIcon: { width: 28, textAlign: 'center', marginRight: S.lg },
   rowStatus: { minWidth: 62, textAlign: 'right' },
+  retry: { height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   tip: { flexDirection: 'row', gap: S.md, marginTop: S.xxl - 2 },
   tipBar: { width: 3, borderRadius: 2 },
 });

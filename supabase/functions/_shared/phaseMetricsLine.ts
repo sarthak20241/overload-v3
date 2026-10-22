@@ -84,9 +84,11 @@ export async function askCoachLine(
   apiKey: string,
   fetchFn: typeof fetch = fetch,
   model: string = COACH_LINE_MODEL,
+  /** Shorter than the usual 20 s when the caller's run ends sooner. */
+  timeoutMs: number = TIMEOUT_MS,
 ): Promise<LineAnswer> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), Math.max(0, Math.min(TIMEOUT_MS, timeoutMs)));
   try {
     const res = await fetchFn('https://api.anthropic.com/v1/messages', {
       method: 'POST',

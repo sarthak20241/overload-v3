@@ -402,3 +402,25 @@ Deno.test("the metrics read is scoped to the user as well as the phase", async (
   const metricsRead = reads.find((r) => r.table === "coach_program_phase_metrics");
   assertEquals(metricsRead?.eq, [["user_id", "user-1"], ["phase_id", "ph0"]]);
 });
+
+Deno.test("no time left for the model: no call, no try spent, the phase is due again next run", async () => {
+  const { db, writes } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: rows, error: null }],
+    daily_metrics: [{ data: { value: 71.4 }, error: null }],
+    user_nutrition_stats: [{ data: [{ protein_g: 155 }, { protein_g: 160 }], error: null }],
+  });
+  let modelCalls = 0;
+  const fetchFn = (() => { modelCalls += 1; return Promise.resolve(new Response("{}", { status: 200 })); }) as unknown as typeof fetch;
+  // The run must stop in one second: too little for a 20 s model call.
+  const out = await metricsStep(db, "user-1", DAY, WEEK, "key", fetchFn, new Date().toISOString(), Date.now() + 1_000);
+  assertEquals(modelCalls, 0);
+  assertEquals(out.checked, 2);
+  assertEquals(out.line, false);
+  assertEquals(out.error, "line: out of time, retry next run");
+  // Un-stamped so the cron lists the user again, and the ledger untouched.
+  const unstamp = writes.find((w) => w.table === "coach_program_phase_metrics" && w.patch.checked_week === null);
+  assertEquals(unstamp?.patch, { checked_week: null });
+  assertEquals(writes.some((w) => "retry_tries" in w.patch), false);
+});

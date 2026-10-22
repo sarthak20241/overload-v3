@@ -17,12 +17,12 @@ import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { loadActiveProgram, daysBetweenISO, todayLocalISO, type ActiveProgram } from '@/lib/programData';
+import { loadActiveProgram, phaseFor, daysBetweenISO, todayLocalISO, type ActiveProgram } from '@/lib/programData';
 import { loadLiveReadings } from '@/lib/pillarData';
 import type { LiveReadings } from '@/lib/phaseMetricHeadline';
 import { PhaseDetail } from '@/components/program/PhaseDetail';
 import { PlanRows } from '@/components/program/PlanRows';
-import { ScreenSkeleton, Stagger, S, T } from '@/components/program/finish';
+import { LoadFailed, ScreenSkeleton, Stagger, S, T } from '@/components/program/finish';
 import { FontWeight } from '@/constants/theme';
 
 export default function GoalPlanPhaseScreen() {
@@ -36,6 +36,7 @@ export default function GoalPlanPhaseScreen() {
 
   const [program, setProgram] = useState<ActiveProgram | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [readinessToday, setReadinessToday] = useState<number | null>(null);
   const [live, setLive] = useState<LiveReadings | null>(null);
@@ -59,8 +60,11 @@ export default function GoalPlanPhaseScreen() {
       setProgram(p);
       setReadinessToday(readiness);
       setLive(lv);
-    } catch {
-      /* keep what we had */
+      setLoadFailed(false);
+    } catch (e) {
+      // Keep what we had; with nothing yet, say the load failed rather than "no program".
+      console.warn('[programs] phase load failed', e);
+      if (n === loadSeq.current) setLoadFailed(true);
     } finally {
       if (n === loadSeq.current) { setLoading(false); setRefreshing(false); }
     }
@@ -75,11 +79,7 @@ export default function GoalPlanPhaseScreen() {
   const back = () => (router.canGoBack() ? router.back() : router.replace('/goal-plan' as any));
   const totalWeeks = program ? (program.total_weeks ?? program.phases.reduce((a, p) => a + p.duration_weeks, 0)) : 0;
   const ended = program != null && totalWeeks > 0 && daysBetweenISO(program.start_date, todayLocalISO()) >= totalWeeks * 7;
-  const shown = program
-    ? (seq != null ? program.phases.find((ph) => ph.seq === seq) : null)
-      ?? (program.currentPhaseSeq != null ? program.phases.find((ph) => ph.seq === program.currentPhaseSeq) : null)
-      ?? program.phases[0] ?? null
-    : null;
+  const shown = phaseFor(program, seq);
   const shownIndex = program && shown ? Math.max(0, program.phases.findIndex((ph) => ph.id === shown.id)) : 0;
   const headerTitle = program && program.phases.length > 0 ? `Phase ${shownIndex + 1} of ${program.phases.length}` : 'Phase';
 
@@ -100,7 +100,11 @@ export default function GoalPlanPhaseScreen() {
         {loading ? (
           <ScreenSkeleton variant="phase" />
         ) : !program || !shown ? (
-          <Text style={[T.body, { color: C.mutedFg, paddingTop: S.xl }]}>No program yet. Build one from Goal & Plan and this screen fills in.</Text>
+          loadFailed && !program ? (
+            <LoadFailed onRetry={() => { setLoading(true); load(); }} />
+          ) : (
+            <Text style={[T.body, { color: C.mutedFg, paddingTop: S.xl }]}>No program yet. Build one from Goal & Plan and this screen fills in.</Text>
+          )
         ) : (
           <>
             <Stagger index={0}>

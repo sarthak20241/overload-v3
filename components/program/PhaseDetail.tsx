@@ -14,7 +14,7 @@ import { Feather } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { haptics } from '@/lib/haptics';
-import type { ActiveProgram, ActiveProgramPhaseRow } from '@/lib/programData';
+import { phaseFor, type ActiveProgram } from '@/lib/programData';
 import { defaultJobText, heroOf, jobFraction, type MetricKind } from '@/lib/phaseMetrics';
 import { S, T } from '@/components/program/finish';
 import { Colors, FontWeight, colorWithAlpha } from '@/constants/theme';
@@ -47,9 +47,7 @@ interface Props {
 
 export function PhaseDetail({ program, seq, ended, onSelectSeq }: Props) {
   const { C } = useTheme();
-  const currentPhase = program.currentPhaseSeq != null ? program.phases.find((p) => p.seq === program.currentPhaseSeq) ?? null : null;
-  const ph: ActiveProgramPhaseRow | null =
-    (seq != null ? program.phases.find((p) => p.seq === seq) ?? null : null) ?? currentPhase ?? program.phases[0] ?? null;
+  const ph = phaseFor(program, seq);
   if (!ph) return null;
 
   const isCur = ph.seq === program.currentPhaseSeq;
