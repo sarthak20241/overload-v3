@@ -6,7 +6,7 @@
 // that the saved rows win, in every mode, and that nothing else is consulted.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { type ParseMealDeps, runParseMeal } from "./parseMeal.ts";
+import { hintBox, type ParseMealDeps, runParseMeal } from "./parseMeal.ts";
 import { openingText } from "./foodAgent.ts";
 import {
   findSavedMeal,
@@ -625,4 +625,17 @@ Deno.test("rejecting the saved meal on a card: the pick is traced as rejected, n
   });
   assertEquals(r.parsed!.items.map((i) => i.food_name), ["oatmeal"]);
   assertEquals(r.steps.filter((s) => s.tool === "saved_hint").map((s) => s.result), ["rejected"]);
+});
+
+Deno.test("a pick that lands after the offer step gave up is not judged", async () => {
+  let answer: (h: SavedMealHint | null) => void = () => {};
+  const box = hintBox(new Promise<SavedMealHint | null>((r) => { answer = r; }));
+  assertEquals(await box.wait(0), null);
+  assertEquals([box.waited, box.gaveUp], [true, true]);
+  // The router answers a moment later: the parse can see it now, but nothing
+  // was shown or offered, so the trace must keep saying "pending".
+  answer(HINT);
+  await Promise.resolve();
+  assertEquals(box.peek(), HINT);
+  assertEquals(box.gaveUp, true);
 });

@@ -6033,7 +6033,9 @@ async function runParseMealOnce(
   // Who was right about the router's pick, for the trace: the model logged
   // it, the card offers it, the words turned saved meals down, the pick was
   // past the prompt cap, or no line could carry the offer.
-  const h = hint.peek();
+  // A pick that landed after the offer step gave up was never shown or
+  // offered either, so it is not judged (it would read as "no_line").
+  const h = hint.gaveUp ? undefined : hint.peek();
   if (h === undefined) {
     // The router had not answered when the parse finished: nothing was
     // shown or offered, and the trace says so rather than saying "no pick".
@@ -6095,12 +6097,16 @@ interface HintBox {
   /** Whether the offer step ever waited: a trace "pending" means the router
    *  was still out after that wait, "skipped" means nobody asked. */
   waited: boolean;
+  /** The wait ran out before the router answered. An answer that lands
+   *  after that was never shown or offered, so the trace must still say
+   *  "pending" and not judge a pick nobody acted on. */
+  gaveUp: boolean;
   forPrompt(): SavedMealHint | null;
   peek(): SavedMealHint | null | undefined;
   wait(ms: number): Promise<SavedMealHint | null>;
 }
 
-function hintBox(src: ParseMealInput["savedHint"]): HintBox {
+export function hintBox(src: ParseMealInput["savedHint"]): HintBox {
   let settled: SavedMealHint | null | undefined;
   let pending: Promise<SavedMealHint | null> | null = null;
   if (src && typeof (src as Promise<unknown>).then === "function") {
@@ -6111,6 +6117,7 @@ function hintBox(src: ParseMealInput["savedHint"]): HintBox {
   const box: HintBox = {
     pointer: false,
     waited: false,
+    gaveUp: false,
     forPrompt: () => {
       const v = settled ?? null;
       if (v) box.pointer = true;
@@ -6121,7 +6128,10 @@ function hintBox(src: ParseMealInput["savedHint"]): HintBox {
       box.waited = true;
       if (settled !== undefined || !pending) return Promise.resolve(settled ?? null);
       return new Promise((resolve) => {
-        const t = setTimeout(() => resolve(null), ms);
+        const t = setTimeout(() => {
+          box.gaveUp = true;
+          resolve(null);
+        }, ms);
         pending!.then((v) => {
           clearTimeout(t);
           resolve(v);
