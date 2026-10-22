@@ -41,6 +41,19 @@ function fakeDb(script: Record<string, Answer[]>) {
 }
 
 const program = { id: "prog", title: "Summer Cut", start_date: "2026-10-05" };
+
+/**
+ * Nothing due in the running phase: the only writes allowed are the week
+ * stamps on the OTHER phases (so the user leaves the due list), never the
+ * running phase's rows, its numbers, or the coach line.
+ */
+function onlyOtherStamps(writes: Written[], running = "ph0"): boolean {
+  return writes.every((w) =>
+    w.table === "coach_program_phase_metrics" &&
+    Object.keys(w.patch).every((k) => k === "checked_at" || k === "checked_week") &&
+    !w.eq.some(([k, v]) => k === "phase_id" && v === running)
+  );
+}
 const phases = [
   { id: "ph0", seq: 0, name: "Foundation", duration_weeks: 4, start_offset_weeks: 0, diet_protein_g: 150, job_text: "Bring weight 72 to 71 kg" },
   // Starts Monday Nov 2, after the Oct 19 week.
@@ -149,7 +162,7 @@ Deno.test("nothing to do: no program, or every metric already checked this week"
     coach_program_phase_metrics: [{ data: rows.map((r) => ({ ...r, checked_week: WEEK })), error: null }],
   });
   assertEquals(await metricsStep(done.db, "user-1", DAY, WEEK, "key"), { checked: 0, line: false });
-  assertEquals(done.writes.length, 0);
+  assertEquals(onlyOtherStamps(done.writes), true);
 
   // Checked at 00:30 Monday in Kolkata: the UTC stamp still says Sunday, but
   // the local week is this one, so nothing is due again.
@@ -159,7 +172,7 @@ Deno.test("nothing to do: no program, or every metric already checked this week"
     coach_program_phase_metrics: [{ data: rows.map((r) => ({ ...r, checked_at: "2026-10-18T19:00:00Z", checked_week: WEEK })), error: null }],
   });
   assertEquals(await metricsStep(east.db, "user-1", "2026-10-19", WEEK, "key"), { checked: 0, line: false });
-  assertEquals(east.writes.length, 0);
+  assertEquals(onlyOtherStamps(east.writes), true);
 });
 
 Deno.test("a row the check cannot read never keeps the phase due", async () => {
@@ -173,7 +186,7 @@ Deno.test("a row the check cannot read never keeps the phase due", async () => {
   let modelCalls = 0;
   const fetchFn = (() => { modelCalls += 1; return Promise.resolve(new Response("{}", { status: 200 })); }) as unknown as typeof fetch;
   assertEquals(await metricsStep(db, "user-1", DAY, WEEK, "key", fetchFn), { checked: 0, line: false });
-  assertEquals(writes.length, 0);
+  assertEquals(onlyOtherStamps(writes), true);
   assertEquals(modelCalls, 0);
 });
 
@@ -369,7 +382,7 @@ Deno.test("a failed line is retried next run and a clean line then clears the le
   const rows3 = rows.map((r) => ({ ...r, checked_week: WEEK, retry_tries: 0, retry_week: WEEK }));
   const run3 = fakeDb({ ...script(), coach_program_phase_metrics: [{ data: rows3, error: null }] });
   assertEquals(await metricsStep(run3.db, "user-1", DAY, WEEK, "key", ok), { checked: 0, line: false });
-  assertEquals(run3.writes.length, 0);
+  assertEquals(onlyOtherStamps(run3.writes), true);
 });
 
 Deno.test("each custom metric reads its own latest log", async () => {
@@ -423,4 +436,24 @@ Deno.test("no time left for the model: no call, no try spent, the phase is due a
   const unstamp = writes.find((w) => w.table === "coach_program_phase_metrics" && w.patch.checked_week === null);
   assertEquals(unstamp?.patch, { checked_week: null });
   assertEquals(writes.some((w) => "retry_tries" in w.patch), false);
+});
+
+Deno.test("the active phase already checked this week still stamps the other phases, so the user leaves the due list", async () => {
+  // A regenerated program, say: the running phase was checked this week, a
+  // phase to come has fresh unstamped rows that put the user on the due list.
+  const checked = rows.map((r) => ({ ...r, checked_week: WEEK }));
+  const { db, writes } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: checked, error: null }],
+  });
+  let modelCalls = 0;
+  const fetchFn = (() => { modelCalls += 1; return Promise.resolve(new Response("{}", { status: 200 })); }) as unknown as typeof fetch;
+  const out = await metricsStep(db, "user-1", DAY, WEEK, "key", fetchFn);
+  assertEquals(out, { checked: 0, line: false });
+  assertEquals(modelCalls, 0);
+  const stamp = writes.find((w) => w.eq.some(([k, v]) => k === "phase_id" && v === "ph1"));
+  assertEquals(typeof stamp?.patch.checked_week, "string");
+  // The checked phase itself is left alone.
+  assertEquals(writes.some((w) => w.eq.some(([k, v]) => k === "phase_id" && v === "ph0")), false);
 });

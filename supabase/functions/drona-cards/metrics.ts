@@ -194,7 +194,13 @@ export async function metricsStep(
       await stampOthers(phase.id);
       return none;
     }
-    if (!checkDue(readableRows, weekStart)) return none;
+    if (!checkDue(readableRows, weekStart)) {
+      // This phase is done for the week, but another phase's rows may still
+      // be unstamped (a regenerated program): stamp them, or the user stays
+      // on the due list every run until Monday.
+      await stampOthers(phase.id);
+      return none;
+    }
 
     const phaseStart = addDays(String(prog.start_date), phase.start_offset_weeks * 7);
     const { readings, failed } = await gatherReadings(db, userId, localDay, weekStart, phaseStart, metrics, phase.diet_protein_g);
