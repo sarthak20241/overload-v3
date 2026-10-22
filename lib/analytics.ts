@@ -225,6 +225,7 @@ export type AnalyticsEvent =
   | 'program_completed'
   | 'program_ended'
   | 'program_phase_viewed'
+  | 'program_phase_opened'
   | 'program_metric_logged'
   | 'goal_metrics_viewed'
   // ── Profile & settings ───────────────────────────────────────────────────

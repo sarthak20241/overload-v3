@@ -4,7 +4,13 @@ import {
   cleanLine,
   defaultJobText,
   escapeIlike,
+  focusLine,
+  heroCapsLabel,
+  heroStatusLine,
+  KIND_UNIT,
   metricsText,
+  type MetricKind,
+  type MetricStatus,
   formatMetricValue,
   heroOf,
   jobFraction,
@@ -252,6 +258,21 @@ Deno.test("an exercise name is made safe for an ilike filter", () => {
   assertEquals(escapeIlike("Bench_Press*"), "Bench\\_Press");
   assertEquals(escapeIlike("a\\b,c"), "a\\\\b c");
   assertEquals(escapeIlike("  *  "), "");
+});
+
+Deno.test("the main screen's one-liners come from the status words", () => {
+  assertEquals(heroCapsLabel({ kind: "bodyweight" }), "CURRENT WEIGHT");
+  assertEquals(heroCapsLabel({ kind: "lift_e1rm", ref: { exercise_name: "Squat" } }), "SQUAT E1RM");
+  assertEquals(heroCapsLabel({ kind: "custom", ref: { name: "Handstand hold" } }), "HANDSTAND HOLD");
+  assertEquals(heroStatusLine("slipping"), "A little behind this week");
+  assertEquals(heroStatusLine("done"), "Phase target reached");
+  assertEquals(heroStatusLine("set"), "");
+  const m = (kind: MetricKind, status: MetricStatus, target = 5, is_hero = false) => ({ kind, status, target_value: target, unit: KIND_UNIT[kind as Exclude<MetricKind, "custom">] ?? "", is_hero });
+  // The two most behind, worst first; the hero never.
+  assertEquals(focusLine([m("bodyweight", "behind", 70, true), m("protein_days", "slipping"), m("cardio_sessions", "due", 2), m("sleep_hours", "on_track", 7)]),
+    "Hit your protein target and add a cardio session.");
+  assertEquals(focusLine([m("steps", "close", 8000)]), "Get your steps to 8,000.");
+  assertEquals(focusLine([m("protein_days", "on_track"), m("sleep_hours", "done", 7)]), "");
 });
 
 Deno.test("a coach line is kept only when it reads as one", () => {

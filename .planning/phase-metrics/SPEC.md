@@ -135,3 +135,37 @@ Rules:
   description lists the exact deploy order: migration first, then functions,
   then the app build, and says whether an OTA is possible or 1.0.2 is needed.
 - The claude[bot] review is read and answered before asking the user to merge.
+
+
+## 8. v2 layout (approved 2026-10-22)
+
+The user found the first build "too boxy and complicated". Reference:
+`shots/goal-screen-v2-reference.webp` (the title there is a placeholder; the
+app shows the PROGRAM NAME).
+
+Main screen (`app/goal-plan.tsx`), top to bottom, page background, flat, no
+boxes except the phase card:
+1. Header: back, "Goal & Plan", a `•••` menu (End this program, From Drona).
+2. Title = the program name. Under it, muted: "Week 4 of 12 · Ends Dec 23".
+3. Hero row: small caps label from the hero kind (CURRENT WEIGHT, SQUAT E1RM,
+   SESSIONS LAST WEEK, a custom name with the "You log it" tag and "+ Log"),
+   the big number and unit; right: GOAL and the goal value. No metrics: today's
+   bodyweight against target_weight_kg, else no hero.
+4. The hero chart: plain stroke, no fill; weekly kinds keep the bars.
+5. One status sentence from the hero's status (`heroStatusLine`, in code).
+6. The phase card (the only card): CURRENT PHASE, name, chevron, "Week 4 of 5
+   · Target 63.7 kg", the job bar, "23% of phase target". Tapping opens the
+   phase screen.
+7. "Your plan": three list rows with hairline dividers (Train / Eat / Recover),
+   subtitle = plan text plus the pillar's supporting-metric status, coloured.
+   Each opens the phase screen scrolled to that pillar.
+8. "This week's focus": one sentence, the phase's coach_line, else derived in
+   code from the worst supporting metric (`focusLine`).
+9. One full-width lime button: "Build this phase's workouts" when the current
+   phase has no routines, else "Adjust with Drona".
+
+Phase screen (`app/goal-plan-phase.tsx`, route `/goal-plan-phase?seq=N&pillar=train`):
+everything the first build showed for a phase, moved: the numbers-only stepper,
+job line, Drona's line, Train / Eat / Recover with the week strip, fuel marks,
+macro bar, tracked rows with status, routines, the rules and the build call
+to action (`components/program/PhaseDetail.tsx`).

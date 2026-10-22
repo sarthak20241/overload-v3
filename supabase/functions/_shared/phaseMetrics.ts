@@ -496,6 +496,75 @@ export function escapeIlike(name: string): string {
     .trim();
 }
 
+// ── The main Goal screen's one-liners (v2 layout), in code ──────────────────
+
+/** The small caps label over the hero number: "CURRENT WEIGHT", "SQUAT E1RM", "SESSIONS THIS WEEK". */
+export function heroCapsLabel(m: { kind: MetricKind; ref?: MetricRef | null }): string {
+  switch (m.kind) {
+    case 'bodyweight': return 'CURRENT WEIGHT';
+    case 'lift_e1rm': return `${m.ref?.exercise_name ?? 'LIFT'} E1RM`.toUpperCase();
+    case 'sessions_per_week': return 'SESSIONS LAST WEEK';
+    case 'cardio_sessions': return 'CARDIO LAST WEEK';
+    case 'steps': return 'STEPS A DAY';
+    case 'sleep_hours': return 'SLEEP A NIGHT';
+    case 'protein_days': return 'PROTEIN DAYS';
+    case 'sets_per_muscle': return `${m.ref?.muscle ?? 'MUSCLE'} SETS A WEEK`.toUpperCase();
+    case 'distance': return (m.ref?.exercise_name ? `${m.ref.exercise_name} DISTANCE` : 'DISTANCE').toUpperCase();
+    case 'duration': return (m.ref?.exercise_name ? `${m.ref.exercise_name} TIME` : 'DURATION').toUpperCase();
+    case 'custom': return (m.ref?.name ?? 'YOUR METRIC').toUpperCase();
+  }
+}
+
+/** The sentence under the chart, from the hero's status. Empty when there is nothing to say yet. */
+export function heroStatusLine(status: MetricStatus): string {
+  switch (status) {
+    case 'on_track': return 'On track this week';
+    case 'close': return 'Close to the line';
+    case 'slipping': return 'A little behind this week';
+    case 'behind': return 'Behind this week';
+    case 'done': return 'Phase target reached';
+    case 'due': return 'First reading this week';
+    case 'set': return '';
+  }
+}
+
+/** The order a status is worth attention in: the worst first. */
+const STATUS_WORRY: Record<MetricStatus, number> = { behind: 5, slipping: 4, due: 3, close: 2, set: 1, on_track: 0, done: 0 };
+
+/** What one supporting target asks for this week, in the coach's voice. */
+function focusAsk(m: { kind: MetricKind; ref?: MetricRef | null; target_value: number; unit: string }): string {
+  const t = formatMetricValue(m.kind, m.target_value, m.unit);
+  switch (m.kind) {
+    case 'protein_days': return 'hit your protein target';
+    case 'sessions_per_week': return 'get every session in';
+    case 'cardio_sessions': return m.target_value === 1 ? 'get your cardio session in' : 'add a cardio session';
+    case 'steps': return `get your steps to ${t}`;
+    case 'sleep_hours': return `sleep ${t} hours`;
+    case 'sets_per_muscle': return `reach ${t} ${metricLabel(m).toLowerCase()}`;
+    case 'lift_e1rm': return `push ${metricLabel(m)} to ${t} ${m.unit}`;
+    case 'bodyweight': return 'keep the scale moving';
+    case 'distance': return `cover ${t} ${m.unit}`;
+    case 'duration': return `reach ${t} ${m.unit}`;
+    case 'custom': return `log ${metricLabel(m).toLowerCase()}`;
+  }
+}
+
+/**
+ * "This week's focus" when Drona has not written a line: the one or two
+ * supporting targets most behind, as one sentence. Empty when nothing is
+ * behind. The hero is left out: it is the number above.
+ */
+export function focusLine(metrics: readonly { kind: MetricKind; ref?: MetricRef | null; is_hero: boolean; status: MetricStatus; target_value: number; unit: string }[]): string {
+  const worst = metrics
+    .filter((m) => !m.is_hero && STATUS_WORRY[m.status] >= 2)
+    .sort((a, b) => STATUS_WORRY[b.status] - STATUS_WORRY[a.status])
+    .slice(0, 2);
+  if (worst.length === 0) return '';
+  const asks = worst.map(focusAsk);
+  const text = asks.length === 1 ? asks[0] : `${asks[0]} and ${asks[1]}`;
+  return text.charAt(0).toUpperCase() + text.slice(1) + '.';
+}
+
 /** A line is kept only when it reads as one: 3 to 160 characters, no em dash, no newline. */
 export function cleanLine(v: unknown, max = 160): string | null {
   if (typeof v !== 'string') return null;
