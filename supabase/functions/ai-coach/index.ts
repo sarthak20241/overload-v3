@@ -734,7 +734,10 @@ async function resolveFoodBarOutcome(args: {
   recentTurns?: { role: "user" | "drona"; text: string }[];
   cardOpen?: boolean;
 }): Promise<FoodBarOutcome> {
-  if (FOOD_INTENT_MODE !== "on") return { action: "log", planned: "log", cardOpen: args.cardOpen, decision: null };
+  // Every outcome says whether a card was open, so the trace can tell a card
+  // question that fell to the parse from a plain one. One place, not per return.
+  const out = (o: Omit<FoodBarOutcome, "cardOpen">): FoodBarOutcome => ({ ...o });
+  if (FOOD_INTENT_MODE !== "on") return out({ action: "log", planned: "log", decision: null });
   const decision = await args.intentP.catch(() => null);
   const parseFoundFood = !!args.result.parsed && args.result.parsed.items.length > 0;
   const action = decideFoodAction({
@@ -747,11 +750,11 @@ async function resolveFoodBarOutcome(args: {
 
   if (action === "agent") {
     const o = args.agentP ? await args.agentP : null;
-    if (!o) return { action: "log", planned: action, cardOpen: args.cardOpen, decision };
+    if (!o) return out({ action: "log", planned: action, decision });
     const agent = { kind: o.kind, reason: o.kind === "failed" ? o.reason : null, turns: o.turns };
-    if (o.kind === "log") return { action: "log", planned: action, cardOpen: args.cardOpen, decision, result: o.result, agent };
-    if (o.kind === "create") return { action: "create", planned: action, cardOpen: args.cardOpen, decision, create: o.create, agent };
-    if (o.kind === "reply") return { action: "reply", planned: action, cardOpen: args.cardOpen, decision, reply: o.text, agent };
+    if (o.kind === "log") return out({ action: "log", planned: action, decision, result: o.result, agent });
+    if (o.kind === "create") return out({ action: "create", planned: action, decision, create: o.create, agent });
+    if (o.kind === "reply") return out({ action: "reply", planned: action, decision, reply: o.text, agent });
     // With a card open the parse already edited it from the user's words, so
     // a failed agent hands that back instead of a canned line: the card is
     // never lost to the agent's bad turn. Known cost: for a pure QUESTION the
@@ -761,27 +764,27 @@ async function resolveFoodBarOutcome(args: {
     // fallback is counted so the rate of the canned answer can be read.
     if (args.cardOpen) {
       console.log(`[food_agent] failed beside a card (${o.reason}); parse result served`);
-      return { action: "log", planned: action, cardOpen: args.cardOpen, decision, agent, followup: { ...skippedFollowup("reply"), error: `agent_failed_card_fallback:${o.reason}` } };
+      return out({ action: "log", planned: action, decision, agent, followup: { ...skippedFollowup("reply"), error: `agent_failed_card_fallback:${o.reason}` } });
     }
-    return { action: "reply", planned: action, cardOpen: args.cardOpen, decision, reply: AGENT_FAILED_REPLY, agent };
+    return out({ action: "reply", planned: action, decision, reply: AGENT_FAILED_REPLY, agent });
   }
   if (action === "reply") {
     const { reply, followup } = await replyToFoodBarChat(
       args.text, args.supportsCreate, args.readDiary ?? null, args.recentTurns ?? [],
     );
     return reply
-      ? { action, planned: action, cardOpen: args.cardOpen, decision, reply, followup }
-      : { action: "log", planned: action, cardOpen: args.cardOpen, decision, followup };
+      ? out({ action, planned: action, decision, reply, followup })
+      : out({ action: "log", planned: action, decision, followup });
   }
   if (action === "create") {
     const { create, followup } = await draftFoodCreate(
       args.text, args.mealHint, args.readDiary ?? null, args.recentTurns ?? [],
     );
     return create
-      ? { action, planned: action, cardOpen: args.cardOpen, decision, create, followup }
-      : { action: "log", planned: action, cardOpen: args.cardOpen, decision, followup };
+      ? out({ action, planned: action, decision, create, followup })
+      : out({ action: "log", planned: action, decision, followup });
   }
-  return { action: "log", planned: "log", cardOpen: args.cardOpen, decision };
+  return out({ action: "log", planned: "log", decision });
 }
 
 /** True once the router has settled on a create this client can draw, so the

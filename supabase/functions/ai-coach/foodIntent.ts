@@ -178,6 +178,8 @@ export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
       "A QUESTION about whether saving or creating is possible is not an instruction either: it asks about ability and names nothing to save. " +
       "A polite request that names the specific food or meal to save (\"could you save X\") IS an instruction. " +
       "A card on screen is not a request to save it: only words asking to keep, save or make a meal of it are. " +
+      "A bare acknowledgement beside a card (\"ok\", \"yes\", \"cool\", \"looks good\", \"thanks\") is NOT a request to save: " +
+      "the user is accepting the card as shown, and tapping Add is how they log it. That is other. " +
       "A complaint or question about the card (\"you did not reply\", \"how is it 240 kcal\") is never this. " +
       "If the food to save has to be looked up in what they logged before, or they also want it logged, that is not this option.",
     examples: [
@@ -196,6 +198,8 @@ export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
       "questions about the user's own progress, totals or history, and questions about nutrition in general. " +
       "With a card on screen: a question or complaint about it that gives nothing to change (\"how is it 240 kcal?\", " +
       "\"why is that there?\", \"you did not answer me\", \"what??\") is also this, never edit and never create. " +
+      "So is a bare acknowledgement of the card (\"ok\", \"yes\", \"cool\", \"looks good\", \"thanks\"): it names no " +
+      "change and asks for no save. " +
       "These get a spoken answer, which is why they are kept apart from logging and saving.",
     not_for:
       "Any message that reports eating or drinking. That holds even when no specific food or dish is named, " +
@@ -580,6 +584,13 @@ export async function routeFoodIntent(
         }
       }
 
+      // A bare ack beside a card is accepting the card, not asking to save it
+      // or to talk: Jev calls it create at 0.46-0.75 (see isBareAck). Read as
+      // 'other' under the bar, so it falls to the parse and nothing is drafted.
+      if (choice && context?.card?.length && isBareAck(trimmed) && (choice.choice === "create" || choice.choice === "other")) {
+        deps.log?.(`[food_intent] bare ack beside a card (jev=${choice.choice} @ ${choice.confidence.toFixed(2)}), read as other under the bar`);
+        return { intent: "other", source: "jev", confidence: 0, note: `jev ${res.response.model} bare_ack`, savedMatch, hasFood, pendingAction };
+      }
       if (choice && isIntent(choice.choice) && (choice.choice !== "continue" || context?.pendingMeal) && (choice.choice !== "edit" || context?.card?.length)) {
         if (choice.confidence >= JEV_INTENT_FLOOR) {
           deps.log?.(
@@ -677,6 +688,28 @@ export interface FoodActionInputs {
    *  about it all go to the food agent, which holds the card and can change it,
    *  remove from it, save it, or answer about it. */
   cardOpen?: boolean;
+}
+
+/**
+ * A bare acknowledgement: a few stock words and nothing else ("ok", "yes",
+ * "thanks", "cool", "looks good"). Beside a card Jev reads these as a save
+ * request at 0.46-0.75 (measured 2026-10-22, live), which sits right against
+ * the create bar; a real "make it a meal" scores 0.76-0.82. The margin is too
+ * thin for a floor, so this is code: a bare ack is never a create and never
+ * starts the agent. The user is accepting the card as shown, and tapping Add
+ * is how they log it. Anything with more words is not touched.
+ */
+export function isBareAck(text: string): boolean {
+  // Single stray letters are punctuation fragments ("that's" -> "that", "s"),
+  // not words, so they are dropped before the count.
+  const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").trim().split(/\s+/).filter((w) => w.length > 1 || w === "k");
+  if (words.length === 0 || words.length > 4) return false;
+  const ACK = new Set([
+    "ok", "okay", "k", "kk", "yes", "yep", "yeah", "ya", "yup", "sure", "fine", "cool", "good", "great", "nice",
+    "perfect", "thanks", "thank", "thx", "ty", "you", "done", "alright", "right", "looks", "that", "thats", "it",
+    "all", "is", "go", "ahead", "noted", "got", "sounds",
+  ]);
+  return words.every((w) => ACK.has(w));
 }
 
 /** The bar for 'edit' and for a card question reaching the agent. Below it the

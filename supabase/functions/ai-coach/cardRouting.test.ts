@@ -17,6 +17,7 @@ import { CARD_NOTE, type FoodAgentDeps, openingText, runFoodAgent, toolsFor } fr
 import {
   CARD_AGENT_FLOOR,
   decideFoodAction,
+  isBareAck,
   type FoodIntentDecision,
   routeFoodIntent,
   shouldRouteFoodIntent,
@@ -64,6 +65,27 @@ Deno.test("'edit' is an intent only while a card is open", async () => {
   // No card: an 'edit' verdict is unusable and the ladder falls to the floor.
   const noCard = await routeFoodIntent("they were small", deps, readFoodContext([], null));
   assertEquals(noCard.intent, "log");
+});
+
+Deno.test("the failure this prevents: a bare 'ok' beside a card was read as a save request", async () => {
+  // Live, 2026-10-22: Jev scored "ok" as create at 0.70-0.75 with a card open,
+  // right against the create bar, so the agent offered a save card for "ok".
+  const deps = { jev: { apiKey: "k", timeoutMs: 1000, fetchFn: jevSays("create", 0.75) } };
+  const ctx = { ...readFoodContext([], null), card: CARD };
+  const d = await routeFoodIntent("ok", deps, ctx);
+  assertEquals([d.intent, d.confidence], ["other", 0]);
+  assertEquals(decideFoodAction({ decision: d, mode: "on", parseFoundFood: true, clientSupportsCreate: true, cardOpen: true }), "log");
+  assertEquals(wantsFoodAgent(d, true, true), false);
+  // A real save request beside the same card is untouched.
+  const save = await routeFoodIntent("shall we make it a meal, I have this daily", deps, ctx);
+  assertEquals(save.intent, "create");
+  // No card: the ack rule does not apply, and Jev's verdict stands.
+  assertEquals((await routeFoodIntent("ok", deps, readFoodContext([], null))).intent, "create");
+});
+
+Deno.test("isBareAck: stock words only, never a message with content", () => {
+  for (const t of ["ok", "OK!", "yes", "cool", "thanks", "thanks that's it", "looks good", "all good, thanks"]) assertEquals(isBareAck(t), true, t);
+  for (const t of ["", "ok make it 2", "thanks, remove the dal", "yes it was navratri chana", "ok but how is it 240"]) assertEquals(isBareAck(t), false, t);
 });
 
 // ── Policy: who handles what beside a card ─────────────────────────────────
