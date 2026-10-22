@@ -276,6 +276,8 @@ Deno.test("the failure this prevents: a retry that only removes a line was throw
   assertEquals(log.systems.length, 2, "the extract is asked once more");
   assertEquals(r.declined, null, `still the stock answer: ${r.declined?.message}`);
   assertEquals((r.parsed?.items ?? []).some((i) => /halwa/i.test(i.food_name)), false, "the halwa line must be gone");
+  // The other lines survive: a partial removal must never empty the card.
+  assert((r.parsed?.items ?? []).some((i) => /poori/i.test(i.food_name)), "the surviving poori line must remain");
   assertEquals(r.parsed?.corrects_previous, true);
 });
 

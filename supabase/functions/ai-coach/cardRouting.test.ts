@@ -150,7 +150,7 @@ Deno.test("a kept line comes back exactly as it was: section, confidence, note a
   // The failure this prevents: remove_card_lines rebuilt every kept line as
   // "high" confidence, no note, no fiber, stamped into the default meal.
   const card: CardLine[] = [
-    { ...CARD[0], meal_type: "dinner", confidence: "low", assumption: "Took the plain cooked row.", fiber_g: 1.2 },
+    { ...CARD[0], meal_type: "dinner", confidence: "low", assumption: "Took the plain cooked row.", fiber_g: 1.2, said_name: "chawal" },
     { ...CARD[2], meal_type: "dinner" },
   ];
   const out = await runFoodAgent(
@@ -159,7 +159,7 @@ Deno.test("a kept line comes back exactly as it was: section, confidence, note a
   );
   assert(out.kind === "log", out.kind);
   const [rice] = out.result.parsed!.items;
-  assertEquals([rice.meal_type, rice.confidence, rice.assumption, rice.fiber_g], ["dinner", "low", "Took the plain cooked row.", 1.2]);
+  assertEquals([rice.meal_type, rice.confidence, rice.assumption, rice.fiber_g, rice.said_name], ["dinner", "low", "Took the plain cooked row.", 1.2, "chawal"]);
   assertEquals(out.result.parsed!.meal_type, "dinner");
 });
 

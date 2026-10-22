@@ -44,6 +44,8 @@ export interface CardLine {
   confidence?: "high" | "medium" | "low";
   /** The section the line sits in. A kept line goes back to the same one. */
   meal_type?: "breakfast" | "lunch" | "dinner" | "snack";
+  /** What the user called this line, when the card shows another name. */
+  said_name?: string;
 }
 
 /** Lines the card carries to the models. The SAME cap index.ts puts on

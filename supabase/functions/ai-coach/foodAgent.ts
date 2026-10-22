@@ -701,6 +701,7 @@ function cardLineAsItem(l: CardLine, mealDefault: MealType): ParsedItem {
     assumption: l.assumption ?? null,
     confidence: l.confidence ?? "medium",
     meal_type: l.meal_type ?? mealDefault,
+    ...(l.said_name ? { said_name: l.said_name } : {}),
   };
 }
 

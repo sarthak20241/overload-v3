@@ -3512,6 +3512,7 @@ async function handleParseMealRequest(args: {
     kcal: p.kcal ?? 0, protein_g: p.protein_g, carb_g: p.carb_g, fat_g: p.fat_g,
     food_id: p.food_id, source: p.source,
     fiber_g: p.fiber_g, assumption: p.assumption, confidence: p.confidence, meal_type: p.meal_type,
+    ...(p.said_name ? { said_name: p.said_name } : {}),
   }));
   const foodContext: FoodConversationContext = { ...baseFoodContext, card: card.length ? card : null };
 
