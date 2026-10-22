@@ -11,7 +11,7 @@
  *             notification permission prompt (needed for the day-5 reminder
  *             this screen promises, plus rest cues later).
  *   paywall   The single reusable paywall: transparent price headline,
- *             Free → Pro table, annual (preselected, save badge) vs monthly
+ *             four Pro check lines, annual (preselected, save badge) vs monthly
  *             vs founding lifetime, trust row, refund promise, CTA, delayed
  *             soft-wall skip link. Every trial claim on it (badge, "No
  *             payment today", "Start my N days free") is derived from the
@@ -116,32 +116,18 @@ interface PurchaseOutcome {
   onTrial: boolean;
 }
 
-// Free → Pro comparison rows. `free`/`pro` render as: string → text,
-// 'yes' → check icon, 'soon' → outlined "SOON" chip, null → dash. CORE
-// shows by default (highest-signal deltas); MORE expands behind "See the
-// full comparison" (Linktree's expandable-detail pattern) and deliberately
-// includes the both-included rows so what free KEEPS is visible — the
-// soft-wall skipper reads that as transparency, not concealment.
+// What the paywall says Pro gives. Readiness dropped from Pro (2026-07-29):
+// the app never gated it client-side, so advertising it was a bug.
 //
-// Readiness dropped from Pro (2026-07-29 pivot): the app never gated it
-// client-side, so advertising it as Pro was a false-advertising bug.
-// Weekly reports + Coach nudges added with "Soon" markers — both are real
-// product commitments spawned as build tasks; the chip becomes stale if
-// the features don't ship within a few weeks, so treat those as deadline
-// obligations, not backlog wishes.
-type CompareCell = string | 'yes' | 'soon' | null;
-const COMPARE_CORE: { label: string; free: CompareCell; pro: CompareCell }[] = [
-  { label: 'Coach chat', free: '3/day', pro: 'Unlimited' },
-  { label: 'Fast, accurate AI food logs', free: '3/day', pro: 'Unlimited' },
-  { label: 'Personalized plans + workouts', free: null, pro: 'yes' },
-  { label: 'Weekly plan rewrites', free: null, pro: 'yes' },
-];
-const COMPARE_MORE: { label: string; free: CompareCell; pro: CompareCell }[] = [
-  { label: 'Refine any plan in chat', free: null, pro: 'yes' },
-  { label: 'Weekly progress reports', free: null, pro: 'soon' },
-  { label: 'Proactive coach nudges', free: null, pro: 'soon' },
-  { label: 'Workout + diet tracking', free: 'yes', pro: 'yes' },
-  { label: 'Unlimited routines + history', free: 'yes', pro: 'yes' },
+// 2026-10-22: the Free/Pro table (FREE + PRO columns, a "See the full
+// comparison" expander and SOON rows) read as a wall of text on a real
+// Android phone and pushed the headline off screen. Pro is now four short
+// lines; each one is something Pro does today.
+const PRO_POINTS = [
+  'Unlimited coach chat',
+  'Unlimited AI food logs',
+  'Plans built around you',
+  'Weekly plan rewrites',
 ];
 
 interface FoundingStatus {
@@ -193,8 +179,6 @@ export default function UpgradeScreen() {
   // provisioned yet), so it's collapsed behind a link by default. Once
   // expanded, the row inflates in place and the link disappears.
   const [showAllPlans, setShowAllPlans] = useState(false);
-  // Full comparison list, collapsed by default (core deltas only).
-  const [showFullCompare, setShowFullCompare] = useState(false);
   // Soft-wall skip: fades in after a beat so the value case gets first read.
   const [skipVisible, setSkipVisible] = useState(false);
   const purchasesUsable = isPurchasesAvailable();
@@ -476,14 +460,6 @@ export default function UpgradeScreen() {
         : context === 'cap_chat' || context === 'cap_parse'
           ? 'A coach who never runs out.'
           : 'Always by your side. All the way to your goal.';
-  // One sentence: the ecosystem story (Sarthak's framing). Everything else
-  // (what's included, trial mechanics, price) lives in exactly one dedicated
-  // element below: the Free → Pro comparison table with its expandable full
-  // list. History: v4 had three overlapping explainers and read overloaded;
-  // v5 collapsed them into the table.
-  const paywallSub =
-    'Drona reads every rep and every meal, and tells you exactly what to do next.';
-
   return (
     <SafeAreaView style={[u.safeArea, { backgroundColor: C.background }]}>
       {step === 'warmup' && (
@@ -628,68 +604,16 @@ export default function UpgradeScreen() {
           >
             <Text style={[u.eyebrow, { color: C.accentText }]}>OVERLOAD PRO</Text>
             <Text style={[u.hero, { color: C.foreground }]}>{paywallTitle}</Text>
-            <Text style={[u.heroSub, { color: C.textSecondary }]}>{paywallSub}</Text>
 
-            {/* Free → Pro comparison (RC "Educate & Frame Value", Vivid's
-                compare-plans pattern). THE single explainer on this screen:
-                our freemium model means free users already have a metered
-                coach, so "what am I signing up for?" is genuinely the delta,
-                not a feature list. Also quietly reassures the soft-wall
-                skipper that free keeps working. */}
-            <View style={[u.compare, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-              <View style={u.cmpHeader}>
-                <View style={{ flex: 1 }} />
-                <View style={u.cmpCol}>
-                  <Text style={[u.cmpHeadText, { color: C.textDim }]}>FREE</Text>
-                </View>
-                <View style={u.cmpCol}>
-                  <Text style={[u.cmpHeadText, { color: C.accentText }]}>PRO</Text>
-                </View>
-              </View>
-              {(showFullCompare ? [...COMPARE_CORE, ...COMPARE_MORE] : COMPARE_CORE).map((row) => (
-                <View key={row.label} style={[u.cmpRow, { borderTopColor: C.borderSubtle }]}>
-                  <Text style={[u.cmpLabel, { color: C.foreground }]}>{row.label}</Text>
-                  <View style={u.cmpCol}>
-                    {row.free === 'yes' ? (
-                      <Feather name="check" size={IconSize.sm} color={C.textMuted} />
-                    ) : row.free === 'soon' ? (
-                      <View style={[u.soonChip, { borderColor: C.textMuted }]}>
-                        <Text style={[u.soonText, { color: C.textMuted }]}>SOON</Text>
-                      </View>
-                    ) : row.free ? (
-                      <Text style={[u.cmpFree, { color: C.textMuted }]}>{row.free}</Text>
-                    ) : (
-                      <Feather name="minus" size={IconSize.sm} color={C.textDim} />
-                    )}
-                  </View>
-                  <View style={u.cmpCol}>
-                    {row.pro === 'yes' ? (
-                      <Feather name="check" size={IconSize.sm} color={C.accentText} />
-                    ) : row.pro === 'soon' ? (
-                      <View style={[u.soonChip, { borderColor: C.accentText }]}>
-                        <Text style={[u.soonText, { color: C.accentText }]}>SOON</Text>
-                      </View>
-                    ) : (
-                      <Text style={[u.cmpPro, { color: C.accentText }]}>{row.pro}</Text>
-                    )}
-                  </View>
+            {/* What Pro gives, four short lines. Free users already know the
+                free side (they hit its caps), so only the Pro side is shown. */}
+            <View style={u.points}>
+              {PRO_POINTS.map((point) => (
+                <View key={point} style={u.pointRow}>
+                  <Feather name="check" size={IconSize.sm} color={C.accentText} />
+                  <Text style={[u.pointText, { color: C.foreground }]}>{point}</Text>
                 </View>
               ))}
-              <TouchableOpacity
-                onPress={() => setShowFullCompare((v) => !v)}
-                accessibilityRole="button"
-                accessibilityLabel={showFullCompare ? 'Show less' : 'See the full comparison'}
-                style={[u.cmpMoreBtn, { borderTopColor: C.borderSubtle }]}
-              >
-                <Text style={[u.cmpMoreText, { color: C.textMuted }]}>
-                  {showFullCompare ? 'Show less' : 'See the full comparison'}
-                </Text>
-                <Feather
-                  name={showFullCompare ? 'chevron-up' : 'chevron-down'}
-                  size={IconSize.sm}
-                  color={C.textMuted}
-                />
-              </TouchableOpacity>
             </View>
 
             {loading ? (
@@ -708,7 +632,7 @@ export default function UpgradeScreen() {
                       saveTag={savePct && savePct > 0 ? `SAVE ${savePct}%` : undefined}
                       price={annual.product.priceString}
                       priceUnit="/yr"
-                      note={perMonth ? `${perMonth}/mo, billed yearly` : 'Billed yearly'}
+                      note={perMonth ? `${perMonth}/mo` : undefined}
                       onPress={() => { track('paywall_plan_selected', { plan: 'annual', previous_plan: selectedPlan }); setSelectedPlan('annual'); }}
                     />
                   </Animated.View>
@@ -721,11 +645,7 @@ export default function UpgradeScreen() {
                       badge={trialBadge(trialDays.monthly)}
                       price={monthly.product.priceString}
                       priceUnit="/mo"
-                      note={
-                        trialDays.monthly > 0
-                          ? `Free for ${trialDays.monthly} days, then billed monthly`
-                          : 'Billed monthly · no trial'
-                      }
+                      note={trialDays.monthly > 0 ? undefined : 'No free trial'}
                       onPress={() => { track('paywall_plan_selected', { plan: 'monthly', previous_plan: selectedPlan }); setSelectedPlan('monthly'); }}
                     />
                   </Animated.View>
@@ -832,7 +752,7 @@ export default function UpgradeScreen() {
                   and the trust line above already says "One payment, no
                   renewals" — claiming it auto-renews contradicts that and is
                   exactly the kind of billing copy App Review reads. */}
-              {selectedPlan !== 'founding_lifetime' && `Auto-renews until cancelled. ${STORE_MANAGE_HINT} `}
+              {selectedPlan !== 'founding_lifetime' && `Auto-renews. ${STORE_MANAGE_HINT} `}
               <Text style={u.legalLink} onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}>
                 Terms
               </Text>
@@ -1161,69 +1081,19 @@ const u = StyleSheet.create({
     letterSpacing: LetterSpacing.tight,
     lineHeight: 33,
   },
-  heroSub: {
-    fontSize: FontSize.md,
-    lineHeight: 19,
-    marginTop: 6,
-  },
-  // Free → Pro comparison table
-  compare: {
-    borderWidth: 1,
-    borderRadius: Radius.lg,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
+  // What Pro gives: four short check lines under the headline.
+  points: {
     marginTop: Spacing.lg,
+    gap: Spacing.sm + 2,
   },
-  cmpHeader: {
+  pointRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: Spacing.xs,
+    gap: Spacing.sm,
   },
-  cmpHeadText: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-    letterSpacing: LetterSpacing.label,
-  },
-  cmpMoreBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    paddingTop: Spacing.sm + 1,
-    paddingBottom: 2,
-    borderTopWidth: 1,
-  },
-  cmpMoreText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
-  cmpRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: Spacing.sm + 1,
-    borderTopWidth: 1,
-  },
-  cmpLabel: { flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.medium },
-  cmpCol: { width: 82, alignItems: 'center' },
-  cmpFree: { fontSize: FontSize.sm },
-  cmpPro: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
-  // "SOON" chip: outlined pill that carries a Pro feature we've committed
-  // to shipping but haven't shipped yet. Deliberately smaller and less
-  // visually loud than a checkmark so the eye reads it as "yes, and it's
-  // in flight" rather than "yes, definitely today". Color set inline from
-  // the column's theme (accent for Pro, muted for Free — the latter is
-  // never used today but keeps the render branch symmetric).
-  soonChip: {
-    borderWidth: 1,
-    borderRadius: Radius.sm,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  soonText: {
-    fontSize: 9.5,
-    fontWeight: FontWeight.bold,
-    letterSpacing: 0.5,
-  },
+  pointText: { fontSize: FontSize.md, fontWeight: FontWeight.medium },
   // Success screen: mark, headline, one-line sub, then a three-row "what
-  // just unlocked" card. Same card grammar as the comparison table above so
-  // the beat reads as the answer to it.
+  // just unlocked" card.
   successMark: { alignItems: 'center', marginBottom: Spacing.lg },
   unlockCard: {
     alignSelf: 'stretch',
