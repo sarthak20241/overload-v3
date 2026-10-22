@@ -35,10 +35,12 @@ export interface WeeklyReadings {
   sleep_avg_h: number | null;
   /** Days last whole week at or above the protein target. */
   protein_days: number | null;
-  /** The longest distance in one logged set, km. */
+  /** The longest distance in one logged set of any exercise, km. */
   distance_best_km: number | null;
-  /** The longest time in one logged set, minutes. */
+  /** The longest time in one logged set of any exercise, minutes. */
   duration_best_min: number | null;
+  /** For a distance or duration metric that names its exercise: that exercise's best, by metric id. */
+  best_by_metric: Record<string, number>;
   /** The latest hand-logged value by metric id. */
   custom_latest: Record<string, number>;
 }
@@ -54,6 +56,7 @@ export const EMPTY_READINGS: WeeklyReadings = {
   protein_days: null,
   distance_best_km: null,
   duration_best_min: null,
+  best_by_metric: {},
   custom_latest: {},
 };
 
@@ -94,8 +97,10 @@ export function currentValueFor(m: MetricToCheck, r: WeeklyReadings): number | n
     case 'cardio_sessions': return r.cardio_sessions;
     case 'sleep_hours': return r.sleep_avg_h;
     case 'protein_days': return r.protein_days;
-    case 'distance': return r.distance_best_km;
-    case 'duration': return r.duration_best_min;
+    // A metric that names its exercise reads that exercise's best; one that
+    // does not reads the best of any exercise.
+    case 'distance': return m.ref?.exercise_id ? (Number.isFinite(r.best_by_metric[m.id]) ? r.best_by_metric[m.id] : null) : r.distance_best_km;
+    case 'duration': return m.ref?.exercise_id ? (Number.isFinite(r.best_by_metric[m.id]) ? r.best_by_metric[m.id] : null) : r.duration_best_min;
     case 'custom': return Number.isFinite(r.custom_latest[m.id]) ? r.custom_latest[m.id] : null;
   }
 }

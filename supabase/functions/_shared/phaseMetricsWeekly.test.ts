@@ -44,6 +44,10 @@ Deno.test("each kind reads its own source", () => {
   assertEquals(currentValueFor(metric({ kind: "protein_days" }), r), 5);
   assertEquals(currentValueFor(metric({ kind: "distance" }), r), 5.2);
   assertEquals(currentValueFor(metric({ kind: "duration" }), r), 32);
+  // Named: that exercise's own best, never the any-exercise one.
+  const named = readings({ duration_best_min: 32, best_by_metric: { "m-plank": 2.5 } });
+  assertEquals(currentValueFor(metric({ id: "m-plank", kind: "duration", ref: { exercise_name: "Plank", exercise_id: "ex-plank" } }), named), 2.5);
+  assertEquals(currentValueFor(metric({ id: "m-other", kind: "duration", ref: { exercise_name: "Row", exercise_id: "ex-row" } }), named), null);
   assertEquals(currentValueFor(metric({ id: "m9", kind: "custom", ref: { name: "Hold" } }), r), 12);
 });
 

@@ -66,12 +66,12 @@ const CRON_CONCURRENCY = 4;
 /**
  * Stop starting phase metric checks this long after the run began: the cron
  * call times out at 55 s, the cards and check-ins run first, and the moments
- * pass must still get its turn. The budget is checked between batches, and a
- * batch can hold one model call per user (20 s timeout each, in parallel),
- * so the last batch started inside the budget still ends well under 55 s.
- * What is left waits for the next run.
+ * pass must still get its turn. The budget is checked before each batch, and
+ * a batch can hold one model call per user (20 s timeout each, in parallel),
+ * so the last batch started inside the budget ends by about 40 s, leaving
+ * the moments pass its share of the 55 s. What is left waits for the next run.
  */
-const METRICS_BUDGET_MS = 25_000;
+const METRICS_BUDGET_MS = 20_000;
 /** Cards older than this are history nobody reads; the facts window is 8 weeks. */
 const KEEP_WEEKS = 26;
 

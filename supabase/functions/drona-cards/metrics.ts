@@ -330,7 +330,7 @@ async function gatherReadings(
 ): Promise<{ readings: WeeklyReadings; failed: Set<MetricToCheck["kind"]> }> {
   const kinds = new Set(metrics.map((m) => m.kind));
   const prevWeek = addDays(weekStart, -7);
-  const r: WeeklyReadings = { ...EMPTY_READINGS, e1rm_by_exercise: {}, sets_by_muscle: {}, custom_latest: {} };
+  const r: WeeklyReadings = { ...EMPTY_READINGS, e1rm_by_exercise: {}, sets_by_muscle: {}, best_by_metric: {}, custom_latest: {} };
   const failed = new Set<MetricToCheck["kind"]>();
   const fail = (why: string, ...ks: MetricToCheck["kind"][]) => {
     console.log(`[drona-cards] metric read failed (${ks.join(", ")}): ${why}`);
@@ -364,16 +364,18 @@ async function gatherReadings(
         // Only the user's own exercises, then the catalog: this runs with the
         // service role, and another user's custom exercise must never be
         // picked. Two plain filters, no filter string built from the id.
+        // A failed lookup fails THIS metric's kind and moves on to the next
+        // name: a named distance must not fall back to any exercise's best.
         const { data: own, error: ownErr } = await retried(() =>
           db.from("exercises").select("id").eq("user_id", userId).ilike("name", escaped).order("id", { ascending: true }).limit(1)
         );
-        if (ownErr) return fail(ownErr.message, "lift_e1rm");
+        if (ownErr) { fail(ownErr.message, m.kind); continue; }
         let id: string | undefined = (own ?? [])[0]?.id;
         if (!id) {
           const { data: catalog, error: catErr } = await retried(() =>
             db.from("exercises").select("id").is("user_id", null).ilike("name", escaped).order("id", { ascending: true }).limit(1)
           );
-          if (catErr) return fail(catErr.message, "lift_e1rm");
+          if (catErr) { fail(catErr.message, m.kind); continue; }
           id = (catalog ?? [])[0]?.id;
         }
         if (!id) continue;
@@ -478,25 +480,32 @@ async function gatherReadings(
   // tells the coach. The phase start is the user's local day read as UTC
   // midnight: at most one set on the first local day can land on the wrong
   // side, which is accepted for a best-since-start number.
-  const bestSet = (kind: "distance" | "duration") => async () => {
+  // One read per metric that names an exercise (only its sets count: a
+  // run's distance, a plank's time; the name was resolved to an id above),
+  // and one read per kind for the metrics that do not (any exercise's
+  // best). So two duration metrics naming two exercises each get their own.
+  const bestSet = (kind: "distance" | "duration", forMetric: MetricToCheck | null) => async () => {
     const col = kind === "distance" ? "distance_m" : "duration_seconds";
-    // When the metric names an exercise, only its sets count (a run's
-    // distance, a plank's time); the name was resolved to an id above.
-    const exerciseId = metrics.find((m) => m.kind === kind)?.ref?.exercise_id ?? null;
     let q = db.from("workout_sets").select("distance_m, duration_seconds, completed, workouts!inner(user_id, started_at)")
       .eq("workouts.user_id", userId).gte("workouts.started_at", `${phaseStart}T00:00:00Z`)
       .gt(col, 0).eq("completed", true);
-    if (exerciseId) q = q.eq("exercise_id", exerciseId);
+    if (forMetric?.ref?.exercise_id) q = q.eq("exercise_id", forMetric.ref.exercise_id);
     const { data, error } = await retried(() => q.order(col, { ascending: false }).limit(50));
     if (error) return fail(error.message, kind);
     const best = bestOfSets((data ?? []).map((s: Row) => ({
       distance_m: num(s.distance_m), duration_seconds: num(s.duration_seconds), completed: s.completed as boolean | null,
     })));
-    if (kind === "distance") r.distance_best_km = best.distance_best_km;
-    else r.duration_best_min = best.duration_best_min;
+    const value = kind === "distance" ? best.distance_best_km : best.duration_best_min;
+    if (forMetric) { if (value != null) r.best_by_metric[forMetric.id] = value; }
+    else if (kind === "distance") r.distance_best_km = value;
+    else r.duration_best_min = value;
   };
-  if (kinds.has("distance")) jobs.push(bestSet("distance")());
-  if (kinds.has("duration")) jobs.push(bestSet("duration")());
+  for (const kind of ["distance", "duration"] as const) {
+    if (!kinds.has(kind)) continue;
+    const ofKind = metrics.filter((m) => m.kind === kind);
+    for (const m of ofKind.filter((m) => m.ref?.exercise_id)) jobs.push(bestSet(kind, m)());
+    if (ofKind.some((m) => !m.ref?.exercise_id)) jobs.push(bestSet(kind, null)());
+  }
   if (kinds.has("custom")) {
     const ids = metrics.filter((m) => m.kind === "custom").map((m) => m.id);
     jobs.push((async () => {
