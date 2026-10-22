@@ -3,7 +3,7 @@
 // lib/foodBoxTour.ts has no imports, so Deno can test it directly.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { shouldOfferTour, TOUR_COPY, tourEndReason, tourNext, type TourStep } from "./foodBoxTour.ts";
+import { shouldOfferTour, TOUR_COPY, tourEndReason, tourNext, tourSignalForFlow, type TourStep } from "./foodBoxTour.ts";
 
 const ready = {
   signedIn: true,
@@ -102,4 +102,33 @@ Deno.test("every step the user can see has copy, written without em dashes", () 
     assert(c.title.length > 0 && c.body.length > 0, step);
     assert(!`${c.title}${c.body}`.includes("—"), `${step} has an em dash`);
   }
+});
+
+Deno.test("flow: a send from an idle box or a card is 'sent'", () => {
+  assertEquals(tourSignalForFlow({ status: "idle" }, "analysing", false), { event: "sent" });
+  assertEquals(tourSignalForFlow({ status: "review" }, "streaming", false), { event: "sent" });
+});
+
+Deno.test("flow: what a read turns into", () => {
+  assertEquals(tourSignalForFlow({ status: "analysing" }, "review", false), { event: "review" });
+  assertEquals(tourSignalForFlow({ status: "streaming" }, "declined", false), { event: "declined" });
+  assertEquals(tourSignalForFlow({ status: "analysing" }, "error", false), { event: "declined" });
+});
+
+Deno.test("flow: Just log it sends finish the tour, a plain read that clears does not", () => {
+  assertEquals(tourSignalForFlow({ status: "analysing", auto: true }, "idle", false), { event: "auto_logged" });
+  assertEquals(tourSignalForFlow({ status: "streaming", auto: true }, "sent", false), { event: "auto_logged" });
+  assertEquals(tourSignalForFlow({ status: "analysing" }, "idle", false), { end: "idle" });
+  assertEquals(tourSignalForFlow({ status: "analysing" }, "create", false), { end: "create" });
+});
+
+Deno.test("flow: the card closing is Add only when Add closed it", () => {
+  assertEquals(tourSignalForFlow({ status: "review" }, "idle", true), { event: "added" });
+  assertEquals(tourSignalForFlow({ status: "review" }, "idle", false), { end: "discarded" });
+});
+
+Deno.test("flow: anything else says nothing", () => {
+  assertEquals(tourSignalForFlow({ status: "analysing" }, "streaming", false), null);
+  assertEquals(tourSignalForFlow({ status: "idle" }, "create", false), null);
+  assertEquals(tourSignalForFlow({ status: "declined" }, "idle", false), null);
 });

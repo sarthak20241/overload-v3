@@ -81,7 +81,7 @@ import { CopyMealSheet } from '@/components/diet/CopyMealSheet';
 import { learnPatterns, mealsToSuggest, copyableFromDay, withPreviousDay, type FoodSuggestion, type HistoryEntry } from '@/lib/foodPatterns';
 import { useFoodHistory, useDayMealLines, relogLines, lineAsItem } from '@/lib/foodPatternsData';
 import { FoodBoxTourTip } from '@/components/diet/FoodBoxTourTip';
-import { shouldOfferTour, tourEndReason, tourNext, TOUR_COPY, type TourEvent, type TourStep } from '@/lib/foodBoxTour';
+import { shouldOfferTour, tourEndReason, tourNext, tourSignalForFlow, TOUR_COPY, type TourEvent, type TourStep } from '@/lib/foodBoxTour';
 import { getFoodBoxTourDone, setFoodBoxTourDone } from '@/lib/foodBoxTourStore';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
@@ -667,18 +667,22 @@ export default function NutritionScreen() {
     }, 700);
     return () => clearTimeout(t);
   }, [offerTour, tourStep]);
-  // The last line stays a moment, then goes.
+  // The last line stays a moment, then goes. endTour on 'done' only clears it.
   useEffect(() => {
     if (tourStep !== 'done') return;
-    const t = setTimeout(() => setTourStep(null), 4000);
+    const t = setTimeout(() => endTour('left'), 4000);
     return () => clearTimeout(t);
-  }, [tourStep]);
+  }, [tourStep, endTour]);
   // Leaving the screen mid-tour ends it: it is a one-time thing, and coming
   // back to the same pointer every visit would nag.
   // Through a ref: a new endTour identity must not read as the screen blurring.
   const endTourRef = useRef(endTour);
   endTourRef.current = endTour;
-  useFocusEffect(useCallback(() => () => endTourRef.current('left', 'screen'), []));
+  // A tap on search (the icon in the box, a meal's Add row) leaves the screen
+  // too; say so, since search is what the tour is up against.
+  useFocusEffect(useCallback(() => () => endTourRef.current(
+    'left', Date.now() - lastSearchOpenAt < 1500 ? 'search' : 'screen',
+  ), []));
   // Set by onAdd right before the card closes, so "the card went away after
   // Add" can be told apart from Discard.
   const tourAddedRef = useRef(false);
@@ -687,24 +691,18 @@ export default function NutritionScreen() {
     const was = tourPrevFlow.current;
     tourPrevFlow.current = flow;
     if (was.status === flow.status) return;
-    const reading = (st: ParseFlow['status']) => st === 'analysing' || st === 'streaming';
-    const now = flow.status;
     const added = tourAddedRef.current;
     tourAddedRef.current = false;
-    if (reading(now) && !reading(was.status)) {
-      // Someone who finds the box on their own never needs the tour later.
-      if (tourStepRef.current === null && tourDone === false) markTourDone();
-      tourEvent('sent');
-    } else if (reading(was.status)) {
-      const auto = (was.status === 'analysing' || was.status === 'streaming') && !!was.auto;
-      if (now === 'review') tourEvent('review');
-      else if (now === 'declined' || now === 'error') tourEvent('declined');
-      else if (auto && (now === 'idle' || now === 'sent')) tourEvent('auto_logged');
-      else if (now === 'create' || now === 'idle') endTour('left', now);
-    } else if (was.status === 'review' && now === 'idle') {
-      if (added) tourEvent('added');
-      else endTour('left', 'discarded');
-    }
+    const sig = tourSignalForFlow(
+      { status: was.status, auto: (was.status === 'analysing' || was.status === 'streaming') && !!was.auto },
+      flow.status,
+      added,
+    );
+    if (!sig) return;
+    if ('end' in sig) { endTour('left', sig.end); return; }
+    // Someone who finds the box on their own never needs the tour later.
+    if (sig.event === 'sent' && tourStepRef.current === null && tourDone === false) markTourDone();
+    tourEvent(sig.event);
   }, [flow, tourDone, markTourDone, tourEvent, endTour]);
   // The food box's own events: tapped into, and left without sending.
   const boxFocusRef = useRef<{ sent: boolean } | null>(null);
@@ -713,6 +711,7 @@ export default function NutritionScreen() {
     track('food_box_focused', { tour: tourStepRef.current ?? 'none' });
     tourEvent('focused');
   }, [tourEvent]);
+  const lastBoxSendAt = useRef(0);
   const textRef = useRef(text);
   textRef.current = text;
   const onBoxBlur = useCallback(() => {
@@ -723,7 +722,9 @@ export default function NutritionScreen() {
     // A tap on search (the icon in the box, or a meal's Add row) blurs the
     // box too. The tap and the blur land in either order, so look a beat
     // later and say which it was: switching to search is not giving up.
+    // Also catches a send whose tap blurred the box before onSend ran.
     setTimeout(() => {
+      if (Date.now() - lastBoxSendAt.current < 1500) return;
       track('food_box_abandoned', { had_text: hadText, to_search: Date.now() - lastSearchOpenAt < 1500 });
     }, 300);
   }, []);
@@ -1538,6 +1539,7 @@ export default function NutritionScreen() {
     // manual picker exactly as the old bar did.
     if (!isSignedIn) { openSearch(mealForNow(), 'guest_bar'); return; }
     if (boxFocusRef.current) boxFocusRef.current.sent = true;
+    lastBoxSendAt.current = Date.now();
     setText('');
     void runParse(t);
   }, [text, isSignedIn, flow.status, runParse]);
@@ -2199,7 +2201,7 @@ export default function NutritionScreen() {
             title={inlineTourTip.title}
             body={inlineTourTip.body}
             actionLabel={tourStep === 'done' ? 'Got it' : 'Skip'}
-            onAction={tourStep === 'done' ? () => setTourStep(null) : () => endTour('skipped')}
+            onAction={() => endTour(tourStep === 'done' ? 'left' : 'skipped')}
           />
         )}
         {flow.status === 'create' && (

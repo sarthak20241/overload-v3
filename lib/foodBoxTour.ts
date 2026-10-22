@@ -54,6 +54,36 @@ export function tourNext(step: TourStep, event: TourEvent): TourStep {
   }
 }
 
+/** The food box flow statuses the tour reads (the screen's ParseFlow). */
+export type FlowStatus = 'idle' | 'analysing' | 'streaming' | 'sent' | 'review' | 'declined' | 'error' | 'create';
+
+/**
+ * What a change in the food box flow means for the tour: an event to feed
+ * tourNext, a reason to end it, or nothing. `was.auto`: that read was a "Just
+ * log it" send, which logs on its own. `added`: the screen's Add closed the
+ * card (Discard closes it the same way).
+ */
+export function tourSignalForFlow(
+  was: { status: FlowStatus; auto?: boolean },
+  now: FlowStatus,
+  added: boolean,
+): { event: TourEvent } | { end: string } | null {
+  if (was.status === now) return null;
+  const reading = (st: FlowStatus) => st === 'analysing' || st === 'streaming';
+  if (reading(now)) return reading(was.status) ? null : { event: 'sent' };
+  if (reading(was.status)) {
+    if (now === 'review') return { event: 'review' };
+    if (now === 'declined' || now === 'error') return { event: 'declined' };
+    if (was.auto && (now === 'idle' || now === 'sent')) return { event: 'auto_logged' };
+    // A read that cleared the card, or became a "save this food" draft: not
+    // the meal the tour was walking.
+    if (now === 'idle' || now === 'create' || now === 'sent') return { end: now };
+    return null;
+  }
+  if (was.status === 'review' && now === 'idle') return added ? { event: 'added' } : { end: 'discarded' };
+  return null;
+}
+
 /** What the user has logged recently, as much as the gate needs. */
 export interface LoggedLine { logged_via?: string | null }
 
