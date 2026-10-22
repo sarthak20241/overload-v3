@@ -42,6 +42,8 @@ EVAL_VIA_CLI=1 npx tsx scripts/program-activity-eval/run.mts
 # Edge function unit tests (the one real test suite).
 deno test --allow-all supabase/functions/ai-coach/
 deno test --allow-all supabase/functions/revenuecat-webhook/
+deno test --allow-all supabase/functions/session-refresh/   # who may get a sign-in ticket
+deno test --allow-all lib/sessionRefresh.test.ts             # silent re-sign-in: ticket, then sign-out, then sign-in
 deno test --allow-all supabase/functions/_shared/   # TODAY pick rules, shared by app + daily-suggestion
 deno test --allow-all lib/xp.test.ts
 deno test --allow-all lib/tiers.test.ts

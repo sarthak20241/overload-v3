@@ -122,6 +122,8 @@ jobs:
           deno test --allow-all supabase/functions/ai-coach/
           deno test --allow-all supabase/functions/_shared/
           deno test --allow-all supabase/functions/revenuecat-webhook/
+          deno test --allow-all supabase/functions/session-refresh/
+          deno test --allow-all lib/sessionRefresh.test.ts
           deno test --allow-all lib/xp.test.ts
           deno test --allow-all lib/tiers.test.ts
           deno test --allow-all lib/coachErrors.test.ts

@@ -17,6 +17,7 @@ import { BasicInfoProvider } from '@/hooks/useBasicInfo';
 import { PreferencesProvider } from '@/hooks/usePreferences';
 import { hydrateGuestStore } from '@/lib/guestStore';
 import { hydrateActiveWorkout } from '@/lib/activeWorkoutPersistence';
+import { SessionRefreshGate } from '@/components/SessionRefreshGate';
 import { ClerkSupabaseBridge } from '@/components/ClerkSupabaseBridge';
 import { RevenueCatBridge } from '@/components/RevenueCatBridge';
 import { SyncProvider } from '@/components/SyncProvider';
@@ -116,9 +117,13 @@ export default function RootLayout() {
     <AppContent />
   ) : (
     <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
-      <ClerkSupabaseBridge />
-      <RevenueCatBridge />
-      <AppContent />
+      {/* Swaps a nearly expired session for a fresh one before anything
+          that reacts to auth mounts (components/SessionRefreshGate.tsx). */}
+      <SessionRefreshGate>
+        <ClerkSupabaseBridge />
+        <RevenueCatBridge />
+        <AppContent />
+      </SessionRefreshGate>
     </ClerkProvider>
   );
 
