@@ -19,6 +19,61 @@ export interface PendingFoodMeal {
 export interface FoodConversationContext {
   recentTurns: FoodTurn[];
   pendingMeal: PendingFoodMeal | null;
+  /** The meal card on screen, parsed and not yet added: one line per food.
+   *  Absent on a first-shot log. The router reads it so a message with a card
+   *  open can be an edit of it, new food beside it, a question about it, or a
+   *  request to save it, instead of always being treated as a correction. */
+  card?: CardLine[] | null;
+}
+
+/** One card line as the router and the agent see it. The macros and ids ride
+ *  along so the agent can hand a line back exactly as it was. */
+export interface CardLine {
+  food_name: string;
+  quantity: number;
+  serving_label: string;
+  grams: number;
+  kcal: number;
+  protein_g?: number;
+  carb_g?: number;
+  fat_g?: number;
+  food_id?: string | null;
+  source?: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
+  fiber_g?: number | null;
+  assumption?: string | null;
+  confidence?: "high" | "medium" | "low";
+  /** The section the line sits in. A kept line goes back to the same one. */
+  meal_type?: "breakfast" | "lunch" | "dinner" | "snack";
+  /** What the user called this line, when the card shows another name. */
+  said_name?: string;
+}
+
+/** Lines the card carries to the models. The SAME cap index.ts puts on
+ *  previous_items, so the numbers the agent names for remove_card_lines are
+ *  the card's own: a mismatch here would delete the wrong line.
+ *
+ *  KNOWN LIMIT: the app (lib/dietData.ts) also cuts previous_items at 12 and
+ *  sends no total, so a card of 13+ lines arrives as 12 and the server cannot
+ *  tell. A correction then rebuilds the card from those 12 and drops the rest
+ *  (this predates PR #277). Until the app sends the real count, the agent's
+ *  card tools refuse a card AT the cap (cardMayBeCut), since 12 could be 12 of
+ *  30; the parse path still runs. */
+export const CARD_MAX_LINES = 12;
+
+/** True when the card the agent holds may be only the first CARD_MAX_LINES of
+ *  a longer one. The app sends no total, so "at the cap" is the only signal. */
+export function cardMayBeCut(card: CardLine[] | null | undefined): boolean {
+  return (card?.length ?? 0) >= CARD_MAX_LINES;
+}
+
+/** The card for a model's eyes: short, numbered, one line per food. */
+export function cardLines(card: CardLine[] | null | undefined): string[] {
+  // Whitespace collapsed: a newline in a client-supplied name would otherwise
+  // forge an extra numbered line in the prompt.
+  const flat = (x: string) => x.replace(/\s+/g, " ").trim();
+  return (card ?? []).slice(0, CARD_MAX_LINES).map((l, i) =>
+    `${i + 1}. ${flat(l.food_name)}: ${l.quantity} ${flat(l.serving_label)}, ${Math.round(l.grams)} g, ${Math.round(l.kcal)} kcal`
+  );
 }
 
 export function pendingFoodMeal(text: string, question: string): PendingFoodMeal | null {
@@ -70,9 +125,14 @@ export function readFoodContext(turns: unknown, pending: unknown): FoodConversat
 export function foodIntentState(text: string, context?: FoodConversationContext): string {
   const trimmed = text.trim().replace(/\s+/g, " ");
   const message = trimmed.length <= 1200 ? trimmed : `${trimmed.slice(0, 1200)}...`;
-  if (!context?.pendingMeal && !context?.recentTurns.length) return message;
+  if (!context?.pendingMeal && !context?.recentTurns.length && !context?.card?.length) return message;
   const bounded = readFoodContext(context?.recentTurns, context?.pendingMeal);
-  return JSON.stringify({ message, recent_turns: bounded.recentTurns, pending_meal: bounded.pendingMeal });
+  return JSON.stringify({
+    message,
+    recent_turns: bounded.recentTurns,
+    pending_meal: bounded.pendingMeal,
+    ...(context?.card?.length ? { card: cardLines(context.card) } : {}),
+  });
 }
 
 export function continuationText(text: string, pending: PendingFoodMeal): string {

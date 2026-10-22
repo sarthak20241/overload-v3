@@ -217,7 +217,7 @@ Deno.test("a remembered portion is the user's one unit, never divided", async ()
 
 // ── 3. A complaint that states the fix changes the line ─────────────────────
 
-function challengeDeps(statesFix: number, log: { systems: string[]; jev: string[][] }, retryFlag = true): ParseMealDeps {
+function challengeDeps(statesFix: number, log: { systems: string[]; jev: string[][] }, retryFlag = true, removeOnly = false): ParseMealDeps {
   let extracts = 0;
   const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init!.body));
@@ -231,6 +231,8 @@ function challengeDeps(statesFix: number, log: { systems: string[]; jev: string[
       log.systems.push(JSON.stringify(body.system));
       const input = extracts === 1
         ? { declined: false, asks_about_previous: true, meal_type_from_text: null, items: [] }
+        : removeOnly
+        ? { declined: false, corrects_previous: true, meal_type_from_text: null, items: [], removed_food_names: ["Suji halwa"] }
         : {
           declined: false, corrects_previous: retryFlag, meal_type_from_text: null, items: [
             { name: "poori", brand: null, quantity: 3, unit: "small piece", prep: null, corrects_food_name: "poori" },
@@ -264,6 +266,39 @@ Deno.test("the failure this prevents: 'they were small' got the stock answer and
   const step = r.steps.find((s) => s.tool === "challenge_states_fix");
   assertEquals((step?.result as { applied: boolean }).applied, true);
   assertEquals(r.declined, null, `still the stock answer: ${r.declined?.message}`);
+});
+
+Deno.test("the failure this prevents: a retry that only removes a line was thrown away", async () => {
+  // Live, 2026-10-21: "why did u add tomato and onion separately" asked for a
+  // removal; the retry carried no items, was dropped, and the canned answer went out.
+  const log = { systems: [] as string[], jev: [] as string[][] };
+  const r = await runParseMeal(challengeDeps(0.92, log, true, true), challenge("why did you add the halwa separately?"));
+  assertEquals(log.systems.length, 2, "the extract is asked once more");
+  assertEquals(r.declined, null, `still the stock answer: ${r.declined?.message}`);
+  assertEquals((r.parsed?.items ?? []).some((i) => /halwa/i.test(i.food_name)), false, "the halwa line must be gone");
+  // The other lines survive: a partial removal must never empty the card.
+  assert((r.parsed?.items ?? []).some((i) => /poori/i.test(i.food_name)), "the surviving poori line must remain");
+  assertEquals(r.parsed?.corrects_previous, true);
+});
+
+Deno.test("a removal naming nothing on the card declines, instead of re-sending the card as 'taken off'", async () => {
+  // A misspelled or invented name matches no line: nothing changes, so the
+  // old decline stands rather than a corrects_previous of the unchanged card.
+  const log = { systems: [] as string[], jev: [] as string[][] };
+  const d = challengeDeps(0.92, log, true, true);
+  const origFetch = d.fetchFn!;
+  d.fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+    const r = await origFetch(url, init);
+    if (String(url).includes("typesafe.ai")) return r;
+    const body = await r.clone().json();
+    const blk = body.content?.[0];
+    if (blk?.input?.removed_food_names) blk.input.removed_food_names = ["kheer"];
+    return Response.json(body);
+  }) as typeof fetch;
+  d.jev = { ...d.jev!, fetchFn: d.fetchFn };
+  const r = await runParseMeal(d, challenge("why did you add the kheer?"));
+  assert(r.declined !== null, "a no-op removal must decline");
+  assertEquals(r.parsed, null);
 });
 
 Deno.test("the retry edits the card even when the model tags it as an addition", async () => {
