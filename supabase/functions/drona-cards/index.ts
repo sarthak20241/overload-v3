@@ -502,7 +502,10 @@ async function runCron(): Promise<Response> {
     // (checked_week, the local Monday the job wrote). The bound is the LATEST
     // week start of this run's zones, so the read is a superset: a zone
     // already on the next week is listed at once, and metricsStep's own
-    // checkDue filters per user. Everyone else costs nothing.
+    // checkDue filters per user. Everyone else costs nothing. The cost of the
+    // superset: while the zones straddle a Monday (about a day a week), a
+    // user whose own Monday has not come yet is listed too, and pays three
+    // small reads per run until it does.
     // A time budget keeps the moments pass below from being starved.
     const latestWeek = weekStarts.length > 0 ? [...weekStarts].sort().pop()! : null;
     const due_metrics = new Set<string>();
