@@ -176,7 +176,13 @@ create policy "coach_program_phase_metric_logs_owner_delete" on public.coach_pro
   for delete to authenticated using (user_id = current_clerk_user_id());
 
 revoke all on table public.coach_program_phase_metric_logs from anon, authenticated;
-grant select, insert, update, delete on table public.coach_program_phase_metric_logs to authenticated;
+grant select, insert, delete on table public.coach_program_phase_metric_logs to authenticated;
+-- Every column but id and created_at. The app writes a log as an upsert on
+-- (metric_id, logged_on), and Postgres needs UPDATE on every column the
+-- upsert sets, metric_id and user_id included, when the same day is logged
+-- twice; the update policy's with check still ties the row to the caller's
+-- own metric, so neither can be pointed at anyone else's.
+grant update (metric_id, user_id, value, logged_on, note) on table public.coach_program_phase_metric_logs to authenticated;
 
 commit;
 
