@@ -704,12 +704,28 @@ export function isBareAck(text: string): boolean {
   // not words, so they are dropped before the count.
   const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").trim().split(/\s+/).filter((w) => w.length > 1 || w === "k");
   if (words.length === 0 || words.length > 4) return false;
+  // No question words, and no verbs that ask for a check: "is it right" and
+  // "is that all" are questions for the agent, not acks.
   const ACK = new Set([
     "ok", "okay", "k", "kk", "yes", "yep", "yeah", "ya", "yup", "sure", "fine", "cool", "good", "great", "nice",
-    "perfect", "thanks", "thank", "thx", "ty", "you", "done", "alright", "right", "looks", "that", "thats", "it",
-    "all", "is", "go", "ahead", "noted", "got", "sounds",
+    "perfect", "thanks", "thank", "thx", "ty", "you", "done", "alright", "looks", "that", "thats", "it", "all",
+    "noted", "got", "sounds",
   ]);
   return words.every((w) => ACK.has(w));
+}
+
+/**
+ * A card was open, the verdict was a question or complaint, and the policy
+ * still sent it to the parse (under the bar, or not Jev's). That is the one
+ * path where the canned per-line breakdown can still show, so it is counted
+ * in the trace. Pure, and here rather than in index.ts, so a test can reach
+ * it: index.ts boots the server on import.
+ */
+export function cardQuestionFellToParse(
+  d: Pick<FoodIntentDecision, "intent"> | null,
+  outcome: { cardOpen?: boolean; action: FoodAction } | null | undefined,
+): boolean {
+  return !!(outcome?.cardOpen && d?.intent === "other" && outcome.action === "log");
 }
 
 /** The bar for 'edit' and for a card question reaching the agent. Below it the

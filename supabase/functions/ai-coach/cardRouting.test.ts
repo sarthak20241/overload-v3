@@ -16,6 +16,7 @@ import { type CardLine, cardLines, cardMayBeCut, foodIntentState, readFoodContex
 import { CARD_NOTE, type FoodAgentDeps, openingText, runFoodAgent, toolsFor } from "./foodAgent.ts";
 import {
   CARD_AGENT_FLOOR,
+  cardQuestionFellToParse,
   decideFoodAction,
   isBareAck,
   type FoodIntentDecision,
@@ -86,6 +87,22 @@ Deno.test("the failure this prevents: a bare 'ok' beside a card was read as a sa
 Deno.test("isBareAck: stock words only, never a message with content", () => {
   for (const t of ["ok", "OK!", "yes", "cool", "thanks", "thanks that's it", "looks good", "all good, thanks"]) assertEquals(isBareAck(t), true, t);
   for (const t of ["", "ok make it 2", "thanks, remove the dal", "yes it was navratri chana", "ok but how is it 240"]) assertEquals(isBareAck(t), false, t);
+  // A short question is a question for the agent, never an ack.
+  for (const t of ["is it right", "is that all", "right?", "go ahead?"]) assertEquals(isBareAck(t), false, t);
+});
+
+Deno.test("the failure this prevents: the card-question trace flag was always false", () => {
+  // The outcome's cardOpen was never stamped, so card_question_to_parse could
+  // not fire and the canned-breakdown rate was unmeasurable. The flag is pure
+  // now, and it fires exactly when a card question fell to the parse.
+  const other = decision({ intent: "other" });
+  assertEquals(cardQuestionFellToParse(other, { cardOpen: true, action: "log" }), true);
+  // Not when the agent took it, not without a card, not for an edit or a log.
+  assertEquals(cardQuestionFellToParse(other, { cardOpen: true, action: "agent" }), false);
+  assertEquals(cardQuestionFellToParse(other, { cardOpen: false, action: "log" }), false);
+  assertEquals(cardQuestionFellToParse(other, { action: "log" }), false);
+  assertEquals(cardQuestionFellToParse(decision({ intent: "edit" }), { cardOpen: true, action: "log" }), false);
+  assertEquals(cardQuestionFellToParse(null, { cardOpen: true, action: "log" }), false);
 });
 
 // ── Policy: who handles what beside a card ─────────────────────────────────

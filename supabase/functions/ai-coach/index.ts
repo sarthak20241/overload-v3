@@ -75,6 +75,7 @@ import {
   agentAsked,
   continuesPendingMeal,
   wantsFoodAgent,
+  cardQuestionFellToParse,
 } from "./foodIntent.ts";
 import { CARD_MAX_LINES, type CardLine, cardMayBeCut, readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
@@ -737,7 +738,7 @@ async function resolveFoodBarOutcome(args: {
 }): Promise<FoodBarOutcome> {
   // Every outcome says whether a card was open, so the trace can tell a card
   // question that fell to the parse from a plain one. One place, not per return.
-  const out = (o: Omit<FoodBarOutcome, "cardOpen">): FoodBarOutcome => ({ ...o });
+  const out = (o: Omit<FoodBarOutcome, "cardOpen">): FoodBarOutcome => ({ ...o, cardOpen: args.cardOpen });
   if (FOOD_INTENT_MODE !== "on") return out({ action: "log", planned: "log", decision: null });
   const decision = await args.intentP.catch(() => null);
   const parseFoundFood = !!args.result.parsed && args.result.parsed.items.length > 0;
@@ -820,7 +821,7 @@ function foodIntentStep(d: FoodIntentDecision | null, outcome?: FoodBarOutcome):
       // policy still sent to the parse (a verdict under the bar, or not Jev's).
       // That is the one path where the canned per-line breakdown can still
       // show, so it is counted here beside the agent-failure fallback.
-      card_question_to_parse: !!(outcome?.cardOpen && d.intent === "other" && outcome.action === "log"),
+      card_question_to_parse: cardQuestionFellToParse(d, outcome),
       // The agent's turns: which tools it called together, tokens and time.
       agent: outcome?.agent ?? null,
       intent: d.intent,
