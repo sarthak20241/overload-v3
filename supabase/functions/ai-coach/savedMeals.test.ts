@@ -11,6 +11,7 @@ import { openingText } from "./foodAgent.ts";
 import {
   findSavedMeal,
   hintOfferTarget,
+  MAX_SAVED_IN_PROMPT,
   mergeSavedLines,
   type SavedMealHint,
   savedCount,
@@ -446,6 +447,10 @@ Deno.test("the offer lands on the line sharing the most words with the saved mea
   assertEquals(hintOfferTarget(HINT, [OATS], []), null);
   // A pick that is not among the saved meals is ignored.
   assertEquals(hintOfferTarget({ ...HINT, id: "sm-gone" }, [OATS], ["oats"]), null);
+  // A pick past the prompt cap was never shown to the model: no offer either.
+  const filler = Array.from({ length: MAX_SAVED_IN_PROMPT }, (_, i) => ({ ...OATS, id: `sm-${i}`, name: `Meal ${i}` }));
+  assertEquals(hintOfferTarget(HINT, [...filler, OATS], ["oats"]), null);
+  assertEquals(hintOfferTarget(HINT, [...filler.slice(1), OATS], ["oats"]), "oats");
   // A one-item saved meal IS that food: its item's words count too.
   const plate: SavedMealForParse = {
     ...OATS, id: "sm-roti", name: "My Roti Plate",
@@ -504,6 +509,19 @@ Deno.test("words that turn the saved meal down beat the router's pick", async ()
     { ...INPUT, text: "kesar pista oats, not from my saved meals", mode: "fast", savedMeals: [OATS], savedHint: HINT },
   );
   assertEquals(r.saved_suggestions, undefined);
+  assertEquals(r.steps.find((s) => s.tool === "saved_hint")?.result, "rejected");
+});
+
+Deno.test("a pick the model was never shown is traced as not listed", async () => {
+  // "kesar pista oats" is a line the plain word check cannot tie to "Oats with
+  // milk" (every word must match), so only the router's pick could offer it.
+  const filler = Array.from({ length: MAX_SAVED_IN_PROMPT }, (_, i) => ({ ...OATS, id: `sm-${i}`, name: `Meal ${i}` }));
+  const r = await runParseMeal(
+    stub([], [{ ...OATMEAL_ITEM, name: "kesar pista oats" }]),
+    { ...INPUT, text: "kesar pista oats", mode: "fast", savedMeals: [...filler, OATS], savedHint: HINT },
+  );
+  assertEquals(r.saved_suggestions, undefined);
+  assertEquals(r.steps.find((s) => s.tool === "saved_hint")?.result, "not_listed");
 });
 
 Deno.test("no pick, no pointer and no step: the prompt is exactly as before", async () => {

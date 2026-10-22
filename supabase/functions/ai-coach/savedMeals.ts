@@ -122,9 +122,11 @@ export interface SavedMealHint {
 /** Which parsed line the router's pick is offered against: the line sharing
  *  the most words with the saved meal's name (its one item counts too when the
  *  meal IS that one food, as in suggestSavedMeal). Null when no line shares a
- *  word, because a swap offer needs a line to swap. */
+ *  word, because a swap offer needs a line to swap, and null for a pick past
+ *  MAX_SAVED_IN_PROMPT: the model never saw that meal, so the card does not
+ *  offer it either. */
 export function hintOfferTarget(hint: SavedMealHint, saved: SavedMealForParse[], itemNames: string[]): string | null {
-  const meal = saved.find((m) => m.id === hint.id);
+  const meal = saved.slice(0, MAX_SAVED_IN_PROMPT).find((m) => m.id === hint.id);
   if (!meal) return null;
   const named = meal.items.length === 1 ? [meal.name, meal.items[0].food_name] : [meal.name];
   const have = new Set(named.flatMap(words));

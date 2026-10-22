@@ -34,6 +34,7 @@ import {
   type SavedMealForParse,
   rejectsSavedMeal,
   hintOfferTarget,
+  MAX_SAVED_IN_PROMPT,
   type SavedMealHint,
   savedMealsBlock,
   suggestSavedMeal,
@@ -6016,15 +6017,25 @@ async function runParseMealOnce(
 
   if (suggestions.length > 0) result.saved_suggestions = suggestions;
   // Who was right about the router's pick, for the trace: the model logged
-  // it, the card offers it, or no line could carry the offer.
+  // it, the card offers it, the words turned saved meals down, the pick was
+  // past the prompt cap, or no line could carry the offer.
   if (input.savedHint) {
     const h = input.savedHint;
     const offered = suggestions.find((s) => s.saved_id === h.id);
+    const verdict = hits.some((x) => x.meal.id === h.id)
+      ? "logged"
+      : offered
+      ? `offered:${offered.food_name}`
+      : rejectsSavedMeal(input.text)
+      ? "rejected"
+      : !saved.slice(0, MAX_SAVED_IN_PROMPT).some((m) => m.id === h.id)
+      ? "not_listed"
+      : "no_line";
     result.steps = [...result.steps, {
       iter: 0,
       tool: "saved_hint",
       input: { id: h.id, name: h.name, confidence: h.confidence },
-      result: hits.some((x) => x.meal.id === h.id) ? "logged" : offered ? `offered:${offered.food_name}` : "no_line",
+      result: verdict,
     }];
   }
   let final = result;
