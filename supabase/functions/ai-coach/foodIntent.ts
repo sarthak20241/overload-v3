@@ -736,7 +736,9 @@ export function decideFoodAction(i: FoodActionInputs): FoodAction {
   // 'log' (new food beside the card) stays on the parse, and so does any
   // unsure verdict: the correction path edits the card from the user's words.
   if (i.cardOpen && wantsFoodAgent(i.decision, i.clientSupportsCreate, true)) return "agent";
-  if (i.cardOpen && intent !== "steps") return "log";
+  // 'continue' keeps its own routing below: a pending meal and a card rarely
+  // coexist, but when they do the answer to Drona's question comes first.
+  if (i.cardOpen && intent !== "steps" && intent !== "continue") return "log";
 
   if (intent === "create") {
     if (!i.clientSupportsCreate) return "log";

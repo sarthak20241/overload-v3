@@ -588,6 +588,21 @@ async function finishWith(
     const drop = new Set(nums.map((n) => n - 1));
     const kept = card.filter((_, i) => !drop.has(i));
     const summary = clean(typeof args.summary === "string" ? args.summary : "");
+    const emptyUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0 };
+    if (kept.length === 0) {
+      // Nothing left: the card is cleared, the way removing the last line with
+      // the X button clears it. A meal with zero items is an error to the app
+      // (lib/dietData.ts), so it must never be sent as one.
+      return {
+        kind: "log",
+        result: {
+          parsed: null,
+          declined: { message: summary || "Taken off. Nothing left on this one.", cleared: true },
+          usage: emptyUsage, tool_calls: ["food_agent", "remove_card_lines"], steps: [], iterations: turns.length,
+        },
+        turns,
+      };
+    }
     // The kept lines go back as they were: a correction replaces the card.
     // The card's own section leads; the default is only for a line without one.
     const meal: MealType = kept[0]?.meal_type ?? input.defaultMeal;
@@ -602,7 +617,7 @@ async function finishWith(
           // An empty card is a card with nothing left: the app clears it.
         },
         declined: null,
-        usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0 },
+        usage: emptyUsage,
         tool_calls: ["food_agent", "remove_card_lines"],
         steps: [],
         iterations: turns.length,
@@ -614,22 +629,22 @@ async function finishWith(
     if (!card.length) return { kind: "failed", reason: "save_without_card", turns };
     const name = clean(typeof args.name === "string" ? args.name : "").slice(0, 80) || "My meal";
     const summary = clean(typeof args.summary === "string" ? args.summary : "");
-    return {
-      kind: "create",
-      create: {
-        tool: CREATE_CUSTOM_MEAL_TOOL.name,
-        input: {
-          name,
-          items: card.map((l) => ({
-            name: l.food_name, quantity: l.quantity, serving_label: l.serving_label, grams: l.grams,
-            kcal: Math.round(l.kcal), protein_g: l.protein_g ?? 0, carb_g: l.carb_g ?? 0, fat_g: l.fat_g ?? 0, estimated: false,
-          })),
-          log_now: args.log_now === true,
-          summary: summary || `${name}, ${card.length} items. Want it in My Meals?`,
-        },
-      },
-      turns,
-    };
+    // A line the parse only estimated is saved as estimated, so the save card
+    // flags it for a look before it becomes "the user's own numbers". The
+    // card's lines are what the reads vouch for here, so `seen` learns them
+    // first and the same validator the agent's other saves use runs on top.
+    remember(seen, card.map((l) => ({ food_name: l.food_name, kcal: l.kcal })));
+    const input = checkedCreateInput({
+      name,
+      items: card.map((l) => ({
+        name: l.food_name, quantity: l.quantity, serving_label: l.serving_label, grams: l.grams,
+        kcal: Math.round(l.kcal), protein_g: l.protein_g ?? 0, carb_g: l.carb_g ?? 0, fat_g: l.fat_g ?? 0,
+        estimated: l.source === "estimate" || l.source === "web",
+      })),
+      log_now: args.log_now === true,
+      summary: summary || `${name}, ${card.length} items. Want it in My Meals?`,
+    }, seen);
+    return { kind: "create", create: { tool: CREATE_CUSTOM_MEAL_TOOL.name, input }, turns };
   }
   if (u.name === CREATE_CUSTOM_MEAL_TOOL.name || u.name === CREATE_CUSTOM_FOOD_TOOL.name) {
     return { kind: "create", create: { tool: u.name, input: checkedCreateInput(args, seen) }, turns };

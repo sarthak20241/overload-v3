@@ -279,6 +279,26 @@ Deno.test("the failure this prevents: a retry that only removes a line was throw
   assertEquals(r.parsed?.corrects_previous, true);
 });
 
+Deno.test("a removal naming nothing on the card declines, instead of re-sending the card as 'taken off'", async () => {
+  // A misspelled or invented name matches no line: nothing changes, so the
+  // old decline stands rather than a corrects_previous of the unchanged card.
+  const log = { systems: [] as string[], jev: [] as string[][] };
+  const d = challengeDeps(0.92, log, true, true);
+  const origFetch = d.fetchFn!;
+  d.fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+    const r = await origFetch(url, init);
+    if (String(url).includes("typesafe.ai")) return r;
+    const body = await r.clone().json();
+    const blk = body.content?.[0];
+    if (blk?.input?.removed_food_names) blk.input.removed_food_names = ["kheer"];
+    return Response.json(body);
+  }) as typeof fetch;
+  d.jev = { ...d.jev!, fetchFn: d.fetchFn };
+  const r = await runParseMeal(d, challenge("why did you add the kheer?"));
+  assert(r.declined !== null, "a no-op removal must decline");
+  assertEquals(r.parsed, null);
+});
+
 Deno.test("the retry edits the card even when the model tags it as an addition", async () => {
   const log = { systems: [] as string[], jev: [] as string[][] };
   const r = await runParseMeal(challengeDeps(0.92, log, false), challenge("I had just 3 puris they were small"));

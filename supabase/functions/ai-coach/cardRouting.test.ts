@@ -184,7 +184,29 @@ Deno.test("'make it a meal' with a card open becomes a save card with every line
   assertEquals(out.create.tool, "create_custom_meal");
   const input = out.create.input as { name: string; log_now: boolean; items: Record<string, unknown>[] };
   assertEquals([input.name, input.log_now, input.items.length], ["Paneer sabji lunch", true, 4]);
-  assertEquals(input.items[1], { name: "Milky Mist low fat paneer sabji", quantity: 1, serving_label: "serving", grams: 180, kcal: 240, protein_g: 18, carb_g: 8, fat_g: 14, estimated: false });
+  assertEquals(input.items[1], { name: "Milky Mist low fat paneer sabji", quantity: 1, serving_label: "serving", grams: 180, kcal: 240, protein_g: 18, carb_g: 8, fat_g: 14, estimated: true });
+});
+
+Deno.test("the failure this prevents: removing every line sent a zero-item meal, which the app reads as an error", async () => {
+  const out = await runFoodAgent(
+    { text: "scrap all of it", defaultMeal: "lunch", card: [CARD[0]] },
+    deps(scripted([[{ name: "remove_card_lines", input: { lines: [1], summary: "All gone." } }]])),
+  );
+  assert(out.kind === "log", out.kind);
+  // Cleared, the way the X button clears the last line: no parsed meal at all.
+  assertEquals(out.result.parsed, null);
+  assertEquals(out.result.declined, { message: "All gone.", cleared: true });
+});
+
+Deno.test("a save marks estimated lines as estimated, and runs through the create validator", async () => {
+  const out = await runFoodAgent(
+    { ...INPUT, text: "make it a meal" },
+    deps(scripted([[{ name: "save_card_as_meal", input: { name: "Lunch", log_now: false, summary: "Lunch, 4 items. Want it in My Meals?" } }]])),
+  );
+  assert(out.kind === "create", out.kind);
+  const items = out.create.input.items as Record<string, unknown>[];
+  // CARD[0] is catalog, CARD[1] and CARD[2] are estimates, CARD[3] is catalog.
+  assertEquals(items.map((i) => i.estimated), [false, true, true, false]);
 });
 
 Deno.test("card tools without a card, or with bad lines, fail honestly", async () => {

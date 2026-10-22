@@ -6682,7 +6682,10 @@ async function runParseMealCore(
     const what = removedNames.length === 1 ? removedNames[0] : "those";
     return declineResult(`Removed ${what}. Nothing left on this one.`, true);
   }
-  if (hasPrevious && extItems.length === 0 && removedNames.length > 0) {
+  // Only when a named line was FOUND. A misspelled or invented name matches
+  // nothing: the old decline stands, rather than a "took it off" that changed
+  // nothing and a corrects_previous that re-sends the card as is.
+  if (hasPrevious && extItems.length === 0 && removedNames.length > 0 && removedTargets.size > 0) {
     // Hand the survivors back untouched, as a correction: the card is replaced
     // by itself minus the removed lines. keepUncoveredPrevious is the SAME
     // restore the correction guard runs at the end of the full path, and the

@@ -76,7 +76,7 @@ import {
   continuesPendingMeal,
   wantsFoodAgent,
 } from "./foodIntent.ts";
-import { type CardLine, readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
+import { CARD_MAX_LINES, type CardLine, readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
 import { startHeartbeat } from "./streamHeartbeat.ts";
@@ -755,8 +755,12 @@ async function resolveFoodBarOutcome(args: {
     // never lost to the agent's bad turn. Known cost: for a pure QUESTION the
     // parse's answer is the per-line breakdown this PR replaces. That is the
     // safe miss (the card survives), taken on purpose over a reply that cannot
-    // see the card. The agent's failure reason is in the trace.
-    if (args.cardOpen) return { action: "log", planned: action, decision, agent };
+    // see the card. The agent's failure reason is in the trace, and this
+    // fallback is counted so the rate of the canned answer can be read.
+    if (args.cardOpen) {
+      console.log(`[food_agent] failed beside a card (${o.reason}); parse result served`);
+      return { action: "log", planned: action, decision, agent, followup: { ...skippedFollowup("reply"), error: `agent_failed_card_fallback:${o.reason}` } };
+    }
     return { action: "reply", planned: action, decision, reply: AGENT_FAILED_REPLY, agent };
   }
   if (action === "reply") {
@@ -3460,7 +3464,7 @@ async function handleParseMealRequest(args: {
   const baseFoodContext = readFoodContext(body.recent_turns, body.pending_meal);
   const recentTurns = baseFoodContext.recentTurns;
   const previousItems: PreviousItem[] = Array.isArray(body.previous_items)
-    ? (body.previous_items as Array<Record<string, unknown>>).slice(0, 12).flatMap((r) => {
+    ? (body.previous_items as Array<Record<string, unknown>>).slice(0, CARD_MAX_LINES).flatMap((r) => {
       const name = typeof r?.food_name === "string" ? r.food_name.trim().slice(0, 120) : "";
       if (!name) return [];
       const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
