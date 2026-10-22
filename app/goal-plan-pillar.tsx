@@ -1,0 +1,501 @@
+/**
+ * Train / Eat / Recover as one flat screen each (.planning/phase-metrics/SPEC.md,
+ * section 9; design target shots/pillars-v1.png, src/pillars.py):
+ *   /goal-plan-pillar?pillar=train|eat|recover&seq=<phase seq>
+ * Reached from the plan rows on the Goal screen (the current phase) and on the
+ * phase screen (the phase being viewed). Same shape for all three: eyebrow
+ * (phase and week), the title, one hero number, one status line, one weekly
+ * visual, a short section of rows, and the coach's tip as a quote.
+ */
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { View, Text, Pressable, ScrollView, StyleSheet, RefreshControl } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Feather } from '@expo/vector-icons';
+import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useTheme } from '@/hooks/useTheme';
+import { track, markWorkoutSource } from '@/lib/analytics';
+import { useSupabaseClient } from '@/lib/supabase';
+import { useClerkUser } from '@/hooks/useClerkUser';
+import { loadActiveProgram, daysBetweenISO, todayLocalISO, type ActiveProgram, type ActiveProgramPhaseRow } from '@/lib/programData';
+import {
+  formatMetricValue, heroOf, STATUS_LABEL, statusFor, statusTone, type MetricStatus, type PhaseMetricRow,
+} from '@/lib/phaseMetrics';
+import {
+  DAY_LETTERS, DAY_NAMES_LONG, hrvVerdict, loadLastNights, loadRoutineSummaries, loadTodayVitals, loadWeekSessions,
+  readinessVerdict, rhrVerdict, weekdayIndex, type Night, type RoutineSummary, type TodayVitals, type WeekSessions,
+} from '@/lib/pillarData';
+import { getHealthConnectionStatus } from '@/lib/healthSync';
+import { weekPatternFor, shortDayLabel, REST } from '@/lib/weekPattern';
+import { WEEK_ORDER, fuelOn } from '@/lib/fuelDays';
+import { PILLAR_OF, type Pillar } from '@/components/program/PhaseDetail';
+import { CoachTip, Row, ScreenSkeleton, SectionLabel, Stagger, S, T, useStatusColor } from '@/components/program/finish';
+import { AICoachModal } from '@/components/ai/AICoachModal';
+import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
+import { Colors, FontWeight } from '@/constants/theme';
+import { haptics } from '@/lib/haptics';
+
+const TITLE: Record<Pillar, string> = { train: 'Train', eat: 'Eat', recover: 'Recover' };
+const SLEEP_TARGET_H = 7;
+
+export default function GoalPlanPillarScreen() {
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const { C } = useTheme();
+  const supabase = useSupabaseClient();
+  const { user } = useClerkUser();
+  const clerkId = user?.id ?? null;
+  const statusColor = useStatusColor();
+  const { pillar: pillarParam, seq: seqParam } = useLocalSearchParams<{ pillar?: string; seq?: string }>();
+  const pillar: Pillar = pillarParam === 'eat' || pillarParam === 'recover' ? pillarParam : 'train';
+  const seqAsked = Number.isFinite(parseInt(seqParam ?? '', 10)) ? parseInt(seqParam ?? '', 10) : null;
+
+  const [program, setProgram] = useState<ActiveProgram | null>(null);
+  const [week, setWeek] = useState<WeekSessions | null>(null);
+  const [routines, setRoutines] = useState<RoutineSummary[]>([]);
+  const [nights, setNights] = useState<Night[]>([]);
+  const [vitals, setVitals] = useState<TodayVitals | null>(null);
+  const [healthConnected, setHealthConnected] = useState<boolean | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [coachOpen, setCoachOpen] = useState(false);
+  const [buildSeed, setBuildSeed] = useState<{ goal?: string; note?: string } | null>(null);
+  const [buildPhaseId, setBuildPhaseId] = useState<string | null>(null);
+  const [detailRoutine, setDetailRoutine] = useState<RoutineRaw | null>(null);
+  const loadSeq = useRef(0);
+
+  const load = useCallback(async () => {
+    const n = ++loadSeq.current;
+    if (!supabase || !clerkId) { setLoading(false); return; }
+    try {
+      const p = await loadActiveProgram(supabase, clerkId);
+      if (n !== loadSeq.current) return;
+      setProgram(p);
+      const ph = p ? (seqAsked != null ? p.phases.find((x) => x.seq === seqAsked) : null) ?? (p.currentPhaseSeq != null ? p.phases.find((x) => x.seq === p.currentPhaseSeq) : null) ?? p.phases[0] ?? null : null;
+      if (pillar === 'train') {
+        const [w, r] = await Promise.all([loadWeekSessions(supabase, clerkId), loadRoutineSummaries(supabase, ph?.routines.map((x) => x.id) ?? [])]);
+        if (n !== loadSeq.current) return;
+        setWeek(w); setRoutines(r);
+      } else if (pillar === 'recover') {
+        const [ns, v] = await Promise.all([loadLastNights(supabase, clerkId), loadTodayVitals(supabase, clerkId)]);
+        if (n !== loadSeq.current) return;
+        setNights(ns); setVitals(v);
+        if (!v.anyHealthData) {
+          const status = await getHealthConnectionStatus(clerkId).catch(() => 'unknown' as const);
+          if (n === loadSeq.current) setHealthConnected(status === 'granted');
+        }
+      }
+    } catch (e) {
+      console.warn('[programs] pillar load failed', e);
+    } finally {
+      if (n === loadSeq.current) { setLoading(false); setRefreshing(false); }
+    }
+  }, [supabase, clerkId, pillar, seqAsked]);
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useEffect(() => { track('program_pillar_viewed', { pillar, seq: seqAsked }); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  const phase: ActiveProgramPhaseRow | null = program
+    ? (seqAsked != null ? program.phases.find((x) => x.seq === seqAsked) : null)
+      ?? (program.currentPhaseSeq != null ? program.phases.find((x) => x.seq === program.currentPhaseSeq) : null)
+      ?? program.phases[0] ?? null
+    : null;
+  const isCur = program != null && phase != null && phase.seq === program.currentPhaseSeq;
+  const today = todayLocalISO();
+  const todayIdx = weekdayIndex(today);
+
+  const buildSplitFor = useCallback((ph: ActiveProgramPhaseRow) => {
+    const b = ph.training_block;
+    const desc = [b?.split_type, b?.emphasis].filter(Boolean).join(', ');
+    setBuildSeed({
+      goal: b?.emphasis || b?.split_type || undefined,
+      note: `Build the training split for the "${ph.name}" phase of my current program${desc ? `: ${desc}` : ''}.${ph.training_directive ? ` ${ph.training_directive}` : ''} Follow that exact split and cadence.`,
+    });
+    setBuildPhaseId(ph.id);
+    track('program_split_build_started', { phase_seq: ph.seq, has_training_block: !!b });
+    setCoachOpen(true);
+  }, []);
+
+  const openRoutine = useCallback(async (routineId: string) => {
+    if (!supabase) return;
+    const { data } = await supabase.from('routines').select('*, routine_exercises(*, exercises(*))').eq('id', routineId).maybeSingle();
+    if (data) setDetailRoutine(data as RoutineRaw);
+    else router.push(`/workout/${routineId}` as any);
+  }, [supabase, router]);
+
+  const back = () => (router.canGoBack() ? router.back() : router.replace('/goal-plan' as any));
+
+  // ── Shared bits ────────────────────────────────────────────────────────────
+  const eyebrow = (() => {
+    if (!program || !phase) return '';
+    const name = phase.name.toUpperCase();
+    if (isCur && program.weekInPhase != null) return `${name}  ·  WEEK ${program.weekInPhase} OF ${phase.duration_weeks}`;
+    const daysIn = daysBetweenISO(program.start_date, today);
+    if (daysIn < phase.start_offset_weeks * 7) return `${name}  ·  STARTS WEEK ${phase.start_offset_weeks + 1}`;
+    return `${name}  ·  DONE`;
+  })();
+  const statusText = (s: MetricStatus) => <Text style={[T.status, { color: statusColor(statusTone(s)) }]}>{STATUS_LABEL[s]}</Text>;
+  const supporting = (ph: ActiveProgramPhaseRow) => {
+    const hero = heroOf(ph.metrics);
+    return ph.metrics.filter((m) => m.id !== hero?.id && PILLAR_OF[m.kind] === pillar);
+  };
+  const metricRow = (m: PhaseMetricRow, i: number, n: number) => {
+    const cur = m.current_value;
+    const t = formatMetricValue(m.kind, m.target_value, m.unit);
+    const v = cur == null ? null : formatMetricValue(m.kind, cur, m.unit);
+    const name = m.kind === 'steps' ? 'Steps' : m.kind === 'cardio_sessions' ? 'Cardio' : m.kind === 'sessions_per_week' ? 'Sessions' : m.kind === 'protein_days' ? 'Protein days' : m.kind === 'sleep_hours' ? 'Sleep' : m.kind === 'sets_per_muscle' ? `${m.ref?.muscle ?? 'Muscle'} sets` : m.kind === 'lift_e1rm' ? `${m.ref?.exercise_name ?? 'Lift'} e1RM` : m.kind === 'custom' ? (m.ref?.name ?? 'Your metric') : m.kind === 'bodyweight' ? 'Weight' : m.kind === 'distance' ? 'Distance' : 'Duration';
+    const rest = m.kind === 'protein_days' ? 'of 7' : m.kind === 'sleep_hours' ? `of ${t} h` : `of ${t}${m.kind === 'steps' ? '' : m.unit && m.kind !== 'sessions_per_week' && m.kind !== 'cardio_sessions' ? ` ${m.unit}` : ''}`;
+    return (
+      <Row
+        key={m.id}
+        title={name}
+        value={v ?? undefined}
+        valueRest={v == null ? (m.kind === 'custom' ? 'Not logged yet' : 'No reading yet') : rest}
+        status={{ label: STATUS_LABEL[m.status], tone: statusTone(m.status) }}
+        first={i === 0}
+        last={i === n - 1}
+        accessibilityLabel={`${name}, ${v ?? 'no reading'} ${v == null ? '' : rest}, ${STATUS_LABEL[m.status]}`}
+      />
+    );
+  };
+
+  // ── TRAIN ──────────────────────────────────────────────────────────────────
+  const renderTrain = (ph: ActiveProgramPhaseRow) => {
+    const pattern = weekPatternFor(ph.training_block);
+    const planned = ph.training_block?.days_per_week ?? (pattern ? pattern.filter((d) => d !== REST).length : null);
+    const sessionsMetric = ph.metrics.find((m) => m.kind === 'sessions_per_week') ?? null;
+    const target = sessionsMetric?.target_value ?? planned ?? null;
+    const done = week?.count ?? 0;
+    const status: MetricStatus | null = sessionsMetric?.status ?? null;
+    const split = ph.training_block?.split_type ?? null;
+    const others = supporting(ph).filter((m) => m.kind !== 'sessions_per_week');
+    return (
+      <>
+        <Stagger index={2}>
+          <View style={styles.hero}>
+            <Text style={[T.hero, { color: C.foreground }]}>{isCur ? done : (planned ?? '–')}</Text>
+            <Text style={[T.unit, { color: C.mutedFg }]}>
+              {isCur ? `of ${target ?? '–'} sessions this week` : 'sessions a week in this phase'}
+            </Text>
+          </View>
+          <Text style={[T.body, { color: C.mutedFg, marginTop: S.xs }]}>
+            {split ?? 'Your split'}{status ? <> · {statusText(status)}</> : null}
+          </Text>
+        </Stagger>
+
+        {pattern && (
+          <Stagger index={3} style={styles.section}>
+            <SectionLabel style={{ marginBottom: S.md }}>{isCur ? 'This week' : 'The week'}</SectionLabel>
+            <View style={styles.week} accessibilityRole="list">
+              {pattern.map((label, i) => {
+                const rest = label === REST;
+                const doneName = isCur ? week?.doneByDay[i] ?? null : null;
+                const isDone = doneName != null;
+                const isToday = isCur && i === todayIdx;
+                const name = rest ? 'Rest' : shortDayLabel(label);
+                const state = isDone ? 'done' : isToday ? 'today' : rest ? 'rest' : 'to come';
+                return (
+                  <View key={i} style={styles.day} accessibilityLabel={`${DAY_NAMES_LONG[i]}, ${name}, ${state}`}>
+                    <Text style={[T.dayLetter, { color: C.textDim }]}>{DAY_LETTERS[i]}</Text>
+                    <View
+                      style={[
+                        styles.dot,
+                        isDone ? { backgroundColor: Colors.primary }
+                          : isToday ? { backgroundColor: 'transparent', borderWidth: 2, borderColor: Colors.primary }
+                          : rest ? { backgroundColor: 'transparent' }
+                          : { backgroundColor: C.card },
+                      ]}
+                    >
+                      {isDone ? <Feather name="check" size={16} color={Colors.primaryFg} />
+                        : rest ? <Text style={[T.dayName, { color: C.textDim }]}>–</Text>
+                        : <Text style={[T.dayName, { color: isToday ? C.accentText : C.foreground, fontWeight: FontWeight.bold }]}>{name.charAt(0)}</Text>}
+                    </View>
+                    <Text style={[T.dayName, { color: rest ? C.textDim : C.mutedFg }]} numberOfLines={1}>{name}</Text>
+                  </View>
+                );
+              })}
+            </View>
+          </Stagger>
+        )}
+
+        {others.length > 0 && (
+          <Stagger index={4} style={styles.section}>
+            <SectionLabel style={{ marginBottom: S.xs }}>Targets</SectionLabel>
+            {others.map((m, i) => metricRow(m, i, others.length))}
+          </Stagger>
+        )}
+
+        <Stagger index={5} style={styles.section}>
+          <SectionLabel style={{ marginBottom: S.xs }}>Workouts</SectionLabel>
+          {routines.length > 0 ? (
+            routines.map((r, i) => (
+              <Row
+                key={r.id}
+                title={r.name}
+                valueRest={`${r.exercises} exercise${r.exercises === 1 ? '' : 's'}`}
+                onPress={() => openRoutine(r.id)}
+                first={i === 0}
+                last={i === routines.length - 1}
+                accessibilityLabel={`${r.name}, ${r.exercises} exercises`}
+              />
+            ))
+          ) : (
+            <View style={{ gap: S.md, marginTop: S.sm }}>
+              <Text style={[T.body, { color: C.mutedFg }]}>
+                {isCur
+                  ? `No sessions yet for ${ph.name}, and your next one depends on them. I build the split from this phase's plan, about a minute.`
+                  : `No sessions yet for ${ph.name}. I build the split from this phase's plan, about a minute.`}
+              </Text>
+              <Pressable
+                onPress={() => { haptics.tap(); buildSplitFor(ph); }}
+                style={({ pressed }) => [styles.primary, { backgroundColor: Colors.primary, opacity: pressed ? 0.85 : 1 }]}
+                accessibilityRole="button"
+                accessibilityLabel="Build this phase's workouts"
+              >
+                <Text style={[T.rowTitle, { color: Colors.primaryFg, fontWeight: FontWeight.bold }]}>Build this phase's workouts</Text>
+              </Pressable>
+            </View>
+          )}
+        </Stagger>
+        <Stagger index={6}><CoachTip text={ph.training_directive} /></Stagger>
+      </>
+    );
+  };
+
+  // ── EAT ────────────────────────────────────────────────────────────────────
+  const renderEat = (ph: ActiveProgramPhaseRow) => {
+    const protein = ph.metrics.find((m) => m.kind === 'protein_days') ?? null;
+    const kcal = ph.diet_calorie_target;
+    const fuel = ph.diet_fuel_days && ph.diet_fuel_days.length > 0 ? ph.diet_fuel_days : null;
+    const fuelKcal = fuel ? Math.max(...fuel.map((f) => f.kcal)) : 0;
+    const pattern = weekPatternFor(ph.training_block);
+    const macros: { key: string; g: number | null; color: string; name: string }[] = [
+      { key: 'p', g: ph.diet_protein_g, color: C.macro.protein, name: 'Protein' },
+      { key: 'c', g: ph.diet_carb_g, color: C.macro.carbs, name: 'Carbs' },
+      { key: 'f', g: ph.diet_fat_g, color: C.macro.fat, name: 'Fat' },
+    ];
+    const others = supporting(ph).filter((m) => m.kind !== 'protein_days');
+    return (
+      <>
+        <Stagger index={2}>
+          <View style={styles.hero}>
+            <Text style={[T.hero, { color: C.foreground }]}>{kcal != null ? kcal.toLocaleString('en-US') : '–'}</Text>
+            <Text style={[T.unit, { color: C.mutedFg }]}>kcal a day</Text>
+          </View>
+          <Text style={[T.body, { color: C.mutedFg, marginTop: S.xs }]}>
+            {protein
+              ? <>Protein {protein.current_value != null ? `${formatMetricValue('protein_days', protein.current_value)} of 7 days` : 'not logged yet'} · {statusText(protein.status)}</>
+              : ph.diet_protein_g != null ? `${ph.diet_protein_g} g protein a day` : 'Log your food and I hold the line.'}
+          </Text>
+        </Stagger>
+
+        {macros.some((m) => m.g != null) && (
+          <Stagger index={3} style={styles.section}>
+            <SectionLabel style={{ marginBottom: S.md }}>Daily targets</SectionLabel>
+            <View style={styles.macros}>
+              {macros.filter((m) => m.g != null).map((m) => (
+                <View key={m.key} style={{ flex: 1 }} accessibilityLabel={`${m.name} ${m.g} grams`}>
+                  <Text style={[T.big, { color: C.foreground }]}>{m.g}g</Text>
+                  <Text style={[T.status, { color: C.mutedFg, fontWeight: FontWeight.medium, marginTop: 2 }]}>{m.name}</Text>
+                  <View style={[styles.macroLine, { backgroundColor: m.color }]} />
+                </View>
+              ))}
+            </View>
+          </Stagger>
+        )}
+
+        {fuel && (
+          <Stagger index={4} style={styles.section}>
+            <SectionLabel style={{ marginBottom: S.md }}>Fuel days  ·  +{fuelKcal} kcal as carbs</SectionLabel>
+            <View style={styles.week} accessibilityRole="list">
+              {WEEK_ORDER.map((dow, i) => {
+                const f = fuelOn(fuel, dow);
+                const label = pattern ? pattern[i] : null;
+                const rest = label === REST;
+                const name = label ? (rest ? 'Rest' : shortDayLabel(label)) : (f ? 'Fuel' : '');
+                return (
+                  <View key={dow} style={styles.day} accessibilityLabel={`${DAY_NAMES_LONG[i]}${f ? `, fuel day, plus ${f.kcal} calories` : ''}`}>
+                    <Text style={[T.dayLetter, { color: C.textDim }]}>{DAY_LETTERS[i]}</Text>
+                    <View style={[styles.dot, rest && !f ? { backgroundColor: 'transparent' } : { backgroundColor: C.card }, f && { borderWidth: 2, borderColor: Colors.primary }]}>
+                      {rest && !f
+                        ? <Text style={[T.dayName, { color: C.textDim }]}>–</Text>
+                        : <Text style={[T.dayName, { color: f ? C.accentText : C.foreground, fontWeight: FontWeight.bold }]}>{name ? name.charAt(0) : '+'}</Text>}
+                    </View>
+                    <Text style={[T.dayName, { color: rest ? C.textDim : C.mutedFg }]} numberOfLines={1}>{name}</Text>
+                  </View>
+                );
+              })}
+            </View>
+          </Stagger>
+        )}
+
+        {others.length > 0 && (
+          <Stagger index={5} style={styles.section}>
+            <SectionLabel style={{ marginBottom: S.xs }}>Targets</SectionLabel>
+            {others.map((m, i) => metricRow(m, i, others.length))}
+          </Stagger>
+        )}
+        <Stagger index={6}><CoachTip text={ph.diet_directive} /></Stagger>
+      </>
+    );
+  };
+
+  // ── RECOVER ────────────────────────────────────────────────────────────────
+  const renderRecover = (ph: ActiveProgramPhaseRow) => {
+    const sleepMetric = ph.metrics.find((m) => m.kind === 'sleep_hours') ?? null;
+    const target = sleepMetric?.target_value ?? SLEEP_TARGET_H;
+    const slept = nights.filter((n) => n.hours != null);
+    const avg = slept.length > 0 ? slept.reduce((a, n) => a + (n.hours ?? 0), 0) / slept.length : null;
+    const atTarget = slept.filter((n) => (n.hours ?? 0) >= target).length;
+    const status: MetricStatus | null = sleepMetric?.status
+      ?? (avg != null ? statusFor({ kind: 'sleep_hours', direction: 'up', target_value: target, current_value: avg, progress: 0.5 }) : null);
+    const noHealth = vitals != null && !vitals.anyHealthData && slept.length === 0;
+    const maxH = Math.max(target, ...slept.map((n) => n.hours ?? 0), 1);
+    const others = supporting(ph).filter((m) => m.kind !== 'sleep_hours');
+    return (
+      <>
+        <Stagger index={2}>
+          <View style={styles.hero}>
+            <Text style={[T.hero, { color: C.foreground }]}>{avg != null ? avg.toFixed(1) : '–'}</Text>
+            <Text style={[T.unit, { color: C.mutedFg }]}>h sleep a night</Text>
+          </View>
+          <Text style={[T.body, { color: C.mutedFg, marginTop: S.xs }]}>
+            {avg != null
+              ? <>{atTarget} of {slept.length} night{slept.length === 1 ? '' : 's'} at {target}h+{status ? <> · {statusText(status)}</> : null}</>
+              : noHealth ? 'No nights recorded yet.' : 'No sleep in the last seven nights.'}
+          </Text>
+        </Stagger>
+
+        {noHealth ? (
+          <Stagger index={3} style={styles.section}>
+            <Text style={[T.body, { color: C.mutedFg }]}>
+              {healthConnected ? 'Health is connected; the first night shows up after your next sync.' : 'Connect Apple Health to see sleep and readiness.'}
+            </Text>
+            {!healthConnected && (
+              <Pressable
+                onPress={() => { haptics.selection(); router.push('/health' as any); }}
+                style={({ pressed }) => [styles.primary, { backgroundColor: C.muted, marginTop: S.md, opacity: pressed ? 0.85 : 1 }]}
+                accessibilityRole="button"
+                accessibilityLabel="Connect Health"
+              >
+                <Text style={[T.rowTitle, { color: C.foreground, fontWeight: FontWeight.semibold }]}>Connect Health</Text>
+              </Pressable>
+            )}
+          </Stagger>
+        ) : (
+          <>
+            {vitals && (vitals.readiness != null || vitals.rhr || vitals.hrv) && (
+              <Stagger index={3} style={styles.section}>
+                <SectionLabel style={{ marginBottom: S.xs }}>Today</SectionLabel>
+                {(() => {
+                  const rows: { title: string; value: string; rest?: string; status: { label: string; tone: 'ok' | 'warn' | 'dim' } }[] = [];
+                  if (vitals.readiness != null) {
+                    const v = readinessVerdict(vitals.readiness);
+                    rows.push({ title: 'Readiness', value: String(Math.round(vitals.readiness)), status: { label: v.text, tone: v.band === 'high' ? 'ok' : v.band === 'low' ? 'warn' : 'dim' } });
+                  }
+                  if (vitals.rhr) { const v = rhrVerdict(vitals.rhr); rows.push({ title: 'Resting heart rate', value: String(Math.round(vitals.rhr.value)), rest: 'bpm', status: { label: v.text, tone: v.tone } }); }
+                  if (vitals.hrv) { const v = hrvVerdict(vitals.hrv); rows.push({ title: 'HRV', value: String(Math.round(vitals.hrv.value)), rest: 'ms', status: { label: v.text, tone: v.tone } }); }
+                  return rows.map((r, i) => (
+                    <Row key={r.title} title={r.title} value={r.value} valueRest={r.rest} status={r.status} first={i === 0} last={i === rows.length - 1}
+                      accessibilityLabel={`${r.title} ${r.value}${r.rest ? ` ${r.rest}` : ''}, ${r.status.label}`} />
+                  ));
+                })()}
+              </Stagger>
+            )}
+
+            <Stagger index={4} style={styles.section}>
+              <SectionLabel style={{ marginBottom: S.md }}>Last 7 nights</SectionLabel>
+              <View style={[styles.sleep, { borderColor: C.borderLight }]} accessibilityRole="list">
+                {nights.map((n) => {
+                  const i = weekdayIndex(n.day);
+                  const h = n.hours;
+                  const barH = h == null ? 6 : Math.max(8, Math.round((h / maxH) * 72));
+                  const met = h != null && h >= target;
+                  return (
+                    <View key={n.day} style={styles.night} accessibilityLabel={`${DAY_NAMES_LONG[i]}, ${h == null ? 'no sleep recorded' : `${h.toFixed(1)} hours${met ? ', at target' : ''}`}`}>
+                      <Text style={[T.dayLetter, { color: C.mutedFg }]}>{h == null ? '' : h.toFixed(1)}</Text>
+                      <View style={[styles.bar, { height: barH, backgroundColor: h == null ? C.muted : met ? Colors.primary : C.textDim }]} />
+                      <Text style={[T.dayLetter, { color: C.textDim }]}>{DAY_LETTERS[i]}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            </Stagger>
+
+            {others.length > 0 && (
+              <Stagger index={5} style={styles.section}>
+                <SectionLabel style={{ marginBottom: S.xs }}>Targets</SectionLabel>
+                {others.map((m, i) => metricRow(m, i, others.length))}
+              </Stagger>
+            )}
+          </>
+        )}
+        <Stagger index={6}><CoachTip text={ph.readiness_directive} /></Stagger>
+      </>
+    );
+  };
+
+  return (
+    <View style={[styles.root, { backgroundColor: C.background, paddingTop: insets.top }]}>
+      <View style={styles.nav}>
+        <Pressable onPress={back} hitSlop={12} style={styles.navBtn} accessibilityRole="button" accessibilityLabel="Back">
+          <Feather name="chevron-left" size={24} color={C.foreground} />
+        </Pressable>
+      </View>
+      <ScrollView
+        contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: S.xs, paddingBottom: insets.bottom + S.xxl }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={C.mutedFg} />}
+      >
+        {loading ? (
+          <ScreenSkeleton variant="pillar" />
+        ) : !program || !phase ? (
+          <View style={{ paddingTop: S.xl }}>
+            <Text style={[T.title, { color: C.foreground }]}>{TITLE[pillar]}</Text>
+            <Text style={[T.body, { color: C.mutedFg, marginTop: S.md }]}>No program yet. Build one from Goal & Plan and this screen fills in.</Text>
+          </View>
+        ) : (
+          <>
+            <Stagger index={0}><Text style={[T.section, { color: C.mutedFg }]}>{eyebrow}</Text></Stagger>
+            <Stagger index={1}><Text style={[T.title, { color: C.foreground, marginTop: S.xs }]}>{TITLE[pillar]}</Text></Stagger>
+            {pillar === 'train' ? renderTrain(phase) : pillar === 'eat' ? renderEat(phase) : renderRecover(phase)}
+          </>
+        )}
+      </ScrollView>
+
+      <RoutineDetailSheet
+        routine={detailRoutine}
+        onClose={() => setDetailRoutine(null)}
+        onStartWorkout={() => {
+          const id = detailRoutine?.id;
+          setDetailRoutine(null);
+          if (id) { markWorkoutSource('program'); router.push(`/workout/${id}` as any); }
+        }}
+      />
+      <AICoachModal
+        visible={coachOpen}
+        source="goal_plan"
+        onClose={() => { setCoachOpen(false); setBuildSeed(null); setBuildPhaseId(null); load(); }}
+        initialScreen={buildSeed ? 'plan' : 'program'}
+        planSeed={buildSeed ?? undefined}
+        linkRoutinesToPhaseId={buildPhaseId ?? undefined}
+        onRoutineCreated={() => load()}
+        onProgramApplied={() => load()}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  nav: { height: 44, justifyContent: 'center', paddingHorizontal: S.lg },
+  navBtn: { width: 44, height: 44, justifyContent: 'center' },
+  hero: { marginTop: S.xl + 2, flexDirection: 'row', alignItems: 'baseline', gap: S.sm },
+  section: { marginTop: S.xxl + 2 },
+  week: { flexDirection: 'row', justifyContent: 'space-between' },
+  day: { width: 44, alignItems: 'center', gap: S.sm },
+  dot: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  macros: { flexDirection: 'row', gap: S.lg },
+  macroLine: { height: 4, borderRadius: 2, marginTop: S.sm + 2 },
+  sleep: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', height: 118, borderBottomWidth: 1, borderStyle: 'dashed', paddingBottom: 0 },
+  night: { width: 40, alignItems: 'center', gap: S.xs + 2 },
+  bar: { width: 26, borderRadius: 7 },
+  primary: { height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+});

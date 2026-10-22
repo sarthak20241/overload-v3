@@ -226,6 +226,8 @@ export type AnalyticsEvent =
   | 'program_ended'
   | 'program_phase_viewed'
   | 'program_phase_opened'
+  | 'program_pillar_opened'
+  | 'program_pillar_viewed'
   | 'program_metrics_save_failed'
   | 'program_metric_logged'
   | 'goal_metrics_viewed'

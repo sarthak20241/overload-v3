@@ -169,3 +169,47 @@ everything the first build showed for a phase, moved: the numbers-only stepper,
 job line, Drona's line, Train / Eat / Recover with the week strip, fuel marks,
 macro bar, tracked rows with status, routines, the rules and the build call
 to action (`components/program/PhaseDetail.tsx`).
+
+
+## 9. Pillar screens and the finish pass (approved 2026-10-22)
+
+Train, Eat and Recover are three individual, flat screens. Design target:
+`shots/pillars-v1.png` (all three), `shots/pillar-train.png`, `shots/pillar-eat.png`,
+`shots/pillar-recover.png`; exact sizes, colours and spacing in `src/pillars.py`.
+
+- One route, `app/goal-plan-pillar.tsx`: `/goal-plan-pillar?pillar=train|eat|recover&seq=<phase>`.
+  The main screen's plan rows open it for the current phase; the phase
+  screen's rows open it for the phase being viewed. The phase screen keeps
+  the numbers-only stepper, name and weeks, job bar and coach line, then the
+  same three plan rows; its boxed pillar cards are gone.
+- Every pillar screen, same shape, no boxes: eyebrow "<PHASE> · WEEK 4 OF 5"
+  (a phase to come: "STARTS WEEK 7"), the title, one hero number with its
+  unit, one status line, one weekly visual, a short section of rows, and the
+  coach's tip as a quote with a 3px lime bar.
+- Train: sessions this week of the target; the seven days from the week
+  pattern (done = lime with a check, from finished workouts this week; today
+  ringed; rest a dash; to come the session's initial); TARGETS rows for the
+  other metrics; WORKOUTS rows per routine with the exercise count, opening
+  the routine sheet; no routines = the lime build button and one coach line.
+  The training directive is the tip.
+- Eat: kcal a day; protein metric with status; DAILY TARGETS as three big
+  numbers with a macro-coloured line; FUEL DAYS circles with a lime ring on
+  the fuel days (hidden when there are none). The diet directive is the tip.
+- Recover: average sleep over the last seven nights; nights at the target
+  with status; TODAY rows (readiness and its verdict, resting heart rate
+  low/normal/high, HRV up/flat/down, each only when it exists); LAST 7 NIGHTS
+  bars (lime at target, grey under, a dashed baseline). With no Health data:
+  one calm line and the connect action. The readiness directive is the tip.
+
+The finish pass (`components/program/finish.tsx`), applied to the main, phase
+and pillar screens: skeleton blocks instead of spinners; one spacing scale
+(4/8/12/16/24/32) and one type scale (title 34/700, hero 56/700 tabular,
+unit 18/500 muted, section 12/600 uppercase, row title 16/500, row value
+15/500, status 13/600, meta 14/500); rows 52pt with hairline dividers, a
+pressed state, a chevron only when they navigate; a short staggered fade on
+first render that respects reduce motion; a light haptic on stepper and row
+taps (expo-haptics is in the shipped 1.0.1 binary); tabular numbers with
+separators and one decimal for kg and hours; empty states in the coach's
+voice; bottom safe-area padding and pull-to-refresh. No new native
+dependency and no Skia: react-native-svg and Reanimated only, so the whole
+thing stays OTA-able to 1.0.1.
