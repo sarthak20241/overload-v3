@@ -2,7 +2,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { useMemo, useRef } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { hasClerkKey } from '@/hooks/useClerkUser';
-import { FRESH_TOKEN_BUDGET_MS, sendWithFreshTokenRetry, sharedInFlight, tokenWithin } from '@/lib/authRetry';
+import { FRESH_TOKEN_BUDGET_MS, sendWithFreshTokenRetry, sharedInFlight, tokenWithin, tokenWithinTimed } from '@/lib/authRetry';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'placeholder';
@@ -125,29 +125,7 @@ export function useSupabaseClient(): SupabaseClient {
           // landed and cached. TOKEN_BUDGET_MS buys that refresh room to
           // finish while still bounding the wait, and it stays well under the
           // time a parse itself takes, so it costs a healthy request nothing.
-          const tokenWithinBudget = async (): Promise<{ token: string | null; timedOut: boolean }> => {
-            let timedOut = false;
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            try {
-              const token = await Promise.race([
-                getTokenRef.current(),
-                new Promise<null>((resolve) => {
-                  timer = setTimeout(() => {
-                    timedOut = true;
-                    resolve(null);
-                  }, TOKEN_BUDGET_MS);
-                }),
-              ]);
-              return { token, timedOut };
-            } catch {
-              return { token: null, timedOut };
-            } finally {
-              // A token that arrived in time must not leave a timer behind to
-              // mark this request as timed out later.
-              clearTimeout(timer);
-            }
-          };
-          const { token, timedOut } = await tokenWithinBudget();
+          const { token, timedOut } = await tokenWithinTimed(() => getTokenRef.current(), TOKEN_BUDGET_MS);
           // No token (offline + expired token, or getToken timed out): FAIL the
           // request rather than send it unauthenticated. An anon request passes
           // RLS as "no rows" and returns empty data with NO error — which screens

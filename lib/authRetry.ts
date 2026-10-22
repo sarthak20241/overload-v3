@@ -112,25 +112,40 @@ export function sharedInFlight<T>(fn: () => Promise<T>): () => Promise<T> {
 export const FRESH_TOKEN_BUDGET_MS = 10000;
 
 /**
- * `getToken`, but null after `ms` or on a throw instead of hanging or failing.
- * Clerk blocks on a refresh it cannot finish offline; without a bound the
- * request that is waiting to retry would wait with it.
+ * `getToken`, but null after `ms` or on a throw instead of hanging or failing,
+ * with `timedOut` saying which. Clerk blocks on a refresh it cannot finish
+ * offline; without a bound the request waiting on it would wait with it.
  */
+export async function tokenWithinTimed(
+  getToken: () => Promise<string | null>,
+  ms: number,
+): Promise<{ token: string | null; timedOut: boolean }> {
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const token = await Promise.race([
+      getToken(),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          resolve(null);
+        }, ms);
+      }),
+    ]);
+    return { token, timedOut };
+  } catch {
+    return { token: null, timedOut };
+  } finally {
+    // A token that arrived in time must not leave a timer behind to mark the
+    // call as timed out later.
+    clearTimeout(timer);
+  }
+}
+
+/** `tokenWithinTimed` for callers that only need the token. */
 export async function tokenWithin(
   getToken: () => Promise<string | null>,
   ms: number,
 ): Promise<string | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      getToken(),
-      new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), ms);
-      }),
-    ]);
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+  return (await tokenWithinTimed(getToken, ms)).token;
 }

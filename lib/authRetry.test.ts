@@ -7,7 +7,7 @@
 // limits that keep a really signed-out user from looping.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { freshTokenAfterExpiry, isExpiredTokenReply, sendWithFreshTokenRetry, sharedInFlight, tokenWithin } from "./authRetry.ts";
+import { freshTokenAfterExpiry, isExpiredTokenReply, sendWithFreshTokenRetry, sharedInFlight, tokenWithin, tokenWithinTimed } from "./authRetry.ts";
 
 // The exact bodies the two servers send for an expired token.
 const EDGE_EXPIRED = JSON.stringify({
@@ -150,4 +150,10 @@ Deno.test("the first reply's body is released before the retry", async () => {
   const res = await sendWithFreshTokenRetry(() => Promise.resolve(sends.shift()!), "stale", () => Promise.resolve("fresh"));
   assertEquals(res.status, 200);
   assertEquals(first.bodyUsed || cancelled, true);
+});
+
+Deno.test("tokenWithinTimed: says whether the null came from the timeout", async () => {
+  assertEquals(await tokenWithinTimed(() => Promise.resolve("t"), 50), { token: "t", timedOut: false });
+  assertEquals(await tokenWithinTimed(() => new Promise<string | null>(() => {}), 20), { token: null, timedOut: true });
+  assertEquals(await tokenWithinTimed(() => Promise.resolve(null), 50), { token: null, timedOut: false });
 });
