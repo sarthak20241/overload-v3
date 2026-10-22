@@ -17,7 +17,7 @@ import { BasicInfoProvider } from '@/hooks/useBasicInfo';
 import { PreferencesProvider } from '@/hooks/usePreferences';
 import { hydrateGuestStore } from '@/lib/guestStore';
 import { hydrateActiveWorkout } from '@/lib/activeWorkoutPersistence';
-import { SessionRefreshGate } from '@/components/SessionRefreshGate';
+import { holdSplashForGate, SessionRefreshGate } from '@/components/SessionRefreshGate';
 import { ClerkSupabaseBridge } from '@/components/ClerkSupabaseBridge';
 import { RevenueCatBridge } from '@/components/RevenueCatBridge';
 import { SyncProvider } from '@/components/SyncProvider';
@@ -26,7 +26,6 @@ import { AnalyticsBridge } from '@/components/AnalyticsBridge';
 import { posthog } from '@/lib/analytics';
 import { PortalProvider } from '@/components/ui/Portal';
 import { PostHogProvider } from 'posthog-react-native';
-import { SplashScreen } from 'expo-router';
 
 // Required for OAuth flows to complete when the auth session returns.
 // Must run at app boot, before any auth screen mounts.
@@ -51,12 +50,8 @@ const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? '';
 
 // SessionRefreshGate renders nothing until Clerk has loaded and any session
 // swap is over (seconds, at most). Keep the native splash over that wait
-// instead of a blank screen; the gate hides it when done. The timer is only a
-// backstop so no path can leave the splash up for good.
-if (publishableKey) {
-  SplashScreen.preventAutoHideAsync().catch(() => {});
-  setTimeout(() => SplashScreen.hideAsync().catch(() => {}), 60_000);
-}
+// instead of a blank screen; the gate hides it when done.
+if (publishableKey) holdSplashForGate();
 
 function AppInner() {
   const { C } = useTheme();

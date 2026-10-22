@@ -48,6 +48,17 @@ const TICKET_FETCH_MS = 8000;
 /** Null when the request never got an answer (offline, aborted): a skip.
  *  Throws when the server answered with an error, so a broken deploy (no
  *  CLERK_SECRET_KEY, a verifier bug) shows up as a failure, not a skip. */
+// A backstop so no path can leave the splash up for good. Cleared when the
+// gate hides the splash itself, so it never hides one a later caller holds.
+let splashBackstop: ReturnType<typeof setTimeout> | undefined;
+
+/** Hold the native splash until the gate is done. Call once at module load,
+ *  before the first render, and only when the gate will be mounted. */
+export function holdSplashForGate(): void {
+  SplashScreen.preventAutoHideAsync().catch(() => {});
+  splashBackstop = setTimeout(() => SplashScreen.hideAsync().catch(() => {}), 60_000);
+}
+
 async function fetchTicket(token: string): Promise<{ ticket: string; userId: string } | null> {
   const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -203,7 +214,9 @@ export function SessionRefreshGate({ children }: { children: ReactNode }) {
   }, [done, isLoaded, isSignedIn, userId, session, getToken, signOut, clerk]);
 
   useEffect(() => {
-    if (done) SplashScreen.hideAsync().catch(() => {});
+    if (!done) return;
+    clearTimeout(splashBackstop);
+    SplashScreen.hideAsync().catch(() => {});
   }, [done]);
 
   return done ? <>{children}</> : null;
