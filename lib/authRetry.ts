@@ -107,6 +107,8 @@ export async function sendStreamWithFreshTokenRetry<R extends { status: number; 
   try {
     body = await first.text();
   } catch {
+    // No body to read, so no proof the token expired: no retry. The caller
+    // takes this 401 as a plain failure, as it would without this helper.
     return first;
   }
   const next = await freshTokenAfterExpiry(first.status, body, token, freshToken);
