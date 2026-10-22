@@ -7,7 +7,7 @@
 // limits that keep a really signed-out user from looping.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { freshTokenAfterExpiry, isExpiredTokenReply, sendWithFreshTokenRetry } from "./authRetry.ts";
+import { freshTokenAfterExpiry, isExpiredTokenReply, sendWithFreshTokenRetry, sharedInFlight } from "./authRetry.ts";
 
 // The exact bodies the two servers send for an expired token.
 const EDGE_EXPIRED = JSON.stringify({
@@ -106,4 +106,22 @@ Deno.test("freshTokenAfterExpiry: a fresh token only for an expired 401", async 
   assertEquals(await freshTokenAfterExpiry(401, EDGE_EXPIRED, "stale", () => Promise.resolve("stale")), null);
   assertEquals(await freshTokenAfterExpiry(401, EDGE_EXPIRED, "stale", () => Promise.resolve(null)), null);
   assertEquals(await freshTokenAfterExpiry(401, EDGE_EXPIRED, "stale", () => Promise.reject(new Error("offline"))), null);
+});
+
+Deno.test("sharedInFlight: parallel 401s share one fresh-token fetch", async () => {
+  let calls = 0;
+  let release: (v: string) => void = () => {};
+  const fresh = sharedInFlight(() => {
+    calls++;
+    return new Promise<string>((resolve) => (release = resolve));
+  });
+  const both = Promise.all([fresh(), fresh(), fresh()]);
+  release("fresh");
+  assertEquals(await both, ["fresh", "fresh", "fresh"]);
+  assertEquals(calls, 1);
+  // Settled: the next call asks again.
+  const later = fresh();
+  release("fresher");
+  assertEquals(await later, "fresher");
+  assertEquals(calls, 2);
 });

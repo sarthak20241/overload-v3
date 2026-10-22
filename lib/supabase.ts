@@ -2,7 +2,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { useMemo, useRef } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { hasClerkKey } from '@/hooks/useClerkUser';
-import { sendWithFreshTokenRetry } from '@/lib/authRetry';
+import { sendWithFreshTokenRetry, sharedInFlight } from '@/lib/authRetry';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'placeholder';
@@ -101,6 +101,23 @@ export function useSupabaseClient(): SupabaseClient {
   getTokenRef.current = getToken;
 
   return useMemo(() => {
+    // One skip-cache token fetch for every request that 401s on the same
+    // stale token at once (lib/authRetry.ts). Bounded like any token read.
+    const sharedFreshToken = sharedInFlight(async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          getTokenRef.current({ skipCache: true }) as Promise<string | null>,
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), TOKEN_BUDGET_MS);
+          }),
+        ]);
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timer);
+      }
+    });
     return createClient(supabaseUrl, supabaseAnonKey, {
       global: {
         fetch: async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -120,16 +137,12 @@ export function useSupabaseClient(): SupabaseClient {
           // landed and cached. TOKEN_BUDGET_MS buys that refresh room to
           // finish while still bounding the wait, and it stays well under the
           // time a parse itself takes, so it costs a healthy request nothing.
-          // Each call reports its own timeout, so the retry's token fetch can
-          // never change how the first one is reported.
-          const tokenWithinBudget = async (
-            opts?: { skipCache: boolean },
-          ): Promise<{ token: string | null; timedOut: boolean }> => {
+          const tokenWithinBudget = async (): Promise<{ token: string | null; timedOut: boolean }> => {
             let timedOut = false;
             let timer: ReturnType<typeof setTimeout> | undefined;
             try {
               const token = await Promise.race([
-                getTokenRef.current(opts),
+                getTokenRef.current(),
                 new Promise<null>((resolve) => {
                   timer = setTimeout(() => {
                     timedOut = true;
@@ -166,7 +179,9 @@ export function useSupabaseClient(): SupabaseClient {
           }
           // An expired token from Clerk's cache gets one retry with a fresh
           // one (lib/authRetry.ts), so a stale cache never reads as a dead
-          // session.
+          // session. The retry re-sends init.body as is: fine for the string
+          // bodies supabase-js sends, but a one-shot stream body could not be
+          // sent twice.
           return sendWithFreshTokenRetry(
             (t) => {
               const headers = new Headers(init.headers);
@@ -174,7 +189,7 @@ export function useSupabaseClient(): SupabaseClient {
               return fetch(input as any, { ...init, headers });
             },
             token,
-            async () => (await tokenWithinBudget({ skipCache: true })).token,
+            sharedFreshToken,
           );
         },
       },

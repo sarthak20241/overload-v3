@@ -80,3 +80,23 @@ export async function sendWithFreshTokenRetry(
   const next = await freshTokenAfterExpiry(first.status, body, token, freshToken);
   return next ? send(next) : first;
 }
+
+/**
+ * Wrap `fn` so calls made while one is still running share its promise.
+ *
+ * After the app comes back from the background, a screen fires many requests
+ * at once with the same stale token, and every one of them 401s. Without this,
+ * each would ask Clerk for its own fresh token: a burst of identical fetches.
+ * Once the shared call settles, the next call starts a new one.
+ */
+export function sharedInFlight<T>(fn: () => Promise<T>): () => Promise<T> {
+  let inFlight: Promise<T> | null = null;
+  return () => {
+    if (!inFlight) {
+      inFlight = fn().finally(() => {
+        inFlight = null;
+      });
+    }
+    return inFlight;
+  };
+}
