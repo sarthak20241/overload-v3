@@ -6001,6 +6001,9 @@ async function runParseMealOnce(
       previousItems: [],
       recentTurns: [],
       savedMeals: undefined,
+      // The pick was turned down with the meal; the rerun must not read it
+      // as a meal the model was never shown.
+      savedHint: null,
     });
     if (fresh.parsed) {
       fresh.parsed = {
@@ -6010,7 +6013,14 @@ async function runParseMealOnce(
       };
     }
     // The call that noticed the rejection was billed too: keep its cost.
-    fresh.steps = [...result.steps, ...fresh.steps];
+    const h = hint.peek();
+    fresh.steps = [
+      ...result.steps,
+      ...(h
+        ? [{ iter: 0, tool: "saved_hint", input: { id: h.id, name: h.name, confidence: h.confidence, pointer: hint.pointer }, result: "rejected" }]
+        : []),
+      ...fresh.steps,
+    ];
     fresh.tool_calls = [...result.tool_calls, ...fresh.tool_calls];
     fresh.iterations += result.iterations;
     for (const k of Object.keys(fresh.usage) as (keyof ParseMealResult["usage"])[]) {
@@ -6555,6 +6565,7 @@ async function runParseMealCore(
   // The user's saved meals come out HERE, before any lookup can run on them.
   // Nothing past this line sees a saved item: no estimate, no catalog, no web.
   if (saved.length > 0 && ext.requests_research !== true) {
+    const rejects = rejectsSavedMeal(input.text);
     extItems = extItems.filter((it) => {
       // Do not reinterpret a card's existing food as a saved meal just because
       // extraction attached a saved_meal tag while changing its portion.
@@ -6564,7 +6575,8 @@ async function runParseMealCore(
       if (existing) return true;
       const meal = findSavedMeal(it.savedMeal, saved);
       if (!meal) {
-        const offer = suggestSavedMeal(it.name, saved);
+        // No swap offer of any kind when the words turn saved meals down.
+        const offer = rejects ? null : suggestSavedMeal(it.name, saved);
         if (offer) suggestions.push({ food_name: it.name, saved_id: offer.id, saved_name: offer.name });
         return true;
       }
@@ -6583,7 +6595,7 @@ async function runParseMealCore(
     // router is waited on only up to the cap, never a log held for it, and
     // only when an offer could come of it: a line to put it on, and words
     // that do not turn saved meals down.
-    const pick = fresh.length > 0 && !rejectsSavedMeal(input.text)
+    const pick = fresh.length > 0 && !rejects
       ? await hint.wait(Math.min(deps.timeoutMs, HINT_WAIT_MS))
       : null;
     if (pick && !hits.some((h) => h.meal.id === pick.id) && !suggestions.some((s) => s.saved_id === pick.id)) {

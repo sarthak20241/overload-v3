@@ -583,3 +583,45 @@ Deno.test("the agent gets the pick as one line, with the query to fetch that mea
   assert(text.endsWith("my usual oats"), text);
   assertEquals(openingText({ text: "my usual oats", savedHint: null }, null), "my usual oats");
 });
+
+Deno.test("words that turn saved meals down stop the plain word check's offer too", async () => {
+  // "oats" alone would get the "Oats with milk" swap from the word check;
+  // the same words that block the router's pick must block that as well,
+  // or the trace calls a turned-down meal "offered".
+  const r = await runParseMeal(
+    stub([], [{ ...OATMEAL_ITEM, name: "oats" }]),
+    { ...INPUT, text: "oats, not from my saved meals", mode: "fast", savedMeals: [OATS], savedHint: HINT },
+  );
+  assertEquals(r.parsed!.items.map((i) => [i.food_name, i.source]), [["oats", "estimate"]]);
+  assertEquals(r.saved_suggestions, undefined);
+  assertEquals(r.steps.find((s) => s.tool === "saved_hint")?.result, "rejected");
+});
+
+Deno.test("rejecting the saved meal on a card: the pick is traced as rejected, never as unlisted", async () => {
+  let call = 0;
+  const deps = stub([], []);
+  const inner = deps.fetchFn!;
+  deps.fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+    call++;
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    const name = body.tool_choice?.name;
+    const input = call === 1
+      ? { declined: false, rejects_saved: true, corrects_previous: true, items: [] }
+      : { declined: false, meal_type_from_text: null, items: [OATMEAL_ITEM] };
+    await inner(url, init);
+    return new Response(JSON.stringify({
+      stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 },
+      content: [{ type: "tool_use", name, input }],
+    }), { status: 200 });
+  }) as typeof fetch;
+  const r = await runParseMeal(deps, {
+    ...INPUT, text: "not from saved meals", mode: "fast", savedMeals: [OATS], savedHint: HINT,
+    previousText: "Can you log the oat meal to breakfast",
+    previousItems: [
+      { food_id: "f-oats", food_name: "oats", quantity: 48, serving_label: "g", grams: 48, kcal: 180 },
+      { food_id: "f-milk", food_name: "milk", quantity: 550, serving_label: "ml", grams: 550, kcal: 370 },
+    ],
+  });
+  assertEquals(r.parsed!.items.map((i) => i.food_name), ["oatmeal"]);
+  assertEquals(r.steps.filter((s) => s.tool === "saved_hint").map((s) => s.result), ["rejected"]);
+});
