@@ -269,6 +269,43 @@ Deno.test("joining words do not block a swap offer", () => {
   assertEquals(suggestSavedMeal("rice and chicken", [DAL_RICE]), null);
 });
 
+// ── Seen live 2026-10-22: "2 boiled eggs" offered the saved "Bread butter" ──
+// That meal holds 2 boiled eggs AND a slice of toast. Matching one of its items
+// is not the user naming it: the swap would log bread they never mentioned.
+
+const BREAD_BUTTER: SavedMealForParse = {
+  id: "sm-bb", name: "Bread butter", kind: "meal", servings: 1, serving_label: null,
+  kcal: 234, protein_g: 15, carb_g: 16, fat_g: 11,
+  items: [
+    { food_id: "f-egg", food_name: "Eggs, boiled", quantity: 2, serving_unit: "egg", grams: 100, kcal: 155, protein_g: 12.6, carb_g: 1.1, fat_g: 10.6, fiber_g: 0 },
+    { food_id: "f-toast", food_name: "Bread, white, toasted", quantity: 1, serving_unit: "slice", grams: 27, kcal: 79, protein_g: 2.4, carb_g: 15, fat_g: 1, fiber_g: 0.7 },
+  ],
+};
+
+Deno.test("one item of a bigger saved meal is not offered as that meal", () => {
+  assertEquals(suggestSavedMeal("boiled egg", [BREAD_BUTTER]), null);
+  assertEquals(suggestSavedMeal("toast", [BREAD_BUTTER]), null);
+  // Its name is still the user naming it.
+  assertEquals(suggestSavedMeal("bread butter", [BREAD_BUTTER])?.id, "sm-bb");
+});
+
+Deno.test("a saved meal of one food is offered for that food", () => {
+  const CHEELA: SavedMealForParse = {
+    ...OATS, id: "sm-cheela", name: "Monday Breakfast",
+    items: [{ ...OATS.items[0], food_name: "Besan cheela" }],
+  };
+  assertEquals(suggestSavedMeal("besan cheela", [CHEELA])?.id, "sm-cheela");
+});
+
+Deno.test("2 boiled eggs: estimate logged, no Bread butter offer", async () => {
+  const r = await runParseMeal(
+    stub([], [{ ...OATMEAL_ITEM, name: "boiled egg", quantity: 2, unit: "piece" }]),
+    { ...INPUT, text: "2 boiled eggs", mode: "fast", savedMeals: [BREAD_BUTTER] },
+  );
+  assertEquals(r.parsed!.items.map((i) => i.food_name), ["boiled egg"]);
+  assertEquals(r.saved_suggestions, undefined);
+});
+
 Deno.test("rejecting the saved meal keeps the cost of BOTH calls", async () => {
   let call = 0;
   const deps = stub([], []);
