@@ -5,7 +5,7 @@
  * user has no program, the program has no metrics, or the metrics table is
  * not there yet (loadActiveProgram answers an empty list for that).
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
@@ -38,29 +38,35 @@ export function GoalMetricsCard({ chartWidth }: Props) {
   const clerkId = user?.id ?? null;
   const [program, setProgram] = useState<ActiveProgram | null>(null);
   const [items, setItems] = useState<Item[]>([]);
-  const viewed = useState({ sent: false })[0];
+  const viewedSent = useRef(false);
+  // Only the newest load may paint: a focus right after mount, or a user
+  // change, can resolve out of order.
+  const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    const fresh = () => seq === loadSeq.current;
     if (!supabase || !clerkId) { setProgram(null); setItems([]); return; }
     try {
       const p = await loadActiveProgram(supabase, clerkId);
       const phase = p && p.currentPhaseSeq != null ? p.phases[p.currentPhaseSeq] : null;
-      if (!p || !phase || phase.metrics.length === 0) { setProgram(null); setItems([]); return; }
+      if (!p || !phase || phase.metrics.length === 0) { if (fresh()) { setProgram(null); setItems([]); } return; }
       const hero = heroOf(phase.metrics);
       const picks = phase.metrics.filter((m) => m.id === hero?.id || m.kind === 'custom');
       const loaded = await Promise.all(picks.map(async (metric) => ({
         metric,
         series: await loadMetricSeries(supabase, clerkId, p, metric, phase.diet_protein_g),
       })));
+      if (!fresh()) return;
       setProgram(p);
       setItems(loaded);
-      if (!viewed.sent) { viewed.sent = true; track('goal_metrics_viewed', { metrics: loaded.length }); }
+      if (!viewedSent.current) { viewedSent.current = true; track('goal_metrics_viewed', { metrics: loaded.length }); }
     } catch {
       /* keep what we had */
     }
-  }, [supabase, clerkId, viewed]);
+  }, [supabase, clerkId]);
 
-  useEffect(() => { load(); }, [load]);
+  // Focus fires on mount too, so one effect is enough.
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   if (!program || items.length === 0) return null;

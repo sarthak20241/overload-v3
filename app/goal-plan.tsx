@@ -17,7 +17,7 @@
  * split" opens the plan generator seeded to that phase (cadence comes from the
  * phase's training directive). Fully theme-aware, coach-voice copy.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { track, markWorkoutSource } from '@/lib/analytics';
 import { View, Text, Pressable, ScrollView, ActivityIndicator, StyleSheet, Alert, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -42,7 +42,7 @@ import {
   chartKindOf, defaultJobText, formatMetricValue, heroOf, isWeeklyKind, jobFraction, metricLabel, metricRowName,
   phaseProgress, STATUS_LABEL, statusTone, type MetricKind, type PhaseMetricRow,
 } from '@/lib/phaseMetrics';
-import { loadMetricSeries, programWeeks, type MetricSeries } from '@/lib/phaseMetricSeries';
+import { loadMetricSeries, type MetricSeries } from '@/lib/phaseMetricSeries';
 import { MetricBarsChart, MetricLineChart } from '@/components/program/PhaseMetricChart';
 import { MetricLogSheet } from '@/components/program/MetricLogSheet';
 import { useToast } from '@/components/ui/Toast';
@@ -234,6 +234,10 @@ export default function GoalPlanScreen() {
   // building a split in the coach modal).
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
+  // A weekly rollover moves the current phase: the phase card follows it
+  // rather than staying pinned to the phase the user last tapped.
+  useEffect(() => { setViewSeq(null); }, [program?.id, program?.currentPhaseSeq]);
+
   const currentPhaseForSeries = program != null && program.currentPhaseSeq != null ? program.phases[program.currentPhaseSeq] : null;
   const heroForSeries = currentPhaseForSeries ? heroOf(currentPhaseForSeries.metrics) : null;
   // The chart's readings: reloaded when the program, the hero, or its latest
@@ -242,7 +246,9 @@ export default function GoalPlanScreen() {
     if (!supabase || !clerkId || !program || !currentPhaseForSeries || !heroForSeries) { setSeries(null); return; }
     let live = true;
     loadMetricSeries(supabase, clerkId, program, heroForSeries, currentPhaseForSeries.diet_protein_g)
-      .then((data) => { if (live) setSeries({ id: heroForSeries.id, data }); });
+      .then((data) => { if (live) setSeries({ id: heroForSeries.id, data }); })
+      // The chart is a nicety under a number already shown: no series, no chart.
+      .catch((e) => { console.warn('[programs] metric series failed', e); if (live) setSeries(null); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase, clerkId, program?.id, heroForSeries?.id, heroForSeries?.current_value, heroForSeries?.checked_at]);
@@ -621,7 +627,8 @@ export default function GoalPlanScreen() {
       setLogOpen(false);
       await load();
     } catch (e) {
-      toast.error(`Could not log that${(e as Error)?.message ? ` (${String((e as Error).message).slice(0, 60)})` : ''}`);
+      console.warn('[programs] metric log failed', e);
+      toast.error('Could not log that. Check your connection and try again.');
     } finally {
       setLogging(false);
     }
