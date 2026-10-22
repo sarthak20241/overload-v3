@@ -650,6 +650,7 @@ function startFoodAgent(args: {
           ? { text: args.pendingMeal.text, question: args.pendingMeal.question }
           : null,
         card: args.card?.lines ?? null,
+        savedHint: d?.savedMatch ?? null,
       },
       {
         model: MODEL,
@@ -3807,6 +3808,10 @@ async function handleParseMealRequest(args: {
                 mode: "fast",
                 recentFoods: [],
                 savedMeals: savedMealsP,
+                // The router's pick, as a promise: the parse peeks at it for
+                // the prompt and waits for it only after extraction, so the
+                // common path still pays nothing for the router question.
+                savedHint: intentP.then((d) => d?.savedMatch ?? null, () => null),
                 todayTotals: null,
                 targets: null,
                 contextPromise,
@@ -4019,6 +4024,7 @@ async function handleParseMealRequest(args: {
           // runParseMeal (after extract), so these queries overlap extraction.
           recentFoods: [],
           savedMeals: savedMealsP,
+          savedHint: intentP.then((d) => d?.savedMatch ?? null, () => null),
           todayTotals: null,
           targets: null,
           contextPromise,
