@@ -64,7 +64,7 @@ import { SelectTextSheet, coachPlainText, type MessageSheetTarget } from '@/comp
 import { MessageCopyButton } from '@/components/coach/MessageCopyButton';
 import { PastChatsList } from '@/components/coach/PastChatsList';
 import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
-import { isExpiredTokenReply } from '@/lib/authRetry';
+import { freshTokenAfterExpiry } from '@/lib/authRetry';
 import { withChangeSource } from '@/lib/planChangeSource';
 import { ilikeExact, parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
 import { writeWithTargetFallback } from '@/lib/routineTargets';
@@ -583,6 +583,8 @@ function callAICoachStreaming(
 
   let buffer = '';
   let token = initialToken;
+  // One fresh-token retry per call (lib/authRetry.ts decides when).
+  let tokenRetried = false;
 
   const processChunk = (text: string) => {
     buffer += text;
@@ -633,7 +635,8 @@ function callAICoachStreaming(
 
   // One attempt. Returns 'retry_without_mode' when the server rejected the
   // requested mode as a Pro flow because it predates that mode existing, and
-  // 'retry_fresh_token' when it rejected the token as expired.
+  // 'retry_fresh_token' when it rejected the token as expired and `token` now
+  // holds a fresh one.
   const attempt = async (
     mode: StreamingOptions['mode'],
   ): Promise<'retry_without_mode' | 'retry_fresh_token' | void> => {
@@ -663,8 +666,14 @@ function callAICoachStreaming(
 
       if (!response.ok) {
         const body = await response.text();
-        if (options.freshToken && isExpiredTokenReply(response.status, body)) {
-          return 'retry_fresh_token';
+        if (options.freshToken && !tokenRetried) {
+          const next = await freshTokenAfterExpiry(response.status, body, token, options.freshToken);
+          if (controller.signal.aborted) return;
+          if (next) {
+            tokenRetried = true;
+            token = next;
+            return 'retry_fresh_token';
+          }
         }
         // 402s carry a structured reason. Cap hits are a product moment
         // (upgrade sheet), not an error state — route them to onCapHit when
@@ -729,31 +738,16 @@ function callAICoachStreaming(
   (async () => {
     try {
       let mode = options.mode;
-      let tokenRetried = false;
       let modeRetried = false;
-      // At most one retry of each kind, so this ends in three attempts at worst.
+      // Each retry kind happens at most once (attempt() and modeRetried see
+      // to that), so this ends in three attempts at worst.
       while (true) {
         const outcome = await attempt(mode);
-        if (outcome === 'retry_fresh_token' && !tokenRetried) {
-          // Clerk's cache served an expired token. Ask for a fresh one and
-          // send again, once; a dead session still fails on the next 401.
-          tokenRetried = true;
-          let next: string | null = null;
-          try { next = await options.freshToken!(); } catch { next = null; }
-          if (controller.signal.aborted) return;
-          if (!next || next === token) {
-            fail('HTTP 401: token expired and no fresh token');
-            return;
-          }
-          token = next;
-        } else if (outcome === 'retry_fresh_token') {
-          fail('HTTP 401: token expired after a fresh token');
-          return;
-        } else if (outcome === 'retry_without_mode' && !modeRetried) {
+        if (outcome === 'retry_without_mode' && !modeRetried) {
           // A plain-chat request can't trip the same guard again.
           modeRetried = true;
           mode = undefined;
-        } else {
+        } else if (outcome !== 'retry_fresh_token') {
           return;
         }
         buffer = '';

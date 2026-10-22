@@ -7,7 +7,7 @@
 // limits that keep a really signed-out user from looping.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { isExpiredTokenReply, sendWithFreshTokenRetry } from "./authRetry.ts";
+import { freshTokenAfterExpiry, isExpiredTokenReply, sendWithFreshTokenRetry } from "./authRetry.ts";
 
 // The exact bodies the two servers send for an expired token.
 const EDGE_EXPIRED = JSON.stringify({
@@ -94,4 +94,16 @@ Deno.test("a fresh-token fetch that throws leaves the first reply", async () => 
   const res = await sendWithFreshTokenRetry(send, "stale", () => Promise.reject(new Error("offline")));
   assertEquals(res.status, 401);
   assertEquals(seen, ["stale"]);
+});
+
+// The coach stream calls this directly instead of sendWithFreshTokenRetry.
+Deno.test("freshTokenAfterExpiry: a fresh token only for an expired 401", async () => {
+  const fresh = () => Promise.resolve("fresh");
+  assertEquals(await freshTokenAfterExpiry(401, EDGE_EXPIRED, "stale", fresh), "fresh");
+  assertEquals(await freshTokenAfterExpiry(401, POSTGREST_EXPIRED, "stale", fresh), "fresh");
+  assertEquals(await freshTokenAfterExpiry(401, JSON.stringify({ debug: "no auth header" }), "stale", fresh), null);
+  assertEquals(await freshTokenAfterExpiry(402, EDGE_EXPIRED, "stale", fresh), null);
+  assertEquals(await freshTokenAfterExpiry(401, EDGE_EXPIRED, "stale", () => Promise.resolve("stale")), null);
+  assertEquals(await freshTokenAfterExpiry(401, EDGE_EXPIRED, "stale", () => Promise.resolve(null)), null);
+  assertEquals(await freshTokenAfterExpiry(401, EDGE_EXPIRED, "stale", () => Promise.reject(new Error("offline"))), null);
 });

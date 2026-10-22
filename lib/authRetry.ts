@@ -32,15 +32,37 @@ export function isExpiredTokenReply(status: number, body: string): boolean {
 }
 
 /**
+ * The token to retry with, or null when this reply is not one to retry.
+ *
+ * Null for anything but an expired-token 401, when Clerk cannot produce a
+ * token, and when it hands back the same token (resending it would only fail
+ * again). Callers retry at most once, so a dead session fails on the second
+ * 401 and reaches the sign-in copy. Both retry paths decide here: the fetch
+ * wrapper through `sendWithFreshTokenRetry`, the coach stream directly.
+ */
+export async function freshTokenAfterExpiry(
+  status: number,
+  body: string,
+  token: string,
+  freshToken: () => Promise<string | null>,
+): Promise<string | null> {
+  if (!isExpiredTokenReply(status, body)) return null;
+  let next: string | null = null;
+  try {
+    next = await freshToken();
+  } catch {
+    next = null;
+  }
+  return next && next !== token ? next : null;
+}
+
+/**
  * Send with `token`; on an expired-token 401, send once more with a fresh one.
  *
  * `send` must build the whole request from the token it is given, so the retry
  * is the same request with only the header changed. The first response's body
  * is read from a clone, so when there is no retry the caller still gets a
  * response it can read.
- *
- * Returns the first response unchanged when there is no fresh token, or when
- * Clerk hands back the same token (resending it would only fail again).
  */
 export async function sendWithFreshTokenRetry(
   send: (token: string) => Promise<Response>,
@@ -55,13 +77,6 @@ export async function sendWithFreshTokenRetry(
   } catch {
     return first;
   }
-  if (!isExpiredTokenReply(first.status, body)) return first;
-  let next: string | null = null;
-  try {
-    next = await freshToken();
-  } catch {
-    next = null;
-  }
-  if (!next || next === token) return first;
-  return send(next);
+  const next = await freshTokenAfterExpiry(first.status, body, token, freshToken);
+  return next ? send(next) : first;
 }

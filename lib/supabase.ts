@@ -122,16 +122,23 @@ export function useSupabaseClient(): SupabaseClient {
           // time a parse itself takes, so it costs a healthy request nothing.
           let timedOut = false;
           const tokenWithinBudget = async (opts?: { skipCache: boolean }): Promise<string | null> => {
+            let timer: ReturnType<typeof setTimeout> | undefined;
             try {
               return await Promise.race([
                 getTokenRef.current(opts),
-                new Promise<null>((resolve) => setTimeout(() => {
-                  timedOut = true;
-                  resolve(null);
-                }, TOKEN_BUDGET_MS)),
+                new Promise<null>((resolve) => {
+                  timer = setTimeout(() => {
+                    timedOut = true;
+                    resolve(null);
+                  }, TOKEN_BUDGET_MS);
+                }),
               ]);
             } catch {
               return null;
+            } finally {
+              // A token that arrived in time must not leave a timer behind to
+              // mark this request as timed out later.
+              clearTimeout(timer);
             }
           };
           const token = await tokenWithinBudget();
