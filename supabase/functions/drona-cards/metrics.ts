@@ -56,8 +56,15 @@ export interface Db {
   from(table: string): DbQuery;
 }
 
-/** A failed coach line is retried this many times in a week, then the old line stays. */
-export const LINE_TRIES_PER_WEEK = 3;
+/**
+ * A run that ends with a failed source read or a failed coach line is retried
+ * this many times in a week; then the phase is stamped for the week, the
+ * metrics the reads could not reach keep their last number, and the phase
+ * keeps last week's line. Counted on the phase's rows (retry_tries for
+ * retry_week), so the cap holds for as long as those rows exist: a program
+ * rebuilt mid-week starts a fresh count with its fresh rows.
+ */
+export const TRIES_PER_WEEK = 3;
 
 export interface MetricsStepResult {
   /** Metrics written this run (0 when nothing was due). */
@@ -143,7 +150,7 @@ export async function metricsStep(
     // RLS only guards the client's writes.
     const { data: metricRows, error: mErr } = await retried(() =>
       db.from("coach_program_phase_metrics")
-        .select("id, seq, is_hero, kind, ref, unit, direction, start_value, target_value, current_value, status, checked_week, line_tries, line_week")
+        .select("id, seq, is_hero, kind, ref, unit, direction, start_value, target_value, current_value, status, checked_week, retry_tries, retry_week")
         .eq("user_id", userId).eq("phase_id", phase.id).order("seq", { ascending: true })
     );
     if (mErr) return { ...none, error: `metrics: ${mErr.message}` };
@@ -216,7 +223,20 @@ export async function metricsStep(
     // stays down the phase keeps last week's line.
     if (writeErrors.length > 0 || readable.length < metrics.length) {
       const why = [...writeErrors, ...(readable.length < metrics.length ? [`read failed for ${[...failed].join(", ")}`] : [])];
-      return { checked, line: false, error: why.join("; ") };
+      // Retried next run (the unwritten rows are still unstamped), up to
+      // TRIES_PER_WEEK: then every row is stamped for the week so a source
+      // that stays down does not hold the user on the due list all week.
+      const tries = triesSoFar(rows, weekStart) + 1;
+      const ledger = { retry_tries: tries, retry_week: weekStart };
+      const giveUp = tries >= TRIES_PER_WEEK;
+      const { error: ledgerErr } = await retried(() =>
+        db.from("coach_program_phase_metrics")
+          .update(giveUp ? { ...ledger, checked_at: now, checked_week: weekStart } : ledger)
+          .eq("user_id", userId).eq("phase_id", phase.id)
+      );
+      if (ledgerErr) console.log(`[drona-cards] could not record the tries: ${ledgerErr.message}`);
+      if (giveUp) await stampOthers(phase.id);
+      return { checked, line: false, error: `${why.join("; ")}${giveUp ? `, gave up for the week after ${tries} tries` : ", retry next run"}` };
     }
 
     await stampOthers(phase.id);
@@ -248,16 +268,16 @@ export async function metricsStep(
       metrics: lineMetrics,
     }, anthropicKey, fetchFn);
     if (!answer.line) {
-      // The line is retried this week, up to LINE_TRIES_PER_WEEK: every row of
+      // The line is retried this week, up to TRIES_PER_WEEK: every row of
       // the phase is un-stamped, so the cron lists the user again and the
       // next run re-checks the phase (idempotent) and asks the model once
       // more. The tries are counted in the rows' own job-only columns
-      // (line_tries for line_week), so a model that keeps failing (a bad key,
+      // (retry_tries for retry_week), so a model that keeps failing (a bad key,
       // a 4xx) costs at most three calls a week and the phase keeps last
       // week's line, and no single row carries the signal.
-      const tries = Math.max(0, ...rows.map((r) => (r.line_week === weekStart ? num(r.line_tries) ?? 0 : 0))) + 1;
-      const ledger = { line_tries: tries, line_week: weekStart };
-      if (tries >= LINE_TRIES_PER_WEEK) {
+      const tries = triesSoFar(rows, weekStart) + 1;
+      const ledger = { retry_tries: tries, retry_week: weekStart };
+      if (tries >= TRIES_PER_WEEK) {
         console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} failed ${tries} times this week (${answer.error ?? "no line"}); keeping last week's line`);
         const { error: noteErr } = await retried(() =>
           db.from("coach_program_phase_metrics").update(ledger).eq("user_id", userId).eq("phase_id", phase.id)
@@ -265,7 +285,7 @@ export async function metricsStep(
         if (noteErr) console.log(`[drona-cards] could not record the line tries: ${noteErr.message}`);
         return { checked, line: false, error: `line: ${answer.error ?? "no line"}, gave up for the week after ${tries} tries` };
       }
-      console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} not written: ${answer.error ?? "no line"}; retry next run (${tries} of ${LINE_TRIES_PER_WEEK})`);
+      console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} not written: ${answer.error ?? "no line"}; retry next run (${tries} of ${TRIES_PER_WEEK})`);
       const { error: unstampErr } = await retried(() =>
         db.from("coach_program_phase_metrics").update({ checked_week: null, ...ledger }).eq("user_id", userId).eq("phase_id", phase.id)
       );
@@ -277,15 +297,20 @@ export async function metricsStep(
     );
     if (lineErr) return { checked, line: false, error: `line: ${lineErr.message}` };
     // A clean line clears the retry ledger.
-    if (rows.some((r) => (num(r.line_tries) ?? 0) > 0)) {
+    if (rows.some((r) => (num(r.retry_tries) ?? 0) > 0)) {
       await retried(() =>
-        db.from("coach_program_phase_metrics").update({ line_tries: 0, line_week: weekStart }).eq("user_id", userId).eq("phase_id", phase.id)
+        db.from("coach_program_phase_metrics").update({ retry_tries: 0, retry_week: weekStart }).eq("user_id", userId).eq("phase_id", phase.id)
       );
     }
     return { checked, line: true };
   } catch (e) {
     return { ...none, error: String(e).slice(0, 200) };
   }
+}
+
+/** The runs that already failed this week, from the phase's rows. */
+function triesSoFar(rows: Record<string, unknown>[], weekStart: string): number {
+  return Math.max(0, ...rows.map((r) => (r.retry_week === weekStart ? num(r.retry_tries) ?? 0 : 0)));
 }
 
 /**
