@@ -556,6 +556,14 @@ interface StreamingOptions {
   freshToken?: () => Promise<string | null>;
 }
 
+// The stream's `freshToken`: a token straight from Clerk with the cache
+// skipped, or null when there is no Clerk session to ask.
+function freshTokenFrom(
+  getToken: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null,
+): () => Promise<string | null> {
+  return () => getToken?.({ skipCache: true }) ?? Promise.resolve(null);
+}
+
 function callAICoachStreaming(
   messages: { role: string; content: string }[],
   initialToken: string,
@@ -1534,7 +1542,7 @@ function ChatScreen({
       conversationId: workoutContext ? undefined : ensureActiveConversationId(userId),
       clientMsgId: workoutContext ? undefined : userMsg?.id,
       ...(opens ? { openedByApp: true } : {}),
-      freshToken: () => getToken?.({ skipCache: true }) ?? Promise.resolve(null),
+      freshToken: freshTokenFrom(getToken),
     });
   }, [input, loading, messages, supabase, getToken, workoutContext, canEditWorkout, markStarted, setMessages, userId]);
 
@@ -2738,7 +2746,7 @@ function GeneratePlanScreen({
       {
         forceTool: 'generate_plan',
         phaseId: isRefine ? undefined : phaseId,
-        freshToken: () => getToken?.({ skipCache: true }) ?? Promise.resolve(null),
+        freshToken: freshTokenFrom(getToken),
       },
     );
   };
@@ -3402,7 +3410,7 @@ function GenerateWorkoutScreen({
           onRequestUpgrade?.(kind);
         },
       },
-      { forceTool: 'generate_workout', freshToken: () => getToken?.({ skipCache: true }) ?? Promise.resolve(null) },
+      { forceTool: 'generate_workout', freshToken: freshTokenFrom(getToken) },
     );
   };
 
@@ -4050,7 +4058,7 @@ function RefineChatScreen({
       // which is true for all refine_*+generate_* and discuss_*+generate_*
       // combinations.
       ...(shouldForceTool ? { forceTool: forceToolName } : {}),
-      freshToken: () => getToken?.({ skipCache: true }) ?? Promise.resolve(null),
+      freshToken: freshTokenFrom(getToken),
     });
   }, [input, loading, messages, getToken, recapText, starterText, mode, kind, handleStructured, onRequestUpgrade]);
 
