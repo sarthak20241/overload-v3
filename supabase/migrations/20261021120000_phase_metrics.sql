@@ -110,8 +110,11 @@ create policy "coach_program_phase_metrics_owner_insert" on public.coach_program
                    and p.user_id = current_clerk_user_id()));
 
 -- A client updates only a custom metric (the one it logs by hand); every
--- app-measured kind is written by the weekly job alone, so a client cannot
--- set a bodyweight or lift status it did not earn.
+-- app-measured kind's reading and status are written by the weekly job
+-- alone once the row exists. (A client may still insert an app-measured
+-- row with a target of its own choosing: that is its own plan for its own
+-- phase, and the job overwrites the reading and status from the real
+-- sources.)
 drop policy if exists "coach_program_phase_metrics_owner_update" on public.coach_program_phase_metrics;
 create policy "coach_program_phase_metrics_owner_update" on public.coach_program_phase_metrics
   for update to authenticated using (user_id = current_clerk_user_id() and kind = 'custom')
@@ -195,7 +198,9 @@ create policy "coach_program_phase_metric_logs_owner_delete" on public.coach_pro
   for delete to authenticated using (user_id = current_clerk_user_id());
 
 revoke all on table public.coach_program_phase_metric_logs from anon, authenticated;
-grant select, insert, delete on table public.coach_program_phase_metric_logs to authenticated;
+grant select, delete on table public.coach_program_phase_metric_logs to authenticated;
+-- The log itself; id and created_at are the database's.
+grant insert (metric_id, user_id, value, logged_on, note) on table public.coach_program_phase_metric_logs to authenticated;
 -- Every column but id and created_at. The app writes a log as an upsert on
 -- (metric_id, logged_on), and Postgres needs UPDATE on every column the
 -- upsert sets, metric_id and user_id included, when the same day is logged

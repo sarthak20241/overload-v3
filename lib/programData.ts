@@ -592,7 +592,14 @@ export async function saveProgram(
   try {
     await saveProgramMetrics(supabase, clerkId, prog.id, program.phases, phaseIds);
   } catch (e) {
+    // Visible in analytics, not only the console: a program that lost its
+    // metrics renders without a hero until it is rebuilt.
     console.warn('[programs] metrics save failed; program kept without them', e);
+    track('program_metrics_save_failed', {
+      phases: program.phases.length,
+      metrics: program.phases.reduce((n, ph) => n + (ph.metrics?.length ?? 0), 0),
+      code: (e as { code?: string })?.code ?? null,
+    });
   }
   return { programId: prog.id, phaseIds };
 }
