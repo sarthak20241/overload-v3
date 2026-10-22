@@ -45,9 +45,6 @@ const TICKET_WAIT_MS = 9000;
 const SWAP_MAX_MS = 30000;
 const TICKET_FETCH_MS = 8000;
 
-/** Null when the request never got an answer (offline, aborted): a skip.
- *  Throws when the server answered with an error, so a broken deploy (no
- *  CLERK_SECRET_KEY, a verifier bug) shows up as a failure, not a skip. */
 // A backstop so no path can leave the splash up for good. Cleared when the
 // gate hides the splash itself, so it never hides one a later caller holds.
 let splashBackstop: ReturnType<typeof setTimeout> | undefined;
@@ -59,6 +56,9 @@ export function holdSplashForGate(): void {
   splashBackstop = setTimeout(() => SplashScreen.hideAsync().catch(() => {}), 60_000);
 }
 
+/** Null when the request never got an answer (offline, aborted): a skip.
+ *  Throws when the server answered with an error, so a broken deploy (no
+ *  CLERK_SECRET_KEY, a verifier bug) shows up as a failure, not a skip. */
 async function fetchTicket(token: string): Promise<{ ticket: string; userId: string } | null> {
   const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
