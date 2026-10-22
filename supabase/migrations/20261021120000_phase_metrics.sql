@@ -68,6 +68,11 @@ create table if not exists public.coach_program_phase_metrics (
   -- job compares this, a local date, with the user's local week start; a UTC
   -- instant against a local Monday reads as "not yet" for hours east of UTC.
   checked_week  date,
+  -- The coach line's retry ledger, kept by the job on every row of the
+  -- phase: how many times the line failed in line_week. Job-only columns
+  -- (not in the client grants), so a client cannot buy itself more calls.
+  line_tries    integer not null default 0,
+  line_week     date,
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now(),
   unique (phase_id, seq)
@@ -124,7 +129,8 @@ create policy "coach_program_phase_metrics_owner_delete" on public.coach_program
 revoke all on table public.coach_program_phase_metrics from anon, authenticated;
 grant select, delete on table public.coach_program_phase_metrics to authenticated;
 -- The app inserts a metric's definition only; the weekly job fills the
--- reading, the status and the check stamp (checked_at, checked_week).
+-- reading, the status, the check stamp (checked_at, checked_week) and the
+-- line's retry ledger (line_tries, line_week).
 grant insert (id, program_id, phase_id, user_id, seq, is_hero, kind, ref, unit, direction, start_value, target_value, status_note)
   on table public.coach_program_phase_metrics to authenticated;
 -- On update the app may also move current_value and status (it does so the

@@ -235,15 +235,17 @@ Deno.test("a failed coach line un-stamps one row, so the week retries it", async
   assertEquals(out.checked, 2);
   assertEquals(out.line, false);
   assertEquals(out.error?.startsWith("line: 500"), true);
+  // Every row of the phase is un-stamped and carries the ledger: no single
+  // row holds the signal.
   const unstamp = writes.find((w) => w.patch.checked_week === null);
-  assertEquals(unstamp?.eq, [["id", "m-bw"]]);
-  assertEquals(unstamp?.patch.status_note, `line_retry:${WEEK}:1`);
+  assertEquals(unstamp?.eq, [["user_id", "user-1"], ["phase_id", "ph0"]]);
+  assertEquals([unstamp?.patch.line_tries, unstamp?.patch.line_week], [1, WEEK]);
   assertEquals(writes.some((w) => w.table === "coach_program_phases"), false);
 });
 
 Deno.test("after the week's last allowed try the line gives up and the phase stays stamped", async () => {
-  // The ledger says two tries already this week.
-  const tried = rows.map((r, i) => (i === 0 ? { ...r, status_note: `line_retry:${WEEK}:${LINE_TRIES_PER_WEEK - 1}` } : r));
+  // The ledger says two tries already this week (on every row of the phase).
+  const tried = rows.map((r) => ({ ...r, line_tries: LINE_TRIES_PER_WEEK - 1, line_week: WEEK }));
   const { db, writes } = fakeDb({
     coach_programs: [{ data: program, error: null }],
     coach_program_phases: [{ data: phases, error: null }],
@@ -257,9 +259,11 @@ Deno.test("after the week's last allowed try the line gives up and the phase sta
   assertEquals(out.error?.includes("gave up for the week"), true);
   // No row is un-stamped: the user leaves the due list until next week.
   assertEquals(writes.some((w) => w.patch.checked_week === null), false);
-  assertEquals(writes.find((w) => typeof w.patch.status_note === "string")?.patch.status_note, `line_retry:${WEEK}:${LINE_TRIES_PER_WEEK}`);
+  const gaveUp = writes.find((w) => w.patch.line_tries === LINE_TRIES_PER_WEEK);
+  assertEquals(gaveUp?.eq, [["user_id", "user-1"], ["phase_id", "ph0"]]);
+  assertEquals(gaveUp?.patch.line_week, WEEK);
   // A ledger from an earlier week does not count.
-  const stale = rows.map((r, i) => (i === 0 ? { ...r, status_note: "line_retry:2026-10-12:2" } : r));
+  const stale = rows.map((r) => ({ ...r, line_tries: 2, line_week: "2026-10-12" }));
   const fresh = fakeDb({
     coach_programs: [{ data: program, error: null }],
     coach_program_phases: [{ data: phases, error: null }],
@@ -271,7 +275,7 @@ Deno.test("after the week's last allowed try the line gives up and the phase sta
 });
 
 Deno.test("a clean line clears the retry ledger", async () => {
-  const tried = rows.map((r, i) => (i === 0 ? { ...r, status_note: `line_retry:${WEEK}:1` } : r));
+  const tried = rows.map((r) => ({ ...r, line_tries: 1, line_week: WEEK }));
   const { db, writes } = fakeDb({
     coach_programs: [{ data: program, error: null }],
     coach_program_phases: [{ data: phases, error: null }],
@@ -283,7 +287,8 @@ Deno.test("a clean line clears the retry ledger", async () => {
     content: [{ type: "tool_use", name: "phase_line", input: { line: "On pace. Keep the protein up on rest days and the scale follows." } }],
   }), { status: 200 }))) as unknown as typeof fetch;
   assertEquals(await metricsStep(db, "user-1", DAY, WEEK, "key", fetchFn), { checked: 2, line: true });
-  assertEquals(writes.some((w) => w.patch.status_note === null && w.eq[0][1] === "m-bw"), true);
+  const cleared = writes.find((w) => w.patch.line_tries === 0);
+  assertEquals(cleared?.eq, [["user_id", "user-1"], ["phase_id", "ph0"]]);
 });
 
 Deno.test("the metrics read is scoped to the user as well as the phase", async () => {

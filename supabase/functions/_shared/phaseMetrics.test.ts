@@ -99,6 +99,14 @@ Deno.test("a weekly target to keep under reads the other way", () => {
   assertEquals(statusFor(under(6)), "behind");    // 150%
 });
 
+Deno.test("a weekly target of zero is met at zero and missed by anything else", () => {
+  const z = (current: number, direction: "up" | "down"): StatusInput =>
+    ({ kind: "cardio_sessions", direction, start_value: null, target_value: 0, current_value: current, progress: 0.5 });
+  assertEquals(statusFor(z(0, "down")), "on_track");
+  assertEquals(statusFor(z(2, "down")), "behind");
+  assertEquals(statusFor(z(0, "up")), "on_track");
+});
+
 Deno.test("the chart follows the family: bars for a habit, a line for a number", () => {
   assertEquals(chartKindOf("sessions_per_week"), "bars");
   assertEquals(chartKindOf("steps"), "bars");

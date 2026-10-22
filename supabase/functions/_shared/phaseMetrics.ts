@@ -334,7 +334,10 @@ export function statusFor(i: StatusInput): MetricStatus {
 
   if (isWeeklyKind(i.kind)) {
     if (cur == null) return p > 0 ? 'due' : 'set';
-    const r = target === 0 ? 1 : cur / target;
+    // A zero target cannot be a ratio: at or under it is the target met,
+    // anything else is not. Unreachable today (weekly targets clamp to 1+).
+    if (target <= 0) return cur <= target ? 'on_track' : 'behind';
+    const r = cur / target;
     if (i.direction === 'down') {
       if (cur <= target) return 'on_track';
       if (r <= 1.15) return 'close';
