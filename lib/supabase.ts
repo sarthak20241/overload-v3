@@ -25,9 +25,12 @@ const ExpoSecureStoreAdapter = {
 //
 // Without a registered getter (guest mode, sign-out, pre-Clerk boot) the
 // callback returns null and the client falls back to the anon key.
-let clerkTokenGetter: (() => Promise<string | null>) | null = null;
+// `skipCache` asks Clerk for a token minted now instead of its cached one: the
+// retry after an expired-token 401 (lib/authRetry.ts).
+type ClerkTokenGetter = (opts?: { skipCache?: boolean }) => Promise<string | null>;
+let clerkTokenGetter: ClerkTokenGetter | null = null;
 
-export function setSupabaseTokenGetter(fn: (() => Promise<string | null>) | null): void {
+export function setSupabaseTokenGetter(fn: ClerkTokenGetter | null): void {
   clerkTokenGetter = fn;
 }
 
@@ -50,6 +53,19 @@ export async function getSupabaseAccessToken(): Promise<string | null> {
     return null;
   }
 }
+
+/**
+ * A token straight from Clerk with its cache skipped, for the callers of
+ * `getSupabaseAccessToken` to retry with once the server says theirs expired
+ * (lib/authRetry.ts). Null when there is no session, on a throw, or after
+ * FRESH_TOKEN_BUDGET_MS. Requests that 401 together share one fetch.
+ */
+export const getFreshSupabaseAccessToken = sharedInFlight(() =>
+  tokenWithin(
+    () => (clerkTokenGetter ? clerkTokenGetter({ skipCache: true }) : Promise.resolve(null)),
+    FRESH_TOKEN_BUDGET_MS,
+  ),
+);
 
 export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {

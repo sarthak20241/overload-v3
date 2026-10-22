@@ -26,6 +26,7 @@ import { programNarrative } from '@/lib/programNarrative';
 import { buildWeekPattern, splitCycle, weekPatternFor } from '@/lib/weekPattern';
 import type { CoachGoal } from '@/lib/types';
 import { GOAL_LABELS, goalLabels, joinGoals, primaryGoal, programGoalFor, selectedGoals } from '@/lib/fitnessGoals';
+import { FRESH_TOKEN_BUDGET_MS, sendWithFreshTokenRetry, tokenWithin } from '@/lib/authRetry';
 
 const REQUEST_TIMEOUT_MS = 75_000;
 
@@ -278,6 +279,9 @@ export function buildOnboardingProgramMessage(a: OnboardingAnswers, extras: Prog
 export async function requestDronaOnboardingProgram(args: {
   token: string;
   message: string;
+  /** A token minted now, to retry with once when the server says `token`
+   *  expired (lib/authRetry.ts). Without it an expired token fails the call. */
+  freshToken?: () => Promise<string | null>;
 }): Promise<Record<string, unknown>> {
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -286,19 +290,27 @@ export async function requestDronaOnboardingProgram(args: {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(`${supabaseUrl}/functions/v1/ai-coach`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${args.token}`,
-        apikey: anonKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messages: [{ role: 'user', content: args.message }],
-        force_tool: 'generate_program',
-      }),
-      signal: controller.signal,
-    });
+    // A token stale in Clerk's cache would otherwise cost the user Drona's
+    // program and leave them the deterministic one.
+    const freshToken = args.freshToken;
+    const response = await sendWithFreshTokenRetry(
+      (t) =>
+        fetch(`${supabaseUrl}/functions/v1/ai-coach`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${t}`,
+            apikey: anonKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            messages: [{ role: 'user', content: args.message }],
+            force_tool: 'generate_program',
+          }),
+          signal: controller.signal,
+        }),
+      args.token,
+      freshToken ? () => tokenWithin(freshToken, FRESH_TOKEN_BUDGET_MS) : () => Promise.resolve(null),
+    );
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const json = (await response.json()) as {
       structured?: { name?: string; input?: Record<string, unknown> } | null;

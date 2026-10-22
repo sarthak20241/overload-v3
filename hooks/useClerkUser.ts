@@ -19,8 +19,9 @@ export interface ClerkUserState {
   isLoaded: boolean;
   isSignedIn: boolean;
   signOut: () => Promise<void>;
-  /** Clerk JWT for authenticated edge-function calls. Null when signed out. */
-  getToken: (() => Promise<string | null>) | null;
+  /** Clerk JWT for authenticated edge-function calls. Null when signed out.
+   *  `skipCache` mints a new one: the retry after an expired-token 401. */
+  getToken: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null;
 }
 
 export function useClerkUser(): ClerkUserState {
