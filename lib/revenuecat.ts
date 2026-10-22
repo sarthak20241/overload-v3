@@ -155,6 +155,16 @@ const RC_ANDROID_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_KEY ?? '';
 
 let configured = false;
 
+// Store words for purchase copy. An Android buyer pays through Google Play and
+// restores against their Google account, so "App Store" / "Apple ID" there
+// names a store they never touched.
+export const STORE_NAME: string = Platform.OS === 'android' ? 'Google Play' : 'App Store';
+export const STORE_ACCOUNT: string = Platform.OS === 'android' ? 'Google account' : 'Apple ID';
+export const STORE_MANAGE_HINT: string =
+  Platform.OS === 'android'
+    ? 'Manage in Google Play → Payments & subscriptions.'
+    : 'Manage in Settings → Apple ID → Subscriptions.';
+
 function getApiKey(): string {
   if (Platform.OS === 'ios') return RC_IOS_KEY;
   if (Platform.OS === 'android') return RC_ANDROID_KEY;

@@ -47,6 +47,8 @@ import {
   ensureIdentity,
   PurchasesUnavailableError,
   PurchaseCancelledError,
+  STORE_ACCOUNT,
+  STORE_MANAGE_HINT,
   type RevenueCatPackage,
   type PlanKey,
 } from '@/lib/revenuecat';
@@ -242,7 +244,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
           toast.info("Restored. We're finalizing. Try again in a minute.");
         }
       } else {
-        toast.info('No previous purchases on this Apple ID.');
+        toast.info(`No previous purchases on this ${STORE_ACCOUNT}.`);
       }
     } catch (e) {
       console.warn('[paywall] restore failed:', e);
@@ -391,8 +393,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
 
         <View style={s.legal}>
           <Text style={[s.legalText, { color: C.mutedFg }]}>
-            Subscriptions auto-renew until cancelled. Manage in Settings → Apple ID →
-            Subscriptions.{' '}
+            Subscriptions auto-renew until cancelled. {STORE_MANAGE_HINT}{' '}
             <Text
               style={[s.legalLink, { color: C.foreground }]}
               onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}

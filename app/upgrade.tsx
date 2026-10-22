@@ -33,9 +33,9 @@
  *       opened from the cap-hit sheet / locked features / milestone card.
  *       Finishing pops back to wherever the user was.
  *
- * Android: Play billing is blocked (BillDesk merchant verification), so this
- * screen never sells there. Direct opens get a "Pro is coming to Android"
- * panel; the onboarding flow skips /upgrade entirely on Android.
+ * Android sells the same three products through Google Play (same RC
+ * offerings; Play IDs overload_monthly:monthly, overload_annual:annual,
+ * overload_founding_lifetime). Store words come from STORE_NAME/STORE_ACCOUNT.
  *
  * Purchase plumbing mirrors components/ai/Paywall.tsx: RC purchase, then poll
  * get_coach_access_status until the webhook flips the tier. On a successful
@@ -46,7 +46,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Linking,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -101,6 +100,8 @@ import {
   freeTrialDays,
   PurchaseCancelledError,
   PurchasesUnavailableError,
+  STORE_ACCOUNT,
+  STORE_NAME,
   type PlanKey,
   type RevenueCatPackage,
 } from '@/lib/revenuecat';
@@ -402,7 +403,7 @@ export default function UpgradeScreen() {
         }
       } else {
         track('purchase_restore_failed', { reason: 'no_active', context });
-        toast.info('No previous purchases on this Apple ID.');
+        toast.info(`No previous purchases on this ${STORE_ACCOUNT}.`);
       }
     } catch (e) {
       track('purchase_restore_failed', { reason: 'error', context });
@@ -431,29 +432,6 @@ export default function UpgradeScreen() {
     track('paywall_step_advanced', { from: 'reminder', to: 'paywall', notifications_granted: granted, context });
     setStep('paywall');
   }, [context]);
-
-  // ── Android: nothing to sell until Play billing unblocks ─────────────────
-  if (Platform.OS === 'android') {
-    return (
-      <SafeAreaView style={[u.safeArea, { backgroundColor: C.background }]}>
-        <View style={u.centerFill}>
-          <DronaMark size={56} state="idle" />
-          <Text style={[u.displayTitle, { color: C.foreground, textAlign: 'center' }]}>
-            Pro is coming to Android.
-          </Text>
-          <Text style={[u.subText, { color: C.textSecondary, textAlign: 'center' }]}>
-            Until then you have the free plan: your full program, plus 3 coach
-            messages and 3 AI food logs a day. I make those three count.
-          </Text>
-        </View>
-        <View style={u.footer}>
-          <PressableScale onPress={finish} style={[u.cta, Shadow.playBtn]} accessibilityRole="button" accessibilityLabel="Continue">
-            <Text style={u.ctaText}>Continue</Text>
-          </PressableScale>
-        </View>
-      </SafeAreaView>
-    );
-  }
 
   const annual = packages.annual ?? null;
   const monthly = packages.monthly ?? null;
@@ -805,7 +783,7 @@ export default function UpgradeScreen() {
                 {purchasing ? (
                   <>
                     <ActivityIndicator size="small" color={Colors.primaryFg} />
-                    <Text style={u.ctaText}>Confirming with App Store…</Text>
+                    <Text style={u.ctaText}>Confirming with {STORE_NAME}…</Text>
                   </>
                 ) : verifying ? (
                   <>
