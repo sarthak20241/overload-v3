@@ -17,13 +17,19 @@
  * mounting the app then would let the guards and bridges see the signed-out
  * moment, the thing this gate exists to hide. It waits for the swap, up to
  * SWAP_MAX_MS, a cap only for a Clerk call that never returns.
+ *
+ * It runs once per cold start, on purpose. Doing it on return from the
+ * background would mean unmounting a live app (an active workout included)
+ * to hide the sign-out. So a user who keeps the app alive in memory from
+ * before their last 3 days until past day 7 still meets the sign-in screen.
+ * Phones end background apps far sooner than that in practice.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { REFRESH_WITHIN_MS, runSessionRefresh, shouldRefreshSession } from '@/lib/sessionRefresh';
 import { track } from '@/lib/analytics';
 
 const CLERK_LOAD_WAIT_MS = 4000;
-const TICKET_WAIT_MS = 12000;
+const TICKET_WAIT_MS = 9000;
 const SWAP_MAX_MS = 30000;
 const TICKET_FETCH_MS = 8000;
 
@@ -102,8 +108,13 @@ export function SessionRefreshGate({ children }: { children: ReactNode }) {
     runSessionRefresh({
       currentUserId: userId,
       fetchTicket: async () => {
-        const token = await getToken();
-        return token ? fetchTicket(token) : null;
+        // Any failure here means "no ticket", which changes nothing.
+        try {
+          const token = await getToken();
+          return token ? await fetchTicket(token) : null;
+        } catch {
+          return null;
+        }
       },
       beforeSignOut: () => {
         if (settled) return false; // the gate already gave up and moved on

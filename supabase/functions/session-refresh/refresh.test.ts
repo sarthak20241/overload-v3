@@ -61,6 +61,7 @@ Deno.test("an ended, revoked or missing session gets nothing", async () => {
     { id: "sess_a", user_id: "user_a", status: "revoked", expire_at: NOW + DAY },
     { id: "sess_a", user_id: "user_a", status: "ended", expire_at: NOW + DAY },
     { id: "sess_a", user_id: "user_a", status: "expired", expire_at: NOW - DAY },
+    { id: "sess_a", user_id: "user_a", status: "active", expire_at: NOW - 1 },
     { id: "sess_other", user_id: "user_a", status: "active", expire_at: NOW + DAY },
     null,
   ]) {

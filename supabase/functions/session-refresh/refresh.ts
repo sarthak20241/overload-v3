@@ -70,6 +70,10 @@ export async function handleRefresh(deps: RefreshDeps): Promise<RefreshResult> {
   }
 
   const remaining = session.expire_at - deps.now();
+  if (remaining <= 0) {
+    // Clerk may not have flipped the status yet; past its end is past its end.
+    return { status: 403, body: { error: "session_not_active" }, detail: "past expire_at" };
+  }
   if (remaining > REFRESH_WITHIN_MS) {
     // Not an error: the app asked early (its clock, or a session Clerk
     // already extended). Nothing to do, and the app carries on as it is.
