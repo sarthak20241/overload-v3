@@ -3,7 +3,7 @@
 // lib/foodBoxTour.ts has no imports, so Deno can test it directly.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { shouldOfferTour, TOUR_COPY, tourNext, type TourStep } from "./foodBoxTour.ts";
+import { shouldOfferTour, TOUR_COPY, tourEndReason, tourNext, type TourStep } from "./foodBoxTour.ts";
 
 const ready = {
   signedIn: true,
@@ -11,10 +11,11 @@ const ready = {
   isToday: true,
   dayReady: true,
   flowIdle: true,
+  historyLoaded: true,
   history: [{ logged_via: null }, { logged_via: "manual" }],
 };
 
-Deno.test("offers the tour to a signed-in user who has never typed a meal", () => {
+Deno.test("offers the tour to a signed-in user with no typed meal in their recent history", () => {
   assert(shouldOfferTour(ready));
 });
 
@@ -22,7 +23,7 @@ Deno.test("never offers it again once done", () => {
   assert(!shouldOfferTour({ ...ready, done: true }));
 });
 
-Deno.test("never offers it to someone who already logs with Drona", () => {
+Deno.test("never offers it to someone who logged with Drona in their recent history", () => {
   assert(!shouldOfferTour({ ...ready, history: [{ logged_via: "manual" }, { logged_via: "ai" }] }));
   assert(!shouldOfferTour({ ...ready, history: [{ logged_via: "ai_auto" }] }));
 });
@@ -36,6 +37,32 @@ Deno.test("waits for the day to load, for today, for the box to be free, and for
 
 Deno.test("done is unknown until storage answers, and unknown is not an offer", () => {
   assert(!shouldOfferTour({ ...ready, done: null }));
+});
+
+Deno.test("an empty history that has not loaded yet is not 'never typed a meal'", () => {
+  assert(!shouldOfferTour({ ...ready, historyLoaded: false, history: [] }));
+});
+
+Deno.test("ends the tour when the user moves off today while it points at the box", () => {
+  for (const step of ["type", "write", "retry"] as const) {
+    assertEquals(tourEndReason(step, { isToday: false, history: ready.history }), "not_today");
+  }
+});
+
+Deno.test("ends the tour when history shows they already log with Drona", () => {
+  assertEquals(tourEndReason("type", { isToday: true, history: [{ logged_via: "ai" }] }), "uses_drona");
+});
+
+Deno.test("never ends a meal the user is in the middle of", () => {
+  // Reading, the card, the last line: their own meal is mid-way, and their own
+  // Add is what puts an 'ai' line in history.
+  for (const step of ["reading", "review", "done"] as const) {
+    assertEquals(tourEndReason(step, { isToday: false, history: [{ logged_via: "ai" }] }), null);
+  }
+});
+
+Deno.test("keeps going while nothing changed", () => {
+  assertEquals(tourEndReason("write", { isToday: true, history: ready.history }), null);
 });
 
 Deno.test("the happy path: tap the box, send, review, add", () => {

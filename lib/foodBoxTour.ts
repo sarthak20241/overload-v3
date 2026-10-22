@@ -1,6 +1,8 @@
 /**
  * The food box tour: a one-time guided walk through logging a meal by typing
- * it, for a user who has only ever used food search.
+ * it, for a user whose recent diary (the last four weeks the screen already
+ * loads) has no meal Drona read. Someone who typed meals long ago and has
+ * been away may get it too; that is accepted, it is one tip they can skip.
  *
  * Why it exists: a new user (2026-10-21) logged 13 foods through about 45
  * manual searches, several of which found nothing, and never touched the box
@@ -65,14 +67,34 @@ export interface TourGate {
   dayReady: boolean;
   /** Nothing is being read or reviewed in the box right now. */
   flowIdle: boolean;
+  /** `history` came from the server, not just a cold cache. An empty list
+   *  before that is "not here yet", never "has not typed a meal". */
+  historyLoaded: boolean;
   history: LoggedLine[];
 }
 
-/** Offer the tour only to someone who has never typed a meal: a line Drona
- *  read is logged_via 'ai' (review then Add) or 'ai_auto' ("Just log it"). */
+const usesDrona = (history: LoggedLine[]) => history.some((l) => (l.logged_via ?? '').startsWith('ai'));
+
+/** Offer the tour only to someone with no typed meal in recent history: a
+ *  line Drona read is logged_via 'ai' (review then Add) or 'ai_auto' ("Just
+ *  log it"). */
 export function shouldOfferTour(g: TourGate): boolean {
-  if (!g.signedIn || g.done !== false || !g.isToday || !g.dayReady || !g.flowIdle) return false;
-  return !g.history.some((l) => (l.logged_via ?? '').startsWith('ai'));
+  if (!g.signedIn || g.done !== false || !g.isToday || !g.dayReady || !g.flowIdle || !g.historyLoaded) return false;
+  return !usesDrona(g.history);
+}
+
+/** Why a showing tour should stop, or null to keep going. Only while it is
+ *  pointing at the box: once a meal is being read or reviewed, it is the
+ *  user's own meal mid-way, and their own Add is what puts an 'ai' line in
+ *  history. */
+export function tourEndReason(
+  step: TourStep,
+  now: { isToday: boolean; history: LoggedLine[] },
+): 'not_today' | 'uses_drona' | null {
+  if (step !== 'type' && step !== 'write' && step !== 'retry') return null;
+  if (!now.isToday) return 'not_today';
+  if (usesDrona(now.history)) return 'uses_drona';
+  return null;
 }
 
 /** Drona speaks. Short, one idea each, no em dashes. */

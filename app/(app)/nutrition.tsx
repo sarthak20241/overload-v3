@@ -81,7 +81,7 @@ import { CopyMealSheet } from '@/components/diet/CopyMealSheet';
 import { learnPatterns, mealsToSuggest, copyableFromDay, withPreviousDay, type FoodSuggestion, type HistoryEntry } from '@/lib/foodPatterns';
 import { useFoodHistory, useDayMealLines, relogLines, lineAsItem } from '@/lib/foodPatternsData';
 import { FoodBoxTourTip } from '@/components/diet/FoodBoxTourTip';
-import { shouldOfferTour, tourNext, TOUR_COPY, type TourEvent, type TourStep } from '@/lib/foodBoxTour';
+import { shouldOfferTour, tourEndReason, tourNext, TOUR_COPY, type TourEvent, type TourStep } from '@/lib/foodBoxTour';
 import { getFoodBoxTourDone, setFoodBoxTourDone } from '@/lib/foodBoxTourStore';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
@@ -211,7 +211,9 @@ type SearchSource = 'box_icon' | 'meal_row' | 'guest_bar';
  *  The target meal goes through setLogMeal (a module store the screens read on
  *  focus) because food-search is a retained Tabs screen and router params went
  *  stale across re-opens — which made every log land in breakfast. */
+let lastSearchOpenAt = 0;
 function openSearch(meal: MealType, source: SearchSource) {
+  lastSearchOpenAt = Date.now();
   track('food_search_opened', { source, meal });
   setLogMeal(meal);
   router.push({ pathname: '/food-search', params: { meal } });
@@ -600,7 +602,7 @@ export default function NutritionScreen() {
   // otherwise count as a change and fetch the history twice per open.
   // Counted back from the day on screen when it is in the past, else today.
   const historyAnchor = viewIso < todayIso ? viewIso : todayIso;
-  const { history } = useFoodHistory(!isSignedIn ? 'guest' : dayUnknown ? null : diaryVersion, historyAnchor);
+  const { history, loaded: historyLoaded } = useFoodHistory(!isSignedIn ? 'guest' : dayUnknown ? null : diaryVersion, historyAnchor);
   const patterns = useMemo(() => learnPatterns(isSignedIn ? history : [], viewIso, todayIso), [history, viewIso, todayIso, isSignedIn]);
 
   // ── Food box tour (lib/foodBoxTour) ──────────────────────────────────────
@@ -625,7 +627,7 @@ export default function NutritionScreen() {
   /** Ends it before the last step: Skip, or the user went elsewhere. */
   const endTour = useCallback((how: 'skipped' | 'left', reason?: string) => {
     const step = tourStepRef.current;
-    if (!step || step === 'done') { setTourStep(null); return; }
+    if (!step || step === 'done') { tourStepRef.current = null; setTourStep(null); return; }
     tourStepRef.current = null;
     setTourStep(null);
     markTourDone();
@@ -647,8 +649,14 @@ export default function NutritionScreen() {
   }, [markTourDone]);
   const offerTour = shouldOfferTour({
     signedIn: !!isSignedIn, done: tourDone, isToday, dayReady: !dayUnknown,
-    flowIdle: flow.status === 'idle', history,
+    flowIdle: flow.status === 'idle', historyLoaded, history,
   });
+  // While it points at the box: moved off today, or history landed showing
+  // they already type meals. Either way the tip no longer fits.
+  const tourEnd = tourStep ? tourEndReason(tourStep, { isToday, history }) : null;
+  useEffect(() => {
+    if (tourEnd) endTour('left', tourEnd);
+  }, [tourEnd, endTour]);
   useEffect(() => {
     if (!offerTour || tourStep !== null) return;
     // A beat after the day lands, so the tip does not arrive with the shimmer.
@@ -705,11 +713,20 @@ export default function NutritionScreen() {
     track('food_box_focused', { tour: tourStepRef.current ?? 'none' });
     tourEvent('focused');
   }, [tourEvent]);
+  const textRef = useRef(text);
+  textRef.current = text;
   const onBoxBlur = useCallback(() => {
     const f = boxFocusRef.current;
     boxFocusRef.current = null;
-    if (f && !f.sent) track('food_box_abandoned', { had_text: text.trim().length > 0 });
-  }, [text]);
+    if (!f || f.sent) return;
+    const hadText = textRef.current.trim().length > 0;
+    // A tap on search (the icon in the box, or a meal's Add row) blurs the
+    // box too. The tap and the blur land in either order, so look a beat
+    // later and say which it was: switching to search is not giving up.
+    setTimeout(() => {
+      track('food_box_abandoned', { had_text: hadText, to_search: Date.now() - lastSearchOpenAt < 1500 });
+    }, 300);
+  }, []);
   const prevDate = new Date(viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate() - 1);
   const prevIso = ymd(prevDate);
   const prevLines = useDayMealLines(history, prevIso);
