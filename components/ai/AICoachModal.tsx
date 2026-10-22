@@ -64,6 +64,7 @@ import { SelectTextSheet, coachPlainText, type MessageSheetTarget } from '@/comp
 import { MessageCopyButton } from '@/components/coach/MessageCopyButton';
 import { PastChatsList } from '@/components/coach/PastChatsList';
 import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
+import { FRESH_TOKEN_BUDGET_MS, freshTokenAfterExpiry, tokenWithin } from '@/lib/authRetry';
 import { withChangeSource } from '@/lib/planChangeSource';
 import { ilikeExact, parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
 import { writeWithTargetFallback } from '@/lib/routineTargets';
@@ -550,11 +551,22 @@ interface StreamingOptions {
   // free user's first phase-1 build through on it (once); for everyone else
   // it is ignored.
   phaseId?: string;
+  // A token straight from Clerk with the cache skipped. Called once, when the
+  // server rejects `token` as expired (lib/authRetry.ts).
+  freshToken?: () => Promise<string | null>;
+}
+
+// The stream's `freshToken`: a token straight from Clerk with the cache
+// skipped, or null when there is no Clerk session to ask.
+function freshTokenFrom(
+  getToken: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null,
+): () => Promise<string | null> {
+  return () => getToken?.({ skipCache: true }) ?? Promise.resolve(null);
 }
 
 function callAICoachStreaming(
   messages: { role: string; content: string }[],
-  token: string,
+  initialToken: string,
   callbacks: StreamingCallbacks,
   options: StreamingOptions = {},
 ): { abort: () => void } {
@@ -578,6 +590,9 @@ function callAICoachStreaming(
   }
 
   let buffer = '';
+  let token = initialToken;
+  // One fresh-token retry per call (lib/authRetry.ts decides when).
+  let tokenRetried = false;
 
   const processChunk = (text: string) => {
     buffer += text;
@@ -627,8 +642,12 @@ function callAICoachStreaming(
   };
 
   // One attempt. Returns 'retry_without_mode' when the server rejected the
-  // requested mode as a Pro flow because it predates that mode existing.
-  const attempt = async (mode: StreamingOptions['mode']): Promise<'retry_without_mode' | void> => {
+  // requested mode as a Pro flow because it predates that mode existing, and
+  // 'retry_fresh_token' when it rejected the token as expired and `token` now
+  // holds a fresh one.
+  const attempt = async (
+    mode: StreamingOptions['mode'],
+  ): Promise<'retry_without_mode' | 'retry_fresh_token' | void> => {
       const response = await expoFetch(`${supabaseUrl}/functions/v1/ai-coach`, {
         method: 'POST',
         headers: {
@@ -655,6 +674,21 @@ function callAICoachStreaming(
 
       if (!response.ok) {
         const body = await response.text();
+        if (options.freshToken && !tokenRetried) {
+          const freshToken = options.freshToken;
+          const next = await freshTokenAfterExpiry(
+            response.status,
+            body,
+            token,
+            () => tokenWithin(freshToken, FRESH_TOKEN_BUDGET_MS),
+          );
+          if (controller.signal.aborted) return;
+          if (next) {
+            tokenRetried = true;
+            token = next;
+            return 'retry_fresh_token';
+          }
+        }
         // 402s carry a structured reason. Cap hits are a product moment
         // (upgrade sheet), not an error state — route them to onCapHit when
         // the caller can render one.
@@ -717,11 +751,20 @@ function callAICoachStreaming(
 
   (async () => {
     try {
-      if (await attempt(options.mode) === 'retry_without_mode') {
-        // Second and last attempt; a plain-chat request can't trip the same
-        // guard, so this can't loop.
+      let mode = options.mode;
+      let modeRetried = false;
+      // Each retry kind happens at most once (attempt() and modeRetried see
+      // to that), so this ends in three attempts at worst.
+      while (true) {
+        const outcome = await attempt(mode);
+        if (outcome === 'retry_without_mode' && !modeRetried) {
+          // A plain-chat request can't trip the same guard again.
+          modeRetried = true;
+          mode = undefined;
+        } else if (outcome !== 'retry_fresh_token') {
+          return;
+        }
         buffer = '';
-        await attempt(undefined);
       }
     } catch (e: any) {
       if (e?.name === 'AbortError' || controller.signal.aborted) return;
@@ -1105,7 +1148,7 @@ function ChatScreen({
   // Falls back to null in guest mode (no Clerk key).
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
-  const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
+  const getToken: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
   // The starter (visible greeting) the chat opens on. Tailored to workout mode.
   const makeStarter = (): ChatMessage =>
     workoutContext
@@ -1499,6 +1542,7 @@ function ChatScreen({
       conversationId: workoutContext ? undefined : ensureActiveConversationId(userId),
       clientMsgId: workoutContext ? undefined : userMsg?.id,
       ...(opens ? { openedByApp: true } : {}),
+      freshToken: freshTokenFrom(getToken),
     });
   }, [input, loading, messages, supabase, getToken, workoutContext, canEditWorkout, markStarted, setMessages, userId]);
 
@@ -2481,7 +2525,7 @@ function GeneratePlanScreen({
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
-  const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
+  const getToken: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
 
   const [goal, setGoal] = useState(seed?.goal ?? '');
   const [days, setDays] = useState(seed?.days ?? '4 days');
@@ -2699,7 +2743,11 @@ function GeneratePlanScreen({
       // phaseId only on a fresh build: each request carrying it spends one of a
       // free user's 3 phase-1 tries. (Refine runs through RefineChatScreen with
       // a mode, which the server never counts.)
-      { forceTool: 'generate_plan', phaseId: isRefine ? undefined : phaseId },
+      {
+        forceTool: 'generate_plan',
+        phaseId: isRefine ? undefined : phaseId,
+        freshToken: freshTokenFrom(getToken),
+      },
     );
   };
 
@@ -3203,7 +3251,7 @@ function GenerateWorkoutScreen({
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
-  const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
+  const getToken: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
 
   const [focus, setFocus] = useState('');
   const [duration, setDuration] = useState('45 min');
@@ -3362,7 +3410,7 @@ function GenerateWorkoutScreen({
           onRequestUpgrade?.(kind);
         },
       },
-      { forceTool: 'generate_workout' },
+      { forceTool: 'generate_workout', freshToken: freshTokenFrom(getToken) },
     );
   };
 
@@ -3728,7 +3776,7 @@ function RefineChatScreen({
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
-  const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
+  const getToken: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
 
   // Pre-compute the recap and the tailored starter. These live as the
   // first two conversation turns (synthetic user recap, then assistant
@@ -4010,6 +4058,7 @@ function RefineChatScreen({
       // which is true for all refine_*+generate_* and discuss_*+generate_*
       // combinations.
       ...(shouldForceTool ? { forceTool: forceToolName } : {}),
+      freshToken: freshTokenFrom(getToken),
     });
   }, [input, loading, messages, getToken, recapText, starterText, mode, kind, handleStructured, onRequestUpgrade]);
 

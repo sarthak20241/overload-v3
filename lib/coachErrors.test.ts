@@ -111,3 +111,14 @@ Deno.test("the cause is kept in the detail, not swapped for it", async () => {
   assertStringIncludes(logged, "Failed to send a request to the Edge Function");
   assertStringIncludes(logged, "Network request failed");
 });
+
+// The coach stream's own failure line when an expired token could not be
+// replaced (lib/authRetry.ts found no fresh one, or the retry 401'd again).
+// It must land on the sign-in copy: the user really does need to sign in.
+Deno.test("an expired-token 401 from the coach stream reads as signed out", () => {
+  const body = JSON.stringify({
+    error: "Unauthorized",
+    debug: 'verify failed: "exp" claim timestamp check failed',
+  });
+  assertEquals(coachErrorMessage(`HTTP 401: ${body}`), SIGNED_OUT);
+});
