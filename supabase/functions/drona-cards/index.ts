@@ -66,15 +66,15 @@ const CRON_CONCURRENCY = 4;
 /**
  * Stop starting phase metric checks this long after the metrics pass began,
  * and in any case once the run is METRICS_LATEST_MS old: the cron call times
- * out at 55 s, the cards and check-ins run first, and the moments pass must
- * still get its turn. The budget is checked before each batch (the first
- * batch always runs, so a busy card pass cannot push the metrics out of
- * every run), and a batch can hold one model call per user (20 s timeout
- * each, in parallel), so the last batch started inside the budget ends by
- * about 40 s. What is left waits for the next run.
+ * out at 55 s, and the cards, check-ins and moments all run first. The
+ * budget is checked before each batch (the first batch always runs, so a
+ * busy card pass cannot push the metrics out of every run), and a batch can
+ * hold one model call per user (20 s timeout each, in parallel), so the
+ * last batch started inside the budget ends by about 45 s. What is left
+ * waits for the next run.
  */
 const METRICS_BUDGET_MS = 20_000;
-const METRICS_LATEST_MS = 22_000;
+const METRICS_LATEST_MS = 25_000;
 /** Cards older than this are history nobody reads; the facts window is 8 weeks. */
 const KEEP_WEEKS = 26;
 
@@ -499,6 +499,11 @@ async function runCron(): Promise<Response> {
       });
     }
 
+    // Moments after the weekly cards: a weekly card written this run is waiting,
+    // so the moment rules leave that person alone today. Before the metrics
+    // pass, so a late metrics batch can never starve them.
+    const moments = await runMoments(db, now.getTime());
+
     // The phase metrics check (.planning/phase-metrics/SPEC.md): once a local
     // week per user with an active program, whether or not a card is due.
     // One read finds who has a metric row not yet checked this LOCAL week
@@ -553,9 +558,6 @@ async function runCron(): Promise<Response> {
       });
     }
 
-    // Moments after the weekly cards: a weekly card written this run is waiting,
-    // so the moment rules leave that person alone today.
-    const moments = await runMoments(db, now.getTime());
     return json({ users: weeks.length, due: due.length, saved, held, checkins, pick_failed: pickFailed,
       words_asked: wordsAsked, words_failed: wordsFailed, moments_made: moments.made, moments_failed: moments.failed,
       metrics_checked: metricsChecked, coach_lines: linesWritten, metrics_skipped: metricsSkipped,

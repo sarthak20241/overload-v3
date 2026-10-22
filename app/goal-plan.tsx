@@ -138,6 +138,9 @@ export default function GoalPlanScreen() {
   const [loading, setLoading] = useState(true);
   const loadSeq = useRef(0);
   const viewedRef = useRef(false);
+  // Bumped on every focus, so the small reads below (weight, readiness)
+  // follow a value logged on another screen.
+  const [focusTick, setFocusTick] = useState(0);
   // The hero metric's readings for the chart, keyed by metric id.
   const [series, setSeries] = useState<{ id: string; data: MetricSeries } | null>(null);
   // Today's weight, for a program with no hero metric.
@@ -184,7 +187,7 @@ export default function GoalPlanScreen() {
     }
   }, [supabase, clerkId]);
   useEffect(() => { load(); }, [load]);
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => { load(); setFocusTick((t) => t + 1); }, [load]));
 
   // ── Derived ────────────────────────────────────────────────────────────────
   const totalWeeks = program ? (program.total_weeks ?? program.phases.reduce((a, p) => a + p.duration_weeks, 0)) : 0;
@@ -229,10 +232,13 @@ export default function GoalPlanScreen() {
       .order('metric_date', { ascending: false })
       .limit(1)
       .maybeSingle()
-      .then(({ data }) => { if (live) setWeightKg(data?.value != null && Number.isFinite(Number(data.value)) ? Number(data.value) : null); });
+      .then(
+        ({ data }) => { if (live) setWeightKg(data?.value != null && Number.isFinite(Number(data.value)) ? Number(data.value) : null); },
+        (e: unknown) => { console.warn('[programs] weight read failed', e); },
+      );
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supabase, clerkId, program?.id, hero?.id]);
+  }, [supabase, clerkId, program?.id, hero?.id, focusTick]);
 
   // Today's readiness score, for the Recover row when the phase tracks no sleep.
   useEffect(() => {
@@ -245,10 +251,13 @@ export default function GoalPlanScreen() {
       .eq('metric_type', 'readiness_score')
       .eq('metric_date', todayLocalISO())
       .maybeSingle()
-      .then(({ data }) => { if (live) setReadinessToday(data?.value != null && Number.isFinite(Number(data.value)) ? Number(data.value) : null); });
+      .then(
+        ({ data }) => { if (live) setReadinessToday(data?.value != null && Number.isFinite(Number(data.value)) ? Number(data.value) : null); },
+        (e: unknown) => { console.warn('[programs] readiness read failed', e); },
+      );
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supabase, clerkId, program?.id]);
+  }, [supabase, clerkId, program?.id, focusTick]);
 
   const buildSplitFor = useCallback((ph: ActiveProgramPhaseRow) => {
     const b = ph.training_block;

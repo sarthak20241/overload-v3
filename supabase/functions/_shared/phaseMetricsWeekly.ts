@@ -97,10 +97,11 @@ export function currentValueFor(m: MetricToCheck, r: WeeklyReadings): number | n
     case 'cardio_sessions': return r.cardio_sessions;
     case 'sleep_hours': return r.sleep_avg_h;
     case 'protein_days': return r.protein_days;
-    // A metric that names its exercise reads that exercise's best; one that
-    // does not reads the best of any exercise.
-    case 'distance': return m.ref?.exercise_id ? (Number.isFinite(r.best_by_metric[m.id]) ? r.best_by_metric[m.id] : null) : r.distance_best_km;
-    case 'duration': return m.ref?.exercise_id ? (Number.isFinite(r.best_by_metric[m.id]) ? r.best_by_metric[m.id] : null) : r.duration_best_min;
+    // A metric that names its exercise reads that exercise's best, and
+    // nothing at all while the name is unresolved; only one that names no
+    // exercise reads the best of any exercise.
+    case 'distance': return m.ref?.exercise_name ? (Number.isFinite(r.best_by_metric[m.id]) ? r.best_by_metric[m.id] : null) : r.distance_best_km;
+    case 'duration': return m.ref?.exercise_name ? (Number.isFinite(r.best_by_metric[m.id]) ? r.best_by_metric[m.id] : null) : r.duration_best_min;
     case 'custom': return Number.isFinite(r.custom_latest[m.id]) ? r.custom_latest[m.id] : null;
   }
 }

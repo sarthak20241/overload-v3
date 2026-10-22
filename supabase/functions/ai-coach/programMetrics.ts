@@ -116,7 +116,7 @@ export function withPhaseMetrics(
     if (!ph || typeof ph !== "object") return ph;
     const seq = (ph as { seq?: unknown }).seq;
     if (typeof seq !== "number") return ph;
-    const list = (bySeq.get(seq) ?? [])
+    const list = [...(bySeq.get(seq) ?? [])]
       .sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0))
       .map((r) => metricForPrompt(r, current))
       .filter((m): m is PromptMetric => m != null);

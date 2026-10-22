@@ -48,6 +48,8 @@ Deno.test("each kind reads its own source", () => {
   const named = readings({ duration_best_min: 32, best_by_metric: { "m-plank": 2.5 } });
   assertEquals(currentValueFor(metric({ id: "m-plank", kind: "duration", ref: { exercise_name: "Plank", exercise_id: "ex-plank" } }), named), 2.5);
   assertEquals(currentValueFor(metric({ id: "m-other", kind: "duration", ref: { exercise_name: "Row", exercise_id: "ex-row" } }), named), null);
+  // Named but not yet resolved to an id: still never another exercise's set.
+  assertEquals(currentValueFor(metric({ id: "m-new", kind: "duration", ref: { exercise_name: "Plank" } }), named), null);
   assertEquals(currentValueFor(metric({ id: "m9", kind: "custom", ref: { name: "Hold" } }), r), 12);
 });
 

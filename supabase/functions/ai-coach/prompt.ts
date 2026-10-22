@@ -761,7 +761,7 @@ const PHASE_METRICS_SCHEMA = {
       kind: {
         type: 'string',
         enum: [...METRIC_KINDS],
-        description: 'bodyweight: the latest weigh-in, kg. lift_e1rm: one lift\'s estimated one-rep max from logged sets, kg (name it in exercise). sets_per_muscle: working sets on one muscle group a week (name it in muscle). steps: steps a day, averaged over the week. sessions_per_week: finished workouts a week. cardio_sessions: finished workouts with a timed cardio exercise a week. sleep_hours: hours asleep a night, averaged. protein_days: days a week at or above the protein target. distance: the longest distance in one logged set, km. duration: the longest time in one logged set, minutes. For both, name the exercise (see exercise) unless any exercise should count. custom: a number the user logs by hand.',
+        description: 'bodyweight: the latest weigh-in, kg. lift_e1rm: one lift\'s estimated one-rep max from logged sets, kg (exercise is required for it). sets_per_muscle: working sets on one muscle group a week (name it in muscle). steps: steps a day, averaged over the week. sessions_per_week: finished workouts a week. cardio_sessions: finished workouts with a timed cardio exercise a week. sleep_hours: hours asleep a night, averaged. protein_days: days a week at or above the protein target. distance: the longest distance in one logged set, km. duration: the longest time in one logged set, minutes. For both, name the exercise (see exercise) unless any exercise should count. custom: a number the user logs by hand.',
       },
       hero: { type: 'boolean', description: 'True on exactly one metric per phase: the one the phase is judged on.' },
       target: { type: 'number', description: 'The value to reach by the end of this phase (number kinds) or to hit each week (weekly kinds), in the kind\'s unit.' },
@@ -773,6 +773,9 @@ const PHASE_METRICS_SCHEMA = {
       unit: { type: 'string', description: 'custom only: the unit the user logs in, e.g. "s", "reps", "cm", "km".' },
     },
     required: ['kind', 'target'],
+    // A lift is nothing without its exercise: the client drops a lift_e1rm
+    // metric that names none, so the schema asks for it up front.
+    allOf: [{ if: { properties: { kind: { const: 'lift_e1rm' } }, required: ['kind'] }, then: { required: ['exercise'] } }],
   },
 };
 

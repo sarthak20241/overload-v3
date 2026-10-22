@@ -509,7 +509,10 @@ async function gatherReadings(
     if (!kinds.has(kind)) continue;
     const ofKind = metrics.filter((m) => m.kind === kind);
     for (const m of ofKind.filter((m) => m.ref?.exercise_id)) jobs.push(bestSet(kind, m)());
-    if (ofKind.some((m) => !m.ref?.exercise_id)) jobs.push(bestSet(kind, null)());
+    // The any-exercise read is only for metrics that name no exercise. A
+    // named metric whose name matched nothing gets no reading at all rather
+    // than another exercise's best (currentValueFor reads it the same way).
+    if (ofKind.some((m) => !m.ref?.exercise_name)) jobs.push(bestSet(kind, null)());
   }
   if (kinds.has("custom")) {
     // The latest log of each custom metric, one read per metric (a phase
