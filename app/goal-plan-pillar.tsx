@@ -6,6 +6,11 @@
  * phase screen (the phase being viewed). Same shape for all three: eyebrow
  * (phase and week), the title, one hero number, one status line, one weekly
  * visual, a short section of rows, and the coach's tip as a quote.
+ *
+ * The hero is the SAME number and status the plan row on the Goal screen
+ * shows (lib/phaseMetricHeadline.ts): the job's last-whole-week reading,
+ * labelled "last week", or the live fallback with no status word. Live
+ * this-week progress lives only in the week visual.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, ScrollView, StyleSheet, RefreshControl } from 'react-native';
@@ -18,8 +23,10 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { loadActiveProgram, daysBetweenISO, todayLocalISO, type ActiveProgram, type ActiveProgramPhaseRow } from '@/lib/programData';
 import {
-  formatMetricValue, heroOf, STATUS_LABEL, statusFor, statusTone, type MetricStatus, type PhaseMetricRow,
+  formatMetricValue, heroOf, STATUS_LABEL, statusTone, type MetricStatus, type PhaseMetricRow,
 } from '@/lib/phaseMetrics';
+import { headlineText, liveFrom, metricHeadline } from '@/lib/phaseMetricHeadline';
+import { useNutritionTargets, useTodayNutrition } from '@/lib/dietData';
 import {
   DAY_LETTERS, DAY_NAMES_LONG, hrvVerdict, loadLastNights, loadRoutineSummaries, loadTodayVitals, loadWeekSessions,
   readinessVerdict, rhrVerdict, weekdayIndex, type Night, type RoutineSummary, type TodayVitals, type WeekSessions,
@@ -101,6 +108,8 @@ export default function GoalPlanPillarScreen() {
   const isCur = program != null && phase != null && phase.seq === program.currentPhaseSeq;
   const today = todayLocalISO();
   const todayIdx = weekdayIndex(today);
+  // The live fallback, from what this pillar loaded (Train: the week; Recover: the nights).
+  const live = liveFrom(week, nights);
 
   const buildSplitFor = useCallback((ph: ActiveProgramPhaseRow) => {
     const b = ph.training_block;
@@ -139,6 +148,7 @@ export default function GoalPlanPillarScreen() {
   };
   const metricRow = (m: PhaseMetricRow, i: number, n: number) => {
     const cur = m.current_value;
+    const status = metricHeadline(m, null).status;
     const t = formatMetricValue(m.kind, m.target_value, m.unit);
     const v = cur == null ? null : formatMetricValue(m.kind, cur, m.unit);
     const name = m.kind === 'steps' ? 'Steps' : m.kind === 'cardio_sessions' ? 'Cardio' : m.kind === 'sessions_per_week' ? 'Sessions' : m.kind === 'protein_days' ? 'Protein days' : m.kind === 'sleep_hours' ? 'Sleep' : m.kind === 'sets_per_muscle' ? `${m.ref?.muscle ?? 'Muscle'} sets` : m.kind === 'lift_e1rm' ? `${m.ref?.exercise_name ?? 'Lift'} e1RM` : m.kind === 'custom' ? (m.ref?.name ?? 'Your metric') : m.kind === 'bodyweight' ? 'Weight' : m.kind === 'distance' ? 'Distance' : 'Duration';
@@ -149,10 +159,10 @@ export default function GoalPlanPillarScreen() {
         title={name}
         value={v ?? undefined}
         valueRest={v == null ? (m.kind === 'custom' ? 'Not logged yet' : 'No reading yet') : rest}
-        status={{ label: STATUS_LABEL[m.status], tone: statusTone(m.status) }}
+        status={status ? { label: STATUS_LABEL[status], tone: statusTone(status) } : null}
         first={i === 0}
         last={i === n - 1}
-        accessibilityLabel={`${name}, ${v ?? 'no reading'} ${v == null ? '' : rest}, ${STATUS_LABEL[m.status]}`}
+        accessibilityLabel={`${name}, ${v ?? 'no reading'} ${v == null ? '' : rest}${status ? `, ${STATUS_LABEL[status]}` : ''}`}
       />
     );
   };
@@ -163,18 +173,20 @@ export default function GoalPlanPillarScreen() {
     const planned = ph.training_block?.days_per_week ?? (pattern ? pattern.filter((d) => d !== REST).length : null);
     const sessionsMetric = ph.metrics.find((m) => m.kind === 'sessions_per_week') ?? null;
     const target = sessionsMetric?.target_value ?? planned ?? null;
-    const done = week?.count ?? 0;
-    const status: MetricStatus | null = sessionsMetric?.status ?? null;
+    // The hero: the job's reading when there is one (any phase), else for the
+    // current phase the live count so far this week, else the plan.
+    const h = sessionsMetric && (sessionsMetric.current_value != null || isCur) ? metricHeadline(sessionsMetric, live) : null;
+    const heroNum = h?.num ? h.num : isCur ? String(live.sessionsThisWeek) : (planned != null ? String(planned) : '–');
+    const heroRest = h?.num ? h.rest : isCur ? `of ${target ?? '–'} sessions so far this week` : 'sessions a week in this phase';
+    const status: MetricStatus | null = h?.status ?? null;
     const split = ph.training_block?.split_type ?? null;
     const others = supporting(ph).filter((m) => m.kind !== 'sessions_per_week');
     return (
       <>
         <Stagger index={2}>
-          <View style={styles.hero}>
-            <Text style={[T.hero, { color: C.foreground }]}>{isCur ? done : (planned ?? '–')}</Text>
-            <Text style={[T.unit, { color: C.mutedFg }]}>
-              {isCur ? `of ${target ?? '–'} sessions this week` : 'sessions a week in this phase'}
-            </Text>
+          <View style={styles.hero} accessibilityLabel={`${heroNum} ${heroRest}${status ? `, ${STATUS_LABEL[status]}` : ''}`}>
+            <Text style={[T.hero, { color: C.foreground }]}>{heroNum}</Text>
+            <Text style={[T.unit, { color: C.mutedFg, flexShrink: 1 }]}>{heroRest}</Text>
           </View>
           <Text style={[T.body, { color: C.mutedFg, marginTop: S.xs }]}>
             {split ?? 'Your split'}{status ? <> · {statusText(status)}</> : null}
@@ -263,6 +275,7 @@ export default function GoalPlanPillarScreen() {
   // ---- EAT -------------------------------------------------------------------
   const renderEat = (ph: ActiveProgramPhaseRow) => {
     const protein = ph.metrics.find((m) => m.kind === 'protein_days') ?? null;
+    const proteinLine = protein ? metricHeadline(protein, live) : null;
     const kcal = ph.diet_calorie_target;
     const fuel = ph.diet_fuel_days && ph.diet_fuel_days.length > 0 ? ph.diet_fuel_days : null;
     const fuelKcal = fuel ? Math.max(...fuel.map((f) => f.kcal)) : 0;
@@ -281,8 +294,8 @@ export default function GoalPlanPillarScreen() {
             <Text style={[T.unit, { color: C.mutedFg }]}>kcal a day</Text>
           </View>
           <Text style={[T.body, { color: C.mutedFg, marginTop: S.xs }]}>
-            {protein
-              ? <>Protein {protein.current_value != null ? `${formatMetricValue('protein_days', protein.current_value)} of 7 days` : 'not logged yet'} · {statusText(protein.status)}</>
+            {proteinLine
+              ? <>{headlineText(proteinLine)}{proteinLine.status ? <> · {statusText(proteinLine.status)}</> : null}</>
               : ph.diet_protein_g != null ? `${ph.diet_protein_g} g protein a day` : 'Log your food and I hold the line.'}
           </Text>
         </Stagger>
@@ -333,7 +346,13 @@ export default function GoalPlanPillarScreen() {
             {others.map((m, i) => metricRow(m, i, others.length))}
           </Stagger>
         )}
-        <Stagger index={6}><CoachTip text={ph.diet_directive} /></Stagger>
+
+        {isCur && (
+          <Stagger index={6} style={styles.section}>
+            <EatToday />
+          </Stagger>
+        )}
+        <Stagger index={7}><CoachTip text={ph.diet_directive} /></Stagger>
       </>
     );
   };
@@ -343,23 +362,28 @@ export default function GoalPlanPillarScreen() {
     const sleepMetric = ph.metrics.find((m) => m.kind === 'sleep_hours') ?? null;
     const target = sleepMetric?.target_value ?? SLEEP_TARGET_H;
     const slept = nights.filter((n) => n.hours != null);
-    const avg = slept.length > 0 ? slept.reduce((a, n) => a + (n.hours ?? 0), 0) / slept.length : null;
-    const atTarget = slept.filter((n) => (n.hours ?? 0) >= target).length;
-    const status: MetricStatus | null = sleepMetric?.status
-      ?? (avg != null ? statusFor({ kind: 'sleep_hours', direction: 'up', target_value: target, current_value: avg, progress: 0.5 }) : null);
+    // The hero: the job's reading when there is one, else the live average over
+    // the nights that exist, saying how many when fewer than four. No status
+    // word on a live number; the lime bars below show which nights hit target.
+    const h = sleepMetric ? metricHeadline(sleepMetric, live) : null;
+    const liveRest = live.sleepNights < 4 ? `h a night from ${live.sleepNights} night${live.sleepNights === 1 ? '' : 's'}` : 'h a night, last 7 nights';
+    const heroNum = h?.num ? h.num : live.sleepAvg != null ? formatMetricValue('sleep_hours', live.sleepAvg) : null;
+    const heroRest = h?.num ? h.rest : liveRest;
+    const status: MetricStatus | null = h?.status ?? null;
     const noHealth = vitals != null && !vitals.anyHealthData && slept.length === 0;
     const maxH = Math.max(target, ...slept.map((n) => n.hours ?? 0), 1);
     const others = supporting(ph).filter((m) => m.kind !== 'sleep_hours');
     return (
       <>
         <Stagger index={2}>
-          <View style={styles.hero}>
-            <Text style={[T.hero, { color: C.foreground }]}>{avg != null ? avg.toFixed(1) : '–'}</Text>
-            <Text style={[T.unit, { color: C.mutedFg }]}>h sleep a night</Text>
+          <View style={styles.hero} accessibilityLabel={heroNum != null ? `${heroNum} ${heroRest}${status ? `, ${STATUS_LABEL[status]}` : ''}` : 'No sleep recorded'}>
+            <Text style={[T.hero, { color: C.foreground }]}>{heroNum ?? '–'}</Text>
+            <Text style={[T.unit, { color: C.mutedFg, flexShrink: 1 }]}>{heroNum != null ? heroRest : 'h sleep a night'}</Text>
           </View>
           <Text style={[T.body, { color: C.mutedFg, marginTop: S.xs }]}>
-            {avg != null
-              ? <>{atTarget} of {slept.length} night{slept.length === 1 ? '' : 's'} at {target}h+{status ? <> · {statusText(status)}</> : null}</>
+            {heroNum != null
+              ? <>Target {target}h a night{status ? <> · {statusText(status)}</> : null}</>
+              : h && h.rest !== 'No reading yet' ? h.rest
               : noHealth ? 'No nights recorded yet.' : 'No sleep in the last seven nights.'}
           </Text>
         </Stagger>
@@ -480,6 +504,33 @@ export default function GoalPlanPillarScreen() {
         onProgramApplied={() => load()}
       />
     </View>
+  );
+}
+
+/**
+ * TODAY on the Eat screen: calories and protein eaten today of today's
+ * target, from the same hooks the dashboard's Fuel card reads (today's diary
+ * and the nutrition targets, fuel day included).
+ */
+function EatToday() {
+  const { C } = useTheme();
+  const fuel = useTodayNutrition();
+  const { targetsOn } = useNutritionTargets();
+  const t = targetsOn(new Date());
+  const ready = !fuel.loading || fuel.totalsDayIso === todayLocalISO();
+  const kcal = ready ? Math.round(fuel.totals.kcal).toLocaleString('en-US') : '–';
+  const protein = ready ? String(Math.round(fuel.totals.protein_g)) : '–';
+  const kcalTarget = Math.round(t.kcal).toLocaleString('en-US');
+  const proteinTarget = `${Math.round(t.protein)}g`;
+  return (
+    <>
+      <SectionLabel style={{ marginBottom: S.xs }}>Today</SectionLabel>
+      <Row title="Calories" value={kcal} valueRest={`of ${kcalTarget}`} first accessibilityLabel={`Calories, ${kcal} of ${kcalTarget} today`} />
+      <Row title="Protein" value={protein} valueRest={`of ${proteinTarget}`} last accessibilityLabel={`Protein, ${protein} of ${proteinTarget} today`} />
+      {ready && fuel.totals.kcal === 0 && (
+        <Text style={[T.meta, { color: C.mutedFg, marginTop: S.sm }]}>Nothing logged yet today.</Text>
+      )}
+    </>
   );
 }
 

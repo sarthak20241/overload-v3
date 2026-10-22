@@ -1,8 +1,10 @@
 /**
  * "Your plan": the three rows (Train / Eat / Recover) shared by the main Goal
  * screen and the phase screen. Each row's subtitle carries ONE supporting
- * metric of the phase with its coloured status word, else the plan text, and
- * each row opens that pillar's screen for the phase it describes.
+ * metric of the phase, read through metricHeadline so it is the same number
+ * and status word the pillar screen's hero shows ("3 of 4 sessions last
+ * week · On track"), else the plan text. Each row opens that pillar's screen
+ * for the phase it describes.
  */
 import { View, Text } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -11,7 +13,8 @@ import { track } from '@/lib/analytics';
 import type { ActiveProgramPhaseRow } from '@/lib/programData';
 import { heroOf, STATUS_LABEL, statusTone, type MetricKind, type MetricStatus } from '@/lib/phaseMetrics';
 import { weekPatternFor, REST } from '@/lib/weekPattern';
-import { PILLAR_OF, rowValue, type Pillar } from '@/components/program/PhaseDetail';
+import { PILLAR_OF, type Pillar } from '@/components/program/PhaseDetail';
+import { headlineText, metricHeadline, type LiveReadings } from '@/lib/phaseMetricHeadline';
 import { Row, SectionLabel, Stagger, S, T, useStatusColor } from '@/components/program/finish';
 import { FontWeight } from '@/constants/theme';
 
@@ -27,50 +30,45 @@ const SUBTITLE_MAX_CHARS = 36;
 
 /**
  * A plan row's subtitle: ONE metric with its status when the pillar has one,
- * else the plan text. Never more than a line: a Train row with a metric
- * drops the split and day count, an Eat row drops its calories when the line
- * would not fit.
+ * else the plan text. Never more than a line: a long headline takes its
+ * short form, a Train row with a metric drops the split and day count, an
+ * Eat row drops its calories when the line would not fit.
  */
-export function pillarSummary(ph: ActiveProgramPhaseRow, pillar: Pillar, readinessToday: number | null): { text: string; status: MetricStatus | null } {
+export function pillarSummary(ph: ActiveProgramPhaseRow, pillar: Pillar, readinessToday: number | null, live: LiveReadings | null): { text: string; status: MetricStatus | null } {
   const hero = heroOf(ph.metrics);
   const candidates = ph.metrics.filter((m) => m.id !== hero?.id && PILLAR_OF[m.kind] === pillar);
   const metric = ROW_METRIC_PREFERENCE[pillar].map((k) => candidates.find((m) => m.kind === k)).find((m) => m != null) ?? null;
-  const metricText = (m: typeof metric) => {
-    if (!m) return '';
-    const { value, rest } = rowValue(m);
-    if (!value) return rest;
-    switch (m.kind) {
-      case 'sessions_per_week': return `${value} sessions`;
-      case 'steps': return `Steps ${value}`;
-      case 'cardio_sessions': return `Cardio ${value}`;
-      case 'protein_days': return `Protein ${value} days`;
-      case 'sleep_hours': return `${value.replace(/h$/, '')} h sleep`;
-      default: return value;
-    }
+  const h = metric ? metricHeadline(metric, live) : null;
+  const fitsLine = (text: string, status: MetricStatus | null) => text.length + (status ? 3 + STATUS_LABEL[status].length : 0) <= SUBTITLE_MAX_CHARS;
+  const metricText = () => {
+    if (!h) return '';
+    const full = headlineText(h);
+    return fitsLine(full, h.status) ? full : headlineText(h, true);
   };
   if (pillar === 'train') {
-    if (metric) return { text: metricText(metric), status: metric.status };
+    if (h) return { text: metricText(), status: h.status };
     const week = weekPatternFor(ph.training_block);
     const days = ph.training_block?.days_per_week ?? (week ? week.filter((d) => d !== REST).length : null);
     return { text: [ph.training_block?.split_type, days ? `${days} days` : null].filter(Boolean).join(' · ') || 'Training plan', status: null };
   }
   if (pillar === 'eat') {
     const kcal = ph.diet_calorie_target != null ? `${ph.diet_calorie_target.toLocaleString('en-US')} kcal` : null;
-    if (!metric) {
+    if (!h) {
       return { text: [kcal, ph.diet_protein_g != null ? `${ph.diet_protein_g} g protein` : null].filter(Boolean).join(' · ') || 'Daily targets', status: null };
     }
-    const m = metricText(metric);
+    const m = metricText();
     const full = kcal ? `${kcal} · ${m}` : m;
-    const fits = full.length + 3 + STATUS_LABEL[metric.status].length <= SUBTITLE_MAX_CHARS;
-    return { text: fits ? full : m, status: metric.status };
+    return { text: fitsLine(full, h.status) ? full : m, status: h.status };
   }
-  if (metric) return { text: metricText(metric), status: metric.status };
+  if (h) return { text: metricText(), status: h.status };
   return { text: readinessToday != null ? `Readiness ${Math.round(readinessToday)} today` : 'Sleep and readiness', status: null };
 }
 
 interface Props {
   phase: ActiveProgramPhaseRow;
   readinessToday: number | null;
+  /** The live fallback for a metric with no job reading yet; null while it loads. */
+  live: LiveReadings | null;
   /** Where the rows are tapped from, for analytics. */
   from: 'goal' | 'phase';
   /** The stagger index the heading starts at. */
@@ -79,7 +77,7 @@ interface Props {
   heading?: boolean;
 }
 
-export function PlanRows({ phase, readinessToday, from, staggerFrom = 0, heading = true }: Props) {
+export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, heading = true }: Props) {
   const { C } = useTheme();
   const router = useRouter();
   const statusColor = useStatusColor();
@@ -101,7 +99,7 @@ export function PlanRows({ phase, readinessToday, from, staggerFrom = 0, heading
       )}
       {!heading && <SectionLabel style={{ marginBottom: S.md }}>Your plan</SectionLabel>}
       {rows.map(({ pillar, icon, title }, i) => {
-        const s = pillarSummary(phase, pillar, readinessToday);
+        const s = pillarSummary(phase, pillar, readinessToday, live);
         return (
           <Stagger key={pillar} index={staggerFrom + 1 + i}>
             <Row

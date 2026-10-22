@@ -213,3 +213,25 @@ separators and one decimal for kg and hours; empty states in the coach's
 voice; bottom safe-area padding and pull-to-refresh. No new native
 dependency and no Skia: react-native-svg and Reanimated only, so the whole
 thing stays OTA-able to 1.0.1.
+
+One number per metric (device check 2026-10-22). A plan row on the Goal or
+phase screen and the hero on the pillar screen show the SAME value and
+status, read through one helper (`lib/phaseMetricHeadline.ts`):
+
+- With a job reading: the last whole week, labelled so. "3 of 4 sessions
+  last week · On track", "7.3 h a night last week · On track", "8,200 steps
+  a day last week", "5 of 7 protein days last week", "2 of 3 cardio last week".
+- Without one: the same live number everywhere and no status word, since the
+  job has not judged it. Sessions: "1 of 4 sessions so far this week" (the
+  Goal and phase screens load the same live readings the pillar does).
+  Sleep: the average over the nights that exist, "8.0 h a night from 2
+  nights" under four nights, else "h a night, last 7 nights". A source with
+  nothing yet says what feeds it ("Needs Health sync", "Not logged yet");
+  "Due" only where a reading is owed and nothing live stands in.
+- Live this-week progress beyond that lives only in the week visual: the
+  day circles and the sleep bars.
+
+The Eat screen's TODAY section (current phase only), above the tip:
+"Calories 528 of 1,800" and "Protein 36 of 115g" as two rows, from the same
+hooks as the dashboard's Fuel card (today's diary and the nutrition targets,
+fuel day included). Fuel days stay hidden when the phase has none.

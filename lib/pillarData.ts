@@ -10,6 +10,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { todayLocalISO } from '@/lib/programData';
 import { bandForScore, directive, type ReadinessBand } from '@/lib/readiness';
+import { liveFrom, type LiveReadings } from '@/lib/phaseMetricHeadline';
 
 function localISO(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -122,6 +123,17 @@ export async function loadLastNights(supabase: SupabaseClient, clerkId: string, 
     /* empty nights */
   }
   return out;
+}
+
+/**
+ * The live readings every screen falls back to when a metric has no job
+ * reading yet (lib/phaseMetricHeadline.ts): sessions since Monday and the
+ * sleep average of the last seven nights. Both loaders swallow their own
+ * errors, so this never throws.
+ */
+export async function loadLiveReadings(supabase: SupabaseClient, clerkId: string): Promise<LiveReadings> {
+  const [week, nights] = await Promise.all([loadWeekSessions(supabase, clerkId), loadLastNights(supabase, clerkId)]);
+  return liveFrom(week, nights);
 }
 
 export interface Vital {

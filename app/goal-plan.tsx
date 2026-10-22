@@ -46,6 +46,8 @@ import { loadMetricSeries, type MetricSeries } from '@/lib/phaseMetricSeries';
 import { MetricBarsChart, MetricLineChart } from '@/components/program/PhaseMetricChart';
 import { MetricLogSheet } from '@/components/program/MetricLogSheet';
 import { PlanRows } from '@/components/program/PlanRows';
+import { loadLiveReadings } from '@/lib/pillarData';
+import type { LiveReadings } from '@/lib/phaseMetricHeadline';
 import { ScreenSkeleton, SectionLabel, Stagger, S, T } from '@/components/program/finish';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -113,6 +115,7 @@ export default function GoalPlanScreen() {
   const [weightKg, setWeightKg] = useState<number | null>(null);
   // Today's readiness, for a Recover row with no sleep metric.
   const [readinessToday, setReadinessToday] = useState<number | null>(null);
+  const [live, setLive] = useState<LiveReadings | null>(null);
   const [logOpen, setLogOpen] = useState(false);
   const [logging, setLogging] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
@@ -134,9 +137,10 @@ export default function GoalPlanScreen() {
     const seq = ++loadSeq.current;
     if (!supabase || !clerkId) { setProgram(null); setLoading(false); setRefreshing(false); return; }
     try {
-      const p = await loadActiveProgram(supabase, clerkId);
+      const [p, lv] = await Promise.all([loadActiveProgram(supabase, clerkId), loadLiveReadings(supabase, clerkId)]);
       if (seq !== loadSeq.current) return;
       setProgram(p);
+      setLive(lv);
       if (!viewedRef.current) {
         viewedRef.current = true;
         track('program_viewed', {
@@ -536,7 +540,7 @@ export default function GoalPlanScreen() {
             <Stagger index={2}>{renderPhaseCard()}</Stagger>
             {shownPhase && (
               <View style={{ marginTop: S.xxl }}>
-                <PlanRows phase={shownPhase} readinessToday={readinessToday} from="goal" staggerFrom={3} />
+                <PlanRows phase={shownPhase} readinessToday={readinessToday} live={live} from="goal" staggerFrom={3} />
               </View>
             )}
 

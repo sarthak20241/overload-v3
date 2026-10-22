@@ -18,6 +18,8 @@ import { track } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { loadActiveProgram, daysBetweenISO, todayLocalISO, type ActiveProgram } from '@/lib/programData';
+import { loadLiveReadings } from '@/lib/pillarData';
+import type { LiveReadings } from '@/lib/phaseMetricHeadline';
 import { PhaseDetail } from '@/components/program/PhaseDetail';
 import { PlanRows } from '@/components/program/PlanRows';
 import { ScreenSkeleton, Stagger, S, T } from '@/components/program/finish';
@@ -36,6 +38,7 @@ export default function GoalPlanPhaseScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [readinessToday, setReadinessToday] = useState<number | null>(null);
+  const [live, setLive] = useState<LiveReadings | null>(null);
   const [seq, setSeq] = useState<number | null>(() => {
     const n = parseInt(seqParam ?? '', 10);
     return Number.isFinite(n) ? n : null;
@@ -46,14 +49,16 @@ export default function GoalPlanPhaseScreen() {
     const n = ++loadSeq.current;
     if (!supabase || !clerkId) { setProgram(null); setLoading(false); setRefreshing(false); return; }
     try {
-      const [p, readiness] = await Promise.all([
+      const [p, readiness, lv] = await Promise.all([
         loadActiveProgram(supabase, clerkId),
         supabase.from('daily_metrics').select('value').eq('user_id', clerkId).eq('metric_type', 'readiness_score').eq('metric_date', todayLocalISO()).maybeSingle()
           .then(({ data }) => (data?.value != null && Number.isFinite(Number(data.value)) ? Number(data.value) : null), () => null),
+        loadLiveReadings(supabase, clerkId),
       ]);
       if (n !== loadSeq.current) return;
       setProgram(p);
       setReadinessToday(readiness);
+      setLive(lv);
     } catch {
       /* keep what we had */
     } finally {
@@ -102,7 +107,7 @@ export default function GoalPlanPhaseScreen() {
               <PhaseDetail program={program} seq={seq} ended={ended} onSelectSeq={setSeq} />
             </Stagger>
             <View style={{ marginTop: S.xxl }}>
-              <PlanRows phase={shown} readinessToday={readinessToday} from="phase" staggerFrom={1} heading={false} />
+              <PlanRows phase={shown} readinessToday={readinessToday} live={live} from="phase" staggerFrom={1} heading={false} />
             </View>
           </>
         )}

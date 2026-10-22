@@ -5,8 +5,9 @@
  * Eat / Recover detail lives on the pillar screens (app/goal-plan-pillar.tsx),
  * reached through the plan rows under this card.
  *
- * Also home to the two small helpers the plan rows and the pillar screens
- * share: which pillar a metric belongs to, and a tracked row's value text.
+ * Also home to the one small helper the plan rows and the pillar screens
+ * share: which pillar a metric belongs to. A metric's number and its label
+ * come from lib/phaseMetricHeadline.ts, the same on every screen.
  */
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { Feather } from '@expo/vector-icons';
@@ -14,7 +15,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { haptics } from '@/lib/haptics';
 import type { ActiveProgram, ActiveProgramPhaseRow } from '@/lib/programData';
-import { defaultJobText, formatMetricValue, heroOf, jobFraction, type MetricKind, type PhaseMetricRow } from '@/lib/phaseMetrics';
+import { defaultJobText, heroOf, jobFraction, type MetricKind } from '@/lib/phaseMetrics';
 import { S, T } from '@/components/program/finish';
 import { Colors, FontWeight, colorWithAlpha } from '@/constants/theme';
 
@@ -34,29 +35,6 @@ export const PILLAR_OF: Record<MetricKind, Pillar> = {
   duration: 'train',
   custom: 'train',
 };
-
-/** The value column of a tracked row: the number and what it is of. */
-export function rowValue(m: PhaseMetricRow): { value: string; rest: string } {
-  const cur = m.current_value;
-  if (cur == null) {
-    // A source with no data at all: say what would feed it.
-    if (m.kind === 'custom') return { value: '', rest: 'Not logged yet' };
-    if ((m.kind === 'steps' || m.kind === 'sleep_hours') && m.status === 'due') return { value: '', rest: 'Needs Health sync' };
-    if (m.kind === 'lift_e1rm' && m.status === 'set') return { value: '', rest: 'Log the lift to start' };
-    return { value: '', rest: 'No reading yet' };
-  }
-  const v = formatMetricValue(m.kind, cur, m.unit);
-  const t = formatMetricValue(m.kind, m.target_value, m.unit);
-  switch (m.kind) {
-    case 'sessions_per_week': return { value: `${v} of ${t}`, rest: 'last week' };
-    case 'cardio_sessions': return { value: `${v} of ${t}`, rest: 'last week' };
-    case 'protein_days': return { value: `${v} of 7`, rest: 'days hit' };
-    case 'sleep_hours': return { value: `${v}h`, rest: 'a night' };
-    case 'steps': return { value: v, rest: 'avg' };
-    case 'sets_per_muscle': return { value: v, rest: 'sets last week' };
-    default: return { value: `${v}${m.unit ? ` ${m.unit}` : ''}`, rest: m.direction === 'hold' ? 'now' : `of ${t}` };
-  }
-}
 
 interface Props {
   program: ActiveProgram;
