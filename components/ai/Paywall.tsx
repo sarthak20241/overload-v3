@@ -49,6 +49,7 @@ import {
   PurchaseCancelledError,
   STORE_ACCOUNT,
   STORE_MANAGE_HINT,
+  STORE_NAME,
   type RevenueCatPackage,
   type PlanKey,
 } from '@/lib/revenuecat';
@@ -374,7 +375,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
               <View style={[s.expoGoNote, { backgroundColor: C.muted }]}>
                 <Feather name="info" size={14} color={C.mutedFg} />
                 <Text style={[s.expoGoText, { color: C.mutedFg }]}>
-                  In-app purchases require a TestFlight or App Store build.
+                  In-app purchases need the {STORE_NAME} version of Overload.
                   The buttons above will explain this when tapped.
                 </Text>
               </View>

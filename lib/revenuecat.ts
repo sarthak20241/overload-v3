@@ -375,8 +375,8 @@ export async function purchaseCoachPackage(
   const P = loadPurchases();
   if (!P) {
     throw new PurchasesUnavailableError(
-      'In-app purchases require a development build. Sign up via TestFlight ' +
-      'or wait for the App Store release.',
+      `In-app purchases need the ${STORE_NAME} version of Overload. ` +
+      'Install it from there to upgrade.',
     );
   }
   try {
