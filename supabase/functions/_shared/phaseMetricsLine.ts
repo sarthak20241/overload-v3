@@ -9,7 +9,7 @@
  * `fetchFn` is injectable so an eval can route the call through `claude -p`.
  */
 import { cleanLine, formatMetricValue, type MetricKind, type MetricRef, metricLabel, STATUS_LABEL, type MetricStatus } from './phaseMetrics.ts';
-import { SONNET_MODEL, sonnetSettings } from './sonnet.ts';
+import { requireTool, SONNET_MODEL, sonnetSettings } from './sonnet.ts';
 
 export const COACH_LINE_MODEL = SONNET_MODEL;
 const TIMEOUT_MS = 20_000;
@@ -97,7 +97,9 @@ export async function askCoachLine(
         system: COACH_LINE_SYSTEM,
         tools: [COACH_LINE_TOOL],
         ...sonnetSettings(model),
-        messages: [{ role: 'user', content: linePrompt(pack) }],
+        // Sonnet 5.5 rejects a forced tool_choice: the shared requireTool note
+        // after the user turn is how a call is made to end in the tool.
+        messages: [{ role: 'user', content: linePrompt(pack) }, requireTool('phase_line')],
       }),
       signal: controller.signal,
     });

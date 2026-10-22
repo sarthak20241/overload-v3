@@ -455,8 +455,12 @@ export function metricText(m: { kind: MetricKind; is_hero: boolean; ref?: Metric
   const start = finite(m.start_value);
   const t = formatMetricValue(m.kind, m.target_value, m.unit);
   const unit = m.unit ? ` ${m.unit}` : '';
+  // The period the target is measured in: a day for steps, a night for
+  // sleep, a week for the rest. The coach copies this line back into
+  // generate_program on a refine, so the scale must be the one it saves.
+  const per = m.kind === 'steps' ? 'a day' : m.kind === 'sleep_hours' ? 'a night' : 'a week';
   const value = isWeeklyKind(m.kind)
-    ? `${t}${unit} a week`
+    ? `${t}${unit} ${per}`
     : `${start != null ? `${formatMetricValue(m.kind, start, m.unit)} to ` : ''}${t}${unit}`;
   const dir = m.kind === 'bodyweight' || m.kind === 'custom' ? `, ${m.direction}` : '';
   return `${m.kind}${who.trimEnd()}${m.is_hero ? ' (hero)' : ''}: ${value}${dir}`;

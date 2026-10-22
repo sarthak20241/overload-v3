@@ -4,6 +4,7 @@ import {
   cleanLine,
   defaultJobText,
   escapeIlike,
+  metricsText,
   formatMetricValue,
   heroOf,
   jobFraction,
@@ -224,6 +225,15 @@ Deno.test("status words take the card's colours", () => {
   assertEquals(statusTone("behind"), "warn");
   assertEquals(statusTone("due"), "dim");
   assertEquals(statusTone("set"), "dim");
+});
+
+Deno.test("the recap line carries each kind's own period, so a refine keeps the scale", () => {
+  assertEquals(metricsText([
+    { kind: "steps", is_hero: false, unit: "steps", direction: "up", target_value: 8000 },
+    { kind: "sleep_hours", is_hero: false, unit: "h", direction: "up", target_value: 7 },
+    { kind: "sessions_per_week", is_hero: true, unit: "sessions", direction: "up", target_value: 4 },
+    { kind: "bodyweight", is_hero: false, unit: "kg", direction: "down", start_value: 72.5, target_value: 71.8 },
+  ]), "sessions_per_week (hero): 4 sessions a week; steps: 8,000 steps a day; sleep_hours: 7 h a night; bodyweight: 72.5 to 71.8 kg, down");
 });
 
 Deno.test("an exercise name is made safe for an ilike filter", () => {

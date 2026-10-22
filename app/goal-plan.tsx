@@ -134,10 +134,17 @@ function heroSub(m: PhaseMetricRow, goalTarget: number | null): string {
     return cur >= m.target_value ? `${v} of ${t} last week. Target met.` : `${v} of ${t} last week.`;
   }
   if (cur == null) return m.kind === 'custom' ? 'Log your first number to start the line.' : 'No reading yet. Weigh in or log a session to start the line.';
-  const toPhase = Math.abs(m.target_value - cur);
+  // Signed by direction: past the target is "met", never "0.4 kg to go".
+  const left = (target: number) => (m.direction === 'down' ? cur - target : m.direction === 'up' ? target - cur : Math.abs(target - cur));
   const unit = m.unit ? ` ${m.unit}` : '';
-  const parts = [`${formatMetricValue(m.kind, toPhase, m.unit)}${unit} to this phase's target`];
-  if (goalTarget != null && goalTarget !== m.target_value) parts.push(`${formatMetricValue(m.kind, Math.abs(goalTarget - cur), m.unit)} to the goal`);
+  const toPhase = left(m.target_value);
+  const parts = [toPhase <= 0 && m.direction !== 'hold'
+    ? "Phase target met"
+    : `${formatMetricValue(m.kind, toPhase, m.unit)}${unit} to this phase's target`];
+  if (goalTarget != null && goalTarget !== m.target_value) {
+    const toGoal = left(goalTarget);
+    parts.push(toGoal <= 0 && m.direction !== 'hold' ? 'goal met' : `${formatMetricValue(m.kind, toGoal, m.unit)} to the goal`);
+  }
   return parts.join(' · ');
 }
 
@@ -178,6 +185,8 @@ export default function GoalPlanScreen() {
     return () => { live = false; };
   }, [user?.id, supabase]));
   const [loading, setLoading] = useState(true);
+  // Only the newest load may paint: focus, close, apply and a log can overlap.
+  const loadSeq = useRef(0);
   const [coachOpen, setCoachOpen] = useState(false);
   // Which rail row is expanded in "The full plan" (phase seq), if any.
   const [expandedSeq, setExpandedSeq] = useState<number | null>(null);
@@ -214,9 +223,11 @@ export default function GoalPlanScreen() {
   }, [supabase, router]);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     if (!supabase || !clerkId) { setProgram(null); setLoading(false); return; }
     try {
       const p = await loadActiveProgram(supabase, clerkId);
+      if (seq !== loadSeq.current) return;
       setProgram(p);
       // Once per screen visit, not per focus refetch.
       if (!viewedRef.current) {

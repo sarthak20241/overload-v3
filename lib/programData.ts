@@ -854,8 +854,16 @@ export async function loadActiveProgram(
 
   // The phase metrics. A database without the table (the app before the
   // migration) is a program with no metrics, which the screen renders in the
-  // plain layout. Any other failure throws, like the reads above.
-  const byPhase = await loadProgramMetrics(supabase, String(p.id));
+  // plain layout. Any other failure is a warning, not a failed load: the
+  // metrics are optional on top of a program every caller needs (the Goal
+  // screen's empty state on a failed load is the dangerous one, and the
+  // phase reconcile does not read metrics at all).
+  let byPhase = new Map<string, MetricRowWithLog[]>();
+  try {
+    byPhase = await loadProgramMetrics(supabase, String(p.id));
+  } catch (e) {
+    console.warn('[programs] metrics read failed; program loaded without them', e);
+  }
   for (const ph of phases) {
     const list = byPhase.get(ph.id) ?? [];
     // A custom metric reads the latest log live: the weekly check can be days

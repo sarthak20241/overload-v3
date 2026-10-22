@@ -92,12 +92,18 @@ export async function loadMetricSeries(
       }
       case 'distance':
       case 'duration': {
+        // Only sets that carry the measure, longest first, so strength sets
+        // never fill the row cap and hide a real point.
+        const col = metric.kind === 'distance' ? 'distance_m' : 'duration_seconds';
         const { data } = await supabase
           .from('workout_sets')
           .select('distance_m, duration_seconds, completed, workouts!inner(user_id, started_at, finished_at)')
           .eq('workouts.user_id', clerkId)
           .gte('workouts.started_at', `${start}T00:00:00`)
-          .eq('completed', true);
+          .eq('completed', true)
+          .gt(col, 0)
+          .order(col, { ascending: false })
+          .limit(500);
         const best = new Map<string, number>();
         for (const s of (data ?? []) as unknown as { distance_m: number | null; duration_seconds: number | null; workouts: { started_at: string; finished_at: string | null } }[]) {
           if (!s.workouts?.finished_at) continue;
