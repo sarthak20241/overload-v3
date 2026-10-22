@@ -473,8 +473,36 @@ Deno.test("the failure this prevents: the router's pick is offered, the parsed a
   assertEquals(r.saved_suggestions, [{ food_name: "kesar pista oats", saved_id: "sm-oats", saved_name: "Oats with milk" }]);
   const step = r.steps.find((s) => s.tool === "saved_hint");
   assertEquals(step?.result, "offered:kesar pista oats");
-  assertEquals(step?.input, { id: "sm-oats", name: "Oats with milk", confidence: 0.84 });
+  assertEquals(step?.input, { id: "sm-oats", name: "Oats with milk", confidence: 0.84, pointer: true });
 });
+
+Deno.test("the parse never waits for the router: no pointer when it is still out, the offer once it is back", async () => {
+  const seen: string[] = [];
+  // The router answers 20 ms in: after the prompt is built (the stub answers
+  // at once), before the offer step gives up.
+  const late = new Promise<SavedMealHint | null>((r) => setTimeout(() => r(HINT), 20));
+  const r = await runParseMeal(
+    stub([], [{ ...OATMEAL_ITEM, name: "kesar pista oats" }], seen),
+    { ...INPUT, text: "yesterday's oat meal in breakfast", mode: "fast", savedMeals: [OATS], savedHint: late },
+  );
+  assert(!seen[0].includes("router read"), seen[0]);
+  assertEquals(r.saved_suggestions, [{ food_name: "kesar pista oats", saved_id: "sm-oats", saved_name: "Oats with milk" }]);
+  const step = r.steps.find((s) => s.tool === "saved_hint");
+  assertEquals(step?.result, "offered:kesar pista oats");
+  assertEquals((step?.input as { pointer: boolean }).pointer, false);
+});
+
+Deno.test("a router that never answers holds no log: no offer, and the trace says pending", async () => {
+  const never = new Promise<SavedMealHint | null>(() => {});
+  const r = await runParseMeal(
+    { ...stub([], [{ ...OATMEAL_ITEM, name: "kesar pista oats" }]), timeoutMs: 30 },
+    { ...INPUT, text: "kesar pista oats", mode: "fast", savedMeals: [OATS], savedHint: never },
+  );
+  assertEquals(r.parsed!.items.map((i) => i.food_name), ["kesar pista oats"]);
+  assertEquals(r.saved_suggestions, undefined);
+  assertEquals(r.steps.find((s) => s.tool === "saved_hint"), { iter: 0, tool: "saved_hint", input: null, result: "pending" });
+});
+
 
 Deno.test("when the model tags the saved meal itself, the pick is logged and not offered again", async () => {
   const r = await runParseMeal(
