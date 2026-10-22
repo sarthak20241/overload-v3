@@ -95,6 +95,7 @@ Deno.serve(async (req) => {
         status: result.status,
         minted: "ticket" in result.body && !!result.body.ticket,
         reason: "reason" in result.body ? result.body.reason : "error" in result.body ? result.body.error : null,
+        detail: "detail" in result ? result.detail : undefined,
       }),
     );
     return jsonResponse(result.body, result.status);

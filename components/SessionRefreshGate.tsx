@@ -11,16 +11,20 @@
  * done. Mount it inside <ClerkProvider> only.
  *
  * It never holds the app up for long: it waits at most CLERK_LOAD_WAIT_MS for
- * Clerk to load (offline, Clerk may never load), and the swap itself is cut
- * off at REFRESH_MAX_MS. On any failure before the sign-out, the user simply
- * keeps the session they had.
+ * Clerk to load (offline, Clerk may never load) and TICKET_WAIT_MS for the
+ * ticket. Giving up before the sign-out leaves the user with the session they
+ * had. After the sign-out has begun the gate does NOT give up at that mark:
+ * mounting the app then would let the guards and bridges see the signed-out
+ * moment, the thing this gate exists to hide. It waits for the swap, up to
+ * SWAP_MAX_MS, a cap only for a Clerk call that never returns.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { REFRESH_WITHIN_MS, runSessionRefresh, shouldRefreshSession } from '@/lib/sessionRefresh';
 import { track } from '@/lib/analytics';
 
 const CLERK_LOAD_WAIT_MS = 4000;
-const REFRESH_MAX_MS = 15000;
+const TICKET_WAIT_MS = 12000;
+const SWAP_MAX_MS = 30000;
 const TICKET_FETCH_MS = 8000;
 
 async function fetchTicket(token: string): Promise<{ ticket: string; userId: string } | null> {
@@ -74,11 +78,39 @@ export function SessionRefreshGate({ children }: { children: ReactNode }) {
       return;
     }
     const daysLeft = expireAt ? Math.round(((expireAt.getTime() - Date.now()) / 86_400_000) * 10) / 10 : null;
-    const run = runSessionRefresh({
+    // Exactly one of these wins: the ticket wait running out (before the
+    // sign-out), or the sign-out starting. JS runs them one at a time.
+    let settled = false;
+    let committed = false;
+    let ticketTimer: ReturnType<typeof setTimeout> | undefined;
+    let swapTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (outcome: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(ticketTimer);
+      clearTimeout(swapTimer);
+      track(outcome === 'refreshed' ? 'session_refreshed' : 'session_refresh_failed', {
+        outcome,
+        days_left: daysLeft,
+        window_days: REFRESH_WITHIN_MS / 86_400_000,
+      });
+      setDone(true);
+    };
+    ticketTimer = setTimeout(() => {
+      if (!committed) finish('ticket_timed_out');
+    }, TICKET_WAIT_MS);
+    runSessionRefresh({
       currentUserId: userId,
       fetchTicket: async () => {
         const token = await getToken();
         return token ? fetchTicket(token) : null;
+      },
+      beforeSignOut: () => {
+        if (settled) return false; // the gate already gave up and moved on
+        committed = true;
+        clearTimeout(ticketTimer);
+        swapTimer = setTimeout(() => finish('swap_timed_out'), SWAP_MAX_MS);
+        return true;
       },
       signOut: () => signOut(),
       signInWithTicket: async (ticket) => {
@@ -89,16 +121,7 @@ export function SessionRefreshGate({ children }: { children: ReactNode }) {
         }
         await clerk.setActive({ session: attempt.createdSessionId });
       },
-    });
-    const cutoff = new Promise<'timed_out'>((r) => setTimeout(() => r('timed_out'), REFRESH_MAX_MS));
-    Promise.race([run, cutoff]).then((outcome) => {
-      track(outcome === 'refreshed' ? 'session_refreshed' : 'session_refresh_failed', {
-        outcome,
-        days_left: daysLeft,
-        window_days: REFRESH_WITHIN_MS / 86_400_000,
-      });
-      setDone(true);
-    });
+    }).then(finish, () => finish('error'));
   }, [done, isLoaded, isSignedIn, userId, session, getToken, signOut, clerk]);
 
   return done ? <>{children}</> : null;

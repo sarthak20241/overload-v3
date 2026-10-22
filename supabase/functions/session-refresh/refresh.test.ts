@@ -42,6 +42,8 @@ Deno.test("an unverified caller gets nothing", async () => {
   const { d, minted } = deps({ claims: { error: 'verify failed: "exp" claim timestamp check failed' } });
   const res = await handleRefresh(d);
   assertEquals(res.status, 401);
+  // The verifier's message stays in the server log, not the reply.
+  assertEquals(res.body, { error: "Unauthorized" });
   assertEquals(minted, []);
 });
 

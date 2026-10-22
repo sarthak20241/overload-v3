@@ -14,7 +14,14 @@
  *      nothing changes and the user stays signed in.
  *   2. only then sign out. A failed sign-out also changes nothing.
  *   3. sign in with the ticket, retried, because a failure HERE is the one
- *      that leaves the user signed out.
+ *      that leaves the user signed out. The retry covers a request that
+ *      never reached Clerk. It cannot cover one Clerk redeemed but whose
+ *      reply was lost: tickets are one-time, so the retries fail on a used
+ *      ticket and the user is signed out a few days early.
+ *
+ * The caller may give up while waiting for the ticket (the gate cannot hold
+ * the app forever), but never after the sign-out has begun: by then the only
+ * way out is through the ticket. `beforeSignOut` is where that line is drawn.
  *
  * No imports, so Deno can test it directly (lib/sessionRefresh.test.ts).
  */
@@ -41,6 +48,9 @@ export interface RefreshSteps {
   signInWithTicket: (ticket: string) => Promise<void>;
   /** Waits between sign-in attempts. */
   sleep?: (ms: number) => Promise<void>;
+  /** Called once, right before the sign-out. Returning false stops here with
+   *  nothing changed: the caller has stopped waiting and moved on. */
+  beforeSignOut?: () => boolean;
 }
 
 export type RefreshOutcome =
@@ -49,6 +59,8 @@ export type RefreshOutcome =
   /** Nothing changed; the old session is still active. */
   | 'no_ticket'
   | 'ticket_user_mismatch'
+  /** The caller stopped waiting before the sign-out; nothing changed. */
+  | 'abandoned'
   | 'sign_out_failed'
   /** Signed out and the ticket never signed in: the user must sign in. */
   | 'sign_in_failed';
@@ -67,6 +79,7 @@ export async function runSessionRefresh(steps: RefreshSteps): Promise<RefreshOut
   }
   if (!got) return 'no_ticket';
   if (got.userId !== steps.currentUserId) return 'ticket_user_mismatch';
+  if (steps.beforeSignOut && !steps.beforeSignOut()) return 'abandoned';
 
   try {
     await steps.signOut();

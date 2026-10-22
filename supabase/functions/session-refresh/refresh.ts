@@ -44,15 +44,18 @@ export interface RefreshDeps {
   now: () => number;
 }
 
+/** `detail` is for the server log only. The caller gets just the error code:
+ *  verifier messages and session states are nothing a client needs, and this
+ *  endpoint mints sign-ins, so it says as little as it can. */
 export type RefreshResult =
   | { status: 200; body: { ticket: string; user_id: string } }
   | { status: 200; body: { ticket: null; reason: string } }
-  | { status: 401 | 403; body: { error: string; debug?: string } };
+  | { status: 401 | 403; body: { error: string }; detail?: string };
 
 export async function handleRefresh(deps: RefreshDeps): Promise<RefreshResult> {
   const claims = await deps.verify();
   if ("error" in claims) {
-    return { status: 401, body: { error: "Unauthorized", debug: claims.error } };
+    return { status: 401, body: { error: "Unauthorized" }, detail: claims.error };
   }
 
   const session = await deps.getSession(claims.sid);
@@ -63,7 +66,7 @@ export async function handleRefresh(deps: RefreshDeps): Promise<RefreshResult> {
     return { status: 403, body: { error: "session_user_mismatch" } };
   }
   if (session.status !== "active") {
-    return { status: 403, body: { error: "session_not_active", debug: session.status } };
+    return { status: 403, body: { error: "session_not_active" }, detail: session.status };
   }
 
   const remaining = session.expire_at - deps.now();

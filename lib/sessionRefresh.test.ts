@@ -97,3 +97,21 @@ Deno.test("a sign-out that throws gets one ticket attempt", async () => {
   assertEquals(await runSessionRefresh(refused.s), "sign_out_failed");
   assertEquals(refused.log.filter((l) => l === "signIn:t1").length, 1);
 });
+
+Deno.test("a caller that stopped waiting before the sign-out changes nothing", async () => {
+  const { s, log } = steps({ beforeSignOut: () => false });
+  assertEquals(await runSessionRefresh(s), "abandoned");
+  assertEquals(log, ["fetchTicket"]);
+});
+
+Deno.test("beforeSignOut runs once, after the ticket and before the sign-out", async () => {
+  const order: string[] = [];
+  const { s, log } = steps({
+    beforeSignOut: () => {
+      order.push(`commit after ${log.join(",")}`);
+      return true;
+    },
+  });
+  assertEquals(await runSessionRefresh(s), "refreshed");
+  assertEquals(order, ["commit after fetchTicket"]);
+});
