@@ -6037,7 +6037,9 @@ async function runParseMealOnce(
   if (h === undefined) {
     // The router had not answered when the parse finished: nothing was
     // shown or offered, and the trace says so rather than saying "no pick".
-    result.steps = [...result.steps, { iter: 0, tool: "saved_hint", input: null, result: "pending" }];
+    // "pending" when the offer step waited and gave up, "skipped" when it
+    // never asked (no line to offer on, or the words turned saved meals down).
+    result.steps = [...result.steps, { iter: 0, tool: "saved_hint", input: null, result: hint.waited ? "pending" : "skipped" }];
   } else if (h) {
     const offered = suggestions.find((s) => s.saved_id === h.id);
     const verdict = hits.some((x) => x.meal.id === h.id)
@@ -6090,6 +6092,9 @@ const HINT_WAIT_MS = 1500;
  *  before extracting, so the common path keeps paying nothing for it. */
 interface HintBox {
   pointer: boolean;
+  /** Whether the offer step ever waited: a trace "pending" means the router
+   *  was still out after that wait, "skipped" means nobody asked. */
+  waited: boolean;
   forPrompt(): SavedMealHint | null;
   peek(): SavedMealHint | null | undefined;
   wait(ms: number): Promise<SavedMealHint | null>;
@@ -6105,20 +6110,24 @@ function hintBox(src: ParseMealInput["savedHint"]): HintBox {
   }
   const box: HintBox = {
     pointer: false,
+    waited: false,
     forPrompt: () => {
       const v = settled ?? null;
       if (v) box.pointer = true;
       return v;
     },
     peek: () => settled,
-    wait: (ms) =>
-      settled !== undefined || !pending ? Promise.resolve(settled ?? null) : new Promise((resolve) => {
+    wait: (ms) => {
+      box.waited = true;
+      if (settled !== undefined || !pending) return Promise.resolve(settled ?? null);
+      return new Promise((resolve) => {
         const t = setTimeout(() => resolve(null), ms);
         pending!.then((v) => {
           clearTimeout(t);
           resolve(v);
         });
-      }),
+      });
+    },
   };
   return box;
 }
@@ -6591,10 +6600,10 @@ async function runParseMealCore(
     const fresh = extItems.filter((it) =>
       !(correctsPrevious && prevItems.some((p) => memoryKey(p.food_name) === memoryKey(it.name)))
     );
-    // Extraction is back, so the router has had that long to answer; a slow
-    // router is waited on only up to the cap, never a log held for it, and
-    // only when an offer could come of it: a line to put it on, and words
-    // that do not turn saved meals down.
+    // Extraction is back, so the router has had that long to answer. A slow
+    // router can still hold the log, but only up to the cap (1.5 s, or the
+    // deps timeout if lower), and only when an offer could come of it: a
+    // line to put it on, and words that do not turn saved meals down.
     const pick = fresh.length > 0 && !rejects
       ? await hint.wait(Math.min(deps.timeoutMs, HINT_WAIT_MS))
       : null;

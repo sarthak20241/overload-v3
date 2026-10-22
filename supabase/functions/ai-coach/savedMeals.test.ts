@@ -518,8 +518,9 @@ Deno.test("no wait for the router when no offer could come of it", async () => {
   assert(Date.now() - t0 < 300, `waited ${Date.now() - t0} ms`);
   assertEquals(r.parsed!.items.map((i) => i.food_name), ["kesar pista oats"]);
   assertEquals(r.saved_suggestions, undefined);
+  // Nobody asked the router, so the trace must not claim it was waited for.
+  assertEquals(r.steps.find((s) => s.tool === "saved_hint")?.result, "skipped");
 });
-
 
 Deno.test("when the model tags the saved meal itself, the pick is logged and not offered again", async () => {
   const r = await runParseMeal(
