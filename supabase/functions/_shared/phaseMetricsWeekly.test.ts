@@ -147,5 +147,9 @@ Deno.test("a check is due once a local week, whatever the UTC clock says", () =>
   // A check made at 00:30 Monday in Kolkata is stamped Sunday 19:00 UTC; it
   // belongs to the local week all the same and is not due again.
   assertEquals(checkDue([{ checked_week: "2026-10-19" }], "2026-10-19"), false);
+  // A source read failed last run: the rows that were checked are stamped,
+  // the failed ones are not. One unstamped row makes the phase due again.
+  assertEquals(checkDue([{ checked_week: "2026-10-19" }, { checked_week: null }], "2026-10-19"), true);
+  assertEquals(checkDue([{ checked_week: "2026-10-19" }, { checked_week: "2026-10-12" }], "2026-10-19"), true);
   assertEquals(checkDue([], "2026-10-19"), false);
 });

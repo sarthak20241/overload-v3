@@ -67,14 +67,17 @@ const CRON_CONCURRENCY = 4;
  * Stop starting phase metric checks this long after the metrics pass began,
  * and in any case once the run is METRICS_LATEST_MS old: the cron call times
  * out at 55 s, and the cards, check-ins and moments all run first. The
- * budget is checked before each batch (the first batch always runs, so a
- * busy card pass cannot push the metrics out of every run), and a batch can
- * hold one model call per user (20 s timeout each, in parallel), so the
- * last batch started inside the budget ends by about 45 s. What is left
- * waits for the next run.
+ * budget is checked before each batch, and a batch can hold one model call
+ * per user (20 s timeout each, in parallel), so the last batch started
+ * inside the budget ends by about 45 s. The first batch runs past the
+ * budget too (so a busy card pass cannot push the metrics out of every
+ * run), but never once the run is METRICS_FIRST_BATCH_BY_MS old: a batch
+ * started later could still be mid-call when the 55 s limit kills the run.
+ * What is left waits for the next run.
  */
 const METRICS_BUDGET_MS = 20_000;
 const METRICS_LATEST_MS = 25_000;
+const METRICS_FIRST_BATCH_BY_MS = 33_000;
 /** Cards older than this are history nobody reads; the facts window is 8 weeks. */
 const KEEP_WEEKS = 26;
 
@@ -543,7 +546,8 @@ async function runCron(): Promise<Response> {
     const metricsStart = Date.now();
     const metricsDeadline = Math.min(metricsStart + METRICS_BUDGET_MS, now.getTime() + METRICS_LATEST_MS);
     for (let i = 0; i < metricUsers.length; i += CRON_CONCURRENCY) {
-      if (i > 0 && Date.now() > metricsDeadline) {
+      const late = i > 0 ? Date.now() > metricsDeadline : Date.now() > now.getTime() + METRICS_FIRST_BATCH_BY_MS;
+      if (late) {
         metricsSkipped = metricUsers.length - i;
         failures.push(`metrics: out of time, ${metricsSkipped} left for the next run`);
         break;
