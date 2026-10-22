@@ -3,16 +3,17 @@
 Decided with the user on 2026-10-21 from the App Store card demos. The demo
 screens are the design target; the build must match them.
 
-Demo images (final):
-- Goal card: `shots/01-goal.png` (this folder) and `~/overload-upload-shots/v6/01-goal.png`
-- Phase view: `~/overload-upload-shots/v6/_alt/01b-phase-view-demo.png`
+Demo images (final), all in this folder:
+- Goal card: `shots/01-goal.png`
+- Phase view: `shots/01b-phase-view-demo.png`
 - Both side by side: `shots/01-goal-and-phase.png`
-- Older variants worth reading: `~/overload-upload-shots/v6/_alt/01-goal-three-goals.png`
+- Older variants worth reading: `shots/01-goal-three-goals.png`
   (fitness goal with weekly bars, and a custom metric the user logs).
 
 Demo source (HTML + CSS, exact sizes, colors, spacing): `src/goal9.tmpl.html`
-and `src/goal9.py` in this folder (copies of `~/overload-upload-shots/v6/_src/`).
-`src/goal8.py` holds the fitness (weekly bars) and custom ("You log it") variants.
+and `src/goal9.py` in this folder. `src/goal8.py` holds the fitness (weekly
+bars) and custom ("You log it") variants. The originals were made on one
+machine outside the repo; these copies are the ones to read.
 
 ## 1. The idea
 

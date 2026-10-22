@@ -9,7 +9,7 @@ import { useCallback, useRef, useState } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
-import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
+import { Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -61,8 +61,9 @@ export function GoalMetricsCard({ chartWidth }: Props) {
       setProgram(p);
       setItems(loaded);
       if (!viewedSent.current) { viewedSent.current = true; track('goal_metrics_viewed', { metrics: loaded.length }); }
-    } catch {
-      /* keep what we had */
+    } catch (e) {
+      // Keep what we had; the card is a nicety on a busy screen.
+      console.warn('[programs] goal metrics load failed', e);
     }
   }, [supabase, clerkId]);
 
@@ -145,6 +146,6 @@ const s = StyleSheet.create({
   itemHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   itemName: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, flexShrink: 1 },
   itemStatus: { fontSize: 11.5, fontWeight: FontWeight.semibold },
-  itemValue: { fontSize: 22, fontWeight: FontWeight.bold, marginTop: 2, fontVariant: ['tabular-nums'], letterSpacing: -0.4, color: Colors.primary },
+  itemValue: { fontSize: 22, fontWeight: FontWeight.bold, marginTop: 2, fontVariant: ['tabular-nums'], letterSpacing: -0.4 },
   itemUnit: { fontSize: FontSize.sm, fontWeight: FontWeight.medium, letterSpacing: 0 },
 });

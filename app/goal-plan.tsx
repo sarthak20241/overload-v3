@@ -261,7 +261,7 @@ export default function GoalPlanScreen() {
       .catch((e) => { console.warn('[programs] metric series failed', e); if (live) setSeries(null); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supabase, clerkId, program?.id, heroForSeries?.id, heroForSeries?.current_value, heroForSeries?.checked_at]);
+  }, [supabase, clerkId, program?.id, heroForSeries?.id, heroForSeries?.current_value, heroForSeries?.checked_at, currentPhaseForSeries?.diet_protein_g]);
 
   // Open the plan generator pre-seeded to a phase's training block, so the
   // generated split matches that phase. The training_directive carries the
@@ -834,6 +834,18 @@ export default function GoalPlanScreen() {
             {isCur && program.weekInPhase != null ? `  ·  wk ${program.weekInPhase} of ${ph.duration_weeks}` : ''}
           </Text>
         </View>
+        {/* The goal card above always shows the current phase; say so when
+            the stepper has moved this card and the pillars to another one. */}
+        {!isCur && program.currentPhaseSeq != null && (
+          <View style={styles.viewingRow}>
+            <Text style={[styles.viewingText, { color: C.mutedFg }]}>
+              {ph.seq < program.currentPhaseSeq ? 'A phase you have done.' : 'A phase still to come.'} The card above stays on today's phase.
+            </Text>
+            <Pressable onPress={() => setViewSeq(null)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back to the current phase">
+              <Text style={[styles.viewingLink, { color: C.accentText }]}>Back to now</Text>
+            </Pressable>
+          </View>
+        )}
 
         {job && (
           <View style={[styles.job, { backgroundColor: C.muted }]}>
@@ -1476,6 +1488,9 @@ const styles = StyleSheet.create({
   phaseTitleRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 14, gap: 8 },
   phaseName: { fontSize: 20, lineHeight: 24, fontWeight: FontWeight.bold, letterSpacing: -0.4, flexShrink: 1 },
   phaseWeeks: { fontSize: 13, fontWeight: FontWeight.medium },
+  viewingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 6 },
+  viewingText: { flex: 1, fontSize: 12, lineHeight: 16, fontWeight: FontWeight.medium },
+  viewingLink: { fontSize: 12, fontWeight: FontWeight.semibold },
   job: { marginTop: 8, borderRadius: 14, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 11 },
   jobTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
   jobText: { fontSize: 13, fontWeight: FontWeight.semibold, flexShrink: 1 },
