@@ -786,10 +786,11 @@ export default function GoalPlanScreen() {
     const line = isCur ? (ph.coach_line ?? ph.training_directive) : (ph.training_directive ?? ph.diet_directive);
     return (
       <Animated.View entering={FadeInDown.duration(300).delay(70)} style={[styles.card, styles.cardFlat, { backgroundColor: C.card }]}>
-        {/* Stepper: past ticks, the current phase as a named pill, the rest as
-            numbers. The named pill takes the width it needs; with many phases
-            or a long name the row scrolls sideways rather than ellipsize. */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.steps} style={{ flexGrow: 0 }}>
+        {/* Stepper: numbers only, every node the same size. Past phases are
+            lime ticks, the current one a filled lime circle with its number,
+            the rest hollow numbers; the viewed one carries a ring. The name
+            lives in the title line below, never in the row. */}
+        <View style={styles.steps}>
           {program.phases.map((p, i) => {
             const past = program.currentPhaseSeq != null ? p.seq < program.currentPhaseSeq : ended;
             const cur = p.seq === program.currentPhaseSeq;
@@ -798,24 +799,23 @@ export default function GoalPlanScreen() {
               <View key={p.id} style={[styles.stepWrap, i === program.phases.length - 1 && { flex: 0 }]}>
                 <Pressable
                   onPress={() => { setViewSeq(p.seq); track('program_phase_viewed', { seq: p.seq, current: cur }); }}
-                  hitSlop={6}
+                  hitSlop={8}
                   accessibilityRole="button"
                   accessibilityLabel={`View ${p.name}`}
                   style={[
                     styles.step,
                     cur
-                      ? { backgroundColor: Colors.primary, borderColor: Colors.primary, width: undefined, paddingHorizontal: 10 }
+                      ? { backgroundColor: Colors.primary, borderColor: sel ? C.foreground : Colors.primary }
                       : past
-                        ? { backgroundColor: C.primaryMuted, borderColor: 'transparent' }
+                        ? { backgroundColor: C.primaryMuted, borderColor: sel ? C.foreground : 'transparent' }
                         : { borderColor: sel ? C.foreground : C.border },
                   ]}
                 >
-                  {cur && <View style={[styles.stepDot, { backgroundColor: Colors.primaryFg }]} />}
                   {past && !cur ? (
                     <Feather name="check" size={12} color={C.accentText} />
                   ) : (
-                    <Text style={[styles.stepText, cur ? { color: Colors.primaryFg, fontWeight: FontWeight.bold, fontSize: 13 } : { color: sel ? C.foreground : C.textDim }]}>
-                      {cur ? p.name : i + 1}
+                    <Text style={[styles.stepText, cur ? { color: Colors.primaryFg, fontWeight: FontWeight.bold } : { color: sel ? C.foreground : C.textDim }]}>
+                      {i + 1}
                     </Text>
                   )}
                 </Pressable>
@@ -825,7 +825,7 @@ export default function GoalPlanScreen() {
               </View>
             );
           })}
-        </ScrollView>
+        </View>
 
         <View style={styles.phaseTitleRow}>
           <Text style={[styles.phaseName, { color: C.foreground }]} numberOfLines={1}>{ph.name}</Text>
@@ -846,6 +846,15 @@ export default function GoalPlanScreen() {
                 <View style={[styles.jobFill, { width: `${Math.max(2, pct)}%`, backgroundColor: Colors.primary }]} />
               </View>
             )}
+          </View>
+        )}
+
+        {isCur && ph.routines.length === 0 && (
+          <View style={[styles.notice, { backgroundColor: colorWithAlpha(Colors.warning, 0.12) }]}>
+            <Feather name="alert-circle" size={12} color={C.warningText} />
+            <Text style={[styles.noticeText, { color: C.warningText }]}>
+              This phase has no workouts yet. Build them before your next session.
+            </Text>
           </View>
         )}
 
@@ -876,19 +885,23 @@ export default function GoalPlanScreen() {
     const kcal = ph.diet_calorie_target;
     const pG = ph.diet_protein_g; const cG = ph.diet_carb_g; const fG = ph.diet_fat_g;
     const macroTotal = (pG ?? 0) * 4 + (cG ?? 0) * 4 + (fG ?? 0) * 9;
-    const header = (label: string, right: React.ReactNode) => (
+    const header = (label: string, right: React.ReactNode, rightColor?: string) => (
       <View style={styles.pillarHead}>
         <Text style={[styles.pillarKey, { color: C.accentText }]}>{label}</Text>
-        <Text style={[styles.pillarRight, { color: C.mutedFg }]} numberOfLines={1}>{right}</Text>
+        <Text style={[styles.pillarRight, { color: rightColor ?? C.mutedFg }]} numberOfLines={1}>{right}</Text>
       </View>
     );
+    const unbuilt = ph.routines.length === 0;
+    const isCurPhase = ph.seq === program.currentPhaseSeq;
     return (
       <>
         {/* TRAIN */}
         <Animated.View entering={FadeInDown.duration(300).delay(120)} style={[styles.pillar, { backgroundColor: C.card }]}>
-          {header('TRAIN', (
-            <>{ph.training_block?.split_type ?? 'Training'}{days ? <>  ·  <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>{days} days</Text></> : null}</>
-          ))}
+          {unbuilt && isCurPhase
+            ? header('TRAIN', 'Not built', C.warningText)
+            : header('TRAIN', (
+              <>{ph.training_block?.split_type ?? 'Training'}{days ? <>  ·  <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>{days} days</Text></> : null}</>
+            ))}
           {week && (
             <View style={[styles.plan, { borderColor: C.borderSubtle }]}>
               <View style={styles.strip}>
@@ -914,9 +927,27 @@ export default function GoalPlanScreen() {
             </View>
           )}
           {train.map((m, i) => renderMetricRow(m, i === train.length - 1))}
-          <View style={[styles.rr, { borderTopWidth: StyleSheet.hairlineWidth, borderColor: C.borderSubtle }]}>
-            <Text style={[styles.trackName, { color: C.foreground }]}>Routines</Text>
-            {ph.routines.length > 0 ? (
+          {unbuilt ? (
+            // No sessions yet: a real call to action, not a row link. The
+            // current phase is more urgent (today's session depends on it),
+            // and says so in the header and the phase card above.
+            <View style={[styles.buildWrap, { borderTopWidth: StyleSheet.hairlineWidth, borderColor: C.borderSubtle }]}>
+              <Text style={[styles.buildLine, { color: C.mutedFg }]}>
+                No sessions yet for {ph.name}. I build the split from this phase's plan, about a minute.
+              </Text>
+              <Pressable
+                onPress={() => buildSplitFor(ph)}
+                style={[styles.buildBtn, { backgroundColor: Colors.primary }]}
+                accessibilityRole="button"
+                accessibilityLabel={`Build this phase's workouts for ${ph.name}`}
+              >
+                <Feather name="zap" size={14} color={Colors.primaryFg} />
+                <Text style={[styles.buildBtnText, { color: Colors.primaryFg }]}>Build this phase's workouts</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View style={[styles.rr, { borderTopWidth: StyleSheet.hairlineWidth, borderColor: C.borderSubtle }]}>
+              <Text style={[styles.trackName, { color: C.foreground }]}>Routines</Text>
               <View style={styles.routineChips}>
                 {ph.routines.map((r) => (
                   <Pressable key={r.id} onPress={() => openRoutinePreview(r.id)} hitSlop={4} accessibilityRole="button" accessibilityLabel={`Preview ${r.name}`}>
@@ -927,13 +958,8 @@ export default function GoalPlanScreen() {
                   <Feather name="refresh-cw" size={12} color={C.textDim} />
                 </Pressable>
               </View>
-            ) : (
-              <Pressable onPress={() => buildSplitFor(ph)} style={styles.buildInline} accessibilityRole="button" accessibilityLabel={`Build the workout split for ${ph.name}`}>
-                <Feather name="plus" size={12} color={C.accentText} />
-                <Text style={[styles.buildInlineText, { color: C.accentText }]}>Build split</Text>
-              </Pressable>
-            )}
-          </View>
+            </View>
+          )}
           {ph.training_directive && ph.coach_line && (
             <Text style={[styles.rule, { color: C.mutedFg, borderColor: C.borderSubtle }]}>{ph.training_directive}</Text>
           )}
@@ -1442,12 +1468,11 @@ const styles = StyleSheet.create({
   chartWrap: { marginTop: 6 },
   goalCap: { fontSize: 13, fontWeight: FontWeight.medium, flexShrink: 1 },
 
-  steps: { flexDirection: 'row', alignItems: 'center', minWidth: '100%' },
-  stepWrap: { flexDirection: 'row', alignItems: 'center', flexGrow: 1, flexShrink: 0 },
-  step: { height: 26, minWidth: 26, borderRadius: 13, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 7, flexShrink: 0 },
-  stepDot: { width: 7, height: 7, borderRadius: 4 },
+  steps: { flexDirection: 'row', alignItems: 'center' },
+  stepWrap: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  step: { width: 26, height: 26, borderRadius: 13, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   stepText: { fontSize: 12, fontWeight: FontWeight.semibold },
-  stepLine: { flexGrow: 1, height: 1.5, minWidth: 10, marginHorizontal: 6 },
+  stepLine: { flex: 1, height: 1.5, minWidth: 6, marginHorizontal: 6 },
   phaseTitleRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 14, gap: 8 },
   phaseName: { fontSize: 20, lineHeight: 24, fontWeight: FontWeight.bold, letterSpacing: -0.4, flexShrink: 1 },
   phaseWeeks: { fontSize: 13, fontWeight: FontWeight.medium },
@@ -1486,8 +1511,12 @@ const styles = StyleSheet.create({
   rr: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', minHeight: 40, gap: 8 },
   routineChips: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1, flexWrap: 'wrap', justifyContent: 'flex-end' },
   routineChip: { fontSize: 13, fontWeight: FontWeight.medium },
-  buildInline: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  buildInlineText: { fontSize: 13, fontWeight: FontWeight.semibold },
+  buildWrap: { paddingTop: 10, paddingBottom: 8, gap: 10 },
+  buildLine: { fontSize: 13, lineHeight: 18, fontWeight: FontWeight.medium },
+  buildBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 44, borderRadius: Radius.lg },
+  buildBtnText: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
+  notice: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9 },
+  noticeText: { flex: 1, fontSize: 12.5, lineHeight: 17, fontWeight: FontWeight.semibold },
   rule: { paddingTop: 10, paddingBottom: 8, fontSize: 12, lineHeight: 16, fontWeight: FontWeight.medium, borderTopWidth: StyleSheet.hairlineWidth },
 
   secondaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: Radius.lg, paddingVertical: 12 },
