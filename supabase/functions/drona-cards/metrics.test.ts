@@ -109,6 +109,21 @@ Deno.test("nothing to do: no program, or every metric already checked this week"
   assertEquals(done.writes.length, 0);
 });
 
+Deno.test("a row the check cannot read never keeps the phase due", async () => {
+  const checked = rows.map((r) => ({ ...r, checked_at: "2026-10-19T06:00:00Z" }));
+  const bad = { id: "m-bad", seq: 2, is_hero: false, kind: "steps", ref: null, unit: "steps", direction: "up", start_value: null, target_value: null, current_value: null, status: "set", checked_at: null };
+  const { db, writes } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: [...checked, bad], error: null }],
+  });
+  let modelCalls = 0;
+  const fetchFn = (() => { modelCalls += 1; return Promise.resolve(new Response("{}", { status: 200 })); }) as unknown as typeof fetch;
+  assertEquals(await metricsStep(db, "user-1", DAY, WEEK, "key", fetchFn), { checked: 0, line: false });
+  assertEquals(writes.length, 0);
+  assertEquals(modelCalls, 0);
+});
+
 Deno.test("the metrics read is scoped to the user as well as the phase", async () => {
   const { db, reads } = fakeDb({
     coach_programs: [{ data: program, error: null }],

@@ -241,7 +241,11 @@ export default function GoalPlanScreen() {
   const currentPhaseForSeries = program != null && program.currentPhaseSeq != null ? program.phases[program.currentPhaseSeq] : null;
   const heroForSeries = currentPhaseForSeries ? heroOf(currentPhaseForSeries.metrics) : null;
   // The chart's readings: reloaded when the program, the hero, or its latest
-  // value changes (a fresh log moves the line at once).
+  // value changes (a fresh log moves the line at once). The keys are the
+  // program id and the hero's id, value and check stamp on purpose: `program`
+  // and `currentPhaseForSeries` are new objects on every load(), and keying
+  // on them would refetch the series on every focus. Everything the loader
+  // reads changes one of those keys when it changes.
   useEffect(() => {
     if (!supabase || !clerkId || !program || !currentPhaseForSeries || !heroForSeries) { setSeries(null); return; }
     let live = true;

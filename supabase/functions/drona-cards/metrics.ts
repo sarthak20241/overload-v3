@@ -120,12 +120,16 @@ export async function metricsStep(
     );
     if (mErr) return { ...none, error: `metrics: ${mErr.message}` };
     const rows = (metricRows ?? []) as Record<string, unknown>[];
-    if (!checkDue(rows as { checked_at: string | null }[], weekStart)) return none;
 
+    // Only rows the check can read: a row with no target or an unknown kind
+    // is never stamped, so it must not count toward "due" either, or the
+    // group would re-check (and re-ask the model) every run for ever.
     const metrics: MetricToCheck[] = [];
+    const readableRows: { checked_at: string | null }[] = [];
     for (const r of rows) {
       const target = num(r.target_value);
       if (!isMetricKind(r.kind) || target == null) continue;
+      readableRows.push({ checked_at: typeof r.checked_at === "string" ? r.checked_at : null });
       metrics.push({
         id: String(r.id),
         kind: r.kind,
@@ -136,7 +140,7 @@ export async function metricsStep(
         current_value: num(r.current_value),
       });
     }
-    if (metrics.length === 0) return none;
+    if (metrics.length === 0 || !checkDue(readableRows, weekStart)) return none;
 
     const phaseStart = addDays(String(prog.start_date), phase.start_offset_weeks * 7);
     const { readings, failed } = await gatherReadings(db, userId, localDay, weekStart, phaseStart, metrics, phase.diet_protein_g);
