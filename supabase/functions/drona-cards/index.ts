@@ -508,7 +508,7 @@ async function runCron(): Promise<Response> {
     // small reads per run until it does.
     // A time budget keeps the moments pass below from being starved.
     const latestWeek = weekStarts.length > 0 ? [...weekStarts].sort().pop()! : null;
-    const due_metrics = new Set<string>();
+    const dueMetrics = new Set<string>();
     if (latestWeek) {
       for (let from = 0; ; from += USER_PAGE) {
         // Active programs only, rows the check can read (a target), and a
@@ -522,11 +522,15 @@ async function runCron(): Promise<Response> {
             .range(from, from + USER_PAGE - 1)
         );
         if (uncheckedErr) { failures.push(`metrics: due read: ${uncheckedErr.message}`); break; }
-        for (const m of unchecked ?? []) if (m.user_id) due_metrics.add(String(m.user_id));
+        for (const m of unchecked ?? []) if (m.user_id) dueMetrics.add(String(m.user_id));
         if (!unchecked || unchecked.length < USER_PAGE) break;
       }
     }
-    const metricUsers = weeks.filter((w) => due_metrics.has(w.userId));
+    // Rotated by run, so a cron that is always near its budget does not
+    // starve the same users at the end of the list every week.
+    const dueUsers = weeks.filter((w) => dueMetrics.has(w.userId));
+    const rotate = dueUsers.length > 0 ? Math.floor(now.getTime() / 900_000) % dueUsers.length : 0;
+    const metricUsers = [...dueUsers.slice(rotate), ...dueUsers.slice(0, rotate)];
     let metricsSkipped = 0;
     for (let i = 0; i < metricUsers.length; i += CRON_CONCURRENCY) {
       if (Date.now() - now.getTime() > METRICS_BUDGET_MS) {
