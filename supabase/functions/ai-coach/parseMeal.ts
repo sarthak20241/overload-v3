@@ -382,7 +382,9 @@ export function keepUncoveredPrevious(
     // word-overlaps "tofu", so the guard below reads the tofu line as dropped
     // and helpfully restores it. The guard exists to stop data loss; on an
     // identity swap it would otherwise cause data duplication.
-    replaced?.has(p.food_name.toLowerCase()) ||
+    // Same normalization as removedTargets (trim + lower), so the two can
+    // never disagree about which line a removal named.
+    replaced?.has(p.food_name.trim().toLowerCase()) ||
     items.some((it) =>
       (p.food_id && it.food_id === p.food_id) || wordsOverlap(it.food_name, p.food_name)
     );

@@ -209,6 +209,22 @@ Deno.test("a save marks estimated lines as estimated, and runs through the creat
   assertEquals(items.map((i) => i.estimated), [false, true, true, false]);
 });
 
+Deno.test("a card at the cap gets no card tools: it may be 12 of more, and the app sends no total", async () => {
+  // Known limit, pinned: the app cuts previous_items at 12 without a count, so
+  // a 30-line card arrives as 12. Editing it would drop lines 13+. At the cap
+  // the agent cannot tell, so it keeps only the plain tools and the parse
+  // path still runs. One under the cap is a whole card.
+  const twelve = Array.from({ length: 12 }, (_, i) => ({ ...CARD[0], food_name: `line ${i + 1}` }));
+  assertEquals(toolsFor(twelve).some((t) => t.name === "remove_card_lines"), false);
+  assertEquals(toolsFor(twelve.slice(0, 11)).some((t) => t.name === "remove_card_lines"), true);
+  // And a finish that names a card tool on such a card is refused, not acted on.
+  const out = await runFoodAgent(
+    { text: "remove line 3", defaultMeal: "lunch", card: twelve },
+    deps(scripted([[{ name: "remove_card_lines", input: { lines: [3], summary: "x" } }]])),
+  );
+  assertEquals(out.kind, "failed");
+});
+
 Deno.test("card tools without a card, or with bad lines, fail honestly", async () => {
   const noCard = await runFoodAgent({ text: "remove it", defaultMeal: "lunch" }, deps(scripted([[{ name: "remove_card_lines", input: { lines: [1], summary: "x" } }]])));
   assertEquals(noCard.kind, "failed");

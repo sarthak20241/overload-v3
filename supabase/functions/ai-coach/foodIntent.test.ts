@@ -281,7 +281,6 @@ void _exhaustive;
 
 Deno.test("mode off asks nothing", () => {
   assertEquals(shouldRouteFoodIntent("off"), false);
-  assertEquals(shouldRouteFoodIntent("off"), false);
 });
 
 Deno.test("a correction turn is routed too, in any live mode", () => {

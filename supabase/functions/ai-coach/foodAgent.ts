@@ -17,7 +17,7 @@
 //
 // Deps are injected so the loop is testable without the network.
 
-import { type CardLine, cardLines, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
+import { type CardLine, cardLines, cardMayBeCut, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { sonnetSettings } from "../_shared/sonnet.ts";
 import {
   type AnthropicTool,
@@ -231,9 +231,11 @@ const FINISH_TOOLS = new Set([
 ]);
 
 /** The tools for this run: the card tools only when a card is on screen, so a
- *  first-shot message cannot "edit" nothing. */
+ *  first-shot message cannot "edit" nothing. A card that may be cut at the cap
+ *  gets no card tools either: editing, removing from, or saving a card the
+ *  agent cannot see all of would drop the lines past the cap (cardMayBeCut). */
 export function toolsFor(card: CardLine[] | null | undefined): AnthropicTool[] {
-  return card?.length ? [...FOOD_AGENT_TOOLS, ...CARD_TOOLS] : FOOD_AGENT_TOOLS;
+  return card?.length && !cardMayBeCut(card) ? [...FOOD_AGENT_TOOLS, ...CARD_TOOLS] : FOOD_AGENT_TOOLS;
 }
 
 /** Said to the agent when a card is on screen: what it is and what to do with it. */
@@ -568,6 +570,12 @@ async function finishWith(
     return text ? { kind: "reply", text, turns } : { kind: "failed", reason: "empty_reply", turns };
   }
   const card = input.card ?? [];
+  // The card tools act on the card, so a card that may be cut at the cap
+  // refuses them HERE too, not only in toolsFor: a model can name a tool it
+  // was not offered, and the refusal has to sit where the tool would act.
+  if (cardMayBeCut(card) && (u.name === EDIT_CARD_TOOL.name || u.name === REMOVE_CARD_LINES_TOOL.name || u.name === SAVE_CARD_AS_MEAL_TOOL.name)) {
+    return { kind: "failed", reason: "card_may_be_cut", turns };
+  }
   if (u.name === EDIT_CARD_TOOL.name) {
     const change = typeof args.change === "string" ? args.change.trim() : "";
     if (!change || !card.length) return { kind: "failed", reason: "edit_without_card", turns };

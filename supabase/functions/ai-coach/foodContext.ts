@@ -50,8 +50,21 @@ export interface CardLine {
 
 /** Lines the card carries to the models. The SAME cap index.ts puts on
  *  previous_items, so the numbers the agent names for remove_card_lines are
- *  the card's own: a mismatch here would delete the wrong line. */
+ *  the card's own: a mismatch here would delete the wrong line.
+ *
+ *  KNOWN LIMIT: the app (lib/dietData.ts) also cuts previous_items at 12 and
+ *  sends no total, so a card of 13+ lines arrives as 12 and the server cannot
+ *  tell. A correction then rebuilds the card from those 12 and drops the rest
+ *  (this predates PR #277). Until the app sends the real count, the agent's
+ *  card tools refuse a card AT the cap (cardMayBeCut), since 12 could be 12 of
+ *  30; the parse path still runs. */
 export const CARD_MAX_LINES = 12;
+
+/** True when the card the agent holds may be only the first CARD_MAX_LINES of
+ *  a longer one. The app sends no total, so "at the cap" is the only signal. */
+export function cardMayBeCut(card: CardLine[] | null | undefined): boolean {
+  return (card?.length ?? 0) >= CARD_MAX_LINES;
+}
 
 /** The card for a model's eyes: short, numbered, one line per food. */
 export function cardLines(card: CardLine[] | null | undefined): string[] {
