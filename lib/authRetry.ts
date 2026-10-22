@@ -78,7 +78,13 @@ export async function sendWithFreshTokenRetry(
     return first;
   }
   const next = await freshTokenAfterExpiry(first.status, body, token, freshToken);
-  return next ? send(next) : first;
+  if (!next) return first;
+  // Only the clone was read. Release the first reply before replacing it, so
+  // it holds no connection or buffer open.
+  try {
+    await first.body?.cancel();
+  } catch { /* already closed, or no stream body: nothing to release */ }
+  return send(next);
 }
 
 /**
@@ -99,4 +105,32 @@ export function sharedInFlight<T>(fn: () => Promise<T>): () => Promise<T> {
     }
     return inFlight;
   };
+}
+
+/** How long a fresh-token fetch may take before the retry is given up. Sized
+ *  like lib/supabase.ts's TOKEN_BUDGET_MS: a cold refresh on mobile. */
+export const FRESH_TOKEN_BUDGET_MS = 10000;
+
+/**
+ * `getToken`, but null after `ms` or on a throw instead of hanging or failing.
+ * Clerk blocks on a refresh it cannot finish offline; without a bound the
+ * request that is waiting to retry would wait with it.
+ */
+export async function tokenWithin(
+  getToken: () => Promise<string | null>,
+  ms: number,
+): Promise<string | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      getToken(),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), ms);
+      }),
+    ]);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }

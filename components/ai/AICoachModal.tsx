@@ -64,7 +64,7 @@ import { SelectTextSheet, coachPlainText, type MessageSheetTarget } from '@/comp
 import { MessageCopyButton } from '@/components/coach/MessageCopyButton';
 import { PastChatsList } from '@/components/coach/PastChatsList';
 import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
-import { freshTokenAfterExpiry } from '@/lib/authRetry';
+import { FRESH_TOKEN_BUDGET_MS, freshTokenAfterExpiry, tokenWithin } from '@/lib/authRetry';
 import { withChangeSource } from '@/lib/planChangeSource';
 import { ilikeExact, parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
 import { writeWithTargetFallback } from '@/lib/routineTargets';
@@ -667,7 +667,13 @@ function callAICoachStreaming(
       if (!response.ok) {
         const body = await response.text();
         if (options.freshToken && !tokenRetried) {
-          const next = await freshTokenAfterExpiry(response.status, body, token, options.freshToken);
+          const freshToken = options.freshToken;
+          const next = await freshTokenAfterExpiry(
+            response.status,
+            body,
+            token,
+            () => tokenWithin(freshToken, FRESH_TOKEN_BUDGET_MS),
+          );
           if (controller.signal.aborted) return;
           if (next) {
             tokenRetried = true;

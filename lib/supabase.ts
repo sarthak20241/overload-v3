@@ -2,7 +2,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { useMemo, useRef } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { hasClerkKey } from '@/hooks/useClerkUser';
-import { sendWithFreshTokenRetry, sharedInFlight } from '@/lib/authRetry';
+import { FRESH_TOKEN_BUDGET_MS, sendWithFreshTokenRetry, sharedInFlight, tokenWithin } from '@/lib/authRetry';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'placeholder';
@@ -103,21 +103,9 @@ export function useSupabaseClient(): SupabaseClient {
   return useMemo(() => {
     // One skip-cache token fetch for every request that 401s on the same
     // stale token at once (lib/authRetry.ts). Bounded like any token read.
-    const sharedFreshToken = sharedInFlight(async () => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        return await Promise.race([
-          getTokenRef.current({ skipCache: true }) as Promise<string | null>,
-          new Promise<null>((resolve) => {
-            timer = setTimeout(() => resolve(null), TOKEN_BUDGET_MS);
-          }),
-        ]);
-      } catch {
-        return null;
-      } finally {
-        clearTimeout(timer);
-      }
-    });
+    const sharedFreshToken = sharedInFlight(() =>
+      tokenWithin(() => getTokenRef.current({ skipCache: true }), FRESH_TOKEN_BUDGET_MS),
+    );
     return createClient(supabaseUrl, supabaseAnonKey, {
       global: {
         fetch: async (input: RequestInfo | URL, init: RequestInit = {}) => {

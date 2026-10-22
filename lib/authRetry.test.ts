@@ -7,7 +7,7 @@
 // limits that keep a really signed-out user from looping.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { freshTokenAfterExpiry, isExpiredTokenReply, sendWithFreshTokenRetry, sharedInFlight } from "./authRetry.ts";
+import { freshTokenAfterExpiry, isExpiredTokenReply, sendWithFreshTokenRetry, sharedInFlight, tokenWithin } from "./authRetry.ts";
 
 // The exact bodies the two servers send for an expired token.
 const EDGE_EXPIRED = JSON.stringify({
@@ -124,4 +124,30 @@ Deno.test("sharedInFlight: parallel 401s share one fresh-token fetch", async () 
   release("fresher");
   assertEquals(await later, "fresher");
   assertEquals(calls, 2);
+});
+
+Deno.test("tokenWithin: a hung or throwing token fetch gives null, a quick one passes", async () => {
+  assertEquals(await tokenWithin(() => Promise.resolve("t"), 50), "t");
+  assertEquals(await tokenWithin(() => new Promise<string | null>(() => {}), 20), null);
+  assertEquals(await tokenWithin(() => Promise.reject(new Error("offline")), 50), null);
+});
+
+Deno.test("the first reply's body is released before the retry", async () => {
+  let cancelled = false;
+  const first = new Response(
+    new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode(EDGE_EXPIRED));
+        c.close();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }),
+    { status: 401 },
+  );
+  const sends = [first, new Response("ok", { status: 200 })];
+  const res = await sendWithFreshTokenRetry(() => Promise.resolve(sends.shift()!), "stale", () => Promise.resolve("fresh"));
+  assertEquals(res.status, 200);
+  assertEquals(first.bodyUsed || cancelled, true);
 });
