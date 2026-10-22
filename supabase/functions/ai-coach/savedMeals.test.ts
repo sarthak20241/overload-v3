@@ -7,9 +7,12 @@
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import { type ParseMealDeps, runParseMeal } from "./parseMeal.ts";
+import { openingText } from "./foodAgent.ts";
 import {
   findSavedMeal,
+  hintOfferTarget,
   mergeSavedLines,
+  type SavedMealHint,
   savedCount,
   savedMealLines,
   savedMealsBlock,
@@ -413,4 +416,107 @@ Deno.test("the code check never fires on a card with no saved-meal lines", async
   });
   assertEquals(seen, []);
   assertEquals(r.steps.some((s) => s.tool === "rejects_saved"), false);
+});
+
+// ── the router's pick (Jev) is a pointer and an offer, never a log ──────────
+//
+// Live, 21 days to 2026-10-22: Jev was sure 7 times. Twice the parse agreed.
+// Twice "10g doctor's choice oats" pointed at a whole 426 kcal saved serving
+// for 10 g of it, and once "yesterday's oat meal" pointed at a saved meal when
+// the diary was meant. So Jev's pick steers the model and offers a swap; the
+// parse keeps the amount, and only the model's own tag logs the saved rows.
+
+const HINT: SavedMealHint = { id: "sm-oats", name: "Oats with milk", confidence: 0.84 };
+
+Deno.test("the block carries the router's pick as a pointer, only for a listed meal", () => {
+  const b = savedMealsBlock([OATS], HINT);
+  assert(b.includes('router read the message as naming "Oats with milk" (84% sure)'), b);
+  assert(b.includes("A pointer, not a verdict"), b);
+  assert(b.endsWith("\n</saved_meals>"), b);
+  assertEquals(savedMealsBlock([OATS], { ...HINT, id: "sm-gone" }), savedMealsBlock([OATS]));
+  assertEquals(savedMealsBlock([OATS], null), savedMealsBlock([OATS]));
+  assertEquals(savedMealsBlock([], HINT), "");
+});
+
+Deno.test("the offer lands on the line sharing the most words with the saved meal", () => {
+  assertEquals(hintOfferTarget(HINT, [OATS], ["kesar pista oats", "banana"]), "kesar pista oats");
+  assertEquals(hintOfferTarget(HINT, [OATS], ["oats with honey", "milk"]), "oats with honey");
+  // No line shares a word: nothing to swap, so no offer.
+  assertEquals(hintOfferTarget(HINT, [OATS], ["chicken", "rice"]), null);
+  assertEquals(hintOfferTarget(HINT, [OATS], []), null);
+  // A pick that is not among the saved meals is ignored.
+  assertEquals(hintOfferTarget({ ...HINT, id: "sm-gone" }, [OATS], ["oats"]), null);
+  // A one-item saved meal IS that food: its item's words count too.
+  const plate: SavedMealForParse = {
+    ...OATS, id: "sm-roti", name: "My Roti Plate",
+    items: [{ ...OATS.items[0], food_name: "Roti / Chapati" }],
+  };
+  assertEquals(hintOfferTarget({ id: "sm-roti", name: "My Roti Plate", confidence: 0.86 }, [plate], ["chapati"]), "chapati");
+});
+
+Deno.test("the failure this prevents: the router's pick is offered, the parsed amount is logged", async () => {
+  const seen: string[] = [];
+  const r = await runParseMeal(
+    stub([], [{ ...OATMEAL_ITEM, name: "kesar pista oats" }], seen),
+    { ...INPUT, text: "yesterday's oat meal in breakfast", mode: "fast", savedMeals: [OATS], savedHint: HINT },
+  );
+  // The model saw the pointer under the list.
+  assert(seen[0].includes('router read the message as naming "Oats with milk" (84% sure)'), seen[0]);
+  // The parse's own line stands, as an estimate: nothing was logged from the saved rows.
+  assertEquals(r.parsed!.items.map((i) => [i.food_name, i.source]), [["kesar pista oats", "estimate"]]);
+  // The card gets the one-tap swap on that line.
+  assertEquals(r.saved_suggestions, [{ food_name: "kesar pista oats", saved_id: "sm-oats", saved_name: "Oats with milk" }]);
+  const step = r.steps.find((s) => s.tool === "saved_hint");
+  assertEquals(step?.result, "offered:kesar pista oats");
+  assertEquals(step?.input, { id: "sm-oats", name: "Oats with milk", confidence: 0.84 });
+});
+
+Deno.test("when the model tags the saved meal itself, the pick is logged and not offered again", async () => {
+  const r = await runParseMeal(
+    stub([], [{ ...OATMEAL_ITEM, saved_meal: "Oats with milk" }]),
+    { ...INPUT, mode: "fast", savedMeals: [OATS], savedHint: HINT },
+  );
+  assertEquals(r.parsed!.items.map((i) => i.source), ["manual", "manual"]);
+  assertEquals(r.saved_suggestions, undefined);
+  assertEquals(r.steps.find((s) => s.tool === "saved_hint")?.result, "logged");
+});
+
+Deno.test("a pick no line can carry is recorded, not forced onto the card", async () => {
+  const r = await runParseMeal(
+    stub([], [{ ...OATMEAL_ITEM, name: "chicken" }]),
+    { ...INPUT, text: "chicken", mode: "fast", savedMeals: [OATS], savedHint: HINT },
+  );
+  assertEquals(r.saved_suggestions, undefined);
+  assertEquals(r.steps.find((s) => s.tool === "saved_hint")?.result, "no_line");
+});
+
+Deno.test("the word check and the router's pick never offer the same meal twice", async () => {
+  const r = await runParseMeal(
+    stub([], [{ ...OATMEAL_ITEM, name: "oats" }]),
+    { ...INPUT, text: "oats in breakfast", mode: "fast", savedMeals: [OATS], savedHint: HINT },
+  );
+  assertEquals(r.saved_suggestions, [{ food_name: "oats", saved_id: "sm-oats", saved_name: "Oats with milk" }]);
+});
+
+Deno.test("words that turn the saved meal down beat the router's pick", async () => {
+  const r = await runParseMeal(
+    stub([], [{ ...OATMEAL_ITEM, name: "kesar pista oats" }]),
+    { ...INPUT, text: "kesar pista oats, not from my saved meals", mode: "fast", savedMeals: [OATS], savedHint: HINT },
+  );
+  assertEquals(r.saved_suggestions, undefined);
+});
+
+Deno.test("no pick, no pointer and no step: the prompt is exactly as before", async () => {
+  const seen: string[] = [];
+  const r = await runParseMeal(stub([], [OATMEAL_ITEM], seen), { ...INPUT, mode: "fast", savedMeals: [OATS] });
+  assert(!seen[0].includes("router read"), seen[0]);
+  assertEquals(r.steps.find((s) => s.tool === "saved_hint"), undefined);
+});
+
+Deno.test("the agent gets the pick as one line, with the query to fetch that meal", () => {
+  const text = openingText({ text: "my usual oats", savedHint: HINT }, "Today is Thursday 2026-10-22.");
+  assert(text.includes('saved meal "Oats with milk", 84% sure'), text);
+  assert(text.includes('list_saved_meals (query "Oats with milk")'), text);
+  assert(text.endsWith("my usual oats"), text);
+  assertEquals(openingText({ text: "my usual oats", savedHint: null }, null), "my usual oats");
 });

@@ -33,6 +33,8 @@ import {
   type SavedHit,
   type SavedMealForParse,
   rejectsSavedMeal,
+  hintOfferTarget,
+  type SavedMealHint,
   savedMealsBlock,
   suggestSavedMeal,
 } from "./savedMeals.ts";
@@ -957,6 +959,10 @@ export interface ParseMealInput {
    *  catalog, not the web (savedMeals.ts). A promise so the read can start
    *  alongside everything else; it is awaited just before the first call. */
   savedMeals?: SavedMealForParse[] | Promise<SavedMealForParse[]>;
+  /** The router's pick among those saved meals, with Jev's confidence. Shown
+   *  to the model as a pointer, and offered as a swap on the card when the
+   *  model does not tag it. Never logged from here (see SavedMealHint). */
+  savedHint?: SavedMealHint | null;
   todayTotals: { kcal: number; protein_g: number } | null;
   targets: { daily_calorie_target: number | null; protein_target_g: number | null } | null;
   // Optional: when set, the recents/targets/totals above are placeholders and
@@ -6009,6 +6015,18 @@ async function runParseMealOnce(
   }
 
   if (suggestions.length > 0) result.saved_suggestions = suggestions;
+  // Who was right about the router's pick, for the trace: the model logged
+  // it, the card offers it, or no line could carry the offer.
+  if (input.savedHint) {
+    const h = input.savedHint;
+    const offered = suggestions.find((s) => s.saved_id === h.id);
+    result.steps = [...result.steps, {
+      iter: 0,
+      tool: "saved_hint",
+      input: { id: h.id, name: h.name, confidence: h.confidence },
+      result: hits.some((x) => x.meal.id === h.id) ? "logged" : offered ? `offered:${offered.food_name}` : "no_line",
+    }];
+  }
   let final = result;
   if (hits.length > 0) {
     final = mergeSavedLines(result, hits, input.mealHint ?? mealForHour(input.localHour));
@@ -6194,10 +6212,10 @@ async function runParseMealCore(
               grams: p.grams,
             })),
           },
-        }) + savedMealsBlock(saved)
+        }) + savedMealsBlock(saved, input.savedHint ?? null)
         : input.pendingMeal
-        ? JSON.stringify({ text: userText.text, pending_meal: input.pendingMeal }) + savedMealsBlock(saved)
-        : userText.text + savedMealsBlock(saved),
+        ? JSON.stringify({ text: userText.text, pending_meal: input.pendingMeal }) + savedMealsBlock(saved, input.savedHint ?? null)
+        : userText.text + savedMealsBlock(saved, input.savedHint ?? null),
     }],
   });
   const extractRes = await callExtract();
@@ -6489,6 +6507,21 @@ async function runParseMealCore(
       hits.push({ meal, count: savedCount(it.quantity, it.unit), mealType: it.meal ?? mealFromText ?? null });
       return false;
     });
+    // The router's pick (Jev) when the model did not tag it: a swap offer on
+    // the line that shares its words, never a log. The user taps if they
+    // meant the saved meal; the parsed line stands if they did not. Lines
+    // already on the card are the correction paths' to keep.
+    const hint = input.savedHint;
+    if (
+      hint && !hits.some((h) => h.meal.id === hint.id) && !suggestions.some((s) => s.saved_id === hint.id) &&
+      !rejectsSavedMeal(input.text)
+    ) {
+      const fresh = extItems.filter((it) =>
+        !(correctsPrevious && prevItems.some((p) => memoryKey(p.food_name) === memoryKey(it.name)))
+      );
+      const target = hintOfferTarget(hint, saved, fresh.map((it) => it.name));
+      if (target) suggestions.push({ food_name: target, saved_id: hint.id, saved_name: hint.name });
+    }
     // Everything they said was a saved meal. There is nothing left to look up,
     // so return now: runParseMeal fills the lines in from the stored rows.
     if (hits.length > 0 && extItems.length === 0) {

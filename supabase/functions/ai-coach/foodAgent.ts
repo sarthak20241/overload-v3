@@ -68,14 +68,27 @@ export interface FoodAgentInput {
    *  agent can edit it, add to it, remove from it, save it as a meal, or talk
    *  about it. Its numbers are the user's working copy, never to be re-guessed. */
   card?: CardLine[] | null;
+  /** The router's read of the message: which saved meal it names, and how
+   *  sure (0-1). One line in the opening message, so the agent can fetch that
+   *  one meal with list_saved_meals instead of reading them all. A pointer,
+   *  not a verdict: the amount and the day in the message win. */
+  savedHint?: { id: string; name: string; confidence: number } | null;
 }
 
 /** The opening user message: the date, then (when this answers the agent's
  *  question) what was asked, then the user's words. */
-export function openingText(input: Pick<FoodAgentInput, "text" | "answering" | "card">, days: string | null): string {
+export function openingText(input: Pick<FoodAgentInput, "text" | "answering" | "card" | "savedHint">, days: string | null): string {
   const parts: string[] = [];
   if (days) parts.push(`(${days})`);
   if (input.card?.length) parts.push(`(card on screen:\n${cardLines(input.card).join("\n")})`);
+  if (input.savedHint) {
+    const name = JSON.stringify(input.savedHint.name);
+    parts.push(
+      `(The app's router read this as naming the user's saved meal ${name}, ${Math.round(input.savedHint.confidence * 100)}% sure. ` +
+        `A pointer, not a verdict: check it with list_saved_meals (query ${name}) before copying its lines, ` +
+        "and let the amount and the day in the message win.)",
+    );
+  }
   if (input.answering) {
     parts.push(
       `(This answers your question ${JSON.stringify(input.answering.question)} about the user's message ${JSON.stringify(input.answering.text)}. ` +

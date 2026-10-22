@@ -650,6 +650,7 @@ function startFoodAgent(args: {
           ? { text: args.pendingMeal.text, question: args.pendingMeal.question }
           : null,
         card: args.card?.lines ?? null,
+        savedHint: d?.savedMatch ?? null,
       },
       {
         model: MODEL,
@@ -3784,7 +3785,8 @@ async function handleParseMealRequest(args: {
           // the two can leave the interval running.
           const stopHeartbeat = startHeartbeat((frame) => controller.enqueue(enc.encode(frame)));
           try {
-            const pendingMeal = foodContext.pendingMeal && continuesPendingMeal(await intentP)
+            const routed = await intentP;
+            const pendingMeal = foodContext.pendingMeal && continuesPendingMeal(routed)
               ? foodContext.pendingMeal : null;
             const firstParse = await runParseMeal(
               {
@@ -3807,6 +3809,9 @@ async function handleParseMealRequest(args: {
                 mode: "fast",
                 recentFoods: [],
                 savedMeals: savedMealsP,
+                // The router's pick, already settled above: a pointer for the
+                // model and a swap offer, costing the parse no wait.
+                savedHint: routed?.savedMatch ?? null,
                 todayTotals: null,
                 targets: null,
                 contextPromise,
@@ -4003,7 +4008,8 @@ async function handleParseMealRequest(args: {
       brandWeb: !parseFreeTier,
     });
     const work = (async () => {
-      const pendingMeal = foodContext.pendingMeal && continuesPendingMeal(await intentP)
+      const routed = await intentP;
+      const pendingMeal = foodContext.pendingMeal && continuesPendingMeal(routed)
         ? foodContext.pendingMeal : null;
       const firstParse = await runParseMeal(
         makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier }),
@@ -4019,6 +4025,7 @@ async function handleParseMealRequest(args: {
           // runParseMeal (after extract), so these queries overlap extraction.
           recentFoods: [],
           savedMeals: savedMealsP,
+          savedHint: routed?.savedMatch ?? null,
           todayTotals: null,
           targets: null,
           contextPromise,
