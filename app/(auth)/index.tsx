@@ -16,6 +16,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import * as WebBrowser from 'expo-web-browser';
 import { setGuestMode, getGuestMode } from '@/lib/guestMode';
 import { getGuestWorkouts, getGuestRoutines } from '@/lib/guestStore';
+import { classifySSO, shouldReloadSSO, ssoDetail, ssoErrorCopy, SIGN_IN_INCOMPLETE_COPY, type SSOOutcome } from '@/lib/ssoOutcome';
 
 function useWarmUpBrowser() {
   useEffect(() => {
@@ -172,6 +173,28 @@ export default function AuthScreen() {
     );
   }
 
+  // Password and OAuth sign-ins both land here when Clerk asks for a second
+  // factor. Pick one we can prompt for (TOTP needs no prep, phone_code needs
+  // an SMS dispatched first, backup_code is the fallback) and hand off to the
+  // 'mfa' step. False when the account has no factor this screen supports.
+  const startSecondFactor = async (attempt: any): Promise<boolean> => {
+    const factors: any[] = attempt?.supportedSecondFactors ?? [];
+    const chosen =
+      factors.find((f) => f.strategy === 'totp') ??
+      factors.find((f) => f.strategy === 'phone_code') ??
+      factors.find((f) => f.strategy === 'backup_code');
+    if (!chosen) return false;
+    if (chosen.strategy === 'phone_code') {
+      await signIn!.prepareSecondFactor({ strategy: 'phone_code', phoneNumberId: chosen.phoneNumberId });
+    }
+    setSecondFactorStrategy(chosen.strategy);
+    setMfaPhoneHint(chosen.safeIdentifier ?? '');
+    setMfaPhoneId(chosen.phoneNumberId);
+    setCode('');
+    setMode('mfa');
+    return true;
+  };
+
   const handleSubmit = async () => {
     // Belt-and-suspenders against the bypass we hit on TestFlight: a build
     // shipped without EAS env vars had hasClerkKey === false, every mode
@@ -199,28 +222,12 @@ export default function AuthScreen() {
           // tells us why, so surface something the user can act on instead of
           // a dead-end "try again".
           if (result.status === 'needs_second_factor') {
-            // Password checked out; the account has 2FA. Pick a second factor
-            // we can prompt for — TOTP (authenticator app) needs no prep,
-            // phone_code needs an SMS dispatched first, backup_code is the
-            // fallback. Then hand off to the 'mfa' step.
-            const factors: any[] = result.supportedSecondFactors ?? [];
-            const chosen =
-              factors.find((f) => f.strategy === 'totp') ??
-              factors.find((f) => f.strategy === 'phone_code') ??
-              factors.find((f) => f.strategy === 'backup_code');
-            if (!chosen) {
+            // Password checked out; the account has 2FA.
+            if (!(await startSecondFactor(result))) {
               throw new Error(
                 'This account requires two-factor authentication, but no supported method is available. Please sign in with Google.'
               );
             }
-            if (chosen.strategy === 'phone_code') {
-              await signIn!.prepareSecondFactor({ strategy: 'phone_code', phoneNumberId: chosen.phoneNumberId });
-            }
-            setSecondFactorStrategy(chosen.strategy);
-            setMfaPhoneHint(chosen.safeIdentifier ?? '');
-            setMfaPhoneId(chosen.phoneNumberId);
-            setCode('');
-            setMode('mfa');
             return;
           }
           if (result.status === 'needs_first_factor') {
@@ -240,7 +247,9 @@ export default function AuthScreen() {
             }
             return;
           }
-          throw new Error(`Sign-in couldn't complete (status: ${result.status}). Please try again.`);
+          track('auth_failed', { method: 'password', reason: 'incomplete', detail: `signIn=${result.status}` });
+          setError(SIGN_IN_INCOMPLETE_COPY);
+          return;
         }
         await setSignInActive!({ session: result.createdSessionId });
         track('signed_in', { method: 'password' });
@@ -366,99 +375,81 @@ export default function AuthScreen() {
     }
   };
 
-  const handleApple = async () => {
-    if (!hasClerkKey || !startSSOFlow || authBusy) return;
-    setAppleLoading(true);
+  // Google and Apple both use Clerk's web-based OAuth, so no native module or
+  // entitlement is required. The user signs in via the in-app browser, which
+  // redirects back to `overload://sso-callback`, and Clerk creates the
+  // session. Each provider must be enabled in the Clerk Dashboard (Configure →
+  // SSO Connections), and Apple also needs its Services ID in the Apple
+  // Developer Portal.
+  //
+  // The redirect is the exact native-scheme callback on Clerk's mobile SSO
+  // allowlist. makeRedirectUri in a dev client can produce an exp://host:port
+  // URL that is NOT allowlisted, which makes Clerk return no external
+  // verification URL ("Missing external verification redirect URL for SSO
+  // flow"). That case throws; it never reaches the no-session branch below.
+  // This app only ships as a dev client / standalone build (native health
+  // modules rule out Expo Go), so the custom scheme is always valid.
+  //
+  // startSSOFlow resolves with no session in several states (lib/ssoOutcome.ts
+  // names them). The user sees a coach line; the Clerk detail goes to
+  // analytics and the console.
+  const runSSO = async (strategy: 'oauth_google' | 'oauth_apple', provider: 'Google' | 'Apple') => {
+    const method = provider === 'Google' ? 'google' : 'apple';
+    // startSSOFlow returns at once with no session, and never opens the
+    // browser, while Clerk's sign-in and sign-up resources are still loading.
+    if (!signInLoaded || !signUpLoaded) {
+      track('auth_failed', { method, reason: 'not_ready' });
+      setError(ssoErrorCopy({ kind: 'not_ready' }, provider)!);
+      return;
+    }
+    const setBusy = provider === 'Google' ? setGoogleLoading : setAppleLoading;
+    setBusy(true);
     setError('');
+    setMethodHint('');
     try {
-      // Mirrors handleGoogle below — uses Clerk's web-based OAuth so no
-      // native module / entitlement is required. The user signs in via the
-      // in-app browser, redirects back to `overload://sso-callback`, and
-      // Clerk creates the session. Apple OAuth must be enabled in the Clerk
-      // Dashboard (Configure → SSO Connections → Apple) and the Services ID
-      // configured in Apple Developer Portal.
-      const redirectUrl = 'overload://sso-callback';
-      const { createdSessionId, setActive, authSessionResult, signUp: su } = await startSSOFlow({
-        strategy: 'oauth_apple',
-        redirectUrl,
-      });
-      if (createdSessionId && setActive) {
-        await setActive({ session: createdSessionId });
-        track('signed_in', { method: 'apple' });
+      const result = await startSSOFlow({ strategy, redirectUrl: 'overload://sso-callback' });
+      let outcome: SSOOutcome = classifySSO(result);
+      let state = result;
+      let reloaded = false;
+      if (shouldReloadSSO(outcome) && result.signIn) {
+        // The browser came back but Clerk's answer had no session and no
+        // reason. Read the attempt once more before calling it a failure.
+        await new Promise((r) => setTimeout(r, 1000));
+        const signInNow = await result.signIn.reload();
+        state = { ...result, createdSessionId: null, signIn: signInNow };
+        outcome = classifySSO(state);
+        reloaded = true;
+      }
+
+      if (outcome.kind === 'session') {
+        await result.setActive!({ session: outcome.sessionId });
+        track('signed_in', { method, after_reload: reloaded || undefined });
         router.replace('/(app)');
         return;
       }
+      if (outcome.kind === 'cancelled') return;
+      if (outcome.kind === 'second_factor' && (await startSecondFactor(state.signIn))) return;
 
-      const t = authSessionResult?.type;
-      if (t === 'cancel' || t === 'dismiss') {
-        return;
-      }
-      if (su?.status === 'missing_requirements') {
-        const missing = su.missingFields?.join(', ') || 'additional info';
-        setError(`Sign-up needs ${missing}. Set those fields to optional in your Clerk Dashboard, or collect them in a follow-up screen.`);
-        return;
-      }
-      if (t && t !== 'success') {
-        setError(`Apple sign-in did not complete (${t}).`);
-        return;
-      }
-      setError('Sign-in returned but no session was created. Add the redirect URL to your Clerk allowlist.');
+      const detail = ssoDetail(state);
+      track('auth_failed', { method, reason: outcome.kind, detail, after_reload: reloaded || undefined });
+      console.warn(`[auth] ${provider} sign-in ended without a session: ${outcome.kind} (${detail})`);
+      setError(ssoErrorCopy(outcome, provider) ?? ssoErrorCopy({ kind: 'no_session' }, provider)!);
     } catch (err: any) {
-      track('auth_failed', { method: 'apple', reason: err?.errors?.[0]?.code ?? 'unknown' });
-      setError(err.errors?.[0]?.longMessage || err.message || 'Apple sign-in failed');
+      track('auth_failed', { method, reason: err?.errors?.[0]?.code ?? 'unknown' });
+      setError(err.errors?.[0]?.longMessage || err.message || `${provider} sign-in failed`);
     } finally {
-      setAppleLoading(false);
+      setBusy(false);
     }
   };
 
-  const handleGoogle = async () => {
+  const handleApple = () => {
     if (!hasClerkKey || !startSSOFlow || authBusy) return;
-    setGoogleLoading(true);
-    setError('');
-    try {
-      // Use the exact native-scheme callback that is on Clerk's mobile SSO
-      // allowlist. makeRedirectUri in a dev client can produce an exp://host:port
-      // URL that is NOT allowlisted, which makes Clerk return no external
-      // verification URL ("Missing external verification redirect URL for SSO
-      // flow"). This app only ships as a dev client / standalone build (native
-      // health modules rule out Expo Go), so the custom scheme is always valid.
-      const redirectUrl = 'overload://sso-callback';
-      const { createdSessionId, setActive, authSessionResult, signUp: su } = await startSSOFlow({
-        strategy: 'oauth_google',
-        redirectUrl,
-      });
-      if (createdSessionId && setActive) {
-        await setActive({ session: createdSessionId });
-        track('signed_in', { method: 'google' });
-        router.replace('/(app)');
-        return;
-      }
+    void runSSO('oauth_apple', 'Apple');
+  };
 
-      // OAuth flow returned without a session. Branch on what we know to
-      // give the user something actionable instead of stranding them.
-      const t = authSessionResult?.type;
-      if (t === 'cancel' || t === 'dismiss') {
-        // User backed out of the browser — silent.
-        return;
-      }
-      if (su?.status === 'missing_requirements') {
-        const missing = su.missingFields?.join(', ') || 'additional info';
-        setError(`Sign-up needs ${missing}. Set those fields to optional in your Clerk Dashboard, or collect them in a follow-up screen.`);
-        return;
-      }
-      if (t && t !== 'success') {
-        setError(`Google sign-in did not complete (${t}).`);
-        return;
-      }
-      // Browser returned success but Clerk produced no session — almost
-      // always means the redirect URL isn't on Clerk's allowlist.
-      setError('Sign-in returned but no session was created. Add the redirect URL to your Clerk allowlist.');
-    } catch (err: any) {
-      track('auth_failed', { method: 'google', reason: err?.errors?.[0]?.code ?? 'unknown' });
-      setError(err.errors?.[0]?.longMessage || err.message || 'Google sign-in failed');
-    } finally {
-      setGoogleLoading(false);
-    }
+  const handleGoogle = () => {
+    if (!hasClerkKey || !startSSOFlow || authBusy) return;
+    void runSSO('oauth_google', 'Google');
   };
 
   return (
