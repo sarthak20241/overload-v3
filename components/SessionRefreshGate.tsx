@@ -25,7 +25,13 @@
  * Phones end background apps far sooner than that in practice.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { REFRESH_WITHIN_MS, runSessionRefresh, shouldRefreshSession, SKIPPED_OUTCOMES } from '@/lib/sessionRefresh';
+import {
+  type GateOutcome,
+  REFRESH_WITHIN_MS,
+  runSessionRefresh,
+  shouldRefreshSession,
+  SKIPPED_OUTCOMES,
+} from '@/lib/sessionRefresh';
 import { track } from '@/lib/analytics';
 
 const CLERK_LOAD_WAIT_MS = 4000;
@@ -88,9 +94,10 @@ export function SessionRefreshGate({ children }: { children: ReactNode }) {
     // sign-out), or the sign-out starting. JS runs them one at a time.
     let settled = false;
     let committed = false;
+    let createdSessionId: string | null = null;
     let ticketTimer: ReturnType<typeof setTimeout> | undefined;
     let swapTimer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (outcome: string) => {
+    const finish = (outcome: GateOutcome) => {
       if (settled) return;
       settled = true;
       clearTimeout(ticketTimer);
@@ -131,12 +138,17 @@ export function SessionRefreshGate({ children }: { children: ReactNode }) {
       },
       signOut: () => signOut(),
       signInWithTicket: async (ticket) => {
-        // Read the client at call time: the sign-out above replaced it.
-        const attempt = await clerk.client.signIn.create({ strategy: 'ticket', ticket });
-        if (attempt.status !== 'complete' || !attempt.createdSessionId) {
-          throw new Error(`ticket sign-in: ${attempt.status}`);
+        // The ticket is one-time. Once it has made a session, a retry must
+        // only try to activate that session again, never redeem the ticket.
+        if (!createdSessionId) {
+          // Read the client at call time: the sign-out above replaced it.
+          const attempt = await clerk.client.signIn.create({ strategy: 'ticket', ticket });
+          if (attempt.status !== 'complete' || !attempt.createdSessionId) {
+            throw new Error(`ticket sign-in: ${attempt.status}`);
+          }
+          createdSessionId = attempt.createdSessionId as string;
         }
-        await clerk.setActive({ session: attempt.createdSessionId });
+        await clerk.setActive({ session: createdSessionId });
       },
     }).then(finish, () => finish('error'));
   }, [done, isLoaded, isSignedIn, userId, session, getToken, signOut, clerk]);

@@ -52,6 +52,8 @@ async function verifyClerkJwt(
 async function clerk(path: string, init: RequestInit = {}): Promise<Response> {
   return await fetch(`${CLERK_API}${path}`, {
     ...init,
+    // The app stops waiting at 8s; a Clerk call past that only costs time.
+    signal: AbortSignal.timeout(5000),
     headers: {
       Authorization: `Bearer ${CLERK_SECRET_KEY}`,
       "Content-Type": "application/json",

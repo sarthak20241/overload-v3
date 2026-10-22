@@ -127,7 +127,7 @@ Deno.test("only outcomes that changed nothing count as skipped", async () => {
     assertEquals(SKIPPED_OUTCOMES.includes(await runSessionRefresh(s)), true);
   }
   // These are real failures and must not hide among the skips.
-  for (const outcome of ["sign_in_failed", "sign_out_failed", "ticket_user_mismatch", "refreshed"]) {
+  for (const outcome of ["sign_in_failed", "sign_out_failed", "ticket_user_mismatch", "refreshed", "swap_timed_out", "error"] as const) {
     assertEquals(SKIPPED_OUTCOMES.includes(outcome), false);
   }
 });
