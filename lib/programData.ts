@@ -415,7 +415,7 @@ export async function saveProgram(
   supabase: Supa,
   clerkId: string,
   program: GeneratedProgram,
-): Promise<{ programId: string; phaseIds: string[] }> {
+): Promise<{ programId: string; phaseIds: string[]; metricsSaved: boolean }> {
   // A zero-phase program is not saveable: total_weeks would be 0, activeSeq
   // null, the phases insert a no-op, and the Goal & Plan screen would render a
   // program with no NOW card and no timeline. The tool schema's minItems only
@@ -589,11 +589,14 @@ export async function saveProgram(
   // 5. The phase metrics. Non-fatal like step 4: the program and its phases
   //    are committed, and a program without its metrics still renders (the
   //    Goal screen falls back to the plain layout for it).
+  let metricsSaved = true;
   try {
     await saveProgramMetrics(supabase, clerkId, prog.id, program.phases, phaseIds);
   } catch (e) {
-    // Visible in analytics, not only the console: a program that lost its
-    // metrics renders without a hero until it is rebuilt.
+    // Visible in analytics and to the caller (which tells the user), not
+    // only the console: a program that lost its metrics renders without a
+    // hero until it is rebuilt.
+    metricsSaved = false;
     console.warn('[programs] metrics save failed; program kept without them', e);
     track('program_metrics_save_failed', {
       phases: program.phases.length,
@@ -601,7 +604,7 @@ export async function saveProgram(
       code: (e as { code?: string })?.code ?? null,
     });
   }
-  return { programId: prog.id, phaseIds };
+  return { programId: prog.id, phaseIds, metricsSaved };
 }
 
 /**
@@ -640,15 +643,13 @@ async function saveProgramMetrics(
     }
   };
   if (names.size > 0) {
-    // The catalog and the user's own exercises, said explicitly rather than
-    // left to the exercises RLS.
-    const { data: found, error } = await supabase
-      .from('exercises')
-      .select('id, name, user_id')
-      .in('name', [...names])
-      .or(`user_id.is.null,user_id.eq.${clerkId}`);
+    // The user's own exercises, then the catalog: two plain reads, no filter
+    // string built from the id (the weekly job does the same).
+    const own = await supabase.from('exercises').select('id, name, user_id').eq('user_id', clerkId).in('name', [...names]);
+    const catalog = await supabase.from('exercises').select('id, name, user_id').is('user_id', null).in('name', [...names]);
+    const error = own.error ?? catalog.error;
     if (error) console.warn('[programs] exercise lookup for metrics failed', error.message);
-    keep((found ?? []) as { id: string; name: string; user_id: string | null }[]);
+    keep([...(own.data ?? []), ...(catalog.data ?? [])] as { id: string; name: string; user_id: string | null }[]);
     // Second pass, case-insensitive, for names the coach cased differently:
     // one ilike per name, with the model's text escaped so `%` and `_` in a
     // name cannot act as wildcards and match a different lift.
@@ -656,12 +657,9 @@ async function saveProgramMetrics(
     for (const n of missing) {
       const escaped = escapeIlike(n);
       if (!escaped) continue;
-      const { data: loose } = await supabase
-        .from('exercises')
-        .select('id, name, user_id')
-        .ilike('name', escaped)
-        .or(`user_id.is.null,user_id.eq.${clerkId}`);
-      keep((loose ?? []) as { id: string; name: string; user_id: string | null }[]);
+      const looseOwn = await supabase.from('exercises').select('id, name, user_id').eq('user_id', clerkId).ilike('name', escaped);
+      const looseCatalog = await supabase.from('exercises').select('id, name, user_id').is('user_id', null).ilike('name', escaped);
+      keep([...(looseOwn.data ?? []), ...(looseCatalog.data ?? [])] as { id: string; name: string; user_id: string | null }[]);
     }
   }
   const rows: Record<string, unknown>[] = [];
@@ -852,11 +850,15 @@ export async function loadActiveProgram(
   const p = prog as Record<string, unknown>;
   const startDate = String(p.start_date);
   const today = todayLocalISO();
-  const currentPhaseSeq = computeActivePhaseSeq(startDate, phases, today);
-  const weekInPhase = currentPhaseSeq != null
-    ? Math.floor(
-        (daysBetweenISO(startDate, today) - phases[currentPhaseSeq].start_offset_weeks * 7) / 7,
-      ) + 1
+  // computeActivePhaseSeq answers with an INDEX into the seq-ordered list;
+  // what leaves this function is the phase's own seq value, so every reader
+  // looks a phase up by seq (saveProgram writes dense 0-based seqs, so the
+  // two agree today, but nothing outside this function depends on it).
+  const activeIdx = computeActivePhaseSeq(startDate, phases, today);
+  const activePhase = activeIdx != null ? phases[activeIdx] : null;
+  const currentPhaseSeq = activePhase ? activePhase.seq : null;
+  const weekInPhase = activePhase
+    ? Math.floor((daysBetweenISO(startDate, today) - activePhase.start_offset_weeks * 7) / 7) + 1
     : null;
 
   // The phase metrics. A database without the table (the app before the
@@ -875,7 +877,7 @@ export async function loadActiveProgram(
     const list = byPhase.get(ph.id) ?? [];
     // A custom metric reads the latest log live: the weekly check can be days
     // behind the value the user logged this morning.
-    const progress = ph.seq === currentPhaseSeq ? phaseProgress(weekInPhase, ph.duration_weeks) : 0;
+    const progress = activePhase && ph.id === activePhase.id ? phaseProgress(weekInPhase, ph.duration_weeks) : 0;
     ph.metrics = list.map((m) => {
       if (m.kind !== 'custom' || m.latest_log == null) return m;
       const current_value = m.latest_log;
@@ -1090,7 +1092,8 @@ export async function reconcileActiveProgram(
   // Same phase as last applied → do nothing (respects manual in-phase edits).
   if (active.currentPhaseSeq === active.applied_phase_seq) return null;
 
-  const phase = active.phases[active.currentPhaseSeq];
+  const phase = active.phases.find((ph) => ph.seq === active.currentPhaseSeq);
+  if (!phase) return null;
   await applyPhaseTargets(supabase, clerkId, {
     calories: phase.diet_calorie_target ?? undefined,
     protein_g: phase.diet_protein_g ?? undefined,

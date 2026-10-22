@@ -4654,8 +4654,11 @@ export function AICoachModal({
     handleClose();
     toast.info('Setting up your program…');
     saveProgram(withChangeSource(supabase, 'chat'), clerkId, program)
-      .then(() => {
-        toast.success('Program set. Your targets are updated.');
+      .then(({ metricsSaved }) => {
+        // The program is saved either way; say when its metrics are not, so
+        // the Goal screen's missing hero is not a surprise.
+        if (metricsSaved) toast.success('Program set. Your targets are updated.');
+        else toast.info('Program set. Its phase metrics did not save; rebuild with Drona to add them.');
         onProgramApplied?.();
       })
       .catch((err) => {
