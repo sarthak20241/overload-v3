@@ -16,7 +16,12 @@
  * had. After the sign-out has begun the gate does NOT give up at that mark:
  * mounting the app then would let the guards and bridges see the signed-out
  * moment, the thing this gate exists to hide. It waits for the swap, up to
- * SWAP_MAX_MS, a cap only for a Clerk call that never returns.
+ * SWAP_MAX_MS, a cap only for a Clerk call that never returns. That cap is
+ * the one exception: past it the app mounts while the user may be signed
+ * out, and the guards and bridges see it. It is reported as swap_timed_out.
+ *
+ * The native splash stays up while the gate renders nothing: app/_layout.tsx
+ * holds it, and this hides it once the gate is done.
  *
  * It runs once per cold start, on purpose. Doing it on return from the
  * background would mean unmounting a live app (an active workout included)
@@ -25,6 +30,7 @@
  * Phones end background apps far sooner than that in practice.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { SplashScreen } from 'expo-router';
 import {
   type GateOutcome,
   REFRESH_WITHIN_MS,
@@ -52,20 +58,26 @@ async function fetchTicket(token: string): Promise<{ ticket: string; userId: str
     let res: Response;
     try {
       res = await fetch(`${url}/functions/v1/session-refresh`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        apikey: anonKey,
-        'Content-Type': 'application/json',
-      },
-      body: '{}',
-      signal: controller.signal,
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          apikey: anonKey,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+        signal: controller.signal,
       });
     } catch {
       return null;
     }
     if (!res.ok) throw new Error(`session-refresh: HTTP ${res.status}`);
-    const body = (await res.json()) as { ticket?: string | null; user_id?: string };
+    let body: { ticket?: string | null; user_id?: string };
+    try {
+      body = (await res.json()) as typeof body;
+    } catch {
+      // The connection dropped or the abort fired mid-body: no answer, a skip.
+      return null;
+    }
     return body.ticket && body.user_id ? { ticket: body.ticket, userId: body.user_id } : null;
   } finally {
     clearTimeout(timer);
@@ -162,6 +174,10 @@ export function SessionRefreshGate({ children }: { children: ReactNode }) {
       },
     }).then(finish, () => finish('error'));
   }, [done, isLoaded, isSignedIn, userId, session, getToken, signOut, clerk]);
+
+  useEffect(() => {
+    if (done) SplashScreen.hideAsync().catch(() => {});
+  }, [done]);
 
   return done ? <>{children}</> : null;
 }
