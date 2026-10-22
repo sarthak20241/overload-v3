@@ -233,14 +233,20 @@ export function mergeSavedLines<R extends MergeableResult>(
 /** A saved meal to OFFER, never to log: the item names one food that is part
  *  of a saved meal ("oats", saved "Oats with milk"). Decision 1A: search the
  *  food as asked, and let the user swap with one tap. Every word of the food
- *  must appear in the meal's name or one of its items, so "chicken" does not
- *  offer "Chicken biryani" when it is only in the name by accident of a longer
- *  word. Newest saved meal first, which is the order they arrive in. */
+ *  must appear in the meal's NAME, so "chicken" does not offer "Chicken
+ *  biryani" when it is only in the name by accident of a longer word.
+ *
+ *  The items count only when the meal IS that one food (a saved "Monday
+ *  Breakfast" of one besan cheela). One item of a bigger meal is not the user
+ *  naming it: seen live, "2 boiled eggs" offered "Bread butter" because that
+ *  meal holds boiled eggs, and the swap would have logged toast too. Newest
+ *  saved meal first, which is the order they arrive in. */
 export function suggestSavedMeal(foodName: string, saved: SavedMealForParse[]): SavedMealForParse | null {
   const want = words(foodName);
   if (want.length === 0) return null;
   for (const m of saved) {
-    const have = new Set([m.name, ...m.items.map((i) => i.food_name)].flatMap(words));
+    const named = m.items.length === 1 ? [m.name, m.items[0].food_name] : [m.name];
+    const have = new Set(named.flatMap(words));
     if (want.every((w) => have.has(w))) return m;
   }
   return null;
