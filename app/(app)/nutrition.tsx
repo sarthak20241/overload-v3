@@ -80,6 +80,9 @@ import { MealSuggestions } from '@/components/diet/MealSuggestions';
 import { CopyMealSheet } from '@/components/diet/CopyMealSheet';
 import { learnPatterns, mealsToSuggest, copyableFromDay, withPreviousDay, type FoodSuggestion, type HistoryEntry } from '@/lib/foodPatterns';
 import { useFoodHistory, useDayMealLines, relogLines, lineAsItem } from '@/lib/foodPatternsData';
+import { FoodBoxTourTip } from '@/components/diet/FoodBoxTourTip';
+import { shouldOfferTour, tourNext, TOUR_COPY, type TourEvent, type TourStep } from '@/lib/foodBoxTour';
+import { getFoodBoxTourDone, setFoodBoxTourDone } from '@/lib/foodBoxTourStore';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
  *  'review' holds a parsed-but-UNLOGGED meal: nothing is written until the user
@@ -200,11 +203,16 @@ function dayLabel(date: Date): string {
   return date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
+/** Which door into food search: the icon inside the food box, a meal's own
+ *  "Add to" row, or the guest bar (no box for guests). */
+type SearchSource = 'box_icon' | 'meal_row' | 'guest_bar';
+
 /** Open the full-screen food search targeting a meal (MFP model, not a drawer).
  *  The target meal goes through setLogMeal (a module store the screens read on
  *  focus) because food-search is a retained Tabs screen and router params went
  *  stale across re-opens — which made every log land in breakfast. */
-function openSearch(meal: MealType) {
+function openSearch(meal: MealType, source: SearchSource) {
+  track('food_search_opened', { source, meal });
   setLogMeal(meal);
   router.push({ pathname: '/food-search', params: { meal } });
 }
@@ -299,7 +307,7 @@ export default function NutritionScreen() {
   // screen has landed, so it never competes with it.
   usePrefetchWeek(weekStartIso, !dayUnknown);
   const supabase = useSupabaseClient();
-  const { isSignedIn } = useClerkUser();
+  const { isSignedIn, user } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();
   const { width: winW, height: winH } = useWindowDimensions();
   // Bottom edge of the calorie ring + macro bars, in the day scroll's CONTENT
@@ -594,6 +602,114 @@ export default function NutritionScreen() {
   const historyAnchor = viewIso < todayIso ? viewIso : todayIso;
   const { history } = useFoodHistory(!isSignedIn ? 'guest' : dayUnknown ? null : diaryVersion, historyAnchor);
   const patterns = useMemo(() => learnPatterns(isSignedIn ? history : [], viewIso, todayIso), [history, viewIso, todayIso, isSignedIn]);
+
+  // ── Food box tour (lib/foodBoxTour) ──────────────────────────────────────
+  // Once, for someone who has only ever used food search: Drona points at the
+  // box, and each step waits for the user's own tap on their own meal.
+  const userId = user?.id ?? null;
+  const [tourDone, setTourDone] = useState<boolean | null>(null);
+  const [tourStep, setTourStep] = useState<TourStep | null>(null);
+  const tourStepRef = useRef<TourStep | null>(null);
+  tourStepRef.current = tourStep;
+  useEffect(() => {
+    let cancelled = false;
+    setTourDone(null);
+    if (!userId) return;
+    void getFoodBoxTourDone(userId).then((d) => { if (!cancelled) setTourDone(d); });
+    return () => { cancelled = true; };
+  }, [userId]);
+  const markTourDone = useCallback(() => {
+    setTourDone(true);
+    if (userId) void setFoodBoxTourDone(userId);
+  }, [userId]);
+  /** Ends it before the last step: Skip, or the user went elsewhere. */
+  const endTour = useCallback((how: 'skipped' | 'left', reason?: string) => {
+    const step = tourStepRef.current;
+    if (!step || step === 'done') { setTourStep(null); return; }
+    tourStepRef.current = null;
+    setTourStep(null);
+    markTourDone();
+    if (how === 'skipped') track('food_tour_skipped', { step });
+    else track('food_tour_left', { step, reason: reason ?? null });
+  }, [markTourDone]);
+  const tourEvent = useCallback((ev: TourEvent) => {
+    const cur = tourStepRef.current;
+    if (!cur || cur === 'done') return;
+    const next = tourNext(cur, ev);
+    if (next === cur) return;
+    tourStepRef.current = next;
+    setTourStep(next);
+    track('food_tour_step', { step: next, from: cur });
+    if (next === 'done') {
+      markTourDone();
+      track('food_tour_completed', {});
+    }
+  }, [markTourDone]);
+  const offerTour = shouldOfferTour({
+    signedIn: !!isSignedIn, done: tourDone, isToday, dayReady: !dayUnknown,
+    flowIdle: flow.status === 'idle', history,
+  });
+  useEffect(() => {
+    if (!offerTour || tourStep !== null) return;
+    // A beat after the day lands, so the tip does not arrive with the shimmer.
+    const t = setTimeout(() => {
+      tourStepRef.current = 'type';
+      setTourStep('type');
+      track('food_tour_shown', {});
+    }, 700);
+    return () => clearTimeout(t);
+  }, [offerTour, tourStep]);
+  // The last line stays a moment, then goes.
+  useEffect(() => {
+    if (tourStep !== 'done') return;
+    const t = setTimeout(() => setTourStep(null), 4000);
+    return () => clearTimeout(t);
+  }, [tourStep]);
+  // Leaving the screen mid-tour ends it: it is a one-time thing, and coming
+  // back to the same pointer every visit would nag.
+  // Through a ref: a new endTour identity must not read as the screen blurring.
+  const endTourRef = useRef(endTour);
+  endTourRef.current = endTour;
+  useFocusEffect(useCallback(() => () => endTourRef.current('left', 'screen'), []));
+  // Set by onAdd right before the card closes, so "the card went away after
+  // Add" can be told apart from Discard.
+  const tourAddedRef = useRef(false);
+  const tourPrevFlow = useRef<ParseFlow>(flow);
+  useEffect(() => {
+    const was = tourPrevFlow.current;
+    tourPrevFlow.current = flow;
+    if (was.status === flow.status) return;
+    const reading = (st: ParseFlow['status']) => st === 'analysing' || st === 'streaming';
+    const now = flow.status;
+    const added = tourAddedRef.current;
+    tourAddedRef.current = false;
+    if (reading(now) && !reading(was.status)) {
+      // Someone who finds the box on their own never needs the tour later.
+      if (tourStepRef.current === null && tourDone === false) markTourDone();
+      tourEvent('sent');
+    } else if (reading(was.status)) {
+      const auto = (was.status === 'analysing' || was.status === 'streaming') && !!was.auto;
+      if (now === 'review') tourEvent('review');
+      else if (now === 'declined' || now === 'error') tourEvent('declined');
+      else if (auto && (now === 'idle' || now === 'sent')) tourEvent('auto_logged');
+      else if (now === 'create' || now === 'idle') endTour('left', now);
+    } else if (was.status === 'review' && now === 'idle') {
+      if (added) tourEvent('added');
+      else endTour('left', 'discarded');
+    }
+  }, [flow, tourDone, markTourDone, tourEvent, endTour]);
+  // The food box's own events: tapped into, and left without sending.
+  const boxFocusRef = useRef<{ sent: boolean } | null>(null);
+  const onBoxFocus = useCallback(() => {
+    boxFocusRef.current = { sent: false };
+    track('food_box_focused', { tour: tourStepRef.current ?? 'none' });
+    tourEvent('focused');
+  }, [tourEvent]);
+  const onBoxBlur = useCallback(() => {
+    const f = boxFocusRef.current;
+    boxFocusRef.current = null;
+    if (f && !f.sent) track('food_box_abandoned', { had_text: text.trim().length > 0 });
+  }, [text]);
   const prevDate = new Date(viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate() - 1);
   const prevIso = ymd(prevDate);
   const prevLines = useDayMealLines(history, prevIso);
@@ -1403,7 +1519,8 @@ export default function NutritionScreen() {
     if (flow.status === 'analysing' || flow.status === 'streaming') return;
     // Guest fallback: no JWT means parse_meal would 401, so route to the
     // manual picker exactly as the old bar did.
-    if (!isSignedIn) { openSearch(mealForNow()); return; }
+    if (!isSignedIn) { openSearch(mealForNow(), 'guest_bar'); return; }
+    if (boxFocusRef.current) boxFocusRef.current.sent = true;
     setText('');
     void runParse(t);
   }, [text, isSignedIn, flow.status, runParse]);
@@ -1491,6 +1608,7 @@ export default function NutritionScreen() {
     // Reset here too: Undo puts the card back in review, and it should come
     // back open rather than as a summary line the user has to expand.
     setCardMinimized(false);
+    tourAddedRef.current = true;
     setFlow({ status: 'idle' });
   }, [flow, supabase, adding, reload, viewDate, isToday]);
 
@@ -1601,6 +1719,12 @@ export default function NutritionScreen() {
     : "Good start. Get one more protein hit in at lunch and you're on pace.";
 
   const s = makeStyles(C);
+
+  // The tour's line in the food bar. While reading there is nothing to say; in
+  // review it rides on the bigger card instead, when that is up.
+  const inlineTourTip = tourStep === 'type' || tourStep === 'write' || tourStep === 'retry' || tourStep === 'done'
+    ? TOUR_COPY[tourStep]
+    : tourStep === 'review' && !pop ? TOUR_COPY.review : null;
 
   /** The parse card, once, for both places it shows: pinned above the food
    *  bar and lifted into the popover. Same props and callbacks in both, so a
@@ -2026,7 +2150,7 @@ export default function NutritionScreen() {
                 onEdit={(item) => onEditSuggestion(m.type, item)}
               />
 
-              <Pressable style={s.add} hitSlop={8} onPress={() => openSearch(m.type)}>
+              <Pressable style={s.add} hitSlop={8} onPress={() => openSearch(m.type, 'meal_row')}>
                 <Feather name="plus" size={14} color={C.accentText} />
                 <Text style={s.addTxt}>Add to {m.label.toLowerCase()}</Text>
               </Pressable>
@@ -2034,6 +2158,16 @@ export default function NutritionScreen() {
           );
         })}
       </ScrollView>
+
+      {/* Food box tour, first step: dim the day so the box stands out. Visual
+          only (touches pass through), and declared before the bar so the bar
+          and the tip paint over it, sharp. */}
+      {tourStep === 'type' && (
+        <View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay, opacity: 0.75 }]}
+        />
+      )}
 
       {/* Bottom logging bar. Signed-in: type free text, Drona parses it and logs
           in place (ParsedMealCard is the receipt + Undo, pinned above). Guest:
@@ -2043,6 +2177,14 @@ export default function NutritionScreen() {
         s.inputWrap,
         { bottom: kbHeight, paddingBottom: barPadBottom },
       ]}>
+        {inlineTourTip && (
+          <FoodBoxTourTip
+            title={inlineTourTip.title}
+            body={inlineTourTip.body}
+            actionLabel={tourStep === 'done' ? 'Got it' : 'Skip'}
+            onAction={tourStep === 'done' ? () => setTourStep(null) : () => endTour('skipped')}
+          />
+        )}
         {flow.status === 'create' && (
           <View style={{ marginBottom: Spacing.sm }}>
             <FoodCreateCard
@@ -2082,7 +2224,7 @@ export default function NutritionScreen() {
 
         {isSignedIn ? (
           <View style={s.input} onLayout={(e) => setInputRowH(e.nativeEvent.layout.height)}>
-            <Pressable onPress={() => openSearch(mealForNow())} hitSlop={8} style={s.iconBox}>
+            <Pressable onPress={() => openSearch(mealForNow(), 'box_icon')} hitSlop={8} style={s.iconBox}>
               <Feather name="search" size={16} color={C.textSecondary} />
             </Pressable>
             <TextInput
@@ -2090,6 +2232,8 @@ export default function NutritionScreen() {
               style={s.inputText}
               value={text}
               onChangeText={setText}
+              onFocus={onBoxFocus}
+              onBlur={onBoxBlur}
               // "Just log it" changes what send DOES, and the placeholder is the
               // honest always-visible signal of that: send now commits.
               placeholder={autoLog ? 'Tell Drona what you ate, it goes straight in' : 'Tell Drona what you ate'}
@@ -2135,7 +2279,7 @@ export default function NutritionScreen() {
             </Pressable>
           </View>
         ) : (
-          <Pressable style={s.input} onPress={() => openSearch(mealForNow())}>
+          <Pressable style={s.input} onPress={() => openSearch(mealForNow(), 'guest_bar')}>
             <Feather name="plus-circle" size={16} color={C.accentText} />
             <Text style={[s.inputText, { color: C.textDim }]}>Add what you ate</Text>
           </Pressable>
@@ -2207,6 +2351,15 @@ export default function NutritionScreen() {
         bottomEdge={popBottomEdge}
         onRequestClose={closePop}
         onClosed={() => setPop(null)}
+        tip={tourStep === 'review' ? (
+          <FoodBoxTourTip
+            title={TOUR_COPY.review.title}
+            body={TOUR_COPY.review.body}
+            actionLabel="Skip"
+            onAction={() => endTour('skipped')}
+            caret={false}
+          />
+        ) : undefined}
       >
         {renderParseCard({ expanded: true, onCollapse: closePop, onToggleMinimize: undefined, onNaturalHeight: onPopNatural })}
       </MealCardPopover>

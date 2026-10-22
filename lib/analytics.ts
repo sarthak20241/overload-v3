@@ -168,6 +168,17 @@ export type AnalyticsEvent =
   | 'auto_log_toggled'
   | 'food_searched'
   | 'food_picked'
+  // How people reach food: the box (typed, Drona reads it) versus manual search,
+  // and which door into search (`source`). Focused without a send is abandoned.
+  | 'food_box_focused'
+  | 'food_box_abandoned'
+  | 'food_search_opened'
+  // The one-time food box tour (lib/foodBoxTour). `step` on each.
+  | 'food_tour_shown'
+  | 'food_tour_step'
+  | 'food_tour_skipped'
+  | 'food_tour_left'
+  | 'food_tour_completed'
   | 'quick_add_opened'
   // Drona built a food or meal out of what the user said. Two events, not one:
   // the gap between them is how many proposals get dismissed, which is the only

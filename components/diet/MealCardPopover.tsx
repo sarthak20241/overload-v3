@@ -85,6 +85,9 @@ interface Props {
   onRequestClose: () => void;
   onClosed: () => void;
   children: React.ReactNode;
+  /** A line about the card, drawn just above it (the food box tour). Left
+   *  out when the card is too tall to leave room for it. */
+  tip?: React.ReactNode;
 }
 
 const OPEN_SPRING = { damping: 22, stiffness: 240, mass: 0.9 };
@@ -93,6 +96,8 @@ const CLOSE_TIMING = { duration: 220, easing: Easing.out(Easing.cubic) };
 const MIN_FRAME = 200;
 // Close to the iOS keyboard curve, so the card rides up with the box.
 const FOLLOW_TIMING = { duration: 250, easing: Easing.out(Easing.cubic) };
+// Room a tip needs above the card before it is shown at all.
+const TIP_ROOM = 96;
 
 export function MealCardPopover(props: Props) {
   // The Portal entry is registered on the screen's first render whether or not
@@ -100,7 +105,7 @@ export function MealCardPopover(props: Props) {
   return <Portal>{props.visible ? <PopoverBody {...props} /> : null}</Portal>;
 }
 
-function PopoverBody({ origin, naturalHeight, bottomEdge, open, onRequestClose, onClosed, children }: Props) {
+function PopoverBody({ origin, naturalHeight, bottomEdge, open, onRequestClose, onClosed, children, tip }: Props) {
   const { C, mode } = useTheme();
   const insets = useSafeAreaInsets();
   const { width: winW, height: winH } = useWindowDimensions();
@@ -186,6 +191,14 @@ function PopoverBody({ origin, naturalHeight, bottomEdge, open, onRequestClose, 
     height: edge.value,
     opacity: interpolate(p.value, [0, 1], [0, 1], Extrapolation.CLAMP),
   }));
+  const tipFade = useAnimatedStyle(() => ({
+    opacity: interpolate(p.value, [0.6, 1], [0, 1], Extrapolation.CLAMP),
+  }));
+  // Where the card rests once open (the frame's own target), so the tip sits
+  // just above it. From React, not the animation: it only has to be right
+  // once the card has landed, and it fades in only then.
+  const restTop = Math.max(bottom - dstH, top);
+  const showTip = !!tip && open && restTop - top >= TIP_ROOM;
 
   return (
     // box-none: the root lets touches through to the food box below the
@@ -227,6 +240,14 @@ function PopoverBody({ origin, naturalHeight, bottomEdge, open, onRequestClose, 
           </View>
         </View>
       </Animated.View>
+      {showTip && (
+        <Animated.View
+          style={[{ position: 'absolute', left: dstX, width: dstW, bottom: winH - restTop + Spacing.xs }, tipFade]}
+          pointerEvents="box-none"
+        >
+          {tip}
+        </Animated.View>
+      )}
     </View>
   );
 }
