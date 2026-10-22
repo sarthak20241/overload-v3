@@ -6684,8 +6684,12 @@ async function runParseMealCore(
   }
   if (hasPrevious && extItems.length === 0 && removedNames.length > 0) {
     // Hand the survivors back untouched, as a correction: the card is replaced
-    // by itself minus the removed lines. keepUncoveredPrevious is what the
-    // guard uses for exactly this, so one path serves both.
+    // by itself minus the removed lines. keepUncoveredPrevious is the SAME
+    // restore the correction guard runs at the end of the full path, and the
+    // lines come straight from previous_items, so their provenance (source,
+    // note, confidence) needs no preserveManual pass: nothing was re-resolved.
+    // Decide never ran (decide_ms 0 below), which is why the timing step is
+    // pushed here instead of by the decide block.
     const kept = keepUncoveredPrevious([], prevItems, replacedNames);
     const what = removedNames.length === 1 ? removedNames[0] : "those";
     T.decide_ms = 0;

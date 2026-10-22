@@ -352,11 +352,10 @@ export function parseFoodIntentMode(raw: string | undefined): FoodIntentMode {
  * wrong in both directions, and asking would spend a call to receive a
  * meaningless answer.
  */
-export function shouldRouteFoodIntent(mode: FoodIntentMode, _isCorrection: boolean): boolean {
+export function shouldRouteFoodIntent(mode: FoodIntentMode): boolean {
   // The router runs with a card open too, since PR #277: before, every message
   // beside a card was a correction, so a question got a canned breakdown and
-  // "make it a meal" was never heard. `isCorrection` is kept so callers need no
-  // change; the router itself now reads the card.
+  // "make it a meal" was never heard. The router itself now reads the card.
   return mode !== "off";
 }
 

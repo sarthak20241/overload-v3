@@ -373,11 +373,10 @@ function makeFoodIntentDeps(
 function startFoodIntent(
   savedMealsP: Promise<SavedMealForParse[]>,
   text: string,
-  isCorrection: boolean,
   context: FoodConversationContext,
   abortSignal?: AbortSignal,
 ): Promise<FoodIntentDecision | null> {
-  if (!shouldRouteFoodIntent(FOOD_INTENT_MODE, isCorrection)) return Promise.resolve(null);
+  if (!shouldRouteFoodIntent(FOOD_INTENT_MODE)) return Promise.resolve(null);
   // The same saved-meal read the parser uses, so one query serves both.
   return savedMealsP
     .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal), context))
@@ -675,7 +674,8 @@ function startFoodAgent(args: {
               text: change,
               localHour: args.localHour,
               mealHint: args.mealHint,
-              mode: null,
+              // The user's own tier, the same one parseFood runs in.
+              mode: args.mode,
               recentFoods: [],
               savedMeals: args.savedMealsP,
               todayTotals: null,
@@ -752,7 +752,10 @@ async function resolveFoodBarOutcome(args: {
     if (o.kind === "reply") return { action: "reply", planned: action, decision, reply: o.text, agent };
     // With a card open the parse already edited it from the user's words, so
     // a failed agent hands that back instead of a canned line: the card is
-    // never lost to the agent's bad turn.
+    // never lost to the agent's bad turn. Known cost: for a pure QUESTION the
+    // parse's answer is the per-line breakdown this PR replaces. That is the
+    // safe miss (the card survives), taken on purpose over a reply that cannot
+    // see the card. The agent's failure reason is in the trace.
     if (args.cardOpen) return { action: "log", planned: action, decision, agent };
     return { action: "reply", planned: action, decision, reply: AGENT_FAILED_REPLY, agent };
   }
@@ -3498,10 +3501,13 @@ async function handleParseMealRequest(args: {
   // The card on screen, as the router and the agent see it: the lines with
   // their numbers, so a message beside a card can be an edit, a question, a
   // save, or new food, and the agent can hand lines back exactly as they were.
+  // Same 12-line cap as previous_items above (CARD_MAX_LINES): the agent's
+  // remove_card_lines names lines by these numbers.
   const card: CardLine[] = previousItems.map((p) => ({
     food_name: p.food_name, quantity: p.quantity, serving_label: p.serving_label, grams: p.grams,
     kcal: p.kcal ?? 0, protein_g: p.protein_g, carb_g: p.carb_g, fat_g: p.fat_g,
     food_id: p.food_id, source: p.source,
+    fiber_g: p.fiber_g, assumption: p.assumption, confidence: p.confidence, meal_type: p.meal_type,
   }));
   const foodContext: FoodConversationContext = { ...baseFoodContext, card: card.length ? card : null };
 
@@ -3732,7 +3738,7 @@ async function handleParseMealRequest(args: {
         // Kicked off BEFORE the parse is awaited, so the two overlap and the
         // common path (log, almost always) pays nothing for the question.
         const savedMealsP = fetchSavedMealsForParse(userClient);
-        const intentP = startFoodIntent(savedMealsP, text, previousItems.length > 0, foodContext, abort.signal);
+        const intentP = startFoodIntent(savedMealsP, text, foodContext, abort.signal);
         const supportsCreate = clientSupportsFoodCreate(body);
         // Settled into a plain variable so the progress gate below can read it
         // synchronously. Awaiting inside onProgress would stall the stream.
@@ -3958,7 +3964,7 @@ async function handleParseMealRequest(args: {
   // a parse that blew up is exactly when knowing what the user was asking for is
   // most useful.
   const savedMealsP = fetchSavedMealsForParse(userClient);
-  const intentP = startFoodIntent(savedMealsP, text, previousItems.length > 0, foodContext);
+  const intentP = startFoodIntent(savedMealsP, text, foodContext);
   const supportsCreate = clientSupportsFoodCreate(body);
 
   try {

@@ -589,13 +589,14 @@ async function finishWith(
     const kept = card.filter((_, i) => !drop.has(i));
     const summary = clean(typeof args.summary === "string" ? args.summary : "");
     // The kept lines go back as they were: a correction replaces the card.
-    const meal: MealType = input.defaultMeal;
+    // The card's own section leads; the default is only for a line without one.
+    const meal: MealType = kept[0]?.meal_type ?? input.defaultMeal;
     return {
       kind: "log",
       result: {
         parsed: {
           meal_type: meal,
-          items: kept.map((l) => cardLineAsItem(l, meal)),
+          items: kept.map((l) => cardLineAsItem(l, input.defaultMeal)),
           drona_line: summary || "Taken off.",
           corrects_previous: true,
           // An empty card is a card with nothing left: the app clears it.
@@ -667,8 +668,9 @@ async function finishWith(
   };
 }
 
-/** A card line back as a parsed item, numbers untouched: the user's working copy. */
-function cardLineAsItem(l: CardLine, meal: MealType): ParsedItem {
+/** A card line back as a parsed item, exactly as it was: numbers, section,
+ *  confidence and note all carried, nothing re-stamped. The user's working copy. */
+function cardLineAsItem(l: CardLine, mealDefault: MealType): ParsedItem {
   return {
     food_id: l.food_id ?? null,
     food_name: l.food_name,
@@ -679,11 +681,11 @@ function cardLineAsItem(l: CardLine, meal: MealType): ParsedItem {
     protein_g: l.protein_g ?? 0,
     carb_g: l.carb_g ?? 0,
     fat_g: l.fat_g ?? 0,
-    fiber_g: null,
+    fiber_g: l.fiber_g ?? null,
     source: l.source ?? "manual",
-    assumption: null,
-    confidence: "high",
-    meal_type: meal,
+    assumption: l.assumption ?? null,
+    confidence: l.confidence ?? "medium",
+    meal_type: l.meal_type ?? mealDefault,
   };
 }
 

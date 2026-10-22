@@ -280,8 +280,8 @@ void _exhaustive;
 // is real behaviour, not plumbing.
 
 Deno.test("mode off asks nothing", () => {
-  assertEquals(shouldRouteFoodIntent("off", false), false);
-  assertEquals(shouldRouteFoodIntent("off", true), false);
+  assertEquals(shouldRouteFoodIntent("off"), false);
+  assertEquals(shouldRouteFoodIntent("off"), false);
 });
 
 Deno.test("a correction turn is routed too, in any live mode", () => {
@@ -289,13 +289,13 @@ Deno.test("a correction turn is routed too, in any live mode", () => {
   // it, or add to it: the router reads the card and says which (PR #277).
   // Before, every such message was a correction, and a question about the
   // card got a canned breakdown.
-  assertEquals(shouldRouteFoodIntent("shadow", true), true);
-  assertEquals(shouldRouteFoodIntent("on", true), true);
+  assertEquals(shouldRouteFoodIntent("shadow"), true);
+  assertEquals(shouldRouteFoodIntent("on"), true);
 });
 
 Deno.test("a first-shot message is routed in shadow and on", () => {
-  assertEquals(shouldRouteFoodIntent("shadow", false), true);
-  assertEquals(shouldRouteFoodIntent("on", false), true);
+  assertEquals(shouldRouteFoodIntent("shadow"), true);
+  assertEquals(shouldRouteFoodIntent("on"), true);
 });
 
 Deno.test("mode parsing accepts the three words and nothing else", () => {

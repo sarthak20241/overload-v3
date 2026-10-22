@@ -39,11 +39,21 @@ export interface CardLine {
   fat_g?: number;
   food_id?: string | null;
   source?: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
+  fiber_g?: number | null;
+  assumption?: string | null;
+  confidence?: "high" | "medium" | "low";
+  /** The section the line sits in. A kept line goes back to the same one. */
+  meal_type?: "breakfast" | "lunch" | "dinner" | "snack";
 }
+
+/** Lines the card carries to the models. The SAME cap index.ts puts on
+ *  previous_items, so the numbers the agent names for remove_card_lines are
+ *  the card's own: a mismatch here would delete the wrong line. */
+export const CARD_MAX_LINES = 12;
 
 /** The card for a model's eyes: short, numbered, one line per food. */
 export function cardLines(card: CardLine[] | null | undefined): string[] {
-  return (card ?? []).slice(0, 12).map((l, i) =>
+  return (card ?? []).slice(0, CARD_MAX_LINES).map((l, i) =>
     `${i + 1}. ${l.food_name}: ${l.quantity} ${l.serving_label}, ${Math.round(l.grams)} g, ${Math.round(l.kcal)} kcal`
   );
 }

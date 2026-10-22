@@ -37,8 +37,8 @@ const decision = (d: Partial<FoodIntentDecision>): FoodIntentDecision => ({
 // ── The router runs with a card open, and sees it ───────────────────────────
 
 Deno.test("the failure this prevents: a message beside a card skipped the router", () => {
-  assertEquals(shouldRouteFoodIntent("on", true), true);
-  assertEquals(shouldRouteFoodIntent("off", true), false);
+  assertEquals(shouldRouteFoodIntent("on"), true);
+  assertEquals(shouldRouteFoodIntent("off"), false);
 });
 
 Deno.test("the router's state carries the card, one numbered line per food", () => {
@@ -144,6 +144,23 @@ Deno.test("the failure this prevents: 'why did u add tomato and onion separately
   // The kept lines come back exactly as they were, and the card is REPLACED.
   assertEquals([items[0].kcal, items[0].food_id, items[1].kcal], [194, "r1", 240]);
   assertEquals(out.result.parsed!.corrects_previous, true);
+});
+
+Deno.test("a kept line comes back exactly as it was: section, confidence, note and fiber carried", async () => {
+  // The failure this prevents: remove_card_lines rebuilt every kept line as
+  // "high" confidence, no note, no fiber, stamped into the default meal.
+  const card: CardLine[] = [
+    { ...CARD[0], meal_type: "dinner", confidence: "low", assumption: "Took the plain cooked row.", fiber_g: 1.2 },
+    { ...CARD[2], meal_type: "dinner" },
+  ];
+  const out = await runFoodAgent(
+    { text: "remove the tomato line", defaultMeal: "lunch", card },
+    deps(scripted([[{ name: "remove_card_lines", input: { lines: [2], summary: "Off it goes." } }]])),
+  );
+  assert(out.kind === "log", out.kind);
+  const [rice] = out.result.parsed!.items;
+  assertEquals([rice.meal_type, rice.confidence, rice.assumption, rice.fiber_g], ["dinner", "low", "Took the plain cooked row.", 1.2]);
+  assertEquals(out.result.parsed!.meal_type, "dinner");
 });
 
 Deno.test("an edit goes through the correction path and replaces the card", async () => {
