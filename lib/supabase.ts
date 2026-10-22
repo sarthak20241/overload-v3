@@ -120,11 +120,15 @@ export function useSupabaseClient(): SupabaseClient {
           // landed and cached. TOKEN_BUDGET_MS buys that refresh room to
           // finish while still bounding the wait, and it stays well under the
           // time a parse itself takes, so it costs a healthy request nothing.
-          let timedOut = false;
-          const tokenWithinBudget = async (opts?: { skipCache: boolean }): Promise<string | null> => {
+          // Each call reports its own timeout, so the retry's token fetch can
+          // never change how the first one is reported.
+          const tokenWithinBudget = async (
+            opts?: { skipCache: boolean },
+          ): Promise<{ token: string | null; timedOut: boolean }> => {
+            let timedOut = false;
             let timer: ReturnType<typeof setTimeout> | undefined;
             try {
-              return await Promise.race([
+              const token = await Promise.race([
                 getTokenRef.current(opts),
                 new Promise<null>((resolve) => {
                   timer = setTimeout(() => {
@@ -133,15 +137,16 @@ export function useSupabaseClient(): SupabaseClient {
                   }, TOKEN_BUDGET_MS);
                 }),
               ]);
+              return { token, timedOut };
             } catch {
-              return null;
+              return { token: null, timedOut };
             } finally {
               // A token that arrived in time must not leave a timer behind to
               // mark this request as timed out later.
               clearTimeout(timer);
             }
           };
-          const token = await tokenWithinBudget();
+          const { token, timedOut } = await tokenWithinBudget();
           // No token (offline + expired token, or getToken timed out): FAIL the
           // request rather than send it unauthenticated. An anon request passes
           // RLS as "no rows" and returns empty data with NO error — which screens
@@ -169,7 +174,7 @@ export function useSupabaseClient(): SupabaseClient {
               return fetch(input as any, { ...init, headers });
             },
             token,
-            () => tokenWithinBudget({ skipCache: true }),
+            async () => (await tokenWithinBudget({ skipCache: true })).token,
           );
         },
       },
