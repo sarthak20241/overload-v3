@@ -27,7 +27,7 @@ import { track } from '@/lib/analytics';
 import { missingColumn, missingTable, withoutColumns } from '@/lib/missingColumn';
 import { programGoalFor } from '@/lib/fitnessGoals';
 import {
-  isMetricDirection, isMetricKind, isMetricStatus, normalizeMetrics, phaseProgress, statusFor,
+  escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, normalizeMetrics, phaseProgress, statusFor,
   type MetricRef, type PhaseMetricInput, type PhaseMetricRow,
 } from '@/lib/phaseMetrics';
 
@@ -601,9 +601,11 @@ export async function saveProgram(
  * Write each phase's metrics (coach_program_phase_metrics). A lift metric
  * names its exercise; the id is looked up by name here (the user's own and the
  * built-in catalog), so the weekly check can read user_lift_stats by id. A
- * name that matches nothing keeps the name in `ref`; the check then skips it.
- * A database without the table (the app before the migration) is a warning,
- * not an error.
+ * name that matches nothing keeps the name in `ref`; the weekly check then
+ * looks it up again. A database without the table (the app before the
+ * migration) is a warning, not an error. Any other failure throws, and the
+ * caller (saveProgram step 5) catches it: the program and its phases are
+ * already committed and still render, so metrics are best-effort there.
  */
 async function saveProgramMetrics(
   supabase: Supa,
@@ -642,7 +644,7 @@ async function saveProgramMetrics(
     // name cannot act as wildcards and match a different lift.
     const missing = [...names].filter((n) => !idByName.has(n.toLowerCase()));
     for (const n of missing) {
-      const escaped = n.replace(/[\\%_]/g, (c) => `\\${c}`).replace(/[,()]/g, ' ').trim();
+      const escaped = escapeIlike(n);
       if (!escaped) continue;
       const { data: loose } = await supabase
         .from('exercises')

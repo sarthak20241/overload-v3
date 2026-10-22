@@ -462,6 +462,21 @@ export function metricsText(list: readonly Parameters<typeof metricText>[0][]): 
   return sorted.map(metricText).join('; ');
 }
 
+/**
+ * A model-written exercise name made safe for a PostgREST `ilike` filter:
+ * `\\`, `%` and `_` are escaped (Postgres wildcards), `*` is dropped
+ * (postgrest-js turns it into `%`), and `,` `(` `)` become spaces (filter
+ * syntax). Empty when nothing is left.
+ */
+export function escapeIlike(name: string): string {
+  return name
+    .replace(/[\\%_]/g, (c) => `\\${c}`)
+    .replace(/\*/g, '')
+    .replace(/[,()]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** A line is kept only when it reads as one: 3 to 160 characters, no em dash, no newline. */
 export function cleanLine(v: unknown, max = 160): string | null {
   if (typeof v !== 'string') return null;

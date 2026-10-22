@@ -20,6 +20,8 @@ function fakeDb(script: Record<string, Answer[]>) {
     const self = () => b;
     for (const m of ["select", "in", "gte", "lte", "lt", "gt", "order", "limit", "maybeSingle", "not", "range"]) b[m] = self;
     b.eq = (k: string, v: unknown) => { eqs.push([k, v]); return b; };
+    b.is = (k: string, v: unknown) => { eqs.push([`is:${k}`, v]); return b; };
+    b.neq = (k: string, v: unknown) => { eqs.push([`neq:${k}`, v]); return b; };
     b.update = (p: Record<string, unknown>) => { patch = p; return b; };
     b.ilike = (k: string, v: unknown) => { eqs.push([`ilike:${k}`, v]); return b; };
     b.or = (f: string) => { eqs.push(["or", f]); return b; };
@@ -63,7 +65,7 @@ Deno.test("a clean week writes every metric and the coach line", async () => {
   }), { status: 200 }))) as unknown as typeof fetch;
   const out = await metricsStep(db, "user-1", DAY, WEEK, "key", fetchFn);
   assertEquals(out, { checked: 2, line: true });
-  const metricWrites = writes.filter((w) => w.table === "coach_program_phase_metrics");
+  const metricWrites = writes.filter((w) => w.table === "coach_program_phase_metrics" && "status" in w.patch);
   assertEquals(metricWrites.map((w) => [w.eq[0][1], w.patch.current_value, w.patch.status]), [
     ["m-bw", 71.4, "on_track"],   // 0.6 of 1 kg gone at half the phase: on pace
     ["m-pd", 3, "slipping"],      // 3 of 5 days: 60%
@@ -132,35 +134,60 @@ Deno.test("a lift metric with only a name is resolved to an exercise id, kept, a
     coach_programs: [{ data: program, error: null }],
     coach_program_phases: [{ data: phases, error: null }],
     coach_program_phase_metrics: [{ data: [lift], error: null }],
-    exercises: [{ data: [{ id: "ex-catalog", user_id: null }, { id: "ex-mine", user_id: "user-1" }], error: null }],
+    exercises: [{ data: [{ id: "ex-mine" }], error: null }],
     user_lift_stats: [{ data: [{ exercise_id: "ex-mine", estimated_1rm: 101.5 }], error: null }],
   });
   const out = await metricsStep(db, "user-1", DAY, WEEK, "");
   assertEquals(out, { checked: 1, line: false });
-  // The user's own exercise wins, the id is kept on the row, and the lift's
-  // first reading becomes its start.
-  // Only the catalog and the user's own exercises are candidates.
-  assertEquals(reads.find((r) => r.table === "exercises")?.eq, [["ilike:name", "Barbell Bench Press"], ["or", "user_id.is.null,user_id.eq.user-1"]]);
+  // The user's own exercise is asked for first and wins; the id is kept on
+  // the row, and the lift's first reading becomes its start.
+  const exerciseReads = reads.filter((r) => r.table === "exercises");
+  assertEquals(exerciseReads.length, 1);
+  assertEquals(exerciseReads[0].eq, [["user_id", "user-1"], ["ilike:name", "Barbell Bench Press"]]);
   const refWrite = writes.find((w) => w.table === "coach_program_phase_metrics" && "ref" in w.patch);
   assertEquals(refWrite?.patch.ref, { exercise_name: "Barbell Bench Press", exercise_id: "ex-mine" });
   const check = writes.find((w) => w.table === "coach_program_phase_metrics" && "status" in w.patch);
   assertEquals([check?.patch.current_value, check?.patch.start_value, check?.patch.status], [101.5, 101.5, "on_track"]);
 });
 
-Deno.test("another user's custom exercise is never picked for a lift", async () => {
-  const lift = { id: "m-lift", seq: 0, is_hero: true, kind: "lift_e1rm", ref: { exercise_name: "Bench" }, unit: "kg", direction: "up", start_value: null, target_value: 110, current_value: null, status: "set", checked_at: null };
-  const { db, writes } = fakeDb({
+Deno.test("with no own exercise the catalog is asked, with the user filter on each read", async () => {
+  const lift = { id: "m-lift", seq: 0, is_hero: true, kind: "lift_e1rm", ref: { exercise_name: "Bench (wide)" }, unit: "kg", direction: "up", start_value: null, target_value: 110, current_value: null, status: "set", checked_at: null };
+  const { db, writes, reads } = fakeDb({
     coach_programs: [{ data: program, error: null }],
     coach_program_phases: [{ data: phases, error: null }],
     coach_program_phase_metrics: [{ data: [lift], error: null }],
-    // The filter keeps these out on the real database; the fake returns them
-    // anyway to prove the code does not take one.
-    exercises: [{ data: [{ id: "ex-theirs", user_id: "user-2" }], error: null }],
+    exercises: [{ data: [], error: null }, { data: [{ id: "ex-catalog" }], error: null }],
+    user_lift_stats: [{ data: [], error: null }],
   });
   assertEquals(await metricsStep(db, "user-1", DAY, WEEK, ""), { checked: 1, line: false });
-  assertEquals(writes.some((w) => "ref" in w.patch), false);
-  const check = writes.find((w) => w.table === "coach_program_phase_metrics");
+  const exerciseReads = reads.filter((r) => r.table === "exercises");
+  // Own first (user_id = me), then the catalog (user_id is null); never a
+  // read that could see another user's exercise. The name is escaped.
+  assertEquals(exerciseReads.map((r) => r.eq), [
+    [["user_id", "user-1"], ["ilike:name", "Bench wide"]],
+    [["is:user_id", null], ["ilike:name", "Bench wide"]],
+  ]);
+  assertEquals(writes.find((w) => "ref" in w.patch)?.patch.ref, { exercise_name: "Bench (wide)", exercise_id: "ex-catalog" });
+  // No lift stats yet: the metric is written with no reading, status set.
+  const check = writes.find((w) => w.table === "coach_program_phase_metrics" && "status" in w.patch);
   assertEquals([check?.patch.current_value, check?.patch.status], [null, "set"]);
+});
+
+Deno.test("a clean check also stamps the program's other phases, numbers untouched", async () => {
+  const { db, writes } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: rows, error: null }],
+    daily_metrics: [{ data: { value: 71.4 }, error: null }],
+    user_nutrition_stats: [{ data: [{ protein_g: 155 }], error: null }],
+  });
+  await metricsStep(db, "user-1", DAY, WEEK, "", fetch, "2026-10-20T09:00:00.000Z");
+  const others = writes.find((w) => w.eq.some(([k]) => k === "neq:phase_id"));
+  assertEquals(others?.patch, { checked_at: "2026-10-20T09:00:00.000Z" });
+  assertEquals(others?.eq, [["user_id", "user-1"], ["program_id", "prog"], ["neq:phase_id", "ph0"]]);
+  // Every stamp of the run is the run's own clock.
+  const stamped = writes.filter((w) => w.table === "coach_program_phase_metrics").map((w) => w.patch.checked_at);
+  assertEquals(new Set(stamped), new Set(["2026-10-20T09:00:00.000Z"]));
 });
 
 Deno.test("the metrics read is scoped to the user as well as the phase", async () => {

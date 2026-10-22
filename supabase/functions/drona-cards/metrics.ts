@@ -13,7 +13,7 @@
  * cron summary, and a failed model call keeps last week's line.
  */
 import {
-  isMetricDirection, isMetricKind, isMetricStatus, phaseProgress, type MetricRef, type MetricStatus,
+  escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, phaseProgress, type MetricRef, type MetricStatus,
 } from "../_shared/phaseMetrics.ts";
 import {
   activePhaseIndex, bestOfSets, checkDue, checkMetrics, EMPTY_READINGS, meanPositive, proteinDaysOf,
@@ -43,6 +43,8 @@ export interface DbQuery extends PromiseLike<DbResult> {
   lte(column: string, value: unknown): DbQuery;
   lt(column: string, value: unknown): DbQuery;
   gt(column: string, value: unknown): DbQuery;
+  neq(column: string, value: unknown): DbQuery;
+  is(column: string, value: null | boolean): DbQuery;
   ilike(column: string, value: unknown): DbQuery;
   or(filters: string): DbQuery;
   order(column: string, options?: { ascending?: boolean; nullsFirst?: boolean }): DbQuery;
@@ -92,6 +94,8 @@ export async function metricsStep(
   weekStart: string,
   anthropicKey: string,
   fetchFn: typeof fetch = fetch,
+  /** The run's own clock, so every stamp of one run compares as one. */
+  nowISO: string = new Date().toISOString(),
 ): Promise<MetricsStepResult> {
   const none: MetricsStepResult = { checked: 0, line: false };
   try {
@@ -158,7 +162,7 @@ export async function metricsStep(
     const readable = metrics.filter((m) => !failed.has(m.kind));
     const checks = checkMetrics(readable, readings, progress, weekIn <= 1);
 
-    const now = new Date().toISOString();
+    const now = nowISO;
     let checked = 0;
     const writeErrors: string[] = [];
     for (const c of checks) {
@@ -185,6 +189,16 @@ export async function metricsStep(
       const why = [...writeErrors, ...(readable.length < metrics.length ? [`read failed for ${[...failed].join(", ")}`] : [])];
       return { checked, line: false, error: why.join("; ") };
     }
+
+    // The program's other phases (past and future) get the same stamp, and
+    // nothing else: their numbers are not touched. Without this a finished
+    // phase's rows read as "unchecked" to the cron's pre-filter for ever and
+    // the user would be visited every run.
+    const { error: othersErr } = await retried(() =>
+      db.from("coach_program_phase_metrics").update({ checked_at: now })
+        .eq("user_id", userId).eq("program_id", prog.id).neq("phase_id", phase.id)
+    );
+    if (othersErr) console.log(`[drona-cards] stamping other phases for ${userId.slice(0, 12)}: ${othersErr.message}`);
 
     // The line, from the numbers just written. No key, no line.
     if (!anthropicKey) return { checked, line: false };
@@ -269,18 +283,23 @@ async function gatherReadings(
       // and the next check read it directly.
       for (const m of lifts) {
         if (m.ref?.exercise_id || !m.ref?.exercise_name) continue;
-        const escaped = m.ref.exercise_name.replace(/[\\%_]/g, (c) => `\\${c}`).trim();
+        const escaped = escapeIlike(m.ref.exercise_name);
         if (!escaped) continue;
-        // Only the catalog and the user's own exercises: this runs with the
+        // Only the user's own exercises, then the catalog: this runs with the
         // service role, and another user's custom exercise must never be
-        // picked. Own row first, then the lowest catalog id.
-        const { data: found, error: findErr } = await retried(() =>
-          db.from("exercises").select("id, user_id").ilike("name", escaped)
-            .or(`user_id.is.null,user_id.eq.${userId}`).order("id", { ascending: true }).limit(50)
+        // picked. Two plain filters, no filter string built from the id.
+        const { data: own, error: ownErr } = await retried(() =>
+          db.from("exercises").select("id").eq("user_id", userId).ilike("name", escaped).order("id", { ascending: true }).limit(1)
         );
-        if (findErr) return fail(findErr.message, "lift_e1rm");
-        const own = (found ?? []).find((e: Row) => e.user_id === userId);
-        const id = own?.id ?? (found ?? []).find((e: Row) => e.user_id == null)?.id;
+        if (ownErr) return fail(ownErr.message, "lift_e1rm");
+        let id: string | undefined = (own ?? [])[0]?.id;
+        if (!id) {
+          const { data: catalog, error: catErr } = await retried(() =>
+            db.from("exercises").select("id").is("user_id", null).ilike("name", escaped).order("id", { ascending: true }).limit(1)
+          );
+          if (catErr) return fail(catErr.message, "lift_e1rm");
+          id = (catalog ?? [])[0]?.id;
+        }
         if (!id) continue;
         m.ref = { ...m.ref, exercise_id: String(id) };
         const { error: refErr } = await retried(() =>

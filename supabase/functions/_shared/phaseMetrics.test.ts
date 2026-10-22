@@ -3,6 +3,7 @@ import {
   chartKindOf,
   cleanLine,
   defaultJobText,
+  escapeIlike,
   formatMetricValue,
   heroOf,
   jobFraction,
@@ -215,6 +216,14 @@ Deno.test("status words take the card's colours", () => {
   assertEquals(statusTone("behind"), "warn");
   assertEquals(statusTone("due"), "dim");
   assertEquals(statusTone("set"), "dim");
+});
+
+Deno.test("an exercise name is made safe for an ilike filter", () => {
+  assertEquals(escapeIlike("Barbell Bench Press"), "Barbell Bench Press");
+  assertEquals(escapeIlike("Leg Press (45%)"), "Leg Press  45\\%".replace("  ", " "));
+  assertEquals(escapeIlike("Bench_Press*"), "Bench\\_Press");
+  assertEquals(escapeIlike("a\\b,c"), "a\\\\b c");
+  assertEquals(escapeIlike("  *  "), "");
 });
 
 Deno.test("a coach line is kept only when it reads as one", () => {

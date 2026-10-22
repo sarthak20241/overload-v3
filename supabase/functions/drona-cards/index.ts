@@ -503,10 +503,15 @@ async function runCron(): Promise<Response> {
     const due_metrics = new Set<string>();
     if (earliestWeek) {
       for (let from = 0; ; from += USER_PAGE) {
+        // Active programs only, rows the check can read (a target), and a
+        // stable page key (user_id, id) so no row straddles a page edge.
         const { data: unchecked, error: uncheckedErr } = await retried(() =>
-          db.from("coach_program_phase_metrics").select("user_id")
+          db.from("coach_program_phase_metrics").select("user_id, coach_programs!inner(status)")
+            .eq("coach_programs.status", "active")
+            .not("target_value", "is", null)
             .or(`checked_at.is.null,checked_at.lt.${earliestWeek}`)
-            .order("user_id", { ascending: true }).range(from, from + USER_PAGE - 1)
+            .order("user_id", { ascending: true }).order("id", { ascending: true })
+            .range(from, from + USER_PAGE - 1)
         );
         if (uncheckedErr) { failures.push(`metrics: due read: ${uncheckedErr.message}`); break; }
         for (const m of unchecked ?? []) if (m.user_id) due_metrics.add(String(m.user_id));
@@ -523,7 +528,7 @@ async function runCron(): Promise<Response> {
       }
       const batch = metricUsers.slice(i, i + CRON_CONCURRENCY);
       // The real client is structurally the little Db the step types against.
-      const results = await Promise.all(batch.map((w) => metricsStep(db as unknown as MetricsDb, w.userId, w.day, w.week, ANTHROPIC_API_KEY)));
+      const results = await Promise.all(batch.map((w) => metricsStep(db as unknown as MetricsDb, w.userId, w.day, w.week, ANTHROPIC_API_KEY, fetch, now.toISOString())));
       results.forEach((m, j) => {
         metricsChecked += m.checked;
         if (m.line) linesWritten += 1;
