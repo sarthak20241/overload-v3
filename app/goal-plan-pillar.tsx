@@ -123,7 +123,7 @@ export default function GoalPlanPillarScreen() {
 
   const back = () => (router.canGoBack() ? router.back() : router.replace('/goal-plan' as any));
 
-  // ── Shared bits ────────────────────────────────────────────────────────────
+  // ---- Shared bits -----------------------------------------------------------
   const eyebrow = (() => {
     if (!program || !phase) return '';
     const name = phase.name.toUpperCase();
@@ -157,7 +157,7 @@ export default function GoalPlanPillarScreen() {
     );
   };
 
-  // ── TRAIN ──────────────────────────────────────────────────────────────────
+  // ---- TRAIN -----------------------------------------------------------------
   const renderTrain = (ph: ActiveProgramPhaseRow) => {
     const pattern = weekPatternFor(ph.training_block);
     const planned = ph.training_block?.days_per_week ?? (pattern ? pattern.filter((d) => d !== REST).length : null);
@@ -260,7 +260,7 @@ export default function GoalPlanPillarScreen() {
     );
   };
 
-  // ── EAT ────────────────────────────────────────────────────────────────────
+  // ---- EAT -------------------------------------------------------------------
   const renderEat = (ph: ActiveProgramPhaseRow) => {
     const protein = ph.metrics.find((m) => m.kind === 'protein_days') ?? null;
     const kcal = ph.diet_calorie_target;
@@ -338,7 +338,7 @@ export default function GoalPlanPillarScreen() {
     );
   };
 
-  // ── RECOVER ────────────────────────────────────────────────────────────────
+  // ---- RECOVER ---------------------------------------------------------------
   const renderRecover = (ph: ActiveProgramPhaseRow) => {
     const sleepMetric = ph.metrics.find((m) => m.kind === 'sleep_hours') ?? null;
     const target = sleepMetric?.target_value ?? SLEEP_TARGET_H;

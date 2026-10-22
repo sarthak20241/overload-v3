@@ -151,7 +151,7 @@ export function FuelDaysSheet({ open, initial, baseKcal, source, phaseId, onClos
       try {
         const program = await loadActiveProgram(supabase, clerkId);
         targetPhase = program && program.currentPhaseSeq != null
-          ? program.phases[program.currentPhaseSeq]?.id ?? null
+          ? program.phases.find((ph) => ph.seq === program.currentPhaseSeq)?.id ?? null
           : null;
       } catch {
         setBusy(false);

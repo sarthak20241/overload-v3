@@ -162,7 +162,7 @@ export function NutritionGoalSheet({
       if (supabase && clerkId) {
         loadActiveProgram(supabase, clerkId)
           .then((p) => {
-            const ph = p && p.currentPhaseSeq != null ? p.phases[p.currentPhaseSeq] : null;
+            const ph = p && p.currentPhaseSeq != null ? p.phases.find((x) => x.seq === p.currentPhaseSeq) ?? null : null;
             setPhase(ph
               ? {
                   id: ph.id,

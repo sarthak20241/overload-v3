@@ -1012,6 +1012,9 @@ export async function logMetricValue(
   note?: string,
 ): Promise<void> {
   if (!Number.isFinite(value)) throw new Error('That is not a number.');
+  // The same bounds as the table's check: a negative or absurd number would
+  // skew the status and the chart.
+  if (value < 0 || value > 1_000_000) throw new Error('That number is out of range.');
   const { error } = await supabase
     .from(METRIC_LOGS_TABLE)
     .upsert(

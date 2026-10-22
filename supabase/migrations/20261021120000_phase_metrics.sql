@@ -46,23 +46,26 @@ create table if not exists public.coach_program_phase_metrics (
   program_id    uuid not null references public.coach_programs(id) on delete cascade,
   phase_id      uuid not null references public.coach_program_phases(id) on delete cascade,
   user_id       text not null default current_clerk_user_id(),
-  seq           integer not null default 0,
+  -- At most eight rows a phase (the coach emits 3 to 5): a client cannot
+  -- fill a phase with rows the weekly job would read one by one.
+  seq           integer not null default 0 check (seq between 0 and 7),
   is_hero       boolean not null default false,
   kind          text not null check (kind in (
                   'bodyweight', 'lift_e1rm', 'sets_per_muscle', 'steps',
                   'sessions_per_week', 'cardio_sessions', 'sleep_hours',
                   'protein_days', 'distance', 'duration', 'custom')),
   -- lift_e1rm: {exercise_id, exercise_name}; sets_per_muscle: {muscle};
-  -- custom: {name}. Other kinds: null.
-  ref           jsonb,
-  unit          text,
+  -- custom: {name}. Other kinds: null. Sizes are capped: ref and unit reach
+  -- the coach-line prompt (capped again there), status_note is a note.
+  ref           jsonb check (ref is null or pg_column_size(ref) <= 2000),
+  unit          text check (unit is null or char_length(unit) <= 24),
   direction     text not null default 'up' check (direction in ('up', 'down', 'hold')),
   start_value   numeric,
   target_value  numeric,
   current_value numeric,
   status        text not null default 'set' check (status in (
                   'set', 'on_track', 'close', 'slipping', 'behind', 'due', 'done')),
-  status_note   text,
+  status_note   text check (status_note is null or char_length(status_note) <= 200),
   checked_at    timestamptz,
   -- The user's LOCAL week (its Monday) the last check belongs to. The weekly
   -- job compares this, a local date, with the user's local week start; a UTC
@@ -154,9 +157,9 @@ create table if not exists public.coach_program_phase_metric_logs (
   id          uuid primary key default gen_random_uuid(),
   metric_id   uuid not null references public.coach_program_phase_metrics(id) on delete cascade,
   user_id     text not null default current_clerk_user_id(),
-  value       numeric not null,
+  value       numeric not null check (value >= 0 and value <= 1000000),
   logged_on   date not null,   -- the user's LOCAL day
-  note        text,
+  note        text check (note is null or char_length(note) <= 200),
   created_at  timestamptz not null default now(),
   unique (metric_id, logged_on)
 );

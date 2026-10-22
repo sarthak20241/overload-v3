@@ -68,7 +68,8 @@ export function MetricLogSheet({ visible, metric, saving, onSave, onClose }: Pro
   if (!mounted || !metric) return null;
 
   const value = Number(text.replace(',', '.'));
-  const valid = text.trim().length > 0 && Number.isFinite(value);
+  // Zero or more, and nothing absurd: the same bounds the table holds.
+  const valid = text.trim().length > 0 && Number.isFinite(value) && value >= 0 && value <= 1_000_000;
   const step = stepFor(metric.target_value);
   const bump = (delta: number) => {
     haptics.tick();
