@@ -71,8 +71,10 @@ create table if not exists public.coach_program_phase_metrics (
   -- The job's retry ledger, kept on every row of the phase: how many runs
   -- in retry_week ended with a failed source read or a failed coach line.
   -- After three the phase is stamped for the week and left alone. Job-only
-  -- columns (not in the client grants), so a client cannot buy itself
-  -- more runs or more model calls.
+  -- columns (not in the client grants), so a client cannot edit the count.
+  -- A client can still delete and re-insert its own rows, which starts a
+  -- fresh ledger; that costs it at most one check per cron tick for its own
+  -- phase, which is the cost of a new program anyway.
   retry_tries   integer not null default 0,
   retry_week    date,
   created_at    timestamptz not null default now(),

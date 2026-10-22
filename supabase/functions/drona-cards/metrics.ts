@@ -488,11 +488,14 @@ async function gatherReadings(
   // best). So two duration metrics naming two exercises each get their own.
   const bestSet = (kind: "distance" | "duration", forMetric: MetricToCheck | null) => async () => {
     const col = kind === "distance" ? "distance_m" : "duration_seconds";
-    let q = db.from("workout_sets").select("distance_m, duration_seconds, completed, workouts!inner(user_id, started_at)")
-      .eq("workouts.user_id", userId).gte("workouts.started_at", `${phaseStart}T00:00:00Z`)
-      .gt(col, 0).eq("completed", true);
-    if (forMetric?.ref?.exercise_id) q = q.eq("exercise_id", forMetric.ref.exercise_id);
-    const { data, error } = await retried(() => q.order(col, { ascending: false }).limit(50));
+    // The builder is made inside the closure: each retry gets a fresh one.
+    const { data, error } = await retried(() => {
+      let q = db.from("workout_sets").select("distance_m, duration_seconds, completed, workouts!inner(user_id, started_at)")
+        .eq("workouts.user_id", userId).gte("workouts.started_at", `${phaseStart}T00:00:00Z`)
+        .gt(col, 0).eq("completed", true);
+      if (forMetric?.ref?.exercise_id) q = q.eq("exercise_id", forMetric.ref.exercise_id);
+      return q.order(col, { ascending: false }).limit(50);
+    });
     if (error) return fail(error.message, kind);
     const best = bestOfSets((data ?? []).map((s: Row) => ({
       distance_m: num(s.distance_m), duration_seconds: num(s.duration_seconds), completed: s.completed as boolean | null,
@@ -511,10 +514,12 @@ async function gatherReadings(
   if (kinds.has("custom")) {
     const ids = metrics.filter((m) => m.kind === "custom").map((m) => m.id);
     jobs.push((async () => {
+      // Newest first; one log a day per metric, so a few weeks per metric is
+      // plenty to find the latest and keeps the read far from the row cap.
       const { data, error } = await retried(() =>
         db.from("coach_program_phase_metric_logs").select("metric_id, value, logged_on")
           .eq("user_id", userId).in("metric_id", ids)
-          .order("logged_on", { ascending: false })
+          .order("logged_on", { ascending: false }).limit(ids.length * 30)
       );
       if (error) return fail(error.message, "custom");
       for (const row of data ?? []) {
