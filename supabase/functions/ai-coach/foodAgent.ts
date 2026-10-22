@@ -634,7 +634,8 @@ async function finishWith(
     // card's lines are what the reads vouch for here, so `seen` learns them
     // first and the same validator the agent's other saves use runs on top.
     remember(seen, card.map((l) => ({ food_name: l.food_name, kcal: l.kcal })));
-    const input = checkedCreateInput({
+    // Not `input`: that is finishWith's own parameter, and a shadow here is a trap.
+    const createInput = checkedCreateInput({
       name,
       items: card.map((l) => ({
         name: l.food_name, quantity: l.quantity, serving_label: l.serving_label, grams: l.grams,
@@ -644,7 +645,7 @@ async function finishWith(
       log_now: args.log_now === true,
       summary: summary || `${name}, ${card.length} items. Want it in My Meals?`,
     }, seen);
-    return { kind: "create", create: { tool: CREATE_CUSTOM_MEAL_TOOL.name, input }, turns };
+    return { kind: "create", create: { tool: CREATE_CUSTOM_MEAL_TOOL.name, input: createInput }, turns };
   }
   if (u.name === CREATE_CUSTOM_MEAL_TOOL.name || u.name === CREATE_CUSTOM_FOOD_TOOL.name) {
     return { kind: "create", create: { tool: u.name, input: checkedCreateInput(args, seen) }, turns };

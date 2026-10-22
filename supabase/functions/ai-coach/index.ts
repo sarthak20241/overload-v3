@@ -577,6 +577,8 @@ interface FoodBarOutcome {
   action: FoodAction;
   planned: FoodAction;
   decision: FoodIntentDecision | null;
+  /** A meal card was on screen for this message. */
+  cardOpen?: boolean;
   /** The reply or create call, as the trace keeps it. Absent on a plain log. */
   followup?: FoodFollowup;
   reply?: string;
@@ -732,7 +734,7 @@ async function resolveFoodBarOutcome(args: {
   recentTurns?: { role: "user" | "drona"; text: string }[];
   cardOpen?: boolean;
 }): Promise<FoodBarOutcome> {
-  if (FOOD_INTENT_MODE !== "on") return { action: "log", planned: "log", decision: null };
+  if (FOOD_INTENT_MODE !== "on") return { action: "log", planned: "log", cardOpen: args.cardOpen, decision: null };
   const decision = await args.intentP.catch(() => null);
   const parseFoundFood = !!args.result.parsed && args.result.parsed.items.length > 0;
   const action = decideFoodAction({
@@ -745,11 +747,11 @@ async function resolveFoodBarOutcome(args: {
 
   if (action === "agent") {
     const o = args.agentP ? await args.agentP : null;
-    if (!o) return { action: "log", planned: action, decision };
+    if (!o) return { action: "log", planned: action, cardOpen: args.cardOpen, decision };
     const agent = { kind: o.kind, reason: o.kind === "failed" ? o.reason : null, turns: o.turns };
-    if (o.kind === "log") return { action: "log", planned: action, decision, result: o.result, agent };
-    if (o.kind === "create") return { action: "create", planned: action, decision, create: o.create, agent };
-    if (o.kind === "reply") return { action: "reply", planned: action, decision, reply: o.text, agent };
+    if (o.kind === "log") return { action: "log", planned: action, cardOpen: args.cardOpen, decision, result: o.result, agent };
+    if (o.kind === "create") return { action: "create", planned: action, cardOpen: args.cardOpen, decision, create: o.create, agent };
+    if (o.kind === "reply") return { action: "reply", planned: action, cardOpen: args.cardOpen, decision, reply: o.text, agent };
     // With a card open the parse already edited it from the user's words, so
     // a failed agent hands that back instead of a canned line: the card is
     // never lost to the agent's bad turn. Known cost: for a pure QUESTION the
@@ -759,27 +761,27 @@ async function resolveFoodBarOutcome(args: {
     // fallback is counted so the rate of the canned answer can be read.
     if (args.cardOpen) {
       console.log(`[food_agent] failed beside a card (${o.reason}); parse result served`);
-      return { action: "log", planned: action, decision, agent, followup: { ...skippedFollowup("reply"), error: `agent_failed_card_fallback:${o.reason}` } };
+      return { action: "log", planned: action, cardOpen: args.cardOpen, decision, agent, followup: { ...skippedFollowup("reply"), error: `agent_failed_card_fallback:${o.reason}` } };
     }
-    return { action: "reply", planned: action, decision, reply: AGENT_FAILED_REPLY, agent };
+    return { action: "reply", planned: action, cardOpen: args.cardOpen, decision, reply: AGENT_FAILED_REPLY, agent };
   }
   if (action === "reply") {
     const { reply, followup } = await replyToFoodBarChat(
       args.text, args.supportsCreate, args.readDiary ?? null, args.recentTurns ?? [],
     );
     return reply
-      ? { action, planned: action, decision, reply, followup }
-      : { action: "log", planned: action, decision, followup };
+      ? { action, planned: action, cardOpen: args.cardOpen, decision, reply, followup }
+      : { action: "log", planned: action, cardOpen: args.cardOpen, decision, followup };
   }
   if (action === "create") {
     const { create, followup } = await draftFoodCreate(
       args.text, args.mealHint, args.readDiary ?? null, args.recentTurns ?? [],
     );
     return create
-      ? { action, planned: action, decision, create, followup }
-      : { action: "log", planned: action, decision, followup };
+      ? { action, planned: action, cardOpen: args.cardOpen, decision, create, followup }
+      : { action: "log", planned: action, cardOpen: args.cardOpen, decision, followup };
   }
-  return { action: "log", planned: "log", decision };
+  return { action: "log", planned: "log", cardOpen: args.cardOpen, decision };
 }
 
 /** True once the router has settled on a create this client can draw, so the
@@ -810,6 +812,11 @@ function foodIntentStep(d: FoodIntentDecision | null, outcome?: FoodBarOutcome):
       // The reply or create call in full: what the model wrote, what the user
       // was shown, the card it drafted, tokens, timing, and any error.
       followup: outcome?.followup ?? null,
+      // A card was open and the message was a question or complaint that the
+      // policy still sent to the parse (a verdict under the bar, or not Jev's).
+      // That is the one path where the canned per-line breakdown can still
+      // show, so it is counted here beside the agent-failure fallback.
+      card_question_to_parse: !!(outcome?.cardOpen && d.intent === "other" && outcome.action === "log"),
       // The agent's turns: which tools it called together, tokens and time.
       agent: outcome?.agent ?? null,
       intent: d.intent,
