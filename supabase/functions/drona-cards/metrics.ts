@@ -464,7 +464,12 @@ async function gatherReadings(
   }
   // The best set since the phase began, so a quiet fortnight does not pull
   // the number back (a progress kind keeps its best). One read per kind,
-  // longest first, so the cap can never hide the best set.
+  // longest first, so the cap can never hide the best set. Any exercise
+  // counts: the kinds are "the longest distance / time in one logged set",
+  // so a plank hold is a duration and a row is a distance, as the prompt
+  // tells the coach. The phase start is the user's local day read as UTC
+  // midnight: at most one set on the first local day can land on the wrong
+  // side, which is accepted for a best-since-start number.
   const bestSet = (kind: "distance" | "duration") => async () => {
     const col = kind === "distance" ? "distance_m" : "duration_seconds";
     const { data, error } = await retried(() =>
