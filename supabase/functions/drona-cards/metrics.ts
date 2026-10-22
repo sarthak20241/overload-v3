@@ -285,27 +285,37 @@ async function gatherReadings(
         db.from("drona_week_facts").select("t_sessions, a_cardio_sessions, r_steps_avg, r_sleep_avg_min")
           .eq("user_id", userId).eq("week_start", prevWeek).maybeSingle()
       );
-      if (error) return fail(error.message, "sessions_per_week", "cardio_sessions", "steps", "sleep_hours");
-      r.sessions = num(data?.t_sessions);
-      r.cardio_sessions = num(data?.a_cardio_sessions);
-      r.steps_avg = num(data?.r_steps_avg);
-      const sleepMin = num(data?.r_sleep_avg_min);
-      r.sleep_avg_h = sleepMin == null ? null : Math.round((sleepMin / 60) * 10) / 10;
-    })());
-  }
-  if (kinds.has("steps") || kinds.has("sleep_hours")) {
-    // The facts row can be missing for a week the cron has not reached:
-    // read the days themselves as the fallback.
-    jobs.push((async () => {
-      const { data, error } = await retried(() =>
-        db.from("daily_metrics").select("metric_type, value").eq("user_id", userId)
-          .in("metric_type", ["steps", "sleep_minutes"]).gte("metric_date", prevWeek).lt("metric_date", weekStart)
-      );
-      if (error) return fail(error.message, "steps", "sleep_hours");
-      const steps = meanPositive((data ?? []).filter((d: Row) => d.metric_type === "steps").map((d: Row) => num(d.value)));
-      const sleep = meanPositive((data ?? []).filter((d: Row) => d.metric_type === "sleep_minutes").map((d: Row) => num(d.value)));
-      if (r.steps_avg == null && steps != null) r.steps_avg = Math.round(steps);
-      if (r.sleep_avg_h == null && sleep != null) r.sleep_avg_h = Math.round((sleep / 60) * 10) / 10;
+      if (error) {
+        // Sessions and cardio have no other source; steps and sleep still
+        // have the days below, so they are failed only if that read fails too.
+        fail(error.message, "sessions_per_week", "cardio_sessions");
+      } else {
+        r.sessions = num(data?.t_sessions);
+        r.cardio_sessions = num(data?.a_cardio_sessions);
+        r.steps_avg = num(data?.r_steps_avg);
+        const sleepMin = num(data?.r_sleep_avg_min);
+        r.sleep_avg_h = sleepMin == null ? null : Math.round((sleepMin / 60) * 10) / 10;
+      }
+      // The facts row can be missing for a week the cron has not reached (or
+      // the read failed): the days themselves are the fallback. After the
+      // facts, not beside them, so a kind is failed only when NO source gave
+      // it a value.
+      if ((kinds.has("steps") && r.steps_avg == null) || (kinds.has("sleep_hours") && r.sleep_avg_h == null)) {
+        const { data: days, error: daysErr } = await retried(() =>
+          db.from("daily_metrics").select("metric_type, value").eq("user_id", userId)
+            .in("metric_type", ["steps", "sleep_minutes"]).gte("metric_date", prevWeek).lt("metric_date", weekStart)
+        );
+        if (daysErr) {
+          const stillEmpty: MetricToCheck["kind"][] = [];
+          if (r.steps_avg == null) stillEmpty.push("steps");
+          if (r.sleep_avg_h == null) stillEmpty.push("sleep_hours");
+          return fail(daysErr.message, ...stillEmpty);
+        }
+        const steps = meanPositive((days ?? []).filter((d: Row) => d.metric_type === "steps").map((d: Row) => num(d.value)));
+        const sleep = meanPositive((days ?? []).filter((d: Row) => d.metric_type === "sleep_minutes").map((d: Row) => num(d.value)));
+        if (r.steps_avg == null && steps != null) r.steps_avg = Math.round(steps);
+        if (r.sleep_avg_h == null && sleep != null) r.sleep_avg_h = Math.round((sleep / 60) * 10) / 10;
+      }
     })());
   }
   if (kinds.has("protein_days")) {

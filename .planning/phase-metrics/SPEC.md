@@ -85,6 +85,12 @@ Rules:
   sets `status` with rules IN CODE (arithmetic in code, judgment in Jev).
   `coach_line` comes from the model, grounded in those numbers.
 - Custom metrics take `current_value` from the latest log.
+- A check runs once per local week per user (the drona-cards cron, every 15
+  minutes, for users with an active program). A metric whose source read
+  fails is left unstamped and retried on the next run; the readable ones are
+  written. The coach line is written only on a run where every read
+  succeeded, so a partial failure delays the line, never writes it from half
+  the numbers.
 
 ## 5. App
 
