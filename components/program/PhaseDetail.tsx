@@ -99,7 +99,7 @@ export function PhaseDetail({ program, seq, ended, onSelectSeq, onBuild, onOpenR
     const { value, rest } = rowValue(m);
     return (
       <View key={m.id} style={[styles.trackRow, !last && { borderBottomWidth: StyleSheet.hairlineWidth, borderColor: C.borderSubtle }]}>
-        <Text style={[styles.trackName, { color: C.foreground }]} numberOfLines={1}>{metricRowName(m)}</Text>
+        <Text style={[styles.trackName, { color: C.foreground }]} numberOfLines={1}>{metricRowName(m, { proteinG: ph.diet_protein_g })}</Text>
         <Text style={[styles.trackValue, { color: C.mutedFg }]} numberOfLines={1}>
           {value ? <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>{value} </Text> : null}
           {rest}

@@ -259,8 +259,15 @@ export function metricLabel(m: { kind: MetricKind; ref?: MetricRef | null }): st
   }
 }
 
-/** The short row name with the target folded in: "Steps 8,000", "Protein 5 days", "Sleep 7h+". */
-export function metricRowName(m: { kind: MetricKind; ref?: MetricRef | null; target_value: number; unit: string; direction: MetricDirection }): string {
+/**
+ * The short row name with the target folded in: "Steps 8,000", "Sleep 7h+",
+ * "Protein 150g" (the phase's protein target in grams, passed in: the metric's
+ * own target is the days a week, which reads in the value column as "5 of 7").
+ */
+export function metricRowName(
+  m: { kind: MetricKind; ref?: MetricRef | null; target_value: number; unit: string; direction: MetricDirection },
+  opts?: { proteinG?: number | null },
+): string {
   const t = formatMetricValue(m.kind, m.target_value, m.unit);
   switch (m.kind) {
     case 'steps': return `Steps ${t}`;
@@ -269,7 +276,7 @@ export function metricRowName(m: { kind: MetricKind; ref?: MetricRef | null; tar
     case 'sessions_per_week': return 'Sessions';
     case 'cardio_sessions': return 'Cardio';
     case 'sleep_hours': return `Sleep ${t}h${m.direction === 'up' ? '+' : ''}`;
-    case 'protein_days': return `Protein ${t} days`;
+    case 'protein_days': return opts?.proteinG != null ? `Protein ${Math.round(opts.proteinG)}g` : 'Protein';
     case 'sets_per_muscle': return `${metricLabel(m)} ${t}`;
     default: return metricLabel(m);
   }

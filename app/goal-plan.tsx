@@ -520,7 +520,12 @@ export default function GoalPlanScreen() {
     );
   };
 
-  const focus = currentPhase ? (currentPhase.coach_line ?? focusLine(currentPhase.metrics)) : '';
+  // Drona's line can run to two sentences; the focus is its first one.
+  const firstSentence = (s: string) => {
+    const m = s.match(/^(.+?[.!?])(\s|$)/);
+    return m ? m[1] : s;
+  };
+  const focus = currentPhase ? (currentPhase.coach_line ? firstSentence(currentPhase.coach_line) : focusLine(currentPhase.metrics)) : '';
   const unbuilt = currentPhase != null && currentPhase.routines.length === 0;
 
   return (
@@ -573,7 +578,7 @@ export default function GoalPlanScreen() {
               <Feather name="star" size={18} color={Colors.primary} style={{ marginTop: 2 }} />
               <View style={{ flex: 1 }}>
                 <Text style={[styles.caps, { color: C.mutedFg }]}>THIS WEEK'S FOCUS</Text>
-                <Text style={[styles.focusText, { color: C.foreground }]} numberOfLines={2}>{focus}</Text>
+                <Text style={[styles.focusText, { color: C.foreground }]} numberOfLines={3}>{focus}</Text>
               </View>
             </View>
           ) : null}

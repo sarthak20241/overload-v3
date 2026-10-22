@@ -215,6 +215,9 @@ Deno.test("labels and row names read like the card", () => {
   assertEquals(metricLabel({ kind: "custom", ref: { name: "Handstand hold" } }), "Handstand hold");
   assertEquals(metricRowName({ kind: "steps", target_value: 8000, unit: "steps", direction: "up" }), "Steps 8,000");
   assertEquals(metricRowName({ kind: "sleep_hours", target_value: 7, unit: "h", direction: "up" }), "Sleep 7h+");
+  // Protein days: the name carries the phase's protein target, never the day count.
+  assertEquals(metricRowName({ kind: "protein_days", target_value: 5, unit: "days", direction: "up" }, { proteinG: 150 }), "Protein 150g");
+  assertEquals(metricRowName({ kind: "protein_days", target_value: 5, unit: "days", direction: "up" }), "Protein");
   assertEquals(metricRowName({ kind: "cardio_sessions", target_value: 2, unit: "sessions", direction: "up" }), "Cardio");
   assertEquals(metricRowName({ kind: "sessions_per_week", target_value: 4, unit: "sessions", direction: "up" }), "Sessions");
 });

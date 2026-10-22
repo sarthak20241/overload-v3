@@ -102,6 +102,11 @@ export default function GoalPlanPhaseScreen() {
   }, [supabase, router]);
 
   const back = () => (router.canGoBack() ? router.back() : router.replace('/goal-plan' as any));
+  // "Phase 2 of 4": the phase shown (the stepper moves it), not the current one.
+  const shownIndex = program
+    ? Math.max(0, program.phases.findIndex((ph) => ph.seq === (seq ?? program.currentPhaseSeq ?? program.phases[0]?.seq)))
+    : 0;
+  const headerTitle = program && program.phases.length > 0 ? `Phase ${shownIndex + 1} of ${program.phases.length}` : 'Phase';
   const totalWeeks = program ? (program.total_weeks ?? program.phases.reduce((a, p) => a + p.duration_weeks, 0)) : 0;
   const ended = program != null && totalWeeks > 0 && daysBetweenISO(program.start_date, todayLocalISO()) >= totalWeeks * 7;
 
@@ -111,7 +116,7 @@ export default function GoalPlanPhaseScreen() {
         <Pressable onPress={back} style={[styles.iconBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
           <Feather name="chevron-left" size={16} color={C.foreground} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: C.foreground }]}>Phase</Text>
+        <Text style={[styles.headerTitle, { color: C.foreground }]}>{headerTitle}</Text>
         <View style={{ width: 32 }} />
       </View>
 
