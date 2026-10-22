@@ -233,8 +233,8 @@ export function mergeSavedLines<R extends MergeableResult>(
 /** A saved meal to OFFER, never to log: the item names one food that is part
  *  of a saved meal ("oats", saved "Oats with milk"). Decision 1A: search the
  *  food as asked, and let the user swap with one tap. Every word of the food
- *  must appear in the meal's NAME, so "chicken" does not offer "Chicken
- *  biryani" when it is only in the name by accident of a longer word.
+ *  must appear in the meal's NAME, so "rice and chicken" does not offer "Dal
+ *  rice" just because the two share "rice".
  *
  *  The items count only when the meal IS that one food (a saved "Monday
  *  Breakfast" of one besan cheela). One item of a bigger meal is not the user
