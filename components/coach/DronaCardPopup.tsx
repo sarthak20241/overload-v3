@@ -159,7 +159,7 @@ function primaryLabelFor(payload: SavedDronaCard['payload']): string {
     case 'log_weight':
       return 'Log a weigh-in';
     case 'log_food':
-      return 'Log food';
+      return payload.focus === 'ai' ? 'Try it' : 'Log food';
     case 'start_session':
       return 'See what is due';
     case 'apply_swap':
