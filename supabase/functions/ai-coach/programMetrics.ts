@@ -49,6 +49,18 @@ export interface PromptMetric {
   checked_at?: string;
 }
 
+/**
+ * Client-written text (a custom metric's name and unit, an exercise or
+ * muscle name, the phase's job line) on one line and cut to size before it
+ * reaches the coach's context. The table caps sizes too, but loosely (ref
+ * up to 2000 bytes); these are the sizes a label ever needs.
+ */
+const MAX_NAME = 60;
+const MAX_UNIT = 24;
+const MAX_JOB = 80;
+const clip = (v: unknown, n: number): string =>
+  typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, n).trim() : "";
+
 const num = (v: unknown): number | undefined => {
   if (v == null) return undefined;
   const n = Number(v);
@@ -60,14 +72,20 @@ export function metricForPrompt(r: PhaseMetricDbRow, withProgress: boolean): Pro
   if (!isMetricKind(r.kind)) return null;
   const target = num(r.target_value);
   if (target == null) return null;
-  const ref = (r.ref && typeof r.ref === "object" ? r.ref : {}) as MetricRef;
+  const raw = (r.ref && typeof r.ref === "object" ? r.ref : {}) as MetricRef;
+  const ref: MetricRef = {
+    ...(raw.exercise_id ? { exercise_id: clip(raw.exercise_id, MAX_NAME) } : {}),
+    ...(raw.exercise_name ? { exercise_name: clip(raw.exercise_name, MAX_NAME) } : {}),
+    ...(raw.muscle ? { muscle: clip(raw.muscle, MAX_NAME) } : {}),
+    ...(raw.name ? { name: clip(raw.name, MAX_NAME) } : {}),
+  };
   const out: PromptMetric = {
     kind: r.kind,
-    label: metricLabel({ kind: r.kind, ref }),
+    label: clip(metricLabel({ kind: r.kind, ref }), MAX_NAME),
     hero: r.is_hero === true,
     target,
     direction: isMetricDirection(r.direction) ? r.direction : "up",
-    unit: r.unit ?? "",
+    unit: clip(r.unit, MAX_UNIT),
   };
   const start = num(r.start_value);
   if (start != null) out.start = start;
@@ -100,7 +118,8 @@ export function withPhaseMetrics(
   for (const ph of phases) {
     if (typeof ph.seq !== "number") continue;
     seqByPhaseId.set(ph.id, ph.seq);
-    if (typeof ph.job_text === "string" && ph.job_text.length > 0) jobBySeq.set(ph.seq, ph.job_text);
+    const job = clip(ph.job_text, MAX_JOB);
+    if (job) jobBySeq.set(ph.seq, job);
   }
   const bySeq = new Map<number, PhaseMetricDbRow[]>();
   for (const r of rows) {
