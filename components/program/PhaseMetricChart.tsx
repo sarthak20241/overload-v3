@@ -12,7 +12,7 @@
  *                    phase target. x runs from the first reading inside the
  *                    program to the program's end, so the line always starts
  *                    at the left edge. The readings get the left part of the
- *                    width (HISTORY_SHARE) even when they cover a few days of
+ *                    width (HISTORY_SHARE in lib/chartScale.ts) even when they cover a few days of
  *                    a long program, so the line reads as a line, not a stub;
  *                    the dashed stretch to the goal takes the rest.
  *   MetricBarsChart  a habit: one bar per program week against a dotted
@@ -24,6 +24,7 @@ import Svg, { Circle, Defs, Line, LinearGradient, Path, Rect, Stop, Text as SvgT
 import { Colors } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { monotonePath } from '@/components/ui/MiniAreaChart';
+import { metricXScale } from '@/lib/chartScale';
 
 export const CHART_HEIGHT = 58;
 const BARS_HEIGHT = 88;
@@ -32,8 +33,6 @@ const PAD_BOTTOM = 6;
 const X0 = 4;
 const X1_INSET = 10;
 const LABEL_FONT = 10.5;
-/** The share of the width the readings so far get, at least. */
-const HISTORY_SHARE = 0.58;
 
 export interface LinePoint {
   /** Program weeks from the start (fractional). */
@@ -68,17 +67,9 @@ export function MetricLineChart({ width, points, weeks, endTarget }: LineProps) 
   // does not hug the top edge.
   const padY = (hi - lo) * 0.15;
   lo -= padY; hi += padY;
-  // Two pieces: first reading to now across at least HISTORY_SHARE of the
-  // width, now to the program's end across the rest.
+  // First reading to now, then now to the program's end (lib/chartScale.ts).
   const xNow = inside.length > 0 ? inside[inside.length - 1].x : xStart;
-  const linearShare = (xNow - xStart) / (xEnd - xStart);
-  const share = inside.length >= 2 ? Math.max(HISTORY_SHARE, linearShare) : linearShare;
-  const xMid = X0 + (x1 - X0) * share;
-  const X = (w: number) => {
-    const c = Math.max(xStart, Math.min(xEnd, w));
-    if (xNow <= xStart || c <= xNow) return xNow <= xStart ? X0 : X0 + (xMid - X0) * (c - xStart) / (xNow - xStart);
-    return xMid + (x1 - xMid) * (c - xNow) / Math.max(1e-9, xEnd - xNow);
-  };
+  const X = metricXScale({ x0: X0, x1, xStart, xNow, xEnd, readings: inside.length });
   const Y = (v: number) => PAD_TOP + (H - PAD_TOP - PAD_BOTTOM) * (hi - v) / (hi - lo);
 
   const pts = inside.map((p) => ({ x: X(p.x), y: Y(p.y) }));
