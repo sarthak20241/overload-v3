@@ -455,4 +455,4 @@ export class PurchasePendingError extends Error {
   }
 }
 
-export { describePurchaseError, type PurchaseErrorInfo } from './purchaseErrors';
+export { describePurchaseError, PENDING_STILL_WAITING, type PurchaseErrorInfo } from './purchaseErrors';

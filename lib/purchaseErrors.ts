@@ -57,3 +57,11 @@ export function describePurchaseError(e: any): PurchaseErrorInfo {
     message: e?.message ? String(e.message).slice(0, 300) : null,
   };
 }
+
+/**
+ * What a paywall says when a pending payment has not landed after the
+ * 2-minute wait. The buy button stays off meanwhile; reopening the screen is
+ * the way to try again if the bank declined it.
+ */
+export const PENDING_STILL_WAITING =
+  "Your bank is still approving this. Pro unlocks on its own when it does, so don't pay again. If it gets declined, reopen this and try again.";

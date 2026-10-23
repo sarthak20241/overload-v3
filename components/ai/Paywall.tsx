@@ -39,6 +39,7 @@ import { track, setUserProps } from '@/lib/analytics';
 import { useTheme } from '@/hooks/useTheme';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
+import { invalidateCoachAccess } from '@/hooks/useCoachAccess';
 import {
   getCoachOfferings,
   purchaseCoachPackage,
@@ -49,6 +50,7 @@ import {
   PurchaseCancelledError,
   PurchasePendingError,
   describePurchaseError,
+  PENDING_STILL_WAITING,
   STORE_ACCOUNT,
   STORE_MANAGE_HINT,
   STORE_NAME,
@@ -226,6 +228,9 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
             paywallResolved.current = true;
             track('purchase_completed', { plan, source: 'coach_sheet', was_pending: true });
             setUserProps({ tier: plan });
+            // The parent may never get onPurchased() if the sheet closed, so
+            // drop the cached access state here or the app keeps saying Free.
+            invalidateCoachAccess();
             if (!mounted.current) return;
             toast.success("You're in. Welcome to Coach Drona.");
             await onPurchased();
@@ -236,7 +241,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
             // store's already-owned error while this order is still pending.
             setPendingOrder(true);
             toast.info(
-              "Your bank is still approving this. Pro unlocks on its own when it does, so don't pay again. Declined? Tap Restore, then try again.",
+              PENDING_STILL_WAITING,
               { durationMs: 10000 },
             );
           }
@@ -269,8 +274,6 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
   const handleRestore = useCallback(async () => {
     if (restoring) return;
     setRestoring(true);
-    // Restore is the way out of a pending order that the bank declined.
-    setPendingOrder(false);
     try {
       const info = await restorePurchases();
       if (!info) {
@@ -281,6 +284,9 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
         (e) => e.isActive,
       );
       if (hasActive) {
+        // Only a found entitlement ends the pending lock; an empty restore
+        // may just mean the bank has not approved yet.
+        setPendingOrder(false);
         const flipped = await waitForTierFlip();
         if (flipped) {
           paywallResolved.current = true;

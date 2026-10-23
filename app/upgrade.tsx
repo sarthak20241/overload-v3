@@ -102,6 +102,7 @@ import {
   PurchaseCancelledError,
   PurchasePendingError,
   describePurchaseError,
+  PENDING_STILL_WAITING,
   PurchasesUnavailableError,
   STORE_ACCOUNT,
   STORE_NAME,
@@ -400,7 +401,7 @@ export default function UpgradeScreen() {
           if (!mounted.current) return;
           setPendingOrder(true);
           toast.info(
-            "Your bank is still approving this. Pro unlocks on its own when it does, so don't pay again. Declined? Tap Restore, then try again.",
+            PENDING_STILL_WAITING,
             { durationMs: 10000 },
           );
         }
@@ -433,8 +434,6 @@ export default function UpgradeScreen() {
   const handleRestore = useCallback(async () => {
     if (restoring) return;
     setRestoring(true);
-    // Restore is the way out of a pending order that the bank declined.
-    setPendingOrder(false);
     track('purchase_restore_started', { context });
     try {
       const info = await restorePurchases();
@@ -445,6 +444,9 @@ export default function UpgradeScreen() {
       }
       const hasActive = Object.values(info.entitlements?.active ?? {}).some((e) => e.isActive);
       if (hasActive) {
+        // Only a found entitlement ends the pending lock; an empty restore
+        // may just mean the bank has not approved yet.
+        setPendingOrder(false);
         const flipped = await waitForTierFlip();
         invalidateCoachAccess();
         if (flipped) {
