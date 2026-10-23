@@ -25,6 +25,8 @@
 // Loosely-typed RC bindings. The real types live in react-native-purchases;
 // duplicating them here would just rot. The Paywall consumes these via
 // runtime property access; mistakes surface immediately in the UI.
+import { isPaymentPending } from './purchaseErrors';
+
 type RCPackage = {
   identifier: string;
   packageType: string; // 'MONTHLY' | 'ANNUAL' | 'LIFETIME' | 'CUSTOM' | ...
@@ -147,8 +149,6 @@ function loadPurchases(): any | null {
 // singleton instance", was swallowed, and never retried → every purchase got
 // tagged with an anonymous RC id instead of the Clerk id, so the webhook
 // could never match user_profiles.
-
-import { isPaymentPending } from './purchaseErrors';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Platform } = require('react-native');
@@ -402,6 +402,22 @@ export async function purchaseCoachPackage(
  * affordance on any paywall. Returns the customer's entitlements so the UI
  * can show a confirmation.
  */
+/**
+ * Fresh entitlements without a purchase. A pending payment never returns
+ * customerInfo from purchasePackage, so after it lands this is the only way
+ * to read whether the buyer is really on a trial.
+ */
+export async function getCustomerInfo(): Promise<RevenueCatCustomerInfo | null> {
+  const P = loadPurchases();
+  if (!P) return null;
+  try {
+    return await P.getCustomerInfo();
+  } catch (e) {
+    console.warn('[revenuecat] getCustomerInfo failed:', e);
+    return null;
+  }
+}
+
 export async function restorePurchases(): Promise<RevenueCatCustomerInfo | null> {
   const P = loadPurchases();
   if (!P) return null;

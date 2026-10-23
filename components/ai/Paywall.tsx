@@ -103,6 +103,10 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
   const [founding, setFounding] = useState<FoundingStatus | null>(null);
   const [purchasingPlan, setPurchasingPlan] = useState<PlanKey | null>(null);
   const [verifying, setVerifying] = useState(false);
+  // A payment the bank is still approving after the 2-minute wait.
+  const [pendingOrder, setPendingOrder] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
   const [restoring, setRestoring] = useState(false);
   const purchasesUsable = isPurchasesAvailable();
 
@@ -175,7 +179,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
         toast.error('Plan unavailable. Try again.');
         return;
       }
-      if (purchasingPlan) return; // guard double-tap
+      if (purchasingPlan || pendingOrder) return; // guard double-tap and a pending order
       setPurchasingPlan(plan);
       try {
         // Belt-and-suspenders: guarantee the SDK is logged in as the Clerk
@@ -216,6 +220,8 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
           setVerifying(true);
           const flipped = await waitForTierFlip(120_000);
           track('purchase_pending_resolved', { plan, source: 'coach_sheet', flipped });
+          // The wait runs up to 2 minutes; the sheet may be gone by now.
+          if (!mounted.current) return;
           if (flipped) {
             paywallResolved.current = true;
             track('purchase_completed', { plan, source: 'coach_sheet', was_pending: true });
@@ -224,8 +230,11 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
             await onPurchased();
             onClose();
           } else {
+            // Keep the cards off: a second tap could double-charge or hit the
+            // store's already-owned error while this order is still pending.
+            setPendingOrder(true);
             toast.info(
-              "Your bank is still approving this. Pro unlocks on its own when it does, so don't pay again. Nothing in a few minutes? Try again.",
+              "Your bank is still approving this. Pro unlocks on its own when it does, so don't pay again.",
               { durationMs: 10000 },
             );
           }
@@ -252,7 +261,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
         setVerifying(false);
       }
     },
-    [packages, purchasingPlan, waitForTierFlip, toast, onClose, onPurchased, user],
+    [packages, purchasingPlan, pendingOrder, waitForTierFlip, toast, onClose, onPurchased, user],
   );
 
   const handleRestore = useCallback(async () => {
@@ -354,7 +363,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
                 // case separately and we don't want to tease unavailability.
                 return null;
               }
-              const disabled = !pkg || purchasingPlan !== null || verifying;
+              const disabled = !pkg || purchasingPlan !== null || verifying || pendingOrder;
               const isThisPurchasing = purchasingPlan === plan;
               const highlight = plan === 'annual';
               const priceLabel = pkg?.product?.priceString ?? '—';
