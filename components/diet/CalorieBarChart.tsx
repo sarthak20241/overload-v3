@@ -40,8 +40,10 @@ export function CalorieBarChart({ bars, width, height, colors }: {
   colors: CalorieBarColors;
 }) {
   const [active, setActive] = useState<number | null>(null);
-  // A different set of days: an old selection would point at another bar.
-  useEffect(() => { setActive(null); }, [bars.length]);
+  // A different set of days (fewer of them, or the same count shifted at
+  // midnight): an old selection would point at another day's bar.
+  const span = `${bars[0]?.dayIso ?? ''}:${bars.length}`;
+  useEffect(() => { setActive(null); }, [span]);
   if (bars.length === 0) return null;
 
   const plotH = height - LABEL_H - TOP_PAD;
@@ -55,6 +57,8 @@ export function CalorieBarChart({ bars, width, height, colors }: {
   const colorFor = (b: CalorieBar) =>
     b.status === 'over' ? colors.over : b.status === 'under' && !b.today ? colors.under : colors.inRange;
 
+  // locationX is relative to the pressed view. The press layer has no
+  // children and spans the whole chart, so it is the chart's own x.
   const onPress = (e: GestureResponderEvent) => {
     const i = Math.min(bars.length - 1, Math.max(0, Math.floor(e.nativeEvent.locationX / colW)));
     setActive(active === i ? null : i);
