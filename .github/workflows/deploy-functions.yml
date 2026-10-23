@@ -137,6 +137,7 @@ jobs:
           deno test --allow-all --unstable-sloppy-imports lib/phaseMetricHeadline.test.ts
           deno test --allow-all lib/screenCache.test.ts
           deno test --allow-all lib/chartScale.test.ts
+          deno test --allow-all lib/phasePick.test.ts
 
       - name: Pick functions
         id: pick

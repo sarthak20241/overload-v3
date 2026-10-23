@@ -6,7 +6,7 @@ import { type Db, TRIES_PER_WEEK, dueReadFailure, metricsStep } from "./metrics.
  * awaiting it resolves to the next scripted answer for that table. Writes
  * (update) are recorded with the filters that followed them.
  */
-type Answer = { data: unknown; error: { message: string } | null; throws?: boolean };
+type Answer = { data: unknown; error: { message: string } | null; throws?: boolean; delayMs?: number };
 interface Written { table: string; patch: Record<string, unknown>; eq: [string, unknown][] }
 interface Read { table: string; eq: [string, unknown][] }
 
@@ -37,9 +37,11 @@ function fakeDb(script: Record<string, Answer[]>, failWrite: (w: Written) => str
       reads.push({ table, eq: [...eqs] });
       const queue = script[table] ?? [];
       const a = queue.length > 0 ? queue.shift()! : { data: null, error: null };
+      // A slow read: answers after delayMs.
+      const wait = a.delayMs ? new Promise((r) => setTimeout(r, a.delayMs)) : Promise.resolve();
       // A read that throws (a dropped connection), not one that answers with an error.
-      if (a.throws) return Promise.reject(new Error("socket hang up")).then(resolve, reject);
-      return Promise.resolve(a).then(resolve);
+      if (a.throws) return wait.then(() => Promise.reject(new Error("socket hang up"))).then(resolve, reject);
+      return wait.then(() => a).then(resolve);
     };
     return b;
   };
@@ -554,4 +556,21 @@ Deno.test("a read that throws fails only its own kind; the other reads still cou
   // Protein days was read and written; only bodyweight waits.
   const metricWrites = writes.filter((w) => w.table === "coach_program_phase_metrics" && "status" in w.patch);
   assertEquals(metricWrites.map((w) => w.eq[0][1]), ["m-pd"]);
+});
+
+Deno.test("a read that throws while the exercise lookup is still running is handled, not left unhandled", async () => {
+  // The bodyweight read starts first and fails while the name lookup is
+  // still awaited; its failure must be caught then, not when the other
+  // reads are gathered (Deno ends the run on an unhandled rejection).
+  const lift = { id: "m-lift", seq: 1, is_hero: false, kind: "lift_e1rm", ref: { exercise_name: "Bench Press" }, unit: "kg", direction: "up", start_value: 80, target_value: 90, current_value: 82, status: "on_track", checked_week: "2026-10-12" };
+  const { db } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: [rows[0], lift], error: null }],
+    daily_metrics: Array.from({ length: 3 }, () => ({ data: null, error: null, throws: true })),
+    exercises: [{ data: [{ id: "ex-bench" }], error: null, delayMs: 3000 }],
+    user_lift_stats: [{ data: [{ exercise_id: "ex-bench", estimated_1rm: 84 }], error: null }],
+  });
+  const out = await metricsStep(db, "user-1", DAY, WEEK, "key");
+  assertEquals([out.checked, out.error], [1, "read failed for bodyweight, retry next run"]);
 });

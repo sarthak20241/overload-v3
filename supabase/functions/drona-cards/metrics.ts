@@ -391,9 +391,12 @@ async function gatherReadings(
     for (const k of ks) if (kinds.has(k)) failed.add(k);
   };
   // Each read carries the kinds it feeds, so a read that throws fails only
-  // those kinds; the others' readings still count.
-  const jobs: { p: Promise<void>; ks: MetricToCheck["kind"][] }[] = [];
-  const add = (ks: MetricToCheck["kind"][], p: Promise<void>) => { jobs.push({ p, ks }); };
+  // those kinds; the others' readings still count. The handler is attached
+  // the moment the read starts: a read that fails while the exercise lookup
+  // below is still awaited would otherwise be an unhandled rejection, which
+  // ends a Deno run.
+  const jobs: Promise<void>[] = [];
+  const add = (ks: MetricToCheck["kind"][], p: Promise<void>) => { jobs.push(p.catch((e) => fail(String(e), ...ks))); };
 
   if (kinds.has("bodyweight")) {
     add(["bodyweight"], (async () => {
@@ -590,6 +593,6 @@ async function gatherReadings(
     }
   }
   // A read that threw is a failed read too: the caller skips its kinds.
-  await Promise.all(jobs.map(({ p, ks }) => p.catch((e) => fail(String(e), ...ks))));
+  await Promise.all(jobs);
   return { readings: r, failed };
 }

@@ -26,6 +26,9 @@ import {
 import { track } from '@/lib/analytics';
 import { missingColumn, missingTable, nextColumnSet, withoutColumns } from '@/lib/missingColumn';
 import { fetchShared, invalidateUserProgram, peek } from '@/lib/screenCache';
+import { activePhaseOn, computeActivePhaseSeq, daysBetweenISO, phaseFor } from '@/lib/phasePick';
+// Re-exported: the screens and helpers import these from here.
+export { activePhaseOn, computeActivePhaseSeq, daysBetweenISO, phaseFor };
 import { programGoalFor } from '@/lib/fitnessGoals';
 import {
   escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, namesAnExercise, normalizeMetrics, phaseProgress, statusFor,
@@ -101,14 +104,7 @@ export function todayLocalISO(): string {
   return toLocalISO(new Date());
 }
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
-/** Whole days from aISO to bISO (b - a), computed at local midnight. */
-export function daysBetweenISO(aISO: string, bISO: string): number {
-  const [ay, am, ad] = aISO.split('-').map((n) => parseInt(n, 10));
-  const [by, bm, bd] = bISO.split('-').map((n) => parseInt(n, 10));
-  const a = new Date(ay, am - 1, ad).getTime();
-  const b = new Date(by, bm - 1, bd).getTime();
-  return Math.round((b - a) / 86_400_000);
-}
+
 
 // ── Normalizer (generate_program tool input -> GeneratedProgram) ──────────────
 // Free-text fields are capped so an oversized or adversarial emission cannot
@@ -244,36 +240,6 @@ export function structuredToProgram(input: Record<string, unknown>): GeneratedPr
 }
 
 // ── Active-phase math ─────────────────────────────────────────────────────────
-/**
- * Which phase index is active on todayISO, or null if the program hasn't
- * started yet (today < start) or has already ended (today past the last phase).
- * Phases are consecutive: phase i spans [offsetWeeks*7, (offsetWeeks+dur)*7)
- * days from start_date. Pure + local-date, so the client and any later server
- * job agree.
- */
-export function computeActivePhaseSeq(
-  startDateISO: string,
-  phases: Array<{ duration_weeks: number; start_offset_weeks?: number }>,
-  todayISO: string,
-): number | null {
-  const days = daysBetweenISO(startDateISO, todayISO);
-  if (days < 0) return null;
-  // Prefer the PERSISTED start_offset_weeks when the row carries one (the
-  // load path), and only derive it cumulatively when it does not (the save
-  // path, which is what computes those offsets in the first place). Deriving
-  // unconditionally was correct only while seq always equalled array index;
-  // an update-in-place that edits one phase's duration would silently desync
-  // the DB offsets from the recomputed ones with no error surfaced.
-  let derivedOffset = 0;
-  for (let i = 0; i < phases.length; i++) {
-    const offsetWeeks = phases[i].start_offset_weeks ?? derivedOffset;
-    const startD = offsetWeeks * 7;
-    const endD = (offsetWeeks + phases[i].duration_weeks) * 7;
-    if (days >= startD && days < endD) return i;
-    derivedOffset = offsetWeeks + phases[i].duration_weeks;
-  }
-  return null;
-}
 
 /** Cumulative start-offset (in weeks) for each phase, phase 0 = 0. */
 function offsetsOf(phases: Array<{ duration_weeks: number }>): number[] {
@@ -755,17 +721,6 @@ export interface ActiveProgram {
   weekInPhase: number | null;
 }
 
-/**
- * The phase a screen shows: the one asked for by seq, else the current one,
- * else the first (before the program starts). One helper, so the phase,
- * pillar and phase-card screens can never resolve it differently.
- */
-export function phaseFor(program: ActiveProgram | null, seq: number | null): ActiveProgramPhaseRow | null {
-  if (!program) return null;
-  return (seq != null ? program.phases.find((p) => p.seq === seq) ?? null : null)
-    ?? (program.currentPhaseSeq != null ? program.phases.find((p) => p.seq === program.currentPhaseSeq) ?? null : null)
-    ?? program.phases[0] ?? null;
-}
 
 /**
  * Read the user's active program + phases, with the current phase computed.
@@ -995,16 +950,8 @@ function finishProgram(
 ): ActiveProgram {
   const startDate = String(p.start_date);
   const today = todayLocalISO();
-  // computeActivePhaseSeq answers with an INDEX into the seq-ordered list;
-  // what leaves this function is the phase's own seq value, so every reader
-  // looks a phase up by seq (saveProgram writes dense 0-based seqs, so the
-  // two agree today, but nothing outside this function depends on it).
-  const activeIdx = computeActivePhaseSeq(startDate, phases, today);
-  const activePhase = activeIdx != null ? phases[activeIdx] : null;
-  const currentPhaseSeq = activePhase ? activePhase.seq : null;
-  const weekInPhase = activePhase
-    ? Math.floor((daysBetweenISO(startDate, today) - activePhase.start_offset_weeks * 7) / 7) + 1
-    : null;
+  // Found by its place in time, reported by its own seq (activePhaseOn).
+  const { phase: activePhase, seq: currentPhaseSeq, weekInPhase } = activePhaseOn(startDate, phases, today);
 
   for (const ph of phases) {
     const list = byPhase.get(ph.id) ?? [];
