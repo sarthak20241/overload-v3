@@ -892,7 +892,7 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
       return null;
     }
 
-    const byId = new Map(withPanel.map((p, i) => [`p${i + 1}`, p.r.url]));
+    const byId = new Map(withPanel.map((p, i) => [`p${i + 1}`, p]));
     const data = await deps.callModel({
       model: deps.model,
       // 2000, not 1500: Haiku 5.5 counts the same text as ~30% more tokens.
@@ -924,12 +924,12 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
     const dropped: Array<{ site: string; why: DropReason; from: "page" | "snippet" }> = [];
     let serving: { label: string; grams: number } | null = null;
     for (const rep of reports) {
-      const url = byId.get(rep.page_id);
-      if (!url) continue;
+      const page = byId.get(rep.page_id);
+      if (!page) continue;
+      const url = page.r.url;
       const read = readReport(rep, url);
       if ("dropped" in read) {
-        const page = withPanel[Number(rep.page_id.slice(1)) - 1];
-        dropped.push({ site: hostOf(url), why: read.dropped, from: page?.full ? "page" : "snippet" });
+        dropped.push({ site: hostOf(url), why: read.dropped, from: page.full ? "page" : "snippet" });
         if (UNREAD_LABEL.has(read.dropped)) unread.add(hostOf(url));
         continue;
       }
