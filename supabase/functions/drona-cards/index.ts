@@ -551,7 +551,9 @@ async function runCron(): Promise<Response> {
       const late = i > 0 ? Date.now() > metricsDeadline : Date.now() > now.getTime() + METRICS_FIRST_BATCH_BY_MS;
       if (late) {
         metricsSkipped = metricUsers.length - i;
-        failures.push(`metrics: out of time, ${metricsSkipped} left for the next run`);
+        // Routine, not a failure: counted in metrics_skipped, so it never
+        // crowds the real failures out of the summary.
+        console.log(`[drona-cards] metrics: out of time, ${metricsSkipped} left for the next run`);
         break;
       }
       const batch = metricUsers.slice(i, i + CRON_CONCURRENCY);
