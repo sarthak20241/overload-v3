@@ -233,7 +233,13 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
             invalidateCoachAccess();
             if (!mounted.current) return;
             toast.success("You're in. Welcome to Coach Drona.");
-            await onPurchased();
+            // This runs inside the catch, so a throw here would escape as an
+            // unhandled rejection; the buyer is paid either way.
+            try {
+              await onPurchased();
+            } catch (err) {
+              console.warn('[paywall] onPurchased after pending failed:', err);
+            }
             onClose();
           } else {
             if (!mounted.current) return;
