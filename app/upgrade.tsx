@@ -51,6 +51,7 @@ import {
   Text,
   TouchableOpacity,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -85,6 +86,14 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { orbWebBox } from '@/components/coach/OrbStage';
+import { SignalOrb, signalOrbColor } from '@/components/coach/SignalOrb';
+
+// Drona's orb at the top of the paywall. Drawn with SignalOrb directly (not
+// OrbStage) so it can run brighter: at this size OrbStage's default reads dim.
+// 136 on tall phones; 104 on short ones (most Android) so the plans still sit
+// above the CTA without scrolling.
+const paywallOrbSize = (screenHeight: number) => (screenHeight >= 840 ? 136 : 104);
 import { invalidateCoachAccess } from '@/hooks/useCoachAccess';
 import { prefetchDashboard } from '@/lib/dashboardData';
 import {
@@ -178,7 +187,8 @@ function perMonthLabel(pkg: RevenueCatPackage): string | null {
 
 export default function UpgradeScreen() {
   const router = useRouter();
-  const { C } = useTheme();
+  const { C, mode } = useTheme();
+  const orbSize = paywallOrbSize(useWindowDimensions().height);
   const toast = useToast();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
@@ -680,6 +690,21 @@ export default function UpgradeScreen() {
             bounces={false}
             alwaysBounceVertical={false}
           >
+            {/* Drona, present on the screen that sells Drona: the same orb as
+                the coach chat, centered over the headline and listening
+                quietly. It thinks while a purchase is confirming, so the wait
+                reads as Drona at work. */}
+            <View style={[u.paywallOrb, { width: orbSize, height: orbSize }]} pointerEvents="none">
+              <SignalOrb
+                size={orbWebBox(orbSize)}
+                state={purchasing || verifying ? 'thinking' : 'listening'}
+                level={0.35}
+                particles={2200}
+                brightness={1.3}
+                color={signalOrbColor(mode)}
+                placeholder={<DronaMark size={28} color={C.accentText} state="static" />}
+              />
+            </View>
             <Text style={[u.eyebrow, { color: C.accentText }]}>OVERLOAD PRO</Text>
             <Text style={[u.hero, { color: C.foreground }]}>{paywallTitle}</Text>
             <Text style={[u.heroSub, { color: C.textSecondary }]}>
@@ -1036,6 +1061,17 @@ const u = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.sm,
     paddingBottom: Spacing.xs,
+  },
+  // The orb box is wider than its sphere (halo), so pull it left and up to
+  // line the sphere up with the headline's left edge.
+  // Centered over the headline. No negative top margin: the scroll view clips
+  // anything pulled above it, which flattened the sphere's top.
+  paywallOrb: {
+    alignSelf: 'center',
+    marginTop: -Spacing.sm,
+    marginBottom: -10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   closeBtn: {
     width: 32,
