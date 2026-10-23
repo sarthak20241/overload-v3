@@ -135,6 +135,7 @@ jobs:
           deno test --allow-all --unstable-sloppy-imports lib/planExercise.test.ts
           deno test --allow-all --unstable-sloppy-imports lib/routineTargets.test.ts
           deno test --allow-all --unstable-sloppy-imports lib/phaseMetricHeadline.test.ts
+          deno test --allow-all lib/screenCache.test.ts
 
       - name: Pick functions
         id: pick

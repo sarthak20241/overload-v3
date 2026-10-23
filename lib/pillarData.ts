@@ -11,6 +11,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { todayLocalISO } from '@/lib/programData';
 import { bandForScore, directive, type ReadinessBand } from '@/lib/readiness';
 import { liveFrom, type LiveReadings } from '@/lib/phaseMetricHeadline';
+import { fetchShared, peek } from '@/lib/screenCache';
 
 function localISO(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -132,7 +133,7 @@ export async function loadLastNights(supabase: SupabaseClient, clerkId: string, 
  * errors, so this never throws.
  */
 export async function loadLiveReadings(supabase: SupabaseClient, clerkId: string): Promise<LiveReadings> {
-  const [week, nights] = await Promise.all([loadWeekSessions(supabase, clerkId), loadLastNights(supabase, clerkId)]);
+  const [week, nights] = await Promise.all([sharedWeekSessions(supabase, clerkId), sharedLastNights(supabase, clerkId)]);
   return liveFrom(week, nights);
 }
 
@@ -203,4 +204,47 @@ export function hrvVerdict(v: Vital): { text: string; tone: 'ok' | 'warn' | 'dim
   if (r >= 1.05) return { text: 'Up', tone: 'ok' };
   if (r <= 0.95) return { text: 'Down', tone: 'warn' };
   return { text: 'Flat', tone: 'dim' };
+}
+
+// ---- Shared, cached reads (lib/screenCache.ts) ------------------------------
+// The Goal screen starts these for the current phase as soon as it has the
+// program, so tapping Train, Eat or Recover paints at once from the cache
+// and only refreshes in the background. Keys carry the local day (or week),
+// so a value never crosses midnight.
+
+const weekKey = (clerkId: string) => `pillar:week:${clerkId}:${mondayOfLocal(todayLocalISO())}`;
+const nightsKey = (clerkId: string) => `pillar:nights:${clerkId}:${todayLocalISO()}`;
+const vitalsKey = (clerkId: string) => `pillar:vitals:${clerkId}:${todayLocalISO()}`;
+const routinesKey = (clerkId: string, ids: string[]) => `pillar:routines:${clerkId}:${[...ids].sort().join(',')}`;
+
+export const sharedWeekSessions = (s: SupabaseClient, clerkId: string) => fetchShared(weekKey(clerkId), () => loadWeekSessions(s, clerkId));
+export const sharedLastNights = (s: SupabaseClient, clerkId: string) => fetchShared(nightsKey(clerkId), () => loadLastNights(s, clerkId));
+export const sharedTodayVitals = (s: SupabaseClient, clerkId: string) => fetchShared(vitalsKey(clerkId), () => loadTodayVitals(s, clerkId));
+export const sharedRoutineSummaries = (s: SupabaseClient, clerkId: string, ids: string[]) =>
+  fetchShared(routinesKey(clerkId, ids), () => loadRoutineSummaries(s, ids));
+
+export const peekWeekSessions = (clerkId: string | null) => (clerkId ? peek<WeekSessions>(weekKey(clerkId)) : undefined);
+export const peekLastNights = (clerkId: string | null) => (clerkId ? peek<Night[]>(nightsKey(clerkId)) : undefined);
+export const peekTodayVitals = (clerkId: string | null) => (clerkId ? peek<TodayVitals>(vitalsKey(clerkId)) : undefined);
+export const peekRoutineSummaries = (clerkId: string | null, ids: string[]) =>
+  (clerkId ? (ids.length === 0 ? [] : peek<RoutineSummary[]>(routinesKey(clerkId, ids))) : undefined);
+
+/** The live readings from the cache, when both parts are there. */
+export function peekLiveReadings(clerkId: string | null): LiveReadings | null {
+  const week = peekWeekSessions(clerkId);
+  const nights = peekLastNights(clerkId);
+  return week && nights ? liveFrom(week, nights) : null;
+}
+
+/**
+ * Warm the pillar screens for a phase: this week's sessions, the last seven
+ * nights, today's vitals, and the phase's routine summaries, all at once, and
+ * only the ones the cache does not hold yet (the screens refresh on focus).
+ * Fire and forget; every loader swallows its own errors.
+ */
+export function prefetchPillars(s: SupabaseClient, clerkId: string, routineIds: string[]): void {
+  if (peekWeekSessions(clerkId) === undefined) void sharedWeekSessions(s, clerkId);
+  if (peekLastNights(clerkId) === undefined) void sharedLastNights(s, clerkId);
+  if (peekTodayVitals(clerkId) === undefined) void sharedTodayVitals(s, clerkId);
+  if (routineIds.length > 0 && peekRoutineSummaries(clerkId, routineIds) === undefined) void sharedRoutineSummaries(s, clerkId, routineIds);
 }

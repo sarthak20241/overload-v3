@@ -21,15 +21,16 @@ import { useTheme } from '@/hooks/useTheme';
 import { track, markWorkoutSource } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { loadActiveProgram, phaseFor, daysBetweenISO, todayLocalISO, type ActiveProgram, type ActiveProgramPhaseRow } from '@/lib/programData';
+import { loadActiveProgram, peekActiveProgram, phaseFor, daysBetweenISO, todayLocalISO, type ActiveProgram, type ActiveProgramPhaseRow } from '@/lib/programData';
 import {
   formatMetricValue, heroOf, STATUS_LABEL, statusTone, type MetricKind, type MetricStatus, type PhaseMetricRow,
 } from '@/lib/phaseMetrics';
 import { headlineText, liveFrom, metricHeadline } from '@/lib/phaseMetricHeadline';
 import { useNutritionTargets, useTodayNutrition } from '@/lib/dietData';
 import {
-  DAY_LETTERS, DAY_NAMES_LONG, hrvVerdict, loadLastNights, loadRoutineSummaries, loadTodayVitals, loadWeekSessions,
-  readinessVerdict, rhrVerdict, weekdayIndex, type Night, type RoutineSummary, type TodayVitals, type WeekSessions,
+  DAY_LETTERS, DAY_NAMES_LONG, hrvVerdict, peekLastNights, peekRoutineSummaries, peekTodayVitals, peekWeekSessions,
+  readinessVerdict, rhrVerdict, sharedLastNights, sharedRoutineSummaries, sharedTodayVitals, sharedWeekSessions,
+  weekdayIndex, type Night, type RoutineSummary, type TodayVitals, type WeekSessions,
 } from '@/lib/pillarData';
 import { getHealthConnectionStatus } from '@/lib/healthSync';
 import { weekPatternFor, shortDayLabel, REST } from '@/lib/weekPattern';
@@ -79,13 +80,22 @@ export default function GoalPlanPillarScreen() {
   const pillar: Pillar = pillarParam === 'eat' || pillarParam === 'recover' ? pillarParam : 'train';
   const seqAsked = Number.isFinite(parseInt(seqParam ?? '', 10)) ? parseInt(seqParam ?? '', 10) : null;
 
-  const [program, setProgram] = useState<ActiveProgram | null>(null);
-  const [week, setWeek] = useState<WeekSessions | null>(null);
-  const [routines, setRoutines] = useState<RoutineSummary[]>([]);
-  const [nights, setNights] = useState<Night[]>([]);
-  const [vitals, setVitals] = useState<TodayVitals | null>(null);
+  // Paint at once from the screen cache: the Goal screen read the program
+  // and warmed this pillar's data for the current phase. The focus load
+  // refreshes all of it behind; a skeleton only when something is missing.
+  const cachedProgram = peekActiveProgram(clerkId);
+  const cachedPhase = phaseFor(cachedProgram ?? null, seqAsked);
+  const cachedRoutineIds = cachedPhase?.routines.map((r) => r.id) ?? [];
+  const [program, setProgram] = useState<ActiveProgram | null>(() => cachedProgram ?? null);
+  const [week, setWeek] = useState<WeekSessions | null>(() => peekWeekSessions(clerkId) ?? null);
+  const [routines, setRoutines] = useState<RoutineSummary[] | null>(() => peekRoutineSummaries(clerkId, cachedRoutineIds) ?? null);
+  const [nights, setNights] = useState<Night[]>(() => peekLastNights(clerkId) ?? []);
+  const [vitals, setVitals] = useState<TodayVitals | null>(() => peekTodayVitals(clerkId) ?? null);
   const [healthConnected, setHealthConnected] = useState<boolean | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() =>
+    cachedProgram === undefined
+    || (pillar === 'train' && peekWeekSessions(clerkId) === undefined)
+    || (pillar === 'recover' && (peekLastNights(clerkId) === undefined || peekTodayVitals(clerkId) === undefined)));
   const [loadFailed, setLoadFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
@@ -98,17 +108,28 @@ export default function GoalPlanPillarScreen() {
     const n = ++loadSeq.current;
     if (!supabase || !clerkId) { setLoading(false); return; }
     try {
-      const p = await loadActiveProgram(supabase, clerkId);
+      // Everything this pillar needs starts at once. Only the routine
+      // summaries need the program (the phase's routine ids): with a cached
+      // program they start now too, and are read again only if the fresh
+      // program links different routines.
+      const known = phaseFor(peekActiveProgram(clerkId) ?? null, seqAsked)?.routines.map((r) => r.id) ?? null;
+      const programP = loadActiveProgram(supabase, clerkId);
+      const routinesP = pillar === 'train' && known ? sharedRoutineSummaries(supabase, clerkId, known) : null;
+      const weekP = pillar === 'train' ? sharedWeekSessions(supabase, clerkId) : null;
+      const nightsP = pillar === 'recover' ? sharedLastNights(supabase, clerkId) : null;
+      const vitalsP = pillar === 'recover' ? sharedTodayVitals(supabase, clerkId) : null;
+      const p = await programP;
       if (n !== loadSeq.current) return;
       setProgram(p);
       setLoadFailed(false);
-      const ph = phaseFor(p, seqAsked);
+      const ids = phaseFor(p, seqAsked)?.routines.map((x) => x.id) ?? [];
       if (pillar === 'train') {
-        const [w, r] = await Promise.all([loadWeekSessions(supabase, clerkId), loadRoutineSummaries(supabase, ph?.routines.map((x) => x.id) ?? [])]);
+        const same = known != null && known.join(',') === ids.join(',');
+        const [w, r] = await Promise.all([weekP!, same && routinesP ? routinesP : sharedRoutineSummaries(supabase, clerkId, ids)]);
         if (n !== loadSeq.current) return;
         setWeek(w); setRoutines(r);
       } else if (pillar === 'recover') {
-        const [ns, v] = await Promise.all([loadLastNights(supabase, clerkId), loadTodayVitals(supabase, clerkId)]);
+        const [ns, v] = await Promise.all([nightsP!, vitalsP!]);
         if (n !== loadSeq.current) return;
         setNights(ns); setVitals(v);
         if (!v.anyHealthData) {
@@ -125,6 +146,7 @@ export default function GoalPlanPillarScreen() {
     }
   }, [supabase, clerkId, pillar, seqAsked]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
   useEffect(() => { track('program_pillar_viewed', { pillar, seq: seqAsked }); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
   const phase = phaseFor(program, seqAsked);
@@ -203,6 +225,12 @@ export default function GoalPlanPillarScreen() {
     const heroRest = h?.num ? h.rest : isCur ? `of ${target ?? '–'} sessions so far this week` : 'sessions a week in this phase';
     const status: MetricStatus | null = h?.status ?? null;
     const split = ph.training_block?.split_type ?? null;
+    // The phase's own routines decide "built or not" (as on the phase card);
+    // the summaries only add the exercise counts, which fill in when read.
+    const workoutRows = ph.routines.map((r) => {
+      const sum = routines?.find((x) => x.id === r.id);
+      return { id: r.id, name: sum?.name ?? r.name, exercises: sum ? sum.exercises : null };
+    });
     const others = supporting(ph).filter((m) => m.kind !== 'sessions_per_week');
     return (
       <>
@@ -260,16 +288,16 @@ export default function GoalPlanPillarScreen() {
 
         <Stagger index={5} style={styles.section}>
           <SectionLabel style={{ marginBottom: S.xs }}>Workouts</SectionLabel>
-          {routines.length > 0 ? (
-            routines.map((r, i) => (
+          {workoutRows.length > 0 ? (
+            workoutRows.map((r, i) => (
               <Row
                 key={r.id}
                 title={r.name}
-                valueRest={`${r.exercises} exercise${r.exercises === 1 ? '' : 's'}`}
+                valueRest={r.exercises == null ? undefined : `${r.exercises} exercise${r.exercises === 1 ? '' : 's'}`}
                 onPress={() => openRoutine(r.id)}
                 first={i === 0}
-                last={i === routines.length - 1}
-                accessibilityLabel={`${r.name}, ${r.exercises} exercises`}
+                last={i === workoutRows.length - 1}
+                accessibilityLabel={r.exercises == null ? r.name : `${r.name}, ${r.exercises} exercises`}
               />
             ))
           ) : (

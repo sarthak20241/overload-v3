@@ -31,6 +31,8 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { haptics } from '@/lib/haptics';
 import {
   loadActiveProgram,
+  peekActiveProgram,
+  phaseFor,
   endActiveProgram,
   logMetricValue,
   daysBetweenISO,
@@ -46,7 +48,8 @@ import { loadMetricSeries, type MetricSeries } from '@/lib/phaseMetricSeries';
 import { MetricBarsChart, MetricLineChart } from '@/components/program/PhaseMetricChart';
 import { MetricLogSheet } from '@/components/program/MetricLogSheet';
 import { PlanRows } from '@/components/program/PlanRows';
-import { loadLiveReadings } from '@/lib/pillarData';
+import { ObjectiveText } from '@/components/program/ObjectiveText';
+import { loadLiveReadings, peekLiveReadings, prefetchPillars } from '@/lib/pillarData';
 import type { LiveReadings } from '@/lib/phaseMetricHeadline';
 import { LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T } from '@/components/program/finish';
 import { useToast } from '@/components/ui/Toast';
@@ -98,8 +101,10 @@ export default function GoalPlanScreen() {
   const { width: winW } = useWindowDimensions();
   const toast = useToast();
 
-  const [program, setProgram] = useState<ActiveProgram | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Paint at once from the screen cache when another screen (or the last
+  // visit) already read the program; the focus load refreshes it behind.
+  const [program, setProgram] = useState<ActiveProgram | null>(() => peekActiveProgram(clerkId) ?? null);
+  const [loading, setLoading] = useState(() => peekActiveProgram(clerkId) === undefined);
   const [refreshing, setRefreshing] = useState(false);
   const loadSeq = useRef(0);
   const viewedRef = useRef(false);
@@ -115,7 +120,7 @@ export default function GoalPlanScreen() {
   const [weightKg, setWeightKg] = useState<number | null>(null);
   // Today's readiness, for a Recover row with no sleep metric.
   const [readinessToday, setReadinessToday] = useState<number | null>(null);
-  const [live, setLive] = useState<LiveReadings | null>(null);
+  const [live, setLive] = useState<LiveReadings | null>(() => peekLiveReadings(clerkId));
   const [loadFailed, setLoadFailed] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
   const [logging, setLogging] = useState(false);
@@ -143,6 +148,10 @@ export default function GoalPlanScreen() {
       setProgram(p);
       setLive(lv);
       setLoadFailed(false);
+      // Warm Train, Eat and Recover for the phase the plan rows open, so a
+      // tap paints from the cache instead of waiting on four more reads.
+      const ph = p ? phaseFor(p, null) : null;
+      if (ph) prefetchPillars(supabase, clerkId, ph.routines.map((r) => r.id));
       if (!viewedRef.current) {
         viewedRef.current = true;
         track('program_viewed', {
@@ -542,6 +551,7 @@ export default function GoalPlanScreen() {
                 {notStarted ? `Starts ${fmtShortISO(program.start_date)}` : ended ? 'Program complete' : `Week ${weekOverall} of ${totalWeeks}`}
                 {'  ·  '}{ended ? `Ended ${fmtShortISO(program.target_date ?? endDateISO!)}` : `Ends ${fmtShortISO(program.target_date ?? endDateISO!)}`}
               </Text>
+              <ObjectiveText text={program.objective} style={{ marginTop: S.sm }} />
             </Stagger>
             <Stagger index={1}>{renderHero()}</Stagger>
             <Stagger index={2}>{renderPhaseCard()}</Stagger>

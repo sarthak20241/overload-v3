@@ -17,8 +17,8 @@ import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { loadActiveProgram, phaseFor, daysBetweenISO, todayLocalISO, type ActiveProgram } from '@/lib/programData';
-import { loadLiveReadings } from '@/lib/pillarData';
+import { loadActiveProgram, peekActiveProgram, phaseFor, daysBetweenISO, todayLocalISO, type ActiveProgram } from '@/lib/programData';
+import { loadLiveReadings, peekLiveReadings, peekTodayVitals, prefetchPillars, sharedTodayVitals } from '@/lib/pillarData';
 import type { LiveReadings } from '@/lib/phaseMetricHeadline';
 import { PhaseDetail } from '@/components/program/PhaseDetail';
 import { PlanRows } from '@/components/program/PlanRows';
@@ -34,12 +34,14 @@ export default function GoalPlanPhaseScreen() {
   const clerkId = user?.id ?? null;
   const { seq: seqParam } = useLocalSearchParams<{ seq?: string }>();
 
-  const [program, setProgram] = useState<ActiveProgram | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Paint at once from the screen cache (the Goal screen filled it); the
+  // focus load refreshes it behind. A skeleton only on a cold start.
+  const [program, setProgram] = useState<ActiveProgram | null>(() => peekActiveProgram(clerkId) ?? null);
+  const [loading, setLoading] = useState(() => peekActiveProgram(clerkId) === undefined);
   const [loadFailed, setLoadFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [readinessToday, setReadinessToday] = useState<number | null>(null);
-  const [live, setLive] = useState<LiveReadings | null>(null);
+  const [readinessToday, setReadinessToday] = useState<number | null>(() => peekTodayVitals(clerkId)?.readiness ?? null);
+  const [live, setLive] = useState<LiveReadings | null>(() => peekLiveReadings(clerkId));
   const [seq, setSeq] = useState<number | null>(() => {
     const n = parseInt(seqParam ?? '', 10);
     return Number.isFinite(n) ? n : null;
@@ -50,15 +52,17 @@ export default function GoalPlanPhaseScreen() {
     const n = ++loadSeq.current;
     if (!supabase || !clerkId) { setProgram(null); setLoading(false); setRefreshing(false); return; }
     try {
-      const [p, readiness, lv] = await Promise.all([
+      // All side by side: the program, today's vitals (readiness for the
+      // Recover row) and the live readings, each shared with the other
+      // Goal & Plan screens through the cache.
+      const [p, vitals, lv] = await Promise.all([
         loadActiveProgram(supabase, clerkId),
-        supabase.from('daily_metrics').select('value').eq('user_id', clerkId).eq('metric_type', 'readiness_score').eq('metric_date', todayLocalISO()).maybeSingle()
-          .then(({ data }) => (data?.value != null && Number.isFinite(Number(data.value)) ? Number(data.value) : null), () => null),
+        sharedTodayVitals(supabase, clerkId),
         loadLiveReadings(supabase, clerkId),
       ]);
       if (n !== loadSeq.current) return;
       setProgram(p);
-      setReadinessToday(readiness);
+      setReadinessToday(vitals.readiness);
       setLive(lv);
       setLoadFailed(false);
     } catch (e) {
@@ -70,6 +74,13 @@ export default function GoalPlanPhaseScreen() {
     }
   }, [supabase, clerkId]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+
+  // Warm the pillar screens for the phase being viewed (only what the cache lacks).
+  const shownRoutineIds = phaseFor(program, seq)?.routines.map((r) => r.id).join(',') ?? '';
+  useEffect(() => {
+    if (supabase && clerkId && program) prefetchPillars(supabase, clerkId, shownRoutineIds ? shownRoutineIds.split(',') : []);
+  }, [supabase, clerkId, program, shownRoutineIds]);
 
   useEffect(() => {
     track('program_phase_opened', { seq: seq ?? null });

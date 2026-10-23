@@ -235,3 +235,18 @@ The Eat screen's TODAY section (current phase only), above the tip:
 "Calories 528 of 1,800" and "Protein 36 of 115g" as two rows, from the same
 hooks as the dashboard's Fuel card (today's diary and the nutrition targets,
 fuel day included). Fuel days stay hidden when the phase has none.
+
+Speed (2026-10-23). The program loads in one round: the program with its
+phases and their routines embedded (`routines!program_phase_id`, since phases
+and routines point at each other twice), and the active program's metrics
+read side by side through an inner join. The old step-by-step read stays as
+the fallback for a relationship error; missing-column fallbacks run only on
+an actual error, and the widest column set that worked is remembered.
+`lib/screenCache.ts` keeps the program and the pillar reads in memory: the
+phase and pillar screens paint at once from it and refresh on focus, the
+Goal screen warms Train/Eat/Recover for the current phase, and every write
+to the program or a phase's routines invalidates it.
+
+The program's objective sits under "Week N of M · Ends …": one muted
+paragraph (15/21), two lines with an inline lime "More", "Less" to close.
+Hidden when empty.

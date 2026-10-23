@@ -21,6 +21,7 @@ import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
 import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
 import { fuelDaysText } from '@/lib/fuelDays';
+import { invalidateUserProgram } from '@/lib/screenCache';
 import { activityText } from '@/lib/activityGoals';
 import { metricsText } from '@/lib/phaseMetrics';
 import { track } from '@/lib/analytics';
@@ -4462,6 +4463,8 @@ export function AICoachModal({
       .single();
 
     if (error || !routine) throw error || new Error('Failed to create routine');
+    // A routine linked to a phase changes what the Goal & Plan screens show.
+    if (phaseId && clerkId) invalidateUserProgram(clerkId);
 
     // Resolve all exercises in parallel — each one does select + optional insert + link insert.
     // Drops save time from N*(2-3) sequential round trips to ~3 round trips total.
@@ -4602,6 +4605,7 @@ export function AICoachModal({
             throw unlinkErr;
           }
           console.log(`[routine-save] cleared ${cleared?.length ?? 0} prior routine(s) from phase ${phaseId}`);
+          if (user?.id) invalidateUserProgram(user.id);
         }
         unlinkDone = true;
         for (let i = 0; i < workouts.length; i++) {
