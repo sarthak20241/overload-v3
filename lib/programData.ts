@@ -1166,6 +1166,9 @@ export async function logMetricValue(
       { onConflict: 'metric_id,logged_on' },
     );
   if (error) throw error;
+  // The log has landed: the cached program is stale from here even if the
+  // metric update below fails, so the next read must go to the database.
+  invalidateProgram(clerkId);
   const status = statusFor({ ...metric, current_value: value, progress });
   const { data: moved, error: upErr } = await supabase
     .from(METRICS_TABLE)
