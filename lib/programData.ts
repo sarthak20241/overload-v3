@@ -29,7 +29,7 @@ import { fetchShared, invalidateUserProgram, peek } from '@/lib/screenCache';
 import { computeActivePhaseSeq, daysBetweenISO, toLocalISO, todayLocalISO } from '@/lib/programDates';
 import { programGoalFor } from '@/lib/fitnessGoals';
 import {
-  escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, normalizeMetrics, phaseProgress, statusFor,
+  escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, namesAnExercise, normalizeMetrics, phaseProgress, statusFor,
   type MetricRef, type PhaseMetricInput, type PhaseMetricRow,
 } from '@/lib/phaseMetrics';
 
@@ -583,7 +583,7 @@ async function saveProgramMetrics(
 ): Promise<void> {
   const names = new Set<string>();
   for (const ph of phases) for (const m of ph.metrics ?? []) {
-    if (m.kind === 'lift_e1rm' && m.ref?.exercise_name && !m.ref.exercise_id) names.add(m.ref.exercise_name);
+    if (namesAnExercise(m.kind) && m.ref?.exercise_name && !m.ref.exercise_id) names.add(m.ref.exercise_name);
   }
   const idByName = new Map<string, string>();
   // The winner for a name: the user's own exercise of that name, else the
@@ -625,7 +625,7 @@ async function saveProgramMetrics(
     if (!phaseId) return;
     (ph.metrics ?? []).forEach((m, seq) => {
       const ref: MetricRef = { ...(m.ref ?? {}) };
-      if (m.kind === 'lift_e1rm' && !ref.exercise_id && ref.exercise_name) {
+      if (namesAnExercise(m.kind) && !ref.exercise_id && ref.exercise_name) {
         const id = idByName.get(ref.exercise_name.toLowerCase());
         if (id) ref.exercise_id = id;
       }
@@ -704,7 +704,7 @@ export interface ActiveProgram {
   total_weeks: number | null;
   applied_phase_seq: number | null;
   phases: ActiveProgramPhaseRow[];
-  /** Index into phases that is active today, or null (not started / ended). */
+  /** The `seq` of the phase active today (look it up with phaseFor, never as an array index), or null (not started / ended). */
   currentPhaseSeq: number | null;
   /** 1-based week within the current phase, or null. */
   weekInPhase: number | null;
@@ -1066,6 +1066,8 @@ async function loadProgramMetrics(
       .from(METRIC_LOGS_TABLE)
       .select('metric_id, value, logged_on')
       .in('metric_id', customIds)
+      // Up to today: a future-dated log must not become the current value.
+      .lte('logged_on', todayLocalISO())
       .order('logged_on', { ascending: false });
     if (logErr && !missingTable(logErr, METRIC_LOGS_TABLE)) throw logErr;
     const seen = new Set<string>();

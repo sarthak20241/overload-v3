@@ -13,7 +13,7 @@
  * cron summary, and a failed model call keeps last week's line.
  */
 import {
-  escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, phaseProgress, type MetricRef, type MetricStatus,
+  escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, namesAnExercise, phaseProgress, type MetricRef, type MetricStatus,
 } from "../_shared/phaseMetrics.ts";
 import {
   activePhaseIndex, addDays, bestOfSets, checkDue, checkMetrics, EMPTY_READINGS, meanPositive, ownExercise, proteinDaysOf,
@@ -136,15 +136,15 @@ export async function metricsStep(
     // (stampWeekFor): past and running phases this week, phases to come the
     // week before they start. Numbers are never touched. Without this a row
     // the check never reaches keeps its user on the cron's due list for ever.
+    // Side by side: each phase is its own write, and they share the run's 55 s.
     const stampOthers = async (except: string | null) => {
-      for (const ph of phases) {
-        if (ph.id === except) continue;
+      await Promise.all(phases.filter((ph) => ph.id !== except).map(async (ph) => {
         const { error } = await retried(() =>
           db.from("coach_program_phase_metrics").update({ checked_at: now, checked_week: stampWeekFor(startDate, ph, weekStart) })
             .eq("user_id", userId).eq("phase_id", ph.id)
         );
         if (error) console.log(`[drona-cards] stamping phase ${ph.id.slice(0, 8)} for ${userId.slice(0, 12)}: ${error.message}`);
-      }
+      }));
     };
 
     const idx = activePhaseIndex(startDate, phases, localDay);
@@ -323,7 +323,7 @@ export async function metricsStep(
       return { checked, line: false, error: `line: ${answer.error ?? "no line"}, retry next run${unstampErr ? `; ledger write failed: ${unstampErr.message}` : ""}` };
     }
     const { error: lineErr } = await retried(() =>
-      db.from("coach_program_phases").update({ coach_line: answer.line }).eq("id", phase.id)
+      db.from("coach_program_phases").update({ coach_line: answer.line }).eq("id", phase.id).eq("user_id", userId)
     );
     if (lineErr) return { checked, line: false, error: `line: ${lineErr.message}` };
     // A clean line clears the retry ledger. A failed clear leaves a stale
@@ -385,7 +385,7 @@ async function gatherReadings(
   // name here, and the id is kept on the row so the chart and the next check
   // read it directly. Lifts need it; distance and duration use it when the
   // coach named the one exercise that counts.
-  const named = metrics.filter((m) => (m.kind === "lift_e1rm" || m.kind === "distance" || m.kind === "duration") && !m.ref?.exercise_id && m.ref?.exercise_name);
+  const named = metrics.filter((m) => namesAnExercise(m.kind) && !m.ref?.exercise_id && m.ref?.exercise_name);
   if (named.length > 0) {
     // Degrades like every other source: a throw here fails the named kinds
     // for this run, never the whole step.
@@ -551,8 +551,10 @@ async function gatherReadings(
     for (const m of metrics.filter((m) => m.kind === "custom")) {
       jobs.push((async () => {
         const { data, error } = await retried(() =>
+          // Up to today only: the table does not bound logged_on, so a
+          // future-dated log written straight to it must not become the reading.
           db.from("coach_program_phase_metric_logs").select("metric_id, value, logged_on")
-            .eq("user_id", userId).eq("metric_id", m.id)
+            .eq("user_id", userId).eq("metric_id", m.id).lte("logged_on", localDay)
             .order("logged_on", { ascending: false }).limit(1)
         );
         if (error) return fail(error.message, "custom");

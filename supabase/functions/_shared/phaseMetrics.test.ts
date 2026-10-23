@@ -1,5 +1,6 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
+  namesAnExercise,
   chartKindOf,
   cleanLine,
   defaultJobText,
@@ -305,4 +306,11 @@ Deno.test("every saved field fits the table, so one long value cannot sink the w
   const many = normalizeMetrics(Array.from({ length: 12 }, () => ({ kind: "steps", target: 8000, hero: true })));
   assertEquals(many.length, 5);
   assertEquals(many.filter((m) => m.is_hero).length, 1);
+});
+
+Deno.test("the kinds that name one exercise: the app save and the weekly job resolve the same ones", () => {
+  assertEquals(namesAnExercise("lift_e1rm"), true);
+  assertEquals(namesAnExercise("distance"), true);
+  assertEquals(namesAnExercise("duration"), true);
+  for (const k of ["bodyweight", "steps", "sets_per_muscle", "custom", "sleep_hours"] as const) assertEquals(namesAnExercise(k), false);
 });

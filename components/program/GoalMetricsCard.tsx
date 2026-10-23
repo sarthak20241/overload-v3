@@ -134,11 +134,7 @@ export function GoalMetricsCard({ chartWidth }: Props) {
                   width={chartWidth}
                   points={series.points.length > 0 ? series.points : [{ x: Math.max(0, daysIn / 7), y: cur! }]}
                   weeks={weeks}
-                  phaseEndWeek={phaseEnd}
-                  phaseTarget={metric.target_value}
-                  phaseTargetLabel={`${formatMetricValue(metric.kind, metric.target_value, metric.unit)} by wk ${phaseEnd}`}
-                  goalTarget={metric.kind === 'bodyweight' ? program.target_weight_kg : null}
-                  goalLabel={metric.kind === 'bodyweight' && program.target_weight_kg != null ? `${program.target_weight_kg} kg` : undefined}
+                  endTarget={metric.kind === 'bodyweight' && program.target_weight_kg != null ? program.target_weight_kg : metric.target_value}
                 />
               )
             ) : (

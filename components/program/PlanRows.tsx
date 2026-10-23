@@ -82,10 +82,12 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
   const { C } = useTheme();
   const router = useRouter();
   const statusColor = useStatusColor();
-  const rows: { pillar: Pillar; icon: 'activity' | 'coffee' | 'moon'; title: string }[] = [
-    { pillar: 'train', icon: 'activity', title: 'Train' },
-    { pillar: 'eat', icon: 'coffee', title: 'Eat' },
-    { pillar: 'recover', icon: 'moon', title: 'Recover' },
+  // The approved reference's thin outline icons (Ionicons ships with
+  // @expo/vector-icons, so no native change).
+  const rows: { pillar: Pillar; icon: 'barbell-outline' | 'restaurant-outline' | 'moon-outline'; title: string }[] = [
+    { pillar: 'train', icon: 'barbell-outline', title: 'Train' },
+    { pillar: 'eat', icon: 'restaurant-outline', title: 'Eat' },
+    { pillar: 'recover', icon: 'moon-outline', title: 'Recover' },
   ];
   const open = (pillar: Pillar) => {
     track('program_pillar_opened', { pillar, seq: phase.seq, from });
@@ -95,7 +97,7 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
     <View>
       {heading && (
         <Stagger index={staggerFrom}>
-          <Text style={[T.cardTitle, { color: C.foreground, marginBottom: S.md }]}>Your plan</Text>
+          <Text style={[T.heading, { color: C.foreground, marginBottom: S.md }]}>Your plan</Text>
         </Stagger>
       )}
       {!heading && <SectionLabel style={{ marginBottom: S.md }}>Your plan</SectionLabel>}
@@ -104,8 +106,9 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
         return (
           <Stagger key={pillar} index={staggerFrom + 1 + i}>
             <Row
-              icon={icon}
+              ionIcon={icon}
               title={title}
+              minHeight={64}
               first={i === 0}
               last={i === rows.length - 1}
               onPress={() => open(pillar)}
@@ -113,7 +116,13 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
               subtitle={(
                 <>
                   {s.text}
-                  {s.status ? <Text style={{ color: statusColor(statusTone(s.status)), fontWeight: FontWeight.semibold }}>{` · ${STATUS_LABEL[s.status]}`}</Text> : null}
+                  {/* Calm by default: a good or neutral status reads in the
+                      same muted colour; only a problem (Slipping, Behind) gets colour. */}
+                  {s.status ? (
+                    <Text style={statusTone(s.status) === 'warn' ? { color: statusColor('warn'), fontWeight: FontWeight.medium } : null}>
+                      {` · ${STATUS_LABEL[s.status]}`}
+                    </Text>
+                  ) : null}
                 </>
               )}
             />

@@ -148,6 +148,15 @@ const finite = (v: unknown): number | null =>
 const text = (v: unknown): string | undefined =>
   typeof v === 'string' && v.trim().length > 0 ? v.trim().slice(0, MAX_TEXT) : undefined;
 
+/**
+ * The kinds a metric can tie to one exercise by name (a lift, a run, a
+ * plank). The app's save and the weekly job both resolve the name to an
+ * exercise id for exactly these, so the two never drift apart.
+ */
+export function namesAnExercise(kind: MetricKind): boolean {
+  return kind === 'lift_e1rm' || kind === 'distance' || kind === 'duration';
+}
+
 export function isMetricKind(v: unknown): v is MetricKind {
   return typeof v === 'string' && (METRIC_KINDS as readonly string[]).includes(v);
 }

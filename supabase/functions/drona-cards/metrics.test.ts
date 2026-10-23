@@ -18,7 +18,8 @@ function fakeDb(script: Record<string, Answer[]>, failWrite: (w: Written) => str
     const eqs: [string, unknown][] = [];
     const b: Record<string, unknown> = {};
     const self = () => b;
-    for (const m of ["select", "in", "gte", "lte", "lt", "gt", "order", "limit", "maybeSingle", "not", "range"]) b[m] = self;
+    for (const m of ["select", "in", "gte", "lt", "gt", "order", "limit", "maybeSingle", "not", "range"]) b[m] = self;
+    b.lte = (k: string, v: unknown) => { eqs.push([`lte:${k}`, v]); return b; };
     b.eq = (k: string, v: unknown) => { eqs.push([k, v]); return b; };
     b.is = (k: string, v: unknown) => { eqs.push([`is:${k}`, v]); return b; };
     b.neq = (k: string, v: unknown) => { eqs.push([`neq:${k}`, v]); return b; };
@@ -91,7 +92,7 @@ Deno.test("a clean week writes every metric and the coach line", async () => {
   assertEquals(metricWrites.every((w) => typeof w.patch.checked_at === "string" && w.patch.checked_week === WEEK), true);
   const line = writes.find((w) => w.table === "coach_program_phases");
   assertEquals(line?.patch.coach_line, "On pace. Protein is the one slipping; three of five days hit.");
-  assertEquals(line?.eq, [["id", "ph0"]]);
+  assertEquals(line?.eq, [["id", "ph0"], ["user_id", "user-1"]]);
 });
 
 Deno.test("a source that fails to read leaves its metric untouched, the rest are written, the line waits", async () => {
@@ -404,7 +405,11 @@ Deno.test("each custom metric reads its own latest log", async () => {
   });
   assertEquals(await metricsStep(db, "user-1", DAY, WEEK, ""), { checked: 2, line: false });
   const logReads = reads.filter((r) => r.table === "coach_program_phase_metric_logs");
-  assertEquals(logReads.map((r) => r.eq), [[["user_id", "user-1"], ["metric_id", "m-a"]], [["user_id", "user-1"], ["metric_id", "m-b"]]]);
+  // Only logs up to today: a future-dated log (written straight to the table) never becomes the reading.
+  assertEquals(logReads.map((r) => r.eq), [
+    [["user_id", "user-1"], ["metric_id", "m-a"], ["lte:logged_on", DAY]],
+    [["user_id", "user-1"], ["metric_id", "m-b"], ["lte:logged_on", DAY]],
+  ]);
   const values = writes.filter((w) => "status" in w.patch).map((w) => [w.eq[0][1], w.patch.current_value]);
   assertEquals(values, [["m-a", 12], ["m-b", 6]]);
 });

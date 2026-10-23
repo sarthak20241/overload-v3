@@ -247,6 +247,17 @@ phase and pillar screens paint at once from it and refresh on focus, the
 Goal screen warms Train/Eat/Recover for the current phase, and every write
 to the program or a phase's routines invalidates it.
 
+Main screen matched to the reference (2026-10-23, user feedback "doesn't look
+like the thing we planned"): calmer type (title 28/700, phase name 22/600,
+"Your plan" 24/600, row titles 18/500, row lines 15/400, the hero number
+44/700 the one heavy element); the chart is one smooth line from the first
+reading, readings across at least 58% of the width, a faint lime fill, a solid
+dot at now, a dashed line to a hollow ring at the goal, nothing else; "59 kg"
+not "59.0 kg"; thin outline Ionicons on the plan rows (barbell, knife and fork,
+moon); status words muted unless Slipping or Behind (amber); the phase card
+surface 20/20; the focus is one clause on at most two lines with a lime
+sparkle; the one action pinned above the home indicator (56 tall, radius 18).
+
 The program's objective sits under "Week N of M · Ends …": one muted
 paragraph (15/21), two lines with an inline lime "More", "Less" to close.
 Hidden when empty.

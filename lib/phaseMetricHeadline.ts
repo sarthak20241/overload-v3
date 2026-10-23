@@ -101,7 +101,17 @@ export function focusFromCoachLine(line: string): string {
   if (sentences.length <= 1) return sentences[0] ?? line;
   const restates = /^(on track|on pace|behind|a little behind|close|slipping|ahead|right on|good week|steady)\b/i;
   const first = sentences[0];
-  return restates.test(first) && first.length < 48 ? sentences[1] : first;
+  return firstClause(restates.test(first) && first.length < 48 ? sentences[1] : first);
+}
+
+/** Over this many characters, the focus keeps only the clause before a semicolon: two lines, whole. */
+const FOCUS_MAX = 70;
+
+/** A long sentence's first clause (up to ";"), ended with a full stop; a short one as it is. */
+function firstClause(s: string): string {
+  if (s.length <= FOCUS_MAX) return s;
+  const i = s.indexOf(';');
+  return i > 12 ? `${s.slice(0, i).trimEnd()}.` : s;
 }
 
 /** What a metric is about, said first on a plan row where the words alone would not say it. */
