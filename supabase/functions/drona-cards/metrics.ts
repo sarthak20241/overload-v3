@@ -326,11 +326,14 @@ export async function metricsStep(
       db.from("coach_program_phases").update({ coach_line: answer.line }).eq("id", phase.id)
     );
     if (lineErr) return { checked, line: false, error: `line: ${lineErr.message}` };
-    // A clean line clears the retry ledger.
+    // A clean line clears the retry ledger. A failed clear leaves a stale
+    // count for this week only (the next week starts its own); it is named
+    // in the run summary rather than dropped.
     if (rows.some((r) => (num(r.retry_tries) ?? 0) > 0)) {
-      await retried(() =>
+      const { error: clearErr } = await retried(() =>
         db.from("coach_program_phase_metrics").update({ retry_tries: 0, retry_week: weekStart }).eq("user_id", userId).eq("phase_id", phase.id)
       );
+      if (clearErr) return { checked, line: true, error: `ledger clear failed: ${clearErr.message}` };
     }
     return { checked, line: true };
   } catch (e) {

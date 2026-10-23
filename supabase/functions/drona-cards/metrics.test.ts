@@ -10,7 +10,7 @@ type Answer = { data: unknown; error: { message: string } | null };
 interface Written { table: string; patch: Record<string, unknown>; eq: [string, unknown][] }
 interface Read { table: string; eq: [string, unknown][] }
 
-function fakeDb(script: Record<string, Answer[]>) {
+function fakeDb(script: Record<string, Answer[]>, failWrite: (w: Written) => string | null = () => null) {
   const writes: Written[] = [];
   const reads: Read[] = [];
   const from = (table: string) => {
@@ -27,8 +27,11 @@ function fakeDb(script: Record<string, Answer[]>) {
     b.or = (f: string) => { eqs.push(["or", f]); return b; };
     b.then = (resolve: (a: Answer) => unknown) => {
       if (patch) {
-        writes.push({ table, patch, eq: [...eqs] });
-        return Promise.resolve({ data: null, error: null }).then(resolve);
+        const w = { table, patch, eq: [...eqs] };
+        writes.push(w);
+        const msg = failWrite(w);
+        // status 400: a hard failure, so retried() does not repeat it.
+        return Promise.resolve({ data: null, error: msg ? { message: msg } : null, status: msg ? 400 : 204 }).then(resolve);
       }
       reads.push({ table, eq: [...eqs] });
       const queue = script[table] ?? [];
@@ -456,4 +459,22 @@ Deno.test("the active phase already checked this week still stamps the other pha
   assertEquals(typeof stamp?.patch.checked_week, "string");
   // The checked phase itself is left alone.
   assertEquals(writes.some((w) => w.eq.some(([k, v]) => k === "phase_id" && v === "ph0")), false);
+});
+
+Deno.test("a clean line whose ledger clear fails says so, so the stale count is not silent", async () => {
+  const tried = rows.map((r) => ({ ...r, checked_week: null, retry_tries: 1, retry_week: WEEK }));
+  const { db } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: tried, error: null }],
+    daily_metrics: [{ data: { value: 71.4 }, error: null }],
+    user_nutrition_stats: [{ data: [{ protein_g: 155 }], error: null }],
+  }, (w) => (w.patch.retry_tries === 0 ? "permission denied" : null));
+  const ok = (() => Promise.resolve(new Response(JSON.stringify({
+    content: [{ type: "tool_use", name: "phase_line", input: { line: "On pace. Keep the protein steady." } }],
+  }), { status: 200 }))) as unknown as typeof fetch;
+  const out = await metricsStep(db, "user-1", DAY, WEEK, "key", ok);
+  // The line is written; the failed clear is named, not dropped.
+  assertEquals([out.checked, out.line], [2, true]);
+  assertEquals(out.error, "ledger clear failed: permission denied");
 });
