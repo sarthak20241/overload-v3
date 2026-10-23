@@ -116,6 +116,7 @@ export function NutritionTrendsCard() {
         <Key color={C.macro.calories} label="In range" C={C} />
         <Key color={C.warningText} label="Over" C={C} />
         <Key color={C.textDim} label="Under" C={C} />
+        <Key color={tint(C.macro.calories, 0.45)} label="Today so far" C={C} />
       </View>
 
       <Text style={[s.caption, { color: C.textDim, borderTopColor: C.borderSubtle }]}>

@@ -4,7 +4,7 @@
  * shows as a taller band. Tap a bar for its day and numbers. The y axis starts
  * at zero, so bar height is the real amount eaten.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, type GestureResponderEvent } from 'react-native';
 import Svg, { G, Rect, Line } from 'react-native-svg';
 import { FontWeight } from '@/constants/theme';
@@ -40,6 +40,8 @@ export function CalorieBarChart({ bars, width, height, colors }: {
   colors: CalorieBarColors;
 }) {
   const [active, setActive] = useState<number | null>(null);
+  // A different set of days: an old selection would point at another bar.
+  useEffect(() => { setActive(null); }, [bars.length]);
   if (bars.length === 0) return null;
 
   const plotH = height - LABEL_H - TOP_PAD;
