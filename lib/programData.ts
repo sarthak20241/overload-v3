@@ -24,7 +24,7 @@ import {
   clampCardioSessions, clampStepsTarget, hasActivityGoals, normalizeActivityGoals, type ActivityGoals,
 } from '@/lib/activityGoals';
 import { track } from '@/lib/analytics';
-import { missingColumn, missingTable, withoutColumns } from '@/lib/missingColumn';
+import { missingColumn, missingTable, nextColumnSet, withoutColumns } from '@/lib/missingColumn';
 import { fetchShared, invalidateUserProgram, peek } from '@/lib/screenCache';
 import { programGoalFor } from '@/lib/fitnessGoals';
 import {
@@ -796,16 +796,18 @@ export function invalidateProgram(clerkId: string): void {
 const PROGRAM_COLS = 'id, title, objective, goal, target_weight_kg, target_date, start_date, total_weeks, applied_phase_seq';
 const PHASE_BASE_COLS = 'id, seq, name, duration_weeks, start_offset_weeks, diet_calorie_target, diet_protein_g, diet_carb_g, diet_fat_g, diet_directive, training_directive, readiness_directive, training_block, routine_id';
 /**
- * The phase column sets, widest first, in migration order; each step drops
- * the columns a database one migration older does not have. Postgres names
- * only the first missing column, so a database missing several reports the
- * newest-but-one, and each step covers it.
+ * The phase column sets, widest first, in migration order; each drops the
+ * columns a database one migration older does not have. Postgres names only
+ * the FIRST missing column in select-list order, so a database missing
+ * several names an older one; nextColumnSet skips straight to the first set
+ * without it (tested in lib/missingColumn.test.ts).
  */
-const PHASE_COL_SETS: { cols: string; dropsNext: readonly string[] }[] = [
-  { cols: `${PHASE_BASE_COLS}, diet_fuel_days, ${ACTIVITY_COLS.join(', ')}, ${JOB_COLS.join(', ')}`, dropsNext: JOB_COLS },
-  { cols: `${PHASE_BASE_COLS}, diet_fuel_days, ${ACTIVITY_COLS.join(', ')}`, dropsNext: ACTIVITY_COLS },
-  { cols: `${PHASE_BASE_COLS}, diet_fuel_days`, dropsNext: ['diet_fuel_days'] },
-  { cols: PHASE_BASE_COLS, dropsNext: [] },
+const PHASE_BASE_LIST = PHASE_BASE_COLS.split(', ');
+const PHASE_COL_SETS: readonly (readonly string[])[] = [
+  [...PHASE_BASE_LIST, 'diet_fuel_days', ...ACTIVITY_COLS, ...JOB_COLS],
+  [...PHASE_BASE_LIST, 'diet_fuel_days', ...ACTIVITY_COLS],
+  [...PHASE_BASE_LIST, 'diet_fuel_days'],
+  PHASE_BASE_LIST,
 ];
 /** The widest phase column set this database has answered; later reads start there, so an older database costs the extra trip once. */
 let phaseColLevel = 0;
@@ -824,19 +826,20 @@ async function loadActiveProgramFast(supabase: Supa, clerkId: string): Promise<A
     (e) => { console.warn('[programs] metrics read failed; program loaded without them', e); return new Map<string, MetricRowWithLog[]>(); },
   );
   let tree: Record<string, unknown> | null = null;
-  for (let lvl = phaseColLevel; ; lvl++) {
+  for (let lvl = phaseColLevel; ;) {
     const set = PHASE_COL_SETS[lvl];
     // routines!program_phase_id: phases and routines point at each other
     // twice (routines.program_phase_id and coach_program_phases.routine_id),
     // so the embed names the link it means.
     const { data, error } = await supabase
       .from('coach_programs')
-      .select(`${PROGRAM_COLS}, coach_program_phases(${set.cols}, routines!program_phase_id(id, name, created_at))`)
+      .select(`${PROGRAM_COLS}, coach_program_phases(${set.join(', ')}, routines!program_phase_id(id, name, created_at))`)
       .eq('user_id', clerkId)
       .eq('status', 'active')
       .maybeSingle();
     if (!error) { phaseColLevel = lvl; tree = data as Record<string, unknown> | null; break; }
-    if (set.dropsNext.length > 0 && missingColumn(error, set.dropsNext)) continue;
+    const next = nextColumnSet(error, PHASE_COL_SETS, lvl);
+    if (next != null) { lvl = next; continue; }
     if (relationshipError(error)) {
       console.warn('[programs] embedded program read not available; reading step by step', error);
       return loadActiveProgramSteps(supabase, clerkId);

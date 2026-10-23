@@ -39,3 +39,24 @@ export function withoutColumns<T extends Record<string, unknown>>(rows: T[], col
     return out as T;
   });
 }
+
+/**
+ * For a read that tries column sets widest first: the index of the next set
+ * to try after `err` at set `from`, or null when there is none to try.
+ * Postgres names only the FIRST missing column in select-list order, so a
+ * database missing several new columns names an older one; this skips to
+ * the first later set that no longer has the named column, instead of
+ * stepping one set at a time and failing on a column that step did not drop.
+ */
+export function nextColumnSet(err: unknown, sets: readonly (readonly string[])[], from: number): number | null {
+  const e = err as { code?: string; message?: string } | null;
+  if (!e || (e.code !== '42703' && e.code !== 'PGRST204')) return null;
+  // The exact column, never a substring match ('id' must not match 'routine_id').
+  const msg = e.message ?? '';
+  const col = /column (?:"?\w+"?\.)?"?(\w+)"? does not exist/.exec(msg)?.[1] ?? /'(\w+)' column/.exec(msg)?.[1];
+  if (!col || !(sets[from] ?? []).includes(col)) return null;
+  for (let i = from + 1; i < sets.length; i++) {
+    if (!sets[i].includes(col)) return i;
+  }
+  return null;
+}

@@ -130,10 +130,12 @@ export default function GoalPlanScreen() {
     const seq = ++loadSeq.current;
     if (!supabase || !clerkId) { setProgram(null); setLoading(false); setRefreshing(false); return; }
     try {
-      const [p, lv] = await Promise.all([loadActiveProgram(supabase, clerkId), loadLiveReadings(supabase, clerkId)]);
+      // A failed live read keeps the readings the screen had; only the
+      // program read can fail the load.
+      const [p, lv] = await Promise.all([loadActiveProgram(supabase, clerkId), loadLiveReadings(supabase, clerkId).catch(() => null)]);
       if (seq !== loadSeq.current) return;
       setProgram(p);
-      setLive(lv);
+      if (lv) setLive(lv);
       setLoadFailed(false);
       // Warm Train, Eat and Recover for the phase the plan rows open, so a
       // tap paints from the cache instead of waiting on four more reads.

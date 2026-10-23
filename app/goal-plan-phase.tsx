@@ -55,15 +55,17 @@ export default function GoalPlanPhaseScreen() {
       // All side by side: the program, today's vitals (readiness for the
       // Recover row) and the live readings, each shared with the other
       // Goal & Plan screens through the cache.
+      // A failed side read keeps what the screen had; only the program read
+      // can fail the load.
       const [p, vitals, lv] = await Promise.all([
         loadActiveProgram(supabase, clerkId),
-        sharedTodayVitals(supabase, clerkId),
-        loadLiveReadings(supabase, clerkId),
+        sharedTodayVitals(supabase, clerkId).catch(() => null),
+        loadLiveReadings(supabase, clerkId).catch(() => null),
       ]);
       if (n !== loadSeq.current) return;
       setProgram(p);
-      setReadinessToday(vitals.readiness);
-      setLive(lv);
+      if (vitals) setReadinessToday(vitals.readiness);
+      if (lv) setLive(lv);
       setLoadFailed(false);
     } catch (e) {
       // Keep what we had; with nothing yet, say the load failed rather than "no program".

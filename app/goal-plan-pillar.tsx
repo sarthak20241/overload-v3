@@ -129,14 +129,21 @@ export default function GoalPlanPillarScreen() {
       const ids = phaseFor(p, seqAsked)?.routines.map((x) => x.id) ?? [];
       if (pillar === 'train') {
         const same = known != null && known.join(',') === ids.join(',');
-        const [w, r] = await Promise.all([weekP!, same && routinesP ? routinesP : sharedRoutineSummaries(supabase, clerkId, ids)]);
+        // A side read that fails keeps what the screen had (and is not
+        // cached); it is read again on the next focus or pull.
+        const [w, r] = await Promise.all([
+          weekP!.catch(() => null),
+          (same && routinesP ? routinesP : sharedRoutineSummaries(supabase, clerkId, ids)).catch(() => null),
+        ]);
         if (n !== loadSeq.current) return;
-        setWeek(w); setRoutines(r);
+        if (w) setWeek(w);
+        if (r) setRoutines(r);
       } else if (pillar === 'recover') {
-        const [ns, v] = await Promise.all([nightsP!, vitalsP!]);
+        const [ns, v] = await Promise.all([nightsP!.catch(() => null), vitalsP!.catch(() => null)]);
         if (n !== loadSeq.current) return;
-        setNights(ns); setVitals(v);
-        if (!v.anyHealthData) {
+        if (ns) setNights(ns);
+        if (v) setVitals(v);
+        if (v && !v.anyHealthData) {
           const status = await getHealthConnectionStatus(clerkId).catch(() => 'unknown' as const);
           if (n === loadSeq.current) setHealthConnected(status === 'granted');
         }

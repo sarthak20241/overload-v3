@@ -49,28 +49,25 @@ export interface WeekSessions {
 /** This local week's finished sessions, Monday first. */
 export async function loadWeekSessions(supabase: SupabaseClient, clerkId: string): Promise<WeekSessions> {
   const empty: WeekSessions = { doneByDay: Array.from({ length: 7 }, () => null), count: 0 };
-  try {
-    const monday = mondayOfLocal(todayLocalISO());
-    const [y, m, d] = monday.split('-').map((n) => parseInt(n, 10));
-    const sinceISO = new Date(y, m - 1, d).toISOString();
-    const { data } = await supabase
-      .from('workouts')
-      .select('name, started_at, finished_at')
-      .eq('user_id', clerkId)
-      .not('finished_at', 'is', null)
-      .gte('started_at', sinceISO)
-      .order('started_at', { ascending: true });
-    const out = { ...empty, doneByDay: [...empty.doneByDay] };
-    for (const w of (data ?? []) as { name: string | null; started_at: string }[]) {
-      const day = weekdayIndex(localISO(new Date(w.started_at)));
-      if (day < 0 || day > 6) continue;
-      if (out.doneByDay[day] == null) out.doneByDay[day] = w.name ?? '';
-      out.count += 1;
-    }
-    return out;
-  } catch {
-    return empty;
+  const monday = mondayOfLocal(todayLocalISO());
+  const [y, m, d] = monday.split('-').map((n) => parseInt(n, 10));
+  const sinceISO = new Date(y, m - 1, d).toISOString();
+  const { data, error } = await supabase
+    .from('workouts')
+    .select('name, started_at, finished_at')
+    .eq('user_id', clerkId)
+    .not('finished_at', 'is', null)
+    .gte('started_at', sinceISO)
+    .order('started_at', { ascending: true });
+  if (error) throw error;
+  const out = { ...empty, doneByDay: [...empty.doneByDay] };
+  for (const w of (data ?? []) as { name: string | null; started_at: string }[]) {
+    const day = weekdayIndex(localISO(new Date(w.started_at)));
+    if (day < 0 || day > 6) continue;
+    if (out.doneByDay[day] == null) out.doneByDay[day] = w.name ?? '';
+    out.count += 1;
   }
+  return out;
 }
 
 export interface RoutineSummary {
@@ -82,17 +79,14 @@ export interface RoutineSummary {
 /** The phase's routines with how many exercises each holds. */
 export async function loadRoutineSummaries(supabase: SupabaseClient, routineIds: string[]): Promise<RoutineSummary[]> {
   if (routineIds.length === 0) return [];
-  try {
-    const { data } = await supabase
-      .from('routines')
-      .select('id, name, created_at, routine_exercises(id)')
-      .in('id', routineIds)
-      .order('created_at', { ascending: true });
-    return ((data ?? []) as { id: string; name: string; routine_exercises: { id: string }[] | null }[])
-      .map((r) => ({ id: r.id, name: r.name, exercises: r.routine_exercises?.length ?? 0 }));
-  } catch {
-    return [];
-  }
+  const { data, error } = await supabase
+    .from('routines')
+    .select('id, name, created_at, routine_exercises(id)')
+    .in('id', routineIds)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return ((data ?? []) as { id: string; name: string; routine_exercises: { id: string }[] | null }[])
+    .map((r) => ({ id: r.id, name: r.name, exercises: r.routine_exercises?.length ?? 0 }));
 }
 
 export interface Night {
@@ -107,21 +101,18 @@ export async function loadLastNights(supabase: SupabaseClient, clerkId: string, 
   const today = todayLocalISO();
   const days = Array.from({ length: nights }, (_, i) => addDaysLocal(today, i - (nights - 1)));
   const out: Night[] = days.map((day) => ({ day, hours: null }));
-  try {
-    const { data } = await supabase
-      .from('daily_metrics')
-      .select('metric_date, value')
-      .eq('user_id', clerkId)
-      .eq('metric_type', 'sleep_minutes')
-      .gte('metric_date', days[0])
-      .lte('metric_date', today);
-    for (const r of (data ?? []) as { metric_date: string; value: number }[]) {
-      const n = out.find((x) => x.day === r.metric_date);
-      const v = Number(r.value);
-      if (n && Number.isFinite(v) && v > 0) n.hours = Math.round((v / 60) * 10) / 10;
-    }
-  } catch {
-    /* empty nights */
+  const { data, error } = await supabase
+    .from('daily_metrics')
+    .select('metric_date, value')
+    .eq('user_id', clerkId)
+    .eq('metric_type', 'sleep_minutes')
+    .gte('metric_date', days[0])
+    .lte('metric_date', today);
+  if (error) throw error;
+  for (const r of (data ?? []) as { metric_date: string; value: number }[]) {
+    const n = out.find((x) => x.day === r.metric_date);
+    const v = Number(r.value);
+    if (n && Number.isFinite(v) && v > 0) n.hours = Math.round((v / 60) * 10) / 10;
   }
   return out;
 }
@@ -129,8 +120,8 @@ export async function loadLastNights(supabase: SupabaseClient, clerkId: string, 
 /**
  * The live readings every screen falls back to when a metric has no job
  * reading yet (lib/phaseMetricHeadline.ts): sessions since Monday and the
- * sleep average of the last seven nights. Both loaders swallow their own
- * errors, so this never throws.
+ * sleep average of the last seven nights. Throws when either read fails;
+ * callers keep the readings they had.
  */
 export async function loadLiveReadings(supabase: SupabaseClient, clerkId: string): Promise<LiveReadings> {
   const [week, nights] = await Promise.all([sharedWeekSessions(supabase, clerkId), sharedLastNights(supabase, clerkId)]);
@@ -155,30 +146,27 @@ export interface TodayVitals {
 export async function loadTodayVitals(supabase: SupabaseClient, clerkId: string): Promise<TodayVitals> {
   const today = todayLocalISO();
   const out: TodayVitals = { readiness: null, rhr: null, hrv: null, anyHealthData: false };
-  try {
-    const { data } = await supabase
-      .from('daily_metrics')
-      .select('metric_type, metric_date, value')
-      .eq('user_id', clerkId)
-      .in('metric_type', ['readiness_score', 'resting_hr_bpm', 'hrv_sdnn_ms', 'sleep_minutes'])
-      .gte('metric_date', addDaysLocal(today, -28))
-      .lte('metric_date', today);
-    const rows = (data ?? []) as { metric_type: string; metric_date: string; value: number }[];
-    out.anyHealthData = rows.length > 0;
-    const vital = (type: string): Vital | null => {
-      const todayRow = rows.find((r) => r.metric_type === type && r.metric_date === today);
-      if (!todayRow || !Number.isFinite(Number(todayRow.value))) return null;
-      const past = rows.filter((r) => r.metric_type === type && r.metric_date !== today).map((r) => Number(r.value)).filter((v) => Number.isFinite(v) && v > 0);
-      const usual = past.length >= 5 ? past.reduce((a, b) => a + b, 0) / past.length : null;
-      return { value: Number(todayRow.value), usual };
-    };
-    const r = rows.find((x) => x.metric_type === 'readiness_score' && x.metric_date === today);
-    out.readiness = r && Number.isFinite(Number(r.value)) ? Number(r.value) : null;
-    out.rhr = vital('resting_hr_bpm');
-    out.hrv = vital('hrv_sdnn_ms');
-  } catch {
-    /* nothing today */
-  }
+  const { data, error } = await supabase
+    .from('daily_metrics')
+    .select('metric_type, metric_date, value')
+    .eq('user_id', clerkId)
+    .in('metric_type', ['readiness_score', 'resting_hr_bpm', 'hrv_sdnn_ms', 'sleep_minutes'])
+    .gte('metric_date', addDaysLocal(today, -28))
+    .lte('metric_date', today);
+  if (error) throw error;
+  const rows = (data ?? []) as { metric_type: string; metric_date: string; value: number }[];
+  out.anyHealthData = rows.length > 0;
+  const vital = (type: string): Vital | null => {
+    const todayRow = rows.find((r) => r.metric_type === type && r.metric_date === today);
+    if (!todayRow || !Number.isFinite(Number(todayRow.value))) return null;
+    const past = rows.filter((r) => r.metric_type === type && r.metric_date !== today).map((r) => Number(r.value)).filter((v) => Number.isFinite(v) && v > 0);
+    const usual = past.length >= 5 ? past.reduce((a, b) => a + b, 0) / past.length : null;
+    return { value: Number(todayRow.value), usual };
+  };
+  const r = rows.find((x) => x.metric_type === 'readiness_score' && x.metric_date === today);
+  out.readiness = r && Number.isFinite(Number(r.value)) ? Number(r.value) : null;
+  out.rhr = vital('resting_hr_bpm');
+  out.hrv = vital('hrv_sdnn_ms');
   return out;
 }
 
@@ -240,11 +228,13 @@ export function peekLiveReadings(clerkId: string | null): LiveReadings | null {
  * Warm the pillar screens for a phase: this week's sessions, the last seven
  * nights, today's vitals, and the phase's routine summaries, all at once, and
  * only the ones the cache does not hold yet (the screens refresh on focus).
- * Fire and forget; every loader swallows its own errors.
+ * Fire and forget: a failed read is simply not cached, and the screen reads
+ * it again when it opens.
  */
 export function prefetchPillars(s: SupabaseClient, clerkId: string, routineIds: string[]): void {
-  if (peekWeekSessions(clerkId) === undefined) void sharedWeekSessions(s, clerkId);
-  if (peekLastNights(clerkId) === undefined) void sharedLastNights(s, clerkId);
-  if (peekTodayVitals(clerkId) === undefined) void sharedTodayVitals(s, clerkId);
-  if (routineIds.length > 0 && peekRoutineSummaries(clerkId, routineIds) === undefined) void sharedRoutineSummaries(s, clerkId, routineIds);
+  const quiet = (p: Promise<unknown>) => { p.catch(() => {}); };
+  if (peekWeekSessions(clerkId) === undefined) quiet(sharedWeekSessions(s, clerkId));
+  if (peekLastNights(clerkId) === undefined) quiet(sharedLastNights(s, clerkId));
+  if (peekTodayVitals(clerkId) === undefined) quiet(sharedTodayVitals(s, clerkId));
+  if (routineIds.length > 0 && peekRoutineSummaries(clerkId, routineIds) === undefined) quiet(sharedRoutineSummaries(s, clerkId, routineIds));
 }

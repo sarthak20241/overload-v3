@@ -4468,7 +4468,10 @@ export function AICoachModal({
 
     // Resolve all exercises in parallel — each one does select + optional insert + link insert.
     // Drops save time from N*(2-3) sequential round trips to ~3 round trips total.
-    await Promise.all(workout.exercises.map(async (ex, i) => {
+    // allSettled, not all: every link write has finished (landed or failed)
+    // before the Goal & Plan cache is dropped again below, so no screen keeps
+    // a snapshot read while the links were still landing.
+    const linked = await Promise.allSettled(workout.exercises.map(async (ex, i) => {
       // Case-insensitive find, oldest row first — .single() would error when a
       // global library row and a same-named custom both match (legal scopes
       // under migration 0037's unique indexes). Escaped so % and _ in the
@@ -4527,6 +4530,9 @@ export function AICoachModal({
       const linkErr = await writeWithTargetFallback(link);
       if (linkErr) throw linkErr;
     }));
+    if (phaseId && clerkId) invalidateUserProgram(clerkId);
+    const failed = linked.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failed) throw failed.reason;
   };
 
   const handleSaveRoutine = (workout: GeneratedWorkout) => {
