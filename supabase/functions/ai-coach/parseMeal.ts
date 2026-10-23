@@ -3307,10 +3307,16 @@ export function reconcileReadings(
 /**
  * Precise's web lookup for one food, on whichever provider deps selects.
  *
- * Tavily falls back to the Anthropic lookup ONLY when Tavily could not be used
- * at all (no key, auth, out of credits, down). "Searched and found nothing" is
- * an answer, not an outage: re-asking a second provider would double the cost
- * of every obscure food for the same null.
+ * Tavily falls back to the Anthropic lookup when Tavily could not be used at
+ * all (no key, auth, out of credits, down), and when it FOUND the food's label
+ * but could not read it: the reader agreed a page was this food, and the text
+ * Tavily handed over never said what its numbers were per. Seen live
+ * 2026-10-23: Instamart printed "per 250 ml" above an Epigamia shake's panel,
+ * Tavily's snippet cut it off, the label was dropped and the line became a
+ * guess, 150 kcal for a 141 kcal bottle; the user's own "check online" then
+ * ran this same Anthropic lookup and got it. "Searched and found nothing" is
+ * still an answer, not an outage: re-asking a second provider would double the
+ * cost of every obscure food for the same null.
  */
 async function webFindingFor(
   deps: ParseMealDeps,
@@ -3360,8 +3366,15 @@ async function webFindingFor(
     for (const st of out.steps) {
       onStep?.({ iter: 1, tool: st.tool, input: { item: item.name, ...(st.input as object) }, result: st.result });
     }
-    if (!out.unavailable) return out.finding ?? undefined;
-    onStep?.({ iter: 1, tool: "web_fallback", input: { item: item.name, from: "tavily" }, result: null });
+    if (!out.unavailable && (out.finding || !out.labelUnread?.length)) return out.finding ?? undefined;
+    onStep?.({
+      iter: 1,
+      tool: "web_fallback",
+      input: out.unavailable
+        ? { item: item.name, from: "tavily" }
+        : { item: item.name, from: "tavily_unread", sites: out.labelUnread },
+      result: null,
+    });
   }
   const found = await runSuperLookup(deps, [item], onUsage, onCall);
   return found?.get(item.name) ?? (found ? [...found.values()][0] : undefined);

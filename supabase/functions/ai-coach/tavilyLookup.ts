@@ -129,6 +129,10 @@ export interface TavilyLookupOutcome {
   /** Every search ran and none found a label for this food: "not found" is
    *  then a fact, not an outage. */
   searchedNoLabel?: boolean;
+  /** On a miss: sites where the reader agreed the page was this food but the
+   *  text it got (often a cut search snippet) never said what its numbers were
+   *  per. The label exists; this provider could not hand it over whole. */
+  labelUnread?: string[];
 }
 
 // ── Tuning ──────────────────────────────────────────────────────────────────
@@ -355,16 +359,37 @@ const round1 = (n: number) => Math.round(n * 10) / 10;
  * panel (usually per-pack numbers taken as per 100 g).
  */
 export function readingFromReport(r: PageReport, url: string): SourceReading | null {
-  if (!r.same_food || r.basis === "none") return null;
+  const out = readReport(r, url);
+  return "reading" in out ? out.reading : null;
+}
+
+/** Why a page's report did not become a reading. The first three mean the
+ *  reader agreed it is this food but the text never said what its numbers are
+ *  per (or carried none): the label exists and could not be read. */
+export type DropReason =
+  | "not_same_food"
+  | "no_basis"
+  | "no_kcal"
+  | "serving_no_grams"
+  | "kcal_too_high"
+  | "macros_over_100";
+
+/** A drop that means "right food, label not readable from this text". */
+export const UNREAD_LABEL: ReadonlySet<DropReason> = new Set(["no_basis", "no_kcal", "serving_no_grams"]);
+
+/** readingFromReport with the reason it said no. */
+export function readReport(r: PageReport, url: string): { reading: SourceReading } | { dropped: DropReason } {
+  if (!r.same_food) return { dropped: "not_same_food" };
+  if (r.basis === "none") return { dropped: "no_basis" };
   // kJ-only labels (common outside India) are converted here, never by the
   // reader: 1 kcal = 4.184 kJ.
   const kj = num(r.energy_kj);
   const kcal = num(r.kcal) ?? (kj === null ? null : kj / 4.184);
-  if (kcal === null) return null;
+  if (kcal === null) return { dropped: "no_kcal" };
   let factor = 1;
   if (r.basis === "per_serving") {
     const g = num(r.serving_grams);
-    if (g === null || g <= 0 || g > 2000) return null;
+    if (g === null || g <= 0 || g > 2000) return { dropped: "serving_no_grams" };
     factor = 100 / g;
   }
   const scale = (v: number | null) => (v === null ? null : round1(v * factor));
@@ -375,10 +400,10 @@ export function readingFromReport(r: PageReport, url: string): SourceReading | n
     fat_g: scale(num(r.fat_g)),
     fiber_g: scale(num(r.fiber_g)),
   };
-  if (per_100.kcal > 950) return null;
+  if (per_100.kcal > 950) return { dropped: "kcal_too_high" };
   const macroSum = (per_100.protein_g ?? 0) + (per_100.carb_g ?? 0) + (per_100.fat_g ?? 0);
-  if (macroSum > 105) return null;
-  return { source: providerFor(url), ref: url.slice(0, 500), via: "web_search", per_100 };
+  if (macroSum > 105) return { dropped: "macros_over_100" };
+  return { reading: { source: providerFor(url), ref: url.slice(0, 500), via: "web_search", per_100 } };
 }
 
 const brandWords = (s: string) =>
@@ -499,10 +524,24 @@ const READ_SYSTEM =
   "for THIS food: ignore columns that compare it to other foods or a category average, and % daily " +
   "value or %RDA columns. A text may hold two parts separated by ---; use the part for this food. " +
   "Set same_food false for a page about a different brand, variant or food. " +
+  "A page may also carry top, its opening words (product name, pack size, price). Copy numbers only from " +
+  "text. Use top only for serving_grams and serving_label, and only when the numbers in text are for one " +
+  "pack of this same product and top prints that pack's size. " +
   "food.as_eaten, when present, is how the user ate it: set same_food false when the numbers you would copy are " +
   "for a different state of the food (the dry or raw panel of a food eaten cooked, or the reverse).";
 
 // ── Orchestration ───────────────────────────────────────────────────────────
+
+/** A page handed to the reader: the panel text Jev chose, whether it came from
+ *  the page itself or only from Tavily's search snippet (a snippet can be cut
+ *  short: seen live, "per 250 ml" was trimmed off the top of a panel), and the
+ *  page's opening words when we hold the page. */
+interface ReadPage {
+  r: TavilyResult;
+  panel: string;
+  full: boolean;
+  heading: string | null;
+}
 
 /** A search result plus what we can see of the page, for Jev to judge. */
 interface Candidate {
@@ -687,7 +726,7 @@ async function selectPages(
   item: WebFoodItem,
   results: TavilyResult[],
   steps: LookupStep[],
-): Promise<{ pages: Array<{ r: TavilyResult; panel: string }>; credits: number; seen: SeenResult[] }> {
+): Promise<{ pages: ReadPage[]; credits: number; seen: SeenResult[] }> {
   let credits = 0;
   const cands: Candidate[] = [...results]
     .sort((a, b) => b.score - a.score)
@@ -730,8 +769,8 @@ async function selectPages(
     steps.push({ tool: "web_relevance", input: { mode: "fallback", why }, result: { kept: top.length } });
     await fillBlind(top);
     const pages = top
-      .map((c) => ({ r: c.r, panel: findPanelText(c.pieces.join(" ")) }))
-      .filter((x): x is { r: TavilyResult; panel: string } => !!x.panel);
+      .map((c) => ({ r: c.r, panel: findPanelText(c.pieces.join(" ")), full: c.full, heading: c.heading }))
+      .filter((x): x is ReadPage => !!x.panel);
     return { pages, credits, seen: seenOf() };
   };
 
@@ -761,18 +800,18 @@ async function selectPages(
     // and let the best-scoring window stand in for the piece choice.
     const pages = withPieces
       .filter((c) => (c.p ?? 0) >= RELEVANCE_FLOOR)
-      .map((c) => ({ r: c.r, panel: findPanelText(c.pieces.join(" ")) }))
-      .filter((x): x is { r: TavilyResult; panel: string } => !!x.panel);
+      .map((c) => ({ r: c.r, panel: findPanelText(c.pieces.join(" ")), full: c.full, heading: c.heading }))
+      .filter((x): x is ReadPage => !!x.panel);
     steps.push({ tool: "web_relevance", input: { mode: "jev", look: 2 }, result: { failure: "jev_failed", kept: pages.length } });
     return { pages, credits, seen: seenOf() };
   }
 
-  const pages: Array<{ r: TavilyResult; panel: string; p: number }> = [];
+  const pages: Array<ReadPage & { p: number }> = [];
   const trace: unknown[] = [];
   withPieces.forEach((c, i) => {
     const a = second[i];
     const text = (a.p ?? 0) >= RELEVANCE_FLOOR ? textForReader(c.pieces, a) : null;
-    if (text) pages.push({ r: c.r, panel: text, p: a.p ?? 0 });
+    if (text) pages.push({ r: c.r, panel: text, full: c.full, heading: c.heading, p: a.p ?? 0 });
     trace.push({
       site: hostOf(c.r.url),
       p: round2(a.p),
@@ -788,7 +827,7 @@ async function selectPages(
     result: trace,
   });
   pages.sort((a, b) => b.p - a.p);
-  return { pages: pages.map(({ r, panel }) => ({ r, panel })), credits, seen: seenOf() };
+  return { pages: pages.map(({ r, panel, full, heading }) => ({ r, panel, full, heading })), credits, seen: seenOf() };
 }
 
 /**
@@ -811,6 +850,9 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
   const seen = new Set<string>();
   const judged: SeenResult[] = [];
   const asked: string[] = [];
+  /** Sites where the reader agreed it was this food but the text never said
+   *  what its numbers were per (see UNREAD_LABEL). */
+  const unread = new Set<string>();
 
   /** One search, judged against `as`, read if anything survives. */
   const attempt = async (q: string, as: WebFoodItem): Promise<WebFinding | "unavailable" | null> => {
@@ -850,7 +892,7 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
       return null;
     }
 
-    const byId = new Map(withPanel.map((p, i) => [`p${i + 1}`, p.r.url]));
+    const byId = new Map(withPanel.map((p, i) => [`p${i + 1}`, p]));
     const data = await deps.callModel({
       model: deps.model,
       // 2000, not 1500: Haiku 5.5 counts the same text as ~30% more tokens.
@@ -862,7 +904,15 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
         role: "user",
         content: JSON.stringify({
           food: foodState(as),
-          pages: withPanel.map((p, i) => ({ page_id: `p${i + 1}`, site: hostOf(p.r.url), title: p.r.title, text: p.panel })),
+          pages: withPanel.map((p, i) => ({
+            page_id: `p${i + 1}`,
+            site: hostOf(p.r.url),
+            title: p.r.title,
+            // The page's opening words (product name, pack size) when we hold
+            // the page and they are not already inside the panel text.
+            ...(p.heading && !p.panel.includes(p.heading) ? { top: p.heading } : {}),
+            text: p.panel,
+          })),
         }),
       }],
     });
@@ -871,12 +921,19 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
 
     const readings: SourceReading[] = [];
     const pageBrands: string[] = [];
+    const dropped: Array<{ site: string; why: DropReason; from: "page" | "snippet" }> = [];
     let serving: { label: string; grams: number } | null = null;
     for (const rep of reports) {
-      const url = byId.get(rep.page_id);
-      if (!url) continue;
-      const reading = readingFromReport(rep, url);
-      if (!reading) continue;
+      const page = byId.get(rep.page_id);
+      if (!page) continue;
+      const url = page.r.url;
+      const read = readReport(rep, url);
+      if ("dropped" in read) {
+        dropped.push({ site: hostOf(url), why: read.dropped, from: page.full ? "page" : "snippet" });
+        if (UNREAD_LABEL.has(read.dropped)) unread.add(hostOf(url));
+        continue;
+      }
+      const reading = read.reading;
       readings.push(reading);
       if (rep.brand) pageBrands.push(rep.brand);
       if (!serving && rep.serving_label && rep.serving_grams && rep.serving_grams > 0 && rep.serving_grams <= 5000) {
@@ -889,6 +946,10 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
       result: {
         reported: reports.length,
         kept: readings.map((r) => ({ site: hostOf(r.ref), kcal: r.per_100.kcal })),
+        // Why each other page said no, and whether we read the page or only a
+        // search snippet. Without this a miss could only be explained by
+        // replaying the reader by hand.
+        ...(dropped.length ? { dropped } : {}),
       },
     });
     if (readings.length === 0) return null;
@@ -915,9 +976,16 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
     if (found) return { finding: found, credits, steps, unavailable: false };
   }
 
-  const missed = { finding: null, credits, steps, unavailable: false, searchedNoLabel: true };
+  const missedNow = () => ({
+    finding: null,
+    credits,
+    steps,
+    unavailable: false,
+    searchedNoLabel: true,
+    ...(unread.size ? { labelUnread: [...unread] } : {}),
+  });
   // No results at all leaves the rewrite nothing to learn from but the name.
-  if (!deps.suggestSearch || judged.length === 0) return missed;
+  if (!deps.suggestSearch || judged.length === 0) return missedNow();
   const raw = await deps.suggestSearch(item, judged.slice(0, MAX_SEEN_FOR_REWRITE)).catch(() => null);
   const rewrite = cleanRewrite(raw, item, asked);
   steps.push({
@@ -925,7 +993,7 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
     input: { seen: judged.length },
     result: rewrite ? { name: rewrite.name, queries: rewrite.queries } : { none: true },
   });
-  if (!rewrite) return missed;
+  if (!rewrite) return missedNow();
   // The same words with new searches is a retry, not a new name: nothing to
   // tell the catalog or decide.
   const differs = normName(rewrite.name) !== normName(foodLabel(item)) && normName(rewrite.name) !== normName(item.name);
@@ -951,7 +1019,7 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
       };
     }
   }
-  return { ...missed, ...(differs && ran ? { renamed: rewrite.name } : {}) };
+  return { ...missedNow(), ...(differs && ran ? { renamed: rewrite.name } : {}) };
 }
 
 const normName = (s: string) => s.toLowerCase().replace(/[^a-z0-9\u0900-\u097f]+/g, " ").trim();
