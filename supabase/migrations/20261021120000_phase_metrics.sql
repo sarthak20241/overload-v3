@@ -29,9 +29,16 @@
 -- new tables cascade from it (metrics from the phase, logs from the metric),
 -- so the function body is left as it is.
 --
--- After apply_migration of a NEW table, run:  notify pgrst, 'reload schema';
--- (PostgREST does not see a new table until it reloads its schema cache.)
--- The migration is applied by the user, not by a session. NOT YET APPLIED.
+-- PostgREST does not see a new table until it reloads its schema cache, so the
+-- migration sends the reload itself, inside the transaction: Postgres delivers
+-- a NOTIFY at commit, so it fires only if everything above landed.
+-- The migration is applied by the user, not by a session.
+--
+-- PRODUCTION: an early revision of this file is applied there (recorded as
+-- 20261022022018 "phase_metrics" and 20261022115109
+-- "phase_metrics_delta_checked_week_grants"). The differences since then are
+-- brought over by 20261023120000_phase_metrics_sync.sql, which must be applied
+-- before drona-cards is deployed (the weekly job needs retry_tries/retry_week).
 
 begin;
 
@@ -211,12 +218,12 @@ grant insert (metric_id, user_id, value, logged_on, note) on table public.coach_
 -- own metric, so neither can be pointed at anyone else's.
 grant update (metric_id, user_id, value, logged_on, note) on table public.coach_program_phase_metric_logs to authenticated;
 
+-- New tables are invisible to PostgREST until it reloads; sent at commit.
+notify pgrst, 'reload schema';
+
 commit;
 
--- Run after applying (new tables are invisible to PostgREST until it reloads):
--- notify pgrst, 'reload schema';
---
--- Then VERIFY the grants rather than assume them (a project default grant
+-- After applying, VERIFY the grants rather than assume them (a project default grant
 -- that survived would be invisible otherwise). Both should list only the
 -- columns granted above, with no 'checked_at', 'checked_week', 'retry_tries',
 -- 'retry_week' for authenticated and nothing for anon:
