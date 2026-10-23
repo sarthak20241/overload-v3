@@ -568,6 +568,8 @@ async function runCron(): Promise<Response> {
         if (m.error) failures.push(`${batch[j].userId.slice(0, 12)} metrics: ${m.error}`);
       });
     }
+    // Where the pass ended against the run's 55 s, so a timeout can be traced.
+    console.log(`[drona-cards] metrics pass: ${metricUsers.length} due, ${metricsChecked} checked, ${metricsSkipped} skipped; started ${metricsStart - now.getTime()} ms in, ended ${Date.now() - now.getTime()} ms in`);
 
     return json({ users: weeks.length, due: due.length, saved, held, checkins, pick_failed: pickFailed,
       words_asked: wordsAsked, words_failed: wordsFailed, moments_made: moments.made, moments_failed: moments.failed,
