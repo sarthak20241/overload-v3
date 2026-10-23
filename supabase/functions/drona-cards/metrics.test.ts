@@ -91,7 +91,7 @@ Deno.test("a clean week writes every metric and the coach line", async () => {
   assertEquals(metricWrites.every((w) => typeof w.patch.checked_at === "string" && w.patch.checked_week === WEEK), true);
   const line = writes.find((w) => w.table === "coach_program_phases");
   assertEquals(line?.patch.coach_line, "On pace. Protein is the one slipping; three of five days hit.");
-  assertEquals(line?.eq, [["id", "ph0"]]);
+  assertEquals(line?.eq, [["id", "ph0"], ["user_id", "user-1"]]);
 });
 
 Deno.test("a source that fails to read leaves its metric untouched, the rest are written, the line waits", async () => {

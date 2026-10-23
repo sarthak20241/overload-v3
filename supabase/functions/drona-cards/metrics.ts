@@ -136,15 +136,15 @@ export async function metricsStep(
     // (stampWeekFor): past and running phases this week, phases to come the
     // week before they start. Numbers are never touched. Without this a row
     // the check never reaches keeps its user on the cron's due list for ever.
+    // Side by side: each phase is its own write, and they share the run's 55 s.
     const stampOthers = async (except: string | null) => {
-      for (const ph of phases) {
-        if (ph.id === except) continue;
+      await Promise.all(phases.filter((ph) => ph.id !== except).map(async (ph) => {
         const { error } = await retried(() =>
           db.from("coach_program_phase_metrics").update({ checked_at: now, checked_week: stampWeekFor(startDate, ph, weekStart) })
             .eq("user_id", userId).eq("phase_id", ph.id)
         );
         if (error) console.log(`[drona-cards] stamping phase ${ph.id.slice(0, 8)} for ${userId.slice(0, 12)}: ${error.message}`);
-      }
+      }));
     };
 
     const idx = activePhaseIndex(startDate, phases, localDay);
@@ -323,7 +323,7 @@ export async function metricsStep(
       return { checked, line: false, error: `line: ${answer.error ?? "no line"}, retry next run${unstampErr ? `; ledger write failed: ${unstampErr.message}` : ""}` };
     }
     const { error: lineErr } = await retried(() =>
-      db.from("coach_program_phases").update({ coach_line: answer.line }).eq("id", phase.id)
+      db.from("coach_program_phases").update({ coach_line: answer.line }).eq("id", phase.id).eq("user_id", userId)
     );
     if (lineErr) return { checked, line: false, error: `line: ${lineErr.message}` };
     // A clean line clears the retry ledger. A failed clear leaves a stale
