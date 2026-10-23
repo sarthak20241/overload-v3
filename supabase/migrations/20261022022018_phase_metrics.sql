@@ -159,6 +159,11 @@ grant insert (id, program_id, phase_id, user_id, seq, is_hero, kind, ref, unit, 
 -- as checked. seq and is_hero are not updatable either: the app never
 -- reorders or re-heroes rows, and the unique constraints on both are not
 -- deferrable, so a swap by updates could fail halfway.
+-- current_value and status are client-writable for the caller's own custom
+-- metrics only (the update policy above), so the log sheet moves the card at
+-- once. They are not trusted: the weekly job recomputes a custom metric's
+-- value and status from its latest log and overwrites both, and Drona's line
+-- is built from that check, never from the stored status.
 grant update (ref, unit, direction, start_value, target_value, current_value, status, status_note, updated_at)
   on table public.coach_program_phase_metrics to authenticated;
 
@@ -198,7 +203,12 @@ create policy "coach_program_phase_metric_logs_owner_insert" on public.coach_pro
 
 drop policy if exists "coach_program_phase_metric_logs_owner_update" on public.coach_program_phase_metric_logs;
 create policy "coach_program_phase_metric_logs_owner_update" on public.coach_program_phase_metric_logs
-  for update to authenticated using (user_id = current_clerk_user_id())
+  for update to authenticated using (
+    user_id = current_clerk_user_id()
+    and exists (select 1 from public.coach_program_phase_metrics m
+                 where m.id = coach_program_phase_metric_logs.metric_id
+                   and m.user_id = current_clerk_user_id()
+                   and m.kind = 'custom'))
   with check (
     user_id = current_clerk_user_id()
     and exists (select 1 from public.coach_program_phase_metrics m
