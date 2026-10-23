@@ -21,7 +21,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { track } from '@/lib/analytics';
 import { View, Text, Pressable, ScrollView, StyleSheet, Alert, RefreshControl, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Feather } from '@expo/vector-icons';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { readCardHistory } from '@/lib/dronaCard';
@@ -49,6 +49,7 @@ import { MetricBarsChart, MetricLineChart } from '@/components/program/PhaseMetr
 import { MetricLogSheet } from '@/components/program/MetricLogSheet';
 import { PlanRows } from '@/components/program/PlanRows';
 import { ObjectiveText } from '@/components/program/ObjectiveText';
+import { SparkleIcon } from '@/components/program/LineIcons';
 import { loadLiveReadings, peekLiveReadings, prefetchPillars } from '@/lib/pillarData';
 import { focusFromCoachLine, type LiveReadings } from '@/lib/phaseMetricHeadline';
 import { LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T } from '@/components/program/finish';
@@ -443,7 +444,7 @@ export default function GoalPlanScreen() {
             />
           )}
         </View>
-        {status ? <Text style={[T.body, { color: C.mutedFg, marginTop: S.sm }]}>{status}</Text> : null}
+        {status ? <Text style={[T.body, { color: C.mutedFg, marginTop: S.xs }]}>{status}</Text> : null}
       </View>
     );
   };
@@ -471,7 +472,7 @@ export default function GoalPlanScreen() {
           <Text style={[T.cardTitle, { color: C.foreground, flexShrink: 1 }]} numberOfLines={1}>{ph.name}</Text>
           <Feather name="chevron-right" size={22} color={C.mutedFg} />
         </View>
-        <Text style={[T.body, { color: C.mutedFg, marginTop: 6 }]} numberOfLines={1}>
+        <Text style={[T.body, { color: C.mutedFg, marginTop: 4 }]} numberOfLines={1}>
           {when}{target ? `  ·  ${target}` : ''}
         </Text>
         {pct != null && (
@@ -490,6 +491,8 @@ export default function GoalPlanScreen() {
     ? (currentPhase.coach_line ? focusFromCoachLine(currentPhase.coach_line) : focusLine(currentPhase.metrics))
     : '';
   const unbuilt = currentPhase != null && currentPhase.routines.length === 0;
+  // The pinned button sits just above the home indicator, as in the reference.
+  const footerBottom = Math.max(insets.bottom - 8, S.md);
 
   return (
     <View style={[styles.root, { backgroundColor: C.background, paddingTop: insets.top }]}>
@@ -505,7 +508,7 @@ export default function GoalPlanScreen() {
       </View>
 
       <ScrollView
-        contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: S.sm, paddingBottom: program ? FOOTER_H + insets.bottom + S.xl : insets.bottom + S.xl }}
+        contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: 0, paddingBottom: program ? FOOTER_H + footerBottom + S.lg : insets.bottom + S.xl }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(true); setFocusTick((t) => t + 1); }} tintColor={C.mutedFg} />}
       >
         {loading ? (
@@ -538,17 +541,17 @@ export default function GoalPlanScreen() {
         ) : (
           <>
             <Stagger index={0}>
-              <Text style={[T.title, { color: C.foreground, marginTop: S.xs }]}>{program.title}</Text>
+              <Text style={[T.title, { color: C.foreground }]}>{program.title}</Text>
               <Text style={[T.body, { color: C.mutedFg, marginTop: S.xs }]}>
                 {notStarted ? `Starts ${fmtShortISO(program.start_date)}` : ended ? 'Program complete' : `Week ${weekOverall} of ${totalWeeks}`}
                 {'  ·  '}{ended ? `Ended ${fmtShortISO(program.target_date ?? endDateISO!)}` : `Ends ${fmtShortISO(program.target_date ?? endDateISO!)}`}
               </Text>
-              <ObjectiveText text={program.objective} style={{ marginTop: S.sm }} />
+              <ObjectiveText text={program.objective} style={{ marginTop: 4 }} />
             </Stagger>
             <Stagger index={1}>{renderHero()}</Stagger>
             <Stagger index={2}>{renderPhaseCard()}</Stagger>
             {shownPhase && (
-              <View style={{ marginTop: 36 }}>
+              <View style={{ marginTop: 14 }}>
                 <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} />
               </View>
             )}
@@ -556,7 +559,7 @@ export default function GoalPlanScreen() {
             {focus ? (
               <Stagger index={7}>
                 <View style={styles.focus}>
-                  <MaterialCommunityIcons name="star-four-points-outline" size={22} color={Colors.primary} style={{ marginTop: 1 }} />
+                  <View style={{ marginTop: 1 }}><SparkleIcon size={22} color={Colors.primary} /></View>
                   <View style={{ flex: 1 }}>
                     <SectionLabel>This week's focus</SectionLabel>
                     <Text style={[styles.focusText, { color: C.foreground }]} numberOfLines={2}>{focus}</Text>
@@ -577,7 +580,7 @@ export default function GoalPlanScreen() {
       {/* The one action, pinned above the home indicator; the page scrolls under
           a footer the colour of the page, as in the reference. */}
       {!loading && program && (
-        <View style={[styles.footer, { backgroundColor: C.background, paddingBottom: insets.bottom + S.sm }]}>
+        <View style={[styles.footer, { backgroundColor: C.background, paddingBottom: footerBottom }]}>
           <Pressable
             onPress={() => {
               haptics.tap();
@@ -618,13 +621,13 @@ export default function GoalPlanScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: S.lg, height: 44 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: S.lg, height: 40 },
   headerBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   menuDot: { position: 'absolute', top: 8, right: 8, width: 7, height: 7, borderRadius: 4 },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: S.xxl * 2, gap: S.md },
   emptyIconWrap: { width: 56, height: 56, borderRadius: Radius.full, alignItems: 'center', justifyContent: 'center' },
 
-  heroBlock: { marginTop: S.xl + 4 },
+  heroBlock: { marginTop: S.md },
   goalValue: { fontSize: 20, lineHeight: 25, fontWeight: FontWeight.medium, marginTop: S.xs, fontVariant: ['tabular-nums'] },
   heroRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: S.md },
   capsRow: { flexDirection: 'row', alignItems: 'center', gap: S.sm },
@@ -634,16 +637,16 @@ const styles = StyleSheet.create({
   goalCol: { alignItems: 'flex-end', paddingBottom: 8 },
   chartWrap: { marginTop: S.md },
 
-  phaseCard: { marginTop: 28, borderRadius: 20, padding: 20 },
-  phaseTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, gap: S.sm },
-  jobBar: { height: 8, borderRadius: 4, marginTop: 18, overflow: 'hidden' },
+  phaseCard: { marginTop: S.md, borderRadius: 20, paddingHorizontal: S.lg, paddingVertical: S.md },
+  phaseTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, gap: S.sm },
+  jobBar: { height: 8, borderRadius: 4, marginTop: 10, overflow: 'hidden' },
   jobFill: { height: '100%', borderRadius: 4 },
-  pctText: { fontSize: 14, lineHeight: 18, fontWeight: FontWeight.regular, marginTop: 10 },
+  pctText: { fontSize: 14, lineHeight: 18, fontWeight: FontWeight.regular, marginTop: 6 },
 
-  focus: { flexDirection: 'row', gap: S.lg, alignItems: 'flex-start', marginTop: S.xl },
-  focusText: { fontSize: 16, lineHeight: 22, fontWeight: FontWeight.regular, marginTop: S.xs },
+  focus: { flexDirection: 'row', gap: S.lg, alignItems: 'flex-start', marginTop: 10 },
+  focusText: { fontSize: 16, lineHeight: 21, fontWeight: FontWeight.regular, marginTop: 2 },
 
-  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: S.xl, paddingTop: S.sm },
+  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: S.xl, paddingTop: 4 },
   footerBtn: { height: 56, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   footerText: { fontSize: 17, lineHeight: 22, fontWeight: FontWeight.semibold, color: Colors.primaryFg },
 

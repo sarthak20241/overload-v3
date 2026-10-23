@@ -8,7 +8,7 @@
 import type { ReactNode } from 'react';
 import { View, Text, Pressable, StyleSheet, type StyleProp, type ViewStyle, type TextStyle } from 'react-native';
 import Animated, { FadeInDown, useReducedMotion } from 'react-native-reanimated';
-import { Feather, Ionicons } from '@expo/vector-icons';
+import { Feather } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
 import { Colors, FontWeight } from '@/constants/theme';
@@ -18,9 +18,9 @@ export const S = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
 
 /** The type scale. Negative letter-spacing on the large text only. */
 export const T = StyleSheet.create({
-  title: { fontSize: 28, lineHeight: 34, fontWeight: FontWeight.bold, letterSpacing: -0.5 },
+  title: { fontSize: 28, lineHeight: 32, fontWeight: FontWeight.bold, letterSpacing: -0.5 },
   hero: { fontSize: 56, lineHeight: 58, fontWeight: FontWeight.bold, letterSpacing: -2, fontVariant: ['tabular-nums'] },
-  heroSmall: { fontSize: 44, lineHeight: 48, fontWeight: FontWeight.bold, letterSpacing: -1.4, fontVariant: ['tabular-nums'] },
+  heroSmall: { fontSize: 44, lineHeight: 46, fontWeight: FontWeight.bold, letterSpacing: -1.4, fontVariant: ['tabular-nums'] },
   unit: { fontSize: 18, lineHeight: 22, fontWeight: FontWeight.medium },
   section: { fontSize: 12, lineHeight: 16, fontWeight: FontWeight.semibold, letterSpacing: 1, textTransform: 'uppercase' },
   rowTitle: { fontSize: 18, lineHeight: 23, fontWeight: FontWeight.medium },
@@ -32,7 +32,7 @@ export const T = StyleSheet.create({
   body: { fontSize: 15, lineHeight: 21, fontWeight: FontWeight.regular },
   cardTitle: { fontSize: 22, lineHeight: 27, fontWeight: FontWeight.semibold, letterSpacing: -0.3 },
   /** A section heading on a page ("Your plan"). */
-  heading: { fontSize: 24, lineHeight: 29, fontWeight: FontWeight.semibold, letterSpacing: -0.4 },
+  heading: { fontSize: 22, lineHeight: 27, fontWeight: FontWeight.bold, letterSpacing: -0.3 },
   big: { fontSize: 26, lineHeight: 30, fontWeight: FontWeight.semibold, letterSpacing: -0.6, fontVariant: ['tabular-nums'] },
   dayLetter: { fontSize: 11, lineHeight: 14, fontWeight: FontWeight.semibold },
   dayName: { fontSize: 11, lineHeight: 14, fontWeight: FontWeight.semibold },
@@ -72,8 +72,8 @@ interface RowProps {
   /** The row navigates: a chevron, a pressed state and a haptic. */
   onPress?: () => void;
   icon?: keyof typeof Feather.glyphMap;
-  /** A thin outline Ionicons glyph instead of a Feather one (the plan rows' barbell, knife and fork, moon). */
-  ionIcon?: keyof typeof Ionicons.glyphMap;
+  /** A drawn icon instead of a Feather glyph (the plan rows' thin line icons, components/program/LineIcons). */
+  iconNode?: ReactNode;
   subtitle?: ReactNode;
   /** Taller rows for a short list that is the page's main content (the plan rows: 64). */
   minHeight?: number;
@@ -86,13 +86,13 @@ interface RowProps {
  * A list row: 52pt minimum, hairline dividers, a full-row press target with
  * a subtle pressed state, a chevron only when it navigates.
  */
-export function Row({ title, value, valueRest, status, onPress, icon, ionIcon, subtitle, minHeight, first, last, accessibilityLabel }: RowProps) {
+export function Row({ title, value, valueRest, status, onPress, icon, iconNode, subtitle, minHeight, first, last, accessibilityLabel }: RowProps) {
   const { C } = useTheme();
   const statusColor = useStatusColor();
   const body = (
     <>
-      {ionIcon
-        ? <Ionicons name={ionIcon} size={27} color={C.foreground} style={styles.rowIconWide} />
+      {iconNode
+        ? <View style={styles.rowIconWide}>{iconNode}</View>
         : icon && <Feather name={icon} size={22} color={C.foreground} style={styles.rowIcon} />}
       <View style={{ flex: 1 }}>
         <Text style={[T.rowTitle, { color: C.foreground }]} numberOfLines={1}>{title}</Text>
@@ -109,7 +109,7 @@ export function Row({ title, value, valueRest, status, onPress, icon, ionIcon, s
     </>
   );
   const border = [first && { borderTopWidth: StyleSheet.hairlineWidth }, !last && { borderBottomWidth: StyleSheet.hairlineWidth }, { borderColor: C.borderSubtle }];
-  const tall = minHeight ? { minHeight } : null;
+  const tall = minHeight ? { minHeight, paddingVertical: 4 } : null;
   if (!onPress) return <View style={[styles.row, tall, border]}>{body}</View>;
   return (
     <Pressable
@@ -199,7 +199,7 @@ export function ScreenSkeleton({ variant }: { variant: 'goal' | 'pillar' | 'phas
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', minHeight: 52, paddingVertical: S.sm },
   rowIcon: { width: 28, textAlign: 'center', marginRight: S.lg },
-  rowIconWide: { width: 36, textAlign: 'center', marginRight: S.xl - 4 },
+  rowIconWide: { width: 36, alignItems: 'center', marginRight: S.xl - 4 },
   rowStatus: { minWidth: 62, textAlign: 'right' },
   retry: { height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   tip: { flexDirection: 'row', gap: S.md, marginTop: S.xxl - 2 },
