@@ -1,17 +1,19 @@
 /**
  * Today's steps and this week's cardio against the current phase's activity
  * goals (lib/activityGoals holds the rules). Read-only, for the dashboard.
+ * The goals come from the program the dashboard already holds
+ * (lib/dashboardProgram activityTargetsFrom); only the readings are read here.
  *
- * Fails open: no program, no goals, a database from before the goal columns,
- * or any read error all return null, and the dashboard simply shows nothing.
- * A wrong "0 steps" is worse than no row.
+ * Fails open: a read error returns null, and the dashboard simply shows
+ * nothing. A wrong "0 steps" is worse than no row.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
-  cardioRowsFromWorkouts, clampCardioSessions, clampStepsTarget, countCardioSessions, goalProgress,
+  cardioRowsFromWorkouts, countCardioSessions, goalProgress,
   stepsProgressFromReading, type GoalProgress, type WorkoutWithSets,
 } from '@/lib/activityGoals';
-import { computeActivePhaseSeq, todayLocalISO } from '@/lib/programData';
+import { todayLocalISO } from '@/lib/programDates';
+import type { ActivityTargets } from '@/lib/dashboardProgram';
 
 export interface ActivityProgress {
   /** Today's steps vs the phase's step goal; null = no step goal. */
@@ -34,34 +36,10 @@ function localWeekStart(now: Date = new Date()): Date {
 export async function loadActivityProgress(
   supabase: SupabaseClient,
   clerkId: string,
+  { stepsTarget, cardioTarget }: ActivityTargets,
 ): Promise<ActivityProgress | null> {
   try {
-    const { data: prog, error: progErr } = await supabase
-      .from('coach_programs')
-      .select('id, start_date')
-      .eq('user_id', clerkId)
-      .eq('status', 'active')
-      .maybeSingle();
-    if (progErr || !prog) return null;
-
-    // Its own read, so a database without the columns errors HERE and only
-    // costs this row.
-    const { data: phases, error: phErr } = await supabase
-      .from('coach_program_phases')
-      .select('seq, duration_weeks, start_offset_weeks, activity_steps_target, cardio_sessions_per_week')
-      .eq('program_id', (prog as { id: string }).id)
-      .order('seq', { ascending: true });
-    if (phErr || !phases || phases.length === 0) return null;
-
     const today = todayLocalISO();
-    // An index into `phases` (ordered by seq), not a seq value.
-    const idx = computeActivePhaseSeq(String((prog as { start_date: string }).start_date), phases, today);
-    if (idx == null) return null;
-    const phase = phases[idx] as { activity_steps_target: unknown; cardio_sessions_per_week: unknown };
-    const stepsTarget = clampStepsTarget(phase.activity_steps_target);
-    const cardioTarget = clampCardioSessions(phase.cardio_sessions_per_week);
-    if (stepsTarget == null && cardioTarget == null) return null;
-
     const [stepsRes, cardioRes] = await Promise.all([
       stepsTarget == null ? null : supabase
         .from('daily_metrics')

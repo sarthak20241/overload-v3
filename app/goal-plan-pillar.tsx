@@ -104,7 +104,7 @@ export default function GoalPlanPillarScreen() {
   const [detailRoutine, setDetailRoutine] = useState<RoutineRaw | null>(null);
   const loadSeq = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     const n = ++loadSeq.current;
     if (!supabase || !clerkId) { setLoading(false); return; }
     try {
@@ -113,7 +113,7 @@ export default function GoalPlanPillarScreen() {
       // program they start now too, and are read again only if the fresh
       // program links different routines.
       const known = phaseFor(peekActiveProgram(clerkId) ?? null, seqAsked)?.routines.map((r) => r.id) ?? null;
-      const programP = loadActiveProgram(supabase, clerkId);
+      const programP = loadActiveProgram(supabase, clerkId, { fresh });
       const routinesP = pillar === 'train' && known ? sharedRoutineSummaries(supabase, clerkId, known) : null;
       const weekP = pillar === 'train' ? sharedWeekSessions(supabase, clerkId) : null;
       const nightsP = pillar === 'recover' ? sharedLastNights(supabase, clerkId) : null;
@@ -534,7 +534,7 @@ export default function GoalPlanPillarScreen() {
       </View>
       <ScrollView
         contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: S.xs, paddingBottom: insets.bottom + S.xxl }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={C.mutedFg} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(true); }} tintColor={C.mutedFg} />}
       >
         {loading ? (
           <ScreenSkeleton variant="pillar" />
@@ -542,7 +542,7 @@ export default function GoalPlanPillarScreen() {
           <View style={{ paddingTop: S.xl }}>
             <Text style={[T.title, { color: C.foreground }]}>{TITLE[pillar]}</Text>
             {loadFailed && !program
-              ? <LoadFailed onRetry={() => { setLoading(true); load(); }} />
+              ? <LoadFailed onRetry={() => { setLoading(true); load(true); }} />
               : <Text style={[T.body, { color: C.mutedFg, marginTop: S.md }]}>No program yet. Build one from Goal & Plan and this screen fills in.</Text>}
           </View>
         ) : (

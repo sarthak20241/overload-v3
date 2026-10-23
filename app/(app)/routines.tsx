@@ -1534,7 +1534,7 @@ export default function RoutinesScreen() {
   const { user, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
-  const { pendingCount } = useSync();
+  const { pendingCount, syncedTick } = useSync();
   const toast = useToast();
   const [routines, setRoutines] = useState<RoutineRaw[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1546,7 +1546,9 @@ export default function RoutinesScreen() {
   const [aiCoachOpen, setAiCoachOpen] = useState(false);
   const [aiCoachSource, setAiCoachSource] = useState('routines');
 
-  const fetchRoutines = useCallback(async () => {
+  // `network: false` repaints from the cache with the queue merged on (a local
+  // save, which needs no read).
+  const fetchRoutines = useCallback(async ({ network = true }: { network?: boolean } = {}) => {
     const clerkId = user?.id;
     if (isGuestSession || !clerkId) {
       setRoutines(getGuestRoutines() as unknown as RoutineRaw[]);
@@ -1561,6 +1563,7 @@ export default function RoutinesScreen() {
     // Clear the spinner after the cache read; the network revalidation below
     // runs in the background and must not hold the spinner (offline it hangs).
     setLoading(false);
+    if (!network) return;
     try {
       const { data, error } = await supabase
         .from('routines')
@@ -1585,7 +1588,17 @@ export default function RoutinesScreen() {
     // Hold the spinner until Clerk settles; the effect re-runs when it does.
     if (!clerkLoaded) return;
     fetchRoutines().finally(() => setLoading(false));
-  }, [fetchRoutines, clerkLoaded, pendingCount]);
+  }, [fetchRoutines, clerkLoaded, syncedTick]);
+
+  // A local save (the queue grew): merge it on with no read. A drop is a flush
+  // landing, which bumps syncedTick and re-reads above.
+  const lastPending = useRef(pendingCount);
+  useEffect(() => {
+    const rose = pendingCount > lastPending.current;
+    lastPending.current = pendingCount;
+    if (rose && clerkLoaded) fetchRoutines({ network: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingCount]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -1738,7 +1751,7 @@ export default function RoutinesScreen() {
         visible={sheetOpen}
         editingRoutine={editingRoutine}
         onClose={closeSheet}
-        onSaved={fetchRoutines}
+        onSaved={() => fetchRoutines()}
       />
       <RoutineMenuModal
         visible={menuRoutine !== null}

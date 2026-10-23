@@ -37,6 +37,8 @@ import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
+import { loadOlderWorkouts, loadRecentWorkouts } from '@/lib/recentWorkouts';
+import { mergeWorkoutWindows } from '@/lib/workoutWindows';
 import { getPendingWorkouts } from '@/lib/syncQueue';
 import { pendingToDashboardWorkout } from '@/lib/pendingAdapters';
 import { applyEditsToDashboardRows } from '@/lib/editQueue';
@@ -1263,7 +1265,7 @@ export default function AnalyticsScreen() {
   const toast = useToast();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
-  const { pendingCount } = useSync();
+  const { pendingCount, syncedTick } = useSync();
   const { width: winWidth } = useWindowDimensions();
   const bigChartWidth = winWidth - Spacing.xl * 2 - Spacing.lg * 2;
   const [workouts, setWorkouts] = useState<WorkoutRaw[]>([]);
@@ -1304,7 +1306,9 @@ export default function AnalyticsScreen() {
   const [profileGender, setProfileGender] = useState<string | null>(null);
   const [shareBodyOpen, setShareBodyOpen] = useState(false);
 
-  const fetchData = useCallback(async () => {
+  // `network: false` repaints from the cache with the queue merged on (a local
+  // save); `fresh` skips the shared reads' freshness window (pull to refresh).
+  const fetchData = useCallback(async ({ network = true, fresh = false }: { network?: boolean; fresh?: boolean } = {}) => {
     const apply = (list: WorkoutRaw[]) => {
       setWorkouts(list);
       const all = [...new Set(
@@ -1348,14 +1352,8 @@ export default function AnalyticsScreen() {
     // Clear the spinner after the cache read; the network revalidation below
     // runs in the background and must not hold the spinner (offline it hangs).
     setLoading(false);
+    if (!network) return;
 
-    const sinceIso = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
-    let q = supabase
-      .from('workouts')
-      .select('*, workout_sets(*, exercises(*))')
-      .gte('started_at', sinceIso)
-      .order('started_at', { ascending: false });
-    if (clerkId) q = q.eq('user_id', clerkId);
     // Only when the profile cache had nothing: one indexed single-column read,
     // fired alongside the workouts query so it costs no extra wall time. A
     // failure here is silent — the card still renders on the default body.
@@ -1374,11 +1372,15 @@ export default function AnalyticsScreen() {
       })();
     }
     try {
-      const { data, error } = await q;
-      if (error) throw error;
-      const fresh = (data as WorkoutRaw[]) || [];
-      writeCache('analyticsWorkouts', clerkId, fresh);
-      apply(withPending(fresh));
+      // 180 days: the newest 90 are the read the dashboard and History share,
+      // so usually only the older half is read here (lib/workoutWindows).
+      const [recent, older] = await Promise.all([
+        loadRecentWorkouts(supabase, clerkId, { fresh }),
+        loadOlderWorkouts(supabase, clerkId, { fresh }),
+      ]);
+      const rows = mergeWorkoutWindows(recent as WorkoutRaw[], older as WorkoutRaw[]);
+      writeCache('analyticsWorkouts', clerkId, rows);
+      apply(withPending(rows));
     } catch {
       // Offline — keep the cache-first + pending view.
     }
@@ -1390,7 +1392,17 @@ export default function AnalyticsScreen() {
     // Hold the spinner until Clerk settles; the effect re-runs when it does.
     if (!clerkLoaded) return;
     fetchData().finally(() => setLoading(false));
-  }, [fetchData, clerkLoaded, pendingCount]);
+  }, [fetchData, clerkLoaded, syncedTick]);
+
+  // A local save (the queue grew): merge it on with no read. A drop is a flush
+  // landing, which bumps syncedTick and re-reads above.
+  const lastPending = useRef(pendingCount);
+  useEffect(() => {
+    const rose = pendingCount > lastPending.current;
+    lastPending.current = pendingCount;
+    if (rose && clerkLoaded) fetchData({ network: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingCount]);
 
   // A signed-in user's weight and body fat live in daily_metrics, shown in the
   // saved unit; guests keep the device logs. Waits for the saved unit, which
@@ -1412,11 +1424,11 @@ export default function AnalyticsScreen() {
     loadWeightSeries().then((wl) => { if (live) setWeightLog(wl); }).catch(() => {});
     loadBodyFatSeries().then((bfl) => { if (live) setBodyFatLog(bfl); }).catch(() => {});
     return () => { live = false; };
-  }, [loadWeightSeries, loadBodyFatSeries, clerkLoaded, basicInfoReady, pendingCount]);
+  }, [loadWeightSeries, loadBodyFatSeries, clerkLoaded, basicInfoReady, syncedTick]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    await fetchData();
+    await fetchData({ fresh: true });
     const [wl, bfl] = await Promise.all([
       loadWeightSeries().catch(() => weightLog),
       loadBodyFatSeries().catch(() => bodyFatLog),

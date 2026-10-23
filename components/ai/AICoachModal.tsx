@@ -22,6 +22,7 @@ import { Portal } from '@/components/ui/Portal';
 import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
 import { fuelDaysText } from '@/lib/fuelDays';
 import { invalidateUserProgram } from '@/lib/screenCache';
+import { newClientId } from '@/lib/syncQueue';
 import { activityText } from '@/lib/activityGoals';
 import { metricsText } from '@/lib/phaseMetrics';
 import { track } from '@/lib/analytics';
@@ -4175,6 +4176,20 @@ function RefineChatScreen({
   );
 }
 
+/**
+ * A routine batch that did not fully save. `failed` are indexes into the
+ * batch. `someSaved` says whether the routine rows went in: if not, nothing
+ * saved; if so, every routine exists and the failed ones are missing links.
+ */
+class RoutineBatchError extends Error {
+  constructor(readonly failed: number[], readonly someSaved: boolean, readonly cause: unknown) {
+    super((cause as { message?: string } | null)?.message ?? 'Failed to create routine');
+  }
+  get code(): string | undefined {
+    return (this.cause as { code?: string } | null)?.code;
+  }
+}
+
 // ─── Main Modal ──────────────────────────────────────────────────────────────
 export function AICoachModal({
   visible,
@@ -4408,69 +4423,14 @@ export function AICoachModal({
   // AFTER handleClose() has told the Goal & Plan screen to clear buildPhaseId.
   // Reading the prop there yields nothing — that is what silently disabled the
   // rebuild unlink and let duplicate splits stack up under a phase.
-  const insertRoutineToBackend = async (workout: GeneratedWorkout, phaseId = linkRoutinesToPhaseId) => {
-    const clerkId = user?.id;
-    if (!isSupabaseConfigured || !clerkId) {
-      const routineId = `guest-r-${Date.now()}`;
-      addGuestRoutine({
-        id: routineId,
-        user_id: 'guest',
-        name: workout.name,
-        description: undefined as any,
-        color: undefined as any,
-        created_at: new Date().toISOString(),
-        routine_exercises: workout.exercises.map((ex, i) => {
-          const def = planExerciseInsert(ex);
-          // A library exercise: how it is measured comes from the device's
-          // catalog, as the signed-in branch reads it from the row. Without it
-          // a guest's "Plank 45s" would store a time no screen shows.
-          const lib = ex.new_exercise ? null : findCatalogExerciseByName(ex.name, null);
-          const metricType = def.metric_type ?? lib?.metric_type;
-          return {
-            id: `gre-${Date.now()}-${i}`,
-            exercise_id: `gex-${Date.now()}-${i}`,
-            order: i,
-            sets: ex.sets,
-            rest_seconds: parseInt(ex.rest) || 60,
-            // Parity with the authenticated branch — guest users keep
-            // their cues too. Otherwise the routine renders without
-            // notes the moment they save it.
-            ...planRepsAndNote(ex.reps, ex.note, { metricType }),
-            exercises: {
-              id: `gex-${Date.now()}-${i}`,
-              name: ex.name,
-              muscle_group: lib?.muscle_group ?? def.muscle_group,
-              category: lib?.category ?? def.category,
-              ...(metricType ? { metric_type: metricType } : {}),
-            },
-          };
-        }),
-      });
-      return;
-    }
-    // The phase link is written IN the insert, not as a follow-up update. As a
-    // separate step it could fail after the routine had saved, and the save
-    // then reported success while the phase still had no routines, so the
-    // Goal screen and the dashboard asked to build the split again. Throwing
-    // from a follow-up would be worse: the batch Retry re-inserts the routine.
-    // One row, one write, so the routine and its link land or fail together.
-    // (It was split out once for PostgREST schema-cache lag on a then-new
-    // column; program_phase_id has been live since migration 0096.)
-    const { data: routine, error } = await withChangeSource(supabase, 'chat')
-      .from('routines')
-      .insert({ user_id: clerkId, name: workout.name, program_phase_id: phaseId ?? null })
-      .select()
-      .single();
-
-    if (error || !routine) throw error || new Error('Failed to create routine');
-    // A routine linked to a phase changes what the Goal & Plan screens show.
-    if (phaseId && clerkId) invalidateUserProgram(clerkId);
-
+  // Find or create each exercise of one saved routine and write its link rows.
+  // Throws the first failure, after every write has finished (landed or not).
+  const linkRoutineExercises = async (routineId: string, workout: GeneratedWorkout) => {
     // Resolve all exercises in parallel — each one does select + optional insert + link insert.
     // Drops save time from N*(2-3) sequential round trips to ~3 round trips total.
     // allSettled, not all: every link write has finished (landed or failed)
-    // before the Goal & Plan cache is dropped again below, so no screen keeps
-    // a snapshot read while the links were still landing.
+    // before this returns, so the caller drops the Goal & Plan cache only
+    // after the links are in, and no screen keeps a read from midway.
     const linked = await Promise.allSettled(workout.exercises.map(async (ex, i) => {
       // Case-insensitive find, oldest row first — .single() would error when a
       // global library row and a same-named custom both match (legal scopes
@@ -4514,7 +4474,7 @@ export function AICoachModal({
       if (!exerciseId) return;
 
       const link = (targetColumns: boolean) => withChangeSource(supabase, 'chat').from('routine_exercises').insert({
-        routine_id: routine.id,
+        routine_id: routineId,
         exercise_id: exerciseId,
         sets: ex.sets,
         rest_seconds: parseInt(ex.rest) || 60,
@@ -4530,9 +4490,84 @@ export function AICoachModal({
       const linkErr = await writeWithTargetFallback(link);
       if (linkErr) throw linkErr;
     }));
-    if (phaseId && clerkId) invalidateUserProgram(clerkId);
     const failed = linked.find((r): r is PromiseRejectedResult => r.status === 'rejected');
     if (failed) throw failed.reason;
+  };
+
+  // phaseId is passed in rather than read off the prop, because callers run
+  // AFTER handleClose() has told the Goal & Plan screen to clear buildPhaseId.
+  // Reading the prop there yields nothing — that is what silently disabled the
+  // rebuild unlink and let duplicate splits stack up under a phase.
+  //
+  // Every routine of the batch goes in ONE insert (the ids are made here, so
+  // no reply order has to be trusted), then all their exercises link side by
+  // side. A split used to save one routine after another, each waiting on the
+  // last. Throws a RoutineBatchError naming which routines did not save fully.
+  const insertRoutinesToBackend = async (workouts: GeneratedWorkout[], phaseId = linkRoutinesToPhaseId) => {
+    const clerkId = user?.id;
+    if (!isSupabaseConfigured || !clerkId) {
+      for (const workout of workouts) {
+        const routineId = `guest-r-${Date.now()}`;
+        addGuestRoutine({
+          id: routineId,
+          user_id: 'guest',
+          name: workout.name,
+          description: undefined as any,
+          color: undefined as any,
+          created_at: new Date().toISOString(),
+          routine_exercises: workout.exercises.map((ex, i) => {
+            const def = planExerciseInsert(ex);
+            // A library exercise: how it is measured comes from the device's
+            // catalog, as the signed-in branch reads it from the row. Without it
+            // a guest's "Plank 45s" would store a time no screen shows.
+            const lib = ex.new_exercise ? null : findCatalogExerciseByName(ex.name, null);
+            const metricType = def.metric_type ?? lib?.metric_type;
+            return {
+              id: `gre-${Date.now()}-${i}`,
+              exercise_id: `gex-${Date.now()}-${i}`,
+              order: i,
+              sets: ex.sets,
+              rest_seconds: parseInt(ex.rest) || 60,
+              // Parity with the authenticated branch — guest users keep
+              // their cues too. Otherwise the routine renders without
+              // notes the moment they save it.
+              ...planRepsAndNote(ex.reps, ex.note, { metricType }),
+              exercises: {
+                id: `gex-${Date.now()}-${i}`,
+                name: ex.name,
+                muscle_group: lib?.muscle_group ?? def.muscle_group,
+                category: lib?.category ?? def.category,
+                ...(metricType ? { metric_type: metricType } : {}),
+              },
+            };
+          }),
+        });
+      }
+      return;
+    }
+    // The phase link is written IN the insert, not as a follow-up update. As a
+    // separate step it could fail after the routine had saved, and the save
+    // then reported success while the phase still had no routines, so the
+    // Goal screen and the dashboard asked to build the split again. Throwing
+    // from a follow-up would be worse: the batch Retry re-inserts the routine.
+    // One row each, one write, so the routines and their links land or fail
+    // together. (It was split out once for PostgREST schema-cache lag on a
+    // then-new column; program_phase_id has been live since migration 0096.)
+    const rows = workouts.map((w) => ({ id: newClientId(), user_id: clerkId, name: w.name, program_phase_id: phaseId ?? null }));
+    const { error } = await withChangeSource(supabase, 'chat').from('routines').insert(rows);
+    // Nothing saved: every routine is still to do.
+    if (error) throw new RoutineBatchError(workouts.map((_, i) => i), false, error);
+    // A routine linked to a phase changes what the Goal & Plan screens show.
+    if (phaseId && clerkId) invalidateUserProgram(clerkId);
+    // allSettled, not all: every link write has finished before the Goal &
+    // Plan cache is dropped again below, so no screen keeps a snapshot read
+    // while the links were still landing.
+    const linked = await Promise.allSettled(workouts.map((w, i) => linkRoutineExercises(rows[i].id, w)));
+    if (phaseId && clerkId) invalidateUserProgram(clerkId);
+    const failedAt = linked.flatMap((r, i) => (r.status === 'rejected' ? [i] : []));
+    if (failedAt.length > 0) {
+      throw new RoutineBatchError(failedAt, true, (linked[failedAt[0]] as PromiseRejectedResult).reason);
+    }
   };
 
   const handleSaveRoutine = (workout: GeneratedWorkout) => {
@@ -4543,7 +4578,7 @@ export function AICoachModal({
     track('coach_routines_saved', { count: 1, linked_to_phase: !!phaseId, is_retry: false, exercise_count: workout.exercises?.length ?? null });
     handleClose();
     toast.info(`Saving “${workout.name}”…`);
-    insertRoutineToBackend(workout, phaseId)
+    insertRoutinesToBackend([workout], phaseId)
       .then(() => {
         toast.success('Routine saved');
         onRoutineCreated?.();
@@ -4572,10 +4607,6 @@ export function AICoachModal({
     const phaseId = linkRoutinesToPhaseId;
     handleClose();
     (async () => {
-      // Track which item we're attempting so Retry resumes from the failure
-      // point instead of replaying earlier items that already committed —
-      // otherwise a failure on item N produces duplicates of 0..N-1 on retry.
-      let attemptingIndex = 0;
       // Set only once the unlink has succeeded (or was not needed). Retry
       // passes this as isRetry: a failure INSIDE the unlink must retry as a
       // fresh attempt (unlink again), because nothing has saved yet, whereas
@@ -4614,27 +4645,29 @@ export function AICoachModal({
           if (user?.id) invalidateUserProgram(user.id);
         }
         unlinkDone = true;
-        for (let i = 0; i < workouts.length; i++) {
-          attemptingIndex = i;
-          toast.info(`Saving “${workouts[i].name}” (${i + 1}/${workouts.length})…`);
-          await insertRoutineToBackend(workouts[i], phaseId);
-        }
+        toast.info(workouts.length > 1 ? `Saving ${workouts.length} routines…` : `Saving “${workouts[0]?.name}”…`);
+        await insertRoutinesToBackend(workouts, phaseId);
         toast.success(workouts.length > 1 ? `Saved ${workouts.length} routines` : 'Routine saved');
         onRoutineCreated?.();
       } catch (err: any) {
         // Log the real failure — a swallowed error here made "couldn't save"
         // undiagnosable, and a transport-level throw on attempt 1 once left
         // this toast on screen while the Retry quietly succeeded behind it.
+        // Retry replays only the routines that did not save, never one that
+        // already committed (that would duplicate it). An unlink failure, or
+        // the routine insert failing, saved nothing: every routine is left.
+        const failed: number[] = err instanceof RoutineBatchError ? err.failed : workouts.map((_, i) => i);
+        const first = failed[0] ?? 0;
         console.warn(
-          `[routine-save] batch failed at ${attemptingIndex + 1}/${workouts.length} (“${workouts[attemptingIndex]?.name}”):`,
+          `[routine-save] batch failed at ${first + 1}/${workouts.length} (“${workouts[first]?.name}”):`,
           err?.message ?? err,
           err?.code ?? '',
         );
-        const remaining = workouts.slice(attemptingIndex);
+        const remaining = failed.map((i) => workouts[i]);
         // Refresh to surface whatever did save before the failure.
-        if (attemptingIndex > 0) onRoutineCreated?.();
+        if (err instanceof RoutineBatchError && err.someSaved) onRoutineCreated?.();
         toast.error(
-          `Couldn't save “${workouts[attemptingIndex]?.name}” (${attemptingIndex + 1}/${workouts.length})${err?.message ? ` — ${String(err.message).slice(0, 60)}` : ''}`,
+          `Couldn't save “${workouts[first]?.name}” (${first + 1}/${workouts.length})${err?.message ? ` — ${String(err.message).slice(0, 60)}` : ''}`,
           { action: { label: 'Retry', onPress: () => handleSaveRoutines(remaining, unlinkDone) } },
         );
       } finally {

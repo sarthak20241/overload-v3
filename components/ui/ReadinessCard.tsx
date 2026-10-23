@@ -23,7 +23,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { loadReadiness } from '@/lib/readinessSync';
+import { peekReadiness, sharedReadiness } from '@/lib/readinessSync';
 import { loadRecentSleep } from '@/lib/sleepLog';
 import { bandColor, directive, bandPillTextColor } from '@/lib/readiness';
 import type { ReadinessContributor, ReadinessResult } from '@/lib/readiness';
@@ -102,11 +102,16 @@ export function ReadinessCard() {
       }
       // Only show the spinner on the FIRST load (no result yet). On a refocus
       // reload keep the current card visible so returning doesn't flash a spinner.
-      setState((prev) => ({ ...prev, loading: prev.result == null }));
+      // Today's readiness already cached (an earlier focus, or the health sync
+      // that just computed it) paints at once.
+      const cached = peekReadiness(userId);
+      if (cached !== undefined) setState((prev) => ({ ...prev, loading: false, result: cached, error: false }));
+      else setState((prev) => ({ ...prev, loading: prev.result == null }));
       // Readiness is the hero: apply it the moment it resolves, never blocked on
       // the optional sleep query. The sleep row's duration streams in behind it
-      // (best-effort; the row falls back to a status word without it).
-      loadReadiness(supabase, userId)
+      // (best-effort; the row falls back to a status word without it). Inside
+      // its freshness window this answers from the cache with no read.
+      sharedReadiness(supabase, userId)
         .then((result) => {
           if (!cancelled) setState((prev) => ({ ...prev, loading: false, result, error: false }));
         })
