@@ -48,7 +48,7 @@ Deno.test("only activity missing: the activity fallback catches it, fuel days st
   assertEquals(missingColumn(err, ["diet_fuel_days"]), false);
 });
 
-// The phase metrics tables (migration 20261021120000): the app ships before
+// The phase metrics tables (migration 20261022022018): the app ships before
 // the migration, so a read of a table that is not there yet falls back.
 Deno.test("a read of a table the database does not have yet falls back", () => {
   // PostgREST: the table is not in its schema cache (also what a table created

@@ -381,10 +381,13 @@ async function gatherReadings(
     console.log(`[drona-cards] metric read failed (${ks.join(", ")}): ${why}`);
     for (const k of ks) if (kinds.has(k)) failed.add(k);
   };
-  const jobs: Promise<void>[] = [];
+  // Each read carries the kinds it feeds, so a read that throws fails only
+  // those kinds; the others' readings still count.
+  const jobs: { p: Promise<void>; ks: MetricToCheck["kind"][] }[] = [];
+  const add = (ks: MetricToCheck["kind"][], p: Promise<void>) => { jobs.push({ p, ks }); };
 
   if (kinds.has("bodyweight")) {
-    jobs.push((async () => {
+    add(["bodyweight"], (async () => {
       const { data, error } = await retried(() =>
         db.from("daily_metrics").select("value").eq("user_id", userId).eq("metric_type", "bodyweight_kg")
           .gte("metric_date", addDays(localDay, -14)).lte("metric_date", localDay)
@@ -435,7 +438,7 @@ async function gatherReadings(
     })().catch((e) => fail(String(e), ...new Set(named.map((m) => m.kind))));
   }
   if (kinds.has("lift_e1rm")) {
-    jobs.push((async () => {
+    add(["lift_e1rm"], (async () => {
       const lifts = metrics.filter((m) => m.kind === "lift_e1rm");
       const ids = lifts.filter((m) => m.ref?.exercise_id).map((m) => m.ref!.exercise_id!);
       if (ids.length === 0) return;
@@ -450,7 +453,7 @@ async function gatherReadings(
     })());
   }
   if (kinds.has("sets_per_muscle")) {
-    jobs.push((async () => {
+    add(["sets_per_muscle"], (async () => {
       const { data, error } = await retried(() =>
         db.from("user_volume_stats").select("muscle_group, set_count").eq("user_id", userId).eq("week_start", prevWeek)
       );
@@ -462,7 +465,7 @@ async function gatherReadings(
     })());
   }
   if (kinds.has("sessions_per_week") || kinds.has("cardio_sessions") || kinds.has("steps") || kinds.has("sleep_hours")) {
-    jobs.push((async () => {
+    add(["sessions_per_week", "cardio_sessions", "steps", "sleep_hours"], (async () => {
       // Last whole week's facts, rebuilt by pg_cron (drona_rebuild_all_facts).
       const { data, error } = await retried(() =>
         db.from("drona_week_facts").select("t_sessions, a_cardio_sessions, r_steps_avg, r_sleep_avg_min")
@@ -502,7 +505,7 @@ async function gatherReadings(
     })());
   }
   if (kinds.has("protein_days")) {
-    jobs.push((async () => {
+    add(["protein_days"], (async () => {
       let target = phaseProteinG;
       if (target == null) {
         const { data: prof, error: profErr } = await retried(() =>
@@ -553,17 +556,17 @@ async function gatherReadings(
   for (const kind of ["distance", "duration"] as const) {
     if (!kinds.has(kind)) continue;
     const ofKind = metrics.filter((m) => m.kind === kind);
-    for (const m of ofKind.filter((m) => m.ref?.exercise_id)) jobs.push(bestSet(kind, m)());
+    for (const m of ofKind.filter((m) => m.ref?.exercise_id)) add([kind], bestSet(kind, m)());
     // The any-exercise read is only for metrics tied to no exercise (no id,
     // no name). A metric tied to one whose read found nothing gets no reading
     // rather than another exercise's best (currentValueFor reads it the same way).
-    if (ofKind.some((m) => !ownExercise(m))) jobs.push(bestSet(kind, null)());
+    if (ofKind.some((m) => !ownExercise(m))) add([kind], bestSet(kind, null)());
   }
   if (kinds.has("custom")) {
     // The latest log of each custom metric, one read per metric (a phase
     // has one or two), so no metric's latest can be cut off by another's.
     for (const m of metrics.filter((m) => m.kind === "custom")) {
-      jobs.push((async () => {
+      add(["custom"], (async () => {
         const { data, error } = await retried(() =>
           // Up to today only: the table does not bound logged_on, so a
           // future-dated log written straight to it must not become the reading.
@@ -577,7 +580,7 @@ async function gatherReadings(
       })());
     }
   }
-  // A read that threw is a failed read too: the caller skips those kinds.
-  await Promise.all(jobs.map((j) => j.catch((e) => fail(String(e), ...kinds))));
+  // A read that threw is a failed read too: the caller skips its kinds.
+  await Promise.all(jobs.map(({ p, ks }) => p.catch((e) => fail(String(e), ...ks))));
   return { readings: r, failed };
 }

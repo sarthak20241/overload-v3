@@ -217,7 +217,7 @@ function activityOf(v: unknown): { activity?: ActivityGoals } {
 // The activity goal columns (migration 20261018120000). The app ships before
 // the migration, so every read and write of them falls back without them.
 const ACTIVITY_COLS = ['activity_steps_target', 'cardio_sessions_per_week'] as const;
-// The phase metrics columns and tables (migration 20261021120000). Same rule.
+// The phase metrics columns and tables (migration 20261022022018). Same rule.
 const JOB_COLS = ['job_text', 'coach_line'] as const;
 const METRICS_TABLE = 'coach_program_phase_metrics';
 const METRIC_LOGS_TABLE = 'coach_program_phase_metric_logs';

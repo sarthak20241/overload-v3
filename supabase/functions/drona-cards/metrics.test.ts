@@ -6,7 +6,7 @@ import { type Db, TRIES_PER_WEEK, dueReadFailure, metricsStep } from "./metrics.
  * awaiting it resolves to the next scripted answer for that table. Writes
  * (update) are recorded with the filters that followed them.
  */
-type Answer = { data: unknown; error: { message: string } | null };
+type Answer = { data: unknown; error: { message: string } | null; throws?: boolean };
 interface Written { table: string; patch: Record<string, unknown>; eq: [string, unknown][] }
 interface Read { table: string; eq: [string, unknown][] }
 
@@ -26,7 +26,7 @@ function fakeDb(script: Record<string, Answer[]>, failWrite: (w: Written) => str
     b.update = (p: Record<string, unknown>) => { patch = p; return b; };
     b.ilike = (k: string, v: unknown) => { eqs.push([`ilike:${k}`, v]); return b; };
     b.or = (f: string) => { eqs.push(["or", f]); return b; };
-    b.then = (resolve: (a: Answer) => unknown) => {
+    b.then = (resolve: (a: Answer) => unknown, reject?: (e: unknown) => unknown) => {
       if (patch) {
         const w = { table, patch, eq: [...eqs] };
         writes.push(w);
@@ -37,6 +37,8 @@ function fakeDb(script: Record<string, Answer[]>, failWrite: (w: Written) => str
       reads.push({ table, eq: [...eqs] });
       const queue = script[table] ?? [];
       const a = queue.length > 0 ? queue.shift()! : { data: null, error: null };
+      // A read that throws (a dropped connection), not one that answers with an error.
+      if (a.throws) return Promise.reject(new Error("socket hang up")).then(resolve, reject);
       return Promise.resolve(a).then(resolve);
     };
     return b;
@@ -494,4 +496,20 @@ Deno.test("the due read names the missing sync migration instead of failing user
   );
   // Any other failure is reported as it is.
   assertEquals(dueReadFailure({ code: "57014", message: "canceling statement due to statement timeout" }), "metrics: due read: canceling statement due to statement timeout");
+});
+
+Deno.test("a read that throws fails only its own kind; the other reads still count", async () => {
+  const { db, writes } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: rows, error: null }],
+    // The bodyweight read throws on each of retried()'s tries.
+    daily_metrics: Array.from({ length: 3 }, () => ({ data: null, error: null, throws: true })),
+    user_nutrition_stats: [{ data: [{ protein_g: 155 }, { protein_g: 160 }, { protein_g: 120 }, { protein_g: 151 }, { protein_g: 149 }], error: null }],
+  });
+  const out = await metricsStep(db, "user-1", DAY, WEEK, "key", (() => Promise.resolve(new Response("{}", { status: 200 }))) as unknown as typeof fetch);
+  assertEquals(out.error, "read failed for bodyweight, retry next run");
+  // Protein days was read and written; only bodyweight waits.
+  const metricWrites = writes.filter((w) => w.table === "coach_program_phase_metrics" && "status" in w.patch);
+  assertEquals(metricWrites.map((w) => w.eq[0][1]), ["m-pd"]);
 });

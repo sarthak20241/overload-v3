@@ -4731,7 +4731,7 @@ Deno.serve(async (req) => {
     console.log("[ai-coach] activity fetch threw:", String(e));
   }
 
-  // 4d''. Phase metrics (20261021120000): what each phase is judged on, and
+  // 4d''. Phase metrics (20261022022018): what each phase is judged on, and
   // the current phase's weekly numbers. Its own reads, so a database without
   // the table (or the job columns) costs only these keys.
   try {

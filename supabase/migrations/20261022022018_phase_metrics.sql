@@ -1,4 +1,4 @@
--- 20261021120000_phase_metrics.sql: one hero metric and a few supporting targets per program phase
+-- 20261022022018_phase_metrics.sql: one hero metric and a few supporting targets per program phase
 --
 -- A phase used to carry only diet targets and directives. Now Drona picks what
 -- each phase is judged on (.planning/phase-metrics/SPEC.md):
@@ -34,13 +34,14 @@
 -- a NOTIFY at commit, so it fires only if everything above landed.
 -- The migration is applied by the user, not by a session.
 --
--- PRODUCTION: an early revision of this file is applied there (recorded as
--- 20261022022018 "phase_metrics" and 20261022115109
--- "phase_metrics_delta_checked_week_grants"). The differences since then are
--- brought over by 20261023120000_phase_metrics_sync.sql, which must be applied
--- before drona-cards is deployed (the weekly job needs retry_tries/retry_week).
--- Do NOT `supabase db push` this file to production: its history does not
--- list this version, so it would run again there. Apply the sync file by hand.
+-- PRODUCTION: an early revision of this file is applied there under this same
+-- version (20261022022018 "phase_metrics"), then 20261022115109
+-- "phase_metrics_delta_checked_week_grants" (a no-op placeholder here). This
+-- file was first written as 20261021120000 and renamed so the repo's history
+-- matches production's: `supabase db push` skips both. The differences since
+-- that early revision are brought over by 20261023120000_phase_metrics_sync.sql,
+-- which must be applied before drona-cards is deployed (the weekly job needs
+-- retry_tries/retry_week).
 
 begin;
 

@@ -1,9 +1,9 @@
--- 20261023120000_phase_metrics_sync.sql: bring the live phase-metrics tables up to 20261021120000
+-- 20261023120000_phase_metrics_sync.sql: bring the live phase-metrics tables up to 20261022022018
 --
--- Production applied an EARLY revision of 20261021120000_phase_metrics.sql
--- (recorded as 20261022022018 "phase_metrics", then 20261022115109
--- "phase_metrics_delta_checked_week_grants"). Review rounds on PR #278 then
--- changed that file. Read on 2026-10-23, production differs from it in:
+-- Production applied an EARLY revision of 20261022022018_phase_metrics.sql
+-- (first written as 20261021120000; recorded as 20261022022018
+-- "phase_metrics", then 20261022115109 "phase_metrics_delta_checked_week_grants").
+-- Review rounds on PR #278 then changed that file. Read on 2026-10-23, production differs from it in:
 --
 --   coach_program_phase_metrics
 --     - no retry_tries / retry_week (the weekly job reads and writes both:
@@ -19,18 +19,18 @@
 -- Every live row fits the new checks (checked 2026-10-23: 22 metric rows, 0
 -- logs, none out of range), so they are added validated. Every statement is
 -- idempotent, so this is also safe on a database built from the current
--- 20261021120000 file, where it changes nothing (the checks are added only
+-- 20261022022018 file, where it changes nothing (the checks are added only
 -- to columns that have none).
 --
 -- Applied by the user, not by a session (apply_migration / the SQL editor).
--- Apply BEFORE deploying drona-cards. Do NOT `supabase db push` this branch:
--- production's history has this feature under 20261022022018 and
--- 20261022115109, so db push would also try 20261021120000 again.
+-- Apply BEFORE deploying drona-cards. With the repo's history now matching
+-- production's (20261022022018, 20261022115109), `supabase db push` would run
+-- only this file; applying it by hand is still the plan.
 
 begin;
 
 -- True when `col` of `tbl` already carries a CHECK constraint (under any
--- name: a database built from the current 20261021120000 has them inline).
+-- name: a database built from the current 20261022022018 has them inline).
 create or replace function pg_temp.has_check(tbl regclass, col text) returns boolean
 language sql stable as $$
   select exists (
@@ -78,7 +78,7 @@ create policy "coach_program_phase_metrics_owner_update" on public.coach_program
                    and p.program_id = coach_program_phase_metrics.program_id
                    and p.user_id = current_clerk_user_id()));
 
--- The grants exactly as in 20261021120000: no is_hero or seq updates, and
+-- The grants exactly as in 20261022022018: no is_hero or seq updates, and
 -- nothing on the job-only columns (checked_at, checked_week, retry_*).
 revoke all on table public.coach_program_phase_metrics from anon, authenticated;
 grant select, delete on table public.coach_program_phase_metrics to authenticated;
@@ -130,7 +130,7 @@ notify pgrst, 'reload schema';
 
 commit;
 
--- After applying, check the result matches 20261021120000:
+-- After applying, check the result matches 20261022022018:
 --
 --   select column_name from information_schema.columns
 --    where table_schema = 'public' and table_name = 'coach_program_phase_metrics'
