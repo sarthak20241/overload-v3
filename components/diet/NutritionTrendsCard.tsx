@@ -19,11 +19,12 @@ import { CalorieBarChart } from '@/components/diet/CalorieBarChart';
 const DAYS = 14;
 const r0 = (n: number) => Math.round(n);
 
-/** A theme colour at `alpha`. Theme tokens are hex today; anything else is
- *  returned as is rather than turned into an invalid colour string. */
+/** A theme colour at `alpha`. Theme tokens are hex today; anything else
+ *  falls back to transparent, so a faint band can never turn solid and hide
+ *  the bars drawn over it. */
 function tint(color: string, alpha: number): string {
   const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
-  if (!m) return color;
+  if (!m) return 'transparent';
   const h = m[1].length === 3 ? m[1].split('').map((c) => c + c).join('') : m[1];
   const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
   return `rgba(${r},${g},${b},${alpha})`;
@@ -47,13 +48,18 @@ export function NutritionTrendsCard() {
   const logged = history.filter((d) => d.kcal > 0);
   if (logged.length === 0) return null;
 
-  const avg = (sel: (d: DayNutrition) => number) => logged.reduce((a, d) => a + sel(d), 0) / logged.length;
+  const todayIso = ymd(new Date());
+  // Macro averages over the same days as the calorie average: finished logged
+  // days, so half of today does not pull them down. Only today logged: today.
+  const finished = logged.filter((d) => d.dayIso !== todayIso);
+  const base = finished.length ? finished : logged;
+  const avg = (sel: (d: DayNutrition) => number) => base.reduce((a, d) => a + sel(d), 0) / base.length;
   // Each day against the goal it had: fuel days, one-day goals, past changes.
   const goalFor = (iso: string) => {
     const [y, m, d] = iso.split('-').map(Number);
     return targetsOn(new Date(y, m - 1, d)).kcal;
   };
-  const { bars, summary } = calorieBars(history, goalFor, ymd(new Date()));
+  const { bars, summary } = calorieBars(history, goalFor, todayIso);
   const chartWidth = width - Spacing.xl * 2 - Spacing.lg * 2;
   const pct = Math.round(RANGE_PCT * 100);
 
