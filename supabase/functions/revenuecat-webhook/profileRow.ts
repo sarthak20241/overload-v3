@@ -37,7 +37,11 @@ export async function ensureProfileRow(
   db: ProfileUpserter,
   clerkUserId: string | null | undefined,
 ): Promise<boolean> {
-  if (!isClerkUserId(clerkUserId)) return false;
+  if (!isClerkUserId(clerkUserId)) {
+    // The caller's update will then match 0 rows and throw for a retry.
+    console.warn(`[revenuecat] no profile row created: ${clerkUserId ?? "(none)"} is not a Clerk id`);
+    return false;
+  }
   const { error } = await db
     .from("user_profiles")
     .upsert({ clerk_user_id: clerkUserId }, { onConflict: "clerk_user_id", ignoreDuplicates: true });
