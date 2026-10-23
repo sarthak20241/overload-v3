@@ -107,6 +107,7 @@ import {
   STORE_NAME,
   type PlanKey,
   type RevenueCatPackage,
+  type RevenueCatCustomerInfo,
 } from '@/lib/revenuecat';
 
 type FunnelStep = 'warmup' | 'reminder' | 'paywall' | 'success';
@@ -159,7 +160,7 @@ function currencySymbol(priceString: string): string {
  * the product's offer: an existing subscriber who upgrades has no intro
  * trial, and the day-5 reminder would promise one they are not on.
  */
-function entitlementOnTrial(customerInfo: { entitlements?: { active?: Record<string, { periodType?: string }> } } | null | undefined): boolean {
+function entitlementOnTrial(customerInfo: RevenueCatCustomerInfo | null | undefined): boolean {
   return Object.values(customerInfo?.entitlements?.active ?? {}).some((e) => {
     const t = e?.periodType;
     return t === 'TRIAL' || t === 'INTRO' || t === 'trial' || t === 'intro';
@@ -374,29 +375,32 @@ export default function UpgradeScreen() {
         const flipped = await waitForTierFlip(120_000);
         invalidateCoachAccess();
         track('purchase_pending_resolved', { plan: selectedPlan, context, source, flipped });
-        if (!mounted.current) return;
         if (flipped) {
           // A pending purchase never returned customerInfo. Read it fresh: a
           // product that offers a trial says nothing about whether THIS buyer
           // got one (a returning subscriber does not), and the day-5 reminder
           // must not promise a trial they are not on.
           const onTrial = entitlementOnTrial(await getCustomerInfo());
-          if (!mounted.current) return;
+          // Conversion tracking and the reminder do not need this screen, so
+          // they run even if the buyer left during the wait. These are exactly
+          // the slow-bank buyers this branch exists for.
           if (onTrial) {
             void scheduleTrialReminder().then((scheduled) => {
               track('trial_reminder_scheduled', { scheduled, plan: selectedPlan });
             });
           }
-          void prefetchDashboard(supabase, user?.id);
           paywallResolved.current = true;
           setUserProps({ tier: selectedPlan, on_trial: onTrial });
           track('purchase_completed', { plan: selectedPlan, on_trial: onTrial, context, source, was_pending: true });
+          if (!mounted.current) return;
+          void prefetchDashboard(supabase, user?.id);
           setOutcome({ plan: selectedPlan, onTrial });
           setStep('success');
         } else {
+          if (!mounted.current) return;
           setPendingOrder(true);
           toast.info(
-            "Your bank is still approving this. Pro unlocks on its own when it does, so don't pay again.",
+            "Your bank is still approving this. Pro unlocks on its own when it does, so don't pay again. Declined? Tap Restore, then try again.",
             { durationMs: 10000 },
           );
         }
@@ -418,7 +422,7 @@ export default function UpgradeScreen() {
           error_underlying: err.underlying,
           error_message: err.message,
         });
-        toast.error("That didn't go through. Nothing was charged. Try again, or tap Restore if you've bought before.", { durationMs: 8000 });
+        toast.error("That didn't go through. Try again. If you were charged, tap Restore.", { durationMs: 8000 });
       }
     } finally {
       setPurchasing(false);
@@ -429,6 +433,8 @@ export default function UpgradeScreen() {
   const handleRestore = useCallback(async () => {
     if (restoring) return;
     setRestoring(true);
+    // Restore is the way out of a pending order that the bank declined.
+    setPendingOrder(false);
     track('purchase_restore_started', { context });
     try {
       const info = await restorePurchases();

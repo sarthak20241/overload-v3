@@ -398,11 +398,6 @@ export async function purchaseCoachPackage(
 }
 
 /**
- * Restores a previous purchase — Apple HIG requires a "Restore Purchases"
- * affordance on any paywall. Returns the customer's entitlements so the UI
- * can show a confirmation.
- */
-/**
  * Fresh entitlements without a purchase. A pending payment never returns
  * customerInfo from purchasePackage, so after it lands this is the only way
  * to read whether the buyer is really on a trial.
@@ -418,6 +413,11 @@ export async function getCustomerInfo(): Promise<RevenueCatCustomerInfo | null> 
   }
 }
 
+/**
+ * Restores a previous purchase — Apple HIG requires a "Restore Purchases"
+ * affordance on any paywall. Returns the customer's entitlements so the UI
+ * can show a confirmation.
+ */
 export async function restorePurchases(): Promise<RevenueCatCustomerInfo | null> {
   const P = loadPurchases();
   if (!P) return null;

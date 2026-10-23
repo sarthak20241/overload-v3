@@ -220,21 +220,23 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
           setVerifying(true);
           const flipped = await waitForTierFlip(120_000);
           track('purchase_pending_resolved', { plan, source: 'coach_sheet', flipped });
-          // The wait runs up to 2 minutes; the sheet may be gone by now.
-          if (!mounted.current) return;
           if (flipped) {
+            // Tracking does not need the sheet, so it runs even if the buyer
+            // left during the up-to-2-minute wait.
             paywallResolved.current = true;
             track('purchase_completed', { plan, source: 'coach_sheet', was_pending: true });
             setUserProps({ tier: plan });
+            if (!mounted.current) return;
             toast.success("You're in. Welcome to Coach Drona.");
             await onPurchased();
             onClose();
           } else {
+            if (!mounted.current) return;
             // Keep the cards off: a second tap could double-charge or hit the
             // store's already-owned error while this order is still pending.
             setPendingOrder(true);
             toast.info(
-              "Your bank is still approving this. Pro unlocks on its own when it does, so don't pay again.",
+              "Your bank is still approving this. Pro unlocks on its own when it does, so don't pay again. Declined? Tap Restore, then try again.",
               { durationMs: 10000 },
             );
           }
@@ -254,7 +256,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
             error_message: err.message,
           });
           console.warn('[paywall] purchase failed:', err, e);
-          toast.error("That didn't go through. Nothing was charged. Try again, or tap Restore if you've bought before.", { durationMs: 8000 });
+          toast.error("That didn't go through. Try again. If you were charged, tap Restore.", { durationMs: 8000 });
         }
       } finally {
         setPurchasingPlan(null);
@@ -267,6 +269,8 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
   const handleRestore = useCallback(async () => {
     if (restoring) return;
     setRestoring(true);
+    // Restore is the way out of a pending order that the bank declined.
+    setPendingOrder(false);
     try {
       const info = await restorePurchases();
       if (!info) {
