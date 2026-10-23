@@ -622,6 +622,10 @@ export default function UpgradeScreen() {
               Plus unlimited coach chat and AI food logs.
             </Text>
 
+            {/* Spare height sits HERE, between the story and the plans, so the
+                plans rest right above the CTA like most store paywalls. */}
+            <View style={u.planSpacer} />
+
             {loading ? (
               <View style={u.spinnerWrap}>
                 <ActivityIndicator color={C.foreground} />
@@ -738,11 +742,10 @@ export default function UpgradeScreen() {
                   {selectedTrial > 0 ? 'No payment today' : 'First charge today'}
                   {'   ·   '}
                   <Text
-                    style={{ color: C.foreground }}
                     onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}
                     accessibilityRole="link"
                   >
-                    Didn't reach your goal? Full refund.
+                    Miss your goal? Full refund.
                   </Text>
                 </>
               )}
@@ -1096,10 +1099,12 @@ const u = StyleSheet.create({
   // ScrollView (SE-class safety net), footer is fixed at the bottom.
   paywallBody: { flex: 1 },
   paywallBodyContent: {
+    flexGrow: 1,
     paddingHorizontal: Spacing.xxl,
     paddingTop: Spacing.sm,
     paddingBottom: Spacing.md,
   },
+  planSpacer: { flexGrow: 1, minHeight: Spacing.lg },
   hero: {
     fontFamily: FontFamily.display,
     fontSize: 28,
