@@ -749,7 +749,7 @@ export interface ActiveProgram {
   total_weeks: number | null;
   applied_phase_seq: number | null;
   phases: ActiveProgramPhaseRow[];
-  /** Index into phases that is active today, or null (not started / ended). */
+  /** The `seq` of the phase active today (look it up with phaseFor, never as an array index), or null (not started / ended). */
   currentPhaseSeq: number | null;
   /** 1-based week within the current phase, or null. */
   weekInPhase: number | null;
