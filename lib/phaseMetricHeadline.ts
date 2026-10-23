@@ -103,3 +103,35 @@ export function focusFromCoachLine(line: string): string {
   const first = sentences[0];
   return restates.test(first) && first.length < 48 ? sentences[1] : first;
 }
+
+/** What a metric is about, said first on a plan row where the words alone would not say it. */
+function rowSubject(m: PhaseMetricRow): string | null {
+  if (m.kind === 'protein_days') return 'Protein';
+  if (m.kind === 'sets_per_muscle') return m.ref?.muscle ?? 'Muscle';
+  return null;
+}
+
+/**
+ * A plan row's line (Train / Eat / Recover on the Goal and phase screens):
+ * the same number and status as metricHeadline, worded so the row always
+ * names what it measures. The row title is the pillar ("Eat"), so "5 of 7
+ * last week" alone is a number with no subject. `short` is for a line that
+ * would not fit; it is shorter but never drops the subject.
+ */
+export function rowLine(m: PhaseMetricRow, live: LiveReadings | null): { text: string; short: string; status: MetricStatus | null } {
+  const h = metricHeadline(m, live);
+  const subject = rowSubject(m);
+  if (!h.num) {
+    const text = m.kind === 'protein_days' ? `Protein days: ${h.rest.toLowerCase()}` : subject ? `${subject}: ${h.rest.toLowerCase()}` : h.rest;
+    return { text, short: text, status: h.status };
+  }
+  if (m.kind === 'protein_days') {
+    const when = h.rest.replace(/^of 7 protein days /, '');
+    return { text: `Protein ${h.num} of 7 days ${when}`, short: `${h.num} of 7 protein days ${when}`, status: h.status };
+  }
+  if (subject) {
+    const full = `${subject} ${h.num} ${h.rest}`;
+    return { text: full, short: `${subject} ${h.num} ${h.rest.replace(/ (last week|so far this week)$/, '')}`, status: h.status };
+  }
+  return { text: headlineText(h), short: headlineText(h, true), status: h.status };
+}

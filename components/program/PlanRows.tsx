@@ -14,7 +14,7 @@ import type { ActiveProgramPhaseRow } from '@/lib/programData';
 import { heroOf, STATUS_LABEL, statusTone, type MetricKind, type MetricStatus } from '@/lib/phaseMetrics';
 import { weekPatternFor, REST } from '@/lib/weekPattern';
 import { PILLAR_OF, type Pillar } from '@/components/program/PhaseDetail';
-import { headlineText, metricHeadline, type LiveReadings } from '@/lib/phaseMetricHeadline';
+import { rowLine, type LiveReadings } from '@/lib/phaseMetricHeadline';
 import { Row, SectionLabel, Stagger, S, T, useStatusColor } from '@/components/program/finish';
 import { FontWeight } from '@/constants/theme';
 
@@ -25,8 +25,13 @@ const ROW_METRIC_PREFERENCE: Record<Pillar, MetricKind[]> = {
   recover: ['sleep_hours'],
 };
 
-/** A subtitle at 14pt beside an icon and a chevron fits about this many characters on a 402pt screen. */
-const SUBTITLE_MAX_CHARS = 36;
+/**
+ * A subtitle at 14pt beside an icon and a chevron fits about this many
+ * characters on a 402pt screen. Measured on device: "3 of 4 sessions last
+ * week · On track" (36) used ~233pt and left ~65pt, so ~46 fit; 42 keeps a
+ * margin for wide glyphs.
+ */
+const SUBTITLE_MAX_CHARS = 42;
 
 /**
  * A plan row's subtitle: ONE metric with its status when the pillar has one,
@@ -38,13 +43,9 @@ export function pillarSummary(ph: ActiveProgramPhaseRow, pillar: Pillar, readine
   const hero = heroOf(ph.metrics);
   const candidates = ph.metrics.filter((m) => m.id !== hero?.id && PILLAR_OF[m.kind] === pillar);
   const metric = ROW_METRIC_PREFERENCE[pillar].map((k) => candidates.find((m) => m.kind === k)).find((m) => m != null) ?? null;
-  const h = metric ? metricHeadline(metric, live) : null;
+  const h = metric ? rowLine(metric, live) : null;
   const fitsLine = (text: string, status: MetricStatus | null) => text.length + (status ? 3 + STATUS_LABEL[status].length : 0) <= SUBTITLE_MAX_CHARS;
-  const metricText = () => {
-    if (!h) return '';
-    const full = headlineText(h);
-    return fitsLine(full, h.status) ? full : headlineText(h, true);
-  };
+  const metricText = () => (!h ? '' : fitsLine(h.text, h.status) ? h.text : h.short);
   if (pillar === 'train') {
     if (h) return { text: metricText(), status: h.status };
     const week = weekPatternFor(ph.training_block);

@@ -1,6 +1,6 @@
 // deno test --allow-all --unstable-sloppy-imports lib/phaseMetricHeadline.test.ts
 import { assertEquals } from 'https://deno.land/std@0.224.0/assert/mod.ts';
-import { focusFromCoachLine, metricHeadline, liveFrom, headlineText, type LiveReadings } from './phaseMetricHeadline.ts';
+import { focusFromCoachLine, metricHeadline, liveFrom, headlineText, rowLine, type LiveReadings } from './phaseMetricHeadline.ts';
 
 const base = { id: 'm', program_id: 'p', phase_id: 'ph', user_id: 'u', seq: 0, is_hero: false, ref: {}, unit: null, direction: 'up' as const, start_value: null, status_note: null, updated_at: '' };
 const m = (kind: string, target: number, current: number | null, status = 'on_track') =>
@@ -48,4 +48,24 @@ Deno.test('the focus sentence never splits a decimal number', () => {
   assertEquals(focusFromCoachLine('Sleep averaged 6.5 h; get to 7.5 h this week. Lights out by 11.'), 'Sleep averaged 6.5 h; get to 7.5 h this week.');
   assertEquals(focusFromCoachLine('On pace! Keep the 2.5 kg plates on.'), 'Keep the 2.5 kg plates on.');
   assertEquals(focusFromCoachLine('Add one set to rows.'), 'Add one set to rows.');
+});
+
+Deno.test('a plan row always names what it measures, even in its short form', () => {
+  // Protein days: the subject leads; the short form keeps it.
+  assertEquals(rowLine(m('protein_days', 5, 5, 'slipping'), live), { text: 'Protein 5 of 7 days last week', short: '5 of 7 protein days last week', status: 'slipping' });
+  // Sets name the muscle.
+  assertEquals(rowLine({ ...m('sets_per_muscle', 12, 10), ref: { muscle: 'Chest' } }, live).text, 'Chest 10 of 12 sets last week');
+  // Steps and cardio carry their subject in the words already.
+  assertEquals(rowLine(m('steps', 10000, 8200), live).text, '8,200 steps a day last week');
+  assertEquals(rowLine(m('steps', 10000, 8200), live).short, '8,200 steps/day last week');
+  assertEquals(rowLine(m('cardio_sessions', 3, 2), live).text, '2 of 3 cardio last week');
+  assertEquals(rowLine(m('sleep_hours', 7, 7.3), live).text, '7.3 h a night last week');
+  assertEquals(rowLine(m('sessions_per_week', 4, 3), live).text, '3 of 4 sessions last week');
+  // No reading: the subject is still there.
+  assertEquals(rowLine(m('protein_days', 5, null, 'due'), live).text, 'Protein days: no reading yet');
+  // No short form ever drops the subject.
+  for (const kind of ['protein_days', 'steps', 'cardio_sessions', 'sleep_hours', 'sessions_per_week']) {
+    const r = rowLine(m(kind, 5, 3), live);
+    assertEquals(/protein|steps|cardio|night|sessions/i.test(r.short), true, `${kind}: ${r.short}`);
+  }
 });
