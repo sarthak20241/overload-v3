@@ -13,7 +13,7 @@
  * cron summary, and a failed model call keeps last week's line.
  */
 import {
-  escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, phaseProgress, type MetricRef, type MetricStatus,
+  escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, namesAnExercise, phaseProgress, type MetricRef, type MetricStatus,
 } from "../_shared/phaseMetrics.ts";
 import {
   activePhaseIndex, addDays, bestOfSets, checkDue, checkMetrics, EMPTY_READINGS, meanPositive, ownExercise, proteinDaysOf,
@@ -385,7 +385,7 @@ async function gatherReadings(
   // name here, and the id is kept on the row so the chart and the next check
   // read it directly. Lifts need it; distance and duration use it when the
   // coach named the one exercise that counts.
-  const named = metrics.filter((m) => (m.kind === "lift_e1rm" || m.kind === "distance" || m.kind === "duration") && !m.ref?.exercise_id && m.ref?.exercise_name);
+  const named = metrics.filter((m) => namesAnExercise(m.kind) && !m.ref?.exercise_id && m.ref?.exercise_name);
   if (named.length > 0) {
     // Degrades like every other source: a throw here fails the named kinds
     // for this run, never the whole step.

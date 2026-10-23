@@ -28,7 +28,7 @@ import { missingColumn, missingTable, nextColumnSet, withoutColumns } from '@/li
 import { fetchShared, invalidateUserProgram, peek } from '@/lib/screenCache';
 import { programGoalFor } from '@/lib/fitnessGoals';
 import {
-  escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, normalizeMetrics, phaseProgress, statusFor,
+  escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, namesAnExercise, normalizeMetrics, phaseProgress, statusFor,
   type MetricRef, type PhaseMetricInput, type PhaseMetricRow,
 } from '@/lib/phaseMetrics';
 
@@ -628,7 +628,7 @@ async function saveProgramMetrics(
 ): Promise<void> {
   const names = new Set<string>();
   for (const ph of phases) for (const m of ph.metrics ?? []) {
-    if (m.kind === 'lift_e1rm' && m.ref?.exercise_name && !m.ref.exercise_id) names.add(m.ref.exercise_name);
+    if (namesAnExercise(m.kind) && m.ref?.exercise_name && !m.ref.exercise_id) names.add(m.ref.exercise_name);
   }
   const idByName = new Map<string, string>();
   // The winner for a name: the user's own exercise of that name, else the
@@ -670,7 +670,7 @@ async function saveProgramMetrics(
     if (!phaseId) return;
     (ph.metrics ?? []).forEach((m, seq) => {
       const ref: MetricRef = { ...(m.ref ?? {}) };
-      if (m.kind === 'lift_e1rm' && !ref.exercise_id && ref.exercise_name) {
+      if (namesAnExercise(m.kind) && !ref.exercise_id && ref.exercise_name) {
         const id = idByName.get(ref.exercise_name.toLowerCase());
         if (id) ref.exercise_id = id;
       }
