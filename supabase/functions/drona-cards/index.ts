@@ -34,7 +34,7 @@ import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "..
 import { type MomentPerson, momentRow, pickMoment } from "../_shared/dronaMoments.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
-import { type Db as MetricsDb, metricsStep } from "./metrics.ts";
+import { type Db as MetricsDb, dueReadFailure, metricsStep } from "./metrics.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -527,14 +527,17 @@ async function runCron(): Promise<Response> {
         // Active programs only, rows the check can read (a target), and a
         // stable page key (user_id, id) so no row straddles a page edge.
         const { data: unchecked, error: uncheckedErr } = await retried(() =>
-          db.from("coach_program_phase_metrics").select("user_id, coach_programs!inner(status)")
+          // retry_tries is selected on purpose: without the sync migration
+          // (20261023120000) this read fails once and names it (dueReadFailure),
+          // instead of every user's check failing on its own.
+          db.from("coach_program_phase_metrics").select("user_id, retry_tries, coach_programs!inner(status)")
             .eq("coach_programs.status", "active")
             .not("target_value", "is", null)
             .or(`checked_week.is.null,checked_week.lt.${latestWeek}`)
             .order("user_id", { ascending: true }).order("id", { ascending: true })
             .range(from, from + USER_PAGE - 1)
         );
-        if (uncheckedErr) { failures.push(`metrics: due read: ${uncheckedErr.message}`); break; }
+        if (uncheckedErr) { failures.push(dueReadFailure(uncheckedErr)); break; }
         for (const m of unchecked ?? []) if (m.user_id) dueMetrics.add(String(m.user_id));
         if (!unchecked || unchecked.length < USER_PAGE) break;
       }

@@ -22,7 +22,10 @@
 -- 20261021120000 file, where it changes nothing (the checks are added only
 -- to columns that have none).
 --
--- Applied by the user, not by a session. Apply BEFORE deploying drona-cards.
+-- Applied by the user, not by a session (apply_migration / the SQL editor).
+-- Apply BEFORE deploying drona-cards. Do NOT `supabase db push` this branch:
+-- production's history has this feature under 20261022022018 and
+-- 20261022115109, so db push would also try 20261021120000 again.
 
 begin;
 

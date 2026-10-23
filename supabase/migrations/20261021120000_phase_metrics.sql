@@ -39,6 +39,8 @@
 -- "phase_metrics_delta_checked_week_grants"). The differences since then are
 -- brought over by 20261023120000_phase_metrics_sync.sql, which must be applied
 -- before drona-cards is deployed (the weekly job needs retry_tries/retry_week).
+-- Do NOT `supabase db push` this file to production: its history does not
+-- list this version, so it would run again there. Apply the sync file by hand.
 
 begin;
 

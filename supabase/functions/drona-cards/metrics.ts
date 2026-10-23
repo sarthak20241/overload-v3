@@ -65,6 +65,20 @@ export interface Db {
  * rebuilt mid-week starts a fresh count with its fresh rows.
  */
 export const TRIES_PER_WEEK = 3;
+/**
+ * The cron's due read selects retry_tries, so a database without the sync
+ * migration (20261023120000) fails it once, with this message, and the whole
+ * metrics pass is skipped; without it every user's check would fail on its
+ * own read instead. Any other failure is reported as it is.
+ */
+export function dueReadFailure(err: { code?: string; message?: string }): string {
+  const msg = err.message ?? "";
+  if (err.code === "42703" && /retry_(tries|week)/.test(msg)) {
+    return "metrics: skipped, the database lacks retry_tries; apply 20261023120000_phase_metrics_sync.sql";
+  }
+  return `metrics: due read: ${msg}`;
+}
+
 /** Under this much time left in the run, the coach line waits for the next run. */
 export const MIN_LINE_MS = 5_000;
 

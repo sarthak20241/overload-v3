@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { type Db, TRIES_PER_WEEK, metricsStep } from "./metrics.ts";
+import { type Db, TRIES_PER_WEEK, dueReadFailure, metricsStep } from "./metrics.ts";
 
 /**
  * A fake PostgREST client: every chained call returns the builder, and
@@ -484,4 +484,14 @@ Deno.test("a clean line whose ledger clear fails says so, so the stale count is 
   // The line is written; the failed clear is named, not dropped.
   assertEquals([out.checked, out.line], [2, true]);
   assertEquals(out.error, "ledger clear failed: permission denied");
+});
+
+Deno.test("the due read names the missing sync migration instead of failing user by user", () => {
+  // Production before 20261023120000: retry_tries does not exist.
+  assertEquals(
+    dueReadFailure({ code: "42703", message: "column coach_program_phase_metrics.retry_tries does not exist" }),
+    "metrics: skipped, the database lacks retry_tries; apply 20261023120000_phase_metrics_sync.sql",
+  );
+  // Any other failure is reported as it is.
+  assertEquals(dueReadFailure({ code: "57014", message: "canceling statement due to statement timeout" }), "metrics: due read: canceling statement due to statement timeout");
 });
