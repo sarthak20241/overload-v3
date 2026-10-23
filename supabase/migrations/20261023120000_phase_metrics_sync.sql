@@ -29,14 +29,17 @@
 
 begin;
 
--- True when `col` of `tbl` already carries a CHECK constraint (under any
--- name: a database built from the current 20261022022018 has them inline).
-create or replace function pg_temp.has_check(tbl regclass, col text) returns boolean
+-- True when `tbl` already carries the bound on `col`, matched by NAME, not
+-- by "any check on the column" (an unrelated check would then hide a missing
+-- bound). Two names count: the one this file adds (`named`), and the name
+-- Postgres gives an inline column check (`<table>_<col>_check`), which is
+-- what a database built from the current 20261022022018 has.
+create or replace function pg_temp.has_check(tbl regclass, col text, named text) returns boolean
 language sql stable as $$
   select exists (
     select 1 from pg_constraint c
-      join pg_attribute a on a.attrelid = c.conrelid and a.attnum = any (c.conkey)
-     where c.conrelid = tbl and c.contype = 'c' and a.attname = col)
+     where c.conrelid = tbl and c.contype = 'c'
+       and c.conname in (named, (select relname from pg_class where oid = tbl) || '_' || col || '_check'))
 $$;
 
 -- ---- coach_program_phase_metrics --------------------------------------------
@@ -47,19 +50,19 @@ alter table public.coach_program_phase_metrics
 
 do $$
 begin
-  if not pg_temp.has_check('public.coach_program_phase_metrics', 'seq') then
+  if not pg_temp.has_check('public.coach_program_phase_metrics', 'seq', 'coach_program_phase_metrics_seq_range') then
     alter table public.coach_program_phase_metrics
       add constraint coach_program_phase_metrics_seq_range check (seq between 0 and 7);
   end if;
-  if not pg_temp.has_check('public.coach_program_phase_metrics', 'ref') then
+  if not pg_temp.has_check('public.coach_program_phase_metrics', 'ref', 'coach_program_phase_metrics_ref_size') then
     alter table public.coach_program_phase_metrics
       add constraint coach_program_phase_metrics_ref_size check (ref is null or pg_column_size(ref) <= 2000);
   end if;
-  if not pg_temp.has_check('public.coach_program_phase_metrics', 'unit') then
+  if not pg_temp.has_check('public.coach_program_phase_metrics', 'unit', 'coach_program_phase_metrics_unit_size') then
     alter table public.coach_program_phase_metrics
       add constraint coach_program_phase_metrics_unit_size check (unit is null or char_length(unit) <= 24);
   end if;
-  if not pg_temp.has_check('public.coach_program_phase_metrics', 'status_note') then
+  if not pg_temp.has_check('public.coach_program_phase_metrics', 'status_note', 'coach_program_phase_metrics_status_note_size') then
     alter table public.coach_program_phase_metrics
       add constraint coach_program_phase_metrics_status_note_size check (status_note is null or char_length(status_note) <= 200);
   end if;
@@ -96,11 +99,11 @@ grant update (ref, unit, direction, start_value, target_value, current_value, st
 
 do $$
 begin
-  if not pg_temp.has_check('public.coach_program_phase_metric_logs', 'value') then
+  if not pg_temp.has_check('public.coach_program_phase_metric_logs', 'value', 'coach_program_phase_metric_logs_value_range') then
     alter table public.coach_program_phase_metric_logs
       add constraint coach_program_phase_metric_logs_value_range check (value >= 0 and value <= 1000000);
   end if;
-  if not pg_temp.has_check('public.coach_program_phase_metric_logs', 'note') then
+  if not pg_temp.has_check('public.coach_program_phase_metric_logs', 'note', 'coach_program_phase_metric_logs_note_size') then
     alter table public.coach_program_phase_metric_logs
       add constraint coach_program_phase_metric_logs_note_size check (note is null or char_length(note) <= 200);
   end if;

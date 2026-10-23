@@ -258,7 +258,7 @@ export async function metricsStep(
           checked_at: now,
           checked_week: weekStart,
           updated_at: now,
-        }).eq("id", c.id)
+        }).eq("id", c.id).eq("user_id", userId)
       );
       // Keep going: a row left unstamped makes the group due again on the
       // next run (checkDue), and every write here is idempotent.
@@ -275,8 +275,21 @@ export async function metricsStep(
       // Retried next run (the unwritten rows are still unstamped). At the
       // limit every row is stamped for the week instead.
       const t = await recordTry({}, { checked_at: now, checked_week: weekStart });
-      if (t.giveUp && !t.failed) await stampOthers(phase.id);
-      return { checked, line: false, error: `${why.join("; ")}${t.giveUp ? `, gave up for the week after ${t.tries} tries` : ", retry next run"}${t.ledgerNote}` };
+      let fallback = "";
+      let stamped = t.giveUp && !t.failed;
+      if (t.failed) {
+        // Without the ledger the tries never advance, so the give-up could
+        // never land and the phase would be re-read every run all week. The
+        // phase is stamped for the week instead: no retries, but bounded.
+        const { error: stampErr } = await retried(() =>
+          db.from("coach_program_phase_metrics").update({ checked_at: now, checked_week: weekStart })
+            .eq("user_id", userId).eq("phase_id", phase.id)
+        );
+        stamped = !stampErr;
+        fallback = stampErr ? `; fallback stamp failed: ${stampErr.message}` : "; stamped for the week instead";
+      }
+      if (stamped) await stampOthers(phase.id);
+      return { checked, line: false, error: `${why.join("; ")}${t.giveUp ? `, gave up for the week after ${t.tries} tries` : ", retry next run"}${t.ledgerNote}${fallback}` };
     }
 
     await stampOthers(phase.id);

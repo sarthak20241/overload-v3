@@ -92,6 +92,8 @@ Deno.test("a clean week writes every metric and the coach line", async () => {
     ["m-pd", 3, "slipping"],      // 3 of 5 days: 60%
   ]);
   assertEquals(metricWrites.every((w) => typeof w.patch.checked_at === "string" && w.patch.checked_week === WEEK), true);
+  // The job runs as the service role: each row write is also scoped to the user.
+  assertEquals(metricWrites.every((w) => w.eq.some(([k, v]) => k === "user_id" && v === "user-1")), true);
   const line = writes.find((w) => w.table === "coach_program_phases");
   assertEquals(line?.patch.coach_line, "On pace. Protein is the one slipping; three of five days hit.");
   assertEquals(line?.eq, [["id", "ph0"], ["user_id", "user-1"]]);
@@ -155,6 +157,27 @@ Deno.test("a source that stays down is retried, then the week is given up and th
   const ledger = first.writes.find((w) => w.patch.retry_tries === 1);
   assertEquals(ledger?.patch, { retry_tries: 1, retry_week: WEEK });
   assertEquals(first.writes.some((w) => w.eq.some(([k, v]) => k === "phase_id" && v === "ph1")), false);
+});
+
+Deno.test("a source that is down and a ledger that cannot be written: the phase is stamped for the week, not retried every run", async () => {
+  // Without the ledger the tries never advance, so the give-up could never
+  // land and the phase would be re-read every cron run all week.
+  const { db, writes } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: rows, error: null }],
+    daily_metrics: Array.from({ length: 3 }, () => ({ data: null, error: { message: "504 gateway" } })),
+    user_nutrition_stats: [{ data: [{ protein_g: 155 }], error: null }],
+  }, (w) => ("retry_tries" in w.patch ? "permission denied" : null));
+  const out = await metricsStep(db, "user-1", DAY, WEEK, "key");
+  assertEquals(out.error, "read failed for bodyweight, retry next run; ledger write failed: permission denied; stamped for the week instead");
+  const stamp = writes.find((w) =>
+    !("retry_tries" in w.patch) && !("status" in w.patch) && w.patch.checked_week === WEEK &&
+    w.eq.some(([k, v]) => k === "phase_id" && v === "ph0"));
+  assertEquals(stamp?.eq, [["user_id", "user-1"], ["phase_id", "ph0"]]);
+  assertEquals(typeof stamp?.patch.checked_at, "string");
+  // The other phases are stamped too, so nothing about this user is due.
+  assertEquals(writes.some((w) => w.eq.some(([k, v]) => k === "phase_id" && v === "ph1")), true);
 });
 
 Deno.test("nothing to do: no program, or every metric already checked this week", async () => {
