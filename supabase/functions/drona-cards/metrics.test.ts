@@ -416,6 +416,25 @@ Deno.test("a failed line is retried next run and a clean line then clears the le
   assertEquals(onlyOtherStamps(run3.writes), true);
 });
 
+Deno.test("a coach line that cannot be saved is retried next run, like a failed model call", async () => {
+  const { db, writes } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: rows, error: null }],
+    daily_metrics: [{ data: { value: 71.4 }, error: null }],
+    user_nutrition_stats: [{ data: [{ protein_g: 155 }], error: null }],
+  }, (w) => (w.table === "coach_program_phases" ? "permission denied" : null));
+  const ok = (() => Promise.resolve(new Response(JSON.stringify({
+    content: [{ type: "tool_use", name: "phase_line", input: { line: "On pace." } }],
+  }), { status: 200 }))) as unknown as typeof fetch;
+  const out = await metricsStep(db, "user-1", DAY, WEEK, "key", ok);
+  assertEquals([out.checked, out.line, out.error], [2, false, "line: permission denied, retry next run"]);
+  // The rows are un-stamped and carry the try, so the cron lists the user again.
+  const retry = writes.find((w) => w.patch.checked_week === null);
+  assertEquals(retry?.patch, { retry_tries: 1, retry_week: WEEK, checked_week: null });
+  assertEquals(retry?.eq, [["user_id", "user-1"], ["phase_id", "ph0"]]);
+});
+
 Deno.test("each custom metric reads its own latest log", async () => {
   const a = { id: "m-a", seq: 0, is_hero: true, kind: "custom", ref: { name: "Hold" }, unit: "s", direction: "up", start_value: 5, target_value: 20, current_value: 9, status: "on_track", checked_week: null };
   const b = { id: "m-b", seq: 1, is_hero: false, kind: "custom", ref: { name: "Pull-ups" }, unit: "reps", direction: "up", start_value: 3, target_value: 10, current_value: 4, status: "on_track", checked_week: null };

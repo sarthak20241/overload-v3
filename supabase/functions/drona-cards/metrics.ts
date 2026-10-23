@@ -331,21 +331,24 @@ export async function metricsStep(
       weeks_total: phase.duration_weeks,
       metrics: lineMetrics,
     }, anthropicKey, fetchFn, undefined, Number.isFinite(left) ? left : undefined);
-    if (!answer.line) {
-      // Retried this week: the rows are un-stamped, so the cron lists the
-      // user again and the next run re-checks the phase (idempotent) and asks
-      // the model once more. A model that keeps failing (a bad key, a 4xx)
-      // costs at most TRIES_PER_WEEK calls a week; the phase keeps last
-      // week's line. At the limit the rows keep their stamp.
-      const why = answer.error ?? "no line";
+    // A line that is saved ends here. A model that gives no line, or a line
+    // that cannot be saved, is retried this week: the rows are un-stamped,
+    // so the cron lists the user again and the next run re-checks the phase
+    // (idempotent) and asks the model once more. A model that keeps failing
+    // (a bad key, a 4xx) costs at most TRIES_PER_WEEK calls a week; the phase
+    // keeps last week's line. At the limit the rows keep their stamp.
+    let why: string | null = answer.line ? null : answer.error ?? "no line";
+    if (answer.line) {
+      const { error: lineErr } = await retried(() =>
+        db.from("coach_program_phases").update({ coach_line: answer.line }).eq("id", phase.id).eq("user_id", userId)
+      );
+      if (lineErr) why = lineErr.message;
+    }
+    if (why != null) {
       const t = await recordTry({ checked_week: null }, {});
       console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} not written: ${why}; ${t.giveUp ? "keeping last week's line" : "retry next run"} (${t.tries} of ${TRIES_PER_WEEK})`);
       return { checked, line: false, error: `line: ${why}, ${t.giveUp ? `gave up for the week after ${t.tries} tries` : "retry next run"}${t.ledgerNote}` };
     }
-    const { error: lineErr } = await retried(() =>
-      db.from("coach_program_phases").update({ coach_line: answer.line }).eq("id", phase.id).eq("user_id", userId)
-    );
-    if (lineErr) return { checked, line: false, error: `line: ${lineErr.message}` };
     // A clean line clears the retry ledger. A failed clear leaves a stale
     // count for this week only (the next week starts its own); it is named
     // in the run summary rather than dropped.
