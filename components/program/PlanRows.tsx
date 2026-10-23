@@ -16,6 +16,7 @@ import { weekPatternFor, REST } from '@/lib/weekPattern';
 import { PILLAR_OF, type Pillar } from '@/components/program/PhaseDetail';
 import { rowLine, type LiveReadings } from '@/lib/phaseMetricHeadline';
 import { Row, SectionLabel, Stagger, S, T, useStatusColor } from '@/components/program/finish';
+import { DumbbellIcon, MoonIcon, UtensilsIcon } from '@/components/program/LineIcons';
 import { FontWeight } from '@/constants/theme';
 
 /** The one supporting metric a plan row shows, in order of preference per pillar. */
@@ -82,12 +83,11 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
   const { C } = useTheme();
   const router = useRouter();
   const statusColor = useStatusColor();
-  // The approved reference's thin outline icons (Ionicons ships with
-  // @expo/vector-icons, so no native change).
-  const rows: { pillar: Pillar; icon: 'barbell-outline' | 'restaurant-outline' | 'moon-outline'; title: string }[] = [
-    { pillar: 'train', icon: 'barbell-outline', title: 'Train' },
-    { pillar: 'eat', icon: 'restaurant-outline', title: 'Eat' },
-    { pillar: 'recover', icon: 'moon-outline', title: 'Recover' },
+  // The approved reference's thin outline icons (Lucide paths, drawn inline).
+  const rows: { pillar: Pillar; Icon: typeof DumbbellIcon; title: string }[] = [
+    { pillar: 'train', Icon: DumbbellIcon, title: 'Train' },
+    { pillar: 'eat', Icon: UtensilsIcon, title: 'Eat' },
+    { pillar: 'recover', Icon: MoonIcon, title: 'Recover' },
   ];
   const open = (pillar: Pillar) => {
     track('program_pillar_opened', { pillar, seq: phase.seq, from });
@@ -97,18 +97,18 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
     <View>
       {heading && (
         <Stagger index={staggerFrom}>
-          <Text style={[T.heading, { color: C.foreground, marginBottom: S.md }]}>Your plan</Text>
+          <Text style={[T.heading, { color: C.foreground, marginBottom: 6 }]}>Your plan</Text>
         </Stagger>
       )}
       {!heading && <SectionLabel style={{ marginBottom: S.md }}>Your plan</SectionLabel>}
-      {rows.map(({ pillar, icon, title }, i) => {
+      {rows.map(({ pillar, Icon, title }, i) => {
         const s = pillarSummary(phase, pillar, readinessToday, live);
         return (
           <Stagger key={pillar} index={staggerFrom + 1 + i}>
             <Row
-              ionIcon={icon}
+              iconNode={<Icon size={26} color={C.foreground} />}
               title={title}
-              minHeight={64}
+              minHeight={54}
               first={i === 0}
               last={i === rows.length - 1}
               onPress={() => open(pillar)}

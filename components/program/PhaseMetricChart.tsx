@@ -25,10 +25,10 @@ import { Colors } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { monotonePath } from '@/components/ui/MiniAreaChart';
 
-export const CHART_HEIGHT = 76;
+export const CHART_HEIGHT = 58;
 const BARS_HEIGHT = 88;
 const PAD_TOP = 6;
-const PAD_BOTTOM = 12;
+const PAD_BOTTOM = 6;
 const X0 = 4;
 const X1_INSET = 10;
 const LABEL_FONT = 10.5;
@@ -64,7 +64,9 @@ export function MetricLineChart({ width, points, weeks, endTarget }: LineProps) 
   let hi = Math.max(...ys);
   if (!Number.isFinite(lo) || !Number.isFinite(hi)) { lo = 0; hi = 1; }
   if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
-  const padY = (hi - lo) * 0.1;
+  // ~15% room above and below the readings and the goal, so a flat week
+  // does not hug the top edge.
+  const padY = (hi - lo) * 0.15;
   lo -= padY; hi += padY;
   // Two pieces: first reading to now across at least HISTORY_SHARE of the
   // width, now to the program's end across the rest.
@@ -86,13 +88,19 @@ export function MetricLineChart({ width, points, weeks, endTarget }: LineProps) 
   const line = pts.length >= 2 ? monotonePath(pts) : null;
   // The fill closes the line down to the chart's floor.
   const area = line && last ? `${line} L ${last.x},${H} L ${pts[0].x},${H} Z` : null;
+  const fillTop = pts.length > 0 ? Math.min(...pts.map((p) => p.y)) : 0;
 
   return (
     <View style={{ width, height: H }}>
       <Svg width={width} height={H} viewBox={`0 0 ${width} ${H}`}>
         <Defs>
-          <LinearGradient id="metricFill" x1="0" y1="0" x2="0" y2="1">
-            <Stop offset="0" stopColor={Colors.primary} stopOpacity={0.07} />
+          {/* A soft wash, not a block: ~12% lime at the line, gone by 70% of
+              the way down. In user space from the line's top to the floor, so
+              the fade is the same however flat the line is. */}
+          <LinearGradient id="metricFill" gradientUnits="userSpaceOnUse" x1="0" y1={String(fillTop)} x2="0" y2={String(H)}>
+            <Stop offset="0" stopColor={Colors.primary} stopOpacity={0.12} />
+            <Stop offset="0.35" stopColor={Colors.primary} stopOpacity={0.04} />
+            <Stop offset="0.7" stopColor={Colors.primary} stopOpacity={0} />
             <Stop offset="1" stopColor={Colors.primary} stopOpacity={0} />
           </LinearGradient>
         </Defs>
