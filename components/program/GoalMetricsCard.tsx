@@ -80,7 +80,10 @@ export function GoalMetricsCard({ chartWidth }: Props) {
       // Awaited below; a no-op handler keeps a failure that lands while the
       // cached series load from being reported as unhandled.
       programP.catch(() => {});
-      if (cached !== undefined) await show(cached);
+      if (cached !== undefined) {
+        // A failure here must not skip the fresh program below.
+        try { await show(cached); } catch (e) { console.warn('[programs] goal metrics (cached) failed', e); }
+      }
       await show(await programP);
     } catch (e) {
       // Keep what we had; the card is a nicety on a busy screen.

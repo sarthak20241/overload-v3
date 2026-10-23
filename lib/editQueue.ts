@@ -453,6 +453,8 @@ async function flushPendingEdit(
 export interface EditFlushResult {
   pendingCount: number;
   lastError: string | null;
+  /** Entries this flush put on the server. */
+  flushed: number;
 }
 
 // One in-flight flush per user. The XP delta is applied once, when an entry's
@@ -473,10 +475,12 @@ export async function flushEditQueue(
   const run = (async (): Promise<EditFlushResult> => {
     const queue = [...getPendingEdits(userId)].sort((a, b) => a.createdAt - b.createdAt);
     let lastError: string | null = null;
+    let flushed = 0;
     for (const entry of queue) {
       if (entry.nextAttemptAt > Date.now()) continue;
       try {
         await flushPendingEdit(supabase, userId, entry);
+        flushed += 1;
       } catch (err: any) {
         const msg = String(err?.message ?? err);
         patchEntry(userId, entry.workoutId, {
@@ -489,7 +493,7 @@ export async function flushEditQueue(
         // data error: park this one, keep going
       }
     }
-    return { pendingCount: getPendingEditCount(userId), lastError };
+    return { pendingCount: getPendingEditCount(userId), lastError, flushed };
   })();
 
   _flushInFlight[userId] = run;

@@ -29,9 +29,12 @@ const values = new Map<string, unknown>();
 /** When each value was stored, for maxAgeMs. */
 const storedAt = new Map<string, number>();
 let now = () => Date.now();
-const inflight = new Map<string, { gen: number; p: Promise<unknown> }>();
+const inflight = new Map<string, { gen: number; keyGen: number; p: Promise<unknown> }>();
 /** Bumped by every invalidate, so a read can tell a write happened while it ran. */
 let generation = 0;
+/** Bumped by put for its one key only, so a put never costs another key's read. */
+const keyGens = new Map<string, number>();
+const keyGen = (key: string) => keyGens.get(key) ?? 0;
 
 /** The cached value, or undefined when there is none (null is a stored "nothing"). */
 export function peek<T>(key: string): T | undefined {
@@ -50,17 +53,18 @@ export function fetchShared<T>(key: string, fn: () => Promise<T>, opts?: { maxAg
     return Promise.resolve(values.get(key) as T);
   }
   const running = inflight.get(key);
-  if (running && running.gen === generation) return running.p as Promise<T>;
+  if (running && running.gen === generation && running.keyGen === keyGen(key)) return running.p as Promise<T>;
   const gen = generation;
+  const kg = keyGen(key);
   const p = fn().then(
     (v) => {
-      if (gen === generation) { values.set(key, v); storedAt.set(key, now()); }
+      if (gen === generation && kg === keyGen(key)) { values.set(key, v); storedAt.set(key, now()); }
       return v;
     },
   ).finally(() => {
     if (inflight.get(key)?.p === p) inflight.delete(key);
   });
-  inflight.set(key, { gen, p });
+  inflight.set(key, { gen, keyGen: kg, p });
   return p;
 }
 
@@ -77,11 +81,11 @@ export function invalidate(prefix: string): void {
 }
 
 /**
- * Store a value a write just computed (it is fresh). A read already in
- * flight is not stored over it, as with invalidate.
+ * Store a value a write just computed (it is fresh). A read of this key
+ * already in flight is not stored over it; reads of other keys are untouched.
  */
 export function put<T>(key: string, value: T): void {
-  generation += 1;
+  keyGens.set(key, keyGen(key) + 1);
   values.set(key, value);
   storedAt.set(key, now());
 }
@@ -116,6 +120,7 @@ export function resetForTest(): void {
   values.clear();
   storedAt.clear();
   inflight.clear();
+  keyGens.clear();
   generation = 0;
   now = () => Date.now();
 }

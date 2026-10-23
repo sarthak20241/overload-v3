@@ -170,3 +170,23 @@ Deno.test('prune drops the older days of one kind and keeps the rest, without dr
   assertEquals(peek('pillar:nights:u2:2026-10-21'), 3);
   assertEquals(peek('pillar:week:u1:2026-10-19'), 4);
 });
+
+Deno.test('put only blocks reads of its own key: a read of another key in flight is still stored', async () => {
+  resetForTest();
+  const gate = later({ id: 'p1' });
+  const pending = fetchShared('program:u1', () => gate.p);
+  put('readiness:u1:2026-10-23', 'computed');
+  gate.done();
+  await pending;
+  assertEquals(peek('program:u1'), { id: 'p1' });
+});
+
+Deno.test('after a put, a new caller does not join the older read of that key', async () => {
+  resetForTest();
+  const gate = later('before-the-write');
+  fetchShared('readiness:u1:2026-10-23', () => gate.p);
+  put('readiness:u1:2026-10-23', 'computed');
+  const v = fetchShared('readiness:u1:2026-10-23', () => Promise.resolve('read-after-the-write'));
+  gate.done();
+  assertEquals(await v, 'read-after-the-write');
+});
