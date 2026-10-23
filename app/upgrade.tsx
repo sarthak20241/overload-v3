@@ -11,7 +11,7 @@
  *             notification permission prompt (needed for the day-5 reminder
  *             this screen promises, plus rest cues later).
  *   paywall   The single reusable paywall: transparent price headline,
- *             four Pro check lines, annual (preselected, save badge) vs monthly
+ *             a path to the goal, annual (preselected, save badge) vs monthly
  *             vs founding lifetime, trust row, refund promise, CTA, delayed
  *             soft-wall skip link. Every trial claim on it (badge, "No
  *             payment today", "Start my N days free") is derived from the
@@ -101,7 +101,6 @@ import {
   PurchaseCancelledError,
   PurchasesUnavailableError,
   STORE_ACCOUNT,
-  STORE_MANAGE_HINT,
   STORE_NAME,
   type PlanKey,
   type RevenueCatPackage,
@@ -123,11 +122,16 @@ interface PurchaseOutcome {
 // comparison" expander and SOON rows) read as a wall of text on a real
 // Android phone and pushed the headline off screen. Pro is now four short
 // lines; each one is something Pro does today.
-const PRO_POINTS = [
-  'Unlimited coach chat',
-  'Unlimited AI food logs',
-  'Plans built around you',
-  'Weekly plan rewrites',
+//
+// 2026-10-23: four feature lines still sold features, not the product. Free
+// is a sample (3 chats, 3 AI food logs a day); Pro is the coaching that walks
+// someone to their goal, so the paywall draws that walk: three steps joined by
+// a line, ending at the goal. Every step is something only Pro can run today
+// (the server gates program/plan/workout building and refining as Pro).
+const PRO_PATH = [
+  'A program built for your goal',
+  'Drona checks in. Your plan adapts to your routine.',
+  'Training and food, coached daily',
 ];
 
 interface FoundingStatus {
@@ -179,8 +183,6 @@ export default function UpgradeScreen() {
   // provisioned yet), so it's collapsed behind a link by default. Once
   // expanded, the row inflates in place and the link disappears.
   const [showAllPlans, setShowAllPlans] = useState(false);
-  // Soft-wall skip: fades in after a beat so the value case gets first read.
-  const [skipVisible, setSkipVisible] = useState(false);
   const purchasesUsable = isPurchasesAvailable();
 
   // Paywall analytics. `context` is what sent them here (a usage cap, the
@@ -250,12 +252,6 @@ export default function UpgradeScreen() {
       cancelled = true;
     };
   }, [supabase]);
-
-  useEffect(() => {
-    if (step !== 'paywall') return;
-    const t = setTimeout(() => setSkipVisible(true), 2000);
-    return () => clearTimeout(t);
-  }, [step]);
 
   // Where "done" goes. The funnel replaces into the app; a direct open pops
   // back to whatever surfaced the paywall.
@@ -565,29 +561,24 @@ export default function UpgradeScreen() {
                 non-consumable now exists in both App Store Connect and Play)
               - sticky footer with the CTA + trust check + delayed skip link
           */}
-          <View style={u.topBar}>
+          {/* One way out: a quiet close in the corner (2026-10-23, replaces the
+              back chevron AND the "Not now, I'll train on the free plan" link,
+              which cluttered the footer). It always leaves for the free plan,
+              funnel included, so it is the skip. Restore lives under the CTA. */}
+          <View style={[u.topBar, { justifyContent: 'flex-end' }]}>
             <TouchableOpacity
               onPress={() => {
-                if (!isFunnel) track('paywall_skipped', { via: 'top_bar', context, seconds_on_screen: Math.round((Date.now() - paywallOpenedAt.current) / 1000) });
-                isFunnel ? setStep('reminder') : finish();
+                track('paywall_skipped', { via: 'close', context, seconds_on_screen: Math.round((Date.now() - paywallOpenedAt.current) / 1000) });
+                finish();
               }}
               accessibilityRole="button"
-              accessibilityLabel="Back"
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="Close, continue on the free plan"
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              // Leaving mid-purchase would drop the "Activating Pro" wait.
+              disabled={purchasing || verifying || restoring}
+              style={[u.closeBtn, { backgroundColor: C.card }, (purchasing || verifying || restoring) && { opacity: 0.4 }]}
             >
-              <Feather name="chevron-left" size={IconSize.lg} color={C.textMuted} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={handleRestore}
-              disabled={restoring}
-              accessibilityRole="button"
-              accessibilityLabel="Restore purchases"
-            >
-              {restoring ? (
-                <ActivityIndicator size="small" color={C.textMuted} />
-              ) : (
-                <Text style={[u.restoreText, { color: C.textMuted }]}>Restore</Text>
-              )}
+              <Feather name="x" size={IconSize.md} color={C.textMuted} />
             </TouchableOpacity>
           </View>
 
@@ -604,17 +595,36 @@ export default function UpgradeScreen() {
           >
             <Text style={[u.eyebrow, { color: C.accentText }]}>OVERLOAD PRO</Text>
             <Text style={[u.hero, { color: C.foreground }]}>{paywallTitle}</Text>
+            <Text style={[u.heroSub, { color: C.textSecondary }]}>
+              Free is a taste of Drona. Pro is the coaching.
+            </Text>
 
-            {/* What Pro gives, four short lines. Free users already know the
-                free side (they hit its caps), so only the Pro side is shown. */}
+            {/* What Pro gives, as a path: three steps, then the goal. Free
+                users already know the free side (they hit its caps). */}
             <View style={u.points}>
-              {PRO_POINTS.map((point) => (
-                <View key={point} style={u.pointRow}>
-                  <Feather name="check" size={IconSize.sm} color={C.accentText} />
-                  <Text style={[u.pointText, { color: C.foreground }]}>{point}</Text>
+              {PRO_PATH.map((step) => (
+                <View key={step} style={u.pathRow}>
+                  <View style={u.pathRail}>
+                    <View style={[u.pathDot, { borderColor: C.accentText }]} />
+                    <View style={[u.pathLine, { backgroundColor: C.borderSubtle }]} />
+                  </View>
+                  <Text style={[u.pointText, { color: C.foreground }]}>{step}</Text>
                 </View>
               ))}
+              <View style={u.pathRow}>
+                <View style={u.pathRail}>
+                  <Feather name="flag" size={IconSize.sm} color={C.accentText} />
+                </View>
+                <Text style={[u.pathGoal, { color: C.accentText }]}>Your goal</Text>
+              </View>
             </View>
+            <Text style={[u.pathPlus, { color: C.textMuted }]}>
+              Plus unlimited coach chat and AI food logs.
+            </Text>
+
+            {/* Spare height sits HERE, between the story and the plans, so the
+                plans rest right above the CTA like most store paywalls. */}
+            <View style={u.planSpacer} />
 
             {loading ? (
               <View style={u.spinnerWrap}>
@@ -714,53 +724,65 @@ export default function UpgradeScreen() {
                 )}
               </PressableScale>
             </Animated.View>
-            {/* One quiet trust line under the CTA (RC "Build Trust" + Bloom's
-                refund transparency). Three facts, no icons: the billing
-                truth, the exit path, the refund promise. It MUST track the
-                selected plan AND the store: "No payment today" only when the
-                selected product carries a free trial, otherwise it is a lie
-                (and an App Review rejection waiting to happen). The refund is
-                a promise Sarthak makes, not Apple: money moves through
-                Apple's refund flow, we just never argue. History: v6 had two
-                chip rows + a refund row above the CTA and read cluttered. */}
+            {/* One quiet trust line under the CTA: the billing truth, then the
+                goal promise (2026-10-23, replaced "Cancel anytime · 14-day
+                refund"; Overload exists to get people to their goal, so the
+                refund is tied to it). The first fact MUST track plan + trial:
+                "No payment today" only when the selected product carries a
+                free trial, otherwise it is a lie. The promise's rules (30 days
+                after the program ends, subscriptions only) are in the Terms,
+                and tapping the promise opens them. */}
             <Text style={[u.trustLine, { color: C.textMuted }]}>
-              {[
-                selectedTrial > 0
-                  ? 'No payment today'
-                  : selectedPlan === 'founding_lifetime'
-                    ? 'One payment, no renewals'
-                    : 'First charge today',
-                selectedPlan === 'founding_lifetime' ? 'Yours forever' : 'Cancel anytime',
-                '14-day refund',
-              ].join('   ·   ')}
-            </Text>
-            {skipVisible && (
-              <Animated.View entering={FadeIn.duration(400)}>
-                <TouchableOpacity
-                  onPress={() => { track('paywall_skipped', { via: 'soft_skip', context, seconds_on_screen: Math.round((Date.now() - paywallOpenedAt.current) / 1000) }); finish(); }}
-                  accessibilityRole="button"
-                  accessibilityLabel="Continue with the free plan"
-                >
-                  <Text style={[u.skipText, { color: C.textDim }]}>
-                    Not now, I'll train on the free plan
+              {selectedPlan === 'founding_lifetime' ? (
+                // The goal promise is tied to a subscription program in the
+                // Terms; a one-time lifetime buy keeps its own two facts.
+                'One payment, no renewals   ·   Yours forever'
+              ) : (
+                <>
+                  {selectedTrial > 0 ? 'No payment today' : 'First charge today'}
+                  {'   ·   '}
+                  <Text
+                    onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}
+                    accessibilityRole="link"
+                  >
+                    Miss your goal? Full refund.
                   </Text>
-                </TouchableOpacity>
-              </Animated.View>
-            )}
-            <Text style={[u.legal, { color: C.textDim }]}>
-              {/* Subscriptions only. Founding Lifetime is a non-consumable,
-                  and the trust line above already says "One payment, no
-                  renewals" — claiming it auto-renews contradicts that and is
-                  exactly the kind of billing copy App Review reads. */}
-              {selectedPlan !== 'founding_lifetime' && `Auto-renews until cancelled. ${STORE_MANAGE_HINT} `}
-              <Text style={u.legalLink} onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}>
-                Terms
-              </Text>
-              {' · '}
-              <Text style={u.legalLink} onPress={() => Linking.openURL('https://tryoverload.app/privacy.html')}>
-                Privacy
-              </Text>
+                </>
+              )}
             </Text>
+            {/* Restore, Terms, Privacy as one quiet row under the CTA, the way
+                most store paywalls do it. The renewal terms live on the plan
+                cards ("billed yearly", "Then billed monthly") and the store's
+                own sheet, so no separate auto-renew sentence. */}
+            <View style={u.footLinks}>
+              <TouchableOpacity
+                onPress={handleRestore}
+                disabled={restoring}
+                accessibilityRole="button"
+                accessibilityLabel="Restore purchases"
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                {restoring ? (
+                  <ActivityIndicator size="small" color={C.textMuted} />
+                ) : (
+                  <Text style={[u.footLink, { color: C.textMuted }]}>Restore</Text>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}
+                accessibilityRole="link"
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={[u.footLink, { color: C.textMuted }]}>Terms</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => Linking.openURL('https://tryoverload.app/privacy.html')}
+                accessibilityRole="link"
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={[u.footLink, { color: C.textMuted }]}>Privacy</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </Animated.View>
       )}
@@ -926,7 +948,13 @@ const u = StyleSheet.create({
     paddingTop: Spacing.sm,
     paddingBottom: Spacing.xs,
   },
-  restoreText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  closeBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   scroll: {
     flexGrow: 1,
     paddingHorizontal: Spacing.xxl,
@@ -1071,27 +1099,38 @@ const u = StyleSheet.create({
   // ScrollView (SE-class safety net), footer is fixed at the bottom.
   paywallBody: { flex: 1 },
   paywallBodyContent: {
+    flexGrow: 1,
     paddingHorizontal: Spacing.xxl,
     paddingTop: Spacing.sm,
     paddingBottom: Spacing.md,
   },
+  planSpacer: { flexGrow: 1, minHeight: Spacing.lg },
   hero: {
     fontFamily: FontFamily.display,
     fontSize: 28,
     letterSpacing: LetterSpacing.tight,
     lineHeight: 33,
   },
-  // What Pro gives: four short check lines under the headline.
-  points: {
-    marginTop: Spacing.lg,
-    gap: Spacing.sm + 2,
+  heroSub: {
+    fontSize: FontSize.md,
+    lineHeight: 20,
+    marginTop: 6,
   },
-  pointRow: {
+  // The path to the goal: lime ring per step on a thin rail, flag at the end.
+  // Rows carry no gap so each rail segment runs into the next ring.
+  points: { marginTop: Spacing.lg },
+  pathRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
+    alignItems: 'flex-start',
+    gap: Spacing.md,
+    minHeight: 34,
   },
-  pointText: { fontSize: FontSize.md, fontWeight: FontWeight.medium },
+  pathRail: { width: 14, alignItems: 'center', alignSelf: 'stretch' },
+  pathDot: { width: 12, height: 12, borderRadius: 6, borderWidth: 2, marginTop: 4 },
+  pathLine: { width: 2, flex: 1, marginTop: 3, marginBottom: -1 },
+  pointText: { flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.medium, lineHeight: 20 },
+  pathGoal: { fontSize: FontSize.md, fontWeight: FontWeight.bold, lineHeight: 20 },
+  pathPlus: { fontSize: FontSize.sm, marginTop: Spacing.xs },
   // Success screen: mark, headline, one-line sub, then a three-row "what
   // just unlocked" card.
   successMark: { alignItems: 'center', marginBottom: Spacing.lg },
@@ -1160,20 +1199,13 @@ const u = StyleSheet.create({
     textAlign: 'center',
     marginTop: Spacing.md,
   },
-  skipText: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    textAlign: 'center',
-    textDecorationLine: 'underline',
-    marginTop: Spacing.md,
+  footLinks: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: Spacing.xxl,
+    marginTop: Spacing.lg,
   },
-  legal: {
-    fontSize: FontSize.xs,
-    lineHeight: 15,
-    textAlign: 'center',
-    marginTop: Spacing.sm,
-  },
-  legalLink: { textDecorationLine: 'underline' },
+  footLink: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
 
   expoGoNote: {
     flexDirection: 'row',
