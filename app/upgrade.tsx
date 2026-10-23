@@ -735,13 +735,17 @@ export default function UpgradeScreen() {
                 program ends) is in the Terms; the line stays short. The first
                 fact still tracks plan + trial so it is never a lie. */}
             <Text style={[u.trustLine, { color: C.textMuted }]}>
-              {selectedTrial > 0
-                ? 'No payment today'
-                : selectedPlan === 'founding_lifetime'
-                  ? 'One payment, no renewals'
-                  : 'First charge today'}
-              {'   ·   '}
-              <Text style={{ color: C.foreground }}>Didn't reach your goal? Full refund.</Text>
+              {selectedPlan === 'founding_lifetime' ? (
+                // The goal promise is tied to a subscription program in the
+                // Terms; a one-time lifetime buy keeps its own two facts.
+                'One payment, no renewals   ·   Yours forever'
+              ) : (
+                <>
+                  {selectedTrial > 0 ? 'No payment today' : 'First charge today'}
+                  {'   ·   '}
+                  <Text style={{ color: C.foreground }}>Didn't reach your goal? Full refund.</Text>
+                </>
+              )}
             </Text>
             {/* Restore, Terms, Privacy as one quiet row under the CTA, the way
                 most store paywalls do it. The renewal terms live on the plan
