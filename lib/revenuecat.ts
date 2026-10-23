@@ -25,6 +25,8 @@
 // Loosely-typed RC bindings. The real types live in react-native-purchases;
 // duplicating them here would just rot. The Paywall consumes these via
 // runtime property access; mistakes surface immediately in the UI.
+import { isPaymentPending } from './purchaseErrors';
+
 type RCPackage = {
   identifier: string;
   packageType: string; // 'MONTHLY' | 'ANNUAL' | 'LIFETIME' | 'CUSTOM' | ...
@@ -388,7 +390,26 @@ export async function purchaseCoachPackage(
     if (e?.userCancelled || e?.code === 'PURCHASE_CANCELLED') {
       throw new PurchaseCancelledError();
     }
+    // The store accepted the purchase and is waiting on the buyer's bank.
+    // Not a failure: callers show a waiting state and keep polling.
+    if (isPaymentPending(e)) throw new PurchasePendingError();
     throw e;
+  }
+}
+
+/**
+ * Fresh entitlements without a purchase. A pending payment never returns
+ * customerInfo from purchasePackage, so after it lands this is the only way
+ * to read whether the buyer is really on a trial.
+ */
+export async function getCustomerInfo(): Promise<RevenueCatCustomerInfo | null> {
+  const P = loadPurchases();
+  if (!P) return null;
+  try {
+    return await P.getCustomerInfo();
+  } catch (e) {
+    console.warn('[revenuecat] getCustomerInfo failed:', e);
+    return null;
   }
 }
 
@@ -421,3 +442,17 @@ export class PurchaseCancelledError extends Error {
     this.name = 'PurchaseCancelledError';
   }
 }
+
+/**
+ * The store accepted the purchase but the money has not moved yet (a bank
+ * mandate, Ask to Buy, SEPA). Nothing is owed and nothing was refused, so
+ * tapping buy again is wrong. See lib/purchaseErrors.ts.
+ */
+export class PurchasePendingError extends Error {
+  constructor() {
+    super('Payment pending approval');
+    this.name = 'PurchasePendingError';
+  }
+}
+
+export { describePurchaseError, PENDING_STILL_WAITING, type PurchaseErrorInfo } from './purchaseErrors';

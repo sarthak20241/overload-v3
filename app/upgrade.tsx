@@ -97,13 +97,18 @@ import {
   isPurchasesAvailable,
   purchaseCoachPackage,
   restorePurchases,
+  getCustomerInfo,
   freeTrialDays,
   PurchaseCancelledError,
+  PurchasePendingError,
+  describePurchaseError,
+  PENDING_STILL_WAITING,
   PurchasesUnavailableError,
   STORE_ACCOUNT,
   STORE_NAME,
   type PlanKey,
   type RevenueCatPackage,
+  type RevenueCatCustomerInfo,
 } from '@/lib/revenuecat';
 
 type FunnelStep = 'warmup' | 'reminder' | 'paywall' | 'success';
@@ -150,6 +155,19 @@ function currencySymbol(priceString: string): string {
   return sym || '';
 }
 
+/**
+ * Is this buyer actually on a trial right now? Read from the active
+ * entitlement's periodType (INTRO | TRIAL), never from the selected plan or
+ * the product's offer: an existing subscriber who upgrades has no intro
+ * trial, and the day-5 reminder would promise one they are not on.
+ */
+function entitlementOnTrial(customerInfo: RevenueCatCustomerInfo | null | undefined): boolean {
+  return Object.values(customerInfo?.entitlements?.active ?? {}).some((e) => {
+    const t = e?.periodType;
+    return t === 'TRIAL' || t === 'INTRO' || t === 'trial' || t === 'intro';
+  });
+}
+
 function perMonthLabel(pkg: RevenueCatPackage): string | null {
   const price = pkg.product?.price;
   if (typeof price !== 'number' || price <= 0) return null;
@@ -178,7 +196,15 @@ export default function UpgradeScreen() {
   const [purchasing, setPurchasing] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  // A payment the bank is still approving after the 2-minute wait. The buy
+  // button stays off: a second tap could double-charge (Ask to Buy) or hit
+  // Play's already-owned error while the first order is still pending.
+  const [pendingOrder, setPendingOrder] = useState(false);
   const [outcome, setOutcome] = useState<PurchaseOutcome | null>(null);
+  // The pending wait outlives a tap by up to 2 minutes; nothing may update a
+  // screen the buyer already left.
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
   // Founding Lifetime is a distracting third option (and its ASC IAP isn't
   // provisioned yet), so it's collapsed behind a link by default. Once
   // expanded, the row inflates in place and the link disappears.
@@ -265,8 +291,10 @@ export default function UpgradeScreen() {
     }
   }, [isFunnel, params.dest, router]);
 
-  const waitForTierFlip = useCallback(async (): Promise<boolean> => {
-    const deadline = Date.now() + 30_000;
+  // Longer `timeoutMs` for a pending payment: the store is waiting on a bank
+  // mandate, which routinely lands well after the 30s a webhook flip needs.
+  const waitForTierFlip = useCallback(async (timeoutMs = 30_000): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       try {
         const { data } = await supabase.rpc('get_coach_access_status');
@@ -285,7 +313,7 @@ export default function UpgradeScreen() {
       toast.error('Plan unavailable. Try again.');
       return;
     }
-    if (purchasing || verifying) return;
+    if (purchasing || verifying || pendingOrder) return;
     setPurchasing(true);
     track('purchase_started', { plan: selectedPlan, context, source: isFunnel ? 'onboarding_funnel' : 'direct' });
     try {
@@ -302,11 +330,7 @@ export default function UpgradeScreen() {
         // scheduling would fire a false "your trial converts in 2 days"
         // notification 5 days later. Check the active entitlement's
         // periodType (INTRO | TRIAL) rather than trusting selectedPlan.
-        const active = Object.values(customerInfo?.entitlements?.active ?? {});
-        const onTrial = active.some((e) => {
-          const t = e?.periodType;
-          return t === 'TRIAL' || t === 'INTRO' || t === 'trial' || t === 'intro';
-        });
+        const onTrial = entitlementOnTrial(customerInfo);
         if (onTrial) {
           void scheduleTrialReminder().then((scheduled) => {
             track('trial_reminder_scheduled', { scheduled, plan: selectedPlan });
@@ -341,19 +365,71 @@ export default function UpgradeScreen() {
       if (e instanceof PurchaseCancelledError) {
         /* backed out of the payment sheet, stay put */
         track('purchase_failed', { plan: selectedPlan, reason: 'cancelled', context });
+      } else if (e instanceof PurchasePendingError) {
+        // Nothing failed: the store is waiting on the buyer's bank (an Indian
+        // card or UPI mandate, Ask to Buy, SEPA). Keep "Activating Pro…" up
+        // and poll well past the normal window instead of saying "failed".
+        const source = isFunnel ? 'onboarding_funnel' : 'direct';
+        track('purchase_pending', { plan: selectedPlan, context, source });
+        setPurchasing(false);
+        setVerifying(true);
+        const flipped = await waitForTierFlip(120_000);
+        invalidateCoachAccess();
+        track('purchase_pending_resolved', { plan: selectedPlan, context, source, flipped });
+        if (flipped) {
+          // A pending purchase never returned customerInfo. Read it fresh: a
+          // product that offers a trial says nothing about whether THIS buyer
+          // got one (a returning subscriber does not), and the day-5 reminder
+          // must not promise a trial they are not on.
+          const onTrial = entitlementOnTrial(await getCustomerInfo());
+          // Conversion tracking and the reminder do not need this screen, so
+          // they run even if the buyer left during the wait. These are exactly
+          // the slow-bank buyers this branch exists for.
+          if (onTrial) {
+            void scheduleTrialReminder().then((scheduled) => {
+              track('trial_reminder_scheduled', { scheduled, plan: selectedPlan });
+            });
+          }
+          paywallResolved.current = true;
+          setUserProps({ tier: selectedPlan, on_trial: onTrial });
+          track('purchase_completed', { plan: selectedPlan, on_trial: onTrial, context, source, was_pending: true });
+          if (!mounted.current) return;
+          void prefetchDashboard(supabase, user?.id);
+          setOutcome({ plan: selectedPlan, onTrial });
+          setStep('success');
+        } else {
+          if (!mounted.current) return;
+          setPendingOrder(true);
+          toast.info(
+            PENDING_STILL_WAITING,
+            { durationMs: 10000 },
+          );
+        }
       } else if (e instanceof PurchasesUnavailableError) {
         track('purchase_failed', { plan: selectedPlan, reason: 'unavailable', context });
         toast.error(e.message, { durationMs: 6000 });
       } else {
-        console.warn('[upgrade] purchase failed:', e);
-        track('purchase_failed', { plan: selectedPlan, reason: 'error', context });
-        toast.error('Purchase failed. Try again or contact support.');
+        // Carry the store's own reason into the event; a bare 'error' left
+        // a Pending-then-Canceled Play order undiagnosable (2026-10-23).
+        const err = describePurchaseError(e);
+        console.warn('[upgrade] purchase failed:', err, e);
+        track('purchase_failed', {
+          plan: selectedPlan,
+          reason: 'error',
+          context,
+          source: isFunnel ? 'onboarding_funnel' : 'direct',
+          error_code: err.code,
+          error_readable: err.readable,
+          error_underlying: err.underlying,
+          error_message: err.message,
+        });
+        toast.error("That didn't go through. Try again. If you were charged, tap Restore.", { durationMs: 8000 });
       }
     } finally {
       setPurchasing(false);
       setVerifying(false);
     }
-  }, [packages, selectedPlan, purchasing, verifying, user?.id, waitForTierFlip, toast, finish, supabase]);
+  }, [packages, selectedPlan, purchasing, verifying, pendingOrder, user?.id, waitForTierFlip, toast, finish, supabase, context, isFunnel]);
 
   const handleRestore = useCallback(async () => {
     if (restoring) return;
@@ -368,6 +444,9 @@ export default function UpgradeScreen() {
       }
       const hasActive = Object.values(info.entitlements?.active ?? {}).some((e) => e.isActive);
       if (hasActive) {
+        // Only a found entitlement ends the pending lock; an empty restore
+        // may just mean the bank has not approved yet.
+        setPendingOrder(false);
         const flipped = await waitForTierFlip();
         invalidateCoachAccess();
         if (flipped) {
@@ -387,8 +466,16 @@ export default function UpgradeScreen() {
         toast.info(`No previous purchases on this ${STORE_ACCOUNT}.`);
       }
     } catch (e) {
-      track('purchase_restore_failed', { reason: 'error', context });
-      console.warn('[upgrade] restore failed:', e);
+      const err = describePurchaseError(e);
+      track('purchase_restore_failed', {
+        reason: 'error',
+        context,
+        error_code: err.code,
+        error_readable: err.readable,
+        error_underlying: err.underlying,
+        error_message: err.message,
+      });
+      console.warn('[upgrade] restore failed:', err, e);
       toast.error('Restore failed. Try again later.');
     } finally {
       setRestoring(false);
@@ -699,8 +786,8 @@ export default function UpgradeScreen() {
             <Animated.View style={ctaPulseStyle}>
               <PressableScale
                 onPress={handlePurchase}
-                disabled={purchasing || verifying || loading}
-                style={[u.cta, Shadow.playBtn, loading && { opacity: 0.7 }]}
+                disabled={purchasing || verifying || loading || pendingOrder}
+                style={[u.cta, Shadow.playBtn, (loading || pendingOrder) && { opacity: 0.7 }]}
                 accessibilityRole="button"
                 accessibilityLabel={ctaLabel}
               >
@@ -719,6 +806,8 @@ export default function UpgradeScreen() {
                     <ActivityIndicator size="small" color={Colors.primaryFg} />
                     <Text style={u.ctaText}>Activating Pro…</Text>
                   </>
+                ) : pendingOrder ? (
+                  <Text style={u.ctaText}>Waiting for your bank</Text>
                 ) : (
                   <Text style={u.ctaText}>{ctaLabel}</Text>
                 )}
