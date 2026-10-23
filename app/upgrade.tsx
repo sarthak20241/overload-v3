@@ -575,8 +575,8 @@ export default function UpgradeScreen() {
               accessibilityLabel="Close, continue on the free plan"
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               // Leaving mid-purchase would drop the "Activating Pro" wait.
-              disabled={purchasing || verifying}
-              style={[u.closeBtn, { backgroundColor: C.card }, (purchasing || verifying) && { opacity: 0.4 }]}
+              disabled={purchasing || verifying || restoring}
+              style={[u.closeBtn, { backgroundColor: C.card }, (purchasing || verifying || restoring) && { opacity: 0.4 }]}
             >
               <Feather name="x" size={IconSize.md} color={C.textMuted} />
             </TouchableOpacity>
@@ -720,20 +720,14 @@ export default function UpgradeScreen() {
                 )}
               </PressableScale>
             </Animated.View>
-            {/* One quiet trust line under the CTA (RC "Build Trust" + Bloom's
-                refund transparency). Three facts, no icons: the billing
-                truth, the exit path, the refund promise. It MUST track the
-                selected plan AND the store: "No payment today" only when the
-                selected product carries a free trial, otherwise it is a lie
-                (and an App Review rejection waiting to happen). The refund is
-                a promise Sarthak makes, not Apple: money moves through
-                Apple's refund flow, we just never argue. History: v6 had two
-                chip rows + a refund row above the CTA and read cluttered. */}
-            {/* 2026-10-23: the goal promise replaces "Cancel anytime · 14-day
-                refund". Overload exists to get people to their goal, so the
-                refund is tied to it. The rule (ask within 30 days after the
-                program ends) is in the Terms; the line stays short. The first
-                fact still tracks plan + trial so it is never a lie. */}
+            {/* One quiet trust line under the CTA: the billing truth, then the
+                goal promise (2026-10-23, replaced "Cancel anytime · 14-day
+                refund"; Overload exists to get people to their goal, so the
+                refund is tied to it). The first fact MUST track plan + trial:
+                "No payment today" only when the selected product carries a
+                free trial, otherwise it is a lie. The promise's rules (30 days
+                after the program ends, subscriptions only) are in the Terms,
+                and tapping the promise opens them. */}
             <Text style={[u.trustLine, { color: C.textMuted }]}>
               {selectedPlan === 'founding_lifetime' ? (
                 // The goal promise is tied to a subscription program in the
@@ -743,7 +737,13 @@ export default function UpgradeScreen() {
                 <>
                   {selectedTrial > 0 ? 'No payment today' : 'First charge today'}
                   {'   ·   '}
-                  <Text style={{ color: C.foreground }}>Didn't reach your goal? Full refund.</Text>
+                  <Text
+                    style={{ color: C.foreground }}
+                    onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}
+                    accessibilityRole="link"
+                  >
+                    Didn't reach your goal? Full refund.
+                  </Text>
                 </>
               )}
             </Text>
