@@ -11,7 +11,7 @@
  *             notification permission prompt (needed for the day-5 reminder
  *             this screen promises, plus rest cues later).
  *   paywall   The single reusable paywall: transparent price headline,
- *             four Pro check lines, annual (preselected, save badge) vs monthly
+ *             a path to the goal, annual (preselected, save badge) vs monthly
  *             vs founding lifetime, trust row, refund promise, CTA, delayed
  *             soft-wall skip link. Every trial claim on it (badge, "No
  *             payment today", "Start my N days free") is derived from the
@@ -574,7 +574,9 @@ export default function UpgradeScreen() {
               accessibilityRole="button"
               accessibilityLabel="Close, continue on the free plan"
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              style={[u.closeBtn, { backgroundColor: C.card }]}
+              // Leaving mid-purchase would drop the "Activating Pro" wait.
+              disabled={purchasing || verifying}
+              style={[u.closeBtn, { backgroundColor: C.card }, (purchasing || verifying) && { opacity: 0.4 }]}
             >
               <Feather name="x" size={IconSize.md} color={C.textMuted} />
             </TouchableOpacity>
@@ -597,8 +599,8 @@ export default function UpgradeScreen() {
               Free is a taste of Drona. Pro is the coaching.
             </Text>
 
-            {/* What Pro gives, four short lines. Free users already know the
-                free side (they hit its caps), so only the Pro side is shown. */}
+            {/* What Pro gives, as a path: three steps, then the goal. Free
+                users already know the free side (they hit its caps). */}
             <View style={u.points}>
               {PRO_PATH.map((step) => (
                 <View key={step} style={u.pathRow}>
@@ -1105,7 +1107,6 @@ const u = StyleSheet.create({
     lineHeight: 20,
     marginTop: 6,
   },
-  // What Pro gives: four short check lines under the headline.
   // The path to the goal: lime ring per step on a thin rail, flag at the end.
   // Rows carry no gap so each rail segment runs into the next ring.
   points: { marginTop: Spacing.lg },
