@@ -1,6 +1,6 @@
 // deno test --allow-all lib/screenCache.test.ts
 import { assertEquals } from 'https://deno.land/std@0.224.0/assert/mod.ts';
-import { clearCache, fetchShared, invalidate, peek, resetForTest } from './screenCache.ts';
+import { clearCache, fetchShared, invalidate, peek, prune, resetForTest } from './screenCache.ts';
 
 const later = <T,>(v: T) => {
   let resolve!: (x: T) => void;
@@ -87,4 +87,22 @@ Deno.test('clearCache empties everything (sign-out)', async () => {
   await fetchShared('program:u1', () => Promise.resolve('a'));
   clearCache();
   assertEquals(peek('program:u1'), undefined);
+});
+
+Deno.test('prune drops the older days of one kind and keeps the rest, without dropping reads in flight', async () => {
+  resetForTest();
+  await fetchShared('pillar:nights:u1:2026-10-21', () => Promise.resolve(1));
+  await fetchShared('pillar:nights:u1:2026-10-22', () => Promise.resolve(2));
+  await fetchShared('pillar:nights:u2:2026-10-21', () => Promise.resolve(3));
+  await fetchShared('pillar:week:u1:2026-10-19', () => Promise.resolve(4));
+  const gate = later('today');
+  const pending = fetchShared('pillar:nights:u1:2026-10-23', () => gate.p);
+  prune('pillar:nights:u1', 'pillar:nights:u1:2026-10-23');
+  gate.done();
+  await pending;
+  assertEquals(peek('pillar:nights:u1:2026-10-21'), undefined);
+  assertEquals(peek('pillar:nights:u1:2026-10-22'), undefined);
+  assertEquals(peek('pillar:nights:u1:2026-10-23'), 'today'); // pruning is not a write: the read is still stored
+  assertEquals(peek('pillar:nights:u2:2026-10-21'), 3);
+  assertEquals(peek('pillar:week:u1:2026-10-19'), 4);
 });

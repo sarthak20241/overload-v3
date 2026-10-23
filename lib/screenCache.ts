@@ -64,6 +64,16 @@ export function invalidateUserProgram(clerkId: string): void {
   invalidate(`pillar:routines:${clerkId}`);
 }
 
+/**
+ * Housekeeping, not a write: drop the values under `prefix` (by whole
+ * segments) except `keep`, such as yesterday's nights once today's are
+ * asked for. Reads in flight are still stored, so nothing about a current
+ * value changes; a long session just does not keep every past day.
+ */
+export function prune(prefix: string, keep: string): void {
+  for (const k of [...values.keys()]) if (k !== keep && k.startsWith(`${prefix}:`)) values.delete(k);
+}
+
 /** Sign-out: forget every user's values; reads in flight are not stored. */
 export function clearCache(): void {
   generation += 1;

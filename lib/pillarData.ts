@@ -11,7 +11,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { todayLocalISO } from '@/lib/programData';
 import { bandForScore, directive, type ReadinessBand } from '@/lib/readiness';
 import { liveFrom, type LiveReadings } from '@/lib/phaseMetricHeadline';
-import { fetchShared, peek } from '@/lib/screenCache';
+import { fetchShared, peek, prune } from '@/lib/screenCache';
 
 function localISO(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -205,11 +205,19 @@ const nightsKey = (clerkId: string) => `pillar:nights:${clerkId}:${todayLocalISO
 const vitalsKey = (clerkId: string) => `pillar:vitals:${clerkId}:${todayLocalISO()}`;
 const routinesKey = (clerkId: string, ids: string[]) => `pillar:routines:${clerkId}:${[...ids].sort().join(',')}`;
 
-export const sharedWeekSessions = (s: SupabaseClient, clerkId: string) => fetchShared(weekKey(clerkId), () => loadWeekSessions(s, clerkId));
-export const sharedLastNights = (s: SupabaseClient, clerkId: string) => fetchShared(nightsKey(clerkId), () => loadLastNights(s, clerkId));
-export const sharedTodayVitals = (s: SupabaseClient, clerkId: string) => fetchShared(vitalsKey(clerkId), () => loadTodayVitals(s, clerkId));
+/** Read through the cache, first dropping this user's older entries of the same kind (past days, an old routine set). */
+function shared<T>(kindPrefix: string, key: string, fn: () => Promise<T>): Promise<T> {
+  prune(kindPrefix, key);
+  return fetchShared(key, fn);
+}
+export const sharedWeekSessions = (s: SupabaseClient, clerkId: string) =>
+  shared(`pillar:week:${clerkId}`, weekKey(clerkId), () => loadWeekSessions(s, clerkId));
+export const sharedLastNights = (s: SupabaseClient, clerkId: string) =>
+  shared(`pillar:nights:${clerkId}`, nightsKey(clerkId), () => loadLastNights(s, clerkId));
+export const sharedTodayVitals = (s: SupabaseClient, clerkId: string) =>
+  shared(`pillar:vitals:${clerkId}`, vitalsKey(clerkId), () => loadTodayVitals(s, clerkId));
 export const sharedRoutineSummaries = (s: SupabaseClient, clerkId: string, ids: string[]) =>
-  fetchShared(routinesKey(clerkId, ids), () => loadRoutineSummaries(s, ids));
+  shared(`pillar:routines:${clerkId}`, routinesKey(clerkId, ids), () => loadRoutineSummaries(s, ids));
 
 export const peekWeekSessions = (clerkId: string | null) => (clerkId ? peek<WeekSessions>(weekKey(clerkId)) : undefined);
 export const peekLastNights = (clerkId: string | null) => (clerkId ? peek<Night[]>(nightsKey(clerkId)) : undefined);
