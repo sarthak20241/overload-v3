@@ -645,7 +645,7 @@ export default function UpgradeScreen() {
                       badge={trialBadge(trialDays.monthly)}
                       price={monthly.product.priceString}
                       priceUnit="/mo"
-                      note={trialDays.monthly > 0 ? undefined : 'No free trial'}
+                      note={trialDays.monthly > 0 ? 'Then billed monthly' : 'Billed monthly · no trial'}
                       onPress={() => { track('paywall_plan_selected', { plan: 'monthly', previous_plan: selectedPlan }); setSelectedPlan('monthly'); }}
                     />
                   </Animated.View>
