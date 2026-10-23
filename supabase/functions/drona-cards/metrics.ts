@@ -414,7 +414,7 @@ async function gatherReadings(
         if (!id) continue;
         m.ref = { ...m.ref, exercise_id: String(id) };
         const { error: refErr } = await retried(() =>
-          db.from("coach_program_phase_metrics").update({ ref: m.ref }).eq("id", m.id)
+          db.from("coach_program_phase_metrics").update({ ref: m.ref }).eq("id", m.id).eq("user_id", userId)
         );
         if (refErr) console.log(`[drona-cards] could not keep the exercise id on ${m.id.slice(0, 8)}: ${refErr.message}`);
       }

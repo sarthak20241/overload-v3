@@ -48,16 +48,26 @@ export function fetchShared<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return p;
 }
 
-/** Drop every cached value whose key starts with `prefix`; reads in flight are not stored. */
+/**
+ * Drop the cached value at `prefix` and every key below it, by whole
+ * segments: 'program:user_1' clears 'program:user_1' and
+ * 'program:user_1:…', never 'program:user_10'. Reads in flight are not stored.
+ */
 export function invalidate(prefix: string): void {
   generation += 1;
-  for (const k of [...values.keys()]) if (k.startsWith(prefix)) values.delete(k);
+  for (const k of [...values.keys()]) if (k === prefix || k.startsWith(`${prefix}:`)) values.delete(k);
 }
 
 /** A user's program changed (or the routines of one of its phases): drop the program and its routine summaries. */
 export function invalidateUserProgram(clerkId: string): void {
   invalidate(`program:${clerkId}`);
   invalidate(`pillar:routines:${clerkId}`);
+}
+
+/** Sign-out: forget every user's values; reads in flight are not stored. */
+export function clearCache(): void {
+  generation += 1;
+  values.clear();
 }
 
 /** Tests only: start from empty. */

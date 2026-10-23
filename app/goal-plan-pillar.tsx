@@ -118,6 +118,10 @@ export default function GoalPlanPillarScreen() {
       const weekP = pillar === 'train' ? sharedWeekSessions(supabase, clerkId) : null;
       const nightsP = pillar === 'recover' ? sharedLastNights(supabase, clerkId) : null;
       const vitalsP = pillar === 'recover' ? sharedTodayVitals(supabase, clerkId) : null;
+      // The loaders swallow their own errors, but if the program read throws
+      // first these are never awaited: a no-op catch keeps any rejection of
+      // theirs from going unhandled.
+      for (const side of [routinesP, weekP, nightsP, vitalsP]) side?.catch(() => {});
       const p = await programP;
       if (n !== loadSeq.current) return;
       setProgram(p);

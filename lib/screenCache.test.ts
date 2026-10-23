@@ -1,6 +1,6 @@
 // deno test --allow-all lib/screenCache.test.ts
 import { assertEquals } from 'https://deno.land/std@0.224.0/assert/mod.ts';
-import { fetchShared, invalidate, peek, resetForTest } from './screenCache.ts';
+import { clearCache, fetchShared, invalidate, peek, resetForTest } from './screenCache.ts';
 
 const later = <T,>(v: T) => {
   let resolve!: (x: T) => void;
@@ -66,4 +66,25 @@ Deno.test('a failed read stores nothing and keeps the last good value', async ()
   try { await fetchShared('program:u1', () => Promise.reject(new Error('offline'))); } catch { threw = true; }
   assertEquals(threw, true);
   assertEquals(peek('program:u1'), { id: 'good' });
+});
+
+Deno.test('invalidate matches whole key segments: user_1 never clears user_10', async () => {
+  resetForTest();
+  await fetchShared('program:user_1', () => Promise.resolve('a'));
+  await fetchShared('program:user_10', () => Promise.resolve('b'));
+  await fetchShared('pillar:routines:user_1:r1,r2', () => Promise.resolve('c'));
+  await fetchShared('pillar:routines:user_10:r3', () => Promise.resolve('d'));
+  invalidate('program:user_1');
+  invalidate('pillar:routines:user_1');
+  assertEquals(peek('program:user_1'), undefined);
+  assertEquals(peek('program:user_10'), 'b');
+  assertEquals(peek('pillar:routines:user_1:r1,r2'), undefined);
+  assertEquals(peek('pillar:routines:user_10:r3'), 'd');
+});
+
+Deno.test('clearCache empties everything (sign-out)', async () => {
+  resetForTest();
+  await fetchShared('program:u1', () => Promise.resolve('a'));
+  clearCache();
+  assertEquals(peek('program:u1'), undefined);
 });

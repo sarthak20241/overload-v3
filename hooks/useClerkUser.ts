@@ -11,6 +11,7 @@
  */
 
 import type { UserResource } from '@clerk/types';
+import { clearCache } from '@/lib/screenCache';
 
 export const hasClerkKey = !!process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
@@ -46,6 +47,9 @@ export function useClerkUser(): ClerkUserState {
     isLoaded: !!userLoaded && !!authLoaded,
     isSignedIn: !!isSignedIn,
     signOut: async () => {
+      // The Goal & Plan screen cache is keyed by user, so nothing leaks
+      // across accounts, but a signed-out device should not keep it.
+      clearCache();
       if (signOut) await signOut();
     },
     getToken: isSignedIn && getToken ? getToken : null,

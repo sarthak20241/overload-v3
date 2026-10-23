@@ -211,6 +211,8 @@ Deno.test("a lift metric with only a name is resolved to an exercise id, kept, a
   assertEquals(exerciseReads[0].eq, [["user_id", "user-1"], ["ilike:name", "Barbell Bench Press"]]);
   const refWrite = writes.find((w) => w.table === "coach_program_phase_metrics" && "ref" in w.patch);
   assertEquals(refWrite?.patch.ref, { exercise_name: "Barbell Bench Press", exercise_id: "ex-mine" });
+  // The service-role write is scoped to the user, like the lookup before it.
+  assertEquals(refWrite?.eq, [["id", "m-lift"], ["user_id", "user-1"]]);
   const check = writes.find((w) => w.table === "coach_program_phase_metrics" && "status" in w.patch);
   assertEquals([check?.patch.current_value, check?.patch.start_value, check?.patch.status], [101.5, 101.5, "on_track"]);
 });
