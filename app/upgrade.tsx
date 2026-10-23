@@ -51,7 +51,6 @@ import {
   Text,
   TouchableOpacity,
   View,
-  useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -86,14 +85,6 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { DronaMark } from '@/components/coach/DronaMark';
-import { orbWebBox } from '@/components/coach/OrbStage';
-import { SignalOrb, signalOrbColor } from '@/components/coach/SignalOrb';
-
-// Drona's orb at the top of the paywall. Drawn with SignalOrb directly (not
-// OrbStage) so it can run brighter: at this size OrbStage's default reads dim.
-// 136 on tall phones; 104 on short ones (most Android) so the plans still sit
-// above the CTA without scrolling.
-const paywallOrbSize = (screenHeight: number) => (screenHeight >= 840 ? 136 : 104);
 import { invalidateCoachAccess } from '@/hooks/useCoachAccess';
 import { prefetchDashboard } from '@/lib/dashboardData';
 import {
@@ -187,8 +178,7 @@ function perMonthLabel(pkg: RevenueCatPackage): string | null {
 
 export default function UpgradeScreen() {
   const router = useRouter();
-  const { C, mode } = useTheme();
-  const orbSize = paywallOrbSize(useWindowDimensions().height);
+  const { C } = useTheme();
   const toast = useToast();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
@@ -690,21 +680,6 @@ export default function UpgradeScreen() {
             bounces={false}
             alwaysBounceVertical={false}
           >
-            {/* Drona, present on the screen that sells Drona: the same orb as
-                the coach chat, centered over the headline and listening
-                quietly. It thinks while a purchase is confirming, so the wait
-                reads as Drona at work. */}
-            <View style={[u.paywallOrb, { width: orbSize, height: orbSize }]} pointerEvents="none">
-              <SignalOrb
-                size={orbWebBox(orbSize)}
-                state={purchasing || verifying ? 'thinking' : 'listening'}
-                level={0.35}
-                particles={2200}
-                brightness={1.3}
-                color={signalOrbColor(mode)}
-                placeholder={<DronaMark size={28} color={C.accentText} state="static" />}
-              />
-            </View>
             <Text style={[u.eyebrow, { color: C.accentText }]}>OVERLOAD PRO</Text>
             <Text style={[u.hero, { color: C.foreground }]}>{paywallTitle}</Text>
             <Text style={[u.heroSub, { color: C.textSecondary }]}>
@@ -838,32 +813,10 @@ export default function UpgradeScreen() {
                 )}
               </PressableScale>
             </Animated.View>
-            {/* One quiet trust line under the CTA: the billing truth, then the
-                goal promise (2026-10-23, replaced "Cancel anytime · 14-day
-                refund"; Overload exists to get people to their goal, so the
-                refund is tied to it). The first fact MUST track plan + trial:
-                "No payment today" only when the selected product carries a
-                free trial, otherwise it is a lie. The promise's rules (30 days
-                after the program ends, subscriptions only) are in the Terms,
-                and tapping the promise opens them. */}
-            <Text style={[u.trustLine, { color: C.textMuted }]}>
-              {selectedPlan === 'founding_lifetime' ? (
-                // The goal promise is tied to a subscription program in the
-                // Terms; a one-time lifetime buy keeps its own two facts.
-                'One payment, no renewals   ·   Yours forever'
-              ) : (
-                <>
-                  {selectedTrial > 0 ? 'No payment today' : 'First charge today'}
-                  {'   ·   '}
-                  <Text
-                    onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}
-                    accessibilityRole="link"
-                  >
-                    Miss your goal? Full refund.
-                  </Text>
-                </>
-              )}
-            </Text>
+            {/* 2026-10-23: the trust line ("No payment today · Miss your goal?
+                Full refund.") is gone at the owner's call to cut clutter. The
+                trial still reads off the badges and the CTA, and the goal
+                refund rules stay in the Terms. */}
             {/* Restore, Terms, Privacy as one quiet row under the CTA, the way
                 most store paywalls do it. The renewal terms live on the plan
                 cards ("billed yearly", "Then billed monthly") and the store's
@@ -1061,17 +1014,6 @@ const u = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.sm,
     paddingBottom: Spacing.xs,
-  },
-  // The orb box is wider than its sphere (halo), so pull it left and up to
-  // line the sphere up with the headline's left edge.
-  // Centered over the headline. No negative top margin: the scroll view clips
-  // anything pulled above it, which flattened the sphere's top.
-  paywallOrb: {
-    alignSelf: 'center',
-    marginTop: -Spacing.sm,
-    marginBottom: -10,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   closeBtn: {
     width: 32,
@@ -1290,13 +1232,6 @@ const u = StyleSheet.create({
   },
   noPayText: { fontSize: FontSize.md, fontWeight: FontWeight.bold },
 
-  // Single trust line under the CTA: billing truth · exit path · refund.
-  trustLine: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.medium,
-    textAlign: 'center',
-    marginTop: Spacing.md,
-  },
 
   footer: {
     paddingHorizontal: Spacing.xxl,
