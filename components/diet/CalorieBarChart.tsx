@@ -11,6 +11,9 @@ import { FontWeight } from '@/constants/theme';
 import type { CalorieBar } from '@/lib/calorieBars';
 
 const LABEL_H = 14;
+/** The day labels and the tooltip live in fixed rows (LABEL_H, TOP_PAD), so
+ *  system text scaling may grow them only this far before they would clip. */
+const MAX_FONT_SCALE = 1.3;
 const TOP_PAD = 22;
 const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -112,6 +115,7 @@ export function CalorieBarChart({ bars, width, height, colors }: {
         {bars.map((b, i) => (
           <Text
             key={b.dayIso}
+            maxFontSizeMultiplier={MAX_FONT_SCALE}
             style={[
               s.label,
               { width: colW, color: b.today ? colors.labelToday : colors.label },
@@ -135,7 +139,11 @@ export function CalorieBarChart({ bars, width, height, colors }: {
       />
       {sel && selText && (
         <View pointerEvents="none" style={s.tipRow}>
-          <Text style={[s.tipText, { color: colors.tooltipText, backgroundColor: colors.tooltipBg }]} numberOfLines={1}>
+          <Text
+            style={[s.tipText, { color: colors.tooltipText, backgroundColor: colors.tooltipBg }]}
+            numberOfLines={1}
+            maxFontSizeMultiplier={MAX_FONT_SCALE}
+          >
             {selText}
           </Text>
         </View>
