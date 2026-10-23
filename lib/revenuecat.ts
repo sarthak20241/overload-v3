@@ -161,7 +161,7 @@ let configured = false;
 export const STORE_NAME: string = Platform.OS === 'android' ? 'Google Play' : 'App Store';
 export const STORE_ACCOUNT: string = Platform.OS === 'android' ? 'Google account' : 'Apple ID';
 export const STORE_MANAGE_HINT: string =
-  Platform.OS === 'android' ? 'Cancel in Google Play.' : 'Cancel in Settings.';
+  Platform.OS === 'android' ? 'Cancel in Google Play.' : 'Cancel in Settings → Apple ID.';
 
 function getApiKey(): string {
   if (Platform.OS === 'ios') return RC_IOS_KEY;

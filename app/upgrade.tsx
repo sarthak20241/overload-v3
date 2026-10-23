@@ -632,7 +632,7 @@ export default function UpgradeScreen() {
                       saveTag={savePct && savePct > 0 ? `SAVE ${savePct}%` : undefined}
                       price={annual.product.priceString}
                       priceUnit="/yr"
-                      note={perMonth ? `${perMonth}/mo` : undefined}
+                      note={perMonth ? `${perMonth}/mo, billed yearly` : 'Billed yearly'}
                       onPress={() => { track('paywall_plan_selected', { plan: 'annual', previous_plan: selectedPlan }); setSelectedPlan('annual'); }}
                     />
                   </Animated.View>
@@ -752,7 +752,7 @@ export default function UpgradeScreen() {
                   and the trust line above already says "One payment, no
                   renewals" — claiming it auto-renews contradicts that and is
                   exactly the kind of billing copy App Review reads. */}
-              {selectedPlan !== 'founding_lifetime' && `Auto-renews. ${STORE_MANAGE_HINT} `}
+              {selectedPlan !== 'founding_lifetime' && `Auto-renews until cancelled. ${STORE_MANAGE_HINT} `}
               <Text style={u.legalLink} onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}>
                 Terms
               </Text>
