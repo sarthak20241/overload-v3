@@ -71,67 +71,67 @@ export function CalorieBarChart({ bars, width, height, colors }: {
 
   return (
     <View style={{ width, height }}>
-        <Svg width={width} height={height} pointerEvents="none">
-          {bars.map((b, i) => {
-            const cx = colW * i + colW / 2;
-            const x = cx - barW / 2;
-            const bandTop = b.hi > 0 ? yFor(b.hi) : null;
-            return (
-              <G key={b.dayIso}>
-                {active === i && (
-                  <Rect x={colW * i + 1} y={TOP_PAD - 4} width={colW - 2} height={plotH + 4} rx={4} fill={colors.band} opacity={0.6} />
-                )}
-                {bandTop !== null && (
-                  <Rect x={x - 2} y={bandTop} width={barW + 4} height={Math.max(1, yFor(b.lo) - bandTop)} rx={2} fill={colors.band} />
-                )}
-                {b.status !== 'none' && (
-                  <Rect
-                    x={x}
-                    y={yFor(b.kcal)}
-                    width={barW}
-                    height={Math.max(2, TOP_PAD + plotH - yFor(b.kcal))}
-                    rx={Math.min(4, barW / 2)}
-                    fill={colorFor(b)}
-                    opacity={b.today ? 0.45 : 1}
-                  />
-                )}
-                {b.goal > 0 && (
-                  <Line x1={x - 3} x2={x + barW + 3} y1={yFor(b.goal)} y2={yFor(b.goal)} stroke={colors.label} strokeWidth={1} opacity={0.5} />
-                )}
-              </G>
-            );
-          })}
-        </Svg>
-        <View style={[s.labels, { top: height - LABEL_H }]} pointerEvents="none">
-          {bars.map((b, i) => (
-            <Text
-              key={b.dayIso}
-              style={[
-                s.label,
-                { width: colW, color: b.today ? colors.labelToday : colors.label },
-                b.today && { fontWeight: FontWeight.bold },
-              ]}
-            >
-              {/* Every other day on a 14-day chart, so the numbers do not touch. */}
-              {bars.length <= 7 || i % 2 === (bars.length - 1) % 2 ? String(dayParts(b.dayIso).day) : ''}
-            </Text>
-          ))}
+      <Svg width={width} height={height} pointerEvents="none">
+        {bars.map((b, i) => {
+          const cx = colW * i + colW / 2;
+          const x = cx - barW / 2;
+          const bandTop = b.hi > 0 ? yFor(b.hi) : null;
+          return (
+            <G key={b.dayIso}>
+              {active === i && (
+                <Rect x={colW * i + 1} y={TOP_PAD - 4} width={colW - 2} height={plotH + 4} rx={4} fill={colors.band} opacity={0.6} />
+              )}
+              {bandTop !== null && (
+                <Rect x={x - 2} y={bandTop} width={barW + 4} height={Math.max(1, yFor(b.lo) - bandTop)} rx={2} fill={colors.band} />
+              )}
+              {b.status !== 'none' && (
+                <Rect
+                  x={x}
+                  y={yFor(b.kcal)}
+                  width={barW}
+                  height={Math.max(2, TOP_PAD + plotH - yFor(b.kcal))}
+                  rx={Math.min(4, barW / 2)}
+                  fill={colorFor(b)}
+                  opacity={b.today ? 0.45 : 1}
+                />
+              )}
+              {b.goal > 0 && (
+                <Line x1={x - 3} x2={x + barW + 3} y1={yFor(b.goal)} y2={yFor(b.goal)} stroke={colors.label} strokeWidth={1} opacity={0.5} />
+              )}
+            </G>
+          );
+        })}
+      </Svg>
+      <View style={[s.labels, { top: height - LABEL_H }]} pointerEvents="none">
+        {bars.map((b, i) => (
+          <Text
+            key={b.dayIso}
+            style={[
+              s.label,
+              { width: colW, color: b.today ? colors.labelToday : colors.label },
+              b.today && { fontWeight: FontWeight.bold },
+            ]}
+          >
+            {/* Every other day on a 14-day chart, so the numbers do not touch. */}
+            {bars.length <= 7 || i % 2 === (bars.length - 1) % 2 ? String(dayParts(b.dayIso).day) : ''}
+          </Text>
+        ))}
+      </View>
+      {/* A clear layer ON TOP of the drawing takes the tap. Wrapped around
+          the Svg instead, the native svg view swallowed every touch on iOS. */}
+      <Pressable
+        onPress={onPress}
+        style={StyleSheet.absoluteFill}
+        accessible
+        accessibilityLabel={`Calories per day for the last ${bars.length} days, each against its goal range`}
+      />
+      {sel && selText && (
+        <View pointerEvents="none" style={s.tipRow}>
+          <Text style={[s.tipText, { color: colors.tooltipText, backgroundColor: colors.tooltipBg }]} numberOfLines={1}>
+            {selText}
+          </Text>
         </View>
-        {/* A clear layer ON TOP of the drawing takes the tap. Wrapped around
-            the Svg instead, the native svg view swallowed every touch on iOS. */}
-        <Pressable
-          onPress={onPress}
-          style={StyleSheet.absoluteFill}
-          accessible
-          accessibilityLabel={`Calories per day for the last ${bars.length} days, each against its goal range`}
-        />
-        {sel && selText && (
-          <View pointerEvents="none" style={s.tipRow}>
-            <Text style={[s.tipText, { color: colors.tooltipText, backgroundColor: colors.tooltipBg }]} numberOfLines={1}>
-              {selText}
-            </Text>
-          </View>
-        )}
+      )}
     </View>
   );
 }

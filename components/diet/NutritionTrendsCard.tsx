@@ -19,6 +19,16 @@ import { CalorieBarChart } from '@/components/diet/CalorieBarChart';
 const DAYS = 14;
 const r0 = (n: number) => Math.round(n);
 
+/** A theme colour at `alpha`. Theme tokens are hex today; anything else is
+ *  returned as is rather than turned into an invalid colour string. */
+function tint(color: string, alpha: number): string {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
+  if (!m) return color;
+  const h = m[1].length === 3 ? m[1].split('').map((c) => c + c).join('') : m[1];
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
 export function NutritionTrendsCard() {
   const { C } = useTheme();
   const supabase = useSupabaseClient();
@@ -67,7 +77,7 @@ export function NutritionTrendsCard() {
         </View>
       ) : (
         <View style={s.valueRow}>
-          <Text style={[s.suffix, { color: C.textMuted }]}>Today is the first day logged. Your range fills in from tomorrow.</Text>
+          <Text style={[s.suffix, { color: C.textMuted }]}>Only today is logged in the last 14 days. Your range fills in as days finish.</Text>
         </View>
       )}
 
@@ -80,17 +90,17 @@ export function NutritionTrendsCard() {
             inRange: C.macro.calories,
             over: C.warningText,
             under: C.textDim,
-            band: C.macro.calories + '22',
+            band: tint(C.macro.calories, 0.13),
             label: C.textMuted,
             labelToday: C.foreground,
-            tooltipBg: C.macro.calories + '1f',
+            tooltipBg: tint(C.macro.calories, 0.12),
             tooltipText: C.foreground,
           }}
         />
       </View>
 
       <View style={s.legend}>
-        <Key color={C.macro.calories + '33'} label={`Goal ±${pct}%`} C={C} />
+        <Key color={tint(C.macro.calories, 0.2)} label={`Goal ±${pct}%`} C={C} />
         <Key color={C.macro.calories} label="In range" C={C} />
         <Key color={C.warningText} label="Over" C={C} />
         <Key color={C.textDim} label="Under" C={C} />
