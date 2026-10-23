@@ -69,3 +69,12 @@ Deno.test('a plan row always names what it measures, even in its short form', ()
     assertEquals(/protein|steps|cardio|night|sessions/i.test(r.short), true, `${kind}: ${r.short}`);
   }
 });
+
+Deno.test('a long focus sentence keeps its first clause, so it fits two lines whole', () => {
+  assertEquals(
+    focusFromCoachLine('A little behind this week. Keep protein at 115g and add the second cardio session; the scale usually follows a week later.'),
+    'Keep protein at 115g and add the second cardio session.',
+  );
+  // A short sentence with a semicolon stays whole.
+  assertEquals(focusFromCoachLine('Rest today; train tomorrow.'), 'Rest today; train tomorrow.');
+});

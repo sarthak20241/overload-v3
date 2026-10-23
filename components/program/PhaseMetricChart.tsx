@@ -1,31 +1,39 @@
 /**
- * The hero metric's chart on the Goal screen (.planning/phase-metrics/SPEC.md,
- * src/goal9.py line_chart and src/goal8.py bars_chart), in react-native-svg,
- * which has shipped since the first build, so this needs no new native code.
+ * The hero metric's chart on the Goal screen, drawn to the approved
+ * reference (.planning/phase-metrics/shots/goal-screen-v2-reference.webp),
+ * in react-native-svg, which has shipped since the first build, so this
+ * needs no new native code.
  *
- *   MetricLineChart  a number over the program: the readings as a lime line
- *                    with a dot on the latest, a dotted path on to the phase
- *                    target (ringed dot, "69.6 by wk 7") and the goal (flag,
- *                    "68 kg"). x is program weeks, 0 at the start.
+ *   MetricLineChart  a number over the program: one smooth lime line from
+ *                    the first reading, a faint lime fill under it, a solid
+ *                    dot at now, and a dashed line on to a hollow ring at the
+ *                    target at the program's end. Nothing else: the GOAL
+ *                    figure sits above the chart and the phase card says the
+ *                    phase target. x runs from the first reading inside the
+ *                    program to the program's end, so the line always starts
+ *                    at the left edge. The readings get the left part of the
+ *                    width (HISTORY_SHARE) even when they cover a few days of
+ *                    a long program, so the line reads as a line, not a stub;
+ *                    the dashed stretch to the goal takes the rest.
  *   MetricBarsChart  a habit: one bar per program week against a dotted
  *                    target line, past weeks solid, this week lighter, weeks
  *                    to come as stubs.
  */
 import { View } from 'react-native';
-import Svg, { Circle, G, Line, Path, Rect, Text as SvgText } from 'react-native-svg';
+import Svg, { Circle, Defs, Line, LinearGradient, Path, Rect, Stop, Text as SvgText } from 'react-native-svg';
 import { Colors } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { monotonePath } from '@/components/ui/MiniAreaChart';
 
-export const CHART_HEIGHT = 88;
-const PAD_TOP = 12;
-const PAD_BOTTOM = 22;
+export const CHART_HEIGHT = 76;
+const BARS_HEIGHT = 88;
+const PAD_TOP = 6;
+const PAD_BOTTOM = 12;
 const X0 = 4;
-const X1_INSET = 16;
+const X1_INSET = 10;
 const LABEL_FONT = 10.5;
-/** Half a label's width: a label centred nearer an edge than this is pulled in. */
-const LABEL_HALF = 26;
-const clampLabelX = (x: number, width: number) => Math.max(LABEL_HALF, Math.min(width - LABEL_HALF, x));
+/** The share of the width the readings so far get, at least. */
+const HISTORY_SHARE = 0.58;
 
 export interface LinePoint {
   /** Program weeks from the start (fractional). */
@@ -37,75 +45,71 @@ interface LineProps {
   width: number;
   /** Readings so far, oldest first. */
   points: LinePoint[];
-  /** The whole program, in weeks: the x axis. */
+  /** The whole program, in weeks: where the line's path ends. */
   weeks: number;
-  /** Where this phase ends (program week) and what it asks for. */
-  phaseEndWeek: number;
-  phaseTarget: number;
-  phaseTargetLabel: string;
-  /** The program's own destination, when it has one: the flag at the end. */
-  goalTarget?: number | null;
-  goalLabel?: string;
+  /** The value the hollow ring at the end marks: the program goal, else the phase target. */
+  endTarget: number;
 }
 
-export function MetricLineChart({ width, points, weeks, phaseEndWeek, phaseTarget, phaseTargetLabel, goalTarget, goalLabel }: LineProps) {
+export function MetricLineChart({ width, points, weeks, endTarget }: LineProps) {
   const { C } = useTheme();
   const H = CHART_HEIGHT;
   const x1 = width - X1_INSET;
-  const W = Math.max(1, weeks);
-  const ys = [...points.map((p) => p.y), phaseTarget, ...(goalTarget != null ? [goalTarget] : [])];
+  // From the first reading inside the program to the program's end.
+  const inside = points.filter((p) => p.x >= 0);
+  const xStart = inside.length > 0 ? inside[0].x : 0;
+  const xEnd = Math.max(xStart + 1, weeks);
+  const ys = [...inside.map((p) => p.y), endTarget];
   let lo = Math.min(...ys);
   let hi = Math.max(...ys);
   if (!Number.isFinite(lo) || !Number.isFinite(hi)) { lo = 0; hi = 1; }
   if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
-  const padY = (hi - lo) * 0.12;
+  const padY = (hi - lo) * 0.1;
   lo -= padY; hi += padY;
-  const X = (w: number) => X0 + (x1 - X0) * Math.max(0, Math.min(W, w)) / W;
+  // Two pieces: first reading to now across at least HISTORY_SHARE of the
+  // width, now to the program's end across the rest.
+  const xNow = inside.length > 0 ? inside[inside.length - 1].x : xStart;
+  const linearShare = (xNow - xStart) / (xEnd - xStart);
+  const share = inside.length >= 2 ? Math.max(HISTORY_SHARE, linearShare) : linearShare;
+  const xMid = X0 + (x1 - X0) * share;
+  const X = (w: number) => {
+    const c = Math.max(xStart, Math.min(xEnd, w));
+    if (xNow <= xStart || c <= xNow) return xNow <= xStart ? X0 : X0 + (xMid - X0) * (c - xStart) / (xNow - xStart);
+    return xMid + (x1 - xMid) * (c - xNow) / Math.max(1e-9, xEnd - xNow);
+  };
   const Y = (v: number) => PAD_TOP + (H - PAD_TOP - PAD_BOTTOM) * (hi - v) / (hi - lo);
 
-  const pts = points.map((p) => ({ x: X(p.x), y: Y(p.y) }));
+  const pts = inside.map((p) => ({ x: X(p.x), y: Y(p.y) }));
   const last = pts[pts.length - 1] ?? null;
-  const px = X(phaseEndWeek);
-  const py = Y(phaseTarget);
-  const tx = X(W);
-  const ty = goalTarget != null ? Y(goalTarget) : null;
-  const dotted = last
-    ? `M${last.x.toFixed(1)},${last.y.toFixed(1)} L${px.toFixed(1)},${py.toFixed(1)}${ty != null ? ` L${tx.toFixed(1)},${ty.toFixed(1)}` : ''}`
-    : null;
-  // Labels sit under their marks; when the two land on top of each other the
-  // goal label moves up above the flag.
-  const goalLabelAbove = ty != null && Math.abs(ty - py) < 14 && Math.abs(tx - px) < 60;
+  const tx = X(xEnd);
+  const ty = Y(endTarget);
+  const line = pts.length >= 2 ? monotonePath(pts) : null;
+  // The fill closes the line down to the chart's floor.
+  const area = line && last ? `${line} L ${last.x},${H} L ${pts[0].x},${H} Z` : null;
 
   return (
     <View style={{ width, height: H }}>
       <Svg width={width} height={H} viewBox={`0 0 ${width} ${H}`}>
-        {dotted && (
-          <Path d={dotted} stroke={C.textMuted} strokeWidth={2} strokeDasharray="1 6" strokeLinecap="round" fill="none" />
-        )}
-        {pts.length >= 2 && (
-          <Path d={monotonePath(pts)} stroke={Colors.primary} strokeWidth={2.5} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-        )}
+        <Defs>
+          <LinearGradient id="metricFill" x1="0" y1="0" x2="0" y2="1">
+            <Stop offset="0" stopColor={Colors.primary} stopOpacity={0.07} />
+            <Stop offset="1" stopColor={Colors.primary} stopOpacity={0} />
+          </LinearGradient>
+        </Defs>
+        {area && <Path d={area} fill="url(#metricFill)" />}
         {last && (
-          <>
-            <Circle cx={last.x} cy={last.y} r={5.5} fill={Colors.primary} />
-            <Circle cx={last.x} cy={last.y} r={2.2} fill={Colors.primaryFg} />
-          </>
+          <Path
+            d={`M ${last.x},${last.y} L ${tx},${ty}`}
+            stroke={C.textMuted}
+            strokeWidth={1.5}
+            strokeDasharray="4 5"
+            strokeLinecap="round"
+            fill="none"
+          />
         )}
-        <Circle cx={px} cy={py} r={4} fill={C.card} stroke={Colors.primary} strokeWidth={2} />
-        <SvgText x={clampLabelX(px, width)} y={py + 20} textAnchor="middle" fontSize={LABEL_FONT} fontWeight="600" fill={C.accentText}>
-          {phaseTargetLabel}
-        </SvgText>
-        {ty != null && (
-          <G transform={`translate(${tx.toFixed(1)},${ty.toFixed(1)})`}>
-            <Circle r={9} fill={C.card} stroke={C.mutedFg} strokeWidth={1.4} />
-            <Path d="M-2.8,4.2 L-2.8,-4.6 M-2.8,-4.6 L3.8,-2.5 L-2.8,-0.4" stroke={C.foreground} strokeWidth={1.4} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-          </G>
-        )}
-        {ty != null && goalLabel && (
-          <SvgText x={clampLabelX(tx, width)} y={goalLabelAbove ? ty - 14 : ty + 22} textAnchor="middle" fontSize={LABEL_FONT} fontWeight="600" fill={C.mutedFg}>
-            {goalLabel}
-          </SvgText>
-        )}
+        {line && <Path d={line} stroke={Colors.primary} strokeWidth={2.5} fill="none" strokeLinecap="round" strokeLinejoin="round" />}
+        {last && <Circle cx={last.x} cy={last.y} r={5.5} fill={Colors.primary} />}
+        <Circle cx={tx} cy={ty} r={5.5} fill={C.background} stroke={C.mutedFg} strokeWidth={1.6} />
       </Svg>
     </View>
   );
@@ -125,7 +129,7 @@ interface BarsProps {
 
 export function MetricBarsChart({ width, values, weeks, curWeek, target, targetLabel }: BarsProps) {
   const { C } = useTheme();
-  const H = CHART_HEIGHT;
+  const H = BARS_HEIGHT;
   const x1 = width - X1_INSET;
   const W = Math.max(1, weeks);
   const top = 14;

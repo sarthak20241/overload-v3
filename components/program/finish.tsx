@@ -8,7 +8,7 @@
 import type { ReactNode } from 'react';
 import { View, Text, Pressable, StyleSheet, type StyleProp, type ViewStyle, type TextStyle } from 'react-native';
 import Animated, { FadeInDown, useReducedMotion } from 'react-native-reanimated';
-import { Feather } from '@expo/vector-icons';
+import { Feather, Ionicons } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
 import { Colors, FontWeight } from '@/constants/theme';
@@ -18,18 +18,22 @@ export const S = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
 
 /** The type scale. Negative letter-spacing on the large text only. */
 export const T = StyleSheet.create({
-  title: { fontSize: 34, lineHeight: 40, fontWeight: FontWeight.bold, letterSpacing: -0.8 },
+  title: { fontSize: 28, lineHeight: 34, fontWeight: FontWeight.bold, letterSpacing: -0.5 },
   hero: { fontSize: 56, lineHeight: 58, fontWeight: FontWeight.bold, letterSpacing: -2, fontVariant: ['tabular-nums'] },
   heroSmall: { fontSize: 44, lineHeight: 48, fontWeight: FontWeight.bold, letterSpacing: -1.4, fontVariant: ['tabular-nums'] },
   unit: { fontSize: 18, lineHeight: 22, fontWeight: FontWeight.medium },
   section: { fontSize: 12, lineHeight: 16, fontWeight: FontWeight.semibold, letterSpacing: 1, textTransform: 'uppercase' },
-  rowTitle: { fontSize: 16, lineHeight: 20, fontWeight: FontWeight.medium },
+  rowTitle: { fontSize: 18, lineHeight: 23, fontWeight: FontWeight.medium },
+  /** A list row's second line: muted, regular. */
+  rowSub: { fontSize: 15, lineHeight: 20, fontWeight: FontWeight.regular },
   rowValue: { fontSize: 15, lineHeight: 20, fontWeight: FontWeight.medium, fontVariant: ['tabular-nums'] },
   status: { fontSize: 13, lineHeight: 16, fontWeight: FontWeight.semibold },
   meta: { fontSize: 14, lineHeight: 18, fontWeight: FontWeight.medium },
-  body: { fontSize: 15, lineHeight: 21, fontWeight: FontWeight.medium },
-  cardTitle: { fontSize: 22, lineHeight: 26, fontWeight: FontWeight.bold, letterSpacing: -0.4 },
-  big: { fontSize: 26, lineHeight: 30, fontWeight: FontWeight.bold, letterSpacing: -0.6, fontVariant: ['tabular-nums'] },
+  body: { fontSize: 15, lineHeight: 21, fontWeight: FontWeight.regular },
+  cardTitle: { fontSize: 22, lineHeight: 27, fontWeight: FontWeight.semibold, letterSpacing: -0.3 },
+  /** A section heading on a page ("Your plan"). */
+  heading: { fontSize: 24, lineHeight: 29, fontWeight: FontWeight.semibold, letterSpacing: -0.4 },
+  big: { fontSize: 26, lineHeight: 30, fontWeight: FontWeight.semibold, letterSpacing: -0.6, fontVariant: ['tabular-nums'] },
   dayLetter: { fontSize: 11, lineHeight: 14, fontWeight: FontWeight.semibold },
   dayName: { fontSize: 11, lineHeight: 14, fontWeight: FontWeight.semibold },
 });
@@ -68,7 +72,11 @@ interface RowProps {
   /** The row navigates: a chevron, a pressed state and a haptic. */
   onPress?: () => void;
   icon?: keyof typeof Feather.glyphMap;
+  /** A thin outline Ionicons glyph instead of a Feather one (the plan rows' barbell, knife and fork, moon). */
+  ionIcon?: keyof typeof Ionicons.glyphMap;
   subtitle?: ReactNode;
+  /** Taller rows for a short list that is the page's main content (the plan rows: 64). */
+  minHeight?: number;
   first?: boolean;
   last?: boolean;
   accessibilityLabel?: string;
@@ -78,15 +86,17 @@ interface RowProps {
  * A list row: 52pt minimum, hairline dividers, a full-row press target with
  * a subtle pressed state, a chevron only when it navigates.
  */
-export function Row({ title, value, valueRest, status, onPress, icon, subtitle, first, last, accessibilityLabel }: RowProps) {
+export function Row({ title, value, valueRest, status, onPress, icon, ionIcon, subtitle, minHeight, first, last, accessibilityLabel }: RowProps) {
   const { C } = useTheme();
   const statusColor = useStatusColor();
   const body = (
     <>
-      {icon && <Feather name={icon} size={22} color={C.foreground} style={styles.rowIcon} />}
+      {ionIcon
+        ? <Ionicons name={ionIcon} size={27} color={C.foreground} style={styles.rowIconWide} />
+        : icon && <Feather name={icon} size={22} color={C.foreground} style={styles.rowIcon} />}
       <View style={{ flex: 1 }}>
         <Text style={[T.rowTitle, { color: C.foreground }]} numberOfLines={1}>{title}</Text>
-        {subtitle ? <Text style={[T.meta, { color: C.mutedFg, marginTop: 2 }]} numberOfLines={1}>{subtitle}</Text> : null}
+        {subtitle ? <Text style={[T.rowSub, { color: C.mutedFg, marginTop: 2 }]} numberOfLines={1}>{subtitle}</Text> : null}
       </View>
       {(value || valueRest) && (
         <Text style={[T.rowValue, { color: C.mutedFg, marginRight: status ? S.lg : 0 }]} numberOfLines={1}>
@@ -99,11 +109,12 @@ export function Row({ title, value, valueRest, status, onPress, icon, subtitle, 
     </>
   );
   const border = [first && { borderTopWidth: StyleSheet.hairlineWidth }, !last && { borderBottomWidth: StyleSheet.hairlineWidth }, { borderColor: C.borderSubtle }];
-  if (!onPress) return <View style={[styles.row, border]}>{body}</View>;
+  const tall = minHeight ? { minHeight } : null;
+  if (!onPress) return <View style={[styles.row, tall, border]}>{body}</View>;
   return (
     <Pressable
       onPress={() => { haptics.selection(); onPress(); }}
-      style={({ pressed }) => [styles.row, border, pressed && { backgroundColor: C.surfaceHover }]}
+      style={({ pressed }) => [styles.row, tall, border, pressed && { backgroundColor: C.surfaceHover }]}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? title}
     >
@@ -188,6 +199,7 @@ export function ScreenSkeleton({ variant }: { variant: 'goal' | 'pillar' | 'phas
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', minHeight: 52, paddingVertical: S.sm },
   rowIcon: { width: 28, textAlign: 'center', marginRight: S.lg },
+  rowIconWide: { width: 36, textAlign: 'center', marginRight: S.xl - 4 },
   rowStatus: { minWidth: 62, textAlign: 'right' },
   retry: { height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   tip: { flexDirection: 'row', gap: S.md, marginTop: S.xxl - 2 },
