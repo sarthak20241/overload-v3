@@ -13,6 +13,7 @@ import { syncHealthData } from './healthSync';
 import { dowOfISO, normalizeFuelDays } from './fuelDays';
 import { storeReadinessParts } from './readinessParts';
 import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from './targetHistory';
+import { fetchShared, peek, put } from './screenCache';
 
 const BASELINE_DAYS = 28;
 // sleep_quality rides along for today's read only; it is a subjective modifier, so
@@ -100,6 +101,28 @@ export async function loadReadiness(
     acuteLoad,
     nutrition,
   });
+}
+
+/**
+ * Today's readiness through lib/screenCache, one entry per user and local day,
+ * so the dashboard card does not recompute it (three reads) on every focus.
+ * Kept current by the writes that change it: computeAndStoreReadiness (the
+ * health sync and a sleep log) stores what it computed, and a workout flush
+ * clears it (components/SyncProvider; the training load reads workouts). The
+ * window bounds the rest (a past day's food, a goal change).
+ */
+export const READINESS_FRESH_MS = 60_000;
+const readinessKey = (userId: string, day: string) => `readiness:${userId}:${day}`;
+
+/** The readiness cached for today: undefined = not read yet. */
+export function peekReadiness(userId: string): ReadinessResult | null | undefined {
+  return peek<ReadinessResult | null>(readinessKey(userId, todayLocalISO()));
+}
+
+/** Today's readiness, from the cache when it is fresh. Throws on a failed read. */
+export function sharedReadiness(supabase: SupabaseClient, userId: string): Promise<ReadinessResult | null> {
+  const day = todayLocalISO();
+  return fetchShared(readinessKey(userId, day), () => loadReadiness(supabase, userId, day), { maxAgeMs: READINESS_FRESH_MS });
 }
 
 /** Fallback daily targets, mirroring lib/dietData DEFAULT_TARGETS. */
@@ -286,6 +309,8 @@ export async function computeAndStoreReadiness(
   // midnight cannot score one day and file it under another.
   const day = todayLocalISO();
   const result = await loadReadiness(supabase, userId, day);
+  // The freshest answer there is: the dashboard card paints it on its next focus.
+  put(readinessKey(userId, day), result);
   if (result && result.score != null) {
     const { error: upErr } = await supabase.from('daily_metrics').upsert(
       { user_id: userId, metric_date: day, metric_type: 'readiness_score', value: result.score, unit: 'score', source: 'manual' },

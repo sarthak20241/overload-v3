@@ -15,6 +15,8 @@ import { flushQueue, getPendingCount, hydrateSyncQueue } from '@/lib/syncQueue';
 import { flushRoutineQueue, getPendingRoutineCount, hydrateRoutineQueue } from '@/lib/routineQueue';
 import { flushEditQueue, getPendingEditCount, hydrateEditQueue } from '@/lib/editQueue';
 import { hydrateCache } from '@/lib/localCache';
+import { invalidate } from '@/lib/screenCache';
+import { nextSyncCounts, type SyncCounts } from '@/lib/syncTick';
 
 /** Workouts + routines + workout edits still waiting to sync for this user. */
 const totalPending = (userId: string) =>
@@ -23,6 +25,12 @@ const totalPending = (userId: string) =>
 interface SyncState {
   /** Workouts saved locally but not yet on the server. */
   pendingCount: number;
+  /**
+   * Bumped each time a flush lands something on the server (or the count
+   * drops), so screens re-read it. A rise is a local save; screens show it
+   * by merging the queue onto what they already hold, with no read.
+   */
+  syncedTick: number;
   flushing: boolean;
   /** Last flush error message while work is still pending, else null. */
   lastError: string | null;
@@ -32,6 +40,7 @@ interface SyncState {
 
 const SyncContext = createContext<SyncState>({
   pendingCount: 0,
+  syncedTick: 0,
   flushing: false,
   lastError: null,
   flushNow: async () => {},
@@ -49,7 +58,27 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
   const userId = user?.id ?? null;
-  const [pendingCount, setPendingCount] = useState(0);
+  // The count and syncedTick move in ONE state update, so a drop re-renders
+  // the screens once with both, never with the count first and the tick after.
+  const [{ pendingCount, syncedTick }, setCounts] = useState({ pendingCount: 0, syncedTick: 0 });
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
+  const countsRef = useRef<SyncCounts>({ pendingCount: 0, syncedTick: 0 });
+  // `landed`: items the flush just put on the server. Counted, not read off
+  // the count: a save made during the flush can keep the count level.
+  const setPendingCount = useCallback((n: number, landed = 0) => {
+    const { counts, synced } = nextSyncCounts(countsRef.current, n, landed);
+    if (counts === countsRef.current) return;
+    countsRef.current = counts;
+    // The server changed: the shared reads it touches are stale (the
+    // workouts, and readiness, whose training load reads them).
+    const uid = userIdRef.current;
+    if (synced && uid) {
+      invalidate(`workouts:${uid}`);
+      invalidate(`readiness:${uid}`);
+    }
+    setCounts(counts);
+  }, []);
   const [flushing, setFlushing] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const flushingRef = useRef(false);
@@ -62,10 +91,13 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
   // Hydrate this user's queue when they sign in / change.
   useEffect(() => {
-    if (!userId) {
-      setPendingCount(0);
-      return;
+    // A new identity starts from an empty queue, so the old account's count
+    // never reads as this one's rise or drop.
+    if (countsRef.current.pendingCount !== 0) {
+      countsRef.current = { ...countsRef.current, pendingCount: 0 };
+      setCounts(countsRef.current);
     }
+    if (!userId) return;
     let cancelled = false;
     // Warm the read cache early so screens render last-known data instantly.
     void hydrateCache(userId);
@@ -79,7 +111,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [userId]);
+  }, [userId, setPendingCount]);
 
   const flushNow = useCallback(async () => {
     if (!userId) return;
@@ -98,7 +130,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       const wResult = await flushQueue(supabaseRef.current, userId);
       const eResult = await flushEditQueue(supabaseRef.current, userId);
       const total = rResult.pendingCount + wResult.pendingCount + eResult.pendingCount;
-      setPendingCount(total);
+      setPendingCount(total, rResult.flushed + wResult.flushed + eResult.flushed);
       setLastError(
         total > 0 ? (wResult.lastError ?? eResult.lastError ?? rResult.lastError) : null,
       );
@@ -106,7 +138,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       flushingRef.current = false;
       setFlushing(false);
     }
-  }, [userId]);
+  }, [userId, setPendingCount]);
 
   // Flush when the app returns to the foreground.
   useEffect(() => {
@@ -126,8 +158,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   }, [flushNow, userId]);
 
   const value = useMemo(
-    () => ({ pendingCount, flushing, lastError, flushNow }),
-    [pendingCount, flushing, lastError, flushNow],
+    () => ({ pendingCount, syncedTick, flushing, lastError, flushNow }),
+    [pendingCount, syncedTick, flushing, lastError, flushNow],
   );
 
   return <SyncContext.Provider value={value}>{children}</SyncContext.Provider>;

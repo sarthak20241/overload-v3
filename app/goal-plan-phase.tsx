@@ -54,7 +54,7 @@ export default function GoalPlanPhaseScreen() {
   }, [seqParam]);
   const loadSeq = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     const n = ++loadSeq.current;
     if (!supabase || !clerkId) { setProgram(null); setLoading(false); setRefreshing(false); return; }
     try {
@@ -64,7 +64,7 @@ export default function GoalPlanPhaseScreen() {
       // A failed side read keeps what the screen had; only the program read
       // can fail the load.
       const [p, vitals, lv] = await Promise.all([
-        loadActiveProgram(supabase, clerkId),
+        loadActiveProgram(supabase, clerkId, { fresh }),
         sharedTodayVitals(supabase, clerkId).catch(() => null),
         loadLiveReadings(supabase, clerkId).catch(() => null),
       ]);
@@ -114,13 +114,13 @@ export default function GoalPlanPhaseScreen() {
 
       <ScrollView
         contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: S.xs, paddingBottom: insets.bottom + S.xxl }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={C.mutedFg} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(true); }} tintColor={C.mutedFg} />}
       >
         {loading ? (
           <ScreenSkeleton variant="phase" />
         ) : !program || !shown ? (
           loadFailed && !program ? (
-            <LoadFailed onRetry={() => { setLoading(true); load(); }} />
+            <LoadFailed onRetry={() => { setLoading(true); load(true); }} />
           ) : (
             <Text style={[T.body, { color: C.mutedFg, paddingTop: S.xl }]}>No program yet. Build one from Goal & Plan and this screen fills in.</Text>
           )

@@ -17,6 +17,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
+import { loadRecentWorkouts } from '@/lib/recentWorkouts';
 
 export interface DashboardData {
   /** Workouts from the last 90 days, newest first, with `sets` normalized. */
@@ -24,33 +25,26 @@ export interface DashboardData {
   xp: number;
 }
 
-const WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
-
 /**
  * Fetch workouts (90-day window) + profile XP and write both to the cache.
  * Throws on any request error so callers keep whatever the cache already
  * holds — a failed read must never blank the dashboard.
+ *
+ * The workouts are the read History and Analytics share (lib/recentWorkouts),
+ * so a screen opened right after this one reads none of them again.
  */
 export async function fetchDashboardData(
   supabase: SupabaseClient<any, any, any>,
   clerkId: string | undefined,
 ): Promise<DashboardData> {
-  // Only fetch the last 90 days to cap payload size; the client-side stats
-  // need recent history only.
-  const sinceIso = new Date(Date.now() - WINDOW_MS).toISOString();
-  let workoutsQ = supabase
-    .from('workouts')
-    .select('*, workout_sets(*, exercises(*))')
-    .gte('started_at', sinceIso)
-    .order('started_at', { ascending: false });
-  let profileQ = supabase.from('user_profiles').select('xp').limit(1).maybeSingle();
-  if (clerkId) {
-    workoutsQ = workoutsQ.eq('user_id', clerkId);
-    profileQ = supabase.from('user_profiles').select('xp').eq('clerk_user_id', clerkId).maybeSingle();
-  }
-  const [wRes, pRes] = await Promise.all([workoutsQ, profileQ]);
-  if (wRes.error || pRes.error) throw wRes.error || pRes.error;
-  const workouts = ((wRes.data as any[]) || []).map((w: any) => ({
+  // Only the last 90 days, to cap payload size; the client-side stats need
+  // recent history only.
+  const profileQ = clerkId
+    ? supabase.from('user_profiles').select('xp').eq('clerk_user_id', clerkId).maybeSingle()
+    : supabase.from('user_profiles').select('xp').limit(1).maybeSingle();
+  const [rows, pRes] = await Promise.all([loadRecentWorkouts(supabase, clerkId), profileQ]);
+  if (pRes.error) throw pRes.error;
+  const workouts = rows.map((w: any) => ({
     ...w,
     sets: w.workout_sets ?? w.sets ?? [],
   }));

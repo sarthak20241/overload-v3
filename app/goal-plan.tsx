@@ -135,13 +135,13 @@ export default function GoalPlanScreen() {
     return () => { live = false; };
   }, [user?.id, supabase]));
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     const seq = ++loadSeq.current;
     if (!supabase || !clerkId) { setProgram(null); setLoading(false); setRefreshing(false); return; }
     try {
       // A failed live read keeps the readings the screen had; only the
       // program read can fail the load.
-      const [p, lv] = await Promise.all([loadActiveProgram(supabase, clerkId), loadLiveReadings(supabase, clerkId).catch(() => null)]);
+      const [p, lv] = await Promise.all([loadActiveProgram(supabase, clerkId, { fresh }), loadLiveReadings(supabase, clerkId).catch(() => null)]);
       if (seq !== loadSeq.current) return;
       setProgram(p);
       if (lv) setLive(lv);
@@ -509,12 +509,12 @@ export default function GoalPlanScreen() {
 
       <ScrollView
         contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: 0, paddingBottom: program ? FOOTER_H + footerBottom + S.lg : insets.bottom + S.xl }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); setFocusTick((t) => t + 1); }} tintColor={C.mutedFg} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(true); setFocusTick((t) => t + 1); }} tintColor={C.mutedFg} />}
       >
         {loading ? (
           <ScreenSkeleton variant="goal" />
         ) : !program && loadFailed ? (
-          <LoadFailed onRetry={() => { setLoading(true); load(); }} />
+          <LoadFailed onRetry={() => { setLoading(true); load(true); }} />
         ) : !program ? (
           <View style={styles.empty}>
             <View style={[styles.emptyIconWrap, { backgroundColor: C.primarySubtle }]}>

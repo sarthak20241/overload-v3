@@ -29,7 +29,7 @@ import {
   saveNutritionTargets, saveDayTarget, clearDayTarget, energySplit, macrosForKcal, macroKcal, ymd,
   type NutritionTargets, type EnergySplit,
 } from '@/lib/dietData';
-import { loadActiveProgram } from '@/lib/programData';
+import { invalidateProgram, loadActiveProgram } from '@/lib/programData';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { fuelDayText, type FuelDay } from '@/lib/fuelDays';
@@ -330,6 +330,8 @@ export function NutritionGoalSheet({
           .update({ diet_calorie_target: t.kcal, diet_protein_g: t.protein, diet_carb_g: t.carb, diet_fat_g: t.fat })
           .eq('id', phase.id)
           .select('id');
+        // The phase's targets are part of the cached program (Goal & Plan).
+        invalidateProgram(clerkId);
         if (phaseErr) return phaseErr.message;
         return (data?.length ?? 0) === 0 ? 'phase not updated' : undefined;
       };
