@@ -64,3 +64,14 @@ Deno.test('only today logged: nothing to sum up yet', () => {
   const { summary } = calorieBars([{ dayIso: '2026-10-23', kcal: 900 }], () => 1800, '2026-10-23');
   assertEquals(summary, { logged: 0, inRange: 0, avgKcal: null });
 });
+
+Deno.test('a day with no goal is not counted as in range', () => {
+  const { summary } = calorieBars(
+    [{ dayIso: '2026-10-21', kcal: 2600 }, { dayIso: '2026-10-22', kcal: 1800 }],
+    (d) => (d === '2026-10-21' ? 0 : 1800),
+    '2026-10-23',
+  );
+  // 2,600 with no goal says nothing about range: one day judged, and it landed.
+  // It was still eaten, so it stays in the average.
+  assertEquals(summary, { logged: 1, inRange: 1, avgKcal: 2200 });
+});

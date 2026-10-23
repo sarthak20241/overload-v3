@@ -81,6 +81,12 @@ export function NutritionTrendsCard() {
           <View style={{ flex: 1 }} />
           <Text style={[s.avg, { color: C.textMuted }]}>{r0(summary.avgKcal ?? 0).toLocaleString()} kcal avg</Text>
         </View>
+      ) : summary.avgKcal !== null ? (
+        // Finished days, none with a goal: no range to report, the average still stands.
+        <View style={s.valueRow}>
+          <Text style={[s.value, { color: C.foreground }]}>{r0(summary.avgKcal).toLocaleString()}</Text>
+          <Text style={[s.suffix, { color: C.textMuted }]}> kcal / day avg</Text>
+        </View>
       ) : (
         <View style={s.valueRow}>
           <Text style={[s.suffix, { color: C.textMuted }]}>Only today is logged in the last 14 days. Your range fills in as days finish.</Text>
@@ -112,7 +118,10 @@ export function NutritionTrendsCard() {
         <Key color={C.textDim} label="Under" C={C} />
       </View>
 
-      <View style={[s.macros, { borderTopColor: C.borderSubtle }]}>
+      <Text style={[s.caption, { color: C.textDim, borderTopColor: C.borderSubtle }]}>
+        {finished.length ? 'Daily averages, not counting today' : 'Today so far'}
+      </Text>
+      <View style={s.macros}>
         <Macro label="Protein" value={`${r0(avg((d) => d.protein_g))}g`} color={C.macro.protein} C={C} />
         <Macro label="Carbs" value={`${r0(avg((d) => d.carb_g))}g`} color={C.macro.carbs} C={C} />
         <Macro label="Fat" value={`${r0(avg((d) => d.fat_g))}g`} color={C.macro.fat} C={C} />
@@ -152,5 +161,6 @@ const s = StyleSheet.create({
   key: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   swatch: { width: 8, height: 8, borderRadius: 2 },
   keyText: { fontSize: 10 },
-  macros: { flexDirection: 'row', marginTop: Spacing.md, paddingTop: Spacing.md, borderTopWidth: 1 },
+  caption: { fontSize: 10, marginTop: Spacing.md, paddingTop: Spacing.sm, borderTopWidth: 1 },
+  macros: { flexDirection: 'row', marginTop: Spacing.xs },
 });

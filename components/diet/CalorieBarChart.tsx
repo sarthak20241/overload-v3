@@ -124,6 +124,8 @@ export function CalorieBarChart({ bars, width, height, colors }: {
         style={StyleSheet.absoluteFill}
         accessible
         accessibilityLabel={`Calories per day for the last ${bars.length} days, each against its goal range`}
+        // The tapped day, read out: the tooltip itself takes no focus.
+        accessibilityValue={selText ? { text: selText } : undefined}
       />
       {sel && selText && (
         <View pointerEvents="none" style={s.tipRow}>

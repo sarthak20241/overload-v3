@@ -27,11 +27,12 @@ export interface CalorieBar {
 }
 
 export interface CalorieBarSummary {
-  /** Finished days with food logged (today is not finished). */
+  /** Finished days with food logged and a goal to judge them by (today is
+   *  not finished; a day with no goal has no range to land in). */
   logged: number;
   /** Of those, the days that landed inside their range. */
   inRange: number;
-  /** Mean kcal over those days. Null when there are none. */
+  /** Mean kcal over every finished logged day, goal or not. Null when none. */
   avgKcal: number | null;
 }
 
@@ -68,11 +69,12 @@ export function calorieBars(
     return { dayIso: d.dayIso, kcal, goal, ...rangeFor(goal), status: statusFor(kcal, goal), today: d.dayIso === todayIso };
   });
   const done = bars.filter((b) => !b.today && b.status !== 'none');
+  const judged = done.filter((b) => b.hi > 0);
   return {
     bars,
     summary: {
-      logged: done.length,
-      inRange: done.filter((b) => b.status === 'in').length,
+      logged: judged.length,
+      inRange: judged.filter((b) => b.status === 'in').length,
       avgKcal: done.length ? Math.round(done.reduce((a, b) => a + b.kcal, 0) / done.length) : null,
     },
   };
