@@ -122,7 +122,7 @@ export default function GoalPlanPhaseScreen() {
               <PhaseDetail program={program} seq={seq} ended={ended} onSelectSeq={setSeq} />
             </Stagger>
             <View style={{ marginTop: S.xxl }}>
-              <PlanRows phase={shown} readinessToday={readinessToday} live={live} from="phase" staggerFrom={1} heading={false} />
+              <PlanRows phase={shown} readinessToday={readinessToday} live={shown.seq === program.currentPhaseSeq ? live : null} from="phase" staggerFrom={1} heading={false} />
             </View>
           </>
         )}

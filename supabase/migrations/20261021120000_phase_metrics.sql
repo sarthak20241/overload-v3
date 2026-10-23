@@ -227,16 +227,25 @@ commit;
 --      and grantee in ('authenticated', 'anon')
 --    order by 1, 2, 3, 4;
 --
--- And the real test, as a user, in one transaction that is rolled back:
+-- And the real test, as a user, in one transaction that is rolled back. An
+-- expected error aborts the transaction, so each check sits behind its own
+-- savepoint and is rolled back to it; otherwise the checks after the first
+-- error would "fail" only because the transaction was already aborted:
 --
 --   begin;
 --   set local role authenticated;
 --   set local request.jwt.claims = '{"sub":"<a clerk id with an active program>"}';
+--   savepoint a;
 --   -- must fail with 42501 (permission denied): a client stamping its own check
 --   update coach_program_phase_metrics set checked_week = current_date where user_id = '<that id>';
+--   rollback to savepoint a;
+--   savepoint b;
 --   -- must update 0 rows: an app-measured row is not client-updatable
 --   update coach_program_phase_metrics set status = 'done' where user_id = '<that id>' and kind = 'bodyweight';
---   -- must fail: a metric on another user's phase
+--   rollback to savepoint b;
+--   savepoint c;
+--   -- must fail with 42501 (row-level security): a metric on another user's phase
 --   insert into coach_program_phase_metrics (program_id, phase_id, user_id, kind, target_value)
 --     values ('<their program>', '<their phase>', '<that id>', 'steps', 8000);
+--   rollback to savepoint c;
 --   rollback;

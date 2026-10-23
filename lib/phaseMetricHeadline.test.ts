@@ -1,6 +1,6 @@
 // deno test --allow-all --unstable-sloppy-imports lib/phaseMetricHeadline.test.ts
 import { assertEquals } from 'https://deno.land/std@0.224.0/assert/mod.ts';
-import { metricHeadline, liveFrom, headlineText, type LiveReadings } from './phaseMetricHeadline.ts';
+import { focusFromCoachLine, metricHeadline, liveFrom, headlineText, type LiveReadings } from './phaseMetricHeadline.ts';
 
 const base = { id: 'm', program_id: 'p', phase_id: 'ph', user_id: 'u', seq: 0, is_hero: false, ref: {}, unit: null, direction: 'up' as const, start_value: null, status_note: null, updated_at: '' };
 const m = (kind: string, target: number, current: number | null, status = 'on_track') =>
@@ -40,4 +40,12 @@ Deno.test('liveFrom: sessions this week and the sleep average over the nights th
   const nights = [{ day: 'a', hours: 7.5 }, { day: 'b', hours: null }, { day: 'c', hours: 8.5 }];
   assertEquals(liveFrom(week, nights), { sessionsThisWeek: 2, sleepAvg: 8, sleepNights: 2 });
   assertEquals(liveFrom(null, []), { sessionsThisWeek: 0, sleepAvg: null, sleepNights: 0 });
+});
+
+Deno.test('the focus sentence never splits a decimal number', () => {
+  // A status-only first sentence gives way to the action, whole.
+  assertEquals(focusFromCoachLine('Behind the line this week. Hold 71.8 kg by Sunday.'), 'Hold 71.8 kg by Sunday.');
+  assertEquals(focusFromCoachLine('Sleep averaged 6.5 h; get to 7.5 h this week. Lights out by 11.'), 'Sleep averaged 6.5 h; get to 7.5 h this week.');
+  assertEquals(focusFromCoachLine('On pace! Keep the 2.5 kg plates on.'), 'Keep the 2.5 kg plates on.');
+  assertEquals(focusFromCoachLine('Add one set to rows.'), 'Add one set to rows.');
 });

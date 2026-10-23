@@ -326,7 +326,7 @@ export default function GoalPlanPillarScreen() {
   // ---- EAT -------------------------------------------------------------------
   const renderEat = (ph: ActiveProgramPhaseRow) => {
     const protein = ph.metrics.find((m) => m.kind === 'protein_days') ?? null;
-    const proteinLine = protein ? metricHeadline(protein, live) : null;
+    const proteinLine = protein ? metricHeadline(protein, isCur ? live : null) : null;
     const kcal = ph.diet_calorie_target;
     const fuel = ph.diet_fuel_days && ph.diet_fuel_days.length > 0 ? ph.diet_fuel_days : null;
     const fuelKcal = fuel ? Math.max(...fuel.map((f) => f.kcal)) : 0;
@@ -416,10 +416,16 @@ export default function GoalPlanPillarScreen() {
     // The hero: the job's reading when there is one, else the live average over
     // the nights that exist, saying how many when fewer than four. No status
     // word on a live number; the lime bars below show which nights hit target.
-    const h = sleepMetric ? metricHeadline(sleepMetric, live) : null;
+    // This week's nights belong to the current phase only; another phase
+    // shows its own reading or its plan, never this week's sleep.
+    const h = sleepMetric ? metricHeadline(sleepMetric, isCur ? live : null) : null;
     const liveRest = live.sleepNights < 4 ? `h a night from ${live.sleepNights} night${live.sleepNights === 1 ? '' : 's'}` : 'h a night, last 7 nights';
-    const heroNum = h?.num ? h.num : live.sleepAvg != null ? formatMetricValue('sleep_hours', live.sleepAvg) : null;
-    const heroRest = h?.num ? h.rest : liveRest;
+    // With no job reading: the current phase shows this week's live average;
+    // another phase shows its own target, as Train shows the phase's plan.
+    const heroNum = h?.num ? h.num
+      : !isCur ? formatMetricValue('sleep_hours', target)
+      : live.sleepAvg != null ? formatMetricValue('sleep_hours', live.sleepAvg) : null;
+    const heroRest = h?.num ? h.rest : !isCur ? 'h a night in this phase' : liveRest;
     const status: MetricStatus | null = h?.status ?? null;
     const noHealth = vitals != null && !vitals.anyHealthData && slept.length === 0;
     const maxH = Math.max(target, ...slept.map((n) => n.hours ?? 0), 1);

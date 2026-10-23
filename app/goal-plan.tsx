@@ -50,7 +50,7 @@ import { MetricLogSheet } from '@/components/program/MetricLogSheet';
 import { PlanRows } from '@/components/program/PlanRows';
 import { ObjectiveText } from '@/components/program/ObjectiveText';
 import { loadLiveReadings, peekLiveReadings, prefetchPillars } from '@/lib/pillarData';
-import type { LiveReadings } from '@/lib/phaseMetricHeadline';
+import { focusFromCoachLine, type LiveReadings } from '@/lib/phaseMetricHeadline';
 import { LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T } from '@/components/program/finish';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -67,19 +67,6 @@ function addDaysISO(iso: string, delta: number): string {
   const mm = String(dt.getMonth() + 1).padStart(2, '0');
   const dd = String(dt.getDate()).padStart(2, '0');
   return `${dt.getFullYear()}-${mm}-${dd}`;
-}
-
-/**
- * The focus sentence from Drona's line: the first sentence that asks for
- * something. A first sentence that only restates the status ("Behind the
- * line this week.") gives way to the next one, which carries the action.
- */
-export function focusFromCoachLine(line: string): string {
-  const sentences = line.match(/[^.!?]+[.!?]?/g)?.map((s) => s.trim()).filter(Boolean) ?? [line];
-  if (sentences.length <= 1) return sentences[0] ?? line;
-  const restates = /^(on track|on pace|behind|a little behind|close|slipping|ahead|right on|good week|steady)\b/i;
-  const first = sentences[0];
-  return restates.test(first) && first.length < 48 ? sentences[1] : first;
 }
 
 export default function GoalPlanScreen() {
@@ -329,7 +316,7 @@ export default function GoalPlanScreen() {
 
   const openPhase = () => {
     haptics.selection();
-    track('program_phase_opened', { seq: shownPhase?.seq ?? null, from: 'goal' });
+    // program_phase_opened is recorded once, by the phase screen on mount.
     router.push({ pathname: '/goal-plan-phase', params: shownPhase ? { seq: String(shownPhase.seq) } : {} } as any);
   };
 
@@ -557,7 +544,7 @@ export default function GoalPlanScreen() {
             <Stagger index={2}>{renderPhaseCard()}</Stagger>
             {shownPhase && (
               <View style={{ marginTop: S.xxl }}>
-                <PlanRows phase={shownPhase} readinessToday={readinessToday} live={live} from="goal" staggerFrom={3} />
+                <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} />
               </View>
             )}
 

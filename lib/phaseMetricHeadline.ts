@@ -88,3 +88,18 @@ export function liveFrom(week: { count: number } | null, nights: { hours: number
     sleepNights: slept.length,
   };
 }
+
+/**
+ * The focus sentence from Drona's line: the first sentence that asks for
+ * something. A first sentence that only restates the status ("Behind the
+ * line this week.") gives way to the next one, which carries the action.
+ */
+export function focusFromCoachLine(line: string): string {
+  // A sentence ends at . ! or ? followed by a space or the end, never inside
+  // a number: "71.8 kg" and "7.5 h" stay whole.
+  const sentences = line.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean);
+  if (sentences.length <= 1) return sentences[0] ?? line;
+  const restates = /^(on track|on pace|behind|a little behind|close|slipping|ahead|right on|good week|steady)\b/i;
+  const first = sentences[0];
+  return restates.test(first) && first.length < 48 ? sentences[1] : first;
+}
