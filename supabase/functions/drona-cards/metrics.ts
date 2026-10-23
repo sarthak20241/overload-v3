@@ -551,8 +551,10 @@ async function gatherReadings(
     for (const m of metrics.filter((m) => m.kind === "custom")) {
       jobs.push((async () => {
         const { data, error } = await retried(() =>
+          // Up to today only: the table does not bound logged_on, so a
+          // future-dated log written straight to it must not become the reading.
           db.from("coach_program_phase_metric_logs").select("metric_id, value, logged_on")
-            .eq("user_id", userId).eq("metric_id", m.id)
+            .eq("user_id", userId).eq("metric_id", m.id).lte("logged_on", localDay)
             .order("logged_on", { ascending: false }).limit(1)
         );
         if (error) return fail(error.message, "custom");

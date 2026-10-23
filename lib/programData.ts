@@ -1092,6 +1092,8 @@ async function loadProgramMetrics(
       .from(METRIC_LOGS_TABLE)
       .select('metric_id, value, logged_on')
       .in('metric_id', customIds)
+      // Up to today: a future-dated log must not become the current value.
+      .lte('logged_on', todayLocalISO())
       .order('logged_on', { ascending: false });
     if (logErr && !missingTable(logErr, METRIC_LOGS_TABLE)) throw logErr;
     const seen = new Set<string>();
