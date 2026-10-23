@@ -27,7 +27,7 @@ import { monotonePath } from '@/components/ui/MiniAreaChart';
 import { useGoalPalette } from '@/components/program/finish';
 import { metricXScale } from '@/lib/chartScale';
 
-export const CHART_HEIGHT = 51;
+export const CHART_HEIGHT = 42;
 const BARS_HEIGHT = 88;
 const PAD_TOP = 6;
 const PAD_BOTTOM = 6;

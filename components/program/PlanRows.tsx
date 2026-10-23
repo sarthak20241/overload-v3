@@ -86,7 +86,7 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
   const router = useRouter();
   const statusColor = useStatusColor();
   // The Goal screen draws the reference's look: 65pt rows, 24pt icons at 90%
-  // white, dividers only between rows starting at the text column.
+  // white, full-width hairlines above, between and below the rows.
   const pal = useGoalPalette();
   const goal = from === 'goal';
   // The approved reference's thin outline icons (Lucide paths, drawn inline).
@@ -115,7 +115,7 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
               iconNode={<Icon size={goal ? 24 : 26} color={goal ? pal.icon : C.foreground} />}
               title={title}
               minHeight={goal ? 65 : 54}
-              look={goal ? { muted: pal.muted, divider: pal.divider, dividerInset: 56 } : undefined}
+              look={goal ? { muted: pal.muted, divider: pal.divider } : undefined}
               first={i === 0}
               last={i === rows.length - 1}
               onPress={() => open(pillar)}

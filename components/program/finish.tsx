@@ -113,10 +113,10 @@ interface RowProps {
   minHeight?: number;
   /**
    * The Goal screen's list look (the reference): its own muted colour, and
-   * dividers only BETWEEN rows, starting at the text column (not under the
-   * icon), none above the first row or below the last.
+   * full-width hairlines in its divider colour above the first row, between
+   * rows, and below the last.
    */
-  look?: { muted: string; divider: string; dividerInset: number };
+  look?: { muted: string; divider: string };
   first?: boolean;
   last?: boolean;
   accessibilityLabel?: string;
@@ -146,13 +146,10 @@ export function Row({ title, value, valueRest, status, onPress, icon, iconNode, 
       )}
       {status && <Text style={[T.status, styles.rowStatus, { color: statusColor(status.tone) }]} numberOfLines={1}>{status.label}</Text>}
       {onPress && <Feather name="chevron-right" size={18} color={look ? look.muted : C.textMuted} style={{ marginLeft: S.sm }} />}
-      {look && !last && (
-        <View style={[styles.innerDivider, { left: look.dividerInset, backgroundColor: look.divider }]} pointerEvents="none" />
-      )}
     </>
   );
   const border = look
-    ? null
+    ? [first && { borderTopWidth: StyleSheet.hairlineWidth }, { borderBottomWidth: StyleSheet.hairlineWidth }, { borderColor: look.divider }]
     : [first && { borderTopWidth: StyleSheet.hairlineWidth }, !last && { borderBottomWidth: StyleSheet.hairlineWidth }, { borderColor: C.borderSubtle }];
   const tall = minHeight ? { minHeight, paddingVertical: 4 } : null;
   if (!onPress) return <View style={[styles.row, tall, border]}>{body}</View>;
@@ -245,7 +242,6 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', minHeight: 52, paddingVertical: S.sm },
   rowIcon: { width: 28, textAlign: 'center', marginRight: S.lg },
   rowIconWide: { width: 36, alignItems: 'center', marginRight: S.xl - 4 },
-  innerDivider: { position: 'absolute', right: 0, bottom: 0, height: StyleSheet.hairlineWidth },
   rowStatus: { minWidth: 62, textAlign: 'right' },
   retry: { height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   tip: { flexDirection: 'row', gap: S.md, marginTop: S.xxl - 2 },

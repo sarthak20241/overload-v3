@@ -72,7 +72,7 @@ function addDaysISO(iso: string, delta: number): string {
 }
 
 /** The pinned button's height plus its top padding; the scroll content clears it. */
-const FOOTER_H = 52 + 4;
+const FOOTER_H = 48 + 4;
 
 /** A goal figure as the reference shows it: "59 kg", not "59.0 kg", when whole. */
 function goalText(kind: Parameters<typeof formatMetricValue>[0], v: number, unit?: string): string {
@@ -493,7 +493,7 @@ export default function GoalPlanScreen() {
     : '';
   const unbuilt = currentPhase != null && currentPhase.routines.length === 0;
   // The pinned button sits just above the home indicator, as in the reference.
-  const footerBottom = Math.max(insets.bottom - 8, S.md);
+  const footerBottom = Math.max(insets.bottom - 14, 12);
   const pal = useGoalPalette();
 
   return (
@@ -553,7 +553,7 @@ export default function GoalPlanScreen() {
             <Stagger index={1}>{renderHero()}</Stagger>
             <Stagger index={2}>{renderPhaseCard()}</Stagger>
             {shownPhase && (
-              <View style={{ marginTop: 23 }}>
+              <View style={{ marginTop: 18 }}>
                 <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} headingGap={17} />
               </View>
             )}
@@ -561,10 +561,10 @@ export default function GoalPlanScreen() {
             {focus ? (
               <Stagger index={7}>
                 <View style={styles.focus}>
-                  <View style={{ marginTop: 1 }}><SparkleIcon size={22} color={Colors.primary} /></View>
+                  <View style={{ marginTop: 0 }}><SparkleIcon size={18} color={Colors.primary} /></View>
                   <View style={{ flex: 1 }}>
-                    <SectionLabel>This week's focus</SectionLabel>
-                    <Text style={[styles.focusText, { color: C.foreground }]} numberOfLines={1}>{focus}</Text>
+                    <SectionLabel style={styles.focusLabel}>This week's focus</SectionLabel>
+                    <Text style={[styles.focusText, { color: C.foreground }]}>{focus}</Text>
                   </View>
                 </View>
               </Stagger>
@@ -652,20 +652,21 @@ const styles = StyleSheet.create({
   goalCol: { alignItems: 'flex-end', paddingBottom: 8 },
   chartWrap: { marginTop: 2 },
 
-  phaseCard: { marginTop: 14, borderRadius: 20, paddingHorizontal: 18, paddingTop: 12, paddingBottom: 16, borderWidth: StyleSheet.hairlineWidth, borderTopWidth: 1 },
+  phaseCard: { marginTop: 10, borderRadius: 20, paddingHorizontal: 18, paddingTop: 12, paddingBottom: 16, borderWidth: StyleSheet.hairlineWidth, borderTopWidth: 1 },
   phaseName: { fontSize: 18, lineHeight: 23, fontWeight: FontWeight.semibold, flexShrink: 1 },
   phaseTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, gap: S.sm },
   jobBar: { height: 8, borderRadius: 4, marginTop: 11, overflow: 'hidden' },
   jobFill: { height: '100%', borderRadius: 4 },
   pctText: { fontSize: 14, lineHeight: 18, fontWeight: FontWeight.regular, marginTop: 5 },
 
-  focus: { flexDirection: 'row', gap: S.lg, alignItems: 'flex-start', marginTop: -6 },
-  focusText: { fontSize: 15, lineHeight: 20, fontWeight: FontWeight.regular, marginTop: 3 },
+  focus: { flexDirection: 'row', gap: 14, alignItems: 'flex-start', marginTop: 4 },
+  focusLabel: { fontSize: 11, lineHeight: 14 },
+  focusText: { fontSize: 14, lineHeight: 19, fontWeight: FontWeight.regular, marginTop: 4 },
 
   footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: S.lg, paddingTop: 4 },
   footerFade: { position: 'absolute', left: 0, right: 0, top: -12 },
-  footerBtn: { height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  footerText: { fontSize: 17, lineHeight: 22, fontWeight: FontWeight.semibold, color: '#0A0A0A' },
+  footerBtn: { height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  footerText: { fontSize: 16, lineHeight: 21, fontWeight: FontWeight.semibold, color: '#0A0A0A' },
 
   primaryBtn: { alignItems: 'center', justifyContent: 'center', borderRadius: Radius.lg, paddingHorizontal: 18, minHeight: 52, marginTop: S.sm },
 });
