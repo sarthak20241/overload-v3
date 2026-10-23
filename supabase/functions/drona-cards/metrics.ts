@@ -228,6 +228,25 @@ export async function metricsStep(
     const readable = metrics.filter((m) => !failed.has(m.kind));
     const checks = checkMetrics(readable, readings, progress, weekIn <= 1);
 
+    // One failed try this week, counted in the phase's own job-only columns
+    // (retry_tries for retry_week), so no single row carries the signal.
+    // Under TRIES_PER_WEEK the rows also get `onRetry`; at the limit they get
+    // `onGiveUp`, so a source or model that stays down does not hold the user
+    // on the due list all week. A ledger that cannot be written is said out
+    // loud in the summary: the tries would not advance, so the give-up could
+    // never land.
+    const recordTry = async (onRetry: Record<string, unknown>, onGiveUp: Record<string, unknown>) => {
+      const tries = triesSoFar(rows, weekStart) + 1;
+      const giveUp = tries >= TRIES_PER_WEEK;
+      const { error } = await retried(() =>
+        db.from("coach_program_phase_metrics")
+          .update({ retry_tries: tries, retry_week: weekStart, ...(giveUp ? onGiveUp : onRetry) })
+          .eq("user_id", userId).eq("phase_id", phase.id)
+      );
+      if (error) console.log(`[drona-cards] could not record the tries for ${userId.slice(0, 12)}: ${error.message}`);
+      return { tries, giveUp, failed: error != null, ledgerNote: error ? `; ledger write failed: ${error.message}` : "" };
+    };
+
     let checked = 0;
     const writeErrors: string[] = [];
     for (const c of checks) {
@@ -253,23 +272,11 @@ export async function metricsStep(
     // stays down the phase keeps last week's line.
     if (writeErrors.length > 0 || readable.length < metrics.length) {
       const why = [...writeErrors, ...(readable.length < metrics.length ? [`read failed for ${[...failed].join(", ")}`] : [])];
-      // Retried next run (the unwritten rows are still unstamped), up to
-      // TRIES_PER_WEEK: then every row is stamped for the week so a source
-      // that stays down does not hold the user on the due list all week.
-      const tries = triesSoFar(rows, weekStart) + 1;
-      const ledger = { retry_tries: tries, retry_week: weekStart };
-      const giveUp = tries >= TRIES_PER_WEEK;
-      const { error: ledgerErr } = await retried(() =>
-        db.from("coach_program_phase_metrics")
-          .update(giveUp ? { ...ledger, checked_at: now, checked_week: weekStart } : ledger)
-          .eq("user_id", userId).eq("phase_id", phase.id)
-      );
-      // A ledger that cannot be written is said out loud in the summary: the
-      // tries would not advance, so the give-up could never land.
-      if (ledgerErr) console.log(`[drona-cards] could not record the tries: ${ledgerErr.message}`);
-      if (giveUp && !ledgerErr) await stampOthers(phase.id);
-      const ledgerNote = ledgerErr ? `; ledger write failed: ${ledgerErr.message}` : "";
-      return { checked, line: false, error: `${why.join("; ")}${giveUp ? `, gave up for the week after ${tries} tries` : ", retry next run"}${ledgerNote}` };
+      // Retried next run (the unwritten rows are still unstamped). At the
+      // limit every row is stamped for the week instead.
+      const t = await recordTry({}, { checked_at: now, checked_week: weekStart });
+      if (t.giveUp && !t.failed) await stampOthers(phase.id);
+      return { checked, line: false, error: `${why.join("; ")}${t.giveUp ? `, gave up for the week after ${t.tries} tries` : ", retry next run"}${t.ledgerNote}` };
     }
 
     await stampOthers(phase.id);
@@ -312,29 +319,15 @@ export async function metricsStep(
       metrics: lineMetrics,
     }, anthropicKey, fetchFn, undefined, Number.isFinite(left) ? left : undefined);
     if (!answer.line) {
-      // The line is retried this week, up to TRIES_PER_WEEK: every row of
-      // the phase is un-stamped, so the cron lists the user again and the
-      // next run re-checks the phase (idempotent) and asks the model once
-      // more. The tries are counted in the rows' own job-only columns
-      // (retry_tries for retry_week), so a model that keeps failing (a bad key,
-      // a 4xx) costs at most three calls a week and the phase keeps last
-      // week's line, and no single row carries the signal.
-      const tries = triesSoFar(rows, weekStart) + 1;
-      const ledger = { retry_tries: tries, retry_week: weekStart };
-      if (tries >= TRIES_PER_WEEK) {
-        console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} failed ${tries} times this week (${answer.error ?? "no line"}); keeping last week's line`);
-        const { error: noteErr } = await retried(() =>
-          db.from("coach_program_phase_metrics").update(ledger).eq("user_id", userId).eq("phase_id", phase.id)
-        );
-        if (noteErr) console.log(`[drona-cards] could not record the line tries: ${noteErr.message}`);
-        return { checked, line: false, error: `line: ${answer.error ?? "no line"}, gave up for the week after ${tries} tries${noteErr ? `; ledger write failed: ${noteErr.message}` : ""}` };
-      }
-      console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} not written: ${answer.error ?? "no line"}; retry next run (${tries} of ${TRIES_PER_WEEK})`);
-      const { error: unstampErr } = await retried(() =>
-        db.from("coach_program_phase_metrics").update({ checked_week: null, ...ledger }).eq("user_id", userId).eq("phase_id", phase.id)
-      );
-      if (unstampErr) console.log(`[drona-cards] could not mark the line for retry: ${unstampErr.message}`);
-      return { checked, line: false, error: `line: ${answer.error ?? "no line"}, retry next run${unstampErr ? `; ledger write failed: ${unstampErr.message}` : ""}` };
+      // Retried this week: the rows are un-stamped, so the cron lists the
+      // user again and the next run re-checks the phase (idempotent) and asks
+      // the model once more. A model that keeps failing (a bad key, a 4xx)
+      // costs at most TRIES_PER_WEEK calls a week; the phase keeps last
+      // week's line. At the limit the rows keep their stamp.
+      const why = answer.error ?? "no line";
+      const t = await recordTry({ checked_week: null }, {});
+      console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} not written: ${why}; ${t.giveUp ? "keeping last week's line" : "retry next run"} (${t.tries} of ${TRIES_PER_WEEK})`);
+      return { checked, line: false, error: `line: ${why}, ${t.giveUp ? `gave up for the week after ${t.tries} tries` : "retry next run"}${t.ledgerNote}` };
     }
     const { error: lineErr } = await retried(() =>
       db.from("coach_program_phases").update({ coach_line: answer.line }).eq("id", phase.id).eq("user_id", userId)
