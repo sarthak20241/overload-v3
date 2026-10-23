@@ -52,7 +52,8 @@ import { ObjectiveText } from '@/components/program/ObjectiveText';
 import { SparkleIcon } from '@/components/program/LineIcons';
 import { loadLiveReadings, peekLiveReadings, prefetchPillars } from '@/lib/pillarData';
 import { focusFromCoachLine, type LiveReadings } from '@/lib/phaseMetricHeadline';
-import { LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T } from '@/components/program/finish';
+import { LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T, useGoalPalette } from '@/components/program/finish';
+import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from 'react-native-svg';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { Colors, Radius, FontWeight } from '@/constants/theme';
@@ -71,7 +72,7 @@ function addDaysISO(iso: string, delta: number): string {
 }
 
 /** The pinned button's height plus its top padding; the scroll content clears it. */
-const FOOTER_H = 56 + S.sm;
+const FOOTER_H = 52 + 4;
 
 /** A goal figure as the reference shows it: "59 kg", not "59.0 kg", when whole. */
 function goalText(kind: Parameters<typeof formatMetricValue>[0], v: number, unit?: string): string {
@@ -366,7 +367,7 @@ export default function GoalPlanScreen() {
             <View style={{ flex: 1 }}>
               <SectionLabel>Current weight</SectionLabel>
               <View style={styles.heroNumWrap}>
-                <Text style={[T.heroSmall, { color: C.foreground }]}>{weightKg == null ? '–' : formatMetricValue('bodyweight', weightKg)}</Text>
+                <Text style={[styles.heroNum, { color: C.foreground }]}>{weightKg == null ? '–' : formatMetricValue('bodyweight', weightKg)}</Text>
                 <Text style={[T.unit, { color: C.mutedFg }]}>kg</Text>
               </View>
               {weightKg == null && <Text style={[T.meta, { color: C.mutedFg, marginTop: S.xs }]}>Weigh in and your number shows here.</Text>}
@@ -398,7 +399,7 @@ export default function GoalPlanScreen() {
               )}
             </View>
             <View style={styles.heroNumWrap}>
-              <Text style={[T.heroSmall, { color: C.foreground }]}>
+              <Text style={[styles.heroNum, { color: C.foreground }]}>
                 {hero.current_value == null ? '–' : formatMetricValue(hero.kind, hero.current_value, hero.unit)}
               </Text>
               <Text style={[T.unit, { color: C.mutedFg }]}>
@@ -444,7 +445,7 @@ export default function GoalPlanScreen() {
             />
           )}
         </View>
-        {status ? <Text style={[T.body, { color: C.mutedFg, marginTop: S.xs }]}>{status}</Text> : null}
+        {status ? <Text style={[T.body, { color: pal.muted, marginTop: S.xs }]}>{status}</Text> : null}
       </View>
     );
   };
@@ -463,24 +464,24 @@ export default function GoalPlanScreen() {
     return (
       <Pressable
         onPress={openPhase}
-        style={({ pressed }) => [styles.phaseCard, { backgroundColor: pressed ? C.surfaceHover : C.card }]}
+        style={({ pressed }) => [styles.phaseCard, { backgroundColor: pal.card, borderColor: pal.cardBorder, borderTopColor: pal.cardTop, opacity: pressed ? 0.85 : 1 }]}
         accessibilityRole="button"
         accessibilityLabel={`Open the ${ph.name} phase. ${when}${target ? `, ${target}` : ''}${pct != null ? `, ${pct} percent of the phase target` : ''}`}
       >
         <SectionLabel>{isCur ? 'Current phase' : notStarted ? 'First phase' : ended ? 'Last phase' : 'Phase'}</SectionLabel>
         <View style={styles.phaseTitleRow}>
-          <Text style={[T.cardTitle, { color: C.foreground, flexShrink: 1 }]} numberOfLines={1}>{ph.name}</Text>
-          <Feather name="chevron-right" size={22} color={C.mutedFg} />
+          <Text style={[styles.phaseName, { color: C.foreground }]} numberOfLines={1}>{ph.name}</Text>
+          <Feather name="chevron-right" size={20} color={pal.muted} />
         </View>
-        <Text style={[T.body, { color: C.mutedFg, marginTop: 4 }]} numberOfLines={1}>
+        <Text style={[T.body, { color: pal.muted, marginTop: 2 }]} numberOfLines={1}>
           {when}{target ? `  ·  ${target}` : ''}
         </Text>
         {pct != null && (
           <>
-            <View style={[styles.jobBar, { backgroundColor: C.muted }]}>
+            <View style={[styles.jobBar, { backgroundColor: 'rgba(255,255,255,0.08)' }]}>
               <View style={[styles.jobFill, { width: `${Math.max(2, pct)}%`, backgroundColor: Colors.primary }]} />
             </View>
-            <Text style={[styles.pctText, { color: C.mutedFg }]}>{pct}% of phase target</Text>
+            <Text style={[styles.pctText, { color: pal.muted }]}>{pct}% of phase target</Text>
           </>
         )}
       </Pressable>
@@ -493,9 +494,10 @@ export default function GoalPlanScreen() {
   const unbuilt = currentPhase != null && currentPhase.routines.length === 0;
   // The pinned button sits just above the home indicator, as in the reference.
   const footerBottom = Math.max(insets.bottom - 8, S.md);
+  const pal = useGoalPalette();
 
   return (
-    <View style={[styles.root, { backgroundColor: C.background, paddingTop: insets.top }]}>
+    <View style={[styles.root, { backgroundColor: pal.bg, paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Pressable onPress={back} hitSlop={12} accessibilityRole="button" accessibilityLabel="Back" style={styles.headerBtn}>
           <Feather name="chevron-left" size={24} color={C.foreground} />
@@ -508,7 +510,7 @@ export default function GoalPlanScreen() {
       </View>
 
       <ScrollView
-        contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: 0, paddingBottom: program ? FOOTER_H + footerBottom + S.lg : insets.bottom + S.xl }}
+        contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: 6, paddingBottom: program ? FOOTER_H + footerBottom + S.lg : insets.bottom + S.xl }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); setFocusTick((t) => t + 1); }} tintColor={C.mutedFg} />}
       >
         {loading ? (
@@ -542,17 +544,17 @@ export default function GoalPlanScreen() {
           <>
             <Stagger index={0}>
               <Text style={[T.title, { color: C.foreground }]}>{program.title}</Text>
-              <Text style={[T.body, { color: C.mutedFg, marginTop: S.xs }]}>
+              <Text style={[T.body, { color: pal.muted, marginTop: S.xs }]}>
                 {notStarted ? `Starts ${fmtShortISO(program.start_date)}` : ended ? 'Program complete' : `Week ${weekOverall} of ${totalWeeks}`}
                 {'  ·  '}{ended ? `Ended ${fmtShortISO(program.target_date ?? endDateISO!)}` : `Ends ${fmtShortISO(program.target_date ?? endDateISO!)}`}
               </Text>
-              <ObjectiveText text={program.objective} style={{ marginTop: 4 }} />
+              <ObjectiveText text={program.objective} lines={1} color={pal.muted} style={{ marginTop: 4 }} />
             </Stagger>
             <Stagger index={1}>{renderHero()}</Stagger>
             <Stagger index={2}>{renderPhaseCard()}</Stagger>
             {shownPhase && (
-              <View style={{ marginTop: 14 }}>
-                <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} />
+              <View style={{ marginTop: 23 }}>
+                <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} headingGap={17} />
               </View>
             )}
 
@@ -562,7 +564,7 @@ export default function GoalPlanScreen() {
                   <View style={{ marginTop: 1 }}><SparkleIcon size={22} color={Colors.primary} /></View>
                   <View style={{ flex: 1 }}>
                     <SectionLabel>This week's focus</SectionLabel>
-                    <Text style={[styles.focusText, { color: C.foreground }]} numberOfLines={2}>{focus}</Text>
+                    <Text style={[styles.focusText, { color: C.foreground }]} numberOfLines={1}>{focus}</Text>
                   </View>
                 </View>
               </Stagger>
@@ -580,7 +582,19 @@ export default function GoalPlanScreen() {
       {/* The one action, pinned above the home indicator; the page scrolls under
           a footer the colour of the page, as in the reference. */}
       {!loading && program && (
-        <View style={[styles.footer, { backgroundColor: C.background, paddingBottom: footerBottom }]}>
+        <View style={[styles.footer, { backgroundColor: pal.bg, paddingBottom: footerBottom }]}>
+          {/* A short fade of the page colour above the footer, so content
+              scrolling under it does not look cut off (12pt: at first paint it
+              stays clear of the focus line). */}
+          <Svg style={styles.footerFade} width="100%" height={12} pointerEvents="none">
+            <Defs>
+              <SvgLinearGradient id="footerFade" x1="0" y1="0" x2="0" y2="1">
+                <Stop offset="0" stopColor={pal.bg} stopOpacity={0} />
+                <Stop offset="1" stopColor={pal.bg} stopOpacity={1} />
+              </SvgLinearGradient>
+            </Defs>
+            <Rect x="0" y="0" width="100%" height="12" fill="url(#footerFade)" />
+          </Svg>
           <Pressable
             onPress={() => {
               haptics.tap();
@@ -621,13 +635,14 @@ export default function GoalPlanScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: S.lg, height: 40 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: S.lg, height: 44 },
   headerBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   menuDot: { position: 'absolute', top: 8, right: 8, width: 7, height: 7, borderRadius: 4 },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: S.xxl * 2, gap: S.md },
   emptyIconWrap: { width: 56, height: 56, borderRadius: Radius.full, alignItems: 'center', justifyContent: 'center' },
 
-  heroBlock: { marginTop: S.md },
+  heroBlock: { marginTop: S.sm },
+  heroNum: { fontSize: 42, lineHeight: 44, fontWeight: FontWeight.bold, letterSpacing: -1.3, fontVariant: ['tabular-nums'] },
   goalValue: { fontSize: 20, lineHeight: 25, fontWeight: FontWeight.medium, marginTop: S.xs, fontVariant: ['tabular-nums'] },
   heroRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: S.md },
   capsRow: { flexDirection: 'row', alignItems: 'center', gap: S.sm },
@@ -635,20 +650,22 @@ const styles = StyleSheet.create({
   heroTag: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: Radius.full },
   logBtn: { marginLeft: 10, paddingHorizontal: S.md, paddingVertical: 6, borderRadius: Radius.full, alignSelf: 'center', minHeight: 32, justifyContent: 'center' },
   goalCol: { alignItems: 'flex-end', paddingBottom: 8 },
-  chartWrap: { marginTop: S.md },
+  chartWrap: { marginTop: 2 },
 
-  phaseCard: { marginTop: S.md, borderRadius: 20, paddingHorizontal: S.lg, paddingVertical: S.md },
+  phaseCard: { marginTop: 14, borderRadius: 20, paddingHorizontal: 18, paddingTop: 12, paddingBottom: 16, borderWidth: StyleSheet.hairlineWidth, borderTopWidth: 1 },
+  phaseName: { fontSize: 18, lineHeight: 23, fontWeight: FontWeight.semibold, flexShrink: 1 },
   phaseTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, gap: S.sm },
-  jobBar: { height: 8, borderRadius: 4, marginTop: 10, overflow: 'hidden' },
+  jobBar: { height: 8, borderRadius: 4, marginTop: 11, overflow: 'hidden' },
   jobFill: { height: '100%', borderRadius: 4 },
-  pctText: { fontSize: 14, lineHeight: 18, fontWeight: FontWeight.regular, marginTop: 6 },
+  pctText: { fontSize: 14, lineHeight: 18, fontWeight: FontWeight.regular, marginTop: 5 },
 
-  focus: { flexDirection: 'row', gap: S.lg, alignItems: 'flex-start', marginTop: 10 },
-  focusText: { fontSize: 16, lineHeight: 21, fontWeight: FontWeight.regular, marginTop: 2 },
+  focus: { flexDirection: 'row', gap: S.lg, alignItems: 'flex-start', marginTop: -6 },
+  focusText: { fontSize: 15, lineHeight: 20, fontWeight: FontWeight.regular, marginTop: 3 },
 
-  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: S.xl, paddingTop: 4 },
-  footerBtn: { height: 56, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  footerText: { fontSize: 17, lineHeight: 22, fontWeight: FontWeight.semibold, color: Colors.primaryFg },
+  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: S.lg, paddingTop: 4 },
+  footerFade: { position: 'absolute', left: 0, right: 0, top: -12 },
+  footerBtn: { height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  footerText: { fontSize: 17, lineHeight: 22, fontWeight: FontWeight.semibold, color: '#0A0A0A' },
 
   primaryBtn: { alignItems: 'center', justifyContent: 'center', borderRadius: Radius.lg, paddingHorizontal: 18, minHeight: 52, marginTop: S.sm },
 });

@@ -38,6 +38,40 @@ export const T = StyleSheet.create({
   dayName: { fontSize: 11, lineHeight: 14, fontWeight: FontWeight.semibold },
 });
 
+/**
+ * The Goal screen's palette, sampled from the approved reference
+ * (.planning/phase-metrics/shots/goal-screen-v2-reference.webp): a cool
+ * near-black page, a cool grey card with a faint top edge, softer muted text
+ * and dividers. Dark mode only; light mode keeps the theme's colours.
+ */
+export function useGoalPalette() {
+  const { C, mode } = useTheme();
+  if (mode === 'dark') {
+    return {
+      bg: '#0B0D0F',
+      card: '#15191C',
+      cardBorder: 'rgba(255,255,255,0.05)',
+      cardTop: 'rgba(255,255,255,0.06)',
+      muted: '#A5A9B1',
+      divider: 'rgba(255,255,255,0.07)',
+      icon: 'rgba(255,255,255,0.9)',
+      dash: 'rgba(255,255,255,0.35)',
+      ring: 'rgba(255,255,255,0.7)',
+    };
+  }
+  return {
+    bg: C.background,
+    card: C.card,
+    cardBorder: C.borderSubtle,
+    cardTop: C.borderSubtle,
+    muted: C.mutedFg,
+    divider: C.borderSubtle,
+    icon: C.foreground,
+    dash: C.textMuted,
+    ring: C.mutedFg,
+  };
+}
+
 /** A status word's colour on the active theme. */
 export function useStatusColor() {
   const { C } = useTheme();
@@ -75,8 +109,14 @@ interface RowProps {
   /** A drawn icon instead of a Feather glyph (the plan rows' thin line icons, components/program/LineIcons). */
   iconNode?: ReactNode;
   subtitle?: ReactNode;
-  /** Taller rows for a short list that is the page's main content (the plan rows: 64). */
+  /** Taller rows for a short list that is the page's main content (the plan rows). */
   minHeight?: number;
+  /**
+   * The Goal screen's list look (the reference): its own muted colour, and
+   * dividers only BETWEEN rows, starting at the text column (not under the
+   * icon), none above the first row or below the last.
+   */
+  look?: { muted: string; divider: string; dividerInset: number };
   first?: boolean;
   last?: boolean;
   accessibilityLabel?: string;
@@ -86,7 +126,7 @@ interface RowProps {
  * A list row: 52pt minimum, hairline dividers, a full-row press target with
  * a subtle pressed state, a chevron only when it navigates.
  */
-export function Row({ title, value, valueRest, status, onPress, icon, iconNode, subtitle, minHeight, first, last, accessibilityLabel }: RowProps) {
+export function Row({ title, value, valueRest, status, onPress, icon, iconNode, subtitle, minHeight, look, first, last, accessibilityLabel }: RowProps) {
   const { C } = useTheme();
   const statusColor = useStatusColor();
   const body = (
@@ -96,7 +136,7 @@ export function Row({ title, value, valueRest, status, onPress, icon, iconNode, 
         : icon && <Feather name={icon} size={22} color={C.foreground} style={styles.rowIcon} />}
       <View style={{ flex: 1 }}>
         <Text style={[T.rowTitle, { color: C.foreground }]} numberOfLines={1}>{title}</Text>
-        {subtitle ? <Text style={[T.rowSub, { color: C.mutedFg, marginTop: 2 }]} numberOfLines={1}>{subtitle}</Text> : null}
+        {subtitle ? <Text style={[T.rowSub, { color: look?.muted ?? C.mutedFg, marginTop: 2 }]} numberOfLines={1}>{subtitle}</Text> : null}
       </View>
       {(value || valueRest) && (
         <Text style={[T.rowValue, { color: C.mutedFg, marginRight: status ? S.lg : 0 }]} numberOfLines={1}>
@@ -105,10 +145,15 @@ export function Row({ title, value, valueRest, status, onPress, icon, iconNode, 
         </Text>
       )}
       {status && <Text style={[T.status, styles.rowStatus, { color: statusColor(status.tone) }]} numberOfLines={1}>{status.label}</Text>}
-      {onPress && <Feather name="chevron-right" size={18} color={C.textMuted} style={{ marginLeft: S.sm }} />}
+      {onPress && <Feather name="chevron-right" size={18} color={look ? look.muted : C.textMuted} style={{ marginLeft: S.sm }} />}
+      {look && !last && (
+        <View style={[styles.innerDivider, { left: look.dividerInset, backgroundColor: look.divider }]} pointerEvents="none" />
+      )}
     </>
   );
-  const border = [first && { borderTopWidth: StyleSheet.hairlineWidth }, !last && { borderBottomWidth: StyleSheet.hairlineWidth }, { borderColor: C.borderSubtle }];
+  const border = look
+    ? null
+    : [first && { borderTopWidth: StyleSheet.hairlineWidth }, !last && { borderBottomWidth: StyleSheet.hairlineWidth }, { borderColor: C.borderSubtle }];
   const tall = minHeight ? { minHeight, paddingVertical: 4 } : null;
   if (!onPress) return <View style={[styles.row, tall, border]}>{body}</View>;
   return (
@@ -200,6 +245,7 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', minHeight: 52, paddingVertical: S.sm },
   rowIcon: { width: 28, textAlign: 'center', marginRight: S.lg },
   rowIconWide: { width: 36, alignItems: 'center', marginRight: S.xl - 4 },
+  innerDivider: { position: 'absolute', right: 0, bottom: 0, height: StyleSheet.hairlineWidth },
   rowStatus: { minWidth: 62, textAlign: 'right' },
   retry: { height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   tip: { flexDirection: 'row', gap: S.md, marginTop: S.xxl - 2 },

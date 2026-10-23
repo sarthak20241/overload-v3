@@ -24,9 +24,10 @@ import Svg, { Circle, Defs, Line, LinearGradient, Path, Rect, Stop, Text as SvgT
 import { Colors } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { monotonePath } from '@/components/ui/MiniAreaChart';
+import { useGoalPalette } from '@/components/program/finish';
 import { metricXScale } from '@/lib/chartScale';
 
-export const CHART_HEIGHT = 58;
+export const CHART_HEIGHT = 51;
 const BARS_HEIGHT = 88;
 const PAD_TOP = 6;
 const PAD_BOTTOM = 6;
@@ -51,7 +52,7 @@ interface LineProps {
 }
 
 export function MetricLineChart({ width, points, weeks, endTarget }: LineProps) {
-  const { C } = useTheme();
+  const pal = useGoalPalette();
   const H = CHART_HEIGHT;
   const x1 = width - X1_INSET;
   // From the first reading inside the program to the program's end.
@@ -85,13 +86,12 @@ export function MetricLineChart({ width, points, weeks, endTarget }: LineProps) 
     <View style={{ width, height: H }}>
       <Svg width={width} height={H} viewBox={`0 0 ${width} ${H}`}>
         <Defs>
-          {/* A soft wash, not a block: ~12% lime at the line, gone by 70% of
-              the way down. In user space from the line's top to the floor, so
-              the fade is the same however flat the line is. */}
-          <LinearGradient id="metricFill" gradientUnits="userSpaceOnUse" x1="0" y1={String(fillTop)} x2="0" y2={String(H)}>
-            <Stop offset="0" stopColor={Colors.primary} stopOpacity={0.12} />
-            <Stop offset="0.35" stopColor={Colors.primary} stopOpacity={0.04} />
-            <Stop offset="0.7" stopColor={Colors.primary} stopOpacity={0} />
+          {/* A soft wash, not a block: ~10% lime at the line, gone ~50pt
+              below it (the reference), and always before the chart's floor so
+              no edge shows. In user space from the line's top, so it fades the
+              same however flat the line is. */}
+          <LinearGradient id="metricFill" gradientUnits="userSpaceOnUse" x1="0" y1={String(fillTop)} x2="0" y2={String(Math.min(fillTop + 50, fillTop + (H - fillTop) * 0.85))}>
+            <Stop offset="0" stopColor={Colors.primary} stopOpacity={0.1} />
             <Stop offset="1" stopColor={Colors.primary} stopOpacity={0} />
           </LinearGradient>
         </Defs>
@@ -99,7 +99,7 @@ export function MetricLineChart({ width, points, weeks, endTarget }: LineProps) 
         {last && (
           <Path
             d={`M ${last.x},${last.y} L ${tx},${ty}`}
-            stroke={C.textMuted}
+            stroke={pal.dash}
             strokeWidth={1.5}
             strokeDasharray="4 5"
             strokeLinecap="round"
@@ -107,8 +107,8 @@ export function MetricLineChart({ width, points, weeks, endTarget }: LineProps) 
           />
         )}
         {line && <Path d={line} stroke={Colors.primary} strokeWidth={2.5} fill="none" strokeLinecap="round" strokeLinejoin="round" />}
-        {last && <Circle cx={last.x} cy={last.y} r={5.5} fill={Colors.primary} />}
-        <Circle cx={tx} cy={ty} r={5.5} fill={C.background} stroke={C.mutedFg} strokeWidth={1.6} />
+        {last && <Circle cx={last.x} cy={last.y} r={5} fill={Colors.primary} />}
+        <Circle cx={tx} cy={ty} r={6} fill={pal.bg} stroke={pal.ring} strokeWidth={1.5} />
       </Svg>
     </View>
   );

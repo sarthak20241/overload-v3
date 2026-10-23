@@ -15,7 +15,7 @@ import { heroOf, STATUS_LABEL, statusTone, type MetricKind, type MetricStatus } 
 import { weekPatternFor, REST } from '@/lib/weekPattern';
 import { PILLAR_OF, type Pillar } from '@/components/program/PhaseDetail';
 import { rowLine, type LiveReadings } from '@/lib/phaseMetricHeadline';
-import { Row, SectionLabel, Stagger, S, T, useStatusColor } from '@/components/program/finish';
+import { Row, SectionLabel, Stagger, S, T, useGoalPalette, useStatusColor } from '@/components/program/finish';
 import { DumbbellIcon, MoonIcon, UtensilsIcon } from '@/components/program/LineIcons';
 import { FontWeight } from '@/constants/theme';
 
@@ -77,12 +77,18 @@ interface Props {
   staggerFrom?: number;
   /** Show the "Your plan" heading. */
   heading?: boolean;
+  /** Space between the "Your plan" heading and the first row. */
+  headingGap?: number;
 }
 
-export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, heading = true }: Props) {
+export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, heading = true, headingGap = 6 }: Props) {
   const { C } = useTheme();
   const router = useRouter();
   const statusColor = useStatusColor();
+  // The Goal screen draws the reference's look: 65pt rows, 24pt icons at 90%
+  // white, dividers only between rows starting at the text column.
+  const pal = useGoalPalette();
+  const goal = from === 'goal';
   // The approved reference's thin outline icons (Lucide paths, drawn inline).
   const rows: { pillar: Pillar; Icon: typeof DumbbellIcon; title: string }[] = [
     { pillar: 'train', Icon: DumbbellIcon, title: 'Train' },
@@ -97,7 +103,7 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
     <View>
       {heading && (
         <Stagger index={staggerFrom}>
-          <Text style={[T.heading, { color: C.foreground, marginBottom: 6 }]}>Your plan</Text>
+          <Text style={[T.heading, { color: C.foreground, marginBottom: headingGap }]}>Your plan</Text>
         </Stagger>
       )}
       {!heading && <SectionLabel style={{ marginBottom: S.md }}>Your plan</SectionLabel>}
@@ -106,9 +112,10 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
         return (
           <Stagger key={pillar} index={staggerFrom + 1 + i}>
             <Row
-              iconNode={<Icon size={26} color={C.foreground} />}
+              iconNode={<Icon size={goal ? 24 : 26} color={goal ? pal.icon : C.foreground} />}
               title={title}
-              minHeight={54}
+              minHeight={goal ? 65 : 54}
+              look={goal ? { muted: pal.muted, divider: pal.divider, dividerInset: 56 } : undefined}
               first={i === 0}
               last={i === rows.length - 1}
               onPress={() => open(pillar)}
