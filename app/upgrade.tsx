@@ -99,6 +99,8 @@ import {
   restorePurchases,
   freeTrialDays,
   PurchaseCancelledError,
+  PurchasePendingError,
+  describePurchaseError,
   PurchasesUnavailableError,
   STORE_ACCOUNT,
   STORE_NAME,
@@ -265,8 +267,10 @@ export default function UpgradeScreen() {
     }
   }, [isFunnel, params.dest, router]);
 
-  const waitForTierFlip = useCallback(async (): Promise<boolean> => {
-    const deadline = Date.now() + 30_000;
+  // Longer `timeoutMs` for a pending payment: the store is waiting on a bank
+  // mandate, which routinely lands well after the 30s a webhook flip needs.
+  const waitForTierFlip = useCallback(async (timeoutMs = 30_000): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       try {
         const { data } = await supabase.rpc('get_coach_access_status');
@@ -341,19 +345,63 @@ export default function UpgradeScreen() {
       if (e instanceof PurchaseCancelledError) {
         /* backed out of the payment sheet, stay put */
         track('purchase_failed', { plan: selectedPlan, reason: 'cancelled', context });
+      } else if (e instanceof PurchasePendingError) {
+        // Nothing failed: the store is waiting on the buyer's bank (an Indian
+        // card or UPI mandate, Ask to Buy, SEPA). Keep "Activating Pro…" up
+        // and poll well past the normal window instead of saying "failed".
+        const source = isFunnel ? 'onboarding_funnel' : 'direct';
+        track('purchase_pending', { plan: selectedPlan, context, source });
+        setPurchasing(false);
+        setVerifying(true);
+        const flipped = await waitForTierFlip(120_000);
+        invalidateCoachAccess();
+        track('purchase_pending_resolved', { plan: selectedPlan, context, source, flipped });
+        if (flipped) {
+          // A pending purchase never returned customerInfo, so read the trial
+          // off the product the buyer picked.
+          const onTrial = freeTrialDays(pkg) > 0;
+          if (onTrial) {
+            void scheduleTrialReminder().then((scheduled) => {
+              track('trial_reminder_scheduled', { scheduled, plan: selectedPlan });
+            });
+          }
+          void prefetchDashboard(supabase, user?.id);
+          paywallResolved.current = true;
+          setUserProps({ tier: selectedPlan, on_trial: onTrial });
+          track('purchase_completed', { plan: selectedPlan, on_trial: onTrial, context, source, was_pending: true });
+          setOutcome({ plan: selectedPlan, onTrial });
+          setStep('success');
+        } else {
+          toast.info(
+            "Your bank is still approving this. Pro unlocks on its own when it does, so don't pay again. Nothing in a few minutes? Try again.",
+            { durationMs: 10000 },
+          );
+        }
       } else if (e instanceof PurchasesUnavailableError) {
         track('purchase_failed', { plan: selectedPlan, reason: 'unavailable', context });
         toast.error(e.message, { durationMs: 6000 });
       } else {
-        console.warn('[upgrade] purchase failed:', e);
-        track('purchase_failed', { plan: selectedPlan, reason: 'error', context });
-        toast.error('Purchase failed. Try again or contact support.');
+        // Carry the store's own reason into the event; a bare 'error' left
+        // a Pending-then-Canceled Play order undiagnosable (2026-10-23).
+        const err = describePurchaseError(e);
+        console.warn('[upgrade] purchase failed:', err, e);
+        track('purchase_failed', {
+          plan: selectedPlan,
+          reason: 'error',
+          context,
+          source: isFunnel ? 'onboarding_funnel' : 'direct',
+          error_code: err.code,
+          error_readable: err.readable,
+          error_underlying: err.underlying,
+          error_message: err.message,
+        });
+        toast.error("That didn't go through. Nothing was charged. Try again, or tap Restore if you've bought before.", { durationMs: 8000 });
       }
     } finally {
       setPurchasing(false);
       setVerifying(false);
     }
-  }, [packages, selectedPlan, purchasing, verifying, user?.id, waitForTierFlip, toast, finish, supabase]);
+  }, [packages, selectedPlan, purchasing, verifying, user?.id, waitForTierFlip, toast, finish, supabase, context, isFunnel]);
 
   const handleRestore = useCallback(async () => {
     if (restoring) return;
@@ -387,8 +435,16 @@ export default function UpgradeScreen() {
         toast.info(`No previous purchases on this ${STORE_ACCOUNT}.`);
       }
     } catch (e) {
-      track('purchase_restore_failed', { reason: 'error', context });
-      console.warn('[upgrade] restore failed:', e);
+      const err = describePurchaseError(e);
+      track('purchase_restore_failed', {
+        reason: 'error',
+        context,
+        error_code: err.code,
+        error_readable: err.readable,
+        error_underlying: err.underlying,
+        error_message: err.message,
+      });
+      console.warn('[upgrade] restore failed:', err, e);
       toast.error('Restore failed. Try again later.');
     } finally {
       setRestoring(false);

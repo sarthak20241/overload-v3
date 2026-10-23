@@ -247,6 +247,8 @@ export type AnalyticsEvent =
   | 'paywall_skipped'
   | 'paywall_success_cta'
   | 'purchase_started'
+  | 'purchase_pending'
+  | 'purchase_pending_resolved'
   | 'purchase_completed'
   | 'purchase_failed'
   | 'purchase_restore_started'

@@ -148,6 +148,8 @@ function loadPurchases(): any | null {
 // tagged with an anonymous RC id instead of the Clerk id, so the webhook
 // could never match user_profiles.
 
+import { isPaymentPending } from './purchaseErrors';
+
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Platform } = require('react-native');
 const RC_IOS_KEY = process.env.EXPO_PUBLIC_REVENUECAT_IOS_KEY ?? '';
@@ -388,6 +390,9 @@ export async function purchaseCoachPackage(
     if (e?.userCancelled || e?.code === 'PURCHASE_CANCELLED') {
       throw new PurchaseCancelledError();
     }
+    // The store accepted the purchase and is waiting on the buyer's bank.
+    // Not a failure: callers show a waiting state and keep polling.
+    if (isPaymentPending(e)) throw new PurchasePendingError();
     throw e;
   }
 }
@@ -421,3 +426,17 @@ export class PurchaseCancelledError extends Error {
     this.name = 'PurchaseCancelledError';
   }
 }
+
+/**
+ * The store accepted the purchase but the money has not moved yet (a bank
+ * mandate, Ask to Buy, SEPA). Nothing is owed and nothing was refused, so
+ * tapping buy again is wrong. See lib/purchaseErrors.ts.
+ */
+export class PurchasePendingError extends Error {
+  constructor() {
+    super('Payment pending approval');
+    this.name = 'PurchasePendingError';
+  }
+}
+
+export { describePurchaseError, type PurchaseErrorInfo } from './purchaseErrors';

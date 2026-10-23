@@ -51,6 +51,7 @@ deno test --unstable-sloppy-imports --import-map=lib/test-import-map.json lib/re
 deno test --allow-all lib/coachErrors.test.ts  # which bucket a failure lands in
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/directFetchRetry.test-import-map.json lib/directFetchRetry.test.ts  # Today pick + weekly card retry an expired token once
 deno test --allow-all lib/authRetry.test.ts    # expired Clerk token: one retry with a fresh one
+deno test --allow-all lib/purchaseErrors.test.ts # a pending store payment is not a failure; failures keep the store's reason
 deno test --allow-all lib/coachBlocks.test.ts  # tables/charts/stats/progress in Drona's replies
 deno test --allow-all lib/servingSize.test.ts # food editor portion <-> stored serving
 deno test --allow-all lib/logDay.test.ts      # "2 eggs for tomorrow" -> which day a food log lands on

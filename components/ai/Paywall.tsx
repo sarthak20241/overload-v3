@@ -47,6 +47,8 @@ import {
   ensureIdentity,
   PurchasesUnavailableError,
   PurchaseCancelledError,
+  PurchasePendingError,
+  describePurchaseError,
   STORE_ACCOUNT,
   STORE_MANAGE_HINT,
   STORE_NAME,
@@ -150,8 +152,10 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
   // Poll the access RPC until state === 'paid', up to a timeout. Called
   // after a successful purchasePackage() so we don't dismiss the paywall
   // before the RC webhook has actually flipped user_profiles.tier.
-  const waitForTierFlip = useCallback(async (): Promise<boolean> => {
-    const deadline = Date.now() + 30_000;
+  // Longer `timeoutMs` for a pending payment (a bank mandate), which lands
+  // well after the 30s a normal webhook flip needs.
+  const waitForTierFlip = useCallback(async (timeoutMs = 30_000): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       try {
         const { data } = await supabase.rpc('get_coach_access_status');
@@ -204,13 +208,44 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
         if (e instanceof PurchaseCancelledError) {
           // User backed out of the Apple sheet — no toast needed.
           track('purchase_failed', { plan, reason: 'cancelled', source: 'coach_sheet' });
+        } else if (e instanceof PurchasePendingError) {
+          // Nothing failed: the store is waiting on the buyer's bank. Keep
+          // waiting and poll well past the normal window.
+          track('purchase_pending', { plan, source: 'coach_sheet' });
+          setPurchasingPlan(null);
+          setVerifying(true);
+          const flipped = await waitForTierFlip(120_000);
+          track('purchase_pending_resolved', { plan, source: 'coach_sheet', flipped });
+          if (flipped) {
+            paywallResolved.current = true;
+            track('purchase_completed', { plan, source: 'coach_sheet', was_pending: true });
+            setUserProps({ tier: plan });
+            toast.success("You're in. Welcome to Coach Drona.");
+            await onPurchased();
+            onClose();
+          } else {
+            toast.info(
+              "Your bank is still approving this. Pro unlocks on its own when it does, so don't pay again. Nothing in a few minutes? Try again.",
+              { durationMs: 10000 },
+            );
+          }
         } else if (e instanceof PurchasesUnavailableError) {
           track('purchase_failed', { plan, reason: 'unavailable', source: 'coach_sheet' });
           toast.error(e.message, { durationMs: 6000 });
         } else {
-          track('purchase_failed', { plan, reason: 'error', source: 'coach_sheet' });
-          console.warn('[paywall] purchase failed:', e);
-          toast.error('Purchase failed. Try again or contact support.');
+          // Carry the store's own reason into the event (see lib/purchaseErrors.ts).
+          const err = describePurchaseError(e);
+          track('purchase_failed', {
+            plan,
+            reason: 'error',
+            source: 'coach_sheet',
+            error_code: err.code,
+            error_readable: err.readable,
+            error_underlying: err.underlying,
+            error_message: err.message,
+          });
+          console.warn('[paywall] purchase failed:', err, e);
+          toast.error("That didn't go through. Nothing was charged. Try again, or tap Restore if you've bought before.", { durationMs: 8000 });
         }
       } finally {
         setPurchasingPlan(null);
@@ -248,7 +283,16 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
         toast.info(`No previous purchases on this ${STORE_ACCOUNT}.`);
       }
     } catch (e) {
-      console.warn('[paywall] restore failed:', e);
+      const err = describePurchaseError(e);
+      track('purchase_restore_failed', {
+        reason: 'error',
+        source: 'coach_sheet',
+        error_code: err.code,
+        error_readable: err.readable,
+        error_underlying: err.underlying,
+        error_message: err.message,
+      });
+      console.warn('[paywall] restore failed:', err, e);
       toast.error('Restore failed. Try again later.');
     } finally {
       setRestoring(false);
