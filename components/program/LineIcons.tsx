@@ -35,6 +35,8 @@ export interface LineIconProps {
 }
 
 function Icon({ size = 26, color, strokeWidth = 1.75, children }: LineIconProps & { children: ReactNode }) {
+  // Callers pass the stroke they want in screen points; the 24-unit grid scales it.
+  strokeWidth = strokeWidth * 24 / size;
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
       {children}

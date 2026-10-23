@@ -116,7 +116,7 @@ interface RowProps {
    * full-width hairlines in its divider colour above the first row, between
    * rows, and below the last.
    */
-  look?: { muted: string; divider: string };
+  look?: { muted: string; divider: string; titleSize?: number; subSize?: number; iconColumn?: number };
   first?: boolean;
   last?: boolean;
   accessibilityLabel?: string;
@@ -132,11 +132,11 @@ export function Row({ title, value, valueRest, status, onPress, icon, iconNode, 
   const body = (
     <>
       {iconNode
-        ? <View style={styles.rowIconWide}>{iconNode}</View>
+        ? <View style={[styles.rowIconWide, look?.iconColumn ? { width: look.iconColumn, marginRight: 18 } : null]}>{iconNode}</View>
         : icon && <Feather name={icon} size={22} color={C.foreground} style={styles.rowIcon} />}
       <View style={{ flex: 1 }}>
-        <Text style={[T.rowTitle, { color: C.foreground }]} numberOfLines={1}>{title}</Text>
-        {subtitle ? <Text style={[T.rowSub, { color: look?.muted ?? C.mutedFg, marginTop: 2 }]} numberOfLines={1}>{subtitle}</Text> : null}
+        <Text style={[T.rowTitle, look?.titleSize ? { fontSize: look.titleSize, lineHeight: look.titleSize + 5 } : null, { color: C.foreground }]} numberOfLines={1}>{title}</Text>
+        {subtitle ? <Text style={[T.rowSub, look?.subSize ? { fontSize: look.subSize, lineHeight: look.subSize + 5 } : null, { color: look?.muted ?? C.mutedFg, marginTop: 2 }]} numberOfLines={1}>{subtitle}</Text> : null}
       </View>
       {(value || valueRest) && (
         <Text style={[T.rowValue, { color: C.mutedFg, marginRight: status ? S.lg : 0 }]} numberOfLines={1}>

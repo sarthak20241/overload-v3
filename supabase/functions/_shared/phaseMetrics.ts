@@ -575,11 +575,15 @@ function focusAsk(m: { kind: MetricKind; ref?: MetricRef | null; target_value: n
  * supporting targets most behind, as one sentence. Empty when nothing is
  * behind. The hero is left out: it is the number above.
  */
-export function focusLine(metrics: readonly { kind: MetricKind; ref?: MetricRef | null; is_hero: boolean; status: MetricStatus; target_value: number; unit: string }[]): string {
+export function focusLine(
+  metrics: readonly { kind: MetricKind; ref?: MetricRef | null; is_hero: boolean; status: MetricStatus; target_value: number; unit: string }[],
+  /** How many targets the sentence names: 2 (the default) or 1. */
+  limit = 2,
+): string {
   const worst = metrics
     .filter((m) => !m.is_hero && STATUS_WORRY[m.status] >= 2)
     .sort((a, b) => STATUS_WORRY[b.status] - STATUS_WORRY[a.status])
-    .slice(0, 2);
+    .slice(0, limit);
   if (worst.length === 0) return '';
   const asks = worst.map(focusAsk);
   const text = asks.length === 1 ? asks[0] : `${asks[0]} and ${asks[1]}`;

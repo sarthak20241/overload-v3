@@ -1,6 +1,6 @@
 // deno test --allow-all --unstable-sloppy-imports lib/phaseMetricHeadline.test.ts
 import { assertEquals } from 'https://deno.land/std@0.224.0/assert/mod.ts';
-import { focusFromCoachLine, metricHeadline, liveFrom, headlineText, rowLine, type LiveReadings } from './phaseMetricHeadline.ts';
+import { focusFromCoachLine, goalFocus, metricHeadline, liveFrom, headlineText, planRowLine, rowLine, type LiveReadings } from './phaseMetricHeadline.ts';
 
 const base = { id: 'm', program_id: 'p', phase_id: 'ph', user_id: 'u', seq: 0, is_hero: false, ref: {}, unit: null, direction: 'up' as const, start_value: null, status_note: null, updated_at: '' };
 const m = (kind: string, target: number, current: number | null, status = 'on_track') =>
@@ -77,4 +77,36 @@ Deno.test('a long focus sentence keeps its first clause, so it fits two lines wh
   );
   // A short sentence with a semicolon stays whole.
   assertEquals(focusFromCoachLine('Rest today; train tomorrow.'), 'Rest today; train tomorrow.');
+});
+
+Deno.test('the Goal screen focus: one short line, never cut', () => {
+  const metrics = [
+    { ...m('protein_days', 5, 4, 'slipping') }, { ...m('cardio_sessions', 2, 1, 'behind') },
+    { ...m('steps', 8000, 7400, 'close') }, { ...m('bodyweight', 59, 65.9, 'behind'), is_hero: true },
+  ];
+  // A short coach action wins.
+  assertEquals(goalFocus('A little behind this week. Add one cardio session.', metrics), 'Add one cardio session.');
+  // A long one gives way to the built sentence: the two worst supporting targets.
+  assertEquals(
+    goalFocus('A little behind. Keep protein at 115g and add the second cardio session; the scale follows.', metrics),
+    'Add a cardio session and hit your protein target.',
+  );
+  // Two asks that would run past 52 characters: only the worst one.
+  const long = [{ ...m('sets_per_muscle', 16, 9, 'behind'), ref: { muscle: 'Upper chest' } }, { ...m('steps', 10000, 6000, 'slipping') }];
+  const one = goalFocus(null, long);
+  assertEquals(one.length <= 52, true, one);
+  assertEquals(one.includes(' and '), false, one);
+  // Nothing behind: no focus line at all.
+  assertEquals(goalFocus(null, [{ ...m('protein_days', 5, 5, 'on_track') }]), '');
+});
+
+Deno.test('plan rows on the Goal screen: plan first, one short line, no "last week"', () => {
+  assertEquals(planRowLine('train', { split: 'Push/Pull/Legs', days: 5 }), { text: 'Push / Pull / Legs · 5 days', status: null });
+  assertEquals(planRowLine('eat', { kcal: 1800, proteinG: 115 }), { text: '1,800 kcal · 115 g protein', status: null });
+  assertEquals(planRowLine('recover', { sleep: m('sleep_hours', 7, 7.3, 'on_track') }, live), { text: '7.3 h sleep', status: 'on_track' });
+  // No job reading yet: the live average, no status word.
+  assertEquals(planRowLine('recover', { sleep: m('sleep_hours', 7, null, 'due') }, { ...live, sleepAvg: 7.4, sleepNights: 5 }), { text: '7.4 h sleep', status: null });
+  assertEquals(planRowLine('recover', {}, live, 72), { text: 'Readiness 72 today', status: null });
+  assertEquals(planRowLine('train', {}), { text: 'Training plan', status: null });
+  assertEquals(planRowLine('eat', {}), { text: 'Daily targets', status: null });
 });

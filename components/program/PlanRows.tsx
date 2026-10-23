@@ -14,7 +14,7 @@ import type { ActiveProgramPhaseRow } from '@/lib/programData';
 import { heroOf, STATUS_LABEL, statusTone, type MetricKind, type MetricStatus } from '@/lib/phaseMetrics';
 import { weekPatternFor, REST } from '@/lib/weekPattern';
 import { PILLAR_OF, type Pillar } from '@/components/program/PhaseDetail';
-import { rowLine, type LiveReadings } from '@/lib/phaseMetricHeadline';
+import { planRowLine, rowLine, type LiveReadings } from '@/lib/phaseMetricHeadline';
 import { Row, SectionLabel, Stagger, S, T, useGoalPalette, useStatusColor } from '@/components/program/finish';
 import { DumbbellIcon, MoonIcon, UtensilsIcon } from '@/components/program/LineIcons';
 import { FontWeight } from '@/constants/theme';
@@ -85,8 +85,9 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
   const { C } = useTheme();
   const router = useRouter();
   const statusColor = useStatusColor();
-  // The Goal screen draws the reference's look: 65pt rows, 24pt icons at 90%
-  // white, full-width hairlines above, between and below the rows.
+  // The Goal screen draws the reference's look: 65pt rows, 29pt thin icons
+  // in a 40pt column, 17/14 type, full-width hairlines, plan-first lines,
+  // status words in the same muted colour.
   const pal = useGoalPalette();
   const goal = from === 'goal';
   // The approved reference's thin outline icons (Lucide paths, drawn inline).
@@ -95,6 +96,16 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
     { pillar: 'eat', Icon: UtensilsIcon, title: 'Eat' },
     { pillar: 'recover', Icon: MoonIcon, title: 'Recover' },
   ];
+  const goalLine = (pillar: Pillar) => {
+    const pattern = weekPatternFor(phase.training_block);
+    return planRowLine(pillar, {
+      split: phase.training_block?.split_type ?? null,
+      days: phase.training_block?.days_per_week ?? (pattern ? pattern.filter((d) => d !== REST).length : null),
+      kcal: phase.diet_calorie_target,
+      proteinG: phase.diet_protein_g,
+      sleep: phase.metrics.find((m) => m.kind === 'sleep_hours') ?? null,
+    }, live, readinessToday);
+  };
   const open = (pillar: Pillar) => {
     track('program_pillar_opened', { pillar, seq: phase.seq, from });
     router.push({ pathname: '/goal-plan-pillar', params: { pillar, seq: String(phase.seq) } } as any);
@@ -108,14 +119,16 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
       )}
       {!heading && <SectionLabel style={{ marginBottom: S.md }}>Your plan</SectionLabel>}
       {rows.map(({ pillar, Icon, title }, i) => {
-        const s = pillarSummary(phase, pillar, readinessToday, live);
+        // The Goal screen uses the reference's plan-first line; the phase
+        // screen keeps the metric line with its coloured status.
+        const s = goal ? goalLine(pillar) : pillarSummary(phase, pillar, readinessToday, live);
         return (
           <Stagger key={pillar} index={staggerFrom + 1 + i}>
             <Row
-              iconNode={<Icon size={goal ? 24 : 26} color={goal ? pal.icon : C.foreground} />}
+              iconNode={goal ? <Icon size={29} strokeWidth={1.6} color={pal.icon} /> : <Icon size={26} color={C.foreground} />}
               title={title}
               minHeight={goal ? 65 : 54}
-              look={goal ? { muted: pal.muted, divider: pal.divider } : undefined}
+              look={goal ? { muted: pal.muted, divider: pal.divider, titleSize: 17, subSize: 14, iconColumn: 40 } : undefined}
               first={i === 0}
               last={i === rows.length - 1}
               onPress={() => open(pillar)}
@@ -126,7 +139,7 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
                   {/* Calm by default: a good or neutral status reads in the
                       same muted colour; only a problem (Slipping, Behind) gets colour. */}
                   {s.status ? (
-                    <Text style={statusTone(s.status) === 'warn' ? { color: statusColor('warn'), fontWeight: FontWeight.medium } : null}>
+                    <Text style={!goal && statusTone(s.status) === 'warn' ? { color: statusColor('warn'), fontWeight: FontWeight.medium } : null}>
                       {` · ${STATUS_LABEL[s.status]}`}
                     </Text>
                   ) : null}

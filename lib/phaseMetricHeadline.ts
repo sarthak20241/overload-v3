@@ -16,7 +16,7 @@
  *
  * Pure, so `lib/phaseMetricHeadline.test.ts` covers it under deno.
  */
-import { formatMetricValue, type MetricStatus, type PhaseMetricRow } from './phaseMetrics';
+import { focusLine, formatMetricValue, type MetricStatus, type PhaseMetricRow } from './phaseMetrics';
 
 /** The live values a screen can read without the weekly job. */
 export interface LiveReadings {
@@ -145,3 +145,62 @@ export function rowLine(m: PhaseMetricRow, live: LiveReadings | null): { text: s
   }
   return { text: headlineText(h), short: headlineText(h, true), status: h.status };
 }
+
+/** The Goal screen's focus fits one line at its size: about this many characters. */
+export const GOAL_FOCUS_MAX = 52;
+
+/**
+ * "This week's focus" on the Goal screen: one short line, never wrapped or
+ * cut. Drona's action sentence when it fits; else a sentence built from the
+ * two supporting targets most behind, or the single worst when two would not
+ * fit; empty when nothing is behind (and the line is not shown).
+ */
+export function goalFocus(
+  coachLine: string | null | undefined,
+  metrics: readonly Parameters<typeof focusLine>[0][number][],
+  max = GOAL_FOCUS_MAX,
+): string {
+  if (coachLine) {
+    const action = focusFromCoachLine(coachLine);
+    if (action.length <= max) return action;
+  }
+  const two = focusLine(metrics);
+  if (two.length <= max) return two;
+  const one = focusLine(metrics, 1);
+  return one.length <= max ? one : '';
+}
+
+/** "Push/Pull/Legs" as the reference sets it: "Push / Pull / Legs". */
+const spacedSlashes = (s: string) => s.replace(/\s*\/\s*/g, ' / ');
+
+/**
+ * A plan row's line on the Goal screen, in the reference's pattern: the plan
+ * first, one short line, no "last week". Train: the split and its days. Eat:
+ * the day's calories and protein. Recover: the sleep reading, with the job's
+ * status word when it has judged one (the status shows in the row's muted
+ * colour; the detail lives on the pillar screens).
+ */
+export function planRowLine(
+  pillar: 'train' | 'eat' | 'recover',
+  parts: { split?: string | null; days?: number | null; kcal?: number | null; proteinG?: number | null; sleep?: PhaseMetricRow | null },
+  live: LiveReadings | null = null,
+  readinessToday: number | null = null,
+): { text: string; status: MetricStatus | null } {
+  if (pillar === 'train') {
+    const bits = [parts.split ? spacedSlashes(parts.split) : null, parts.days ? `${parts.days} days` : null].filter(Boolean);
+    return { text: bits.join(' · ') || 'Training plan', status: null };
+  }
+  if (pillar === 'eat') {
+    const bits = [
+      parts.kcal != null ? `${parts.kcal.toLocaleString('en-US')} kcal` : null,
+      parts.proteinG != null ? `${parts.proteinG} g protein` : null,
+    ].filter(Boolean);
+    return { text: bits.join(' · ') || 'Daily targets', status: null };
+  }
+  if (parts.sleep) {
+    const h = metricHeadline(parts.sleep, live);
+    if (h.num) return { text: `${h.num} h sleep`, status: h.status };
+  }
+  return { text: readinessToday != null ? `Readiness ${Math.round(readinessToday)} today` : 'Sleep and readiness', status: null };
+}
+

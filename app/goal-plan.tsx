@@ -41,17 +41,17 @@ import {
   type ActiveProgramPhaseRow,
 } from '@/lib/programData';
 import {
-  chartKindOf, focusLine, formatMetricValue, heroCapsLabel, heroOf, heroStatusLine, isWeeklyKind, jobFraction,
+  chartKindOf, formatMetricValue, heroCapsLabel, heroOf, heroStatusLine, isWeeklyKind, jobFraction,
   phaseProgress,
 } from '@/lib/phaseMetrics';
 import { loadMetricSeries, type MetricSeries } from '@/lib/phaseMetricSeries';
 import { MetricBarsChart, MetricLineChart } from '@/components/program/PhaseMetricChart';
 import { MetricLogSheet } from '@/components/program/MetricLogSheet';
 import { PlanRows } from '@/components/program/PlanRows';
-import { ObjectiveText } from '@/components/program/ObjectiveText';
+import { AboutGoalSheet } from '@/components/program/AboutGoalSheet';
 import { SparkleIcon } from '@/components/program/LineIcons';
 import { loadLiveReadings, peekLiveReadings, prefetchPillars } from '@/lib/pillarData';
-import { focusFromCoachLine, type LiveReadings } from '@/lib/phaseMetricHeadline';
+import { goalFocus, type LiveReadings } from '@/lib/phaseMetricHeadline';
 import { LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T, useGoalPalette } from '@/components/program/finish';
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from 'react-native-svg';
 import { useToast } from '@/components/ui/Toast';
@@ -72,7 +72,7 @@ function addDaysISO(iso: string, delta: number): string {
 }
 
 /** The pinned button's height plus its top padding; the scroll content clears it. */
-const FOOTER_H = 48 + 4;
+const FOOTER_H = 48;
 
 /** A goal figure as the reference shows it: "59 kg", not "59.0 kg", when whole. */
 function goalText(kind: Parameters<typeof formatMetricValue>[0], v: number, unit?: string): string {
@@ -122,6 +122,7 @@ export default function GoalPlanScreen() {
   const [logOpen, setLogOpen] = useState(false);
   const [logging, setLogging] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const [buildSeed, setBuildSeed] = useState<{ goal?: string; days?: string; note?: string } | null>(null);
   const [buildPhaseId, setBuildPhaseId] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
@@ -320,6 +321,8 @@ export default function GoalPlanScreen() {
   const openMenu = () => {
     haptics.selection();
     Alert.alert('Goal & Plan', undefined, [
+      // The objective lives here: the main screen shows only what the reference shows.
+      ...(program?.objective?.trim() ? [{ text: 'About this goal', onPress: () => setAboutOpen(true) }] : []),
       { text: dronaWaiting > 0 ? `From Drona · ${dronaWaiting} waiting` : 'From Drona', onPress: openFromDrona },
       ...(program ? [{ text: 'End this program', style: 'destructive' as const, onPress: confirmEnd }] : []),
       { text: 'Cancel', style: 'cancel' as const },
@@ -445,7 +448,7 @@ export default function GoalPlanScreen() {
             />
           )}
         </View>
-        {status ? <Text style={[T.body, { color: pal.muted, marginTop: S.xs }]}>{status}</Text> : null}
+        {status ? <Text style={[T.body, { color: pal.muted, marginTop: S.xs + 6 }]}>{status}</Text> : null}
       </View>
     );
   };
@@ -488,12 +491,14 @@ export default function GoalPlanScreen() {
     );
   };
 
-  const focus = currentPhase
-    ? (currentPhase.coach_line ? focusFromCoachLine(currentPhase.coach_line) : focusLine(currentPhase.metrics))
-    : '';
+  // One short line (lib/phaseMetricHeadline goalFocus): Drona's action when
+  // it fits, else the targets most behind; never wrapped or cut.
+  const focus = currentPhase ? goalFocus(currentPhase.coach_line, currentPhase.metrics) : '';
   const unbuilt = currentPhase != null && currentPhase.routines.length === 0;
-  // The pinned button sits just above the home indicator, as in the reference.
-  const footerBottom = Math.max(insets.bottom - 14, 12);
+  // The pinned button sits where the reference has it (top ~818 on an
+  // 874pt screen, bottom 8pt above the edge): low enough that the home bar
+  // overlaps its bottom edge, as in the reference.
+  const footerBottom = Math.max(insets.bottom - 26, 8);
   const pal = useGoalPalette();
 
   return (
@@ -548,12 +553,11 @@ export default function GoalPlanScreen() {
                 {notStarted ? `Starts ${fmtShortISO(program.start_date)}` : ended ? 'Program complete' : `Week ${weekOverall} of ${totalWeeks}`}
                 {'  ·  '}{ended ? `Ended ${fmtShortISO(program.target_date ?? endDateISO!)}` : `Ends ${fmtShortISO(program.target_date ?? endDateISO!)}`}
               </Text>
-              <ObjectiveText text={program.objective} lines={1} color={pal.muted} style={{ marginTop: 4 }} />
             </Stagger>
             <Stagger index={1}>{renderHero()}</Stagger>
             <Stagger index={2}>{renderPhaseCard()}</Stagger>
             {shownPhase && (
-              <View style={{ marginTop: 18 }}>
+              <View style={{ marginTop: 22 }}>
                 <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} headingGap={17} />
               </View>
             )}
@@ -564,7 +568,7 @@ export default function GoalPlanScreen() {
                   <View style={{ marginTop: 0 }}><SparkleIcon size={18} color={Colors.primary} /></View>
                   <View style={{ flex: 1 }}>
                     <SectionLabel style={styles.focusLabel}>This week's focus</SectionLabel>
-                    <Text style={[styles.focusText, { color: C.foreground }]}>{focus}</Text>
+                    <Text style={[styles.focusText, { color: C.foreground }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.9}>{focus}</Text>
                   </View>
                 </View>
               </Stagger>
@@ -584,16 +588,16 @@ export default function GoalPlanScreen() {
       {!loading && program && (
         <View style={[styles.footer, { backgroundColor: pal.bg, paddingBottom: footerBottom }]}>
           {/* A short fade of the page colour above the footer, so content
-              scrolling under it does not look cut off (12pt: at first paint it
+              scrolling under it does not look cut off (4pt: at first paint it
               stays clear of the focus line). */}
-          <Svg style={styles.footerFade} width="100%" height={12} pointerEvents="none">
+          <Svg style={styles.footerFade} width="100%" height={4} pointerEvents="none">
             <Defs>
               <SvgLinearGradient id="footerFade" x1="0" y1="0" x2="0" y2="1">
                 <Stop offset="0" stopColor={pal.bg} stopOpacity={0} />
                 <Stop offset="1" stopColor={pal.bg} stopOpacity={1} />
               </SvgLinearGradient>
             </Defs>
-            <Rect x="0" y="0" width="100%" height="12" fill="url(#footerFade)" />
+            <Rect x="0" y="0" width="100%" height="4" fill="url(#footerFade)" />
           </Svg>
           <Pressable
             onPress={() => {
@@ -609,6 +613,13 @@ export default function GoalPlanScreen() {
           </Pressable>
         </View>
       )}
+
+      <AboutGoalSheet
+        visible={aboutOpen}
+        title={program?.title ?? ''}
+        objective={program?.objective?.trim() ?? ''}
+        onClose={() => setAboutOpen(false)}
+      />
 
       <MetricLogSheet
         visible={logOpen}
@@ -641,7 +652,7 @@ const styles = StyleSheet.create({
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: S.xxl * 2, gap: S.md },
   emptyIconWrap: { width: 56, height: 56, borderRadius: Radius.full, alignItems: 'center', justifyContent: 'center' },
 
-  heroBlock: { marginTop: S.sm },
+  heroBlock: { marginTop: 19 },
   heroNum: { fontSize: 42, lineHeight: 44, fontWeight: FontWeight.bold, letterSpacing: -1.3, fontVariant: ['tabular-nums'] },
   goalValue: { fontSize: 20, lineHeight: 25, fontWeight: FontWeight.medium, marginTop: S.xs, fontVariant: ['tabular-nums'] },
   heroRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: S.md },
@@ -650,21 +661,21 @@ const styles = StyleSheet.create({
   heroTag: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: Radius.full },
   logBtn: { marginLeft: 10, paddingHorizontal: S.md, paddingVertical: 6, borderRadius: Radius.full, alignSelf: 'center', minHeight: 32, justifyContent: 'center' },
   goalCol: { alignItems: 'flex-end', paddingBottom: 8 },
-  chartWrap: { marginTop: 2 },
+  chartWrap: { marginTop: 0 },
 
-  phaseCard: { marginTop: 10, borderRadius: 20, paddingHorizontal: 18, paddingTop: 12, paddingBottom: 16, borderWidth: StyleSheet.hairlineWidth, borderTopWidth: 1 },
+  phaseCard: { marginTop: 12, borderRadius: 20, paddingHorizontal: 18, paddingTop: 12, paddingBottom: 16, borderWidth: StyleSheet.hairlineWidth, borderTopWidth: 1 },
   phaseName: { fontSize: 18, lineHeight: 23, fontWeight: FontWeight.semibold, flexShrink: 1 },
   phaseTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, gap: S.sm },
   jobBar: { height: 8, borderRadius: 4, marginTop: 11, overflow: 'hidden' },
   jobFill: { height: '100%', borderRadius: 4 },
   pctText: { fontSize: 14, lineHeight: 18, fontWeight: FontWeight.regular, marginTop: 5 },
 
-  focus: { flexDirection: 'row', gap: 14, alignItems: 'flex-start', marginTop: 4 },
+  focus: { flexDirection: 'row', gap: 14, alignItems: 'flex-start', marginTop: 20 },
   focusLabel: { fontSize: 11, lineHeight: 14 },
   focusText: { fontSize: 14, lineHeight: 19, fontWeight: FontWeight.regular, marginTop: 4 },
 
-  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: S.lg, paddingTop: 4 },
-  footerFade: { position: 'absolute', left: 0, right: 0, top: -12 },
+  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: S.lg, paddingTop: 0 },
+  footerFade: { position: 'absolute', left: 0, right: 0, top: -4 },
   footerBtn: { height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   footerText: { fontSize: 16, lineHeight: 21, fontWeight: FontWeight.semibold, color: '#0A0A0A' },
 
