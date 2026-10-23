@@ -68,7 +68,7 @@ export function tierLabel(tier: string | null | undefined): string {
  * What Pro gives you, shared by the profile card and the plan page so the two
  * cannot drift.
  *
- * Kept apart from the paywall's own list (app/upgrade.tsx PRO_POINTS): that
+ * Kept apart from the paywall's own list (app/upgrade.tsx PRO_PATH): that
  * one sells to someone deciding, these two surfaces confirm it to someone who
  * already paid. Nothing enforces parity with the paywall, so if the offer
  * changes, both need editing.
