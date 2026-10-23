@@ -46,6 +46,12 @@ export default function GoalPlanPhaseScreen() {
     const n = parseInt(seqParam ?? '', 10);
     return Number.isFinite(n) ? n : null;
   });
+  // A new ?seq= while the screen is open (a deep link to another phase) moves
+  // the stepper to it; the stepper's own taps change seq without a param.
+  useEffect(() => {
+    const n = parseInt(seqParam ?? '', 10);
+    if (Number.isFinite(n)) setSeq(n);
+  }, [seqParam]);
   const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
