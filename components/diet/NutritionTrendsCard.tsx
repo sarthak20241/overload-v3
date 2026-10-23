@@ -1,8 +1,9 @@
 /**
- * NutritionTrendsCard — the diet slice of the Analytics tab: daily calories over
- * the last 14 days + per-day macro averages. Self-contained (loads its own
- * history, reloads on focus) and renders nothing until there's at least one
- * logged day, so it can drop into Analytics with a single insert.
+ * NutritionTrendsCard — the diet slice of the Analytics tab: daily calories
+ * over the last 14 days as bars, each against that day's own goal range
+ * (lib/calorieBars.ts), plus per-day macro averages. Self-contained (loads its
+ * own history, reloads on focus) and renders nothing until there's at least
+ * one logged day, so it can drop into Analytics with a single insert.
  */
 import { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, useWindowDimensions } from 'react-native';
@@ -10,9 +11,10 @@ import { useFocusEffect } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import { Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { useSupabaseClient } from '@/lib/supabase';
-import { loadNutritionHistory, type DayNutrition } from '@/lib/dietData';
+import { loadNutritionHistory, useNutritionTargets, ymd, type DayNutrition } from '@/lib/dietData';
+import { calorieBars, RANGE_PCT } from '@/lib/calorieBars';
+import { CalorieBarChart } from '@/components/diet/CalorieBarChart';
 
 const DAYS = 14;
 const r0 = (n: number) => Math.round(n);
@@ -21,6 +23,7 @@ export function NutritionTrendsCard() {
   const { C } = useTheme();
   const supabase = useSupabaseClient();
   const { width } = useWindowDimensions();
+  const { targetsOn } = useNutritionTargets();
   const [history, setHistory] = useState<DayNutrition[]>([]);
 
   useFocusEffect(
@@ -35,9 +38,14 @@ export function NutritionTrendsCard() {
   if (logged.length === 0) return null;
 
   const avg = (sel: (d: DayNutrition) => number) => logged.reduce((a, d) => a + sel(d), 0) / logged.length;
-  const kcalSeries = history.map((d) => d.kcal);
-  const labels = history.map((d) => { const [, m, day] = d.dayIso.split('-'); return `${Number(m)}/${Number(day)}`; });
+  // Each day against the goal it had: fuel days, one-day goals, past changes.
+  const goalFor = (iso: string) => {
+    const [y, m, d] = iso.split('-').map(Number);
+    return targetsOn(new Date(y, m - 1, d)).kcal;
+  };
+  const { bars, summary } = calorieBars(history, goalFor, ymd(new Date()));
   const chartWidth = width - Spacing.xl * 2 - Spacing.lg * 2;
+  const pct = Math.round(RANGE_PCT * 100);
 
   return (
     <View style={[s.card, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
@@ -48,22 +56,44 @@ export function NutritionTrendsCard() {
         <Text style={[s.range, { color: C.textDim }]}>Last {DAYS} days</Text>
       </View>
 
-      <View style={s.valueRow}>
-        <Text style={[s.value, { color: C.foreground }]}>{r0(avg((d) => d.kcal)).toLocaleString()}</Text>
-        <Text style={[s.suffix, { color: C.textMuted }]}> kcal / day avg</Text>
+      {summary.logged > 0 ? (
+        <View style={s.valueRow}>
+          <Text style={[s.value, { color: C.foreground }]}>{summary.inRange}</Text>
+          <Text style={[s.suffix, { color: C.textMuted }]}>
+            {` of ${summary.logged} ${summary.logged === 1 ? 'day' : 'days'} in your range`}
+          </Text>
+          <View style={{ flex: 1 }} />
+          <Text style={[s.avg, { color: C.textMuted }]}>{r0(summary.avgKcal ?? 0).toLocaleString()} kcal avg</Text>
+        </View>
+      ) : (
+        <View style={s.valueRow}>
+          <Text style={[s.suffix, { color: C.textMuted }]}>Today is the first day logged. Your range fills in from tomorrow.</Text>
+        </View>
+      )}
+
+      <View style={{ marginTop: Spacing.sm }}>
+        <CalorieBarChart
+          bars={bars}
+          width={chartWidth}
+          height={128}
+          colors={{
+            inRange: C.macro.calories,
+            over: C.warningText,
+            under: C.textDim,
+            band: C.macro.calories + '22',
+            label: C.textMuted,
+            labelToday: C.foreground,
+            tooltipBg: C.macro.calories + '1f',
+            tooltipText: C.foreground,
+          }}
+        />
       </View>
 
-      <View style={{ marginTop: 4, marginHorizontal: -2 }}>
-        <MiniAreaChart
-          data={kcalSeries}
-          labels={labels}
-          width={chartWidth}
-          height={96}
-          color={C.macro.calories}
-          valueSuffix="kcal"
-          tooltipBgColor={C.elevated}
-          tooltipTextColor={C.foreground}
-        />
+      <View style={s.legend}>
+        <Key color={C.macro.calories + '33'} label={`Goal ±${pct}%`} C={C} />
+        <Key color={C.macro.calories} label="In range" C={C} />
+        <Key color={C.warningText} label="Over" C={C} />
+        <Key color={C.textDim} label="Under" C={C} />
       </View>
 
       <View style={[s.macros, { borderTopColor: C.borderSubtle }]}>
@@ -71,6 +101,15 @@ export function NutritionTrendsCard() {
         <Macro label="Carbs" value={`${r0(avg((d) => d.carb_g))}g`} color={C.macro.carbs} C={C} />
         <Macro label="Fat" value={`${r0(avg((d) => d.fat_g))}g`} color={C.macro.fat} C={C} />
       </View>
+    </View>
+  );
+}
+
+function Key({ color, label, C }: { color: string; label: string; C: ReturnType<typeof useTheme>['C'] }) {
+  return (
+    <View style={s.key}>
+      <View style={[s.swatch, { backgroundColor: color }]} />
+      <Text style={[s.keyText, { color: C.textMuted }]}>{label}</Text>
     </View>
   );
 }
@@ -92,5 +131,10 @@ const s = StyleSheet.create({
   valueRow: { flexDirection: 'row', alignItems: 'baseline', marginTop: Spacing.sm },
   value: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] },
   suffix: { fontSize: FontSize.sm },
+  avg: { fontSize: 12, fontVariant: ['tabular-nums'] },
+  legend: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md, marginTop: Spacing.sm },
+  key: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  swatch: { width: 8, height: 8, borderRadius: 2 },
+  keyText: { fontSize: 10 },
   macros: { flexDirection: 'row', marginTop: Spacing.md, paddingTop: Spacing.md, borderTopWidth: 1 },
 });
