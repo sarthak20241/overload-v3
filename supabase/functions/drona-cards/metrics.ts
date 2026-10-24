@@ -416,6 +416,11 @@ async function gatherReadings(
   const jobs: Promise<void>[] = [];
   const add = (ks: MetricToCheck["kind"][], p: Promise<void>) => { jobs.push(p.catch((e) => fail(String(e), ...ks))); };
 
+  // Bodyweight is the latest weigh-in of the last 14 days, not this week's
+  // only: many people weigh once a week or less, and a week with no weigh-in
+  // would otherwise read as "no reading" while the trend is known. The Goal
+  // screen calls it "current weight", which is what this is. Older than 14
+  // days, there is no reading and the metric is due.
   if (kinds.has("bodyweight")) {
     add(["bodyweight"], (async () => {
       const { data, error } = await retried(() =>
