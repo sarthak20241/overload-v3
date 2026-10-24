@@ -51,7 +51,7 @@ import { PlanRows } from '@/components/program/PlanRows';
 import { AboutGoalSheet } from '@/components/program/AboutGoalSheet';
 import { ChevronLeftIcon, ChevronRightIcon, SparkleIcon } from '@/components/program/LineIcons';
 import { loadLiveReadings, peekLiveReadings, prefetchPillars } from '@/lib/pillarData';
-import { goalFocus, type LiveReadings } from '@/lib/phaseMetricHeadline';
+import { goalFocus, goalText, type LiveReadings } from '@/lib/phaseMetricHeadline';
 import { DotLine, FOOTER_H, FooterAction, LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T, useGoalPalette } from '@/components/program/finish';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -70,14 +70,8 @@ function addDaysISO(iso: string, delta: number): string {
   return `${dt.getFullYear()}-${mm}-${dd}`;
 }
 
-/** The pinned button's height plus its top padding; the scroll content clears it. */
 /** The Goal screen's line chart, 7pt shorter than the default so the page fits above the button. */
 const GOAL_CHART_HEIGHT = CHART_HEIGHT - 7;
-
-/** A goal figure as the reference shows it: "59 kg", not "59.0 kg", when whole. */
-function goalText(kind: Parameters<typeof formatMetricValue>[0], v: number, unit?: string): string {
-  return Number.isInteger(v) ? String(v) : formatMetricValue(kind, v, unit);
-}
 
 export default function GoalPlanScreen() {
   const insets = useSafeAreaInsets();

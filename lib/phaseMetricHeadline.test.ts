@@ -1,6 +1,6 @@
 // deno test --allow-all --unstable-sloppy-imports lib/phaseMetricHeadline.test.ts
 import { assertEquals } from 'https://deno.land/std@0.224.0/assert/mod.ts';
-import { focusFromCoachLine, goalFocus, metricHeadline, liveFrom, headlineText, planRowLine, rowLine, type LiveReadings } from './phaseMetricHeadline.ts';
+import { focusFromCoachLine, goalFocus, goalText, metricHeadline, liveFrom, headlineText, planRowLine, rowLine, type LiveReadings } from './phaseMetricHeadline.ts';
 
 const base = { id: 'm', program_id: 'p', phase_id: 'ph', user_id: 'u', seq: 0, is_hero: false, ref: {}, unit: null, direction: 'up' as const, start_value: null, status_note: null, updated_at: '' };
 const m = (kind: string, target: number, current: number | null, status = 'on_track') =>
@@ -109,4 +109,12 @@ Deno.test('plan rows on the Goal screen: plan first, one short line, no "last we
   assertEquals(planRowLine('recover', {}, live, 72), { text: 'Readiness 72 today', status: null });
   assertEquals(planRowLine('train', {}), { text: 'Training plan', status: null });
   assertEquals(planRowLine('eat', {}), { text: 'Daily targets', status: null });
+});
+
+Deno.test('a goal reads like the number beside it: no .0 on a whole number, separators on big ones', () => {
+  assertEquals(goalText('bodyweight', 59), '59');
+  assertEquals(goalText('bodyweight', 63.7), '63.7');
+  // A steps goal reads as the current value on the same screen does.
+  assertEquals(goalText('steps', 10000), '10,000');
+  assertEquals(goalText('steps', 8000), '8,000');
 });

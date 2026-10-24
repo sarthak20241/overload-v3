@@ -601,3 +601,26 @@ Deno.test("without a model key the metrics pass does not run, so its phases stay
   assertEquals(metricsPassBlocked(""), "metrics: skipped, ANTHROPIC_API_KEY is not set; every phase stays due");
   assertEquals(metricsPassBlocked("sk-ant-x"), null);
 });
+
+Deno.test("the coach-line call is cut to the run's hard stop, not the usual 20 s", async () => {
+  // A model that never answers, and a run with ~6 s left (over MIN_LINE_MS,
+  // so the call is made): it must give up by the hard stop, with no try spent
+  // on the model's account beyond the ledger's normal retry.
+  const { db } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: rows, error: null }],
+    daily_metrics: [{ data: { value: 71.4 }, error: null }],
+    user_nutrition_stats: [{ data: [{ protein_g: 155 }], error: null }],
+  });
+  const hang = ((_url: string, init?: RequestInit) => new Promise<Response>((_res, rej) => {
+    init?.signal?.addEventListener("abort", () => rej(Object.assign(new Error("aborted"), { name: "AbortError" })));
+  })) as unknown as typeof fetch;
+  const started = Date.now();
+  const stopBy = started + 6_000;
+  const out = await metricsStep(db, "user-1", DAY, WEEK, "key", hang, new Date().toISOString(), stopBy);
+  const ended = Date.now();
+  assertEquals(out.error, "line: timeout, retry next run");
+  // Done within a moment of the hard stop (the ledger write after the call is quick).
+  assertEquals(ended <= stopBy + 500, true);
+});

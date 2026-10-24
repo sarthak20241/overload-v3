@@ -204,3 +204,12 @@ export function planRowLine(
   return { text: readinessToday != null ? `Readiness ${Math.round(readinessToday)} today` : 'Sleep and readiness', status: null };
 }
 
+
+/**
+ * A goal's number on the Goal screen: a whole number has no ".0" ("59 kg",
+ * not "59.0 kg") and keeps its thousands separator ("10,000" steps, as the
+ * current value beside it reads); otherwise it reads as formatMetricValue does.
+ */
+export function goalText(kind: Parameters<typeof formatMetricValue>[0], v: number, unit?: string): string {
+  return Number.isInteger(v) ? v.toLocaleString('en-US') : formatMetricValue(kind, v, unit);
+}
