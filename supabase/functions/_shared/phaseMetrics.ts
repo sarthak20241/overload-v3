@@ -127,12 +127,22 @@ export interface PhaseMetricInput {
   ref?: MetricRef;
 }
 
-/** One phase metric as the app reads it back. */
+/**
+ * One phase metric as the app reads it back.
+ *
+ * Trust: a client may insert any kind with its own target, and may write
+ * `current_value` and `status` on its own custom metrics (the log sheet moves
+ * the card at once). Those are display values for that user only. The weekly
+ * job (drona-cards/metrics.ts) recomputes the reading and status from the real
+ * sources and overwrites them, and Drona's line is built from that check.
+ * Nothing server-side may treat a stored status, or a target, as vetted.
+ */
 export interface PhaseMetricRow extends PhaseMetricInput {
   id: string;
   phase_id: string;
   seq: number;
   current_value: number | null;
+  /** Job-checked for app-measured kinds; user-asserted for a custom metric until the next weekly check. */
   status: MetricStatus;
   status_note: string | null;
   checked_at: string | null;
