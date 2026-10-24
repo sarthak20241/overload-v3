@@ -419,8 +419,9 @@ async function gatherReadings(
   // Bodyweight is the latest weigh-in of the last 14 days, not this week's
   // only: many people weigh once a week or less, and a week with no weigh-in
   // would otherwise read as "no reading" while the trend is known. The Goal
-  // screen calls it "current weight", which is what this is. Older than 14
-  // days, there is no reading and the metric is due.
+  // screen calls it "current weight", which is what this is. With nothing in
+  // the last 14 days there is no fresh reading, and the check keeps the last
+  // stored value (bodyweight is a progress kind: checkMetric).
   if (kinds.has("bodyweight")) {
     add(["bodyweight"], (async () => {
       const { data, error } = await retried(() =>
