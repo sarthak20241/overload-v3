@@ -183,7 +183,7 @@ export function NutritionTrendsCard() {
                 inRange: C.macro.calories,
                 over: C.warningText,
                 under: C.textDim,
-                band: tint(C.macro.calories, 0.13),
+                band: tint(C.macro.calories, 0.22),
                 label: C.textMuted,
                 labelToday: C.foreground,
                 tooltipBg: tint(C.macro.calories, 0.12),
@@ -193,11 +193,11 @@ export function NutritionTrendsCard() {
           </View>
 
           <View style={s.legend}>
-            <Key color={tint(C.macro.calories, 0.2)} label={`Goal ±${pct}%`} C={C} />
             <Key color={C.macro.calories} label="In range" C={C} />
             <Key color={C.warningText} label="Over" C={C} />
             <Key color={C.textDim} label="Under" C={C} />
-            {offset === 0 && <Key color={tint(C.macro.calories, 0.45)} label="Today so far" C={C} />}
+            {offset === 0 && <Key color={tint(C.macro.calories, 0.45)} label="Today" C={C} />}
+            <Text style={[s.keyText, s.bandNote, { color: C.textDim }]}>Shaded: goal ±{pct}%</Text>
           </View>
 
           <Text style={[s.caption, { color: C.textDim, borderTopColor: C.borderSubtle }]}>{caption}</Text>
@@ -250,6 +250,7 @@ const s = StyleSheet.create({
   key: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   swatch: { width: 8, height: 8, borderRadius: 2 },
   keyText: { fontSize: FontSize.xs },
+  bandNote: { marginLeft: 'auto' },
   caption: { fontSize: FontSize.xs, marginTop: Spacing.md, paddingTop: Spacing.sm, borderTopWidth: 1 },
   macros: { flexDirection: 'row', marginTop: Spacing.xs },
 });

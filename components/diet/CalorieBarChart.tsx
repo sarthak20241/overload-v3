@@ -56,7 +56,19 @@ export function CalorieBarChart({ bars, width, height, colors, rangeLabel }: {
   const top = Math.max(...bars.map((b) => Math.max(b.kcal, b.hi)), 1) * 1.08;
   const yFor = (v: number) => TOP_PAD + plotH - (v / top) * plotH;
   const colW = width / bars.length;
-  const barW = Math.max(4, Math.min(18, colW * 0.56));
+  const barW = Math.max(4, Math.min(22, colW * 0.62));
+
+  // One band per run of days sharing a goal, drawn across their whole columns:
+  // it reads as a range, and steps only where the goal changed (a fuel day, a
+  // new phase). Days with nothing logged keep the band, so the range never
+  // breaks into scattered pills.
+  const runs: Array<{ start: number; end: number; lo: number; hi: number; goal: number }> = [];
+  bars.forEach((b, i) => {
+    if (b.hi <= 0) return;
+    const last = runs[runs.length - 1];
+    if (last && last.end === i - 1 && last.lo === b.lo && last.hi === b.hi) last.end = i;
+    else runs.push({ start: i, end: i, lo: b.lo, hi: b.hi, goal: b.goal });
+  });
 
   // Today is still going: under its range is not "under" yet, so it stays the
   // in-range colour, drawn lighter. Already over is worth showing as over.
@@ -84,17 +96,36 @@ export function CalorieBarChart({ bars, width, height, colors, rangeLabel }: {
   return (
     <View style={{ width, height }}>
       <Svg width={width} height={height} pointerEvents="none">
+        {runs.map((r) => (
+          <G key={`run-${r.start}`}>
+            {/* Runs touch edge to edge, so a goal change is a step in one
+                ribbon rather than a gap between separate pills. */}
+            <Rect
+              x={colW * r.start}
+              y={yFor(r.hi)}
+              width={colW * (r.end - r.start + 1)}
+              height={Math.max(1, yFor(r.lo) - yFor(r.hi))}
+              fill={colors.band}
+            />
+            <Line
+              x1={colW * r.start}
+              x2={colW * (r.end + 1)}
+              y1={yFor(r.goal)}
+              y2={yFor(r.goal)}
+              stroke={colors.label}
+              strokeWidth={1}
+              strokeDasharray="3,3"
+              opacity={0.45}
+            />
+          </G>
+        ))}
         {bars.map((b, i) => {
           const cx = colW * i + colW / 2;
           const x = cx - barW / 2;
-          const bandTop = b.hi > 0 ? yFor(b.hi) : null;
           return (
             <G key={b.dayIso}>
               {active === i && (
                 <Rect x={colW * i + 1} y={TOP_PAD - 4} width={colW - 2} height={plotH + 4} rx={4} fill={colors.band} opacity={0.6} />
-              )}
-              {bandTop !== null && (
-                <Rect x={x - 2} y={bandTop} width={barW + 4} height={Math.max(1, yFor(b.lo) - bandTop)} rx={2} fill={colors.band} />
               )}
               {b.status !== 'none' && (
                 <Rect
@@ -102,13 +133,10 @@ export function CalorieBarChart({ bars, width, height, colors, rangeLabel }: {
                   y={yFor(b.kcal)}
                   width={barW}
                   height={Math.max(2, TOP_PAD + plotH - yFor(b.kcal))}
-                  rx={Math.min(4, barW / 2)}
+                  rx={Math.min(5, barW / 2)}
                   fill={colorFor(b)}
                   opacity={b.today ? 0.45 : 1}
                 />
-              )}
-              {b.goal > 0 && (
-                <Line x1={x - 3} x2={x + barW + 3} y1={yFor(b.goal)} y2={yFor(b.goal)} stroke={colors.label} strokeWidth={1} opacity={0.5} />
               )}
             </G>
           );
