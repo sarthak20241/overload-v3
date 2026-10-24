@@ -832,11 +832,11 @@ export default function OnboardingScreen() {
                 multiple
                 compact
                 selected={answers.goalNote != null}
-                onPress={() => setAnswers((a) => {
-                  if (a.goalNote == null) return { ...a, goalNote: stashedGoalNote.current };
-                  stashedGoalNote.current = a.goalNote;
-                  return { ...a, goalNote: null };
-                })}
+                onPress={() => {
+                  if (answers.goalNote != null) stashedGoalNote.current = answers.goalNote;
+                  const next = answers.goalNote == null ? stashedGoalNote.current : null;
+                  setAnswers((a) => ({ ...a, goalNote: next }));
+                }}
               />
             </View>
             {answers.goalNote != null && (
