@@ -79,3 +79,32 @@ export function calorieBars(
     },
   };
 }
+
+/** The periods the card can show, in days. */
+export const PERIODS = [7, 14, 30] as const;
+export type PeriodDays = (typeof PERIODS)[number];
+
+/** How far back the card can step: about a year. */
+export const MAX_DAYS_BACK = 365;
+
+/**
+ * The days a period covers. offset 0 ends today; offset 1 is the period just
+ * before it, and so on. Local calendar days, oldest first.
+ */
+export function periodFor(today: Date, days: number, offset: number): { start: Date; end: Date } {
+  const end = new Date(today.getFullYear(), today.getMonth(), today.getDate() - offset * days);
+  const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - (days - 1));
+  return { start, end };
+}
+
+/** Whether one more step back stays inside MAX_DAYS_BACK. */
+export function canStepBack(days: number, offset: number): boolean {
+  return (offset + 1) * days + days - 1 <= MAX_DAYS_BACK;
+}
+
+/** Show every nth day label so about seven fit: 7 days every day, 14 every
+ *  other day, 30 every fifth. Counted back from the newest day, so it always
+ *  has its label. */
+export function labelEvery(n: number): number {
+  return Math.max(1, Math.ceil(n / 7));
+}

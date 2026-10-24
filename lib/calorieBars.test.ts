@@ -5,7 +5,7 @@
 // judged against its own goal and what the summary counts.
 
 import { assertEquals } from 'jsr:@std/assert@1';
-import { calorieBars, rangeFor, statusFor } from './calorieBars.ts';
+import { calorieBars, canStepBack, labelEvery, periodFor, rangeFor, statusFor } from './calorieBars.ts';
 
 Deno.test('the range is the goal plus or minus 10%', () => {
   assertEquals(rangeFor(1800), { lo: 1620, hi: 1980 });
@@ -74,4 +74,28 @@ Deno.test('a day with no goal is not counted as in range', () => {
   // 2,600 with no goal says nothing about range: one day judged, and it landed.
   // It was still eaten, so it stays in the average.
   assertEquals(summary, { logged: 1, inRange: 1, avgKcal: 2200 });
+});
+
+
+const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+Deno.test('the current period ends today; each step back is one whole period earlier', () => {
+  const today = new Date(2026, 9, 24);
+  assertEquals([iso(periodFor(today, 14, 0).start), iso(periodFor(today, 14, 0).end)], ['2026-10-11', '2026-10-24']);
+  assertEquals([iso(periodFor(today, 14, 1).start), iso(periodFor(today, 14, 1).end)], ['2026-09-27', '2026-10-10']);
+  assertEquals([iso(periodFor(today, 7, 2).start), iso(periodFor(today, 7, 2).end)], ['2026-10-04', '2026-10-10']);
+  // Across a month and a year boundary.
+  assertEquals(iso(periodFor(new Date(2026, 0, 3), 30, 0).start), '2025-12-05');
+});
+
+Deno.test('stepping back stops at about a year', () => {
+  assertEquals(canStepBack(30, 0), true);
+  assertEquals(canStepBack(30, 10), true);  // 12 periods of 30 reach 359 days back
+  assertEquals(canStepBack(30, 11), false); // a 13th would reach 389
+  assertEquals(canStepBack(7, 50), true);
+  assertEquals(canStepBack(7, 51), false);
+});
+
+Deno.test('about seven day labels fit whatever the period', () => {
+  assertEquals([labelEvery(7), labelEvery(14), labelEvery(30)], [1, 2, 5]);
 });

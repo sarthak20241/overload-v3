@@ -8,9 +8,10 @@ import { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, type GestureResponderEvent } from 'react-native';
 import Svg, { G, Rect, Line } from 'react-native-svg';
 import { FontWeight } from '@/constants/theme';
-import type { CalorieBar } from '@/lib/calorieBars';
+import { labelEvery, type CalorieBar } from '@/lib/calorieBars';
 
 const LABEL_H = 14;
+const LABEL_W = 24;
 /** The day labels and the tooltip live in fixed rows (LABEL_H, TOP_PAD), so
  *  system text scaling may grow them only this far before they would clip. */
 const MAX_FONT_SCALE = 1.3;
@@ -112,18 +113,24 @@ export function CalorieBarChart({ bars, width, height, colors }: {
         })}
       </Svg>
       <View style={[s.labels, { top: height - LABEL_H }]} pointerEvents="none">
-        {bars.map((b, i) => (
+        {/* About seven labels whatever the period, the newest always labelled.
+            Each is centred on its bar in a box wider than the column: on 30
+            days a column is ~10 pt and a two-digit date wrapped inside it. */}
+        {bars.map((b, i) => (bars.length - 1 - i) % labelEvery(bars.length) === 0 && (
           <Text
             key={b.dayIso}
+            numberOfLines={1}
             maxFontSizeMultiplier={MAX_FONT_SCALE}
             style={[
               s.label,
-              { width: colW, color: b.today ? colors.labelToday : colors.label },
+              {
+                left: Math.max(0, Math.min(width - LABEL_W, colW * i + colW / 2 - LABEL_W / 2)),
+                color: b.today ? colors.labelToday : colors.label,
+              },
               b.today && { fontWeight: FontWeight.bold },
             ]}
           >
-            {/* Every other day on a 14-day chart, so the numbers do not touch. */}
-            {bars.length <= 7 || i % 2 === (bars.length - 1) % 2 ? String(dayParts(b.dayIso).day) : ''}
+            {String(dayParts(b.dayIso).day)}
           </Text>
         ))}
       </View>
@@ -153,8 +160,8 @@ export function CalorieBarChart({ bars, width, height, colors }: {
 }
 
 const s = StyleSheet.create({
-  labels: { position: 'absolute', left: 0, right: 0, flexDirection: 'row' },
-  label: { fontSize: 9, textAlign: 'center', fontVariant: ['tabular-nums'] },
+  labels: { position: 'absolute', left: 0, right: 0, height: LABEL_H },
+  label: { position: 'absolute', top: 0, width: LABEL_W, fontSize: 9, textAlign: 'center', fontVariant: ['tabular-nums'] },
   tipRow: { position: 'absolute', top: 0, left: 0, right: 0, alignItems: 'center' },
   tipText: {
     fontSize: 11, fontWeight: FontWeight.semibold, fontVariant: ['tabular-nums'],
