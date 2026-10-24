@@ -66,6 +66,16 @@ export interface Db {
  */
 export const TRIES_PER_WEEK = 3;
 /**
+ * Why the cron skips the whole metrics pass, or null when it may run. Without
+ * a model key every phase would get its numbers and its week stamp but no
+ * line, and a key restored mid-week could not write that week's line. Skipped,
+ * nothing is written and every phase stays due, so the first run after the
+ * key is back does the week in full.
+ */
+export function metricsPassBlocked(anthropicKey: string): string | null {
+  return anthropicKey ? null : "metrics: skipped, ANTHROPIC_API_KEY is not set; every phase stays due";
+}
+/**
  * The cron's due read selects retry_tries, so a database without the sync
  * migration (20261023120000) fails it once, with this message, and the whole
  * metrics pass is skipped; without it every user's check would fail on its
@@ -300,7 +310,9 @@ export async function metricsStep(
 
     await stampOthers(phase.id);
 
-    // The line, from the numbers just written. No key, no line.
+    // The line, from the numbers just written. No key, no line: the cron never
+    // gets here without one (metricsPassBlocked skips the pass), so this only
+    // serves a caller that wants the numbers alone, such as the tests.
     if (!anthropicKey) return { checked, line: false };
     // Every metric has a check here: the early return above guarantees
     // readable.length === metrics.length, so the lookup cannot miss.

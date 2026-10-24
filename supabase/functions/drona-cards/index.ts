@@ -34,7 +34,7 @@ import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "..
 import { type MomentPerson, momentRow, pickMoment } from "../_shared/dronaMoments.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
-import { type Db as MetricsDb, dueReadFailure, metricsStep } from "./metrics.ts";
+import { type Db as MetricsDb, dueReadFailure, metricsPassBlocked, metricsStep } from "./metrics.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -520,7 +520,10 @@ async function runCron(): Promise<Response> {
     // user whose own Monday has not come yet is listed too, and pays three
     // small reads per run until it does.
     // A time budget keeps the moments pass below from being starved.
-    const latestWeek = weekStarts.length > 0 ? [...weekStarts].sort().pop()! : null;
+    // No model key: the pass is skipped whole and named once (metricsPassBlocked).
+    const blocked = metricsPassBlocked(ANTHROPIC_API_KEY);
+    if (blocked) failures.push(blocked);
+    const latestWeek = !blocked && weekStarts.length > 0 ? [...weekStarts].sort().pop()! : null;
     const dueMetrics = new Set<string>();
     if (latestWeek) {
       for (let from = 0; ; from += USER_PAGE) {

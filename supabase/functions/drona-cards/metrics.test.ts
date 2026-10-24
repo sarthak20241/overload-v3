@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { type Db, TRIES_PER_WEEK, dueReadFailure, metricsStep } from "./metrics.ts";
+import { type Db, TRIES_PER_WEEK, dueReadFailure, metricsPassBlocked, metricsStep } from "./metrics.ts";
 
 /**
  * A fake PostgREST client: every chained call returns the builder, and
@@ -593,4 +593,11 @@ Deno.test("a read that throws while the exercise lookup is still running is hand
   });
   const out = await metricsStep(db, "user-1", DAY, WEEK, "key");
   assertEquals([out.checked, out.error], [1, "read failed for bodyweight, retry next run"]);
+});
+
+Deno.test("without a model key the metrics pass does not run, so its phases stay due for when the key is back", () => {
+  // Running it would write the numbers and stamp the week with no line, and
+  // a key restored mid-week could not write that week's line any more.
+  assertEquals(metricsPassBlocked(""), "metrics: skipped, ANTHROPIC_API_KEY is not set; every phase stays due");
+  assertEquals(metricsPassBlocked("sk-ant-x"), null);
 });
