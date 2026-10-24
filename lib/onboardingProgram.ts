@@ -25,7 +25,7 @@ import { structuredToProgram, type GeneratedProgram, type ProgramDiet, type Prog
 import { programNarrative } from '@/lib/programNarrative';
 import { buildWeekPattern, splitCycle, weekPatternFor } from '@/lib/weekPattern';
 import type { CoachGoal } from '@/lib/types';
-import { GOAL_LABELS, goalLabels, joinGoals, primaryGoal, programGoalFor, selectedGoals } from '@/lib/fitnessGoals';
+import { GOAL_LABELS, goalLabels, goalNoteBriefLine, joinGoals, primaryGoal, programGoalFor, selectedGoals } from '@/lib/fitnessGoals';
 import { FRESH_TOKEN_BUDGET_MS, sendWithFreshTokenRetry, tokenWithin } from '@/lib/authRetry';
 
 const REQUEST_TIMEOUT_MS = 75_000;
@@ -248,6 +248,7 @@ export function buildOnboardingProgramMessage(a: OnboardingAnswers, extras: Prog
   return [
     `I just finished onboarding. Lay out my program toward my goal from these answers.`,
     `Goal: ${goal}. Goals: ${goalLabels(a) || 'general fitness'}. Experience: ${a.experience ?? 'beginner'}. Training ${freq} days a week.`,
+    goalNoteBriefLine(a.goalNote),
     body.length ? `Body: ${body.join(', ')}.` : '',
     `Today is ${today}. ${horizon}`,
     t

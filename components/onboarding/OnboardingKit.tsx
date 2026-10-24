@@ -102,6 +102,8 @@ export function QuestionStep({
   caption,
   footer,
   keyboardTaps = false,
+  scrollRef,
+  compact = false,
 }: {
   stepKey: string;
   question: string;
@@ -113,17 +115,22 @@ export function QuestionStep({
   footer?: React.ReactNode;
   /** Set for steps with text inputs so taps commit instead of dismissing. */
   keyboardTaps?: boolean;
+  /** For steps that must scroll a late text input into view (goal step). */
+  scrollRef?: React.Ref<ScrollView>;
+  /** Tighter top and gaps so a long list fits one screen (goal step). */
+  compact?: boolean;
 }) {
   const { C } = useTheme();
   return (
     <Animated.View key={stepKey} entering={FadeIn.duration(250)} style={k.stepFill}>
       <ScrollView
-        contentContainerStyle={k.stepScroll}
+        ref={scrollRef}
+        contentContainerStyle={[k.stepScroll, compact && k.stepScrollCompact]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps={keyboardTaps ? 'handled' : 'never'}
       >
         <Text style={[k.question, { color: C.foreground }]}>{question}</Text>
-        <Text style={[k.questionSub, { color: C.textMuted }]}>{sub}</Text>
+        <Text style={[k.questionSub, compact && k.questionSubCompact, { color: C.textMuted }]}>{sub}</Text>
         {children}
         {caption != null && (
           <Text style={[k.caption, { color: C.textDim }]}>{caption}</Text>
@@ -144,6 +151,7 @@ export function OptionCard({
   onPress,
   index,
   multiple = false,
+  compact = false,
 }: {
   icon: keyof typeof Feather.glyphMap;
   title: string;
@@ -152,6 +160,8 @@ export function OptionCard({
   onPress: () => void;
   index: number;
   multiple?: boolean;
+  /** One-line card (no sub) for lists that must fit one screen. */
+  compact?: boolean;
 }) {
   const { C } = useTheme();
   return (
@@ -163,6 +173,7 @@ export function OptionCard({
         }}
         style={[
           k.option,
+          compact && k.optionCompact,
           {
             backgroundColor: selected ? C.primaryMuted : C.card,
             borderColor: selected ? C.primaryBorder : 'transparent',
@@ -172,12 +183,12 @@ export function OptionCard({
         accessibilityLabel={title}
         accessibilityState={multiple ? { checked: selected } : { selected }}
       >
-        <View style={[k.optionIcon, { backgroundColor: C.muted }]}>
+        <View style={[k.optionIcon, compact && k.optionIconCompact, { backgroundColor: C.muted }]}>
           <Feather name={icon} size={IconSize.sm} color={selected ? C.accentText : C.textMuted} />
         </View>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={[k.optionTitle, { color: C.foreground }]}>{title}</Text>
-          {sub != null && <Text style={[k.optionSub, { color: C.textDim }]}>{sub}</Text>}
+          {sub != null && !compact && <Text style={[k.optionSub, { color: C.textDim }]}>{sub}</Text>}
         </View>
         <View
           style={[
@@ -206,6 +217,7 @@ export function TextAreaField({
   accessibilityLabel,
   maxLength = 200,
   autoFocus = false,
+  compact = false,
 }: {
   value: string;
   onChangeText: (text: string) => void;
@@ -213,10 +225,12 @@ export function TextAreaField({
   accessibilityLabel: string;
   maxLength?: number;
   autoFocus?: boolean;
+  /** Two-line box with no counter, for a screen that must not scroll. */
+  compact?: boolean;
 }) {
   const { C } = useTheme();
   return (
-    <Animated.View entering={FadeInDown.delay(100).duration(400)} style={k.textAreaWrap}>
+    <Animated.View entering={FadeInDown.delay(100).duration(400)} style={[k.textAreaWrap, compact && k.textAreaWrapCompact]}>
       <TextInput
         value={value}
         onChangeText={onChangeText}
@@ -228,13 +242,16 @@ export function TextAreaField({
         autoFocus={autoFocus}
         style={[
           k.textArea,
+          compact && k.textAreaCompact,
           { backgroundColor: C.card, borderColor: C.borderSubtle, color: C.foreground },
         ]}
         accessibilityLabel={accessibilityLabel}
       />
-      <Text style={[k.textAreaCount, { color: C.textDim }]}>
-        {value.length}/{maxLength}
-      </Text>
+      {!compact && (
+        <Text style={[k.textAreaCount, { color: C.textDim }]}>
+          {value.length}/{maxLength}
+        </Text>
+      )}
     </Animated.View>
   );
 }
@@ -305,6 +322,7 @@ const k = StyleSheet.create({
     paddingTop: Spacing.xxxl,
     paddingBottom: Spacing.xxxl,
   },
+  stepScrollCompact: { paddingTop: Spacing.lg, paddingBottom: Spacing.lg },
   question: {
     fontFamily: FontFamily.display,
     fontSize: 36,
@@ -317,6 +335,7 @@ const k = StyleSheet.create({
     marginTop: Spacing.md,
     marginBottom: Spacing.xxxl,
   },
+  questionSubCompact: { marginTop: Spacing.sm, marginBottom: Spacing.xl },
   caption: {
     fontSize: FontSize.sm,
     lineHeight: 18,
@@ -333,6 +352,8 @@ const k = StyleSheet.create({
     paddingVertical: Spacing.md,
     paddingHorizontal: Spacing.lg,
   },
+  optionCompact: { minHeight: 52, paddingVertical: Spacing.sm, borderRadius: 16 },
+  optionIconCompact: { width: 30, height: 30, borderRadius: 15 },
   optionIcon: {
     width: 36,
     height: 36,
@@ -353,6 +374,8 @@ const k = StyleSheet.create({
   radioDot: { width: 8, height: 8, borderRadius: 4 },
 
   textAreaWrap: { marginTop: Spacing.lg },
+  textAreaWrapCompact: { marginTop: Spacing.sm },
+  textAreaCompact: { minHeight: 64, paddingTop: Spacing.md, paddingBottom: Spacing.md, fontSize: 16, lineHeight: 22 },
   textArea: {
     minHeight: 132,
     borderRadius: 20,

@@ -9,6 +9,10 @@ import { FontSize } from '@/constants/theme';
 export const MEDICAL_DISCLAIMER_SHORT =
   'Drona is a training coach, not a medical professional. For medical advice, diagnosis, or treatment, talk to a doctor or other healthcare professional.';
 
+/** One line for tight screens (onboarding). Still both statements. */
+export const MEDICAL_DISCLAIMER_LINE =
+  'Not a medical device. See a doctor for medical advice.';
+
 export const MEDICAL_DISCLAIMER_FULL =
   'Overload is not a medical device. It does not diagnose, treat, cure, or prevent any medical condition. Coach Drona gives training guidance, not medical advice. Always consult a doctor or other qualified healthcare professional for medical advice, diagnosis, or treatment, and before starting a new exercise or nutrition program.';
 
@@ -16,7 +20,7 @@ export function MedicalDisclaimer({
   variant = 'full',
   style,
 }: {
-  variant?: 'short' | 'full';
+  variant?: 'line' | 'short' | 'full';
   style?: StyleProp<TextStyle>;
 }) {
   const { C } = useTheme();
@@ -25,7 +29,9 @@ export function MedicalDisclaimer({
       style={[styles.text, { color: C.textDim }, style]}
       accessibilityRole="text"
     >
-      {variant === 'short' ? MEDICAL_DISCLAIMER_SHORT : MEDICAL_DISCLAIMER_FULL}
+      {variant === 'line'
+        ? MEDICAL_DISCLAIMER_LINE
+        : variant === 'short' ? MEDICAL_DISCLAIMER_SHORT : MEDICAL_DISCLAIMER_FULL}
     </Text>
   );
 }

@@ -4,8 +4,8 @@
  * the Cal AI funnel with our adaptations (soft wall, 7-day trial, transparent
  * price headline):
  *
- *   warmup    "Try everything free for 7 days." Gift frame, Drona's voice,
- *             no price anywhere. First "No payment today".
+ *   warmup    "Your goal isn't yours alone anymore." Trust first, Drona's
+ *             voice, no price anywhere. First "No payment today".
  *   reminder  "I'll remind you before you pay." One screen for the one
  *             objection that kills trials. Continue triggers the OS
  *             notification permission prompt (needed for the day-5 reminder
@@ -85,6 +85,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { DronaHeroOrb } from '@/components/coach/DronaHeroOrb';
 import { invalidateCoachAccess } from '@/hooks/useCoachAccess';
 import { prefetchDashboard } from '@/lib/dashboardData';
 import {
@@ -548,18 +549,23 @@ export default function UpgradeScreen() {
       {step === 'warmup' && (
         <Animated.View key="warmup" entering={FadeIn.duration(250)} style={u.stepFill}>
           <View style={u.centerFill}>
+            {/* 2026-10-23: the first funnel beat builds trust before any
+                price: the goal stops being the user's burden alone. The free
+                week moved to the footer note below. */}
             <Animated.Text
               entering={FadeInDown.duration(400)}
               style={[u.displayTitle, { color: C.foreground, textAlign: 'center' }]}
             >
-              Try everything free for 7 days.
+              Your goal isn't yours alone anymore.
             </Animated.Text>
             <Animated.View entering={FadeInDown.delay(150).duration(400)} style={u.quoteWrap}>
-              <DronaMark size={56} state="idle" />
+              {/* Drona's orb, the same one as the coach chat, speaking the
+                  promise below. */}
+              <DronaHeroOrb style={u.trustOrb} />
               <View style={[u.quoteBubble, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
                 <Text style={[u.quoteText, { color: C.foreground }]}>
-                  I don't do generic plans. Give me a week of your training and
-                  judge me on the results.
+                  From today, getting you there is my job too. I'll build the
+                  plan, check in, and adjust it whenever life gets in the way.
                 </Text>
               </View>
             </Animated.View>
@@ -570,9 +576,10 @@ export default function UpgradeScreen() {
               onPress={() => { track('paywall_step_advanced', { from: 'warmup', to: 'reminder', context }); setStep('reminder'); }}
               style={[u.cta, Shadow.playBtn]}
               accessibilityRole="button"
-              accessibilityLabel="Try it free"
+              accessibilityLabel="I'm in"
             >
-              <Text style={u.ctaText}>Try it free</Text>
+              {/* The buyer's answer to Drona's promise, not a sales verb. */}
+              <Text style={u.ctaText}>I'm in</Text>
             </PressableScale>
             <Text style={[u.ctaNote, { color: C.textMuted }]}>
               Billing starts only after your 7-day trial, unless you cancel.
@@ -813,32 +820,10 @@ export default function UpgradeScreen() {
                 )}
               </PressableScale>
             </Animated.View>
-            {/* One quiet trust line under the CTA: the billing truth, then the
-                goal promise (2026-10-23, replaced "Cancel anytime · 14-day
-                refund"; Overload exists to get people to their goal, so the
-                refund is tied to it). The first fact MUST track plan + trial:
-                "No payment today" only when the selected product carries a
-                free trial, otherwise it is a lie. The promise's rules (30 days
-                after the program ends, subscriptions only) are in the Terms,
-                and tapping the promise opens them. */}
-            <Text style={[u.trustLine, { color: C.textMuted }]}>
-              {selectedPlan === 'founding_lifetime' ? (
-                // The goal promise is tied to a subscription program in the
-                // Terms; a one-time lifetime buy keeps its own two facts.
-                'One payment, no renewals   ·   Yours forever'
-              ) : (
-                <>
-                  {selectedTrial > 0 ? 'No payment today' : 'First charge today'}
-                  {'   ·   '}
-                  <Text
-                    onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}
-                    accessibilityRole="link"
-                  >
-                    Miss your goal? Full refund.
-                  </Text>
-                </>
-              )}
-            </Text>
+            {/* 2026-10-23: the trust line ("No payment today · Miss your goal?
+                Full refund.") is gone at the owner's call to cut clutter. The
+                trial still reads off the badges and the CTA, and the goal
+                refund rules stay in the Terms. */}
             {/* Restore, Terms, Privacy as one quiet row under the CTA, the way
                 most store paywalls do it. The renewal terms live on the plan
                 cards ("billed yearly", "Then billed monthly") and the store's
@@ -1070,6 +1055,9 @@ const u = StyleSheet.create({
   },
 
   quoteWrap: { alignItems: 'center', marginTop: Spacing.xxxl, gap: Spacing.lg },
+  // The orb box carries a halo, so trim it above; leave room below so the
+  // sphere and the bubble do not crowd each other.
+  trustOrb: { marginTop: -Spacing.md, marginBottom: Spacing.sm },
   quoteBubble: {
     borderWidth: 1,
     borderRadius: Radius.xl,
@@ -1254,13 +1242,6 @@ const u = StyleSheet.create({
   },
   noPayText: { fontSize: FontSize.md, fontWeight: FontWeight.bold },
 
-  // Single trust line under the CTA: billing truth · exit path · refund.
-  trustLine: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.medium,
-    textAlign: 'center',
-    marginTop: Spacing.md,
-  },
 
   footer: {
     paddingHorizontal: Spacing.xxl,
