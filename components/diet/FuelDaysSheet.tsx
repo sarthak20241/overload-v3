@@ -18,7 +18,7 @@ import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
-import { saveFuelDays } from '@/lib/dietData';
+import { saveFuelDays, savePlannedFuelDays } from '@/lib/dietData';
 import { loadActiveProgram } from '@/lib/programData';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -41,6 +41,11 @@ interface Props {
    * the current phase up itself at save time.
    */
   phaseId?: string | null;
+  /**
+   * The phase has not started: save only its planned fuel days
+   * (savePlannedFuelDays), never the live ones. Needs `phaseId`.
+   */
+  planOnly?: boolean;
   onClose: () => void;
   onSaved: (saved: FuelDay[]) => void;
 }
@@ -53,7 +58,7 @@ function joinDays(names: string[]): string {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
-export function FuelDaysSheet({ open, initial, baseKcal, source, phaseId, onClose, onSaved }: Props) {
+export function FuelDaysSheet({ open, initial, baseKcal, source, phaseId, planOnly, onClose, onSaved }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   const { height: winH } = useWindowDimensions();
@@ -151,7 +156,7 @@ export function FuelDaysSheet({ open, initial, baseKcal, source, phaseId, onClos
       try {
         const program = await loadActiveProgram(supabase, clerkId);
         targetPhase = program && program.currentPhaseSeq != null
-          ? program.phases[program.currentPhaseSeq]?.id ?? null
+          ? program.phases.find((ph) => ph.seq === program.currentPhaseSeq)?.id ?? null
           : null;
       } catch {
         setBusy(false);
@@ -160,7 +165,9 @@ export function FuelDaysSheet({ open, initial, baseKcal, source, phaseId, onClos
         return;
       }
     }
-    const { error } = await saveFuelDays(supabase, clerkId, chosen, targetPhase);
+    const { error } = planOnly && targetPhase
+      ? await savePlannedFuelDays(supabase, targetPhase, chosen)
+      : await saveFuelDays(supabase, clerkId, chosen, targetPhase);
     setBusy(false);
     if (error) { haptics.warning(); setFailed(true); return; }
     track('fuel_days_saved', {

@@ -45,6 +45,7 @@ deno test --allow-all supabase/functions/revenuecat-webhook/
 deno test --allow-all supabase/functions/session-refresh/   # who may get a sign-in ticket
 deno test --allow-all lib/sessionRefresh.test.ts             # silent re-sign-in: ticket, then sign-out, then sign-in
 deno test --allow-all supabase/functions/_shared/   # TODAY pick rules, shared by app + daily-suggestion
+deno test --allow-all supabase/functions/drona-cards/ # weekly phase metrics check, against a fake database
 deno test --allow-all lib/xp.test.ts
 deno test --allow-all lib/tiers.test.ts
 deno test --unstable-sloppy-imports --import-map=lib/test-import-map.json lib/readiness.test.ts
@@ -55,6 +56,10 @@ deno test --allow-all lib/purchaseErrors.test.ts # a pending store payment is no
 deno test --allow-all lib/coachBlocks.test.ts  # tables/charts/stats/progress in Drona's replies
 deno test --allow-all lib/servingSize.test.ts # food editor portion <-> stored serving
 deno test --allow-all lib/logDay.test.ts      # "2 eggs for tomorrow" -> which day a food log lands on
+deno test --allow-all --unstable-sloppy-imports lib/phaseMetricHeadline.test.ts # one number per phase metric on every screen
+deno test --allow-all lib/screenCache.test.ts  # Goal & Plan screens paint from cache; a pre-write read is never stored
+deno test --allow-all lib/chartScale.test.ts   # Goal screen chart: readings width, goal ring at the program end
+deno test --allow-all lib/phasePick.test.ts    # the active phase by seq, never by list index
 deno test --allow-all lib/fitnessGoals.test.ts
 deno test --allow-all lib/coachTopic.test.ts   # chats opened from the app: Drona's hidden topic turn + what is sent
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/coachConversations.test.ts  # saved chats: topic title, hidden turn kept

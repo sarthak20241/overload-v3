@@ -1,58 +1,61 @@
 /**
- * Goal & Plan (Drona Programs, Phase 3 redesign).
+ * Goal & Plan (.planning/phase-metrics/SPEC.md, sections 8 and 9).
  *
- * Root-level full-screen route (like app/health.tsx), reached from the dashboard
- * "Goal" pill, the coach menu, and the deep link overload://goal-plan. The page
- * tells one story top-down instead of a wall of equal cards:
- *   1. HERO: the goal, the destination, and a segmented progress bar where each
- *      segment is a phase (width = its weeks) and the current segment fills to
- *      today. One glance answers "where am I in this".
- *   2. NOW: the current phase only, with its daily targets as chips, the fuel
- *      week (what each weekday actually asks for, with the long-run and leg
- *      days lifted), the three directives as icon rows, and the phase's split
- *      (built routines or the build button).
- *   3. THE FULL PLAN: every phase as a compact rail row (done / now / ahead),
- *      expanding on tap to the same detail block.
- * "Adjust with Drona" opens the coach program flow; per-phase "Build workout
- * split" opens the plan generator seeded to that phase (cadence comes from the
- * phase's training directive). Fully theme-aware, coach-voice copy.
+ * Root-level full-screen route, reached from the dashboard "Goal" pill, the
+ * coach menu, and the deep link overload://goal-plan. One flat page, top to
+ * bottom: the program name and where you are, the hero metric with its
+ * chart and one status sentence, the current phase card (the only card; it
+ * opens the phase screen, app/goal-plan-phase.tsx), three plan rows (Train /
+ * Eat / Recover, each with its status, each opening that pillar's screen,
+ * app/goal-plan-pillar.tsx), this week's focus in one sentence, and one lime
+ * button: build the phase's workouts when there are none, else adjust with
+ * Drona. Rare actions (end the program, From Drona) sit behind the header's
+ * menu. Skeleton while loading, pull to refresh, a short stagger on first
+ * render (components/program/finish.tsx).
+ *
+ * A program built before phase metrics has no hero: the top shows today's
+ * weight against the target when there is one, and the rows carry the plan
+ * text only. Nothing here needs the metrics tables to exist.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { track, markWorkoutSource } from '@/lib/analytics';
-import { View, Text, Pressable, ScrollView, ActivityIndicator, StyleSheet, Alert } from 'react-native';
+import { track } from '@/lib/analytics';
+import { View, Text, Pressable, ScrollView, StyleSheet, Alert, RefreshControl, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useTheme } from '@/hooks/useTheme';
 import { readCardHistory } from '@/lib/dronaCard';
 import { waitingCount } from '@/lib/dronaInbox';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
+import { haptics } from '@/lib/haptics';
 import {
   loadActiveProgram,
+  peekActiveProgram,
+  phaseFor,
   endActiveProgram,
+  logMetricValue,
   daysBetweenISO,
   todayLocalISO,
   type ActiveProgram,
   type ActiveProgramPhaseRow,
 } from '@/lib/programData';
-import { weekPatternFor, shortDayLabel, REST } from '@/lib/weekPattern';
+import {
+  chartKindOf, formatMetricValue, heroCapsLabel, heroOf, heroStatusLine, isWeeklyKind, jobFraction,
+  phaseProgress,
+} from '@/lib/phaseMetrics';
+import { loadMetricSeries, type MetricSeries } from '@/lib/phaseMetricSeries';
+import { CHART_HEIGHT, MetricBarsChart, MetricLineChart } from '@/components/program/PhaseMetricChart';
+import { MetricLogSheet } from '@/components/program/MetricLogSheet';
+import { PlanRows } from '@/components/program/PlanRows';
+import { AboutGoalSheet } from '@/components/program/AboutGoalSheet';
+import { ChevronLeftIcon, ChevronRightIcon, SparkleIcon } from '@/components/program/LineIcons';
+import { loadLiveReadings, peekLiveReadings, prefetchPillars } from '@/lib/pillarData';
+import { goalFocus, goalText, type LiveReadings } from '@/lib/phaseMetricHeadline';
+import { DotLine, FOOTER_H, FooterAction, LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T, useGoalPalette } from '@/components/program/finish';
+import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
-import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
-import { useNutritionTargets } from '@/lib/dietData';
-import { DAY_NAMES, WEEK_ORDER, fuelDaysText, fuelOn, kcalOnDow } from '@/lib/fuelDays';
-import { activityText } from '@/lib/activityGoals';
-import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
-import { Colors, Spacing, Radius, FontSize, FontWeight, colorWithAlpha } from '@/constants/theme';
-
-const GOAL_LABEL: Record<string, string> = {
-  hypertrophy: 'MUSCLE',
-  strength: 'STRENGTH',
-  fat_loss: 'FAT LOSS',
-  endurance: 'ENDURANCE',
-  general: 'FITNESS',
-};
+import { Colors, Radius, FontWeight } from '@/constants/theme';
 
 function fmtShortISO(iso: string): string {
   const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
@@ -67,7 +70,8 @@ function addDaysISO(iso: string, delta: number): string {
   return `${dt.getFullYear()}-${mm}-${dd}`;
 }
 
-const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+/** The Goal screen's line chart, 7pt shorter than the default so the page fits above the button. */
+const GOAL_CHART_HEIGHT = CHART_HEIGHT - 7;
 
 export default function GoalPlanScreen() {
   const insets = useSafeAreaInsets();
@@ -85,8 +89,37 @@ export default function GoalPlanScreen() {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
   const clerkId = user?.id ?? null;
+  const { width: winW } = useWindowDimensions();
+  const toast = useToast();
 
-  const [program, setProgram] = useState<ActiveProgram | null>(null);
+  // Paint at once from the screen cache when another screen (or the last
+  // visit) already read the program; the focus load refreshes it behind.
+  const [program, setProgram] = useState<ActiveProgram | null>(() => peekActiveProgram(clerkId) ?? null);
+  const [loading, setLoading] = useState(() => peekActiveProgram(clerkId) === undefined);
+  const [refreshing, setRefreshing] = useState(false);
+  const loadSeq = useRef(0);
+  const viewedRef = useRef(false);
+  // Bumped on every focus, so the small reads below (weight, readiness)
+  // follow a value logged on another screen.
+  const [focusTick, setFocusTick] = useState(0);
+  // Bumped after a log is saved here, so the chart refetches even when the
+  // logged value equals the last one (the keys below would not move).
+  const [seriesTick, setSeriesTick] = useState(0);
+  // The hero metric's readings for the chart, keyed by metric id.
+  const [series, setSeries] = useState<{ id: string; data: MetricSeries } | null>(null);
+  // Today's weight, for a program with no hero metric.
+  const [weightKg, setWeightKg] = useState<number | null>(null);
+  // Today's readiness, for a Recover row with no sleep metric.
+  const [readinessToday, setReadinessToday] = useState<number | null>(null);
+  const [live, setLive] = useState<LiveReadings | null>(() => peekLiveReadings(clerkId));
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
+  const [logging, setLogging] = useState(false);
+  const [coachOpen, setCoachOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [buildSeed, setBuildSeed] = useState<{ goal?: string; days?: string; note?: string } | null>(null);
+  const [buildPhaseId, setBuildPhaseId] = useState<string | null>(null);
+  const [ending, setEnding] = useState(false);
   // Cards waiting on From Drona: they are about this plan, so the door is here too.
   const [dronaWaiting, setDronaWaiting] = useState(0);
   useFocusEffect(useCallback(() => {
@@ -97,48 +130,22 @@ export default function GoalPlanScreen() {
     });
     return () => { live = false; };
   }, [user?.id, supabase]));
-  const [loading, setLoading] = useState(true);
-  const [coachOpen, setCoachOpen] = useState(false);
-  // Which rail row is expanded in "The full plan" (phase seq), if any.
-  const [expandedSeq, setExpandedSeq] = useState<number | null>(null);
-  // When set, the coach opens in plan-generation mode seeded to build a specific
-  // phase's split; null opens the program builder ("Adjust with Drona").
-  const [buildSeed, setBuildSeed] = useState<{ goal?: string; days?: string; note?: string } | null>(null);
-  // The phase id whose split is being built, so saved routines link back to it.
-  const [buildPhaseId, setBuildPhaseId] = useState<string | null>(null);
-  // Routine preview: tapping a split routine opens the shared detail sheet
-  // (same one as the Routines tab and the dashboard today card) so the user
-  // sees the session and chooses to start, instead of starting on tap.
-  const [detailRoutine, setDetailRoutine] = useState<RoutineRaw | null>(null);
-  const [ending, setEnding] = useState(false);
-  const viewedRef = useRef(false);
-  // Fuel days live on the profile, not the phase: they ride on whatever the
-  // base target is, so a phase change keeps the long-run Sunday.
-  const { targets: profileTargets, fuelDays, applyFuelDays } = useNutritionTargets();
-  const [fuelOpen, setFuelOpen] = useState(false);
-
-  const openRoutinePreview = useCallback(async (routineId: string) => {
-    if (!supabase) return;
-    const { data } = await supabase
-      .from('routines')
-      .select('*, routine_exercises(*, exercises(*))')
-      .eq('id', routineId)
-      .maybeSingle();
-    if (data) {
-      setDetailRoutine(data as RoutineRaw);
-    } else {
-      // Preview fetch failed (offline, etc). Fall back to the workout screen
-      // rather than a dead tap.
-      router.push(`/workout/${routineId}` as any);
-    }
-  }, [supabase, router]);
 
   const load = useCallback(async () => {
-    if (!supabase || !clerkId) { setProgram(null); setLoading(false); return; }
+    const seq = ++loadSeq.current;
+    if (!supabase || !clerkId) { setProgram(null); setLoading(false); setRefreshing(false); return; }
     try {
-      const p = await loadActiveProgram(supabase, clerkId);
+      // A failed live read keeps the readings the screen had; only the
+      // program read can fail the load.
+      const [p, lv] = await Promise.all([loadActiveProgram(supabase, clerkId), loadLiveReadings(supabase, clerkId).catch(() => null)]);
+      if (seq !== loadSeq.current) return;
       setProgram(p);
-      // Once per screen visit, not per focus refetch.
+      if (lv) setLive(lv);
+      setLoadFailed(false);
+      // Warm Train, Eat and Recover for the phase the plan rows open, so a
+      // tap paints from the cache instead of waiting on four more reads.
+      const ph = p ? phaseFor(p, null) : null;
+      if (ph) prefetchPillars(supabase, clerkId, ph.routines.map((r) => r.id));
       if (!viewedRef.current) {
         viewedRef.current = true;
         track('program_viewed', {
@@ -148,22 +155,94 @@ export default function GoalPlanScreen() {
           total_weeks: p?.total_weeks ?? null,
         });
       }
-    } catch {
-      /* keep whatever we had */
+    } catch (e) {
+      // Keep whatever we had; with nothing yet, say the load failed rather
+      // than show the "no program" empty state over a network error.
+      console.warn('[programs] goal load failed', e);
+      if (seq === loadSeq.current) setLoadFailed(true);
     } finally {
-      setLoading(false);
+      // Only the newest load clears the spinner: a superseded one returning
+      // early must not drop it while the newer one is still in flight.
+      if (seq === loadSeq.current) { setLoading(false); setRefreshing(false); }
     }
   }, [supabase, clerkId]);
+  // Focus fires on mount too, so one effect is enough.
+  useFocusEffect(useCallback(() => { load(); setFocusTick((t) => t + 1); }, [load]));
 
-  useEffect(() => { load(); }, [load]);
-  // Reload when returning to the screen (e.g. after applying a program or
-  // building a split in the coach modal).
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  // ── Derived ────────────────────────────────────────────────────────────────
+  const totalWeeks = program ? (program.total_weeks ?? program.phases.reduce((a, p) => a + p.duration_weeks, 0)) : 0;
+  const daysIn = program ? daysBetweenISO(program.start_date, todayLocalISO()) : 0;
+  const totalDays = totalWeeks * 7;
+  const notStarted = program != null && daysIn < 0;
+  const ended = program != null && totalDays > 0 && daysIn >= totalDays;
+  const weekOverall = program ? Math.max(1, Math.min(totalWeeks, Math.floor(daysIn / 7) + 1)) : 0;
+  const endDateISO = program ? addDaysISO(program.start_date, totalDays) : null;
+  // By seq, not array index, like the stepper's lookup.
+  const currentPhase = program != null && program.currentPhaseSeq != null
+    ? program.phases.find((ph) => ph.seq === program.currentPhaseSeq) ?? null
+    : null;
+  // The phase card shows the current phase, else the one nearest today.
+  const shownPhase = currentPhase ?? (program ? (ended ? program.phases[program.phases.length - 1] : program.phases[0]) ?? null : null);
+  const hero = currentPhase ? heroOf(currentPhase.metrics) : null;
+  const hasMetrics = program != null && program.phases.some((ph) => ph.metrics.length > 0);
+  const chartWidth = Math.max(200, winW - S.xl * 2);
+  const curProgress = currentPhase ? phaseProgress(program?.weekInPhase, currentPhase.duration_weeks) : 0;
 
-  // Open the plan generator pre-seeded to a phase's training block, so the
-  // generated split matches that phase. The training_directive carries the
-  // phase's real cadence (which may be a rotation like "8-day, 6 sessions"),
-  // so it drives the split, NOT the weekly days_per_week number.
+  // The chart's readings: keyed on the program id, the hero's id, value and
+  // check stamp, and the phase's protein target; `program` is a new object
+  // on every load() and keying on it would refetch on every focus. The
+  // previous series stays on screen until the new one arrives (the chart
+  // only draws a series whose id matches the hero), so a fresh log refills
+  // the line without a blank frame.
+  useEffect(() => {
+    if (!supabase || !clerkId || !program || !currentPhase || !hero) { setSeries(null); return; }
+    let live = true;
+    loadMetricSeries(supabase, clerkId, program, hero, currentPhase.diet_protein_g)
+      .then((data) => { if (live) setSeries({ id: hero.id, data }); })
+      .catch((e) => { console.warn('[programs] metric series failed', e); });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase, clerkId, program?.id, hero?.id, hero?.current_value, hero?.checked_at, currentPhase?.diet_protein_g, seriesTick]);
+
+  // No hero metric (a program from before them): today's weight is the top number.
+  useEffect(() => {
+    if (!supabase || !clerkId || !program || hero) { setWeightKg(null); return; }
+    let live = true;
+    supabase
+      .from('daily_metrics')
+      .select('value')
+      .eq('user_id', clerkId)
+      .eq('metric_type', 'bodyweight_kg')
+      .order('metric_date', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(
+        ({ data }) => { if (live) setWeightKg(data?.value != null && Number.isFinite(Number(data.value)) ? Number(data.value) : null); },
+        (e: unknown) => { console.warn('[programs] weight read failed', e); },
+      );
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase, clerkId, program?.id, hero?.id, focusTick]);
+
+  // Today's readiness score, for the Recover row when the phase tracks no sleep.
+  useEffect(() => {
+    if (!supabase || !clerkId || !program) { setReadinessToday(null); return; }
+    let live = true;
+    supabase
+      .from('daily_metrics')
+      .select('value')
+      .eq('user_id', clerkId)
+      .eq('metric_type', 'readiness_score')
+      .eq('metric_date', todayLocalISO())
+      .maybeSingle()
+      .then(
+        ({ data }) => { if (live) setReadinessToday(data?.value != null && Number.isFinite(Number(data.value)) ? Number(data.value) : null); },
+        (e: unknown) => { console.warn('[programs] readiness read failed', e); },
+      );
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase, clerkId, program?.id, focusTick]);
+
   const buildSplitFor = useCallback((ph: ActiveProgramPhaseRow) => {
     const b = ph.training_block;
     const desc = [b?.split_type, b?.emphasis].filter(Boolean).join(', ');
@@ -175,6 +254,30 @@ export default function GoalPlanScreen() {
     track('program_split_build_started', { phase_seq: ph.seq, has_training_block: !!b });
     setCoachOpen(true);
   }, []);
+
+  // Open the build flow for the user the dashboard sent here, but only while
+  // that phase really has no split.
+  useEffect(() => {
+    if (buildParam !== 'phase' || autoBuildFired.current) return;
+    const phase = currentPhase ?? program?.phases[0] ?? null;
+    if (!phase) return;
+    autoBuildFired.current = true;
+    if (phase.routines.length === 0) buildSplitFor(phase);
+  }, [buildParam, currentPhase, program, buildSplitFor]);
+
+  useEffect(() => {
+    if (dronaParam !== 'calories' || dronaFired.current || loading) return;
+    dronaFired.current = true;
+    const raw = parseInt(kcalParam ?? '', 10);
+    const n = Number.isFinite(raw) ? Math.min(8000, Math.max(800, raw)) : NaN;
+    setProgramDraft(Number.isFinite(n)
+      ? `I want my daily calories at ${n}. Update my plan to match.`
+      : 'I want to change my daily calories. Update my plan to match.');
+    setBuildSeed(null);
+    setBuildPhaseId(null);
+    track('program_calories_from_goal_sheet', { kcal: Number.isFinite(n) ? n : null });
+    setCoachOpen(true);
+  }, [dronaParam, kcalParam, loading]);
 
   // Stop following the program. Confirmed, because it cannot be undone from
   // here: the user rebuilds with Drona if they change their mind. Targets are
@@ -193,10 +296,7 @@ export default function GoalPlanScreen() {
             setEnding(true);
             try {
               await endActiveProgram(supabase, clerkId);
-              track('program_ended', {
-                phases: program?.phases.length ?? null,
-                current_phase_seq: program?.currentPhaseSeq ?? null,
-              });
+              track('program_ended', { phases: program?.phases.length ?? null, current_phase_seq: program?.currentPhaseSeq ?? null });
               await load();
             } catch {
               Alert.alert('That did not go through', 'Check your connection and try again.');
@@ -209,603 +309,303 @@ export default function GoalPlanScreen() {
     );
   }, [supabase, clerkId, ending, load, program]);
 
+  const openFromDrona = () => { track('drona_inbox_opened', { from: 'goal' }); router.push({ pathname: '/(app)/from-drona', params: { from: 'goal' } } as any); };
+
+  // The rare actions, behind the header's menu.
+  const openMenu = () => {
+    haptics.selection();
+    Alert.alert('Goal & Plan', undefined, [
+      // The objective lives here: the main screen shows only what the reference shows.
+      ...(program?.objective?.trim() ? [{ text: 'About this goal', onPress: () => setAboutOpen(true) }] : []),
+      { text: dronaWaiting > 0 ? `From Drona · ${dronaWaiting} waiting` : 'From Drona', onPress: openFromDrona },
+      ...(program ? [{ text: 'End this program', style: 'destructive' as const, onPress: confirmEnd }] : []),
+      { text: 'Cancel', style: 'cancel' as const },
+    ]);
+  };
+
+  const openPhase = () => {
+    haptics.selection();
+    // program_phase_opened is recorded once, by the phase screen on mount.
+    router.push({ pathname: '/goal-plan-phase', params: shownPhase ? { seq: String(shownPhase.seq) } : {} } as any);
+  };
+
+  const saveLog = async (value: number, note: string) => {
+    if (!supabase || !clerkId || !hero || !currentPhase) return;
+    setLogging(true);
+    try {
+      await logMetricValue(supabase, clerkId, hero, value, curProgress, note);
+      track('program_metric_logged', { kind: hero.kind, phase_seq: currentPhase.seq });
+      setLogOpen(false);
+      // The log is saved whatever the reload does (load() keeps the last
+      // good program on a failed read), so say so.
+      toast.success('Logged.');
+      await load();
+      setSeriesTick((t) => t + 1);
+    } catch (e) {
+      console.warn('[programs] metric log failed', e);
+      toast.error('Could not log that. Check your connection and try again.');
+    } finally {
+      setLogging(false);
+    }
+  };
+
   const back = () => (router.canGoBack() ? router.back() : router.replace('/'));
 
-  // ── Derived progress (only when a program exists) ──────────────────────────
-  const totalWeeks = program
-    ? (program.total_weeks ?? program.phases.reduce((a, p) => a + p.duration_weeks, 0))
-    : 0;
-  const daysIn = program ? daysBetweenISO(program.start_date, todayLocalISO()) : 0;
-  const totalDays = totalWeeks * 7;
-  const notStarted = program != null && daysIn < 0;
-  const ended = program != null && totalDays > 0 && daysIn >= totalDays;
-  const weekOverall = program
-    ? Math.max(1, Math.min(totalWeeks, Math.floor(daysIn / 7) + 1))
-    : 0;
-  const endDateISO = program ? addDaysISO(program.start_date, totalDays) : null;
-
-  const currentPhase = program != null && program.currentPhaseSeq != null
-    ? program.phases[program.currentPhaseSeq]
-    : null;
-
-  // Open the build flow for the user the dashboard sent here, but only while
-  // that phase really has no split: arriving on a built phase should just show
-  // it, and the focus reload must not reopen the coach a second time.
-  useEffect(() => {
-    if (buildParam !== 'phase' || autoBuildFired.current) return;
-    const phase = currentPhase ?? program?.phases[0] ?? null;
-    if (!phase) return;
-    autoBuildFired.current = true;
-    if (phase.routines.length === 0) buildSplitFor(phase);
-  }, [buildParam, currentPhase, program, buildSplitFor]);
-
-  useEffect(() => {
-    if (dronaParam !== 'calories' || dronaFired.current || loading) return;
-    dronaFired.current = true;
-    const raw = parseInt(kcalParam ?? '', 10);
-    // A deep link can carry anything: hold it to the goal sheet's bounds.
-    const n = Number.isFinite(raw) ? Math.min(8000, Math.max(800, raw)) : NaN;
-    setProgramDraft(Number.isFinite(n)
-      ? `I want my daily calories at ${n}. Update my plan to match.`
-      : 'I want to change my daily calories. Update my plan to match.');
-    setBuildSeed(null);
-    setBuildPhaseId(null);
-    track('program_calories_from_goal_sheet', { kcal: Number.isFinite(n) ? n : null });
-    setCoachOpen(true);
-  }, [dronaParam, kcalParam, loading]);
-
-  // ── The week, as one line ──────────────────────────────────────────────────
-  // A phase used to say only "Push/Pull/Legs, 5 days a week", which leaves the
-  // reader to invent the week themselves. Days are numbered, not named: "Day 1"
-  // survives a missed Monday.
-  const renderWeekStrip = (ph: ActiveProgramPhaseRow) => {
-    const week = weekPatternFor(ph.training_block);
-    if (!week) return null;
-    return (
-      <View style={styles.weekBlock}>
-        <Text style={[styles.directiveLabel, { color: C.mutedFg }]}>YOUR WEEK</Text>
-        <View style={styles.weekStrip}>
-          <View style={[styles.weekRule, { backgroundColor: C.border }]} />
-          {week.map((label, i) => {
-            const rest = label === REST;
-            return (
-              <View key={i} style={styles.weekCell}>
-                <View
-                  style={[
-                    styles.weekDot,
-                    rest
-                      ? { backgroundColor: C.background, borderColor: C.border }
-                      : { backgroundColor: C.accentText, borderColor: C.accentText },
-                  ]}
-                />
-                <Text style={[styles.weekDay, { color: C.mutedFg }]}>D{i + 1}</Text>
-                <Text
-                  numberOfLines={1}
-                  style={[
-                    styles.weekLabel,
-                    { color: rest ? C.mutedFg : C.foreground, fontWeight: rest ? FontWeight.medium : FontWeight.semibold },
-                  ]}
-                >
-                  {shortDayLabel(label)}
-                </Text>
-              </View>
-            );
-          })}
-        </View>
-      </View>
-    );
-  };
-
-  // ── The fuel week: what each weekday asks you to eat ───────────────────────
-  // One phase target used to stand for every day, so a long-run Sunday read as
-  // "you went over". Seven columns, Monday first; a fuel day is lifted in the
-  // accent with its reason underneath. Weekdays are NAMED here, unlike the
-  // training line: a long run lives on a calendar day, not a rotation slot.
-  const renderFuelWeek = (baseKcal: number) => {
-    const todayDow = new Date().getDay();
-    const lifted = WEEK_ORDER.map((dow) => fuelOn(fuelDays, dow)).filter((d): d is NonNullable<typeof d> => d != null);
-    if (lifted.length === 0) {
+  // ── The hero: the number the program is judged on ─────────────────────────
+  const renderHero = () => {
+    if (!program) return null;
+    const goalTarget = hero?.kind === 'bodyweight' ? program.target_weight_kg : null;
+    if (!hero) {
+      // A program from before phase metrics: today's weight against the target.
+      if (weightKg == null && program.target_weight_kg == null) return null;
       return (
-        <Pressable
-          onPress={() => setFuelOpen(true)}
-          style={[styles.fuelEmpty, { borderColor: C.border }]}
-          accessibilityRole="button"
-          accessibilityLabel="Add fuel days"
-        >
-          <Feather name="plus" size={12} color={C.accentText} />
-          <Text style={[styles.fuelEmptyText, { color: C.mutedFg }]}>
-            <Text style={{ color: C.accentText, fontWeight: FontWeight.semibold }}>Fuel days</Text>
-            {'  '}More food on long-run or leg days
-          </Text>
-        </Pressable>
+        <View style={styles.heroBlock}>
+          <View style={styles.heroRow}>
+            <View style={{ flex: 1 }}>
+              <SectionLabel style={[styles.heroLabel, { color: pal.label }]}>Current weight</SectionLabel>
+              <View style={styles.heroNumWrap}>
+                <Text style={[styles.heroNum, { color: C.foreground }]}>{weightKg == null ? '–' : formatMetricValue('bodyweight', weightKg)}</Text>
+                <Text style={[styles.heroUnit, { color: pal.muted }]}>kg</Text>
+              </View>
+              {weightKg == null && <Text style={[T.meta, { color: C.mutedFg, marginTop: S.xs }]}>Weigh in and your number shows here.</Text>}
+            </View>
+            {program.target_weight_kg != null && (
+              <View style={styles.goalCol}>
+                <SectionLabel style={[styles.heroLabel, { color: pal.label }]}>Goal</SectionLabel>
+                <Text style={[styles.goalValue, { color: C.foreground }]}>{goalText('bodyweight', program.target_weight_kg)} kg</Text>
+              </View>
+            )}
+          </View>
+        </View>
       );
     }
+    const chart = series && series.id === hero.id ? series.data : null;
+    const goalLabel = goalTarget != null ? 'Goal' : 'Phase goal';
+    const goalValue = goalTarget ?? hero.target_value;
+    const status = heroStatusLine(hero.status);
     return (
-      <View style={styles.fuelBlock}>
-        <View style={styles.fuelHead}>
-          <Text style={[styles.directiveLabel, { color: C.mutedFg, marginBottom: 0 }]}>FUEL BY DAY</Text>
-          <Pressable onPress={() => setFuelOpen(true)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Edit fuel days">
-            <Text style={[styles.fuelEdit, { color: C.accentText }]}>Edit</Text>
-          </Pressable>
-        </View>
-        <View style={styles.fuelRow}>
-          {WEEK_ORDER.map((dow) => {
-            const fuel = fuelOn(fuelDays, dow);
-            const isToday = dow === todayDow;
-            return (
-              <View
-                key={dow}
-                style={[
-                  styles.fuelCell,
-                  fuel && { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.fuelDay,
-                    { color: isToday ? C.foreground : C.mutedFg, fontWeight: isToday ? FontWeight.bold : FontWeight.semibold },
-                  ]}
-                >
-                  {DAY_NAMES[dow].slice(0, 3).toUpperCase()}
-                </Text>
-                <Text
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  style={[styles.fuelKcal, { color: fuel ? C.accentText : C.foreground }]}
-                >
-                  {kcalOnDow(baseKcal, fuelDays, dow)}
-                </Text>
-                {isToday && <View style={[styles.fuelTodayDot, { backgroundColor: fuel ? C.accentText : C.mutedFg }]} />}
-              </View>
-            );
-          })}
-        </View>
-        <View style={styles.fuelLegend}>
-          {lifted.map((d) => (
-            <View key={d.dow} style={styles.fuelLegendItem}>
-              <Feather name="zap" size={10} color={C.accentText} />
-              <Text style={[styles.fuelLegendText, { color: C.mutedFg }]} numberOfLines={1}>
-                <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>{DAY_NAMES[d.dow]}</Text>
-                {d.label ? ` ${d.label}` : ''} · +{d.kcal} kcal, +{Math.round(d.kcal / 4)}g carbs
+      <View style={styles.heroBlock}>
+        <View style={styles.heroRow}>
+          <View style={{ flex: 1 }}>
+            <View style={styles.capsRow}>
+              <SectionLabel style={[styles.heroLabel, { color: pal.label, flexShrink: 1 }]}>{heroCapsLabel(hero)}</SectionLabel>
+              {hero.kind === 'custom' && (
+                <View style={[styles.heroTag, { backgroundColor: C.muted }]}>
+                  <Text style={[T.status, { color: C.mutedFg, fontSize: 11 }]}>You log it</Text>
+                </View>
+              )}
+            </View>
+            <View style={styles.heroNumWrap}>
+              <Text style={[styles.heroNum, { color: C.foreground }]}>
+                {hero.current_value == null ? '–' : formatMetricValue(hero.kind, hero.current_value, hero.unit)}
               </Text>
-            </View>
-          ))}
-        </View>
-      </View>
-    );
-  };
-
-  // ── Shared detail block: targets + directives + split ──────────────────────
-  const renderPhaseDetail = (ph: ActiveProgramPhaseRow, opts?: { compact?: boolean; fuel?: boolean }) => {
-    const directives: Array<{ icon: 'zap' | 'activity' | 'moon'; label: string; text: string | null }> = [
-      { icon: 'zap', label: 'DIET', text: ph.diet_directive },
-      {
-        icon: 'activity',
-        label: 'TRAINING',
-        text: [
-          [ph.training_block?.split_type, ph.training_block?.emphasis].filter(Boolean).join(' · ') || null,
-          ph.training_directive,
-        ].filter(Boolean).join('. ') || null,
-      },
-      { icon: 'moon', label: 'RECOVERY', text: ph.readiness_directive },
-    ];
-    return (
-      <View>
-        {/* Daily targets as chips. Calories lead, macros follow. */}
-        <View style={styles.chipRow}>
-          {ph.diet_calorie_target != null && (
-            <View style={[styles.chip, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}>
-              <Text style={[styles.chipValue, { color: C.accentText }]}>{ph.diet_calorie_target}</Text>
-              <Text style={[styles.chipLabel, { color: C.accentText }]}>KCAL / DAY</Text>
-            </View>
-          )}
-          {ph.diet_protein_g != null && (
-            <View style={[styles.chip, { backgroundColor: C.muted, borderColor: 'transparent' }]}>
-              <Text style={[styles.chipValue, { color: C.foreground }]}>{ph.diet_protein_g}g</Text>
-              <Text style={[styles.chipLabel, { color: C.mutedFg }]}>PROTEIN</Text>
-            </View>
-          )}
-          {ph.diet_carb_g != null && (
-            <View style={[styles.chip, { backgroundColor: C.muted, borderColor: 'transparent' }]}>
-              <Text style={[styles.chipValue, { color: C.foreground }]}>{ph.diet_carb_g}g</Text>
-              <Text style={[styles.chipLabel, { color: C.mutedFg }]}>CARBS</Text>
-            </View>
-          )}
-          {ph.diet_fat_g != null && (
-            <View style={[styles.chip, { backgroundColor: C.muted, borderColor: 'transparent' }]}>
-              <Text style={[styles.chipValue, { color: C.foreground }]}>{ph.diet_fat_g}g</Text>
-              <Text style={[styles.chipLabel, { color: C.mutedFg }]}>FAT</Text>
-            </View>
-          )}
-        </View>
-
-        {/* NOW: the live fuel week, editable. Any other phase: the fuel days
-            Drona planned for it, which go live when that phase starts. */}
-        {opts?.fuel
-          ? renderFuelWeek(ph.diet_calorie_target ?? profileTargets.kcal)
-          : ph.diet_fuel_days && ph.diet_fuel_days.length > 0 && (
-            <View style={styles.fuelPlanned}>
-              <Feather name="zap" size={11} color={C.accentText} />
-              <Text style={[styles.fuelLegendText, { color: C.mutedFg }]}>
-                <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>Fuel days </Text>
-                {fuelDaysText(ph.diet_fuel_days)}
+              <Text style={[styles.heroUnit, { color: pal.muted }]}>
+                {isWeeklyKind(hero.kind) && hero.current_value != null ? `of ${formatMetricValue(hero.kind, hero.target_value, hero.unit)}` : hero.unit}
               </Text>
+              {hero.kind === 'custom' && (
+                <Pressable
+                  onPress={() => { haptics.tap(); setLogOpen(true); }}
+                  style={({ pressed }) => [styles.logBtn, { backgroundColor: Colors.primary, opacity: pressed ? 0.85 : 1 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Log ${heroCapsLabel(hero)}`}
+                >
+                  <Text style={[T.status, { color: Colors.primaryFg }]}>+ Log</Text>
+                </Pressable>
+              )}
             </View>
-          )}
-
-        {/* The phase's movement goals, when Drona set any. Progress lives on
-            the home screen; this says what the phase asks for. */}
-        {(ph.activity_steps_target != null || ph.cardio_sessions_per_week != null) && (
-          <View style={styles.fuelPlanned}>
-            <Feather name="activity" size={11} color={C.accentText} />
-            <Text style={[styles.fuelLegendText, { color: C.mutedFg }]}>
-              <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>Move </Text>
-              {activityText({
-                steps_per_day: ph.activity_steps_target,
-                cardio_sessions_per_week: ph.cardio_sessions_per_week,
-              })}
+          </View>
+          <View style={styles.goalCol}>
+            <SectionLabel style={[styles.heroLabel, { color: pal.label }]}>{goalLabel}</SectionLabel>
+            <Text style={[styles.goalValue, { color: C.foreground }]}>
+              {goalText(hero.kind, goalValue, hero.unit)}{hero.unit ? ` ${hero.unit}` : ''}
             </Text>
           </View>
-        )}
+        </View>
 
-        {renderWeekStrip(ph)}
-
-        {/* Directives as labeled icon rows, one story line each. */}
-        {directives.filter((d) => d.text).map((d) => (
-          <View key={d.label} style={styles.directiveRow}>
-            <View style={[styles.directiveIcon, { backgroundColor: C.primarySubtle }]}>
-              <Feather name={d.icon} size={12} color={C.accentText} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.directiveLabel, { color: C.mutedFg }]}>{d.label}</Text>
-              <Text
-                style={[styles.directiveText, { color: C.foreground }]}
-                numberOfLines={opts?.compact ? 3 : undefined}
-              >
-                {d.text}
-              </Text>
-            </View>
-          </View>
-        ))}
-
-        {/* The phase's split: built routines, or the build affordance. */}
-        {ph.routines.length > 0 ? (
-          <View style={styles.builtWrap}>
-            <View style={styles.builtHeader}>
-              <Feather name="check-circle" size={13} color={C.accentText} />
-              <Text style={[styles.builtHeaderText, { color: C.accentText }]}>
-                Split built · {ph.routines.length} routine{ph.routines.length === 1 ? '' : 's'}
-              </Text>
-            </View>
-            {ph.routines.map((r) => (
-              <Pressable
-                key={r.id}
-                onPress={() => openRoutinePreview(r.id)}
-                style={[styles.routineRow, { backgroundColor: C.muted }]}
-                accessibilityRole="button"
-                accessibilityLabel={`Preview ${r.name}`}
-              >
-                <Feather name="eye" size={11} color={C.accentText} />
-                <Text style={[styles.routineName, { color: C.foreground }]} numberOfLines={1}>{r.name}</Text>
-                <Feather name="chevron-right" size={13} color={C.textMuted} />
-              </Pressable>
-            ))}
-            <Pressable
-              onPress={() => buildSplitFor(ph)}
-              style={styles.rebuildBtn}
-              accessibilityRole="button"
-              accessibilityLabel={`Rebuild the workout split for ${ph.name}`}
-            >
-              <Feather name="refresh-cw" size={11} color={C.mutedFg} />
-              <Text style={[styles.rebuildText, { color: C.mutedFg }]}>Rebuild split</Text>
-            </Pressable>
-          </View>
-        ) : (
-          <Pressable
-            onPress={() => buildSplitFor(ph)}
-            style={[styles.buildSplitBtn, { backgroundColor: C.primarySubtle }]}
-            accessibilityRole="button"
-            accessibilityLabel={`Build the workout split for ${ph.name}`}
-          >
-            <Feather name="plus" size={13} color={C.accentText} />
-            <Text style={[styles.buildSplitText, { color: C.accentText }]}>Build workout split</Text>
-          </Pressable>
-        )}
+        <View style={styles.chartWrap} accessibilityLabel={`${heroCapsLabel(hero)} over the program`}>
+          {chart && chartKindOf(hero.kind) === 'line' && (chart.points.length > 0 || hero.current_value != null) && (
+            <MetricLineChart
+              width={chartWidth}
+              points={chart.points.length > 0 ? chart.points : [{ x: Math.max(0, daysIn / 7), y: hero.current_value! }]}
+              weeks={totalWeeks}
+              endTarget={goalTarget ?? hero.target_value}
+              height={GOAL_CHART_HEIGHT}
+            />
+          )}
+          {chart && chartKindOf(hero.kind) === 'bars' && (
+            <MetricBarsChart
+              width={chartWidth}
+              values={chart.weekly}
+              weeks={totalWeeks}
+              curWeek={weekOverall}
+              target={hero.target_value}
+              targetLabel={hero.kind === 'steps' ? `${formatMetricValue('steps', hero.target_value)} a day` : `${formatMetricValue(hero.kind, hero.target_value, hero.unit)} a week`}
+            />
+          )}
+        </View>
+        {status ? <Text style={[styles.heroStatus, { color: pal.muted }]}>{status}</Text> : null}
       </View>
     );
   };
+
+  // ── The phase card: the only card ─────────────────────────────────────────
+  const renderPhaseCard = () => {
+    if (!program || !shownPhase) return null;
+    const ph = shownPhase;
+    const isCur = ph.seq === program.currentPhaseSeq;
+    const phHero = heroOf(ph.metrics);
+    const pct = isCur && phHero ? Math.round(jobFraction(phHero) * 100) : null;
+    const target = phHero ? `Target ${formatMetricValue(phHero.kind, phHero.target_value, phHero.unit)}${phHero.unit ? ` ${phHero.unit}` : ''}` : null;
+    const when = isCur && program.weekInPhase != null
+      ? `Week ${program.weekInPhase} of ${ph.duration_weeks}`
+      : notStarted ? `Starts ${fmtShortISO(program.start_date)}` : ended ? 'Done' : `${ph.duration_weeks} weeks`;
+    return (
+      <Pressable
+        onPress={openPhase}
+        style={({ pressed }) => [styles.phaseCard, { backgroundColor: pal.card, opacity: pressed ? 0.85 : 1 }]}
+        accessibilityRole="button"
+        accessibilityLabel={`Open the ${ph.name} phase. ${when}${target ? `, ${target}` : ''}${pct != null ? `, ${pct} percent of the phase target` : ''}`}
+      >
+        <SectionLabel style={styles.phaseLabel}>{isCur ? 'Current phase' : notStarted ? 'First phase' : ended ? 'Last phase' : 'Phase'}</SectionLabel>
+        {/* The chevron sits a little below the name's middle, as measured on the reference. */}
+        <View style={styles.phaseTitleRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.phaseName, { color: C.foreground }]} numberOfLines={1}>{ph.name}</Text>
+            <DotLine parts={[when, target ?? '']} style={[styles.phaseMeta, { color: pal.muted }]} containerStyle={{ marginTop: 2 }} />
+          </View>
+          <View style={{ marginRight: -12, alignSelf: 'flex-start', marginTop: 2 }}>
+            <ChevronRightIcon size={24} strokeWidth={1.5} color={pal.chevron} />
+          </View>
+        </View>
+        {pct != null && (
+          <>
+            <View style={[styles.jobBar, { backgroundColor: 'rgba(255,255,255,0.08)' }]}>
+              <View style={[styles.jobFill, { width: `${Math.max(2, pct)}%`, backgroundColor: Colors.primary }]} />
+            </View>
+            <Text style={[styles.pctText, { color: pal.muted }]}>{pct}% of phase target</Text>
+          </>
+        )}
+      </Pressable>
+    );
+  };
+
+  // One short line (lib/phaseMetricHeadline goalFocus): Drona's action when
+  // it fits, else the targets most behind; never wrapped or cut.
+  const focus = currentPhase ? goalFocus(currentPhase.coach_line, currentPhase.metrics) : '';
+  const unbuilt = currentPhase != null && currentPhase.routines.length === 0;
+  // The pinned button sits fully inside the safe area: its bottom 8pt above
+  // the home indicator zone (insets.bottom), on every iPhone. The reference
+  // mock put it lower, under the home bar; that ignored the safe area.
+  const footerBottom = insets.bottom + 8;
+  const pal = useGoalPalette();
 
   return (
-    <View style={[styles.root, { backgroundColor: C.background, paddingTop: insets.top }]}>
-      {/* Header */}
-      <View style={[styles.header, { borderColor: C.borderSubtle }]}>
-        <Pressable
-          onPress={back}
-          style={[styles.iconBtn, { backgroundColor: C.muted }]}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel="Back"
-        >
-          <Feather name="arrow-left" size={16} color={C.foreground} />
+    <View style={[styles.root, { backgroundColor: pal.bg, paddingTop: insets.top }]}>
+      <View style={styles.header}>
+        <Pressable onPress={back} hitSlop={12} accessibilityRole="button" accessibilityLabel="Back" style={styles.headerBtn}>
+          <ChevronLeftIcon size={28} strokeWidth={1.75} color={C.foreground} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: C.foreground }]}>Goal & Plan</Text>
-        <View style={{ width: 32 }} />
+        <Text style={[T.rowTitle, { color: C.foreground, fontWeight: FontWeight.semibold, fontSize: 17, lineHeight: 22 }]}>Goal & Plan</Text>
+        <Pressable onPress={openMenu} hitSlop={12} accessibilityRole="button" accessibilityLabel="More" style={styles.headerBtn}>
+          <Feather name="more-horizontal" size={22} color={C.foreground} />
+          {dronaWaiting > 0 && <View style={[styles.menuDot, { backgroundColor: Colors.primary }]} />}
+        </Pressable>
       </View>
 
-      {loading ? (
-        <View style={styles.centerWrap}>
-          <ActivityIndicator size="small" color={C.accentText} />
-        </View>
-      ) : !program ? (
-        // Empty state
-        <View style={styles.centerWrap}>
-          <View style={[styles.emptyIconWrap, { backgroundColor: C.primarySubtle }]}>
-            <Feather name="target" size={24} color={C.accentText} />
-          </View>
-          <Text style={[styles.emptyTitle, { color: C.foreground }]}>No program yet</Text>
-          <Text style={[styles.emptySub, { color: C.mutedFg }]}>
-            Tell Drona your goal and it will lay out a phased plan, week by week, and keep your
-            targets in step with it.
-          </Text>
-          <Pressable
-            onPress={() => setCoachOpen(true)}
-            style={[styles.primaryBtn, { backgroundColor: Colors.primary }]}
-            accessibilityRole="button"
-            accessibilityLabel="Build a program with Drona"
-          >
-            <Feather name="target" size={16} color={Colors.primaryFg} />
-            <Text style={[styles.primaryBtnText, { color: Colors.primaryFg }]}>Build a program</Text>
-          </Pressable>
-          {/* A card can wait on From Drona with no program at all (log food,
-              weigh in), so the door stays open here too. */}
-          {dronaWaiting > 0 && (
-            <Pressable
-              onPress={() => { track('drona_inbox_opened', { from: 'goal' }); router.push({ pathname: '/(app)/from-drona', params: { from: 'goal' } } as any); }}
-              style={[styles.secondaryBtn, { backgroundColor: C.muted, marginTop: Spacing.md, alignSelf: 'stretch' }]}
-              accessibilityRole="button"
-              accessibilityLabel="Open From Drona"
-            >
-              <Feather name="inbox" size={14} color={C.mutedFg} />
-              <Text style={[styles.secondaryBtnText, { color: C.mutedFg }]}>From Drona · {dronaWaiting} waiting</Text>
-            </Pressable>
-          )}
-        </View>
-      ) : (
-        <ScrollView contentContainerStyle={{ padding: Spacing.xl, paddingBottom: insets.bottom + 96 }}>
-          {/* ── HERO: the goal + where you are ─────────────────────────────── */}
-          <Animated.View
-            entering={FadeInDown.duration(300)}
-            style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
-          >
-            <View style={styles.heroTopRow}>
-              {program.goal && (
-                <View style={[styles.goalPill, { backgroundColor: C.primarySubtle }]}>
-                  <Text style={[styles.goalPillText, { color: C.accentText }]}>
-                    {GOAL_LABEL[program.goal] ?? program.goal.toUpperCase()}
-                  </Text>
-                </View>
-              )}
-              <Text style={[styles.heroWeeks, { color: C.mutedFg }]}>{totalWeeks} weeks</Text>
+      <ScrollView
+        contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: 6, paddingBottom: program ? FOOTER_H + footerBottom + S.lg : insets.bottom + S.xl }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); setFocusTick((t) => t + 1); }} tintColor={C.mutedFg} />}
+      >
+        {loading ? (
+          <ScreenSkeleton variant="goal" />
+        ) : !program && loadFailed ? (
+          <LoadFailed onRetry={() => { setLoading(true); load(); }} />
+        ) : !program ? (
+          <View style={styles.empty}>
+            <View style={[styles.emptyIconWrap, { backgroundColor: C.primarySubtle }]}>
+              <Feather name="target" size={24} color={C.accentText} />
             </View>
-            <Text style={[styles.heroTitle, { color: C.foreground }]}>{program.title}</Text>
-            {program.objective && (
-              <Text style={[styles.objective, { color: C.mutedFg }]}>{program.objective}</Text>
+            <Text style={[T.cardTitle, { color: C.foreground, marginTop: S.xs }]}>No program yet</Text>
+            <Text style={[T.body, { color: C.mutedFg, textAlign: 'center' }]}>
+              Tell Drona your goal and it will lay out a phased plan, week by week, and keep your targets in step with it.
+            </Text>
+            <Pressable
+              onPress={() => { haptics.tap(); setCoachOpen(true); }}
+              style={({ pressed }) => [styles.primaryBtn, { backgroundColor: Colors.primary, opacity: pressed ? 0.85 : 1 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Build a program with Drona"
+            >
+              <Text style={[T.rowTitle, { color: Colors.primaryFg, fontWeight: FontWeight.bold }]}>Build a program</Text>
+            </Pressable>
+            {dronaWaiting > 0 && (
+              <Pressable onPress={openFromDrona} hitSlop={8} accessibilityRole="button" accessibilityLabel="Open From Drona">
+                <Text style={[T.meta, { color: C.mutedFg }]}>From Drona · {dronaWaiting} waiting</Text>
+              </Pressable>
+            )}
+          </View>
+        ) : (
+          <>
+            <Stagger index={0}>
+              <Text style={[T.title, { color: C.foreground }]}>{program.title}</Text>
+              <Text style={[T.body, { color: pal.muted, marginTop: S.xs }]}>
+                {notStarted ? `Starts ${fmtShortISO(program.start_date)}` : ended ? 'Program complete' : `Week ${weekOverall} of ${totalWeeks}`}
+                {'  ·  '}{ended ? `Ended ${fmtShortISO(program.target_date ?? endDateISO!)}` : `Ends ${fmtShortISO(program.target_date ?? endDateISO!)}`}
+              </Text>
+            </Stagger>
+            <Stagger index={1}>{renderHero()}</Stagger>
+            <Stagger index={2}>{renderPhaseCard()}</Stagger>
+            {shownPhase && (
+              <View style={{ marginTop: 19 }}>
+                <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} headingGap={13} />
+              </View>
             )}
 
-            {/* Destination stats */}
-            <View style={styles.statsRow}>
-              <View style={styles.statBlock}>
-                <Text style={[styles.statValue, { color: C.foreground }]}>
-                  {notStarted ? `Starts ${fmtShortISO(program.start_date)}` : ended ? 'Done' : `Week ${weekOverall} of ${totalWeeks}`}
-                </Text>
-                <Text style={[styles.statLabel, { color: C.mutedFg }]}>WHERE YOU ARE</Text>
-              </View>
-              {program.target_weight_kg != null && (
-                <View style={styles.statBlock}>
-                  <Text style={[styles.statValue, { color: C.foreground }]}>{program.target_weight_kg} kg</Text>
-                  <Text style={[styles.statLabel, { color: C.mutedFg }]}>TARGET</Text>
-                </View>
-              )}
-              <View style={styles.statBlock}>
-                <Text style={[styles.statValue, { color: C.foreground }]}>
-                  {fmtShortISO(program.target_date ?? endDateISO!)}
-                </Text>
-                <Text style={[styles.statLabel, { color: C.mutedFg }]}>FINISH</Text>
-              </View>
-            </View>
-
-            {/* Segmented phase progress: one segment per phase, sized by weeks.
-                Past phases filled dim, current fills to today, future stay muted. */}
-            <View style={styles.barTrack}>
-              {program.phases.map((ph) => {
-                const isPast = program.currentPhaseSeq != null
-                  ? ph.seq < program.currentPhaseSeq
-                  : ended;
-                const isCur = ph.seq === program.currentPhaseSeq;
-                const frac = isCur
-                  ? clamp01((daysIn - ph.start_offset_weeks * 7) / (ph.duration_weeks * 7))
-                  : 0;
-                return (
-                  <View
-                    key={ph.id}
-                    style={[
-                      styles.barSegment,
-                      { flex: ph.duration_weeks, backgroundColor: isPast ? colorWithAlpha(Colors.primary, 0.35) : C.muted },
-                    ]}
-                  >
-                    {isCur && (
-                      <View style={[styles.barFill, { width: `${Math.max(6, frac * 100)}%`, backgroundColor: Colors.primary }]} />
-                    )}
+            {focus ? (
+              <Stagger index={7}>
+                <View style={styles.focus}>
+                  <View style={{ marginTop: 0 }}><SparkleIcon size={18} color={Colors.primary} /></View>
+                  <View style={{ flex: 1 }}>
+                    <SectionLabel style={styles.focusLabel}>This week's focus</SectionLabel>
+                    <Text style={[styles.focusText, { color: C.foreground }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.9}>{focus}</Text>
                   </View>
-                );
-              })}
-            </View>
-            <View style={styles.barCaptionRow}>
-              <Text style={[styles.barCaption, { color: C.accentText }]} numberOfLines={1}>
-                {notStarted
-                  ? 'Locked in. We start soon.'
-                  : ended
-                    ? 'Program complete. Talk to Drona about what is next.'
-                    : currentPhase
-                      ? `Now: ${currentPhase.name}`
-                      : 'Between phases'}
+                </View>
+              </Stagger>
+            ) : null}
+
+            {!hasMetrics && (
+              <Text style={[T.meta, { color: C.textDim, textAlign: 'center', marginTop: S.xl, fontSize: 12, lineHeight: 16 }]}>
+                This program was built before phase metrics. Rebuild it with Drona to get a hero number and weekly status.
               </Text>
-              {!ended && currentPhase && program.weekInPhase != null && (
-                <Text style={[styles.barCaptionRight, { color: C.mutedFg }]}>
-                  wk {program.weekInPhase}/{currentPhase.duration_weeks}
-                </Text>
-              )}
-            </View>
-          </Animated.View>
+            )}
+          </>
+        )}
+      </ScrollView>
 
-          {/* ── NOW: the phase driving today's targets ─────────────────────── */}
-          {currentPhase && (
-            <Animated.View
-              entering={FadeInDown.duration(300).delay(70)}
-              style={[styles.card, styles.nowCard, { backgroundColor: C.card, borderColor: Colors.primary }]}
-            >
-              <View style={styles.nowHeadRow}>
-                <View style={[styles.nowPill, { backgroundColor: Colors.primary }]}>
-                  <Text style={[styles.nowPillText, { color: Colors.primaryFg }]}>NOW</Text>
-                </View>
-                <Text style={[styles.nowWeeksText, { color: C.mutedFg }]}>
-                  Weeks {currentPhase.start_offset_weeks + 1}-{currentPhase.start_offset_weeks + currentPhase.duration_weeks}
-                </Text>
-              </View>
-              <Text style={[styles.phaseTitle, { color: C.foreground }]}>{currentPhase.name}</Text>
-              {renderPhaseDetail(currentPhase, { fuel: true })}
-            </Animated.View>
-          )}
-
-          {/* ── THE FULL PLAN: rail timeline of every phase ────────────────── */}
-          <Animated.View entering={FadeInDown.duration(300).delay(140)}>
-            <Text style={[styles.sectionEyebrow, { color: C.mutedFg }]}>THE FULL PLAN</Text>
-            <View style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-              {program.phases.map((ph, idx) => {
-                const isCur = ph.seq === program.currentPhaseSeq;
-                const isPast = program.currentPhaseSeq != null ? ph.seq < program.currentPhaseSeq : ended;
-                const isLast = idx === program.phases.length - 1;
-                const expanded = expandedSeq === ph.seq;
-                const wkStart = ph.start_offset_weeks + 1;
-                const wkEnd = ph.start_offset_weeks + ph.duration_weeks;
-                return (
-                  <View key={ph.id} style={styles.railRow}>
-                    {/* Rail */}
-                    <View style={styles.railCol}>
-                      <View
-                        style={[
-                          styles.railDot,
-                          isCur
-                            ? { backgroundColor: Colors.primary, borderColor: Colors.primary }
-                            : isPast
-                              ? { backgroundColor: colorWithAlpha(Colors.primary, 0.4), borderColor: 'transparent' }
-                              : { backgroundColor: 'transparent', borderColor: C.textMuted },
-                        ]}
-                      />
-                      {!isLast && <View style={[styles.railLine, { backgroundColor: C.borderSubtle }]} />}
-                    </View>
-                    {/* Row content */}
-                    <View style={[styles.railContent, !isLast && styles.railContentSpacing]}>
-                      <Pressable
-                        onPress={() => { if (!expanded) track('program_phase_expanded', { seq: ph.seq }); setExpandedSeq(expanded ? null : ph.seq); }}
-                        style={styles.railHead}
-                        accessibilityRole="button"
-                        accessibilityLabel={`${ph.name}, ${expanded ? 'collapse' : 'expand'}`}
-                      >
-                        <View style={{ flex: 1 }}>
-                          <View style={styles.railNameRow}>
-                            <Text style={[styles.railName, { color: isPast ? C.mutedFg : C.foreground }]} numberOfLines={1}>
-                              {ph.name}
-                            </Text>
-                            {isCur && (
-                              <View style={[styles.nowPillSmall, { backgroundColor: C.primarySubtle }]}>
-                                <Text style={[styles.nowPillSmallText, { color: C.accentText }]}>NOW</Text>
-                              </View>
-                            )}
-                            {isPast && <Feather name="check" size={12} color={C.mutedFg} />}
-                          </View>
-                          <Text style={[styles.railSub, { color: C.mutedFg }]}>
-                            {wkStart === wkEnd ? `Week ${wkStart}` : `Weeks ${wkStart}-${wkEnd}`}
-                            {ph.diet_calorie_target != null ? ` · ${ph.diet_calorie_target} kcal` : ''}
-                            {ph.routines.length > 0 ? ` · split ready` : ''}
-                          </Text>
-                        </View>
-                        <Feather name={expanded ? 'chevron-up' : 'chevron-down'} size={15} color={C.textMuted} />
-                      </Pressable>
-                      {expanded && (
-                        <Animated.View entering={FadeInDown.duration(200)} style={{ marginTop: 4 }}>
-                          {renderPhaseDetail(ph, { compact: true })}
-                        </Animated.View>
-                      )}
-                    </View>
-                  </View>
-                );
-              })}
-            </View>
-          </Animated.View>
-
-          {/* Adjust with Drona */}
-          <Pressable
-            onPress={() => { setBuildSeed(null); setBuildPhaseId(null); setCoachOpen(true); }}
-            style={[styles.secondaryBtn, { backgroundColor: C.muted }]}
-            accessibilityRole="button"
-            accessibilityLabel="Adjust this program with Drona"
-          >
-            <Feather name="message-circle" size={14} color={C.mutedFg} />
-            <Text style={[styles.secondaryBtnText, { color: C.mutedFg }]}>Adjust with Drona</Text>
-          </Pressable>
-
-          {/* From Drona: the cards pushed to Later, and what has changed. */}
-          <Pressable
-            onPress={() => { track('drona_inbox_opened', { from: 'goal' }); router.push({ pathname: '/(app)/from-drona', params: { from: 'goal' } } as any); }}
-            style={[styles.secondaryBtn, { backgroundColor: C.muted, marginTop: Spacing.sm }]}
-            accessibilityRole="button"
-            accessibilityLabel="Open From Drona"
-          >
-            <Feather name="inbox" size={14} color={C.mutedFg} />
-            <Text style={[styles.secondaryBtnText, { color: C.mutedFg }]}>
-              {dronaWaiting > 0 ? `From Drona · ${dronaWaiting} waiting` : 'From Drona'}
-            </Text>
-          </Pressable>
-
-          {/* The way out. Without this a user who stops following the plan has
-              no exit: every phase boundary rewrites their goal again. */}
-          <Pressable
-            onPress={confirmEnd}
-            disabled={ending}
-            style={[styles.endBtn, { opacity: ending ? 0.5 : 1 }]}
-            accessibilityRole="button"
-            accessibilityLabel="End this program"
-          >
-            <Text style={[styles.endBtnText, { color: C.dangerText }]}>
-              {ending ? 'Ending...' : 'End this program'}
-            </Text>
-          </Pressable>
-        </ScrollView>
+      {/* The one action, pinned above the home indicator (FooterAction). */}
+      {!loading && program && (
+        <FooterAction
+          label={unbuilt ? "Build this phase's workouts" : 'Adjust with Drona'}
+          accessibilityLabel={unbuilt ? "Build this phase's workouts" : 'Adjust this program with Drona'}
+          onPress={() => {
+            if (unbuilt && currentPhase) buildSplitFor(currentPhase);
+            else { setBuildSeed(null); setBuildPhaseId(null); setCoachOpen(true); }
+          }}
+        />
       )}
 
-      {/* Session preview: view the routine, then choose to start. */}
-      <RoutineDetailSheet
-        routine={detailRoutine}
-        onClose={() => setDetailRoutine(null)}
-        onStartWorkout={() => {
-          const id = detailRoutine?.id;
-          setDetailRoutine(null);
-          if (id) {
-            markWorkoutSource('program');
-            router.push(`/workout/${id}` as any);
-          }
-        }}
+      <AboutGoalSheet
+        visible={aboutOpen}
+        title={program?.title ?? ''}
+        objective={program?.objective?.trim() ?? ''}
+        onClose={() => setAboutOpen(false)}
       />
 
-      <FuelDaysSheet
-        open={fuelOpen}
-        initial={fuelDays}
-        baseKcal={currentPhase?.diet_calorie_target ?? profileTargets.kcal}
-        source="goal_plan"
-        phaseId={currentPhase?.id ?? null}
-        onClose={() => setFuelOpen(false)}
-        onSaved={(saved) => { setFuelOpen(false); applyFuelDays(saved); load(); }}
+      <MetricLogSheet
+        visible={logOpen}
+        metric={hero?.kind === 'custom' ? hero : null}
+        saving={logging}
+        onSave={saveLog}
+        onClose={() => setLogOpen(false)}
       />
 
       <AICoachModal
@@ -815,11 +615,15 @@ export default function GoalPlanScreen() {
         initialScreen={buildSeed ? 'plan' : 'program'}
         planSeed={buildSeed ?? undefined}
         programDraft={programDraft}
+        // An active program: Drona opens on changing it, naming the phase.
+        programExisting={program && currentPhase ? {
+          title: program.title,
+          phaseName: currentPhase.name,
+          week: program.weekInPhase,
+          weeks: currentPhase.duration_weeks,
+        } : undefined}
         linkRoutinesToPhaseId={buildPhaseId ?? undefined}
         onRoutineCreated={() => load()}
-        // Fires after saveProgram actually commits. The load() in onClose runs
-        // at close time and races the background save, so on Apply it reads
-        // the OLD program and the screen looked stale until the next visit.
         onProgramApplied={() => load()}
       />
     </View>
@@ -828,129 +632,45 @@ export default function GoalPlanScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  iconBtn: { width: 32, height: 32, borderRadius: Radius.full, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
-  centerWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xxl, gap: 12 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: S.lg, height: 44 },
+  headerBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  // 6pt, tucked against the top-right of the dots (a 22pt glyph centred in 44pt).
+  menuDot: { position: 'absolute', top: 14, right: 8, width: 6, height: 6, borderRadius: 3 },
+  empty: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: S.xxl * 2, gap: S.md },
   emptyIconWrap: { width: 56, height: 56, borderRadius: Radius.full, alignItems: 'center', justifyContent: 'center' },
-  emptyTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold, marginTop: 4 },
-  emptySub: { fontSize: FontSize.sm, textAlign: 'center', lineHeight: 20 },
-  primaryBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: Radius.lg, paddingHorizontal: 18, paddingVertical: 12, marginTop: 8 },
-  primaryBtnText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
 
-  card: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radius.lg,
-    padding: Spacing.lg,
-    marginBottom: Spacing.lg,
-  },
+  heroBlock: { marginTop: 19 },
+  // The hero's sizes, measured against the reference (same strings, same scale).
+  heroLabel: { fontSize: 10, lineHeight: 13, letterSpacing: 0.6 },
+  heroNum: { fontSize: 38, lineHeight: 40, fontWeight: FontWeight.bold, letterSpacing: -1.2, fontVariant: ['tabular-nums'] },
+  heroUnit: { fontSize: 15, lineHeight: 18, fontWeight: FontWeight.regular },
+  goalValue: { fontSize: 16, lineHeight: 20, fontWeight: FontWeight.medium, marginTop: S.xs, fontVariant: ['tabular-nums'] },
+  heroStatus: { fontSize: 12, lineHeight: 17, fontWeight: FontWeight.regular, marginTop: S.xs + 6 },
+  heroRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: S.md },
+  capsRow: { flexDirection: 'row', alignItems: 'center', gap: S.sm },
+  heroNumWrap: { flexDirection: 'row', alignItems: 'baseline', gap: 6, marginTop: S.xs + 3 },
+  heroTag: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: Radius.full },
+  logBtn: { marginLeft: 10, paddingHorizontal: S.md, paddingVertical: 6, borderRadius: Radius.full, alignSelf: 'center', minHeight: 32, justifyContent: 'center' },
+  // The goal value's bottom lines up with the bottom of the big number's unit.
+  goalCol: { alignItems: 'flex-end', paddingBottom: 6 },
+  chartWrap: { marginTop: 5 },
 
-  // Hero
-  heroTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  goalPill: { borderRadius: Radius.full, paddingHorizontal: 10, paddingVertical: 4 },
-  goalPillText: { fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1 },
-  heroWeeks: { fontSize: FontSize.xs, fontWeight: FontWeight.medium },
-  heroTitle: { fontSize: 24, fontWeight: FontWeight.bold, marginTop: 10, letterSpacing: -0.3 },
-  objective: { fontSize: FontSize.sm, lineHeight: 20, marginTop: 6 },
-  statsRow: { flexDirection: 'row', gap: Spacing.xl, marginTop: 16 },
-  statBlock: { gap: 2 },
-  statValue: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
-  statLabel: { fontSize: 9, fontWeight: FontWeight.semibold, letterSpacing: 0.8 },
-  barTrack: { flexDirection: 'row', gap: 3, height: 8, marginTop: 16 },
-  barSegment: { borderRadius: 4, overflow: 'hidden' },
-  barFill: { height: '100%', borderRadius: 4 },
-  barCaptionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, gap: 8 },
-  barCaption: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, flexShrink: 1 },
-  barCaptionRight: { fontSize: FontSize.xs },
+  // Wider than the text column (16pt edges on a 402pt screen, text at 38pt),
+  // no outline: the surface against the page is the edge.
+  phaseCard: { marginTop: 15, marginHorizontal: -8, borderRadius: 22, paddingHorizontal: 22, paddingTop: 16, paddingBottom: 16 },
+  // Sizes measured against the reference (same strings, same scale).
+  phaseLabel: { fontSize: 10, lineHeight: 13, letterSpacing: 0.6 },
+  phaseMeta: { fontSize: 13.5, lineHeight: 19, fontWeight: FontWeight.regular },
+  phaseName: { fontSize: 16.5, lineHeight: 22, fontWeight: FontWeight.semibold, flexShrink: 1 },
+  phaseTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, gap: S.sm },
+  jobBar: { height: 8, borderRadius: 4, marginTop: 13, overflow: 'hidden' },
+  jobFill: { height: '100%', borderRadius: 4 },
+  pctText: { fontSize: 12, lineHeight: 17, fontWeight: FontWeight.regular, marginTop: 5 },
 
-  // Now card
-  nowCard: { borderWidth: 1.5 },
-  nowHeadRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  nowPill: { borderRadius: Radius.full, paddingHorizontal: 9, paddingVertical: 3 },
-  nowPillText: { fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1 },
-  nowWeeksText: { fontSize: FontSize.xs, fontWeight: FontWeight.medium },
-  phaseTitle: { fontSize: FontSize.xl, fontWeight: FontWeight.bold, marginTop: 8, marginBottom: 2 },
+  focus: { flexDirection: 'row', gap: 14, alignItems: 'flex-start', marginTop: 20 },
+  focusLabel: { fontSize: 11, lineHeight: 14 },
+  focusText: { fontSize: 14, lineHeight: 19, fontWeight: FontWeight.regular, marginTop: 4 },
 
-  // Phase detail (chips + directives + split)
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
-  chip: { borderRadius: Radius.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingVertical: 7, alignItems: 'flex-start', gap: 1 },
-  chipValue: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
-  chipLabel: { fontSize: 8.5, fontWeight: FontWeight.semibold, letterSpacing: 0.8 },
-  directiveRow: { flexDirection: 'row', gap: 10, marginTop: 12, alignItems: 'flex-start' },
-  directiveIcon: { width: 24, height: 24, borderRadius: 7, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
-  directiveLabel: { fontSize: 9, fontWeight: FontWeight.semibold, letterSpacing: 0.8, marginBottom: 2 },
-  directiveText: { fontSize: FontSize.sm, lineHeight: 19 },
 
-  fuelEmpty: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12,
-    borderWidth: 1, borderStyle: 'dashed', borderRadius: Radius.md, paddingVertical: 9, paddingHorizontal: 12,
-  },
-  fuelEmptyText: { fontSize: FontSize.xs, flexShrink: 1 },
-  fuelBlock: { marginTop: 14 },
-  fuelHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  fuelEdit: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
-  fuelRow: { flexDirection: 'row', gap: 4, marginTop: 8 },
-  fuelCell: {
-    flex: 1, alignItems: 'center', gap: 3, paddingTop: 7, paddingBottom: 9,
-    borderRadius: Radius.sm, borderWidth: StyleSheet.hairlineWidth, borderColor: 'transparent',
-  },
-  fuelDay: { fontSize: 8.5, letterSpacing: 0.4 },
-  fuelKcal: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },
-  fuelTodayDot: { position: 'absolute', bottom: 3, width: 3, height: 3, borderRadius: 2 },
-  fuelLegend: { marginTop: 8, gap: 4 },
-  fuelPlanned: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 },
-  fuelLegendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  fuelLegendText: { fontSize: FontSize.xs, flexShrink: 1 },
-
-  weekBlock: { marginTop: 14 },
-  weekStrip: { flexDirection: 'row', marginTop: 8 },
-  // The rule runs behind the dots so the seven days read as one line.
-  weekRule: { position: 'absolute', left: 14, right: 14, top: 4, height: StyleSheet.hairlineWidth },
-  weekCell: { flex: 1, alignItems: 'center', gap: 3 },
-  weekDot: { width: 9, height: 9, borderRadius: 5, borderWidth: 1 },
-  weekDay: { fontSize: 8.5, fontWeight: FontWeight.semibold, letterSpacing: 0.4 },
-  weekLabel: { fontSize: 9.5, textAlign: 'center' },
-
-  builtWrap: { marginTop: 14, gap: 6 },
-  builtHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
-  builtHeaderText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
-  routineRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 9, paddingHorizontal: 12, borderRadius: Radius.md },
-  routineName: { flex: 1, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
-  rebuildBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start', marginTop: 6 },
-  rebuildText: { fontSize: FontSize.xs },
-  buildSplitBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    marginTop: 14, borderRadius: Radius.md, paddingVertical: 10,
-  },
-  buildSplitText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
-
-  // Full plan rail
-  sectionEyebrow: { fontSize: 10, fontWeight: FontWeight.semibold, letterSpacing: 1, marginBottom: 8, marginLeft: 2 },
-  railRow: { flexDirection: 'row' },
-  railCol: { width: 20, alignItems: 'center' },
-  railDot: { width: 10, height: 10, borderRadius: 5, borderWidth: 1.5, marginTop: 5 },
-  railLine: { width: 2, flex: 1, marginTop: 4, marginBottom: -2, borderRadius: 1 },
-  railContent: { flex: 1, marginLeft: 8 },
-  railContentSpacing: { paddingBottom: Spacing.lg },
-  railHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  railNameRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  railName: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, flexShrink: 1 },
-  nowPillSmall: { borderRadius: Radius.full, paddingHorizontal: 7, paddingVertical: 2 },
-  nowPillSmallText: { fontSize: 9, fontWeight: FontWeight.bold, letterSpacing: 0.8 },
-  railSub: { fontSize: FontSize.xs, marginTop: 2 },
-
-  secondaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: Radius.lg, paddingVertical: 12 },
-  secondaryBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
-
-  // Quiet on purpose: an exit that is findable, not one that competes with
-  // "Adjust with Drona" for the tap.
-  endBtn: { alignItems: 'center', justifyContent: 'center', paddingVertical: Spacing.md, marginTop: Spacing.xs },
-  endBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
+  primaryBtn: { alignItems: 'center', justifyContent: 'center', borderRadius: Radius.lg, paddingHorizontal: 18, minHeight: 52, marginTop: S.sm },
 });

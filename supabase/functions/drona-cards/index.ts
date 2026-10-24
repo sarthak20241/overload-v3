@@ -34,6 +34,7 @@ import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "..
 import { type MomentPerson, momentRow, pickMoment } from "../_shared/dronaMoments.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
+import { type Db as MetricsDb, dueReadFailure, metricsPassBlocked, metricsStep } from "./metrics.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -62,6 +63,23 @@ const JWKS = createRemoteJWKSet(new URL(`${CLERK_ISSUER}/.well-known/jwks.json`)
 
 const USER_PAGE = 1000;
 const CRON_CONCURRENCY = 4;
+/**
+ * Stop starting phase metric checks this long after the metrics pass began,
+ * and in any case once the run is METRICS_LATEST_MS old: the cron call times
+ * out at 55 s, and the cards, check-ins and moments all run first. The
+ * budget is checked before each batch, and a batch can hold one model call
+ * per user (20 s timeout each, in parallel), so the last batch started
+ * inside the budget ends by about 45 s. The first batch runs past the
+ * budget too (so a busy card pass cannot push the metrics out of every
+ * run), but never once the run is METRICS_FIRST_BATCH_BY_MS old: a batch
+ * started later could still be mid-call when the 55 s limit kills the run.
+ * What is left waits for the next run.
+ */
+const METRICS_BUDGET_MS = 20_000;
+const METRICS_LATEST_MS = 25_000;
+const METRICS_FIRST_BATCH_BY_MS = 33_000;
+/** Every metrics step is done by this point in the run: model calls are cut to fit, 3 s inside the 55 s limit. */
+const METRICS_HARD_STOP_MS = 52_000;
 /** Cards older than this are history nobody reads; the facts window is 8 weeks. */
 const KEEP_WEEKS = 26;
 
@@ -460,6 +478,8 @@ async function runCron(): Promise<Response> {
     let wordsFailed = 0;
     let wordsAsked = 0;
     let checkins = 0;
+    let metricsChecked = 0;
+    let linesWritten = 0;
     const failures: string[] = [];
     for (let i = 0; i < due.length; i += CRON_CONCURRENCY) {
       const batch = due.slice(i, i + CRON_CONCURRENCY);
@@ -485,10 +505,84 @@ async function runCron(): Promise<Response> {
     }
 
     // Moments after the weekly cards: a weekly card written this run is waiting,
-    // so the moment rules leave that person alone today.
+    // so the moment rules leave that person alone today. Before the metrics
+    // pass, so a late metrics batch can never starve them.
     const moments = await runMoments(db, now.getTime());
+
+    // The phase metrics check (.planning/phase-metrics/SPEC.md): once a local
+    // week per user with an active program, whether or not a card is due.
+    // One read finds who has a metric row not yet checked this LOCAL week
+    // (checked_week, the local Monday the job wrote). The bound is the LATEST
+    // week start of this run's zones, so the read is a superset: a zone
+    // already on the next week is listed at once, and metricsStep's own
+    // checkDue filters per user. Everyone else costs nothing. The cost of the
+    // superset: while the zones straddle a Monday (about a day a week), a
+    // user whose own Monday has not come yet is listed too, and pays three
+    // small reads per run until it does.
+    // A time budget keeps the moments pass below from being starved.
+    // No model key: the pass is skipped whole and named once (metricsPassBlocked).
+    const blocked = metricsPassBlocked(ANTHROPIC_API_KEY);
+    if (blocked) failures.push(blocked);
+    const latestWeek = !blocked && weekStarts.length > 0 ? [...weekStarts].sort().pop()! : null;
+    const dueMetrics = new Set<string>();
+    if (latestWeek) {
+      for (let from = 0; ; from += USER_PAGE) {
+        // Active programs only, rows the check can read (a target), and a
+        // stable page key (user_id, id) so no row straddles a page edge.
+        const { data: unchecked, error: uncheckedErr } = await retried(() =>
+          // retry_tries is selected on purpose: without the sync migration
+          // (20261023120000) this read fails once and names it (dueReadFailure),
+          // instead of every user's check failing on its own.
+          db.from("coach_program_phase_metrics").select("user_id, retry_tries, coach_programs!inner(status)")
+            .eq("coach_programs.status", "active")
+            .not("target_value", "is", null)
+            .or(`checked_week.is.null,checked_week.lt.${latestWeek}`)
+            .order("user_id", { ascending: true }).order("id", { ascending: true })
+            .range(from, from + USER_PAGE - 1)
+        );
+        if (uncheckedErr) { failures.push(dueReadFailure(uncheckedErr)); break; }
+        for (const m of unchecked ?? []) if (m.user_id) dueMetrics.add(String(m.user_id));
+        if (!unchecked || unchecked.length < USER_PAGE) break;
+      }
+    }
+    // Rotated by run, so a cron that is always near its budget does not
+    // starve the same users at the end of the list every week.
+    const dueUsers = weeks.filter((w) => dueMetrics.has(w.userId));
+    const rotate = dueUsers.length > 0 ? Math.floor(now.getTime() / 900_000) % dueUsers.length : 0;
+    const metricUsers = [...dueUsers.slice(rotate), ...dueUsers.slice(0, rotate)];
+    let metricsSkipped = 0;
+    // Lines skipped for lack of time (routine; the phase is retried next run).
+    let linesOutOfTime = 0;
+    const metricsStart = Date.now();
+    const metricsDeadline = Math.min(metricsStart + METRICS_BUDGET_MS, now.getTime() + METRICS_LATEST_MS);
+    for (let i = 0; i < metricUsers.length; i += CRON_CONCURRENCY) {
+      const late = i > 0 ? Date.now() > metricsDeadline : Date.now() > now.getTime() + METRICS_FIRST_BATCH_BY_MS;
+      if (late) {
+        metricsSkipped = metricUsers.length - i;
+        // Routine, not a failure: counted in metrics_skipped, so it never
+        // crowds the real failures out of the summary.
+        console.log(`[drona-cards] metrics: out of time, ${metricsSkipped} left for the next run`);
+        break;
+      }
+      const batch = metricUsers.slice(i, i + CRON_CONCURRENCY);
+      // The real client is structurally the little Db the step types against.
+      const results = await Promise.all(batch.map((w) => metricsStep(db as unknown as MetricsDb, w.userId, w.day, w.week, ANTHROPIC_API_KEY, fetch, now.toISOString(), now.getTime() + METRICS_HARD_STOP_MS)));
+      results.forEach((m, j) => {
+        metricsChecked += m.checked;
+        if (m.line) linesWritten += 1;
+        if (m.outOfTime) linesOutOfTime += 1;
+        // An out-of-time line is routine (counted above); it stays out of the
+        // failure list unless its un-stamp write also failed.
+        const routine = m.outOfTime && !m.error?.includes("ledger write failed");
+        if (m.error && !routine) failures.push(`${batch[j].userId.slice(0, 12)} metrics: ${m.error}`);
+      });
+    }
+    // Where the pass ended against the run's 55 s, so a timeout can be traced.
+    console.log(`[drona-cards] metrics pass: ${metricUsers.length} due, ${metricsChecked} checked, ${metricsSkipped} skipped, ${linesOutOfTime} lines out of time; started ${metricsStart - now.getTime()} ms in, ended ${Date.now() - now.getTime()} ms in`);
+
     return json({ users: weeks.length, due: due.length, saved, held, checkins, pick_failed: pickFailed,
       words_asked: wordsAsked, words_failed: wordsFailed, moments_made: moments.made, moments_failed: moments.failed,
+      metrics_checked: metricsChecked, coach_lines: linesWritten, metrics_skipped: metricsSkipped, lines_out_of_time: linesOutOfTime,
       failures: failures.slice(0, 20) });
   } finally {
     // Settled on every path: the runtime may stop the worker once the response
