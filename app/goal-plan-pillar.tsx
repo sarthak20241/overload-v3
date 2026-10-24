@@ -73,6 +73,63 @@ function rowRest(m: PhaseMetricRow, target: string): string {
   return `of ${target}${!bare && m.unit ? ` ${m.unit}` : ''}`;
 }
 
+/**
+ * A section: 28pt above, the small caps label (with an optional lime text
+ * button at its right), 12pt to its content. Defined at module level, not
+ * inside the screen: a component created in the render is a new type on every
+ * render, so its whole subtree remounts and a tap that lands across a
+ * re-render (data arriving) is lost.
+ */
+function Section({ index, label, children, action }: {
+  index: number; label: string; children: ReactNode;
+  /** A small lime text button at the label's right ("Edit fuel days"). */
+  action?: { label: string; onPress: () => void };
+}) {
+  const { C } = useTheme();
+  const pal = useGoalPalette();
+  return (
+    <Stagger index={index} style={styles.section}>
+      <View style={styles.sectionHead}>
+        <SectionLabel style={[styles.sectionLabel, { color: pal.label }]}>{label}</SectionLabel>
+        {action && (
+          <Pressable onPress={() => { haptics.selection(); action.onPress(); }} hitSlop={10} accessibilityRole="button" accessibilityLabel={action.label}>
+            <Text style={[styles.sectionAction, { color: C.accentText }]}>{action.label}</Text>
+          </Pressable>
+        )}
+      </View>
+      {children}
+    </Stagger>
+  );
+}
+
+/** The hero, as on the Goal screen: caps label, the number and its unit, one status line. */
+function Hero({ label, num, unit, line, status, a11y }: {
+  label: string; num: string; unit: string; line: string; status: MetricStatus | null; a11y: string;
+}) {
+  const { C } = useTheme();
+  const pal = useGoalPalette();
+  const statusColor = useStatusColor();
+  // A status word is muted unless it is a problem.
+  const warn = status && statusTone(status) === 'warn' ? statusColor('warn') : undefined;
+  return (
+    <Stagger index={1}>
+      <View style={styles.heroBlock} accessible accessibilityLabel={a11y}>
+        <SectionLabel style={[styles.heroLabel, { color: pal.label }]}>{label}</SectionLabel>
+        <View style={styles.heroNumWrap}>
+          <Text style={[styles.heroNum, { color: C.foreground }]}>{num}</Text>
+          <Text style={[styles.heroUnit, { color: pal.muted, flexShrink: 1 }]} numberOfLines={1}>{unit}</Text>
+        </View>
+        <DotLine
+          parts={[line, status ? STATUS_LABEL[status] : '']}
+          colors={[undefined, warn]}
+          style={[styles.heroStatus, { color: pal.muted }]}
+          containerStyle={{ marginTop: 10 }}
+        />
+      </View>
+    </Stagger>
+  );
+}
+
 export default function GoalPlanPillarScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -216,9 +273,6 @@ export default function GoalPlanPillarScreen() {
     if (daysIn < phase.start_offset_weeks * 7) return `Starts week ${phase.start_offset_weeks + 1}`;
     return 'Done';
   })();
-  const warnColor = statusColor('warn');
-  /** A status word's colour on these screens: muted, unless it is a problem. */
-  const toneColor = (s: MetricStatus | null) => (s && statusTone(s) === 'warn' ? warnColor : undefined);
   const supporting = (ph: ActiveProgramPhaseRow) => {
     const hero = heroOf(ph.metrics);
     return ph.metrics.filter((m) => m.id !== hero?.id && PILLAR_OF[m.kind] === pillar);
@@ -245,44 +299,6 @@ export default function GoalPlanPillarScreen() {
       />
     );
   };
-  /** A section: 28pt above, the small caps label, 12pt to its content. */
-  const Section = ({ index, label, children, action }: {
-    index: number; label: string; children: ReactNode;
-    /** A small lime text button at the label's right ("Edit fuel days"). */
-    action?: { label: string; onPress: () => void };
-  }) => (
-    <Stagger index={index} style={styles.section}>
-      <View style={styles.sectionHead}>
-        <SectionLabel style={[styles.sectionLabel, { color: pal.label }]}>{label}</SectionLabel>
-        {action && (
-          <Pressable onPress={() => { haptics.selection(); action.onPress(); }} hitSlop={10} accessibilityRole="button" accessibilityLabel={action.label}>
-            <Text style={[styles.sectionAction, { color: C.accentText }]}>{action.label}</Text>
-          </Pressable>
-        )}
-      </View>
-      {children}
-    </Stagger>
-  );
-  /** The hero, as on the Goal screen: caps label, the number and its unit, one status line. */
-  const Hero = ({ label, num, unit, line, status, a11y }: {
-    label: string; num: string; unit: string; line: string; status: MetricStatus | null; a11y: string;
-  }) => (
-    <Stagger index={1}>
-      <View style={styles.heroBlock} accessible accessibilityLabel={a11y}>
-        <SectionLabel style={[styles.heroLabel, { color: pal.label }]}>{label}</SectionLabel>
-        <View style={styles.heroNumWrap}>
-          <Text style={[styles.heroNum, { color: C.foreground }]}>{num}</Text>
-          <Text style={[styles.heroUnit, { color: pal.muted, flexShrink: 1 }]} numberOfLines={1}>{unit}</Text>
-        </View>
-        <DotLine
-          parts={[line, status ? STATUS_LABEL[status] : '']}
-          colors={[undefined, toneColor(status)]}
-          style={[styles.heroStatus, { color: pal.muted }]}
-          containerStyle={{ marginTop: 10 }}
-        />
-      </View>
-    </Stagger>
-  );
   /** A seven-day strip: 28pt circles, a dash for rest, the letter above and the name below. */
   const dayStrip = (days: { key: string | number; letter: string; name: string; kind: 'done' | 'today' | 'upcoming' | 'rest' | 'fuel'; a11y: string }[]) => (
     <View style={styles.week} accessibilityRole="list">
@@ -693,6 +709,14 @@ export default function GoalPlanPillarScreen() {
         onClose={() => { setCoachOpen(false); setBuildSeed(null); setBuildPhaseId(null); setProgramDraft(undefined); load(); }}
         initialScreen={buildSeed ? 'plan' : 'program'}
         programDraft={buildSeed ? undefined : programDraft}
+        // Drona opens on changing this program, naming the phase being viewed
+        // (and its week when it is the one running now).
+        programExisting={program && phase ? {
+          title: program.title,
+          phaseName: phase.name,
+          week: isCur ? program.weekInPhase : null,
+          weeks: phase.duration_weeks,
+        } : undefined}
         planSeed={buildSeed ?? undefined}
         linkRoutinesToPhaseId={buildPhaseId ?? undefined}
         onRoutineCreated={() => load()}

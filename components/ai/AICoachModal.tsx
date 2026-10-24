@@ -3017,6 +3017,21 @@ function GeneratePlanScreen({
 }
 
 // ─── Generate Program Screen ─────────────────────────────────────────────────
+/**
+ * The program the user already follows, when the program chat is opened to
+ * CHANGE it (Goal & Plan's "Adjust with Drona"): Drona's greeting says where
+ * they are instead of offering to build a new program. The server already
+ * reads the active program into every mode's context; this only sets the
+ * conversation's opening.
+ */
+export interface ExistingProgramOpener {
+  title: string;
+  phaseName: string;
+  /** The week inside the phase, when the phase is the one running now. */
+  week: number | null;
+  weeks: number | null;
+}
+
 // Coach designs a scheduled multi-week program through conversation
 // (discuss_program), emits it via generate_program, and the user reviews the
 // phase timeline and taps Apply. Apply (handleSaveProgram in the parent)
@@ -3027,11 +3042,13 @@ function GenerateProgramScreen({
   onApply,
   onRequestUpgrade,
   initialDraft,
+  existing,
 }: {
   onBack: () => void;
   onApply: (program: GeneratedProgram) => void;
   onRequestUpgrade?: (kind: 'cap' | 'pro') => void;
   initialDraft?: string;
+  existing?: ExistingProgramOpener;
 }) {
   const { C } = useTheme();
   const [result, setResult] = useState<GeneratedProgram | null>(null);
@@ -3047,6 +3064,7 @@ function GenerateProgramScreen({
         onRefined={(next) => setResult(next as GeneratedProgram)}
         onRequestUpgrade={onRequestUpgrade}
         initialDraft={initialDraft}
+        existing={existing}
       />
     );
   }
@@ -3705,6 +3723,7 @@ function RefineChatScreen({
   onRefined,
   onRequestUpgrade,
   initialDraft,
+  existing,
 }: {
   // 'refine' — iterating on an already-generated workout/plan (workout or
   // plan must be provided). 'discuss' — talking with Coach Drona BEFORE any
@@ -3730,6 +3749,8 @@ function RefineChatScreen({
   // Typed into the box on open, NOT sent: the user reads it and taps send
   // (e.g. the goal sheet's "Change my whole plan with Drona").
   initialDraft?: string;
+  // Discuss-program opened to change the program the user already follows.
+  existing?: ExistingProgramOpener;
 }) {
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -3755,6 +3776,12 @@ function RefineChatScreen({
 
   const starterText = (() => {
     if (kind === 'discuss') {
+      if (mode === 'refine_program' && existing) {
+        const where = existing.week != null && existing.weeks != null
+          ? `${existing.phaseName}, week ${existing.week} of ${existing.weeks}`
+          : existing.phaseName;
+        return `You're in ${where}. What would you like to change?`;
+      }
       if (mode === 'refine_program') {
         return "I'm Coach Drona. Let's build a program toward your goal. Tell me what you're chasing, your timeline if you have one, how many days a week you can train, and anything I should work around. When you're set, I'll lay out the phases.";
       }
@@ -3870,7 +3897,9 @@ function RefineChatScreen({
     // therefore optional) overrides. For refine kind, the opener carries
     // the recap because the model needs the live state of the workout/plan.
     const syntheticOpener = kind === 'discuss'
-      ? (mode === 'refine_program'
+      ? (mode === 'refine_program' && existing
+          ? `I already follow my program "${existing.title}" and I'm in ${existing.phaseName}. I want to change part of it. Let's discuss the change before you lay out the updated phases.`
+          : mode === 'refine_program'
           ? "I want to build a scheduled multi-week program toward my goal. Let's discuss it before you lay out the phases."
           : mode === 'refine_plan'
             ? "I want to build a new training plan. Let's discuss what should be in it before you write it."
@@ -4185,6 +4214,7 @@ export function AICoachModal({
   initialTopic,
   planSeed,
   programDraft,
+  programExisting,
   linkRoutinesToPhaseId,
   workoutContext,
   onApplyWorkoutEdit,
@@ -4212,6 +4242,10 @@ export function AICoachModal({
   // When set, the program chat opens with this typed in, unsent (the goal
   // sheet's "Change my whole plan with Drona"). Pass initialScreen="program".
   programDraft?: string;
+  // When set, the program chat opens to CHANGE this program (Goal & Plan's
+  // "Adjust with Drona"): Drona's greeting names the phase and asks what to
+  // change, instead of offering to build a new program.
+  programExisting?: ExistingProgramOpener;
   // When set, routines saved from this session are linked to the program phase
   // (routines.program_phase_id), so the Goal & Plan screen shows the phase's
   // split as built. Paired with planSeed for a "Build workout split" flow.
@@ -4892,6 +4926,7 @@ export function AICoachModal({
                   onBack={() => setScreen('menu')}
                   onApply={handleSaveProgram}
                   initialDraft={programDraft}
+                  existing={programExisting}
                   onRequestUpgrade={(kind) =>
                     handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')
                   }

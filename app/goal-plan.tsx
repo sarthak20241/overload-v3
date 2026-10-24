@@ -621,6 +621,13 @@ export default function GoalPlanScreen() {
         initialScreen={buildSeed ? 'plan' : 'program'}
         planSeed={buildSeed ?? undefined}
         programDraft={programDraft}
+        // An active program: Drona opens on changing it, naming the phase.
+        programExisting={program && currentPhase ? {
+          title: program.title,
+          phaseName: currentPhase.name,
+          week: program.weekInPhase,
+          weeks: currentPhase.duration_weeks,
+        } : undefined}
         linkRoutinesToPhaseId={buildPhaseId ?? undefined}
         onRoutineCreated={() => load()}
         onProgramApplied={() => load()}
