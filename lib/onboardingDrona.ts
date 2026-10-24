@@ -41,6 +41,7 @@ export interface AnonIntake {
   direction: 'loss' | 'gain' | null;
   targets: { kcal: number; protein: number; carb: number; fat: number } | null;
   /** Optional free text; the edge sanitizes and length-caps it before use. */
+  goalNote: string | null;
   healthNotes: string | null;
   routinePrefs: string | null;
 }
@@ -66,6 +67,7 @@ export function buildAnonIntake(
     weeklyRateKg: extras.weeklyRateKg,
     direction: extras.direction,
     targets: extras.targets,
+    goalNote: answers.goalNote?.trim() || null,
     healthNotes: answers.healthNotes,
     routinePrefs: answers.routinePrefs,
   };

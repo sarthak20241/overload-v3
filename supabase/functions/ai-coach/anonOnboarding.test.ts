@@ -134,3 +134,23 @@ Deno.test("a cut is briefed as fat_loss even when muscle is the first goal", () 
   });
   assertStringIncludes(buildAnonProgramMessage(nudgeUp, TODAY), 'goal is "fat_loss"');
 });
+
+Deno.test("a goal in the user's own words reaches the brief as fenced data", () => {
+  const s = sanitizeAnonIntake({
+    goals: [],
+    goalNote: "Run a half\nmarathon in March " + "y".repeat(400),
+  });
+  // No preset goal picked: the program still has a goal key to work from.
+  assertEquals(s.goalKeys, ["general"]);
+  assert(s.goalNote != null);
+  assert(!s.goalNote.includes("\n"), "newlines collapsed");
+  assertEquals(s.goalNote.length, 200);
+  const msg = buildAnonProgramMessage(s, TODAY);
+  assertStringIncludes(msg, "My goal in my own words");
+  assertStringIncludes(msg, '"""\nRun a half marathon in March');
+});
+
+Deno.test("no goal note, no own-words line", () => {
+  const msg = buildAnonProgramMessage(sanitizeAnonIntake({ goals: ["strength"] }), TODAY);
+  assert(!msg.includes("My goal in my own words"));
+});

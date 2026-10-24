@@ -47,6 +47,11 @@ export interface OnboardingAnswers {
   heightCm: number | null;
   weightKg: number | null;
   goalWeightKg: number | null;
+  /**
+   * Optional free text: the goal in the user's own words ("Something else" on
+   * the goal step). null = not chosen; '' = chosen but not written yet.
+   */
+  goalNote?: string | null;
   /** Optional free text: injuries / conditions the plan should train around. */
   healthNotes: string | null;
   /** Optional free text: preferences for the routine (lifts, equipment, etc.). */
@@ -390,6 +395,10 @@ export async function saveOnboardingProfile(
   // earlier note. Guests skip these (their local store has no such fields).
   const injury = answers.healthNotes?.trim();
   const prefs = answers.routinePrefs?.trim();
+  // A goal in their own words lands in goal_detail, which Drona's memory and
+  // context already read ("goal detail"), so it outlives the starter plan.
+  const goalNote = answers.goalNote?.trim();
+  if (goalNote) row.goal_detail = goalNote.slice(0, 500);
   if (injury) row.injury_notes = injury.slice(0, 500);
   if (prefs) row.training_preferences = prefs.slice(0, 500);
   if (Object.keys(row).length === 1) return; // nothing beyond the id

@@ -4,8 +4,8 @@
  * the Cal AI funnel with our adaptations (soft wall, 7-day trial, transparent
  * price headline):
  *
- *   warmup    "Try everything free for 7 days." Gift frame, Drona's voice,
- *             no price anywhere. First "No payment today".
+ *   warmup    "Your goal isn't yours alone anymore." Trust first, Drona's
+ *             voice, no price anywhere. First "No payment today".
  *   reminder  "I'll remind you before you pay." One screen for the one
  *             objection that kills trials. Continue triggers the OS
  *             notification permission prompt (needed for the day-5 reminder
@@ -85,6 +85,12 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { orbWebBox } from '@/components/coach/OrbStage';
+import { SignalOrb, signalOrbColor } from '@/components/coach/SignalOrb';
+
+// Drona's orb on the trust screen. Drawn with SignalOrb directly so it can run
+// brighter than OrbStage's default, which reads dim on this dark screen.
+const TRUST_ORB = 140;
 import { invalidateCoachAccess } from '@/hooks/useCoachAccess';
 import { prefetchDashboard } from '@/lib/dashboardData';
 import {
@@ -178,7 +184,7 @@ function perMonthLabel(pkg: RevenueCatPackage): string | null {
 
 export default function UpgradeScreen() {
   const router = useRouter();
-  const { C } = useTheme();
+  const { C, mode } = useTheme();
   const toast = useToast();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
@@ -548,18 +554,32 @@ export default function UpgradeScreen() {
       {step === 'warmup' && (
         <Animated.View key="warmup" entering={FadeIn.duration(250)} style={u.stepFill}>
           <View style={u.centerFill}>
+            {/* 2026-10-23: the first funnel beat builds trust before any
+                price: the goal stops being the user's burden alone. The free
+                week moved to the footer note below. */}
             <Animated.Text
               entering={FadeInDown.duration(400)}
               style={[u.displayTitle, { color: C.foreground, textAlign: 'center' }]}
             >
-              Try everything free for 7 days.
+              Your goal isn't yours alone anymore.
             </Animated.Text>
             <Animated.View entering={FadeInDown.delay(150).duration(400)} style={u.quoteWrap}>
-              <DronaMark size={56} state="idle" />
+              {/* Drona's orb, the same one as the coach chat, speaking the
+                  promise below. */}
+              <View style={[u.trustOrb, { width: TRUST_ORB, height: TRUST_ORB }]} pointerEvents="none">
+                <SignalOrb
+                  size={orbWebBox(TRUST_ORB)}
+                  state="listening"
+                  level={0.4}
+                  particles={2200}
+                  brightness={1.6}
+                  color={signalOrbColor(mode)}
+                />
+              </View>
               <View style={[u.quoteBubble, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
                 <Text style={[u.quoteText, { color: C.foreground }]}>
-                  I don't do generic plans. Give me a week of your training and
-                  judge me on the results.
+                  From today, getting you there is my job too. I'll build the
+                  plan, check in, and adjust it whenever life gets in the way.
                 </Text>
               </View>
             </Animated.View>
@@ -570,9 +590,10 @@ export default function UpgradeScreen() {
               onPress={() => { track('paywall_step_advanced', { from: 'warmup', to: 'reminder', context }); setStep('reminder'); }}
               style={[u.cta, Shadow.playBtn]}
               accessibilityRole="button"
-              accessibilityLabel="Try it free"
+              accessibilityLabel="I'm in"
             >
-              <Text style={u.ctaText}>Try it free</Text>
+              {/* The buyer's answer to Drona's promise, not a sales verb. */}
+              <Text style={u.ctaText}>I'm in</Text>
             </PressableScale>
             <Text style={[u.ctaNote, { color: C.textMuted }]}>
               Billing starts only after your 7-day trial, unless you cancel.
@@ -1048,6 +1069,9 @@ const u = StyleSheet.create({
   },
 
   quoteWrap: { alignItems: 'center', marginTop: Spacing.xxxl, gap: Spacing.lg },
+  // The orb box carries a halo, so trim it above; leave room below so the
+  // sphere and the bubble do not crowd each other.
+  trustOrb: { marginTop: -Spacing.md, marginBottom: Spacing.sm, alignItems: 'center', justifyContent: 'center' },
   quoteBubble: {
     borderWidth: 1,
     borderRadius: Radius.xl,
