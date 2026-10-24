@@ -88,6 +88,12 @@ export interface MetricsStepResult {
   /** The coach line was written. */
   line: boolean;
   error?: string;
+  /**
+   * The line was skipped because the run had no time left for a model call.
+   * Routine, not a failure: the cron counts these (lines_out_of_time) and
+   * keeps them out of its failure list, unless a ledger write also failed.
+   */
+  outOfTime?: true;
 }
 
 interface PhaseRow {
@@ -321,7 +327,7 @@ export async function metricsStep(
         db.from("coach_program_phase_metrics").update({ checked_week: null }).eq("user_id", userId).eq("phase_id", phase.id)
       );
       if (unstampErr) console.log(`[drona-cards] could not mark the line for retry: ${unstampErr.message}`);
-      return { checked, line: false, error: `line: out of time, retry next run${unstampErr ? `; ledger write failed: ${unstampErr.message}` : ""}` };
+      return { checked, line: false, outOfTime: true, error: `line: out of time, retry next run${unstampErr ? `; ledger write failed: ${unstampErr.message}` : ""}` };
     }
     const answer = await askCoachLine({
       program_title: String(prog.title ?? "Your program"),

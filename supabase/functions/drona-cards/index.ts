@@ -548,6 +548,8 @@ async function runCron(): Promise<Response> {
     const rotate = dueUsers.length > 0 ? Math.floor(now.getTime() / 900_000) % dueUsers.length : 0;
     const metricUsers = [...dueUsers.slice(rotate), ...dueUsers.slice(0, rotate)];
     let metricsSkipped = 0;
+    // Lines skipped for lack of time (routine; the phase is retried next run).
+    let linesOutOfTime = 0;
     const metricsStart = Date.now();
     const metricsDeadline = Math.min(metricsStart + METRICS_BUDGET_MS, now.getTime() + METRICS_LATEST_MS);
     for (let i = 0; i < metricUsers.length; i += CRON_CONCURRENCY) {
@@ -565,15 +567,19 @@ async function runCron(): Promise<Response> {
       results.forEach((m, j) => {
         metricsChecked += m.checked;
         if (m.line) linesWritten += 1;
-        if (m.error) failures.push(`${batch[j].userId.slice(0, 12)} metrics: ${m.error}`);
+        if (m.outOfTime) linesOutOfTime += 1;
+        // An out-of-time line is routine (counted above); it stays out of the
+        // failure list unless its un-stamp write also failed.
+        const routine = m.outOfTime && !m.error?.includes("ledger write failed");
+        if (m.error && !routine) failures.push(`${batch[j].userId.slice(0, 12)} metrics: ${m.error}`);
       });
     }
     // Where the pass ended against the run's 55 s, so a timeout can be traced.
-    console.log(`[drona-cards] metrics pass: ${metricUsers.length} due, ${metricsChecked} checked, ${metricsSkipped} skipped; started ${metricsStart - now.getTime()} ms in, ended ${Date.now() - now.getTime()} ms in`);
+    console.log(`[drona-cards] metrics pass: ${metricUsers.length} due, ${metricsChecked} checked, ${metricsSkipped} skipped, ${linesOutOfTime} lines out of time; started ${metricsStart - now.getTime()} ms in, ended ${Date.now() - now.getTime()} ms in`);
 
     return json({ users: weeks.length, due: due.length, saved, held, checkins, pick_failed: pickFailed,
       words_asked: wordsAsked, words_failed: wordsFailed, moments_made: moments.made, moments_failed: moments.failed,
-      metrics_checked: metricsChecked, coach_lines: linesWritten, metrics_skipped: metricsSkipped,
+      metrics_checked: metricsChecked, coach_lines: linesWritten, metrics_skipped: metricsSkipped, lines_out_of_time: linesOutOfTime,
       failures: failures.slice(0, 20) });
   } finally {
     // Settled on every path: the runtime may stop the worker once the response

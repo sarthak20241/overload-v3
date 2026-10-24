@@ -460,6 +460,24 @@ Deno.test("each custom metric reads its own latest log", async () => {
   assertEquals(values, [["m-a", 12], ["m-b", 6]]);
 });
 
+Deno.test("a custom metric's client-written value and status are overwritten from its latest log", async () => {
+  // The client may write current_value and status on its own custom metric
+  // (the log sheet moves the card at once). The check never trusts them: it
+  // recomputes both from the latest log, so a hand-set "done" does not stand.
+  const tampered = { id: "m-c", seq: 0, is_hero: true, kind: "custom", ref: { name: "Hold" }, unit: "s", direction: "up", start_value: 5, target_value: 20, current_value: 20, status: "done", checked_week: null };
+  const { db, writes } = fakeDb({
+    coach_programs: [{ data: program, error: null }],
+    coach_program_phases: [{ data: phases, error: null }],
+    coach_program_phase_metrics: [{ data: [tampered], error: null }],
+    coach_program_phase_metric_logs: [{ data: [{ metric_id: "m-c", value: 9, logged_on: "2026-10-20" }], error: null }],
+  });
+  assertEquals(await metricsStep(db, "user-1", DAY, WEEK, ""), { checked: 1, line: false });
+  const w = writes.find((x) => "status" in x.patch)!;
+  assertEquals(w.patch.current_value, 9);
+  // 4 of 15 to go at half the phase: not done, and not on track either.
+  assertEquals(w.patch.status !== "done" && w.patch.status !== "on_track", true);
+});
+
 Deno.test("the metrics read is scoped to the user as well as the phase", async () => {
   const { db, reads } = fakeDb({
     coach_programs: [{ data: program, error: null }],
@@ -488,6 +506,8 @@ Deno.test("no time left for the model: no call, no try spent, the phase is due a
   assertEquals(out.checked, 2);
   assertEquals(out.line, false);
   assertEquals(out.error, "line: out of time, retry next run");
+  // Flagged, so the cron counts it as routine (lines_out_of_time) and not a failure.
+  assertEquals(out.outOfTime, true);
   // Un-stamped so the cron lists the user again, and the ledger untouched.
   const unstamp = writes.find((w) => w.table === "coach_program_phase_metrics" && w.patch.checked_week === null);
   assertEquals(unstamp?.patch, { checked_week: null });
