@@ -23,12 +23,12 @@ import { useTheme } from '@/hooks/useTheme';
 import { track, markWorkoutSource } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { loadActiveProgram, peekActiveProgram, phaseFor, daysBetweenISO, todayLocalISO, type ActiveProgram, type ActiveProgramPhaseRow } from '@/lib/programData';
+import { invalidateProgram, loadActiveProgram, peekActiveProgram, phaseFor, daysBetweenISO, todayLocalISO, type ActiveProgram, type ActiveProgramPhaseRow } from '@/lib/programData';
 import {
   formatMetricValue, heroOf, STATUS_LABEL, statusTone, type MetricKind, type MetricStatus, type PhaseMetricRow,
 } from '@/lib/phaseMetrics';
 import { headlineText, liveFrom, metricHeadline } from '@/lib/phaseMetricHeadline';
-import { useNutritionTargets, useTodayNutrition } from '@/lib/dietData';
+import { useNutritionTargets } from '@/lib/dietData';
 import {
   DAY_LETTERS, DAY_NAMES_LONG, hrvVerdict, peekLastNights, peekRoutineSummaries, peekTodayVitals, peekWeekSessions,
   readinessVerdict, rhrVerdict, sharedLastNights, sharedRoutineSummaries, sharedTodayVitals, sharedWeekSessions,
@@ -36,10 +36,11 @@ import {
 } from '@/lib/pillarData';
 import { getHealthConnectionStatus } from '@/lib/healthSync';
 import { weekPatternFor, shortDayLabel, REST } from '@/lib/weekPattern';
-import { WEEK_ORDER, fuelOn } from '@/lib/fuelDays';
+import { DAY_NAMES, WEEK_ORDER, fuelOn, kcalOnDow, type FuelDay } from '@/lib/fuelDays';
+import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
 import { PILLAR_OF, type Pillar } from '@/components/program/PhaseDetail';
 import Svg, { Line as SvgLine } from 'react-native-svg';
-import { CoachNote, DotLine, LoadFailed, Row, ScreenSkeleton, SectionLabel, Stagger, S, useGoalPalette, useStatusColor } from '@/components/program/finish';
+import { CoachNote, DotLine, FooterAction, LoadFailed, Row, ScreenSkeleton, SectionLabel, Stagger, S, useFooterSpace, useGoalPalette, useStatusColor } from '@/components/program/finish';
 import { ChevronLeftIcon } from '@/components/program/LineIcons';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
@@ -107,6 +108,13 @@ export default function GoalPlanPillarScreen() {
   const [buildSeed, setBuildSeed] = useState<{ goal?: string; note?: string } | null>(null);
   const [buildPhaseId, setBuildPhaseId] = useState<string | null>(null);
   const [detailRoutine, setDetailRoutine] = useState<RoutineRaw | null>(null);
+  // "Adjust with Drona": the program chat opens with this typed in, unsent.
+  const [programDraft, setProgramDraft] = useState<string | undefined>(undefined);
+  const [fuelOpen, setFuelOpen] = useState(false);
+  // The live fuel days and the profile's targets (the current phase's fuel
+  // week reads and edits these; a phase to come shows its planned days).
+  const { targets: profileTargets, fuelDays: liveFuel, applyFuelDays } = useNutritionTargets();
+  const footerSpace = useFooterSpace();
   const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
@@ -238,9 +246,20 @@ export default function GoalPlanPillarScreen() {
     );
   };
   /** A section: 28pt above, the small caps label, 12pt to its content. */
-  const Section = ({ index, label, children }: { index: number; label: string; children: ReactNode }) => (
+  const Section = ({ index, label, children, action }: {
+    index: number; label: string; children: ReactNode;
+    /** A small lime text button at the label's right ("Edit fuel days"). */
+    action?: { label: string; onPress: () => void };
+  }) => (
     <Stagger index={index} style={styles.section}>
-      <SectionLabel style={[styles.sectionLabel, { color: pal.label }]}>{label}</SectionLabel>
+      <View style={styles.sectionHead}>
+        <SectionLabel style={[styles.sectionLabel, { color: pal.label }]}>{label}</SectionLabel>
+        {action && (
+          <Pressable onPress={() => { haptics.selection(); action.onPress(); }} hitSlop={10} accessibilityRole="button" accessibilityLabel={action.label}>
+            <Text style={[styles.sectionAction, { color: C.accentText }]}>{action.label}</Text>
+          </Pressable>
+        )}
+      </View>
       {children}
     </Stagger>
   );
@@ -359,21 +378,12 @@ export default function GoalPlanPillarScreen() {
               />
             ))
           ) : (
-            <View style={{ gap: S.md }}>
-              <Text style={[styles.bodyText, { color: pal.muted }]}>
-                {isCur
-                  ? `No sessions yet for ${ph.name}, and your next one depends on them. I build the split from this phase's plan, about a minute.`
-                  : `No sessions yet for ${ph.name}. I build the split from this phase's plan, about a minute.`}
-              </Text>
-              <Pressable
-                onPress={() => { haptics.tap(); buildSplitFor(ph); }}
-                style={({ pressed }) => [styles.primary, { backgroundColor: Colors.primary, opacity: pressed ? 0.85 : 1 }]}
-                accessibilityRole="button"
-                accessibilityLabel="Build this phase's workouts"
-              >
-                <Text style={styles.primaryText}>Build this phase's workouts</Text>
-              </Pressable>
-            </View>
+            // The footer's "Build this phase's workouts" builds them.
+            <Text style={[styles.bodyText, { color: pal.muted }]}>
+              {isCur
+                ? `No sessions yet for ${ph.name}, and your next one depends on them. I build the split from this phase's plan, about a minute.`
+                : `No sessions yet for ${ph.name}. I build the split from this phase's plan, about a minute.`}
+            </Text>
           )}
         </Section>
         <Stagger index={5}><CoachNote label="Drona's tip" text={ph.training_directive} /></Stagger>
@@ -382,27 +392,50 @@ export default function GoalPlanPillarScreen() {
   };
 
   // ---- EAT -------------------------------------------------------------------
+  // This phase's plan, not today's log (the approved mock,
+  // .planning/phase-metrics/shots/eat-v2-mock.png): the daily calories, the
+  // macro targets, and the calories by weekday with its fuel days.
+  const fuelState = (ph: ActiveProgramPhaseRow): { days: FuelDay[]; editable: 'live' | 'plan' | null } => {
+    if (isCur) return { days: liveFuel, editable: 'live' };
+    const future = program != null && daysBetweenISO(program.start_date, today) < ph.start_offset_weeks * 7;
+    return { days: ph.diet_fuel_days ?? [], editable: future ? 'plan' : null };
+  };
   const renderEat = (ph: ActiveProgramPhaseRow) => {
     const protein = ph.metrics.find((m) => m.kind === 'protein_days') ?? null;
     const proteinLine = protein ? metricHeadline(protein, isCur ? live : null) : null;
     const kcal = ph.diet_calorie_target;
-    const fuel = ph.diet_fuel_days && ph.diet_fuel_days.length > 0 ? ph.diet_fuel_days : null;
-    const fuelKcal = fuel ? Math.max(...fuel.map((f) => f.kcal)) : 0;
+    const baseKcal = kcal ?? profileTargets.kcal;
     const pattern = weekPatternFor(ph.training_block);
-    const macros: { key: string; g: number | null; color: string; name: string }[] = [
-      { key: 'p', g: ph.diet_protein_g, color: C.macro.protein, name: 'Protein' },
-      { key: 'c', g: ph.diet_carb_g, color: C.macro.carbs, name: 'Carbs' },
-      { key: 'f', g: ph.diet_fat_g, color: C.macro.fat, name: 'Fat' },
-    ];
+    const { days: fuel, editable } = fuelState(ph);
+    const lifted = WEEK_ORDER.map((dow) => fuelOn(fuel, dow)).filter((d): d is FuelDay => d != null);
+    const todayDow = new Date().getDay();
+    const macros = [
+      { name: 'Protein', g: ph.diet_protein_g },
+      { name: 'Carbs', g: ph.diet_carb_g },
+      { name: 'Fat', g: ph.diet_fat_g },
+    ].filter((m) => m.g != null);
     const others = supporting(ph).filter((m) => m.kind !== 'protein_days');
-    const line = proteinLine
-      ? headlineText(proteinLine)
+    const line = proteinLine?.num
+      ? `Protein ${proteinLine.num} of 7 days last week`
+      : proteinLine ? `Protein days: ${proteinLine.rest.toLowerCase()}`
       : ph.diet_protein_g != null ? `${ph.diet_protein_g} g protein a day` : 'Log your food and I hold the line.';
     const kcalText = kcal != null ? kcal.toLocaleString('en-US') : '–';
+    // "Thursday (Legs) and Saturday (Push), +300 kcal as carbs": the day's own
+    // reason, else that weekday's session in the split.
+    const dayName = (d: FuelDay) => {
+      const slot = pattern ? pattern[WEEK_ORDER.indexOf(d.dow)] : null;
+      const why = d.label || (slot && slot !== REST ? shortDayLabel(slot) : null);
+      return why ? `${DAY_NAMES[d.dow]} (${why})` : DAY_NAMES[d.dow];
+    };
+    const names = lifted.map(dayName);
+    const joined = names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+    const kcals = lifted.map((d) => d.kcal);
+    const extra = kcals.length === 0 ? '' : Math.min(...kcals) === Math.max(...kcals) ? `+${kcals[0]}` : `+${Math.min(...kcals)} to +${Math.max(...kcals)}`;
+    const legend = lifted.length > 0 ? `Fuel days: ${joined}, ${extra} kcal as carbs` : null;
     return (
       <>
         <Hero
-          label="Daily target"
+          label="This phase"
           num={kcalText}
           unit="kcal a day"
           line={line}
@@ -410,45 +443,54 @@ export default function GoalPlanPillarScreen() {
           a11y={`${kcalText} kcal a day. ${line}${proteinLine?.status ? `, ${STATUS_LABEL[proteinLine.status]}` : ''}`}
         />
 
-        {macros.some((m) => m.g != null) && (
+        {macros.length > 0 && (
           <Section index={2} label="Daily targets">
-            <View style={styles.macros}>
-              {macros.filter((m) => m.g != null).map((m) => (
-                <View key={m.key} style={{ flex: 1 }} accessibilityLabel={`${m.name} ${m.g} grams`}>
-                  <Text style={[styles.macroValue, { color: C.foreground }]}>{m.g}g</Text>
-                  <Text style={[styles.macroName, { color: pal.muted }]}>{m.name}</Text>
-                  <View style={[styles.macroLine, { backgroundColor: m.color }]} />
-                </View>
-              ))}
-            </View>
+            {macros.map((m, i) => (
+              <Row key={m.name} title={m.name} value={String(m.g)} valueRest="g" minHeight={52} look={rowLook}
+                first={i === 0} last={i === macros.length - 1} accessibilityLabel={`${m.name}, ${m.g} grams a day`} />
+            ))}
           </Section>
         )}
 
-        {fuel && (
-          <Section index={3} label={`Fuel days · +${fuelKcal} kcal as carbs`}>
-            {dayStrip(WEEK_ORDER.map((dow, i) => {
+        <Section
+          index={3}
+          label="Calories by day"
+          action={editable ? { label: lifted.length > 0 ? 'Edit fuel days' : 'Add fuel days', onPress: () => setFuelOpen(true) } : undefined}
+        >
+          <View style={styles.fuelWeek} accessibilityRole="list">
+            {WEEK_ORDER.map((dow) => {
               const f = fuelOn(fuel, dow);
-              const label = pattern ? pattern[i] : null;
-              const rest = label === REST;
-              const name = label ? (rest ? 'Rest' : shortDayLabel(label)) : (f ? 'Fuel' : '');
-              const kind = f ? 'fuel' : rest ? 'rest' : 'upcoming';
-              return { key: dow, letter: DAY_LETTERS[i], name, kind, a11y: `${DAY_NAMES_LONG[i]}${f ? `, fuel day, plus ${f.kcal} calories` : ''}` };
-            }))}
-          </Section>
-        )}
+              const isToday = isCur && dow === todayDow;
+              const dayKcal = kcalOnDow(baseKcal, fuel, dow);
+              return (
+                <View
+                  key={dow}
+                  style={[styles.fuelCell, f ? { backgroundColor: pal.card } : null]}
+                  accessibilityLabel={`${DAY_NAMES[dow]}, ${dayKcal.toLocaleString('en-US')} kcal${f ? ', fuel day' : ''}${isToday ? ', today' : ''}`}
+                >
+                  <Text style={[styles.fuelLetter, { color: isToday ? C.foreground : pal.chevron }]}>{DAY_NAMES[dow].charAt(0)}</Text>
+                  <Text style={[styles.fuelKcal, { color: f ? Colors.primary : C.foreground }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
+                    {dayKcal.toLocaleString('en-US')}
+                  </Text>
+                  <View style={[styles.fuelDot, isToday ? { backgroundColor: f ? Colors.primary : pal.muted } : null]} />
+                </View>
+              );
+            })}
+          </View>
+          {legend && (
+            <View style={styles.legend}>
+              <View style={[styles.legendDot, { backgroundColor: Colors.primary }]} />
+              <Text style={[styles.legendText, { color: pal.muted }]}>{legend}</Text>
+            </View>
+          )}
+        </Section>
 
         {others.length > 0 && (
           <Section index={4} label="Targets">
             {others.map((m, i) => metricRow(m, i, others.length))}
           </Section>
         )}
-
-        {isCur && (
-          <Section index={5} label="Today">
-            <EatToday />
-          </Section>
-        )}
-        <Stagger index={6}><CoachNote label="Drona's tip" text={ph.diet_directive} /></Stagger>
+        <Stagger index={5}><CoachNote label="Drona's tip" text={ph.diet_directive} /></Stagger>
       </>
     );
   };
@@ -574,7 +616,7 @@ export default function GoalPlanPillarScreen() {
         <View style={styles.navBtn} />
       </View>
       <ScrollView
-        contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: 6, paddingBottom: insets.bottom + S.xxl }}
+        contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: 6, paddingBottom: program && phase ? footerSpace : insets.bottom + S.xxl }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={C.mutedFg} />}
       >
         {loading ? (
@@ -595,6 +637,47 @@ export default function GoalPlanPillarScreen() {
         )}
       </ScrollView>
 
+      {/* The one action, as on the Goal screen: Drona opened on this pillar
+          with the ask typed in, unsent. Train with no workouts for the phase
+          builds them instead. */}
+      {!loading && program && phase && (() => {
+        const build = pillar === 'train' && phase.routines.length === 0;
+        const ask = pillar === 'train' ? 'my training' : pillar === 'eat' ? 'my food targets' : 'my recovery plan';
+        return (
+          <FooterAction
+            label={build ? "Build this phase's workouts" : 'Adjust with Drona'}
+            accessibilityLabel={build ? "Build this phase's workouts" : `Adjust ${ask} with Drona`}
+            onPress={() => {
+              if (build) { buildSplitFor(phase); return; }
+              track('program_pillar_adjust', { pillar, seq: phase.seq });
+              setBuildSeed(null);
+              setBuildPhaseId(null);
+              setProgramDraft(`I want to change ${ask} in ${phase.name}.`);
+              setCoachOpen(true);
+            }}
+          />
+        );
+      })()}
+
+      {phase && (
+        <FuelDaysSheet
+          open={fuelOpen}
+          initial={fuelState(phase).days}
+          baseKcal={phase.diet_calorie_target ?? profileTargets.kcal}
+          source="goal_plan"
+          phaseId={phase.id}
+          planOnly={fuelState(phase).editable === 'plan'}
+          onClose={() => setFuelOpen(false)}
+          onSaved={(saved) => {
+            setFuelOpen(false);
+            if (fuelState(phase).editable === 'live') applyFuelDays(saved);
+            // The phase row changed: the cached program must not paint the old days.
+            if (clerkId) invalidateProgram(clerkId);
+            load();
+          }}
+        />
+      )}
+
       <RoutineDetailSheet
         routine={detailRoutine}
         onClose={() => setDetailRoutine(null)}
@@ -607,71 +690,15 @@ export default function GoalPlanPillarScreen() {
       <AICoachModal
         visible={coachOpen}
         source="goal_plan"
-        onClose={() => { setCoachOpen(false); setBuildSeed(null); setBuildPhaseId(null); load(); }}
+        onClose={() => { setCoachOpen(false); setBuildSeed(null); setBuildPhaseId(null); setProgramDraft(undefined); load(); }}
         initialScreen={buildSeed ? 'plan' : 'program'}
+        programDraft={buildSeed ? undefined : programDraft}
         planSeed={buildSeed ?? undefined}
         linkRoutinesToPhaseId={buildPhaseId ?? undefined}
         onRoutineCreated={() => load()}
         onProgramApplied={() => load()}
       />
     </View>
-  );
-}
-
-/**
- * TODAY on the Eat screen: calories and protein eaten today of today's
- * target, from the same hooks the dashboard's Fuel card reads (today's diary
- * and the nutrition targets, fuel day included). Each row carries a thin
- * progress line in its macro colour, so today reads at a glance.
- */
-function EatToday() {
-  const { C } = useTheme();
-  const pal = useGoalPalette();
-  const fuel = useTodayNutrition();
-  const { targetsOn } = useNutritionTargets();
-  const t = targetsOn(new Date());
-  const ready = !fuel.loading || fuel.totalsDayIso === todayLocalISO();
-  const rows = [
-    {
-      title: 'Calories', eaten: fuel.totals.kcal, goal: t.kcal,
-      value: ready ? Math.round(fuel.totals.kcal).toLocaleString('en-US') : '–',
-      rest: `of ${Math.round(t.kcal).toLocaleString('en-US')}`,
-      color: Colors.primary, opacity: 0.6,
-    },
-    {
-      title: 'Protein', eaten: fuel.totals.protein_g, goal: t.protein,
-      value: ready ? String(Math.round(fuel.totals.protein_g)) : '–',
-      rest: `of ${Math.round(t.protein)}g`,
-      color: C.macro.protein, opacity: 1,
-    },
-  ];
-  return (
-    <>
-      {rows.map((r, i) => {
-        const pct = ready && r.goal > 0 ? Math.max(0, Math.min(1, r.eaten / r.goal)) : 0;
-        return (
-          <View
-            key={r.title}
-            style={[styles.todayRow, { borderColor: pal.divider }, i === 0 && { borderTopWidth: 1 }]}
-            accessible
-            accessibilityLabel={`${r.title}, ${r.value} ${r.rest} today`}
-          >
-            <View style={styles.todayHead}>
-              <Text style={[styles.todayTitle, { color: C.foreground }]}>{r.title}</Text>
-              <Text style={[styles.todayValue, { color: pal.muted }]}>
-                <Text style={{ color: C.foreground, fontWeight: FontWeight.medium }}>{r.value}</Text> {r.rest}
-              </Text>
-            </View>
-            <View style={[styles.progTrack, { backgroundColor: pal.track }]}>
-              <View style={[styles.progFill, { width: `${pct * 100}%`, backgroundColor: r.color, opacity: r.opacity }]} />
-            </View>
-          </View>
-        );
-      })}
-      {ready && fuel.totals.kcal === 0 && (
-        <Text style={[styles.bodyText, { color: pal.muted, marginTop: S.sm }]}>Nothing logged yet today.</Text>
-      )}
-    </>
   );
 }
 
@@ -691,7 +718,9 @@ const styles = StyleSheet.create({
   heroUnit: { fontSize: 15, lineHeight: 18, fontWeight: FontWeight.regular },
   heroStatus: { fontSize: 12, lineHeight: 17, fontWeight: FontWeight.regular },
   section: { marginTop: 28 },
-  sectionLabel: { fontSize: 11, lineHeight: 14, letterSpacing: 0.8, marginBottom: 12 },
+  sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  sectionLabel: { fontSize: 11, lineHeight: 14, letterSpacing: 0.8 },
+  sectionAction: { fontSize: 13, lineHeight: 17, fontWeight: FontWeight.semibold },
   // The day strip.
   week: { flexDirection: 'row', justifyContent: 'space-between' },
   day: { width: 44, alignItems: 'center' },
@@ -700,17 +729,15 @@ const styles = StyleSheet.create({
   dot: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   restDash: { width: 6, height: 2, borderRadius: 1 },
   dayName: { fontSize: 12, lineHeight: 16, fontWeight: FontWeight.regular, marginTop: 6 },
-  // Eat.
-  macros: { flexDirection: 'row', gap: 16 },
-  macroValue: { fontSize: 20, lineHeight: 25, fontWeight: FontWeight.semibold, fontVariant: ['tabular-nums'] },
-  macroName: { fontSize: 12, lineHeight: 16, fontWeight: FontWeight.regular, marginTop: 2 },
-  macroLine: { height: 3, borderRadius: 1.5, marginTop: 10 },
-  todayRow: { minHeight: 52, justifyContent: 'center', paddingVertical: 12, borderBottomWidth: 1 },
-  todayHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' },
-  todayTitle: { fontSize: 16, lineHeight: 21, fontWeight: FontWeight.medium },
-  todayValue: { fontSize: 14, lineHeight: 19, fontWeight: FontWeight.regular, fontVariant: ['tabular-nums'] },
-  progTrack: { height: 2, borderRadius: 1, marginTop: 10, overflow: 'hidden' },
-  progFill: { height: 2, borderRadius: 1 },
+  // Eat: calories by day.
+  fuelWeek: { flexDirection: 'row', justifyContent: 'space-between' },
+  fuelCell: { width: 46, alignItems: 'center', gap: 6, paddingTop: 10, paddingBottom: 8, borderRadius: 12 },
+  fuelLetter: { fontSize: 11, lineHeight: 14, fontWeight: FontWeight.semibold },
+  fuelKcal: { fontSize: 13, lineHeight: 17, fontWeight: FontWeight.semibold, fontVariant: ['tabular-nums'] },
+  fuelDot: { width: 4, height: 4, borderRadius: 2 },
+  legend: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 12 },
+  legendDot: { width: 6, height: 6, borderRadius: 3, marginTop: 6 },
+  legendText: { flex: 1, fontSize: 13, lineHeight: 18, fontWeight: FontWeight.regular },
   // Recover.
   nights: { flexDirection: 'row', justifyContent: 'space-between', paddingRight: 28 },
   night: { width: 32, alignItems: 'center' },
@@ -718,6 +745,4 @@ const styles = StyleSheet.create({
   bar: { width: 14, borderRadius: 4 },
   targetLabel: { position: 'absolute', right: 0, fontSize: 11, lineHeight: 14 },
   inlineAction: { fontWeight: FontWeight.semibold },
-  primary: { height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  primaryText: { fontSize: 16, lineHeight: 21, fontWeight: FontWeight.semibold, color: '#0A0A0A' },
 });

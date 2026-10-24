@@ -52,8 +52,7 @@ import { AboutGoalSheet } from '@/components/program/AboutGoalSheet';
 import { ChevronLeftIcon, ChevronRightIcon, SparkleIcon } from '@/components/program/LineIcons';
 import { loadLiveReadings, peekLiveReadings, prefetchPillars } from '@/lib/pillarData';
 import { goalFocus, type LiveReadings } from '@/lib/phaseMetricHeadline';
-import { DotLine, LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T, useGoalPalette } from '@/components/program/finish';
-import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from 'react-native-svg';
+import { DotLine, FOOTER_H, FooterAction, LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T, useGoalPalette } from '@/components/program/finish';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { Colors, Radius, FontWeight } from '@/constants/theme';
@@ -72,7 +71,6 @@ function addDaysISO(iso: string, delta: number): string {
 }
 
 /** The pinned button's height plus its top padding; the scroll content clears it. */
-const FOOTER_H = 48;
 /** The Goal screen's line chart, 7pt shorter than the default so the page fits above the button. */
 const GOAL_CHART_HEIGHT = CHART_HEIGHT - 7;
 
@@ -589,35 +587,16 @@ export default function GoalPlanScreen() {
         )}
       </ScrollView>
 
-      {/* The one action, pinned above the home indicator; the page scrolls under
-          a footer the colour of the page, as in the reference. */}
+      {/* The one action, pinned above the home indicator (FooterAction). */}
       {!loading && program && (
-        <View style={[styles.footer, { backgroundColor: pal.bg, paddingBottom: footerBottom }]}>
-          {/* A short fade of the page colour above the footer, so content
-              scrolling under it does not look cut off (4pt: at first paint it
-              stays clear of the focus line). */}
-          <Svg style={styles.footerFade} width="100%" height={4} pointerEvents="none">
-            <Defs>
-              <SvgLinearGradient id="footerFade" x1="0" y1="0" x2="0" y2="1">
-                <Stop offset="0" stopColor={pal.bg} stopOpacity={0} />
-                <Stop offset="1" stopColor={pal.bg} stopOpacity={1} />
-              </SvgLinearGradient>
-            </Defs>
-            <Rect x="0" y="0" width="100%" height="4" fill="url(#footerFade)" />
-          </Svg>
-          <Pressable
-            onPress={() => {
-              haptics.tap();
-              if (unbuilt && currentPhase) buildSplitFor(currentPhase);
-              else { setBuildSeed(null); setBuildPhaseId(null); setCoachOpen(true); }
-            }}
-            style={({ pressed }) => [styles.footerBtn, { backgroundColor: Colors.primary, opacity: pressed ? 0.85 : 1 }]}
-            accessibilityRole="button"
-            accessibilityLabel={unbuilt ? "Build this phase's workouts" : 'Adjust this program with Drona'}
-          >
-            <Text style={styles.footerText}>{unbuilt ? "Build this phase's workouts" : 'Adjust with Drona'}</Text>
-          </Pressable>
-        </View>
+        <FooterAction
+          label={unbuilt ? "Build this phase's workouts" : 'Adjust with Drona'}
+          accessibilityLabel={unbuilt ? "Build this phase's workouts" : 'Adjust this program with Drona'}
+          onPress={() => {
+            if (unbuilt && currentPhase) buildSplitFor(currentPhase);
+            else { setBuildSeed(null); setBuildPhaseId(null); setCoachOpen(true); }
+          }}
+        />
       )}
 
       <AboutGoalSheet
@@ -691,10 +670,6 @@ const styles = StyleSheet.create({
   focusLabel: { fontSize: 11, lineHeight: 14 },
   focusText: { fontSize: 14, lineHeight: 19, fontWeight: FontWeight.regular, marginTop: 4 },
 
-  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: S.lg, paddingTop: 0 },
-  footerFade: { position: 'absolute', left: 0, right: 0, top: -4 },
-  footerBtn: { height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  footerText: { fontSize: 16, lineHeight: 21, fontWeight: FontWeight.semibold, color: '#0A0A0A' },
 
   primaryBtn: { alignItems: 'center', justifyContent: 'center', borderRadius: Radius.lg, paddingHorizontal: 18, minHeight: 52, marginTop: S.sm },
 });

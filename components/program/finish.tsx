@@ -7,6 +7,8 @@
  */
 import type { ReactNode } from 'react';
 import { View, Text, Pressable, StyleSheet, type StyleProp, type ViewStyle, type TextStyle } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from 'react-native-svg';
 import Animated, { FadeInDown, useReducedMotion } from 'react-native-reanimated';
 import { Feather } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
@@ -224,6 +226,50 @@ export function DotLine({ parts, style, containerStyle, colors }: {
   );
 }
 
+/** The pinned action's height (FooterAction). */
+export const FOOTER_H = 48;
+
+/**
+ * The bottom padding a scroll view needs so its last row clears FooterAction:
+ * the button, its 8pt above the home indicator zone, and 16pt of air.
+ */
+export function useFooterSpace(): number {
+  const insets = useSafeAreaInsets();
+  return FOOTER_H + insets.bottom + 8 + S.lg;
+}
+
+/**
+ * The one action of a Goal & Plan screen, pinned at the bottom: a 48pt lime
+ * button, its bottom 8pt above the home indicator zone on every iPhone, on a
+ * footer the colour of the page with a 4pt fade above it so content scrolling
+ * under it does not look cut off.
+ */
+export function FooterAction({ label, onPress, accessibilityLabel }: { label: string; onPress: () => void; accessibilityLabel?: string }) {
+  const insets = useSafeAreaInsets();
+  const pal = useGoalPalette();
+  return (
+    <View style={[styles.footer, { backgroundColor: pal.bg, paddingBottom: insets.bottom + 8 }]}>
+      <Svg style={styles.footerFade} width="100%" height={4} pointerEvents="none">
+        <Defs>
+          <SvgLinearGradient id="footerFade" x1="0" y1="0" x2="0" y2="1">
+            <Stop offset="0" stopColor={pal.bg} stopOpacity={0} />
+            <Stop offset="1" stopColor={pal.bg} stopOpacity={1} />
+          </SvgLinearGradient>
+        </Defs>
+        <Rect x="0" y="0" width="100%" height="4" fill="url(#footerFade)" />
+      </Svg>
+      <Pressable
+        onPress={() => { haptics.tap(); onPress(); }}
+        style={({ pressed }) => [styles.footerBtn, { backgroundColor: Colors.primary, opacity: pressed ? 0.85 : 1 }]}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel ?? label}
+      >
+        <Text style={styles.footerText}>{label}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 /**
  * Drona's note at the bottom of a Goal & Plan screen, drawn like the Goal
  * screen's focus: the lime four-point sparkle, a small caps label, the text.
@@ -324,6 +370,10 @@ const styles = StyleSheet.create({
   lookValue: { fontSize: 14, lineHeight: 19, fontWeight: FontWeight.regular },
   lookStatus: { fontSize: 13, lineHeight: 17, fontWeight: FontWeight.regular },
   note: { flexDirection: 'row', gap: 14, alignItems: 'flex-start', marginTop: 28 },
+  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: S.lg, paddingTop: 0 },
+  footerFade: { position: 'absolute', left: 0, right: 0, top: -4 },
+  footerBtn: { height: FOOTER_H, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  footerText: { fontSize: 16, lineHeight: 21, fontWeight: FontWeight.semibold, color: '#0A0A0A' },
   noteLabel: { fontSize: 11, lineHeight: 14 },
   noteText: { fontSize: 14, lineHeight: 19, fontWeight: FontWeight.regular, marginTop: 4 },
   retry: { height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },

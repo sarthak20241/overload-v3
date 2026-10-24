@@ -228,6 +228,7 @@ export type AnalyticsEvent =
   | 'program_phase_opened'
   | 'program_pillar_opened'
   | 'program_pillar_viewed'
+  | 'program_pillar_adjust' // Adjust with Drona on a Train / Eat / Recover screen: { pillar, seq }
   | 'program_metrics_save_failed'
   | 'program_metric_logged'
   | 'goal_metrics_viewed'
