@@ -56,6 +56,7 @@ deno test --allow-all lib/coachBlocks.test.ts  # tables/charts/stats/progress in
 deno test --allow-all lib/servingSize.test.ts # food editor portion <-> stored serving
 deno test --allow-all lib/logDay.test.ts      # "2 eggs for tomorrow" -> which day a food log lands on
 deno test --allow-all lib/fitnessGoals.test.ts
+deno test --allow-all lib/foodBoxTour.test.ts   # food box tour: who gets it, step order
 deno test --allow-all lib/coachTopic.test.ts   # chats opened from the app: Drona's hidden topic turn + what is sent
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/coachConversations.test.ts  # saved chats: topic title, hidden turn kept
 deno test --allow-all lib/missingColumn.test.ts # app-before-migration column fallbacks
