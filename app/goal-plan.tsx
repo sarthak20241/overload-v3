@@ -49,7 +49,7 @@ import { CHART_HEIGHT, MetricBarsChart, MetricLineChart } from '@/components/pro
 import { MetricLogSheet } from '@/components/program/MetricLogSheet';
 import { PlanRows } from '@/components/program/PlanRows';
 import { AboutGoalSheet } from '@/components/program/AboutGoalSheet';
-import { ChevronRightIcon, SparkleIcon } from '@/components/program/LineIcons';
+import { ChevronLeftIcon, ChevronRightIcon, SparkleIcon } from '@/components/program/LineIcons';
 import { loadLiveReadings, peekLiveReadings, prefetchPillars } from '@/lib/pillarData';
 import { goalFocus, type LiveReadings } from '@/lib/phaseMetricHeadline';
 import { DotLine, LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T, useGoalPalette } from '@/components/program/finish';
@@ -370,16 +370,16 @@ export default function GoalPlanScreen() {
         <View style={styles.heroBlock}>
           <View style={styles.heroRow}>
             <View style={{ flex: 1 }}>
-              <SectionLabel>Current weight</SectionLabel>
+              <SectionLabel style={[styles.heroLabel, { color: pal.label }]}>Current weight</SectionLabel>
               <View style={styles.heroNumWrap}>
                 <Text style={[styles.heroNum, { color: C.foreground }]}>{weightKg == null ? '–' : formatMetricValue('bodyweight', weightKg)}</Text>
-                <Text style={[T.unit, { color: C.mutedFg }]}>kg</Text>
+                <Text style={[styles.heroUnit, { color: pal.muted }]}>kg</Text>
               </View>
               {weightKg == null && <Text style={[T.meta, { color: C.mutedFg, marginTop: S.xs }]}>Weigh in and your number shows here.</Text>}
             </View>
             {program.target_weight_kg != null && (
               <View style={styles.goalCol}>
-                <SectionLabel>Goal</SectionLabel>
+                <SectionLabel style={[styles.heroLabel, { color: pal.label }]}>Goal</SectionLabel>
                 <Text style={[styles.goalValue, { color: C.foreground }]}>{goalText('bodyweight', program.target_weight_kg)} kg</Text>
               </View>
             )}
@@ -396,7 +396,7 @@ export default function GoalPlanScreen() {
         <View style={styles.heroRow}>
           <View style={{ flex: 1 }}>
             <View style={styles.capsRow}>
-              <SectionLabel style={{ flexShrink: 1 }}>{heroCapsLabel(hero)}</SectionLabel>
+              <SectionLabel style={[styles.heroLabel, { color: pal.label, flexShrink: 1 }]}>{heroCapsLabel(hero)}</SectionLabel>
               {hero.kind === 'custom' && (
                 <View style={[styles.heroTag, { backgroundColor: C.muted }]}>
                   <Text style={[T.status, { color: C.mutedFg, fontSize: 11 }]}>You log it</Text>
@@ -407,7 +407,7 @@ export default function GoalPlanScreen() {
               <Text style={[styles.heroNum, { color: C.foreground }]}>
                 {hero.current_value == null ? '–' : formatMetricValue(hero.kind, hero.current_value, hero.unit)}
               </Text>
-              <Text style={[T.unit, { color: C.mutedFg }]}>
+              <Text style={[styles.heroUnit, { color: pal.muted }]}>
                 {isWeeklyKind(hero.kind) && hero.current_value != null ? `of ${formatMetricValue(hero.kind, hero.target_value, hero.unit)}` : hero.unit}
               </Text>
               {hero.kind === 'custom' && (
@@ -423,7 +423,7 @@ export default function GoalPlanScreen() {
             </View>
           </View>
           <View style={styles.goalCol}>
-            <SectionLabel>{goalLabel}</SectionLabel>
+            <SectionLabel style={[styles.heroLabel, { color: pal.label }]}>{goalLabel}</SectionLabel>
             <Text style={[styles.goalValue, { color: C.foreground }]}>
               {goalText(hero.kind, goalValue, hero.unit)}{hero.unit ? ` ${hero.unit}` : ''}
             </Text>
@@ -451,7 +451,7 @@ export default function GoalPlanScreen() {
             />
           )}
         </View>
-        {status ? <Text style={[T.body, { color: pal.muted, marginTop: S.xs + 6 }]}>{status}</Text> : null}
+        {status ? <Text style={[styles.heroStatus, { color: pal.muted }]}>{status}</Text> : null}
       </View>
     );
   };
@@ -511,9 +511,9 @@ export default function GoalPlanScreen() {
     <View style={[styles.root, { backgroundColor: pal.bg, paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Pressable onPress={back} hitSlop={12} accessibilityRole="button" accessibilityLabel="Back" style={styles.headerBtn}>
-          <Feather name="chevron-left" size={24} color={C.foreground} />
+          <ChevronLeftIcon size={28} strokeWidth={1.75} color={C.foreground} />
         </Pressable>
-        <Text style={[T.rowTitle, { color: C.foreground, fontWeight: FontWeight.semibold }]}>Goal & Plan</Text>
+        <Text style={[T.rowTitle, { color: C.foreground, fontWeight: FontWeight.semibold, fontSize: 17, lineHeight: 22 }]}>Goal & Plan</Text>
         <Pressable onPress={openMenu} hitSlop={12} accessibilityRole="button" accessibilityLabel="More" style={styles.headerBtn}>
           <Feather name="more-horizontal" size={22} color={C.foreground} />
           {dronaWaiting > 0 && <View style={[styles.menuDot, { backgroundColor: Colors.primary }]} />}
@@ -654,24 +654,30 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: S.lg, height: 44 },
   headerBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  menuDot: { position: 'absolute', top: 8, right: 8, width: 7, height: 7, borderRadius: 4 },
+  // 6pt, tucked against the top-right of the dots (a 22pt glyph centred in 44pt).
+  menuDot: { position: 'absolute', top: 14, right: 8, width: 6, height: 6, borderRadius: 3 },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: S.xxl * 2, gap: S.md },
   emptyIconWrap: { width: 56, height: 56, borderRadius: Radius.full, alignItems: 'center', justifyContent: 'center' },
 
   heroBlock: { marginTop: 19 },
-  heroNum: { fontSize: 42, lineHeight: 44, fontWeight: FontWeight.bold, letterSpacing: -1.3, fontVariant: ['tabular-nums'] },
-  goalValue: { fontSize: 20, lineHeight: 25, fontWeight: FontWeight.medium, marginTop: S.xs, fontVariant: ['tabular-nums'] },
+  // The hero's sizes, measured against the reference (same strings, same scale).
+  heroLabel: { fontSize: 10, lineHeight: 13, letterSpacing: 0.6 },
+  heroNum: { fontSize: 38, lineHeight: 40, fontWeight: FontWeight.bold, letterSpacing: -1.2, fontVariant: ['tabular-nums'] },
+  heroUnit: { fontSize: 15, lineHeight: 18, fontWeight: FontWeight.regular },
+  goalValue: { fontSize: 16, lineHeight: 20, fontWeight: FontWeight.medium, marginTop: S.xs, fontVariant: ['tabular-nums'] },
+  heroStatus: { fontSize: 12, lineHeight: 17, fontWeight: FontWeight.regular, marginTop: S.xs + 6 },
   heroRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: S.md },
   capsRow: { flexDirection: 'row', alignItems: 'center', gap: S.sm },
-  heroNumWrap: { flexDirection: 'row', alignItems: 'baseline', gap: 6, marginTop: S.xs },
+  heroNumWrap: { flexDirection: 'row', alignItems: 'baseline', gap: 6, marginTop: S.xs + 3 },
   heroTag: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: Radius.full },
   logBtn: { marginLeft: 10, paddingHorizontal: S.md, paddingVertical: 6, borderRadius: Radius.full, alignSelf: 'center', minHeight: 32, justifyContent: 'center' },
-  goalCol: { alignItems: 'flex-end', paddingBottom: 8 },
-  chartWrap: { marginTop: 0 },
+  // The goal value's bottom lines up with the bottom of the big number's unit.
+  goalCol: { alignItems: 'flex-end', paddingBottom: 6 },
+  chartWrap: { marginTop: 5 },
 
   // Wider than the text column (16pt edges on a 402pt screen, text at 38pt),
   // no outline: the surface against the page is the edge.
-  phaseCard: { marginTop: 12, marginHorizontal: -8, borderRadius: 22, paddingHorizontal: 22, paddingTop: 16, paddingBottom: 16 },
+  phaseCard: { marginTop: 15, marginHorizontal: -8, borderRadius: 22, paddingHorizontal: 22, paddingTop: 16, paddingBottom: 16 },
   // Sizes measured against the reference (same strings, same scale).
   phaseLabel: { fontSize: 10, lineHeight: 13, letterSpacing: 0.6 },
   phaseMeta: { fontSize: 13.5, lineHeight: 19, fontWeight: FontWeight.regular },

@@ -56,6 +56,8 @@ export function useGoalPalette() {
       muted: '#A5A9B1',
       /** A plan row's second line and the chevrons: a step quieter than `muted`. */
       rowSub: '#9A9EA6',
+      /** The hero's caps labels (CURRENT WEIGHT, GOAL). */
+      label: '#8E939B',
       chevron: '#6B7078',
       divider: 'rgba(255,255,255,0.07)',
       icon: 'rgba(255,255,255,0.9)',
@@ -70,6 +72,7 @@ export function useGoalPalette() {
     cardTop: C.borderSubtle,
     muted: C.mutedFg,
     rowSub: C.mutedFg,
+    label: C.mutedFg,
     chevron: C.textMuted,
     divider: C.borderSubtle,
     icon: C.foreground,

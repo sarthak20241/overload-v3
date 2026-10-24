@@ -88,12 +88,12 @@ export function MetricLineChart({ width, points, weeks, endTarget, height = CHAR
     <View style={{ width, height: H }}>
       <Svg width={width} height={H} viewBox={`0 0 ${width} ${H}`}>
         <Defs>
-          {/* A soft wash, not a block: ~10% lime at the line, gone ~50pt
-              below it (the reference), and always before the chart's floor so
-              no edge shows. In user space from the line's top, so it fades the
+          {/* A soft glow, not a block: ~6% lime at the line (measured on the
+              reference), gone by 70% of the way to the chart's floor so no
+              edge shows. In user space from the line's top, so it fades the
               same however flat the line is. */}
-          <LinearGradient id="metricFill" gradientUnits="userSpaceOnUse" x1="0" y1={String(fillTop)} x2="0" y2={String(Math.min(fillTop + 50, fillTop + (H - fillTop) * 0.85))}>
-            <Stop offset="0" stopColor={Colors.primary} stopOpacity={0.1} />
+          <LinearGradient id="metricFill" gradientUnits="userSpaceOnUse" x1="0" y1={String(fillTop)} x2="0" y2={String(fillTop + (H - fillTop) * 0.7)}>
+            <Stop offset="0" stopColor={Colors.primary} stopOpacity={0.06} />
             <Stop offset="1" stopColor={Colors.primary} stopOpacity={0} />
           </LinearGradient>
         </Defs>
@@ -102,15 +102,15 @@ export function MetricLineChart({ width, points, weeks, endTarget, height = CHAR
           <Path
             d={`M ${last.x},${last.y} L ${tx},${ty}`}
             stroke={pal.dash}
-            strokeWidth={1.5}
-            strokeDasharray="4 5"
+            strokeWidth={1}
+            strokeDasharray="3 4"
             strokeLinecap="round"
             fill="none"
           />
         )}
-        {line && <Path d={line} stroke={Colors.primary} strokeWidth={2.5} fill="none" strokeLinecap="round" strokeLinejoin="round" />}
-        {last && <Circle cx={last.x} cy={last.y} r={5} fill={Colors.primary} />}
-        <Circle cx={tx} cy={ty} r={6} fill={pal.bg} stroke={pal.ring} strokeWidth={1.5} />
+        {line && <Path d={line} stroke={Colors.primary} strokeWidth={2} fill="none" strokeLinecap="round" strokeLinejoin="round" />}
+        {last && <Circle cx={last.x} cy={last.y} r={4.5} fill={Colors.primary} />}
+        <Circle cx={tx} cy={ty} r={5} fill={pal.bg} stroke={pal.ring} strokeWidth={1.25} />
       </Svg>
     </View>
   );
