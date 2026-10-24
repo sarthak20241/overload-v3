@@ -12,7 +12,7 @@ import { Feather } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
 import { Colors, FontWeight } from '@/constants/theme';
-import { ChevronRightIcon } from '@/components/program/LineIcons';
+import { ChevronRightIcon, SparkleIcon } from '@/components/program/LineIcons';
 
 /** The spacing scale: 4 / 8 / 12 / 16 / 24 / 32. */
 export const S = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
@@ -58,6 +58,9 @@ export function useGoalPalette() {
       rowSub: '#9A9EA6',
       /** The hero's caps labels (CURRENT WEIGHT, GOAL). */
       label: '#8E939B',
+      /** A bar below its target (sleep nights), and a progress line's track. */
+      barOff: '#2A2E33',
+      track: 'rgba(255,255,255,0.06)',
       chevron: '#6B7078',
       divider: 'rgba(255,255,255,0.07)',
       icon: 'rgba(255,255,255,0.9)',
@@ -73,6 +76,8 @@ export function useGoalPalette() {
     muted: C.mutedFg,
     rowSub: C.mutedFg,
     label: C.mutedFg,
+    barOff: C.muted,
+    track: C.muted,
     chevron: C.textMuted,
     divider: C.borderSubtle,
     icon: C.foreground,
@@ -155,12 +160,20 @@ export function Row({ title, value, valueRest, status, onPress, icon, iconNode, 
           : subtitle ? <Text style={[T.rowSub, look?.subSize ? { fontSize: look.subSize, lineHeight: look.subSize + 5 } : null, { color: look?.sub ?? look?.muted ?? C.mutedFg, marginTop: 2 }]} numberOfLines={1}>{subtitle}</Text> : null}
       </View>
       {(value || valueRest) && (
-        <Text style={[T.rowValue, { color: C.mutedFg, marginRight: status ? S.lg : 0 }]} numberOfLines={1}>
-          {value ? <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>{value}</Text> : null}
+        <Text style={[T.rowValue, look ? styles.lookValue : null, { color: look?.muted ?? C.mutedFg, marginRight: status ? S.lg : 0 }]} numberOfLines={1}>
+          {value ? <Text style={{ color: C.foreground, fontWeight: look ? FontWeight.medium : FontWeight.semibold }}>{value}</Text> : null}
           {valueRest ? `${value ? ' ' : ''}${valueRest}` : ''}
         </Text>
       )}
-      {status && <Text style={[T.status, styles.rowStatus, { color: statusColor(status.tone) }]} numberOfLines={1}>{status.label}</Text>}
+      {/* The Goal look keeps a status word in the muted colour; only a problem (warn) gets colour. */}
+      {status && (
+        <Text
+          style={[T.status, styles.rowStatus, look ? styles.lookStatus : null, { color: look ? (status.tone === 'warn' ? statusColor('warn') : look.muted) : statusColor(status.tone) }]}
+          numberOfLines={1}
+        >
+          {status.label}
+        </Text>
+      )}
       {onPress && (look
         // The reference's chevron: a 1.5 stroke, its right tip about 2pt
         // inside the text column's edge.
@@ -191,16 +204,41 @@ export function Row({ title, value, valueRest, status, onPress, icon, iconNode, 
  * reference's spacing, wider than a space). The dot is its own Text: a
  * nested Text cannot take a margin. The last part shrinks and is cut first.
  */
-export function DotLine({ parts, style, containerStyle }: { parts: string[]; style?: StyleProp<TextStyle>; containerStyle?: StyleProp<ViewStyle> }) {
-  const shown = parts.filter((p) => p.length > 0);
+export function DotLine({ parts, style, containerStyle, colors }: {
+  parts: string[];
+  style?: StyleProp<TextStyle>;
+  containerStyle?: StyleProp<ViewStyle>;
+  /** A colour per part (index-matched to `parts`), for the one word that needs it, such as a warn status. */
+  colors?: (string | undefined)[];
+}) {
+  const shown = parts.map((p, i) => ({ p, color: colors?.[i] })).filter((x) => x.p.length > 0);
   return (
-    <View style={[{ flexDirection: 'row', alignItems: 'baseline' }, containerStyle]} accessible accessibilityLabel={shown.join(', ')}>
-      {shown.map((p, i) => (
+    <View style={[{ flexDirection: 'row', alignItems: 'baseline' }, containerStyle]} accessible accessibilityLabel={shown.map((x) => x.p).join(', ')}>
+      {shown.map(({ p, color }, i) => (
         <View key={i} style={{ flexDirection: 'row', alignItems: 'baseline', flexShrink: i === shown.length - 1 ? 1 : 0 }}>
           {i > 0 && <Text style={[style, { marginHorizontal: 6 }]}>·</Text>}
-          <Text style={[style, { flexShrink: 1 }]} numberOfLines={1}>{p}</Text>
+          <Text style={[style, { flexShrink: 1 }, color ? { color } : null]} numberOfLines={1}>{p}</Text>
         </View>
       ))}
+    </View>
+  );
+}
+
+/**
+ * Drona's note at the bottom of a Goal & Plan screen, drawn like the Goal
+ * screen's focus: the lime four-point sparkle, a small caps label, the text.
+ * Nothing at all when there is no text.
+ */
+export function CoachNote({ label, text, style }: { label: string; text: string | null | undefined; style?: StyleProp<ViewStyle> }) {
+  const { C } = useTheme();
+  if (!text) return null;
+  return (
+    <View style={[styles.note, style]} accessible accessibilityLabel={`${label}: ${text}`}>
+      <SparkleIcon size={18} color={Colors.primary} />
+      <View style={{ flex: 1 }}>
+        <SectionLabel style={styles.noteLabel}>{label}</SectionLabel>
+        <Text style={[styles.noteText, { color: C.foreground }]}>{text}</Text>
+      </View>
     </View>
   );
 }
@@ -283,6 +321,11 @@ const styles = StyleSheet.create({
   rowIcon: { width: 28, textAlign: 'center', marginRight: S.lg },
   rowIconWide: { width: 36, alignItems: 'center', marginRight: S.xl - 4 },
   rowStatus: { minWidth: 62, textAlign: 'right' },
+  lookValue: { fontSize: 14, lineHeight: 19, fontWeight: FontWeight.regular },
+  lookStatus: { fontSize: 13, lineHeight: 17, fontWeight: FontWeight.regular },
+  note: { flexDirection: 'row', gap: 14, alignItems: 'flex-start', marginTop: 28 },
+  noteLabel: { fontSize: 11, lineHeight: 14 },
+  noteText: { fontSize: 14, lineHeight: 19, fontWeight: FontWeight.regular, marginTop: 4 },
   retry: { height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   tip: { flexDirection: 'row', gap: S.md, marginTop: S.xxl - 2 },
   tipBar: { width: 3, borderRadius: 2 },
