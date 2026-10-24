@@ -45,7 +45,7 @@ import {
   phaseProgress,
 } from '@/lib/phaseMetrics';
 import { loadMetricSeries, type MetricSeries } from '@/lib/phaseMetricSeries';
-import { MetricBarsChart, MetricLineChart } from '@/components/program/PhaseMetricChart';
+import { CHART_HEIGHT, MetricBarsChart, MetricLineChart } from '@/components/program/PhaseMetricChart';
 import { MetricLogSheet } from '@/components/program/MetricLogSheet';
 import { PlanRows } from '@/components/program/PlanRows';
 import { AboutGoalSheet } from '@/components/program/AboutGoalSheet';
@@ -73,6 +73,8 @@ function addDaysISO(iso: string, delta: number): string {
 
 /** The pinned button's height plus its top padding; the scroll content clears it. */
 const FOOTER_H = 48;
+/** The Goal screen's line chart, 7pt shorter than the default so the page fits above the button. */
+const GOAL_CHART_HEIGHT = CHART_HEIGHT - 7;
 
 /** A goal figure as the reference shows it: "59 kg", not "59.0 kg", when whole. */
 function goalText(kind: Parameters<typeof formatMetricValue>[0], v: number, unit?: string): string {
@@ -435,6 +437,7 @@ export default function GoalPlanScreen() {
               points={chart.points.length > 0 ? chart.points : [{ x: Math.max(0, daysIn / 7), y: hero.current_value! }]}
               weeks={totalWeeks}
               endTarget={goalTarget ?? hero.target_value}
+              height={GOAL_CHART_HEIGHT}
             />
           )}
           {chart && chartKindOf(hero.kind) === 'bars' && (
@@ -498,10 +501,10 @@ export default function GoalPlanScreen() {
   // it fits, else the targets most behind; never wrapped or cut.
   const focus = currentPhase ? goalFocus(currentPhase.coach_line, currentPhase.metrics) : '';
   const unbuilt = currentPhase != null && currentPhase.routines.length === 0;
-  // The pinned button sits where the reference has it (top ~818 on an
-  // 874pt screen, bottom 8pt above the edge): low enough that the home bar
-  // overlaps its bottom edge, as in the reference.
-  const footerBottom = Math.max(insets.bottom - 26, 8);
+  // The pinned button sits fully inside the safe area: its bottom 8pt above
+  // the home indicator zone (insets.bottom), on every iPhone. The reference
+  // mock put it lower, under the home bar; that ignored the safe area.
+  const footerBottom = insets.bottom + 8;
   const pal = useGoalPalette();
 
   return (
@@ -560,7 +563,7 @@ export default function GoalPlanScreen() {
             <Stagger index={1}>{renderHero()}</Stagger>
             <Stagger index={2}>{renderPhaseCard()}</Stagger>
             {shownPhase && (
-              <View style={{ marginTop: 25 }}>
+              <View style={{ marginTop: 19 }}>
                 <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} headingGap={13} />
               </View>
             )}

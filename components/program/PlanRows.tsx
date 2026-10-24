@@ -85,7 +85,7 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
   const { C } = useTheme();
   const router = useRouter();
   const statusColor = useStatusColor();
-  // The Goal screen draws the reference's look: 66pt rows, thin icons in a
+  // The Goal screen draws the reference's look: 58pt rows, thin icons in a
   // 40pt column (the dumbbell drawn larger: it is wide and short), 16/500
   // titles over 13pt subtitles, 1pt lines, dots with 6pt of air,
   // plan-first lines, status words in the same muted colour.
@@ -130,7 +130,7 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
                 ? <Icon size={pillar === 'train' ? 40 : pillar === 'recover' ? 31 : 29} strokeWidth={1.6} color={pal.icon} />
                 : <Icon size={26} color={C.foreground} />}
               title={title}
-              minHeight={goal ? 66 : 54}
+              minHeight={goal ? 58 : 54}
               look={goal ? {
                 muted: pal.muted, divider: pal.divider, titleSize: 16, titleWeight: FontWeight.medium, subSize: 12.5,
                 sub: pal.rowSub, chevron: pal.chevron, iconColumn: 40,

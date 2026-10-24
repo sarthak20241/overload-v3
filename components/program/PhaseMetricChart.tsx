@@ -49,11 +49,13 @@ interface LineProps {
   weeks: number;
   /** The value the hollow ring at the end marks: the program goal, else the phase target. */
   endTarget: number;
+  /** The chart's height; CHART_HEIGHT unless the screen needs it shorter. */
+  height?: number;
 }
 
-export function MetricLineChart({ width, points, weeks, endTarget }: LineProps) {
+export function MetricLineChart({ width, points, weeks, endTarget, height = CHART_HEIGHT }: LineProps) {
   const pal = useGoalPalette();
-  const H = CHART_HEIGHT;
+  const H = height;
   const x1 = width - X1_INSET;
   // From the first reading inside the program to the program's end.
   const inside = points.filter((p) => p.x >= 0);
