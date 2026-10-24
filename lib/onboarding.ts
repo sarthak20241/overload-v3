@@ -31,7 +31,7 @@ import {
   type GuestProfile,
 } from '@/lib/guestStore';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
-import { missingGoalsColumn, primaryGoal, selectedGoals } from '@/lib/fitnessGoals';
+import { missingGoalsColumn, primaryGoal, profileGoalFields, selectedGoals } from '@/lib/fitnessGoals';
 
 // ─── Answers ─────────────────────────────────────────────────────────────────
 
@@ -360,17 +360,8 @@ export async function saveOnboardingProfile(
   opts: { isGuest: boolean; clerkId: string | null; client: SupabaseClient },
 ): Promise<void> {
   const patch: Partial<GuestProfile> = {};
-  const goals = selectedGoals(answers);
-  if (goals.length) {
-    patch.goal = primaryGoal(answers);
-    patch.goals = goals;
-  } else if (answers.goalNote?.trim()) {
-    // A written goal with no preset card: the program brief falls back to
-    // general, so the profile says general too. Drona's goals_disagree
-    // signal compares this column with the program's goal.
-    patch.goal = 'general';
-    patch.goals = ['general'];
-  }
+  const goalFields = profileGoalFields(answers);
+  if (goalFields) Object.assign(patch, goalFields);
   if (answers.experience) {
     patch.experience_level = answers.experience;
     patch.training_age_months = TRAINING_AGE_MONTHS[answers.experience];

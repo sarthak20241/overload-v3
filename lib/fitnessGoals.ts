@@ -21,6 +21,20 @@ export function primaryGoal(a: { goals?: unknown; goal?: unknown }): CoachGoal {
   return selectedGoals(a)[0] ?? 'general';
 }
 
+/**
+ * What onboarding writes to the profile's goal columns, or null for nothing.
+ * A goal written in the user's own words with no preset card saves general:
+ * the program brief falls back to general, and Drona's goals_disagree signal
+ * compares this column with the program's goal.
+ */
+export function profileGoalFields(a: { goals?: unknown; goal?: unknown; goalNote?: string | null }):
+  { goal: CoachGoal; goals: CoachGoal[] } | null {
+  const goals = selectedGoals(a);
+  if (goals.length) return { goal: goals[0], goals };
+  if (a.goalNote?.trim()) return { goal: 'general', goals: ['general'] };
+  return null;
+}
+
 export function toggleGoal(a: { goals?: unknown; goal?: unknown }, value: CoachGoal) {
   const current = selectedGoals(a);
   const goals = current.includes(value)
