@@ -85,9 +85,10 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
   const { C } = useTheme();
   const router = useRouter();
   const statusColor = useStatusColor();
-  // The Goal screen draws the reference's look: 65pt rows, 29pt thin icons
-  // in a 40pt column, 17/14 type, full-width hairlines, plan-first lines,
-  // status words in the same muted colour.
+  // The Goal screen draws the reference's look: 66pt rows, thin icons in a
+  // 40pt column (the dumbbell drawn larger: it is wide and short), 16/500
+  // titles over 13pt subtitles, 1pt lines, dots with 6pt of air,
+  // plan-first lines, status words in the same muted colour.
   const pal = useGoalPalette();
   const goal = from === 'goal';
   // The approved reference's thin outline icons (Lucide paths, drawn inline).
@@ -125,10 +126,16 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
         return (
           <Stagger key={pillar} index={staggerFrom + 1 + i}>
             <Row
-              iconNode={goal ? <Icon size={29} strokeWidth={1.6} color={pal.icon} /> : <Icon size={26} color={C.foreground} />}
+              iconNode={goal
+                ? <Icon size={pillar === 'train' ? 40 : pillar === 'recover' ? 31 : 29} strokeWidth={1.6} color={pal.icon} />
+                : <Icon size={26} color={C.foreground} />}
               title={title}
-              minHeight={goal ? 65 : 54}
-              look={goal ? { muted: pal.muted, divider: pal.divider, titleSize: 17, subSize: 14, iconColumn: 40 } : undefined}
+              minHeight={goal ? 66 : 54}
+              look={goal ? {
+                muted: pal.muted, divider: pal.divider, titleSize: 16, titleWeight: FontWeight.medium, subSize: 12.5,
+                sub: pal.rowSub, chevron: pal.chevron, iconColumn: 40,
+              } : undefined}
+              subtitleParts={goal ? [...s.text.split(' · '), ...(s.status ? [STATUS_LABEL[s.status]] : [])] : undefined}
               first={i === 0}
               last={i === rows.length - 1}
               onPress={() => open(pillar)}

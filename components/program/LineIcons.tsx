@@ -6,8 +6,8 @@
  * react-native-svg, which has shipped since the first build, so no new
  * dependency and nothing native.
  *
- * The fork and knife, moon and sparkle paths are Lucide's (lucide-static
- * 0.460.0: utensils, moon, sparkle); the dumbbell is drawn here in the same
+ * The fork and knife, moon, sparkle and chevron paths are Lucide's
+ * (lucide-static 0.460.0: utensils, moon, sparkle, chevron-right); the dumbbell is drawn here in the same
  * stroke. Lucide is ISC licensed:
  *
  *   ISC License
@@ -86,6 +86,15 @@ export function SparkleIcon(p: LineIconProps) {
   return (
     <Icon {...p}>
       <Path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z" />
+    </Icon>
+  );
+}
+
+/** The row and card chevron, thinner than Feather's (the reference's 1.5 stroke). */
+export function ChevronRightIcon(p: LineIconProps) {
+  return (
+    <Icon {...p}>
+      <Path d="m9 18 6-6-6-6" />
     </Icon>
   );
 }

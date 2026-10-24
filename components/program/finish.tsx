@@ -12,6 +12,7 @@ import { Feather } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
 import { Colors, FontWeight } from '@/constants/theme';
+import { ChevronRightIcon } from '@/components/program/LineIcons';
 
 /** The spacing scale: 4 / 8 / 12 / 16 / 24 / 32. */
 export const S = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
@@ -53,6 +54,9 @@ export function useGoalPalette() {
       cardBorder: 'rgba(255,255,255,0.05)',
       cardTop: 'rgba(255,255,255,0.06)',
       muted: '#A5A9B1',
+      /** A plan row's second line and the chevrons: a step quieter than `muted`. */
+      rowSub: '#9A9EA6',
+      chevron: '#6B7078',
       divider: 'rgba(255,255,255,0.07)',
       icon: 'rgba(255,255,255,0.9)',
       dash: 'rgba(255,255,255,0.35)',
@@ -65,6 +69,8 @@ export function useGoalPalette() {
     cardBorder: C.borderSubtle,
     cardTop: C.borderSubtle,
     muted: C.mutedFg,
+    rowSub: C.mutedFg,
+    chevron: C.textMuted,
     divider: C.borderSubtle,
     icon: C.foreground,
     dash: C.textMuted,
@@ -109,14 +115,19 @@ interface RowProps {
   /** A drawn icon instead of a Feather glyph (the plan rows' thin line icons, components/program/LineIcons). */
   iconNode?: ReactNode;
   subtitle?: ReactNode;
+  /** The subtitle as parts joined by a spaced dot (DotLine), instead of `subtitle`. */
+  subtitleParts?: string[];
   /** Taller rows for a short list that is the page's main content (the plan rows). */
   minHeight?: number;
   /**
-   * The Goal screen's list look (the reference): its own muted colour, and
-   * full-width hairlines in its divider colour above the first row, between
-   * rows, and below the last.
+   * The Goal screen's list look (the reference): its own muted colours, a
+   * thin 1.5-stroke chevron, and 1pt lines in its divider colour above the
+   * first row, between rows, and below the last.
    */
-  look?: { muted: string; divider: string; titleSize?: number; subSize?: number; iconColumn?: number };
+  look?: {
+    muted: string; divider: string; titleSize?: number; subSize?: number; iconColumn?: number;
+    titleWeight?: TextStyle['fontWeight']; sub?: string; chevron?: string; chevronSize?: number;
+  };
   first?: boolean;
   last?: boolean;
   accessibilityLabel?: string;
@@ -126,7 +137,7 @@ interface RowProps {
  * A list row: 52pt minimum, hairline dividers, a full-row press target with
  * a subtle pressed state, a chevron only when it navigates.
  */
-export function Row({ title, value, valueRest, status, onPress, icon, iconNode, subtitle, minHeight, look, first, last, accessibilityLabel }: RowProps) {
+export function Row({ title, value, valueRest, status, onPress, icon, iconNode, subtitle, subtitleParts, minHeight, look, first, last, accessibilityLabel }: RowProps) {
   const { C } = useTheme();
   const statusColor = useStatusColor();
   const body = (
@@ -135,8 +146,10 @@ export function Row({ title, value, valueRest, status, onPress, icon, iconNode, 
         ? <View style={[styles.rowIconWide, look?.iconColumn ? { width: look.iconColumn, marginRight: 18 } : null]}>{iconNode}</View>
         : icon && <Feather name={icon} size={22} color={C.foreground} style={styles.rowIcon} />}
       <View style={{ flex: 1 }}>
-        <Text style={[T.rowTitle, look?.titleSize ? { fontSize: look.titleSize, lineHeight: look.titleSize + 5 } : null, { color: C.foreground }]} numberOfLines={1}>{title}</Text>
-        {subtitle ? <Text style={[T.rowSub, look?.subSize ? { fontSize: look.subSize, lineHeight: look.subSize + 5 } : null, { color: look?.muted ?? C.mutedFg, marginTop: 2 }]} numberOfLines={1}>{subtitle}</Text> : null}
+        <Text style={[T.rowTitle, look?.titleSize ? { fontSize: look.titleSize, lineHeight: look.titleSize + 5 } : null, look?.titleWeight ? { fontWeight: look.titleWeight } : null, { color: C.foreground }]} numberOfLines={1}>{title}</Text>
+        {subtitleParts && subtitleParts.length > 0
+          ? <DotLine parts={subtitleParts} style={[T.rowSub, look?.subSize ? { fontSize: look.subSize, lineHeight: look.subSize + 5 } : null, { color: look?.sub ?? look?.muted ?? C.mutedFg }]} containerStyle={{ marginTop: 2 }} />
+          : subtitle ? <Text style={[T.rowSub, look?.subSize ? { fontSize: look.subSize, lineHeight: look.subSize + 5 } : null, { color: look?.sub ?? look?.muted ?? C.mutedFg, marginTop: 2 }]} numberOfLines={1}>{subtitle}</Text> : null}
       </View>
       {(value || valueRest) && (
         <Text style={[T.rowValue, { color: C.mutedFg, marginRight: status ? S.lg : 0 }]} numberOfLines={1}>
@@ -145,11 +158,16 @@ export function Row({ title, value, valueRest, status, onPress, icon, iconNode, 
         </Text>
       )}
       {status && <Text style={[T.status, styles.rowStatus, { color: statusColor(status.tone) }]} numberOfLines={1}>{status.label}</Text>}
-      {onPress && <Feather name="chevron-right" size={18} color={look ? look.muted : C.textMuted} style={{ marginLeft: S.sm }} />}
+      {onPress && (look
+        // The reference's chevron: a 1.5 stroke, its right tip about 2pt
+        // inside the text column's edge.
+        ? <View style={{ marginLeft: S.sm, marginRight: -6 }}><ChevronRightIcon size={look.chevronSize ?? 23} strokeWidth={1.5} color={look.chevron ?? look.muted} /></View>
+        : <Feather name="chevron-right" size={18} color={C.textMuted} style={{ marginLeft: S.sm }} />)}
     </>
   );
+  // The Goal look draws a full 1pt line (the reference's), not a hairline.
   const border = look
-    ? [first && { borderTopWidth: StyleSheet.hairlineWidth }, { borderBottomWidth: StyleSheet.hairlineWidth }, { borderColor: look.divider }]
+    ? [first && { borderTopWidth: 1 }, { borderBottomWidth: 1 }, { borderColor: look.divider }]
     : [first && { borderTopWidth: StyleSheet.hairlineWidth }, !last && { borderBottomWidth: StyleSheet.hairlineWidth }, { borderColor: C.borderSubtle }];
   const tall = minHeight ? { minHeight, paddingVertical: 4 } : null;
   if (!onPress) return <View style={[styles.row, tall, border]}>{body}</View>;
@@ -162,6 +180,25 @@ export function Row({ title, value, valueRest, status, onPress, icon, iconNode, 
     >
       {body}
     </Pressable>
+  );
+}
+
+/**
+ * One line of parts joined by a dot with 6pt of air on each side (the
+ * reference's spacing, wider than a space). The dot is its own Text: a
+ * nested Text cannot take a margin. The last part shrinks and is cut first.
+ */
+export function DotLine({ parts, style, containerStyle }: { parts: string[]; style?: StyleProp<TextStyle>; containerStyle?: StyleProp<ViewStyle> }) {
+  const shown = parts.filter((p) => p.length > 0);
+  return (
+    <View style={[{ flexDirection: 'row', alignItems: 'baseline' }, containerStyle]} accessible accessibilityLabel={shown.join(', ')}>
+      {shown.map((p, i) => (
+        <View key={i} style={{ flexDirection: 'row', alignItems: 'baseline', flexShrink: i === shown.length - 1 ? 1 : 0 }}>
+          {i > 0 && <Text style={[style, { marginHorizontal: 6 }]}>·</Text>}
+          <Text style={[style, { flexShrink: 1 }]} numberOfLines={1}>{p}</Text>
+        </View>
+      ))}
+    </View>
   );
 }
 

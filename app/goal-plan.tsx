@@ -49,10 +49,10 @@ import { MetricBarsChart, MetricLineChart } from '@/components/program/PhaseMetr
 import { MetricLogSheet } from '@/components/program/MetricLogSheet';
 import { PlanRows } from '@/components/program/PlanRows';
 import { AboutGoalSheet } from '@/components/program/AboutGoalSheet';
-import { SparkleIcon } from '@/components/program/LineIcons';
+import { ChevronRightIcon, SparkleIcon } from '@/components/program/LineIcons';
 import { loadLiveReadings, peekLiveReadings, prefetchPillars } from '@/lib/pillarData';
 import { goalFocus, type LiveReadings } from '@/lib/phaseMetricHeadline';
-import { LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T, useGoalPalette } from '@/components/program/finish';
+import { DotLine, LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T, useGoalPalette } from '@/components/program/finish';
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from 'react-native-svg';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -467,18 +467,21 @@ export default function GoalPlanScreen() {
     return (
       <Pressable
         onPress={openPhase}
-        style={({ pressed }) => [styles.phaseCard, { backgroundColor: pal.card, borderColor: pal.cardBorder, borderTopColor: pal.cardTop, opacity: pressed ? 0.85 : 1 }]}
+        style={({ pressed }) => [styles.phaseCard, { backgroundColor: pal.card, opacity: pressed ? 0.85 : 1 }]}
         accessibilityRole="button"
         accessibilityLabel={`Open the ${ph.name} phase. ${when}${target ? `, ${target}` : ''}${pct != null ? `, ${pct} percent of the phase target` : ''}`}
       >
-        <SectionLabel>{isCur ? 'Current phase' : notStarted ? 'First phase' : ended ? 'Last phase' : 'Phase'}</SectionLabel>
+        <SectionLabel style={styles.phaseLabel}>{isCur ? 'Current phase' : notStarted ? 'First phase' : ended ? 'Last phase' : 'Phase'}</SectionLabel>
+        {/* The chevron sits a little below the name's middle, as measured on the reference. */}
         <View style={styles.phaseTitleRow}>
-          <Text style={[styles.phaseName, { color: C.foreground }]} numberOfLines={1}>{ph.name}</Text>
-          <Feather name="chevron-right" size={20} color={pal.muted} />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.phaseName, { color: C.foreground }]} numberOfLines={1}>{ph.name}</Text>
+            <DotLine parts={[when, target ?? '']} style={[styles.phaseMeta, { color: pal.muted }]} containerStyle={{ marginTop: 2 }} />
+          </View>
+          <View style={{ marginRight: -12, alignSelf: 'flex-start', marginTop: 2 }}>
+            <ChevronRightIcon size={24} strokeWidth={1.5} color={pal.chevron} />
+          </View>
         </View>
-        <Text style={[T.body, { color: pal.muted, marginTop: 2 }]} numberOfLines={1}>
-          {when}{target ? `  ·  ${target}` : ''}
-        </Text>
         {pct != null && (
           <>
             <View style={[styles.jobBar, { backgroundColor: 'rgba(255,255,255,0.08)' }]}>
@@ -557,8 +560,8 @@ export default function GoalPlanScreen() {
             <Stagger index={1}>{renderHero()}</Stagger>
             <Stagger index={2}>{renderPhaseCard()}</Stagger>
             {shownPhase && (
-              <View style={{ marginTop: 22 }}>
-                <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} headingGap={17} />
+              <View style={{ marginTop: 25 }}>
+                <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} headingGap={13} />
               </View>
             )}
 
@@ -663,12 +666,17 @@ const styles = StyleSheet.create({
   goalCol: { alignItems: 'flex-end', paddingBottom: 8 },
   chartWrap: { marginTop: 0 },
 
-  phaseCard: { marginTop: 12, borderRadius: 20, paddingHorizontal: 18, paddingTop: 12, paddingBottom: 16, borderWidth: StyleSheet.hairlineWidth, borderTopWidth: 1 },
-  phaseName: { fontSize: 18, lineHeight: 23, fontWeight: FontWeight.semibold, flexShrink: 1 },
+  // Wider than the text column (16pt edges on a 402pt screen, text at 38pt),
+  // no outline: the surface against the page is the edge.
+  phaseCard: { marginTop: 12, marginHorizontal: -8, borderRadius: 22, paddingHorizontal: 22, paddingTop: 16, paddingBottom: 16 },
+  // Sizes measured against the reference (same strings, same scale).
+  phaseLabel: { fontSize: 10, lineHeight: 13, letterSpacing: 0.6 },
+  phaseMeta: { fontSize: 13.5, lineHeight: 19, fontWeight: FontWeight.regular },
+  phaseName: { fontSize: 16.5, lineHeight: 22, fontWeight: FontWeight.semibold, flexShrink: 1 },
   phaseTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, gap: S.sm },
-  jobBar: { height: 8, borderRadius: 4, marginTop: 11, overflow: 'hidden' },
+  jobBar: { height: 8, borderRadius: 4, marginTop: 13, overflow: 'hidden' },
   jobFill: { height: '100%', borderRadius: 4 },
-  pctText: { fontSize: 14, lineHeight: 18, fontWeight: FontWeight.regular, marginTop: 5 },
+  pctText: { fontSize: 12, lineHeight: 17, fontWeight: FontWeight.regular, marginTop: 5 },
 
   focus: { flexDirection: 'row', gap: 14, alignItems: 'flex-start', marginTop: 20 },
   focusLabel: { fontSize: 11, lineHeight: 14 },
