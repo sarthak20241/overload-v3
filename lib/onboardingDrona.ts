@@ -40,8 +40,10 @@ export interface AnonIntake {
   weeklyRateKg: number | null;
   direction: 'loss' | 'gain' | null;
   targets: { kcal: number; protein: number; carb: number; fat: number } | null;
-  /** Optional free text; the edge sanitizes and length-caps it before use. */
+  /** Optional free text, like the two notes below; the edge sanitizes and
+   *  length-caps all three before use. */
   goalNote: string | null;
+  /** Optional free text; the edge sanitizes and length-caps it before use. */
   healthNotes: string | null;
   routinePrefs: string | null;
 }

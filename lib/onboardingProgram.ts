@@ -241,7 +241,8 @@ export function buildOnboardingProgramMessage(a: OnboardingAnswers, extras: Prog
     : `No weight target, so plan a 12 weeks block toward the goal. Omit target_date and target_weight_kg.`;
 
   const fence = (s: string) => `"""\n${s.replace(/"""/g, '"')}\n"""`;
-  const goalNote = a.goalNote?.trim();
+  // Same shape as the anon route's anonText(goalNote, 200): one line, capped.
+  const goalNote = a.goalNote?.replace(/\s+/g, ' ').trim().slice(0, 200);
   const healthNotes = a.healthNotes?.trim();
   const routinePrefs = a.routinePrefs?.trim();
   const t = extras.targets;

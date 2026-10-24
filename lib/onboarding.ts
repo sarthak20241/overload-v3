@@ -364,6 +364,12 @@ export async function saveOnboardingProfile(
   if (goals.length) {
     patch.goal = primaryGoal(answers);
     patch.goals = goals;
+  } else if (answers.goalNote?.trim()) {
+    // A written goal with no preset card: the program brief falls back to
+    // general, so the profile says general too. Drona's goals_disagree
+    // signal compares this column with the program's goal.
+    patch.goal = 'general';
+    patch.goals = ['general'];
   }
   if (answers.experience) {
     patch.experience_level = answers.experience;
@@ -397,6 +403,7 @@ export async function saveOnboardingProfile(
   const prefs = answers.routinePrefs?.trim();
   // A goal in their own words lands in goal_detail, which Drona's memory and
   // context already read ("goal detail"), so it outlives the starter plan.
+  // Like the notes above, guests lose it and a blank note keeps an old one.
   const goalNote = answers.goalNote?.trim();
   if (goalNote) row.goal_detail = goalNote.slice(0, 500);
   if (injury) row.injury_notes = injury.slice(0, 500);

@@ -85,12 +85,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { DronaMark } from '@/components/coach/DronaMark';
-import { orbWebBox } from '@/components/coach/OrbStage';
-import { SignalOrb, signalOrbColor } from '@/components/coach/SignalOrb';
-
-// Drona's orb on the trust screen. Drawn with SignalOrb directly so it can run
-// brighter than OrbStage's default, which reads dim on this dark screen.
-const TRUST_ORB = 140;
+import { DronaHeroOrb } from '@/components/coach/DronaHeroOrb';
 import { invalidateCoachAccess } from '@/hooks/useCoachAccess';
 import { prefetchDashboard } from '@/lib/dashboardData';
 import {
@@ -184,7 +179,7 @@ function perMonthLabel(pkg: RevenueCatPackage): string | null {
 
 export default function UpgradeScreen() {
   const router = useRouter();
-  const { C, mode } = useTheme();
+  const { C } = useTheme();
   const toast = useToast();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
@@ -566,16 +561,7 @@ export default function UpgradeScreen() {
             <Animated.View entering={FadeInDown.delay(150).duration(400)} style={u.quoteWrap}>
               {/* Drona's orb, the same one as the coach chat, speaking the
                   promise below. */}
-              <View style={[u.trustOrb, { width: TRUST_ORB, height: TRUST_ORB }]} pointerEvents="none">
-                <SignalOrb
-                  size={orbWebBox(TRUST_ORB)}
-                  state="listening"
-                  level={0.4}
-                  particles={2200}
-                  brightness={1.6}
-                  color={signalOrbColor(mode)}
-                />
-              </View>
+              <DronaHeroOrb style={u.trustOrb} />
               <View style={[u.quoteBubble, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
                 <Text style={[u.quoteText, { color: C.foreground }]}>
                   From today, getting you there is my job too. I'll build the
@@ -1071,7 +1057,7 @@ const u = StyleSheet.create({
   quoteWrap: { alignItems: 'center', marginTop: Spacing.xxxl, gap: Spacing.lg },
   // The orb box carries a halo, so trim it above; leave room below so the
   // sphere and the bubble do not crowd each other.
-  trustOrb: { marginTop: -Spacing.md, marginBottom: Spacing.sm, alignItems: 'center', justifyContent: 'center' },
+  trustOrb: { marginTop: -Spacing.md, marginBottom: Spacing.sm },
   quoteBubble: {
     borderWidth: 1,
     borderRadius: Radius.xl,

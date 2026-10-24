@@ -78,8 +78,7 @@ import { CommitmentHold } from '@/components/onboarding/CommitmentHold';
 import { BuildMoment } from '@/components/onboarding/BuildMoment';
 import { ProjectedCurve } from '@/components/onboarding/ProjectedCurve';
 import { DronaMark } from '@/components/coach/DronaMark';
-import { orbWebBox } from '@/components/coach/OrbStage';
-import { SignalOrb, signalOrbColor } from '@/components/coach/SignalOrb';
+import { DronaHeroOrb } from '@/components/coach/DronaHeroOrb';
 import { DemoLoop } from '@/components/onboarding/DemoLoop';
 import {
   EMPTY_ANSWERS,
@@ -131,9 +130,6 @@ const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'healt
 // Steps counted by the progress header (welcome and the build moment hide it).
 const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
 
-/** The interlude orb's box, matching the paywall trust screen. */
-const INTERLUDE_ORB = 140;
-
 const GOAL_OPTIONS: { value: CoachGoal; icon: keyof typeof Feather.glyphMap; title: string }[] = [
   { value: 'hypertrophy', icon: 'layers', title: 'Build muscle' },
   { value: 'strength', icon: 'zap', title: 'Get stronger' },
@@ -158,7 +154,7 @@ const GOAL_PHRASES: Record<CoachGoal, string> = {
 
 export default function OnboardingScreen() {
   const router = useRouter();
-  const { C, mode } = useTheme();
+  const { C } = useTheme();
   const { user, isSignedIn, isLoaded, getToken } = useClerkUser();
   const { isGuest, isLoaded: guestLoaded } = useGuestMode();
   // A fresh visitor (no account, not an explicit guest) is the guest-first
@@ -190,7 +186,15 @@ export default function OnboardingScreen() {
   // "Something else" opens a text box under six cards; once the keyboard is
   // up, scroll it into view or the user types blind.
   const goalScrollRef = useRef<ScrollView>(null);
+  // Text typed before "Something else" was toggled off, so a re-tap brings it
+  // back. A closed card sends nothing (goalNote is null while it is off).
+  const stashedGoalNote = useRef('');
   const goalNoteOpen = step === 'goal' && answers.goalNote != null;
+  // Continue needs a preset goal or a written one. "Something else" open but
+  // left empty blocks it: it would tell Drona nothing.
+  const hasWrittenGoal = !!answers.goalNote?.trim();
+  const emptyNoteOpen = answers.goalNote != null && !hasWrittenGoal;
+  const goalStepReady = hasWrittenGoal || (selectedGoals(answers).length > 0 && !emptyNoteOpen);
   useEffect(() => {
     if (!goalNoteOpen) return;
     const toEnd = () => goalScrollRef.current?.scrollToEnd({ animated: true });
@@ -800,12 +804,7 @@ export default function OnboardingScreen() {
             footer={
               <PrimaryCta
                 label="Continue"
-                // A preset goal, or a written one. "Something else" chosen but
-                // left empty does not count: it would tell Drona nothing.
-                disabled={
-                  (answers.goalNote != null && !answers.goalNote.trim())
-                  || (selectedGoals(answers).length === 0 && !answers.goalNote?.trim())
-                }
+                disabled={!goalStepReady}
                 onPress={() => goTo('experience')}
               />
             }
@@ -833,7 +832,11 @@ export default function OnboardingScreen() {
                 multiple
                 compact
                 selected={answers.goalNote != null}
-                onPress={() => setAnswers((a) => ({ ...a, goalNote: a.goalNote == null ? '' : null }))}
+                onPress={() => setAnswers((a) => {
+                  if (a.goalNote == null) return { ...a, goalNote: stashedGoalNote.current };
+                  stashedGoalNote.current = a.goalNote;
+                  return { ...a, goalNote: null };
+                })}
               />
             </View>
             {answers.goalNote != null && (
@@ -1168,20 +1171,9 @@ export default function OnboardingScreen() {
             footer={<PrimaryCta label="Lock it in" onPress={() => goTo('commit')} />}
           >
               <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
-                {/* Drona's live orb, the same one as the paywall's trust
-                    screen, so Drona reads as the one setting the route. No
-                    placeholder: nothing waits here, so a mark that swaps to
-                    the orb a second later reads as a glitch. */}
-                <View style={[s.interludeOrb, { width: INTERLUDE_ORB, height: INTERLUDE_ORB }]} pointerEvents="none">
-                  <SignalOrb
-                    size={orbWebBox(INTERLUDE_ORB)}
-                    state="listening"
-                    level={0.4}
-                    particles={2200}
-                    brightness={1.6}
-                    color={signalOrbColor(mode)}
-                  />
-                </View>
+                {/* The same orb as the paywall's trust screen, so Drona reads
+                    as the one setting the route. */}
+                <DronaHeroOrb />
                 <View style={s.claimList}>
                   {[
                     'I watch your training, food and recovery',
@@ -1493,7 +1485,6 @@ const s = StyleSheet.create({
   // Question steps
   options: { gap: Spacing.md },
   optionsCompact: { gap: Spacing.sm },
-  interludeOrb: { alignItems: 'center', justifyContent: 'center' },
 
 
   // Body basics + target
