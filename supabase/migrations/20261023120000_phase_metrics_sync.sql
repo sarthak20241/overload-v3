@@ -31,9 +31,10 @@ begin;
 
 -- True when `tbl` already carries the bound on `col`, matched by NAME, not
 -- by "any check on the column" (an unrelated check would then hide a missing
--- bound). Two names count: the one this file adds (`named`), and the name
--- Postgres gives an inline column check (`<table>_<col>_check`), which is
--- what a database built from the current 20261022022018 has.
+-- bound). Two names count: the one this file adds (`named`), which the
+-- current 20261022022018 also gives its inline checks, and the name Postgres
+-- gives an unnamed inline check (`<table>_<col>_check`), which a database
+-- built from an earlier revision of that file has.
 create or replace function pg_temp.has_check(tbl regclass, col text, named text) returns boolean
 language sql stable as $$
   select exists (
