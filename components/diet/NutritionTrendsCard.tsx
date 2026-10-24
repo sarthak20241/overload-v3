@@ -50,12 +50,16 @@ export function NutritionTrendsCard() {
   // Bumped each time the screen comes into focus, so food logged elsewhere
   // shows on return. Starts at 0: the first focus does the first load.
   const [focusTick, setFocusTick] = useState(0);
+  // The period whose load failed, so the card says so instead of leaving the
+  // last period's bars dimmed under the new header for good.
+  const [failed, setFailed] = useState<string | null>(null);
   useFocusEffect(useCallback(() => { setFocusTick((t) => t + 1); }, []));
 
   const key = `${days}:${offset}`;
   useEffect(() => {
     if (focusTick === 0) return;
     let on = true;
+    setFailed(null);
     const { start } = periodFor(new Date(), days, offset);
     loadNutritionRange(supabase, start, days)
       .then((h) => {
@@ -63,7 +67,7 @@ export function NutritionTrendsCard() {
         setLoaded({ key: `${days}:${offset}`, history: h });
         if (h.some((d) => d.kcal > 0)) setEverLogged(true);
       })
-      .catch(() => {});
+      .catch(() => { if (on) setFailed(`${days}:${offset}`); });
     return () => { on = false; };
   }, [supabase, days, offset, focusTick]);
 
@@ -134,6 +138,11 @@ export function NutritionTrendsCard() {
         ))}
       </View>
 
+      {failed === key && (
+        <TouchableOpacity onPress={() => setFocusTick((t) => t + 1)} accessibilityRole="button">
+          <Text style={[s.failed, { color: C.textMuted }]}>Couldn't load these days. Tap to try again.</Text>
+        </TouchableOpacity>
+      )}
       <View style={stale && s.stale}>
       {logged.length === 0 ? (
         <View style={s.valueRow}>
@@ -167,6 +176,7 @@ export function NutritionTrendsCard() {
           <View style={{ marginTop: Spacing.sm }}>
             <CalorieBarChart
               bars={bars}
+              rangeLabel={offset === 0 ? `the last ${days} days` : `${dayLabel(start)} to ${dayLabel(end)}`}
               width={chartWidth}
               height={128}
               colors={{
@@ -224,6 +234,7 @@ function Macro({ label, value, color, C }: { label: string; value: string; color
 const s = StyleSheet.create({
   card: { borderRadius: Radius.lg, borderWidth: 1, padding: Spacing.lg },
   stale: { opacity: 0.4 },
+  failed: { fontSize: FontSize.sm, marginTop: Spacing.sm },
   header: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   label: { fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: LetterSpacing.eyebrow },
   range: { fontSize: 11, fontVariant: ['tabular-nums'] },

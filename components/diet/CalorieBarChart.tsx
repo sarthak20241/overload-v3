@@ -37,8 +37,10 @@ function dayParts(iso: string) {
 
 const fmt = (n: number) => Math.round(n).toLocaleString();
 
-export function CalorieBarChart({ bars, width, height, colors }: {
+export function CalorieBarChart({ bars, width, height, colors, rangeLabel }: {
   bars: CalorieBar[];
+  /** The period in words ("the last 14 days", "26 Aug to 24 Sep"), for screen readers. */
+  rangeLabel: string;
   width: number;
   height: number;
   colors: CalorieBarColors;
@@ -140,7 +142,7 @@ export function CalorieBarChart({ bars, width, height, colors }: {
         onPress={onPress}
         style={StyleSheet.absoluteFill}
         accessible
-        accessibilityLabel={`Calories per day for the last ${bars.length} days, each against its goal range`}
+        accessibilityLabel={`Calories per day for ${rangeLabel}, each against its goal range`}
         // The tapped day, read out: the tooltip itself takes no focus.
         accessibilityValue={selText ? { text: selText } : undefined}
       />
