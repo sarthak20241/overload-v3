@@ -52,6 +52,8 @@ import { startRestEndCue, endRestEndCue } from '@/lib/restCue';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
+import { askForReview, noteWorkoutSaved } from '@/lib/storeReview';
+import { hasSavedPr } from '@/lib/reviewPrompt';
 import { roundVolume, abbreviateNumber, formatWeight, formatDuration, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
 import { metricTypeOf, metricTypeDef, usesReps } from '@/lib/exercises';
 import {
@@ -408,6 +410,15 @@ export default function ActiveWorkoutScreen() {
   // clears it), parked in a ref so the routine-sync answer can pick it up after.
   const pendingRecapRef = useRef<WorkoutRecap | null>(null);
   const [shareRecap, setShareRecap] = useState<WorkoutRecap | null>(null);
+  // Whether the session just saved earned a store rating ask (lib/storeReview).
+  // Asked only after the share card is gone, never on top of it.
+  const reviewDueRef = useRef<Promise<boolean> | null>(null);
+  // Whether the workout as saved holds a PR (hasSavedPr), set at save time
+  // because finishWorkout() empties the exercises before the review ask runs.
+  const savedPrRef = useRef(false);
+  // PRs hit this session, reported on workout_completed. Screen-local: the
+  // screen unmounts after a finish, so it resets with the next session.
+  const prCountRef = useRef(0);
 
   // Keep the screen awake during a workout when the user has opted in. Tied to
   // this screen's lifetime: activates on mount (or when the pref flips on) and
@@ -2549,12 +2560,24 @@ export default function ActiveWorkoutScreen() {
       });
   };
 
+  // Ask for a store rating once the finish flow is gone, if the save earned it.
+  const askIfDue = useCallback(() => {
+    const due = reviewDueRef.current;
+    reviewDueRef.current = null;
+    void due?.then((yes) => { if (yes) askForReview(); });
+  }, []);
+
   /**
    * Last step of finishing: show the recap card, or go straight to history when
-   * there's nothing to show (sharing unsupported, or the recap never got built
-   * because the save threw). Every exit from the finish flow goes through here.
+   * there's nothing to show (sharing unsupported, or no recap was built). Every
+   * successful exit from the finish flow goes through here. A save that threw
+   * does not: confirmFinish's catch shows the error and stays put, so the
+   * review ask below only ever counts saved workouts.
    */
   const leaveAfterFinish = useCallback(() => {
+    // Once per finish: a second call before askIfDue must not count the
+    // workout twice.
+    if (!reviewDueRef.current) reviewDueRef.current = noteWorkoutSaved(savedPrRef.current ? 1 : 0);
     const recap = pendingRecapRef.current;
     if (recap && isShareAvailable()) {
       track('workout_share_opened', {
@@ -2567,12 +2590,14 @@ export default function ActiveWorkoutScreen() {
     }
     pendingRecapRef.current = null;
     router.replace('/(app)/history');
+    askIfDue();
   }, [router]);
 
   const dismissShareRecap = useCallback(() => {
     setShareRecap(null);
     pendingRecapRef.current = null;
     router.replace('/(app)/history');
+    askIfDue();
   }, [router]);
 
   const confirmRoutineSync = () => {
@@ -2604,9 +2629,6 @@ export default function ActiveWorkoutScreen() {
   };
 
   const finishingRef = useRef(false);
-  // PRs hit this session, reported on workout_completed. Screen-local: the
-  // screen unmounts after a finish, so it resets with the next session.
-  const prCountRef = useRef(0);
   const confirmFinish = async (opts?: { name?: string; notes?: string; routineNameToSave?: string; startedAtIso?: string }) => {
     // Synchronous re-entry guard: setSaving is async, so a fast double-tap on
     // the confirm alert's Finish button (which has no disabled state during its
@@ -2670,6 +2692,17 @@ export default function ActiveWorkoutScreen() {
       // heatmap: completed sets per muscle group, warmups included (they're
       // work the body did, even though they don't count toward volume).
       const savedExercises = exercises.filter(keepInSavedWorkout);
+      savedPrRef.current = hasSavedPr(savedExercises.map((e) => ({
+        allTimeBestWeight: e.allTimeBestWeight,
+        previousSets: e.previousSets,
+        sets: e.sets.map((s) => ({
+          completed: s.completed,
+          working: countsAsWorkingSet(s.set_type),
+          weight_kg: s.weight_kg,
+          is_unilateral: s.is_unilateral,
+          weight_kg_right: s.weight_kg_right,
+        })),
+      })));
       const recapCounts: Record<string, number> = {};
       savedExercises.forEach((e) => {
         const group = e.exercise.muscle_group;
