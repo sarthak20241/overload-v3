@@ -11,7 +11,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { requireOptionalNativeModule } from 'expo-modules-core';
 import { track } from '@/lib/analytics';
-import { afterSave, type ReviewState } from '@/lib/reviewPrompt';
+import { afterSave, markAsked, type ReviewState } from '@/lib/reviewPrompt';
 
 const KEY = 'overload.storeReview.v1';
 // Wait for the screen change to settle, so the sheet does not land on top of
@@ -54,13 +54,18 @@ export async function noteWorkoutSaved(prCount: number): Promise<boolean> {
   try {
     const { ask, state } = afterSave(await readState(), { prCount, now: Date.now() });
     await AsyncStorage.setItem(KEY, JSON.stringify(state));
-    return ask;
+    // No native module: never ask, so the gap is not spent on a dialog this
+    // binary cannot show.
+    return ask && getStoreReview() != null;
   } catch {
     return false;
   }
 }
 
-/** Show the system review dialog, if this binary and store can. */
+/**
+ * Show the system review dialog, if this binary and store can. The 90-day gap
+ * starts here, right before the request, not when the ask was decided.
+ */
 export function askForReview(): void {
   const sr = getStoreReview();
   if (!sr) return;
@@ -68,6 +73,8 @@ export function askForReview(): void {
     void (async () => {
       try {
         if (!(await sr.hasAction())) return;
+        const state = await readState();
+        if (state) await AsyncStorage.setItem(KEY, JSON.stringify(markAsked(state, Date.now())));
         track('review_prompt_requested');
         await sr.requestReview();
       } catch {

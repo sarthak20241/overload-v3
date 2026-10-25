@@ -26,7 +26,9 @@ export interface ReviewState {
 
 /**
  * Count one saved workout and decide whether to ask now. The returned state
- * is what to store, with lastAskedAt set when the answer is yes.
+ * is what to store. It does not spend the ask: call markAsked only when the
+ * dialog is really requested, since it may never be (no native module on an
+ * old binary, or the app closed before the share card did).
  */
 export function afterSave(
   prev: ReviewState | null,
@@ -41,5 +43,10 @@ export function afterSave(
     && now - state.firstSavedAt >= REVIEW_MIN_DAYS * DAY_MS
     && (state.lastAskedAt == null || now - state.lastAskedAt >= REVIEW_GAP_DAYS * DAY_MS);
 
-  return { ask, state: ask ? { ...state, lastAskedAt: now } : state };
+  return { ask, state };
+}
+
+/** Start the gap: the dialog was requested at `now`. */
+export function markAsked(state: ReviewState, now: number): ReviewState {
+  return { ...state, lastAskedAt: now };
 }

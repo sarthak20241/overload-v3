@@ -5,7 +5,7 @@
 // later. These pin the moment: a PR, on a lifter who has come back, rarely.
 
 import { assertEquals } from 'jsr:@std/assert@1';
-import { afterSave, REVIEW_GAP_DAYS, REVIEW_MIN_DAYS, REVIEW_MIN_WORKOUTS, type ReviewState } from './reviewPrompt.ts';
+import { afterSave, markAsked, REVIEW_GAP_DAYS, REVIEW_MIN_DAYS, REVIEW_MIN_WORKOUTS, type ReviewState } from './reviewPrompt.ts';
 
 const DAY = 24 * 60 * 60 * 1000;
 const T0 = Date.parse('2026-10-01T10:00:00Z');
@@ -18,11 +18,19 @@ const regular: ReviewState = {
 };
 const later = T0 + REVIEW_MIN_DAYS * DAY;
 
-Deno.test('a PR on a returning lifter asks, and the ask is remembered', () => {
+Deno.test('a PR on a returning lifter asks', () => {
   const r = afterSave(regular, { prCount: 1, now: later });
   assertEquals(r.ask, true);
-  assertEquals(r.state.lastAskedAt, later);
   assertEquals(r.state.saved, REVIEW_MIN_WORKOUTS);
+});
+
+Deno.test('deciding to ask does not spend the ask; only showing it does', () => {
+  // The dialog may never show (no native module on old binaries, app killed
+  // before the share card closes), so the 90-day clock starts at markAsked.
+  const r = afterSave(regular, { prCount: 1, now: later });
+  assertEquals(r.state.lastAskedAt, null);
+  assertEquals(afterSave(r.state, { prCount: 1, now: later + DAY }).ask, true);
+  assertEquals(markAsked(r.state, later).lastAskedAt, later);
 });
 
 Deno.test('a workout with no PR never asks', () => {
@@ -47,7 +55,7 @@ Deno.test('enough workouts crammed into the first days does not ask', () => {
 });
 
 Deno.test('after an ask, the next one waits the full gap', () => {
-  const asked = afterSave(regular, { prCount: 1, now: later }).state;
+  const asked = markAsked(afterSave(regular, { prCount: 1, now: later }).state, later);
   assertEquals(afterSave(asked, { prCount: 1, now: later + (REVIEW_GAP_DAYS - 1) * DAY }).ask, false);
   assertEquals(afterSave(asked, { prCount: 1, now: later + REVIEW_GAP_DAYS * DAY }).ask, true);
 });

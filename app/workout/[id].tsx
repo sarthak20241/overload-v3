@@ -2566,7 +2566,9 @@ export default function ActiveWorkoutScreen() {
    * because the save threw). Every exit from the finish flow goes through here.
    */
   const leaveAfterFinish = useCallback(() => {
-    reviewDueRef.current = noteWorkoutSaved(prCountRef.current);
+    // Once per finish: a second call before askIfDue must not count the
+    // workout twice.
+    if (!reviewDueRef.current) reviewDueRef.current = noteWorkoutSaved(prCountRef.current);
     const recap = pendingRecapRef.current;
     if (recap && isShareAvailable()) {
       track('workout_share_opened', {

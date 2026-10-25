@@ -30,8 +30,9 @@ The old app `com.overload.gym` is still live in Production, titled
    for search.
 5. **English (US) only.** India is a main market. An en-IN copy (same text)
    gets its own ranking there. en-GB and en-AU are free extra reach too.
-6. **No in-app review prompt.** Nothing asks happy users to rate. Ratings
-   count and star average move rank and installs a lot.
+6. **No in-app review prompt in 1.0.2.** Nothing asks happy users to rate.
+   Ratings count and star average move rank and installs a lot. Fixed by
+   PR #297; it shows from the next store build.
 7. **No promo video.** Optional, but it plays at the top of the listing.
 8. **Em dashes** in the live copy. Drop them.
 
@@ -129,9 +130,10 @@ Keep the HEALTH DISCLAIMER paragraph. Play rejected an update without it
 
 Pick A.
 
-## Code change for reach (needs a PR)
+## Code change for reach (PR #297)
 
-Add an in-app review prompt with `expo-store-review`. Ask only after a good
-moment, for example after a workout with a new PR, at most once per 90 days,
-never on the first day. Play limits how often the dialog shows, so a bad
-moment wastes it.
+In-app review prompt with `expo-store-review` (`lib/reviewPrompt.ts`,
+`lib/storeReview.ts`). It asks after a workout with a PR, once the lifter has
+3+ workouts over 3+ days, at most every 90 days. Play limits how often the
+dialog shows, so a bad moment wastes it. It needs a new native build; an OTA
+onto 1.0.2 stays silent.
