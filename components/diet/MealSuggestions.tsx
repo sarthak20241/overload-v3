@@ -164,11 +164,13 @@ function SuggestionRow({ item, added, delayMs, why, onAdd, onEdit }: {
         onPress={onAdd}
         disabled={added}
         // A grey dashed outline: an empty slot waiting for this food. Grey, not
-        // lime, so the food box keeps the loudest edge on the screen.
+        // lime, so the food box keeps the loudest edge on the screen. textDim at
+        // half alpha, not C.border: border is 8% black on light, and a dash
+        // that thin vanishes.
         style={({ pressed }) => [
           s.row,
           {
-            borderColor: shownAdded ? C.accentText : C.border,
+            borderColor: shownAdded ? C.accentText : `${C.textDim}80`,
             borderStyle: shownAdded ? 'solid' : 'dashed',
           },
           pressed && { backgroundColor: C.muted },
