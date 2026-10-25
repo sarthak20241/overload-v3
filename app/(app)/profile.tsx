@@ -1421,6 +1421,8 @@ export default function ProfileScreen() {
                   });
                 }}
                 activeOpacity={0.7}
+                accessibilityRole="link"
+                accessibilityHint="Opens Overload in the app store"
                 style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}
               >
                 <RowIcon name="star" color={Colors.rowIcon.rate} />
