@@ -63,7 +63,7 @@ export async function noteWorkoutSaved(prCount: number): Promise<boolean> {
 
 /**
  * Show the system review dialog, if this binary and store can. The 90-day gap
- * starts here, right before the request, not when the ask was decided.
+ * starts here, after a successful request, not when the ask was decided.
  */
 export function askForReview(): void {
   const sr = getStoreReview();
@@ -72,10 +72,13 @@ export function askForReview(): void {
     void (async () => {
       try {
         if (!(await sr.hasAction())) return;
+        // Spend the gap only once the request went through. It can reject (no
+        // foreground scene on iOS), and a resolve still does not prove the
+        // store showed anything.
+        await sr.requestReview();
+        track('review_prompt_requested');
         const state = await readState();
         if (state) await AsyncStorage.setItem(KEY, JSON.stringify(markAsked(state, Date.now())));
-        track('review_prompt_requested');
-        await sr.requestReview();
       } catch {
         // The store said no, or the dialog failed. Nothing to show the user.
       }

@@ -71,7 +71,7 @@ deno test --allow-all lib/foodPatterns.test.ts  # usual foods per meal, and when
 deno test --allow-all lib/mealCleanup.test.ts   # empty meal rows go in one safe database step
 deno test --allow-all lib/mealCardSplit.test.ts # big food card: list vs note when the box is short
 deno test --allow-all lib/calorieBars.test.ts  # Analytics calorie bars: each day against its own goal ±10%
-deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: after a PR, 3+ workouts over 3+ days, every 90 days at most; the gap starts only when the dialog is requested
+deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
 ```
 

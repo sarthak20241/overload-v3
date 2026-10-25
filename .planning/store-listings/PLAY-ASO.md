@@ -103,7 +103,7 @@ Import your workout history from Hevy in one step.
 
 FREE TO START
 
-Tracking workouts and logging food from the catalog is free, with 3 coach chats and 3 AI food logs a day. Overload Pro gives you unlimited coach chat and AI food logs, and a plan rewritten every week. No ads. We do not sell your data. You can delete your account and all of your data from inside the app.
+Tracking workouts and logging food from the catalog is free, with 3 coach chats and 3 AI food logs per rolling 24 hours. Overload Pro gives you unlimited coach chat and AI food logs, and a plan rewritten every week. No ads. We do not sell your data. You can delete your account and all of your data from inside the app.
 
 HEALTH DISCLAIMER
 

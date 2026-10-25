@@ -53,6 +53,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
 import { askForReview, noteWorkoutSaved } from '@/lib/storeReview';
+import { hasSavedPr } from '@/lib/reviewPrompt';
 import { roundVolume, abbreviateNumber, formatWeight, formatDuration, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
 import { metricTypeOf, metricTypeDef, usesReps } from '@/lib/exercises';
 import {
@@ -412,9 +413,11 @@ export default function ActiveWorkoutScreen() {
   // Whether the session just saved earned a store rating ask (lib/storeReview).
   // Asked only after the share card is gone, never on top of it.
   const reviewDueRef = useRef<Promise<boolean> | null>(null);
-  // PRs hit this session, reported on workout_completed and read by the
-  // review ask. Screen-local: the screen unmounts after a finish, so it resets
-  // with the next session.
+  // Whether the workout as saved holds a PR (hasSavedPr), set at save time
+  // because finishWorkout() empties the exercises before the review ask runs.
+  const savedPrRef = useRef(false);
+  // PRs hit this session, reported on workout_completed. Screen-local: the
+  // screen unmounts after a finish, so it resets with the next session.
   const prCountRef = useRef(0);
 
   // Keep the screen awake during a workout when the user has opted in. Tied to
@@ -2574,7 +2577,7 @@ export default function ActiveWorkoutScreen() {
   const leaveAfterFinish = useCallback(() => {
     // Once per finish: a second call before askIfDue must not count the
     // workout twice.
-    if (!reviewDueRef.current) reviewDueRef.current = noteWorkoutSaved(prCountRef.current);
+    if (!reviewDueRef.current) reviewDueRef.current = noteWorkoutSaved(savedPrRef.current ? 1 : 0);
     const recap = pendingRecapRef.current;
     if (recap && isShareAvailable()) {
       track('workout_share_opened', {
@@ -2689,6 +2692,17 @@ export default function ActiveWorkoutScreen() {
       // heatmap: completed sets per muscle group, warmups included (they're
       // work the body did, even though they don't count toward volume).
       const savedExercises = exercises.filter(keepInSavedWorkout);
+      savedPrRef.current = hasSavedPr(savedExercises.map((e) => ({
+        allTimeBestWeight: e.allTimeBestWeight,
+        previousSets: e.previousSets,
+        sets: e.sets.map((s) => ({
+          completed: s.completed,
+          working: countsAsWorkingSet(s.set_type),
+          weight_kg: s.weight_kg,
+          is_unilateral: s.is_unilateral,
+          weight_kg_right: s.weight_kg_right,
+        })),
+      })));
       const recapCounts: Record<string, number> = {};
       savedExercises.forEach((e) => {
         const group = e.exercise.muscle_group;

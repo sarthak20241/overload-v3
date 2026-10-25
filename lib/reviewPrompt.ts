@@ -70,3 +70,39 @@ export function parseReviewState(raw: string | null): ReviewState | null {
   if (lastAskedAt !== null && !num(lastAskedAt)) return null;
   return { firstSavedAt, saved, lastAskedAt };
 }
+
+export interface SavedExerciseForPr {
+  /** Best weight ever logged before this session, if known. */
+  allTimeBestWeight?: number | null;
+  /** Last session's sets, the fallback when all-time is missing. */
+  previousSets?: { weight_kg: number }[] | null;
+  sets: {
+    completed: boolean;
+    /** countsAsWorkingSet(set_type): warmups never make a PR. */
+    working: boolean;
+    weight_kg: number;
+    is_unilateral?: boolean;
+    weight_kg_right?: number | null;
+  }[];
+}
+
+/**
+ * Whether the workout as saved holds a weight PR: a completed working set
+ * heavier than anything before this session. Same test the live PR badge uses
+ * (handleLogSet in app/workout/[id].tsx), run on what was kept, so a PR set
+ * deleted or edited down before saving does not earn a rating ask.
+ */
+export function hasSavedPr(exercises: SavedExerciseForPr[]): boolean {
+  return exercises.some((e) => {
+    const prior = e.previousSets ?? [];
+    if (!((e.allTimeBestWeight ?? 0) > 0 || prior.length > 0)) return false;
+    const before = Math.max(0, e.allTimeBestWeight ?? 0, ...prior.map((s) => s.weight_kg));
+    const best = Math.max(
+      0,
+      ...e.sets
+        .filter((s) => s.completed && s.working)
+        .map((s) => Math.max(s.weight_kg, s.is_unilateral ? (s.weight_kg_right ?? s.weight_kg) : 0)),
+    );
+    return best > before;
+  });
+}

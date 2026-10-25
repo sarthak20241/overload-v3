@@ -5,7 +5,7 @@
 // later. These pin the moment: a PR, on a lifter who has come back, rarely.
 
 import { assertEquals } from 'jsr:@std/assert@1';
-import { afterSave, markAsked, parseReviewState, REVIEW_GAP_DAYS, REVIEW_MIN_DAYS, REVIEW_MIN_WORKOUTS, type ReviewState } from './reviewPrompt.ts';
+import { afterSave, hasSavedPr, markAsked, parseReviewState, REVIEW_GAP_DAYS, REVIEW_MIN_DAYS, REVIEW_MIN_WORKOUTS, type ReviewState } from './reviewPrompt.ts';
 
 const DAY = 24 * 60 * 60 * 1000;
 const T0 = Date.parse('2026-10-01T10:00:00Z');
@@ -79,5 +79,36 @@ Deno.test('stored state that is not the right shape reads as a fresh start', () 
   assertEquals(
     parseReviewState('{"firstSavedAt":1,"saved":4,"lastAskedAt":9}'),
     { firstSavedAt: 1, saved: 4, lastAskedAt: 9 },
+  );
+});
+
+const set = (weight_kg: number, extra: Partial<{ completed: boolean; working: boolean; is_unilateral: boolean; weight_kg_right: number | null }> = {}) =>
+  ({ weight_kg, completed: true, working: true, ...extra });
+
+Deno.test('a saved working set above the old best is a PR', () => {
+  assertEquals(hasSavedPr([{ allTimeBestWeight: 100, previousSets: [], sets: [set(90), set(102.5)] }]), true);
+});
+
+Deno.test('a PR set deleted or edited down before saving is not a PR', () => {
+  // The live counter went up when the set was logged; only what is saved counts.
+  assertEquals(hasSavedPr([{ allTimeBestWeight: 100, previousSets: [], sets: [set(95)] }]), false);
+  assertEquals(hasSavedPr([{ allTimeBestWeight: 100, previousSets: [], sets: [set(100)] }]), false);
+});
+
+Deno.test('warmups, unfinished sets and first-ever lifts are not PRs', () => {
+  assertEquals(hasSavedPr([{ allTimeBestWeight: 100, previousSets: [], sets: [set(120, { working: false })] }]), false);
+  assertEquals(hasSavedPr([{ allTimeBestWeight: 100, previousSets: [], sets: [set(120, { completed: false })] }]), false);
+  assertEquals(hasSavedPr([{ allTimeBestWeight: null, previousSets: [], sets: [set(120)] }]), false);
+});
+
+Deno.test('last session counts as the old best when all-time is missing', () => {
+  assertEquals(hasSavedPr([{ allTimeBestWeight: null, previousSets: [{ weight_kg: 60 }], sets: [set(62.5)] }]), true);
+  assertEquals(hasSavedPr([{ allTimeBestWeight: null, previousSets: [{ weight_kg: 60 }], sets: [set(60)] }]), false);
+});
+
+Deno.test('the heavier side of a unilateral set counts', () => {
+  assertEquals(
+    hasSavedPr([{ allTimeBestWeight: 20, previousSets: [], sets: [set(18, { is_unilateral: true, weight_kg_right: 22 })] }]),
+    true,
   );
 });
