@@ -5,7 +5,7 @@
 // later. These pin the moment: a PR, on a lifter who has come back, rarely.
 
 import { assertEquals } from 'jsr:@std/assert@1';
-import { afterSave, hasSavedPr, markAsked, parseReviewState, REVIEW_GAP_DAYS, REVIEW_MIN_DAYS, REVIEW_MIN_WORKOUTS, type ReviewState } from './reviewPrompt.ts';
+import { afterSave, hasSavedPr, storePageUrls, markAsked, parseReviewState, REVIEW_GAP_DAYS, REVIEW_MIN_DAYS, REVIEW_MIN_WORKOUTS, type ReviewState } from './reviewPrompt.ts';
 
 const DAY = 24 * 60 * 60 * 1000;
 const T0 = Date.parse('2026-10-01T10:00:00Z');
@@ -111,4 +111,16 @@ Deno.test('the heavier side of a unilateral set counts', () => {
     hasSavedPr([{ allTimeBestWeight: 20, previousSets: [], sets: [set(18, { is_unilateral: true, weight_kg_right: 22 })] }]),
     true,
   );
+});
+
+Deno.test('Rate Overload opens the review page of the right store, app first, web as fallback', () => {
+  // iOS: one https link. iPhones open it in the App Store app; an itms-apps://
+  // link "opens" even with no App Store (Safari shows an invalid-address error),
+  // so a fallback after it would never run.
+  assertEquals(storePageUrls('ios'), ['https://apps.apple.com/app/id6773063775?action=write-review']);
+  assertEquals(storePageUrls('android'), [
+    'market://details?id=com.overload.tracker',
+    'https://play.google.com/store/apps/details?id=com.overload.tracker',
+  ]);
+  assertEquals(storePageUrls('web'), []);
 });

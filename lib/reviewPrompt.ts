@@ -106,3 +106,28 @@ export function hasSavedPr(exercises: SavedExerciseForPr[]): boolean {
     return best > before;
   });
 }
+
+// Store ids: eas.json submit.production.ios.ascAppId and app.json android.package.
+const APP_STORE_ID = '6773063775';
+const PLAY_PACKAGE = 'com.overload.tracker';
+
+/**
+ * Where the Profile "Rate Overload" row goes, in the order to try. Not the
+ * in-app sheet: that one is capped by the store and may show nothing, which
+ * reads as a broken button. A row anyone can tap at any time, with no question
+ * before it, is not review gating.
+ */
+export function storePageUrls(platform: string): string[] {
+  if (platform === 'ios') {
+    // An apps.apple.com link opens the App Store app on iPhone. Not itms-apps://:
+    // it resolves even where no App Store app exists, so no fallback could run.
+    return [`https://apps.apple.com/app/id${APP_STORE_ID}?action=write-review`];
+  }
+  if (platform === 'android') {
+    return [
+      `market://details?id=${PLAY_PACKAGE}`,
+      `https://play.google.com/store/apps/details?id=${PLAY_PACKAGE}`,
+    ];
+  }
+  return [];
+}

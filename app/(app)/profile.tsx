@@ -27,6 +27,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { readCardHistory } from '@/lib/dronaCard';
 import { waitingCount } from '@/lib/dronaInbox';
 import { track, flushAnalytics } from '@/lib/analytics';
+import { openStorePage } from '@/lib/storeReview';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, getGuestProfile, updateGuestProfile, type GuestProfile } from '@/lib/guestStore';
 import { invalidateCustomExercisesCache } from '@/components/routines/ExercisePickerSheet';
@@ -1411,6 +1412,21 @@ export default function ProfileScreen() {
                   onChange={(v) => { if (v !== weightUnit) track('units_changed', { unit: v, surface: 'preferences' }); setWeightUnit(v); }}
                 />
               </View>
+
+              {/* Rate Overload: the store page, open to anyone at any time. */}
+              <TouchableOpacity
+                onPress={() => {
+                  void openStorePage().then((ok) => {
+                    if (!ok) toast.error('Could not open the store. Try again later.');
+                  });
+                }}
+                activeOpacity={0.7}
+                style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}
+              >
+                <RowIcon name="star" color={Colors.rowIcon.rate} />
+                <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>Rate Overload</Text>
+                <Feather name="chevron-right" size={14} color={C.textDim} />
+              </TouchableOpacity>
 
               {/* Report a Bug */}
               <TouchableOpacity

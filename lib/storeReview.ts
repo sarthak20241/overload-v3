@@ -9,9 +9,10 @@
  * an OTA of this code counts workouts and stays silent.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Linking, Platform } from 'react-native';
 import { requireOptionalNativeModule } from 'expo-modules-core';
 import { track } from '@/lib/analytics';
-import { afterSave, markAsked, parseReviewState, type ReviewState } from '@/lib/reviewPrompt';
+import { afterSave, markAsked, parseReviewState, storePageUrls, type ReviewState } from '@/lib/reviewPrompt';
 
 const KEY = 'overload.storeReview.v1';
 // Wait for the screen change to settle, so the sheet does not land on top of
@@ -84,4 +85,22 @@ export function askForReview(): void {
       }
     })();
   }, ASK_DELAY_MS);
+}
+
+/**
+ * The Profile "Rate Overload" row: open this app's page in the store. Plain
+ * Linking, no native module, so it works on every binary. Resolves false when
+ * no store page would open.
+ */
+export async function openStorePage(): Promise<boolean> {
+  track('rate_app_opened', { platform: Platform.OS });
+  for (const url of storePageUrls(Platform.OS)) {
+    try {
+      await Linking.openURL(url);
+      return true;
+    } catch {
+      // No store app (an emulator, a de-Googled phone): try the web page.
+    }
+  }
+  return false;
 }

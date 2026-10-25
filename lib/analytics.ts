@@ -122,6 +122,7 @@ export type AnalyticsEvent =
   | 'workout_discarded'
   | 'workout_share_opened'
   | 'review_prompt_requested'
+  | 'rate_app_opened'
   | 'workout_edited'
   | 'workout_edit_failed'
   | 'workout_preference_changed'
