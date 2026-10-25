@@ -2383,8 +2383,9 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     // Radius.xxl, not lg: a 16px corner on a 48pt full-width bar reads as a wide
     // flat box; a near-pill reads as a composer. Fixed radius, so the corners
     // stay sane when the multiline field grows the bar.
-    // The one lime-edged surface on the screen, a step brighter than the
-    // summary card, so it is the first place the eye lands.
+    // The one lime-edged surface on the screen, so it is the first place the
+    // eye lands. The edge carries that, not the fill: inputBg is lighter than
+    // the card on dark but a grey field on light.
     input: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, backgroundColor: C.inputBg, borderWidth: 1, borderColor: C.primaryBorder, borderRadius: Radius.xxl, paddingHorizontal: Spacing.lg, paddingVertical: 12, ...Shadow.card },
     // maxHeight caps growth (~4 lines) then scrolls; textAlignVertical top for Android multiline.
     // The row bottom-aligns (icons must hug the bottom as the field grows), so
