@@ -2,9 +2,9 @@
  * MealSuggestions: the user's usual foods for one meal, drawn as ghost rows
  * inside that meal's section, right where they would land.
  *
- * A ghost row is a logged row drawn quieter: no box, no divider, muted name,
- * and an outlined + where the logged line has nothing. It reads as "not in
- * your day yet" without spending lime, which the food box owns. It sits in the
+ * A ghost row is an empty slot: a grey dashed outline, muted name, and a small
+ * soft-lime + as its one spot of color. It reads as "not in your day yet"
+ * without a lime edge, which the food box owns. It sits in the
  * meal it belongs to, so there is no separate list to scan and no question of
  * where a tap will log. Three show at first; the rest are one tap behind
  * "N more", so a long habit list never pushes the diary down the screen.
@@ -163,9 +163,16 @@ function SuggestionRow({ item, added, delayMs, why, onAdd, onEdit }: {
       <Pressable
         onPress={onAdd}
         disabled={added}
-        // Same pressed wash as a logged row, so both kinds of line answer a
-        // finger the same way.
-        style={({ pressed }) => [s.row, pressed && { backgroundColor: C.muted }]}
+        // A grey dashed outline: an empty slot waiting for this food. Grey, not
+        // lime, so the food box keeps the loudest edge on the screen.
+        style={({ pressed }) => [
+          s.row,
+          {
+            borderColor: shownAdded ? C.accentText : C.border,
+            borderStyle: shownAdded ? 'solid' : 'dashed',
+          },
+          pressed && { backgroundColor: C.muted },
+        ]}
         accessibilityRole="button"
         accessibilityState={{ disabled: added }}
         accessibilityLabel={added
@@ -175,12 +182,13 @@ function SuggestionRow({ item, added, delayMs, why, onAdd, onEdit }: {
         {/* The fill sits under the content and fades in, so the row reads as
             becoming a logged line rather than swapping to one. */}
         <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, s.tint, { backgroundColor: `${C.accentText}1F` }, tint]} />
-        {/* Grey until added; lime only for the "Added" beat, as feedback. */}
+        {/* The row's one spot of color: a small soft-lime +. Solid lime with
+            a check once added. */}
         <Animated.View style={[s.icon, shownAdded
           ? { backgroundColor: C.accentText, borderColor: C.accentText }
-          : { borderColor: C.textMuted }, iconStyle]}
+          : { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder }, iconStyle]}
         >
-          <Feather name={shownAdded ? 'check' : 'plus'} size={11} color={shownAdded ? C.background : C.textSecondary} />
+          <Feather name={shownAdded ? 'check' : 'plus'} size={11} color={shownAdded ? C.background : C.accentText} />
         </Animated.View>
         <Text style={[s.name, { color: shownAdded ? C.foreground : C.textSecondary }]} numberOfLines={1}>
           {item.food_name} <Text style={[s.serving, { color: C.textMuted }]}>· {formatServing(item.quantity, item.serving_unit)}</Text>
@@ -211,15 +219,13 @@ const s = StyleSheet.create({
   head: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 2 },
   headTxt: { fontSize: FontSize.xs, flexShrink: 1 },
   addAll: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, fontVariant: ['tabular-nums'] },
-  rowWrap: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, marginTop: 2 },
-  // Bleeds past the column like a logged row, so the + lines up with the
-  // logged names and the pressed wash has room.
+  rowWrap: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, marginTop: 6 },
   row: {
     flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    borderRadius: Radius.sm, overflow: 'hidden',
-    paddingVertical: 9, paddingHorizontal: Spacing.sm, marginLeft: -Spacing.sm,
+    borderWidth: 1, borderRadius: Radius.md, overflow: 'hidden',
+    paddingVertical: 9, paddingLeft: 10, paddingRight: Spacing.md,
   },
-  tint: { borderRadius: Radius.sm },
+  tint: { borderRadius: Radius.md },
   icon: { width: 20, height: 20, borderRadius: 10, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   name: { flex: 1, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
   serving: { fontSize: FontSize.xs, fontWeight: FontWeight.regular },
