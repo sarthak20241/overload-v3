@@ -2566,10 +2566,10 @@ export default function ActiveWorkoutScreen() {
 
   /**
    * Last step of finishing: show the recap card, or go straight to history when
-   * there's nothing to show (sharing unsupported, or the recap never got built
-   * because the save threw). Every exit from the finish flow goes through here.
-   * A save that threw does not: confirmFinish's catch shows the error and stays
-   * put, so the review ask below only ever counts saved workouts.
+   * there's nothing to show (sharing unsupported, or no recap was built). Every
+   * successful exit from the finish flow goes through here. A save that threw
+   * does not: confirmFinish's catch shows the error and stays put, so the
+   * review ask below only ever counts saved workouts.
    */
   const leaveAfterFinish = useCallback(() => {
     // Once per finish: a second call before askIfDue must not count the
