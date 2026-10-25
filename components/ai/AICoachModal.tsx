@@ -21,7 +21,9 @@ import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
 import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
 import { fuelDaysText } from '@/lib/fuelDays';
+import { invalidateUserProgram } from '@/lib/screenCache';
 import { activityText } from '@/lib/activityGoals';
+import { metricsText } from '@/lib/phaseMetrics';
 import { track } from '@/lib/analytics';
 import { Colors, Spacing, Radius, FontSize, FontWeight, mixHex } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -2486,6 +2488,10 @@ function programToText(p: GeneratedProgram): string {
     if (ph.fuel_days !== undefined) lines.push(`  Fuel days: ${fuelDaysText(ph.fuel_days)}`);
     // Same again for the step and cardio goals the user already agreed to.
     if (ph.activity) lines.push(`  Activity: ${activityText(ph.activity)}`);
+    // And for what the phase is judged on, so a refine about calories keeps
+    // the hero metric and its targets.
+    if (ph.job_text) lines.push(`  Job: ${ph.job_text}`);
+    if (ph.metrics && ph.metrics.length > 0) lines.push(`  Metrics: ${metricsText(ph.metrics)}`);
     if (ph.diet_directive) lines.push(`  Diet note: ${ph.diet_directive}`);
     if (ph.training_block) {
       const b = ph.training_block;
@@ -3059,6 +3065,21 @@ function GeneratePlanScreen({
 }
 
 // ─── Generate Program Screen ─────────────────────────────────────────────────
+/**
+ * The program the user already follows, when the program chat is opened to
+ * CHANGE it (Goal & Plan's "Adjust with Drona"): Drona's greeting says where
+ * they are instead of offering to build a new program. The server already
+ * reads the active program into every mode's context; this only sets the
+ * conversation's opening.
+ */
+export interface ExistingProgramOpener {
+  title: string;
+  phaseName: string;
+  /** The week inside the phase, when the phase is the one running now. */
+  week: number | null;
+  weeks: number | null;
+}
+
 // Coach designs a scheduled multi-week program through conversation
 // (discuss_program), emits it via generate_program, and the user reviews the
 // phase timeline and taps Apply. Apply (handleSaveProgram in the parent)
@@ -3069,11 +3090,13 @@ function GenerateProgramScreen({
   onApply,
   onRequestUpgrade,
   initialDraft,
+  existing,
 }: {
   onBack: () => void;
   onApply: (program: GeneratedProgram) => void;
   onRequestUpgrade?: (kind: 'cap' | 'pro') => void;
   initialDraft?: string;
+  existing?: ExistingProgramOpener;
 }) {
   const { C } = useTheme();
   const [result, setResult] = useState<GeneratedProgram | null>(null);
@@ -3089,6 +3112,7 @@ function GenerateProgramScreen({
         onRefined={(next) => setResult(next as GeneratedProgram)}
         onRequestUpgrade={onRequestUpgrade}
         initialDraft={initialDraft}
+        existing={existing}
       />
     );
   }
@@ -3747,6 +3771,7 @@ function RefineChatScreen({
   onRefined,
   onRequestUpgrade,
   initialDraft,
+  existing,
 }: {
   // 'refine' — iterating on an already-generated workout/plan (workout or
   // plan must be provided). 'discuss' — talking with Coach Drona BEFORE any
@@ -3772,6 +3797,8 @@ function RefineChatScreen({
   // Typed into the box on open, NOT sent: the user reads it and taps send
   // (e.g. the goal sheet's "Change my whole plan with Drona").
   initialDraft?: string;
+  // Discuss-program opened to change the program the user already follows.
+  existing?: ExistingProgramOpener;
 }) {
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -3797,6 +3824,12 @@ function RefineChatScreen({
 
   const starterText = (() => {
     if (kind === 'discuss') {
+      if (mode === 'refine_program' && existing) {
+        const where = existing.week != null && existing.weeks != null
+          ? `${existing.phaseName}, week ${existing.week} of ${existing.weeks}`
+          : existing.phaseName;
+        return `You're in ${where}. What would you like to change?`;
+      }
       if (mode === 'refine_program') {
         return "I'm Coach Drona. Let's build a program toward your goal. Tell me what you're chasing, your timeline if you have one, how many days a week you can train, and anything I should work around. When you're set, I'll lay out the phases.";
       }
@@ -3912,7 +3945,9 @@ function RefineChatScreen({
     // therefore optional) overrides. For refine kind, the opener carries
     // the recap because the model needs the live state of the workout/plan.
     const syntheticOpener = kind === 'discuss'
-      ? (mode === 'refine_program'
+      ? (mode === 'refine_program' && existing
+          ? `I already follow my program "${existing.title}" and I'm in ${existing.phaseName}. I want to change part of it. Let's discuss the change before you lay out the updated phases.`
+          : mode === 'refine_program'
           ? "I want to build a scheduled multi-week program toward my goal. Let's discuss it before you lay out the phases."
           : mode === 'refine_plan'
             ? "I want to build a new training plan. Let's discuss what should be in it before you write it."
@@ -4228,6 +4263,7 @@ export function AICoachModal({
   initialTopic,
   planSeed,
   programDraft,
+  programExisting,
   linkRoutinesToPhaseId,
   workoutContext,
   onApplyWorkoutEdit,
@@ -4255,6 +4291,10 @@ export function AICoachModal({
   // When set, the program chat opens with this typed in, unsent (the goal
   // sheet's "Change my whole plan with Drona"). Pass initialScreen="program".
   programDraft?: string;
+  // When set, the program chat opens to CHANGE this program (Goal & Plan's
+  // "Adjust with Drona"): Drona's greeting names the phase and asks what to
+  // change, instead of offering to build a new program.
+  programExisting?: ExistingProgramOpener;
   // When set, routines saved from this session are linked to the program phase
   // (routines.program_phase_id), so the Goal & Plan screen shows the phase's
   // split as built. Paired with planSeed for a "Build workout split" flow.
@@ -4506,10 +4546,15 @@ export function AICoachModal({
       .single();
 
     if (error || !routine) throw error || new Error('Failed to create routine');
+    // A routine linked to a phase changes what the Goal & Plan screens show.
+    if (phaseId && clerkId) invalidateUserProgram(clerkId);
 
     // Resolve all exercises in parallel — each one does select + optional insert + link insert.
     // Drops save time from N*(2-3) sequential round trips to ~3 round trips total.
-    await Promise.all(workout.exercises.map(async (ex, i) => {
+    // allSettled, not all: every link write has finished (landed or failed)
+    // before the Goal & Plan cache is dropped again below, so no screen keeps
+    // a snapshot read while the links were still landing.
+    const linked = await Promise.allSettled(workout.exercises.map(async (ex, i) => {
       // Case-insensitive find, oldest row first — .single() would error when a
       // global library row and a same-named custom both match (legal scopes
       // under migration 0037's unique indexes). Escaped so % and _ in the
@@ -4568,6 +4613,9 @@ export function AICoachModal({
       const linkErr = await writeWithTargetFallback(link);
       if (linkErr) throw linkErr;
     }));
+    if (phaseId && clerkId) invalidateUserProgram(clerkId);
+    const failed = linked.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failed) throw failed.reason;
   };
 
   const handleSaveRoutine = (workout: GeneratedWorkout) => {
@@ -4646,6 +4694,7 @@ export function AICoachModal({
             throw unlinkErr;
           }
           console.log(`[routine-save] cleared ${cleared?.length ?? 0} prior routine(s) from phase ${phaseId}`);
+          if (user?.id) invalidateUserProgram(user.id);
         }
         unlinkDone = true;
         for (let i = 0; i < workouts.length; i++) {
@@ -4698,8 +4747,11 @@ export function AICoachModal({
     handleClose();
     toast.info('Setting up your program…');
     saveProgram(withChangeSource(supabase, 'chat'), clerkId, program)
-      .then(() => {
-        toast.success('Program set. Your targets are updated.');
+      .then(({ metricsSaved }) => {
+        // The program is saved either way; say when its metrics are not, so
+        // the Goal screen's missing hero is not a surprise.
+        if (metricsSaved) toast.success('Program set. Your targets are updated.');
+        else toast.info('Program set. Its phase metrics did not save; rebuild with Drona to add them.');
         onProgramApplied?.();
       })
       .catch((err) => {
@@ -4923,6 +4975,7 @@ export function AICoachModal({
                   onBack={() => setScreen('menu')}
                   onApply={handleSaveProgram}
                   initialDraft={programDraft}
+                  existing={programExisting}
                   onRequestUpgrade={(kind) =>
                     handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')
                   }

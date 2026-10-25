@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { missingColumn, withoutColumns } from "./missingColumn.ts";
+import { missingColumn, missingTable, nextColumnSet, withoutColumns } from "./missingColumn.ts";
 
 const COLS = ["activity_steps_target", "cardio_sessions_per_week"];
 
@@ -46,4 +46,50 @@ Deno.test("only activity missing: the activity fallback catches it, fuel days st
   const err = { code: "42703", message: "column coach_program_phases.activity_steps_target does not exist" };
   assertEquals(missingColumn(err, COLS), true);
   assertEquals(missingColumn(err, ["diet_fuel_days"]), false);
+});
+
+// The phase metrics tables (migration 20261022022018): the app ships before
+// the migration, so a read of a table that is not there yet falls back.
+Deno.test("a read of a table the database does not have yet falls back", () => {
+  // PostgREST: the table is not in its schema cache (also what a table created
+  // without a schema reload answers).
+  assertEquals(missingTable({ code: "PGRST205", message: "Could not find the table 'public.coach_program_phase_metrics' in the schema cache" }, "coach_program_phase_metrics"), true);
+  // Postgres: undefined table.
+  assertEquals(missingTable({ code: "42P01", message: "relation \"public.coach_program_phase_metrics\" does not exist" }, "coach_program_phase_metrics"), true);
+});
+
+Deno.test("an unrelated failure is never swallowed as a missing table", () => {
+  // A different table.
+  assertEquals(missingTable({ code: "PGRST205", message: "Could not find the table 'public.other' in the schema cache" }, "coach_program_phase_metrics"), false);
+  // Our table named, but not a missing-table error.
+  assertEquals(missingTable({ code: "42501", message: "permission denied for table coach_program_phase_metrics" }, "coach_program_phase_metrics"), false);
+  // A missing COLUMN on the table is the column fallback's job.
+  assertEquals(missingTable({ code: "42703", message: "column coach_program_phases.job_text does not exist" }, "coach_program_phases"), false);
+  assertEquals(missingTable(null, "coach_program_phase_metrics"), false);
+});
+
+Deno.test("nextColumnSet skips straight to the first set without the column the database named", () => {
+  // Widest first, as the program read uses them.
+  const sets = [
+    ["id", "diet_fuel_days", "activity_steps_target", "job_text"],
+    ["id", "diet_fuel_days", "activity_steps_target"],
+    ["id", "diet_fuel_days"],
+    ["id"],
+  ];
+  const err = (col: string) => ({ code: "42703", message: `column coach_program_phases_1.${col} does not exist` });
+  // Only the newest columns missing: one step.
+  assertEquals(nextColumnSet(err("job_text"), sets, 0), 1);
+  // Activity and job both missing: Postgres names the activity column first,
+  // so it goes straight to the set without activity (and without job).
+  assertEquals(nextColumnSet(err("activity_steps_target"), sets, 0), 2);
+  // Older still: no fuel days.
+  assertEquals(nextColumnSet(err("diet_fuel_days"), sets, 0), 3);
+  // A column no set drops, or not a missing-column error: nothing to retry.
+  assertEquals(nextColumnSet(err("id"), sets, 0), null);
+  assertEquals(nextColumnSet({ code: "57014", message: "timeout" }, sets, 0), null);
+  assertEquals(nextColumnSet(err("job_text"), sets, 3), null);
+  // Exact names: a missing routine_id is not the 'id' column, and PGRST204's wording is read too.
+  const withRoutine = [["id", "routine_id", "job_text"], ["id", "routine_id"], ["id"]];
+  assertEquals(nextColumnSet(err("routine_id"), withRoutine, 0), 2);
+  assertEquals(nextColumnSet({ code: "PGRST204", message: "Could not find the 'job_text' column of 'coach_program_phases' in the schema cache" }, withRoutine, 0), 1);
 });

@@ -122,6 +122,7 @@ jobs:
           # CLAUDE.md documents, unmodified.
           deno test --allow-all supabase/functions/ai-coach/
           deno test --allow-all supabase/functions/_shared/
+          deno test --allow-all supabase/functions/drona-cards/
           deno test --allow-all supabase/functions/revenuecat-webhook/
           deno test --allow-all supabase/functions/session-refresh/
           deno test --allow-all lib/sessionRefresh.test.ts
@@ -138,6 +139,10 @@ jobs:
           deno test --allow-all lib/missingColumn.test.ts
           deno test --allow-all --unstable-sloppy-imports lib/planExercise.test.ts
           deno test --allow-all --unstable-sloppy-imports lib/routineTargets.test.ts
+          deno test --allow-all --unstable-sloppy-imports lib/phaseMetricHeadline.test.ts
+          deno test --allow-all lib/screenCache.test.ts
+          deno test --allow-all lib/chartScale.test.ts
+          deno test --allow-all lib/phasePick.test.ts
 
       - name: Pick functions
         id: pick

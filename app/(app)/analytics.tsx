@@ -27,6 +27,7 @@ import { metricTypeOf, type MetricType } from '@/lib/exercises';
 import { setBestValue, isWeightPrimary, formatPrimaryValue, type DisplaySet } from '@/lib/setDisplay';
 import { getGuestWorkoutsDetailed, getGuestProfile } from '@/lib/guestStore';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
+import { GoalMetricsCard } from '@/components/program/GoalMetricsCard';
 import { BodyHeatmap } from '@/components/ui/BodyHeatmap';
 import { ShareSheet } from '@/components/share/ShareSheet';
 import { BodyShareCard } from '@/components/share/BodyShareCard';
@@ -1923,6 +1924,9 @@ export default function AnalyticsScreen() {
                 )}
               </View>
             )}
+
+            {/* 4b. Goal metrics: the program's hero metric and any custom metric. */}
+            {signedIn && <GoalMetricsCard chartWidth={bigChartWidth} />}
 
             {/* 5. Weight Trend */}
             <TrendCard

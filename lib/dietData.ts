@@ -1780,6 +1780,23 @@ export async function saveFuelDays(
   return {};
 }
 
+/**
+ * Save the fuel days PLANNED for a phase that has not started: only
+ * coach_program_phases.diet_fuel_days, never the live days (those belong to
+ * the phase running now, and the planned ones go live when this phase does).
+ */
+export async function savePlannedFuelDays(
+  supabase: Supa,
+  phaseId: string,
+  days: FuelDay[],
+): Promise<{ error?: string }> {
+  const { error } = await supabase
+    .from('coach_program_phases')
+    .update({ diet_fuel_days: normalizeFuelDays(days) })
+    .eq('id', phaseId);
+  return error ? { error: error.message } : {};
+}
+
 /** Persist daily targets to user_profiles (upsert on clerk_user_id, like the
  *  profile screen). Pass the Clerk id from useClerkUser().user?.id. */
 export async function saveNutritionTargets(
