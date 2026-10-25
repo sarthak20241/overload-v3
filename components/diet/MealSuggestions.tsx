@@ -185,7 +185,7 @@ function SuggestionRow({ item, added, delayMs, why, onAdd, onEdit }: {
         <Text style={[s.name, { color: shownAdded ? C.foreground : C.textSecondary }]} numberOfLines={1}>
           {item.food_name} <Text style={[s.serving, { color: C.textMuted }]}>· {formatServing(item.quantity, item.serving_unit)}</Text>
         </Text>
-        {why && !shownAdded && <Text style={[s.why, { color: C.textMuted }]} numberOfLines={1}>{why}</Text>}
+        {why && !shownAdded && <Text style={[s.why, { color: C.textSecondary }]} numberOfLines={1}>{why}</Text>}
         {shownAdded
           ? <Text style={[s.addedTxt, { color: C.accentText }]}>Added</Text>
           : <Text style={[s.kcal, { color: C.textMuted }]}>{`${Math.round(item.kcal)} cal`}</Text>}
