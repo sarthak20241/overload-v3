@@ -2056,7 +2056,7 @@ export default function NutritionScreen() {
               />
 
               <Pressable style={s.add} hitSlop={8} onPress={() => openSearch(m.type)}>
-                <Feather name="plus" size={14} color={C.textMuted} />
+                <Feather name="plus" size={14} color={C.textSecondary} />
                 <Text style={s.addTxt}>Add to {m.label.toLowerCase()}</Text>
               </Pressable>
             </View>
@@ -2161,7 +2161,8 @@ export default function NutritionScreen() {
               // Full strength while empty too: the send circle is what marks
               // this bar as the place to log. Dimmed only while a parse runs.
               style={[s.send, { opacity: parseInFlight ? 0.4 : 1 }]}
-              accessibilityLabel={autoLog ? 'Log it' : 'Send to Drona'}
+              // Says what a tap does now: with nothing typed it only opens the field.
+              accessibilityLabel={!text.trim() ? 'Type what you ate' : autoLog ? 'Log it' : 'Send to Drona'}
             >
               <Feather name={autoLog ? 'check' : 'arrow-up'} size={16} color={C.background} />
             </Pressable>
@@ -2364,8 +2365,8 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     add: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: Spacing.sm, paddingLeft: 2 },
     copyBtn: { marginLeft: Spacing.sm, padding: 2 },
     // Grey, not lime: four of these per day would spend the accent the food
-    // box needs.
-    addTxt: { fontSize: FontSize.sm, color: C.textMuted, fontWeight: FontWeight.medium },
+    // box needs. textSecondary, not textMuted: muted misses 4.5:1 on light.
+    addTxt: { fontSize: FontSize.sm, color: C.textSecondary, fontWeight: FontWeight.medium },
 
     // "Just log it". The chip is a receipt line under the row, muted except for
     // the Undo it exists to offer; the miss line sits where Drona's own line
