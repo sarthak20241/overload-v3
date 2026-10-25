@@ -52,6 +52,7 @@ import { startRestEndCue, endRestEndCue } from '@/lib/restCue';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
+import { askForReview, noteWorkoutSaved } from '@/lib/storeReview';
 import { roundVolume, abbreviateNumber, formatWeight, formatDuration, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
 import { metricTypeOf, metricTypeDef, usesReps } from '@/lib/exercises';
 import {
@@ -408,6 +409,9 @@ export default function ActiveWorkoutScreen() {
   // clears it), parked in a ref so the routine-sync answer can pick it up after.
   const pendingRecapRef = useRef<WorkoutRecap | null>(null);
   const [shareRecap, setShareRecap] = useState<WorkoutRecap | null>(null);
+  // Whether the session just saved earned a store rating ask (lib/storeReview).
+  // Asked only after the share card is gone, never on top of it.
+  const reviewDueRef = useRef<Promise<boolean> | null>(null);
 
   // Keep the screen awake during a workout when the user has opted in. Tied to
   // this screen's lifetime: activates on mount (or when the pref flips on) and
@@ -2549,12 +2553,20 @@ export default function ActiveWorkoutScreen() {
       });
   };
 
+  // Ask for a store rating once the finish flow is gone, if the save earned it.
+  const askIfDue = useCallback(() => {
+    const due = reviewDueRef.current;
+    reviewDueRef.current = null;
+    void due?.then((yes) => { if (yes) askForReview(); });
+  }, []);
+
   /**
    * Last step of finishing: show the recap card, or go straight to history when
    * there's nothing to show (sharing unsupported, or the recap never got built
    * because the save threw). Every exit from the finish flow goes through here.
    */
   const leaveAfterFinish = useCallback(() => {
+    reviewDueRef.current = noteWorkoutSaved(prCountRef.current);
     const recap = pendingRecapRef.current;
     if (recap && isShareAvailable()) {
       track('workout_share_opened', {
@@ -2567,12 +2579,14 @@ export default function ActiveWorkoutScreen() {
     }
     pendingRecapRef.current = null;
     router.replace('/(app)/history');
+    askIfDue();
   }, [router]);
 
   const dismissShareRecap = useCallback(() => {
     setShareRecap(null);
     pendingRecapRef.current = null;
     router.replace('/(app)/history');
+    askIfDue();
   }, [router]);
 
   const confirmRoutineSync = () => {
