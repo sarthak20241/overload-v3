@@ -412,6 +412,10 @@ export default function ActiveWorkoutScreen() {
   // Whether the session just saved earned a store rating ask (lib/storeReview).
   // Asked only after the share card is gone, never on top of it.
   const reviewDueRef = useRef<Promise<boolean> | null>(null);
+  // PRs hit this session, reported on workout_completed and read by the
+  // review ask. Screen-local: the screen unmounts after a finish, so it resets
+  // with the next session.
+  const prCountRef = useRef(0);
 
   // Keep the screen awake during a workout when the user has opted in. Tied to
   // this screen's lifetime: activates on mount (or when the pref flips on) and
@@ -2620,9 +2624,6 @@ export default function ActiveWorkoutScreen() {
   };
 
   const finishingRef = useRef(false);
-  // PRs hit this session, reported on workout_completed. Screen-local: the
-  // screen unmounts after a finish, so it resets with the next session.
-  const prCountRef = useRef(0);
   const confirmFinish = async (opts?: { name?: string; notes?: string; routineNameToSave?: string; startedAtIso?: string }) => {
     // Synchronous re-entry guard: setSaving is async, so a fast double-tap on
     // the confirm alert's Finish button (which has no disabled state during its

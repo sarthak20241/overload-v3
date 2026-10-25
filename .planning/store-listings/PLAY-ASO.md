@@ -71,7 +71,7 @@ TRACK EVERY WORKOUT
 
 A PROGRAM THAT ADAPTS
 
-Tell Drona your goal in your own words: lose fat, build muscle, get stronger. He builds a multi-week program around your days, your gym and your injuries. When you stall, miss a week or get stronger, the plan moves with you.
+Tell Drona your goal in your own words: lose fat, build muscle, get stronger. He builds a multi-week program around your days, your gym and your injuries. With Pro, he rewrites it every week, so when you stall, miss a week or get stronger, the plan moves with you.
 
 LOG FOOD THE EASY WAY
 
@@ -103,17 +103,20 @@ Import your workout history from Hevy in one step.
 
 FREE TO START
 
-Tracking workouts and food is free. Overload Pro unlocks more of Drona's coaching. No ads. We do not sell your data. You can delete your account and all of your data from inside the app.
+Tracking workouts and logging food from the catalog is free, with 3 coach chats and 3 AI food logs a day. Overload Pro gives you unlimited coach chat and AI food logs, and a plan rewritten every week. No ads. We do not sell your data. You can delete your account and all of your data from inside the app.
 
 HEALTH DISCLAIMER
 
 Overload is not a medical device. It does not diagnose, treat, cure, or prevent any medical condition. The AI coach gives training guidance, not medical advice. Always consult a doctor or other qualified healthcare professional for medical advice, diagnosis, or treatment, and before starting a new exercise or nutrition program.
 ```
 
-Check every line is true before you paste. These need a quick look:
-- "A large food catalog": the catalog is about 8,000 foods.
-- "Tracking workouts and food is free": confirm against the current free limits.
-- The Hevy import screen is live in 1.0.2.
+Checked against the code on 2026-10-25:
+- Free plan: 3 coach chats and 3 AI food logs per rolling 24 hours
+  (`AI_LIMITS` in `supabase/functions/ai-coach/index.ts`). Pro adds the
+  weekly plan rewrite (`PLAN_BENEFITS` in `lib/tiers.ts`). If these limits
+  change, change the FREE TO START paragraph too.
+- "A large food catalog": about 8,000 foods in production.
+- Hevy import: `app/(app)/import.tsx`, enabled.
 
 Keep the HEALTH DISCLAIMER paragraph. Play rejected an update without it
 (2026-09-13).
