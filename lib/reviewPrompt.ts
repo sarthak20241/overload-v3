@@ -50,3 +50,23 @@ export function afterSave(
 export function markAsked(state: ReviewState, now: number): ReviewState {
   return { ...state, lastAskedAt: now };
 }
+
+/**
+ * Read stored state, or null when it is missing or not the right shape. A
+ * malformed value is a fresh start, never a NaN count that blocks every ask.
+ */
+export function parseReviewState(raw: string | null): ReviewState | null {
+  if (!raw) return null;
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const { firstSavedAt, saved, lastAskedAt } = v as Record<string, unknown>;
+  const num = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
+  if (!num(firstSavedAt) || !num(saved)) return null;
+  if (lastAskedAt !== null && !num(lastAskedAt)) return null;
+  return { firstSavedAt, saved, lastAskedAt };
+}

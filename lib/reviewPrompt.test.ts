@@ -5,7 +5,7 @@
 // later. These pin the moment: a PR, on a lifter who has come back, rarely.
 
 import { assertEquals } from 'jsr:@std/assert@1';
-import { afterSave, markAsked, REVIEW_GAP_DAYS, REVIEW_MIN_DAYS, REVIEW_MIN_WORKOUTS, type ReviewState } from './reviewPrompt.ts';
+import { afterSave, markAsked, parseReviewState, REVIEW_GAP_DAYS, REVIEW_MIN_DAYS, REVIEW_MIN_WORKOUTS, type ReviewState } from './reviewPrompt.ts';
 
 const DAY = 24 * 60 * 60 * 1000;
 const T0 = Date.parse('2026-10-01T10:00:00Z');
@@ -63,4 +63,21 @@ Deno.test('after an ask, the next one waits the full gap', () => {
 Deno.test('a clock set backwards does not count as time passed', () => {
   const asked = { ...regular, lastAskedAt: later };
   assertEquals(afterSave(asked, { prCount: 1, now: later - 400 * DAY }).ask, false);
+});
+
+Deno.test('stored state that is not the right shape reads as a fresh start', () => {
+  // A bad value must not leave saved as NaN, which would block every ask.
+  assertEquals(parseReviewState(null), null);
+  assertEquals(parseReviewState('not json'), null);
+  assertEquals(parseReviewState('{"firstSavedAt":1,"saved":"3","lastAskedAt":null}'), null);
+  assertEquals(parseReviewState('{"firstSavedAt":1,"saved":3}'), null);
+  assertEquals(parseReviewState('[]'), null);
+  assertEquals(
+    parseReviewState(JSON.stringify(regular)),
+    regular,
+  );
+  assertEquals(
+    parseReviewState('{"firstSavedAt":1,"saved":4,"lastAskedAt":9}'),
+    { firstSavedAt: 1, saved: 4, lastAskedAt: 9 },
+  );
 });

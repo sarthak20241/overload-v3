@@ -11,7 +11,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { requireOptionalNativeModule } from 'expo-modules-core';
 import { track } from '@/lib/analytics';
-import { afterSave, markAsked, type ReviewState } from '@/lib/reviewPrompt';
+import { afterSave, markAsked, parseReviewState, type ReviewState } from '@/lib/reviewPrompt';
 
 const KEY = 'overload.storeReview.v1';
 // Wait for the screen change to settle, so the sheet does not land on top of
@@ -39,8 +39,7 @@ function getStoreReview(): StoreReview | null {
 
 async function readState(): Promise<ReviewState | null> {
   try {
-    const raw = await AsyncStorage.getItem(KEY);
-    return raw ? (JSON.parse(raw) as ReviewState) : null;
+    return parseReviewState(await AsyncStorage.getItem(KEY));
   } catch {
     return null;
   }
