@@ -76,7 +76,7 @@ export function MealSuggestions({ items, mealLogged, mealLabel, weekday, fromWor
   return (
     <Animated.View entering={FadeIn.duration(220)} exiting={FadeOut.duration(150)} layout={LinearTransition.duration(220)} style={s.wrap}>
       <View style={s.head}>
-        <DronaMark size={9} color={C.accentText} state="static" />
+        <DronaMark size={9} color={`${C.accentText}99`} state="static" />
         <Text style={[s.headTxt, { color: C.textMuted }]} numberOfLines={1}>{title}</Text>
         <View style={{ flex: 1 }} />
         {usual.length > 1 && (

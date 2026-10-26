@@ -1904,7 +1904,7 @@ export default function NutritionScreen() {
             the same stale-number bug wearing a coach's voice. */}
         {!dayUnknown && (
           <View style={s.drona}>
-            <View style={s.avatar}><DronaMark size={11} color={C.accentText} state="static" /></View>
+            <View style={s.avatar}><DronaMark size={11} color={`${C.accentText}99`} state="static" /></View>
             <Text style={s.dronaTxt}>{dronaLine}</Text>
           </View>
         )}
@@ -2012,7 +2012,7 @@ export default function NutritionScreen() {
                     </Pressable>
                     {dronaRef && (
                       <View style={s.dronaChip}>
-                        <DronaMark size={9} color={C.accentText} state="static" />
+                        <DronaMark size={9} color={`${C.accentText}99`} state="static" />
                         <Text style={s.dronaChipTxt}>Added by Drona</Text>
                         <Text style={s.dronaChipTxt}>·</Text>
                         <Pressable
