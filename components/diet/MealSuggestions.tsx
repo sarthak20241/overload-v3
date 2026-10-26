@@ -2,8 +2,9 @@
  * MealSuggestions: the user's usual foods for one meal, drawn as ghost rows
  * inside that meal's section, right where they would land.
  *
- * A ghost row is the logged row's outline without its fill: dashed border, no
- * card, muted name. It reads as "not in your day yet", and it sits in the
+ * A ghost row is an empty slot: a grey dashed outline, muted name, and a small
+ * soft-lime + as its one spot of color. It reads as "not in your day yet"
+ * without a lime edge, which the food box owns. It sits in the
  * meal it belongs to, so there is no separate list to scan and no question of
  * where a tap will log. Three show at first; the rest are one tap behind
  * "N more", so a long habit list never pushes the diary down the screen.
@@ -75,7 +76,7 @@ export function MealSuggestions({ items, mealLogged, mealLabel, weekday, fromWor
   return (
     <Animated.View entering={FadeIn.duration(220)} exiting={FadeOut.duration(150)} layout={LinearTransition.duration(220)} style={s.wrap}>
       <View style={s.head}>
-        <DronaMark size={9} color={C.accentText} state="static" />
+        <DronaMark size={9} color={`${C.accentText}99`} state="static" />
         <Text style={[s.headTxt, { color: C.textMuted }]} numberOfLines={1}>{title}</Text>
         <View style={{ flex: 1 }} />
         {usual.length > 1 && (
@@ -90,7 +91,7 @@ export function MealSuggestions({ items, mealLogged, mealLabel, weekday, fromWor
               ? `Add all ${usual.length} foods from ${fromWord}, ${usualKcal} calories`
               : `Add all ${usual.length} usual foods, ${usualKcal} calories`}
           >
-            <Text style={[s.addAll, { color: C.accentText }]}>{`Add all · ${usualKcal}`}</Text>
+            <Text style={[s.addAll, { color: C.textSecondary }]}>{`Add all · ${usualKcal}`}</Text>
           </Pressable>
         )}
       </View>
@@ -162,13 +163,17 @@ function SuggestionRow({ item, added, delayMs, why, onAdd, onEdit }: {
       <Pressable
         onPress={onAdd}
         disabled={added}
+        // A grey dashed outline: an empty slot waiting for this food. Grey, not
+        // lime, so the food box keeps the loudest edge on the screen. textDim at
+        // half alpha, not C.border: border is 8% black on light, and a dash
+        // that thin vanishes.
         style={({ pressed }) => [
           s.row,
           {
-            borderColor: shownAdded ? C.accentText : C.border,
+            borderColor: shownAdded ? C.accentText : `${C.textDim}80`,
             borderStyle: shownAdded ? 'solid' : 'dashed',
-            transform: [{ scale: pressed ? 0.98 : 1 }],
           },
+          pressed && { backgroundColor: C.muted },
         ]}
         accessibilityRole="button"
         accessibilityState={{ disabled: added }}
@@ -179,16 +184,18 @@ function SuggestionRow({ item, added, delayMs, why, onAdd, onEdit }: {
         {/* The fill sits under the content and fades in, so the row reads as
             becoming a logged line rather than swapping to one. */}
         <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, s.tint, { backgroundColor: `${C.accentText}1F` }, tint]} />
+        {/* The row's one spot of color: a small soft-lime +. Solid lime with
+            a check once added. */}
         <Animated.View style={[s.icon, shownAdded
           ? { backgroundColor: C.accentText, borderColor: C.accentText }
-          : { borderColor: C.accentText }, iconStyle]}
+          : { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder }, iconStyle]}
         >
           <Feather name={shownAdded ? 'check' : 'plus'} size={11} color={shownAdded ? C.background : C.accentText} />
         </Animated.View>
         <Text style={[s.name, { color: shownAdded ? C.foreground : C.textSecondary }]} numberOfLines={1}>
           {item.food_name} <Text style={[s.serving, { color: C.textMuted }]}>· {formatServing(item.quantity, item.serving_unit)}</Text>
         </Text>
-        {why && !shownAdded && <Text style={[s.why, { color: C.accentText }]} numberOfLines={1}>{why}</Text>}
+        {why && !shownAdded && <Text style={[s.why, { color: C.textSecondary }]} numberOfLines={1}>{why}</Text>}
         {shownAdded
           ? <Text style={[s.addedTxt, { color: C.accentText }]}>Added</Text>
           : <Text style={[s.kcal, { color: C.textMuted }]}>{`${Math.round(item.kcal)} cal`}</Text>}

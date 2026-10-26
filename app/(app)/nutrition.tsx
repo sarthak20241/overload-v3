@@ -1904,7 +1904,7 @@ export default function NutritionScreen() {
             the same stale-number bug wearing a coach's voice. */}
         {!dayUnknown && (
           <View style={s.drona}>
-            <View style={s.avatar}><DronaMark size={11} color={C.accentText} state="static" /></View>
+            <View style={s.avatar}><DronaMark size={11} color={`${C.accentText}99`} state="static" /></View>
             <Text style={s.dronaTxt}>{dronaLine}</Text>
           </View>
         )}
@@ -1988,20 +1988,31 @@ export default function NutritionScreen() {
                     entering={relog ? FadeInDown.duration(280).springify().damping(16) : undefined}
                     layout={LinearTransition.duration(220)}
                   >
-                    <Pressable style={s.entry} onPress={() => setEditEntry(e)}>
-                      <Text style={s.entryName}>
-                        {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit)}</Text>
-                      </Text>
-                      <View style={s.macros}>
-                        <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
-                        <Text style={[s.macroNum, { color: C.macro.protein }]}>{formatMacroGrams(e.protein_g)}g P</Text>
-                        <Text style={[s.macroNum, { color: C.macro.carbs }]}>{formatMacroGrams(e.carb_g)}g C</Text>
-                        <Text style={[s.macroNum, { color: C.macro.fat }]}>{formatMacroGrams(e.fat_g)}g F</Text>
+                    {/* A plain list row, not a card: only the summary and the food
+                        box carry a surface, so the box reads as the thing to use.
+                        The chevron and the pressed wash say the row opens. */}
+                    <Pressable
+                      style={({ pressed }) => [s.entry, pressed && { backgroundColor: C.muted }]}
+                      onPress={() => setEditEntry(e)}
+                      accessibilityRole="button"
+                      accessibilityHint="Edit this food"
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.entryName}>
+                          {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit)}</Text>
+                        </Text>
+                        <View style={s.macros}>
+                          <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
+                          <Text style={[s.macroNum, { color: C.macro.protein }]}>{formatMacroGrams(e.protein_g)}g P</Text>
+                          <Text style={[s.macroNum, { color: C.macro.carbs }]}>{formatMacroGrams(e.carb_g)}g C</Text>
+                          <Text style={[s.macroNum, { color: C.macro.fat }]}>{formatMacroGrams(e.fat_g)}g F</Text>
+                        </View>
                       </View>
+                      <Feather name="chevron-right" size={14} color={C.textDim} />
                     </Pressable>
                     {dronaRef && (
                       <View style={s.dronaChip}>
-                        <DronaMark size={9} color={C.accentText} state="static" />
+                        <DronaMark size={9} color={`${C.accentText}99`} state="static" />
                         <Text style={s.dronaChipTxt}>Added by Drona</Text>
                         <Text style={s.dronaChipTxt}>·</Text>
                         <Pressable
@@ -2045,7 +2056,7 @@ export default function NutritionScreen() {
               />
 
               <Pressable style={s.add} hitSlop={8} onPress={() => openSearch(m.type)}>
-                <Feather name="plus" size={14} color={C.accentText} />
+                <Feather name="plus" size={14} color={C.textSecondary} />
                 <Text style={s.addTxt}>Add to {m.label.toLowerCase()}</Text>
               </Pressable>
             </View>
@@ -2111,7 +2122,7 @@ export default function NutritionScreen() {
               // "Just log it" changes what send DOES, and the placeholder is the
               // honest always-visible signal of that: send now commits.
               placeholder={autoLog ? 'Tell Drona what you ate, it goes straight in' : 'Tell Drona what you ate'}
-              placeholderTextColor={C.textDim}
+              placeholderTextColor={C.textSecondary}
               returnKeyType="send"
               onSubmitEditing={onSend}
               blurOnSubmit={false}
@@ -2143,11 +2154,15 @@ export default function NutritionScreen() {
               />
             </Pressable>
             <Pressable
-              onPress={onSend}
+              // Bright while empty, so a tap must do something: open the field.
+              onPress={() => (text.trim() ? onSend() : inputRef.current?.focus())}
               hitSlop={8}
-              disabled={!text.trim() || parseInFlight}
-              style={[s.send, { opacity: text.trim() && !parseInFlight ? 1 : 0.4 }]}
-              accessibilityLabel={autoLog ? 'Log it' : 'Send to Drona'}
+              disabled={parseInFlight}
+              // Full strength while empty too: the send circle is what marks
+              // this bar as the place to log. Dimmed only while a parse runs.
+              style={[s.send, { opacity: parseInFlight ? 0.4 : 1 }]}
+              // Says what a tap does now: with nothing typed it only opens the field.
+              accessibilityLabel={!text.trim() ? 'Type what you ate' : autoLog ? 'Log it' : 'Send to Drona'}
             >
               <Feather name={autoLog ? 'check' : 'arrow-up'} size={16} color={C.background} />
             </Pressable>
@@ -2335,8 +2350,10 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     // SIBLING of the row's Pressable rather than nested inside it. marginTop
     // moves here; the entry itself no longer sets it, or every row would gain
     // a second gap.
-    entryWrap: { marginTop: Spacing.sm },
-    entry: { backgroundColor: C.card, borderRadius: Radius.md, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.md, ...Shadow.card },
+    // The hairline sits on the wrapper so a row's Drona chip stays inside it.
+    entryWrap: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border, paddingBottom: Spacing.xs },
+    // Bleeds a little past the column so the pressed wash has room around the text.
+    entry: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.md, paddingHorizontal: Spacing.sm, marginHorizontal: -Spacing.sm, borderRadius: Radius.sm },
     raw: { fontSize: 10, color: C.textDim, marginBottom: 1 },
     entryName: { fontSize: FontSize.base, fontWeight: FontWeight.medium, color: C.foreground },
     serving: { fontSize: FontSize.sm, color: C.textMuted, fontWeight: FontWeight.regular },
@@ -2347,7 +2364,9 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
 
     add: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: Spacing.sm, paddingLeft: 2 },
     copyBtn: { marginLeft: Spacing.sm, padding: 2 },
-    addTxt: { fontSize: FontSize.sm, color: C.accentText, fontWeight: FontWeight.medium },
+    // Grey, not lime: four of these per day would spend the accent the food
+    // box needs. textSecondary, not textMuted: muted misses 4.5:1 on light.
+    addTxt: { fontSize: FontSize.sm, color: C.textSecondary, fontWeight: FontWeight.medium },
 
     // "Just log it". The chip is a receipt line under the row, muted except for
     // the Undo it exists to offer; the miss line sits where Drona's own line
@@ -2364,7 +2383,10 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     // Radius.xxl, not lg: a 16px corner on a 48pt full-width bar reads as a wide
     // flat box; a near-pill reads as a composer. Fixed radius, so the corners
     // stay sane when the multiline field grows the bar.
-    input: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: Radius.xxl, paddingHorizontal: Spacing.lg, paddingVertical: 10, ...Shadow.card },
+    // The one lime-edged surface on the screen, so it is the first place the
+    // eye lands. The edge carries that, not the fill: inputBg is lighter than
+    // the card on dark but a grey field on light.
+    input: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, backgroundColor: C.inputBg, borderWidth: 1, borderColor: C.primaryBorder, borderRadius: Radius.xxl, paddingHorizontal: Spacing.lg, paddingVertical: 12, ...Shadow.card },
     // maxHeight caps growth (~4 lines) then scrolls; textAlignVertical top for Android multiline.
     // The row bottom-aligns (icons must hug the bottom as the field grows), so
     // at REST the centres drift: the 28pt send circle's centre sits higher than
