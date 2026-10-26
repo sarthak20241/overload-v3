@@ -75,8 +75,9 @@ async function fetchHistory(supabase: Supa, anchorIso: string): Promise<HistoryE
 }
 
 /** `fetched`: these entries came from the server in this app session, not
- *  only from the disk cache. Never written to disk as true. */
-interface HistoryCache { key: string; entries: HistoryEntry[]; fetched?: boolean }
+ *  only from the disk cache. Never written to disk as true. `fetchedFor`:
+ *  the diary version that fetch was for. */
+interface HistoryCache { key: string; entries: HistoryEntry[]; fetched?: boolean; fetchedFor?: string | null }
 /** One shared empty list, so an empty history keeps its identity. */
 const NO_ENTRIES: HistoryEntry[] = [];
 let _mem: HistoryCache | null = null;
@@ -103,10 +104,14 @@ export function useFoodHistory(version: string | null, anchorIso: string): {
   // Entries are kept with the window they belong to. On a day change the old
   // window's entries are never shown for the new one, so no suggestion from
   // the wrong four weeks flashes up while the new window loads.
-  const [state, setState] = useState<HistoryCache>({ key, entries: seed ?? [], fetched: !!seedMem?.fetched });
-  const setHistory = (entries: HistoryEntry[], fetched: boolean) => setState({ key, entries, fetched });
+  const [state, setState] = useState<HistoryCache>({ key, entries: seed ?? [], fetched: !!seedMem?.fetched, fetchedFor: seedMem?.fetchedFor ?? null });
+  const setHistory = (entries: HistoryEntry[], fetched: boolean, fetchedFor: string | null = null) =>
+    setState({ key, entries, fetched, fetchedFor });
   const history = state.key === key ? state.entries : seed ?? NO_ENTRIES;
-  const loaded = state.key === key ? !!state.fetched : !!seedMem?.fetched;
+  // A diary change refetches. Until that fetch lands, the entries on hand
+  // are from before it, so they are not "loaded" for this version.
+  const cur = state.key === key ? state : seedMem;
+  const loaded = !!cur?.fetched && version !== null && cur.fetchedFor === version;
 
   useEffect(() => {
     let cancelled = false;
@@ -124,12 +129,12 @@ export function useFoodHistory(version: string | null, anchorIso: string): {
       // A failed fetch keeps what is on screen: no suggestions beats wrong ones,
       // and stale ones from this morning are still this user's habits.
       if (cancelled || !fresh) return;
-      _mem = { key, entries: fresh, fetched: true };
+      _mem = { key, entries: fresh, fetched: true, fetchedFor: version };
       // Disk holds one slot, and a cold start always opens on today, so only
       // today's window is worth keeping there. Browsing past days would
       // otherwise overwrite it on every day change.
       if (anchorIso === ymd(new Date())) writeCache<HistoryCache>('foodHistory', user.id, { key, entries: fresh });
-      setHistory(fresh, true);
+      setHistory(fresh, true, version);
     })().catch(() => {});
     return () => { cancelled = true; };
   }, [supabase, user?.id, key, version, anchorIso]);
