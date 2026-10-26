@@ -82,7 +82,7 @@ const MASS_OR_VOLUME = new Set(["g", "gm", "gms", "gram", "grams", "kg", "ml", "
 /** The block appended to the extraction message. Empty string when there is
  *  nothing saved, so a user with no saved meals sends exactly what they sent
  *  before this existed: same prompt, same behaviour. */
-export function savedMealsBlock(saved: SavedMealForParse[]): string {
+export function savedMealsBlock(saved: SavedMealForParse[], hint: SavedMealHint | null = null): string {
   const list = saved.slice(0, MAX_SAVED_IN_PROMPT).filter((m) => m.name.trim());
   if (list.length === 0) return "";
   const lines = list.map((m) => {
@@ -91,13 +91,51 @@ export function savedMealsBlock(saved: SavedMealForParse[]): string {
       : m.items.slice(0, 6).map((i) => i.food_name.trim()).filter(Boolean).join(", ");
     return `- "${m.name.trim()}" (${what}${what ? "; " : ""}${Math.round(m.kcal)} kcal)`;
   });
+  // The router's pick, only when it is one of the meals listed: a pointer the
+  // model weighs against the words, never an instruction to tag it.
+  const picked = hint && list.find((m) => m.id === hint.id);
+  const pointer = picked
+    ? `\nThe app's router read the message as naming "${picked.name.trim()}" (${Math.round(hint!.confidence * 100)}% sure). ` +
+      "A pointer, not a verdict: the amount and the words in the message decide, and only a WHOLE meal is tagged."
+    : "";
   return (
     "\n\n<saved_meals>\n" +
     "The user's own saved meals. A reference list, NOT food they ate: take items only from the message above. " +
     "Use one only when the words mean that WHOLE meal, never for a single food that is only part of it.\n" +
     lines.join("\n") +
+    pointer +
     "\n</saved_meals>"
   );
+}
+
+/** The router's read of the message (foodIntent.ts, Jev): which saved meal it
+ *  names, and how sure (0-1). A pointer for the models and a swap offer on the
+ *  card, never a log on its own. Jev reads names, not amounts: live
+ *  (2026-10-09) it read "10g doctor's choice oats" as the whole 426 kcal saved
+ *  serving, and "yesterday's oat meal" as a saved meal when the diary was meant. */
+export interface SavedMealHint {
+  id: string;
+  name: string;
+  confidence: number;
+}
+
+/** Which parsed line the router's pick is offered against: the line sharing
+ *  the most words with the saved meal's name (its one item counts too when the
+ *  meal IS that one food, as in suggestSavedMeal). Null when no line shares a
+ *  word, because a swap offer needs a line to swap, and null for a pick past
+ *  MAX_SAVED_IN_PROMPT: the model never saw that meal, so the card does not
+ *  offer it either. */
+export function hintOfferTarget(hint: SavedMealHint, saved: SavedMealForParse[], itemNames: string[]): string | null {
+  const meal = saved.slice(0, MAX_SAVED_IN_PROMPT).find((m) => m.id === hint.id);
+  if (!meal) return null;
+  const named = meal.items.length === 1 ? [meal.name, meal.items[0].food_name] : [meal.name];
+  const have = new Set(named.flatMap(words));
+  let best: { name: string; shared: number } | null = null;
+  for (const name of itemNames) {
+    const shared = new Set(words(name).filter((w) => have.has(w))).size;
+    if (shared > 0 && (!best || shared > best.shared)) best = { name, shared };
+  }
+  return best?.name ?? null;
 }
 
 /** The saved meal an extracted item points at, by the exact name the model
@@ -233,14 +271,20 @@ export function mergeSavedLines<R extends MergeableResult>(
 /** A saved meal to OFFER, never to log: the item names one food that is part
  *  of a saved meal ("oats", saved "Oats with milk"). Decision 1A: search the
  *  food as asked, and let the user swap with one tap. Every word of the food
- *  must appear in the meal's name or one of its items, so "chicken" does not
- *  offer "Chicken biryani" when it is only in the name by accident of a longer
- *  word. Newest saved meal first, which is the order they arrive in. */
+ *  must appear in the meal's NAME, so "rice and chicken" does not offer "Dal
+ *  rice" just because the two share "rice".
+ *
+ *  The items count only when the meal IS that one food (a saved "Monday
+ *  Breakfast" of one besan cheela). One item of a bigger meal is not the user
+ *  naming it: seen live, "2 boiled eggs" offered "Bread butter" because that
+ *  meal holds boiled eggs, and the swap would have logged toast too. Newest
+ *  saved meal first, which is the order they arrive in. */
 export function suggestSavedMeal(foodName: string, saved: SavedMealForParse[]): SavedMealForParse | null {
   const want = words(foodName);
   if (want.length === 0) return null;
   for (const m of saved) {
-    const have = new Set([m.name, ...m.items.map((i) => i.food_name)].flatMap(words));
+    const named = m.items.length === 1 ? [m.name, m.items[0].food_name] : [m.name];
+    const have = new Set(named.flatMap(words));
     if (want.every((w) => have.has(w))) return m;
   }
   return null;

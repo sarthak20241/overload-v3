@@ -33,6 +33,9 @@ import {
   type SavedHit,
   type SavedMealForParse,
   rejectsSavedMeal,
+  hintOfferTarget,
+  MAX_SAVED_IN_PROMPT,
+  type SavedMealHint,
   savedMealsBlock,
   suggestSavedMeal,
 } from "./savedMeals.ts";
@@ -382,7 +385,9 @@ export function keepUncoveredPrevious(
     // word-overlaps "tofu", so the guard below reads the tofu line as dropped
     // and helpfully restores it. The guard exists to stop data loss; on an
     // identity swap it would otherwise cause data duplication.
-    replaced?.has(p.food_name.toLowerCase()) ||
+    // Same normalization as removedTargets (trim + lower), so the two can
+    // never disagree about which line a removal named.
+    replaced?.has(p.food_name.trim().toLowerCase()) ||
     items.some((it) =>
       (p.food_id && it.food_id === p.food_id) || wordsOverlap(it.food_name, p.food_name)
     );
@@ -955,6 +960,13 @@ export interface ParseMealInput {
    *  catalog, not the web (savedMeals.ts). A promise so the read can start
    *  alongside everything else; it is awaited just before the first call. */
   savedMeals?: SavedMealForParse[] | Promise<SavedMealForParse[]>;
+  /** The router's pick among those saved meals, with Jev's confidence. Shown
+   *  to the model as a pointer when the router has answered by the time the
+   *  prompt is built, and offered as a swap on the card when the model does
+   *  not tag it. Never logged from here (see SavedMealHint). A promise so the
+   *  parse never waits for the router before extracting: the common path pays
+   *  nothing for the router question (see hintBox). */
+  savedHint?: SavedMealHint | null | Promise<SavedMealHint | null>;
   todayTotals: { kcal: number; protein_g: number } | null;
   targets: { daily_calorie_target: number | null; protein_target_g: number | null } | null;
   // Optional: when set, the recents/targets/totals above are placeholders and
@@ -3295,10 +3307,16 @@ export function reconcileReadings(
 /**
  * Precise's web lookup for one food, on whichever provider deps selects.
  *
- * Tavily falls back to the Anthropic lookup ONLY when Tavily could not be used
- * at all (no key, auth, out of credits, down). "Searched and found nothing" is
- * an answer, not an outage: re-asking a second provider would double the cost
- * of every obscure food for the same null.
+ * Tavily falls back to the Anthropic lookup when Tavily could not be used at
+ * all (no key, auth, out of credits, down), and when it FOUND the food's label
+ * but could not read it: the reader agreed a page was this food, and the text
+ * Tavily handed over never said what its numbers were per. Seen live
+ * 2026-10-23: Instamart printed "per 250 ml" above an Epigamia shake's panel,
+ * Tavily's snippet cut it off, the label was dropped and the line became a
+ * guess, 150 kcal for a 141 kcal bottle; the user's own "check online" then
+ * ran this same Anthropic lookup and got it. "Searched and found nothing" is
+ * still an answer, not an outage: re-asking a second provider would double the
+ * cost of every obscure food for the same null.
  */
 async function webFindingFor(
   deps: ParseMealDeps,
@@ -3348,8 +3366,15 @@ async function webFindingFor(
     for (const st of out.steps) {
       onStep?.({ iter: 1, tool: st.tool, input: { item: item.name, ...(st.input as object) }, result: st.result });
     }
-    if (!out.unavailable) return out.finding ?? undefined;
-    onStep?.({ iter: 1, tool: "web_fallback", input: { item: item.name, from: "tavily" }, result: null });
+    if (!out.unavailable && (out.finding || !out.labelUnread?.length)) return out.finding ?? undefined;
+    onStep?.({
+      iter: 1,
+      tool: "web_fallback",
+      input: out.unavailable
+        ? { item: item.name, from: "tavily" }
+        : { item: item.name, from: "tavily_unread", sites: out.labelUnread },
+      result: null,
+    });
   }
   const found = await runSuperLookup(deps, [item], onUsage, onCall);
   return found?.get(item.name) ?? (found ? [...found.values()][0] : undefined);
@@ -5943,7 +5968,8 @@ async function runParseMealOnce(
   const hits: SavedHit[] = [];
   const suggestions: NonNullable<ParseMealResult["saved_suggestions"]> = [];
   const stated: StatedCapture = { meal: null, lines: [] };
-  let result = await runParseMealCore(deps, input, saved, hits, suggestions, stated);
+  const hint = hintBox(input.savedHint);
+  let result = await runParseMealCore(deps, input, saved, hits, suggestions, stated, hint);
   // A continuation that declined anyway: the prompt forbids it, and this makes
   // the rule true. The waiting meal and the answer go through once more as one
   // message that may not be declined. A second decline stands (the meal keeps
@@ -5955,7 +5981,7 @@ async function runParseMealOnce(
       text: continuationText(input.text, input.pendingMeal),
       pendingMeal: null,
       mustLog: true,
-    }, saved, [], [], stated);
+    }, saved, [], [], stated, hint);
     result.steps = [
       ...first.steps,
       { iter: 9, tool: "pending_retry", input: { declined: first.declined!.message }, result: { logged: !!result.parsed } },
@@ -5988,6 +6014,9 @@ async function runParseMealOnce(
       previousItems: [],
       recentTurns: [],
       savedMeals: undefined,
+      // The pick was turned down with the meal; the rerun must not read it
+      // as a meal the model was never shown.
+      savedHint: null,
     });
     if (fresh.parsed) {
       fresh.parsed = {
@@ -5997,7 +6026,14 @@ async function runParseMealOnce(
       };
     }
     // The call that noticed the rejection was billed too: keep its cost.
-    fresh.steps = [...result.steps, ...fresh.steps];
+    const h = hint.peek();
+    fresh.steps = [
+      ...result.steps,
+      ...(h
+        ? [{ iter: 0, tool: "saved_hint", input: { id: h.id, name: h.name, confidence: h.confidence, pointer: hint.pointer }, result: "rejected" }]
+        : []),
+      ...fresh.steps,
+    ];
     fresh.tool_calls = [...result.tool_calls, ...fresh.tool_calls];
     fresh.iterations += result.iterations;
     for (const k of Object.keys(fresh.usage) as (keyof ParseMealResult["usage"])[]) {
@@ -6007,6 +6043,36 @@ async function runParseMealOnce(
   }
 
   if (suggestions.length > 0) result.saved_suggestions = suggestions;
+  // Who was right about the router's pick, for the trace: the model logged
+  // it, the card offers it, the words turned saved meals down, the pick was
+  // past the prompt cap, or no line could carry the offer.
+  // A pick that landed after the offer step gave up was never shown or
+  // offered either, so it is not judged (it would read as "no_line").
+  const h = hint.gaveUp ? undefined : hint.peek();
+  if (h === undefined) {
+    // The router had not answered when the parse finished: nothing was
+    // shown or offered, and the trace says so rather than saying "no pick".
+    // "pending" when the offer step waited and gave up, "skipped" when it
+    // never asked (no line to offer on, or the words turned saved meals down).
+    result.steps = [...result.steps, { iter: 0, tool: "saved_hint", input: null, result: hint.waited ? "pending" : "skipped" }];
+  } else if (h) {
+    const offered = suggestions.find((s) => s.saved_id === h.id);
+    const verdict = hits.some((x) => x.meal.id === h.id)
+      ? "logged"
+      : offered
+      ? `offered:${offered.food_name}`
+      : rejectsSavedMeal(input.text)
+      ? "rejected"
+      : !saved.slice(0, MAX_SAVED_IN_PROMPT).some((m) => m.id === h.id)
+      ? "not_listed"
+      : "no_line";
+    result.steps = [...result.steps, {
+      iter: 0,
+      tool: "saved_hint",
+      input: { id: h.id, name: h.name, confidence: h.confidence, pointer: hint.pointer },
+      result: verdict,
+    }];
+  }
   let final = result;
   if (hits.length > 0) {
     final = mergeSavedLines(result, hits, input.mealHint ?? mealForHour(input.localHour));
@@ -6030,6 +6096,65 @@ async function runParseMealOnce(
   return final;
 }
 
+/** How long the offer step waits for a router that is still out, measured
+ *  from the moment extraction returns. Jev is usually back long before. */
+const HINT_WAIT_MS = 1500;
+
+/** The router's pick as the parse sees it. forPrompt: whatever has settled
+ *  when the prompt is built, and remembers whether a pointer went in. wait:
+ *  the answer once extraction is back, capped. peek: the answer, undefined
+ *  while the router is still out. The parse never waits for the router
+ *  before extracting, so the common path keeps paying nothing for it. */
+interface HintBox {
+  pointer: boolean;
+  /** Whether the offer step ever waited: a trace "pending" means the router
+   *  was still out after that wait, "skipped" means nobody asked. */
+  waited: boolean;
+  /** The wait ran out before the router answered. An answer that lands
+   *  after that was never shown or offered, so the trace must still say
+   *  "pending" and not judge a pick nobody acted on. */
+  gaveUp: boolean;
+  forPrompt(): SavedMealHint | null;
+  peek(): SavedMealHint | null | undefined;
+  wait(ms: number): Promise<SavedMealHint | null>;
+}
+
+export function hintBox(src: ParseMealInput["savedHint"]): HintBox {
+  let settled: SavedMealHint | null | undefined;
+  let pending: Promise<SavedMealHint | null> | null = null;
+  if (src && typeof (src as Promise<unknown>).then === "function") {
+    pending = (src as Promise<SavedMealHint | null>).then((v) => (settled = v ?? null), () => (settled = null));
+  } else {
+    settled = (src as SavedMealHint | null | undefined) ?? null;
+  }
+  const box: HintBox = {
+    pointer: false,
+    waited: false,
+    gaveUp: false,
+    forPrompt: () => {
+      const v = settled ?? null;
+      if (v) box.pointer = true;
+      return v;
+    },
+    peek: () => settled,
+    wait: (ms) => {
+      box.waited = true;
+      if (settled !== undefined || !pending) return Promise.resolve(settled ?? null);
+      return new Promise((resolve) => {
+        const t = setTimeout(() => {
+          box.gaveUp = true;
+          resolve(null);
+        }, ms);
+        pending!.then((v) => {
+          clearTimeout(t);
+          resolve(v);
+        });
+      });
+    },
+  };
+  return box;
+}
+
 async function runParseMealCore(
   deps: ParseMealDeps,
   input: ParseMealInput,
@@ -6037,6 +6162,7 @@ async function runParseMealCore(
   hits: SavedHit[],
   suggestions: NonNullable<ParseMealResult["saved_suggestions"]>,
   statedOut: StatedCapture,
+  hint: HintBox,
 ): Promise<ParseMealResult> {
   const usage = {
     input_tokens: 0,
@@ -6192,10 +6318,10 @@ async function runParseMealCore(
               grams: p.grams,
             })),
           },
-        }) + savedMealsBlock(saved)
+        }) + savedMealsBlock(saved, hint.forPrompt())
         : input.pendingMeal
-        ? JSON.stringify({ text: userText.text, pending_meal: input.pendingMeal }) + savedMealsBlock(saved)
-        : userText.text + savedMealsBlock(saved),
+        ? JSON.stringify({ text: userText.text, pending_meal: input.pendingMeal }) + savedMealsBlock(saved, hint.forPrompt())
+        : userText.text + savedMealsBlock(saved, hint.forPrompt()),
     }],
   });
   const extractRes = await callExtract();
@@ -6260,7 +6386,11 @@ async function runParseMealCore(
       // Forced to a correction: this turn questions the card, so whatever it
       // lists edits the card. Tagged as an addition, "3 small puris" on a
       // one-line card would sit beside the old poori instead of replacing it.
-      if (again.data?.stop_reason !== "max_tokens" && Array.isArray(items) && items.length > 0) {
+      // A retry that only REMOVES lines ("why did you add tomato and onion
+      // separately") carries no items and is just as much a fix. Live,
+      // 2026-10-21: such a retry was thrown away and the canned answer sent.
+      const removes = Array.isArray(blk?.input?.removed_food_names) && blk!.input.removed_food_names.length > 0;
+      if (again.data?.stop_reason !== "max_tokens" && ((Array.isArray(items) && items.length > 0) || removes)) {
         retried = { ...blk!.input, corrects_previous: true };
       }
     }
@@ -6467,6 +6597,7 @@ async function runParseMealCore(
   // The user's saved meals come out HERE, before any lookup can run on them.
   // Nothing past this line sees a saved item: no estimate, no catalog, no web.
   if (saved.length > 0 && ext.requests_research !== true) {
+    const rejects = rejectsSavedMeal(input.text);
     extItems = extItems.filter((it) => {
       // Do not reinterpret a card's existing food as a saved meal just because
       // extraction attached a saved_meal tag while changing its portion.
@@ -6476,13 +6607,33 @@ async function runParseMealCore(
       if (existing) return true;
       const meal = findSavedMeal(it.savedMeal, saved);
       if (!meal) {
-        const offer = suggestSavedMeal(it.name, saved);
+        // No swap offer of any kind when the words turn saved meals down.
+        const offer = rejects ? null : suggestSavedMeal(it.name, saved);
         if (offer) suggestions.push({ food_name: it.name, saved_id: offer.id, saved_name: offer.name });
         return true;
       }
       hits.push({ meal, count: savedCount(it.quantity, it.unit), mealType: it.meal ?? mealFromText ?? null });
       return false;
     });
+    // The router's pick (Jev) when the model did not tag it: a swap offer on
+    // the line that shares its words, never a log. The user taps if they
+    // meant the saved meal; the parsed line stands if they did not. Lines
+    // already on the card are the correction paths' to keep.
+    // Lines an offer could sit on: new ones, not the card's own.
+    const fresh = extItems.filter((it) =>
+      !(correctsPrevious && prevItems.some((p) => memoryKey(p.food_name) === memoryKey(it.name)))
+    );
+    // Extraction is back, so the router has had that long to answer. A slow
+    // router can still hold the log, but only up to the cap (1.5 s, or the
+    // deps timeout if lower), and only when an offer could come of it: a
+    // line to put it on, and words that do not turn saved meals down.
+    const pick = fresh.length > 0 && !rejects
+      ? await hint.wait(Math.min(deps.timeoutMs, HINT_WAIT_MS))
+      : null;
+    if (pick && !hits.some((h) => h.meal.id === pick.id) && !suggestions.some((s) => s.saved_id === pick.id)) {
+      const target = hintOfferTarget(pick, saved, fresh.map((it) => it.name));
+      if (target) suggestions.push({ food_name: target, saved_id: pick.id, saved_name: pick.name });
+    }
     // Everything they said was a saved meal. There is nothing left to look up,
     // so return now: runParseMeal fills the lines in from the stored rows.
     if (hits.length > 0 && extItems.length === 0) {
@@ -6668,9 +6819,44 @@ async function runParseMealCore(
   // them to say what they ate - next to the line they just deleted, because a
   // decline keeps the card. Removing the last line by TEXT should behave like
   // removing it with the X button, which already clears the card.
-  if (hasPrevious && extItems.length === 0 && removedNames.length > 0) {
+  // Only when NOTHING survives: a removal that names one line of several
+  // ("why did you add the halwa separately") lists no items either, and must
+  // leave the other lines standing, not clear the card. Live, 2026-10-21.
+  const survivors = hasPrevious && removedNames.length > 0
+    ? prevItems.filter((p) => !removedTargets.has(p.food_name.trim().toLowerCase()))
+    : prevItems;
+  if (hasPrevious && extItems.length === 0 && removedNames.length > 0 && survivors.length === 0) {
     const what = removedNames.length === 1 ? removedNames[0] : "those";
     return declineResult(`Removed ${what}. Nothing left on this one.`, true);
+  }
+  // Only when a named line was FOUND. A misspelled or invented name matches
+  // nothing: the old decline stands, rather than a "took it off" that changed
+  // nothing and a corrects_previous that re-sends the card as is.
+  if (hasPrevious && extItems.length === 0 && removedNames.length > 0 && removedTargets.size > 0) {
+    // Hand the survivors back untouched, as a correction: the card is replaced
+    // by itself minus the removed lines. keepUncoveredPrevious is the SAME
+    // restore the correction guard runs at the end of the full path, and the
+    // lines come straight from previous_items, so their provenance (source,
+    // note, confidence) needs no preserveManual pass: nothing was re-resolved.
+    // Decide never ran (decide_ms 0 below), which is why the timing step is
+    // pushed here instead of by the decide block.
+    const kept = keepUncoveredPrevious([], prevItems, replacedNames);
+    const what = removedNames.length === 1 ? removedNames[0] : "those";
+    T.decide_ms = 0;
+    steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: false } });
+    return {
+      parsed: {
+        meal_type: kept[0]?.meal_type ?? (mealFromText ?? input.mealHint ?? mealForHour(input.localHour)),
+        items: kept,
+        drona_line: `Took ${what} off.`,
+        corrects_previous: true,
+      },
+      declined: null,
+      usage,
+      tool_calls: [...toolCalls, "remove_lines"],
+      steps,
+      iterations: anthropicCalls,
+    };
   }
 
   if (ext.declined === true || extItems.length === 0) {

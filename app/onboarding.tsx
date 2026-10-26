@@ -37,6 +37,7 @@ import {
   TouchableOpacity,
   Pressable,
   BackHandler,
+  Keyboard,
   useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -77,6 +78,7 @@ import { CommitmentHold } from '@/components/onboarding/CommitmentHold';
 import { BuildMoment } from '@/components/onboarding/BuildMoment';
 import { ProjectedCurve } from '@/components/onboarding/ProjectedCurve';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { DronaHeroOrb } from '@/components/coach/DronaHeroOrb';
 import { DemoLoop } from '@/components/onboarding/DemoLoop';
 import {
   EMPTY_ANSWERS,
@@ -128,12 +130,12 @@ const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'healt
 // Steps counted by the progress header (welcome and the build moment hide it).
 const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
 
-const GOAL_OPTIONS: { value: CoachGoal; icon: keyof typeof Feather.glyphMap; title: string; sub: string }[] = [
-  { value: 'hypertrophy', icon: 'layers', title: 'Build muscle', sub: 'Add size with steady, trackable volume' },
-  { value: 'strength', icon: 'zap', title: 'Get stronger', sub: 'Push the big lifts heavier' },
-  { value: 'fat_loss', icon: 'wind', title: 'Lose fat', sub: 'Cut weight, keep the muscle' },
-  { value: 'endurance', icon: 'repeat', title: 'Build endurance', sub: 'Higher reps, shorter rest' },
-  { value: 'general', icon: 'compass', title: 'Overall fitness', sub: 'Balanced training that sticks' },
+const GOAL_OPTIONS: { value: CoachGoal; icon: keyof typeof Feather.glyphMap; title: string }[] = [
+  { value: 'hypertrophy', icon: 'layers', title: 'Build muscle' },
+  { value: 'strength', icon: 'zap', title: 'Get stronger' },
+  { value: 'fat_loss', icon: 'wind', title: 'Lose fat' },
+  { value: 'endurance', icon: 'repeat', title: 'Build endurance' },
+  { value: 'general', icon: 'compass', title: 'Overall fitness' },
 ];
 
 const EXPERIENCE_OPTIONS: { value: ExperienceLevel; icon: keyof typeof Feather.glyphMap; title: string; sub: string }[] = [
@@ -180,6 +182,26 @@ export default function OnboardingScreen() {
     frequency: 3,
   });
   const [finishing, setFinishing] = useState(false);
+
+  // "Something else" opens a text box under six cards; once the keyboard is
+  // up, scroll it into view or the user types blind.
+  const goalScrollRef = useRef<ScrollView>(null);
+  // Text typed before "Something else" was toggled off, so a re-tap brings it
+  // back. A closed card sends nothing (goalNote is null while it is off).
+  const stashedGoalNote = useRef('');
+  const goalNoteOpen = step === 'goal' && answers.goalNote != null;
+  // Continue needs a preset goal or a written one. "Something else" open but
+  // left empty blocks it: it would tell Drona nothing.
+  const hasWrittenGoal = !!answers.goalNote?.trim();
+  const emptyNoteOpen = answers.goalNote != null && !hasWrittenGoal;
+  const goalStepReady = hasWrittenGoal || (selectedGoals(answers).length > 0 && !emptyNoteOpen);
+  useEffect(() => {
+    if (!goalNoteOpen) return;
+    const toEnd = () => goalScrollRef.current?.scrollToEnd({ animated: true });
+    const sub = Keyboard.addListener('keyboardDidShow', toEnd);
+    const t = setTimeout(toEnd, 80);
+    return () => { sub.remove(); clearTimeout(t); };
+  }, [goalNoteOpen]);
 
   // Analytics. One effect on `step` is the whole drop-off funnel: every beat
   // reports itself, so PostHog can rank the steps people quit on without a
@@ -417,6 +439,7 @@ export default function OnboardingScreen() {
           phases = applyProgram(
             await requestDronaOnboardingProgram({
               token,
+              freshToken: () => getToken({ skipCache: true }),
               message: buildOnboardingProgramMessage(answers, programExtras),
             }),
           );
@@ -769,26 +792,63 @@ export default function OnboardingScreen() {
           <QuestionStep
             stepKey="goal"
             question="What are you training for?"
-            sub="Choose all that apply. Your goals shape your training and nutrition."
+            sub="Pick all that apply. Change them anytime."
+            // One short line, only when it changes something: the goal step
+            // must fit one screen with no scroll.
             caption={selectedGoals(answers).includes('fat_loss')
-              ? 'With fat loss selected, nutrition starts with a deficit while training supports muscle and strength. Your target weight and pace refine it.'
-              : 'Tap a selected goal to remove it. You can change your goals anytime.'}
-            footer={<PrimaryCta label="Continue" disabled={selectedGoals(answers).length === 0} onPress={() => goTo('experience')} />}
+              ? 'Fat loss starts your nutrition in a deficit.'
+              : undefined}
+            compact
+            keyboardTaps
+            scrollRef={goalScrollRef}
+            footer={
+              <PrimaryCta
+                label="Continue"
+                disabled={!goalStepReady}
+                onPress={() => goTo('experience')}
+              />
+            }
           >
-            <View style={s.options}>
+            <View style={s.optionsCompact}>
               {GOAL_OPTIONS.map((opt, idx) => (
                 <OptionCard
                   key={opt.value}
                   index={idx}
                   icon={opt.icon}
                   title={opt.title}
-                  sub={opt.sub}
                   multiple
+                  compact
                   selected={selectedGoals(answers).includes(opt.value)}
                   onPress={() => setAnswers((a) => ({ ...a, ...toggleGoal(a, opt.value) }))}
                 />
               ))}
+              {/* A goal in their own words: the plan builder and Drona's
+                  memory both get it (goal_detail), so a niche goal like a race
+                  date or a comeback from injury shapes the program. */}
+              <OptionCard
+                index={GOAL_OPTIONS.length}
+                icon="edit-3"
+                title="Something else"
+                multiple
+                compact
+                selected={answers.goalNote != null}
+                onPress={() => {
+                  if (answers.goalNote != null) stashedGoalNote.current = answers.goalNote;
+                  const next = answers.goalNote == null ? stashedGoalNote.current : null;
+                  setAnswers((a) => ({ ...a, goalNote: next }));
+                }}
+              />
             </View>
+            {answers.goalNote != null && (
+              <TextAreaField
+                value={answers.goalNote}
+                onChangeText={(text) => setAnswers((a) => ({ ...a, goalNote: text }))}
+                placeholder="e.g. Run a half marathon in March"
+                accessibilityLabel="Your goal in your own words"
+                autoFocus
+                compact
+              />
+            )}
           </QuestionStep>
         )}
 
@@ -850,7 +910,7 @@ export default function OnboardingScreen() {
                 placeholder="e.g. Trick left knee, avoid heavy squats. Sore right shoulder on overhead pressing."
                 accessibilityLabel="Physical or medical notes"
               />
-              <MedicalDisclaimer style={{ marginTop: Spacing.lg }} />
+              <MedicalDisclaimer variant="line" style={{ marginTop: Spacing.lg }} />
           </QuestionStep>
         )}
 
@@ -1111,12 +1171,14 @@ export default function OnboardingScreen() {
             footer={<PrimaryCta label="Lock it in" onPress={() => goTo('commit')} />}
           >
               <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
-                <DronaMark size={64} state="idle" />
+                {/* The same orb as the paywall's trust screen, so Drona reads
+                    as the one setting the route. */}
+                <DronaHeroOrb />
                 <View style={s.claimList}>
                   {[
-                    'I read every set you log',
-                    'When you stall, we change the plan',
-                    'Fuel targets move with your weight',
+                    'I watch your training, food and recovery',
+                    'When things go off track, I adjust your plan',
+                    'So you get there on time',
                   ].map((line, idx) => (
                     <Animated.View
                       key={line}
@@ -1422,6 +1484,7 @@ const s = StyleSheet.create({
 
   // Question steps
   options: { gap: Spacing.md },
+  optionsCompact: { gap: Spacing.sm },
 
 
   // Body basics + target

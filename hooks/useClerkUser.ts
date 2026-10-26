@@ -11,6 +11,7 @@
  */
 
 import type { UserResource } from '@clerk/types';
+import { clearCache } from '@/lib/screenCache';
 
 export const hasClerkKey = !!process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
@@ -19,8 +20,9 @@ export interface ClerkUserState {
   isLoaded: boolean;
   isSignedIn: boolean;
   signOut: () => Promise<void>;
-  /** Clerk JWT for authenticated edge-function calls. Null when signed out. */
-  getToken: (() => Promise<string | null>) | null;
+  /** Clerk JWT for authenticated edge-function calls. Null when signed out.
+   *  `skipCache` mints a new one: the retry after an expired-token 401. */
+  getToken: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null;
 }
 
 export function useClerkUser(): ClerkUserState {
@@ -46,6 +48,9 @@ export function useClerkUser(): ClerkUserState {
     isLoaded: !!userLoaded && !!authLoaded,
     isSignedIn: !!isSignedIn,
     signOut: async () => {
+      // The Goal & Plan screen cache is keyed by user, so nothing leaks
+      // across accounts, but a signed-out device should not keep it.
+      clearCache();
       if (signOut) await signOut();
     },
     getToken: isSignedIn && getToken ? getToken : null,

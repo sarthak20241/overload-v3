@@ -17,7 +17,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { FunctionRegion } from '@supabase/supabase-js';
 import { fetch as expoFetch } from 'expo/fetch';
-import { useSupabaseClient, getSupabaseAccessToken } from '@/lib/supabase';
+import { useSupabaseClient, getFreshSupabaseAccessToken, getSupabaseAccessToken } from '@/lib/supabase';
+import { sendStreamWithFreshTokenRetry } from '@/lib/authRetry';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { coachInvokeErrorMessage, coachInvokeCapSignal } from '@/lib/coachErrors';
 import { isMeasurementUnit } from '@/lib/units';
@@ -1040,10 +1041,14 @@ export async function parseMealStreaming(
     // device trace agrees: pre_parse 1290->442ms, verifyItems 255->30ms).
     // An earlier round concluded "the pin does not work" - that test ran on a
     // stale bundle from a dead Metro watcher, not on this code.
-    const res = await expoFetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/ai-coach?forceFunctionRegion=us-east-1`, {
+    //
+    // An expired token from Clerk's cache gets one retry with a fresh one
+    // (lib/authRetry.ts) before the JSON fallback below: the 401 comes before
+    // any parse starts, so the resend is safe even in "Just log it".
+    const send = (t: string) => expoFetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/ai-coach?forceFunctionRegion=us-east-1`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${t}`,
         'Content-Type': 'application/json',
         'x-region': 'us-east-1',
       },
@@ -1070,6 +1075,7 @@ export async function parseMealStreaming(
         ...autoLogFields(args.autoLog, now),
       }),
     });
+    const res = await sendStreamWithFreshTokenRetry(send, token, getFreshSupabaseAccessToken);
     // A non-2xx is decided before any parse starts (auth, cap, rate limit), so
     // the JSON path can take over safely even in "Just log it": nothing has
     // been written and nothing is still running.
@@ -1772,6 +1778,23 @@ export async function saveFuelDays(
     }
   }
   return {};
+}
+
+/**
+ * Save the fuel days PLANNED for a phase that has not started: only
+ * coach_program_phases.diet_fuel_days, never the live days (those belong to
+ * the phase running now, and the planned ones go live when this phase does).
+ */
+export async function savePlannedFuelDays(
+  supabase: Supa,
+  phaseId: string,
+  days: FuelDay[],
+): Promise<{ error?: string }> {
+  const { error } = await supabase
+    .from('coach_program_phases')
+    .update({ diet_fuel_days: normalizeFuelDays(days) })
+    .eq('id', phaseId);
+  return error ? { error: error.message } : {};
 }
 
 /** Persist daily targets to user_profiles (upsert on clerk_user_id, like the

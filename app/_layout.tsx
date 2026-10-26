@@ -17,6 +17,7 @@ import { BasicInfoProvider } from '@/hooks/useBasicInfo';
 import { PreferencesProvider } from '@/hooks/usePreferences';
 import { hydrateGuestStore } from '@/lib/guestStore';
 import { hydrateActiveWorkout } from '@/lib/activeWorkoutPersistence';
+import { holdSplashForGate, SessionRefreshGate } from '@/components/SessionRefreshGate';
 import { ClerkSupabaseBridge } from '@/components/ClerkSupabaseBridge';
 import { RevenueCatBridge } from '@/components/RevenueCatBridge';
 import { SyncProvider } from '@/components/SyncProvider';
@@ -46,6 +47,11 @@ const tokenCache = {
 };
 
 const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? '';
+
+// SessionRefreshGate renders nothing until Clerk has loaded and any session
+// swap is over (seconds, at most). Keep the native splash over that wait
+// instead of a blank screen; the gate hides it when done.
+if (publishableKey) holdSplashForGate();
 
 function AppInner() {
   const { C } = useTheme();
@@ -116,9 +122,13 @@ export default function RootLayout() {
     <AppContent />
   ) : (
     <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
-      <ClerkSupabaseBridge />
-      <RevenueCatBridge />
-      <AppContent />
+      {/* Swaps a nearly expired session for a fresh one before anything
+          that reacts to auth mounts (components/SessionRefreshGate.tsx). */}
+      <SessionRefreshGate>
+        <ClerkSupabaseBridge />
+        <RevenueCatBridge />
+        <AppContent />
+      </SessionRefreshGate>
     </ClerkProvider>
   );
 

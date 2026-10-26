@@ -46,7 +46,7 @@ import {
  *  'improvise' (build me something from what I have) and 'challenge' (push back
  *  on what I logged) are still coming. They stay out until the downstream code
  *  can handle them: an option with nowhere to go is a route to nowhere. */
-export type FoodIntent = "log" | "create" | "other" | "steps" | "continue";
+export type FoodIntent = "log" | "create" | "other" | "steps" | "continue" | "edit";
 
 /** Where the answer came from. Carried so the logs can show the ladder working,
  *  and so a regression in routing can be attributed to a step rather than
@@ -130,6 +130,23 @@ export const JEV_INTENT_FLOOR = 0.4;
 /** Exported ONLY so the probe measures what ships. A probe holding its own
  *  copy of the wording measures a copy. */
 export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
+  edit: {
+    what:
+      "A meal card is on screen (the `card` list) and the latest message changes something ON it: an amount, a size, " +
+      "a preparation, which food a line is, or asks for a line to be removed. Use only when `card` exists. " +
+      "A complaint about a line's number that also says what it should be is an edit (\"that's too much, I had 2\").",
+    not_for:
+      "Food that is not on the card yet (that is log). A question about the card that gives nothing to change " +
+      "(\"how is it 240 kcal?\", \"why did you add that?\"): that is other. A request to save the card as a meal: that is create. " +
+      "A change that needs food looked up from an earlier day: that is steps.",
+    examples: [
+      "make it 2 rotis",
+      "they were small",
+      "it was navratri chana, not boiled",
+      "remove the dal",
+      "the sabji had onion and tomato in it, not separate",
+    ],
+  },
   continue: {
     what: "The latest message answers the clarification question or supplies details for pending_meal, which has not been logged. Use only when pending_meal exists.",
     not_for: "An unrelated question, greeting, thanks, cancellation, or a separate new meal. Food mentioned only in history is not a new log.",
@@ -160,6 +177,10 @@ export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
       "If you have to infer that they probably want it kept, they did not ask, and this is not the option. " +
       "A QUESTION about whether saving or creating is possible is not an instruction either: it asks about ability and names nothing to save. " +
       "A polite request that names the specific food or meal to save (\"could you save X\") IS an instruction. " +
+      "A card on screen is not a request to save it: only words asking to keep, save or make a meal of it are. " +
+      "A bare acknowledgement beside a card (\"ok\", \"yes\", \"cool\", \"looks good\", \"thanks\") is NOT a request to save: " +
+      "the user is accepting the card as shown, and tapping Add is how they log it. That is other. " +
+      "A complaint or question about the card (\"you did not reply\", \"how is it 240 kcal\") is never this. " +
       "If the food to save has to be looked up in what they logged before, or they also want it logged, that is not this option.",
     examples: [
       "create this as a new meal called Desk Lunch",
@@ -175,6 +196,10 @@ export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
       "Greetings, thanks, small talk, and questions all belong here: questions about what this box or the app can do " +
       "(even when they use the words create, save or meal, because asking whether something is possible is not asking for it), " +
       "questions about the user's own progress, totals or history, and questions about nutrition in general. " +
+      "With a card on screen: a question or complaint about it that gives nothing to change (\"how is it 240 kcal?\", " +
+      "\"why is that there?\", \"you did not answer me\", \"what??\") is also this, never edit and never create. " +
+      "So is a bare acknowledgement of the card (\"ok\", \"yes\", \"cool\", \"looks good\", \"thanks\"): it names no " +
+      "change and asks for no save. " +
       "These get a spoken answer, which is why they are kept apart from logging and saving.",
     not_for:
       "Any message that reports eating or drinking. That holds even when no specific food or dish is named, " +
@@ -218,6 +243,7 @@ export const INTENT_INSTRUCTIONS = {
   default_rule:
     "If the message reports eating or drinking and does not explicitly ask to save anything, the answer is log. " +
     "If it answers a clarification or supplies details for pending_meal, the answer is continue, even when it names no food. " +
+    "If a card is on screen and the message changes a line on it, the answer is edit. " +
     "Otherwise, if it reports no eating at all, the answer is other. " +
     "If the food has to be looked up in earlier logs, or two actions are asked for, the answer is steps.",
 };
@@ -330,10 +356,11 @@ export function parseFoodIntentMode(raw: string | undefined): FoodIntentMode {
  * wrong in both directions, and asking would spend a call to receive a
  * meaningless answer.
  */
-export function shouldRouteFoodIntent(mode: FoodIntentMode, isCorrection: boolean): boolean {
-  if (mode === "off") return false;
-  if (isCorrection) return false;
-  return true;
+export function shouldRouteFoodIntent(mode: FoodIntentMode): boolean {
+  // The router runs with a card open too, since PR #277: before, every message
+  // beside a card was a correction, so a question got a canned breakdown and
+  // "make it a meal" was never heard. The router itself now reads the card.
+  return mode !== "off";
 }
 
 /** One of the user's saved foods or meals, reduced to what a match needs. The
@@ -449,7 +476,7 @@ function savedMealQuestion(
 }
 
 function isIntent(v: unknown): v is FoodIntent {
-  return v === "log" || v === "create" || v === "other" || v === "steps" || v === "continue";
+  return v === "log" || v === "create" || v === "other" || v === "steps" || v === "continue" || v === "edit";
 }
 
 /**
@@ -557,7 +584,16 @@ export async function routeFoodIntent(
         }
       }
 
-      if (choice && isIntent(choice.choice) && (choice.choice !== "continue" || context?.pendingMeal)) {
+      // A bare ack beside a card is accepting the card, not asking to save it,
+      // edit it, or talk: Jev calls "ok" create at 0.46-0.75 (see isBareAck),
+      // and could as well call it edit or log. Whatever the verdict, it is
+      // read as 'other' under the bar, so it falls to the parse and nothing is
+      // drafted or started.
+      if (choice && context?.card?.length && isBareAck(trimmed)) {
+        deps.log?.(`[food_intent] bare ack beside a card (jev=${choice.choice} @ ${choice.confidence.toFixed(2)}), read as other under the bar`);
+        return { intent: "other", source: "jev", confidence: 0, note: `jev ${res.response.model} bare_ack`, savedMatch, hasFood, pendingAction };
+      }
+      if (choice && isIntent(choice.choice) && (choice.choice !== "continue" || context?.pendingMeal) && (choice.choice !== "edit" || context?.card?.length)) {
         if (choice.confidence >= JEV_INTENT_FLOOR) {
           deps.log?.(
             `[food_intent] jev=${choice.choice} conf=${choice.confidence.toFixed(2)} model=${res.response.model}`,
@@ -587,7 +623,7 @@ export async function routeFoodIntent(
   if (deps.classify) {
     try {
       const guess = await deps.classify(state);
-      if (isIntent(guess) && (guess !== "continue" || context?.pendingMeal)) {
+      if (isIntent(guess) && (guess !== "continue" || context?.pendingMeal) && (guess !== "edit" || context?.card?.length)) {
         deps.log?.(`[food_intent] model=${guess}`);
         return { intent: guess, source: "model", confidence: null, note: "model fallback", savedMatch, hasFood, pendingAction };
       }
@@ -650,7 +686,55 @@ export interface FoodActionInputs {
    *  the food bar, the exact failure 0088's `state: 'free'` caused a day before
    *  the client understood it. Old clients keep today's behaviour. */
   clientSupportsCreate: boolean;
+  /** A meal card is on screen. With one, an edit, a save request, or a question
+   *  about it all go to the food agent, which holds the card and can change it,
+   *  remove from it, save it, or answer about it. */
+  cardOpen?: boolean;
 }
+
+/**
+ * A bare acknowledgement: a few stock words and nothing else ("ok", "yes",
+ * "thanks", "cool", "looks good"). Beside a card Jev reads these as a save
+ * request at 0.46-0.75 (measured 2026-10-22, live), which sits right against
+ * the create bar; a real "make it a meal" scores 0.76-0.82. The margin is too
+ * thin for a floor, so this is code: a bare ack is never a create and never
+ * starts the agent. The user is accepting the card as shown, and tapping Add
+ * is how they log it. Anything with more words is not touched.
+ */
+export function isBareAck(text: string): boolean {
+  // Single stray letters are punctuation fragments ("that's" -> "that", "s"),
+  // not words, so they are dropped before the count.
+  const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").trim().split(/\s+/).filter((w) => w.length > 1 || w === "k");
+  if (words.length === 0 || words.length > 4) return false;
+  // At least one word that MEANS yes or thanks, and nothing outside the
+  // list. Filler alone ("it good", "that all") is not an ack, and a question
+  // word anywhere ("is", "right", "go") is not an ack either.
+  const STRONG = new Set([
+    "ok", "okay", "k", "kk", "yes", "yep", "yeah", "ya", "yup", "sure", "fine", "cool", "good", "great", "nice",
+    "perfect", "thanks", "thank", "thx", "ty", "done", "alright", "noted", "got",
+  ]);
+  const FILLER = new Set(["you", "looks", "that", "thats", "it", "all", "sounds"]);
+  return words.some((w) => STRONG.has(w)) && words.every((w) => STRONG.has(w) || FILLER.has(w));
+}
+
+/**
+ * A card was open, the verdict was a question or complaint, and the policy
+ * still sent it to the parse (under the bar, or not Jev's). That is the one
+ * path where the canned per-line breakdown can still show, so it is counted
+ * in the trace. Pure, and here rather than in index.ts, so a test can reach
+ * it: index.ts boots the server on import.
+ */
+export function cardQuestionFellToParse(
+  d: Pick<FoodIntentDecision, "intent"> | null,
+  outcome: { cardOpen?: boolean; action: FoodAction } | null | undefined,
+): boolean {
+  return !!(outcome?.cardOpen && d?.intent === "other" && outcome.action === "log");
+}
+
+/** The bar for 'edit' and for a card question reaching the agent. Below it the
+ *  correction path runs as before, which is the safe miss: the card is edited
+ *  from the user's words, never thrown away. */
+export const CARD_AGENT_FLOOR = 0.4;
 
 /** The agent itself wrote this reply, so a question in it is the agent's.
  *  A failed agent turn also replies, with a canned "try it as two messages":
@@ -678,12 +762,20 @@ export function continuesPendingMeal(d: FoodIntentDecision | null): boolean {
  *  because the agent is STARTED as soon as the router answers, long before the
  *  parse that decideFoodAction also looks at has finished. The agent can end in
  *  a save card, so it needs a client that can draw one. */
-export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreate: boolean): boolean {
+export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreate: boolean, cardOpen = false): boolean {
   // An answer to the agent's own question goes back to it at any confidence
   // that cleared "proceed": the agent asked, so it is the one that can finish.
   if (d?.resumeAgent) return clientSupportsCreate;
-  return !!d && clientSupportsCreate && d.intent === "steps" && d.source === "jev" &&
-    d.confidence !== null && d.confidence >= STEPS_ACTION_FLOOR;
+  if (!d || !clientSupportsCreate || d.source !== "jev" || d.confidence === null) return false;
+  if (d.intent === "steps") return d.confidence >= STEPS_ACTION_FLOOR;
+  // With a card on screen the agent is the one that can edit it, remove from
+  // it, save it, or answer about it. 'other' beside a card goes there too: the
+  // plain reply path cannot see the card. A 'create' keeps the create bar:
+  // live, "u didn't even reply to me?" read as create at 0.50 and the agent
+  // offered a save card. A save is never inferred from a weak verdict.
+  if (cardOpen && d.intent === "create") return d.confidence >= CREATE_ACTION_FLOOR;
+  if (cardOpen && (d.intent === "edit" || d.intent === "other")) return d.confidence >= CARD_AGENT_FLOOR;
+  return false;
 }
 
 export function decideFoodAction(i: FoodActionInputs): FoodAction {
@@ -691,6 +783,14 @@ export function decideFoodAction(i: FoodActionInputs): FoodAction {
   if (i.mode !== "on" || !i.decision) return "log";
 
   const { intent, confidence, source } = i.decision;
+
+  // A card on screen: the agent takes edits, saves and questions about it.
+  // 'log' (new food beside the card) stays on the parse, and so does any
+  // unsure verdict: the correction path edits the card from the user's words.
+  if (i.cardOpen && wantsFoodAgent(i.decision, i.clientSupportsCreate, true)) return "agent";
+  // 'continue' keeps its own routing below: a pending meal and a card rarely
+  // coexist, but when they do the answer to Drona's question comes first.
+  if (i.cardOpen && intent !== "steps" && intent !== "continue") return "log";
 
   if (intent === "create") {
     if (!i.clientSupportsCreate) return "log";

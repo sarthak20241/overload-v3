@@ -42,14 +42,24 @@ EVAL_VIA_CLI=1 npx tsx scripts/program-activity-eval/run.mts
 # Edge function unit tests (the one real test suite).
 deno test --allow-all supabase/functions/ai-coach/
 deno test --allow-all supabase/functions/revenuecat-webhook/
+deno test --allow-all supabase/functions/session-refresh/   # who may get a sign-in ticket
+deno test --allow-all lib/sessionRefresh.test.ts             # silent re-sign-in: ticket, then sign-out, then sign-in
 deno test --allow-all supabase/functions/_shared/   # TODAY pick rules, shared by app + daily-suggestion
+deno test --allow-all supabase/functions/drona-cards/ # weekly phase metrics check, against a fake database
 deno test --allow-all lib/xp.test.ts
 deno test --allow-all lib/tiers.test.ts
 deno test --unstable-sloppy-imports --import-map=lib/test-import-map.json lib/readiness.test.ts
 deno test --allow-all lib/coachErrors.test.ts  # which bucket a failure lands in
+deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/directFetchRetry.test-import-map.json lib/directFetchRetry.test.ts  # Today pick + weekly card retry an expired token once
+deno test --allow-all lib/authRetry.test.ts    # expired Clerk token: one retry with a fresh one
+deno test --allow-all lib/purchaseErrors.test.ts # a pending store payment is not a failure; failures keep the store's reason
 deno test --allow-all lib/coachBlocks.test.ts  # tables/charts/stats/progress in Drona's replies
 deno test --allow-all lib/servingSize.test.ts # food editor portion <-> stored serving
 deno test --allow-all lib/logDay.test.ts      # "2 eggs for tomorrow" -> which day a food log lands on
+deno test --allow-all --unstable-sloppy-imports lib/phaseMetricHeadline.test.ts # one number per phase metric on every screen
+deno test --allow-all lib/screenCache.test.ts  # Goal & Plan screens paint from cache; a pre-write read is never stored
+deno test --allow-all lib/chartScale.test.ts   # Goal screen chart: readings width, goal ring at the program end
+deno test --allow-all lib/phasePick.test.ts    # the active phase by seq, never by list index
 deno test --allow-all lib/fitnessGoals.test.ts
 deno test --allow-all lib/foodBoxTour.test.ts   # food box tour: who gets it, step order
 deno test --allow-all lib/coachTopic.test.ts   # chats opened from the app: Drona's hidden topic turn + what is sent
@@ -61,6 +71,8 @@ deno test --allow-all lib/maintenance.test.ts   # the Nutrition screen's mainten
 deno test --allow-all lib/foodPatterns.test.ts  # usual foods per meal, and when each meal is offered
 deno test --allow-all lib/mealCleanup.test.ts   # empty meal rows go in one safe database step
 deno test --allow-all lib/mealCardSplit.test.ts # big food card: list vs note when the box is short
+deno test --allow-all lib/calorieBars.test.ts  # Analytics calorie bars: each day against its own goal ±10%
+deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
 ```
 

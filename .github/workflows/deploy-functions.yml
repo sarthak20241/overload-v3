@@ -107,10 +107,11 @@ jobs:
       # The repo has no other test CI, so this is the only automated gate
       # between a bad commit and production, and the deploy is blocked on it
       # deliberately. Be clear about its reach though: these suites cover
-      # ai-coach, _shared and revenuecat-webhook. delete-account and form-check
-      # have no tests at all, and daily-suggestion is covered only indirectly,
-      # through the _shared rules it calls. All five are deployable, so a green
-      # run here is not a statement about every function it can ship.
+      # ai-coach, _shared, revenuecat-webhook and session-refresh.
+      # delete-account and form-check have no tests at all, and
+      # daily-suggestion is covered only indirectly, through the _shared rules
+      # it calls. All six are deployable, so a green run here is not a
+      # statement about every function it can ship.
       - name: Test
         run: |
           set -euo pipefail
@@ -121,10 +122,15 @@ jobs:
           # CLAUDE.md documents, unmodified.
           deno test --allow-all supabase/functions/ai-coach/
           deno test --allow-all supabase/functions/_shared/
+          deno test --allow-all supabase/functions/drona-cards/
           deno test --allow-all supabase/functions/revenuecat-webhook/
+          deno test --allow-all supabase/functions/session-refresh/
+          deno test --allow-all lib/sessionRefresh.test.ts
           deno test --allow-all lib/xp.test.ts
           deno test --allow-all lib/tiers.test.ts
           deno test --allow-all lib/coachErrors.test.ts
+          deno test --allow-all lib/authRetry.test.ts
+          deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/directFetchRetry.test-import-map.json lib/directFetchRetry.test.ts
           deno test --allow-all lib/servingSize.test.ts
           deno test --allow-all lib/fitnessGoals.test.ts
           deno test --allow-all lib/coachTopic.test.ts
@@ -133,6 +139,10 @@ jobs:
           deno test --allow-all lib/missingColumn.test.ts
           deno test --allow-all --unstable-sloppy-imports lib/planExercise.test.ts
           deno test --allow-all --unstable-sloppy-imports lib/routineTargets.test.ts
+          deno test --allow-all --unstable-sloppy-imports lib/phaseMetricHeadline.test.ts
+          deno test --allow-all lib/screenCache.test.ts
+          deno test --allow-all lib/chartScale.test.ts
+          deno test --allow-all lib/phasePick.test.ts
 
       - name: Pick functions
         id: pick

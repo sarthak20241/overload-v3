@@ -129,6 +129,7 @@ export const Colors = {
     goal: '#f59e0b',
     bodyFat: '#ef4444',
     bug: '#f97316',
+    rate: '#eab308',
     trainingGoal: '#84cc16',
     experience: '#3b82f6',
     frequency: '#8b5cf6',

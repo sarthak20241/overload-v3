@@ -7,7 +7,8 @@
  * The rules that CHOOSE the card live on the server (_shared/dronaCards.ts).
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getSupabaseAccessToken } from '@/lib/supabase';
+import { getFreshSupabaseAccessToken, getSupabaseAccessToken } from '@/lib/supabase';
+import { sendWithFreshTokenRetry } from '@/lib/authRetry';
 import { localDayISO } from '@/lib/dailySuggestion';
 import { pickCurrentCard, weekStartOf } from '@/lib/dronaRules';
 
@@ -40,6 +41,8 @@ export interface DronaCardPayload {
   phases?: { id: string; name?: string; from_kcal: number; to_kcal: number }[];
   /** talk: the opening line sent for the person when they tap "Talk it through". */
   prompt?: string;
+  /** log_food: 'ai' opens Nutrition with the "Tell Drona what you ate" box focused. */
+  focus?: 'ai';
 }
 
 export interface SavedDronaCard {
@@ -168,12 +171,19 @@ export async function requestWeeklyCard(timeZone: string | null): Promise<SavedD
   try {
     const token = await getSupabaseAccessToken();
     if (!token) return null;
-    const res = await fetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/drona-cards`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'app', ...(timeZone ? { tz: timeZone } : {}) }),
-      signal: controller.signal,
-    });
+    // An expired token from Clerk's cache gets one retry with a fresh one
+    // (lib/authRetry.ts), so a stale cache does not hide the week's card.
+    const res = await sendWithFreshTokenRetry(
+      (t) =>
+        fetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/drona-cards`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: 'app', ...(timeZone ? { tz: timeZone } : {}) }),
+          signal: controller.signal,
+        }),
+      token,
+      getFreshSupabaseAccessToken,
+    );
     if (!res.ok) return null;
     const json = await res.json();
     return asCard(json?.card);

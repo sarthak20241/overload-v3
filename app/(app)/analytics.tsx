@@ -27,6 +27,7 @@ import { metricTypeOf, type MetricType } from '@/lib/exercises';
 import { setBestValue, isWeightPrimary, formatPrimaryValue, type DisplaySet } from '@/lib/setDisplay';
 import { getGuestWorkoutsDetailed, getGuestProfile } from '@/lib/guestStore';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
+import { GoalMetricsCard } from '@/components/program/GoalMetricsCard';
 import { BodyHeatmap } from '@/components/ui/BodyHeatmap';
 import { ShareSheet } from '@/components/share/ShareSheet';
 import { BodyShareCard } from '@/components/share/BodyShareCard';
@@ -1830,9 +1831,6 @@ export default function AnalyticsScreen() {
               </View>
             )}
 
-            {/* 3.6 Nutrition trends (self-gating: renders only if food is logged). */}
-            <NutritionTrendsCard />
-
             {/* 3.5 Body Distribution (moved here from the dashboard). */}
             {hasMuscleData && (
               <View style={[styles.bigCard, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
@@ -1856,6 +1854,10 @@ export default function AnalyticsScreen() {
                 <BodyHeatmap counts={muscleCounts} gender={profileGender} width={bigChartWidth} />
               </View>
             )}
+
+            {/* 3.6 Nutrition trends, below the body chart (self-gating: renders only
+                once a period has food logged). */}
+            <NutritionTrendsCard />
 
             {/* 4. Exercise Progress */}
             {allExerciseNames.length > 0 && (
@@ -1922,6 +1924,9 @@ export default function AnalyticsScreen() {
                 )}
               </View>
             )}
+
+            {/* 4b. Goal metrics: the program's hero metric and any custom metric. */}
+            {signedIn && <GoalMetricsCard chartWidth={bigChartWidth} />}
 
             {/* 5. Weight Trend */}
             <TrendCard

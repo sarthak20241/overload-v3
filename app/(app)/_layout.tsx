@@ -295,13 +295,12 @@ export default function AppLayout() {
         if (dest) {
           void flushNow();
           settle(false);
-          // Paywall funnel (paywall-plan.md): a signed-in convert on iOS gets
-          // the warm-up → reminder → paywall sequence right after their plan
-          // is saved; /upgrade routes to the reveal choice's destination when
-          // they finish or skip. Guests aren't sold to (no Clerk id for the
-          // RC webhook to attribute a purchase to), and Android has no
-          // billing until the Play blocker clears.
-          if (isSignedIn && Platform.OS === 'ios') {
+          // Paywall funnel (paywall-plan.md): a signed-in convert on iOS or
+          // Android gets the warm-up → reminder → paywall sequence right after
+          // their plan is saved; /upgrade routes to the reveal choice's
+          // destination when they finish or skip. Guests aren't sold to (no
+          // Clerk id for the RC webhook to attribute a purchase to).
+          if (isSignedIn && (Platform.OS === 'ios' || Platform.OS === 'android')) {
             router.replace({
               pathname: '/upgrade',
               params: {

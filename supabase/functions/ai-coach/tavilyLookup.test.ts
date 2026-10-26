@@ -11,6 +11,7 @@ import {
   foodLabel,
   type PageReport,
   readingFromReport,
+  readReport,
   runTavilyLookup,
   type TavilyLookupDeps,
 } from "./tavilyLookup.ts";
@@ -553,4 +554,163 @@ Deno.test("Precise writes the pages' brand to the cache when extract left it in 
   assertEquals(found?.brand, "Amul");
   // The key stays on the words as extracted, so the same line still hits.
   assertEquals(rows[0].cache_key, "amul masti dahi");
+});
+
+// ── A label found but not readable (live 2026-10-23, Epigamia shake) ─────────
+//
+// Instamart prints "Nutritional Information per 250 ml" above the panel. Tavily
+// had no text for the Swiggy page and its extract failed, so all we held was
+// the search snippet, which cut the basis off. The reader agreed it was the
+// shake, said it could not tell what the numbers were per, and the line was
+// guessed at 150 kcal. The user's "check online" ran the Anthropic lookup and
+// got 135. Replayed on the exact snippet: 5 of 5 reader runs gave no usable
+// basis (3 "none", 2 "per serving" with no grams).
+
+const SHAKE_SNIPPET = {
+  title: "Epigamia Cookies & Cream Turbo Protein Milkshake - Instamart",
+  url: "https://www.swiggy.com/instamart/item/epigamia-turbo",
+  content: "Energy: 141 kcal · Protein: 25 g · Carbohydrate: 8 g · Total Sugars: 7 g · Added Sugars: 0 g · " +
+    "Total Fat: 1 g · Saturated Fat: 0 g · Trans Fat: 0 g",
+  score: 0.8,
+  raw_content: null,
+};
+const SHAKE = { name: "Epigamia cookies and cream protein milkshake", brand: "Epigamia" };
+
+/** A reader that answers every page the same way, recording what it was given. */
+function cannedReader(answer: Partial<PageReport>, seen: Array<Record<string, unknown>> = []) {
+  return async (payload: Record<string, unknown>) => {
+    const msg = JSON.parse((payload.messages as Array<{ content: string }>)[0].content);
+    seen.push(...msg.pages);
+    return {
+      content: [{
+        type: "tool_use",
+        name: "report_page_panels",
+        input: { pages: msg.pages.map((p: { page_id: string }) => ({ ...report(answer), page_id: p.page_id })) },
+      }],
+    };
+  };
+}
+
+Deno.test("each way a report can fail has its own reason", () => {
+  const u = "https://e.com";
+  assertEquals(readReport(report({ same_food: false }), u), { dropped: "not_same_food" });
+  assertEquals(readReport(report({ basis: "none" }), u), { dropped: "no_basis" });
+  assertEquals(readReport(report({ kcal: null }), u), { dropped: "no_kcal" });
+  assertEquals(readReport(report({ basis: "per_serving", serving_grams: null }), u), { dropped: "serving_no_grams" });
+  assertEquals(readReport(report({ kcal: 2400 }), u), { dropped: "kcal_too_high" });
+  assertEquals(readReport(report({ protein_g: 60, carb_g: 40, fat_g: 20 }), u), { dropped: "macros_over_100" });
+  assert("reading" in readReport(report({}), u));
+});
+
+Deno.test("the failure this prevents: a snippet cut above its panel is traced, and marked as an unread label", async () => {
+  const calls = newCalls();
+  const net = fakeNet({ searches: [{ results: [SHAKE_SNIPPET] }], extractPages: [] }, calls);
+  const out = await runTavilyLookup(
+    { ...lookupDeps(net, calls), callModel: cannedReader({ basis: "none", kcal: null, protein_g: null, carb_g: null, fat_g: null }) },
+    SHAKE,
+  );
+  assertEquals(out.finding, null);
+  assertEquals(out.unavailable, false);
+  assertEquals(out.labelUnread, ["swiggy.com"]);
+  const read = out.steps.find((s) => s.tool === "web_read");
+  assertEquals((read?.result as { dropped: unknown }).dropped, [{ site: "swiggy.com", why: "no_basis", from: "snippet" }]);
+});
+
+Deno.test("per serving with no grams is an unread label too", async () => {
+  const calls = newCalls();
+  const net = fakeNet({ searches: [{ results: [SHAKE_SNIPPET] }], extractPages: [] }, calls);
+  const out = await runTavilyLookup(
+    { ...lookupDeps(net, calls), callModel: cannedReader({ basis: "per_serving", serving_grams: null, kcal: 141 }) },
+    SHAKE,
+  );
+  assertEquals(out.labelUnread, ["swiggy.com"]);
+});
+
+Deno.test("a page the reader calls another product is not an unread label", async () => {
+  const calls = newCalls();
+  const net = fakeNet({ searches: [{ results: [SHAKE_SNIPPET] }], extractPages: [] }, calls);
+  const out = await runTavilyLookup({ ...lookupDeps(net, calls), callModel: cannedReader({ same_food: false }) }, SHAKE);
+  assertEquals(out.finding, null);
+  assertEquals(out.labelUnread, undefined);
+});
+
+Deno.test("the reader sees the page's opening words, so a pack size printed there can fill a serving", async () => {
+  const calls = newCalls();
+  const page = {
+    ...SHAKE_SNIPPET,
+    url: "https://instamart.in/p/epigamia-turbo",
+    raw_content: "Epigamia Cookies & Cream Turbo Protein Milkshake 250 ml Rs 99. " + "Explore more. ".repeat(80) +
+      "Energy: 141 kcal Protein: 25 g Carbohydrate: 8 g Total Fat: 1 g",
+  };
+  const seen: Array<Record<string, unknown>> = [];
+  const net = fakeNet({ searches: [{ results: [page] }] }, calls);
+  await runTavilyLookup({ ...lookupDeps(net, calls), callModel: cannedReader({}, seen) }, SHAKE);
+  assertEquals(seen.length, 1);
+  assert(String(seen[0].top).startsWith("Epigamia Cookies & Cream Turbo Protein Milkshake 250 ml"), String(seen[0].top));
+  // A page whose panel already holds its opening words does not send them twice.
+  const calls2 = newCalls();
+  const seen2: Array<Record<string, unknown>> = [];
+  const net2 = fakeNet({ searches: [{ results: [RIGHT] }] }, calls2);
+  await runTavilyLookup({ ...lookupDeps(net2, calls2), callModel: cannedReader({}, seen2) }, DAHI);
+  assertEquals(seen2[0].top, undefined);
+});
+
+/** Tavily serves the shake's cut snippet; the reader cannot read it; the
+ *  Anthropic lookup answers with the bottle's label. */
+function shakeNet(anthropicTools: string[][], readerSays: Partial<PageReport>): typeof fetch {
+  const calls = newCalls();
+  const tav = fakeNet({ searches: [{ results: [SHAKE_SNIPPET] }], extractPages: [] }, calls);
+  return (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    if (!u.includes("anthropic")) return tav(url, init);
+    const body = JSON.parse(String(init?.body));
+    const tools = (body.tools ?? []).map((t: { name: string }) => t.name);
+    anthropicTools.push(tools);
+    if (tools.includes("report_page_panels")) {
+      return Response.json({
+        stop_reason: "tool_use",
+        usage: { input_tokens: 900, output_tokens: 80 },
+        content: [{ type: "tool_use", name: "report_page_panels", input: { pages: [{ ...report(readerSays), page_id: "p1" }] } }],
+      });
+    }
+    return Response.json({
+      stop_reason: "tool_use",
+      usage: { input_tokens: 20000, output_tokens: 300, server_tool_use: { web_search_requests: 2 } },
+      content: [{
+        type: "tool_use", name: "report_sources",
+        input: {
+          results: [{
+            for_item: SHAKE.name, found: true,
+            readings: [{ url: "https://world.openfoodfacts.org/p/epigamia-turbo", per_100: { kcal: 54, protein_g: 10, carb_g: 3.6, fat_g: 0.1 } }],
+          }],
+        },
+      }],
+    });
+  }) as typeof fetch;
+}
+
+const SHAKE_ITEM = { name: SHAKE.name, brand: "Epigamia", quantity: 1, unit: "bottle" } as never;
+
+Deno.test("a label Tavily found but could not read is looked up again on the Anthropic search", async () => {
+  const tools: string[][] = [];
+  const steps: Array<{ tool: string; input: unknown }> = [];
+  const found = await superLookupOne(
+    preciseDeps(shakeNet(tools, { basis: "none", kcal: null }), "tavily"), SHAKE_ITEM, () => {}, () => {},
+    (s) => steps.push({ tool: s.tool, input: s.input }),
+  );
+  assert(found !== null, "the bottle's label must be found, not guessed");
+  assertEquals(tools.at(-1), ["web_search", "report_sources"]);
+  const fb = steps.find((s) => s.tool === "web_fallback");
+  assertEquals((fb?.input as { from: string; sites: string[] }).from, "tavily_unread");
+  assertEquals((fb?.input as { sites: string[] }).sites, ["swiggy.com"]);
+});
+
+Deno.test("a miss on another product is still an answer: no second provider is paid", async () => {
+  const tools: string[][] = [];
+  const steps: string[] = [];
+  await superLookupOne(
+    preciseDeps(shakeNet(tools, { same_food: false }), "tavily"), SHAKE_ITEM, () => {}, () => {}, (s) => steps.push(s.tool),
+  );
+  assert(!tools.some((t) => t.includes("web_search")), JSON.stringify(tools));
+  assert(!steps.includes("web_fallback"));
 });

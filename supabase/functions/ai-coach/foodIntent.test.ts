@@ -271,7 +271,7 @@ Deno.test("the whole ladder is exercised in order: jev, then model, then default
 
 // A compile-time reminder that the union is what the criteria advertise. If a
 // new intent is added to FoodIntent without a rubric, this stops being valid.
-const _exhaustive: Record<FoodIntent, true> = { log: true, create: true, other: true, steps: true, continue: true };
+const _exhaustive: Record<FoodIntent, true> = { log: true, create: true, other: true, steps: true, continue: true, edit: true };
 void _exhaustive;
 
 // ── The gate: should we even ask? ───────────────────────────────────────────
@@ -280,21 +280,21 @@ void _exhaustive;
 // is real behaviour, not plumbing.
 
 Deno.test("mode off asks nothing", () => {
-  assertEquals(shouldRouteFoodIntent("off", false), false);
-  assertEquals(shouldRouteFoodIntent("off", true), false);
+  assertEquals(shouldRouteFoodIntent("off"), false);
 });
 
-Deno.test("a correction turn is never routed, in any live mode", () => {
-  // A parsed meal is already on screen and the user said "no, the other one".
-  // That is editing. It is neither logging nor creating, so both answers are
-  // wrong and asking spends a call to learn nothing.
-  assertEquals(shouldRouteFoodIntent("shadow", true), false);
-  assertEquals(shouldRouteFoodIntent("on", true), false);
+Deno.test("a correction turn is routed too, in any live mode", () => {
+  // A parsed meal is on screen. The message may edit it, ask about it, save
+  // it, or add to it: the router reads the card and says which (PR #277).
+  // Before, every such message was a correction, and a question about the
+  // card got a canned breakdown.
+  assertEquals(shouldRouteFoodIntent("shadow"), true);
+  assertEquals(shouldRouteFoodIntent("on"), true);
 });
 
 Deno.test("a first-shot message is routed in shadow and on", () => {
-  assertEquals(shouldRouteFoodIntent("shadow", false), true);
-  assertEquals(shouldRouteFoodIntent("on", false), true);
+  assertEquals(shouldRouteFoodIntent("shadow"), true);
+  assertEquals(shouldRouteFoodIntent("on"), true);
 });
 
 Deno.test("mode parsing accepts the three words and nothing else", () => {
