@@ -8,7 +8,7 @@
  * with the keyboard (see hooks/useSheetSlide).
  */
 import React, { useEffect, useRef } from 'react';
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { AccessibilityInfo, Animated, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '@/hooks/useTheme';
 import { FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
 import { DronaMark } from '@/components/coach/DronaMark';
@@ -31,6 +31,11 @@ export function FoodBoxTourTip({ title, body, actionLabel, onAction, caret = tru
     fade.setValue(0);
     Animated.timing(fade, { toValue: 1, duration: 180, useNativeDriver: true }).start();
   }, [title, fade]);
+  // accessibilityLiveRegion (below) is Android only. On iOS, VoiceOver hears a
+  // new step only when it is announced.
+  useEffect(() => {
+    if (Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(`${title}. ${body}`);
+  }, [title, body]);
 
   return (
     <Animated.View
