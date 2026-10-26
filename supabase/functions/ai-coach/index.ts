@@ -27,6 +27,7 @@ import {
 import { envInt } from "../_shared/envInt.ts";
 import { requireTool, retryTool, SONNET_MODEL, SONNET_SETTINGS, sonnetSettings } from "../_shared/sonnet.ts";
 import { AI_LIMITS } from "../_shared/aiLimits.ts";
+import { cooldownBody, reserveProSlot } from "../_shared/aiCooldown.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { AREAS as WORD_AREAS, QUESTIONS as WORD_QUESTIONS, YES as WORD_YES } from "../_shared/dronaWords.ts";
 import { decideMoment, type MomentCandidate, momentRow } from "../_shared/dronaMoments.ts";
@@ -136,12 +137,33 @@ if (!CLERK_ISSUER) {
   );
 }
 
-// Uniform daily cap for Drona access — applies to every paid tier AND every
-// active trial. 30 messages per rolling 24h. Mirror this in
-// get_coach_access_status() (v_daily_limit) so the client and server agree
-// on what counts as "limit hit."
+// Paid and trialing users have no daily cap, only a cooldown
+// (_shared/aiCooldown.ts). The 24h window is the free tier's, and the old
+// Pro caps' while the cooldown migration is not applied yet.
 const RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000;
-const RATE_LIMIT_MAX = AI_LIMITS.proChat;
+
+/** Seconds until the oldest row in the rolling 24h window ages out. Only the
+ *  pre-migration fallback needs it: the cooldown RPC returns its own wait. */
+async function legacyRetryAfterSeconds(
+  admin: SupabaseClient,
+  table: "ai_coach_rate_limit" | "parse_meal_rate_limit",
+  userId: string,
+): Promise<number> {
+  let retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
+  const { data: oldest } = await admin
+    .from(table)
+    .select("request_at")
+    .eq("user_id", userId)
+    .gte("request_at", new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString())
+    .order("request_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (oldest?.request_at) {
+    const freesAtMs = new Date(oldest.request_at).getTime() + RATE_LIMIT_WINDOW_MS;
+    retryAfter = Math.max(0, Math.ceil((freesAtMs - Date.now()) / 1000));
+  }
+  return retryAfter;
+}
 const PREVIEW_MAX_CHARS = 200;
 const MODEL = SONNET_MODEL;
 const MAX_TOOL_ITERATIONS = 5;
@@ -193,7 +215,7 @@ const RETRIEVAL_QUERY_TIMEOUT_MS = envInt("RETRIEVAL_QUERY_TIMEOUT_MS", 8000);
 // parse_meal mode (AI food logging). Haiku for speed + cost: this fires on
 // every meal, and the catalog does the nutrition work — the model only
 // matches and converts quantities. Own rate bucket (parse_meal_rate_limit),
-// NOT the coach 30/24h window: meals happen several times a day and must not
+// NOT the coach chat bucket: meals happen several times a day and must not
 // eat chat quota. Web search (tier 3 of the fallback ladder) is env-gated so
 // it can be killed without a redeploy if costs or quality surprise us.
 // Haiku 5.5 since 2026-10-11: 99/102 on the parse_meal eval against 98/102
@@ -855,7 +877,6 @@ const PARSE_MEAL_MAX_TOKENS = 6500;
 // #1 latency instrumentation: per-isolate parse counter; ==1 means the isolate
 // was cold for this request (proxy for cold-start cost we cannot time inside).
 let PARSE_ISOLATE_REQUESTS = 0;
-const PARSE_RATE_LIMIT_MAX = AI_LIMITS.proFood;
 const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "false";
 // Fast mode's kill switch. "on" only honours what the CLIENT asked for; the
 // server never routes anyone to fast on its own.
@@ -3359,7 +3380,7 @@ async function handleParseMealRequest(args: {
   trace.message_count = 1;
 
   // Tier check (paywall v3): parse runs for every signed-in user, but free
-  // users get FREE_PARSE_LIMIT/day instead of the paid 40. Free cap hits are
+  // users get FREE_PARSE_LIMIT/day while paid has no daily cap. Free cap hits are
   // a 402 upgrade prompt, not a 429 retry. Fail-closed on RPC error, same as
   // the chat gate.
   let parseFreeTier = false;
@@ -3399,54 +3420,52 @@ async function handleParseMealRequest(args: {
     );
   }
 
-  const parseCap = parseFreeTier ? FREE_PARSE_LIMIT : PARSE_RATE_LIMIT_MAX;
-
-  // Own bucket, same sliding-window mechanics as the coach limiter. Now
-  // routed through the atomic try_reserve_parse_meal_slot RPC (migration
-  // 0089) so a concurrent burst can't bypass the free-tier cap of 3 parses
-  // per rolling 24h.
-  const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
-  const { data: parseSlotData, error: parseSlotErr } = await userClient
-    .rpc("try_reserve_parse_meal_slot", { p_cap: parseCap });
-  if (parseSlotErr) {
-    trace.status = "internal_error";
-    trace.error_message = `parse_rate_limit_check_failed: ${parseSlotErr.message}`;
-    return respond({ error: "Rate limit check failed" }, 500);
-  }
-  const parseSlotRow = Array.isArray(parseSlotData) ? parseSlotData[0] : parseSlotData;
-  const parseInserted = Boolean(parseSlotRow?.inserted);
-  const count = Number(parseSlotRow?.current_count ?? 0);
-  if (!parseInserted) {
-    if (parseFreeTier) {
+  // Own bucket, separate from chat. Free: FREE_PARSE_LIMIT per rolling 24h
+  // through the atomic try_reserve_parse_meal_slot RPC (migration 0089), so a
+  // concurrent burst can't bypass the cap of 3. Paid/trialing: no daily stop,
+  // only the cooldown (_shared/aiCooldown.ts).
+  if (parseFreeTier) {
+    const { data: parseSlotData, error: parseSlotErr } = await userClient
+      .rpc("try_reserve_parse_meal_slot", { p_cap: FREE_PARSE_LIMIT });
+    if (parseSlotErr) {
+      trace.status = "internal_error";
+      trace.error_message = `parse_rate_limit_check_failed: ${parseSlotErr.message}`;
+      return respond({ error: "Rate limit check failed" }, 500);
+    }
+    const parseSlotRow = Array.isArray(parseSlotData) ? parseSlotData[0] : parseSlotData;
+    if (!parseSlotRow?.inserted) {
+      const count = Number(parseSlotRow?.current_count ?? 0);
       trace.status = "unauthorized";
-      trace.error_message = `parse_free_cap_hit: count=${count} cap=${parseCap}`;
+      trace.error_message = `parse_free_cap_hit: count=${count} cap=${FREE_PARSE_LIMIT}`;
       return respond(
         {
           error: "free_cap_hit",
           state: "free",
           feature: "parse",
           parses_today: count,
-          parse_daily_limit: parseCap,
+          parse_daily_limit: FREE_PARSE_LIMIT,
         },
         402,
       );
     }
-    trace.status = "rate_limited";
-    trace.error_message = `parse count=${count} cap=${parseCap}`;
-    let retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
-    const { data: oldest } = await admin
-      .from("parse_meal_rate_limit")
-      .select("request_at")
-      .eq("user_id", userId)
-      .gte("request_at", sinceIso)
-      .order("request_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-    if (oldest?.request_at) {
-      const freesAtMs = new Date(oldest.request_at).getTime() + RATE_LIMIT_WINDOW_MS;
-      retryAfter = Math.max(0, Math.ceil((freesAtMs - Date.now()) / 1000));
+  } else {
+    const slot = await reserveProSlot((fn, args) => userClient.rpc(fn, args), "food");
+    if (slot.kind === "error") {
+      trace.status = "internal_error";
+      trace.error_message = `parse_rate_limit_check_failed: ${slot.message}`;
+      return respond({ error: "Rate limit check failed" }, 500);
     }
-    return respond({ error: "Rate limit exceeded", retry_after_seconds: retryAfter }, 429);
+    if (slot.kind === "cooldown") {
+      trace.status = "rate_limited";
+      trace.error_message = `parse cooldown:${slot.reason} count=${slot.count} wait=${slot.retryAfterSeconds}s`;
+      return respond(cooldownBody("food", slot), 429);
+    }
+    if (slot.kind === "legacy_cap") {
+      trace.status = "rate_limited";
+      trace.error_message = `parse count=${slot.count} cap=${slot.cap}`;
+      const retryAfter = await legacyRetryAfterSeconds(admin, "parse_meal_rate_limit", userId);
+      return respond({ error: "Rate limit exceeded", retry_after_seconds: retryAfter }, 429);
+    }
   }
 
   // Context: recents + targets + today's totals, all non-fatal on failure.
@@ -4414,7 +4433,7 @@ Deno.serve(async (req) => {
 
   // 2.5 Parse the body ONCE, up front. parse_meal branches here so it runs
   // for ANY signed-in user: AI food logging is not behind the paid Drona
-  // gate, only behind a valid JWT + its own rate bucket (40/day paid,
+  // gate, only behind a valid JWT + its own rate bucket (a cooldown for paid,
   // FREE_PARSE_LIMIT/day free — the handler does its own tier check). It
   // must therefore branch BEFORE the chat access gate below.
   // Coach chat parses the same body here and reuses it (body.messages).
@@ -4442,7 +4461,7 @@ Deno.serve(async (req) => {
   // 3. Drona access gate. Reads the user's current state via
   // get_coach_access_status() — paid / trialing / free (migration 0088).
   //
-  // paid and trialing pass with the full toolkit and the 30/24h cap. free
+  // paid and trialing pass with the full toolkit and the cooldown, no daily cap. free
   // passes too, but metered (FREE_CHAT_LIMIT) and chat-only: any generate /
   // refine / discuss mode is a Pro feature and 402s here, BEFORE the
   // rate-limit insert below, so a denied Pro request never burns one of the
@@ -4522,65 +4541,62 @@ Deno.serve(async (req) => {
     return respond({ error: "Access check failed" }, 500);
   }
 
-  // 3.5 Rate limit: rolling 24h window. Paid/trialing get RATE_LIMIT_MAX;
-  // free gets FREE_CHAT_LIMIT and 402 (upgrade sheet) instead of 429
-  // (retry-later toast) when spent. Enforcement goes through the atomic
-  // try_reserve_ai_coach_slot RPC (migration 0089): the old
-  // count-then-insert pattern was race-able at cap=3, which turned the
-  // free tier's daily cap into a couple-of-concurrent-requests bypass.
-  // The RPC serializes concurrent slots per user via advisory lock, so a
-  // burst reads a consistent count and only ever inserts once past the cap.
-  // Called via userClient (Clerk JWT) since the RPC reads
-  // current_clerk_user_id(); the resulting row is written under the
-  // service role indirectly through security-definer.
+  // 3.5 Rate limit. Free gets FREE_CHAT_LIMIT per rolling 24h and a 402
+  // (upgrade sheet) instead of a 429 (retry-later toast) when spent.
+  // Enforcement goes through the atomic try_reserve_ai_coach_slot RPC
+  // (migration 0089): the old count-then-insert pattern was race-able at
+  // cap=3, which turned the free tier's daily cap into a
+  // couple-of-concurrent-requests bypass. The RPC serializes concurrent slots
+  // per user via advisory lock, so a burst reads a consistent count and only
+  // ever inserts once past the cap. Called via userClient (Clerk JWT) since
+  // the RPC reads current_clerk_user_id(); the resulting row is written under
+  // the service role indirectly through security-definer.
+  // Paid/trialing have no daily stop, only a cooldown against bursts far past
+  // normal use (_shared/aiCooldown.ts), same lock, same table.
   // The free phase-1 build skips this: its own claim (max 3 tries, once per
   // account) is the limit, and it must not eat one of the 3 free messages.
-  const chatCap = freeTier ? FREE_CHAT_LIMIT : RATE_LIMIT_MAX;
-  const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
-  const { data: slotData, error: slotErr } = freePhaseBuild
-    ? { data: { inserted: true, current_count: 0 }, error: null }
-    : await userClient.rpc("try_reserve_ai_coach_slot", { p_cap: chatCap });
-  if (slotErr) {
-    trace.status = "internal_error";
-    trace.error_message = `rate_limit_check_failed: ${slotErr.message}`;
-    return respond({ error: "Rate limit check failed" }, 500);
-  }
-  const slotRow = Array.isArray(slotData) ? slotData[0] : slotData;
-  const inserted = Boolean(slotRow?.inserted);
-  const count = Number(slotRow?.current_count ?? 0);
-  if (!inserted) {
-    if (freeTier) {
+  if (freeTier) {
+    const { data: slotData, error: slotErr } = await userClient
+      .rpc("try_reserve_ai_coach_slot", { p_cap: FREE_CHAT_LIMIT });
+    if (slotErr) {
+      trace.status = "internal_error";
+      trace.error_message = `rate_limit_check_failed: ${slotErr.message}`;
+      return respond({ error: "Rate limit check failed" }, 500);
+    }
+    const slotRow = Array.isArray(slotData) ? slotData[0] : slotData;
+    if (!slotRow?.inserted) {
+      const count = Number(slotRow?.current_count ?? 0);
       trace.status = "unauthorized";
-      trace.error_message = `free_cap_hit: count=${count} cap=${chatCap}`;
+      trace.error_message = `free_cap_hit: count=${count} cap=${FREE_CHAT_LIMIT}`;
       return respond(
         {
           error: "free_cap_hit",
           state: "free",
           feature: "chat",
           messages_today: count,
-          daily_limit: chatCap,
+          daily_limit: FREE_CHAT_LIMIT,
         },
         402,
       );
     }
-    trace.status = "rate_limited";
-    trace.error_message = `count=${count} cap=${chatCap}`;
-    // Rolling window: derive retry-after from the oldest counted row so
-    // the client isn't told to retry ~23h early.
-    let retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
-    const { data: oldest } = await admin
-      .from("ai_coach_rate_limit")
-      .select("request_at")
-      .eq("user_id", userId)
-      .gte("request_at", sinceIso)
-      .order("request_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-    if (oldest?.request_at) {
-      const freesAtMs = new Date(oldest.request_at).getTime() + RATE_LIMIT_WINDOW_MS;
-      retryAfter = Math.max(0, Math.ceil((freesAtMs - Date.now()) / 1000));
+  } else if (!freePhaseBuild) {
+    const slot = await reserveProSlot((fn, args) => userClient.rpc(fn, args), "chat");
+    if (slot.kind === "error") {
+      trace.status = "internal_error";
+      trace.error_message = `rate_limit_check_failed: ${slot.message}`;
+      return respond({ error: "Rate limit check failed" }, 500);
     }
-    return respond({ error: "Rate limit exceeded", retry_after_seconds: retryAfter }, 429);
+    if (slot.kind === "cooldown") {
+      trace.status = "rate_limited";
+      trace.error_message = `cooldown:${slot.reason} count=${slot.count} wait=${slot.retryAfterSeconds}s`;
+      return respond(cooldownBody("chat", slot), 429);
+    }
+    if (slot.kind === "legacy_cap") {
+      trace.status = "rate_limited";
+      trace.error_message = `count=${slot.count} cap=${slot.cap}`;
+      const retryAfter = await legacyRetryAfterSeconds(admin, "ai_coach_rate_limit", userId);
+      return respond({ error: "Rate limit exceeded", retry_after_seconds: retryAfter }, 429);
+    }
   }
 
   // 4. Fetch pre-computed user_context (tier 1).

@@ -65,7 +65,7 @@ import { haptics } from '@/lib/haptics';
 import { SelectTextSheet, coachPlainText, type MessageSheetTarget } from '@/components/coach/SelectTextSheet';
 import { MessageCopyButton } from '@/components/coach/MessageCopyButton';
 import { PastChatsList } from '@/components/coach/PastChatsList';
-import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
+import { coachErrorMessage, coachInvokeErrorMessage, cooldownMessageFromBody } from '@/lib/coachErrors';
 import { FRESH_TOKEN_BUDGET_MS, freshTokenAfterExpiry, tokenWithin } from '@/lib/authRetry';
 import { withChangeSource } from '@/lib/planChangeSource';
 import { ilikeExact, parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
@@ -726,6 +726,16 @@ function callAICoachStreaming(
               }
             }
           } catch { /* fall through to the generic failure */ }
+        }
+        // A Pro cooldown says how long to wait, which the generic busy line
+        // cannot.
+        if (response.status === 429) {
+          let cooldown: string | null = null;
+          try { cooldown = cooldownMessageFromBody(429, JSON.parse(body)); } catch { /* not JSON */ }
+          if (cooldown) {
+            if (!controller.signal.aborted) callbacks.onError(cooldown);
+            return;
+          }
         }
         fail(`HTTP ${response.status}: ${body.slice(0, 200)}`);
         return;
