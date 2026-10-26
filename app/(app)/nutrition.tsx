@@ -14,7 +14,7 @@
  * v1 renders with sample data so the layout is verifiable on-device; the Supabase
  * day-load + the NL parse (Drona edge fn) wire in next.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, FlatList, Pressable, TextInput, StyleSheet, useWindowDimensions, AppState, Keyboard,
   type NativeScrollEvent, type NativeSyntheticEvent,
@@ -633,7 +633,7 @@ export default function NutritionScreen() {
   // the user is somewhere else. The tour only starts while it is on screen.
   const [screenFocused, setScreenFocused] = useState(false);
   const tourStepRef = useRef<TourStep | null>(null);
-  tourStepRef.current = tourStep;
+  useLayoutEffect(() => { tourStepRef.current = tourStep; }, [tourStep]);
   useEffect(() => {
     let cancelled = false;
     setTourDone(null);
@@ -698,7 +698,7 @@ export default function NutritionScreen() {
   // back to the same pointer every visit would nag.
   // Through a ref: a new endTour identity must not read as the screen blurring.
   const endTourRef = useRef(endTour);
-  endTourRef.current = endTour;
+  useLayoutEffect(() => { endTourRef.current = endTour; }, [endTour]);
   // A tap on search (the icon in the box, a meal's Add row) leaves the screen
   // too; say so, since search is what the tour is up against.
   useFocusEffect(useCallback(() => {
@@ -722,6 +722,7 @@ export default function NutritionScreen() {
       { status: was.status, auto: (was.status === 'analysing' || was.status === 'streaming') && !!was.auto },
       flow.status,
       added,
+      tourStepRef.current,
     );
     if (!sig) return;
     if ('end' in sig) { endTour('left', sig.end); return; }
@@ -740,7 +741,7 @@ export default function NutritionScreen() {
   const abandonTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (abandonTimer.current) clearTimeout(abandonTimer.current); }, []);
   const textRef = useRef(text);
-  textRef.current = text;
+  useLayoutEffect(() => { textRef.current = text; }, [text]);
   const onBoxBlur = useCallback(() => {
     const f = boxFocusRef.current;
     boxFocusRef.current = null;

@@ -67,14 +67,19 @@ export type FlowStatus = 'idle' | 'analysing' | 'streaming' | 'sent' | 'review' 
  * What a change in the food box flow means for the tour: an event to feed
  * tourNext, a reason to end it, or nothing. `was.auto`: that read was a "Just
  * log it" send, which logs on its own. `added`: the screen's Add closed the
- * card (Discard closes it the same way).
+ * card (Discard closes it the same way). `step`: where the tour is, for the
+ * one change that means different things by step.
  */
 export function tourSignalForFlow(
   was: { status: FlowStatus; auto?: boolean },
   now: FlowStatus,
   added: boolean,
+  step?: TourStep | null,
 ): { event: TourEvent } | { end: TourEndReason } | null {
   if (was.status === now) return null;
+  // Add failed (review -> error, meal kept), then the card closed. At
+  // 'retry' an error closing is a failed read, and the tip still fits.
+  if (was.status === 'error' && now === 'idle' && step === 'review') return { end: 'discarded' };
   const reading = (st: FlowStatus) => st === 'analysing' || st === 'streaming';
   if (reading(now)) return reading(was.status) ? null : { event: 'sent' };
   if (reading(was.status)) {

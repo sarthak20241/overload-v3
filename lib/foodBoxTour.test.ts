@@ -133,6 +133,14 @@ Deno.test("flow: the card closing is Add only when Add closed it", () => {
   assertEquals(tourSignalForFlow({ status: "review" }, "idle", false), { end: "discarded" });
 });
 
+Deno.test("flow: a review card that failed to add, then closed, ends the tour", () => {
+  // Add failed (review -> error keeps the meal), then the user closed it.
+  assertEquals(tourSignalForFlow({ status: "review" }, "error", false, "review"), null);
+  assertEquals(tourSignalForFlow({ status: "error" }, "idle", false, "review"), { end: "discarded" });
+  // A read Drona could not do, then closed: the tip still points at the box.
+  assertEquals(tourSignalForFlow({ status: "error" }, "idle", false, "retry"), null);
+});
+
 Deno.test("flow: anything else says nothing", () => {
   assertEquals(tourSignalForFlow({ status: "analysing" }, "streaming", false), null);
   assertEquals(tourSignalForFlow({ status: "idle" }, "create", false), null);
