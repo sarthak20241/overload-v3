@@ -49,9 +49,11 @@ Deno.test("a swap rejects the old food; an edit of the same food does not", () =
 });
 
 function deps(log: { decide: string[] }): ParseMealDeps {
+  // logged_at is relative: memory only reads the last MEMORY_DAYS (10), so a
+  // fixed date aged out of the window and the test went red on its own.
   const boiled = {
     food_name: "boiled chana", food_id: null, kcal: 123, protein_g: 6.8, carb_g: 20.6, fat_g: 2, fiber_g: null,
-    grams: 75, quantity: 75, serving_unit: "g", source: "catalog", logged_via: "ai", tier: "precise", logged_at: "2026-10-16T08:00:00Z",
+    grams: 75, quantity: 75, serving_unit: "g", source: "catalog", logged_via: "ai", tier: "precise", logged_at: new Date(Date.now() - 3 * 86_400_000).toISOString(),
   };
   const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init!.body));
