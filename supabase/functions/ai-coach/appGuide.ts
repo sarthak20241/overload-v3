@@ -8,7 +8,7 @@
 // lifetime entitlements count as Pro access. These records describe the app;
 // authorization continues to be enforced by the existing client/server gates.
 
-import { AI_LIMITS } from "../_shared/aiLimits.ts";
+import { AI_LIMITS, PRO_COOLDOWN } from "../_shared/aiLimits.ts";
 import {
   FUEL_DEFAULT,
   FUEL_LABEL_MAX,
@@ -16,6 +16,12 @@ import {
   FUEL_MIN,
   FUEL_STEP,
 } from "../_shared/fuelDays.ts";
+
+const minutes = (seconds: number) => `${Math.round(seconds / 60)} min`;
+/** The Pro cooldown in words, from the numbers enforcement uses. */
+export const proCooldownText =
+  `more than ${PRO_COOLDOWN.chat.burst} coach messages or ${PRO_COOLDOWN.food.burst} food logs in ${minutes(PRO_COOLDOWN.chat.burstWindowSeconds)}; ` +
+  `past ${PRO_COOLDOWN.chat.heavyAfter} of either in 24 hours, one coach message every ${minutes(PRO_COOLDOWN.chat.heavyGapSeconds)} and one food log every ${minutes(PRO_COOLDOWN.food.heavyGapSeconds)}`;
 
 export interface AppGuideAvailability {
   capability: string;
@@ -545,7 +551,7 @@ export const APP_GUIDE = {
       `Coach Drona (the coach button on Home, the AI button on Routines, insight cards, health signals, the Goal screen, and inside a workout).
 - Menu: "Chat with Coach Drona", "Build a Program", "Generate Workout Plan" (multi-day), "Generate a Workout" (one session). Results show "Why this works for you", "Refine with AI" and Save. Discuss-first chats exist for each.
 - In chat you read everything in user_context and can pull more with the typed tools and coach_query_sql. You change targets through propose_targets, the live session through edit_active_workout, and you remember durable facts with remember_fact.
-- Limits per rolling 24 hours: free users get ${AI_LIMITS.freeChat} coach messages (plain chat and live_workout) and ${AI_LIMITS.freeFood} AI food logs. Paid and active-trial users get ${AI_LIMITS.proChat} coach messages and ${AI_LIMITS.proFood} AI food logs. Generation, discussion, refining, propose_targets and Precise food parsing require Pro or an active trial. All personal coach conversations require signing in.
+- Limits: free users get ${AI_LIMITS.freeChat} coach messages (plain chat and live_workout) and ${AI_LIMITS.freeFood} AI food logs per rolling 24 hours. Paid and active-trial users have no daily limit on either; only a burst far past normal use gets a short cooldown (${proCooldownText}). Generation, discussion, refining, propose_targets and Precise food parsing require Pro or an active trial. All personal coach conversations require signing in.
 - You cannot: log or edit performed sets, finish a workout, edit a saved routine or program in place, send notifications, or see anyone else's data.`,
     sources: [
       "components/ai/AICoachModal.tsx",
@@ -735,7 +741,7 @@ export const APP_GUIDE = {
     }],
     instructions: `Free versus Pro.
 - Free signed-in users: ${AI_LIMITS.freeChat} coach messages and ${AI_LIMITS.freeFood} AI food logs per rolling 24 hours. Plain chat, live-workout coaching and memory are included. Manual routines, workout history, workout/diet tracking, body logs, health sync and readiness do not require Pro; account-backed features still require sign-in.
-- Pro includes monthly/annual subscribers, founding lifetime, AppSumo lifetime and active trials. It unlocks program/plan/workout generation, discussion, refining, coach nutrition-target proposals and Precise food parsing. The backend enforces ${AI_LIMITS.proChat} coach messages and ${AI_LIMITS.proFood} AI food logs per rolling 24 hours, even though the UI calls them unlimited.
+- Pro includes monthly/annual subscribers, founding lifetime, AppSumo lifetime and active trials. It unlocks program/plan/workout generation, discussion, refining, coach nutrition-target proposals and Precise food parsing. Coach chat and AI food logs are unlimited: there is no daily stop. Only a burst far past normal use gets a cooldown of a few minutes (${proCooldownText}), and the app says how long to wait.
 - Upgrade: Profile > Plan, or the paywall when a free user reaches a limit. In-app purchase and Restore purchases are offered on iOS; Android displays "Pro is coming to Android". An existing paid entitlement is checked by the same backend access gate; Android purchase availability does not mean all Android users are limited to free.
 - Trial eligibility and length come from the selected App Store product. An eligible annual offer may have a 7-day trial; do not promise a trial for every plan or repeat trial eligibility. Lifetime purchases do not renew. AppSumo lifetime is redeemed by code, not through store subscription management.
 - The UI advertises personalized plans rewritten weekly; weekly written reports and proactive nudges are not available. Do not promise an automatic weekly rewrite from that marketing text. The user builds or refines a program through the coach.`,

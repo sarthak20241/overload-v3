@@ -11,7 +11,12 @@
 // taking the blame for a slow connection, with Retry the only thing on offer.
 
 import { assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
-import { coachErrorMessage, coachInvokeErrorMessage } from "./coachErrors.ts";
+import {
+  coachErrorMessage,
+  coachInvokeErrorMessage,
+  cooldownMessage,
+  cooldownMessageFromBody,
+} from "./coachErrors.ts";
 
 const OFFLINE = "Lost the connection. Check your network and come back at me.";
 const SIGNED_OUT = "Your session timed out. Sign in again and we'll pick this up.";
@@ -121,4 +126,41 @@ Deno.test("an expired-token 401 from the coach stream reads as signed out", () =
     debug: 'verify failed: "exp" claim timestamp check failed',
   });
   assertEquals(coachErrorMessage(`HTTP 401: ${body}`), SIGNED_OUT);
+});
+
+Deno.test("a Pro cooldown says how long to wait, in the coach's words", async () => {
+  // The body the server sends (supabase/functions/_shared/aiCooldown.ts).
+  const food = { error: "Rate limit exceeded", cooldown: true, feature: "food", reason: "burst", retry_after_seconds: 170 };
+  const chat = { ...food, feature: "chat", reason: "heavy_day", retry_after_seconds: 45 };
+  assertEquals(
+    await coachInvokeErrorMessage(new FunctionsHttpError(fakeResponse(429, food))),
+    "You're logging faster than I can keep up. Give me 3 minutes, then send the next one.",
+  );
+  assertEquals(
+    await coachInvokeErrorMessage(new FunctionsHttpError(fakeResponse(429, chat))),
+    "We've been going hard. Give me a minute to catch up, then send that again.",
+  );
+  // The streaming chat reads the body itself.
+  assertEquals(cooldownMessageFromBody(429, chat), cooldownMessage("chat", 45));
+});
+
+Deno.test("only a cooldown 429 gets the cooldown line; other 429s stay busy", async () => {
+  assertEquals(cooldownMessageFromBody(429, { error: "Rate limit exceeded", retry_after_seconds: 3600 }), null);
+  assertEquals(cooldownMessageFromBody(500, { cooldown: true, retry_after_seconds: 60 }), null);
+  assertEquals(cooldownMessageFromBody(429, "Too Many Requests"), null);
+  assertEquals(
+    await coachInvokeErrorMessage(
+      new FunctionsHttpError(fakeResponse(429, { error: "Rate limit exceeded", retry_after_seconds: 3600 })),
+    ),
+    BUSY,
+  );
+});
+
+Deno.test("cooldown copy rounds the wait up and never uses an em dash", () => {
+  assertEquals(cooldownMessage("chat", 1), cooldownMessage("chat", 60));
+  assertStringIncludes(cooldownMessage("chat", 61), "2 minutes");
+  assertStringIncludes(cooldownMessage("food", 600), "10 minutes");
+  // A body with no usable wait still reads as a short pause, not "0 minutes".
+  assertStringIncludes(cooldownMessageFromBody(429, { cooldown: true, feature: "food" }) ?? "", "a minute");
+  for (const f of ["chat", "food"]) assertEquals(cooldownMessage(f, 300).includes("\u2014"), false);
 });
