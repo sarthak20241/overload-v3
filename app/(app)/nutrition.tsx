@@ -634,9 +634,15 @@ export default function NutritionScreen() {
   const [screenFocused, setScreenFocused] = useState(false);
   const tourStepRef = useRef<TourStep | null>(null);
   useLayoutEffect(() => { tourStepRef.current = tourStep; }, [tourStep]);
+  // The screen can outlive a sign-in change. A new user starts with no tour,
+  // so one user's step can never be seen, or saved as done, by the next.
+  useLayoutEffect(() => {
+    tourStepRef.current = null;
+    setTourStep(null);
+    setTourDone(null);
+  }, [userId]);
   useEffect(() => {
     let cancelled = false;
-    setTourDone(null);
     if (!userId) return;
     void getFoodBoxTourDone(userId).then((d) => { if (!cancelled) setTourDone(d); });
     return () => { cancelled = true; };
@@ -702,6 +708,8 @@ export default function NutritionScreen() {
   // A tap on search (the icon in the box, a meal's Add row) leaves the screen
   // too; say so, since search is what the tour is up against.
   useFocusEffect(useCallback(() => {
+    // Back on the screen: a search opened before this visit is over.
+    lastSearchOpenAt = 0;
     setScreenFocused(true);
     return () => {
       setScreenFocused(false);
