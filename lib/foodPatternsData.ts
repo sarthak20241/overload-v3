@@ -110,6 +110,8 @@ export function useFoodHistory(version: string | null, anchorIso: string): {
   const history = state.key === key ? state.entries : seed ?? NO_ENTRIES;
   // A diary change refetches. Until that fetch lands, the entries on hand
   // are from before it, so they are not "loaded" for this version.
+  // A fetch that fails leaves it false, so a caller waiting on it (the food
+  // box tour) waits too. That is the safe side.
   const cur = state.key === key ? state : seedMem;
   const loaded = !!cur?.fetched && version !== null && cur.fetchedFor === version;
 
