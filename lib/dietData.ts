@@ -30,7 +30,7 @@ import { readSwapOptions, type SwapOption } from '@/lib/variantSwap';
 import { relogColumns, type RelogLabels } from '@/lib/foodPatterns';
 import { deleteMealIfEmpty } from '@/lib/mealCleanup';
 import {
-  pendingRows, prunePending, settlePending as settleGroup, withPending,
+  pendingRows, prunePending, settlePending as settleGroup, withPending, r0, r1,
   type PendingGroup, type PendingSource,
 } from '@/lib/pendingEntries';
 import {
@@ -59,8 +59,6 @@ let _logDate: Date = new Date();
 export const setLogDate = (d: Date) => { _logDate = d; };
 export const getLogDate = (): Date => _logDate;
 
-const r0 = (n: number) => Math.round(n);
-const r1 = (n: number) => Math.round(n * 10) / 10;
 const num = (v: unknown) => (v == null ? 0 : Number(v));
 
 export interface LoggedEntry {

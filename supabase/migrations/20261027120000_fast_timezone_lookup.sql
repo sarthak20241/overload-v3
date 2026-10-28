@@ -51,5 +51,20 @@ begin
     execute replace(pg_get_functiondef(f.oid), 'pg_timezone_names', 'public.timezone_names');
     rewritten := rewritten + 1;
   end loop;
+  -- A function the swap missed would keep the slow path and nothing would say
+  -- so; stop the migration instead.
+  if rewritten = 0 then
+    raise exception 'fast_timezone_lookup: no function read pg_timezone_names';
+  end if;
+  if exists (
+    select 1
+    from pg_proc p
+    join pg_namespace ns on ns.oid = p.pronamespace
+    where ns.nspname not in ('pg_catalog', 'information_schema')
+      and p.prokind = 'f'
+      and pg_get_functiondef(p.oid) like '%pg_timezone_names%'
+  ) then
+    raise exception 'fast_timezone_lookup: a function still reads pg_timezone_names';
+  end if;
   raise notice 'fast_timezone_lookup: % functions now read public.timezone_names', rewritten;
 end $$;

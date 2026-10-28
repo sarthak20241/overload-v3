@@ -60,6 +60,14 @@ Deno.test("a read that started before the save keeps the lines shown", () => {
   assertStrictEquals(prunePending(groups, stale, "2026-10-27"), groups);
 });
 
+Deno.test("a read with only some of the saved rows: each row shows once", () => {
+  const groups = settlePending([group()], "g1", ["r1", "r2"]);
+  const partial = day([real("a"), real("r1", "eggs")]);
+  const shown = withPending(partial, "2026-10-27", groups);
+  assertEquals(shown.breakfast.map((e) => e.id), ["a", "r1", "r2"]);
+  assertEquals(shown.breakfast.map((e) => !!e.pending), [false, false, true]);
+});
+
 Deno.test("still saving: a read never drops the lines", () => {
   const groups = [group()];
   assertStrictEquals(prunePending(groups, day([real("a")]), "2026-10-27"), groups);

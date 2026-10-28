@@ -48,6 +48,9 @@ export function withPending<K extends string, E extends PendingRow>(
   const next = { ...byMeal };
   for (const g of shown) {
     for (const e of g.entries) {
+      // A read can hold some of a save's rows and not yet the rest. A row it
+      // already holds is drawn from the read, never a second time from here.
+      if (ids.has(e.id)) continue;
       const k = e.meal_type as K;
       next[k] = [...(next[k] ?? []), e];
     }
@@ -93,8 +96,10 @@ export interface PendingSource {
   source?: string | null;
 }
 
-const r0 = (n: number) => Math.round(n);
-const r1 = (n: number) => Math.round(n * 10) / 10;
+/** How a saved line's numbers are rounded. logSection stores with these, so
+ *  a pending row and its saved row always show the same numbers. */
+export const r0 = (n: number) => Math.round(n);
+export const r1 = (n: number) => Math.round(n * 10) / 10;
 
 /** The rows to draw for `lines` added to `mealType`, rounded the way the save
  *  rounds them (logSection), so the numbers do not shift when the real rows

@@ -771,7 +771,14 @@ export default function NutritionScreen() {
       meal_type: meal, item_count: lines.length, of_count: prevLines[meal].length,
       from_yesterday: prevLabel === 'Yesterday', is_today: isToday, write_failed: !!error,
     });
-    if (error || !ref) { dropPendingLines(pendingId); haptics.warning(); return; }
+    if (error || !ref) {
+      // The sheet closed on the tap, so open it again: the copy is one tap
+      // from a retry, as it was before the lines showed early.
+      dropPendingLines(pendingId);
+      haptics.warning();
+      setCopyMeal(meal);
+      return;
+    }
     haptics.success();
     settlePendingLines(pendingId, ref.sections.flatMap((sec) => sec.entryIds));
     rememberRelog(ref, `Copied from ${prevLabel === 'Yesterday' ? 'yesterday' : prevLabel}`);
