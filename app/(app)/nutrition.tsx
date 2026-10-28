@@ -34,6 +34,8 @@ import { MealCardPopover, type CardRect } from '@/components/diet/MealCardPopove
 import { DayLoadFailed, DaySummaryLoading, MealRowsLoading } from '@/components/diet/DayLoading';
 import { ParsedItemEditor } from '@/components/diet/ParsedItemEditor';
 import { EntryEditSheet } from '@/components/diet/EntryEditSheet';
+import { SwipeToRemove } from '@/components/diet/SwipeToRemove';
+import { useToast } from '@/components/ui/Toast';
 import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
 import { MaintenanceRow } from '@/components/diet/MaintenanceRow';
 import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
@@ -53,7 +55,7 @@ import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
   type PendingFoodMeal, parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext, sectionsOf,
   loadNutritionRange, dateFromYmd, listSavedMeals, savedMealAsItems, usePrefetchWeek,
-  type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
+  deleteMealEntry, type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
   FOOD_TURNS_KEPT,
 } from '@/lib/dietData';
 import {
@@ -209,6 +211,12 @@ function openSearch(meal: MealType) {
   router.push({ pathname: '/food-search', params: { meal } });
 }
 
+/** How long a swiped-away food can still be brought back. */
+const UNDO_MS = 4000;
+/** The delete waits a beat past the bar, so an Undo tap as the bar leaves
+ *  still finds the rows pending instead of already deleted. */
+const COMMIT_MS = UNDO_MS + 400;
+
 interface MealDef { type: MealType; label: string; icon: keyof typeof Feather.glyphMap }
 
 const MEALS: MealDef[] = [
@@ -285,7 +293,7 @@ export default function NutritionScreen() {
   }, [firstWeekIso, latestWeekIso]);
   const weekIndex = weekStarts.findIndex((w) => ymd(w) === weekStartIso);
   const {
-    byMeal, totals, totalsDayIso, loading, failedDayIso, reload,
+    byMeal, totals: dayTotals, totalsDayIso, loading, failedDayIso, reload,
     addPending: addPendingLines, settlePending: settlePendingLines, dropPending: dropPendingLines,
   } = useDayNutrition(viewIso);
   // The numbers on screen belong to `totalsDayIso`. On a day switch that lags
@@ -406,6 +414,27 @@ export default function NutritionScreen() {
   }, []);
   const [adding, setAdding] = useState(false);
   const [editEntry, setEditEntry] = useState<LoggedEntry | null>(null);
+  // Rows swiped away. They leave the list and the ring at once; the delete
+  // itself waits behind the Undo bar (commitRemoves). An id stays here after
+  // its delete lands, so a reload still in flight cannot flash the row back.
+  const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(new Set());
+  const pendingRemoves = useRef<LoggedEntry[]>([]);
+  const removeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The toast context hands out a new object on every show, so effects and
+  // callbacks read it through a ref. As a dep it re-ran the leave-screen flush
+  // below on each show, which hid the Undo bar and deleted at once.
+  const toast = useToast();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+  const totals = useMemo(() => {
+    if (removedIds.size === 0) return dayTotals;
+    const t = { ...dayTotals };
+    for (const m of MEALS) for (const e of byMeal[m.type]) {
+      if (!removedIds.has(e.id)) continue;
+      t.kcal -= e.kcal; t.protein_g -= e.protein_g; t.carb_g -= e.carb_g; t.fat_g -= e.fat_g;
+    }
+    return { kcal: Math.max(0, t.kcal), protein_g: Math.max(0, t.protein_g), carb_g: Math.max(0, t.carb_g), fat_g: Math.max(0, t.fat_g) };
+  }, [dayTotals, byMeal, removedIds]);
   // `baseTargets` is an ordinary day. The viewed day may be a fuel day (a long
   // run, a leg day) with more on top, so the ring, bars and Drona line all
   // read `targets`, the viewed day's own numbers.
@@ -1615,6 +1644,82 @@ export default function NutritionScreen() {
     reload();
   }, [supabase, reload]);
 
+  /** Deletes every row waiting behind the Undo bar, one at a time so two lines
+   *  of one meal never race the empty-meal cleanup. A failed one comes back. */
+  const commitRemoves = useCallback(async () => {
+    if (removeTimer.current) { clearTimeout(removeTimer.current); removeTimer.current = null; }
+    const batch = pendingRemoves.current;
+    pendingRemoves.current = [];
+    if (!batch.length || !supabase) return;
+    const failed: string[] = [];
+    for (const e of batch) {
+      try {
+        if ((await deleteMealEntry(supabase, e)).error) failed.push(e.id);
+        else track('meal_entry_deleted', { meal_type: e.meal_type, kcal: Math.round(e.kcal), via: 'swipe' });
+      } catch {
+        failed.push(e.id);
+      }
+    }
+    if (failed.length) {
+      setRemovedIds((ids) => { const next = new Set(ids); for (const id of failed) next.delete(id); return next; });
+      haptics.warning();
+      // A newer swipe's Undo bar may be up. Replacing it would leave those
+      // rows to delete with no Undo, and the failed rows reappearing say enough.
+      if (!pendingRemoves.current.length) toastRef.current.error(failed.length === 1 ? 'That food did not delete. It is back on the list.' : `${failed.length} foods did not delete. They are back on the list.`);
+    }
+    reload();
+  }, [supabase, reload]);
+  const commitRef = useRef(commitRemoves);
+  commitRef.current = commitRemoves;
+
+  /** Undo brings back every row removed since the bar appeared. */
+  const undoRemoves = useCallback(() => {
+    if (removeTimer.current) { clearTimeout(removeTimer.current); removeTimer.current = null; }
+    const back = pendingRemoves.current;
+    pendingRemoves.current = [];
+    if (!back.length) return;
+    setRemovedIds((ids) => { const next = new Set(ids); for (const e of back) next.delete(e.id); return next; });
+    haptics.tap();
+  }, []);
+
+  /** A row swiped off the screen. Each new swipe restarts the Undo window, so
+   *  clearing a meal line by line ends in one bar: "Removed 3 foods · Undo".
+   *  False when it cannot be removed now, so the swiped row springs back. */
+  const onRemoveEntry = useCallback((e: LoggedEntry) => {
+    if (!supabase || e.pending) { haptics.warning(); return false; }
+    if (pendingRemoves.current.some((p) => p.id === e.id)) return true;
+    pendingRemoves.current = [...pendingRemoves.current, e];
+    setRemovedIds((ids) => new Set(ids).add(e.id));
+    haptics.medium();
+    const n = pendingRemoves.current.length;
+    toastRef.current.show({
+      type: 'success',
+      text: n === 1 ? `Removed ${e.food_name}` : `Removed ${n} foods`,
+      action: { label: 'Undo', onPress: undoRemoves },
+      durationMs: UNDO_MS,
+    });
+    if (removeTimer.current) clearTimeout(removeTimer.current);
+    removeTimer.current = setTimeout(() => { void commitRef.current(); }, COMMIT_MS);
+    return true;
+  }, [supabase, undoRemoves]);
+
+  // Leaving the screen or the app sends the deletes now: the Undo goes with it.
+  useFocusEffect(useCallback(() => () => {
+    if (!pendingRemoves.current.length) return;
+    toastRef.current.hide();
+    void commitRef.current();
+  }, []));
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      // Background only: 'inactive' is also the notification shade or a
+      // system prompt, which would drop the Undo bar early.
+      if (next !== 'background' || !pendingRemoves.current.length) return;
+      toastRef.current.hide();
+      void commitRef.current();
+    });
+    return () => sub.remove();
+  }, []);
+
   /** A send the server never took, re-sent under the SAME id and day. */
   const onRetryLost = useCallback((p: PendingAutoLog) => {
     setLostSends((l) => l.filter((x) => x.client_id !== p.client_id));
@@ -1948,7 +2053,7 @@ export default function NutritionScreen() {
 
         {/* Meal sections */}
         {MEALS.map((m) => {
-          const entries = dayUnknown ? [] : byMeal[m.type];
+          const entries = dayUnknown ? [] : byMeal[m.type].filter((e) => !removedIds.has(e.id));
           const sub = entries.reduce((a, e) => ({ kcal: a.kcal + e.kcal, protein: a.protein + e.protein_g }), { kcal: 0, protein: 0 });
           // Copy the day before's meal: offered while that meal holds anything
           // this one does not have yet.
@@ -2012,14 +2117,22 @@ export default function NutritionScreen() {
                   >
                     {/* A plain list row, not a card: only the summary and the food
                         box carry a surface, so the box reads as the thing to use.
-                        The chevron and the pressed wash say the row opens. */}
+                        The chevron and the pressed wash say the row opens.
+                        Swipe it off to the left to remove it. */}
+                    {/* A line still saving has no row to delete yet, so it does not swipe. */}
+                    <SwipeToRemove style={s.entrySwipe} disabled={!!e.pending} onRemove={() => onRemoveEntry(e)}>
                     <Pressable
-                      style={({ pressed }) => [s.entry, pressed && { backgroundColor: C.muted }, e.pending && s.entryPending]}
+                      style={({ pressed }) => [s.entry, { backgroundColor: pressed ? C.muted : C.background }, e.pending && s.entryPending]}
                       onPress={e.pending ? undefined : () => setEditEntry(e)}
                       disabled={e.pending}
                       accessibilityRole="button"
                       accessibilityState={{ busy: !!e.pending, disabled: !!e.pending }}
                       accessibilityHint={e.pending ? 'Saving' : 'Edit this food'}
+                      // Screen readers get Remove from the actions rotor, no swipe needed.
+                      accessibilityActions={e.pending ? undefined : [{ name: 'delete', label: 'Remove' }]}
+                      onAccessibilityAction={(ev) => {
+                        if (ev.nativeEvent.actionName === 'delete') onRemoveEntry(e);
+                      }}
                     >
                       <View style={{ flex: 1 }}>
                         <Text style={s.entryName}>
@@ -2034,6 +2147,7 @@ export default function NutritionScreen() {
                       </View>
                       <Feather name="chevron-right" size={14} color={C.textDim} />
                     </Pressable>
+                    </SwipeToRemove>
                     {dronaRef && (
                       <View style={s.dronaChip}>
                         <DronaMark size={9} color={`${C.accentText}99`} state="static" />
@@ -2376,8 +2490,10 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     // a second gap.
     // The hairline sits on the wrapper so a row's Drona chip stays inside it.
     entryWrap: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border, paddingBottom: Spacing.xs },
-    // Bleeds a little past the column so the pressed wash has room around the text.
-    entry: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.md, paddingHorizontal: Spacing.sm, marginHorizontal: -Spacing.sm, borderRadius: Radius.sm },
+    // The swipe box bleeds a little past the column so the pressed wash has
+    // room around the text. On the box, not the row, or the box would clip it.
+    entrySwipe: { marginHorizontal: -Spacing.sm, borderRadius: Radius.sm },
+    entry: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.md, paddingHorizontal: Spacing.sm, borderRadius: Radius.sm },
     // Still saving: the whole row, chevron included, so nothing moves when it lands.
     entryPending: { opacity: 0.5 },
     raw: { fontSize: 10, color: C.textDim, marginBottom: 1 },
