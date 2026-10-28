@@ -18,12 +18,14 @@ const LEAVE_MS = 140;
 
 interface Props {
   style?: StyleProp<ViewStyle>;
+  /** No swipe at all, for a row that cannot be removed yet. */
+  disabled?: boolean;
   /** False when the screen could not take the remove; the row then springs back. */
   onRemove: () => boolean;
   children: ReactNode;
 }
 
-export function SwipeToRemove({ style, onRemove, children }: Props) {
+export function SwipeToRemove({ style, disabled, onRemove, children }: Props) {
   const { width: screenW } = useWindowDimensions();
   const [rowW, setRowW] = useState(screenW);
   const threshold = rowW * REMOVE_AT;
@@ -37,6 +39,7 @@ export function SwipeToRemove({ style, onRemove, children }: Props) {
     <View onLayout={(e) => setRowW(e.nativeEvent.layout.width)}>
       <ReanimatedSwipeable
         ref={swipeRef}
+        enabled={!disabled}
         containerStyle={style}
         friction={1}
         rightThreshold={threshold}
