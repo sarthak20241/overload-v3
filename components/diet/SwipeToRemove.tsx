@@ -1,7 +1,7 @@
 /** A logged food row you throw off to the left to remove. Past the line the bin
  *  grows and the phone ticks; let go there and the row is gone. Short of it,
  *  the row springs back. The screen holds the delete behind an Undo. */
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { StyleSheet, useWindowDimensions, View, type StyleProp, type ViewStyle } from 'react-native';
 import Animated, {
   interpolate, runOnJS, useAnimatedReaction, useAnimatedStyle, withTiming, Extrapolation, type SharedValue,
@@ -26,6 +26,9 @@ export function SwipeToRemove({ style, onRemove, children }: Props) {
   const { width: screenW } = useWindowDimensions();
   const [rowW, setRowW] = useState(screenW);
   const threshold = rowW * REMOVE_AT;
+  // Cleared if the row unmounts first (a day switch mid-slide), so no stale remove fires.
+  const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (leaveTimer.current) clearTimeout(leaveTimer.current); }, []);
 
   return (
     <View onLayout={(e) => setRowW(e.nativeEvent.layout.width)}>
@@ -40,7 +43,7 @@ export function SwipeToRemove({ style, onRemove, children }: Props) {
         )}
         // On release past the line. The spring's long settle read as a stall,
         // so the row goes once the fast part of the slide has played.
-        onSwipeableWillOpen={() => { setTimeout(onRemove, LEAVE_MS); }}
+        onSwipeableWillOpen={() => { leaveTimer.current = setTimeout(onRemove, LEAVE_MS); }}
       >
         {children}
       </ReanimatedSwipeable>

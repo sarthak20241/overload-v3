@@ -213,6 +213,9 @@ function openSearch(meal: MealType) {
 
 /** How long a swiped-away food can still be brought back. */
 const UNDO_MS = 4000;
+/** The delete waits a beat past the bar, so an Undo tap as the bar leaves
+ *  still finds the rows pending instead of already deleted. */
+const COMMIT_MS = UNDO_MS + 400;
 
 interface MealDef { type: MealType; label: string; icon: keyof typeof Feather.glyphMap }
 
@@ -1640,7 +1643,9 @@ export default function NutritionScreen() {
     if (failed.length) {
       setRemovedIds((ids) => { const next = new Set(ids); for (const id of failed) next.delete(id); return next; });
       haptics.warning();
-      toastRef.current.error(failed.length === 1 ? 'That food did not delete. It is back on the list.' : `${failed.length} foods did not delete. They are back on the list.`);
+      // A newer swipe's Undo bar may be up. Replacing it would leave those
+      // rows to delete with no Undo, and the failed rows reappearing say enough.
+      if (!pendingRemoves.current.length) toastRef.current.error(failed.length === 1 ? 'That food did not delete. It is back on the list.' : `${failed.length} foods did not delete. They are back on the list.`);
     }
     reload();
   }, [supabase, reload]);
@@ -1673,7 +1678,7 @@ export default function NutritionScreen() {
       durationMs: UNDO_MS,
     });
     if (removeTimer.current) clearTimeout(removeTimer.current);
-    removeTimer.current = setTimeout(() => { void commitRef.current(); }, UNDO_MS);
+    removeTimer.current = setTimeout(() => { void commitRef.current(); }, COMMIT_MS);
   }, [supabase, undoRemoves]);
 
   // Leaving the screen or the app sends the deletes now: the Undo goes with it.
