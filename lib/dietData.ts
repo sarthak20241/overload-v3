@@ -30,6 +30,10 @@ import { readSwapOptions, type SwapOption } from '@/lib/variantSwap';
 import { relogColumns, type RelogLabels } from '@/lib/foodPatterns';
 import { deleteMealIfEmpty } from '@/lib/mealCleanup';
 import {
+  pendingRows, prunePending, settlePending as settleGroup, withPending,
+  type PendingGroup, type PendingSource,
+} from '@/lib/pendingEntries';
+import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
 } from '@/lib/foods';
@@ -70,6 +74,9 @@ export interface LoggedEntry {
   quantity: number;
   grams_logged: number | null;  // to rescale macros on a quantity edit
   kcal: number; protein_g: number; carb_g: number; fat_g: number;
+  /** Drawn the moment it was added, before its save landed (lib/pendingEntries).
+   *  Its id is not a row yet, so it cannot be edited or undone. */
+  pending?: boolean;
 }
 export interface DayTotals { kcal: number; protein_g: number; carb_g: number; fat_g: number }
 export interface DayData {
@@ -86,6 +93,13 @@ export interface DayData {
    *  tells "still loading" from "gave up". Cleared by the next success. */
   failedDayIso: string | null;
   reload: () => void;
+  /** Show `lines` under `mealType` on this day now, before their save lands.
+   *  Returns the group id the save reports back with. */
+  addPending: (lines: PendingSource[], mealType: MealType) => string;
+  /** The save landed with these row ids: the lines stay until a read shows them. */
+  settlePending: (groupId: string, realIds: string[]) => void;
+  /** The save failed: take the lines back off the screen. */
+  dropPending: (groupId: string) => void;
 }
 
 const emptyByMeal = (): Record<MealType, LoggedEntry[]> =>
@@ -235,6 +249,24 @@ export function useDayNutrition(dayIso: string): DayData {
   }, []);
   const reload = useCallback(() => setTick((t) => t + 1), []);
 
+  // Lines added from this screen whose save has not been read back yet. Kept
+  // out of every cache: only a read of the database ever goes to disk.
+  const [pending, setPending] = useState<PendingGroup<LoggedEntry>[]>([]);
+  const pendingSeq = useRef(0);
+  const addPending = useCallback((lines: PendingSource[], mealType: MealType) => {
+    const id = `${Date.now().toString(36)}-${++pendingSeq.current}`;
+    const entries: LoggedEntry[] = pendingRows(id, lines, mealType)
+      .map((e) => ({ ...e, meal_type: mealType, source: e.source as LoggedEntry['source'] }));
+    setPending((cur) => [...cur, { id, dayIso, entries, realIds: null }]);
+    return id;
+  }, [dayIso]);
+  const settlePending = useCallback((groupId: string, realIds: string[]) => {
+    setPending((cur) => settleGroup(cur, groupId, realIds));
+  }, []);
+  const dropPending = useCallback((groupId: string) => {
+    setPending((cur) => cur.filter((g) => g.id !== groupId));
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const fail = () => { if (!cancelled) { setFailedDayIso(dayIso); setLoading(false); } };
@@ -277,6 +309,7 @@ export function useDayNutrition(dayIso: string): DayData {
         _dayCache.set(key, grouped);
       }
       setByMealForDay(grouped, dayIso);
+      setPending((cur) => prunePending(cur, grouped, dayIso));
       setLoading(false);
     })().catch(fail);
     return () => { cancelled = true; };
@@ -297,8 +330,11 @@ export function useDayNutrition(dayIso: string): DayData {
   // came from until the effect runs. Answer from memory in THIS render, so the
   // screen goes straight from the old day to the new one with no loader frame.
   const fromMemory = !isToday && totalsDayIso !== dayIso ? _dayCache.get(key) : undefined;
-  const shownByMeal = fromMemory ?? byMeal;
   const shownDayIso = fromMemory ? dayIso : totalsDayIso;
+  const shownByMeal = useMemo(
+    () => withPending(fromMemory ?? byMeal, shownDayIso, pending),
+    [fromMemory, byMeal, shownDayIso, pending],
+  );
 
   const totals = useMemo<DayTotals>(() => {
     const t = { kcal: 0, protein_g: 0, carb_g: 0, fat_g: 0 };
@@ -313,6 +349,7 @@ export function useDayNutrition(dayIso: string): DayData {
   return {
     byMeal: shownByMeal, totals, totalsDayIso: shownDayIso,
     loading: fromMemory ? false : loading, failedDayIso, reload,
+    addPending, settlePending, dropPending,
   };
 }
 

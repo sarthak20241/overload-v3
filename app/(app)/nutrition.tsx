@@ -284,7 +284,10 @@ export default function NutritionScreen() {
     return out;
   }, [firstWeekIso, latestWeekIso]);
   const weekIndex = weekStarts.findIndex((w) => ymd(w) === weekStartIso);
-  const { byMeal, totals, totalsDayIso, loading, failedDayIso, reload } = useDayNutrition(viewIso);
+  const {
+    byMeal, totals, totalsDayIso, loading, failedDayIso, reload,
+    addPending: addPendingLines, settlePending: settlePendingLines, dropPending: dropPendingLines,
+  } = useDayNutrition(viewIso);
   // The numbers on screen belong to `totalsDayIso`. On a day switch that lags
   // `viewIso` by a fetch, and the old day's ring, macros and food sat under the
   // new day's header for a second or two. Shimmer until they agree: a stale
@@ -601,8 +604,10 @@ export default function NutritionScreen() {
   // copied or learned from without a restart. Signed-in only, like parsing.
   // Portion and numbers ride along with the ids: a portion edit keeps the
   // row's id, and the copy sheet and the usual portion must still see it.
+  // Lines still saving are left out: the history has nothing new until the
+  // save lands, and the read that follows it changes the version anyway.
   const diaryVersion = useMemo(
-    () => `${totalsDayIso}|${MEALS.map((m) => byMeal[m.type].map((e) =>
+    () => `${totalsDayIso}|${MEALS.map((m) => byMeal[m.type].filter((e) => !e.pending).map((e) =>
       `${e.id}:${e.quantity}:${e.serving_unit}:${e.kcal}:${e.protein_g}:${e.carb_g}:${e.fat_g}`).join(',')).join('|')}`,
     [byMeal, totalsDayIso],
   );
@@ -680,8 +685,10 @@ export default function NutritionScreen() {
     const items = picked.filter((x) => !addedRef.current.has(x.key));
     if (items.length === 0) return;
     const keys = items.map((x) => x.key);
-    // Answer the tap now: the rows read "Added" while the write is under way.
+    // Answer the tap now: the lines go into the meal while the write is under
+    // way (the save is a few round trips), and the suggestion reads "Added".
     markAdded(keys, true);
+    const pendingId = addPendingLines(items, meal);
     haptics.tap();
     const fromPrev = items.every((x) => x.reason === 'previous_day');
     void enqueue(async () => {
@@ -698,15 +705,17 @@ export default function NutritionScreen() {
         from_previous_day: fromPrev,
       });
       if (error || !ref) {
+        dropPendingLines(pendingId);
         markAdded(keys, false);
         haptics.warning();
         return;
       }
       haptics.success();
+      settlePendingLines(pendingId, ref.sections.flatMap((sec) => sec.entryIds));
       rememberRelog(ref, fromPrev ? `Copied from ${prevWord}` : all ? 'Your usual' : 'From your usual');
       reload();
     });
-  }, [supabase, viewDate, isToday, rememberRelog, reload, prevWord, markAdded, enqueue]);
+  }, [supabase, viewDate, isToday, rememberRelog, reload, prevWord, markAdded, enqueue, addPendingLines, settlePendingLines, dropPendingLines]);
 
   // A key is "Added" only until its row leaves: once the diary shows the
   // line, mealsToSuggest drops the suggestion and the key goes with it, so an
@@ -744,6 +753,10 @@ export default function NutritionScreen() {
     const meal = copyMeal;
     relogBusyRef.current = true;
     setRelogBusy('*');
+    // Same as a suggestion: the lines show in the meal now, the sheet closes,
+    // and a failed write takes them back off.
+    const pendingId = addPendingLines(lines, meal);
+    setCopyMeal(null);
     let res: Awaited<ReturnType<typeof relogLines>>;
     try {
       res = await enqueue(() => relogLines(supabase, lines, meal, viewDate, 'copy_day'));
@@ -758,12 +771,12 @@ export default function NutritionScreen() {
       meal_type: meal, item_count: lines.length, of_count: prevLines[meal].length,
       from_yesterday: prevLabel === 'Yesterday', is_today: isToday, write_failed: !!error,
     });
-    if (error || !ref) { haptics.warning(); return; }
+    if (error || !ref) { dropPendingLines(pendingId); haptics.warning(); return; }
     haptics.success();
+    settlePendingLines(pendingId, ref.sections.flatMap((sec) => sec.entryIds));
     rememberRelog(ref, `Copied from ${prevLabel === 'Yesterday' ? 'yesterday' : prevLabel}`);
-    setCopyMeal(null);
     reload();
-  }, [supabase, copyMeal, viewDate, prevLines, prevLabel, isToday, rememberRelog, reload, enqueue]);
+  }, [supabase, copyMeal, viewDate, prevLines, prevLabel, isToday, rememberRelog, reload, enqueue, addPendingLines, settlePendingLines, dropPendingLines]);
 
   const onUndoRelog = useCallback(async (ref: LoggedParseRef) => {
     if (!supabase) return;
@@ -1968,8 +1981,10 @@ export default function NutritionScreen() {
                 // A row Drona added in "Just log it" this launch wears a quiet
                 // chip with Undo, so a meal logged while the app was closed is
                 // still one tap from gone. Cleared by the next app launch.
-                const dronaRef = addedByDronaRef(e.id);
-                const relog = relogged.get(e.id);
+                // A line still saving has no row to open or undo yet: it
+                // shows dimmed and quiet until the day is read back with it.
+                const dronaRef = e.pending ? undefined : addedByDronaRef(e.id);
+                const relog = e.pending ? undefined : relogged.get(e.id);
                 // Undo takes back the whole add (a copy or Add all can be
                 // several lines), so the chip says so when there is more than one.
                 const relogCount = relog ? relog.ref.sections.reduce((t, sec) => t + sec.entryIds.length, 0) : 0;
@@ -1985,17 +2000,19 @@ export default function NutritionScreen() {
                   <Animated.View
                     key={e.id}
                     style={s.entryWrap}
-                    entering={relog ? FadeInDown.duration(280).springify().damping(16) : undefined}
+                    entering={relog || e.pending ? FadeInDown.duration(280).springify().damping(16) : undefined}
                     layout={LinearTransition.duration(220)}
                   >
                     {/* A plain list row, not a card: only the summary and the food
                         box carry a surface, so the box reads as the thing to use.
                         The chevron and the pressed wash say the row opens. */}
                     <Pressable
-                      style={({ pressed }) => [s.entry, pressed && { backgroundColor: C.muted }]}
-                      onPress={() => setEditEntry(e)}
+                      style={({ pressed }) => [s.entry, pressed && { backgroundColor: C.muted }, e.pending && s.entryPending]}
+                      onPress={e.pending ? undefined : () => setEditEntry(e)}
+                      disabled={e.pending}
                       accessibilityRole="button"
-                      accessibilityHint="Edit this food"
+                      accessibilityState={{ busy: !!e.pending, disabled: !!e.pending }}
+                      accessibilityHint={e.pending ? 'Saving' : 'Edit this food'}
                     >
                       <View style={{ flex: 1 }}>
                         <Text style={s.entryName}>
@@ -2354,6 +2371,8 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     entryWrap: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border, paddingBottom: Spacing.xs },
     // Bleeds a little past the column so the pressed wash has room around the text.
     entry: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.md, paddingHorizontal: Spacing.sm, marginHorizontal: -Spacing.sm, borderRadius: Radius.sm },
+    // Still saving: the whole row, chevron included, so nothing moves when it lands.
+    entryPending: { opacity: 0.5 },
     raw: { fontSize: 10, color: C.textDim, marginBottom: 1 },
     entryName: { fontSize: FontSize.base, fontWeight: FontWeight.medium, color: C.foreground },
     serving: { fontSize: FontSize.sm, color: C.textMuted, fontWeight: FontWeight.regular },
