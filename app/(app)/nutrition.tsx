@@ -1663,10 +1663,11 @@ export default function NutritionScreen() {
   }, []);
 
   /** A row swiped off the screen. Each new swipe restarts the Undo window, so
-   *  clearing a meal line by line ends in one bar: "Removed 3 foods · Undo". */
+   *  clearing a meal line by line ends in one bar: "Removed 3 foods · Undo".
+   *  False when it cannot be removed now, so the swiped row springs back. */
   const onRemoveEntry = useCallback((e: LoggedEntry) => {
-    if (!supabase) { haptics.warning(); return; }
-    if (pendingRemoves.current.some((p) => p.id === e.id)) return;
+    if (!supabase) { haptics.warning(); return false; }
+    if (pendingRemoves.current.some((p) => p.id === e.id)) return true;
     pendingRemoves.current = [...pendingRemoves.current, e];
     setRemovedIds((ids) => new Set(ids).add(e.id));
     haptics.medium();
@@ -1679,6 +1680,7 @@ export default function NutritionScreen() {
     });
     if (removeTimer.current) clearTimeout(removeTimer.current);
     removeTimer.current = setTimeout(() => { void commitRef.current(); }, COMMIT_MS);
+    return true;
   }, [supabase, undoRemoves]);
 
   // Leaving the screen or the app sends the deletes now: the Undo goes with it.
@@ -1689,7 +1691,9 @@ export default function NutritionScreen() {
   }, []));
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
-      if (next === 'active' || !pendingRemoves.current.length) return;
+      // Background only: 'inactive' is also the notification shade or a
+      // system prompt, which would drop the Undo bar early.
+      if (next !== 'background' || !pendingRemoves.current.length) return;
       toastRef.current.hide();
       void commitRef.current();
     });

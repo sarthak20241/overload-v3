@@ -6,7 +6,7 @@ import { StyleSheet, useWindowDimensions, View, type StyleProp, type ViewStyle }
 import Animated, {
   interpolate, runOnJS, useAnimatedReaction, useAnimatedStyle, withTiming, Extrapolation, type SharedValue,
 } from 'react-native-reanimated';
-import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
+import ReanimatedSwipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { Feather } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
@@ -18,7 +18,8 @@ const LEAVE_MS = 140;
 
 interface Props {
   style?: StyleProp<ViewStyle>;
-  onRemove: () => void;
+  /** False when the screen could not take the remove; the row then springs back. */
+  onRemove: () => boolean;
   children: ReactNode;
 }
 
@@ -26,13 +27,16 @@ export function SwipeToRemove({ style, onRemove, children }: Props) {
   const { width: screenW } = useWindowDimensions();
   const [rowW, setRowW] = useState(screenW);
   const threshold = rowW * REMOVE_AT;
-  // Cleared if the row unmounts first (a day switch mid-slide), so no stale remove fires.
+  const swipeRef = useRef<SwipeableMethods>(null);
+  // Cleared if the row unmounts first (a day switch mid-slide): no remove
+  // fires, and the row shows again, untouched, when its day comes back.
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (leaveTimer.current) clearTimeout(leaveTimer.current); }, []);
 
   return (
     <View onLayout={(e) => setRowW(e.nativeEvent.layout.width)}>
       <ReanimatedSwipeable
+        ref={swipeRef}
         containerStyle={style}
         friction={1}
         rightThreshold={threshold}
@@ -43,7 +47,13 @@ export function SwipeToRemove({ style, onRemove, children }: Props) {
         )}
         // On release past the line. The spring's long settle read as a stall,
         // so the row goes once the fast part of the slide has played.
-        onSwipeableWillOpen={() => { leaveTimer.current = setTimeout(onRemove, LEAVE_MS); }}
+        onSwipeableWillOpen={() => {
+          if (leaveTimer.current) clearTimeout(leaveTimer.current);
+          leaveTimer.current = setTimeout(() => {
+            leaveTimer.current = null;
+            if (!onRemove()) swipeRef.current?.close();
+          }, LEAVE_MS);
+        }}
       >
         {children}
       </ReanimatedSwipeable>
