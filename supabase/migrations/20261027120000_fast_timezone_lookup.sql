@@ -35,20 +35,39 @@ grant select on public.timezone_names to anon, authenticated, service_role;
 -- its own live definition with only the view's name swapped, so its security
 -- mode, search_path, owner and grants stay as they are. All of them used the
 -- view only to test tz.name = <a user's timezone>.
+--
+-- Only our own schemas, and never a function an extension owns: those are not
+-- ours to rewrite. A schema-qualified pg_catalog.pg_timezone_names is swapped
+-- first, so it cannot turn into pg_catalog.public.timezone_names.
+-- pg_get_functiondef errors on aggregates, and a WHERE does not promise to
+-- test prokind first, so the CASE does.
+create function pg_temp.reads_tz_view(p pg_proc) returns boolean
+language sql stable as $f$
+  select case when p.prokind = 'f'
+    then pg_get_functiondef(p.oid) like '%pg_timezone_names%'
+    else false end
+$f$;
+
+create view pg_temp.tz_view_readers as
+select p.oid
+from pg_proc p
+join pg_namespace ns on ns.oid = p.pronamespace
+where ns.nspname in ('public', 'private')
+  and not exists (
+    select 1 from pg_depend d
+    where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e'
+  )
+  and pg_temp.reads_tz_view(p);
+
 do $$
 declare
   f record;
   rewritten int := 0;
 begin
-  for f in
-    select p.oid
-    from pg_proc p
-    join pg_namespace ns on ns.oid = p.pronamespace
-    where ns.nspname not in ('pg_catalog', 'information_schema')
-      and p.prokind = 'f'
-      and pg_get_functiondef(p.oid) like '%pg_timezone_names%'
-  loop
-    execute replace(pg_get_functiondef(f.oid), 'pg_timezone_names', 'public.timezone_names');
+  for f in select oid from pg_temp.tz_view_readers loop
+    execute replace(
+      replace(pg_get_functiondef(f.oid), 'pg_catalog.pg_timezone_names', 'public.timezone_names'),
+      'pg_timezone_names', 'public.timezone_names');
     rewritten := rewritten + 1;
   end loop;
   -- A function the swap missed would keep the slow path and nothing would say
@@ -56,15 +75,11 @@ begin
   if rewritten = 0 then
     raise exception 'fast_timezone_lookup: no function read pg_timezone_names';
   end if;
-  if exists (
-    select 1
-    from pg_proc p
-    join pg_namespace ns on ns.oid = p.pronamespace
-    where ns.nspname not in ('pg_catalog', 'information_schema')
-      and p.prokind = 'f'
-      and pg_get_functiondef(p.oid) like '%pg_timezone_names%'
-  ) then
+  if exists (select 1 from pg_temp.tz_view_readers) then
     raise exception 'fast_timezone_lookup: a function still reads pg_timezone_names';
   end if;
   raise notice 'fast_timezone_lookup: % functions now read public.timezone_names', rewritten;
 end $$;
+
+drop view pg_temp.tz_view_readers;
+drop function pg_temp.reads_tz_view(pg_proc);
