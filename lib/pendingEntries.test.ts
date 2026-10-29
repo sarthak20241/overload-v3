@@ -38,6 +38,10 @@ Deno.test("saved: each real id maps back to the pending id its row was drawn wit
   // No one-to-one match, or no such group: nothing to map.
   assertEquals(settledKeys([group()], "g1", ["r1"]), []);
   assertEquals(settledKeys([group()], "other", ["r1", "r2"]), []);
+  // Settled twice: the entries already hold the real ids, so no real -> real
+  // pair comes back to overwrite the pending key.
+  const settled = settlePending([group()], "g1", ["r1", "r2"]);
+  assertEquals(settledKeys(settled, "g1", ["r1", "r2"]), []);
 });
 
 Deno.test("saved: the lines take the real ids, so the read's rows match them", () => {

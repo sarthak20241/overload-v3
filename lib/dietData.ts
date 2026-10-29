@@ -264,11 +264,16 @@ export function useDayNutrition(dayIso: string): DayData {
   // Real id -> the pending id that row was drawn with. Never cleared: a few
   // strings per add, and an Undo or a later read must still find the key.
   const rowKeys = useRef(new Map<string, string>());
+  // The groups as last rendered, so settlePending reads them outside the
+  // state updater (updaters stay pure). A save lands long after its add has
+  // rendered, so this always holds the group being settled.
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
   const settlePending = useCallback((groupId: string, realIds: string[]) => {
-    setPending((cur) => {
-      for (const [real, key] of settledKeys(cur, groupId, realIds)) rowKeys.current.set(real, key);
-      return settleGroup(cur, groupId, realIds);
-    });
+    for (const [real, key] of settledKeys(pendingRef.current, groupId, realIds)) {
+      if (!rowKeys.current.has(real)) rowKeys.current.set(real, key);
+    }
+    setPending((cur) => settleGroup(cur, groupId, realIds));
   }, []);
   const rowKey = useCallback((id: string) => rowKeys.current.get(id) ?? id, []);
   const dropPending = useCallback((groupId: string) => {
