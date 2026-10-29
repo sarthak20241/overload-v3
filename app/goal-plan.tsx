@@ -19,7 +19,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { track } from '@/lib/analytics';
-import { View, Text, Pressable, ScrollView, StyleSheet, Alert, RefreshControl, useWindowDimensions } from 'react-native';
+import { View, Text, Pressable, ScrollView, StyleSheet, Alert, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -56,6 +56,7 @@ import { DotLine, FOOTER_H, FooterAction, LoadFailed, ScreenSkeleton, SectionLab
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { Colors, Radius, FontWeight } from '@/constants/theme';
+import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
 
 function fmtShortISO(iso: string): string {
   const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
@@ -514,8 +515,9 @@ export default function GoalPlanScreen() {
 
       <ScrollView
         contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: 6, paddingBottom: program ? FOOTER_H + footerBottom + S.lg : insets.bottom + S.xl }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); setFocusTick((t) => t + 1); }} tintColor={C.mutedFg} />}
+        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); setFocusTick((t) => t + 1); }} />}
       >
+        <RefreshOrb refreshing={refreshing} />
         {loading ? (
           <ScreenSkeleton variant="goal" />
         ) : !program && loadFailed ? (

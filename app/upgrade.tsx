@@ -44,7 +44,6 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Linking,
   ScrollView,
   StyleSheet,
@@ -111,6 +110,7 @@ import {
   type RevenueCatPackage,
   type RevenueCatCustomerInfo,
 } from '@/lib/revenuecat';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 type FunnelStep = 'warmup' | 'reminder' | 'paywall' | 'success';
 
@@ -722,7 +722,7 @@ export default function UpgradeScreen() {
 
             {loading ? (
               <View style={u.spinnerWrap}>
-                <ActivityIndicator color={C.foreground} />
+                <OrbLoader size="large" state="searching" />
               </View>
             ) : (
               <View style={u.plans}>
@@ -805,12 +805,12 @@ export default function UpgradeScreen() {
                     a caption underneath read as "tap again". */}
                 {purchasing ? (
                   <>
-                    <ActivityIndicator size="small" color={Colors.primaryFg} />
+                    <OrbLoader size="small" color={Colors.primaryFg} />
                     <Text style={u.ctaText}>Confirming with {STORE_NAME}…</Text>
                   </>
                 ) : verifying ? (
                   <>
-                    <ActivityIndicator size="small" color={Colors.primaryFg} />
+                    <OrbLoader size="small" color={Colors.primaryFg} />
                     <Text style={u.ctaText}>Activating Pro…</Text>
                   </>
                 ) : pendingOrder ? (
@@ -837,7 +837,7 @@ export default function UpgradeScreen() {
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 {restoring ? (
-                  <ActivityIndicator size="small" color={C.textMuted} />
+                  <OrbLoader size="small" color={C.textMuted} />
                 ) : (
                   <Text style={[u.footLink, { color: C.textMuted }]}>Restore</Text>
                 )}

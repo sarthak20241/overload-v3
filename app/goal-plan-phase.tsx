@@ -9,7 +9,7 @@
  * being viewed.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, ScrollView, StyleSheet, RefreshControl } from 'react-native';
+import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -24,6 +24,7 @@ import { PhaseDetail } from '@/components/program/PhaseDetail';
 import { PlanRows } from '@/components/program/PlanRows';
 import { LoadFailed, ScreenSkeleton, Stagger, S, T } from '@/components/program/finish';
 import { FontWeight } from '@/constants/theme';
+import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
 
 export default function GoalPlanPhaseScreen() {
   const insets = useSafeAreaInsets();
@@ -114,8 +115,9 @@ export default function GoalPlanPhaseScreen() {
 
       <ScrollView
         contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: S.xs, paddingBottom: insets.bottom + S.xxl }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={C.mutedFg} />}
+        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
       >
+        <RefreshOrb refreshing={refreshing} />
         {loading ? (
           <ScreenSkeleton variant="phase" />
         ) : !program || !shown ? (

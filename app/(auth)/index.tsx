@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator,
-  Dimensions,
+  KeyboardAvoidingView, Platform, ScrollView, Dimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,6 +15,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import * as WebBrowser from 'expo-web-browser';
 import { setGuestMode, getGuestMode } from '@/lib/guestMode';
 import { getGuestWorkouts, getGuestRoutines } from '@/lib/guestStore';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 function useWarmUpBrowser() {
   useEffect(() => {
@@ -591,7 +591,7 @@ export default function AuthScreen() {
                   activeOpacity={0.7}
                 >
                   {appleLoading ? (
-                    <ActivityIndicator size="small" color={Colors.appleFg} />
+                    <OrbLoader size="small" color={Colors.appleFg} />
                   ) : (
                     <>
                       {/* Exception to the project's Feather-icons-at-24px convention.
@@ -636,7 +636,7 @@ export default function AuthScreen() {
                   activeOpacity={0.7}
                 >
                   {googleLoading ? (
-                    <ActivityIndicator size="small" color={C.textMuted} />
+                    <OrbLoader size="small" color={C.textMuted} />
                   ) : (
                     <>
                       <GoogleIcon />
@@ -813,7 +813,7 @@ export default function AuthScreen() {
                 activeOpacity={0.85}
               >
                 {loading ? (
-                  <ActivityIndicator size="small" color={Colors.primaryFg} />
+                  <OrbLoader size="small" color={Colors.primaryFg} />
                 ) : (
                   <>
                     <Text style={styles.submitText}>

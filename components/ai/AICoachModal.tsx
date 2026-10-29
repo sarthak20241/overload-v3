@@ -9,7 +9,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, BackHandler, Pressable,
   TextInput, ScrollView, FlatList, Keyboard, Platform,
-  ActivityIndicator, Linking, useWindowDimensions,
+  Linking, useWindowDimensions,
 } from 'react-native';
 import Animated, {
   SlideInDown, SlideOutDown, FadeIn, FadeInDown, Easing,

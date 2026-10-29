@@ -37,7 +37,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { SignalOrb, signalOrbColor, type SignalOrbState } from '@/components/coach/SignalOrb';
 import { orbWebBox } from '@/components/coach/OrbStage';
-import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView, type ViewStyle } from 'react-native';
+import { View, Text, Pressable, StyleSheet, ScrollView, type ViewStyle } from 'react-native';
 import Animated, {
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, Easing,
   useReducedMotion, FadeIn,
@@ -53,6 +53,7 @@ import { DronaMark } from '@/components/coach/DronaMark';
 import { copyToClipboard } from '@/lib/clipboard';
 import { haptics } from '@/lib/haptics';
 import { splitCardSpace } from '@/lib/mealCardSplit';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 /** One more state for "Just log it": `sent` (the stream dropped after the
  *  request left; the diary will show what happened). A SUCCESSFUL auto-log has
@@ -513,7 +514,7 @@ export function ParsedMealCard({
             {checkingIndex === i
               ? (
                 <>
-                  <ActivityIndicator size="small" color={C.textSecondary} />
+                  <OrbLoader size="small" color={C.textSecondary} />
                   <Text style={s.checkTxt}>Checking…</Text>
                 </>
               )

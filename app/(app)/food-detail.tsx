@@ -9,7 +9,7 @@
  * so this screen is stateless and deep-linkable. Calm/mature system throughout.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, TextInput, Pressable, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
@@ -23,6 +23,7 @@ import {
   type FoodServing, type MealType,
 } from '@/lib/foods';
 import { haptics } from '@/lib/haptics';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 const MEALS: { type: MealType; label: string; icon: keyof typeof Feather.glyphMap }[] = [
   { type: 'breakfast', label: 'Breakfast', icon: 'sunrise' },
@@ -179,7 +180,7 @@ export default function FoodDetailScreen() {
         {/* Serving size */}
         <Text style={s.eyebrow}>Serving size</Text>
         {loadingServ ? (
-          <ActivityIndicator color={C.textMuted} style={{ alignSelf: 'flex-start', marginLeft: Spacing.xl }} />
+          <OrbLoader color={C.textMuted} style={{ alignSelf: 'flex-start', marginLeft: Spacing.xl }} />
         ) : (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipRow} keyboardShouldPersistTaps="handled">
             {servings.map((sv) => {

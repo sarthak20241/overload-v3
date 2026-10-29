@@ -15,7 +15,7 @@
  * this-week progress lives only in the week visual.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { View, Text, Pressable, ScrollView, StyleSheet, RefreshControl } from 'react-native';
+import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -46,6 +46,7 @@ import { AICoachModal } from '@/components/ai/AICoachModal';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { Colors, FontWeight } from '@/constants/theme';
 import { haptics } from '@/lib/haptics';
+import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
 
 const TITLE: Record<Pillar, string> = { train: 'Train', eat: 'Eat', recover: 'Recover' };
 const SLEEP_TARGET_H = 7;
@@ -633,8 +634,9 @@ export default function GoalPlanPillarScreen() {
       </View>
       <ScrollView
         contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: 6, paddingBottom: program && phase ? footerSpace : insets.bottom + S.xxl }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={C.mutedFg} />}
+        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
       >
+        <RefreshOrb refreshing={refreshing} />
         {loading ? (
           <ScreenSkeleton variant="pillar" />
         ) : !program || !phase ? (

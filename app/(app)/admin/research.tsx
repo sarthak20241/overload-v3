@@ -16,8 +16,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  ActivityIndicator, BackHandler, Pressable, TextInput,
-  Keyboard, Platform, Linking, RefreshControl,
+  BackHandler, Pressable, TextInput,
+  Keyboard, Platform, Linking,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -29,6 +29,8 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
+import { OrbLoader } from '@/components/ui/OrbLoader';
+import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Phase 3 contradiction detection. Set on pending rows by the ingest worker
@@ -538,7 +540,7 @@ function PaperDetailSheet({
                     style={[s.smallBtn, { backgroundColor: '#f87171', flex: 1, opacity: busy ? 0.6 : 1 }]}
                   >
                     {busy ? (
-                      <ActivityIndicator size="small" color="#fff" />
+                      <OrbLoader size="small" color="#fff" />
                     ) : (
                       <Text style={[s.smallBtnText, { color: '#fff', fontWeight: FontWeight.bold }]}>
                         Confirm Reject
@@ -563,7 +565,7 @@ function PaperDetailSheet({
                   style={[s.actionBtnPrimary, { opacity: busy ? 0.6 : 1 }]}
                 >
                   {busy ? (
-                    <ActivityIndicator size="small" color={Colors.primaryFg} />
+                    <OrbLoader size="small" color={Colors.primaryFg} />
                   ) : (
                     <>
                       <Feather name="check" size={14} color={Colors.primaryFg} />
@@ -768,7 +770,7 @@ function AgentActivityCard({
         activeOpacity={0.7}
       >
         {busy ? (
-          <ActivityIndicator size="small" color={C.textMuted} />
+          <OrbLoader size="small" color={C.textMuted} />
         ) : (
           <>
             <Feather name="rotate-ccw" size={11} color={C.foreground} />
@@ -965,7 +967,7 @@ export default function ResearchReviewScreen() {
   if (adminLoading) {
     return (
       <SafeAreaView style={[s.container, { backgroundColor: C.background }]} edges={['top']}>
-        <ActivityIndicator size="small" color={C.accentText} style={{ marginTop: 40 }} />
+        <OrbLoader size="large" state="searching" style={{ marginTop: 40 }} />
       </SafeAreaView>
     );
   }
@@ -1035,19 +1037,19 @@ export default function ResearchReviewScreen() {
         contentContainerStyle={s.scrollContent}
         showsVerticalScrollIndicator={false}
         refreshControl={
-          <RefreshControl
+          <OrbRefreshControl
             refreshing={refreshing}
             onRefresh={() => { setRefreshing(true); fetchData(); }}
-            tintColor={C.accentText}
           />
         }
       >
+        <RefreshOrb refreshing={refreshing} />
         <StatsBar stats={stats} />
         <SourcesPanel sources={sources} />
 
         {loading ? (
           <View style={{ alignItems: 'center', paddingVertical: 40 }}>
-            <ActivityIndicator size="small" color={C.accentText} />
+            <OrbLoader size="small" color={C.accentText} />
           </View>
         ) : papers.length === 0 ? (
           <View style={[s.emptyState, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
