@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
-  RefreshControl, BackHandler, Pressable, TextInput, useWindowDimensions,
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, BackHandler, Pressable, TextInput, useWindowDimensions,
   Platform, Keyboard,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -46,6 +45,8 @@ import {
   loadMeasurements, saveMeasurements, saveMeasurementUnit,
   type WeightEntry, type BodyFatEntry, type MeasurementEntry, type MeasurementsData,
 } from '@/lib/bodyStats';
+import { OrbLoader } from '@/components/ui/OrbLoader';
+import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -1703,7 +1704,7 @@ export default function AnalyticsScreen() {
   if (loading) {
     return (
       <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
-        <ActivityIndicator color={Colors.primary} style={{ marginTop: 60 }} />
+        <OrbLoader size="large" state="searching" style={{ marginTop: 60 }} />
       </SafeAreaView>
     );
   }
@@ -1713,8 +1714,9 @@ export default function AnalyticsScreen() {
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 120 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={Colors.primary} colors={[Colors.primary]} />}
+        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
       >
+        <RefreshOrb refreshing={refreshing} />
         {/* Header */}
         <View style={styles.header}>
           <Text style={[styles.screenTitle, { color: C.foreground }]}>Analytics</Text>
@@ -1750,7 +1752,7 @@ export default function AnalyticsScreen() {
                     <Text style={[styles.aiTitle, { color: C.foreground }]}>Insights from Coach Drona</Text>
                   </View>
                   {aiLoading ? (
-                    <ActivityIndicator color={C.accentText} size="small" />
+                    <OrbLoader color={C.accentText} size="small" />
                   ) : (
                     <Text style={[styles.aiAction, { color: C.accentText }]}>
                       {insightsOpen ? 'Hide' : 'Analyze'}

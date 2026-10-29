@@ -5,7 +5,6 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  RefreshControl,
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -37,6 +36,7 @@ import { getPendingWorkouts, removePendingWorkout } from '@/lib/syncQueue';
 import { pendingToHistoryRow } from '@/lib/pendingAdapters';
 import { applyEditsToHistoryRows, getPendingEdit, removePendingEdit } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
+import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -990,14 +990,13 @@ export default function HistoryScreen() {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         refreshControl={
-          <RefreshControl
+          <OrbRefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
-            tintColor={Colors.primary}
-            colors={[Colors.primary]}
           />
         }
       >
+        <RefreshOrb refreshing={refreshing} />
         {/* Calendar */}
         {!loading && (
           <View style={styles.calWrap}>

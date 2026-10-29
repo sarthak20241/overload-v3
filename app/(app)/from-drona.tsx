@@ -23,6 +23,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useToast } from '@/components/ui/Toast';
+import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 import { track } from '@/lib/analytics';
 import { DronaCardView } from '@/components/coach/DronaCardView';
 import { OrbStage } from '@/components/coach/OrbStage';
@@ -55,6 +56,13 @@ export default function FromDronaScreen() {
     return () => { live = false; };
   }, [user?.id, supabase]);
   useFocusEffect(load);
+  // A pull waits for the read itself, so the orb leaves when the cards land.
+  const { refreshing, onRefresh } = usePullRefresh(useCallback(async () => {
+    if (!user?.id) return;
+    const rows = await readCardHistory(supabase, user.id);
+    if (rows === undefined) setFailed(true);
+    else { setFailed(false); setCards(rows); }
+  }, [user?.id, supabase]));
 
   const back = useCallback(() => {
     router.replace(from === 'goal' ? '/goal-plan' : '/(app)/profile');
@@ -157,7 +165,12 @@ export default function FromDronaScreen() {
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={s.scroll}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      >
+        <RefreshOrb refreshing={refreshing} />
         {failed && (
           <Text style={[s.empty, { color: C.mutedFg }]}>Could not load this right now. Pull back in a moment.</Text>
         )}

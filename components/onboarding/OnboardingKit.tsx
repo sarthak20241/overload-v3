@@ -17,7 +17,6 @@
  */
 import React, { useEffect } from 'react';
 import {
-  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
@@ -46,6 +45,7 @@ import {
 import { useTheme } from '@/hooks/useTheme';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { haptics } from '@/lib/haptics';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 // ─── Header: back chevron + continuous progress bar ─────────────────────────
 
@@ -283,7 +283,7 @@ export function PrimaryCta({
       accessibilityLabel={accessibilityLabel ?? label}
     >
       {loading ? (
-        <ActivityIndicator size="small" color={Colors.primaryFg} />
+        <OrbLoader size="small" color={Colors.primaryFg} />
       ) : (
         <>
           <Text style={k.primaryBtnText}>{label}</Text>

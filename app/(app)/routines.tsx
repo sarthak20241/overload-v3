@@ -5,8 +5,6 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  ActivityIndicator,
-  RefreshControl,
   TextInput,
   Pressable,
   KeyboardAvoidingView,
@@ -68,6 +66,8 @@ import ReorderableList, {
 import { metricTypeOf, usesReps, type ExerciseDef, type MetricType } from '@/lib/exercises';
 import { formatDuration } from '@/lib/format';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { OrbLoader } from '@/components/ui/OrbLoader';
+import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -1689,16 +1689,15 @@ export default function RoutinesScreen() {
           routines.length === 0 && !loading && styles.listContentEmpty,
         ]}
         refreshControl={
-          <RefreshControl
+          <OrbRefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
-            tintColor={Colors.primary}
-            colors={[Colors.primary]}
           />
         }
       >
+        <RefreshOrb refreshing={refreshing} />
         {loading ? (
-          <ActivityIndicator color={Colors.primary} style={styles.loader} />
+          <OrbLoader size="large" state="searching" style={styles.loader} />
         ) : routines.length === 0 ? (
           <EmptyState onAdd={openCreate} onAI={() => { setAiCoachSource('routines_empty'); setAiCoachOpen(true); }} />
         ) : (

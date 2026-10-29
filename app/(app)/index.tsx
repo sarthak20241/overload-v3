@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, AppState,
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, AppState,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -30,6 +30,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
+import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 import { DronaCardPopup } from '@/components/coach/DronaCardPopup';
 import { useToast } from '@/components/ui/Toast';
 import {
@@ -182,6 +183,9 @@ export default function DashboardScreen() {
   // The sheet opened from the "today" card once the day's session is done.
   const [doneSheetOpen, setDoneSheetOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Bumped by a pull to refresh: re-reads the workouts, which otherwise only
+  // reload when the sync queue moves.
+  const [refreshTick, setRefreshTick] = useState(0);
   // Whether each input to the day's TODAY pick has had its SERVER read settle
   // (or failed offline) on this mount. The day's pick is only saved once all
   // three have: a pick saved from a stale cache would be held all day.
@@ -292,7 +296,7 @@ export default function DashboardScreen() {
     return () => {
       cancelled = true;
     };
-  }, [user?.id, isGuestSession, clerkLoaded, pendingCount]);
+  }, [user?.id, isGuestSession, clerkLoaded, pendingCount, refreshTick]);
 
   // Bumped each time the dashboard comes BACK into focus, so routines and the
   // program reload after another screen changed them. The Goal screen builds a
@@ -314,6 +318,12 @@ export default function DashboardScreen() {
       setFocusTick((t) => t + 1);
     }, []),
   );
+  // A pull re-reads what a refocus does (routines, program, cards, fuel) plus
+  // the workouts.
+  const { refreshing, onRefresh } = usePullRefresh(useCallback(() => {
+    setRefreshTick((t) => t + 1);
+    setFocusTick((t) => t + 1);
+  }, []));
 
   // Load the user's saved routines so the "today's suggestion" card can pick a
   // planned session. Offline-first like the workouts fetch above, but READ-ONLY
@@ -1038,7 +1048,9 @@ export default function DashboardScreen() {
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 100 }}
+        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
+        <RefreshOrb refreshing={refreshing} />
         {/* Header */}
         <View style={styles.header}>
           <View style={{ flex: 1 }}>

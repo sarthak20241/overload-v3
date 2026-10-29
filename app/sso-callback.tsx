@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 import { Redirect } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import { hasClerkKey, useClerkUser } from '@/hooks/useClerkUser';
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 // Catches the OAuth deep link (exp://.../--/sso-callback in Expo Go,
 // overload://sso-callback in dev/prod builds). On Android the deep link
@@ -78,7 +79,7 @@ function ClerkSSOCallback() {
         gap: 16,
       }}
     >
-      <ActivityIndicator size="large" color={C.accentText} />
+      <OrbLoader size="large" state="searching" />
     </View>
   );
 }

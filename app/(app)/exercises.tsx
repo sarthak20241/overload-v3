@@ -15,7 +15,6 @@ import {
   TouchableOpacity,
   ScrollView,
   StyleSheet,
-  ActivityIndicator,
   BackHandler,
   Pressable,
   Keyboard,
@@ -43,6 +42,7 @@ import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 interface DbExercise {
   id: string;
@@ -504,7 +504,7 @@ export default function ExerciseLibraryScreen() {
         keyboardShouldPersistTaps="handled"
       >
         {loading ? (
-          <ActivityIndicator color={Colors.primary} style={{ marginTop: 40 }} />
+          <OrbLoader size="large" state="searching" style={{ marginTop: 40 }} />
         ) : (
           <>
             {filteredCustoms.length > 0 && (

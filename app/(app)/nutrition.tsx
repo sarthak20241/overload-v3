@@ -80,6 +80,7 @@ import { swapToAlternative } from '@/lib/variantSwap';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { MealSuggestions } from '@/components/diet/MealSuggestions';
 import { CopyMealSheet } from '@/components/diet/CopyMealSheet';
+import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 import { learnPatterns, mealsToSuggest, copyableFromDay, withPreviousDay, type FoodSuggestion, type HistoryEntry } from '@/lib/foodPatterns';
 import { useFoodHistory, useDayMealLines, relogLines, lineAsItem } from '@/lib/foodPatternsData';
 
@@ -296,6 +297,8 @@ export default function NutritionScreen() {
     byMeal, totals: dayTotals, totalsDayIso, loading, failedDayIso, reload,
     addPending: addPendingLines, settlePending: settlePendingLines, dropPending: dropPendingLines,
   } = useDayNutrition(viewIso);
+  // A pull re-reads the day on screen, for foods logged from another device.
+  const { refreshing, onRefresh } = usePullRefresh(reload);
   // The numbers on screen belong to `totalsDayIso`. On a day switch that lags
   // `viewIso` by a fetch, and the old day's ring, macros and food sat under the
   // new day's header for a second or two. Shimmer until they agree: a stale
@@ -1844,7 +1847,9 @@ export default function NutritionScreen() {
         showsVerticalScrollIndicator={false}
         onScroll={onDayScroll}
         scrollEventThrottle={16}
+        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
+        <RefreshOrb refreshing={refreshing} />
         {/* Header — back + a day stepper (‹ Today ›, tap the label for the calendar) */}
         <View style={s.header}>
           <Pressable onPress={() => router.back()} hitSlop={12} style={s.back}>

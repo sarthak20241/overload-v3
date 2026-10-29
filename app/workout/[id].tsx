@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, TextInput, ScrollView, FlatList,
-  StyleSheet, ActivityIndicator, Pressable, BackHandler,
+  StyleSheet, Pressable, BackHandler,
   Keyboard, Platform, useWindowDimensions, AppState,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -81,6 +81,7 @@ import {
   type CoachWorkoutEditOp,
 } from '@/lib/workoutCoachEdit';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 // Paused-state colour now lives in Colors.paused (constants/theme.ts).
 
@@ -3626,7 +3627,7 @@ export default function ActiveWorkoutScreen() {
   if (loading) {
     return (
       <View style={[styles.loadingContainer, { paddingTop: insets.top, backgroundColor: C.background }]}>
-        <ActivityIndicator color={Colors.primary} size="large" />
+        <OrbLoader size="large" state="searching" />
       </View>
     );
   }
@@ -3696,7 +3697,7 @@ export default function ActiveWorkoutScreen() {
             style={[styles.finishBtn, saving && { opacity: 0.6 }]}
           >
             {saving ? (
-              <ActivityIndicator size="small" color={Colors.primaryFg} />
+              <OrbLoader size="small" color={Colors.primaryFg} />
             ) : (
               <>
                 <Feather name="check" size={12} color={Colors.primaryFg} />
@@ -4179,7 +4180,7 @@ export default function ActiveWorkoutScreen() {
                   ]}
                 >
                   {saving ? (
-                    <ActivityIndicator size="small" color={Colors.primaryFg} />
+                    <OrbLoader size="small" color={Colors.primaryFg} />
                   ) : (
                     <>
                       <Feather name="check" size={15} color={Colors.primaryFg} />

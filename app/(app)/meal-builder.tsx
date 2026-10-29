@@ -11,7 +11,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, Text, TextInput, Pressable, FlatList, ScrollView, StyleSheet, ActivityIndicator, Keyboard,
+  View, Text, TextInput, Pressable, FlatList, ScrollView, StyleSheet, Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -27,6 +27,7 @@ import {
 import { defaultServing, resolveBaseAmount, nutrientsForAmount, formatServing, type FoodServing, type ResolvedNutrients, type MealType } from '@/lib/foods';
 import { FoodCompositionCard, NutritionFactsPanel } from '@/components/diet/FoodFacts';
 import { haptics } from '@/lib/haptics';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 const round = (n: number) => Math.round(n);
 const r1 = (n: number) => Math.round(n * 10) / 10;
@@ -278,7 +279,7 @@ export default function MealBuilderScreen() {
 
           <Text style={s.sectionLabel}>Serving size</Text>
           {pickLoading ? (
-            <ActivityIndicator style={{ alignSelf: 'flex-start', marginLeft: Spacing.xl, marginTop: 4 }} color={C.textMuted} />
+            <OrbLoader style={{ alignSelf: 'flex-start', marginLeft: Spacing.xl, marginTop: 4 }} color={C.textMuted} />
           ) : (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipRow} keyboardShouldPersistTaps="handled">
               {pickServings.map((sv) => {
@@ -362,7 +363,7 @@ export default function MealBuilderScreen() {
           }}
           ListEmptyComponent={
             searching
-              ? <ActivityIndicator style={{ marginTop: 40 }} color={C.textMuted} />
+              ? <OrbLoader state="searching" style={{ marginTop: 40 }} color={C.textMuted} />
               : query.trim()
                 ? <Text style={s.hint}>No matches for “{query.trim()}”.</Text>
                 : <Text style={s.hint}>Search the catalog to add a food.</Text>
