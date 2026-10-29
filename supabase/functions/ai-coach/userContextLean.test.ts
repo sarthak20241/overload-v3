@@ -25,7 +25,7 @@ const full = () => ({
   top_lifts: [{ exercise: "Bench Press", e1rm_kg: 100 }],
   nutrition: { targets: { kcal: 2400 } },
   active_routines: Array.from({ length: 30 }, (_, i) => routine(i)),
-  weekly_volume: [{ week: "2026-10-20", muscle: "chest", sets: 12 }],
+  weekly_volume: Array.from({ length: 12 }, (_, i) => ({ week: "2026-10-20", muscle: `m${i}`, sets: 10 })),
   recent_plan_changes: ["2026-10-28 (chat) targets: kcal 2500 -> 2400", "2026-10-20 (manual) routine 'Push' created", "2026-10-10 (card) goal set", "2026-10-01 (manual) program created"],
   body_measurements: { waist: { latest: 82, oldest: 85 } },
 });
@@ -67,6 +67,20 @@ Deno.test("a small context holds nothing back and has no on_request", () => {
   assertEquals(held, {});
   // a routine list short enough to send whole is sent whole
   assertEquals((summary as { active_routines: unknown[] }).active_routines, small.active_routines);
+});
+
+Deno.test("a short volume table is sent whole: a fetch would cost more than it saves", () => {
+  const short = { ...full(), weekly_volume: [{ week: "2026-10-20", muscle: "chest", sets: 12 }, { week: "2026-10-20", muscle: "back", sets: 14 }] };
+  const { summary, held } = leanUserContext(short);
+  assertEquals((summary as Record<string, unknown>).weekly_volume, short.weekly_volume);
+  assertEquals(held.weekly_volume, undefined);
+});
+
+Deno.test("routines can be read by name, so one routine does not bring back all of them", () => {
+  const { held } = leanUserContext(full());
+  const out = readHeldSections(held, { sections: ["routines"], routine_names: ["routine 3", "Nope"] }) as Record<string, unknown>;
+  assertEquals((out.routines as { name: string }[]).map((r) => r.name), ["Routine 3"]);
+  assert(String(out.not_available).includes("Nope"));
 });
 
 Deno.test("no context in, no context out", () => {

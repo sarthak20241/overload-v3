@@ -20,6 +20,8 @@ const ROUTINES_WHOLE_MAX = 3;
 const ROUTINE_NAMES_MAX = 15;
 /** Plan changes kept in the summary; the rest wait. */
 const PLAN_CHANGES_KEPT = 3;
+/** Volume tables this long or shorter are sent whole: a fetch would cost more. */
+const VOLUME_WHOLE_MAX = 8;
 
 type Ctx = Record<string, unknown>;
 
@@ -38,7 +40,8 @@ export function leanUserContext(full: unknown): { summary: unknown; held: HeldSe
   const held: HeldSections = {};
   const on: Record<string, string> = {};
 
-  // Routines arrive newest first (get_user_coach_context orders by created_at desc).
+  // Routines arrive newest first: get_user_coach_context aggregates them
+  // `order by r.created_at desc` (0096_coach_programs.sql).
   const routines = summary.active_routines;
   if (Array.isArray(routines) && routines.length > ROUTINES_WHOLE_MAX) {
     held.routines = routines;
@@ -53,7 +56,7 @@ export function leanUserContext(full: unknown): { summary: unknown; held: HeldSe
   }
 
   const volume = summary.weekly_volume;
-  if (Array.isArray(volume) && volume.length > 0) {
+  if (Array.isArray(volume) && volume.length > VOLUME_WHOLE_MAX) {
     held.weekly_volume = volume;
     delete summary.weekly_volume;
     on.weekly_volume = `${volume.length} rows of working sets per muscle per week.`;
@@ -78,16 +81,28 @@ export function leanUserContext(full: unknown): { summary: unknown; held: HeldSe
   return { summary, held };
 }
 
-/** The coach_get_user_details tool: the held sections asked for. */
+/**
+ * The coach_get_user_details tool: the held sections asked for. routine_names
+ * narrows routines to the named ones (any case): a tool result is not cached
+ * and rides every later loop turn, so one routine should not bring back 52.
+ */
 export function readHeldSections(held: HeldSections, input: Record<string, unknown>): unknown {
   const asked = Array.isArray(input.sections) ? input.sections.map(String) : [];
+  const wanted = Array.isArray(input.routine_names) ? input.routine_names.map((n) => String(n).trim()).filter(Boolean) : [];
   const out: Ctx = {};
   const missing: string[] = [];
   for (const name of asked) {
-    if ((ON_REQUEST_SECTIONS as readonly string[]).includes(name) && name in held) {
-      out[name] = held[name as OnRequestSection];
-    } else {
+    if (!(ON_REQUEST_SECTIONS as readonly string[]).includes(name) || !(name in held)) {
       missing.push(name);
+      continue;
+    }
+    const section = held[name as OnRequestSection];
+    if (name === "routines" && wanted.length > 0 && Array.isArray(section)) {
+      const nameOf = (r: unknown) => String((r as { name?: unknown })?.name ?? "").toLowerCase();
+      out.routines = section.filter((r) => wanted.some((w) => w.toLowerCase() === nameOf(r)));
+      for (const w of wanted) if (!section.some((r) => nameOf(r) === w.toLowerCase())) missing.push(`routine '${w}'`);
+    } else {
+      out[name] = section;
     }
   }
   if (missing.length > 0) {

@@ -1680,7 +1680,8 @@ async function runMemorySideEffects(
   if (side.length === 0) return;
   await Promise.all(
     side.map(async (b) => {
-      const result = await executeTool(userClient, b.name ?? "", b.input ?? {}, trace.mode);
+      // Memory tools only: no held sections to read here.
+      const result = await executeTool(userClient, b.name ?? "", b.input ?? {}, trace.mode, null);
       recordToolCall(trace, b.name ?? "<unknown>", result);
     }),
   );
