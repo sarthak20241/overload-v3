@@ -4,7 +4,7 @@ import { useRouter, usePathname } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   useSharedValue, useAnimatedStyle, withRepeat, withTiming, withSequence,
-  Easing, SlideInUp, SlideOutDown, FadeIn, FadeOut,
+  Easing, SlideInUp, SlideOutDown, FadeIn, FadeOut, useReducedMotion,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow, colorWithAlpha } from '@/constants/theme';
@@ -12,9 +12,18 @@ import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { useWorkout } from '@/hooks/useWorkout';
 import { haptics } from '@/lib/haptics';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 // Paused-state colour now lives in Colors.paused (constants/theme.ts).
+
+// One switch length for the tab screens (app/(app)/_layout.tsx) and the
+// marker below, so the two land together.
+export const TAB_SWITCH_MS = 220;
+const MARKER_WIDTH = 20;
+// The bar is five equal slots: Dashboard, Routines, play button, History,
+// Analytics. The marker's slot math needs every slot at `flex: 1` and no
+// horizontal padding on navBar; change either and the marker drifts.
+const SLOT_COUNT = 5;
 
 function fmt(seconds: number) {
   const h = Math.floor(seconds / 3600);
@@ -104,6 +113,46 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
     if (route === '/(app)') return pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index';
     return pathname.includes(route.replace('/(app)/', ''));
   };
+
+  // The marker on the bar's top edge slides to the tab you are on. Off a tab
+  // (Profile, a pushed screen) it fades away; coming back after it is gone,
+  // it fades in at the tab instead of sliding in from wherever it was. Coming
+  // back while it is still fading out, it slides from where it is, so it
+  // never jumps while visible.
+  const activeSlot = isActive('/(app)') ? 0
+    : isActive('/(app)/routines') ? 1
+    : isActive('/(app)/history') ? 3
+    : isActive('/(app)/analytics') ? 4
+    : -1;
+  const [barWidth, setBarWidth] = useState(0);
+  const markerX = useSharedValue(0);
+  const markerOpacity = useSharedValue(0);
+  // Same rule as the tab slide in app/(app)/_layout.tsx: with Reduce Motion
+  // on, the marker moves straight to its place.
+  const reduceMotion = useReducedMotion();
+  useEffect(() => {
+    if (!barWidth) return;
+    const timing = { duration: TAB_SWITCH_MS, easing: Easing.out(Easing.cubic) };
+    const to = (value: number) => (reduceMotion ? value : withTiming(value, timing));
+    if (activeSlot < 0) {
+      markerOpacity.value = to(0);
+      return;
+    }
+    const slot = barWidth / SLOT_COUNT;
+    const x = activeSlot * slot + (slot - MARKER_WIDTH) / 2;
+    // Read on the JS thread, so mid-fade this can trail the UI thread by a
+    // frame. At worst the marker snaps when it is nearly invisible.
+    if (markerOpacity.value > 0) {
+      markerX.value = to(x);
+    } else {
+      markerX.value = x;
+    }
+    markerOpacity.value = to(1);
+  }, [activeSlot, barWidth, reduceMotion]);
+  const markerStyle = useAnimatedStyle(() => ({
+    opacity: markerOpacity.value,
+    transform: [{ translateX: markerX.value }],
+  }));
 
   // Three taps return to a minimized session (center button, mini-bar body,
   // Return chip). One handler so the event fires once with a source.
@@ -254,7 +303,12 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
             borderTopColor: C.border,
           },
         ]}
+        onLayout={(e) => setBarWidth(e.nativeEvent.layout.width)}
       >
+        <Animated.View
+          pointerEvents="none"
+          style={[styles.tabMarker, { backgroundColor: C.accentText }, markerStyle]}
+        />
         <NavButton icon="home" label="Dashboard" active={isActive('/(app)')} onPress={() => router.navigate('/(app)' as any)} />
         <NavButton icon="grid" label="Routines" active={isActive('/(app)/routines')} onPress={() => router.navigate('/(app)/routines' as any)} />
 
@@ -318,6 +372,16 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     zIndex: 50,
+  },
+  // Sits on the bar's top border (-1 covers it) at the left edge; translateX
+  // moves it to the active slot.
+  tabMarker: {
+    position: 'absolute',
+    top: -1,
+    left: 0,
+    width: MARKER_WIDTH,
+    height: 2,
+    borderRadius: 1,
   },
   navItem: {
     flex: 1,
