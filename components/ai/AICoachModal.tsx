@@ -1191,7 +1191,7 @@ function useQuestionPin(
     // reply's tail is worked out again each time it moves.
     onTailLayout: (e: LayoutChangeEvent) => {
       threadEndRef.current = e.nativeEvent.layout.y;
-      if (!loading && tail !== 0) settleTail();
+      if (!loading && tailRef.current !== 0) settleTail();
     },
     // onLayout for a message row: only the latest question is measured.
     userLayout: (id: string) => (id === lastUserId
