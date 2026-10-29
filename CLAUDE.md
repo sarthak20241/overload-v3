@@ -75,6 +75,7 @@ deno test --allow-all lib/pendingEntries.test.ts # an added suggestion or copy s
 deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
 deno test --allow-all lib/questionPin.test.ts  # Drona chat: a reply types in under its question at the top
+deno test --allow-all lib/orbTheme.test.ts     # loading orb: which way a tinted orb fades
 ```
 
 There are no configured lint or build scripts.

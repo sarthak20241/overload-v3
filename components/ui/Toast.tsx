@@ -10,12 +10,13 @@
  */
 
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, { SlideInDown, SlideOutUp, Easing } from 'react-native-reanimated';
 import { Feather } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 export type ToastType = 'info' | 'success' | 'error';
 
@@ -126,7 +127,7 @@ function ToastView({ config, onDismiss }: { config: ToastConfig; onDismiss: () =
       >
         <View style={styles.iconWrap}>
           {type === 'info' ? (
-            <ActivityIndicator size="small" color={accent} />
+            <OrbLoader size="small" color={accent} />
           ) : iconName ? (
             <Feather name={iconName} size={18} color={accent} />
           ) : null}

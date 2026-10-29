@@ -33,7 +33,6 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
-  ActivityIndicator,
   TouchableOpacity,
   Pressable,
   BackHandler,

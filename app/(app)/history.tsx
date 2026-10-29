@@ -5,7 +5,6 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  RefreshControl,
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -37,6 +36,7 @@ import { getPendingWorkouts, removePendingWorkout } from '@/lib/syncQueue';
 import { pendingToHistoryRow } from '@/lib/pendingAdapters';
 import { applyEditsToHistoryRows, getPendingEdit, removePendingEdit } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
+import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -693,7 +693,6 @@ export default function HistoryScreen() {
   const { pendingCount } = useSync();
   const [workouts, setWorkouts] = useState<WorkoutRaw[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
@@ -818,11 +817,8 @@ export default function HistoryScreen() {
     }, [clerkLoaded, fetchWorkouts]),
   );
 
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await fetchWorkouts();
-    setRefreshing(false);
-  }, [fetchWorkouts]);
+  // The hook ends the orb even when the read throws.
+  const { refreshing, onRefresh: handleRefresh } = usePullRefresh(fetchWorkouts);
 
   const handleDelete = (id: string) => {
     setDeleteId(id);
@@ -990,14 +986,13 @@ export default function HistoryScreen() {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         refreshControl={
-          <RefreshControl
+          <OrbRefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
-            tintColor={Colors.primary}
-            colors={[Colors.primary]}
           />
         }
       >
+        <RefreshOrb refreshing={refreshing} />
         {/* Calendar */}
         {!loading && (
           <View style={styles.calWrap}>

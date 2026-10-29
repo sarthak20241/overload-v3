@@ -29,8 +29,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, Text, TouchableOpacity, ScrollView, ActivityIndicator,
-  StyleSheet, Linking,
+  View, Text, TouchableOpacity, ScrollView, StyleSheet, Linking,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -57,6 +56,7 @@ import {
   type RevenueCatPackage,
   type PlanKey,
 } from '@/lib/revenuecat';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 interface FoundingStatus {
   tier: string;
@@ -347,7 +347,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
           accessibilityLabel="Restore purchases"
         >
           {restoring ? (
-            <ActivityIndicator size="small" color={C.foreground} />
+            <OrbLoader size="small" color={C.foreground} />
           ) : (
             <Text style={[s.restoreText, { color: C.mutedFg }]}>Restore</Text>
           )}
@@ -366,7 +366,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
 
         {loading ? (
           <View style={s.spinnerWrap}>
-            <ActivityIndicator color={C.foreground} />
+            <OrbLoader size="large" state="searching" />
           </View>
         ) : (
           <View style={s.plansWrap}>
@@ -433,7 +433,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
                   <Text style={[s.planSub, { color: C.mutedFg }]}>{sub}</Text>
                   {isThisPurchasing && (
                     <View style={s.purchasingOverlay}>
-                      <ActivityIndicator color={Colors.primaryFg} />
+                      <OrbLoader color={Colors.primaryFg} />
                     </View>
                   )}
                 </TouchableOpacity>
@@ -454,7 +454,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
 
         {verifying && (
           <View style={s.verifyingBanner}>
-            <ActivityIndicator color={C.foreground} />
+            <OrbLoader color={C.foreground} />
             <Text style={[s.verifyingText, { color: C.foreground }]}>
               Verifying your purchase…
             </Text>

@@ -14,7 +14,7 @@
  */
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, BackHandler,
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, BackHandler,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -31,6 +31,7 @@ import { useToast } from '@/components/ui/Toast';
 import { useSync } from '@/components/SyncProvider';
 import { enqueueWorkout, getPendingWorkouts } from '@/lib/syncQueue';
 import { buildHevyImport, type ImportUnit, type HevyImportSummary } from '@/lib/hevyImport';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 type Phase = 'idle' | 'parsed' | 'importing' | 'done';
 
@@ -317,7 +318,7 @@ export default function ImportScreen() {
             >
               {phase === 'importing' ? (
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <ActivityIndicator size="small" color={Colors.primaryFg} />
+                  <OrbLoader size="small" color={Colors.primaryFg} />
                   <Text style={[styles.primaryBtnText, { color: Colors.primaryFg }]}>
                     Importing… {syncedSoFar}/{summary.workoutCount}
                   </Text>

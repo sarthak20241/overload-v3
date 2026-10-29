@@ -10,7 +10,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, Text, TextInput, Pressable, FlatList, StyleSheet, ActivityIndicator, Keyboard,
+  View, Text, TextInput, Pressable, FlatList, StyleSheet, Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -29,6 +29,7 @@ import {
 import { defaultServing, searchFoods, type MealType } from '@/lib/foods';
 import { haptics } from '@/lib/haptics';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 type SearchTab = 'all' | 'meals';
 /** 'quick' is not a pane — it opens the Quick add screen and the row stays on
@@ -316,7 +317,7 @@ export default function FoodSearchScreen() {
           style={[s.addBtn, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}
         >
           {busyKey === key
-            ? <ActivityIndicator size="small" color={C.accentText} />
+            ? <OrbLoader size="small" color={C.accentText} />
             : <Feather name="plus" size={18} color={C.accentText} />}
         </Pressable>
       </View>
@@ -345,7 +346,7 @@ export default function FoodSearchScreen() {
           style={[s.addBtn, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}
         >
           {busyKey === key
-            ? <ActivityIndicator size="small" color={C.accentText} />
+            ? <OrbLoader size="small" color={C.accentText} />
             : <Feather name="plus" size={18} color={C.accentText} />}
         </Pressable>
       </Pressable>
@@ -473,7 +474,7 @@ export default function FoodSearchScreen() {
         ItemSeparatorComponent={() => <View style={[s.sep, { backgroundColor: C.borderSubtle }]} />}
         ListEmptyComponent={
           searching ? (
-            <ActivityIndicator style={{ marginTop: 40 }} color={C.textMuted} />
+            <OrbLoader state="searching" style={{ marginTop: 40 }} color={C.textMuted} />
           ) : (
             <View style={s.empty}>
               <Feather name={showingRecents ? 'clock' : 'search'} size={26} color={C.textDim} />
@@ -489,7 +490,7 @@ export default function FoodSearchScreen() {
                 <>
                   <Pressable onPress={askDrona} disabled={aiBusy} style={[s.askBtn, { opacity: aiBusy ? 0.6 : 1 }]}>
                     {aiBusy ? (
-                      <ActivityIndicator size="small" color={Colors.primaryFg} />
+                      <OrbLoader size="small" color={Colors.primaryFg} />
                     ) : (
                       <>
                         <DronaMark size={15} color={Colors.primaryFg} state="static" />

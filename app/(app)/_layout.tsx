@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, BackHandler, Platform, Pressable, ScrollView, ActivityIndicator, useWindowDimensions, Easing as RNEasing } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, BackHandler, Platform, Pressable, ScrollView, useWindowDimensions, Easing as RNEasing } from 'react-native';
 import { Tabs, useRouter, Redirect, usePathname } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
@@ -32,6 +32,7 @@ import { resolveNeedsOnboarding } from '@/lib/onboarding';
 import { drainPendingOnboarding } from '@/lib/pendingOnboarding';
 import { useSync } from '@/components/SyncProvider';
 import type { Routine } from '@/lib/types';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -226,7 +227,7 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
               showsVerticalScrollIndicator={false}
             >
               {loading ? (
-                <ActivityIndicator color={Colors.primary} style={{ marginTop: 24 }} />
+                <OrbLoader size="large" state="searching" style={{ marginTop: 24 }} />
               ) : routines.length === 0 ? (
                 <View style={{ alignItems: 'center', paddingVertical: 24 }}>
                   <Text style={{ color: C.textMuted, fontSize: FontSize.base }}>No routines yet.</Text>
@@ -389,7 +390,7 @@ export default function AppLayout() {
   if (needsOnboarding === null) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.background }}>
-        <ActivityIndicator size="small" color={C.textMuted} />
+        <OrbLoader size="small" color={C.textMuted} />
       </View>
     );
   }
