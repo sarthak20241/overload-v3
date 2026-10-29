@@ -12,9 +12,16 @@ import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { useWorkout } from '@/hooks/useWorkout';
 import { haptics } from '@/lib/haptics';
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 // Paused-state colour now lives in Colors.paused (constants/theme.ts).
+
+// One switch length for the tab screens (app/(app)/_layout.tsx) and the
+// marker below, so the two land together.
+export const TAB_SWITCH_MS = 220;
+const MARKER_WIDTH = 20;
+// The bar is five equal slots: Dashboard, Routines, play button, History, Analytics.
+const SLOT_COUNT = 5;
 
 function fmt(seconds: number) {
   const h = Math.floor(seconds / 3600);
@@ -104,6 +111,41 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
     if (route === '/(app)') return pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index';
     return pathname.includes(route.replace('/(app)/', ''));
   };
+
+  // The marker on the bar's top edge slides to the tab you are on. Off a tab
+  // (Profile, a pushed screen) it fades away; coming back, it fades in at the
+  // tab instead of sliding in from wherever it was.
+  const activeSlot = isActive('/(app)') ? 0
+    : isActive('/(app)/routines') ? 1
+    : isActive('/(app)/history') ? 3
+    : isActive('/(app)/analytics') ? 4
+    : -1;
+  const [barWidth, setBarWidth] = useState(0);
+  const markerX = useSharedValue(0);
+  const markerOpacity = useSharedValue(0);
+  const markerShown = useRef(false);
+  useEffect(() => {
+    if (!barWidth) return;
+    const timing = { duration: TAB_SWITCH_MS, easing: Easing.out(Easing.cubic) };
+    if (activeSlot < 0) {
+      markerShown.current = false;
+      markerOpacity.value = withTiming(0, timing);
+      return;
+    }
+    const slot = barWidth / SLOT_COUNT;
+    const x = activeSlot * slot + (slot - MARKER_WIDTH) / 2;
+    if (markerShown.current) {
+      markerX.value = withTiming(x, timing);
+    } else {
+      markerShown.current = true;
+      markerX.value = x;
+      markerOpacity.value = withTiming(1, timing);
+    }
+  }, [activeSlot, barWidth]);
+  const markerStyle = useAnimatedStyle(() => ({
+    opacity: markerOpacity.value,
+    transform: [{ translateX: markerX.value }],
+  }));
 
   // Three taps return to a minimized session (center button, mini-bar body,
   // Return chip). One handler so the event fires once with a source.
@@ -254,7 +296,12 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
             borderTopColor: C.border,
           },
         ]}
+        onLayout={(e) => setBarWidth(e.nativeEvent.layout.width)}
       >
+        <Animated.View
+          pointerEvents="none"
+          style={[styles.tabMarker, { backgroundColor: C.accentText }, markerStyle]}
+        />
         <NavButton icon="home" label="Dashboard" active={isActive('/(app)')} onPress={() => router.navigate('/(app)' as any)} />
         <NavButton icon="grid" label="Routines" active={isActive('/(app)/routines')} onPress={() => router.navigate('/(app)/routines' as any)} />
 
@@ -318,6 +365,16 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     zIndex: 50,
+  },
+  // Sits on the bar's top border (-1 covers it) at the left edge; translateX
+  // moves it to the active slot.
+  tabMarker: {
+    position: 'absolute',
+    top: -1,
+    left: 0,
+    width: MARKER_WIDTH,
+    height: 2,
+    borderRadius: 1,
   },
   navItem: {
     flex: 1,

@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, BackHandler, Platform, Pressable, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, BackHandler, Platform, Pressable, ScrollView, ActivityIndicator, useWindowDimensions, Easing as RNEasing } from 'react-native';
 import { Tabs, useRouter, Redirect, usePathname } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   Easing,
   useSharedValue,
   useAnimatedStyle,
+  useReducedMotion,
   withTiming,
   runOnJS,
 } from 'react-native-reanimated';
@@ -17,7 +18,7 @@ import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getGuestRoutines } from '@/lib/guestStore';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { mergePendingRoutines } from '@/lib/routineQueue';
-import { BottomNav } from '@/components/ui/BottomNav';
+import { BottomNav, TAB_SWITCH_MS } from '@/components/ui/BottomNav';
 import { ResumeWorkoutPrompt } from '@/components/workout/ResumeWorkoutPrompt';
 import { OfflineBanner } from '@/components/ui/OfflineBanner';
 import { Portal } from '@/components/ui/Portal';
@@ -33,6 +34,19 @@ import { useSync } from '@/components/SyncProvider';
 import type { Routine } from '@/lib/types';
 
 const ROUTINE_COLORS = Colors.routineColors;
+
+// Switching between the bottom-nav tabs: the new screen slides a little from
+// the side of the tab you tapped and fades in. The tab library animates with
+// RN's Animated, so this is RN's Easing, not Reanimated's. Only the main tabs
+// get it; the hidden screens (nutrition, food search, ...) keep their instant
+// switch.
+const TAB_SWITCH = {
+  animation: 'shift',
+  transitionSpec: {
+    animation: 'timing',
+    config: { duration: TAB_SWITCH_MS, easing: RNEasing.out(RNEasing.cubic) },
+  },
+} as const;
 
 function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const router = useRouter();
@@ -342,6 +356,10 @@ export default function AppLayout() {
   // returns below (rules of hooks).
   useForegroundProgramSync();
 
+  // "Reduce Motion" on the phone turns the tab slide off.
+  const reduceMotion = useReducedMotion();
+  const tabOptions = reduceMotion ? undefined : TAB_SWITCH;
+
   // Wait for both auth and guest-flag reads on cold start; otherwise we may
   // briefly redirect a signed-in user (Clerk hasn't restored from SecureStore
   // yet) or a returning guest (AsyncStorage flag hasn't loaded yet). The
@@ -381,14 +399,22 @@ export default function AppLayout() {
 
   return (
     <>
+      {/* Mid-switch both screens are see-through, so the space behind them
+          and each scene's own fill must be the app background. Otherwise the
+          navigation library's light grey default flashes through. */}
+      <View style={{ flex: 1, backgroundColor: C.background }}>
       <Tabs
-        screenOptions={{ headerShown: false, tabBarStyle: { display: 'none' } }}
+        screenOptions={{
+          headerShown: false,
+          tabBarStyle: { display: 'none' },
+          sceneStyle: { backgroundColor: C.background },
+        }}
       >
-        <Tabs.Screen name="index" />
-        <Tabs.Screen name="routines" />
-        <Tabs.Screen name="history" />
-        <Tabs.Screen name="analytics" />
-        <Tabs.Screen name="profile" />
+        <Tabs.Screen name="index" options={tabOptions} />
+        <Tabs.Screen name="routines" options={tabOptions} />
+        <Tabs.Screen name="history" options={tabOptions} />
+        <Tabs.Screen name="analytics" options={tabOptions} />
+        <Tabs.Screen name="profile" options={tabOptions} />
         {/*
           Exercise Library management screen. Hidden from the bottom nav —
           reached via the Routines header book icon or Profile > My Exercises.
@@ -431,6 +457,7 @@ export default function AppLayout() {
         */}
         <Tabs.Screen name="admin/research" options={{ href: null }} />
       </Tabs>
+      </View>
 
       {!hideWorkoutChrome && <BottomNav onOpenModal={() => { track('start_workout_modal_opened'); setModalOpen(true); }} />}
       {!hideWorkoutChrome && (
