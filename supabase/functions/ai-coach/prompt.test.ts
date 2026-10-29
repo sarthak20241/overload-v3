@@ -123,3 +123,31 @@ Deno.test("showing_data is taught only when the client can draw it", () => {
     assert(!withUi(forced).includes("<showing_data>"), `${forced} replies are not chat messages`);
   }
 });
+
+// The user block went into the cache pretty-printed: on 2026-10-29 the indent
+// alone was 45% of the owner's user_context. Compact JSON says the same thing.
+Deno.test("user_context is sent as compact JSON", () => {
+  const ctx = { profile: { goal: "strength", weight_kg: 80 }, top_lifts: [{ exercise: "Squat", e1rm_kg: 140 }] };
+  const text = buildSystemPrompt({ userContext: ctx, mode: "chat" }).system[1].text;
+  assertStringIncludes(text, JSON.stringify(ctx));
+  assert(!text.includes('\n  "profile"'), "no indentation");
+});
+
+// Chat with a lean context: the big sections wait behind coach_get_user_details,
+// and the static block says so. The tool and the note ride every lean chat,
+// held sections or not, so all chat users share one cached prefix.
+Deno.test("a lean chat gets the details tool and the note that explains it", () => {
+  const lean = buildSystemPrompt({ userContext: null, mode: "chat", leanContext: true });
+  assert(lean.tools.some((t) => t.name === "coach_get_user_details"));
+  assertStringIncludes(lean.system[0].text, "<on_request_context>");
+  // free tier strips TERMINAL_TOOLS only; the details tool must survive it
+  assert(!TERMINAL_TOOLS.has("coach_get_user_details"));
+  const plain = buildSystemPrompt({ userContext: null, mode: "chat" });
+  assert(!plain.tools.some((t) => t.name === "coach_get_user_details"));
+  assert(!plain.system[0].text.includes("<on_request_context>"));
+  // only chat goes lean; every other mode keeps the whole context
+  for (const other of ["live_workout", "discuss_program", "refine_plan", "generate_plan"] as Mode[]) {
+    const b = buildSystemPrompt({ userContext: null, mode: other, leanContext: true });
+    assert(!b.tools.some((t) => t.name === "coach_get_user_details"), other);
+  }
+});

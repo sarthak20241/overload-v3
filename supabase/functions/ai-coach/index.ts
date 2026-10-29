@@ -116,6 +116,11 @@ import {
   buildAnonProgramMessage,
   sanitizeAnonIntake,
 } from "./anonOnboarding.ts";
+import { type HeldSections, leanUserContext, readHeldSections } from "./userContextLean.ts";
+
+// Chat sends a short user summary and reads the big sections on demand
+// (userContextLean.ts). LEAN_CHAT_CONTEXT=off sends the whole context again.
+const LEAN_CHAT_CONTEXT = Deno.env.get("LEAN_CHAT_CONTEXT") !== "off";
 
 // Auth model: Supabase third-party Clerk auth covers PostgREST/Realtime but
 // NOT Edge Functions. We deploy verify_jwt:false and verify the Clerk JWT
@@ -1391,7 +1396,12 @@ async function executeTool(
   // The resolved mode, recorded as coach_memory.source so a fact can be traced
   // to the conversation kind that saved it. Optional: the RPC defaults to chat.
   source?: string | null,
+  // The sections a lean chat held back from user_context (userContextLean.ts).
+  held?: HeldSections | null,
 ): Promise<unknown> {
+  // Read from the context already fetched for this request; no database call.
+  if (name === "coach_get_user_details") return readHeldSections(held ?? {}, input);
+
   // Memory (migration 20260919023437). Both RPCs return {saved|forgotten, reason} and
   // never raise for bad input, so the model reads the reason and moves on.
   if (name === "remember_fact") {
@@ -1670,7 +1680,8 @@ async function runMemorySideEffects(
   if (side.length === 0) return;
   await Promise.all(
     side.map(async (b) => {
-      const result = await executeTool(userClient, b.name ?? "", b.input ?? {}, trace.mode);
+      // Memory tools only: no held sections to read here.
+      const result = await executeTool(userClient, b.name ?? "", b.input ?? {}, trace.mode, null);
       recordToolCall(trace, b.name ?? "<unknown>", result);
     }),
   );
@@ -1987,6 +1998,7 @@ async function runStreamingToolLoop(
   trace: CoachTrace,
   forceTool: string | null,
   maxTokens: number,
+  held: HeldSections | null = null,
 ): Promise<StreamingLoopResult> {
   // Per-iteration wall clock, recorded in spans.stream_iterations. The whole
   // reason the program-chat report was hard to diagnose is that a turn's only
@@ -2212,7 +2224,7 @@ async function runStreamingToolLoop(
     }
     const toolResults = await Promise.all(
       toolUses.map(async (block: any) => {
-        const result = await executeTool(userClient, block.name ?? "", block.input ?? {}, trace.mode);
+        const result = await executeTool(userClient, block.name ?? "", block.input ?? {}, trace.mode, held);
         // Record after the call, not before: the result is what tells us
         // whether the tool actually worked.
         recordToolCall(trace, block.name ?? "<unknown>", result);
@@ -5103,7 +5115,15 @@ Deno.serve(async (req) => {
   // older app sends nothing and keeps getting plain markdown.
   const clientUi = (body as { ui?: unknown }).ui;
   const richReplies = Array.isArray(clientUi) && clientUi.includes("blocks_v1");
-  let { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode, freeTier, richReplies });
+  // Chat sends the short summary; the held sections answer coach_get_user_details.
+  // userContext itself stays whole for everything after this point.
+  const leanContext = LEAN_CHAT_CONTEXT && mode === "chat";
+  const leaned = leanContext ? leanUserContext(userContext) : null;
+  const leanHeld: HeldSections | null = leaned?.held ?? null;
+  let { system, tools } = buildSystemPrompt({
+    userContext: leaned ? leaned.summary : userContext,
+    retrievedResearch, mode, freeTier, richReplies, leanContext,
+  });
   // Free tier is chat-only: strip the terminal generation tools (plan /
   // workout emission is Pro) and tell Drona so it answers in coach voice
   // instead of attempting a tool that isn't there. Appended AFTER the
@@ -5228,7 +5248,7 @@ Deno.serve(async (req) => {
                 ? 'programming'
                 : 'thinking';
         sse.write("status", { phase: statusPhase });
-        const result = await runStreamingToolLoop(sse, system, tools, initialConversation, userClient, trace, effectiveForceTool, maxTokens);
+        const result = await runStreamingToolLoop(sse, system, tools, initialConversation, userClient, trace, effectiveForceTool, maxTokens, leanHeld);
 
         // Citations: same regex as non-streaming path
         const refs = new Set<number>();
@@ -5453,7 +5473,7 @@ Deno.serve(async (req) => {
       // turns, loop again.
       const toolResults = await Promise.all(
         toolUses.map(async (block) => {
-          const result = await executeTool(userClient, block.name ?? "", block.input ?? {}, trace.mode);
+          const result = await executeTool(userClient, block.name ?? "", block.input ?? {}, trace.mode, leanHeld);
           // Record after the call, not before: the result is what tells us
           // whether the tool actually worked.
           recordToolCall(trace, block.name ?? "<unknown>", result);
