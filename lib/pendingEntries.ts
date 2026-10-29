@@ -73,6 +73,18 @@ export function settlePending<E extends PendingRow>(
   });
 }
 
+/** What each saved row was drawn as while it saved: [real id, pending id].
+ *  The screen keys a row by its pending id for good. Keyed by id, the row
+ *  remounted when settlePending swapped the id: the line blinked out, slid
+ *  in a second time, and the rows under it jumped. */
+export function settledKeys<E extends PendingRow>(
+  groups: PendingGroup<E>[], groupId: string, realIds: string[],
+): [string, string][] {
+  const g = groups.find((x) => x.id === groupId);
+  if (!g || realIds.length !== g.entries.length) return [];
+  return g.entries.map((e, i) => [realIds[i], e.id]);
+}
+
 /** A read of `dayIso` landed: retire the groups it now holds in full. A group
  *  still saving, or read back by a request that left before the save landed,
  *  stays. Returns `groups` itself when nothing changed. */

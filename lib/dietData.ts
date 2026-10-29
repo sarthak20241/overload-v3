@@ -30,7 +30,7 @@ import { readSwapOptions, type SwapOption } from '@/lib/variantSwap';
 import { relogColumns, type RelogLabels } from '@/lib/foodPatterns';
 import { deleteMealIfEmpty } from '@/lib/mealCleanup';
 import {
-  pendingRows, prunePending, settlePending as settleGroup, withPending, r0, r1,
+  pendingRows, prunePending, settlePending as settleGroup, settledKeys, withPending, r0, r1,
   type PendingGroup, type PendingSource,
 } from '@/lib/pendingEntries';
 import {
@@ -98,6 +98,9 @@ export interface DayData {
   settlePending: (groupId: string, realIds: string[]) => void;
   /** The save failed: take the lines back off the screen. */
   dropPending: (groupId: string) => void;
+  /** The React key for a row: the id it was first drawn with. A line added
+   *  here keeps one key from the tap, through the save, to the read. */
+  rowKey: (id: string) => string;
 }
 
 const emptyByMeal = (): Record<MealType, LoggedEntry[]> =>
@@ -258,9 +261,16 @@ export function useDayNutrition(dayIso: string): DayData {
     setPending((cur) => [...cur, { id, dayIso, entries, realIds: null }]);
     return id;
   }, [dayIso]);
+  // Real id -> the pending id that row was drawn with. Never cleared: a few
+  // strings per add, and an Undo or a later read must still find the key.
+  const rowKeys = useRef(new Map<string, string>());
   const settlePending = useCallback((groupId: string, realIds: string[]) => {
-    setPending((cur) => settleGroup(cur, groupId, realIds));
+    setPending((cur) => {
+      for (const [real, key] of settledKeys(cur, groupId, realIds)) rowKeys.current.set(real, key);
+      return settleGroup(cur, groupId, realIds);
+    });
   }, []);
+  const rowKey = useCallback((id: string) => rowKeys.current.get(id) ?? id, []);
   const dropPending = useCallback((groupId: string) => {
     setPending((cur) => cur.filter((g) => g.id !== groupId));
   }, []);
@@ -347,7 +357,7 @@ export function useDayNutrition(dayIso: string): DayData {
   return {
     byMeal: shownByMeal, totals, totalsDayIso: shownDayIso,
     loading: fromMemory ? false : loading, failedDayIso, reload,
-    addPending, settlePending, dropPending,
+    addPending, settlePending, dropPending, rowKey,
   };
 }
 
