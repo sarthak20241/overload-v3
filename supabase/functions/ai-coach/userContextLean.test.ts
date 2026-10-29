@@ -27,7 +27,11 @@ const full = () => ({
   active_routines: Array.from({ length: 30 }, (_, i) => routine(i)),
   weekly_volume: Array.from({ length: 12 }, (_, i) => ({ week: "2026-10-20", muscle: `m${i}`, sets: 10 })),
   recent_plan_changes: ["2026-10-28 (chat) targets: kcal 2500 -> 2400", "2026-10-20 (manual) routine 'Push' created", "2026-10-10 (card) goal set", "2026-10-01 (manual) program created"],
-  body_measurements: { waist: { latest: 82, oldest: 85 } },
+  // summarizeMeasurements' shape (memory.ts)
+  body_measurements: {
+    latest_on: "2026-10-26", days_logged: 4,
+    sites: ["chest", "hips", "neck", "thigh_l", "waist", "calf_l"].map((site) => ({ site, cm: 80, on: "2026-10-26", prev_cm: 82, prev_on: "2026-08-03" })),
+  },
 });
 
 Deno.test("the summary keeps who the user is and drops the big sections", () => {
@@ -90,6 +94,20 @@ Deno.test("routine_names reaches routines past the names listed in the summary",
   assertStringIncludes((summary as { on_request: Record<string, string> }).on_request.routines, "any saved routine");
   const out = readHeldSections(held, { sections: ["routines"], routine_names: ["Routine 29"] }) as Record<string, unknown>;
   assertEquals((out.routines as { name: string }[]).map((r) => r.name), ["Routine 29"]);
+});
+
+Deno.test("a few tape sites are sent whole", () => {
+  const few = { ...full(), body_measurements: { latest_on: "2026-10-26", days_logged: 1, sites: [{ site: "waist", cm: 82, on: "2026-10-26" }] } };
+  const { summary, held } = leanUserContext(few);
+  assertEquals((summary as Record<string, unknown>).body_measurements, few.body_measurements);
+  assertEquals(held.body_measurements, undefined);
+});
+
+Deno.test("a routine name that is part of a saved name still finds it", () => {
+  const { held } = leanUserContext({ ...full(), active_routines: [{ name: "Push Day A", exercises: [] }, { name: "Pull Day", exercises: [] }, { name: "Legs", exercises: [] }, { name: "Arms", exercises: [] }] });
+  const out = readHeldSections(held, { sections: ["routines"], routine_names: ["push"] }) as Record<string, unknown>;
+  assertEquals((out.routines as { name: string }[]).map((r) => r.name), ["Push Day A"]);
+  assertEquals(out.unknown_routines, undefined);
 });
 
 Deno.test("no context in, no context out", () => {

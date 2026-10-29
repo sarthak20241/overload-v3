@@ -22,6 +22,8 @@ const ROUTINE_NAMES_MAX = 15;
 const PLAN_CHANGES_KEPT = 3;
 /** Volume tables this long or shorter are sent whole: a fetch would cost more. */
 const VOLUME_WHOLE_MAX = 8;
+/** Tape summaries with this many sites or fewer are sent whole. */
+const TAPE_SITES_WHOLE_MAX = 4;
 
 type Ctx = Record<string, unknown>;
 
@@ -71,8 +73,10 @@ export function leanUserContext(full: unknown): { summary: unknown; held: HeldSe
       `recent_plan_changes keeps the newest ${PLAN_CHANGES_KEPT}.`;
   }
 
+  // summarizeMeasurements (memory.ts): { latest_on, days_logged, sites: [...] }.
   const tape = summary.body_measurements;
-  if (tape && typeof tape === "object" && Object.keys(tape as Ctx).length > 0) {
+  const tapeSites = (tape as { sites?: unknown } | null)?.sites;
+  if (Array.isArray(tapeSites) && tapeSites.length > TAPE_SITES_WHOLE_MAX) {
     held.body_measurements = tape;
     delete summary.body_measurements;
     on.body_measurements = "Tape measurements: the latest and the oldest reading per site in the last 90 days.";
@@ -101,8 +105,17 @@ export function readHeldSections(held: HeldSections, input: Record<string, unkno
     const section = held[name as OnRequestSection];
     if (name === "routines" && wanted.length > 0 && Array.isArray(section)) {
       const nameOf = (r: unknown) => String((r as { name?: unknown })?.name ?? "").toLowerCase();
-      out.routines = section.filter((r) => wanted.some((w) => w.toLowerCase() === nameOf(r)));
-      for (const w of wanted) if (!section.some((r) => nameOf(r) === w.toLowerCase())) unknownRoutines.push(w);
+      // The exact name when one matches, else every routine whose name holds
+      // it ("push" finds "Push Day A"), so a short name does not cost a retry.
+      const picked = new Set<unknown>();
+      for (const asked of wanted) {
+        const w = asked.toLowerCase();
+        const exact = section.filter((r) => nameOf(r) === w);
+        const hits = exact.length > 0 ? exact : section.filter((r) => nameOf(r).includes(w));
+        if (hits.length === 0) unknownRoutines.push(asked);
+        for (const h of hits) picked.add(h);
+      }
+      out.routines = section.filter((r) => picked.has(r));
     } else {
       out[name] = section;
     }

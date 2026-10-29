@@ -69,7 +69,17 @@ const FULL_CONTEXT = {
     "2026-10-01 (auto) targets: daily_calorie_target 2550 -> 2450",
     "2026-09-29 (onboarding) program '10-Week Lean Gain' created",
   ],
-  body_measurements: { waist: { latest: { on: "2026-10-26", cm: 84.5 }, oldest: { on: "2026-08-03", cm: 87 } }, chest: { latest: { on: "2026-10-26", cm: 104 }, oldest: { on: "2026-08-03", cm: 103 } } },
+  // summarizeMeasurements' shape (memory.ts)
+  body_measurements: {
+    latest_on: "2026-10-26", days_logged: 6,
+    sites: [
+      { site: "chest", cm: 104, on: "2026-10-26", prev_cm: 103, prev_on: "2026-08-03" },
+      { site: "hips", cm: 98, on: "2026-10-26", prev_cm: 99.5, prev_on: "2026-08-03" },
+      { site: "neck", cm: 39, on: "2026-10-26", prev_cm: 39.5, prev_on: "2026-08-03" },
+      { site: "thigh_l", cm: 59, on: "2026-10-26", prev_cm: 59, prev_on: "2026-08-03" },
+      { site: "waist", cm: 84.5, on: "2026-10-26", prev_cm: 87, prev_on: "2026-08-03" },
+    ],
+  },
 };
 
 type Arm = "lean" | "full";
