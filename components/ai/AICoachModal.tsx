@@ -10,6 +10,7 @@ import {
   View, Text, TouchableOpacity, StyleSheet, BackHandler, Pressable,
   TextInput, ScrollView, FlatList, Keyboard, Platform,
   ActivityIndicator, Linking, useWindowDimensions,
+  type LayoutChangeEvent,
 } from 'react-native';
 import Animated, {
   SlideInDown, SlideOutDown, FadeIn, FadeInDown, Easing,
@@ -1113,6 +1114,80 @@ function WorkoutEditCard({
   );
 }
 
+// When a reply starts, scroll once so the question it answers sits at the top
+// of the screen; the reply then types in under it with no more scrolling. A
+// tail space under the thread gives that scroll room: one full screen while
+// the reply types (it follows the screen's height), then only what a short
+// reply still needs, so the question does not drop when it ends. Once per
+// reply, so a lookup mid-reply never pulls the reader back.
+function useQuestionPin(
+  scrollRef: React.RefObject<ScrollView | null>,
+  messages: ChatMessage[],
+  loading: boolean,
+  // Read as the reply starts: false leaves that reply where it is.
+  shouldPin: () => boolean = () => true,
+) {
+  const lastUserYRef = useRef(0);
+  const contentHRef = useRef(0);
+  const pinnedIdRef = useRef<string | null>(null);
+  // The scroll waits until the tail space is in, or it would stop short.
+  const pendingRef = useRef(false);
+  const shouldPinRef = useRef(shouldPin);
+  shouldPinRef.current = shouldPin;
+  const [viewH, setViewH] = useState(0);
+  const [tail, setTail] = useState<'fill' | number>(0);
+  const tailSpace = tail === 'fill' ? viewH : tail;
+  const tailSpaceRef = useRef(0);
+  tailSpaceRef.current = tailSpace;
+
+  const last = messages[messages.length - 1];
+  const writingId = loading && last?.role === 'assistant' && last.content !== '' ? last.id : null;
+  const lastUserId = [...messages].reverse().find((m) => m.role === 'user' && !m.context)?.id ?? null;
+
+  const neededH = () => lastUserYRef.current - Spacing.md + viewH;
+  const pin = () => {
+    pendingRef.current = false;
+    scrollRef.current?.scrollTo({ y: Math.max(0, lastUserYRef.current - Spacing.md), animated: true });
+  };
+
+  useEffect(() => {
+    if (!writingId || pinnedIdRef.current === writingId) return;
+    pinnedIdRef.current = writingId;
+    if (!shouldPinRef.current()) return;
+    setTail('fill');
+    // Room already there: no new content size is coming to wait for.
+    if (contentHRef.current >= neededH()) pin();
+    else pendingRef.current = true;
+  }, [writingId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (loading) return;
+    pendingRef.current = false;
+    if (tailSpaceRef.current === 0) return;
+    const threadEnd = contentHRef.current - tailSpaceRef.current;
+    setTail(Math.max(0, Math.round(neededH() - threadEnd)));
+  }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return {
+    tailSpace,
+    // A new turn, or another chat opened: no tail, no scroll waiting.
+    reset: useCallback(() => {
+      pendingRef.current = false;
+      pinnedIdRef.current = null;
+      setTail(0);
+    }, []),
+    onScrollLayout: (e: LayoutChangeEvent) => setViewH(e.nativeEvent.layout.height),
+    onContentSizeChange: (_w: number, h: number) => {
+      contentHRef.current = h;
+      if (pendingRef.current && h >= neededH()) pin();
+    },
+    // onLayout for a message row: only the latest question is measured.
+    userLayout: (id: string) => (id === lastUserId
+      ? (e: LayoutChangeEvent) => { lastUserYRef.current = e.nativeEvent.layout.y; }
+      : undefined),
+  };
+}
+
 // ─── Chat Screen ─────────────────────────────────────────────────────────────
 function ChatScreen({
   onBack,
@@ -1228,16 +1303,10 @@ function ChatScreen({
   // re-answers regardless.
   const [capHit, setCapHit] = useState<null | 'cap' | 'pro'>(null);
   const scrollRef = useRef<ScrollView>(null);
-  // When a reply starts, the question it answers goes to the top of the
-  // screen and the reply types in under it, with no more scrolling. The tail
-  // space under the thread gives that scroll room before the reply fills it.
-  const lastUserYRef = useRef(0);
-  const viewHRef = useRef(0);
-  const contentHRef = useRef(0);
-  const pinnedIdRef = useRef<string | null>(null);
-  const [tailSpace, setTailSpace] = useState(0);
-  const tailSpaceRef = useRef(0);
-  tailSpaceRef.current = tailSpace;
+  // The very first reply needs no pin: the hero folds away and the thread
+  // starts at the top anyway.
+  const questionPin = useQuestionPin(scrollRef, messages, loading,
+    () => stage === 'chat' && !(heroVisible && !workoutContext));
   // Tracks the in-flight stream so we can abort it on screen dismiss /
   // unmount and avoid late callbacks firing into an unmounted component
   // (also stops burning Anthropic tokens after the user has left).
@@ -1308,7 +1377,7 @@ function ChatScreen({
     typewriterRef.current = null;
     if (!opens) setInput('');
     Keyboard.dismiss();
-    setTailSpace(0);
+    questionPin.reset();
     setLoading(true);
     const askedAt = Date.now();
     track('coach_message_sent', {
@@ -1761,7 +1830,6 @@ function ChatScreen({
   const orbColor = signalOrbColor(themeMode);
   const userTurns = messages.reduce((n, m) => n + (m.role === 'user' ? 1 : 0), 0);
   const lastMsg = messages[messages.length - 1];
-  const lastUserId = [...messages].reverse().find((m) => m.role === 'user' && !m.context)?.id ?? null;
   // Waiting: no words yet, or Drona stopped mid-reply to look something up
   // (thinkingPhase is set by status events and cleared by the next words).
   const pendingMsg = loading && lastMsg?.role === 'assistant' && (lastMsg.content === '' || !!lastMsg.thinkingPhase)
@@ -1905,7 +1973,9 @@ function ChatScreen({
       ? withRepeat(withSequence(withTiming(0.7, { duration: 1600 }), withTiming(1, { duration: 1600 })), -1)
       : withTiming(1, { duration: 300 });
     // Only the first wait scrolls down to the orb. A lookup after the reply
-    // has started leaves the reader where they are.
+    // has started leaves the reader where they are. pendingMsg is read
+    // outside the deps on purpose: lifted flips in the same render that sets
+    // it, so this render's value is the one that lifted.
     if (lifted && pendingMsg?.content === '') {
       const a = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
       const b = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 650);
@@ -1913,31 +1983,8 @@ function ChatScreen({
     }
   }, [lifted]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // The first words of a reply: scroll once so the question sits at the top.
-  // Once per reply, so a lookup mid-reply never pulls the reader back. The
-  // very first reply needs none: the hero folds away and the thread starts
-  // at the top anyway.
-  const writingId = writingMsg?.id ?? null;
-  useEffect(() => {
-    if (!writingId || pinnedIdRef.current === writingId) return;
-    pinnedIdRef.current = writingId;
-    if (stage !== 'chat' || (heroVisible && !workoutContext)) return;
-    setTailSpace(viewHRef.current);
-    const t = setTimeout(() => {
-      scrollRef.current?.scrollTo({ y: Math.max(0, lastUserYRef.current - Spacing.md), animated: true });
-    }, 60);
-    return () => clearTimeout(t);
-  }, [writingId]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Reply done: keep only the tail space a short reply still needs, so the
-  // question does not drop when it goes.
-  useEffect(() => {
-    if (loading || tailSpaceRef.current === 0) return;
-    const threadEnd = contentHRef.current - tailSpaceRef.current;
-    const need = lastUserYRef.current - Spacing.md + viewHRef.current - threadEnd;
-    setTailSpace(Math.max(0, Math.round(need)));
-  }, [loading]);
-  // A new or reopened chat starts with none.
-  useEffect(() => { if (stage !== 'chat') setTailSpace(0); }, [stage]);
+  // A new chat starts with no tail space.
+  useEffect(() => { if (stage !== 'chat') questionPin.reset(); }, [stage, questionPin.reset]);
 
   const dockStyle = useAnimatedStyle(() => ({
     opacity: dockO.value,
@@ -2037,8 +2084,8 @@ function ChatScreen({
         contentContainerStyle={s.chatMessages}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
-        onLayout={(e) => { viewHRef.current = e.nativeEvent.layout.height; }}
-        onContentSizeChange={(_, h) => { contentHRef.current = h; }}
+        onLayout={questionPin.onScrollLayout}
+        onContentSizeChange={questionPin.onContentSizeChange}
       >
         {/* Hero: the empty chat and the first wait. Folds away (height to 0)
             once the first words arrive and the orb has left for the dock. */}
@@ -2115,7 +2162,7 @@ function ChatScreen({
           return (
             <View
               key={msg.id}
-              onLayout={msg.id === lastUserId ? (e) => { lastUserYRef.current = e.nativeEvent.layout.y; } : undefined}
+              onLayout={questionPin.userLayout(msg.id)}
             >
               {!bubbleOnlyHoldsTheCard && (
               <>
@@ -2179,7 +2226,7 @@ function ChatScreen({
         })}
         {/* Room for the lifted orb, so it never sits on the last message. */}
         <Animated.View style={liftSpaceStyle} />
-        <View style={{ height: tailSpace }} />
+        <View style={{ height: questionPin.tailSpace }} />
       </ScrollView>
 
       {/* Quick-question chips (workout mode only). Shown until the user's
@@ -2391,7 +2438,7 @@ function ChatScreen({
               // A reply still streaming belongs to the thread being left.
               handleStop();
               openConversation(id);
-              setTailSpace(0);
+              questionPin.reset();
               setShowHistory(false);
               setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 50);
             }}
@@ -3924,6 +3971,8 @@ function RefineChatScreen({
   }, [loading]);
   const headerMarkState: DronaMarkState = loading ? 'thinking' : everLoadedRef.current ? 'answer' : 'static';
   const scrollRef = useRef<ScrollView>(null);
+  // See ChatScreen: a reply types in under its question at the top.
+  const questionPin = useQuestionPin(scrollRef, messages, loading);
   // Stable abort handle — refine turns can run long when the model
   // decides to fetch the user's volume series before proposing changes.
   const streamRef = useRef<{ abort: () => void } | null>(null);
@@ -3985,6 +4034,7 @@ function RefineChatScreen({
     typewriterRef.current = null;
     setInput('');
     Keyboard.dismiss();
+    questionPin.reset();
     setLoading(true);
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
 
@@ -4217,12 +4267,14 @@ function RefineChatScreen({
         contentContainerStyle={s.chatMessages}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        onLayout={questionPin.onScrollLayout}
+        onContentSizeChange={questionPin.onContentSizeChange}
       >
         {messages.map((msg, idx) => {
           // See ChatScreen: the running turn's bubble is always the last one.
           const streaming = loading && idx === messages.length - 1 && msg.role === 'assistant';
           return (
-          <View key={msg.id}>
+          <View key={msg.id} onLayout={questionPin.userLayout(msg.id)}>
             <Pressable
               onLongPress={() => openSelectSheet(msg)}
               delayLongPress={350}
@@ -4263,6 +4315,7 @@ function RefineChatScreen({
           </View>
           );
         })}
+        <View style={{ height: questionPin.tailSpace }} />
       </ScrollView>
 
       {/* Input */}
