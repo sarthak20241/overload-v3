@@ -1228,6 +1228,16 @@ function ChatScreen({
   // re-answers regardless.
   const [capHit, setCapHit] = useState<null | 'cap' | 'pro'>(null);
   const scrollRef = useRef<ScrollView>(null);
+  // When a reply starts, the question it answers goes to the top of the
+  // screen and the reply types in under it, with no more scrolling. The tail
+  // space under the thread gives that scroll room before the reply fills it.
+  const lastUserYRef = useRef(0);
+  const viewHRef = useRef(0);
+  const contentHRef = useRef(0);
+  const pinnedIdRef = useRef<string | null>(null);
+  const [tailSpace, setTailSpace] = useState(0);
+  const tailSpaceRef = useRef(0);
+  tailSpaceRef.current = tailSpace;
   // Tracks the in-flight stream so we can abort it on screen dismiss /
   // unmount and avoid late callbacks firing into an unmounted component
   // (also stops burning Anthropic tokens after the user has left).
@@ -1298,6 +1308,7 @@ function ChatScreen({
     typewriterRef.current = null;
     if (!opens) setInput('');
     Keyboard.dismiss();
+    setTailSpace(0);
     setLoading(true);
     const askedAt = Date.now();
     track('coach_message_sent', {
@@ -1750,6 +1761,7 @@ function ChatScreen({
   const orbColor = signalOrbColor(themeMode);
   const userTurns = messages.reduce((n, m) => n + (m.role === 'user' ? 1 : 0), 0);
   const lastMsg = messages[messages.length - 1];
+  const lastUserId = [...messages].reverse().find((m) => m.role === 'user' && !m.context)?.id ?? null;
   // Waiting: no words yet, or Drona stopped mid-reply to look something up
   // (thinkingPhase is set by status events and cleared by the next words).
   const pendingMsg = loading && lastMsg?.role === 'assistant' && (lastMsg.content === '' || !!lastMsg.thinkingPhase)
@@ -1901,6 +1913,32 @@ function ChatScreen({
     }
   }, [lifted]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The first words of a reply: scroll once so the question sits at the top.
+  // Once per reply, so a lookup mid-reply never pulls the reader back. The
+  // very first reply needs none: the hero folds away and the thread starts
+  // at the top anyway.
+  const writingId = writingMsg?.id ?? null;
+  useEffect(() => {
+    if (!writingId || pinnedIdRef.current === writingId) return;
+    pinnedIdRef.current = writingId;
+    if (stage !== 'chat' || (heroVisible && !workoutContext)) return;
+    setTailSpace(viewHRef.current);
+    const t = setTimeout(() => {
+      scrollRef.current?.scrollTo({ y: Math.max(0, lastUserYRef.current - Spacing.md), animated: true });
+    }, 60);
+    return () => clearTimeout(t);
+  }, [writingId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Reply done: keep only the tail space a short reply still needs, so the
+  // question does not drop when it goes.
+  useEffect(() => {
+    if (loading || tailSpaceRef.current === 0) return;
+    const threadEnd = contentHRef.current - tailSpaceRef.current;
+    const need = lastUserYRef.current - Spacing.md + viewHRef.current - threadEnd;
+    setTailSpace(Math.max(0, Math.round(need)));
+  }, [loading]);
+  // A new or reopened chat starts with none.
+  useEffect(() => { if (stage !== 'chat') setTailSpace(0); }, [stage]);
+
   const dockStyle = useAnimatedStyle(() => ({
     opacity: dockO.value,
     transform: [
@@ -1999,6 +2037,8 @@ function ChatScreen({
         contentContainerStyle={s.chatMessages}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        onLayout={(e) => { viewHRef.current = e.nativeEvent.layout.height; }}
+        onContentSizeChange={(_, h) => { contentHRef.current = h; }}
       >
         {/* Hero: the empty chat and the first wait. Folds away (height to 0)
             once the first words arrive and the orb has left for the dock. */}
@@ -2073,7 +2113,10 @@ function ChatScreen({
           // Derived from state, so render never reads a mutable ref.
           const streaming = loading && idx === messages.length - 1 && msg.role === 'assistant';
           return (
-            <View key={msg.id}>
+            <View
+              key={msg.id}
+              onLayout={msg.id === lastUserId ? (e) => { lastUserYRef.current = e.nativeEvent.layout.y; } : undefined}
+            >
               {!bubbleOnlyHoldsTheCard && (
               <>
               <Pressable
@@ -2136,6 +2179,7 @@ function ChatScreen({
         })}
         {/* Room for the lifted orb, so it never sits on the last message. */}
         <Animated.View style={liftSpaceStyle} />
+        <View style={{ height: tailSpace }} />
       </ScrollView>
 
       {/* Quick-question chips (workout mode only). Shown until the user's
@@ -2347,6 +2391,7 @@ function ChatScreen({
               // A reply still streaming belongs to the thread being left.
               handleStop();
               openConversation(id);
+              setTailSpace(0);
               setShowHistory(false);
               setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 50);
             }}
