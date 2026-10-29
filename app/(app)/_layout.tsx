@@ -403,60 +403,60 @@ export default function AppLayout() {
           and each scene's own fill must be the app background. Otherwise the
           navigation library's light grey default flashes through. */}
       <View style={{ flex: 1, backgroundColor: C.background }}>
-      <Tabs
-        screenOptions={{
-          headerShown: false,
-          tabBarStyle: { display: 'none' },
-          sceneStyle: { backgroundColor: C.background },
-        }}
-      >
-        <Tabs.Screen name="index" options={tabOptions} />
-        <Tabs.Screen name="routines" options={tabOptions} />
-        <Tabs.Screen name="history" options={tabOptions} />
-        <Tabs.Screen name="analytics" options={tabOptions} />
-        <Tabs.Screen name="profile" options={tabOptions} />
-        {/*
-          Exercise Library management screen. Hidden from the bottom nav —
-          reached via the Routines header book icon or Profile > My Exercises.
-        */}
-        <Tabs.Screen name="exercises" options={{ href: null }} />
-        {/*
-          Import Data screen (Hevy CSV). Hidden from the bottom nav —
-          reached via Profile > Import Data.
-        */}
-        <Tabs.Screen name="import" options={{ href: null }} />
-        {/*
-          Nutrition day view (diet tracking). Hidden from the bottom nav for now —
-          reached via a dashboard card / deep-link (`/nutrition`) until the nav
-          placement lands post-design-polish.
-        */}
-        <Tabs.Screen name="nutrition" options={{ href: null }} />
-        {/* Diet logging: full-screen catalog search + food detail (MFP model). */}
-        <Tabs.Screen name="food-search" options={{ href: null }} />
-        <Tabs.Screen name="food-detail" options={{ href: null }} />
-        <Tabs.Screen name="meal-builder" options={{ href: null }} />
-        {/* Quick add: calories the user already knows, no catalog row behind them. */}
-        <Tabs.Screen name="quick-add" options={{ href: null }} />
-        {/*
-          Plan screen — what your subscription is and what it has done for you.
-          Hidden from the bottom nav; reached from the Profile plan card. The
-          route itself sends guests and free users to /upgrade.
-        */}
-        <Tabs.Screen name="plan" options={{ href: null }} />
-        {/*
-          From Drona: the cards the user pushed to Later, and what Drona has
-          changed. Hidden from the bottom nav; reached from Profile and Goal.
-        */}
-        <Tabs.Screen name="from-drona" options={{ href: null }} />
-        {/*
-          Admin dashboard for research-kb review (Phase 3).
-          Hidden from the bottom nav — only reachable via deep-link
-          (`/admin/research`) or the "Admin Tools" button rendered for
-          admin users on the Profile screen. The route itself enforces
-          the admin check via useAdminCheck + Postgres RLS.
-        */}
-        <Tabs.Screen name="admin/research" options={{ href: null }} />
-      </Tabs>
+        <Tabs
+          screenOptions={{
+            headerShown: false,
+            tabBarStyle: { display: 'none' },
+            sceneStyle: { backgroundColor: C.background },
+          }}
+        >
+          <Tabs.Screen name="index" options={tabOptions} />
+          <Tabs.Screen name="routines" options={tabOptions} />
+          <Tabs.Screen name="history" options={tabOptions} />
+          <Tabs.Screen name="analytics" options={tabOptions} />
+          <Tabs.Screen name="profile" options={tabOptions} />
+          {/*
+            Exercise Library management screen. Hidden from the bottom nav —
+            reached via the Routines header book icon or Profile > My Exercises.
+          */}
+          <Tabs.Screen name="exercises" options={{ href: null }} />
+          {/*
+            Import Data screen (Hevy CSV). Hidden from the bottom nav —
+            reached via Profile > Import Data.
+          */}
+          <Tabs.Screen name="import" options={{ href: null }} />
+          {/*
+            Nutrition day view (diet tracking). Hidden from the bottom nav for now —
+            reached via a dashboard card / deep-link (`/nutrition`) until the nav
+            placement lands post-design-polish.
+          */}
+          <Tabs.Screen name="nutrition" options={{ href: null }} />
+          {/* Diet logging: full-screen catalog search + food detail (MFP model). */}
+          <Tabs.Screen name="food-search" options={{ href: null }} />
+          <Tabs.Screen name="food-detail" options={{ href: null }} />
+          <Tabs.Screen name="meal-builder" options={{ href: null }} />
+          {/* Quick add: calories the user already knows, no catalog row behind them. */}
+          <Tabs.Screen name="quick-add" options={{ href: null }} />
+          {/*
+            Plan screen — what your subscription is and what it has done for you.
+            Hidden from the bottom nav; reached from the Profile plan card. The
+            route itself sends guests and free users to /upgrade.
+          */}
+          <Tabs.Screen name="plan" options={{ href: null }} />
+          {/*
+            From Drona: the cards the user pushed to Later, and what Drona has
+            changed. Hidden from the bottom nav; reached from Profile and Goal.
+          */}
+          <Tabs.Screen name="from-drona" options={{ href: null }} />
+          {/*
+            Admin dashboard for research-kb review (Phase 3).
+            Hidden from the bottom nav — only reachable via deep-link
+            (`/admin/research`) or the "Admin Tools" button rendered for
+            admin users on the Profile screen. The route itself enforces
+            the admin check via useAdminCheck + Postgres RLS.
+          */}
+          <Tabs.Screen name="admin/research" options={{ href: null }} />
+        </Tabs>
       </View>
 
       {!hideWorkoutChrome && <BottomNav onOpenModal={() => { track('start_workout_modal_opened'); setModalOpen(true); }} />}

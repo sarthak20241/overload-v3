@@ -12,7 +12,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { useWorkout } from '@/hooks/useWorkout';
 import { haptics } from '@/lib/haptics';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 // Paused-state colour now lives in Colors.paused (constants/theme.ts).
 
@@ -113,8 +113,10 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
   };
 
   // The marker on the bar's top edge slides to the tab you are on. Off a tab
-  // (Profile, a pushed screen) it fades away; coming back, it fades in at the
-  // tab instead of sliding in from wherever it was.
+  // (Profile, a pushed screen) it fades away; coming back after it is gone,
+  // it fades in at the tab instead of sliding in from wherever it was. Coming
+  // back while it is still fading out, it slides from where it is, so it
+  // never jumps while visible.
   const activeSlot = isActive('/(app)') ? 0
     : isActive('/(app)/routines') ? 1
     : isActive('/(app)/history') ? 3
@@ -123,24 +125,21 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
   const [barWidth, setBarWidth] = useState(0);
   const markerX = useSharedValue(0);
   const markerOpacity = useSharedValue(0);
-  const markerShown = useRef(false);
   useEffect(() => {
     if (!barWidth) return;
     const timing = { duration: TAB_SWITCH_MS, easing: Easing.out(Easing.cubic) };
     if (activeSlot < 0) {
-      markerShown.current = false;
       markerOpacity.value = withTiming(0, timing);
       return;
     }
     const slot = barWidth / SLOT_COUNT;
     const x = activeSlot * slot + (slot - MARKER_WIDTH) / 2;
-    if (markerShown.current) {
+    if (markerOpacity.value > 0) {
       markerX.value = withTiming(x, timing);
     } else {
-      markerShown.current = true;
       markerX.value = x;
-      markerOpacity.value = withTiming(1, timing);
     }
+    markerOpacity.value = withTiming(1, timing);
   }, [activeSlot, barWidth]);
   const markerStyle = useAnimatedStyle(() => ({
     opacity: markerOpacity.value,
