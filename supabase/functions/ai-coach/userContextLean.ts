@@ -52,7 +52,8 @@ export function leanUserContext(full: unknown): { summary: unknown; held: HeldSe
     on.routines = `${routines.length} saved routines with every exercise, sets, reps and rest. ` +
       (routines.length > ROUTINE_NAMES_MAX
         ? `active_routines lists the newest ${ROUTINE_NAMES_MAX} by name only.`
-        : "active_routines lists them by name only.");
+        : "active_routines lists them by name only.") +
+      " routine_names reads any saved routine by name, listed here or not.";
   }
 
   const volume = summary.weekly_volume;
@@ -91,6 +92,7 @@ export function readHeldSections(held: HeldSections, input: Record<string, unkno
   const wanted = Array.isArray(input.routine_names) ? input.routine_names.map((n) => String(n).trim()).filter(Boolean) : [];
   const out: Ctx = {};
   const missing: string[] = [];
+  const unknownRoutines: string[] = [];
   for (const name of asked) {
     if (!(ON_REQUEST_SECTIONS as readonly string[]).includes(name) || !(name in held)) {
       missing.push(name);
@@ -100,10 +102,15 @@ export function readHeldSections(held: HeldSections, input: Record<string, unkno
     if (name === "routines" && wanted.length > 0 && Array.isArray(section)) {
       const nameOf = (r: unknown) => String((r as { name?: unknown })?.name ?? "").toLowerCase();
       out.routines = section.filter((r) => wanted.some((w) => w.toLowerCase() === nameOf(r)));
-      for (const w of wanted) if (!section.some((r) => nameOf(r) === w.toLowerCase())) missing.push(`routine '${w}'`);
+      for (const w of wanted) if (!section.some((r) => nameOf(r) === w.toLowerCase())) unknownRoutines.push(w);
     } else {
       out[name] = section;
     }
+  }
+  // A name not found is not a missing section: routines exist, that name does not.
+  if (unknownRoutines.length > 0) {
+    out.unknown_routines = `No saved routine is named ${unknownRoutines.map((w) => `'${w}'`).join(", ")}. ` +
+      "Ask for routines without routine_names to see every routine.";
   }
   if (missing.length > 0) {
     out.not_available = `${missing.join(", ")}: not held for this user. Only sections listed in user_context.on_request exist.`;

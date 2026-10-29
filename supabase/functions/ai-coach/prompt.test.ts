@@ -140,6 +140,8 @@ Deno.test("a lean chat gets the details tool and the note that explains it", () 
   const lean = buildSystemPrompt({ userContext: null, mode: "chat", leanContext: true });
   assert(lean.tools.some((t) => t.name === "coach_get_user_details"));
   assertStringIncludes(lean.system[0].text, "<on_request_context>");
+  // free tier strips TERMINAL_TOOLS only; the details tool must survive it
+  assert(!TERMINAL_TOOLS.has("coach_get_user_details"));
   const plain = buildSystemPrompt({ userContext: null, mode: "chat" });
   assert(!plain.tools.some((t) => t.name === "coach_get_user_details"));
   assert(!plain.system[0].text.includes("<on_request_context>"));

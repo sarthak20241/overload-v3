@@ -80,7 +80,16 @@ Deno.test("routines can be read by name, so one routine does not bring back all 
   const { held } = leanUserContext(full());
   const out = readHeldSections(held, { sections: ["routines"], routine_names: ["routine 3", "Nope"] }) as Record<string, unknown>;
   assertEquals((out.routines as { name: string }[]).map((r) => r.name), ["Routine 3"]);
-  assert(String(out.not_available).includes("Nope"));
+  // a name not found is not "routines unavailable": the section exists
+  assert(String(out.unknown_routines).includes("Nope"));
+  assertEquals(out.not_available, undefined);
+});
+
+Deno.test("routine_names reaches routines past the names listed in the summary", () => {
+  const { summary, held } = leanUserContext(full());
+  assertStringIncludes((summary as { on_request: Record<string, string> }).on_request.routines, "any saved routine");
+  const out = readHeldSections(held, { sections: ["routines"], routine_names: ["Routine 29"] }) as Record<string, unknown>;
+  assertEquals((out.routines as { name: string }[]).map((r) => r.name), ["Routine 29"]);
 });
 
 Deno.test("no context in, no context out", () => {

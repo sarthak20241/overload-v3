@@ -1026,7 +1026,7 @@ export const GET_USER_DETAILS_TOOL: AnthropicTool = {
       routine_names: {
         type: 'array',
         items: { type: 'string' },
-        description: 'With routines: only these routines, by the names in user_context.active_routines. Omit to get every routine.',
+        description: 'With routines: only these routines, by name (any saved routine, listed in user_context.active_routines or not). Omit to get every routine.',
       },
     },
     required: ['sections'],
