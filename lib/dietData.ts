@@ -30,7 +30,7 @@ import { readSwapOptions, type SwapOption } from '@/lib/variantSwap';
 import { relogColumns, type RelogLabels } from '@/lib/foodPatterns';
 import { deleteMealIfEmpty } from '@/lib/mealCleanup';
 import {
-  pendingRows, prunePending, settlePending as settleGroup, withPending, r0, r1,
+  pendingRows, prunePending, settlePending as settleGroup, settledKeys, withPending, r0, r1,
   type PendingGroup, type PendingSource,
 } from '@/lib/pendingEntries';
 import {
@@ -98,6 +98,9 @@ export interface DayData {
   settlePending: (groupId: string, realIds: string[]) => void;
   /** The save failed: take the lines back off the screen. */
   dropPending: (groupId: string) => void;
+  /** The React key for a row: the id it was first drawn with. A line added
+   *  here keeps one key from the tap, through the save, to the read. */
+  rowKey: (id: string) => string;
 }
 
 const emptyByMeal = (): Record<MealType, LoggedEntry[]> =>
@@ -251,16 +254,31 @@ export function useDayNutrition(dayIso: string): DayData {
   // out of every cache: only a read of the database ever goes to disk.
   const [pending, setPending] = useState<PendingGroup<LoggedEntry>[]>([]);
   const pendingSeq = useRef(0);
+  // The groups as last rendered, plus any added since, so settlePending reads
+  // them outside the state updater (updaters stay pure).
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
   const addPending = useCallback((lines: PendingSource[], mealType: MealType) => {
     const id = `${Date.now().toString(36)}-${++pendingSeq.current}`;
     const entries: LoggedEntry[] = pendingRows(id, lines, mealType)
       .map((e) => ({ ...e, meal_type: mealType, source: e.source as LoggedEntry['source'] }));
-    setPending((cur) => [...cur, { id, dayIso, entries, realIds: null }]);
+    const group = { id, dayIso, entries, realIds: null };
+    // Into the ref now too: a save that lands before the next render must
+    // still find its group, or its rows lose their keys.
+    pendingRef.current = [...pendingRef.current, group];
+    setPending((cur) => [...cur, group]);
     return id;
   }, [dayIso]);
+  // Real id -> the pending id that row was drawn with. Never cleared: a few
+  // strings per add, and an Undo or a later read must still find the key.
+  const rowKeys = useRef(new Map<string, string>());
   const settlePending = useCallback((groupId: string, realIds: string[]) => {
+    for (const [real, key] of settledKeys(pendingRef.current, groupId, realIds)) {
+      if (!rowKeys.current.has(real)) rowKeys.current.set(real, key);
+    }
     setPending((cur) => settleGroup(cur, groupId, realIds));
   }, []);
+  const rowKey = useCallback((id: string) => rowKeys.current.get(id) ?? id, []);
   const dropPending = useCallback((groupId: string) => {
     setPending((cur) => cur.filter((g) => g.id !== groupId));
   }, []);
@@ -347,7 +365,7 @@ export function useDayNutrition(dayIso: string): DayData {
   return {
     byMeal: shownByMeal, totals, totalsDayIso: shownDayIso,
     loading: fromMemory ? false : loading, failedDayIso, reload,
-    addPending, settlePending, dropPending,
+    addPending, settlePending, dropPending, rowKey,
   };
 }
 
@@ -1432,14 +1450,18 @@ async function logSection(
   }));
 
   const { data: inserted, error } = await supabase
-    .from('meal_entries').insert(rows).select('id');
+    .from('meal_entries').insert(rows).select('id, position');
   if (error) {
     // If we created an empty meal and the entries failed, don't leave the
     // orphan meal behind.
     if (createdMeal) await deleteMealIfEmpty(supabase, mealId);
     return { error: error.message };
   }
-  const entryIds = (inserted ?? []).map((r: any) => String(r.id));
+  // In the order the lines were given: the screen pairs these with its
+  // pending rows one by one (settlePending), and RETURNING promises no order.
+  const entryIds = [...(inserted ?? [])]
+    .sort((a: any, b: any) => a.position - b.position)
+    .map((r: any) => String(r.id));
   return { ref: { mealType, mealId, entryIds, createdMeal } };
 }
 

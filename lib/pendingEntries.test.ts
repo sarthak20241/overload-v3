@@ -1,6 +1,6 @@
 import { assertEquals, assertStrictEquals } from "jsr:@std/assert@1";
 import {
-  landed, pendingRows, prunePending, settlePending, withPending, type PendingGroup,
+  landed, pendingRows, prunePending, settlePending, settledKeys, withPending, type PendingGroup,
 } from "./pendingEntries.ts";
 
 type Row = { id: string; meal_type: "breakfast" | "lunch"; food_name: string; pending?: boolean };
@@ -31,7 +31,20 @@ Deno.test("nothing pending: the day comes back as the same object", () => {
   assertStrictEquals(withPending(byMeal, "2026-10-27", []), byMeal);
 });
 
-Deno.test("saved: the lines take the real ids, so the rows do not remount", () => {
+Deno.test("saved: each real id maps back to the pending id its row was drawn with", () => {
+  // The id changes on settle, so a row keyed by id remounted (the line blinked
+  // and slid in twice). The screen keys by the pending id through these pairs.
+  assertEquals(settledKeys([group()], "g1", ["r1", "r2"]), [["r1", "pending:g1:0"], ["r2", "pending:g1:1"]]);
+  // No one-to-one match, or no such group: nothing to map.
+  assertEquals(settledKeys([group()], "g1", ["r1"]), []);
+  assertEquals(settledKeys([group()], "other", ["r1", "r2"]), []);
+  // Settled twice: the entries already hold the real ids, so no real -> real
+  // pair comes back to overwrite the pending key.
+  const settled = settlePending([group()], "g1", ["r1", "r2"]);
+  assertEquals(settledKeys(settled, "g1", ["r1", "r2"]), []);
+});
+
+Deno.test("saved: the lines take the real ids, so the read's rows match them", () => {
   const [g] = settlePending([group()], "g1", ["r1", "r2"]);
   assertEquals(g.realIds, ["r1", "r2"]);
   assertEquals(g.entries.map((e) => e.id), ["r1", "r2"]);
