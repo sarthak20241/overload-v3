@@ -4,7 +4,7 @@ import { useRouter, usePathname } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   useSharedValue, useAnimatedStyle, withRepeat, withTiming, withSequence,
-  Easing, SlideInUp, SlideOutDown, FadeIn, FadeOut,
+  Easing, SlideInUp, SlideOutDown, FadeIn, FadeOut, useReducedMotion,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow, colorWithAlpha } from '@/constants/theme';
@@ -20,7 +20,9 @@ import { useEffect, useState } from 'react';
 // marker below, so the two land together.
 export const TAB_SWITCH_MS = 220;
 const MARKER_WIDTH = 20;
-// The bar is five equal slots: Dashboard, Routines, play button, History, Analytics.
+// The bar is five equal slots: Dashboard, Routines, play button, History,
+// Analytics. The marker's slot math needs every slot at `flex: 1` and no
+// horizontal padding on navBar; change either and the marker drifts.
 const SLOT_COUNT = 5;
 
 function fmt(seconds: number) {
@@ -125,22 +127,28 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
   const [barWidth, setBarWidth] = useState(0);
   const markerX = useSharedValue(0);
   const markerOpacity = useSharedValue(0);
+  // Same rule as the tab slide in app/(app)/_layout.tsx: with Reduce Motion
+  // on, the marker moves straight to its place.
+  const reduceMotion = useReducedMotion();
   useEffect(() => {
     if (!barWidth) return;
     const timing = { duration: TAB_SWITCH_MS, easing: Easing.out(Easing.cubic) };
+    const to = (value: number) => (reduceMotion ? value : withTiming(value, timing));
     if (activeSlot < 0) {
-      markerOpacity.value = withTiming(0, timing);
+      markerOpacity.value = to(0);
       return;
     }
     const slot = barWidth / SLOT_COUNT;
     const x = activeSlot * slot + (slot - MARKER_WIDTH) / 2;
+    // Read on the JS thread, so mid-fade this can trail the UI thread by a
+    // frame. At worst the marker snaps when it is nearly invisible.
     if (markerOpacity.value > 0) {
-      markerX.value = withTiming(x, timing);
+      markerX.value = to(x);
     } else {
       markerX.value = x;
     }
-    markerOpacity.value = withTiming(1, timing);
-  }, [activeSlot, barWidth]);
+    markerOpacity.value = to(1);
+  }, [activeSlot, barWidth, reduceMotion]);
   const markerStyle = useAnimatedStyle(() => ({
     opacity: markerOpacity.value,
     transform: [{ translateX: markerX.value }],
