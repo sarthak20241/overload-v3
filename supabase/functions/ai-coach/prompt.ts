@@ -40,6 +40,10 @@ export interface PromptContext {
   // Only then is Drona taught the format: an older app would show the raw
   // fenced JSON, so the teaching rides on what the client says it can draw.
   richReplies?: boolean;
+  // Chat sends a short user summary (userContextLean.ts) and reads the big
+  // sections on demand. Only chat honours it; the tool and its note ride every
+  // lean chat so all chat users share one cached prefix.
+  leanContext?: boolean;
 }
 
 export interface ResearchSnippet {
@@ -1005,6 +1009,29 @@ export const LIST_LOGGED_MEALS_TOOL: AnthropicTool = {
   },
 };
 
+// Lean chat only (userContextLean.ts). Served from the context already read for
+// this request, so no database call.
+export const GET_USER_DETAILS_TOOL: AnthropicTool = {
+  name: 'coach_get_user_details',
+  description:
+    'Read the parts of this user\'s context that the chat summary leaves out. Only the sections named in user_context.on_request exist for this user. routines: every saved routine with its exercises, sets, reps and rest. weekly_volume: working sets per muscle per week for recent weeks. plan_changes: up to 25 changes to their targets, goal, program, phases and routines in the last 60 days, newest first, with who made each. body_measurements: the latest and the oldest tape reading per site in the last 90 days. Ask for several sections in one call when you need them.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      sections: {
+        type: 'array',
+        items: { type: 'string', enum: ['routines', 'weekly_volume', 'plan_changes', 'body_measurements'] },
+        description: 'The sections to read.',
+      },
+    },
+    required: ['sections'],
+  },
+};
+
+const ON_REQUEST_CONTEXT = `<on_request_context>
+In this chat, user_context is a summary. Larger sections may be listed in user_context.on_request instead of included: full routine contents, the weekly muscle volume table, the full plan change history, and tape measurements. When the user's question needs one of them, call coach_get_user_details with those section names before answering, and answer from what it returns. Do not guess their contents from the summary. A question the summary already answers needs no call.
+</on_request_context>`;
+
 // Present in every conversational mode, including the chat opened mid-set: the
 // user may drink a shake between sets, and refusing to log it there would be a
 // worse surprise than the coach mentioning food.
@@ -1310,7 +1337,9 @@ export function buildSystemPrompt(ctx: PromptContext): {
   tools: AnthropicTool[];
 } {
   const userContextBlock = ctx.userContext
-    ? `<user_context>\n${JSON.stringify(ctx.userContext, null, 2)}\n</user_context>`
+    // Compact: on 2026-10-29 the indentation alone was 45% of the owner's
+    // block, and the block is written into the cache on every cold message.
+    ? `<user_context>\n${JSON.stringify(ctx.userContext)}\n</user_context>`
     : `<user_context>No personalized data available — user is in guest/demo mode or has not logged any workouts yet. Ask them clarifying questions before recommending specifics.</user_context>`;
 
   // Detect the training-inactive flag in the user_context. The RPC sets
@@ -1368,7 +1397,10 @@ export function buildSystemPrompt(ctx: PromptContext): {
   // Drawn blocks only where the reply is shown as a chat message, and only to
   // a client that can draw them.
   const richBlock = ctx.richReplies && !forcedMode ? `\n\n${RICH_REPLY_BEHAVIOR}` : '';
-  const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${APP_FEATURES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${PROGRAM_COACHING}${targetBlock}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${MEMORY}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${richBlock}${foodBlock}${behaviorBlock}`;
+  // Derived once for both the note and the tool, like carriesProposeTargets.
+  const lean = mode === 'chat' && ctx.leanContext === true;
+  const leanBlock = lean ? `\n\n${ON_REQUEST_CONTEXT}` : '';
+  const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${APP_FEATURES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${PROGRAM_COACHING}${targetBlock}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${MEMORY}${leanBlock}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${richBlock}${foodBlock}${behaviorBlock}`;
   const blocks: AnthropicSystemBlock[] = [
     {
       type: 'text',
@@ -1430,6 +1462,7 @@ export function buildSystemPrompt(ctx: PromptContext): {
                 : carriesProposeTargets
                   ? [...COACH_TOOLS, PROPOSE_TARGETS_TOOL]
                   : [...COACH_TOOLS];
+  if (lean) baseTools.push(GET_USER_DETAILS_TOOL);
   if (!forcedMode) baseTools.push(...FOOD_TOOLS);
 
   // Memory tools ride every CONVERSATIONAL mode. The forced generate modes

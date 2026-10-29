@@ -39,6 +39,11 @@ EVAL_VIA_CLI=1 npx tsx scripts/program-goal-eval/run.mts
 # goal, a gain or strength hold with no ask gets neither. Same CLI rule.
 EVAL_VIA_CLI=1 npx tsx scripts/program-activity-eval/run.mts
 
+# Lean chat context: does Drona fetch a held-back section (routines, volume,
+# plan changes, tape) when a question needs it, and skip it when the summary
+# answers? Same CLI rule.
+EVAL_VIA_CLI=1 npx tsx scripts/lean-context-eval/run.mts
+
 # Edge function unit tests (the one real test suite).
 deno test --allow-all supabase/functions/ai-coach/
 deno test --allow-all supabase/functions/revenuecat-webhook/
