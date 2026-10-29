@@ -21,6 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
 import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
+import { pinOffset, pinRoom, tailAfterReply } from '@/lib/questionPin';
 import { fuelDaysText } from '@/lib/fuelDays';
 import { invalidateUserProgram } from '@/lib/screenCache';
 import { activityText } from '@/lib/activityGoals';
@@ -1129,25 +1130,32 @@ function useQuestionPin(
 ) {
   const lastUserYRef = useRef(0);
   const contentHRef = useRef(0);
+  // Where the thread ends: the tail's own top, so it never counts the tail.
+  const threadEndRef = useRef(0);
   const pinnedIdRef = useRef<string | null>(null);
-  // The scroll waits until the tail space is in, or it would stop short.
+  // The scroll waits until the tail space is in, or it would stop short. A
+  // reply that ends first still gets it: the wait outlives the reply.
   const pendingRef = useRef(false);
   const shouldPinRef = useRef(shouldPin);
   shouldPinRef.current = shouldPin;
   const [viewH, setViewH] = useState(0);
   const [tail, setTail] = useState<'fill' | number>(0);
+  const tailRef = useRef(tail);
+  tailRef.current = tail;
   const tailSpace = tail === 'fill' ? viewH : tail;
-  const tailSpaceRef = useRef(0);
-  tailSpaceRef.current = tailSpace;
 
   const last = messages[messages.length - 1];
   const writingId = loading && last?.role === 'assistant' && last.content !== '' ? last.id : null;
   const lastUserId = [...messages].reverse().find((m) => m.role === 'user' && !m.context)?.id ?? null;
 
-  const neededH = () => lastUserYRef.current - Spacing.md + viewH;
+  const neededH = () => pinRoom(lastUserYRef.current, Spacing.md, viewH);
   const pin = () => {
     pendingRef.current = false;
-    scrollRef.current?.scrollTo({ y: Math.max(0, lastUserYRef.current - Spacing.md), animated: true });
+    scrollRef.current?.scrollTo({ y: pinOffset(lastUserYRef.current, Spacing.md), animated: true });
+  };
+  const settleTail = () => {
+    const next = tailAfterReply(threadEndRef.current, lastUserYRef.current, Spacing.md, viewH);
+    if (next !== tailRef.current) setTail(next);
   };
 
   useEffect(() => {
@@ -1161,11 +1169,8 @@ function useQuestionPin(
   }, [writingId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (loading) return;
-    pendingRef.current = false;
-    if (tailSpaceRef.current === 0) return;
-    const threadEnd = contentHRef.current - tailSpaceRef.current;
-    setTail(Math.max(0, Math.round(neededH() - threadEnd)));
+    if (loading || tailRef.current === 0) return;
+    settleTail();
   }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return {
@@ -1180,6 +1185,13 @@ function useQuestionPin(
     onContentSizeChange: (_w: number, h: number) => {
       contentHRef.current = h;
       if (pendingRef.current && h >= neededH()) pin();
+    },
+    // onLayout for the tail space. The reply's last rows (copy button,
+    // sources) land after loading ends and move the tail down, so a finished
+    // reply's tail is worked out again each time it moves.
+    onTailLayout: (e: LayoutChangeEvent) => {
+      threadEndRef.current = e.nativeEvent.layout.y;
+      if (!loading && tail !== 0) settleTail();
     },
     // onLayout for a message row: only the latest question is measured.
     userLayout: (id: string) => (id === lastUserId
@@ -2224,9 +2236,12 @@ function ChatScreen({
             </View>
           );
         })}
+        {/* The question pin's tail space sits right under the thread, above
+            the lifted orb's room, so the orb's room shrinking away never
+            moves the point it measures from. */}
+        <View style={{ height: questionPin.tailSpace }} onLayout={questionPin.onTailLayout} />
         {/* Room for the lifted orb, so it never sits on the last message. */}
         <Animated.View style={liftSpaceStyle} />
-        <View style={{ height: questionPin.tailSpace }} />
       </ScrollView>
 
       {/* Quick-question chips (workout mode only). Shown until the user's
@@ -4315,7 +4330,7 @@ function RefineChatScreen({
           </View>
           );
         })}
-        <View style={{ height: questionPin.tailSpace }} />
+        <View style={{ height: questionPin.tailSpace }} onLayout={questionPin.onTailLayout} />
       </ScrollView>
 
       {/* Input */}
