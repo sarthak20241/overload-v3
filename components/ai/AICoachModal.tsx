@@ -798,7 +798,6 @@ type SetMessagesFn = React.Dispatch<React.SetStateAction<ChatMessage[]>>;
 function createTypewriter(
   messageId: string,
   setMessages: SetMessagesFn,
-  scrollRef: React.RefObject<ScrollView | null>,
   // An opening holds its first line back until it is clearly not a pre-tool
   // "let me check" line (a tool call starts, a line break, or it grows past
   // what that line can be), so the line never flashes on screen.
@@ -843,8 +842,8 @@ function createTypewriter(
     setMessages(prev => prev.map(m =>
       m.id === messageId ? { ...m, content: displayed } : m
     ));
-    // Auto-scroll while typing — animated:false keeps it cheap.
-    scrollRef.current?.scrollToEnd({ animated: false });
+    // No scroll while typing: the reader stays on the reply's first lines and
+    // scrolls on when they are ready.
   };
 
   const start = () => {
@@ -1298,6 +1297,7 @@ function ChatScreen({
     // reply's text.
     typewriterRef.current = null;
     if (!opens) setInput('');
+    Keyboard.dismiss();
     setLoading(true);
     const askedAt = Date.now();
     track('coach_message_sent', {
@@ -1378,7 +1378,7 @@ function ChatScreen({
     // if the server delivers in chunky bursts the user sees smooth typing.
     // This is how ChatGPT/Claude.ai/Perplexity all do it: the network is
     // bursty, the animation is smooth.
-    const typewriter = createTypewriter(assistantId, setMessages, scrollRef, { holdFirstLine: opens });
+    const typewriter = createTypewriter(assistantId, setMessages, { holdFirstLine: opens });
     typewriterRef.current = typewriter;
     // Per-invocation flag: did the live `structured` event already deliver this
     // turn's workout edit? Guards the onDone fallback against a double card.
@@ -1892,7 +1892,9 @@ function ChatScreen({
     auraBreath.value = lifted
       ? withRepeat(withSequence(withTiming(0.7, { duration: 1600 }), withTiming(1, { duration: 1600 })), -1)
       : withTiming(1, { duration: 300 });
-    if (lifted) {
+    // Only the first wait scrolls down to the orb. A lookup after the reply
+    // has started leaves the reader where they are.
+    if (lifted && pendingMsg?.content === '') {
       const a = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
       const b = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 650);
       return () => { clearTimeout(a); clearTimeout(b); };
@@ -2282,7 +2284,7 @@ function ChatScreen({
             </TouchableOpacity>
           )}
         </View>
-        <MedicalDisclaimer variant="short" style={{ marginTop: Spacing.sm }} />
+        <MedicalDisclaimer variant="line" style={{ marginTop: Spacing.sm }} />
 
         {/* What Drona is doing, under the lifted orb. */}
         <Animated.View style={[s.liftLabel, liftLabelStyle]} pointerEvents="none">
@@ -3937,6 +3939,7 @@ function RefineChatScreen({
     // reply's text.
     typewriterRef.current = null;
     setInput('');
+    Keyboard.dismiss();
     setLoading(true);
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
 
@@ -4028,7 +4031,7 @@ function RefineChatScreen({
     }
 
     streamRef.current?.abort();
-    const typewriter = createTypewriter(assistantId, setMessages, scrollRef);
+    const typewriter = createTypewriter(assistantId, setMessages);
     typewriterRef.current = typewriter;
     streamRef.current = callAICoachStreaming(apiMessages, token, {
       onDelta: (chunk) => typewriter.append(chunk),
