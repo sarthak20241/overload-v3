@@ -15,7 +15,7 @@
  * Android: the content does not move on a pull, so the orb opens its own gap
  * at the top while the refresh runs.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform, RefreshControl, StyleSheet, View, type RefreshControlProps } from 'react-native';
 import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 
@@ -29,7 +29,8 @@ const ANDROID_GAP = 52;
 /** Holds the orb for at least this long, so a fast reload still reads as an
  *  answer to the pull rather than a flicker. */
 const MIN_MS = 800;
-/** A reload that hangs (offline) lets go of the screen after this. */
+/** A reload that hangs (offline) has its orb taken down after this. The
+ *  reload itself is not cancelled: if it lands later, its data still shows. */
 const MAX_MS = 10_000;
 
 /**
@@ -38,14 +39,30 @@ const MAX_MS = 10_000;
  */
 export function usePullRefresh(run: () => unknown) {
   const [refreshing, setRefreshing] = useState(false);
+  // Each pull gets a number; only the latest one may end the orb, so an old
+  // pull's timer cannot cut a newer one short.
+  const pull = useRef(0);
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(() => () => {
+    pull.current = -1;
+    timers.current.forEach(clearTimeout);
+  }, []);
+
   const onRefresh = useCallback(() => {
+    const id = ++pull.current;
+    timers.current.forEach(clearTimeout);
+    timers.current = [];
     setRefreshing(true);
     const started = Date.now();
-    const cap = new Promise((resolve) => setTimeout(resolve, MAX_MS));
+    const cap = new Promise((resolve) => { timers.current.push(setTimeout(() => resolve(null), MAX_MS)); });
     Promise.race([Promise.resolve().then(run), cap])
       .catch(() => {})
       .finally(() => {
-        setTimeout(() => setRefreshing(false), Math.max(0, MIN_MS - (Date.now() - started)));
+        if (id !== pull.current) return;
+        timers.current.forEach(clearTimeout);
+        timers.current = [setTimeout(() => {
+          if (id === pull.current) setRefreshing(false);
+        }, Math.max(0, MIN_MS - (Date.now() - started)))];
       });
   }, [run]);
   return { refreshing, onRefresh };

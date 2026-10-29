@@ -186,6 +186,13 @@ export default function DashboardScreen() {
   // Bumped by a pull to refresh: re-reads the workouts, which otherwise only
   // reload when the sync queue moves.
   const [refreshTick, setRefreshTick] = useState(0);
+  // Resolves the pull's promise once the workouts read it asked for lands, so
+  // the orb stays for the real load and not a fixed time.
+  const refreshDone = useRef<(() => void) | null>(null);
+  const settleRefresh = useCallback(() => {
+    refreshDone.current?.();
+    refreshDone.current = null;
+  }, []);
   // Whether each input to the day's TODAY pick has had its SERVER read settle
   // (or failed offline) on this mount. The day's pick is only saved once all
   // three have: a pick saved from a stale cache would be held all day.
@@ -226,6 +233,7 @@ export default function DashboardScreen() {
       ));
       setLoading(false);
       markSettled('workouts');
+      settleRefresh();
       return;
     }
     const clerkId = user?.id;
@@ -290,7 +298,10 @@ export default function DashboardScreen() {
         // Offline / fetch failed — keep whatever the cache painted; never hang.
         if (!cancelled) setLoading(false);
       }
-      if (!cancelled) markSettled('workouts');
+      if (!cancelled) {
+        markSettled('workouts');
+        settleRefresh();
+      }
     })();
 
     return () => {
@@ -319,11 +330,13 @@ export default function DashboardScreen() {
     }, []),
   );
   // A pull re-reads what a refocus does (routines, program, cards, fuel) plus
-  // the workouts.
-  const { refreshing, onRefresh } = usePullRefresh(useCallback(() => {
+  // the workouts, and holds the orb until the workouts land.
+  const { refreshing, onRefresh } = usePullRefresh(useCallback(() => new Promise<void>((resolve) => {
+    settleRefresh();
+    refreshDone.current = resolve;
     setRefreshTick((t) => t + 1);
     setFocusTick((t) => t + 1);
-  }, []));
+  }), [settleRefresh]));
 
   // Load the user's saved routines so the "today's suggestion" card can pick a
   // planned session. Offline-first like the workouts fetch above, but READ-ONLY

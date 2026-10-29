@@ -10,6 +10,7 @@ import type { StyleProp, ViewStyle } from 'react-native';
 import { ThinkingOrb, type OrbState } from 'expo-thinking-orbs';
 
 import { useTheme } from '@/hooks/useTheme';
+import { orbTheme } from '@/lib/orbTheme';
 
 const SIZES = { small: 20, large: 40 } as const;
 
@@ -39,23 +40,4 @@ export function OrbLoader({ size = 'small', color, state = 'working', paused, st
       accessibilityLabel={accessibilityLabel ?? 'Loading'}
     />
   );
-}
-
-/** The orb fades far dots toward its theme's background. A tint picks the
- *  side it contrasts with: light ink fades to black, dark ink to white.
- *  Mid greys keep the app theme. */
-function orbTheme(color: string | undefined, mode: 'dark' | 'light'): 'dark' | 'light' {
-  const l = color ? luminance(color) : null;
-  if (l == null) return mode;
-  if (l > 0.6) return 'dark';
-  if (l < 0.15) return 'light';
-  return mode;
-}
-
-function luminance(color: string): number | null {
-  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
-  if (!m) return null;
-  const hex = m[1].length === 3 ? m[1].split('').map((c) => c + c).join('') : m[1];
-  const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
