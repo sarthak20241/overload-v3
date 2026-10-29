@@ -1173,6 +1173,12 @@ function useQuestionPin(
     settleTail();
   }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The screen's height changed (first layout, or the keyboard closing) while
+  // a pin waits: the room it needs moved, and no content change may follow.
+  useEffect(() => {
+    if (pendingRef.current && contentHRef.current >= neededH()) pin();
+  }, [viewH]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // A new turn, or another chat opened: no tail, no scroll waiting.
   const reset = useCallback(() => {
     pendingRef.current = false;
@@ -1318,7 +1324,9 @@ function ChatScreen({
   const [capHit, setCapHit] = useState<null | 'cap' | 'pro'>(null);
   const scrollRef = useRef<ScrollView>(null);
   // The very first reply needs no pin: the hero folds away and the thread
-  // starts at the top anyway.
+  // starts at the top anyway. This reads heroVisible as the first words land;
+  // the hero only hides after its fold (setHeroVisible(false) on a timer), so
+  // it is still true then. Hiding it sooner would pin the first reply too.
   const questionPin = useQuestionPin(scrollRef, messages, loading,
     () => stage === 'chat' && !(heroVisible && !workoutContext));
   // Tracks the in-flight stream so we can abort it on screen dismiss /
