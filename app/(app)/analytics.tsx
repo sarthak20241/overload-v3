@@ -46,7 +46,7 @@ import {
   type WeightEntry, type BodyFatEntry, type MeasurementEntry, type MeasurementsData,
 } from '@/lib/bodyStats';
 import { OrbLoader } from '@/components/ui/OrbLoader';
-import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
+import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -1269,7 +1269,6 @@ export default function AnalyticsScreen() {
   const bigChartWidth = winWidth - Spacing.xl * 2 - Spacing.lg * 2;
   const [workouts, setWorkouts] = useState<WorkoutRaw[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
 
   const [selectedExercise, setSelectedExercise] = useState('');
   const [chartMode, setChartMode] = useState<'weight' | 'volume'>('weight');
@@ -1415,8 +1414,8 @@ export default function AnalyticsScreen() {
     return () => { live = false; };
   }, [loadWeightSeries, loadBodyFatSeries, clerkLoaded, basicInfoReady, pendingCount]);
 
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
+  // The hook ends the orb even when a read throws.
+  const { refreshing, onRefresh: handleRefresh } = usePullRefresh(useCallback(async () => {
     await fetchData();
     const [wl, bfl] = await Promise.all([
       loadWeightSeries().catch(() => weightLog),
@@ -1424,8 +1423,7 @@ export default function AnalyticsScreen() {
     ]);
     setWeightLog(wl);
     setBodyFatLog(bfl);
-    setRefreshing(false);
-  }, [fetchData, loadWeightSeries, loadBodyFatSeries, weightLog, bodyFatLog]);
+  }, [fetchData, loadWeightSeries, loadBodyFatSeries, weightLog, bodyFatLog]));
 
   // ── Stats ──
   const weekStart = getWeekStart();

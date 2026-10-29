@@ -53,7 +53,7 @@ import { dailyMetricDef, type DailyMetricDef } from '@/lib/dailyMetrics';
 import { sourcesForHub, type HealthHub } from '@/lib/healthSources';
 import { Colors, Spacing, Radius, FontSize, FontWeight, IconSize, Shadow, colorWithAlpha } from '@/constants/theme';
 import { OrbLoader } from '@/components/ui/OrbLoader';
-import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
+import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 
 const HUB: HealthHub = Platform.OS === 'ios' ? 'healthkit' : 'health_connect';
 const HUB_LABEL = Platform.OS === 'ios' ? 'Apple Health' : 'Health Connect';
@@ -167,7 +167,6 @@ export default function HealthScreen() {
   const [series, setSeries] = useState<Record<string, { date: string; value: number }[]>>({});
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [loadError, setLoadError] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
   const [coachTopic, setCoachTopic] = useState<CoachTopic | undefined>(undefined);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -233,11 +232,8 @@ export default function HealthScreen() {
     }
   }, [params.log, userId, recentSleepReady]);
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await load();
-    setRefreshing(false);
-  }, [load]);
+  // The hook ends the orb even when load() throws.
+  const { refreshing, onRefresh } = usePullRefresh(load);
 
   // Open Drona on this metric (its value + the user's usual). Drona speaks first.
   function askAboutMetric(def: DailyMetricDef, pts: { date: string; value: number }[]) {

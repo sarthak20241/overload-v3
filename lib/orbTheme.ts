@@ -12,8 +12,11 @@ export function orbTheme(color: string | undefined, mode: 'dark' | 'light'): 'da
   return mode;
 }
 
-/** Relative luminance (0 to 1) of a #rgb, #rgba, #rrggbb, #rrggbbaa, rgb() or
- *  rgba() color; null for anything else. Alpha is ignored. */
+/** Brightness (0 to 1) of a #rgb, #rgba, #rrggbb, #rrggbbaa, rgb() or rgba()
+ *  color; null for anything else. Alpha is ignored. This is Rec. 709 luma on
+ *  the sRGB values as written, not linearized relative luminance: the 0.6 and
+ *  0.15 cut-offs in orbTheme are tuned to it, so swapping in the linear
+ *  formula would move every threshold. */
 export function luminance(color: string): number | null {
   const c = color.trim();
   let rgb: number[] | null = null;

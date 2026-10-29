@@ -67,7 +67,7 @@ import { metricTypeOf, usesReps, type ExerciseDef, type MetricType } from '@/lib
 import { formatDuration } from '@/lib/format';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { OrbLoader } from '@/components/ui/OrbLoader';
-import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
+import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -1538,7 +1538,6 @@ export default function RoutinesScreen() {
   const toast = useToast();
   const [routines, setRoutines] = useState<RoutineRaw[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editingRoutine, setEditingRoutine] = useState<{ id?: string; name: string; description: string } | null>(null);
   const [menuRoutine, setMenuRoutine] = useState<RoutineRaw | null>(null);
@@ -1587,11 +1586,8 @@ export default function RoutinesScreen() {
     fetchRoutines().finally(() => setLoading(false));
   }, [fetchRoutines, clerkLoaded, pendingCount]);
 
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await fetchRoutines();
-    setRefreshing(false);
-  }, [fetchRoutines]);
+  // The hook ends the orb even when the read throws.
+  const { refreshing, onRefresh: handleRefresh } = usePullRefresh(fetchRoutines);
 
   const handleDelete = async (id: string) => {
     const target = routines.find((r) => r.id === id);

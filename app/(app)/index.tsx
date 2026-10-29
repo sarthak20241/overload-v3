@@ -222,7 +222,8 @@ export default function DashboardScreen() {
     // Mid-hydration Clerk has no user yet, so isGuestSession reads true and a
     // signed-in user would flash an empty guest dashboard on cold launch.
     // Hold the spinner until Clerk settles; the effect re-runs when it does.
-    if (!clerkLoaded) return;
+    // A pull now has nothing to wait for, so its orb ends at once.
+    if (!clerkLoaded) { settleRefresh(); return; }
     if (isGuestSession) {
       // Guests have no profile row, so derive XP from their logged workouts
       // with the same formula the backend uses.
