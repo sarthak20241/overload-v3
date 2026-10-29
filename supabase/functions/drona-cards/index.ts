@@ -29,7 +29,7 @@ import {
   chooseTexts, QUESTIONS, questionKey, readText, stateFor, type StoredSignal, type WordFacts, type WordText,
   wordBehaviours, wordSignals,
 } from "../_shared/dronaWords.ts";
-import { askJev } from "../ai-coach/jev.ts";
+import { askJev, type JevUsage } from "../ai-coach/jev.ts";
 import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "../_shared/dronaMemory.ts";
 import { type MomentPerson, momentRow, pickMoment } from "../_shared/dronaMoments.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
@@ -226,6 +226,26 @@ type WordsState = "none" | "stored" | "asked" | "failed";
  * Never throws: a failure means no word behaviours this week, and the numbers
  * cards run as before.
  */
+/** Jev's usage hook: a token_usage_log row per answered call, priced by
+ *  model_pricing (input tokens only). Pushed to `into` so the caller settles the
+ *  writes before its response: the isolate may stop once that is sent. */
+function jevUsage(
+  db: SupabaseClient,
+  into: PromiseLike<unknown>[],
+  pipeline: string,
+  via: string,
+  userId: string,
+): (u: JevUsage) => void {
+  return (u) => {
+    into.push(db.rpc("log_token_usage", {
+      p_pipeline: pipeline, p_provider: "typesafe", p_model: u.model,
+      p_input_tokens: u.input_tokens, p_output_tokens: u.output_tokens, p_cache_read_tokens: 0,
+      p_cache_creation_tokens: 0, p_metadata: { via, questions: u.questions, user_id: userId },
+      p_latency_ms: u.latency_ms, p_status: "success", p_error_message: null,
+    }));
+  };
+}
+
 async function wordStep(
   db: SupabaseClient,
   userId: string,
@@ -245,7 +265,11 @@ async function wordStep(
 
   // One call per text, a few at a time: each text's answers stay tied to its day.
   const questions = Object.fromEntries(Object.entries(QUESTIONS).map(([q, v]) => [questionKey(0, q), v]));
-  const deps = { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, log: (m: string) => console.error(`[drona-cards] ${m}`) };
+  const usageLogs: PromiseLike<unknown>[] = [];
+  const deps = {
+    apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, log: (m: string) => console.error(`[drona-cards] ${m}`),
+    onUsage: jevUsage(db, usageLogs, "drona_card", "words", userId),
+  };
   // Every text carries the same questions under index 0 (one call per text).
   const ask = (t: WordText) => askJev(stateFor(t, texts), questions, deps);
   const answers: Awaited<ReturnType<typeof askJev>>[] = [];
@@ -261,6 +285,7 @@ async function wordStep(
     const again = await Promise.all(batch.map((i) => ask(texts[i])));
     batch.forEach((i, j) => { answers[i] = again[j]; });
   }
+  await Promise.allSettled(usageLogs);
   const readings = [];
   let model: string | null = null;
   for (let i = 0; i < texts.length; i++) {
@@ -624,7 +649,7 @@ async function runMemorySweep(): Promise<Response> {
       for (const t of mine) {
         if (Date.now() - started > SWEEP_BUDGET_MS) { tally.left += 1; continue; }
         const r = await catchMemory(t.text, t.kind, {
-          jev: { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS },
+          jev: { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, onUsage: jevUsage(db, logs, "drona_memory", "gate_sweep", userId) },
           anthropicKey: ANTHROPIC_API_KEY,
           today,
           readMemory: () => readMemoryRows(db as never, userId),

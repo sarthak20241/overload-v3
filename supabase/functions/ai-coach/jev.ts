@@ -94,6 +94,18 @@ export interface JevDeps {
    *  just stop reading it. */
   abortSignal?: AbortSignal;
   log?: (msg: string) => void;
+  /** Told what each answered call used, so the caller can price it. Jev was the
+   *  one paid model that never reached token_usage_log. A throw here is ignored. */
+  onUsage?: (usage: JevUsage) => void;
+}
+
+/** What one answered Jev call used. Billed on input tokens ($0.042/M). */
+export interface JevUsage {
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  questions: number;
+  latency_ms: number;
 }
 
 /** Why a call produced nothing. Callers branch on this rather than on a thrown
@@ -154,6 +166,7 @@ export async function askJev(
   const body = JSON.stringify({ state, model: deps.model ?? JEV_MODEL, questions });
 
   let last: { failure: JevFailure; detail: string } = { failure: "http_error", detail: "no attempt made" };
+  const started = Date.now();
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     // A fresh controller per attempt: an aborted one stays aborted, so reusing
@@ -185,6 +198,15 @@ export async function askJev(
         if (!parsed || typeof parsed !== "object" || !parsed.answers) {
           return { ok: false, failure: "bad_response", detail: "no answers in body" };
         }
+        try {
+          deps.onUsage?.({
+            model: typeof parsed.model === "string" && parsed.model ? parsed.model : deps.model ?? JEV_MODEL,
+            input_tokens: Number(parsed.usage?.input_tokens) || 0,
+            output_tokens: Number(parsed.usage?.output_tokens) || 0,
+            questions: Object.keys(questions).length,
+            latency_ms: Date.now() - started,
+          });
+        } catch { /* a logger must never cost the answer */ }
         return { ok: true, response: parsed };
       }
 
