@@ -1173,14 +1173,16 @@ function useQuestionPin(
     settleTail();
   }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // A new turn, or another chat opened: no tail, no scroll waiting.
+  const reset = useCallback(() => {
+    pendingRef.current = false;
+    pinnedIdRef.current = null;
+    setTail(0);
+  }, []);
+
   return {
     tailSpace,
-    // A new turn, or another chat opened: no tail, no scroll waiting.
-    reset: useCallback(() => {
-      pendingRef.current = false;
-      pinnedIdRef.current = null;
-      setTail(0);
-    }, []),
+    reset,
     onScrollLayout: (e: LayoutChangeEvent) => setViewH(e.nativeEvent.layout.height),
     onContentSizeChange: (_w: number, h: number) => {
       contentHRef.current = h;
