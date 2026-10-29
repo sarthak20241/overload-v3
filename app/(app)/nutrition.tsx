@@ -2112,7 +2112,9 @@ export default function NutritionScreen() {
                   <Animated.View
                     key={e.id}
                     style={s.entryWrap}
-                    entering={relog || e.pending ? FadeInDown.duration(280).springify().damping(16) : undefined}
+                    // Timed, not sprung: a spring overshot and the suggestion
+                    // rows below, pushed down by it, bobbed before settling.
+                    entering={relog || e.pending ? FadeInDown.duration(220) : undefined}
                     layout={LinearTransition.duration(220)}
                   >
                     {/* A plain list row, not a card: only the summary and the food
