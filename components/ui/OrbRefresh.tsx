@@ -42,29 +42,34 @@ export function usePullRefresh(run: () => unknown) {
   // Each pull gets a number; only the latest one may end the orb, so an old
   // pull's timer cannot cut a newer one short.
   const pull = useRef(0);
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // The 10 s cap, and the hold that keeps the orb up for MIN_MS.
+  const capTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const clearTimers = useCallback(() => {
+    clearTimeout(capTimer.current);
+    clearTimeout(holdTimer.current);
+  }, []);
   useEffect(() => () => {
     pull.current = -1;
-    timers.current.forEach(clearTimeout);
-  }, []);
+    clearTimers();
+  }, [clearTimers]);
 
   const onRefresh = useCallback(() => {
     const id = ++pull.current;
-    timers.current.forEach(clearTimeout);
-    timers.current = [];
+    clearTimers();
     setRefreshing(true);
     const started = Date.now();
-    const cap = new Promise((resolve) => { timers.current.push(setTimeout(() => resolve(null), MAX_MS)); });
+    const cap = new Promise((resolve) => { capTimer.current = setTimeout(() => resolve(null), MAX_MS); });
     Promise.race([Promise.resolve().then(run), cap])
       .catch(() => {})
       .finally(() => {
         if (id !== pull.current) return;
-        timers.current.forEach(clearTimeout);
-        timers.current = [setTimeout(() => {
+        clearTimers();
+        holdTimer.current = setTimeout(() => {
           if (id === pull.current) setRefreshing(false);
-        }, Math.max(0, MIN_MS - (Date.now() - started)))];
+        }, Math.max(0, MIN_MS - (Date.now() - started)));
       });
-  }, [run]);
+  }, [run, clearTimers]);
   return { refreshing, onRefresh };
 }
 
