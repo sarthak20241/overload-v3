@@ -21,7 +21,7 @@ Deno.test("a successful call reports its usage once", async () => {
   });
   assertEquals(r.ok, true);
   assertEquals(seen.length, 1);
-  assertEquals({ ...seen[0], latency_ms: 0 }, { model: "jev-1.13.0", served_model: "jev-1.13.0", input_tokens: 812, output_tokens: 3, questions: 1, latency_ms: 0 });
+  assertEquals({ ...seen[0], latency_ms: 0 }, { model: "jev-1.13.0", served_model: "jev-1.13.0", input_tokens: 812, output_tokens: 3, questions: 1, latency_ms: 0, usage_missing: false });
 });
 
 Deno.test("a failed call reports nothing", async () => {
@@ -50,6 +50,8 @@ Deno.test("a body without usage still answers, and reports zero tokens", async (
     onUsage: (u) => seen.push(u),
   });
   assertEquals([seen[0].model, seen[0].input_tokens, seen[0].output_tokens], ["jev-x", 0, 0]);
+  // flagged, so a cost page can tell "Jev sent no counts" from a free call
+  assertEquals(seen[0].usage_missing, true);
 });
 
 Deno.test("a retried call reports once, for the attempt that answered", async () => {

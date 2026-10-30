@@ -1132,6 +1132,7 @@ function jevUsageLogger(
       latency_ms: u.latency_ms,
       metadata: {
         via, questions: u.questions, ...(u.served_model ? { served_model: u.served_model } : {}),
+        ...(u.usage_missing ? { usage_missing: true } : {}),
         ...(userId ? { user_id: userId } : {}),
       },
     }));

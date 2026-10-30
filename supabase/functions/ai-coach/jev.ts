@@ -109,6 +109,9 @@ export interface JevUsage {
   output_tokens: number;
   questions: number;
   latency_ms: number;
+  /** The answer carried no usage, so the token counts are 0 by default, not
+   *  by measurement. Logged, so a cost page can tell it from a free call. */
+  usage_missing: boolean;
 }
 
 /** Why a call produced nothing. Callers branch on this rather than on a thrown
@@ -210,6 +213,7 @@ export async function askJev(
             output_tokens: Number(parsed.usage?.output_tokens) || 0,
             questions: Object.keys(questions).length,
             latency_ms: Date.now() - started,
+            usage_missing: !parsed.usage || typeof parsed.usage !== "object",
           });
         } catch { /* a logger must never cost the answer */ }
         return { ok: true, response: parsed };
