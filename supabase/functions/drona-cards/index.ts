@@ -239,7 +239,7 @@ function jevUsage(
         db.rpc("log_token_usage", {
           p_pipeline: pipeline, p_provider: "typesafe", p_model: u.model,
           p_input_tokens: u.input_tokens, p_output_tokens: u.output_tokens, p_cache_read_tokens: 0,
-          p_cache_creation_tokens: 0, p_metadata: { via, questions: u.questions, served_model: u.served_model, user_id: userId },
+          p_cache_creation_tokens: 0, p_metadata: { via, questions: u.questions, ...(u.served_model ? { served_model: u.served_model } : {}), user_id: userId },
           p_latency_ms: u.latency_ms, p_status: "success", p_error_message: null,
         }).abortSignal(AbortSignal.timeout(USAGE_WRITE_TIMEOUT_MS)),
       ).then(
