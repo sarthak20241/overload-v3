@@ -101,7 +101,10 @@ export interface JevDeps {
 
 /** What one answered Jev call used. Billed on input tokens ($0.042/M). */
 export interface JevUsage {
+  /** The model we asked for: the key model_pricing prices. */
   model: string;
+  /** The id the response says answered, which may differ from the one asked for. */
+  served_model: string | null;
   input_tokens: number;
   output_tokens: number;
   questions: number;
@@ -201,7 +204,8 @@ export async function askJev(
         }
         try {
           deps.onUsage?.({
-            model: typeof parsed.model === "string" && parsed.model ? parsed.model : deps.model ?? JEV_MODEL,
+            model: deps.model ?? JEV_MODEL,
+            served_model: typeof parsed.model === "string" && parsed.model ? parsed.model : null,
             input_tokens: Number(parsed.usage?.input_tokens) || 0,
             output_tokens: Number(parsed.usage?.output_tokens) || 0,
             questions: Object.keys(questions).length,

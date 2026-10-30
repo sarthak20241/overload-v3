@@ -21,7 +21,7 @@ Deno.test("a successful call reports its usage once", async () => {
   });
   assertEquals(r.ok, true);
   assertEquals(seen.length, 1);
-  assertEquals({ ...seen[0], latency_ms: 0 }, { model: "jev-1.13.0", input_tokens: 812, output_tokens: 3, questions: 1, latency_ms: 0 });
+  assertEquals({ ...seen[0], latency_ms: 0 }, { model: "jev-1.13.0", served_model: "jev-1.13.0", input_tokens: 812, output_tokens: 3, questions: 1, latency_ms: 0 });
 });
 
 Deno.test("a failed call reports nothing", async () => {
@@ -78,4 +78,16 @@ Deno.test("the pinned Jev model has a model_pricing row", async () => {
     if (sql.includes("model_pricing") && sql.includes(`'${JEV_MODEL}'`)) priced = true;
   }
   assertEquals(priced, true, `add a model_pricing row for ${JEV_MODEL}`);
+});
+
+// Priced by the model we asked for: an echoed id with no model_pricing row
+// would read as free. The id that answered is kept apart for the logs.
+Deno.test("usage is priced under the pinned model, with the served id kept apart", async () => {
+  const seen: JevUsage[] = [];
+  await askJev("two eggs", question, {
+    apiKey: "k", timeoutMs: 1000,
+    fetchFn: replying(200, { model: "jev-1.13.0-20261101", answers: { food: { value: 0.9 } }, usage: { input_tokens: 9, output_tokens: 1 } }),
+    onUsage: (u) => seen.push(u),
+  });
+  assertEquals([seen[0].model, seen[0].served_model], [JEV_MODEL, "jev-1.13.0-20261101"]);
 });

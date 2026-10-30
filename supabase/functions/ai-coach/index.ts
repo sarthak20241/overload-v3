@@ -1130,7 +1130,10 @@ function jevUsageLogger(
       input_tokens: u.input_tokens,
       output_tokens: u.output_tokens,
       latency_ms: u.latency_ms,
-      metadata: { via, questions: u.questions, ...(userId ? { user_id: userId } : {}) },
+      metadata: {
+        via, questions: u.questions, ...(u.served_model ? { served_model: u.served_model } : {}),
+        ...(userId ? { user_id: userId } : {}),
+      },
     }));
 }
 

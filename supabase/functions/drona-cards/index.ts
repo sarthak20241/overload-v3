@@ -218,22 +218,14 @@ async function checkin(
 
 type WordsState = "none" | "stored" | "asked" | "failed";
 
-/**
- * The word step (.planning/drona-word-behaviours.md): what the person told
- * Drona in the week that just ended. Stored answers are reused, so Jev is asked
- * once per person per week; a week with no texts costs nothing. Code picks the
- * texts and decides; Jev only answers yes/no (and which) about each text.
- * Never throws: a failure means no word behaviours this week, and the numbers
- * cards run as before.
- */
+const USAGE_WRITE_TIMEOUT_MS = 5_000;
+
 /** Jev's usage hook: a token_usage_log row per answered call, priced by
  *  model_pricing (input tokens only). Pushed to `into` so the caller settles the
  *  writes before its response: the isolate may stop once that is sent. Each
  *  write gives up after USAGE_WRITE_TIMEOUT_MS, so a stalled log never holds a
  *  card, and a refused one says so in the logs (supabase-js returns database
  *  errors in the result, it does not throw them). */
-const USAGE_WRITE_TIMEOUT_MS = 5_000;
-
 function jevUsage(
   db: SupabaseClient,
   into: PromiseLike<unknown>[],
@@ -247,7 +239,7 @@ function jevUsage(
         db.rpc("log_token_usage", {
           p_pipeline: pipeline, p_provider: "typesafe", p_model: u.model,
           p_input_tokens: u.input_tokens, p_output_tokens: u.output_tokens, p_cache_read_tokens: 0,
-          p_cache_creation_tokens: 0, p_metadata: { via, questions: u.questions, user_id: userId },
+          p_cache_creation_tokens: 0, p_metadata: { via, questions: u.questions, served_model: u.served_model, user_id: userId },
           p_latency_ms: u.latency_ms, p_status: "success", p_error_message: null,
         }).abortSignal(AbortSignal.timeout(USAGE_WRITE_TIMEOUT_MS)),
       ).then(
@@ -258,6 +250,14 @@ function jevUsage(
   };
 }
 
+/**
+ * The word step (.planning/drona-word-behaviours.md): what the person told
+ * Drona in the week that just ended. Stored answers are reused, so Jev is asked
+ * once per person per week; a week with no texts costs nothing. Code picks the
+ * texts and decides; Jev only answers yes/no (and which) about each text.
+ * Never throws: a failure means no word behaviours this week, and the numbers
+ * cards run as before.
+ */
 async function wordStep(
   db: SupabaseClient,
   userId: string,
