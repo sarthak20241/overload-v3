@@ -1,4 +1,4 @@
-// Run with: deno test supabase/functions/ai-coach/jev.test.ts
+// Run with: deno test --allow-read supabase/functions/ai-coach/jev.test.ts
 //
 // Jev was the one paid model that never reached token_usage_log: every intent
 // check, memory gate, brand check and page judgment went unpriced. onUsage is
