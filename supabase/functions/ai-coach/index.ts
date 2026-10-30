@@ -31,7 +31,7 @@ import { cooldownBody, reserveProSlot } from "../_shared/aiCooldown.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { AREAS as WORD_AREAS, QUESTIONS as WORD_QUESTIONS, YES as WORD_YES } from "../_shared/dronaWords.ts";
 import { decideMoment, type MomentCandidate, momentRow } from "../_shared/dronaMoments.ts";
-import { asNoul, type JevAnswer } from "./jev.ts";
+import { asNoul, type JevAnswer, type JevUsage } from "./jev.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
 import { withPhaseActivity } from "./programActivity.ts";
@@ -372,11 +372,12 @@ function toSavedSummaries(saved: SavedMealForParse[]): SavedMealSummary[] {
 function makeFoodIntentDeps(
   savedMeals: SavedMealSummary[],
   abortSignal?: AbortSignal,
+  onUsage?: (u: JevUsage) => void,
 ): FoodIntentDeps {
   return {
     savedMeals,
     jev: JEV_API_KEY
-      ? { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, abortSignal, log: (m) => console.log(m) }
+      ? { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, abortSignal, log: (m) => console.log(m), onUsage }
       : undefined,
     classify: classifyFoodIntentWithModel,
     log: (m) => console.log(m),
@@ -404,11 +405,12 @@ function startFoodIntent(
   text: string,
   context: FoodConversationContext,
   abortSignal?: AbortSignal,
+  onUsage?: (u: JevUsage) => void,
 ): Promise<FoodIntentDecision | null> {
   if (!shouldRouteFoodIntent(FOOD_INTENT_MODE)) return Promise.resolve(null);
   // The same saved-meal read the parser uses, so one query serves both.
   return savedMealsP
-    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal), context))
+    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal, onUsage), context))
     // routeFoodIntent is documented never to throw. This is the belt on top of
     // the braces: nothing about a shadow measurement may fail a meal log.
     .catch((e) => {
@@ -1112,6 +1114,30 @@ function logTavilyCost(admin: SupabaseClient, credits: number | undefined, metad
   });
 }
 
+/** Jev's usage hook for one caller: a token_usage_log row per answered call,
+ *  priced by model_pricing (input tokens only). Kept alive past the response. */
+function jevUsageLogger(
+  admin: SupabaseClient,
+  pipeline: string,
+  via: string,
+  userId: string | null,
+): (u: JevUsage) => void {
+  return (u) =>
+    keepAlive(logTokenUsage(admin, {
+      pipeline,
+      provider: "typesafe",
+      model: u.model,
+      input_tokens: u.input_tokens,
+      output_tokens: u.output_tokens,
+      latency_ms: u.latency_ms,
+      metadata: {
+        via, questions: u.questions, ...(u.served_model ? { served_model: u.served_model } : {}),
+        ...(u.usage_missing ? { usage_missing: true } : {}),
+        ...(userId ? { user_id: userId } : {}),
+      },
+    }));
+}
+
 async function logTokenUsage(
   admin: SupabaseClient,
   rec: {
@@ -1194,7 +1220,10 @@ function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId
               pain: WORD_QUESTIONS.pain, area: WORD_QUESTIONS.area, ask: WORD_QUESTIONS.ask, change: WORD_QUESTIONS.change,
             } }
           : {}),
-        jev: { apiKey: JEV_API_KEY, timeoutMs: 6000, log: (m) => console.log(`[ai-coach] memory ${m}`) },
+        jev: {
+          apiKey: JEV_API_KEY, timeoutMs: 6000, log: (m) => console.log(`[ai-coach] memory ${m}`),
+          onUsage: jevUsageLogger(admin, "drona_memory", `gate_${kind}`, userId),
+        },
         anthropicKey: ANTHROPIC_API_KEY,
         today: new Date().toISOString().slice(0, 10),
         readMemory: () => readMemoryRows(admin as never, userId),
@@ -3211,7 +3240,10 @@ function makeParseDeps(
     // Time is not Precise's constraint, so relevance gets a longer leash than
     // the food-intent race does.
     jev: JEV_API_KEY
-      ? { apiKey: JEV_API_KEY, timeoutMs: Math.max(JEV_TIMEOUT_MS, 5000), log: (m) => console.log(m) }
+      ? {
+        apiKey: JEV_API_KEY, timeoutMs: Math.max(JEV_TIMEOUT_MS, 5000), log: (m) => console.log(m),
+        onUsage: jevUsageLogger(admin, "parse_meal", "parse", userId),
+      }
       : undefined,
     searchCountry: PRECISE_SEARCH_COUNTRY,
     // This user's own log, last 10 days, through THEIR client: RLS keeps it
@@ -3794,7 +3826,7 @@ async function handleParseMealRequest(args: {
         // Kicked off BEFORE the parse is awaited, so the two overlap and the
         // common path (log, almost always) pays nothing for the question.
         const savedMealsP = fetchSavedMealsForParse(userClient);
-        const intentP = startFoodIntent(savedMealsP, text, foodContext, abort.signal);
+        const intentP = startFoodIntent(savedMealsP, text, foodContext, abort.signal, jevUsageLogger(admin, "parse_meal", "food_intent", userId));
         const supportsCreate = clientSupportsFoodCreate(body);
         // Settled into a plain variable so the progress gate below can read it
         // synchronously. Awaiting inside onProgress would stall the stream.
@@ -4024,7 +4056,7 @@ async function handleParseMealRequest(args: {
   // a parse that blew up is exactly when knowing what the user was asking for is
   // most useful.
   const savedMealsP = fetchSavedMealsForParse(userClient);
-  const intentP = startFoodIntent(savedMealsP, text, foodContext);
+  const intentP = startFoodIntent(savedMealsP, text, foodContext, undefined, jevUsageLogger(admin, "parse_meal", "food_intent", userId));
   const supportsCreate = clientSupportsFoodCreate(body);
 
   try {
