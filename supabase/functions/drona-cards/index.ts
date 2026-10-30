@@ -228,7 +228,12 @@ type WordsState = "none" | "stored" | "asked" | "failed";
  */
 /** Jev's usage hook: a token_usage_log row per answered call, priced by
  *  model_pricing (input tokens only). Pushed to `into` so the caller settles the
- *  writes before its response: the isolate may stop once that is sent. */
+ *  writes before its response: the isolate may stop once that is sent. Each
+ *  write gives up after USAGE_WRITE_TIMEOUT_MS, so a stalled log never holds a
+ *  card, and a refused one says so in the logs (supabase-js returns database
+ *  errors in the result, it does not throw them). */
+const USAGE_WRITE_TIMEOUT_MS = 5_000;
+
 function jevUsage(
   db: SupabaseClient,
   into: PromiseLike<unknown>[],
@@ -237,12 +242,19 @@ function jevUsage(
   userId: string,
 ): (u: JevUsage) => void {
   return (u) => {
-    into.push(db.rpc("log_token_usage", {
-      p_pipeline: pipeline, p_provider: "typesafe", p_model: u.model,
-      p_input_tokens: u.input_tokens, p_output_tokens: u.output_tokens, p_cache_read_tokens: 0,
-      p_cache_creation_tokens: 0, p_metadata: { via, questions: u.questions, user_id: userId },
-      p_latency_ms: u.latency_ms, p_status: "success", p_error_message: null,
-    }));
+    into.push(
+      Promise.resolve(
+        db.rpc("log_token_usage", {
+          p_pipeline: pipeline, p_provider: "typesafe", p_model: u.model,
+          p_input_tokens: u.input_tokens, p_output_tokens: u.output_tokens, p_cache_read_tokens: 0,
+          p_cache_creation_tokens: 0, p_metadata: { via, questions: u.questions, user_id: userId },
+          p_latency_ms: u.latency_ms, p_status: "success", p_error_message: null,
+        }).abortSignal(AbortSignal.timeout(USAGE_WRITE_TIMEOUT_MS)),
+      ).then(
+        ({ error }) => { if (error) console.error(`[drona-cards] jev usage (${via}):`, error.message.slice(0, 160)); },
+        (e) => console.error(`[drona-cards] jev usage (${via}) threw:`, String(e).slice(0, 160)),
+      ),
+    );
   };
 }
 
@@ -273,19 +285,22 @@ async function wordStep(
   // Every text carries the same questions under index 0 (one call per text).
   const ask = (t: WordText) => askJev(stateFor(t, texts), questions, deps);
   const answers: Awaited<ReturnType<typeof askJev>>[] = [];
-  for (let i = 0; i < texts.length; i += JEV_CONCURRENCY) {
-    answers.push(...await Promise.all(texts.slice(i, i + JEV_CONCURRENCY).map(ask)));
+  try {
+    for (let i = 0; i < texts.length; i += JEV_CONCURRENCY) {
+      answers.push(...await Promise.all(texts.slice(i, i + JEV_CONCURRENCY).map(ask)));
+    }
+    // One more try for the texts that failed: one flaky call must not hold a
+    // chatty person's whole week. Still failing: the week fails (a missing text
+    // could be the one that says "travelling").
+    const failed = texts.map((_, i) => i).filter((i) => !answers[i].ok);
+    for (let k = 0; k < failed.length; k += JEV_CONCURRENCY) {
+      const batch = failed.slice(k, k + JEV_CONCURRENCY);
+      const again = await Promise.all(batch.map((i) => ask(texts[i])));
+      batch.forEach((i, j) => { answers[i] = again[j]; });
+    }
+  } finally {
+    await Promise.allSettled(usageLogs);
   }
-  // One more try for the texts that failed: one flaky call must not hold a
-  // chatty person's whole week. Still failing: the week fails (a missing text
-  // could be the one that says "travelling").
-  const failed = texts.map((_, i) => i).filter((i) => !answers[i].ok);
-  for (let k = 0; k < failed.length; k += JEV_CONCURRENCY) {
-    const batch = failed.slice(k, k + JEV_CONCURRENCY);
-    const again = await Promise.all(batch.map((i) => ask(texts[i])));
-    batch.forEach((i, j) => { answers[i] = again[j]; });
-  }
-  await Promise.allSettled(usageLogs);
   const readings = [];
   let model: string | null = null;
   for (let i = 0; i < texts.length; i++) {

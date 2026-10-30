@@ -166,12 +166,13 @@ export async function askJev(
   const body = JSON.stringify({ state, model: deps.model ?? JEV_MODEL, questions });
 
   let last: { failure: JevFailure; detail: string } = { failure: "http_error", detail: "no attempt made" };
-  const started = Date.now();
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     // A fresh controller per attempt: an aborted one stays aborted, so reusing
     // it would make the retry fail instantly with the previous timeout.
     const controller = new AbortController();
+    // Timed per attempt: the answering call's latency, not the backoff before it.
+    const started = Date.now();
     const timeoutId = setTimeout(() => controller.abort(), deps.timeoutMs);
     const onCallerAbort = () => controller.abort();
     if (deps.abortSignal?.aborted) controller.abort();

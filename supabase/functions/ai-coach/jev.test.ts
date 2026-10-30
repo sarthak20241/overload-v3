@@ -5,7 +5,7 @@
 // how a caller learns what one call used.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { askJev, type JevUsage } from "./jev.ts";
+import { askJev, JEV_MODEL, type JevUsage } from "./jev.ts";
 
 const question = { food: { type: "noul" as const, instructions: "Is this food?" } };
 
@@ -50,4 +50,32 @@ Deno.test("a body without usage still answers, and reports zero tokens", async (
     onUsage: (u) => seen.push(u),
   });
   assertEquals([seen[0].model, seen[0].input_tokens, seen[0].output_tokens], ["jev-x", 0, 0]);
+});
+
+Deno.test("a retried call reports once, for the attempt that answered", async () => {
+  const seen: JevUsage[] = [];
+  let calls = 0;
+  const flaky = (() => {
+    calls += 1;
+    return Promise.resolve(calls === 1
+      ? new Response("busy", { status: 429, headers: { "retry-after": "0" } })
+      : new Response(JSON.stringify({ model: "jev-1.13.0", answers: { food: { value: 0.9 } }, usage: { input_tokens: 40, output_tokens: 1 } }), { status: 200 }));
+  }) as typeof fetch;
+  const r = await askJev("two eggs", question, { apiKey: "k", timeoutMs: 1000, fetchFn: flaky, onUsage: (u) => seen.push(u) });
+  assertEquals([r.ok, calls, seen.length, seen[0].input_tokens], [true, 2, 1, 40]);
+  // timed from the answering attempt, not from before the 250 ms backoff
+  assertEquals(seen[0].latency_ms < 200, true);
+});
+
+// A model bump without a price row logs every call at $0 (compute_token_cost
+// returns 0 for an unknown model). Pin that the pinned model has one.
+Deno.test("the pinned Jev model has a model_pricing row", async () => {
+  const dir = new URL("../../migrations/", import.meta.url);
+  let priced = false;
+  for await (const f of Deno.readDir(dir)) {
+    if (!f.name.endsWith(".sql")) continue;
+    const sql = await Deno.readTextFile(new URL(f.name, dir));
+    if (sql.includes("model_pricing") && sql.includes(`'${JEV_MODEL}'`)) priced = true;
+  }
+  assertEquals(priced, true, `add a model_pricing row for ${JEV_MODEL}`);
 });
