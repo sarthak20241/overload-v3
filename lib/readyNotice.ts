@@ -42,6 +42,7 @@ export function inboxIdFor(n: ReadyNotice): string | null {
 type Handler = (n: ReadyNotice) => void;
 let handler: Handler | null = null;
 // Notices from before the host mounted (a build that ended during start-up).
+// The last three only: start-up is seconds long, and older ones would be stale.
 let early: ReadyNotice[] = [];
 
 export function setReadyNoticeHandler(h: Handler | null): void {

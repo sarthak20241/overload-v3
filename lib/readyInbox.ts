@@ -62,10 +62,13 @@ export function createReadyInbox(storage: Pick<typeof AsyncStorage, 'getItem' | 
   let userId: string | null = null;
   // Whose items are loaded. undefined: nobody's yet.
   let hydratedFor: string | null | undefined;
+  // False while the stored list is being read: a save then would overwrite
+  // it with only what was added meanwhile.
+  let loaded = false;
   const listeners = new Set<() => void>();
   const emit = () => listeners.forEach((l) => l());
   const save = () => {
-    if (userId) void storage.setItem(keyFor(userId), JSON.stringify(storable(items))).catch(() => {});
+    if (userId && loaded) void storage.setItem(keyFor(userId), JSON.stringify(storable(items))).catch(() => {});
   };
 
   return {
@@ -81,6 +84,7 @@ export function createReadyInbox(storage: Pick<typeof AsyncStorage, 'getItem' | 
       if (hydratedFor !== undefined && id === hydratedFor) return;
       hydratedFor = id;
       userId = id;
+      loaded = false;
       items = [];
       emit();
       if (!id) return;
@@ -90,6 +94,9 @@ export function createReadyInbox(storage: Pick<typeof AsyncStorage, 'getItem' | 
       const fresh = items;
       const stored = parseStored(raw).filter((s) => !fresh.some((f) => f.id === s.id));
       items = [...fresh, ...stored].slice(0, MAX_ITEMS);
+      loaded = true;
+      // What was added during the read is stored now, with the rest.
+      if (fresh.length > 0) save();
       emit();
     },
 

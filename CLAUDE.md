@@ -83,6 +83,7 @@ deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # ed
 deno test --allow-all lib/orbTheme.test.ts     # loading orb: which way a tinted orb fades
 deno test --allow-all lib/coachSessions.test.ts # coach sheets kept while Drona works: when kept, brought back, dropped
 deno test --allow-all --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/readyInbox.test.ts # what waits behind the dashboard bell
+deno test --allow-all lib/backgroundHolds.test.ts # iOS background time: shared task, a hung hold lets go by itself
 ```
 
 There are no configured lint or build scripts.

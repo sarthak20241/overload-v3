@@ -55,7 +55,11 @@ export type CoachSessionEvent<P extends CoachSessionProps> =
   | { type: 'kept'; session: CoachSession<P> }
   | { type: 'finished'; session: CoachSession<P>; failed: boolean; hidden: boolean };
 
-/** Kept sheets past this many lose their oldest idle one. */
+/**
+ * Kept sheets past this many lose their oldest idle one. A soft cap: a busy
+ * sheet is never dropped (that would abort the work), so many busy ones can
+ * go over it.
+ */
 export const MAX_KEPT = 4;
 
 /** Same keys, same values (by identity). An opener's props are a fresh object every render. */

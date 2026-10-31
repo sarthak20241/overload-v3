@@ -12,36 +12,26 @@
  * does not suspend this way) gets a no-op.
  */
 import { requireOptionalNativeModule } from 'expo-modules-core';
+import { createHolds, type NativeTask } from '@/lib/backgroundHolds';
 
-type BackgroundTimeModule = { begin(): void; end(): void };
-
-let native: BackgroundTimeModule | null | undefined;
-function load(): BackgroundTimeModule | null {
-  if (native === undefined) native = requireOptionalNativeModule<BackgroundTimeModule>('BackgroundTime');
-  return native;
+// Counting rules (and the cap on a hold that never ends) live in
+// lib/backgroundHolds. Loaded on first use.
+let holds: ReturnType<typeof createHolds> | null = null;
+function load() {
+  if (!holds) {
+    holds = createHolds(requireOptionalNativeModule<NativeTask>('BackgroundTime'), {
+      set: (fn, ms) => setTimeout(fn, ms),
+      clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    });
+  }
+  return holds;
 }
-
-let holds = 0;
 
 /** Time kept after work ends, so its ready notification is posted before iOS suspends the app. */
 export const NOTICE_GRACE_MS = 3000;
 
 export function holdBackgroundTime(): () => void {
-  const m = load();
-  if (!m) return () => {};
-  holds += 1;
-  if (holds === 1) {
-    try { m.begin(); } catch { /* no time is the old behaviour */ }
-  }
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    holds -= 1;
-    if (holds === 0) {
-      try { m.end(); } catch { /* nothing held */ }
-    }
-  };
+  return load().hold();
 }
 
 /** Hold background time while `work` runs, and a grace period after it settles. */

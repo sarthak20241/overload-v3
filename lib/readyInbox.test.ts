@@ -105,3 +105,24 @@ Deno.test('a notification only routes to an app path', () => {
   assertEquals(readyTargetFromData({ route: 'https://x' }), null);
   assertEquals(readyTargetFromData({ coachSession: 4, route: '//x' }), { coachSession: 4, route: undefined });
 });
+
+Deno.test('an item added while the stored list loads does not overwrite it', async () => {
+  const store = memory();
+  const first = createReadyInbox(store);
+  await first.hydrate('u1');
+  first.add({ ...phase, at: 1 });
+  // A slow read: the add lands before it returns.
+  let finish: (v: string | null) => void = () => {};
+  const slow = {
+    getItem: (k: string) => new Promise<string | null>((r) => { finish = r; void store.getItem(k); }),
+    setItem: store.setItem,
+  };
+  const inbox = createReadyInbox(slow);
+  const loading = inbox.hydrate('u1');
+  inbox.add({ ...phase, id: 'meal', target: { route: '/nutrition' }, at: 2 });
+  assertEquals(parseStored(store.m.get('ready_inbox_v1:u1') ?? null).map((i) => i.id), ['phase:p1']);
+  finish(store.m.get('ready_inbox_v1:u1') ?? null);
+  await loading;
+  assertEquals(inbox.getSnapshot().map((i) => i.id), ['meal', 'phase:p1']);
+  assertEquals(parseStored(store.m.get('ready_inbox_v1:u1') ?? null).map((i) => i.id), ['meal', 'phase:p1']);
+});
