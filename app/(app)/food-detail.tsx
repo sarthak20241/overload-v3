@@ -39,7 +39,7 @@ export default function FoodDetailScreen() {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   const supabase = useSupabaseClient();
-  const params = useLocalSearchParams<{ meal?: string; food?: string; source?: string; assumption?: string }>();
+  const params = useLocalSearchParams<{ meal?: string; food?: string; source?: string; assumption?: string; qty?: string; unit?: string }>();
 
   const food = useMemo<PickerFood | null>(() => {
     try { return params.food ? JSON.parse(decodeURIComponent(params.food)) : null; } catch { return null; }
@@ -70,7 +70,15 @@ export default function FoodDetailScreen() {
         const s = await loadServings(supabase, food);
         if (!on) return;
         setServings(s);
-        setServingLabel(defaultServing({ ...food, servings: s }).label);
+        // A food the user logged before opens at last time's portion (qty x
+        // unit, lib/yourFoods). A unit this food cannot weigh falls back to its
+        // default serving. Set on every new food: this screen is retained, so
+        // the last food's count would otherwise carry over.
+        const withServings = { ...food, servings: s };
+        const unit = params.unit && resolveBaseAmount(withServings, params.unit, 1) != null
+          ? params.unit : defaultServing(withServings).label;
+        setServingLabel(unit);
+        setQty(params.qty && parseFloat(params.qty) > 0 ? params.qty : '1');
       } finally {
         // Always drop the spinner, even if loadServings rejects — otherwise the
         // serving chips stay in a permanent loading state for this screen.
