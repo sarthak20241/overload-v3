@@ -9,8 +9,11 @@
  * - A draft already waiting (built here, or by the user and never saved) is
  *   offered for review to everyone.
  *
- * Inline on the dashboard, never a popup: it is news about next week, not an
- * interruption.
+ * Inline on the dashboard while there is something to do or wait on (building,
+ * a failed build, the Pro upsell). Once the phase is READY it leaves the
+ * dashboard (owner's call, 2026-10-31): it pops up once like a Drona card,
+ * and then waits behind the bell (lib/readyInbox) until it is saved. Later
+ * flies the card into the bell, so the user sees where it went.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
@@ -21,7 +24,10 @@ import { haptics } from '@/lib/haptics';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { Colors, FontSize, FontWeight, Radius, Spacing } from '@/constants/theme';
 import { daysBetweenISO, todayLocalISO, type ActiveProgram } from '@/lib/programData';
-import { onPhaseDraftChange, phasesWithDrafts } from '@/lib/phaseDraft';
+import { onPhaseDraftChange, phasesWithDrafts, readPhaseDraft } from '@/lib/phaseDraft';
+import { readyInbox } from '@/lib/readyInbox';
+import { DronaCardPopup } from '@/components/coach/DronaCardPopup';
+import type { SavedDronaCard } from '@/lib/dronaCard';
 import { requestPhasePlan } from '@/lib/phaseBuild';
 import {
   autoBuildKey,
@@ -44,9 +50,14 @@ interface Props {
   /** Open the phase's draft (or its build) on the Goal screen. */
   onReview: (seq: number) => void;
   onUpgrade: () => void;
+  /** False while something else holds the screen: the ready popup waits. */
+  popupAllowed: boolean;
 }
 
-export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, getToken, onReview, onUpgrade }: Props) {
+// The ready popup shows once per phase; after that the phase waits in the bell.
+const readyPoppedKey = (phaseId: string) => `phase_ready_popped_v1:${phaseId}`;
+
+export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, getToken, onReview, onUpgrade, popupAllowed }: Props) {
   const { C } = useTheme();
   const [draftIds, setDraftIds] = useState<Set<string> | null>(null);
   const [building, setBuilding] = useState(false);
@@ -107,15 +118,34 @@ export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, get
       if (!mayAutoBuild(rec, Date.now())) { if (mounted.current) setBuildFailed(true); return; }
       await AsyncStorage.setItem(key, JSON.stringify({ tries: rec.tries + 1, lastAt: Date.now() })).catch(() => {});
       if (mounted.current) setBuilding(true);
-      const plan = await requestPhasePlan({ phase, getToken });
+      const plan = await requestPhasePlan({ phase, getToken, watching: () => watchingRef.current });
       if (!mounted.current) return;
       setBuilding(false);
       if (!plan) setBuildFailed(true);
       // Success lands through the draft store's change event.
     })();
   }, [action?.kind, action?.phase.id, getToken, program]);
+  // Read when the build ends: the ready popup can show then, so no banner too.
+  const watchingRef = useRef(popupAllowed);
+  watchingRef.current = popupAllowed;
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+
+  // Ready: has this phase's popup been shown already, and how many workouts
+  // does its draft hold (the popup's one number).
+  const readyId = action?.kind === 'review' ? action.phase.id : null;
+  const [ready, setReady] = useState<{ id: string; popped: boolean; workouts: number } | null>(null);
+  useEffect(() => {
+    if (!readyId) { setReady(null); return; }
+    let alive = true;
+    Promise.all([
+      AsyncStorage.getItem(readyPoppedKey(readyId)).catch(() => null),
+      readPhaseDraft(readyId),
+    ]).then(([popped, draft]) => {
+      if (alive) setReady({ id: readyId, popped: popped != null, workouts: draft?.plan.workouts.length ?? 0 });
+    });
+    return () => { alive = false; };
+  }, [readyId]);
 
   const kind = action?.kind ?? null;
   const shown = action != null && !(snoozedUntil != null && Date.now() < snoozedUntil);
@@ -124,8 +154,71 @@ export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, get
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shown, kind, targetId]);
 
-  if (!action || !shown) return null;
+  if (!action) return null;
   const name = action.phase.name;
+
+  if (action.kind === 'review') {
+    if (!ready || ready.id !== action.phase.id || ready.popped || !popupAllowed) return null;
+    const label = `Phase ${action.phase.seq + 1}`;
+    const days = action.startsInDays;
+    // Put in the bell, and the popup is spent: Review and Later both do it.
+    const file = () => {
+      void AsyncStorage.setItem(readyPoppedKey(action.phase.id), String(Date.now())).catch(() => {});
+      setReady({ ...ready, popped: true });
+      readyInbox.add({
+        id: `phase:${action.phase.id}`,
+        title: `${label} is ready`,
+        body: `${name}. I built its workouts. Look them over, change anything with me, then save.`,
+        target: { route: `/goal-plan?build=phase&seq=${action.phase.seq}&auto=1` },
+        // Opening it and backing out unsaved must not lose it: it goes when
+        // the draft is saved or dropped (CoachSheetHost).
+        keepUntilDone: true,
+      });
+    };
+    const card: SavedDronaCard = {
+      id: `phase-${action.phase.id}`,
+      week_start: '',
+      slot: 'moment',
+      kind: 'act',
+      topic: 'phase_ready',
+      title: `${label} is ready`,
+      body: `${name} ${startsInText(days, action.running)}. I built its workouts. Look them over, change anything with me, then save.`,
+      evidence: [
+        ...(ready.workouts > 0 ? [{ label: ready.workouts === 1 ? 'workout' : 'workouts', value: String(ready.workouts) }] : []),
+        action.running || days <= 0
+          ? { label: action.running ? 'under way' : 'starts today', value: 'Now' }
+          : { label: days === 1 ? 'day to go' : 'days to go', value: String(days) },
+      ],
+      payload: {},
+      status: 'pending',
+      deferred_at: null,
+      expires_at: null,
+      decided_at: null,
+      created_at: null,
+    };
+    return (
+      <DronaCardPopup
+        card={card}
+        kicker="DRONA BUILT"
+        primaryLabel="Review and save"
+        secondary={null}
+        onAct={() => {
+          haptics.tap();
+          track('next_phase_card_tapped', { kind: 'review', phase_seq: action.phase.seq });
+          file();
+          onReview(action.phase.seq);
+        }}
+        onDismiss={() => {}}
+        onUndo={() => {}}
+        onLater={() => {
+          track('next_phase_ready_later', { phase_seq: action.phase.seq });
+          file();
+        }}
+      />
+    );
+  }
+
+  if (!shown) return null;
   const when = startsInText(action.startsInDays, action.running);
   const label = `Phase ${action.phase.seq + 1}`;
 
@@ -133,12 +226,7 @@ export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, get
   let body: string;
   let cta: string | null;
   let onPress: (() => void) | null;
-  if (action.kind === 'review') {
-    title = `${label} is ready`;
-    body = `${name} ${when}. I built its workouts. Look them over, change anything with me, then save.`;
-    cta = 'Review and save';
-    onPress = () => onReview(action.phase.seq);
-  } else if (action.kind === 'auto_build') {
+  if (action.kind === 'auto_build') {
     if (building || !buildFailed) {
       title = `Building ${label}`;
       body = `${name} ${when}. I am putting its workouts together now.`;

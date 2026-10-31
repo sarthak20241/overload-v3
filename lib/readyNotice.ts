@@ -1,0 +1,82 @@
+/**
+ * "Drona finished" notices for work the user stopped watching.
+ *
+ * Any flow that keeps running after the user leaves (a kept coach sheet, a
+ * background phase build, a meal parse on a tab they left) calls
+ * announceReady(). One handler, set by CoachSheetHost at the app root,
+ * decides how it lands:
+ * - app open: a banner with a View button,
+ * - app in the background: a phone notification. Its tap opens the same place.
+ *
+ * Either way it also waits behind the dashboard bell (lib/readyInbox) until
+ * it is opened, under `inbox` (its id there; false keeps it out).
+ *
+ * Plain module, no React, so lib code (lib/phaseBuild.ts) can announce too.
+ */
+
+export type ReadyTarget =
+  /** A kept coach sheet. `route` is where to go when it is gone (app restarted). */
+  | { coachSession: number; route?: string }
+  | { route: string };
+
+export interface ReadyNotice {
+  /** The banner line, and the notification's title. */
+  title: string;
+  /** The notification's body. */
+  body: string;
+  failed?: boolean;
+  target: ReadyTarget;
+  /** Its id behind the bell. Default: `coach:<session>` for a sheet. False: not filed. */
+  inbox?: string | false;
+  /** The user can already see it in the app (the dashboard's phase popup): no banner, only the notification when away. */
+  bannerless?: boolean;
+}
+
+/** Where a notice waits behind the bell, or null when it does not. */
+export function inboxIdFor(n: ReadyNotice): string | null {
+  if (n.inbox === false) return null;
+  if (n.inbox) return n.inbox;
+  return 'coachSession' in n.target ? `coach:${n.target.coachSession}` : null;
+}
+
+type Handler = (n: ReadyNotice) => void;
+let handler: Handler | null = null;
+// Notices from before the host mounted (a build that ended during start-up).
+// The last three only: start-up is seconds long, and older ones would be stale.
+let early: ReadyNotice[] = [];
+
+export function setReadyNoticeHandler(h: Handler | null): void {
+  handler = h;
+  if (h && early.length) {
+    const queued = early;
+    early = [];
+    queued.forEach((n) => h(n));
+  }
+}
+
+export function announceReady(n: ReadyNotice): void {
+  if (handler) handler(n);
+  else early = [...early.slice(-2), n];
+}
+
+// Brings a kept coach sheet back. Set by CoachSheetHost (the store lives with
+// the sheet component); false when that sheet is gone.
+let showCoachSession: ((id: number) => boolean) | null = null;
+export function setCoachSessionOpener(fn: ((id: number) => boolean) | null): void {
+  showCoachSession = fn;
+}
+
+/** Open what a notice points at: the kept sheet, or else its route. */
+export function openReadyTarget(t: ReadyTarget, push: (route: string) => void): void {
+  if ('coachSession' in t && showCoachSession?.(t.coachSession)) return;
+  if (t.route) push(t.route);
+}
+
+/** A notification's data, back to a target. Null when it is not ours. */
+export function readyTargetFromData(data: Record<string, unknown>): ReadyTarget | null {
+  // An app path only: one slash, never `//host`.
+  const route = typeof data.route === 'string' && /^\/(?!\/)/.test(data.route) ? data.route : undefined;
+  if (typeof data.coachSession === 'number') return { coachSession: data.coachSession, route };
+  if (route) return { route };
+  return null;
+}

@@ -261,6 +261,28 @@ export async function deferCard(supabase: SupabaseClient, cardId: string): Promi
 }
 
 /**
+ * How many cards the user put off with Later and can still answer: the
+ * dashboard bell's count (components/ui/InboxBell). A Later card always has
+ * expires_at (the end of its week). 0 when the read fails: a missing badge
+ * is quieter than a wrong one.
+ */
+export async function countWaitingCards(supabase: SupabaseClient, clerkId: string): Promise<number> {
+  try {
+    const { count, error } = await supabase
+      .from('drona_cards')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', clerkId)
+      .eq('status', 'pending')
+      .not('deferred_at', 'is', null)
+      .gt('expires_at', new Date().toISOString());
+    if (error) return 0;
+    return count ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Every card the user has, newest first, for the From Drona screen. Which pile
  * each one goes in is lib/dronaInbox's call. `undefined` = the read failed.
  */
