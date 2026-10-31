@@ -227,6 +227,18 @@ export type AnalyticsEvent =
   | 'program_viewed'
   | 'program_phase_expanded'
   | 'program_split_build_started'
+  // A built phase plan kept on the device until Save (lib/phaseDraft.ts).
+  | 'phase_draft_restored'
+  | 'phase_draft_saved'
+  // The next phase, built in the background for Pro (lib/phaseBuild.ts).
+  | 'phase_auto_built'
+  | 'phase_auto_build_failed'
+  | 'next_phase_card_shown'
+  | 'next_phase_card_tapped'
+  // The dashboard's getting-started checklist (lib/startGuide.ts).
+  | 'start_guide_shown'
+  | 'start_guide_step_tapped'
+  | 'start_guide_dismissed'
   | 'program_phase_advanced'
   | 'program_completed'
   | 'program_ended'

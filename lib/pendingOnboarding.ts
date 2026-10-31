@@ -88,7 +88,7 @@ export async function drainPendingOnboarding(target: {
   isGuest: boolean;
   clerkId: string | null;
   client: SupabaseClient;
-}): Promise<PendingOnboarding['dest'] | null> {
+}): Promise<{ dest: PendingOnboarding['dest']; firstPhaseId: string | null } | null> {
   const pending = await getPendingOnboarding();
   if (!pending) return null;
 
@@ -101,7 +101,10 @@ export async function drainPendingOnboarding(target: {
   // The program only. Onboarding no longer saves workouts: phase 1's split is
   // built from the Goal screen once this account exists. A blob stashed by an
   // older build may still carry `plan`; it is ignored rather than saved.
-  if (pending.createPlan && pending.program) await saveOnboardingProgram(pending.program, target);
+  // Phase 1's id comes back so the caller can open its build straight away.
+  const firstPhaseId = pending.createPlan && pending.program
+    ? await saveOnboardingProgram(pending.program, target)
+    : null;
   await markOnboardingDone(identity);
   await clearPendingOnboarding();
   // Closes the funnel opened by onboarding_completed{outcome:'handed_to_signup'}.
@@ -113,7 +116,7 @@ export async function drainPendingOnboarding(target: {
     routines: 0,
     is_guest: target.isGuest,
   });
-  return pending.dest ?? '/(app)';
+  return { dest: pending.dest ?? '/(app)', firstPhaseId };
 }
 
 /**
