@@ -75,6 +75,7 @@ deno test --allow-all lib/maintenance.test.ts   # the Nutrition screen's mainten
 deno test --allow-all lib/foodPatterns.test.ts  # usual foods per meal, and when each meal is offered
 deno test --allow-all lib/mealCleanup.test.ts   # empty meal rows go in one safe database step
 deno test --allow-all lib/mealCardSplit.test.ts # big food card: list vs note when the box is short
+deno test --allow-all lib/mealReady.test.ts   # AI food log: open the result or toast when it lands; a waiting meal survives a restart; - / + amounts
 deno test --allow-all lib/calorieBars.test.ts  # Analytics calorie bars: each day against its own goal ±10%
 deno test --allow-all lib/pendingEntries.test.ts # an added suggestion or copy shows at once, swapped for the saved row
 deno test --allow-all lib/pendingParse.test.ts  # food search "Log it with Drona": handed to Nutrition once, with its meal and day
