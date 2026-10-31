@@ -1,0 +1,235 @@
+/**
+ * Draws every coach sheet, and says when Drona finished out of sight.
+ *
+ * Mounted once at the app root (app/_layout.tsx), inside the providers the
+ * sheet needs. Screens still render <AICoachModal>, which only hands its props
+ * to the session store (lib/coachSessions); this host reads the store and
+ * mounts one <CoachSheet> per session. Because the sheet lives here, leaving
+ * the screen that opened it no longer unmounts it, so a build still running
+ * when the user closes the sheet or walks away keeps going.
+ *
+ * It also owns lib/readyNotice's handler for the whole app:
+ * - app open: a banner with View (a kept sheet comes back, or a route opens),
+ * - app in the background: a phone notification, plus the banner on return
+ *   in case they come back without tapping it.
+ */
+import React, { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
+import { AppState, Keyboard } from 'react-native';
+import { useRouter, type Href } from 'expo-router';
+import { useToast } from '@/components/ui/Toast';
+import { CoachSheet, coachSessions, type CoachSheetProps } from '@/components/ai/AICoachModal';
+import type { CoachSession } from '@/lib/coachSessions';
+import { useClerkUser } from '@/hooks/useClerkUser';
+import { announceReady, inboxIdFor, setReadyNoticeHandler, type ReadyNotice, type ReadyTarget } from '@/lib/readyNotice';
+import { readyInbox, type InboxItem } from '@/lib/readyInbox';
+import { onPhaseDraftChange, readPhaseDraft } from '@/lib/phaseDraft';
+import { addNotificationTapListener, dismissNotification, presentNotificationNow, requestNotificationPermission } from '@/lib/notifications';
+import { holdBackgroundTime, NOTICE_GRACE_MS } from '@/lib/backgroundTime';
+import { readyTargetFromData } from '@/lib/readyNotice';
+import { track } from '@/lib/analytics';
+
+type Session = CoachSession<CoachSheetProps>;
+
+// A sheet closed while idle leaves the store at once, but is drawn a moment
+// longer with visible=false, so its slide-out still plays (the sheet's
+// content unmounts inside a still-mounted Portal, as it always did).
+const EXIT_MS = 260;
+type Drawn = { session: Session; leaving: boolean };
+let drawn: Drawn[] = [];
+const drawnListeners = new Set<() => void>();
+const emitDrawn = () => drawnListeners.forEach((l) => l());
+let lastSessions: Session[] = [];
+coachSessions.subscribe(() => {
+  const now = coachSessions.getSnapshot();
+  const gone = lastSessions.filter((p) => p.visible && !now.some((s) => s.id === p.id));
+  lastSessions = now;
+  const stillLeaving = drawn.filter((d) => d.leaving);
+  drawn = [
+    ...now.map((session) => ({ session, leaving: false })),
+    ...stillLeaving,
+    ...gone.map((g) => ({ session: { ...g, visible: false }, leaving: true })),
+  ].sort((a, b) => a.session.id - b.session.id);
+  gone.forEach((g) => setTimeout(() => {
+    drawn = drawn.filter((d) => !(d.leaving && d.session.id === g.id));
+    emitDrawn();
+  }, EXIT_MS));
+  emitDrawn();
+});
+const subscribeDrawn = (l: () => void) => {
+  drawnListeners.add(l);
+  return () => { drawnListeners.delete(l); };
+};
+const getDrawn = () => drawn;
+
+/** What the notice says for a sheet that ended out of sight. */
+export function coachReadyNotice(s: Session, failed: boolean): ReadyNotice {
+  const target: ReadyTarget = {
+    coachSession: s.id,
+    // A phase build also keeps its plan as a draft, which Goal & Plan opens
+    // even after the app restarts and the kept sheet is gone.
+    route: s.props.linkRoutinesToPhaseId ? '/goal-plan' : undefined,
+  };
+  if (failed) {
+    return { title: "I couldn't finish that.", body: 'Tap to see what happened.', failed: true, target };
+  }
+  if (s.result && s.screen === 'workout') {
+    return { title: 'Your workout is ready.', body: 'Tap to look it over and save it.', target };
+  }
+  if (s.result && s.screen === 'plan') {
+    return { title: 'Your split is ready.', body: 'Tap to look it over and save it.', target };
+  }
+  if (s.result && s.screen === 'program') {
+    return { title: 'Your plan is ready.', body: 'Tap to look it over and apply it.', target };
+  }
+  return { title: 'I answered you.', body: 'Tap to read it.', target };
+}
+
+function targetData(t: ReadyTarget, inbox: string | null): Record<string, unknown> {
+  const base = 'coachSession' in t
+    ? { coachSession: t.coachSession, ...(t.route ? { route: t.route } : {}) }
+    : { route: t.route };
+  return inbox ? { ...base, inbox } : base;
+}
+
+/** Open what a notice points at: the kept sheet, or else its route. */
+export function openReadyTarget(t: ReadyTarget, push: (route: string) => void): void {
+  if ('coachSession' in t && coachSessions.show(t.coachSession)) return;
+  if (t.route) push(t.route);
+}
+
+/** Open an item from behind the bell. It leaves the bell as it opens. */
+export function openInboxItem(item: InboxItem, push: (route: string) => void): void {
+  readyInbox.remove(item.id);
+  openReadyTarget(item.target, push);
+}
+
+// A phase item goes once its draft does (saved, or dropped).
+const dropPhaseItemIfNoDraft = (phaseId: string) => {
+  void readPhaseDraft(phaseId).then((d) => { if (!d) readyInbox.remove(`phase:${phaseId}`); });
+};
+
+export function CoachSheetHost() {
+  const items = useSyncExternalStore(subscribeDrawn, getDrawn);
+  const toast = useToast();
+  const router = useRouter();
+  const { user } = useClerkUser();
+
+  // A new account sees none of the last one's sheets, and its own bell.
+  const userId = user?.id ?? null;
+  useEffect(() => {
+    coachSessions.clear();
+    void readyInbox.hydrate(userId).then(() => {
+      readyInbox.getSnapshot()
+        .filter((i) => i.id.startsWith('phase:'))
+        .forEach((i) => dropPhaseItemIfNoDraft(i.id.slice('phase:'.length)));
+    });
+  }, [userId]);
+  useEffect(() => onPhaseDraftChange(dropPhaseItemIfNoDraft), []);
+
+  // A sheet's item goes once the sheet is opened (any way) or gone.
+  useEffect(() => coachSessions.subscribe(() => {
+    const sessions = coachSessions.getSnapshot();
+    readyInbox.removeWhere((i) => {
+      if (!('coachSession' in i.target)) return false;
+      const id = i.target.coachSession;
+      const s = sessions.find((x) => x.id === id);
+      return !s || !s.unseen;
+    });
+  }), []);
+
+  const go = useCallback((t: ReadyTarget, inbox: string | null) => {
+    if (inbox) readyInbox.remove(inbox);
+    openReadyTarget(t, (route) => router.push(route as Href));
+  }, [router]);
+
+  const showBanner = useCallback((n: ReadyNotice) => {
+    const show = n.failed ? toast.error : toast.success;
+    show(n.title, { action: { label: 'View', onPress: () => go(n.target, inboxIdFor(n)) }, durationMs: 8000 });
+  }, [toast, go]);
+
+  // A notice that landed while the app was in the background, shown as a
+  // banner when the user comes back. Cleared when they tap the notification.
+  const waitingRef = useRef<{ notice: ReadyNotice; shown: Promise<string | null> } | null>(null);
+
+  useEffect(() => {
+    setReadyNoticeHandler((n) => {
+      // Behind the bell until opened, whichever way it lands now.
+      const inbox = inboxIdFor(n);
+      if (inbox) readyInbox.add({ id: inbox, title: n.title, body: n.body, failed: n.failed, target: n.target });
+      if (AppState.currentState === 'active') {
+        showBanner(n);
+        return;
+      }
+      const shown = presentNotificationNow(n.title, n.body, targetData(n.target, inbox));
+      waitingRef.current = { notice: n, shown };
+      void shown.then((id) => {
+        track('ready_notice_sent', { channel: id ? 'notification' : 'none', failed: !!n.failed });
+      });
+    });
+    return () => setReadyNoticeHandler(null);
+  }, [showBanner]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active' || !waitingRef.current) return;
+      const { notice, shown } = waitingRef.current;
+      waitingRef.current = null;
+      // No banner for a sheet that is already on screen (left open when the
+      // user switched apps): the result is right there.
+      const t = notice.target;
+      if (!('coachSession' in t && coachSessions.get(t.coachSession)?.visible)) showBanner(notice);
+      // Back without tapping it: the banner says it now, so the notification
+      // would only be a stale copy in the list. (Often the work ended in the
+      // moment of coming back, before the app heard it was active.)
+      void shown.then((id) => { if (id) void dismissNotification(id); });
+    });
+    return () => sub.remove();
+  }, [showBanner]);
+
+  // While Drona works, ask iOS for time to finish if the user leaves the app
+  // (lib/backgroundTime), kept a moment past the end for the ready notice.
+  const anyBusy = useSyncExternalStore(coachSessions.subscribe, () => coachSessions.getSnapshot().some((s) => s.busy));
+  useEffect(() => {
+    if (!anyBusy) return;
+    const release = holdBackgroundTime();
+    return () => { setTimeout(release, NOTICE_GRACE_MS); };
+  }, [anyBusy]);
+
+  useEffect(() => addNotificationTapListener((data) => {
+    const t = readyTargetFromData(data);
+    if (!t) return;
+    waitingRef.current = null;
+    toast.hide();
+    track('ready_notice_opened', { channel: 'notification' });
+    go(t, typeof data.inbox === 'string' ? data.inbox : null);
+  }), [go, toast]);
+
+  useEffect(() => coachSessions.onEvent((e) => {
+    if (e.type === 'kept') {
+      Keyboard.dismiss();
+      toast.info("Still on it. I'll tell you when it's ready.", { durationMs: 3000 });
+      track('coach_kept_working', { screen: e.session.screen });
+      // The one moment a "may I notify you" ask explains itself.
+      void requestNotificationPermission();
+      return;
+    }
+    // Seen as it ended: nothing to announce, unless the app was away.
+    if (!e.hidden && AppState.currentState === 'active') return;
+    announceReady(coachReadyNotice(e.session, e.failed));
+  }), [toast]);
+
+  return (
+    <>
+      {items.map(({ session, leaving }) => (
+        <CoachSheet
+          key={session.id}
+          {...session.props}
+          sessionId={session.id}
+          visible={session.visible && !leaving}
+          kept={!session.visible && !leaving}
+          onClose={() => coachSessions.close(session.id)}
+        />
+      ))}
+    </>
+  );
+}

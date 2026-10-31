@@ -9,16 +9,20 @@
  *
  * This is also the plan history the owner asked for (2026-09-17): the change
  * diary read through the cards that caused it. Hidden sibling TAB, reached
- * from Profile and from the Goal screen; the chevron returns to whichever one
- * opened it (the `from` param), because router.back() on a hidden tab pops
- * tab history and lands on the dashboard.
+ * from the dashboard's bell, Profile and the Goal screen; the chevron returns
+ * to whichever one opened it (the `from` param), because router.back() on a
+ * hidden tab pops tab history and lands on the dashboard.
+ *
+ * Above both piles, READY: what the device itself has waiting (a build that
+ * finished out of sight, a phase ready to review; lib/readyInbox). Opening
+ * one takes it off the list.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import { Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
+import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -31,6 +35,8 @@ import { actionTarget } from '@/lib/dronaRules';
 import { requestCoachOpen } from '@/lib/coachLaunch';
 import { dronaCardTopic } from '@/lib/coachTopic';
 import { bucketOf, canUndo } from '@/lib/dronaInbox';
+import { readyInbox } from '@/lib/readyInbox';
+import { openInboxItem } from '@/components/ai/CoachSheetHost';
 import {
   movesFor, readCardHistory, setCardStatus, type SavedDronaCard,
 } from '@/lib/dronaCard';
@@ -44,6 +50,7 @@ export default function FromDronaScreen() {
   const toast = useToast();
   const [cards, setCards] = useState<SavedDronaCard[] | null>(null);
   const [failed, setFailed] = useState(false);
+  const ready = useSyncExternalStore(readyInbox.subscribe, readyInbox.getSnapshot);
 
   const load = useCallback(() => {
     if (!user?.id) return;
@@ -65,7 +72,7 @@ export default function FromDronaScreen() {
   }, [user?.id, supabase]));
 
   const back = useCallback(() => {
-    router.replace(from === 'goal' ? '/goal-plan' : '/(app)/profile');
+    router.replace(from === 'goal' ? '/goal-plan' : from === 'dashboard' ? '/(app)' : '/(app)/profile');
   }, [router, from]);
 
   const now = Date.now();
@@ -160,7 +167,7 @@ export default function FromDronaScreen() {
         <View style={{ flex: 1 }}>
           <Text style={[s.title, { color: C.foreground }]}>From Drona</Text>
           <Text style={[s.subtitle, { color: C.mutedFg }]}>
-            {waiting.length > 0 ? `${waiting.length} waiting for you` : 'Nothing waiting'}
+            {waiting.length + ready.length > 0 ? `${waiting.length + ready.length} waiting for you` : 'Nothing waiting'}
           </Text>
         </View>
       </View>
@@ -171,6 +178,29 @@ export default function FromDronaScreen() {
         refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         <RefreshOrb refreshing={refreshing} />
+        {ready.length > 0 && (<>
+          <Text style={[s.label, { color: C.textMuted }]}>READY</Text>
+          {ready.map((item) => (
+            <View key={item.id} style={[s.readyCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+              <View style={{ flex: 1 }}>
+                <Text style={[s.readyTitle, { color: C.foreground }]} numberOfLines={2}>{item.title}</Text>
+                <Text style={[s.readyBody, { color: C.mutedFg }]} numberOfLines={3}>{item.body}</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => {
+                  track('ready_notice_opened', { channel: 'inbox' });
+                  openInboxItem(item, (route) => router.push(route as any));
+                }}
+                style={[s.readyBtn, { backgroundColor: item.failed ? C.muted : Colors.primary }]}
+                accessibilityRole="button"
+                accessibilityLabel={`Open: ${item.title}`}
+              >
+                <Text style={[s.readyBtnText, { color: item.failed ? C.foreground : Colors.primaryFg }]}>Open</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+          <View style={{ height: Spacing.lg }} />
+        </>)}
         {failed && (
           <Text style={[s.empty, { color: C.mutedFg }]}>Could not load this right now. Pull back in a moment.</Text>
         )}
@@ -283,5 +313,13 @@ const s = StyleSheet.create({
   doneTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   doneMeta: { fontSize: FontSize.xs, marginTop: 2 },
   undo: { paddingVertical: 7, paddingHorizontal: 12, borderRadius: Radius.md, borderWidth: 1 },
+  readyCard: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
+    borderRadius: Radius.lg, borderWidth: 1, padding: Spacing.md, marginBottom: Spacing.sm,
+  },
+  readyTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  readyBody: { fontSize: FontSize.xs, lineHeight: 17, marginTop: 2 },
+  readyBtn: { height: 34, paddingHorizontal: 14, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center' },
+  readyBtnText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold },
   undoText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
 });

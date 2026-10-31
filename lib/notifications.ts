@@ -108,3 +108,59 @@ export async function cancelTrialReminder(): Promise<void> {
     /* nothing to cancel */
   }
 }
+
+/**
+ * Show a notification now: Drona finished something while the app was in the
+ * background (lib/readyNotice.ts). `data` rides along to the tap listener.
+ * Resolves to its id, or null without the module or permission. Never asks:
+ * the ask happens when the user first leaves a running build (CoachSheetHost).
+ */
+export async function presentNotificationNow(
+  title: string,
+  body: string,
+  data: Record<string, unknown>,
+): Promise<string | null> {
+  const N = loadNotifications();
+  if (!N) return null;
+  try {
+    const perms = await N.getPermissionsAsync();
+    if (!perms.granted) return null;
+    const id: string = await N.scheduleNotificationAsync({ content: { title, body, data }, trigger: null });
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+/** Take a shown notification out of the list (its news reached the user another way). */
+export async function dismissNotification(id: string): Promise<void> {
+  const N = loadNotifications();
+  if (!N) return;
+  try {
+    await N.dismissNotificationAsync(id);
+  } catch {
+    /* already gone */
+  }
+}
+
+/**
+ * Calls `onTap` with a tapped notification's data, for taps while the app is
+ * running or suspended. A tap that cold-starts the app is not routed: the
+ * kept sheet it named died with the app, and routing during start-up races
+ * the sign-in redirect. Returns the unsubscribe.
+ */
+export function addNotificationTapListener(onTap: (data: Record<string, unknown>) => void): () => void {
+  const N = loadNotifications();
+  if (!N) return () => {};
+  try {
+    const sub = N.addNotificationResponseReceivedListener(
+      (response: { notification?: { request?: { content?: { data?: unknown } } } }) => {
+        const data = response?.notification?.request?.content?.data;
+        if (data && typeof data === 'object') onTap(data as Record<string, unknown>);
+      },
+    );
+    return () => sub.remove();
+  } catch {
+    return () => {};
+  }
+}

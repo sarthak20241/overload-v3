@@ -12,6 +12,8 @@ import { sendWithFreshTokenRetry } from '@/lib/authRetry';
 import { structuredToPlan, type GeneratedPlan } from '@/lib/generatedPlan';
 import type { ActiveProgramPhaseRow } from '@/lib/programData';
 import { writePhaseDraft } from '@/lib/phaseDraft';
+import { announceReady } from '@/lib/readyNotice';
+import { withBackgroundTime } from '@/lib/backgroundTime';
 
 export interface PhaseBuildSeed {
   goal?: string;
@@ -43,10 +45,15 @@ export function phaseBuildPrompt(note: string): string {
  * the plan, or null on any failure (the caller's retry rules decide what next).
  * A 402 is a null too: the server is the gate, this only asks.
  */
-export async function requestPhasePlan(args: {
+export function requestPhasePlan(args: {
   phase: Pick<ActiveProgramPhaseRow, 'id' | 'seq' | 'name' | 'training_block' | 'training_directive'>;
   getToken: (opts?: { skipCache?: boolean }) => Promise<string | null>;
 }): Promise<GeneratedPlan | null> {
+  // Time to finish if the user leaves the app mid-build (lib/backgroundTime).
+  return withBackgroundTime(() => buildPhasePlan(args));
+}
+
+async function buildPhasePlan(args: Parameters<typeof requestPhasePlan>[0]): Promise<GeneratedPlan | null> {
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
   if (!supabaseUrl || !anonKey) return null;
@@ -78,6 +85,17 @@ export async function requestPhasePlan(args: {
     const plan = structuredToPlan(input);
     if (plan.workouts.length === 0) return null;
     await writePhaseDraft(args.phase.id, plan, 'auto');
+    // Nobody watched this build, so it says when it is ready: a banner, or a
+    // notification when the app is in the background. The route is the
+    // dashboard card's Review.
+    announceReady({
+      title: `Your phase ${args.phase.seq + 1} split is ready.`,
+      body: 'Tap to look it over and save it.',
+      target: { route: `/goal-plan?build=phase&seq=${args.phase.seq}&auto=1` },
+      // The dashboard's ready popup files it behind the bell, after the user
+      // has seen it, so the card can fly in (components/program/NextPhaseCard).
+      inbox: false,
+    });
     track('phase_auto_built', {
       phase_seq: args.phase.seq,
       workouts: plan.workouts.length,

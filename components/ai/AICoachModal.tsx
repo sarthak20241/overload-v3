@@ -5,7 +5,7 @@
  * 3. Generate a Workout
  * Matches Figma design exactly.
  */
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, createContext, useContext, useId } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, BackHandler, Pressable,
   TextInput, ScrollView, FlatList, Keyboard, Platform,
@@ -61,6 +61,7 @@ import { SignalOrb, SIGNAL_ORB_SPHERE, signalOrbColor, type SignalOrbState } fro
 import { OrbStage, PulsingStatus, orbWebBox } from '@/components/coach/OrbStage';
 import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 import { ensureActiveConversationId } from '@/lib/coachConversations';
+import { createCoachSessionStore } from '@/lib/coachSessions';
 import { haptics } from '@/lib/haptics';
 import { SelectTextSheet, coachPlainText, type MessageSheetTarget } from '@/components/coach/SelectTextSheet';
 import { MessageCopyButton } from '@/components/coach/MessageCopyButton';
@@ -85,6 +86,24 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Screen = 'menu' | 'chat' | 'plan' | 'workout' | 'program';
+
+// Each sub-screen says whether Drona is working for it, so the sheet knows
+// whether closing it should keep it (lib/coachSessions). Nested screens (the
+// refine chat inside a plan) report too; any one busy makes the sheet busy.
+// `result`: the screen holds a built workout, split or program, so "ready"
+// can say so instead of "I answered you".
+type BusyState = { busy: boolean; failed: boolean; result: boolean };
+type BusyReport = (key: string, state: BusyState | null) => void;
+const CoachBusyContext = createContext<BusyReport | null>(null);
+// Closes the whole sheet. A nested screen's back uses it while Drona is
+// replying, since stepping back would unmount it and abort the reply.
+const CoachCloseContext = createContext<(() => void) | null>(null);
+function useCoachBusy(busy: boolean, failed = false, result = false) {
+  const report = useContext(CoachBusyContext);
+  const key = useId();
+  useEffect(() => { report?.(key, { busy, failed, result }); }, [report, key, busy, failed, result]);
+  useEffect(() => () => report?.(key, null), [report, key]);
+}
 
 // Chat message + citation shapes live in lib/coachConversations.ts so the
 // persistence layer and the UI share one definition. Aliased here to keep the
@@ -1142,6 +1161,9 @@ function ChatScreen({
   }, [workoutContext]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  // The last turn ended in an error, for the "couldn't finish" notice.
+  const [turnFailed, setTurnFailed] = useState(false);
+  useCoachBusy(loading, turnFailed);
   const toast = useToast();
   // P4: a coach-proposed nutrition-target change (from the propose_targets
   // terminal tool). Transient, not persisted: it is an action prompt that sits
@@ -1229,6 +1251,7 @@ function ChatScreen({
     typewriterRef.current = null;
     if (!opens) setInput('');
     setLoading(true);
+    setTurnFailed(false);
     const askedAt = Date.now();
     track('coach_message_sent', {
       chars: text.length,
@@ -1278,6 +1301,7 @@ function ChatScreen({
           ? err.message
           : 'Coach Drona is currently unavailable. Try again in a moment.';
         setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: errText } : m));
+        setTurnFailed(true);
       }
       setLoading(false);
       return;
@@ -1294,6 +1318,7 @@ function ChatScreen({
       setMessages(prev => prev.map(m =>
         m.id === assistantId ? { ...m, content: 'Not signed in. Please sign in again.' } : m
       ));
+      setTurnFailed(true);
       setLoading(false);
       return;
     }
@@ -1453,6 +1478,7 @@ function ChatScreen({
       onError: (errStr) => {
         typewriter.fail(errStr);
         track('coach_failed', { latency_ms: Date.now() - askedAt, mode: workoutContext ? 'live_workout' : 'chat' });
+        setTurnFailed(true);
         setLoading(false);
         streamRef.current = null;
       },
@@ -2497,6 +2523,7 @@ function GeneratePlanScreen({
   const planDaysRef = useRef(0);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [result, setResult] = useState<GeneratedPlan | null>(null);
+  useCoachBusy(loading || refining, !!errorText, !!result);
   // True while the phase draft is being read, so the form never flashes
   // before a waiting draft (or an auto build) takes the screen.
   const [restoring, setRestoring] = useState(!!phaseId);
@@ -3098,6 +3125,8 @@ function GenerateProgramScreen({
 }) {
   const { C } = useTheme();
   const [result, setResult] = useState<GeneratedProgram | null>(null);
+  // Its chat (RefineChatScreen) reports busy; this adds that a program exists.
+  useCoachBusy(false, false, !!result);
   const [showRefine, setShowRefine] = useState(false);
 
   // Discuss first: talk it through, coach emits generate_program → result card.
@@ -3289,6 +3318,7 @@ function GenerateWorkoutScreen({
   const [genStatus, setGenStatus] = useState<GenStatus>(GEN_START);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [result, setResult] = useState<GeneratedWorkout | null>(null);
+  useCoachBusy(loading || refining, !!errorText, !!result);
   // Toggled by the "Refine with AI" button on the result view. When true
   // (and result is non-null), we mount RefineChatScreen instead of the
   // result card. The chat hands back the updated workout via onRefined,
@@ -3859,6 +3889,9 @@ function RefineChatScreen({
   ]);
   const [input, setInput] = useState(initialDraft ?? '');
   const [loading, setLoading] = useState(false);
+  const [turnFailed, setTurnFailed] = useState(false);
+  useCoachBusy(loading, turnFailed);
+  const closeSheet = useContext(CoachCloseContext);
   // Header mark: traces while waiting on the coach, releases when the reply
   // lands, static until the first send.
   const everLoadedRef = useRef(false);
@@ -3930,6 +3963,7 @@ function RefineChatScreen({
     typewriterRef.current = null;
     setInput('');
     setLoading(true);
+    setTurnFailed(false);
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
 
     // Build the API conversation. Order matters: the synthetic opener
@@ -4015,6 +4049,7 @@ function RefineChatScreen({
       setMessages(prev => prev.map(m =>
         m.id === assistantId ? { ...m, content: 'Not signed in. Please sign in again.' } : m
       ));
+      setTurnFailed(true);
       setLoading(false);
       return;
     }
@@ -4067,6 +4102,7 @@ function RefineChatScreen({
       },
       onError: (errStr) => {
         typewriter.fail(errStr);
+        setTurnFailed(true);
         setLoading(false);
         streamRef.current = null;
       },
@@ -4146,7 +4182,7 @@ function RefineChatScreen({
     <View style={{ flex: 1 }}>
       {/* Header */}
       <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
-        <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
+        <TouchableOpacity onPress={loading && closeSheet ? closeSheet : onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
           <Feather name="arrow-left" size={16} color={C.foreground} />
         </TouchableOpacity>
         <SparkleIcon size={16} color={C.accentText} state={headerMarkState} />
@@ -4257,22 +4293,7 @@ function RefineChatScreen({
 }
 
 // ─── Main Modal ──────────────────────────────────────────────────────────────
-export function AICoachModal({
-  visible,
-  onClose,
-  onRoutineCreated,
-  onProgramApplied,
-  initialScreen = 'menu',
-  initialTopic,
-  planSeed,
-  planAutoStart,
-  programDraft,
-  programExisting,
-  linkRoutinesToPhaseId,
-  workoutContext,
-  onApplyWorkoutEdit,
-  source,
-}: {
+export interface AICoachModalProps {
   visible: boolean;
   onClose: () => void;
   /** Which surface opened the sheet (dashboard hero, insight, in-workout...). Analytics only. */
@@ -4316,7 +4337,41 @@ export function AICoachModal({
   // coach change the workout at all: without it the edit tool isn't offered,
   // so the coach is never in a position to promise a change it can't make.
   onApplyWorkoutEdit?: (ops: CoachWorkoutEditOp[]) => CoachEditApplyResult;
-}) {
+}
+
+/** What the session store holds for a sheet: its props minus the opener's visibility. */
+export type CoachSheetProps = Omit<AICoachModalProps, 'visible' | 'onClose'>;
+
+/** Every coach sheet, open or kept (lib/coachSessions). CoachSheetHost renders them. */
+export const coachSessions = createCoachSessionStore<CoachSheetProps>();
+
+// A topic opens its chat once. The latch outlives a sheet: a fresh sheet is
+// mounted per open now, and an opener may leave a used topic set.
+const usedTopics = new WeakSet<CoachTopic>();
+
+/**
+ * The coach sheet itself. Mounted by CoachSheetHost, one per session: `visible`
+ * is whether it shows, `kept` whether it stays mounted out of sight while
+ * Drona works. Openers use AICoachModal below, which is unchanged for them.
+ */
+export function CoachSheet({
+  sessionId,
+  kept,
+  visible,
+  onClose,
+  onRoutineCreated,
+  onProgramApplied,
+  initialScreen = 'menu',
+  initialTopic,
+  planSeed,
+  planAutoStart,
+  programDraft,
+  programExisting,
+  linkRoutinesToPhaseId,
+  workoutContext,
+  onApplyWorkoutEdit,
+  source,
+}: AICoachModalProps & { sessionId: number; kept: boolean }) {
   const { C } = useTheme();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
@@ -4348,12 +4403,9 @@ export function AICoachModal({
     if (visible) void refreshAccess();
   }, [visible, refreshAccess]);
 
-  // The topic the chat already opened on. The sheet stays mounted while the
-  // chat screen comes and goes (back to the menu, into chat again), so the
-  // latch lives here: one topic, one opening.
-  const usedTopicRef = useRef<CoachTopic | null>(null);
+  // The topic the chat already opened on: one topic, one opening (usedTopics).
   const markTopicUsed = useCallback((t: CoachTopic) => {
-    usedTopicRef.current = t;
+    usedTopics.add(t);
   }, []);
 
   const coachOpenedAt = useRef(Date.now());
@@ -4417,9 +4469,30 @@ export function AICoachModal({
     : winH * 0.92;
   const sheetMarginBottom = kbHeight;
 
+  // What the sub-screens report (useCoachBusy), summed for the store.
+  const busyReportsRef = useRef(new Map<string, BusyState>());
+  const [activity, setActivity] = useState<BusyState>({ busy: false, failed: false, result: false });
+  const reportBusy = useCallback<BusyReport>((key, state) => {
+    const m = busyReportsRef.current;
+    if (state) m.set(key, state); else m.delete(key);
+    const sum: BusyState = { busy: false, failed: false, result: false };
+    m.forEach((v) => {
+      sum.busy = sum.busy || v.busy;
+      sum.failed = sum.failed || v.failed;
+      sum.result = sum.result || v.result;
+    });
+    setActivity((a) => (a.busy === sum.busy && a.failed === sum.failed && a.result === sum.result ? a : sum));
+  }, []);
   useEffect(() => {
-    if (visible) setScreen(initialScreen);
-  }, [visible, initialScreen]);
+    coachSessions.report(sessionId, { screen, ...activity });
+  }, [sessionId, screen, activity]);
+
+  // Back to the menu would unmount the screen Drona is working for and abort
+  // it. While busy, back closes the sheet instead, and the store keeps it.
+  const goMenu = () => {
+    if (activity.busy) handleClose();
+    else setScreen('menu');
+  };
 
   const router = useRouter();
 
@@ -4427,8 +4500,8 @@ export function AICoachModal({
     track('coach_closed', {
       screen,
       seconds_open: Math.round((Date.now() - coachOpenedAt.current) / 1000),
+      kept: activity.busy,
     });
-    setScreen('menu');
     onClose();
   };
 
@@ -4474,13 +4547,13 @@ export function AICoachModal({
       // Chat opened from an active workout has no menu to return to — its
       // back arrow closes, so match that.
       if (screen === 'chat' && workoutContext) { handleClose(); return true; }
-      // chat / plan / workout → step back to the menu.
-      setScreen('menu');
+      // chat / plan / workout → step back to the menu (or close, while busy).
+      goMenu();
       return true;
     });
     return () => sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, accessAllowed, screen, showPaywall, workoutContext]);
+  }, [visible, accessAllowed, screen, showPaywall, workoutContext, activity.busy]);
 
   // Live-workout edit: hand the operations to the workout screen, then get out
   // of the way. Anything that actually landed is on the screen behind this
@@ -4779,7 +4852,7 @@ export function AICoachModal({
 
   return (
     <Portal>
-      {visible && (
+      {(visible || kept) && (
         /*
           Rendered in the app's own window via <Portal>, not RN's <Modal> (a
           separate Android Dialog window that edge-to-edge insets by the nav
@@ -4788,7 +4861,16 @@ export function AICoachModal({
           Pressable for tap-to-close (menu/gate only). The sheet itself is a
           plain View so inner ScrollViews keep their pan gestures.
         */
-      <View style={[s.backdrop, { backgroundColor: C.overlay }]}>
+      <View
+        // A kept sheet (closed while Drona works) stays mounted, so its stream
+        // and state live on, but takes no space, touches or screen reader.
+        style={[s.backdrop, { backgroundColor: C.overlay }, !visible && s.keptHidden]}
+        pointerEvents={visible ? 'auto' : 'none'}
+        accessibilityElementsHidden={!visible}
+        importantForAccessibility={visible ? 'auto' : 'no-hide-descendants'}
+      >
+        <CoachBusyContext.Provider value={reportBusy}>
+        <CoachCloseContext.Provider value={handleClose}>
         <Pressable
           style={{ flex: 1 }}
           // Backdrop closes on menu OR while the gate owns the modal —
@@ -4939,6 +5021,9 @@ export function AICoachModal({
                       handleRequestUpgrade('pro_feature');
                       return;
                     }
+                    // Drona is already on this one (closed mid-build, or
+                    // done and unseen): show that sheet, not a second one.
+                    if (coachSessions.pickScreen(sessionId, next)) return;
                     setScreen(next);
                   }}
                 />
@@ -4947,9 +5032,9 @@ export function AICoachModal({
                 <ChatScreen
                   // In workout mode the back arrow closes the sheet (no menu
                   // detour mid-workout); otherwise it returns to the menu.
-                  onBack={workoutContext ? handleClose : () => setScreen('menu')}
+                  onBack={workoutContext ? handleClose : goMenu}
                   onSaveRoutine={(name) => handleSaveRoutine({ name, exercises: [] })}
-                  topic={initialTopic && usedTopicRef.current !== initialTopic ? initialTopic : undefined}
+                  topic={initialTopic && !usedTopics.has(initialTopic) ? initialTopic : undefined}
                   onTopicOpened={markTopicUsed}
                   userId={user?.id ?? null}
                   workoutContext={workoutContext}
@@ -4964,7 +5049,7 @@ export function AICoachModal({
               )}
               {screen === 'plan' && (
                 <GeneratePlanScreen
-                  onBack={() => setScreen('menu')}
+                  onBack={goMenu}
                   onSaveRoutines={handleSaveRoutines}
                   seed={planSeed}
                   phaseId={linkRoutinesToPhaseId}
@@ -4976,7 +5061,7 @@ export function AICoachModal({
               )}
               {screen === 'workout' && (
                 <GenerateWorkoutScreen
-                  onBack={() => setScreen('menu')}
+                  onBack={goMenu}
                   onSaveRoutine={handleSaveRoutine}
                   onRequestUpgrade={(kind) =>
                     handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')
@@ -4985,7 +5070,7 @@ export function AICoachModal({
               )}
               {screen === 'program' && (
                 <GenerateProgramScreen
-                  onBack={() => setScreen('menu')}
+                  onBack={goMenu}
                   onApply={handleSaveProgram}
                   initialDraft={programDraft}
                   existing={programExisting}
@@ -4997,15 +5082,54 @@ export function AICoachModal({
             </>
           )}
         </Animated.View>
+        </CoachCloseContext.Provider>
+        </CoachBusyContext.Provider>
       </View>
       )}
     </Portal>
   );
 }
 
+/**
+ * What screens render to open Drona. It draws nothing itself: it hands its
+ * props to the session store, and CoachSheetHost (app root) draws the sheet.
+ * So the sheet outlives this component. Close it, leave the screen, and a
+ * build still running finishes, then says so (lib/readyNotice).
+ *
+ * Same props as before, so no opener changed: `visible` true opens a sheet
+ * (or brings back a kept one of the same kind), false hides it.
+ */
+export function AICoachModal({ visible, onClose, ...props }: AICoachModalProps) {
+  // Stable for the store, which uses it to tell openers apart.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const close = useCallback(() => closeRef.current(), []);
+  const propsRef = useRef(props);
+  propsRef.current = props;
+  const idRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!visible) return;
+    const id = coachSessions.open(propsRef.current, close);
+    idRef.current = id;
+    return () => {
+      idRef.current = null;
+      coachSessions.release(id, close);
+    };
+  }, [visible, close]);
+
+  // Fresh props reach the open sheet (a refreshed program, a new topic).
+  useEffect(() => {
+    if (visible && idRef.current != null) coachSessions.update(idRef.current, props, close);
+  });
+
+  return null;
+}
+
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const s = StyleSheet.create({
   backdrop: { flex: 1, justifyContent: 'flex-end' },
+  keptHidden: { display: 'none' },
   modalContainer: {
     borderTopLeftRadius: Radius.xxl,
     borderTopRightRadius: Radius.xxl,

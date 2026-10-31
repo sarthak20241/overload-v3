@@ -24,6 +24,9 @@ import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
+import { announceReady } from '@/lib/readyNotice';
+import { readyInbox } from '@/lib/readyInbox';
+import { holdBackgroundTime, NOTICE_GRACE_MS } from '@/lib/backgroundTime';
 import {
   Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow,
 } from '@/constants/theme';
@@ -407,6 +410,41 @@ export default function NutritionScreen() {
   // (runParse would otherwise capture a stale flow or churn its identity).
   const flowRef = useRef<ParseFlow>(flow);
   useEffect(() => { flowRef.current = flow; }, [flow]);
+  // A parse that ends while the user is on another tab, or out of the app,
+  // says so (lib/readyNotice). This tab stays mounted, so the card is here,
+  // waiting, when they come back.
+  const focusedRef = useRef(true);
+  useFocusEffect(useCallback(() => {
+    focusedRef.current = true;
+    // Back on the tab: the meal waiting behind the bell is right here.
+    readyInbox.remove('meal');
+    return () => { focusedRef.current = false; };
+  }, []));
+  const parseWorkingRef = useRef(false);
+  useEffect(() => {
+    const working = flow.status === 'analysing' || flow.status === 'streaming';
+    const ended = parseWorkingRef.current && !working;
+    parseWorkingRef.current = working;
+    if (!ended || (focusedRef.current && AppState.currentState === 'active')) return;
+    const target = { route: '/nutrition' };
+    const inbox = 'meal';
+    if (flow.status === 'review') {
+      announceReady({ title: 'Your meal is ready to add.', body: 'Tap to check it and add it.', target, inbox });
+    } else if (flow.status === 'declined') {
+      announceReady({ title: 'I replied about your meal.', body: 'Tap to read it.', target, inbox });
+    } else if (flow.status === 'create') {
+      announceReady({ title: 'I can save that food for you.', body: 'Tap to look it over.', target, inbox });
+    } else if (flow.status === 'error') {
+      announceReady({ title: "I couldn't read that meal.", body: 'Tap to try again.', failed: true, target, inbox });
+    }
+  }, [flow.status]);
+  // Time to finish a parse if the user leaves the app mid-way (lib/backgroundTime).
+  const parseWorking = flow.status === 'analysing' || flow.status === 'streaming';
+  useEffect(() => {
+    if (!parseWorking) return;
+    const release = holdBackgroundTime();
+    return () => { setTimeout(release, NOTICE_GRACE_MS); };
+  }, [parseWorking]);
   // What was said, so a bare "yes" can answer whatever Drona just offered.
   // Kept in a ref (never rendered) and trimmed to the last few turns.
   const turnsRef = useRef<{ role: 'user' | 'drona'; text: string }[]>([]);

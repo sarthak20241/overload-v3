@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, BackHandler, Pressable, TextInput, useWindowDimensions,
-  Platform, Keyboard,
+  Platform, Keyboard, AppState,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -13,6 +13,9 @@ import Animated, {
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
+import { announceReady } from '@/lib/readyNotice';
+import { readyInbox } from '@/lib/readyInbox';
+import { holdBackgroundTime, NOTICE_GRACE_MS } from '@/lib/backgroundTime';
 import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
@@ -1616,6 +1619,15 @@ export default function AnalyticsScreen() {
   // training history server-side). A successful real read is cached per session
   // so re-opening does not re-bill; a fallback stays retryable. Guests (no
   // coach access) always get the local read.
+  // The read takes up to 25 s. One that lands after the user left the tab (or
+  // the app) says so; the tab stays mounted, so the sheet is still open here.
+  const insightsFocusedRef = useRef(true);
+  useFocusEffect(useCallback(() => {
+    insightsFocusedRef.current = true;
+    readyInbox.remove('insights');
+    return () => { insightsFocusedRef.current = false; };
+  }, []));
+
   const runAnalyze = async () => {
     setInsightsOpen(true);
     // Skip re-billing only when we already have a REAL coach read this session.
@@ -1631,6 +1643,7 @@ export default function AnalyticsScreen() {
       return;
     }
 
+    const release = holdBackgroundTime();
     try {
       const summary = `This week: ${weekWorkouts.length} sessions, ${weekVolume}kg volume, about ${avgDurationMin} min per session${pr != null ? `, ${selectedExercise} best ${prLabel}` : ''}.`;
       const messages = [{
@@ -1659,6 +1672,10 @@ export default function AnalyticsScreen() {
       setInsights(localInsights());
     } finally {
       setAiLoading(false);
+      setTimeout(release, NOTICE_GRACE_MS);
+      if (!insightsFocusedRef.current || AppState.currentState !== 'active') {
+        announceReady({ title: 'Your training read is ready.', body: 'Tap to read it.', target: { route: '/analytics' }, inbox: 'insights' });
+      }
     }
   };
 
