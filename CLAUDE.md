@@ -81,6 +81,7 @@ deno test --allow-all --unstable-sloppy-imports lib/planExercise.test.ts # Drona
 deno test --allow-all --unstable-sloppy-imports lib/routineTargets.test.ts # "45s" / "5km" -> routine time + distance targets
 deno test --allow-all lib/maintenance.test.ts   # the Nutrition screen's maintenance row and sheet
 deno test --allow-all lib/foodPatterns.test.ts  # usual foods per meal, and when each meal is offered
+deno test --allow-all --unstable-sloppy-imports lib/yourFoods.test.ts # manual search: foods you logged before come first
 deno test --allow-all lib/mealCleanup.test.ts   # empty meal rows go in one safe database step
 deno test --allow-all lib/mealCardSplit.test.ts # big food card: list vs note when the box is short
 deno test --allow-all lib/calorieBars.test.ts  # Analytics calorie bars: each day against its own goal ±10%
@@ -89,6 +90,7 @@ deno test --allow-all lib/pendingParse.test.ts  # food search "Log it with Drona
 deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
 deno test --allow-all lib/orbTheme.test.ts     # loading orb: which way a tinted orb fades
+deno test --allow-all lib/homeLogHint.test.ts  # home log button: the pill's words, and when it stops
 # Saved-food triggers (aliases, delete, repair, brand) on an in-memory Postgres:
 deno run --node-modules-dir=none --allow-read --allow-env --allow-net --allow-write --allow-sys supabase/tests/food_memory_local.ts
 ```

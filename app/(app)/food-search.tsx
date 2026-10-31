@@ -12,8 +12,12 @@
  * the results (the keyboard's send does the same): the sentence goes to the
  * Nutrition food box with this meal and day (lib/pendingParse), so a user who
  * came in by hand finds the AI log without leaving the place they looked.
+ *
+ * Foods the user logged before (by hand or with Drona) match first, tagged, at
+ * last time's portion (lib/yourFoods): most of a diary has no catalog row, so
+ * the catalog alone could not find the food they eat every day.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TextInput, Pressable, FlatList, StyleSheet, Keyboard,
 } from 'react-native';
@@ -27,11 +31,12 @@ import { track } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
-  searchCatalog, recentFoods, logFood, getLogMeal, setLogMeal, getLogDate, setQuickAddSeed,
+  searchCatalog, recentFoods, loadYourFoods, logFood, getLogMeal, setLogMeal, getLogDate, setQuickAddSeed,
   listSavedMeals, logSavedMeal, setBuilderMeal,
   type PickerFood, type SavedMeal,
 } from '@/lib/dietData';
-import { defaultServing, searchFoods, type MealType } from '@/lib/foods';
+import { defaultServing, resolveBaseAmount, searchFoods, type MealType } from '@/lib/foods';
+import { matchYourFoods, mergeYourFoods, portionText, type YourFood } from '@/lib/yourFoods';
 import { haptics } from '@/lib/haptics';
 import { dronaLogText, setPendingParse } from '@/lib/pendingParse';
 import { getParseSpeed, effectiveParseSpeed, PARSE_SPEED_COPY, type ParseSpeed } from '@/lib/parseSpeed';
@@ -92,12 +97,20 @@ export default function FoodSearchScreen() {
       setQuery('');
       setTab('all'); // retained Tabs screen: reset to the catalog every reopen (deterministic)
       if (supabase) listSavedMeals(supabase).then(setSavedMeals).catch(() => {});
+      refreshYourFoods();
       // The tier may have changed on Nutrition since the last visit.
       getParseSpeed().then(setPickedSpeed);
       getAutoLog().then(setAutoLogOn);
     }, [supabase]),
   );
   const [results, setResults] = useState<PickerFood[]>([]);
+  const [yourFoods, setYourFoods] = useState<YourFood[]>([]);
+  // Focus and a quick add can both reload the list; only the latest read lands.
+  const yourFoodsRead = useRef(0);
+  function refreshYourFoods() {
+    const n = ++yourFoodsRead.current;
+    loadYourFoods(supabase).then((f) => { if (n === yourFoodsRead.current) setYourFoods(f); }).catch(() => {});
+  }
   const [recents, setRecents] = useState<PickerFood[]>([]);
   const [searching, setSearching] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -140,7 +153,10 @@ export default function FoodSearchScreen() {
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
   const showingRecents = query.trim().length === 0;
-  const data = showingRecents ? recents : results;
+  // The user's own foods match on the device at once, ahead of the catalog,
+  // which arrives after the debounce and drops the copies shown here.
+  const mine = useMemo(() => matchYourFoods(yourFoods, query), [yourFoods, query]);
+  const data = showingRecents ? recents : mergeYourFoods(mine, results);
   // What the Drona row would send, or null when it is hidden: guests (parse
   // needs a session, so it would 401), the My Meals tab, and a query too short
   // to be a meal. A single food name still gets the row; picking is the user's.
@@ -150,14 +166,19 @@ export default function FoodSearchScreen() {
 
   function openDetail(food: PickerFood) {
     Keyboard.dismiss();
-    track('food_picked', { action: 'open_detail', from: showingRecents ? 'recents' : 'results', meal, has_food_id: !!food.id });
+    track('food_picked', { action: 'open_detail', from: showingRecents ? 'recents' : 'results', meal, has_food_id: !!food.id, yours: !!food.yours });
     setLogMeal(meal); // detail reads the target meal from the store on focus
     router.push({
       pathname: '/food-detail',
       // Explicitly blank the AI params: /food-detail is a retained route, so a
       // prior "Ask Drona" visit's source/assumption would otherwise linger and
       // wrongly badge + AI-log this plain catalog tap.
-      params: { meal, food: encodeURIComponent(JSON.stringify(food)), source: '', assumption: '' },
+      // qty/unit: one of the user's own foods opens at last time's portion.
+      params: {
+        // key/ids only serve the merge here; leave them out of the route param.
+        meal, food: encodeURIComponent(JSON.stringify({ ...food, key: undefined, ids: undefined })), source: '', assumption: '',
+        qty: food.yours ? String(food.yours.quantity) : '', unit: food.yours?.servingLabel ?? '',
+      },
     });
   }
 
@@ -199,14 +220,15 @@ export default function FoodSearchScreen() {
   async function quickAdd(food: PickerFood, key: string) {
     if (!supabase || busyKey) return;
     setBusyKey(key);
-    track('food_picked', { action: 'quick_add', from: showingRecents ? 'recents' : 'results', meal, has_food_id: !!food.id });
+    track('food_picked', { action: 'quick_add', from: showingRecents ? 'recents' : 'results', meal, has_food_id: !!food.id, yours: !!food.yours });
     try {
       const ds = defaultServing(food);
+      // One of the user's own foods logs again at last time's portion.
       const { error } = await logFood(supabase, {
         mealType: meal,
         food: { ...food, servings: food.servings.length ? food.servings : [ds] },
-        servingLabel: ds.label,
-        quantity: 1,
+        servingLabel: food.yours?.servingLabel ?? ds.label,
+        quantity: food.yours?.quantity ?? 1,
       });
       if (error) { haptics.warning(); return; }
       haptics.success();
@@ -215,6 +237,7 @@ export default function FoodSearchScreen() {
       toastTimer.current = setTimeout(() => setToast(null), 1600);
       const r = await recentFoods(supabase, 20);
       setRecents(r);
+      refreshYourFoods();
     } catch {
       haptics.warning();
     } finally {
@@ -287,14 +310,28 @@ export default function FoodSearchScreen() {
 
   const renderItem = ({ item, index }: { item: PickerFood; index: number }) => {
     const ds = defaultServing(item);
-    const f = ds.grams / 100;
+    // One of the user's own foods shows last time's portion ("2 roti").
+    const yours = item.yours;
+    const grams = yours
+      ? resolveBaseAmount({ ...item, servings: item.servings.length ? item.servings : [ds] }, yours.servingLabel, yours.quantity) ?? ds.grams
+      : ds.grams;
+    const portion = yours ? portionText(yours) : ds.label;
+    const f = grams / 100;
     const kc = item.kcal * f;
     const key = keyOf(item, index);
     return (
       <Pressable style={s.row} onPress={() => openDetail(item)} android_ripple={{ color: C.surfaceHover }}>
         <View style={{ flex: 1, paddingRight: Spacing.md }}>
           <Text style={s.rowName} numberOfLines={2}>{item.name}</Text>
-          <Text style={s.rowMeta}>{round(kc)} cal<Text style={s.rowDot}>  ·  </Text>{ds.label}</Text>
+          <Text style={s.rowMeta}>{round(kc)} cal<Text style={s.rowDot}>  ·  </Text>{portion}</Text>
+          {yours && (
+            <View style={s.tags}>
+              <Text style={[s.tag, { color: C.textMuted, borderColor: C.border }]}>You logged this</Text>
+              {yours.estimate && (
+                <Text style={[s.tag, { color: C.textMuted, borderColor: C.border }]}>Estimate</Text>
+              )}
+            </View>
+          )}
           <View style={s.rowMacros}>
             <Text style={[s.macro, { color: C.macro.protein }]}>{round(item.protein_g * f)}<Text style={s.macroU}> P</Text></Text>
             <Text style={[s.macro, { color: C.macro.carbs }]}>{round(item.carb_g * f)}<Text style={s.macroU}> C</Text></Text>
@@ -543,6 +580,8 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     macro: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },
     macroU: { fontSize: 10, fontWeight: FontWeight.semibold },
     addBtn: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+    tags: { flexDirection: 'row', gap: 6, marginTop: 6 },
+    tag: { fontSize: 10, fontWeight: FontWeight.semibold, borderWidth: 1, borderRadius: Radius.full, paddingHorizontal: 7, paddingVertical: 2, overflow: 'hidden' },
     sep: { height: 1, marginLeft: Spacing.xl },
 
     empty: { alignItems: 'center', paddingTop: 64, paddingHorizontal: Spacing.xxxl, gap: 8 },
