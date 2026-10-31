@@ -1,10 +1,13 @@
 /**
  * MealResultScreen: Drona's read of a meal, full screen, before it goes in.
  *
- * Top to bottom: what you said, the meal's numbers as big tiles, Drona's line
- * (or his notice, with a choice when he has one), the foods, where it goes
- * (meal and day), then a pinned footer with a box to tell Drona what to
- * change and the Add button. Nothing is written until Add.
+ * Laid out as a Drona card (components/coach/DronaCardPopup.tsx), size for
+ * size: Drona's orb and a kicker, your words as the title, his line as the
+ * body, the meal's numbers in the card's proof strip, then the foods, where
+ * it goes (meal and day), and a pinned footer with a box to tell Drona what
+ * to change and the card's two buttons (Discard outlined, Add filled). The
+ * orb rests while the meal waits for you and moves while Drona works on it
+ * (a correction, a double-check). Nothing is written until Add.
  *
  * It replaces the popover card, so it keeps everything that card did: memory
  * notes ("Same as you logged on Oct 14") and saved-meal offers ride in as the
@@ -27,7 +30,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, Pressable, StyleSheet, ScrollView, TextInput, BackHandler,
 } from 'react-native';
-import Animated, { SlideInDown, SlideOutDown, Easing, FadeIn } from 'react-native-reanimated';
+import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
@@ -35,7 +38,7 @@ import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import { Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing } from '@/constants/theme';
 import { Portal } from '@/components/ui/Portal';
 import { OrbLoader } from '@/components/ui/OrbLoader';
-import { DronaMark } from '@/components/coach/DronaMark';
+import { PulsingStatus } from '@/components/coach/OrbStage';
 import { sectionsOfItems, type ParsedMeal, type ParsedMealItem } from '@/lib/dietData';
 import { formatServing, formatMacroGrams, type MealType } from '@/lib/foods';
 import { isMeasurementUnit } from '@/lib/units';
@@ -58,6 +61,8 @@ const TIER: Record<ParseSpeed, { icon: 'zap' | 'target' | 'award'; label: string
 };
 
 const r0 = (n: number) => Math.round(n);
+/** DronaCardPopup's button height. */
+const BUTTON_HEIGHT = 50;
 
 interface Props {
   open: boolean;
@@ -289,14 +294,19 @@ export function MealResultScreen(props: Props) {
     );
   };
 
-  const tiles: { label: string; value: string; unit: string; color: string }[] = [
-    { label: 'Calories', value: r0(sum.kcal).toLocaleString(), unit: 'kcal', color: C.foreground },
-    // Whole grams up top: a meal total reads at a glance. The lines below
-    // keep their decimals.
-    { label: 'Protein', value: String(r0(sum.p)), unit: 'g', color: C.macro.protein },
-    { label: 'Carbs', value: String(r0(sum.c)), unit: 'g', color: C.macro.carbs },
-    { label: 'Fat', value: String(r0(sum.f)), unit: 'g', color: C.macro.fat },
+  // The meal in one calm strip, the way a Drona card shows its proof: equal
+  // columns, hairline between them. Whole grams: a meal total reads at a
+  // glance, and the lines below keep their decimals.
+  const facts: { label: string; value: string; color: string }[] = [
+    { label: 'kcal', value: r0(sum.kcal).toLocaleString(), color: C.textMuted },
+    { label: 'protein', value: `${r0(sum.p)}g`, color: C.macro.protein },
+    { label: 'carbs', value: `${r0(sum.c)}g`, color: C.macro.carbs },
+    { label: 'fat', value: `${r0(sum.f)}g`, color: C.macro.fat },
   ];
+  // Drona's orb in the card's head: resting while the meal waits for the
+  // user, moving whenever he is working on it.
+  const orbState = updating ? 'working' : busyChecking ? 'searching' : 'listening';
+  const kicker = updating ? 'DRONA IS UPDATING' : busyChecking ? 'DRONA IS CHECKING' : title.toUpperCase();
 
   return (
     <Portal>
@@ -316,8 +326,7 @@ export function MealResultScreen(props: Props) {
           >
             <Feather name="chevron-down" size={22} color={C.foreground} />
           </Pressable>
-          <Text style={s.title} numberOfLines={1}>{title}</Text>
-          <View style={[s.headerBtn, s.headerRight]}>
+          <View style={s.headerRight}>
             {tier && (
               <View style={s.tierChip} accessibilityLabel={`Read with ${TIER[tier].label}`}>
                 <Feather
@@ -330,6 +339,16 @@ export function MealResultScreen(props: Props) {
                 </Text>
               </View>
             )}
+            {saved ? (
+              <View style={s.savedChip} accessibilityLabel="Saved for next time">
+                <Feather name="check" size={13} color={C.accentText} />
+                <Text style={s.savedTxt}>Saved</Text>
+              </View>
+            ) : (
+              <Pressable onPress={onSave} disabled={frozen} hitSlop={8} style={s.saveIcon} accessibilityRole="button" accessibilityLabel="Save this meal for next time">
+                <Feather name="bookmark" size={16} color={C.textSecondary} />
+              </Pressable>
+            )}
           </View>
         </View>
 
@@ -341,11 +360,18 @@ export function MealResultScreen(props: Props) {
           keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}
         >
+          {/* Who is talking */}
+          <View style={s.head}>
+            <View style={s.mark}>
+              <OrbLoader size={32} color={C.accentText} state={orbState} accessibilityLabel={updating ?? 'Drona'} />
+            </View>
+            <Text style={s.kicker}>{kicker}</Text>
+          </View>
+
+          {/* What you ate, in your words */}
           {!!words && (
             <View style={s.wordsRow}>
-              <View style={s.youBubble}>
-                <Text style={s.youTxt}>{words}</Text>
-              </View>
+              <Text style={s.cardTitle} accessibilityRole="header">{words}</Text>
               {!!onEditWords && !busy && (
                 <Pressable
                   onPress={onEditWords}
@@ -354,27 +380,32 @@ export function MealResultScreen(props: Props) {
                   accessibilityLabel="Edit what you wrote"
                   accessibilityHint="Puts your words back in the box to change and send again"
                 >
-                  <Feather name="corner-down-left" size={12} color={C.textMuted} style={{ marginTop: 9 }} />
+                  <Feather name="corner-down-left" size={13} color={C.textMuted} style={{ marginTop: 6 }} />
                 </Pressable>
               )}
             </View>
           )}
 
-          {!!updating && (
-            <Animated.View entering={FadeIn.duration(180)} style={s.updating}>
-              <OrbLoader size="small" />
-              <Text style={s.updatingTxt}>{updating}</Text>
-            </Animated.View>
-          )}
+          {/* Drona's word on it: his line, what he is doing now, or a
+              notice that asks for a choice. */}
+          {updating ? (
+            <PulsingStatus label={updating} color={C.textSecondary} style={s.cardBody} />
+          ) : !notice && meal.drona_line ? (
+            <Text style={s.cardBody}>{meal.drona_line}</Text>
+          ) : null}
 
           <View style={[busy && s.dim]} pointerEvents={busy ? 'none' : 'auto'}>
-            <View style={s.tiles} accessibilityLabel={`${r0(sum.kcal)} calories, ${r0(sum.p)} grams protein, ${r0(sum.c)} grams carbs, ${r0(sum.f)} grams fat`}>
-              {tiles.map((t, k) => (
-                <View key={t.label} style={[s.tile, k === 0 && s.tileWide]}>
-                  <Text style={s.tileLabel}>{t.label}</Text>
-                  <Text style={[k === 0 ? s.tileValueBig : s.tileValue, { color: t.color }]}>
-                    {t.value}<Text style={s.tileUnit}> {t.unit}</Text>
-                  </Text>
+            <View
+              style={s.facts}
+              accessibilityLabel={`${r0(sum.kcal)} calories, ${r0(sum.p)} grams protein, ${r0(sum.c)} grams carbs, ${r0(sum.f)} grams fat`}
+            >
+              {facts.map((f, k) => (
+                <View key={f.label} style={s.factWrap}>
+                  {k > 0 && <View style={s.factDivider} />}
+                  <View style={s.fact}>
+                    <Text style={s.factValue}>{f.value}</Text>
+                    <Text style={[s.factLabel, { color: f.color }]}>{f.label}</Text>
+                  </View>
                 </View>
               ))}
             </View>
@@ -382,10 +413,9 @@ export function MealResultScreen(props: Props) {
               <Text style={s.fiber}>Fiber {r0(sum.fib)} g</Text>
             )}
 
-            {!!notice ? (
-              <View style={[s.coach, s.notice]}>
+            {!!notice && (
+              <View style={s.notice}>
                 <View style={s.noticeHead}>
-                  <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
                   <Text style={s.noticeTxt}>{notice}</Text>
                   <Pressable onPress={onDismissNotice} hitSlop={8} accessibilityRole="button" accessibilityLabel="Dismiss">
                     <Feather name="x" size={13} color={C.textMuted} style={{ marginTop: 3 }} />
@@ -393,21 +423,24 @@ export function MealResultScreen(props: Props) {
                 </View>
                 {!!proposalLabel && (
                   <View style={s.proposalRow}>
-                    <Pressable onPress={onDismissNotice} hitSlop={6} style={s.keepBtn} accessibilityRole="button">
+                    <Pressable
+                      onPress={onDismissNotice}
+                      style={({ pressed }) => [s.keepBtn, { opacity: pressed ? 0.7 : 1 }]}
+                      accessibilityRole="button"
+                    >
                       <Text style={s.keepTxt}>Keep mine</Text>
                     </Pressable>
-                    <Pressable onPress={onAcceptProposal} hitSlop={6} style={s.useBtn} accessibilityRole="button">
+                    <Pressable
+                      onPress={onAcceptProposal}
+                      style={({ pressed }) => [s.useBtn, { opacity: pressed ? 0.85 : 1 }]}
+                      accessibilityRole="button"
+                    >
                       <Text style={s.useTxt}>{proposalLabel}</Text>
                     </Pressable>
                   </View>
                 )}
               </View>
-            ) : meal.drona_line ? (
-              <View style={[s.coach, s.coachRow]}>
-                <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
-                <Text style={s.dronaTxt}>{meal.drona_line}</Text>
-              </View>
-            ) : null}
+            )}
 
             <View style={s.eyebrowRow}>
               <Text style={s.eyebrow}>Foods</Text>
@@ -523,28 +556,23 @@ export function MealResultScreen(props: Props) {
           </View>
           {kbHeight === 0 && (
             <View style={s.actions}>
-              {saved ? (
-                <View style={s.savedChip} accessibilityLabel="Saved for next time">
-                  <Feather name="check" size={13} color={C.accentText} />
-                  <Text style={s.savedTxt}>Saved</Text>
-                </View>
-              ) : (
-                <Pressable onPress={onSave} disabled={frozen} hitSlop={8} style={s.saveIcon} accessibilityRole="button" accessibilityLabel="Save this meal for next time">
-                  <Feather name="bookmark" size={16} color={C.textSecondary} />
-                </Pressable>
-              )}
-              <Pressable onPress={onDiscard} hitSlop={8} style={s.discard} accessibilityRole="button">
-                <Text style={s.discardTxt}>Discard</Text>
+              {/* The card's two answers: same height, same corners, rank from
+                  fill against outline. */}
+              <Pressable
+                onPress={onDiscard}
+                style={({ pressed }) => [s.secondary, { opacity: pressed ? 0.7 : 1 }]}
+                accessibilityRole="button"
+              >
+                <Text style={s.secondaryText}>Discard</Text>
               </Pressable>
               <Pressable
                 onPress={onAdd}
                 disabled={frozen}
-                style={[s.addBtn, { opacity: frozen ? 0.5 : 1 }]}
+                style={({ pressed }) => [s.primary, { opacity: frozen ? 0.5 : pressed ? 0.85 : 1 }]}
                 accessibilityRole="button"
                 accessibilityLabel={`Add to ${destination}`}
               >
-                <Feather name="plus" size={15} color={Colors.primaryFg} />
-                <Text style={s.addTxt}>{adding ? 'Adding...' : `Add to ${destination}`}</Text>
+                <Text style={s.primaryText}>{adding ? 'Adding...' : `Add to ${destination}`}</Text>
               </Pressable>
             </View>
           )}
@@ -557,69 +585,62 @@ export function MealResultScreen(props: Props) {
 function makeStyles(C: ReturnType<typeof useTheme>['C']) {
   return StyleSheet.create({
     root: { ...StyleSheet.absoluteFillObject, backgroundColor: C.background },
-    header: { flexDirection: 'row', alignItems: 'center', height: 48, paddingHorizontal: Spacing.lg },
-    headerBtn: { width: 84, height: 36, justifyContent: 'center' },
-    headerRight: { alignItems: 'flex-end' },
-    title: {
-      flex: 1, textAlign: 'center', fontSize: FontSize.lg, fontWeight: FontWeight.semibold,
-      color: C.foreground, letterSpacing: LetterSpacing.snug,
+    header: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      height: 48, paddingHorizontal: Spacing.lg,
     },
+    headerBtn: { width: 44, height: 36, justifyContent: 'center' },
+    headerRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
     tierChip: {
       flexDirection: 'row', alignItems: 'center', gap: 4,
       paddingVertical: 4, paddingHorizontal: 8, borderRadius: Radius.full,
       borderWidth: 1, borderColor: C.borderSubtle,
     },
     tierTxt: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
-    body: { paddingHorizontal: Spacing.xl, paddingBottom: Spacing.xxl },
+    // The card's own padding (DronaCardPopup), on a full screen.
+    body: { paddingHorizontal: Spacing.xxl, paddingTop: Spacing.sm, paddingBottom: Spacing.xxl },
     pressed: { opacity: 0.6 },
     dim: { opacity: 0.45 },
 
-    wordsRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm, marginTop: Spacing.xs },
-    youBubble: {
-      flexShrink: 1, alignSelf: 'flex-start',
-      backgroundColor: C.inputBg, borderRadius: Radius.md, paddingVertical: 6, paddingHorizontal: 10,
-    },
-    youTxt: { fontSize: FontSize.sm, lineHeight: 18, color: C.foreground },
+    // The Drona card's head, title and body, size for size.
+    head: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm + 2, marginBottom: Spacing.xl },
+    mark: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+    kicker: { flex: 1, fontSize: FontSize.xs, fontWeight: FontWeight.bold, letterSpacing: 1.4, color: C.textMuted },
+    wordsRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm },
+    cardTitle: { flex: 1, fontSize: FontSize.xl, lineHeight: 24, fontWeight: FontWeight.bold, color: C.foreground },
+    cardBody: { fontSize: FontSize.base, lineHeight: 21, color: C.textSecondary, marginTop: Spacing.sm },
 
-    updating: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: Spacing.md },
-    updatingTxt: { fontSize: FontSize.sm, color: C.textSecondary, fontWeight: FontWeight.medium },
+    // The proof strip: equal columns, hairline between them, no pills.
+    facts: {
+      flexDirection: 'row', alignItems: 'stretch', backgroundColor: C.muted,
+      borderRadius: Radius.lg, paddingVertical: Spacing.md + 2, marginTop: Spacing.xl,
+    },
+    factWrap: { flex: 1, flexDirection: 'row', alignItems: 'stretch' },
+    factDivider: { width: StyleSheet.hairlineWidth, marginVertical: 2, backgroundColor: C.borderSubtle },
+    fact: { flex: 1, alignItems: 'center', paddingHorizontal: Spacing.xs },
+    factValue: {
+      fontSize: FontSize.xxl, lineHeight: 26, fontWeight: FontWeight.bold, color: C.foreground,
+      fontVariant: ['tabular-nums'],
+    },
+    factLabel: { fontSize: FontSize.xs, lineHeight: 13, textAlign: 'center', marginTop: 3, fontWeight: FontWeight.medium },
+    fiber: { fontSize: FontSize.sm, color: C.textSecondary, marginTop: Spacing.sm, textAlign: 'center', fontVariant: ['tabular-nums'] },
 
-    tiles: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginTop: Spacing.lg },
-    tile: {
-      flexGrow: 1, flexBasis: '30%', backgroundColor: C.card, borderRadius: Radius.lg,
-      borderWidth: 1, borderColor: C.borderSubtle, paddingVertical: Spacing.md, paddingHorizontal: Spacing.md,
-    },
-    tileWide: { flexBasis: '100%' },
-    tileLabel: {
-      fontSize: FontSize.xs, color: C.textMuted, fontWeight: FontWeight.semibold,
-      letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase',
-    },
-    tileValueBig: {
-      fontSize: FontSize.hero, fontWeight: FontWeight.semibold, letterSpacing: LetterSpacing.tight,
-      fontVariant: ['tabular-nums'], marginTop: 2,
-    },
-    tileValue: {
-      fontSize: FontSize.xxl, fontWeight: FontWeight.semibold, letterSpacing: LetterSpacing.snug,
-      fontVariant: ['tabular-nums'], marginTop: 4,
-    },
-    tileUnit: { fontSize: FontSize.sm, fontWeight: FontWeight.medium, color: C.textMuted, letterSpacing: 0 },
-    fiber: { fontSize: FontSize.sm, color: C.textSecondary, marginTop: Spacing.sm, fontVariant: ['tabular-nums'] },
-
-    coach: { backgroundColor: C.primarySubtle, borderRadius: Radius.md, marginTop: Spacing.lg },
-    coachRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: Spacing.md },
-    notice: { padding: Spacing.md },
+    // A notice asks for a choice, so it sits in the same muted block as the
+    // proof, with the card's two button styles at a smaller size.
+    notice: { backgroundColor: C.muted, borderRadius: Radius.lg, padding: Spacing.lg, marginTop: Spacing.md },
     noticeHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-    noticeTxt: { flex: 1, fontSize: FontSize.sm, lineHeight: 19, color: C.textSecondary },
-    proposalRow: { flexDirection: 'row', gap: 8, marginTop: Spacing.sm, justifyContent: 'flex-end' },
-    keepBtn: { paddingVertical: 7, paddingHorizontal: Spacing.md },
-    keepTxt: { fontSize: FontSize.sm, color: C.textSecondary, fontWeight: FontWeight.medium },
-    useBtn: { backgroundColor: C.foreground, borderRadius: Radius.md, paddingVertical: 7, paddingHorizontal: Spacing.md },
-    useTxt: { fontSize: FontSize.sm, color: C.background, fontWeight: FontWeight.semibold },
-    avatar: {
-      width: 20, height: 20, borderRadius: 10, backgroundColor: C.primarySubtle,
+    noticeTxt: { flex: 1, fontSize: FontSize.base, lineHeight: 21, color: C.foreground },
+    proposalRow: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md },
+    keepBtn: {
+      flex: 1, height: 40, borderRadius: Radius.lg, borderWidth: 1, borderColor: C.border,
       alignItems: 'center', justifyContent: 'center',
     },
-    dronaTxt: { flex: 1, fontSize: FontSize.sm, lineHeight: 19, color: C.textSecondary },
+    keepTxt: { fontSize: FontSize.md, color: C.foreground, fontWeight: FontWeight.semibold },
+    useBtn: {
+      flex: 1, height: 40, borderRadius: Radius.lg, backgroundColor: C.foreground,
+      alignItems: 'center', justifyContent: 'center',
+    },
+    useTxt: { fontSize: FontSize.md, color: C.background, fontWeight: FontWeight.bold },
 
     eyebrowRow: { flexDirection: 'row', alignItems: 'center', marginTop: Spacing.xl },
     eyebrow: {
@@ -693,7 +714,7 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     dayTxt: { fontSize: FontSize.base, color: C.foreground, fontWeight: FontWeight.medium },
 
     footer: {
-      paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm,
+      paddingHorizontal: Spacing.xxl, paddingTop: Spacing.sm,
       borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.background,
     },
     fixBox: {
@@ -708,17 +729,21 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
       width: 28, height: 28, borderRadius: 14, backgroundColor: C.foreground,
       alignItems: 'center', justifyContent: 'center',
     },
-    actions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.md },
-    saveIcon: { padding: 8 },
-    savedChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 8, paddingHorizontal: 8 },
+    actions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm + 2, marginTop: Spacing.md },
+    saveIcon: { padding: 6 },
+    savedChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 6, paddingHorizontal: 4 },
     savedTxt: { fontSize: FontSize.sm, color: C.accentText, fontWeight: FontWeight.semibold },
-    discard: { paddingVertical: 10, paddingHorizontal: 12 },
-    discardTxt: { fontSize: FontSize.base, color: C.textSecondary, fontWeight: FontWeight.medium },
-    // The one lime surface on the screen.
-    addBtn: {
-      flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-      backgroundColor: Colors.primary, borderRadius: Radius.md, paddingVertical: 14,
+    // DronaCardPopup's buttons: same height and corners, rank from fill
+    // against outline. Add is the one lime surface on the screen.
+    secondary: {
+      flex: 1, height: BUTTON_HEIGHT, borderRadius: Radius.lg, borderWidth: 1, borderColor: C.border,
+      alignItems: 'center', justifyContent: 'center',
     },
-    addTxt: { fontSize: FontSize.base, color: Colors.primaryFg, fontWeight: FontWeight.semibold },
+    secondaryText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: C.foreground },
+    primary: {
+      flex: 2, height: BUTTON_HEIGHT, borderRadius: Radius.lg, backgroundColor: Colors.primary,
+      alignItems: 'center', justifyContent: 'center',
+    },
+    primaryText: { fontSize: FontSize.base, fontWeight: FontWeight.bold, color: Colors.primaryFg },
   });
 }
