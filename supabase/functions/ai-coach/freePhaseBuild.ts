@@ -12,3 +12,20 @@ export function freePhaseBuildCandidate(body: unknown): string | null {
   if (typeof b.phase_id !== "string" || b.phase_id === "") return null;
   return b.phase_id;
 }
+
+// Which free-tier requests may ask for a free refine turn on that build.
+//
+// The app builds phase 1 as an unsaved draft and lets the user talk it over
+// with Drona before Save. That chat is RefineChatScreen in mode 'refine_plan';
+// its "yes, do it" turn also forces generate_plan so the model re-emits the
+// plan. Both must pass, or the turn that applies the change would hit the
+// paywall. Discuss modes (no draft yet) and any other forced tool stay Pro.
+// This only decides whether to ASK; try_claim_free_phase_refine decides
+// whether this phase is the claimed, still-unsaved build with turns left.
+export function freePhaseRefineCandidate(body: unknown): string | null {
+  const b = (body ?? {}) as { mode?: unknown; force_tool?: unknown; phase_id?: unknown };
+  if (b.mode !== "refine_plan") return null;
+  if (b.force_tool !== undefined && b.force_tool !== "generate_plan") return null;
+  if (typeof b.phase_id !== "string" || b.phase_id === "") return null;
+  return b.phase_id;
+}
