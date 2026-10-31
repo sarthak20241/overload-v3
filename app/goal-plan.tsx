@@ -55,6 +55,8 @@ import { goalFocus, goalText, type LiveReadings } from '@/lib/phaseMetricHeadlin
 import { DotLine, FOOTER_H, FooterAction, LoadFailed, ScreenSkeleton, SectionLabel, Stagger, S, T, useGoalPalette } from '@/components/program/finish';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
+import { phaseBuildSeed, type PhaseBuildSeed } from '@/lib/phaseBuild';
+import { onPhaseDraftChange, readPhaseDraft } from '@/lib/phaseDraft';
 import { Colors, Radius, FontWeight } from '@/constants/theme';
 import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
 
@@ -77,10 +79,14 @@ const GOAL_CHART_HEIGHT = CHART_HEIGHT - 7;
 export default function GoalPlanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  // ?build=phase arrives from the dashboard prompt that sends a fresh account
-  // straight here to build phase 1. It fires once, after the program loads.
-  const { build: buildParam, drona: dronaParam, kcal: kcalParam } =
-    useLocalSearchParams<{ build?: string; drona?: string; kcal?: string }>();
+  // ?build=phase arrives from the dashboard prompt and from sign-up, to build
+  // phase 1. It fires once, after the program loads. &seq=N builds that phase
+  // instead (the next-phase card). &auto=1 skips the plan form and builds at
+  // once; a draft waiting for the phase opens first either way.
+  // &then=upgrade (sign-up only): when the sheet closes, carry on to the
+  // onboarding paywall that used to come straight after sign-up.
+  const { build: buildParam, seq: seqParam, auto: autoParam, then: thenParam, drona: dronaParam, kcal: kcalParam } =
+    useLocalSearchParams<{ build?: string; seq?: string; auto?: string; then?: string; drona?: string; kcal?: string }>();
   const autoBuildFired = useRef(false);
   // ?drona=calories&kcal=N arrives from the goal sheet's "Change my whole plan
   // with Drona": open the program chat once, the request typed and unsent.
@@ -118,7 +124,8 @@ export default function GoalPlanScreen() {
   const [logging, setLogging] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
-  const [buildSeed, setBuildSeed] = useState<{ goal?: string; days?: string; note?: string } | null>(null);
+  const [buildSeed, setBuildSeed] = useState<PhaseBuildSeed | null>(null);
+  const [buildAuto, setBuildAuto] = useState(false);
   const [buildPhaseId, setBuildPhaseId] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
   // Cards waiting on From Drona: they are about this plan, so the door is here too.
@@ -178,7 +185,7 @@ export default function GoalPlanScreen() {
   const ended = program != null && totalDays > 0 && daysIn >= totalDays;
   const weekOverall = program ? Math.max(1, Math.min(totalWeeks, Math.floor(daysIn / 7) + 1)) : 0;
   const endDateISO = program ? addDaysISO(program.start_date, totalDays) : null;
-  // By seq, not array index, like the stepper's lookup.
+  // By seq, not array index, like the phase timeline's lookup.
   const currentPhase = program != null && program.currentPhaseSeq != null
     ? program.phases.find((ph) => ph.seq === program.currentPhaseSeq) ?? null
     : null;
@@ -244,27 +251,34 @@ export default function GoalPlanScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase, clerkId, program?.id, focusTick]);
 
-  const buildSplitFor = useCallback((ph: ActiveProgramPhaseRow) => {
-    const b = ph.training_block;
-    const desc = [b?.split_type, b?.emphasis].filter(Boolean).join(', ');
-    setBuildSeed({
-      goal: b?.emphasis || b?.split_type || undefined,
-      note: `Build the training split for the "${ph.name}" phase of my current program${desc ? `: ${desc}` : ''}.${ph.training_directive ? ` ${ph.training_directive}` : ''} Follow that exact split and cadence.`,
-    });
+  const buildSplitFor = useCallback((ph: ActiveProgramPhaseRow, auto = false) => {
+    setBuildSeed(phaseBuildSeed(ph));
     setBuildPhaseId(ph.id);
-    track('program_split_build_started', { phase_seq: ph.seq, has_training_block: !!b });
+    setBuildAuto(auto);
+    track('program_split_build_started', { phase_seq: ph.seq, has_training_block: !!ph.training_block, auto });
     setCoachOpen(true);
   }, []);
 
-  // Open the build flow for the user the dashboard sent here, but only while
-  // that phase really has no split.
+  // Open the build flow for the user the dashboard (or sign-up) sent here,
+  // but only while that phase really has no split.
   useEffect(() => {
-    if (buildParam !== 'phase' || autoBuildFired.current) return;
-    const phase = currentPhase ?? program?.phases[0] ?? null;
-    if (!phase) return;
+    if (buildParam !== 'phase' || autoBuildFired.current || !program) return;
+    const want = parseInt(seqParam ?? '', 10);
+    const phase = (Number.isFinite(want) ? program.phases.find((ph) => ph.seq === want) : null)
+      ?? currentPhase ?? program.phases[0] ?? null;
     autoBuildFired.current = true;
-    if (phase.routines.length === 0) buildSplitFor(phase);
-  }, [buildParam, currentPhase, program, buildSplitFor]);
+    if (phase && phase.routines.length === 0) buildSplitFor(phase, autoParam === '1');
+    else if (thenParam === 'upgrade') continueToUpgrade();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buildParam, seqParam, autoParam, currentPhase, program, buildSplitFor]);
+
+  // Sign-up's build came first; the onboarding paywall follows it, once.
+  const upgradeFired = useRef(false);
+  const continueToUpgrade = useCallback(() => {
+    if (thenParam !== 'upgrade' || upgradeFired.current) return;
+    upgradeFired.current = true;
+    router.replace({ pathname: '/upgrade', params: { flow: 'onboarding' } } as any);
+  }, [thenParam, router]);
 
   useEffect(() => {
     if (dronaParam !== 'calories' || dronaFired.current || loading) return;
@@ -494,6 +508,18 @@ export default function GoalPlanScreen() {
   // it fits, else the targets most behind; never wrapped or cut.
   const focus = currentPhase ? goalFocus(currentPhase.coach_line, currentPhase.metrics) : '';
   const unbuilt = currentPhase != null && currentPhase.routines.length === 0;
+  // A built, unsaved plan for the phase: the button opens it rather than
+  // offering to build again (lib/phaseDraft.ts).
+  const [draftWaiting, setDraftWaiting] = useState(false);
+  const draftPhaseId = unbuilt ? currentPhase!.id : null;
+  useEffect(() => {
+    if (!draftPhaseId) { setDraftWaiting(false); return; }
+    let live = true;
+    const check = () => readPhaseDraft(draftPhaseId).then((d) => { if (live) setDraftWaiting(d != null); });
+    check();
+    const off = onPhaseDraftChange((id) => { if (id === draftPhaseId) check(); });
+    return () => { live = false; off(); };
+  }, [draftPhaseId, focusTick]);
   // The pinned button sits fully inside the safe area: its bottom 8pt above
   // the home indicator zone (insets.bottom), on every iPhone. The reference
   // mock put it lower, under the home bar; that ignored the safe area.
@@ -586,10 +612,10 @@ export default function GoalPlanScreen() {
       {/* The one action, pinned above the home indicator (FooterAction). */}
       {!loading && program && (
         <FooterAction
-          label={unbuilt ? "Build this phase's workouts" : 'Adjust with Drona'}
-          accessibilityLabel={unbuilt ? "Build this phase's workouts" : 'Adjust this program with Drona'}
+          label={unbuilt ? (draftWaiting ? 'Review and save workouts' : "Build this phase's workouts") : 'Adjust with Drona'}
+          accessibilityLabel={unbuilt ? (draftWaiting ? "Review and save this phase's workouts" : "Build this phase's workouts") : 'Adjust this program with Drona'}
           onPress={() => {
-            if (unbuilt && currentPhase) buildSplitFor(currentPhase);
+            if (unbuilt && currentPhase) buildSplitFor(currentPhase, true);
             else { setBuildSeed(null); setBuildPhaseId(null); setCoachOpen(true); }
           }}
         />
@@ -613,9 +639,10 @@ export default function GoalPlanScreen() {
       <AICoachModal
         visible={coachOpen}
         source="goal_plan"
-        onClose={() => { setCoachOpen(false); setBuildSeed(null); setBuildPhaseId(null); setProgramDraft(undefined); load(); }}
+        onClose={() => { setCoachOpen(false); setBuildSeed(null); setBuildPhaseId(null); setBuildAuto(false); setProgramDraft(undefined); load(); continueToUpgrade(); }}
         initialScreen={buildSeed ? 'plan' : 'program'}
         planSeed={buildSeed ?? undefined}
+        planAutoStart={buildAuto}
         programDraft={programDraft}
         // An active program: Drona opens on changing it, naming the phase.
         programExisting={program && currentPhase ? {

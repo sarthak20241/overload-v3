@@ -72,3 +72,11 @@ Deno.test("a guest's snooze has a stable key of its own", () => {
   assertEquals(splitPromptSnoozeKey(null), splitPromptSnoozeKey(undefined));
   assert(splitPromptSnoozeKey(null) !== splitPromptSnoozeKey("phase-aaa"));
 });
+
+Deno.test("a built plan waiting as a draft is offered for review, not rebuilt", () => {
+  assertEquals(splitPromptFor({ ...base, hasDraft: true }), "review");
+  // Once the phase has routines the draft is moot.
+  assertEquals(splitPromptFor({ ...base, hasDraft: true, phaseRoutineCount: 3 }), null);
+  // Not now still holds a review.
+  assertEquals(splitPromptFor({ ...base, hasDraft: true, dismissedAt: NOW - 1000 }), null);
+});

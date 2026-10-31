@@ -21,8 +21,12 @@ import { ActivityGoalsCard } from '@/components/program/ActivityGoalsCard';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { dronaCardTopic, insightTopic, type CoachTopic } from '@/lib/coachTopic';
 import { BuildSplitPrompt } from '@/components/program/BuildSplitPrompt';
+import { NextPhaseCard } from '@/components/program/NextPhaseCard';
+import { StartGuideCard } from '@/components/home/StartGuideCard';
+import type { StartStepId } from '@/lib/startGuide';
+import { readPhaseDraft } from '@/lib/phaseDraft';
 import { hasCompletedOnboarding } from '@/lib/onboarding';
-import { loadActiveProgram } from '@/lib/programData';
+import { loadActiveProgram, type ActiveProgram } from '@/lib/programData';
 import { InsightsStrip } from '@/components/insights/InsightsStrip';
 import { MilestoneUpsellCard } from '@/components/insights/MilestoneUpsellCard';
 import { detectInsights } from '@/lib/insights';
@@ -169,7 +173,7 @@ export default function DashboardScreen() {
   const aiChipBg = C.muted;
   const aiChipBorder = C.border;
   const aiChipFg = C.foreground;
-  const { user, isLoaded: clerkLoaded } = useClerkUser();
+  const { user, isLoaded: clerkLoaded, getToken } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const { pendingCount } = useSync();
@@ -383,8 +387,11 @@ export default function DashboardScreen() {
   // life of the tab. A failed read keeps the last good state; before the first
   // good read that is null, which reads as "say nothing".
   const [splitState, setSplitState] = useState<
-    { done: boolean; hasProgram: boolean; count: number | null; phaseId: string | null } | null
+    { done: boolean; hasProgram: boolean; count: number | null; phaseId: string | null; hasDraft: boolean } | null
   >(null);
+  // The full active program, for the next-phase card (the TODAY pick keeps its
+  // own leaner read below).
+  const [activeProgram, setActiveProgram] = useState<ActiveProgram | null>(null);
   // The prompt is a root-Portal overlay, so it would otherwise float above the
   // paywall. Gate it on this screen actually being the one in front.
   const [screenFocused, setScreenFocused] = useState(false);
@@ -398,7 +405,8 @@ export default function DashboardScreen() {
         const done = await hasCompletedOnboarding(clerkId);
         if (cancelled) return;
         if (!done || !clerkId) {
-          setSplitState({ done, hasProgram: false, count: null, phaseId: null });
+          setSplitState({ done, hasProgram: false, count: null, phaseId: null, hasDraft: false });
+          setActiveProgram(null);
           return;
         }
         try {
@@ -407,11 +415,18 @@ export default function DashboardScreen() {
           const phase = program
             ? program.phases.find((ph) => ph.seq === program.currentPhaseSeq) ?? program.phases[0]
             : null;
+          // This popup is about phase 1 only. A later phase that is running
+          // unbuilt belongs to the next-phase card, which knows Pro from free.
+          const isFirst = phase?.seq === 0;
+          const hasDraft = phase && isFirst ? (await readPhaseDraft(phase.id)) != null : false;
+          if (cancelled) return;
+          setActiveProgram(program);
           setSplitState({
             done: true,
             hasProgram: !!program,
-            count: phase ? phase.routines.length : null,
+            count: phase && isFirst ? phase.routines.length : null,
             phaseId: phase?.id ?? null,
+            hasDraft,
           });
         } catch {
           // Offline or RLS hiccup. Keep whatever was last read: on a first
@@ -837,6 +852,17 @@ export default function DashboardScreen() {
   // exercises, ask Drona about it, or start it. 'new' opens the coach to build one.
   // 'complete' opens the done-today sheet: the session, the body map, up next.
   // 'rest' previews the session that follows the rest, for anyone who wants it early.
+  // The getting-started checklist's rows, each to the screen where it is done.
+  const openStartStep = (id: StartStepId) => {
+    switch (id) {
+      case 'workout': handleTodayPress(); break;
+      case 'ai_food': router.push('/nutrition' as any); break;
+      case 'modes': router.push({ pathname: '/nutrition', params: { modes: String(Date.now()) } } as any); break;
+      case 'phases': router.push('/goal-plan-phase' as any); break;
+      case 'weight': router.push({ pathname: '/(app)/analytics', params: { logWeight: String(Date.now()) } } as any); break;
+    }
+  };
+
   const handleTodayPress = () => {
     track('today_suggestion_tapped', {
       kind: todaySuggestion.kind,
@@ -1106,6 +1132,33 @@ export default function DashboardScreen() {
         <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
           <TodaySuggestionCard suggestion={todaySuggestion} onPress={handleTodayPress} />
         </View>
+
+        {/* First-week checklist: where food logging, the AI modes, the phases
+            and the weight log live. Gone once done, hidden, or after 3 weeks. */}
+        {!isGuestSession && user?.id ? (
+            <StartGuideCard
+              containerStyle={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}
+              supabase={supabase}
+              userId={user.id}
+              createdAtMs={user.createdAt ? new Date(user.createdAt).getTime() : null}
+              workoutsLogged={workouts.length}
+              onOpen={openStartStep}
+            />
+        ) : null}
+
+        {/* The next phase, before it starts: built in the background for Pro
+            (as a draft to review and save), announced for free. */}
+        {!isGuestSession && activeProgram ? (
+            <NextPhaseCard
+              containerStyle={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}
+              program={activeProgram}
+              isPro={coachAccess.state === 'paid' || coachAccess.state === 'trialing'}
+              accessKnown={coachAccess.state !== 'unknown'}
+              getToken={getToken}
+              onReview={(seq) => router.push({ pathname: '/goal-plan', params: { build: 'phase', seq: String(seq), auto: '1' } } as any)}
+              onUpgrade={() => router.push('/upgrade' as any)}
+            />
+        ) : null}
 
 
         {/* AI Coach Hero Card */}
@@ -1464,8 +1517,9 @@ export default function DashboardScreen() {
         isGuest={isGuestSession || !user?.id}
         hasProgram={!!splitState?.hasProgram}
         phaseRoutineCount={splitState?.count ?? null}
+        hasDraft={!!splitState?.hasDraft}
         phaseId={splitState?.phaseId ?? null}
-        onBuild={() => router.push({ pathname: '/goal-plan', params: { build: 'phase' } })}
+        onBuild={() => router.push({ pathname: '/goal-plan', params: { build: 'phase', auto: '1' } } as any)}
         onSignIn={() => router.push('/(auth)')}
         onVisibleChange={setSplitPromptShowing}
       />

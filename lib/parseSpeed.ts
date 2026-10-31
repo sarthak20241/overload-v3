@@ -23,6 +23,15 @@ export type ParseSpeed = 'quick' | 'thorough' | 'precise';
 
 const KEY = 'overload.parseSpeed';
 
+/** What each tier is called and does, one short line each. Shared by the
+ *  tier sheet and the food search's "Log it with Drona" row, so the two never
+ *  describe the same mode in different words. */
+export const PARSE_SPEED_COPY: Record<ParseSpeed, { title: string; sub: string }> = {
+  quick: { title: 'Quick', sub: 'Fast estimate from your words.' },
+  thorough: { title: 'Thorough', sub: 'Checks each food against our catalog.' },
+  precise: { title: 'Precise', sub: 'Reads the label. Best for packaged food.' },
+};
+
 /** Wire value for a tier. The stored keys are the words the UI uses; the
  *  server's are the pipeline's own ('fast' / 'super', with smart being the
  *  absence of the field). Keeping the two vocabularies apart means renaming a

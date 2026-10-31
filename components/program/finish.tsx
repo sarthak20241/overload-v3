@@ -343,6 +343,18 @@ export function ScreenSkeleton({ variant }: { variant: 'goal' | 'pillar' | 'phas
       </View>
       {variant === 'goal' ? (
         <Bone w="100%" h={88} r={10} style={{ marginTop: S.lg }} />
+      ) : variant === 'phase' ? (
+        // The phase timeline: nodes down a rail, each with its name and weeks.
+        <View style={{ marginTop: S.xxl, gap: S.lg }}>
+          {[0, 1, 2, 3].map((i) => (
+            <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: S.md }}>
+              <Bone w={26} h={26} r={13} />
+              <Bone w={i === 3 ? 120 : 150} h={14} />
+              <View style={{ flex: 1 }} />
+              <Bone w={64} h={12} />
+            </View>
+          ))}
+        </View>
       ) : (
         <View style={{ marginTop: S.xxl, flexDirection: 'row', justifyContent: 'space-between' }}>
           {Array.from({ length: 7 }, (_, i) => <Bone key={i} w={40} h={40} r={20} />)}
