@@ -243,6 +243,8 @@ export type AnalyticsEvent =
   | 'start_guide_shown'
   | 'start_guide_step_tapped'
   | 'start_guide_dismissed'
+  // The dashboard's floating log-food button (lib/homeLogHint.ts).
+  | 'home_log_food_tapped'
   | 'program_phase_advanced'
   | 'program_completed'
   | 'program_ended'
