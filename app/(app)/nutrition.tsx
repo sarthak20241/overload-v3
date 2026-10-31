@@ -41,6 +41,7 @@ import { MaintenanceRow } from '@/components/diet/MaintenanceRow';
 import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
 import { fuelOn } from '@/lib/fuelDays';
 import { goalDayFor, latestLogDay, readLogDayPhrase } from '@/lib/logDay';
+import { takePendingParse } from '@/lib/pendingParse';
 import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
 import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
@@ -936,8 +937,16 @@ export default function NutritionScreen() {
   /** `retry`: re-send a "Just log it" send with its ORIGINAL id and day (from
    *  the error card or a "Drona didn't get" line). Forces auto mode even if the
    *  toggle has since been flipped: the user is retrying that send, not making
-   *  a new choice. */
-  const runParse = useCallback(async (raw: string, retry?: { clientId: string; logDate: string }) => {
+   *  a new choice.
+   *
+   *  `from`: a sentence handed over from the food search (lib/pendingParse).
+   *  Its meal is the row the user tapped Add on, so it outranks the card's and
+   *  the clock's guess; its day is the one that screen was logging to. */
+  const runParse = useCallback(async (
+    raw: string,
+    retry?: { clientId: string; logDate: string },
+    from?: { mealHint: MealType; day: Date },
+  ) => {
     const t = raw.trim();
     if (!t || !supabase) return;
     // "2 eggs for tomorrow": the message names its own day. Go there first, so
@@ -946,10 +955,10 @@ export default function NutritionScreen() {
     // it was first sent for and only needs the same words taken out.
     const named = readLogDayPhrase(t);
     const sendText = named ? named.rest : t;
-    const logDay = !retry && named ? named.date : viewDate;
-    if (!retry && named && ymd(named.date) !== ymd(viewDate)) {
-      track('nutrition_day_changed', { direction: named.date > viewDate ? 'forward' : 'back', source: 'text' });
-      setViewDate(named.date);
+    const logDay = !retry && named ? named.date : (from?.day ?? viewDate);
+    if (!retry && ymd(logDay) !== ymd(viewDate)) {
+      if (named) track('nutrition_day_changed', { direction: named.date > viewDate ? 'forward' : 'back', source: 'text' });
+      setViewDate(logDay);
     }
     // Only a day ("for tomorrow"): moving there was the whole ask.
     if (!sendText) return;
@@ -1009,7 +1018,10 @@ export default function NutritionScreen() {
     // for a first-shot log, which is what it was always for.
     const args = {
       text: sendText,
-      mealHint: prevReview?.mealType ?? mealForNow(),
+      // A food-search hand-off names its meal outright: the user tapped Add
+      // on Breakfast, so Breakfast it is, card or clock notwithstanding. Words
+      // that name a meal ("for dinner") still win on the server.
+      mealHint: from?.mealHint ?? prevReview?.mealType ?? mealForNow(),
       previous: pending,
       pendingMeal,
       turns,
@@ -1722,6 +1734,19 @@ export default function NutritionScreen() {
     });
     return () => sub.remove();
   }, []);
+
+  // A sentence the food search's "Log it with Drona" row left for this box.
+  // Taking it clears it, so it runs once however often this effect re-runs
+  // (runParse changes identity with the day; a re-focus finds nothing). It
+  // waits while a parse is still running here, as the composer's send does,
+  // and then goes in exactly as if typed into the box: with a card under
+  // review it is a follow-up to that card, never a silent discard of it.
+  useFocusEffect(useCallback(() => {
+    if (!supabase || !isSignedIn || parseInFlight) return;
+    const p = takePendingParse();
+    if (!p) return;
+    void runParse(p.text, undefined, { mealHint: p.meal, day: p.day });
+  }, [supabase, isSignedIn, parseInFlight, runParse]));
 
   /** A send the server never took, re-sent under the SAME id and day. */
   const onRetryLost = useCallback((p: PendingAutoLog) => {

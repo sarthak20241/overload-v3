@@ -77,6 +77,7 @@ deno test --allow-all lib/mealCleanup.test.ts   # empty meal rows go in one safe
 deno test --allow-all lib/mealCardSplit.test.ts # big food card: list vs note when the box is short
 deno test --allow-all lib/calorieBars.test.ts  # Analytics calorie bars: each day against its own goal ±10%
 deno test --allow-all lib/pendingEntries.test.ts # an added suggestion or copy shows at once, swapped for the saved row
+deno test --allow-all lib/pendingParse.test.ts  # food search "Log it with Drona": handed to Nutrition once, with its meal and day
 deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
 deno test --allow-all lib/orbTheme.test.ts     # loading orb: which way a tinted orb fades

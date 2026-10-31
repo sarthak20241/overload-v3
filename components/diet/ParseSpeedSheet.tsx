@@ -27,7 +27,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
 import { haptics } from '@/lib/haptics';
-import type { ParseSpeed } from '@/lib/parseSpeed';
+import { PARSE_SPEED_COPY, type ParseSpeed } from '@/lib/parseSpeed';
 
 interface Props {
   open: boolean;
@@ -50,15 +50,9 @@ const OPTIONS: {
   sub: string;
   pro?: boolean;
 }[] = [
-  { key: 'quick', icon: 'zap', title: 'Quick', sub: 'Logs in seconds. Drona estimates from what you typed.' },
-  { key: 'thorough', icon: 'target', title: 'Thorough', sub: 'A few seconds slower. Drona double-checks every item against the food catalog.' },
-  {
-    key: 'precise',
-    icon: 'award',
-    title: 'Precise',
-    sub: 'Slowest, and worth it on packaged food. Drona reads the product’s own numbers and checks them against a second source. He remembers, so the next time is instant.',
-    pro: true,
-  },
+  { key: 'quick', icon: 'zap', ...PARSE_SPEED_COPY.quick },
+  { key: 'thorough', icon: 'target', ...PARSE_SPEED_COPY.thorough },
+  { key: 'precise', icon: 'award', ...PARSE_SPEED_COPY.precise, pro: true },
 ];
 
 export function ParseSpeedSheet({

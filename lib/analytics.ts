@@ -175,6 +175,10 @@ export type AnalyticsEvent =
   | 'food_searched'
   | 'food_picked'
   | 'quick_add_opened'
+  // The food search's "Log it with Drona" row (or the keyboard's send): the
+  // typed words go to the Nutrition food box instead of a catalog row. Against
+  // food_picked, this is how often a manual search becomes an AI log.
+  | 'food_search_ai_log'
   // Drona built a food or meal out of what the user said. Two events, not one:
   // the gap between them is how many proposals get dismissed, which is the only
   // read we have on whether the cards are worth showing.
