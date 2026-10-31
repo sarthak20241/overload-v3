@@ -4,9 +4,9 @@
  * card:
  *   /goal-plan-phase            the current phase
  *   /goal-plan-phase?seq=2      that phase
- * The numbers-only stepper switches phases; under the phase card the same
- * three plan rows as the main screen open the pillar screens for the phase
- * being viewed.
+ * The phase timeline (phases top to bottom, ending in the goal) switches
+ * phases; under the phase card the same three plan rows as the main screen
+ * open the pillar screens for the phase being viewed.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native';
@@ -48,7 +48,7 @@ export default function GoalPlanPhaseScreen() {
     return Number.isFinite(n) ? n : null;
   });
   // A new ?seq= while the screen is open (a deep link to another phase) moves
-  // the stepper to it; the stepper's own taps change seq without a param.
+  // the timeline to it; the timeline's own taps change seq without a param.
   useEffect(() => {
     const n = parseInt(seqParam ?? '', 10);
     if (Number.isFinite(n)) setSeq(n);

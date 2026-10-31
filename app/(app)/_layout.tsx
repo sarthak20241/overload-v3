@@ -306,10 +306,27 @@ export default function AppLayout() {
     // check - draining marks onboarding done, so the check then returns false
     // and they land straight on the dashboard with their plan.
     drainPendingOnboarding(target)
-      .then((dest) => {
-        if (dest) {
+      .then((drained) => {
+        if (drained) {
+          const { dest, firstPhaseId } = drained;
           void flushNow();
           settle(false);
+          // Sign-up's next step is phase 1's workouts, not the dashboard:
+          // the Goal screen opens the build at once, the user reads the
+          // draft, talks it through with Drona if they like, and taps Save.
+          // The onboarding paywall comes after that sheet closes (then=upgrade
+          // on mobile), so the first thing they see is their plan, not a price.
+          if (isSignedIn && firstPhaseId && dest !== '/(app)/routines') {
+            router.replace({
+              pathname: '/goal-plan',
+              params: {
+                build: 'phase',
+                auto: '1',
+                ...(Platform.OS === 'ios' || Platform.OS === 'android' ? { then: 'upgrade' } : {}),
+              },
+            } as any);
+            return;
+          }
           // Paywall funnel (paywall-plan.md): a signed-in convert on iOS or
           // Android gets the warm-up → reminder → paywall sequence right after
           // their plan is saved; /upgrade routes to the reveal choice's
