@@ -30,6 +30,9 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 // components/ui/BottomNav.tsx draws the bar at 64 + the bottom inset.
 const TAB_BAR_HEIGHT = 64;
 const SIZE = 52;
+/** Scroll room a screen leaves under its content so the button never covers
+ *  the last card: the button plus its gap above the tab bar. */
+export const HOME_LOG_BUTTON_ROOM = SIZE + Spacing.lg + Spacing.xs;
 
 interface Props {
   supabase: SupabaseClient;

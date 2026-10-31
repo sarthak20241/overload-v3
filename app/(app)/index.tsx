@@ -23,7 +23,7 @@ import { dronaCardTopic, insightTopic, type CoachTopic } from '@/lib/coachTopic'
 import { BuildSplitPrompt } from '@/components/program/BuildSplitPrompt';
 import { NextPhaseCard } from '@/components/program/NextPhaseCard';
 import { StartGuideCard } from '@/components/home/StartGuideCard';
-import { HomeLogButton } from '@/components/home/HomeLogButton';
+import { HomeLogButton, HOME_LOG_BUTTON_ROOM } from '@/components/home/HomeLogButton';
 import type { StartStepId } from '@/lib/startGuide';
 import { readPhaseDraft } from '@/lib/phaseDraft';
 import { hasCompletedOnboarding } from '@/lib/onboarding';
@@ -1099,7 +1099,7 @@ export default function DashboardScreen() {
       <ScrollView
         showsVerticalScrollIndicator={false}
         // Room under the last card for the floating log button.
-        contentContainerStyle={{ paddingBottom: 100 + (showLogButton ? 72 : 0) }}
+        contentContainerStyle={{ paddingBottom: 100 + (showLogButton ? HOME_LOG_BUTTON_ROOM : 0) }}
         refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         <RefreshOrb refreshing={refreshing} />
