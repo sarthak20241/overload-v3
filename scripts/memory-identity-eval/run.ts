@@ -13,6 +13,7 @@
 //   MAYBE_FLOOR=0.3 deno run -A ...                            # send more saved foods to decide
 //   ASK=pipeline PIPE_FLOOR=0.3 deno run -A ...                # score to serve, then a choice to decide
 //   CAND_BRAND=field|brackets deno run -A ...                  # saved foods shown with their brand
+//   ASK=prod CAND_BRAND=brackets deno run -A ...               # the app's matchMemory end to end
 //
 // Needs JEV_API_KEY (env or .env.local). One Jev call per case; no Anthropic
 // calls. Cases marked "real" are one user's live rows from 2026-10-06..08, and
@@ -25,6 +26,7 @@
 import { asChoice, askJev, type JevQuestion } from "../../supabase/functions/ai-coach/jev.ts";
 import {
   decideMemory,
+  matchMemory,
   type MemoryFood,
   MEMORY_MAYBE_FLOOR,
   MEMORY_RULE,
@@ -417,6 +419,9 @@ const CHOICE = Deno.env.get("ASK") === "choice";
  *  is served, one choice question, and its top pick at PIPE_FLOOR or more goes
  *  to decide. Decide is a model, so the summary counts what reaches it. */
 const PIPELINE = Deno.env.get("ASK") === "pipeline";
+/** ASK=prod: the app's own matchMemory (score, maybe band, choice), with saved
+ *  brands when CAND_BRAND=brackets. What ships, end to end. */
+const PROD = Deno.env.get("ASK") === "prod";
 const PIPE_FLOOR = Number(Deno.env.get("PIPE_FLOOR") ?? "0.3");
 /** PIPE_STEP2=score replays the build: step 2 is the score's own maybe pick.
  *  PIPE_STEP2=both: the score's maybe pick first, else the choice question. */
@@ -518,6 +523,31 @@ for (const c of picked) for (let rep = 1; rep <= repeat; rep++) {
   const r = await run(c, apiKey, false);
   if ("error" in r) { failed++; console.log(`ERROR ${c.id}: ${r.error}`); continue; }
   const brand = c.brand ? ` (brand "${c.brand}")` : "";
+  if (PROD) {
+    // The app's own matchMemory, end to end: score, maybe band, then the choice.
+    const foods = Object.keys(c.rows).map((n) => branded(food(n, c.times?.[n] ?? 1)));
+    const m = await matchMemory({ apiKey, timeoutMs: 15000 }, foods, { name: c.typed, brand: c.brand ?? null });
+    const ch = m.trace.choice as { pick?: string; p?: number; none?: number } | undefined;
+    console.log(`\n${c.real ? "[real] " : ""}${c.id}${repeat > 1 ? ` #${rep}` : ""}: typed "${c.typed}"${brand}`);
+    console.log(m.food ? `   serves: ${m.food.name} (${Math.round(m.confidence * 100)})`
+      : `   -> ${m.maybe ? `decide judges ${m.maybe.name}` : "normal lookup"}` +
+        (ch ? `   [choice: ${ch.pick} ${Math.round((ch.p ?? 0) * 100)}, none ${Math.round((ch.none ?? 0) * 100)}]` : ""));
+    if (c.serves !== undefined) {
+      servesAll++;
+      const want = (n: string | null) => Array.isArray(c.serves) ? (c.serves as Array<string | null>).includes(n) : n === c.serves;
+      const toDecide = m.maybe?.name ?? null;
+      const tag = m.food
+        ? (want(m.food.name) ? "served_right" : "served_wrong")
+        : toDecide
+        ? (want(toDecide) ? "decide_right" : "decide_wrong")
+        : (want(null) ? "lookup_right" : "miss");
+      pipe[tag] = (pipe[tag] ?? 0) + 1;
+      if (tag === "served_wrong" || tag === "decide_wrong" || tag === "miss") {
+        (pipeBad[tag] ??= []).push(`${c.id}: "${c.typed}" -> ${m.food?.name ?? toDecide ?? "nothing"}`);
+      }
+    }
+    continue;
+  }
   if (PIPELINE) {
     type Ch = { none: number; top: { name: string; p: number } | null; ranked: string[] };
     let toDecide: string | null = null, pick = "";
@@ -593,6 +623,13 @@ for (const c of picked) for (let rep = 1; rep <= repeat; rep++) {
       const unresolved = o.rows!.filter((x) => x.ch.unclear >= 0.75).length;
       console.log(`   OLD question: same=${o.rows!.map((x) => pct(x.ch.same).trim()).join("/")}  unresolved>=0.75 on ${unresolved} row(s)${unresolved > 1 ? " -> meal BLOCKED" : ""}`);
     }
+  }
+}
+if (PROD) {
+  console.log(`\nprod matchMemory, ${servesAll} runs:`);
+  for (const k of ["served_right", "served_wrong", "decide_right", "decide_wrong", "lookup_right", "miss"]) {
+    console.log(`  ${k.padEnd(13)} ${pipe[k] ?? 0}`);
+    for (const b of pipeBad[k] ?? []) console.log(`      ${b}`);
   }
 }
 if (PIPELINE) {

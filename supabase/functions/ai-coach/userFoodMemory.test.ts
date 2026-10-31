@@ -18,6 +18,8 @@ import {
   respellForJev,
   brandApart,
   memoryQuestions,
+  memoryChoiceQuestion,
+  MEMORY_CHOICE_NONE,
   servesTier,
   shortlist,
 } from "./userFoodMemory.ts";
@@ -961,4 +963,70 @@ Deno.test("brand spelling: a one-word food is never respelled toward a saved nam
   );
   // And a two-word brand slip with no brand known yet, as on 10-18.
   assertEquals(respellForJev({ name: "too yum protein oats", brand: null }, [label()]), { name: "Too Yumm protein oats", brand: null });
+});
+
+// ── A choice question when no saved food scored (owner decision 2026-10-31) ─
+// The score asks about each saved food alone. When none reaches the maybe
+// floor, one choice question asks which saved food it is, or none. Its top
+// answer goes to decide only when it is a food, not "none", with 0.3 or more.
+// Eval: "masala tea" -> her "Masala chai" (86%) now reaches decide; "peanut
+// chikki" (none 49%, peanuts 47%) does not.
+
+/** A Jev that scores every saved food at `score`, and answers the choice question with `choice`. */
+const jevScoreThenChoice = (score: number, choice: Record<string, number>, asked: string[] = []) => ({
+  apiKey: "k",
+  timeoutMs: 1000,
+  fetchFn: (async (_u: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body));
+    const answers: Record<string, unknown> = {};
+    for (const [k, q] of Object.entries(body.questions as Record<string, { type: string; criteria: Record<string, string> | string[] }>)) {
+      asked.push(q.type);
+      if (q.type === "choice") {
+        // Map names to the question's own keys.
+        const probs: Record<string, number> = {};
+        for (const [key, name] of Object.entries(q.criteria as Record<string, string>)) {
+          probs[key] = key === "none" ? choice.none ?? 0 : choice[name] ?? 0;
+        }
+        const top = Object.entries(probs).sort((a, b) => b[1] - a[1])[0];
+        answers[k] = { type: "choice", choice: top[0], confidence: top[1], probabilities: probs };
+      } else {
+        answers[k] = { type: "score", probabilities: { "0": 1 - score - 0.01, "1": 0.01, "2": score } };
+      }
+    }
+    return new Response(JSON.stringify({ model: "test", answers, usage: {} }), { status: 200 });
+  }) as unknown as typeof fetch,
+});
+
+Deno.test("no saved food scored: the choice's top food goes to decide", async () => {
+  const asked: string[] = [];
+  const chai = food("Masala chai", 45), powder = food("Tea masala powder", 300);
+  const m = await matchMemory(jevScoreThenChoice(0.2, { "Masala chai": 0.86, none: 0.13, "Tea masala powder": 0.01 }, asked), [chai, powder], { name: "masala tea", brand: null });
+  assertEquals([m.food, m.maybe?.name, m.confidence], [null, "Masala chai", 0.86]);
+  assert(asked.includes("choice"));
+  assertEquals((m.trace.choice as { pick: string }).pick, "Masala chai");
+});
+
+Deno.test("the choice says none ahead of a food: nothing goes to decide", async () => {
+  // Live eval, 2026-10-31: "peanut chikki" -> none 49%, peanuts 47%.
+  const m = await matchMemory(jevScoreThenChoice(0.2, { peanuts: 0.47, none: 0.49, "Pintola peanut butter": 0.04 }), [food("peanuts", 580), food("Pintola peanut butter", 590)], { name: "peanut chikki", brand: null });
+  assertEquals([m.food, m.maybe ?? null], [null, null]);
+});
+
+Deno.test("the choice's top food under 0.3 does not go to decide", async () => {
+  const m = await matchMemory(jevScoreThenChoice(0.1, { "grilled chicken breast": 0.25, "raw chicken breast": 0.24, none: 0.2 }), [food("grilled chicken breast", 165), food("raw chicken breast", 120)], { name: "chicken curry", brand: null });
+  assertEquals([m.food, m.maybe ?? null], [null, null]);
+});
+
+Deno.test("a score in the maybe band needs no choice question", async () => {
+  const asked: string[] = [];
+  const m = await matchMemory(jevScoreThenChoice(0.65, { none: 1 }, asked), [label()], { name: "too yum protein oats", brand: "Too Yum" });
+  assertEquals(m.maybe?.name, label().name);
+  assert(!asked.includes("choice"));
+});
+
+Deno.test("the choice question shows each saved food with its brand apart", () => {
+  const q = memoryChoiceQuestion({ name: "kesar pista oats", brand: null }, [{ ...food("Kesar pista oats yogabar", 340), brand: "Yogabar" }, food("rolled oats", 380)]);
+  assertEquals(q.type, "choice");
+  assertEquals((q as { criteria: Record<string, string> }).criteria, { m1: "Kesar pista oats (Yogabar)", m2: "rolled oats", none: MEMORY_CHOICE_NONE });
+  assert(String(q.instructions).endsWith("Input food: kesar pista oats."));
 });

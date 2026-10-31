@@ -25,7 +25,7 @@
 //
 // Runtime-agnostic (no Deno globals), like ourSources.ts.
 
-import { askJev, type JevDeps, type JevQuestion } from "./jev.ts";
+import { asChoice, askJev, type JevDeps, type JevQuestion } from "./jev.ts";
 import { damerau } from "./textMatch.ts";
 
 
@@ -54,6 +54,16 @@ export const MEMORY_FLOOR = 0.7;
  *  -> peanuts to decide and gained nothing; a choice question after it reached
  *  every miss but sent 6 wrong foods; a choice with no bar served 16 wrong. */
 export const MEMORY_MAYBE_FLOOR = 0.6;
+/** No saved food reached the maybe floor: one choice question asks which saved
+ *  food it is, or none, and its top answer goes to decide only when it is a
+ *  food with at least this chance (owner decision 2026-10-31). The score asks
+ *  about each saved food alone; the choice sees them side by side, which is
+ *  what caught "masala tea" -> "Masala chai" (86%). "None" must not be ahead:
+ *  taking the best food regardless sent Milk chocolate for "chocolate milk"
+ *  (none 67%) and peanuts for "peanut chikki" (none 49%, peanuts 47%). */
+export const MEMORY_CHOICE_FLOOR = 0.3;
+/** The choice question's "none" option. */
+export const MEMORY_CHOICE_NONE = "None of these saved foods is the food the user means.";
 /** A variant of a product that already cleared MEMORY_FLOOR may compete with
  *  it when Jev thinks it more likely the food than not. */
 export const VARIANT_FLOOR = 0.5;
@@ -288,6 +298,24 @@ export const MEMORY_RULE =
 export function memoryInputName(line: { name: string; brand: string | null }): string {
   return line.brand && !memoryKey(line.name).includes(memoryKey(line.brand))
     ? `${line.brand} ${line.name}` : line.name;
+}
+
+/** One choice over the shortlist: which saved food (m1..mN, each with its brand
+ *  apart) the user's words describe, or none. The same rule as the score, said
+ *  for a choice. */
+export function memoryChoiceQuestion(line: { name: string; brand: string | null }, foods: MemoryFood[]): JevQuestion {
+  const body = MEMORY_RULE
+    .replace("Judge one thing: is the candidate, a food this user logged before, a food the user's words describe? ", "")
+    .replace(" Score the candidate using the ordered criteria.", "");
+  const criteria: Record<string, string> = {};
+  foods.forEach((f, i) => { criteria[`m${i + 1}`] = brandApart(f.name, f.brand ?? null); });
+  criteria.none = MEMORY_CHOICE_NONE;
+  return {
+    type: "choice",
+    instructions: "Which of these foods, each one this user logged before, is the food the user's words describe? " +
+      body + ` Answer none when no candidate is that food. Input food: ${memoryInputName(line)}.`,
+    criteria,
+  };
 }
 
 /** One identity question per remembered food, keyed m1..mN in list order. */
@@ -585,6 +613,30 @@ export async function matchMemory(
       if (m?.food) {
         trace.maybe = { name: m.food.name.slice(0, 60), conf: r2(m.confidence) };
         return { food: null, confidence: m.confidence, maybe: m.food, trace };
+      }
+      // Nothing in the band: ask once which saved food it is, side by side.
+      // Only after real scores: a Jev that answered nothing is not asked again.
+      if (res?.ok && scores.some((x) => x !== null)) {
+        const c = await askJev(
+          { foods: [{ id: "f1", name: asked.name, brand: asked.brand }] },
+          { pick: memoryChoiceQuestion(asked, list) },
+          jev,
+        ).catch(() => null);
+        const a = c?.ok ? asChoice(c.response.answers.pick) : null;
+        if (a) {
+          const ranked = Object.entries(a.probabilities ?? {}).sort((x, y) => y[1] - x[1]);
+          const [topKey, topP] = ranked[0] ?? ["none", 0];
+          const pick = topKey === "none" ? null : list[Number(topKey.slice(1)) - 1] ?? null;
+          trace.choice = {
+            pick: pick?.name.slice(0, 60) ?? "none", p: r2(topP), none: r2(a.probabilities?.none ?? 0),
+          };
+          if (pick && topP >= MEMORY_CHOICE_FLOOR) {
+            trace.maybe = { name: pick.name.slice(0, 60), conf: r2(topP), from: "choice" };
+            return { food: null, confidence: topP, maybe: pick, trace };
+          }
+        } else {
+          trace.choice = { failed: c && !c.ok ? c.failure : "no_answer" };
+        }
       }
       return { food: null, confidence: d.confidence, trace };
     }

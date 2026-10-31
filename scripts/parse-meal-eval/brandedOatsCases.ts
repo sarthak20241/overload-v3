@@ -98,6 +98,16 @@ export const BRANDED_OATS_CASES: EvalCase[] = [
   withSaved(one("new-masala-oats", "40g saffola masala oats", "saffola", 150, ["yumm"]), [
     ["Too Yumm! High Protein Super Oats - Masala", 37, 135, 8.2, 20, 2.6, "Too Yumm"], ["rolled oats", 30, 114, 4, 20, 2],
   ]),
+  // The choice step (2026-10-31): her "Masala chai" for "masala tea" reaches
+  // decide, which must take it; "chocolate milk" must not become Milk chocolate.
+  // 1 cup is 200 ml: her 150 g at 70 kcal is 93 kcal for a cup.
+  withSaved(one("mem-masala-tea", "1 cup masala tea", "chai", 93, ["powder"]), [
+    ["Masala chai", 150, 70, 2.5, 9, 2.5], ["Tea masala powder", 5, 15, 0.5, 2.5, 0.3],
+  ]),
+  // Chocolate milk is 65-85 kcal / 100 ml (low fat to whole): 130-170 for 200 ml.
+  withSaved(one("new-choc-milk", "200 ml chocolate milk", "milk", 150, ["milk chocolate", "dairy milk"]), [
+    ["Milk chocolate", 20, 108, 1.5, 11.8, 6],
+  ]),
 ];
 
 /** These saved foods instead of hers. */
