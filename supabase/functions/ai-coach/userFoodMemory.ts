@@ -61,8 +61,8 @@ export const MEMORY_MAYBE_FLOOR = 0.6;
  *  taking the best food regardless sent Milk chocolate for "chocolate milk"
  *  (none 67%) and peanuts for "peanut chikki" (none 49%, peanuts 47%). */
 export const MEMORY_CHOICE_FLOOR = 0.3;
-/** The choice is asked only when some saved food scored at least this (PR #314
- *  review: a second Jev call on every new food). In the eval it helped only
+/** The choice is asked only when some saved food scored at least this, not on
+ *  every new food (a second, serial Jev call). In the eval it helped only
  *  where a saved food had scored ("masala tea": 0.91, then blocked by the word
  *  veto); with every score under 0.15 it never found a right food, and once
  *  sent peanuts for "peanut chikki". */
@@ -502,7 +502,7 @@ const RESPELL_MIN_CHARS = 5;
  * where a brand is written, and a saved food's own brand when it has one. With
  * no brand field, a single typed word is compared with saved brands only: one
  * word one letter from a saved name's first word is usually another food
- * ("mango" and "Mange tout", PR #314 review). Only for Jev: the alias key, the
+ * ("mango" and "Mange tout"). Only for Jev: the alias key, the
  * shortlist and the card keep what the user typed.
  */
 export function respellForJev(
@@ -551,7 +551,7 @@ export async function matchMemory(
   foods: MemoryFood[],
   line: { name: string; brand: string | null },
   /** choice: false skips the choice question. Quick has no decide step to
-   *  judge its answer, so there the call would be wasted (PR #314 review). */
+   *  judge its answer, so there the call would be wasted. */
   opts: { choice?: boolean } = {},
 ): Promise<MemoryMatch> {
   const lookup = memoryInputName(line);

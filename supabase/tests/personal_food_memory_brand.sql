@@ -42,8 +42,20 @@ begin
   values ('c0000000-0000-4000-8000-000000000001','Plain oats',30,'g',30,114,4,20,2,'ai','catalog');
   if not exists (select 1 from public.user_food_cache where user_id='food_brand_test_a' and canonical_key='plain oats') then
     raise exception 'a bad trace number blocked the save'; end if;
+
+  -- A bad trace next to a good one: the good one's brand is still found.
+  -- Postgres may cast before it filters by name, so the bad value must not
+  -- reach a cast (20261031130000).
+  insert into public.parse_traces (user_id,input_text,outcome,items,tier)
+  values ('food_brand_test_a','granola','meal',jsonb_build_array(
+    '{"food_name":"Granola","brand":"Kelloggs","grams":30,"kcal":135}'::jsonb,
+    '{"food_name":"Something else","brand":"X","grams":"a handful","kcal":"?"}'::jsonb),'precise');
+  insert into public.meal_entries (meal_id,food_name,quantity,serving_unit,grams_logged,kcal,protein_g,carb_g,fat_g,logged_via,source)
+  values ('c0000000-0000-4000-8000-000000000001','Granola',30,'g',30,135,3,20,5,'ai','catalog');
+  select brand into v_brand from public.user_food_cache where user_id='food_brand_test_a' and canonical_key='granola';
+  if v_brand is distinct from 'Kelloggs' then raise exception 'a bad trace beside a good one lost its brand: %', v_brand; end if;
 end;
 $$;
 
-select 'brand from parse, kept on edit, replaced by a newer one, bad trace safe' as checks;
+select 'brand from parse, kept on edit, replaced by a newer one, bad trace safe, good brand beside a bad trace' as checks;
 rollback;

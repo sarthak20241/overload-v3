@@ -954,7 +954,7 @@ Deno.test("a logged line carries its brand, so saving it can store it", async ()
 });
 
 Deno.test("brand spelling: a one-word food is never respelled toward a saved name", () => {
-  // PR #314 review: "mango" is one letter from "Mange", and is another food.
+  // "mango" is one letter from "Mange", and is another food.
   assertEquals(respellForJev({ name: "mango shake", brand: null }, [food("Mange tout", 40)]), null);
   // A typo of her saved brand still is, when the saved food knows its brand.
   assertEquals(
@@ -1032,7 +1032,7 @@ Deno.test("the choice question shows each saved food with its brand apart", () =
 });
 
 Deno.test("Quick asks no choice question: it has no decide step to use one", async () => {
-  // PR #314 review: in Quick the choice answer cannot be used, so the call was wasted.
+  // In Quick the choice answer cannot be used, so the call would be wasted.
   const asked: string[] = [];
   const net = jevScoreThenChoice(0.4, { "Masala chai": 0.86, none: 0.14 }, asked);
   const m = await matchMemory(net, [food("Masala chai", 45)], { name: "masala tea", brand: null }, { choice: false });
@@ -1059,7 +1059,7 @@ Deno.test("a Quick log sends no choice question; a Thorough one does", async () 
 });
 
 Deno.test("no saved food scored 0.3: no choice question at all", async () => {
-  // PR #314 review: the choice cost a second Jev call on most new foods. In the
+  // The choice cost a second Jev call on most new foods. In the
   // eval it only ever helped where a saved food had scored (masala tea: 0.91,
   // then blocked by the word veto); with every score under 0.15 it found
   // nothing right and once sent peanuts for "peanut chikki".
@@ -1071,13 +1071,13 @@ Deno.test("no saved food scored 0.3: no choice question at all", async () => {
 });
 
 Deno.test("brand spelling: a two-word spelling variant is respelled to her saved one", () => {
-  // PR #314 review asked to pin this. Same food, her spelling: Jev reads it as
+  // Same food, her spelling: Jev reads it as
   // she saved it. Only Jev's input changes, never the card or the alias.
   assertEquals(respellForJev({ name: "greek yogurt", brand: null }, [food("Greek yoghurt", 60)]), { name: "Greek yoghurt", brand: null });
 });
 
 Deno.test("brand spelling: two saved brands one letter apart", () => {
-  // PR #314 review. Saved brands "Pintola" and "Pintala" are one edit apart.
+  // Saved brands "Pintola" and "Pintala" are one edit apart.
   const foods = [{ ...food("protein oats", 390), brand: "Pintola" }, { ...food("peanut butter", 600), brand: "Pintala" }];
   // A slip one edit from both: no guess.
   assertEquals(respellForJev({ name: "oats", brand: "Pintula" }, foods), null);
@@ -1085,4 +1085,15 @@ Deno.test("brand spelling: two saved brands one letter apart", () => {
   assertEquals(respellForJev({ name: "oats", brand: "Pintala" }, foods), null);
   // One edit from one, two from the other: that one.
   assertEquals(respellForJev({ name: "oats", brand: "Pintolla" }, foods), { name: "oats", brand: "Pintola" });
+});
+
+Deno.test("the choice question carries the rule, not the score's own framing", () => {
+  // It is built by cutting the score's first and last sentences out of
+  // MEMORY_RULE. If that wording changes and a cut misses, the choice would
+  // ask Jev to "score the candidate": this fails instead.
+  const text = String(memoryChoiceQuestion({ name: "oats", brand: null }, [food("rolled oats", 380)]).instructions);
+  assert(text.startsWith("Which of these foods, each one this user logged before, is the food the user's words describe? "), text);
+  assert(!/Score the candidate|Judge one thing/.test(text), text);
+  // The body of the rule is still there.
+  assert(text.includes("Judge intended identity, not exact wording."), text);
 });

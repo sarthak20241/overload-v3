@@ -20,6 +20,7 @@ const migrations = [
   "supabase/migrations/20261001142036_personal_food_alias_owner_cleanup.sql",
   "supabase/migrations/20261012160000_food_memory_survives_delete.sql",
   "supabase/migrations/20261031120000_food_memory_brand.sql",
+  "supabase/migrations/20261031130000_food_memory_brand_safe_casts.sql",
 ];
 const tests = [
   "supabase/tests/personal_food_aliases.sql",
