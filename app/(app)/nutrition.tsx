@@ -561,15 +561,27 @@ export default function NutritionScreen() {
   // card itself lifts off once laid out, from wherever it first appeared.
   // Keyed on popOpen, not pop: a reply that lands during the return trip
   // reopens the card rather than being left small.
+  // A reply that lands while the user is on another tab waits: this tab stays
+  // mounted and the card is a root Portal, so it would open over whatever
+  // screen they are on. It opens when they come back (the ready banner and
+  // the bell bring them here).
   const [autoPopKey, setAutoPopKey] = useState(0);
+  const popOnReturnRef = useRef(false);
   const prevStatus = useRef(flow.status);
   useEffect(() => {
     const was = prevStatus.current;
     prevStatus.current = flow.status;
     if (flow.status === 'review' && (was === 'analysing' || was === 'streaming') && !popOpen) {
-      setAutoPopKey((k) => k + 1);
+      if (focusedRef.current) setAutoPopKey((k) => k + 1);
+      else popOnReturnRef.current = true;
     }
+    if (flow.status !== 'review') popOnReturnRef.current = false;
   }, [flow.status, popOpen]);
+  useFocusEffect(useCallback(() => {
+    if (!popOnReturnRef.current) return;
+    popOnReturnRef.current = false;
+    if (flowRef.current.status === 'review') setAutoPopKey((k) => k + 1);
+  }, []));
   // Parse tier (Quick default / Thorough opt-in / Precise for Pro). A ref
   // mirrors the state so onSend reads the CURRENT choice, matching the flowRef
   // idiom above.
