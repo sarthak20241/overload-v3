@@ -187,6 +187,11 @@ export interface ParsedItem {
   numbers_tier?: ParseTier;
   /** A proposed personal alias. Learned only when this food is saved. */
   memory_input_name?: string;
+  /** The brand this line's food is sold under, when known: the row it was
+   *  filled from, else the brand extract read in the user's words. Read off
+   *  the trace by the saved-food trigger (user_food_cache.brand), so a saved
+   *  food can be shown to Jev with its brand apart (brandApart). */
+  brand?: string | null;
   /** Other variants the user also logs ("vanilla whey" beside the "chocolate
    *  whey" served), priced at this line's weight from their own numbers, so
    *  the card can swap the line in one tap with no model call. */
@@ -677,6 +682,8 @@ export function codeFillItems(
   if (resolved.length === 0) return { items: [], blockedBy: "no items" };
   const out: ParsedItem[] = [];
   for (const r of resolved) {
+    // A saved food is waiting on decide's judgement: only decide can give it.
+    if (r.savedCheck) return { items: [], blockedBy: `saved food to judge: ${r.name}` };
     const top = r.candidates[0];
     if (!top || !top.food_id) return { items: [], blockedBy: `ungrounded: ${r.name}` };
     const per = candidatePer100.get(top.food_id);
@@ -2663,6 +2670,7 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
 - looked_up_as on an item means the user's words found no label as written, and from what the search returned the product is most likely sold under that name. A candidate that is the looked_up_as product is the user's food; say in assumption which product you took it as.
 - similar_products on an item are other companies' products we found. They are NEVER the food: do not log one, and do not copy its numbers. Use them, with what you know of the user's brand and its range, only to keep your estimate in a sensible range.
 - label_not_found on an item means the web was searched for this product's label and none was found. If no candidate is acceptable, say so in assumption ("Couldn't find this exact label, so this is my estimate").
+- saved_food_check on an item is a food this user logged before, with the numbers they kept. A matcher was not sure it is the food they mean now (jev_same is its chance, 0 to 1), so you decide, from the user's words: is it the same product? Words the user left out (a flavour, a product-line word, part of the brand) and a brand spelled loosely or shortened are still the same product. A brand, flavour, preparation or fat grade the user DID write that differs from it makes it a different product. Same product: log it by its food_id, ahead of the candidates, since it is their own food. Different, or you cannot tell: leave it and choose from the candidates as usual.
 - No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
 </candidate_rules>
 
@@ -2847,6 +2855,10 @@ export interface ResolvedItem extends ExtractedItem {
   lookedUpAs?: string;
   /** Precise: the web was searched for this food's label and none was found. */
   labelNotFound?: boolean;
+  /** A food this user saved that Jev scored between MEMORY_MAYBE_FLOOR and
+   *  MEMORY_FLOOR: not served, and not a candidate. Decide is shown it beside
+   *  the candidates and says whether the user's words mean it. */
+  savedCheck?: { candidate: CandidateFood; confidence: number };
   /** Rows the brand check took out (another company's product). Never logged;
    *  decide sees them only as a range for its own estimate. */
   similar?: CandidateFood[];
@@ -4829,7 +4841,7 @@ export function memoryCandidate(food: MemoryFood): CandidateFood {
   return {
     food_id: memoryFoodId(food),
     name: food.name,
-    brand: null,
+    brand: food.brand ?? null,
     base_unit: "g",
     kcal: food.per100.kcal,
     protein_g: food.per100.protein_g,
@@ -5090,6 +5102,7 @@ export function memoryQuickItem(
   return {
     food_id: null,
     food_name: food.name,
+    brand: food.brand ?? line.brand ?? null,
     memory_input_name: stamp.input_name,
     quantity: qty,
     serving_label: line.unit,
@@ -5159,6 +5172,29 @@ export function stampSaidNames(items: ParsedItem[], resolved: ResolvedItem[]): P
     const said = [r.prep && !norm(r.name).includes(norm(r.prep)) ? r.prep : null, foodLabel(r)]
       .filter(Boolean).join(" ").slice(0, 100);
     return norm(said) && norm(said) !== norm(it.food_name) ? { ...it, said_name: said } : it;
+  });
+}
+
+/**
+ * Stamp each line with its brand: the row it was filled from (a catalog,
+ * cache or saved-food row's own brand), else the brand extract read for the
+ * one item that line came from. An estimate line (no row) takes the item's
+ * brand only when its name carries it, so a brand never lands on a line it
+ * does not describe. Runs where stampSaidNames runs, before the ids go.
+ */
+export function stampBrands(items: ParsedItem[], resolved: ResolvedItem[]): ParsedItem[] {
+  const words = (x: string) => ` ${x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
+  return items.map((it) => {
+    if (it.brand !== undefined) return it;
+    if (it.food_id) {
+      const owners = resolved.filter((x) => x.candidates.some((c) => c.food_id === it.food_id));
+      if (owners.length !== 1) return it;
+      const row = owners[0].candidates.find((c) => c.food_id === it.food_id);
+      const brand = row?.brand?.trim() || owners[0].brand?.trim() || null;
+      return brand ? { ...it, brand } : it;
+    }
+    const named = resolved.filter((x) => x.brand?.trim() && words(it.food_name).includes(words(x.brand!)));
+    return named.length === 1 ? { ...it, brand: named[0].brand!.trim() } : it;
   });
 }
 
@@ -7042,7 +7078,7 @@ async function runParseMealCore(
           // with no typed weight falls back to the memory like any line.
           !memoryEligible[idx] || statedFor(it)
             ? Promise.resolve(null)
-            : matchMemory(deps.jev!, memoryFoodsFor(it), { name: memoryLineName(it), brand: it.brand ?? null })
+            : matchMemory(deps.jev!, memoryFoodsFor(it), { name: memoryLineName(it), brand: it.brand ?? null }, { choice: !fastMode })
         ),
       );
       for (const m of matches) if (m) steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: m.trace });
@@ -7195,7 +7231,11 @@ async function runParseMealCore(
 
     const fastDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
     const items = assignItemMeals(
-      checkAtwater(fastItems),
+      // fastItems is toResolve.map, one line per item in order; checked anyway
+      // so a later change to that cannot put a brand on another food.
+      checkAtwater(fastItems.length === toResolve.length
+        ? fastItems.map((it, idx) => (it.brand !== undefined ? it : { ...it, brand: toResolve[idx].brand ?? null }))
+        : fastItems),
       extItems,
       { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
     );
@@ -7272,6 +7312,26 @@ async function runParseMealCore(
           memoryByFood.set(cand.food_id as string, { ...stamp, note });
           return { ...item, candidates: [cand], resolvedIdentity: true } as ResolvedItem;
         });
+      }
+      // Jev was unsure (MEMORY_MAYBE_FLOOR to MEMORY_FLOOR): the lookup runs
+      // as it would have, and decide is shown the saved food to judge. Stamped
+      // now so that, if decide takes it, the line is her memory line like any
+      // other, her words included (the alias a kept line teaches).
+      const maybe = memory[idx]?.maybe;
+      if (maybe) {
+        const cand = memoryCandidate(maybe);
+        memoryByFood.set(
+          cand.food_id as string,
+          memoryStamp(maybe, memTimeZone, memoryInputName({ name: memoryLineName(item), brand: item.brand ?? null })),
+        );
+        const savedCheck = { candidate: cand, confidence: memory[idx]!.confidence };
+        return resolveOneItem(
+          deps, item, steps, toolCalls, stapleNames,
+          superMode
+            ? (it: ExtractedItem, onRenamed?: (name: string) => void, onNoLabel?: () => void) =>
+              superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st) => steps.push(st), onRenamed, onNoLabel)
+            : undefined,
+        ).then((r) => ({ ...r, savedCheck }));
       }
       return resolveOneItem(
         deps,
@@ -7400,6 +7460,16 @@ async function runParseMealCore(
     });
   }
   const candidatePer100 = per100ForItems(resolved);
+  // A saved food decide may take is not a candidate, but its numbers must be
+  // known here: verifyItems recomputes a picked line from them.
+  for (const r of resolved) {
+    const c = r.savedCheck?.candidate;
+    if (c?.food_id && !candidatePer100.has(c.food_id)) {
+      candidatePer100.set(c.food_id, {
+        kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g, name: c.name,
+      });
+    }
+  }
 
 
   const skipMode = deps.skipDecideMode ?? "off";
@@ -7425,7 +7495,7 @@ async function runParseMealCore(
     const fillDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
     const filled = assignItemMeals(
       stripEphemeralIds(
-        stampSaidNames(
+        stampBrands(stampSaidNames(
           flagPrepMismatch(
             checkAtwater(reconcileQuantity(
               await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100),
@@ -7434,7 +7504,7 @@ async function runParseMealCore(
             prepForItems(resolved),
           ),
           resolved,
-        ),
+        ), resolved),
         verifiedForItems(resolved),
         memoryByFood,
       ),
@@ -7496,6 +7566,14 @@ async function runParseMealCore(
       candidates: r.candidates.slice(0, 4).map(candidatePayload),
       ...(r.lookedUpAs ? { looked_up_as: r.lookedUpAs } : {}),
       ...(r.labelNotFound ? { label_not_found: true } : {}),
+      ...(r.savedCheck
+        ? {
+          saved_food_check: {
+            ...candidatePayload(r.savedCheck.candidate),
+            jev_same: Math.round(r.savedCheck.confidence * 100) / 100,
+          },
+        }
+        : {}),
       // No food_id on purpose: these can inform an estimate, never be logged.
       ...(r.similar?.length
         ? {
@@ -7547,6 +7625,21 @@ async function runParseMealCore(
     resolved,
     deps.log,
   );
+  // A saved food decide took is that line's answer from here on: its
+  // servings, name check and fallback all read the line's candidates.
+  if (resolved.some((r) => r.savedCheck)) {
+    resolved = resolved.map((r) => {
+      const c = r.savedCheck?.candidate;
+      if (!c) return r;
+      const taken = picked.some((it) => it.food_id === c.food_id);
+      steps.push({
+        iter: 2, tool: "saved_food_check",
+        input: { item: r.name, saved: c.name.slice(0, 60), conf: Math.round(r.savedCheck!.confidence * 100) / 100 },
+        result: { taken },
+      });
+      return taken ? { ...r, candidates: [c, ...r.candidates], resolvedIdentity: true } : r;
+    });
+  }
   let items = await verifyItems(deps, picked, candidatePer100);
   if (hits.length > 0) {
     const before = items;
@@ -7608,13 +7701,13 @@ async function runParseMealCore(
     items = reconcileExtracted(items, resolved, candidatePer100);
   }
 
-  items = stampSaidNames(
+  items = stampBrands(stampSaidNames(
     flagPrepMismatch(
       checkAtwater(reconcileQuantity(items, servingsForItems(resolved))),
       prepForItems(resolved),
     ),
     resolved,
-  );
+  ), resolved);
 
   // Shadow mode: decide already produced the real answer above. Compare what
   // the code fill WOULD have shipped, so the decision to skip decide is made on

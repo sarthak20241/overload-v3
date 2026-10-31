@@ -2951,6 +2951,8 @@ function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
       ? (c.confirmed_at ? String(c.confirmed_at) : new Date().toISOString())
       : String(c.last_logged_at),
     persistent: true, confirmed_at: String(c.confirmed_at),
+    // Absent before migration 20261031120000 (select "*"), so absent is null.
+    brand: typeof c.brand === "string" && c.brand.trim() ? c.brand.trim() : null,
     confirmed_aliases: Array.isArray(c.aliases) ? c.aliases.filter((a): a is string => typeof a === "string") : [],
   };
 }
