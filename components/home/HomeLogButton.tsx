@@ -4,15 +4,16 @@
  * opens Drona's food box on Nutrition with the keyboard up.
  *
  * Beside it, the first few times, a small pill says what it is for. The facts
- * are read here, cheaply: one row from meal_entries (RLS-scoped, limit 1) and
- * a per-user tap count on the device. Today's food comes from the caller,
+ * are read here, cheaply: a per-user tap count on the device and, until the
+ * user is known to have logged food or the pill is done, one row from
+ * meal_entries (RLS-scoped, limit 1). Today's food comes from the caller,
  * which already holds it for the calorie ring. Re-read on every focus, so a
  * meal logged on Nutrition hides the pill when the user comes back.
  *
  * Text only today. Voice and camera join HomeLogMode, and the button grows a
  * small menu once there is more than one mode.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -23,7 +24,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { Colors, FontSize, FontWeight, Radius, Spacing, Shadow } from '@/constants/theme';
-import { homeLogHint, homeLogTapsKey, parseTaps, type HomeLogMode } from '@/lib/homeLogHint';
+import { HOME_LOG_HINT_MAX_TAPS, homeLogHint, homeLogTapsKey, parseTaps, type HomeLogMode } from '@/lib/homeLogHint';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 // components/ui/BottomNav.tsx draws the bar at 64 + the bottom inset.
@@ -48,18 +49,27 @@ export function HomeLogButton({ supabase, userId, todayReady, loggedToday, hidde
   const [facts, setFacts] = useState<{ everLogged: boolean; taps: number } | null>(null);
   const [tick, setTick] = useState(0);
   useFocusEffect(useCallback(() => { setTick((t) => t + 1); }, []));
+  // The user this phone has seen log food. Once true it stays true, so the
+  // meal_entries read is not repeated on every focus.
+  const everLoggedFor = useRef<string | null>(null);
 
   useEffect(() => {
     let alive = true;
     (async () => {
-      const [any, taps] = await Promise.all([
-        supabase.from('meal_entries').select('id').limit(1),
-        AsyncStorage.getItem(homeLogTapsKey(userId)).catch(() => null),
-      ]);
+      const taps = parseTaps(await AsyncStorage.getItem(homeLogTapsKey(userId)).catch(() => null));
       if (!alive) return;
+      const known = everLoggedFor.current === userId;
+      // Nothing left to learn: the words are settled, or the pill is done.
+      if (known || taps >= HOME_LOG_HINT_MAX_TAPS) {
+        setFacts({ everLogged: known, taps });
+        return;
+      }
+      const any = await supabase.from('meal_entries').select('id').limit(1);
       // A failed read leaves the pill off rather than guessing its words.
-      if (any.error) return;
-      setFacts({ everLogged: (any.data?.length ?? 0) > 0, taps: parseTaps(taps) });
+      if (!alive || any.error) return;
+      const everLogged = (any.data?.length ?? 0) > 0;
+      if (everLogged) everLoggedFor.current = userId;
+      setFacts({ everLogged, taps });
     })().catch(() => {});
     return () => { alive = false; };
   }, [supabase, userId, tick]);
@@ -77,7 +87,12 @@ export function HomeLogButton({ supabase, userId, todayReady, loggedToday, hidde
     const taps = (facts?.taps ?? 0) + 1;
     track('home_log_food_tapped', { mode: 'text', hint, taps });
     setFacts((f) => (f ? { ...f, taps } : f));
-    AsyncStorage.setItem(homeLogTapsKey(userId), String(taps)).catch(() => {});
+    // Count from the stored value, not only what is on screen: a tap before
+    // the focus read settles must not write 1 over a stored 2.
+    const key = homeLogTapsKey(userId);
+    AsyncStorage.getItem(key)
+      .then((raw) => AsyncStorage.setItem(key, String(Math.max(parseTaps(raw) + 1, taps))))
+      .catch(() => {});
     onLog('text');
   };
 

@@ -1506,7 +1506,7 @@ export default function DashboardScreen() {
           todayReady={foodTodayRead}
           loggedToday={foodTodayRead && Object.values(fuel.byMeal).some((rows) => rows.length > 0)}
           hidden={popupShowing || splitPromptShowing || aiCoachOpen || workoutActive}
-          onLog={() => router.push({ pathname: '/nutrition', params: { focus: 'ai' } } as any)}
+          onLog={() => router.push({ pathname: '/nutrition', params: { focus: 'ai' } })}
         />
       ) : null}
 
