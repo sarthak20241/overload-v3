@@ -124,6 +124,52 @@ export function unpackReady<T extends ReadyShape>(raw: string | null | undefined
   }
 }
 
+/** The parts of the screen's flow the store reads. Loose on purpose: the
+ *  screen's own union is wider and stays in nutrition.tsx. */
+export interface StoreFlow {
+  status: string;
+  raw?: string;
+  meal?: { items: unknown[] } | null;
+  mealType?: string;
+  message?: string;
+  [k: string]: unknown;
+}
+
+export type StoreStep =
+  | { kind: 'skip' }
+  | { kind: 'keep' }
+  | { kind: 'clear' }
+  | { kind: 'save'; flow: ReadyShape & Record<string, unknown> };
+
+/** What the stored meal should do after the screen's flow changes.
+ *
+ *  - skip: no account yet, or this account's stored meal has not been read
+ *    back. Writing now could overwrite it, or file the last account's meal
+ *    under the new one's key.
+ *  - save: a meal is waiting for the user. A failed Add counts too: the meal
+ *    is still theirs to add, so it is stored as waiting, with the failure as
+ *    its note.
+ *  - clear: the card is finished, but only once no Add is still writing.
+ *    The flow goes idle the moment Add is tapped, before the write lands, so
+ *    clearing then would lose the meal to a write that fails or an app that
+ *    dies mid-write.
+ *  - keep: anything in between (a correction being read, a reply, a
+ *    "Just log it" send) leaves the stored meal as it is. */
+export function readyStoreStep(
+  flow: StoreFlow,
+  ctx: { key: string | null; restoredKey: string | null; adding: boolean },
+): StoreStep {
+  if (!ctx.key || ctx.restoredKey !== ctx.key) return { kind: 'skip' };
+  if (flow.status === 'review' && isReadyShape(flow)) return { kind: 'save', flow: flow as ReadyShape & Record<string, unknown> };
+  if (flow.status === 'error' && flow.meal && Array.isArray(flow.meal.items) && flow.meal.items.length > 0) {
+    const { message, clientId: _c, logDate: _l, ...rest } = flow;
+    const waiting: Record<string, unknown> = { ...rest, status: 'review', notice: message ?? null };
+    if (isReadyShape(waiting)) return { kind: 'save', flow: waiting as unknown as ReadyShape & Record<string, unknown> };
+  }
+  if (flow.status === 'idle' || flow.status === 'create') return ctx.adding ? { kind: 'keep' } : { kind: 'clear' };
+  return { kind: 'keep' };
+}
+
 // ── The inline amount steppers ──────────────────────────────────────────────
 
 /** One - or + on a line's amount. A bare measurement ("150 g") moves in

@@ -9,6 +9,7 @@ import {
   READY_MAX_AGE_MS,
   readyAction,
   readyLine,
+  readyStoreStep,
   scaleLine,
   stepAmount,
   unpackReady,
@@ -118,4 +119,57 @@ Deno.test("no fiber stays no fiber, and a bad amount changes nothing", () => {
   assertEquals(scaleLine({ ...line, fiber_g: null }, 1).fiber_g, null);
   assertEquals(scaleLine(line, 0), line);
   assertEquals(scaleLine(line, 2), line);
+});
+
+// ── What happens to the stored meal ─────────────────────────────────────────
+
+const ready = { key: "overload.mealReady.u1", restoredKey: "overload.mealReady.u1", adding: false };
+
+Deno.test("a waiting meal is stored", () => {
+  assertEquals(readyStoreStep(review, ready), { kind: "save", flow: review });
+});
+
+Deno.test("tapping Add does not clear the meal while the write is still out", () => {
+  // Add sets the flow idle at once; the write lands later.
+  assertEquals(readyStoreStep({ status: "idle" }, { ...ready, adding: true }), { kind: "keep" });
+});
+
+Deno.test("the meal is cleared only once the write has landed", () => {
+  assertEquals(readyStoreStep({ status: "idle" }, ready), { kind: "clear" });
+});
+
+Deno.test("a failed Add stores the meal as waiting again, with the failure as its note", () => {
+  const failed = {
+    status: "error", raw: review.raw, meal: review.meal, mealType: review.mealType,
+    dayIso: review.dayIso, message: "Could not add that. Try again.",
+  };
+  assertEquals(readyStoreStep(failed, ready), {
+    kind: "save",
+    flow: {
+      status: "review", raw: review.raw, meal: review.meal, mealType: review.mealType,
+      dayIso: review.dayIso, notice: "Could not add that. Try again.",
+    },
+  });
+});
+
+Deno.test("an error with no meal (a failed parse) leaves the store alone", () => {
+  assertEquals(readyStoreStep({ status: "error", raw: "x", message: "no" }, ready), { kind: "keep" });
+});
+
+Deno.test("nothing is written before this account's meal is read back", () => {
+  assertEquals(readyStoreStep(review, { ...ready, restoredKey: null }), { kind: "skip" });
+  assertEquals(readyStoreStep({ status: "idle" }, { ...ready, restoredKey: null }), { kind: "skip" });
+});
+
+Deno.test("a new account never gets the last account's meal", () => {
+  // Signed in as u2, while the restore still belongs to u1.
+  assertEquals(
+    readyStoreStep(review, { key: "overload.mealReady.u2", restoredKey: "overload.mealReady.u1", adding: false }),
+    { kind: "skip" },
+  );
+  assertEquals(readyStoreStep(review, { key: null, restoredKey: null, adding: false }), { kind: "skip" });
+});
+
+Deno.test("a correction being read keeps the stored meal", () => {
+  assertEquals(readyStoreStep({ status: "analysing", raw: "make it 2" }, ready), { kind: "keep" });
 });

@@ -33,7 +33,7 @@ import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMea
 import { MealWaitSheet } from '@/components/diet/MealWaitSheet';
 import { MealResultScreen } from '@/components/diet/MealResultScreen';
 import {
-  arrivalAction, readyLine, readyAction, packReady, unpackReady, stepAmount, scaleLine, type ReadyKind,
+  arrivalAction, readyLine, readyAction, packReady, unpackReady, readyStoreStep, stepAmount, scaleLine, type ReadyKind,
 } from '@/lib/mealReady';
 import { isMeasurementUnit } from '@/lib/units';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -154,6 +154,10 @@ type ParseFlow =
       words?: string;
       /** A suggestion's origin, kept so a retried Add is still reported as one. */
       origin?: 'pattern' | 'copy_day';
+      /** A failed Add keeps the day and tier it was for, so Retry (and a
+       *  restart, which stores this as waiting) still means the same meal. */
+      dayIso?: string;
+      tier?: ParseSpeed;
     }
   // The user asked to SAVE a food or meal, and Drona drafted it. Nothing is
   // written until the card is tapped; `result` is what came back from that tap.
@@ -583,9 +587,26 @@ export default function NutritionScreen() {
   // A meal waiting to be added survives the app being closed: it is work
   // the user would otherwise type again. Read once per account before
   // anything is written, so the first idle render cannot wipe it.
+  // `restoredKey` names the account whose meal was read back. It is a key,
+  // not a flag, so the render that switches accounts already sees "not
+  // read yet" and cannot file the last account's meal under the new key.
   const readyKey = user?.id ? `overload.mealReady.${user.id}` : null;
-  const [readyRestored, setReadyRestored] = useState(false);
+  const [restoredKey, setRestoredKey] = useState<string | null>(null);
+  const lastReadyKey = useRef<string | null>(null);
   useEffect(() => {
+    // Another account signed in: whatever was on screen was the last
+    // account's, so it goes, and its parse with it. Its stored meal stays
+    // under its own key for when it signs back in.
+    if (lastReadyKey.current && lastReadyKey.current !== readyKey) {
+      parseTokenRef.current += 1;
+      parseAbortRef.current?.abort();
+      turnsRef.current = [];
+      lastReviewRef.current = null;
+      setWaitOpen(false);
+      setResultOpen(false);
+      setFlow({ status: 'idle' });
+    }
+    lastReadyKey.current = readyKey;
     if (!readyKey) return;
     let alive = true;
     AsyncStorage.getItem(readyKey)
@@ -595,16 +616,17 @@ export default function NutritionScreen() {
         if (back) setFlow((f) => (f.status === 'idle' ? back : f));
       })
       .catch(() => {})
-      .finally(() => { if (alive) setReadyRestored(true); });
+      .finally(() => { if (alive) setRestoredKey(readyKey); });
     return () => { alive = false; };
   }, [readyKey]);
   useEffect(() => {
-    if (!readyKey || !readyRestored) return;
-    // A running correction keeps the stored meal it is correcting; an error
-    // that kept its meal keeps it too. Only a finished card clears it.
-    if (flow.status === 'review') AsyncStorage.setItem(readyKey, packReady(flow)).catch(() => {});
-    else if (flow.status === 'idle' || flow.status === 'create') AsyncStorage.removeItem(readyKey).catch(() => {});
-  }, [flow, readyKey, readyRestored]);
+    // lib/mealReady decides: an Add still writing keeps the meal stored, a
+    // failed Add stores it as waiting again, only a finished card clears it.
+    const step = readyStoreStep(flow, { key: readyKey, restoredKey, adding });
+    if (!readyKey) return;
+    if (step.kind === 'save') AsyncStorage.setItem(readyKey, packReady(step.flow)).catch(() => {});
+    else if (step.kind === 'clear') AsyncStorage.removeItem(readyKey).catch(() => {});
+  }, [flow, readyKey, restoredKey, adding]);
 
   // Parse tier (Quick default / Thorough opt-in / Precise for Pro). A ref
   // mirrors the state so onSend reads the CURRENT choice, matching the flowRef
@@ -1747,7 +1769,7 @@ export default function NutritionScreen() {
       for (const g of groups) dropPendingLines(g.id);
       haptics.warning();
       // Keep the reviewed meal so Retry re-attempts the write (see onRetry).
-      setFlow({ status: 'error', raw: review.raw, message: 'Could not add that. Try again.', meal: review.meal, mealType: review.mealType, words: review.words, origin: review.origin });
+      setFlow({ status: 'error', raw: review.raw, message: 'Could not add that. Try again.', meal: review.meal, mealType: review.mealType, words: review.words, origin: review.origin, dayIso: review.dayIso, tier: review.tier });
       return;
     }
     editCountRef.current = 0;
@@ -1771,7 +1793,7 @@ export default function NutritionScreen() {
     // A write failure kept the meal → re-show the review card (tapping Add re-writes
     // it, to the current day). Only re-run the AI parse if the meal is gone.
     if (flow.meal && flow.mealType) {
-      setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.mealType, words: flow.words, origin: flow.origin, dayIso: viewIso });
+      setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.mealType, words: flow.words, origin: flow.origin, dayIso: flow.dayIso ?? viewIso, tier: flow.tier });
     } else {
       // A failed "Just log it" send retries under its ORIGINAL id (see ParseFlow).
       void runParse(
