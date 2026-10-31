@@ -28,6 +28,8 @@ export interface ReadyNotice {
   target: ReadyTarget;
   /** Its id behind the bell. Default: `coach:<session>` for a sheet. False: not filed. */
   inbox?: string | false;
+  /** The user can already see it in the app (the dashboard's phase popup): no banner, only the notification when away. */
+  bannerless?: boolean;
 }
 
 /** Where a notice waits behind the bell, or null when it does not. */
@@ -58,7 +60,8 @@ export function announceReady(n: ReadyNotice): void {
 
 /** A notification's data, back to a target. Null when it is not ours. */
 export function readyTargetFromData(data: Record<string, unknown>): ReadyTarget | null {
-  const route = typeof data.route === 'string' && data.route.startsWith('/') ? data.route : undefined;
+  // An app path only: one slash, never `//host`.
+  const route = typeof data.route === 'string' && /^\/(?!\/)/.test(data.route) ? data.route : undefined;
   if (typeof data.coachSession === 'number') return { coachSession: data.coachSession, route };
   if (route) return { route };
   return null;

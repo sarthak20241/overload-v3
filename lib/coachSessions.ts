@@ -58,6 +58,15 @@ export type CoachSessionEvent<P extends CoachSessionProps> =
 /** Kept sheets past this many lose their oldest idle one. */
 export const MAX_KEPT = 4;
 
+/** Same keys, same values (by identity). An opener's props are a fresh object every render. */
+export function sameProps(a: object, b: object): boolean {
+  if (a === b) return true;
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  return ka.every((k) => Object.is((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+}
+
 export function createCoachSessionStore<P extends CoachSessionProps>(now: () => number = Date.now) {
   // Reassigned, never mutated, so a snapshot is stable between writes
   // (useSyncExternalStore needs that).
@@ -170,7 +179,8 @@ export function createCoachSessionStore<P extends CoachSessionProps>(now: () => 
     update(id: number, props: P, onClose: () => void) {
       const s = find(id);
       if (!s || !s.visible || s.onClose !== onClose) return;
-      if (s.props === props) return;
+      // Nothing new: no emit, so the host does not redraw every sheet.
+      if (sameProps(s.props, props)) return;
       sessions = sessions.map((x) => (x.id === id ? { ...x, props } : x));
       emit();
     },
@@ -240,11 +250,13 @@ export function createCoachSessionStore<P extends CoachSessionProps>(now: () => 
       emit();
     },
 
-    /** Sign-out: every sheet goes. */
+    /** Sign-out: every sheet goes. The one showing tells its opener, which would otherwise stay "open". */
     clear() {
       if (sessions.length === 0) return;
+      const onClose = sessions.find((s) => s.visible)?.onClose ?? null;
       sessions = [];
       emit();
+      onClose?.();
     },
   };
 }

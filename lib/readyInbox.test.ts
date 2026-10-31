@@ -1,6 +1,7 @@
 // deno test --allow-all --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/readyInbox.test.ts
 import { assertEquals } from 'jsr:@std/assert@1';
-import { createReadyInbox, parseStored, storable, type InboxItem } from './readyInbox.ts';
+import { createReadyInbox, isStaleCoachItem, parseStored, storable, type InboxItem } from './readyInbox.ts';
+import { inboxIdFor, readyTargetFromData } from './readyNotice.ts';
 
 function memory() {
   const m = new Map<string, string>();
@@ -81,4 +82,26 @@ Deno.test('loading the same user again keeps what is there (a root remount)', as
   inbox.add(phase);
   await inbox.hydrate(null);
   assertEquals(inbox.getSnapshot().map((i) => i.id), ['phase:p1']);
+});
+
+Deno.test('a sheet item stays while the sheet waits unseen, and goes once it shows or is gone', () => {
+  const item = { ...coach, at: 1 };
+  assertEquals(isStaleCoachItem(item, [{ id: 3, visible: false }]), false);
+  assertEquals(isStaleCoachItem(item, [{ id: 3, visible: true }]), true);
+  assertEquals(isStaleCoachItem(item, []), true);
+  assertEquals(isStaleCoachItem({ ...phase, at: 1 }, []), false);
+});
+
+Deno.test('a notice for an open sheet is not filed; a hidden one is', () => {
+  const target = { coachSession: 3 };
+  assertEquals(inboxIdFor({ title: 't', body: 'b', target }), 'coach:3');
+  assertEquals(inboxIdFor({ title: 't', body: 'b', target, inbox: false }), null);
+  assertEquals(inboxIdFor({ title: 't', body: 'b', target: { route: '/nutrition' }, inbox: 'meal' }), 'meal');
+});
+
+Deno.test('a notification only routes to an app path', () => {
+  assertEquals(readyTargetFromData({ route: '/goal-plan' }), { route: '/goal-plan' });
+  assertEquals(readyTargetFromData({ route: '//evil.example' }), null);
+  assertEquals(readyTargetFromData({ route: 'https://x' }), null);
+  assertEquals(readyTargetFromData({ coachSession: 4, route: '//x' }), { coachSession: 4, route: undefined });
 });

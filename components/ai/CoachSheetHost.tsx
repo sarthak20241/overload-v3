@@ -21,7 +21,7 @@ import { CoachSheet, coachSessions, type CoachSheetProps } from '@/components/ai
 import type { CoachSession } from '@/lib/coachSessions';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { announceReady, inboxIdFor, setReadyNoticeHandler, type ReadyNotice, type ReadyTarget } from '@/lib/readyNotice';
-import { readyInbox, type InboxItem } from '@/lib/readyInbox';
+import { isStaleCoachItem, readyInbox, type InboxItem } from '@/lib/readyInbox';
 import { onPhaseDraftChange, readPhaseDraft } from '@/lib/phaseDraft';
 import { addNotificationTapListener, dismissNotification, presentNotificationNow, requestNotificationPermission } from '@/lib/notifications';
 import { holdBackgroundTime, NOTICE_GRACE_MS } from '@/lib/backgroundTime';
@@ -115,9 +115,13 @@ export function CoachSheetHost() {
   const { user } = useClerkUser();
 
   // A new account sees none of the last one's sheets, and its own bell.
+  // Only a real change clears: Clerk loading (nobody, then the user) is not
+  // one, and a sheet opened in that window must stay.
   const userId = user?.id ?? null;
+  const lastUserRef = useRef<string | null>(null);
   useEffect(() => {
-    coachSessions.clear();
+    if (lastUserRef.current !== null && lastUserRef.current !== userId) coachSessions.clear();
+    lastUserRef.current = userId;
     void readyInbox.hydrate(userId).then(() => {
       readyInbox.getSnapshot()
         .filter((i) => i.id.startsWith('phase:'))
@@ -129,12 +133,7 @@ export function CoachSheetHost() {
   // A sheet's item goes once the sheet is opened (any way) or gone.
   useEffect(() => coachSessions.subscribe(() => {
     const sessions = coachSessions.getSnapshot();
-    readyInbox.removeWhere((i) => {
-      if (!('coachSession' in i.target)) return false;
-      const id = i.target.coachSession;
-      const s = sessions.find((x) => x.id === id);
-      return !s || !s.unseen;
-    });
+    readyInbox.removeWhere((i) => isStaleCoachItem(i, sessions));
   }), []);
 
   const go = useCallback((t: ReadyTarget, inbox: string | null) => {
@@ -157,7 +156,7 @@ export function CoachSheetHost() {
       const inbox = inboxIdFor(n);
       if (inbox) readyInbox.add({ id: inbox, title: n.title, body: n.body, failed: n.failed, target: n.target });
       if (AppState.currentState === 'active') {
-        showBanner(n);
+        if (!n.bannerless) showBanner(n);
         return;
       }
       const shown = presentNotificationNow(n.title, n.body, targetData(n.target, inbox));
@@ -177,7 +176,7 @@ export function CoachSheetHost() {
       // No banner for a sheet that is already on screen (left open when the
       // user switched apps): the result is right there.
       const t = notice.target;
-      if (!('coachSession' in t && coachSessions.get(t.coachSession)?.visible)) showBanner(notice);
+      if (!notice.bannerless && !('coachSession' in t && coachSessions.get(t.coachSession)?.visible)) showBanner(notice);
       // Back without tapping it: the banner says it now, so the notification
       // would only be a stale copy in the list. (Often the work ended in the
       // moment of coming back, before the app heard it was active.)
@@ -213,9 +212,12 @@ export function CoachSheetHost() {
       void requestNotificationPermission();
       return;
     }
-    // Seen as it ended: nothing to announce, unless the app was away.
+    // Seen as it ended: nothing to announce, unless the app was away. Then
+    // the notification goes, but nothing is filed behind the bell: the sheet
+    // is open on the result for when they come back.
     if (!e.hidden && AppState.currentState === 'active') return;
-    announceReady(coachReadyNotice(e.session, e.failed));
+    const notice = coachReadyNotice(e.session, e.failed);
+    announceReady(e.hidden ? notice : { ...notice, inbox: false });
   }), [toast]);
 
   return (

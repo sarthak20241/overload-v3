@@ -118,13 +118,16 @@ export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, get
       if (!mayAutoBuild(rec, Date.now())) { if (mounted.current) setBuildFailed(true); return; }
       await AsyncStorage.setItem(key, JSON.stringify({ tries: rec.tries + 1, lastAt: Date.now() })).catch(() => {});
       if (mounted.current) setBuilding(true);
-      const plan = await requestPhasePlan({ phase, getToken });
+      const plan = await requestPhasePlan({ phase, getToken, watching: () => watchingRef.current });
       if (!mounted.current) return;
       setBuilding(false);
       if (!plan) setBuildFailed(true);
       // Success lands through the draft store's change event.
     })();
   }, [action?.kind, action?.phase.id, getToken, program]);
+  // Read when the build ends: the ready popup can show then, so no banner too.
+  const watchingRef = useRef(popupAllowed);
+  watchingRef.current = popupAllowed;
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 

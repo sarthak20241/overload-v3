@@ -1,6 +1,6 @@
 // deno test --allow-all lib/coachSessions.test.ts
 import { assert, assertEquals } from 'jsr:@std/assert@1';
-import { createCoachSessionStore, MAX_KEPT, type CoachSessionEvent, type CoachSessionProps } from './coachSessions.ts';
+import { createCoachSessionStore, MAX_KEPT, sameProps, type CoachSessionEvent, type CoachSessionProps } from './coachSessions.ts';
 
 type P = CoachSessionProps & { tag?: string };
 
@@ -190,5 +190,28 @@ Deno.test('clear drops everything', () => {
   store.report(id, { screen: 'workout', busy: true, failed: false });
   store.close(id);
   store.clear();
+  assertEquals(store.getSnapshot().length, 0);
+});
+
+Deno.test('an opener re-rendering with the same props does not redraw the sheets', () => {
+  const { store } = setup();
+  const close = () => {};
+  const cb = () => {};
+  const id = store.open({ initialScreen: 'chat', tag: 'a', onX: cb } as P, close);
+  let emits = 0;
+  store.subscribe(() => { emits += 1; });
+  store.update(id, { initialScreen: 'chat', tag: 'a', onX: cb } as P, close);
+  assertEquals(emits, 0);
+  store.update(id, { initialScreen: 'chat', tag: 'b', onX: cb } as P, close);
+  assertEquals(emits, 1);
+  assertEquals(sameProps({ a: 1 }, { a: 1, b: undefined }), false);
+});
+
+Deno.test('clear tells the opener of the sheet showing that it closed', () => {
+  const { store } = setup();
+  let closed = 0;
+  store.open({ initialScreen: 'workout' }, () => { closed += 1; });
+  store.clear();
+  assertEquals(closed, 1);
   assertEquals(store.getSnapshot().length, 0);
 });

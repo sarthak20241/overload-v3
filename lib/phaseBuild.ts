@@ -48,6 +48,8 @@ export function phaseBuildPrompt(note: string): string {
 export function requestPhasePlan(args: {
   phase: Pick<ActiveProgramPhaseRow, 'id' | 'seq' | 'name' | 'training_block' | 'training_directive'>;
   getToken: (opts?: { skipCache?: boolean }) => Promise<string | null>;
+  /** True while the dashboard can show its own ready popup: then no banner on top of it. */
+  watching?: () => boolean;
 }): Promise<GeneratedPlan | null> {
   // Time to finish if the user leaves the app mid-build (lib/backgroundTime).
   return withBackgroundTime(() => buildPhasePlan(args));
@@ -95,6 +97,7 @@ async function buildPhasePlan(args: Parameters<typeof requestPhasePlan>[0]): Pro
       // The dashboard's ready popup files it behind the bell, after the user
       // has seen it, so the card can fly in (components/program/NextPhaseCard).
       inbox: false,
+      bannerless: args.watching?.() ?? false,
     });
     track('phase_auto_built', {
       phase_seq: args.phase.seq,

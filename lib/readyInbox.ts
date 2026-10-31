@@ -46,6 +46,17 @@ export function parseStored(raw: string | null): InboxItem[] {
   }
 }
 
+/**
+ * A kept coach sheet's item is stale once the sheet is gone (dropped, the app
+ * restarted) or showing: the user is looking at the result.
+ */
+export function isStaleCoachItem(item: InboxItem, sessions: { id: number; visible: boolean }[]): boolean {
+  if (!('coachSession' in item.target)) return false;
+  const id = item.target.coachSession;
+  const s = sessions.find((x) => x.id === id);
+  return !s || s.visible;
+}
+
 export function createReadyInbox(storage: Pick<typeof AsyncStorage, 'getItem' | 'setItem'>) {
   let items: InboxItem[] = [];
   let userId: string | null = null;
