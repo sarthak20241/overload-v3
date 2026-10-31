@@ -184,7 +184,7 @@ export default function GoalPlanScreen() {
   const ended = program != null && totalDays > 0 && daysIn >= totalDays;
   const weekOverall = program ? Math.max(1, Math.min(totalWeeks, Math.floor(daysIn / 7) + 1)) : 0;
   const endDateISO = program ? addDaysISO(program.start_date, totalDays) : null;
-  // By seq, not array index, like the stepper's lookup.
+  // By seq, not array index, like the phase timeline's lookup.
   const currentPhase = program != null && program.currentPhaseSeq != null
     ? program.phases.find((ph) => ph.seq === program.currentPhaseSeq) ?? null
     : null;
