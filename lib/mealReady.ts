@@ -184,29 +184,75 @@ export function stepAmount(quantity: number, isMeasurement: boolean, dir: 1 | -1
 }
 
 /** The numbers a line carries that scale with how much was eaten. */
-export interface AmountLine {
+export interface AmountNumbers {
   quantity: number;
   grams: number;
   kcal: number; protein_g: number; carb_g: number; fat_g: number;
   fiber_g: number | null;
 }
 
+/** A line that can be stepped. `amount_base` is the line as first seen, so
+ *  every step scales from it and - after + lands on the same numbers. */
+export interface AmountLine extends AmountNumbers {
+  amount_base?: AmountNumbers;
+}
+
 const r1 = (n: number) => Math.round(n * 10) / 10;
+
+function snapshot(l: AmountNumbers): AmountNumbers {
+  return {
+    quantity: l.quantity, grams: l.grams, kcal: l.kcal,
+    protein_g: l.protein_g, carb_g: l.carb_g, fat_g: l.fat_g, fiber_g: l.fiber_g,
+  };
+}
+
+/** The base at a quantity. Back at the base's own quantity it is the base,
+ *  exactly, not a rounded copy of it. */
+function at(base: AmountNumbers, quantity: number): AmountNumbers {
+  if (quantity === base.quantity) return snapshot(base);
+  const k = quantity / base.quantity;
+  return {
+    quantity,
+    grams: r1(base.grams * k),
+    kcal: Math.round(base.kcal * k),
+    protein_g: r1(base.protein_g * k),
+    carb_g: r1(base.carb_g * k),
+    fat_g: r1(base.fat_g * k),
+    fiber_g: base.fiber_g == null ? null : r1(base.fiber_g * k),
+  };
+}
+
+/** The stored base still describes this line: the line's numbers are what
+ *  the base gives at the line's quantity. An edit, a swap or a correction
+ *  changes the numbers, and the base then starts over from the new line. */
+function baseFits(line: AmountNumbers, base: AmountNumbers): boolean {
+  if (!(base.quantity > 0)) return false;
+  const want = at(base, line.quantity);
+  return want.grams === line.grams && want.kcal === line.kcal && want.protein_g === line.protein_g
+    && want.carb_g === line.carb_g && want.fat_g === line.fat_g && want.fiber_g === line.fiber_g;
+}
 
 /** The line at a new amount. Every number moves by the same ratio, the way
  *  the editor's own portion change does, so the line stays the same food
- *  with the same receipts (source, notes, swap options priced by grams). */
+ *  with the same receipts (source, notes, swap options priced by grams).
+ *  Scaled from the line as first seen, not from the last rounded step, so
+ *  + then - returns the original numbers. */
 export function scaleLine<T extends AmountLine>(line: T, quantity: number): T {
   if (!(quantity > 0) || !(line.quantity > 0) || quantity === line.quantity) return line;
-  const k = quantity / line.quantity;
-  return {
-    ...line,
-    quantity,
-    grams: r1(line.grams * k),
-    kcal: Math.round(line.kcal * k),
-    protein_g: r1(line.protein_g * k),
-    carb_g: r1(line.carb_g * k),
-    fat_g: r1(line.fat_g * k),
-    fiber_g: line.fiber_g == null ? null : r1(line.fiber_g * k),
-  };
+  const base = line.amount_base && baseFits(line, line.amount_base) ? line.amount_base : snapshot(line);
+  return { ...line, ...at(base, quantity), amount_base: base };
+}
+
+/** The Add button. A meal for any day but today says which day, so a meal
+ *  restored the morning after is never added to yesterday silently. */
+export function addLabel(destination: string, dayLabel: string): string {
+  return dayLabel === 'Today' ? `Add to ${destination}` : `Add to ${destination} · ${dayLabel}`;
+}
+
+/** The account a restored meal belongs to, after the signed-in key changes.
+ *  Any change, a sign-out included, means this account's meal has not been
+ *  read back yet: signing back in as the same account must not find "already
+ *  read" and clear the store while the read is still out. */
+export function settleRestoredKey(restoredKey: string | null, key: string | null): string | null {
+  return restoredKey === key ? restoredKey : null;
 }

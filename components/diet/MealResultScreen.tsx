@@ -48,6 +48,7 @@ import { PulsingStatus } from '@/components/coach/OrbStage';
 import { sectionsOfItems, type ParsedMeal, type ParsedMealItem } from '@/lib/dietData';
 import { formatServing, formatMacroGrams, type MealType } from '@/lib/foods';
 import { optionAt, swapLabel } from '@/lib/variantSwap';
+import { addLabel } from '@/lib/mealReady';
 import type { ParseSpeed } from '@/lib/parseSpeed';
 import { uncertain, provenance } from './ParsedMealCard';
 
@@ -572,9 +573,9 @@ export function MealResultScreen(props: Props) {
                 style={({ pressed }) => [s.primary, { opacity: frozen ? 0.5 : pressed ? 0.85 : 1 }]}
                 accessibilityRole="button"
                 accessibilityState={{ disabled: frozen }}
-                accessibilityLabel={`Add to ${destination}`}
+                accessibilityLabel={addLabel(destination, dayLabel)}
               >
-                <Text style={s.primaryText}>{adding ? 'Adding...' : `Add to ${destination}`}</Text>
+                <Text style={s.primaryText} numberOfLines={1}>{adding ? 'Adding...' : addLabel(destination, dayLabel)}</Text>
               </Pressable>
             </View>
           )}

@@ -4,12 +4,15 @@
 
 import { assertEquals } from "jsr:@std/assert@1";
 import {
+  type AmountLine,
   arrivalAction,
   packReady,
   READY_MAX_AGE_MS,
   readyAction,
   readyLine,
   readyStoreStep,
+  settleRestoredKey,
+  addLabel,
   scaleLine,
   stepAmount,
   unpackReady,
@@ -109,10 +112,11 @@ const line = {
 };
 
 Deno.test("every number on a line moves with its amount, the rest stays", () => {
-  const out = scaleLine(line, 3);
+  const { amount_base, ...out } = scaleLine(line as typeof line & AmountLine, 3);
   assertEquals(out, {
     ...line, quantity: 3, grams: 120, kcal: 360, protein_g: 12, carb_g: 66, fat_g: 5.4, fiber_g: 6,
   });
+  assertEquals(amount_base?.kcal, 240);
 });
 
 Deno.test("no fiber stays no fiber, and a bad amount changes nothing", () => {
@@ -172,4 +176,56 @@ Deno.test("a new account never gets the last account's meal", () => {
 
 Deno.test("a correction being read keeps the stored meal", () => {
   assertEquals(readyStoreStep({ status: "analysing", raw: "make it 2" }, ready), { kind: "keep" });
+});
+
+// ── Steps scale from the line as first seen ────────────────────────────────
+
+const raw = {
+  food_name: "Paneer tikka", quantity: 1, grams: 52.4, kcal: 142.7, protein_g: 3.25,
+  carb_g: 18.33, fat_g: 6.05, fiber_g: 1.47, source: "estimate",
+};
+const numbers = (l: typeof raw) => ({
+  quantity: l.quantity, grams: l.grams, kcal: l.kcal, protein_g: l.protein_g,
+  carb_g: l.carb_g, fat_g: l.fat_g, fiber_g: l.fiber_g,
+});
+
+Deno.test("+, +, -, - comes back to the original numbers", () => {
+  let l: typeof raw & AmountLine = raw;
+  for (const d of [1, 1, -1, -1] as const) l = scaleLine(l, stepAmount(l.quantity, false, d));
+  assertEquals(numbers(l), numbers(raw));
+});
+
+Deno.test("a line changed by hand starts its steps from the new numbers", () => {
+  const up = scaleLine(raw, 1.5);
+  // The editor sets 300 kcal by hand; the old base no longer describes it.
+  const edited = { ...up, kcal: 300 };
+  assertEquals(scaleLine(edited, 3).kcal, 600);
+});
+
+// ── The Add button names a day that is not today ───────────────────────────
+
+Deno.test("a meal for today just says where it goes", () => {
+  assertEquals(addLabel("Lunch", "Today"), "Add to Lunch");
+});
+
+Deno.test("a meal restored the next morning says it is for yesterday", () => {
+  assertEquals(addLabel("Lunch", "Yesterday"), "Add to Lunch · Yesterday");
+  assertEquals(addLabel("2 meals", "Thu, Oct 30"), "Add to 2 meals · Thu, Oct 30");
+});
+
+// ── Signing out and back in ────────────────────────────────────────────────
+
+Deno.test("signing out and back in as the same account never clears the stored meal", () => {
+  const k = "overload.mealReady.u1";
+  let restored: string | null = k;
+  // Sign out: the key goes, and with it the "already read" mark.
+  restored = settleRestoredKey(restored, null);
+  // Sign back in as u1. The flow is idle and the read is still out.
+  restored = settleRestoredKey(restored, k);
+  assertEquals(readyStoreStep({ status: "idle" }, { key: k, restoredKey: restored, adding: false }), { kind: "skip" });
+});
+
+Deno.test("an unchanged key keeps its restore", () => {
+  assertEquals(settleRestoredKey("k", "k"), "k");
+  assertEquals(settleRestoredKey("k", "k2"), null);
 });

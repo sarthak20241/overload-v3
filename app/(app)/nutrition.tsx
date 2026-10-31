@@ -33,7 +33,7 @@ import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMea
 import { MealWaitSheet } from '@/components/diet/MealWaitSheet';
 import { MealResultScreen } from '@/components/diet/MealResultScreen';
 import {
-  arrivalAction, readyLine, readyAction, packReady, unpackReady, readyStoreStep, stepAmount, scaleLine, type ReadyKind,
+  arrivalAction, readyLine, readyAction, packReady, unpackReady, readyStoreStep, settleRestoredKey, stepAmount, scaleLine, type ReadyKind,
 } from '@/lib/mealReady';
 import { isMeasurementUnit } from '@/lib/units';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -607,6 +607,10 @@ export default function NutritionScreen() {
       setFlow({ status: 'idle' });
     }
     lastReadyKey.current = readyKey;
+    // Any change, a sign-out included, means this account's meal is not read
+    // back yet. Without this, signing back in as the same account found
+    // "already read" with an idle flow and cleared the store mid-read.
+    setRestoredKey((r) => settleRestoredKey(r, readyKey));
     if (!readyKey) return;
     let alive = true;
     AsyncStorage.getItem(readyKey)
