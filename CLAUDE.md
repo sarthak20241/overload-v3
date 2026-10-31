@@ -25,6 +25,9 @@ EVAL_VIA_CLI=1 npx tsx scripts/parse-meal-eval/run.ts
 
 # Saved-food match (Jev only, no model calls): is a food she logged before served?
 # ONLY=too-yum,doctors-banana-caramel REPEAT=3 to see how steady a score is.
+# ASK=prod CAND_BRAND=brackets runs the app's own matchMemory end to end (score,
+# 0.6-0.7 to decide, then the choice question); other knobs are listed at the
+# top of the script (FLOOR, MAYBE_FLOOR, RESPELL=0, DROP_RULE, ASK=choice|pipeline).
 deno run -A scripts/memory-identity-eval/run.ts
 
 # Use the API key ONLY when the question is latency or token cost. The harness

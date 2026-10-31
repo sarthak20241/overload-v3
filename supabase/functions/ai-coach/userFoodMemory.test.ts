@@ -1000,7 +1000,7 @@ const jevScoreThenChoice = (score: number, choice: Record<string, number>, asked
 Deno.test("no saved food scored: the choice's top food goes to decide", async () => {
   const asked: string[] = [];
   const chai = food("Masala chai", 45), powder = food("Tea masala powder", 300);
-  const m = await matchMemory(jevScoreThenChoice(0.2, { "Masala chai": 0.86, none: 0.13, "Tea masala powder": 0.01 }, asked), [chai, powder], { name: "masala tea", brand: null });
+  const m = await matchMemory(jevScoreThenChoice(0.4, { "Masala chai": 0.86, none: 0.13, "Tea masala powder": 0.01 }, asked), [chai, powder], { name: "masala tea", brand: null });
   assertEquals([m.food, m.maybe?.name, m.confidence], [null, "Masala chai", 0.86]);
   assert(asked.includes("choice"));
   assertEquals((m.trace.choice as { pick: string }).pick, "Masala chai");
@@ -1008,12 +1008,12 @@ Deno.test("no saved food scored: the choice's top food goes to decide", async ()
 
 Deno.test("the choice says none ahead of a food: nothing goes to decide", async () => {
   // Live eval, 2026-10-31: "peanut chikki" -> none 49%, peanuts 47%.
-  const m = await matchMemory(jevScoreThenChoice(0.2, { peanuts: 0.47, none: 0.49, "Pintola peanut butter": 0.04 }), [food("peanuts", 580), food("Pintola peanut butter", 590)], { name: "peanut chikki", brand: null });
+  const m = await matchMemory(jevScoreThenChoice(0.4, { peanuts: 0.47, none: 0.49, "Pintola peanut butter": 0.04 }), [food("peanuts", 580), food("Pintola peanut butter", 590)], { name: "peanut chikki", brand: null });
   assertEquals([m.food, m.maybe ?? null], [null, null]);
 });
 
 Deno.test("the choice's top food under 0.3 does not go to decide", async () => {
-  const m = await matchMemory(jevScoreThenChoice(0.1, { "grilled chicken breast": 0.25, "raw chicken breast": 0.24, none: 0.2 }), [food("grilled chicken breast", 165), food("raw chicken breast", 120)], { name: "chicken curry", brand: null });
+  const m = await matchMemory(jevScoreThenChoice(0.4, { "grilled chicken breast": 0.25, "raw chicken breast": 0.24, none: 0.2 }), [food("grilled chicken breast", 165), food("raw chicken breast", 120)], { name: "chicken curry", brand: null });
   assertEquals([m.food, m.maybe ?? null], [null, null]);
 });
 
@@ -1034,7 +1034,7 @@ Deno.test("the choice question shows each saved food with its brand apart", () =
 Deno.test("Quick asks no choice question: it has no decide step to use one", async () => {
   // PR #314 review: in Quick the choice answer cannot be used, so the call was wasted.
   const asked: string[] = [];
-  const net = jevScoreThenChoice(0.2, { "Masala chai": 0.86, none: 0.14 }, asked);
+  const net = jevScoreThenChoice(0.4, { "Masala chai": 0.86, none: 0.14 }, asked);
   const m = await matchMemory(net, [food("Masala chai", 45)], { name: "masala tea", brand: null }, { choice: false });
   assertEquals([m.food, m.maybe ?? null], [null, null]);
   assert(!asked.includes("choice"), JSON.stringify(asked));
@@ -1043,7 +1043,7 @@ Deno.test("Quick asks no choice question: it has no decide step to use one", asy
 Deno.test("a Quick log sends no choice question; a Thorough one does", async () => {
   const typesFor = async (mode: "fast" | null) => {
     const types: string[] = [];
-    const d = deps([live({ tier: "precise" })], { "grilled chicken breast": 0.2 }, [], [], mode === "fast" ? ESTIMATED : EXTRACTED);
+    const d = deps([live({ tier: "precise" })], { "grilled chicken breast": 0.4 }, [], [], mode === "fast" ? ESTIMATED : EXTRACTED);
     const inner = d.fetchFn!;
     const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
       if (String(url).includes("typesafe.ai")) {
@@ -1056,4 +1056,22 @@ Deno.test("a Quick log sends no choice question; a Thorough one does", async () 
   };
   assert(!(await typesFor("fast")).includes("choice"));
   assert((await typesFor(null)).includes("choice"));
+});
+
+Deno.test("no saved food scored 0.3: no choice question at all", async () => {
+  // PR #314 review: the choice cost a second Jev call on most new foods. In the
+  // eval it only ever helped where a saved food had scored (masala tea: 0.91,
+  // then blocked by the word veto); with every score under 0.15 it found
+  // nothing right and once sent peanuts for "peanut chikki".
+  const asked: string[] = [];
+  const m = await matchMemory(jevScoreThenChoice(0.13, { peanuts: 0.49, none: 0.47 }, asked), [food("peanuts", 580)], { name: "peanut chikki", brand: null });
+  assertEquals(m.maybe ?? null, null);
+  assert(!asked.includes("choice"), JSON.stringify(asked));
+  assertEquals((m.trace.choice as { skipped: string }).skipped, "low_scores");
+});
+
+Deno.test("brand spelling: a two-word spelling variant is respelled to her saved one", () => {
+  // PR #314 review asked to pin this. Same food, her spelling: Jev reads it as
+  // she saved it. Only Jev's input changes, never the card or the alias.
+  assertEquals(respellForJev({ name: "greek yogurt", brand: null }, [food("Greek yoghurt", 60)]), { name: "Greek yoghurt", brand: null });
 });

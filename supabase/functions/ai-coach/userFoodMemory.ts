@@ -47,12 +47,11 @@ export const MEMORY_SHORTLIST = 10;
 export const MEMORY_FLOOR = 0.7;
 /** Under MEMORY_FLOOR but at least this: not served, but handed to decide (in
  *  Thorough and Precise) to judge from the user's words whether it is the same
- *  food. Quick has no decide call and ignores it. Owner decision 2026-10-31,
- *  the best of the pipelines measured (memory-identity-eval, ASK=pipeline):
- *  with saved brands shown apart, 0.7 serve + 0.6 to decide served 44 of 60
- *  right, sent no wrong food to decide and missed 2. 0.3 sent "peanut chikki"
- *  -> peanuts to decide and gained nothing; a choice question after it reached
- *  every miss but sent 6 wrong foods; a choice with no bar served 16 wrong. */
+ *  food. Quick has no decide call and ignores it. Owner decision 2026-10-31
+ *  (memory-identity-eval): with saved brands shown apart, 0.7 serve + 0.6 to
+ *  decide served 44 of 60 right, sent no wrong food to decide and missed 2.
+ *  A bar of 0.3 here sent "peanut chikki" -> peanuts and gained nothing. When
+ *  nothing reaches this floor, the choice question below may still find one. */
 export const MEMORY_MAYBE_FLOOR = 0.6;
 /** No saved food reached the maybe floor: one choice question asks which saved
  *  food it is, or none, and its top answer goes to decide only when it is a
@@ -62,6 +61,12 @@ export const MEMORY_MAYBE_FLOOR = 0.6;
  *  taking the best food regardless sent Milk chocolate for "chocolate milk"
  *  (none 67%) and peanuts for "peanut chikki" (none 49%, peanuts 47%). */
 export const MEMORY_CHOICE_FLOOR = 0.3;
+/** The choice is asked only when some saved food scored at least this (PR #314
+ *  review: a second Jev call on every new food). In the eval it helped only
+ *  where a saved food had scored ("masala tea": 0.91, then blocked by the word
+ *  veto); with every score under 0.15 it never found a right food, and once
+ *  sent peanuts for "peanut chikki". */
+export const MEMORY_CHOICE_MIN_SCORE = 0.3;
 /** The choice question's "none" option. */
 export const MEMORY_CHOICE_NONE = "None of these saved foods is the food the user means.";
 /** A variant of a product that already cleared MEMORY_FLOOR may compete with
@@ -619,7 +624,10 @@ export async function matchMemory(
       }
       // Nothing in the band: ask once which saved food it is, side by side.
       // Only after real scores: a Jev that answered nothing is not asked again.
-      if (opts.choice !== false && res?.ok && scores.some((x) => x !== null)) {
+      const best = Math.max(0, ...scores.map((x) => x ?? 0));
+      if (opts.choice !== false && res?.ok && scores.some((x) => x !== null) && best < MEMORY_CHOICE_MIN_SCORE) {
+        trace.choice = { skipped: "low_scores", best: r2(best) };
+      } else if (opts.choice !== false && res?.ok && scores.some((x) => x !== null)) {
         const c = await askJev(
           { foods: [{ id: "f1", name: asked.name, brand: asked.brand }] },
           { pick: memoryChoiceQuestion(asked, list) },

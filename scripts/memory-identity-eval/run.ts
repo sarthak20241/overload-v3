@@ -527,11 +527,12 @@ for (const c of picked) for (let rep = 1; rep <= repeat; rep++) {
     // The app's own matchMemory, end to end: score, maybe band, then the choice.
     const foods = Object.keys(c.rows).map((n) => branded(food(n, c.times?.[n] ?? 1)));
     const m = await matchMemory({ apiKey, timeoutMs: 15000 }, foods, { name: c.typed, brand: c.brand ?? null });
-    const ch = m.trace.choice as { pick?: string; p?: number; none?: number } | undefined;
+    const ch0 = m.trace.choice as { pick?: string; p?: number; none?: number; skipped?: string } | undefined;
+    const ch = ch0?.skipped ? undefined : ch0;
     console.log(`\n${c.real ? "[real] " : ""}${c.id}${repeat > 1 ? ` #${rep}` : ""}: typed "${c.typed}"${brand}`);
     console.log(m.food ? `   serves: ${m.food.name} (${Math.round(m.confidence * 100)})`
       : `   -> ${m.maybe ? `decide judges ${m.maybe.name}` : "normal lookup"}` +
-        (ch ? `   [choice: ${ch.pick} ${Math.round((ch.p ?? 0) * 100)}, none ${Math.round((ch.none ?? 0) * 100)}]` : ""));
+        (ch ? `   [choice: ${ch.pick} ${Math.round((ch.p ?? 0) * 100)}, none ${Math.round((ch.none ?? 0) * 100)}; best score ${Math.round(Math.max(0, ...((m.trace.rows as Array<{ score: number | null }> | undefined) ?? []).map((x) => x.score ?? 0)) * 100)}]` : ""));
     if (c.serves !== undefined) {
       servesAll++;
       const want = (n: string | null) => Array.isArray(c.serves) ? (c.serves as Array<string | null>).includes(n) : n === c.serves;
