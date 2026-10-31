@@ -144,6 +144,11 @@ jobs:
           deno test --allow-all lib/chartScale.test.ts
           deno test --allow-all lib/phasePick.test.ts
 
+      # The saved-food triggers that ai-coach's food memory reads, on an
+      # in-memory Postgres. food-memory-tests.yml runs the same command on PRs.
+      - name: Food memory triggers
+        run: deno run --node-modules-dir=none --allow-read --allow-env --allow-net --allow-write --allow-sys supabase/tests/food_memory_local.ts
+
       - name: Pick functions
         id: pick
         env:
