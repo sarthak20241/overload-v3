@@ -45,6 +45,8 @@ begin
       and abs((i.item->>'kcal')::numeric - e.kcal) <= 0.51
     order by t.created_at desc limit 1;
   exception when others then
+    -- Seen in the logs, like cache_saved_entry's own failures.
+    raise log 'saved food brand lookup failed: %', sqlerrm;
     v_brand := null;
   end;
   insert into public.user_food_cache (
