@@ -1,0 +1,42 @@
+name: Food Memory Tests
+
+# Runs the saved-food trigger tests (supabase/tests/food_memory_local.ts) on
+# PGlite, an in-memory Postgres, so they cannot rot between migrations.
+#
+# Only on PRs that can break them: the migrations the runner applies, the SQL
+# test files, and ai-coach, which reads what those triggers write. Every other
+# PR skips this check, so it never blocks unrelated work.
+#
+# deploy-functions.yml runs the same command before it deploys anything.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+      - 'supabase/tests/**'
+      - 'supabase/functions/ai-coach/**'
+      - '.github/workflows/food-memory-tests.yml'
+
+concurrency:
+  group: food-memory-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  food-memory:
+    name: Food memory triggers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      # --node-modules-dir=none: PGlite comes from Deno's npm cache. Without it,
+      # Deno sees package.json, looks for PGlite in node_modules, and fails.
+      - name: Test
+        run: deno run --node-modules-dir=none --allow-read --allow-env --allow-net --allow-write --allow-sys supabase/tests/food_memory_local.ts
