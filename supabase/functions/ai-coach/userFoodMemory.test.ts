@@ -1075,3 +1075,14 @@ Deno.test("brand spelling: a two-word spelling variant is respelled to her saved
   // she saved it. Only Jev's input changes, never the card or the alias.
   assertEquals(respellForJev({ name: "greek yogurt", brand: null }, [food("Greek yoghurt", 60)]), { name: "Greek yoghurt", brand: null });
 });
+
+Deno.test("brand spelling: two saved brands one letter apart", () => {
+  // PR #314 review. Saved brands "Pintola" and "Pintala" are one edit apart.
+  const foods = [{ ...food("protein oats", 390), brand: "Pintola" }, { ...food("peanut butter", 600), brand: "Pintala" }];
+  // A slip one edit from both: no guess.
+  assertEquals(respellForJev({ name: "oats", brand: "Pintula" }, foods), null);
+  // Typed exactly as one of them: nothing to change.
+  assertEquals(respellForJev({ name: "oats", brand: "Pintala" }, foods), null);
+  // One edit from one, two from the other: that one.
+  assertEquals(respellForJev({ name: "oats", brand: "Pintolla" }, foods), { name: "oats", brand: "Pintola" });
+});

@@ -89,6 +89,8 @@ deno test --allow-all lib/pendingParse.test.ts  # food search "Log it with Drona
 deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
 deno test --allow-all lib/orbTheme.test.ts     # loading orb: which way a tinted orb fades
+# Saved-food triggers (aliases, delete, repair, brand) on an in-memory Postgres:
+deno run --node-modules-dir=none --allow-read --allow-env --allow-net --allow-write --allow-sys supabase/tests/food_memory_local.ts
 ```
 
 There are no configured lint or build scripts.
