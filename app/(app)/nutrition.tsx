@@ -538,6 +538,20 @@ export default function NutritionScreen() {
   const [parseSpeed, setParseSpeedState] = useState<ParseSpeed>('quick');
   const parseSpeedRef = useRef<ParseSpeed>('quick');
   const [speedSheetOpen, setSpeedSheetOpen] = useState(false);
+  // The dashboard's getting-started "Pick how I log food" lands here with
+  // modes=<stamp>: open the mode sheet once per stamp, then clear it (this tab
+  // stays mounted, like focus=ai above).
+  const { modes: modesParam } = useLocalSearchParams<{ modes?: string }>();
+  const modesShown = useRef<string | null>(null);
+  useFocusEffect(useCallback(() => {
+    if (!modesParam || modesShown.current === modesParam) return;
+    modesShown.current = modesParam;
+    const t = setTimeout(() => {
+      setSpeedSheetOpen(true);
+      router.setParams({ modes: undefined });
+    }, 350);
+    return () => clearTimeout(t);
+  }, [modesParam]));
   // Live entitlement for the Precise tier. Trialing counts: a trial that could
   // not reach the tier it is meant to sell is not a trial.
   //
