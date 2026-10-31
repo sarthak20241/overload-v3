@@ -35,8 +35,7 @@ import { actionTarget } from '@/lib/dronaRules';
 import { requestCoachOpen } from '@/lib/coachLaunch';
 import { dronaCardTopic } from '@/lib/coachTopic';
 import { bucketOf, canUndo } from '@/lib/dronaInbox';
-import { readyInbox } from '@/lib/readyInbox';
-import { openInboxItem } from '@/components/ai/CoachSheetHost';
+import { openInboxItem, readyInbox } from '@/lib/readyInbox';
 import {
   movesFor, readCardHistory, setCardStatus, type SavedDronaCard,
 } from '@/lib/dronaCard';

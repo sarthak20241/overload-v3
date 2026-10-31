@@ -1644,6 +1644,8 @@ export default function AnalyticsScreen() {
     }
 
     const release = holdBackgroundTime();
+    // Only a real coach read is news; the local fallback is not "ready".
+    let fromCoach = false;
     try {
       const summary = `This week: ${weekWorkouts.length} sessions, ${weekVolume}kg volume, about ${avgDurationMin} min per session${pr != null ? `, ${selectedExercise} best ${prLabel}` : ''}.`;
       const messages = [{
@@ -1661,6 +1663,7 @@ export default function AnalyticsScreen() {
         ? []
         : text.split('\n').map(cleanLine).filter((l) => l.length > 0).slice(0, 4);
       if (lines.length > 0) {
+        fromCoach = true;
         setInsightsFromCoach(true);
         setInsights(lines);
       } else {
@@ -1673,7 +1676,7 @@ export default function AnalyticsScreen() {
     } finally {
       setAiLoading(false);
       setTimeout(release, NOTICE_GRACE_MS);
-      if (!insightsFocusedRef.current || AppState.currentState !== 'active') {
+      if (fromCoach && (!insightsFocusedRef.current || AppState.currentState !== 'active')) {
         announceReady({ title: 'Your training read is ready.', body: 'Tap to read it.', target: { route: '/analytics' }, inbox: 'insights' });
       }
     }

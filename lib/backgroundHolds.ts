@@ -41,3 +41,41 @@ export function createHolds(native: NativeTask | null, timers: Timers) {
     },
   };
 }
+
+/**
+ * Work that should keep going if the user leaves the app.
+ *
+ * A hold taken when work starts can lapse (MAX_HOLD_MS) before the user ever
+ * leaves, and work that started 2 minutes ago would then get no time at all.
+ * So the moment the app goes to the background with work still running, a
+ * fresh hold is taken; coming back to the app, or the last work ending,
+ * lets it go.
+ */
+export function createWorkTracker(holds: { hold(): () => void }) {
+  let working = 0;
+  let away: (() => void) | null = null;
+  const dropAway = () => { away?.(); away = null; };
+  return {
+    working: () => working,
+    start(): () => void {
+      working += 1;
+      const release = holds.hold();
+      let done = false;
+      return () => {
+        if (done) return;
+        done = true;
+        release();
+        working -= 1;
+        if (working === 0) dropAway();
+      };
+    },
+    appState(state: string) {
+      if (state === 'background' && working > 0) {
+        dropAway();
+        away = holds.hold();
+      } else if (state === 'active') {
+        dropAway();
+      }
+    },
+  };
+}

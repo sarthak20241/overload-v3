@@ -170,6 +170,9 @@ export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, get
         title: `${label} is ready`,
         body: `${name}. I built its workouts. Look them over, change anything with me, then save.`,
         target: { route: `/goal-plan?build=phase&seq=${action.phase.seq}&auto=1` },
+        // Opening it and backing out unsaved must not lose it: it goes when
+        // the draft is saved or dropped (CoachSheetHost).
+        keepUntilDone: true,
       });
     };
     const card: SavedDronaCard = {

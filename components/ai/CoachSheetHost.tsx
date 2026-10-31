@@ -20,12 +20,14 @@ import { useToast } from '@/components/ui/Toast';
 import { CoachSheet, coachSessions, type CoachSheetProps } from '@/components/ai/AICoachModal';
 import type { CoachSession } from '@/lib/coachSessions';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { announceReady, inboxIdFor, setReadyNoticeHandler, type ReadyNotice, type ReadyTarget } from '@/lib/readyNotice';
-import { isStaleCoachItem, readyInbox, type InboxItem } from '@/lib/readyInbox';
+import {
+  announceReady, inboxIdFor, openReadyTarget, readyTargetFromData, setCoachSessionOpener, setReadyNoticeHandler,
+  type ReadyNotice, type ReadyTarget,
+} from '@/lib/readyNotice';
+import { isStaleCoachItem, readyInbox } from '@/lib/readyInbox';
 import { onPhaseDraftChange, readPhaseDraft } from '@/lib/phaseDraft';
 import { addNotificationTapListener, dismissNotification, presentNotificationNow, requestNotificationPermission } from '@/lib/notifications';
 import { holdBackgroundTime, NOTICE_GRACE_MS } from '@/lib/backgroundTime';
-import { readyTargetFromData } from '@/lib/readyNotice';
 import { track } from '@/lib/analytics';
 
 type Session = CoachSession<CoachSheetProps>;
@@ -98,17 +100,8 @@ function sameTarget(a: ReadyTarget, b: ReadyTarget): boolean {
   return a.route === b.route;
 }
 
-/** Open what a notice points at: the kept sheet, or else its route. */
-export function openReadyTarget(t: ReadyTarget, push: (route: string) => void): void {
-  if ('coachSession' in t && coachSessions.show(t.coachSession)) return;
-  if (t.route) push(t.route);
-}
-
-/** Open an item from behind the bell. It leaves the bell as it opens. */
-export function openInboxItem(item: InboxItem, push: (route: string) => void): void {
-  readyInbox.remove(item.id);
-  openReadyTarget(item.target, push);
-}
+// A kept sheet comes back through lib/readyNotice's openReadyTarget.
+setCoachSessionOpener((id) => coachSessions.show(id));
 
 // A phase item goes once its draft does (saved, or dropped).
 const dropPhaseItemIfNoDraft = (phaseId: string) => {

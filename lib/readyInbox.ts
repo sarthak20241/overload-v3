@@ -12,7 +12,7 @@
  * device. A kept coach sheet dies with the app, so its item is never stored.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { ReadyTarget } from '@/lib/readyNotice';
+import { openReadyTarget, type ReadyTarget } from '@/lib/readyNotice';
 
 export interface InboxItem {
   /** One per thing: `coach:<session>`, `phase:<phaseId>`, `meal`, `insights`. */
@@ -22,6 +22,12 @@ export interface InboxItem {
   failed?: boolean;
   target: ReadyTarget;
   at: number;
+  /**
+   * Opening it does not take it out: it goes when what it points at is done
+   * (a phase: when its draft is saved or dropped). Backing out of the screen
+   * without saving must not lose the only way back to it.
+   */
+  keepUntilDone?: boolean;
 }
 
 const MAX_ITEMS = 20;
@@ -57,6 +63,15 @@ export function isStaleCoachItem(item: InboxItem, sessions: { id: number; visibl
   return !s || s.visible;
 }
 
+/**
+ * Open an item from behind the bell. It leaves the bell as it opens, unless
+ * it waits for its work to be done (keepUntilDone).
+ */
+export function openInboxItem(item: InboxItem, push: (route: string) => void): void {
+  if (!item.keepUntilDone) readyInbox.remove(item.id);
+  openReadyTarget(item.target, push);
+}
+
 export function createReadyInbox(storage: Pick<typeof AsyncStorage, 'getItem' | 'setItem'>) {
   let items: InboxItem[] = [];
   let userId: string | null = null;
@@ -78,7 +93,11 @@ export function createReadyInbox(storage: Pick<typeof AsyncStorage, 'getItem' | 
     },
     getSnapshot: () => items,
 
-    /** Load the signed-in user's items (null: signed out, nothing shown). */
+    /**
+     * Load the signed-in user's items. Signed out (null), items live in
+     * memory only and are gone at the next sign-in: a guest's news is not an
+     * account's.
+     */
     async hydrate(id: string | null) {
       // Same user again (a root remount): keep what is here, unsaved sheets too.
       if (hydratedFor !== undefined && id === hydratedFor) return;
@@ -88,8 +107,11 @@ export function createReadyInbox(storage: Pick<typeof AsyncStorage, 'getItem' | 
       items = [];
       emit();
       if (!id) return;
-      const raw = await storage.getItem(keyFor(id)).catch(() => null);
+      let readFailed = false;
+      const raw = await storage.getItem(keyFor(id)).catch(() => { readFailed = true; return null; });
       if (userId !== id) return; // switched again meanwhile
+      // Unread is not empty: never save over a list we could not read.
+      if (readFailed) return;
       // Anything added while the read was in flight stays, on top.
       const fresh = items;
       const stored = parseStored(raw).filter((s) => !fresh.some((f) => f.id === s.id));

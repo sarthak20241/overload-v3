@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, StyleSheet, BackHandler, AccessibilityInfo, findNodeHandle } from 'react-native';
 import Animated, {
   Easing, FadeIn, FadeOut, ZoomIn, useAnimatedStyle, useSharedValue, withSequence, withTiming,
@@ -70,6 +70,15 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker
   // Later: the card shrinks into the bell, the bell bumps, then it is gone.
   const cardRef = useRef<View>(null);
   const leaving = useRef(false);
+  // Flying: the card's buttons stop answering, so a tap mid-flight cannot act
+  // on a card that is already on its way to Later.
+  const [flying, setFlying] = useState(false);
+  const landRef = useRef<{ timer: ReturnType<typeof setTimeout>; land: () => void } | null>(null);
+  // Unmounted mid-flight (the screen went away): the user still said Later.
+  useEffect(() => () => {
+    const pending = landRef.current;
+    if (pending) { clearTimeout(pending.timer); pending.land(); }
+  }, []);
   const dx = useSharedValue(0);
   const dy = useSharedValue(0);
   const shrink = useSharedValue(1);
@@ -93,6 +102,7 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker
     ]);
     if (!to || !from) { onLater(); return; }
     haptics.tick();
+    setFlying(true);
     // Small first, then the trip, so the eye follows a chip into the bell
     // rather than a big card sliding off. Visible until the last stretch.
     const travel = { duration: FLY_MS, easing: Easing.inOut(Easing.cubic) };
@@ -105,7 +115,8 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker
       withTiming(0, { duration: FLY_MS * 0.25, easing: Easing.in(Easing.quad) }),
     );
     dim.value = withTiming(0, { duration: FLY_MS * 0.6 });
-    setTimeout(() => { bumpBell(); onLater(); }, FLY_MS);
+    const land = () => { landRef.current = null; bumpBell(); onLater(); };
+    landRef.current = { timer: setTimeout(land, FLY_MS), land };
   }, [onLater, dx, dy, shrink, fade, dim]);
 
   // A screen reader stays on whatever the dashboard control was until told
@@ -153,6 +164,7 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker
         <Animated.View entering={ZoomIn.duration(240)} style={s.cardSlot}>
         <Animated.View
           ref={cardRef}
+          pointerEvents={flying ? 'none' : 'auto'}
           style={[s.card, { backgroundColor: C.elevated, borderColor: C.borderSubtle }, flyStyle]}
         >
           {/* Who is talking */}

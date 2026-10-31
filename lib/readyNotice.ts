@@ -59,6 +59,19 @@ export function announceReady(n: ReadyNotice): void {
   else early = [...early.slice(-2), n];
 }
 
+// Brings a kept coach sheet back. Set by CoachSheetHost (the store lives with
+// the sheet component); false when that sheet is gone.
+let showCoachSession: ((id: number) => boolean) | null = null;
+export function setCoachSessionOpener(fn: ((id: number) => boolean) | null): void {
+  showCoachSession = fn;
+}
+
+/** Open what a notice points at: the kept sheet, or else its route. */
+export function openReadyTarget(t: ReadyTarget, push: (route: string) => void): void {
+  if ('coachSession' in t && showCoachSession?.(t.coachSession)) return;
+  if (t.route) push(t.route);
+}
+
 /** A notification's data, back to a target. Null when it is not ours. */
 export function readyTargetFromData(data: Record<string, unknown>): ReadyTarget | null {
   // An app path only: one slash, never `//host`.

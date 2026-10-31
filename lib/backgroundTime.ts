@@ -11,27 +11,33 @@
  * Fail-soft: a binary built before the module existed (and Android, which
  * does not suspend this way) gets a no-op.
  */
+import { AppState } from 'react-native';
 import { requireOptionalNativeModule } from 'expo-modules-core';
-import { createHolds, type NativeTask } from '@/lib/backgroundHolds';
+import { createHolds, createWorkTracker, type NativeTask } from '@/lib/backgroundHolds';
 
-// Counting rules (and the cap on a hold that never ends) live in
-// lib/backgroundHolds. Loaded on first use.
-let holds: ReturnType<typeof createHolds> | null = null;
+// Counting rules (the cap on a hold that never ends, and a fresh hold when
+// the app goes to the background mid-work) live in lib/backgroundHolds.
+// Loaded on first use.
+let tracker: ReturnType<typeof createWorkTracker> | null = null;
 function load() {
-  if (!holds) {
-    holds = createHolds(requireOptionalNativeModule<NativeTask>('BackgroundTime'), {
+  if (!tracker) {
+    const holds = createHolds(requireOptionalNativeModule<NativeTask>('BackgroundTime'), {
       set: (fn, ms) => setTimeout(fn, ms),
       clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
     });
+    const t = createWorkTracker(holds);
+    AppState.addEventListener('change', (state) => t.appState(state));
+    tracker = t;
   }
-  return holds;
+  return tracker;
 }
 
 /** Time kept after work ends, so its ready notification is posted before iOS suspends the app. */
 export const NOTICE_GRACE_MS = 3000;
 
+/** Work is running: keep time for it if the user leaves. The release says it ended. */
 export function holdBackgroundTime(): () => void {
-  return load().hold();
+  return load().start();
 }
 
 /** Hold background time while `work` runs, and a grace period after it settles. */

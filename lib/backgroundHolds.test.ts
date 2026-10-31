@@ -1,6 +1,6 @@
 // deno test --allow-all lib/backgroundHolds.test.ts
 import { assertEquals } from 'jsr:@std/assert@1';
-import { createHolds, MAX_HOLD_MS } from './backgroundHolds.ts';
+import { createHolds, createWorkTracker, MAX_HOLD_MS } from './backgroundHolds.ts';
 
 function fake() {
   const calls: string[] = [];
@@ -59,4 +59,29 @@ Deno.test('no native module: holds do nothing', () => {
   h.hold()();
   assertEquals(h.count(), 0);
   assertEquals(f.calls, []);
+});
+
+Deno.test('leaving the app mid-work takes fresh time, even after the first hold lapsed', () => {
+  const f = fake();
+  const t = createWorkTracker(createHolds(f.native, f.timers));
+  const done = t.start();
+  f.fireAll(); // 60 s pass in the app: the first hold lapses
+  assertEquals(f.calls, ['begin', 'end']);
+  t.appState('background');
+  assertEquals(f.calls, ['begin', 'end', 'begin']);
+  done(); // the work ends while away: time goes
+  assertEquals(f.calls, ['begin', 'end', 'begin', 'end']);
+});
+
+Deno.test('coming back to the app lets the away time go; no work, no time taken', () => {
+  const f = fake();
+  const t = createWorkTracker(createHolds(f.native, f.timers));
+  t.appState('background');
+  assertEquals(f.calls, []);
+  const done = t.start();
+  t.appState('background');
+  t.appState('active');
+  done();
+  assertEquals(f.calls.filter((c) => c === 'end').length, 1);
+  assertEquals(t.working(), 0);
 });

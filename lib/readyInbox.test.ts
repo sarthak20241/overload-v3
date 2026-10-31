@@ -1,6 +1,6 @@
 // deno test --allow-all --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/readyInbox.test.ts
 import { assertEquals } from 'jsr:@std/assert@1';
-import { createReadyInbox, isStaleCoachItem, parseStored, storable, type InboxItem } from './readyInbox.ts';
+import { createReadyInbox, isStaleCoachItem, openInboxItem, parseStored, readyInbox, storable, type InboxItem } from './readyInbox.ts';
 import { inboxIdFor, readyTargetFromData } from './readyNotice.ts';
 
 function memory() {
@@ -125,4 +125,26 @@ Deno.test('an item added while the stored list loads does not overwrite it', asy
   await loading;
   assertEquals(inbox.getSnapshot().map((i) => i.id), ['meal', 'phase:p1']);
   assertEquals(parseStored(store.m.get('ready_inbox_v1:u1') ?? null).map((i) => i.id), ['meal', 'phase:p1']);
+});
+
+Deno.test('opening a phase item keeps it until the phase is saved; other items leave as they open', async () => {
+  await readyInbox.hydrate('open-test');
+  readyInbox.add({ ...phase, keepUntilDone: true });
+  readyInbox.add({ id: 'meal', title: 'm', body: 'b', target: { route: '/nutrition' } });
+  const pushed: string[] = [];
+  for (const item of [...readyInbox.getSnapshot()]) openInboxItem(item, (r) => pushed.push(r));
+  assertEquals(pushed, ['/nutrition', '/goal-plan']);
+  assertEquals(readyInbox.getSnapshot().map((i) => i.id), ['phase:p1']);
+});
+
+Deno.test('a stored list that could not be read is never saved over', async () => {
+  const store = memory();
+  const first = createReadyInbox(store);
+  await first.hydrate('u1');
+  first.add({ ...phase, at: 1 });
+  const broken = { getItem: () => Promise.reject(new Error('disk')), setItem: store.setItem };
+  const inbox = createReadyInbox(broken);
+  await inbox.hydrate('u1');
+  inbox.add({ ...phase, id: 'meal', target: { route: '/nutrition' }, at: 2 });
+  assertEquals(parseStored(store.m.get('ready_inbox_v1:u1') ?? null).map((i) => i.id), ['phase:p1']);
 });
