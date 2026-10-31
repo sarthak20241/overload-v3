@@ -61,7 +61,7 @@ import { SignalOrb, SIGNAL_ORB_SPHERE, signalOrbColor, type SignalOrbState } fro
 import { OrbStage, PulsingStatus, orbWebBox } from '@/components/coach/OrbStage';
 import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 import { ensureActiveConversationId } from '@/lib/coachConversations';
-import { createCoachSessionStore } from '@/lib/coachSessions';
+import { createCoachSessionStore, withStableCallbacks } from '@/lib/coachSessions';
 import { haptics } from '@/lib/haptics';
 import { SelectTextSheet, coachPlainText, type MessageSheetTarget } from '@/components/coach/SelectTextSheet';
 import { MessageCopyButton } from '@/components/coach/MessageCopyButton';
@@ -5104,13 +5104,19 @@ export function AICoachModal({ visible, onClose, ...props }: AICoachModalProps) 
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   const close = useCallback(() => closeRef.current(), []);
-  const propsRef = useRef(props);
-  propsRef.current = props;
+  // Callbacks go to the store as stable wrappers over the latest ones, so a
+  // re-render with fresh inline callbacks is "no change" (lib/coachSessions).
+  const latestRef = useRef(props);
+  latestRef.current = props;
+  const wrappersRef = useRef(new Map<string, (...args: unknown[]) => unknown>());
+  const stable = withStableCallbacks(props, latestRef, wrappersRef.current);
+  const stableRef = useRef(stable);
+  stableRef.current = stable;
   const idRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!visible) return;
-    const id = coachSessions.open(propsRef.current, close);
+    const id = coachSessions.open(stableRef.current, close);
     idRef.current = id;
     return () => {
       idRef.current = null;
@@ -5120,7 +5126,7 @@ export function AICoachModal({ visible, onClose, ...props }: AICoachModalProps) 
 
   // Fresh props reach the open sheet (a refreshed program, a new topic).
   useEffect(() => {
-    if (visible && idRef.current != null) coachSessions.update(idRef.current, props, close);
+    if (visible && idRef.current != null) coachSessions.update(idRef.current, stable, close);
   });
 
   return null;

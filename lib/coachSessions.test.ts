@@ -1,6 +1,6 @@
 // deno test --allow-all lib/coachSessions.test.ts
 import { assert, assertEquals } from 'jsr:@std/assert@1';
-import { createCoachSessionStore, MAX_KEPT, sameProps, type CoachSessionEvent, type CoachSessionProps } from './coachSessions.ts';
+import { createCoachSessionStore, MAX_KEPT, sameProps, withStableCallbacks, type CoachSessionEvent, type CoachSessionProps } from './coachSessions.ts';
 
 type P = CoachSessionProps & { tag?: string };
 
@@ -214,4 +214,27 @@ Deno.test('clear tells the opener of the sheet showing that it closed', () => {
   store.clear();
   assertEquals(closed, 1);
   assertEquals(store.getSnapshot().length, 0);
+});
+
+Deno.test('fresh inline callbacks each render count as no change, and still call the newest one', () => {
+  type Q = P & { onX?: (n: number) => number };
+  const cache = new Map();
+  const latest = { current: { initialScreen: 'chat', onX: (n: number) => n + 1 } as Q };
+  const a = withStableCallbacks(latest.current, latest, cache);
+  latest.current = { initialScreen: 'chat', onX: (n: number) => n + 100 } as Q;
+  const b = withStableCallbacks(latest.current, latest, cache);
+  assertEquals(sameProps(a, b), true);
+  assertEquals(b.onX?.(1), 101);
+  latest.current = { initialScreen: 'chat' } as Q;
+  const c = withStableCallbacks(latest.current, latest, cache);
+  assertEquals(c.onX, undefined);
+});
+
+Deno.test('a report for a sheet that is gone changes nothing', () => {
+  const { store, events } = setup();
+  const id = store.open({ initialScreen: 'workout' }, () => {});
+  store.close(id);
+  store.report(id, { screen: 'workout', busy: true, failed: false });
+  assertEquals(store.getSnapshot().length, 0);
+  assertEquals(events.length, 0);
 });

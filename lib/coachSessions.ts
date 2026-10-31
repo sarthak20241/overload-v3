@@ -71,6 +71,36 @@ export function sameProps(a: object, b: object): boolean {
   return ka.every((k) => Object.is((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
 }
 
+type AnyFn = (...args: unknown[]) => unknown;
+
+/**
+ * The opener's props with every callback swapped for a stable wrapper that
+ * calls the opener's LATEST one. Openers pass inline callbacks (a new
+ * function each render), which would fail sameProps on every render and
+ * redraw every sheet; the wrappers keep identity, and still call fresh code.
+ * `cache` holds the wrappers per prop name and lives as long as the opener.
+ */
+export function withStableCallbacks<P extends object>(
+  props: P,
+  latest: { current: P },
+  cache: Map<string, AnyFn>,
+): P {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(props)) {
+    if (typeof v !== 'function') { out[k] = v; continue; }
+    let w = cache.get(k);
+    if (!w) {
+      w = (...args: unknown[]) => {
+        const fn = (latest.current as Record<string, unknown>)[k];
+        return typeof fn === 'function' ? (fn as AnyFn)(...args) : undefined;
+      };
+      cache.set(k, w);
+    }
+    out[k] = w;
+  }
+  return out as P;
+}
+
 export function createCoachSessionStore<P extends CoachSessionProps>(now: () => number = Date.now) {
   // Reassigned, never mutated, so a snapshot is stable between writes
   // (useSyncExternalStore needs that).

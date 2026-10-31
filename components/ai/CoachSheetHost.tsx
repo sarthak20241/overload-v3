@@ -91,6 +91,13 @@ function targetData(t: ReadyTarget, inbox: string | null): Record<string, unknow
   return inbox ? { ...base, inbox } : base;
 }
 
+function sameTarget(a: ReadyTarget, b: ReadyTarget): boolean {
+  if ('coachSession' in a || 'coachSession' in b) {
+    return 'coachSession' in a && 'coachSession' in b && a.coachSession === b.coachSession;
+  }
+  return a.route === b.route;
+}
+
 /** Open what a notice points at: the kept sheet, or else its route. */
 export function openReadyTarget(t: ReadyTarget, push: (route: string) => void): void {
   if ('coachSession' in t && coachSessions.show(t.coachSession)) return;
@@ -197,8 +204,13 @@ export function CoachSheetHost() {
   useEffect(() => addNotificationTapListener((data) => {
     const t = readyTargetFromData(data);
     if (!t) return;
-    waitingRef.current = null;
-    toast.hide();
+    // The banner waiting for "back in the app" goes only if it is this same
+    // news: a tap on an older notification must not cancel a newer one.
+    const waiting = waitingRef.current?.notice.target;
+    if (waiting && sameTarget(waiting, t)) {
+      waitingRef.current = null;
+      toast.hide();
+    }
     track('ready_notice_opened', { channel: 'notification' });
     go(t, typeof data.inbox === 'string' ? data.inbox : null);
   }), [go, toast]);
