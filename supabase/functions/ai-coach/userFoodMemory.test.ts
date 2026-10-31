@@ -1030,3 +1030,30 @@ Deno.test("the choice question shows each saved food with its brand apart", () =
   assertEquals((q as { criteria: Record<string, string> }).criteria, { m1: "Kesar pista oats (Yogabar)", m2: "rolled oats", none: MEMORY_CHOICE_NONE });
   assert(String(q.instructions).endsWith("Input food: kesar pista oats."));
 });
+
+Deno.test("Quick asks no choice question: it has no decide step to use one", async () => {
+  // PR #314 review: in Quick the choice answer cannot be used, so the call was wasted.
+  const asked: string[] = [];
+  const net = jevScoreThenChoice(0.2, { "Masala chai": 0.86, none: 0.14 }, asked);
+  const m = await matchMemory(net, [food("Masala chai", 45)], { name: "masala tea", brand: null }, { choice: false });
+  assertEquals([m.food, m.maybe ?? null], [null, null]);
+  assert(!asked.includes("choice"), JSON.stringify(asked));
+});
+
+Deno.test("a Quick log sends no choice question; a Thorough one does", async () => {
+  const typesFor = async (mode: "fast" | null) => {
+    const types: string[] = [];
+    const d = deps([live({ tier: "precise" })], { "grilled chicken breast": 0.2 }, [], [], mode === "fast" ? ESTIMATED : EXTRACTED);
+    const inner = d.fetchFn!;
+    const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("typesafe.ai")) {
+        for (const q of Object.values(JSON.parse(String(init?.body)).questions as Record<string, { type: string }>)) types.push(q.type);
+      }
+      return inner(url, init);
+    }) as typeof fetch;
+    await runParseMeal({ ...d, fetchFn, jev: { ...d.jev!, fetchFn } }, { ...BASE, text: "150g grilled chicken breast", mode });
+    return types;
+  };
+  assert(!(await typesFor("fast")).includes("choice"));
+  assert((await typesFor(null)).includes("choice"));
+});

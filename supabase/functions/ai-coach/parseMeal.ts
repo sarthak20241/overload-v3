@@ -7078,7 +7078,7 @@ async function runParseMealCore(
           // with no typed weight falls back to the memory like any line.
           !memoryEligible[idx] || statedFor(it)
             ? Promise.resolve(null)
-            : matchMemory(deps.jev!, memoryFoodsFor(it), { name: memoryLineName(it), brand: it.brand ?? null })
+            : matchMemory(deps.jev!, memoryFoodsFor(it), { name: memoryLineName(it), brand: it.brand ?? null }, { choice: !fastMode })
         ),
       );
       for (const m of matches) if (m) steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: m.trace });
@@ -7231,7 +7231,11 @@ async function runParseMealCore(
 
     const fastDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
     const items = assignItemMeals(
-      checkAtwater(fastItems.map((it, idx) => (it.brand !== undefined ? it : { ...it, brand: toResolve[idx]?.brand ?? null }))),
+      // fastItems is toResolve.map, one line per item in order; checked anyway
+      // so a later change to that cannot put a brand on another food.
+      checkAtwater(fastItems.length === toResolve.length
+        ? fastItems.map((it, idx) => (it.brand !== undefined ? it : { ...it, brand: toResolve[idx].brand ?? null }))
+        : fastItems),
       extItems,
       { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
     );

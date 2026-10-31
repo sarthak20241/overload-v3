@@ -545,6 +545,9 @@ export async function matchMemory(
   jev: JevDeps,
   foods: MemoryFood[],
   line: { name: string; brand: string | null },
+  /** choice: false skips the choice question. Quick has no decide step to
+   *  judge its answer, so there the call would be wasted (PR #314 review). */
+  opts: { choice?: boolean } = {},
 ): Promise<MemoryMatch> {
   const lookup = memoryInputName(line);
   const trace: Record<string, unknown> = { item: line.name, lookup_name: lookup, remembered: foods.length, policy: "identity-v2" };
@@ -616,7 +619,7 @@ export async function matchMemory(
       }
       // Nothing in the band: ask once which saved food it is, side by side.
       // Only after real scores: a Jev that answered nothing is not asked again.
-      if (res?.ok && scores.some((x) => x !== null)) {
+      if (opts.choice !== false && res?.ok && scores.some((x) => x !== null)) {
         const c = await askJev(
           { foods: [{ id: "f1", name: asked.name, brand: asked.brand }] },
           { pick: memoryChoiceQuestion(asked, list) },
