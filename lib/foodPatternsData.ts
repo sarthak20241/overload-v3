@@ -74,7 +74,10 @@ async function fetchHistory(supabase: Supa, anchorIso: string): Promise<HistoryE
   return out.map(({ position: _p, ...e }) => e);
 }
 
-interface HistoryCache { key: string; entries: HistoryEntry[] }
+/** `fetched`: these entries came from the server in this app session, not
+ *  only from the disk cache. Never written to disk as true. `fetchedFor`:
+ *  the diary version that fetch was for. */
+interface HistoryCache { key: string; entries: HistoryEntry[]; fetched?: boolean; fetchedFor?: string | null }
 /** One shared empty list, so an empty history keeps its identity. */
 const NO_ENTRIES: HistoryEntry[] = [];
 let _mem: HistoryCache | null = null;
@@ -84,19 +87,33 @@ let _mem: HistoryCache | null = null;
  * that changes when the diary does (the day's entry ids): a change refetches,
  * so a food logged a minute ago can be copied tomorrow without a restart.
  */
-export function useFoodHistory(version: string | null, anchorIso: string): { history: HistoryEntry[] } {
+export function useFoodHistory(version: string | null, anchorIso: string): {
+  history: HistoryEntry[];
+  /** A fresh fetch for this window has landed. Until then an empty history
+   *  may just mean "not here yet", which a caller deciding "this user has
+   *  never done X" must not read as "never". */
+  loaded: boolean;
+} {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
   // v2: entries carry logged_via + tier. An older cache without them would
   // re-log with no label, so it is not read at all.
   const key = `v2:${user?.id ?? 'anon'}:${ymd(new Date())}:${anchorIso}`;
-  const seed = _mem && _mem.key === key ? _mem.entries : null;
+  const seedMem = _mem && _mem.key === key ? _mem : null;
+  const seed = seedMem ? seedMem.entries : null;
   // Entries are kept with the window they belong to. On a day change the old
   // window's entries are never shown for the new one, so no suggestion from
   // the wrong four weeks flashes up while the new window loads.
-  const [state, setState] = useState<HistoryCache>({ key, entries: seed ?? [] });
-  const setHistory = (entries: HistoryEntry[]) => setState({ key, entries });
+  const [state, setState] = useState<HistoryCache>({ key, entries: seed ?? [], fetched: !!seedMem?.fetched, fetchedFor: seedMem?.fetchedFor ?? null });
+  const setHistory = (entries: HistoryEntry[], fetched: boolean, fetchedFor: string | null = null) =>
+    setState({ key, entries, fetched, fetchedFor });
   const history = state.key === key ? state.entries : seed ?? NO_ENTRIES;
+  // A diary change refetches. Until that fetch lands, the entries on hand
+  // are from before it, so they are not "loaded" for this version.
+  // A fetch that fails leaves it false, so a caller waiting on it (the food
+  // box tour) waits too. That is the safe side.
+  const cur = state.key === key ? state : seedMem;
+  const loaded = !!cur?.fetched && version !== null && cur.fetchedFor === version;
 
   useEffect(() => {
     let cancelled = false;
@@ -106,7 +123,7 @@ export function useFoodHistory(version: string | null, anchorIso: string): { his
         await hydrateCache(user.id);
         if (cancelled) return;
         const disk = readCache<HistoryCache>('foodHistory', user.id);
-        if (disk && disk.key === key) { _mem = disk; setHistory(disk.entries); }
+        if (disk && disk.key === key) { _mem = { key: disk.key, entries: disk.entries }; setHistory(disk.entries, false); }
       }
       // null: the caller's diary is mid-load. Paint from cache, fetch once it lands.
       if (!supabase || version === null) return;
@@ -114,17 +131,17 @@ export function useFoodHistory(version: string | null, anchorIso: string): { his
       // A failed fetch keeps what is on screen: no suggestions beats wrong ones,
       // and stale ones from this morning are still this user's habits.
       if (cancelled || !fresh) return;
-      _mem = { key, entries: fresh };
+      _mem = { key, entries: fresh, fetched: true, fetchedFor: version };
       // Disk holds one slot, and a cold start always opens on today, so only
       // today's window is worth keeping there. Browsing past days would
       // otherwise overwrite it on every day change.
-      if (anchorIso === ymd(new Date())) writeCache<HistoryCache>('foodHistory', user.id, _mem);
-      setHistory(fresh);
+      if (anchorIso === ymd(new Date())) writeCache<HistoryCache>('foodHistory', user.id, { key, entries: fresh });
+      setHistory(fresh, true, version);
     })().catch(() => {});
     return () => { cancelled = true; };
   }, [supabase, user?.id, key, version, anchorIso]);
 
-  return { history };
+  return { history, loaded };
 }
 
 /** The lines of `dayIso`'s `meal`, in diary order. History runs ahead to

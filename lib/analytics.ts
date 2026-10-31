@@ -174,6 +174,17 @@ export type AnalyticsEvent =
   | 'auto_log_toggled'
   | 'food_searched'
   | 'food_picked'
+  // How people reach food: the box (typed, Drona reads it) versus manual search,
+  // and which door into search (`source`). Focused without a send is abandoned.
+  | 'food_box_focused'
+  | 'food_box_abandoned'
+  | 'food_search_opened'
+  // The one-time food box tour (lib/foodBoxTour). `step` on each.
+  | 'food_tour_shown'
+  | 'food_tour_step'
+  | 'food_tour_skipped'
+  | 'food_tour_left'
+  | 'food_tour_completed'
   | 'quick_add_opened'
   // The food search's "Log it with Drona" row (or the keyboard's send): the
   // typed words go to the Nutrition food box instead of a catalog row. Against
