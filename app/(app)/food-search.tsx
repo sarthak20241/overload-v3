@@ -97,7 +97,7 @@ export default function FoodSearchScreen() {
       setQuery('');
       setTab('all'); // retained Tabs screen: reset to the catalog every reopen (deterministic)
       if (supabase) listSavedMeals(supabase).then(setSavedMeals).catch(() => {});
-      loadYourFoods(supabase).then(setYourFoods).catch(() => {});
+      refreshYourFoods();
       // The tier may have changed on Nutrition since the last visit.
       getParseSpeed().then(setPickedSpeed);
       getAutoLog().then(setAutoLogOn);
@@ -105,6 +105,12 @@ export default function FoodSearchScreen() {
   );
   const [results, setResults] = useState<PickerFood[]>([]);
   const [yourFoods, setYourFoods] = useState<YourFood[]>([]);
+  // Focus and a quick add can both reload the list; only the latest read lands.
+  const yourFoodsRead = useRef(0);
+  function refreshYourFoods() {
+    const n = ++yourFoodsRead.current;
+    loadYourFoods(supabase).then((f) => { if (n === yourFoodsRead.current) setYourFoods(f); }).catch(() => {});
+  }
   const [recents, setRecents] = useState<PickerFood[]>([]);
   const [searching, setSearching] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -231,7 +237,7 @@ export default function FoodSearchScreen() {
       toastTimer.current = setTimeout(() => setToast(null), 1600);
       const r = await recentFoods(supabase, 20);
       setRecents(r);
-      loadYourFoods(supabase).then(setYourFoods).catch(() => {});
+      refreshYourFoods();
     } catch {
       haptics.warning();
     } finally {
