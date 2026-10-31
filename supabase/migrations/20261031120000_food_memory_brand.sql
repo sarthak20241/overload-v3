@@ -32,15 +32,21 @@ begin
      or e.kcal is null or e.kcal < 0 or e.kcal / e.grams_logged > 12 then return null; end if;
   level := case when e.source = 'manual' or e.logged_via = 'manual' then 'precise'
                 when e.tier in ('fast','thorough','precise') then e.tier else 'fast' end;
-  select left(nullif(trim(i.item->>'brand'), ''), 80) into v_brand
-  from public.parse_traces t
-  cross join lateral jsonb_array_elements(coalesce(t.items, '[]')) i(item)
-  where t.user_id = meal.user_id and t.created_at > now() - interval '6 hours'
-    and t.outcome = 'meal' and nullif(trim(i.item->>'brand'), '') is not null
-    and food_memory_private.name_key(i.item->>'food_name') = key
-    and abs((i.item->>'grams')::numeric - e.grams_logged) <= 0.11
-    and abs((i.item->>'kcal')::numeric - e.kcal) <= 0.51
-  order by t.created_at desc limit 1;
+  -- Its own block: a trace number that does not cast (a non-numeric string)
+  -- costs the brand, never the saved food (PR #314 review).
+  begin
+    select left(nullif(trim(i.item->>'brand'), ''), 80) into v_brand
+    from public.parse_traces t
+    cross join lateral jsonb_array_elements(coalesce(t.items, '[]')) i(item)
+    where t.user_id = meal.user_id and t.created_at > now() - interval '6 hours'
+      and t.outcome = 'meal' and nullif(trim(i.item->>'brand'), '') is not null
+      and food_memory_private.name_key(i.item->>'food_name') = key
+      and abs((i.item->>'grams')::numeric - e.grams_logged) <= 0.11
+      and abs((i.item->>'kcal')::numeric - e.kcal) <= 0.51
+    order by t.created_at desc limit 1;
+  exception when others then
+    v_brand := null;
+  end;
   insert into public.user_food_cache (
     user_id, canonical_key, food_name, food_id, kcal, protein_g, carb_g, fat_g, fiber_g,
     serving_label, serving_grams, source, tier, last_entry_id, last_logged_at, confirmed_at, brand)

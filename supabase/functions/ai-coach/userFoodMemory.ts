@@ -466,8 +466,11 @@ const RESPELL_MIN_CHARS = 5;
  *
  * Exactly one edit, never two: rival brands sit two letters apart (Bikano and
  * Bikaji, textMatch.ts). Only the leading words of a saved name are compared,
- * where a brand is written. Only for Jev: the alias key, the shortlist and the
- * card keep what the user typed.
+ * where a brand is written, and a saved food's own brand when it has one. With
+ * no brand field, a single typed word is compared with saved brands only: one
+ * word one letter from a saved name's first word is usually another food
+ * ("mango" and "Mange tout", PR #314 review). Only for Jev: the alias key, the
+ * shortlist and the card keep what the user typed.
  */
 export function respellForJev(
   line: { name: string; brand: string | null },
@@ -475,18 +478,20 @@ export function respellForJev(
 ): { name: string; brand: string | null } | null {
   const typedWords = memoryKey(line.name).split(" ").filter(Boolean);
   // The words to respell: the brand field, else the name's first one to three.
+  // `names`: whether a saved name's leading words may be the spelling, or only
+  // a saved brand (a single unbranded word).
   const groups = line.brand?.trim()
-    ? [line.brand.trim()]
-    : [1, 2, 3].filter((k) => k <= typedWords.length).map((k) => typedWords.slice(0, k).join(" "));
+    ? [{ typed: line.brand.trim(), names: true }]
+    : [1, 2, 3].filter((k) => k <= typedWords.length).map((k) => ({ typed: typedWords.slice(0, k).join(" "), names: k >= 2 }));
   const spellings = new Map<string, { typed: string; saved: string }>();
-  for (const typed of groups) {
+  for (const { typed, names } of groups) {
     const t = squash(typed);
     if (t.length < RESPELL_MIN_CHARS) continue;
     for (const f of foods) {
       const savedWords = f.name.split(/\s+/).filter(Boolean);
       // The saved brand, when known, is a spelling too, wherever the name puts it.
       const spellingsOf = [
-        ...[1, 2, 3].filter((j) => j <= savedWords.length).map((j) => savedWords.slice(0, j).join(" ")),
+        ...(names ? [1, 2, 3].filter((j) => j <= savedWords.length).map((j) => savedWords.slice(0, j).join(" ")) : []),
         ...(f.brand?.trim() ? [f.brand.trim()] : []),
       ];
       for (const raw of spellingsOf) {

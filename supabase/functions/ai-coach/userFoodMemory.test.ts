@@ -950,3 +950,15 @@ Deno.test("a logged line carries its brand, so saving it can store it", async ()
   );
   assertEquals(q.parsed!.items[0].brand, "Brand B");
 });
+
+Deno.test("brand spelling: a one-word food is never respelled toward a saved name", () => {
+  // PR #314 review: "mango" is one letter from "Mange", and is another food.
+  assertEquals(respellForJev({ name: "mango shake", brand: null }, [food("Mange tout", 40)]), null);
+  // A typo of her saved brand still is, when the saved food knows its brand.
+  assertEquals(
+    respellForJev({ name: "pintolla oats", brand: null }, [{ ...food("Chocolate protein oats", 390), brand: "Pintola" }]),
+    { name: "Pintola oats", brand: null },
+  );
+  // And a two-word brand slip with no brand known yet, as on 10-18.
+  assertEquals(respellForJev({ name: "too yum protein oats", brand: null }, [label()]), { name: "Too Yumm protein oats", brand: null });
+});
