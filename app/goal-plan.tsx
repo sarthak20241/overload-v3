@@ -56,6 +56,7 @@ import { DotLine, FOOTER_H, FooterAction, LoadFailed, ScreenSkeleton, SectionLab
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { phaseBuildSeed, type PhaseBuildSeed } from '@/lib/phaseBuild';
+import { onPhaseDraftChange, readPhaseDraft } from '@/lib/phaseDraft';
 import { Colors, Radius, FontWeight } from '@/constants/theme';
 import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
 
@@ -507,6 +508,18 @@ export default function GoalPlanScreen() {
   // it fits, else the targets most behind; never wrapped or cut.
   const focus = currentPhase ? goalFocus(currentPhase.coach_line, currentPhase.metrics) : '';
   const unbuilt = currentPhase != null && currentPhase.routines.length === 0;
+  // A built, unsaved plan for the phase: the button opens it rather than
+  // offering to build again (lib/phaseDraft.ts).
+  const [draftWaiting, setDraftWaiting] = useState(false);
+  const draftPhaseId = unbuilt ? currentPhase!.id : null;
+  useEffect(() => {
+    if (!draftPhaseId) { setDraftWaiting(false); return; }
+    let live = true;
+    const check = () => readPhaseDraft(draftPhaseId).then((d) => { if (live) setDraftWaiting(d != null); });
+    check();
+    const off = onPhaseDraftChange((id) => { if (id === draftPhaseId) check(); });
+    return () => { live = false; off(); };
+  }, [draftPhaseId, focusTick]);
   // The pinned button sits fully inside the safe area: its bottom 8pt above
   // the home indicator zone (insets.bottom), on every iPhone. The reference
   // mock put it lower, under the home bar; that ignored the safe area.
@@ -599,8 +612,8 @@ export default function GoalPlanScreen() {
       {/* The one action, pinned above the home indicator (FooterAction). */}
       {!loading && program && (
         <FooterAction
-          label={unbuilt ? "Build this phase's workouts" : 'Adjust with Drona'}
-          accessibilityLabel={unbuilt ? "Build this phase's workouts" : 'Adjust this program with Drona'}
+          label={unbuilt ? (draftWaiting ? 'Review and save workouts' : "Build this phase's workouts") : 'Adjust with Drona'}
+          accessibilityLabel={unbuilt ? (draftWaiting ? "Review and save this phase's workouts" : "Build this phase's workouts") : 'Adjust this program with Drona'}
           onPress={() => {
             if (unbuilt && currentPhase) buildSplitFor(currentPhase, true);
             else { setBuildSeed(null); setBuildPhaseId(null); setCoachOpen(true); }

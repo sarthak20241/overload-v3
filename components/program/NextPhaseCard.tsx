@@ -97,21 +97,25 @@ export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, get
     const phase = program.phases.find((p) => p.id === action.phase.id);
     if (!phase || buildingFor.current === phase.id) return;
     buildingFor.current = phase.id;
-    let alive = true;
+    // Not cancelled when the dashboard re-reads the program (a new `program`
+    // object re-runs this effect): the build is already paid for and runs
+    // once, so its ending must always land, or the card says "Building"
+    // forever. Only an unmounted card ignores it.
     (async () => {
       const key = autoBuildKey(phase.id);
       const rec = parseAutoBuildRecord(await AsyncStorage.getItem(key).catch(() => null));
-      if (!mayAutoBuild(rec, Date.now())) { if (alive) setBuildFailed(true); return; }
+      if (!mayAutoBuild(rec, Date.now())) { if (mounted.current) setBuildFailed(true); return; }
       await AsyncStorage.setItem(key, JSON.stringify({ tries: rec.tries + 1, lastAt: Date.now() })).catch(() => {});
-      if (alive) setBuilding(true);
+      if (mounted.current) setBuilding(true);
       const plan = await requestPhasePlan({ phase, getToken });
-      if (!alive) return;
+      if (!mounted.current) return;
       setBuilding(false);
       if (!plan) setBuildFailed(true);
       // Success lands through the draft store's change event.
     })();
-    return () => { alive = false; };
   }, [action?.kind, action?.phase.id, getToken, program]);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   const kind = action?.kind ?? null;
   const shown = action != null && !(snoozedUntil != null && Date.now() < snoozedUntil);
@@ -122,7 +126,7 @@ export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, get
 
   if (!action || !shown) return null;
   const name = action.phase.name;
-  const when = startsInText(action.startsInDays);
+  const when = startsInText(action.startsInDays, action.running);
   const label = `Phase ${action.phase.seq + 1}`;
 
   let title: string;
@@ -131,7 +135,7 @@ export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, get
   let onPress: (() => void) | null;
   if (action.kind === 'review') {
     title = `${label} is ready`;
-    body = `${name} ${when}. I built the workouts. Look them over, change anything with me, then save.`;
+    body = `${name} ${when}. I built its workouts. Look them over, change anything with me, then save.`;
     cta = 'Review and save';
     onPress = () => onReview(action.phase.seq);
   } else if (action.kind === 'auto_build') {
@@ -141,14 +145,14 @@ export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, get
       cta = null;
       onPress = null;
     } else {
-      title = `${label} ${when}`;
-      body = `${name} needs its workouts. Build them with me in a minute.`;
+      title = action.running ? `${label} has no workouts` : `${label} ${when}`;
+      body = `${name} ${when}. Build its workouts with me in a minute.`;
       cta = 'Build it';
       onPress = () => onReview(action.phase.seq);
     }
   } else {
-    title = `${label} ${when}`;
-    body = `${name} needs new workouts. Pro builds them for you, fitted to how phase ${action.phase.seq} went.`;
+    title = action.running ? `${label} has no workouts` : `${label} ${when}`;
+    body = `${name} ${when}. Pro builds its workouts for you, fitted to how phase ${action.phase.seq} went.`;
     cta = 'See Pro';
     onPress = onUpgrade;
   }

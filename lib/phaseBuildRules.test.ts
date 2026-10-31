@@ -71,6 +71,7 @@ Deno.test("inside the lead window Pro builds the next phase and free is told", (
   assertEquals(pro?.kind, "auto_build");
   assertEquals(pro?.phase.id, "p1");
   assertEquals(pro?.startsInDays, NEXT_PHASE_LEAD_DAYS);
+  assertEquals(pro?.running, false);
   assertEquals(nextPhaseActionFor({ ...s, isPro: false })?.kind, "upsell");
 });
 
@@ -92,6 +93,7 @@ Deno.test("a running phase after the first that began unbuilt is the target, now
   assertEquals(a?.kind, "auto_build");
   assertEquals(a?.phase.id, "p1");
   assertEquals(a?.startsInDays, 0);
+  assertEquals(a?.running, true);
 });
 
 Deno.test("phase 1 itself is never this card's job", () => {
@@ -130,4 +132,5 @@ Deno.test("start wording", () => {
   assertEquals(startsInText(0), "starts today");
   assertEquals(startsInText(1), "starts tomorrow");
   assertEquals(startsInText(4), "starts in 4 days");
+  assertEquals(startsInText(0, true), "is under way");
 });

@@ -145,7 +145,7 @@ export function ParseSpeedSheet({
               <View style={s.rowBody}>
                 <Text style={[s.rowTitle, { color: C.foreground }]}>Just log it</Text>
                 <Text style={[s.rowSub, { color: C.textSecondary }]}>
-                  Drona adds it straight to your diary. Close the app if you like. Undo from the diary any time.
+                  Straight into your diary. Undo any time.
                 </Text>
               </View>
               <Switch

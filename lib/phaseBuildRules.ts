@@ -130,9 +130,7 @@ export interface NextPhaseState {
 }
 
 export type NextPhaseAction =
-  | { kind: 'review'; phase: PhaseLite; startsInDays: number }
-  | { kind: 'auto_build'; phase: PhaseLite; startsInDays: number }
-  | { kind: 'upsell'; phase: PhaseLite; startsInDays: number }
+  | { kind: 'review' | 'auto_build' | 'upsell'; phase: PhaseLite; startsInDays: number; running: boolean }
   | null;
 
 /**
@@ -141,7 +139,8 @@ export type NextPhaseAction =
  * The target is either the running phase (seq > 0) when it has no workouts,
  * which happens when a phase began before anyone built it, or the next phase
  * once the running one has NEXT_PHASE_LEAD_DAYS or fewer days left.
- * `startsInDays` is 0 when the target is already running.
+ * `running` says the target is the phase in progress (it has begun without
+ * workouts); `startsInDays` is then 0.
  */
 export function nextPhaseActionFor(s: NextPhaseState): NextPhaseAction {
   if (!s.ready || s.currentPhaseSeq == null) return null;
@@ -151,8 +150,10 @@ export function nextPhaseActionFor(s: NextPhaseState): NextPhaseAction {
 
   let target: PhaseLite | null = null;
   let startsInDays = 0;
+  let running = false;
   if (cur.seq > 0 && cur.routineCount === 0) {
     target = cur;
+    running = true;
   } else {
     const next = phases.find((p) => p.seq > cur.seq);
     if (!next || next.routineCount > 0) return null;
@@ -163,14 +164,13 @@ export function nextPhaseActionFor(s: NextPhaseState): NextPhaseAction {
     startsInDays = Math.max(0, daysLeft);
   }
 
-  if (s.draftPhaseIds.has(target.id)) return { kind: 'review', phase: target, startsInDays };
-  return s.isPro
-    ? { kind: 'auto_build', phase: target, startsInDays }
-    : { kind: 'upsell', phase: target, startsInDays };
+  const kind = s.draftPhaseIds.has(target.id) ? 'review' : s.isPro ? 'auto_build' : 'upsell';
+  return { kind, phase: target, startsInDays, running };
 }
 
-/** "starts today" / "starts tomorrow" / "starts in 3 days". */
-export function startsInText(days: number): string {
+/** "is under way" / "starts today" / "starts tomorrow" / "starts in 3 days". */
+export function startsInText(days: number, running = false): string {
+  if (running) return 'is under way';
   if (days <= 0) return 'starts today';
   if (days === 1) return 'starts tomorrow';
   return `starts in ${days} days`;
