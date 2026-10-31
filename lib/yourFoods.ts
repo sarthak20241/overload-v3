@@ -18,7 +18,7 @@
  *
  * Pure: no app imports, so Deno tests it directly (lib/yourFoods.test.ts).
  */
-import { isMeasurementUnit } from './units';
+import { MASS_UNITS, VOLUME_UNITS, isMeasurementUnit } from './units';
 
 /** One diary line, as read from meal_entries + its meal. */
 export interface YourFoodEntry {
@@ -56,6 +56,9 @@ export interface YourFood {
   kcal: number; protein_g: number; carb_g: number; fat_g: number;
   fiber_g: number | null; sugar_g: number | null; sat_fat_g: number | null; sodium_mg: number | null;
   servings: { label: string; grams: number; is_default: boolean }[];
+  /** Set when last time's portion was a volume ("1 cup" of rice weighed 195 g),
+   *  so the unit tables weigh that cup as logged instead of as water. */
+  density_g_per_ml?: number;
   /** Dedupe key: case, accents, punctuation and plurals folded. */
   key: string;
   /** Every catalog id this name was logged under, so the catalog copy is hidden. */
@@ -99,13 +102,23 @@ export function entryTrust(e: Pick<YourFoodEntry, 'logged_via' | 'source' | 'tie
 
 const n0 = (v: number | null | undefined) => (v == null || !Number.isFinite(Number(v)) ? 0 : Number(v));
 const at = (e: YourFoodEntry) => Date.parse(e.logged_at) || 0;
-/** Grams in one unit of the line's portion, when it was weighed. */
+const unitOf = (e: YourFoodEntry) => (e.serving_unit ?? '').trim().toLowerCase();
+const own = (o: Record<string, number>, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+/**
+ * Grams in one unit of the line's portion: from its weight when it has one,
+ * else from the unit tables for a measurement unit ("150 g" with no weight is
+ * still 150 g; a volume counts as water, the same as resolveBaseAmount with no
+ * density). Null for a named unit with no weight ("1 scoop").
+ */
 const unitGrams = (e: YourFoodEntry): number | null => {
   const g = n0(e.grams_logged), q = n0(e.quantity);
-  return g > 0 && q > 0 ? g / q : null;
+  if (g > 0 && q > 0) return g / q;
+  const u = unitOf(e);
+  if (own(MASS_UNITS, u)) return MASS_UNITS[u];
+  if (own(VOLUME_UNITS, u)) return VOLUME_UNITS[u];
+  return null;
 };
-const sameUnit = (a: YourFoodEntry, b: YourFoodEntry) =>
-  (a.serving_unit ?? '').trim().toLowerCase() === (b.serving_unit ?? '').trim().toLowerCase();
+const sameUnit = (a: YourFoodEntry, b: YourFoodEntry) => unitOf(a) === unitOf(b);
 
 /**
  * Rebuild one food from all of its lines. Numbers come from the most trusted
@@ -113,8 +126,8 @@ const sameUnit = (a: YourFoodEntry, b: YourFoodEntry) =>
  *   - same unit: T's numbers per unit, scaled into N's unit weight
  *   - both weighed: T's numbers per gram, N's unit weight
  *   - otherwise T's numbers can not be put into N's portion, so T gives both
- * A line with no weight treats one unit as 100 g, the same as Recents, so the
- * numbers per unit stay exact.
+ * A named unit with no weight treats one unit as 100 g, the same as Recents,
+ * so the numbers per unit stay exact.
  */
 function rebuild(key: string, lines: YourFoodEntry[]): YourFood | null {
   const byNew = [...lines].sort((a, b) => at(b) - at(a));
@@ -126,19 +139,17 @@ function rebuild(key: string, lines: YourFoodEntry[]): YourFood | null {
 
   const qty = n0(portion.quantity) > 0 ? n0(portion.quantity) : 1;
   const grams = unitGrams(portion) ?? 100;
-  let per100: number;
-  if (sameUnit(trusted, portion)) {
-    // Numbers per unit from T, put into the portion's unit weight.
-    const tq = n0(trusted.quantity) > 0 ? n0(trusted.quantity) : 1;
-    per100 = 100 / (tq * grams);
-  } else {
-    // Both weighed (checked above): numbers per gram from T.
-    per100 = 100 / n0(trusted.grams_logged);
-  }
+  // Same unit: T's numbers per unit, put into the portion's unit weight. Else
+  // both weighed (checked above): T's numbers per gram.
+  const tq = n0(trusted.quantity) > 0 ? n0(trusted.quantity) : 1;
+  const per100 = 100 / (tq * (sameUnit(trusted, portion) ? grams : unitGrams(trusted) ?? 0));
   if (!Number.isFinite(per100) || per100 <= 0) return null;
   const scale = (v: number | null) => (v == null ? null : Number(v) * per100);
 
-  const label = (portion.serving_unit ?? '').trim();
+  const raw = (portion.serving_unit ?? '').trim();
+  const measured = isMeasurementUnit(raw);
+  // resolveBaseAmount looks units up as written, so "Cup" must become "cup".
+  const label = measured ? raw.toLowerCase() : raw;
   const ids = [...new Set(lines.map((e) => e.food_id).filter((x): x is string => !!x))];
   return {
     id: trusted.food_id ?? newest.food_id ?? ids[0] ?? null,
@@ -152,7 +163,8 @@ function rebuild(key: string, lines: YourFoodEntry[]): YourFood | null {
     // A measurement label ("g", "cup") must not become a serving: the food's own
     // servings win over the unit tables in resolveBaseAmount, so a {label:'g',
     // grams:100} serving would make "1 g" weigh 100 g (see recentFoods).
-    servings: !label || isMeasurementUnit(label) ? [] : [{ label, grams, is_default: true }],
+    servings: !label || measured ? [] : [{ label, grams, is_default: true }],
+    ...(own(VOLUME_UNITS, label) ? { density_g_per_ml: grams / VOLUME_UNITS[label] } : {}),
     key,
     ids,
     yours: {

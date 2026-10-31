@@ -8,6 +8,7 @@ import {
   buildYourFoods, entryTrust, matchYourFoods, mergeYourFoods, portionText, yourFoodKey,
   type YourFoodEntry,
 } from "./yourFoods.ts";
+import { MASS_UNITS, VOLUME_UNITS } from "./units.ts";
 
 const line = (name: string, over: Partial<YourFoodEntry> = {}): YourFoodEntry => ({
   food_id: null, food_name: name, serving_unit: "g", quantity: 100, grams_logged: 100,
@@ -136,6 +137,35 @@ Deno.test("a measurement unit is not turned into a serving", () => {
   assertEquals(foods[0].yours.servingLabel, "g");
   assertEquals(foods[0].yours.quantity, 150);
   assertAlmostEquals(foods[0].kcal, 130, 1e-9);
+});
+
+// What logFood would write for this food at its own portion: grams through
+// the same unit tables (lib/foods resolveBaseAmount), times kcal per gram.
+const relogKcal = (f: ReturnType<typeof buildYourFoods>[number]) => {
+  const u = f.yours.servingLabel, q = f.yours.quantity;
+  const sv = f.servings.find((s) => s.label.toLowerCase() === u.toLowerCase());
+  const grams = sv ? sv.grams * q
+    : u in MASS_UNITS ? q * MASS_UNITS[u]
+    : q * VOLUME_UNITS[u] * (f.density_g_per_ml ?? 1);
+  return f.kcal * grams / 100;
+};
+
+Deno.test("a cup re-logs the calories it was logged with", () => {
+  // 1 cup of rice weighed 195 g: the table's 236.6 ml as water would log 21% more.
+  const foods = buildYourFoods([line("rice", { serving_unit: "cup", quantity: 1, grams_logged: 195, kcal: 254 })]);
+  assertEquals(foods[0].servings, []);
+  assertEquals(foods[0].yours.servingLabel, "cup");
+  assertAlmostEquals(relogKcal(foods[0]), 254, 1e-9);
+});
+
+Deno.test("a measurement unit with no weight is weighed by the unit tables", () => {
+  // Was: 100 g per unit, so 150 "g" came out 100x too light per gram.
+  const g = buildYourFoods([line("rice", { serving_unit: "g", quantity: 150, grams_logged: null, kcal: 195 })]);
+  assertAlmostEquals(g[0].kcal, 130, 1e-9);
+  assertAlmostEquals(relogKcal(g[0]), 195, 1e-9);
+  const cup = buildYourFoods([line("dal", { serving_unit: "Cup", quantity: 1, grams_logged: null, kcal: 200 })]);
+  assertEquals(cup[0].yours.servingLabel, "cup"); // the unit tables are lower case
+  assertAlmostEquals(relogKcal(cup[0]), 200, 1e-9);
 });
 
 Deno.test("zero-calorie lines are left out", () => {

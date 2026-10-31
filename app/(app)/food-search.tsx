@@ -169,7 +169,8 @@ export default function FoodSearchScreen() {
       // wrongly badge + AI-log this plain catalog tap.
       // qty/unit: one of the user's own foods opens at last time's portion.
       params: {
-        meal, food: encodeURIComponent(JSON.stringify(food)), source: '', assumption: '',
+        // key/ids only serve the merge here; leave them out of the route param.
+        meal, food: encodeURIComponent(JSON.stringify({ ...food, key: undefined, ids: undefined })), source: '', assumption: '',
         qty: food.yours ? String(food.yours.quantity) : '', unit: food.yours?.servingLabel ?? '',
       },
     });
