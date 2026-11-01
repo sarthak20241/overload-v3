@@ -76,7 +76,9 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker
   const [flying, setFlying] = useState(false);
   const landRef = useRef<{ timer: ReturnType<typeof setTimeout>; land: () => void } | null>(null);
   // Unmounted mid-flight (the screen went away): the user still said Later.
+  const mountedRef = useRef(true);
   useEffect(() => () => {
+    mountedRef.current = false;
     const pending = landRef.current;
     if (pending) { clearTimeout(pending.timer); pending.land(); }
   }, []);
@@ -110,6 +112,8 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker
         node.measureInWindow((x, y, w, h) => resolve(w > 0 ? { x: x + w / 2, y: y + h / 2 } : null));
       })),
     ]);
+    // Unmounted while measuring: nothing to animate, but Later still counts.
+    if (!mountedRef.current) { onLater(); return; }
     if (!to || !from) { setFlying(false); onLater(); return; }
     haptics.tick();
     // Small first, then the trip, so the eye follows a chip into the bell

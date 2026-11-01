@@ -325,10 +325,16 @@ export default function DashboardScreen() {
   const toast = useToast();
   // The bell's share of server cards: the ones put off with Later.
   const [cardsWaiting, setCardsWaiting] = useState(0);
+  // Bumped by a Later: a count read that started before it is stale, and
+  // must not overwrite the +1 (the next read sees the deferred card).
+  const countGenRef = useRef(0);
   useEffect(() => {
     if (!user?.id || isGuestSession) { setCardsWaiting(0); return; }
     let live = true;
-    void countWaitingCards(supabase, user.id).then((n) => { if (live) setCardsWaiting(n); });
+    const gen = ++countGenRef.current;
+    void countWaitingCards(supabase, user.id).then((n) => {
+      if (live && gen === countGenRef.current) setCardsWaiting(n);
+    });
     return () => { live = false; };
   }, [user?.id, isGuestSession, supabase, focusTick]);
   useEffect(() => {
@@ -737,6 +743,7 @@ export default function DashboardScreen() {
     track('drona_card_deferred', { kind: popupCard.kind, topic: popupCard.topic });
     const before = popupCard;
     setPopupCard({ ...popupCard, deferred_at: new Date().toISOString() });
+    countGenRef.current += 1;
     setCardsWaiting((n) => n + 1);
     void deferCard(supabase, popupCard.id).then((result) => {
       // Not saved: the server row is still undeferred, so the popup would be
