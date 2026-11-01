@@ -492,17 +492,13 @@ export default function OnboardingScreen() {
   }, [reportStepChange]);
 
   // The commit confetti plays on the commit screen and the build screen
-  // follows once it lands, so nothing falls over the plan being built. The
-  // timer is a backstop in case the confetti never reports its end.
+  // follows once it lands, so nothing falls over the plan being built.
+  // Celebration's own backstop calls this even if the burst never reports
+  // its end.
   const finishCelebration = useCallback(() => {
     setCelebrating(false);
     if (step === 'commit') goTo('build');
   }, [step, goTo]);
-  useEffect(() => {
-    if (!celebrating) return;
-    const t = setTimeout(finishCelebration, 6000);
-    return () => clearTimeout(t);
-  }, [celebrating, finishCelebration]);
 
   const stepIndex = STEP_ORDER.indexOf(step);
   const nextStep = STEP_ORDER[Math.min(stepIndex + 1, STEP_ORDER.length - 1)];

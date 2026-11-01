@@ -20,6 +20,12 @@ const fresh: StartGuideFacts = {
   opened: new Set(),
 };
 
+Deno.test("there are five steps, as Drona's hello on the card says", () => {
+  // components/home/StartGuideCard.tsx: "Five quick things this week".
+  // Change that line too if this count changes.
+  assertEquals(START_STEPS.length, 5);
+});
+
 Deno.test("a new account sees every step, pointing at the first", () => {
   const v = startGuideView(fresh);
   assertEquals(v?.steps.length, START_STEPS.length);

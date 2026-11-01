@@ -9,8 +9,11 @@
  * the owner asked for one burst, not confetti over the next screen.
  *
  * Unmount it in onDone, which fires when the last piece has landed. Move on
- * to the next screen from there too, so no confetti falls over it.
+ * to the next screen from there too, so no confetti falls over it. A
+ * backstop timer calls onDone anyway if the library never reports its end,
+ * and onDone fires at most once.
  */
+import { useCallback, useEffect, useRef } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { CannonConfetti } from 'react-native-fast-confetti';
 import { Portal } from '@/components/ui/Portal';
@@ -27,7 +30,22 @@ const COLORS = [
   '#ffffff',
 ];
 
+const BACKSTOP_MS = 6000;
+
 export function Celebration({ onDone }: { onDone: () => void }) {
+  const doneRef = useRef(onDone);
+  doneRef.current = onDone;
+  const fired = useRef(false);
+  const finish = useCallback(() => {
+    if (fired.current) return;
+    fired.current = true;
+    doneRef.current();
+  }, []);
+  useEffect(() => {
+    const t = setTimeout(finish, BACKSTOP_MS);
+    return () => clearTimeout(t);
+  }, [finish]);
+
   return (
     <Portal>
       <View pointerEvents="none" style={StyleSheet.absoluteFill}>
@@ -38,7 +56,7 @@ export function Celebration({ onDone }: { onDone: () => void }) {
           sprayDuration={700}
           fadeOutOnEnd
           colors={COLORS}
-          onAnimationEnd={onDone}
+          onAnimationEnd={finish}
         >
           <CannonConfetti.Origin position="bottom-left" target="top-center" spread={1.2} count={130} initialSpeed={2.8}>
             <CannonConfetti.Flake size={10} />
