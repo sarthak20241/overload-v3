@@ -34,6 +34,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache, evictWorkoutFromCaches } from '@/lib/localCache';
 import { getPendingWorkouts, removePendingWorkout } from '@/lib/syncQueue';
 import { pendingToHistoryRow } from '@/lib/pendingAdapters';
+import { earnedXp, importedFromLabel } from '@/lib/healthCardio';
 import { applyEditsToHistoryRows, getPendingEdit, removePendingEdit } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
@@ -83,6 +84,8 @@ interface WorkoutRaw {
   duration_seconds?: number;
   total_volume_kg?: number;
   routine_id?: string;
+  /** 'healthkit' / 'health_connect' for a session brought in from the hub; null when logged here. */
+  source?: string | null;
   workout_sets?: { id: string }[];
   exercises?: ExerciseDetail[];
   notes?: string;
@@ -493,6 +496,7 @@ function SessionCard({
             </Text>
             <Text style={[styles.wDate, { color: C.textMuted }]}>
               {formatDateShort(workout.started_at)}
+              {importedFromLabel(workout.source) ? ` · ${importedFromLabel(workout.source)}` : ''}
             </Text>
             <View style={styles.wMeta}>
               {workout.duration_seconds ? (
@@ -868,7 +872,8 @@ export default function HistoryScreen() {
       const pendingEdit = user?.id ? getPendingEdit(user.id, id) : null;
       const refundSets = pendingEdit ? pendingEdit.baseSetCount : (target?.workout_sets?.length ?? 0);
       const refundVol = pendingEdit ? pendingEdit.baseVolumeKg : (target?.total_volume_kg ?? 0);
-      const earned = getXpForWorkout(refundSets, refundVol);
+      // A workout imported from Apple Health / Health Connect never awarded XP.
+      const earned = earnedXp(target?.source) ? getXpForWorkout(refundSets, refundVol) : 0;
       if (earned > 0) supabase.rpc('award_xp', { p_earned: -earned }).then(() => {}, () => {});
       // Drop any queued edit for this workout so it doesn't flush against a
       // now-deleted row — the INSERT would FK-fail (23503), get misread as a
