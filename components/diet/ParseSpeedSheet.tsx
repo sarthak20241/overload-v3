@@ -3,8 +3,9 @@
  *
  * Two tiers, set once and sticky (lib/parseSpeed): Quick is the default
  * estimate-first fast parse, Precise is the Pro tier that reads the product's
- * own numbers off the web and cross-checks two sources. Below them, one switch: "Just log it"
- * (lib/autoLog), where send commits and the server writes the diary itself.
+ * own numbers off the web and cross-checks two sources. Below them, one
+ * switch: "Just log it" (lib/autoLog), where send commits and the server
+ * writes the diary itself.
  * One sheet answers the whole question of how Drona logs, so the composer
  * grows no extra chrome. Portal sheet like the other diet sheets; no keyboard
  * input, so the plain SlideInDown idiom (DayPickerSheet's) is enough and

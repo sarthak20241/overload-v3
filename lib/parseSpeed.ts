@@ -50,6 +50,9 @@ export function parseSpeedWire(v: ParseSpeed): 'fast' | 'super' {
 }
 
 let _last: ParseSpeed | null = null;
+/** Bumped by every pick. A storage read that started before a pick must not
+ *  write its older value over it when it resolves. */
+let _picks = 0;
 
 /** The last tier read or picked in this app run, or null before any. */
 export function peekParseSpeed(): ParseSpeed | null {
@@ -57,18 +60,24 @@ export function peekParseSpeed(): ParseSpeed | null {
 }
 
 export async function getParseSpeed(): Promise<ParseSpeed> {
+  const picks = _picks;
+  let read: ParseSpeed;
   try {
     const v = await AsyncStorage.getItem(KEY);
     // A stored 'thorough' (the retired tier) falls through to Quick here.
-    _last = v === 'precise' ? 'precise' : 'quick';
+    read = v === 'precise' ? 'precise' : 'quick';
   } catch {
     // Fail open to the default tier, never block logging on storage.
-    _last = _last ?? 'quick';
+    read = 'quick';
   }
-  return _last;
+  // A pick landed while this read ran: it is newer than what storage held.
+  if (picks !== _picks && _last) return _last;
+  _last = read;
+  return read;
 }
 
 export async function setParseSpeed(v: ParseSpeed): Promise<void> {
+  _picks += 1;
   _last = v;
   try {
     if (v === 'quick') await AsyncStorage.removeItem(KEY);

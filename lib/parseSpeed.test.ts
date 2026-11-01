@@ -34,3 +34,13 @@ Deno.test('a pick is in memory at once and stored; Quick clears the key', async 
   assertEquals(await AsyncStorage.getItem(KEY), null);
   assertEquals(await getParseSpeed(), 'quick');
 });
+
+Deno.test('a pick made while a read is running is not undone by the read', async () => {
+  await AsyncStorage.removeItem(KEY);
+  const read = getParseSpeed();
+  // The user taps Precise before the stored value (none: Quick) comes back.
+  const write = setParseSpeed('precise');
+  assertEquals(await read, 'precise');
+  assertEquals(peekParseSpeed(), 'precise');
+  await write;
+});
