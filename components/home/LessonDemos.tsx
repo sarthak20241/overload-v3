@@ -16,7 +16,6 @@ import Animated, {
   Easing,
   FadeIn,
   FadeInDown,
-  FadeOut,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
@@ -264,8 +263,9 @@ function ModesPick({ active }: { active: boolean }) {
         </View>
         <Animated.Text
           key={mode}
-          entering={FadeIn.duration(260)}
-          exiting={FadeOut.duration(160)}
+          // Swap in place, fade in only: an exiting copy would sit on top of
+          // the new line for a moment.
+          entering={FadeIn.duration(320)}
           style={[f.modeSub, { color: C.mutedFg }]}
         >
           {PARSE_SPEED_COPY[mode].sub}
