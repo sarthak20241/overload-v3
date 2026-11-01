@@ -10,7 +10,7 @@ do $$
 declare
   a constant text := 'del_leftover_a';
   w uuid; wb uuid; m uuid; sm uuid; pc uuid;
-  own_ex uuid; shared_ex uuid;
+  own_ex uuid; shared_ex uuid; routine_ex uuid; note_ex uuid; check_ex uuid; rb uuid;
   r record; n bigint; fks text; leftovers text[] := '{}';
 begin
   -- delete_user_data keeps a custom exercise anything below still points at.
@@ -30,6 +30,14 @@ begin
   insert into public.workout_sets(workout_id, exercise_id) values (wb, shared_ex);
   insert into public.form_checks(user_id, exercise_id, exercise_name, summary) values (a, own_ex, 'Leftover test press', '{}');
   insert into public.form_check_rate_limit(user_id) values (a);
+  -- Three more of A's custom exercises, each reaching B by one other path.
+  insert into public.exercises(name, muscle_group, created_by) values ('Leftover test row', 'back', a) returning id into routine_ex;
+  insert into public.exercises(name, muscle_group, created_by) values ('Leftover test curl', 'arms', a) returning id into note_ex;
+  insert into public.exercises(name, muscle_group, created_by) values ('Leftover test squat', 'legs', a) returning id into check_ex;
+  insert into public.routines(user_id, name) values ('del_leftover_b', 'Leftover test routine B') returning id into rb;
+  insert into public.routine_exercises(routine_id, exercise_id) values (rb, routine_ex);
+  insert into public.user_exercise_notes(user_id, exercise_id, note) values ('del_leftover_b', note_ex, 'leftover test');
+  insert into public.form_checks(user_id, exercise_id, exercise_name, summary) values ('del_leftover_b', check_ex, 'Leftover test squat', '{}');
 
   -- Food: a logged meal (its entry writes user_food_cache), the typed text,
   -- a saved meal, a rejected alias, a personal precise alias, a private food.
@@ -90,8 +98,12 @@ begin
   -- What must survive.
   if not exists (select 1 from public.workout_sets where workout_id = wb and exercise_id = shared_ex) then
     raise exception 'deleting A took B''s set on A''s shared custom exercise'; end if;
-  if (select created_by from public.exercises where id = shared_ex) is distinct from 'del_leftover_b' then
-    raise exception 'the shared custom exercise did not pass to B'; end if;
+  select string_agg(name, ', ' order by name) into fks from public.exercises
+   where id in (shared_ex, routine_ex, note_ex, check_ex) and created_by is distinct from 'del_leftover_b';
+  if fks is not null or (select count(*) from public.exercises where id in (shared_ex, routine_ex, note_ex, check_ex)) <> 4 then
+    raise exception 'shared custom exercises not kept and passed to B: %', coalesce(fks, 'one was deleted'); end if;
+  if not exists (select 1 from public.form_checks where user_id = 'del_leftover_b' and exercise_id = check_ex) then
+    raise exception 'B''s form check lost its exercise'; end if;
   if exists (select 1 from public.exercises where id = own_ex) then
     raise exception 'A''s unshared custom exercise survived'; end if;
   if (select count(*) from public.token_usage_log where pipeline = 'leftover_test') <> 2 then
