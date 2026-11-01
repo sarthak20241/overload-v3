@@ -241,9 +241,11 @@ export function createCoachSessionStore<P extends CoachSessionProps>(
 
     /** The opener hid its sheet (or went away). Only the current opener can. */
     release(id: number, onClose: () => void) {
-      const s = find(id);
+      // The sheet it opened may have handed over to a kept one (pickScreen),
+      // which then carries this opener: hiding is still the opener's call.
+      const s = find(id) ?? sessions.find((x) => x.visible && x.onClose === onClose);
       if (!s || s.onClose !== onClose) return;
-      hideSession(id);
+      hideSession(s.id);
       emit();
     },
 

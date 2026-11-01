@@ -258,3 +258,17 @@ Deno.test('sheet ids start from the given first id, so an old run\'s notificatio
   assertEquals(idB, 5000);
 });
 
+
+Deno.test('after a menu pick hands over, the opener can still hide the sheet it now shows', () => {
+  const { store } = setup();
+  const chat = store.open({ initialScreen: 'chat' }, () => {});
+  store.report(chat, { screen: 'chat', busy: true, failed: false });
+  store.close(chat);
+  const opener = () => {};
+  const menu = store.open({ initialScreen: 'menu' }, opener);
+  store.pickScreen(menu, 'chat');
+  store.release(menu, opener); // the opener set visible=false
+  assertEquals(store.get(chat)?.visible, false);
+  // Still busy: kept, not dropped.
+  assertEquals(store.get(chat)?.busy, true);
+});

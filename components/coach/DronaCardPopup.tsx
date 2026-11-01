@@ -110,7 +110,7 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker
         node.measureInWindow((x, y, w, h) => resolve(w > 0 ? { x: x + w / 2, y: y + h / 2 } : null));
       })),
     ]);
-    if (!to || !from) { onLater(); return; }
+    if (!to || !from) { setFlying(false); onLater(); return; }
     haptics.tick();
     // Small first, then the trip, so the eye follows a chip into the bell
     // rather than a big card sliding off. Visible until the last stretch.
