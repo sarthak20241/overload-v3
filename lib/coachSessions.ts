@@ -114,11 +114,17 @@ export function withStableCallbacks<P extends object>(
   return out as P;
 }
 
-export function createCoachSessionStore<P extends CoachSessionProps>(now: () => number = Date.now) {
+export function createCoachSessionStore<P extends CoachSessionProps>(
+  now: () => number = Date.now,
+  // Ids ride in notification payloads, which outlive the app run. Starting
+  // from the launch time keeps an old notification from naming a sheet of
+  // this run (it then falls back to its route).
+  firstId: number = Date.now(),
+) {
   // Reassigned, never mutated, so a snapshot is stable between writes
   // (useSyncExternalStore needs that).
   let sessions: CoachSession<P>[] = [];
-  let nextId = 1;
+  let nextId = firstId;
   const listeners = new Set<() => void>();
   const eventListeners = new Set<(e: CoachSessionEvent<P>) => void>();
 

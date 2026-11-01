@@ -113,7 +113,12 @@ const dropPhaseItemIfNoDraft = (phaseId: string) => {
 
 export function CoachSheetHost() {
   const items = useSyncExternalStore(subscribeDrawn, getDrawn);
-  const toast = useToast();
+  // useToast() is a fresh object whenever a toast shows or hides. Read
+  // through a ref, so the listeners below are not torn down and re-added
+  // each time (a notification tap could land in that gap).
+  const toastNow = useToast();
+  const toastRef = useRef(toastNow);
+  toastRef.current = toastNow;
   const router = useRouter();
   const { user } = useClerkUser();
 
@@ -145,9 +150,9 @@ export function CoachSheetHost() {
   }, [router]);
 
   const showBanner = useCallback((n: ReadyNotice) => {
-    const show = n.failed ? toast.error : toast.success;
+    const show = n.failed ? toastRef.current.error : toastRef.current.success;
     show(n.title, { action: { label: 'View', onPress: () => go(n.target, inboxIdFor(n)) }, durationMs: 8000 });
-  }, [toast, go]);
+  }, [go]);
 
   // Notices that landed while the app was in the background, newest last.
   // On return the newest shows as the banner (one toast slot; the rest wait
@@ -227,15 +232,15 @@ export function CoachSheetHost() {
     // open (or one never followed by 'active') must not skip a later banner.
     tappedRef.current = true;
     setTimeout(() => { tappedRef.current = false; }, TAP_WINDOW_MS * 3);
-    toast.hide();
+    toastRef.current.hide();
     track('ready_notice_opened', { channel: 'notification' });
     go(t, typeof data.inbox === 'string' ? data.inbox : null);
-  }), [go, toast]);
+  }), [go]);
 
   useEffect(() => coachSessions.onEvent((e) => {
     if (e.type === 'kept') {
       Keyboard.dismiss();
-      toast.info("Still on it. I'll tell you when it's ready.", { durationMs: 3000 });
+      toastRef.current.info("Still on it. I'll tell you when it's ready.", { durationMs: 3000 });
       track('coach_kept_working', { screen: e.session.screen });
       // The one moment a "may I notify you" ask explains itself.
       void requestNotificationPermission();
@@ -247,7 +252,7 @@ export function CoachSheetHost() {
     if (!e.hidden && AppState.currentState === 'active') return;
     const notice = coachReadyNotice(e.session, e.failed);
     announceReady(e.hidden ? notice : { ...notice, inbox: false });
-  }), [toast]);
+  }), []);
 
   return (
     <>

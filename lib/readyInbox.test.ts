@@ -179,3 +179,23 @@ Deno.test('a failed read is tried again on the next change, so later items are s
   await new Promise((r) => setTimeout(r, 0));
   assertEquals(parseStored(store.m.get('ready_inbox_v1:u1') ?? null).map((i) => i.id), ['meal', 'phase:p1']);
 });
+
+Deno.test('an item removed while the stored list loads stays removed', async () => {
+  const store = memory();
+  const first = createReadyInbox(store);
+  await first.hydrate('u1');
+  first.add({ ...phase, at: 1 });
+  first.add({ id: 'meal', title: 'm', body: 'b', target: { route: '/nutrition' }, at: 2 });
+  let finish: (v: string | null) => void = () => {};
+  const slow = {
+    getItem: () => new Promise<string | null>((r) => { finish = r; }),
+    setItem: store.setItem,
+  };
+  const inbox = createReadyInbox(slow);
+  const loading = inbox.hydrate('u1');
+  inbox.remove('phase:p1');
+  inbox.removeWhere((i) => i.id === 'meal');
+  finish(store.m.get('ready_inbox_v1:u1') ?? null);
+  await loading;
+  assertEquals(inbox.getSnapshot().length, 0);
+});

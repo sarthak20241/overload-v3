@@ -80,6 +80,8 @@ export function createWorkTracker(holds: { hold(): () => void }) {
       // is little time left. A peek at the notification shade is 'inactive'
       // too; coming back to 'active' lets it go.
       if ((state === 'inactive' || state === 'background') && working > 0) {
+        // Once per stint away: if the 60 s cap already let this hold go,
+        // iOS's ~30 s grant is long spent, so a second one would not help.
         if (!away) away = holds.hold();
       } else if (state === 'active') {
         dropAway();

@@ -247,3 +247,13 @@ Deno.test('an inline object prop with the same fields counts as no change', () =
   assertEquals(sameProps({ x: { list: nested.a } }, { x: { list: nested.a } }), true);
   assertEquals(sameProps({ x: { list: [1] } }, { x: { list: [1] } }), false); // one level only
 });
+
+Deno.test('sheet ids start from the given first id, so an old run\'s notification names no sheet', () => {
+  const a = createCoachSessionStore<P>(() => 1, 1000);
+  const b = createCoachSessionStore<P>(() => 1, 5000);
+  const idA = a.open({ initialScreen: 'chat' }, () => {});
+  const idB = b.open({ initialScreen: 'chat' }, () => {});
+  assertEquals(idA, 1000);
+  assertEquals(b.get(idA), undefined);
+  assertEquals(idB, 5000);
+});

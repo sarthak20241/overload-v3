@@ -80,8 +80,14 @@ export function createReadyInbox(storage: Pick<typeof AsyncStorage, 'getItem' | 
   // False while the stored list is being read: a save then would overwrite
   // it with only what was added meanwhile.
   let loaded = false;
-  // A read of the stored list is in flight.
+  // A read of the stored list is in flight (`loadToken` names the latest, so
+  // an older read for another user cannot clear the flag or merge).
   let reading = false;
+  let loadToken = 0;
+  // Ids taken out while a read was in flight: the stored copy must not bring
+  // them back.
+  let removedDuringLoad = new Set<string>();
+  let removedWhereDuringLoad: ((i: InboxItem) => boolean)[] = [];
   const listeners = new Set<() => void>();
   const emit = () => listeners.forEach((l) => l());
 
@@ -89,14 +95,20 @@ export function createReadyInbox(storage: Pick<typeof AsyncStorage, 'getItem' | 
   // leaves `loaded` false (unread is not empty: never save over it); the next
   // change tries again, so later items are not lost for the whole session.
   const load = async (id: string) => {
+    const token = ++loadToken;
     reading = true;
+    removedDuringLoad = new Set();
+    removedWhereDuringLoad = [];
     let readFailed = false;
     const raw = await storage.getItem(keyFor(id)).catch(() => { readFailed = true; return null; });
+    if (token !== loadToken) return; // a newer load owns the state
     reading = false;
     if (userId !== id || readFailed) return; // switched meanwhile, or unread
-    // Anything added while the read was in flight stays, on top.
+    // Anything added while the read was in flight stays, on top; anything
+    // removed meanwhile stays gone.
     const fresh = items;
-    const stored = parseStored(raw).filter((s) => !fresh.some((f) => f.id === s.id));
+    const stored = parseStored(raw).filter((s) => !fresh.some((f) => f.id === s.id)
+      && !removedDuringLoad.has(s.id) && !removedWhereDuringLoad.some((pred) => pred(s)));
     items = [...fresh, ...stored].slice(0, MAX_ITEMS);
     loaded = true;
     // What was added during the read is stored now, with the rest.
@@ -145,6 +157,7 @@ export function createReadyInbox(storage: Pick<typeof AsyncStorage, 'getItem' | 
     },
 
     remove(id: string) {
+      if (reading) removedDuringLoad.add(id);
       if (!items.some((i) => i.id === id)) return;
       items = items.filter((i) => i.id !== id);
       save();
@@ -152,6 +165,7 @@ export function createReadyInbox(storage: Pick<typeof AsyncStorage, 'getItem' | 
     },
 
     removeWhere(pred: (i: InboxItem) => boolean) {
+      if (reading) removedWhereDuringLoad.push(pred);
       const next = items.filter((i) => !pred(i));
       if (next.length === items.length) return;
       items = next;
