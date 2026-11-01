@@ -81,7 +81,7 @@ import { CopyMealSheet } from '@/components/diet/CopyMealSheet';
 import { learnPatterns, mealsToSuggest, copyableFromDay, withPreviousDay, type FoodSuggestion, type HistoryEntry } from '@/lib/foodPatterns';
 import { useFoodHistory, useDayMealLines, relogLines, lineAsItem } from '@/lib/foodPatternsData';
 import { FoodBoxTourTip } from '@/components/diet/FoodBoxTourTip';
-import { shouldOfferTour, tourEndReason, tourNext, tourSignalForFlow, TOUR_COPY, type TourEndReason, type TourEvent, type TourStep } from '@/lib/foodBoxTour';
+import { shouldOfferTour, tourEndReason, tourEndRetires, tourNext, tourSignalForFlow, TOUR_COPY, type TourEndReason, type TourEvent, type TourStep } from '@/lib/foodBoxTour';
 import { getFoodBoxTourDone, setFoodBoxTourDone } from '@/lib/foodBoxTourStore';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
@@ -651,13 +651,14 @@ export default function NutritionScreen() {
     setTourDone(true);
     if (userId) void setFoodBoxTourDone(userId);
   }, [userId]);
-  /** Ends it before the last step: Skip, or the user went elsewhere. */
+  /** Ends it before the last step: Skip, or the user went elsewhere. Moving
+   *  off today only hides it (tourEndRetires); it comes back on today. */
   const endTour = useCallback((how: 'skipped' | 'left', reason?: TourEndReason) => {
     const step = tourStepRef.current;
     if (!step || step === 'done') { tourStepRef.current = null; setTourStep(null); return; }
     tourStepRef.current = null;
     setTourStep(null);
-    markTourDone();
+    if (tourEndRetires(reason)) markTourDone();
     if (how === 'skipped') track('food_tour_skipped', { step });
     else track('food_tour_left', { step, reason: reason ?? null });
   }, [markTourDone]);

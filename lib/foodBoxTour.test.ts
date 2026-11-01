@@ -3,7 +3,7 @@
 // lib/foodBoxTour.ts has no imports, so Deno can test it directly.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { shouldOfferTour, TOUR_COPY, tourEndReason, tourNext, tourSignalForFlow, type TourStep } from "./foodBoxTour.ts";
+import { shouldOfferTour, TOUR_COPY, tourEndReason, tourEndRetires, tourNext, tourSignalForFlow, type TourStep } from "./foodBoxTour.ts";
 
 const ready = {
   signedIn: true,
@@ -139,6 +139,14 @@ Deno.test("flow: a review card that failed to add, then closed, ends the tour", 
   assertEquals(tourSignalForFlow({ status: "error" }, "idle", false, "review"), { end: "discarded" });
   // A read Drona could not do, then closed: the tip still points at the box.
   assertEquals(tourSignalForFlow({ status: "error" }, "idle", false, "retry"), null);
+});
+
+Deno.test("moving off today only hides the tour; every other early end retires it", () => {
+  assertEquals(tourEndRetires("not_today"), false);
+  for (const r of ["search", "screen", "uses_drona", "discarded", "idle", "create", "sent"] as const) {
+    assertEquals(tourEndRetires(r), true, r);
+  }
+  assertEquals(tourEndRetires(undefined), true);
 });
 
 Deno.test("flow: anything else says nothing", () => {

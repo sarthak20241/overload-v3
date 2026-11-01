@@ -141,6 +141,14 @@ export function tourEndReason(
   return null;
 }
 
+/** Does this early end use up the one showing? Moving off today does not:
+ *  a swipe to yesterday is often by mistake, and the tour comes back on
+ *  today. Every other end does, so leaving or picking search never brings
+ *  the same pointer back each visit. */
+export function tourEndRetires(reason: TourEndReason | undefined): boolean {
+  return reason !== 'not_today';
+}
+
 /** Drona speaks. Short, one idea each, no em dashes. */
 export const TOUR_COPY: Record<'type' | 'write' | 'retry' | 'review' | 'done', { title: string; body: string }> = {
   type: {

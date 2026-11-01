@@ -89,9 +89,10 @@ let _mem: HistoryCache | null = null;
  */
 export function useFoodHistory(version: string | null, anchorIso: string): {
   history: HistoryEntry[];
-  /** A fresh fetch for this window has landed. Until then an empty history
-   *  may just mean "not here yet", which a caller deciding "this user has
-   *  never done X" must not read as "never". */
+  /** A fresh fetch for this window and this diary version has landed. It
+   *  goes false again on every diary change (every log) until the refetch
+   *  lands. Until then an empty history may just mean "not here yet", which
+   *  a caller deciding "this user has never done X" must not read as "never". */
   loaded: boolean;
 } {
   const supabase = useSupabaseClient();
