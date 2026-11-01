@@ -74,8 +74,8 @@ export function openReadyTarget(t: ReadyTarget, push: (route: string) => void): 
 
 /** A notification's data, back to a target. Null when it is not ours. */
 export function readyTargetFromData(data: Record<string, unknown>): ReadyTarget | null {
-  // An app path only: one slash, never `//host`.
-  const route = typeof data.route === 'string' && /^\/(?!\/)/.test(data.route) ? data.route : undefined;
+  // An app path only: one slash, never `//host` or `/\host`, no spaces.
+  const route = typeof data.route === 'string' && /^\/(?![/\\])[^\s\\]*$/.test(data.route) ? data.route : undefined;
   if (typeof data.coachSession === 'number') return { coachSession: data.coachSession, route };
   if (route) return { route };
   return null;

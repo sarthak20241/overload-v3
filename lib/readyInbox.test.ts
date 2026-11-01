@@ -103,6 +103,8 @@ Deno.test('a notification only routes to an app path', () => {
   assertEquals(readyTargetFromData({ route: '/goal-plan' }), { route: '/goal-plan' });
   assertEquals(readyTargetFromData({ route: '//evil.example' }), null);
   assertEquals(readyTargetFromData({ route: 'https://x' }), null);
+  assertEquals(readyTargetFromData({ route: '/\\evil' }), null);
+  assertEquals(readyTargetFromData({ route: '/goal-plan?build=phase&seq=1&auto=1' }), { route: '/goal-plan?build=phase&seq=1&auto=1' });
   assertEquals(readyTargetFromData({ coachSession: 4, route: '//x' }), { coachSession: 4, route: undefined });
 });
 

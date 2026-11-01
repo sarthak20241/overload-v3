@@ -1627,6 +1627,14 @@ export default function AnalyticsScreen() {
     readyInbox.remove('insights');
     return () => { insightsFocusedRef.current = false; };
   }, []));
+  // Back in the app on this tab: the read is on screen, so its bell entry
+  // (filed while the app was away) is done.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active' && insightsFocusedRef.current) readyInbox.remove('insights');
+    });
+    return () => sub.remove();
+  }, []);
 
   const runAnalyze = async () => {
     setInsightsOpen(true);

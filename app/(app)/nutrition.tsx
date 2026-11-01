@@ -558,7 +558,9 @@ export default function NutritionScreen() {
       body: kind === 'review' ? 'Tap to check it and add it.' : 'Tap to open it.',
       failed: kind === 'error',
       target: { route: '/nutrition' },
-      inbox: 'meal',
+      // On this tab with the app open, the meal is right here: nothing to
+      // file behind the bell.
+      inbox: focusedRef.current && appActiveRef.current ? false : 'meal',
       bannerless: true,
     });
     const show = () => toastRef.current.show({
