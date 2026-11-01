@@ -6,7 +6,7 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
   buildCardioLogEntry, cardioChoices, cardioDays, cardioStartedAt, queuedCardioRows,
-  takeCardioStart, setCardioStart, type CardioExercise,
+  takeCardioStart, setCardioStart, CARDIO_START_TTL_MS, type CardioExercise,
 } from "./cardioLog.ts";
 import { countCardioSessions, isCardioSet } from "./activityGoals.ts";
 
@@ -105,4 +105,12 @@ Deno.test("the start hand-off is taken once", () => {
   setCardioStart(RUN);
   assertEquals(takeCardioStart()?.name, "Outdoor Run");
   assertEquals(takeCardioStart(), null);
+});
+
+Deno.test("a start hand-off nobody took goes stale: a later new workout starts empty", () => {
+  setCardioStart(RUN, 1_000);
+  assertEquals(takeCardioStart(1_000 + CARDIO_START_TTL_MS + 1), null);
+  // Still taken in time when the workout screen opens right away.
+  setCardioStart(RUN, 1_000);
+  assertEquals(takeCardioStart(1_000 + 2_000)?.name, "Outdoor Run");
 });

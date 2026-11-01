@@ -184,6 +184,19 @@ export function CardioSheet({ visible, onClose, onLogged }: Props) {
               <View style={[s.handle, { backgroundColor: C.handle }]} />
               <View style={s.header}>
                 <Text style={[s.title, { color: C.foreground }]}>Cardio</Text>
+                <View style={{ flex: 1 }} />
+                {/* The card's cardio half opens this sheet, so the way to the
+                    goals themselves lives here (a cardio-only card has no other). */}
+                <TouchableOpacity
+                  onPress={() => { haptics.tap(); onClose(); router.push('/goal-plan'); }}
+                  disabled={saving}
+                  style={s.planLink}
+                  accessibilityRole="link"
+                  accessibilityLabel="See your plan"
+                >
+                  <Text style={[s.planLinkText, { color: C.textSecondary }]}>See your plan</Text>
+                  <Feather name="chevron-right" size={13} color={C.textSecondary} />
+                </TouchableOpacity>
                 <TouchableOpacity onPress={onClose} disabled={saving} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityRole="button" accessibilityLabel="Close">
                   <Feather name="x" size={15} color={C.foreground} />
                 </TouchableOpacity>
@@ -326,6 +339,8 @@ const s = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.md },
   title: { fontSize: FontSize.xl, fontWeight: FontWeight.black },
   closeBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  planLink: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingVertical: 6, paddingHorizontal: 8, marginRight: Spacing.sm },
+  planLinkText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   segment: { flexDirection: 'row', borderRadius: Radius.md, padding: 3, marginBottom: Spacing.lg },
   segmentBtn: { flex: 1, paddingVertical: 8, borderRadius: Radius.sm, alignItems: 'center' },
   segmentText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },

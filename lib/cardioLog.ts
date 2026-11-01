@@ -228,16 +228,20 @@ export function queuedCardioRows(
 
 // ── "Start cardio" hand-off to the workout screen ─────────────────────────────
 // The sheet sets it and opens /workout/new; the screen takes it once when it
-// starts the empty session. One-shot, so a later plain "new workout" (or a
-// resume) never picks up a stale exercise.
-let pendingStart: CardioExercise | null = null;
+// starts the empty session. One-shot, and it goes stale after a minute: if the
+// workout screen never took it (the push failed, or it resumed another
+// session), a later plain "new workout" must not start with this exercise.
+export const CARDIO_START_TTL_MS = 60_000;
 
-export function setCardioStart(ex: CardioExercise): void {
-  pendingStart = ex;
+let pendingStart: { ex: CardioExercise; at: number } | null = null;
+
+export function setCardioStart(ex: CardioExercise, now: number = Date.now()): void {
+  pendingStart = { ex, at: now };
 }
 
-export function takeCardioStart(): CardioExercise | null {
-  const ex = pendingStart;
+export function takeCardioStart(now: number = Date.now()): CardioExercise | null {
+  const p = pendingStart;
   pendingStart = null;
-  return ex;
+  if (!p || now - p.at > CARDIO_START_TTL_MS) return null;
+  return p.ex;
 }
