@@ -36,6 +36,9 @@ type Session = CoachSession<CoachSheetProps>;
 // longer with visible=false, so its slide-out still plays (the sheet's
 // content unmounts inside a still-mounted Portal, as it always did).
 const EXIT_MS = 260;
+// How long a return to the app waits for a notification tap before showing
+// the "it's ready" banner instead.
+const TAP_WINDOW_MS = 600;
 type Drawn = { session: Session; leaving: boolean };
 let drawn: Drawn[] = [];
 const drawnListeners = new Set<() => void>();
@@ -169,20 +172,30 @@ export function CoachSheetHost() {
   }, [showBanner]);
 
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const sub = AppState.addEventListener('change', (state) => {
       if (state !== 'active' || !waitingRef.current) return;
-      const { notice, shown } = waitingRef.current;
-      waitingRef.current = null;
-      // No banner for a sheet that is already on screen (left open when the
-      // user switched apps): the result is right there.
-      const t = notice.target;
-      if (!notice.bannerless && !('coachSession' in t && coachSessions.get(t.coachSession)?.visible)) showBanner(notice);
-      // Back without tapping it: the banner says it now, so the notification
-      // would only be a stale copy in the list. (Often the work ended in the
-      // moment of coming back, before the app heard it was active.)
-      void shown.then((id) => { if (id) void dismissNotification(id); });
+      const waiting = waitingRef.current;
+      // A beat first: when the user came back by tapping the notification,
+      // its tap can land just after 'active', and it opens the result itself
+      // (clearing waitingRef). The banner must not flash first.
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        if (waitingRef.current !== waiting) return;
+        waitingRef.current = null;
+        const { notice, shown } = waiting;
+        // No banner for a sheet that is already on screen (left open when the
+        // user switched apps): the result is right there.
+        const t = notice.target;
+        if (!notice.bannerless && !('coachSession' in t && coachSessions.get(t.coachSession)?.visible)) showBanner(notice);
+        // Back without tapping it: the banner says it now, so the notification
+        // would only be a stale copy in the list. (Often the work ended in the
+        // moment of coming back, before the app heard it was active.)
+        void shown.then((id) => { if (id) void dismissNotification(id); });
+      }, TAP_WINDOW_MS);
     });
-    return () => sub.remove();
+    return () => { sub.remove(); if (timer) clearTimeout(timer); };
   }, [showBanner]);
 
   // While Drona works, ask iOS for time to finish if the user leaves the app

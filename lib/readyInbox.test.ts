@@ -148,3 +148,16 @@ Deno.test('a stored list that could not be read is never saved over', async () =
   inbox.add({ ...phase, id: 'meal', target: { route: '/nutrition' }, at: 2 });
   assertEquals(parseStored(store.m.get('ready_inbox_v1:u1') ?? null).map((i) => i.id), ['phase:p1']);
 });
+
+Deno.test('news from start-up (before sign-in is known) stays with the account that loads', async () => {
+  const store = memory();
+  const inbox = createReadyInbox(store);
+  await inbox.hydrate(null); // Clerk still loading
+  inbox.add({ ...phase, at: 1 });
+  await inbox.hydrate('u1');
+  assertEquals(inbox.getSnapshot().map((i) => i.id), ['phase:p1']);
+  assertEquals(parseStored(store.m.get('ready_inbox_v1:u1') ?? null).map((i) => i.id), ['phase:p1']);
+  // Another account: the last one's news goes.
+  await inbox.hydrate('u2');
+  assertEquals(inbox.getSnapshot().length, 0);
+});

@@ -95,16 +95,19 @@ export function createReadyInbox(storage: Pick<typeof AsyncStorage, 'getItem' | 
 
     /**
      * Load the signed-in user's items. Signed out (null), items live in
-     * memory only and are gone at the next sign-in: a guest's news is not an
-     * account's.
+     * memory only. Coming from nobody to an account (start-up, while Clerk
+     * loads), they are kept and saved under it: a build that ended in that
+     * window is this user's news. From one account to another, the last
+     * account's items go.
      */
     async hydrate(id: string | null) {
       // Same user again (a root remount): keep what is here, unsaved sheets too.
       if (hydratedFor !== undefined && id === hydratedFor) return;
+      const fromNobody = hydratedFor === undefined || hydratedFor === null;
       hydratedFor = id;
       userId = id;
       loaded = false;
-      items = [];
+      if (!fromNobody || !id) items = [];
       emit();
       if (!id) return;
       let readFailed = false;

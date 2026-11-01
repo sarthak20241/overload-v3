@@ -9,6 +9,11 @@
  * - A hold that is never released (work that hangs) lets go by itself after
  *   MAX_HOLD_MS. iOS grants about 30 s, so nothing real runs that long, and a
  *   stuck count can never cost the rest of the session its background time.
+ * - When iOS expires the task itself (its ~30 s ran out), the native side
+ *   ends it but JS is not told, so the count can stay above 0 for a while.
+ *   Harmless: a later hold calls begin() again (iOS may refuse a second grant
+ *   in the same background stint, which only means no extra time), and the
+ *   MAX_HOLD_MS cap brings the count back to 0.
  */
 export const MAX_HOLD_MS = 60_000;
 
