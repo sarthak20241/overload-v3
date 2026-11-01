@@ -104,7 +104,11 @@ export async function syncHealthCardio(
         if (imported > 0) track('health_cardio_imported', { count: imported, hub: adapter.hub });
         return { imported };
       }
-      // One bad row (a catalog name the database lacks) never blocks the rest.
+      // One bad row (a catalog name the database lacks) never blocks the rest,
+      // but it is reported: a skipped row is a session that never counts.
+      const code = (error as { code?: string }).code ?? null;
+      console.warn('[health-cardio] skipped', p.exercise, code, (error as { message?: string }).message);
+      track('health_cardio_skipped', { code, exercise: p.exercise, hub: adapter.hub });
       continue;
     }
     if (data) imported++;

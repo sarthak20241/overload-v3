@@ -161,6 +161,7 @@ export type AnalyticsEvent =
   | 'health_sync_run'
   | 'health_sync_failed'
   | 'health_cardio_imported'
+  | 'health_cardio_skipped'
   | 'health_workouts_asked'
   | 'readiness_card_tapped'
   // Dashboard cardio row: the sheet, a session started from it, one logged after the fact.

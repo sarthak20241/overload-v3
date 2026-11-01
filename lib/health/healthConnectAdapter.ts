@@ -23,6 +23,7 @@ import {
   type Permission,
 } from 'react-native-health-connect';
 import * as Application from 'expo-application';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { DailyReading, HealthAdapter, ReadableMetric } from '../healthSync';
 import type { HubWorkout } from '../healthCardio';
 
@@ -46,6 +47,8 @@ const WORKOUT_PERMISSIONS: Permission[] = [
   { accessType: 'read', recordType: 'Distance' },
 ];
 const WORKOUTS_FROM_VERSION = [1, 0, 4];
+/** Set once the user says no to workouts, so the Health screen stops asking (Health Connect only). */
+const WORKOUTS_DECLINED_KEY = 'health_workouts_declined_v1';
 
 function binaryDeclaresWorkouts(): boolean {
   const parts = (Application.nativeApplicationVersion ?? '').split('.').map((n) => parseInt(n, 10) || 0);
@@ -108,17 +111,24 @@ export const healthConnectAdapter: HealthAdapter = {
       // grants still connect the metrics that were allowed (per-metric connection
       // is inferred downstream from data presence). No history permission: the
       // backfill only reaches 28 days, well inside the 30-day no-history window.
+      const asked = requestedPermissions();
       let granted;
       try {
-        granted = await requestPermission(requestedPermissions());
+        granted = await requestPermission(asked);
       } catch {
         // A binary that refuses the workout permissions must still connect
         // the daily metrics.
         granted = await requestPermission(READ_PERMISSIONS);
       }
-      return READ_PERMISSIONS.some((req) =>
-        granted.some((g) => g.accessType === req.accessType && g.recordType === req.recordType),
-      );
+      const allowed = (recordType: string) =>
+        granted.some((g) => g.accessType === 'read' && g.recordType === recordType);
+      // Asked for workouts and the answer was no: never offer "Allow workouts"
+      // again (see needsAuthorization). Settings can still turn it on later.
+      if (asked.some((p) => p.recordType === 'ExerciseSession') && !allowed('ExerciseSession')) {
+        await AsyncStorage.setItem(WORKOUTS_DECLINED_KEY, '1').catch(() => {});
+      }
+      // Workouts alone count too: a re-ask from "Allow workouts" asks for nothing else new.
+      return asked.some((req) => allowed(req.recordType));
     } catch {
       return false;
     }
@@ -149,6 +159,7 @@ export const healthConnectAdapter: HealthAdapter = {
   async needsAuthorization() {
     try {
       if (!binaryDeclaresWorkouts()) return false;
+      if ((await AsyncStorage.getItem(WORKOUTS_DECLINED_KEY).catch(() => null)) === '1') return false;
       return !(await hasGrant('ExerciseSession'));
     } catch {
       return null;
