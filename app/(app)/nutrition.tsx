@@ -36,7 +36,7 @@ import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMea
 import { MealWaitSheet } from '@/components/diet/MealWaitSheet';
 import { MealResultScreen } from '@/components/diet/MealResultScreen';
 import {
-  arrivalAction, readyLine, readyAction, packReady, unpackReady, readyStoreStep, settleRestoredKey, stepAmount, scaleLine, type ReadyKind,
+  arrivalAction, showPlan, readyLine, readyAction, packReady, packAdding, unpackReady, readyStoreStep, settleRestoredKey, stepAmount, scaleLine, type ReadyKind,
 } from '@/lib/mealReady';
 import { isMeasurementUnit } from '@/lib/units';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -548,8 +548,10 @@ export default function NutritionScreen() {
     setWaitOpen(false);
     setResultOpen(true);
   }, []);
-  /** Tell the user a parse landed while they were not watching it. */
-  const tell = useCallback((kind: ReadyKind, meals: MealType[]) => {
+  /** Tell the user a parse landed while they were not watching it.
+   *  `onShown` runs when the toast is actually up: now, or on the return to
+   *  the app when it lands in the background. */
+  const tell = useCallback((kind: ReadyKind, meals: MealType[], onShown?: () => void) => {
     // The same news behind the dashboard bell, and as a phone notification
     // when the app is in the background (lib/readyNotice). Bannerless: the
     // toast below is this screen's own banner.
@@ -563,17 +565,20 @@ export default function NutritionScreen() {
       inbox: focusedRef.current && appActiveRef.current ? false : 'meal',
       bannerless: true,
     });
-    const show = () => toastRef.current.show({
-      type: kind === 'error' ? 'error' : 'success',
-      text: readyLine(kind, meals),
-      action: {
-        label: readyAction(kind),
-        onPress: kind === 'review'
-          ? () => openResult('toast')
-          : () => { if (!focusedRef.current) router.navigate('/nutrition'); },
-      },
-      durationMs: READY_TOAST_MS,
-    });
+    const show = () => {
+      toastRef.current.show({
+        type: kind === 'error' ? 'error' : 'success',
+        text: readyLine(kind, meals),
+        action: {
+          label: readyAction(kind),
+          onPress: kind === 'review'
+            ? () => openResult('toast')
+            : () => { if (!focusedRef.current) router.navigate('/nutrition'); },
+        },
+        durationMs: READY_TOAST_MS,
+      });
+      onShown?.();
+    };
     if (!appActiveRef.current) { tellLaterRef.current = show; return; }
     show();
   }, [openResult]);
@@ -600,16 +605,16 @@ export default function NutritionScreen() {
       : flow.status === 'declined' || flow.status === 'create' ? 'reply'
       : flow.status === 'error' ? 'error'
       : null;
-    if (kind) track('meal_ready_shown', { kind, how });
-    if (flow.status === 'review') {
-      if (how === 'show') { Keyboard.dismiss(); setResultOpen(true); }
-      else tell('review', sectionsOf(flow.meal));
-      return;
-    }
     // Not a meal to check (it went in, or it is a reply or a failure, which
     // show above the food box): the result screen has nothing to show.
-    setResultOpen(false);
-    if (kind && how !== 'show') tell(kind, landed ?? []);
+    if (flow.status !== 'review') setResultOpen(false);
+    if (!kind) return;
+    // Counted when the user can see it (lib/mealReady showPlan).
+    const shown = () => track('meal_ready_shown', { kind, how });
+    const plan = showPlan(kind, how);
+    if (plan.via === 'result') { Keyboard.dismiss(); setResultOpen(true); shown(); }
+    else if (plan.via === 'toast') tell(kind, flow.status === 'review' ? sectionsOf(flow.meal) : (landed ?? []), shown);
+    else shown();
   }, [flow, tell]);
 
   // A meal waiting to be added survives the app being closed: it is work
@@ -1771,6 +1776,10 @@ export default function NutritionScreen() {
     setResultOpen(false);
     setCardMinimized(false);
     setFlow({ status: 'idle' });
+    // Stored as "being added" before the write: an app killed after the
+    // write lands but before the store clears brings it back with a note
+    // that it may already be in the diary, not as a fresh Add.
+    if (readyKey) await AsyncStorage.setItem(readyKey, packAdding(review)).catch(() => {});
     let res: Awaited<ReturnType<typeof logParsedMeal>>;
     try {
       res = await logParsedMeal(supabase, meal, day, review.origin ?? 'ai');
@@ -1818,7 +1827,7 @@ export default function NutritionScreen() {
       action: { label: 'Undo', onPress: () => { void onUndoAdd(ref, review); } },
       durationMs: UNDO_MS,
     });
-  }, [flow, supabase, reload, viewDate, viewIso, isToday, addPendingLines, settlePendingLines, dropPendingLines, onUndoAdd]);
+  }, [flow, supabase, reload, viewDate, viewIso, isToday, readyKey, addPendingLines, settlePendingLines, dropPendingLines, onUndoAdd]);
 
   const onRetry = useCallback(() => {
     if (flow.status !== 'error') return;
