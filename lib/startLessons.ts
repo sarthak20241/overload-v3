@@ -50,7 +50,7 @@ export const START_LESSONS: Record<StartStepId, Lesson> = {
   modes: {
     cta: 'Pick a mode',
     pages: [
-      { demo: 'modes_pick', title: 'Three ways I log food', body: 'Quick is a fast estimate. Thorough checks our catalog. Precise is for packaged food.' },
+      { demo: 'modes_pick', title: 'Two ways I log food', body: 'Quick is a fast estimate from your words. Precise is for packaged food.' },
     ],
   },
   workout: {

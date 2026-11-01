@@ -228,8 +228,8 @@ function FoodWhere({ active }: { active: boolean }) {
 
 // ── Food modes ───────────────────────────────────────────────────────────
 
-const MODES: ParseSpeed[] = ['quick', 'thorough', 'precise'];
-const MODE_PHASES = [1800, 1800, 1800] as const;
+const MODES: ParseSpeed[] = ['quick', 'precise'];
+const MODE_PHASES = [1800, 1800] as const;
 
 function ModesPick({ active }: { active: boolean }) {
   const { C } = useTheme();
