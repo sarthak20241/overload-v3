@@ -15,7 +15,7 @@
  * `deno test` reaches it. The entry shapes below mirror lib/syncQueue's
  * PendingWorkout; the caller's assignment to that type keeps them in step.
  */
-import { CARDIO_METRIC_TYPES, CARDIO_MUSCLE_GROUP, type CardioSetRow } from "./activityGoals";
+import { CARDIO_METRIC_TYPES, CARDIO_MUSCLE_GROUP, localDayOf, type CardioSetRow } from "./activityGoals";
 
 /** A cardio exercise as the sheet offers it. id is null for an offline fallback row. */
 export interface CardioExercise {
@@ -211,6 +211,7 @@ export function queuedCardioRows(
     if (serverClientIds.has(w.clientId)) continue;
     const t = Date.parse(w.startedAtIso);
     if (!Number.isFinite(t) || t < weekStart.getTime()) continue;
+    const day = localDayOf(w.startedAtIso);
     for (const ex of w.exercises) {
       for (const s of ex.sets) {
         rows.push({
@@ -219,6 +220,9 @@ export function queuedCardioRows(
           set_type: s.set_type ?? "normal",
           muscle_group: ex.def.muscle_group ?? null,
           metric_type: ex.def.metric_type ?? null,
+          // Queued workouts are always logged in the app; an import goes straight to the server.
+          source: null,
+          day,
         });
       }
     }

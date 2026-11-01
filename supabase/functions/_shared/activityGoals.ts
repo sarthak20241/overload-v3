@@ -11,8 +11,15 @@
  *   - A cardio SESSION is a finished workout with at least one completed,
  *     non-warmup set of a Cardio exercise that is timed (duration,
  *     distance_duration, resistance_duration). A treadmill warmup set before a
- *     lifting day does not make it a cardio day. Only workouts logged in
- *     Overload count: a run recorded only on a watch is not seen here.
+ *     lifting day does not make it a cardio day. A run recorded on a watch
+ *     counts once it is imported (workouts.source, lib/healthCardio.ts).
+ *   - An imported workout gives way to an in-app cardio session on the same
+ *     local day: a run that came in from the watch and was then also logged by
+ *     hand counts once. Same day, not overlapping time, because "Log one you
+ *     did" guesses the time (6 pm, or just now), so the two copies rarely
+ *     overlap. The cost: a watch run in the morning and a separate treadmill
+ *     session logged in the app that evening count as one. The weekly facts
+ *     (drona_rebuild_activity_facts) hold the same rule.
  *   - Weeks start Monday, like every other weekly fact.
  *
  * The clamps are the real bounds. The tool schema only steers the model, and
@@ -79,6 +86,10 @@ export interface CardioSetRow {
   set_type?: string | null;
   muscle_group?: string | null;
   metric_type?: string | null;
+  /** workouts.source: 'healthkit' / 'health_connect' when imported, null when logged in the app. */
+  source?: string | null;
+  /** The workout's local start day, 'YYYY-MM-DD'. Without it an import never gives way. */
+  day?: string | null;
 }
 
 /** Does this set make its workout a cardio session? */
@@ -91,12 +102,25 @@ export function isCardioSet(s: CardioSetRow): boolean {
 
 /**
  * Cardio sessions in a set of rows: the number of distinct workouts with at
- * least one cardio set. The caller passes only FINISHED workouts in the week.
+ * least one cardio set, less an imported one on a day that already has an
+ * in-app cardio session. The caller passes only FINISHED workouts in the week.
  */
 export function countCardioSessions(sets: CardioSetRow[]): number {
-  const ids = new Set<string>();
-  for (const s of sets) if (isCardioSet(s)) ids.add(s.workout_id);
-  return ids.size;
+  const inApp = new Set<string>();
+  const inAppDays = new Set<string>();
+  const imported = new Map<string, string | null>();
+  for (const s of sets) {
+    if (!isCardioSet(s)) continue;
+    if (s.source) {
+      imported.set(s.workout_id, s.day ?? null);
+    } else {
+      inApp.add(s.workout_id);
+      if (s.day) inAppDays.add(s.day);
+    }
+  }
+  let n = inApp.size;
+  for (const day of imported.values()) if (!day || !inAppDays.has(day)) n++;
+  return n;
 }
 
 export interface GoalProgress {
@@ -169,6 +193,8 @@ export function stepsProgressFromReading(reading: unknown, target: number | null
 /** One workout as the dashboard reads it: workouts with workout_sets(..., exercises(...)). */
 export interface WorkoutWithSets {
   id: string;
+  source?: string | null;
+  started_at?: string | null;
   workout_sets?: Array<{
     completed?: boolean | null;
     set_type?: string | null;
@@ -176,10 +202,19 @@ export interface WorkoutWithSets {
   }> | null;
 }
 
+/** The device's local day of an ISO time, 'YYYY-MM-DD'; null when it does not parse. */
+export function localDayOf(iso: string | null | undefined): string | null {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return null;
+  const d = new Date(t);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 /** Flatten nested workouts into the rows countCardioSessions reads. */
 export function cardioRowsFromWorkouts(workouts: WorkoutWithSets[]): CardioSetRow[] {
   const rows: CardioSetRow[] = [];
   for (const w of workouts) {
+    const day = localDayOf(w.started_at);
     for (const s of w.workout_sets ?? []) {
       rows.push({
         workout_id: w.id,
@@ -187,6 +222,8 @@ export function cardioRowsFromWorkouts(workouts: WorkoutWithSets[]): CardioSetRo
         set_type: s.set_type ?? null,
         muscle_group: s.exercises?.muscle_group ?? null,
         metric_type: s.exercises?.metric_type ?? null,
+        source: w.source ?? null,
+        day,
       });
     }
   }

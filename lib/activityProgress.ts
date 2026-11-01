@@ -74,7 +74,7 @@ export async function loadActivityProgress(
         .maybeSingle(),
       cardioTarget == null ? null : supabase
         .from('workouts')
-        .select('id, client_id, workout_sets(completed, set_type, exercises(muscle_group, metric_type))')
+        .select('id, client_id, source, started_at, workout_sets(completed, set_type, exercises(muscle_group, metric_type))')
         .eq('user_id', clerkId)
         .not('finished_at', 'is', null)
         .gte('started_at', localWeekStart().toISOString()),

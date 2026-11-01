@@ -130,7 +130,48 @@ Deno.test("nested workouts flatten into cardio rows", () => {
     { id: "w3", workout_sets: [{ completed: true, exercises: null }] },
   ]);
   assertEquals(rows.length, 3);
-  assertEquals(rows[0], { workout_id: "w1", completed: true, set_type: "normal", muscle_group: "Cardio", metric_type: "distance_duration" });
+  assertEquals(rows[0], { workout_id: "w1", completed: true, set_type: "normal", muscle_group: "Cardio", metric_type: "distance_duration", source: null, day: null });
   assertEquals(rows[2].muscle_group, null);
+  assertEquals(countCardioSessions(rows), 1);
+});
+
+Deno.test("an imported run and an in-app cardio session on the same day count once", () => {
+  const run = { muscle_group: "Cardio", metric_type: "distance_duration", completed: true, set_type: "normal" };
+  // The watch run came in first (7 am); "Log one you did" that evening guessed 6 pm.
+  const sameDay = [
+    { workout_id: "watch", ...run, source: "healthkit", day: "2026-11-03" },
+    { workout_id: "logged", ...run, source: null, day: "2026-11-03" },
+  ];
+  assertEquals(countCardioSessions(sameDay), 1);
+  // Health Connect the same way.
+  assertEquals(countCardioSessions([{ ...sameDay[0], source: "health_connect" }, sameDay[1]]), 1);
+});
+
+Deno.test("an imported run still counts beside a lifting day, or an in-app session on another day", () => {
+  const run = { muscle_group: "Cardio", metric_type: "distance_duration", completed: true, set_type: "normal" };
+  assertEquals(countCardioSessions([
+    { workout_id: "watch", ...run, source: "healthkit", day: "2026-11-03" },
+    // Squats that day, with a treadmill warmup: not a cardio session, so it hides nothing.
+    { workout_id: "legs", ...run, set_type: "warmup", source: null, day: "2026-11-03" },
+    { workout_id: "legs", muscle_group: "Quads", metric_type: "weight_reps", completed: true, source: null, day: "2026-11-03" },
+  ]), 1);
+  assertEquals(countCardioSessions([
+    { workout_id: "watch", ...run, source: "healthkit", day: "2026-11-03" },
+    { workout_id: "logged", ...run, source: null, day: "2026-11-04" },
+  ]), 2);
+  // Two in-app sessions on one day are two: only an import gives way.
+  assertEquals(countCardioSessions([
+    { workout_id: "am", ...run, source: null, day: "2026-11-03" },
+    { workout_id: "pm", ...run, source: null, day: "2026-11-03" },
+  ]), 2);
+});
+
+Deno.test("nested workouts carry their source and local day into the rows", () => {
+  const set = { completed: true, set_type: "normal", exercises: { muscle_group: "Cardio", metric_type: "distance_duration" } };
+  const rows = cardioRowsFromWorkouts([
+    { id: "watch", source: "healthkit", started_at: new Date(2026, 10, 3, 7).toISOString(), workout_sets: [set] },
+    { id: "logged", source: null, started_at: new Date(2026, 10, 3, 17, 30).toISOString(), workout_sets: [set] },
+  ]);
+  assertEquals(rows.map((r) => [r.source, r.day]), [["healthkit", "2026-11-03"], [null, "2026-11-03"]]);
   assertEquals(countCardioSessions(rows), 1);
 });
