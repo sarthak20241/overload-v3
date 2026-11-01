@@ -59,7 +59,7 @@ import Svg, { Circle } from 'react-native-svg';
 import Animated, { FadeInDown, LinearTransition } from 'react-native-reanimated';
 import { ParseSpeedSheet } from '@/components/diet/ParseSpeedSheet';
 import {
-  getParseSpeed, setParseSpeed, effectiveParseSpeed, type ParseSpeed,
+  getParseSpeed, setParseSpeed, peekParseSpeed, effectiveParseSpeed, type ParseSpeed,
 } from '@/lib/parseSpeed';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import {
@@ -252,9 +252,8 @@ const MEALS: MealDef[] = [
 
 /** Composer chip face per tier. Kept next to MEALS rather than inline so the
  *  icon and the screen-reader label cannot drift apart. */
-const SPEED_CHIP: Record<ParseSpeed, { icon: 'zap' | 'target' | 'award'; label: string }> = {
+const SPEED_CHIP: Record<ParseSpeed, { icon: 'zap' | 'award'; label: string }> = {
   quick: { icon: 'zap', label: 'Quick' },
-  thorough: { icon: 'target', label: 'Thorough' },
   precise: { icon: 'award', label: 'Precise' },
 };
 
@@ -665,7 +664,7 @@ export default function NutritionScreen() {
     else if (step.kind === 'clear') AsyncStorage.removeItem(readyKey).catch(() => {});
   }, [flow, readyKey, restoredKey, adding]);
 
-  // Parse tier (Quick default / Thorough opt-in / Precise for Pro). A ref
+  // Parse tier (Quick default / Precise for Pro). A ref
   // mirrors the state so onSend reads the CURRENT choice, matching the flowRef
   // idiom above.
   const [parseSpeed, setParseSpeedState] = useState<ParseSpeed>('quick');
@@ -689,7 +688,7 @@ export default function NutritionScreen() {
   // not reach the tier it is meant to sell is not a trial.
   //
   // Anything else - free, unknown, still loading, offline - reads as NOT
-  // entitled, which is the safe direction: it degrades Precise to Thorough and
+  // entitled, which is the safe direction: it degrades Precise to Quick and
   // still logs the meal. The server holds the real lock (index.ts 402s a free
   // tier asking for super), so a wrong guess here costs a tier, never access.
   const { access: coachAccess } = useCoachAccess();
@@ -718,6 +717,14 @@ export default function NutritionScreen() {
   useEffect(() => {
     getParseSpeed().then((v) => { parseSpeedRef.current = v; setParseSpeedState(v); });
   }, []);
+  // The food search has its own mode switch. Coming back from it, take its
+  // pick at once (in memory, no storage wait): its "Log it with Drona"
+  // hand-off parses on this same focus, further down, and must run in the
+  // mode the user just chose there.
+  useFocusEffect(useCallback(() => {
+    const v = peekParseSpeed();
+    if (v && v !== parseSpeedRef.current) { parseSpeedRef.current = v; setParseSpeedState(v); }
+  }, []));
   const pickParseSpeed = (v: ParseSpeed) => {
     track('parse_tier_changed', { from: parseSpeedRef.current, to: v });
     parseSpeedRef.current = v;
@@ -1187,9 +1194,8 @@ export default function NutritionScreen() {
     };
     // Streaming is only worth it on a first-shot log: a correction needs the
     // full pipeline anyway, and parseMealStreaming falls back on its own, but
-    // not opening the stream saves the wasted round trip. Thorough and Precise
-    // both take that full-pipeline road; they differ only in the speed field,
-    // and no field at all is what the server reads as smart.
+    // not opening the stream saves the wasted round trip. Precise takes the
+    // full-pipeline road with speed 'super'.
     const tier = effectiveParseSpeed(parseSpeedRef.current, canUsePreciseRef.current);
     // Corrections stay on smart even for a Precise user. The lookup already
     // happened on the first shot and its answer is banked; re-running it to
@@ -2585,8 +2591,8 @@ export default function NutritionScreen() {
             {/* Parse-tier chip: quiet in the default (Quick), lime once the user
                 has opted up, so only the non-default state draws the eye. Tap
                 opens the sheet; the choice is sticky. It shows the tier that
-                will actually RUN, so a lapsed subscriber sees Thorough rather
-                than a Precise badge over a Thorough parse. */}
+                will actually RUN, so a lapsed subscriber sees Quick rather
+                than a Precise badge over a Quick parse. */}
             <Pressable
               onPress={() => {
                 // The portal shares the app window, so the keyboard would cover
@@ -2762,7 +2768,8 @@ export default function NutritionScreen() {
       {/* Jump the diary to any past day, or ahead to plan one. */}
       <ParseSpeedSheet
         open={speedSheetOpen}
-        value={parseSpeed}
+        // The tier that runs, so a lapsed Precise pick still ticks Quick.
+        value={runningSpeed}
         autoLog={autoLog}
         canUsePrecise={canUsePrecise}
         onClose={() => setSpeedSheetOpen(false)}

@@ -636,7 +636,7 @@ export const GENERATE_TOOLS: AnthropicTool[] = [
   {
     name: 'generate_workout',
     description:
-      'Emit a single structured workout session. Before calling this tool, write 1 short sentence (5-15 words) like "Designing a chest-focused push day for your hypertrophy goal" so the user sees the intent stream in. The rationale field inside the tool input is the longer explanation (2-4 sentences) that appears with the workout card.',
+      'Emit a single structured workout session. Before calling this tool, write 1 short sentence (5-15 words) like "Designing a chest-focused push day for your hypertrophy goal" so the user sees the intent stream in. The rationale field inside the tool input is the short explanation (1-2 sentences, 25 words at most) that appears with the workout card.',
     input_schema: {
       type: 'object',
       properties: {
@@ -650,7 +650,7 @@ export const GENERATE_TOOLS: AnthropicTool[] = [
         },
         rationale: {
           type: 'string',
-          description: '2-4 sentences explaining why this workout fits THIS user. Reference specifics from user_context: their goal, experience_level, recent volume on the target muscles, top lifts. Tone: confident coach, not generic. Avoid empty phrases like "this is a great workout".',
+          description: '1-2 short sentences, 25 words at most, on why this workout fits THIS user. The card shows it in 3 lines, so name the one or two specifics that matter most (their goal, experience_level, recent volume on the target muscles, a top lift). Tone: confident coach, not generic. Avoid empty phrases like "this is a great workout". No em dashes.',
         },
         estimated_duration_min: { type: 'integer' },
         exercises: {
@@ -664,7 +664,7 @@ export const GENERATE_TOOLS: AnthropicTool[] = [
   {
     name: 'generate_plan',
     description:
-      'Emit a multi-day structured training plan. Before calling, write 1 short sentence signaling what you\'re designing. The rationale field inside is the longer explanation.',
+      'Emit a multi-day structured training plan. Before calling, write 1 short sentence signaling what you\'re designing. The rationale field inside is the short explanation.',
     input_schema: {
       type: 'object',
       properties: {
@@ -679,7 +679,7 @@ export const GENERATE_TOOLS: AnthropicTool[] = [
         days_per_week: { type: 'integer' },
         rationale: {
           type: 'string',
-          description: '3-5 sentences explaining why this split + structure fits THIS user. Reference their goal, training age, weekly target sessions, recovery considerations. Mention the progression strategy briefly.',
+          description: '1-2 short sentences, 25 words at most, on why this split fits THIS user. The card shows it in 3 lines, so pick the one or two reasons that matter most (their goal, training age, weekly sessions, recovery, how to progress). No em dashes.',
         },
         workouts: {
           type: 'array',
