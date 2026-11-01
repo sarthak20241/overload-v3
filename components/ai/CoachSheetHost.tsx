@@ -223,7 +223,10 @@ export function CoachSheetHost() {
     if (!t) return;
     // The tapped news is handled; the "back in the app" banner stays away.
     waitingRef.current = waitingRef.current.filter((w) => !sameTarget(w.notice.target, t));
+    // Only for the return this tap is part of: a tap with the app already
+    // open (or one never followed by 'active') must not skip a later banner.
     tappedRef.current = true;
+    setTimeout(() => { tappedRef.current = false; }, TAP_WINDOW_MS * 3);
     toast.hide();
     track('ready_notice_opened', { channel: 'notification' });
     go(t, typeof data.inbox === 'string' ? data.inbox : null);

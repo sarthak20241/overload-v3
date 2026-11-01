@@ -21,12 +21,14 @@ import { createHolds, createWorkTracker, type NativeTask } from '@/lib/backgroun
 let tracker: ReturnType<typeof createWorkTracker> | null = null;
 function load() {
   if (!tracker) {
-    const holds = createHolds(requireOptionalNativeModule<NativeTask>('BackgroundTime'), {
+    const native = requireOptionalNativeModule<NativeTask>('BackgroundTime');
+    const holds = createHolds(native, {
       set: (fn, ms) => setTimeout(fn, ms),
       clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
     });
     const t = createWorkTracker(holds);
-    AppState.addEventListener('change', (state) => t.appState(state));
+    // No module (Android, an older binary): holds do nothing, so no listener.
+    if (native) AppState.addEventListener('change', (state) => t.appState(state));
     tracker = t;
   }
   return tracker;
