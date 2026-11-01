@@ -74,6 +74,7 @@ import { NumberWheel, RulerSlider } from '@/components/onboarding/BodyPickers';
 import { FrequencyStory } from '@/components/onboarding/FrequencyStory';
 import { PaceSlider } from '@/components/onboarding/PaceSlider';
 import { CommitmentHold } from '@/components/onboarding/CommitmentHold';
+import { Celebration } from '@/components/ui/Celebration';
 import { BuildMoment } from '@/components/onboarding/BuildMoment';
 import { ProjectedCurve } from '@/components/onboarding/ProjectedCurve';
 import { DronaMark } from '@/components/coach/DronaMark';
@@ -181,6 +182,7 @@ export default function OnboardingScreen() {
     frequency: 3,
   });
   const [finishing, setFinishing] = useState(false);
+  const [celebrating, setCelebrating] = useState(false);
 
   // "Something else" opens a text box under six cards; once the keyboard is
   // up, scroll it into view or the user types blind.
@@ -488,6 +490,19 @@ export default function OnboardingScreen() {
     reportStepChange(next, 'cta');
     setStep(next);
   }, [reportStepChange]);
+
+  // The commit confetti plays on the commit screen and the build screen
+  // follows once it lands, so nothing falls over the plan being built. The
+  // timer is a backstop in case the confetti never reports its end.
+  const finishCelebration = useCallback(() => {
+    setCelebrating(false);
+    if (step === 'commit') goTo('build');
+  }, [step, goTo]);
+  useEffect(() => {
+    if (!celebrating) return;
+    const t = setTimeout(finishCelebration, 6000);
+    return () => clearTimeout(t);
+  }, [celebrating, finishCelebration]);
 
   const stepIndex = STEP_ORDER.indexOf(step);
   const nextStep = STEP_ORDER[Math.min(stepIndex + 1, STEP_ORDER.length - 1)];
@@ -1204,7 +1219,7 @@ export default function OnboardingScreen() {
               <CommitmentHold
                 pledgeTitle="I'm in."
                 pledgeBody={`${joinGoals(selectedGoals(answers).map((g, i) => i === 0 ? GOAL_PHRASES[g] : GOAL_PHRASES[g].toLowerCase()))}, ${answers.frequency ?? 3} days a week${paceCtx && paceDate ? `, ${Math.abs(toKg(targetVal) - toKg(weightVal)).toFixed(1)} kg ${targetVal < weightVal ? 'down' : 'up'} by ${paceDate}` : ''}. I log my sessions, even the rough ones.`}
-                onCommitted={() => goTo('build')}
+                onCommitted={() => setCelebrating(true)}
               />
           </QuestionStep>
         )}
@@ -1449,6 +1464,7 @@ export default function OnboardingScreen() {
           </QuestionStep>
         )}
       </KeyboardAvoidingView>
+      {celebrating && <Celebration onDone={finishCelebration} />}
     </SafeAreaView>
   );
 }

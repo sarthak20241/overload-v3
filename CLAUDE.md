@@ -87,6 +87,8 @@ deno test --allow-all lib/coachSessions.test.ts # coach sheets kept while Drona 
 deno test --allow-all --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/readyInbox.test.ts # what waits behind the dashboard bell
 deno test --allow-all lib/backgroundHolds.test.ts # iOS background time: shared task, a hung hold lets go by itself
 deno test --allow-all lib/homeLogHint.test.ts  # home log button: the pill's words, and when it stops
+deno test --allow-all lib/startGuide.test.ts   # Home's first-week path: what ticks a step, the hello, the all-done moment once
+deno test --allow-all --unstable-sloppy-imports lib/startLessons.test.ts # first-week lessons: every step has one, copy fits its card, no em dashes
 ```
 
 There are no configured lint or build scripts.

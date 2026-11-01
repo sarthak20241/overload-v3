@@ -38,6 +38,8 @@ export interface StartGuideFacts {
   accountAgeMs: number | null;
   /** The user tapped Hide. */
   dismissed: boolean;
+  /** The all-done moment was shown and closed. */
+  celebrated: boolean;
   workoutsLogged: number;
   aiMealLogged: boolean;
   /** The user has chosen a food logging mode at least once. */
@@ -62,6 +64,10 @@ export interface StartGuideView {
   doneCount: number;
   /** The first step not done: the one the card points at. */
   nextId: StartStepId | null;
+  /** Every step is done and the moment has not been shown yet. */
+  finished: boolean;
+  /** Nothing done or opened yet: Drona says hello first. */
+  fresh: boolean;
 }
 
 /** What the card shows, or null when it should not show at all. */
@@ -73,8 +79,17 @@ export function startGuideView(f: StartGuideFacts): StartGuideView | null {
   if (f.accountAgeMs > START_GUIDE_DAYS * 24 * 60 * 60 * 1000) return null;
   const steps = START_STEPS.map((s) => ({ ...s, done: stepDone(s.id, f) }));
   const doneCount = steps.filter((s) => s.done).length;
-  if (doneCount === steps.length) return null;
-  return { steps, doneCount, nextId: steps.find((s) => !s.done)?.id ?? null };
+  // All done: one moment to mark it, then the card is gone for good.
+  if (doneCount === steps.length) {
+    return f.celebrated ? null : { steps, doneCount, nextId: null, finished: true, fresh: false };
+  }
+  return {
+    steps,
+    doneCount,
+    nextId: steps.find((s) => !s.done)?.id ?? null,
+    finished: false,
+    fresh: doneCount === 0 && f.opened.size === 0,
+  };
 }
 
 export function startGuideOpenedKey(userId: string): string {
@@ -83,6 +98,10 @@ export function startGuideOpenedKey(userId: string): string {
 
 export function startGuideDismissedKey(userId: string): string {
   return `overload:start_guide_dismissed::${userId}`;
+}
+
+export function startGuideCelebratedKey(userId: string): string {
+  return `overload:start_guide_celebrated::${userId}`;
 }
 
 /** Read the opened-steps list back; anything unknown is dropped. */
