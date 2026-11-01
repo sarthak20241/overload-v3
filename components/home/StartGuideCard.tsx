@@ -47,11 +47,15 @@ interface Props {
   /** Clerk's account creation time, ms. */
   createdAtMs: number | null;
   workoutsLogged: number;
+  /** False while the owner is still loading workouts. The card waits, so a
+   *  0 that is really "not loaded yet" never reads as a step that just got
+   *  done (a false pop and buzz for a returning user). */
+  workoutsReady?: boolean;
   /** Open the step's screen. */
   onOpen: (id: StartStepId) => void;
 }
 
-export function StartGuideCard({ containerStyle, supabase, userId, createdAtMs, workoutsLogged, onOpen }: Props) {
+export function StartGuideCard({ containerStyle, supabase, userId, createdAtMs, workoutsLogged, workoutsReady = true, onOpen }: Props) {
   const { C } = useTheme();
   const [facts, setFacts] = useState<{
     aiMealLogged: boolean;
@@ -82,7 +86,8 @@ export function StartGuideCard({ containerStyle, supabase, userId, createdAtMs, 
           AsyncStorage.getItem(PARSE_SPEED_KEY).catch(() => null),
           AsyncStorage.getItem(startGuideOpenedKey(userId)).catch(() => null),
           AsyncStorage.getItem(startGuideDismissedKey(userId)).catch(() => null),
-          AsyncStorage.getItem(startGuideCelebratedKey(userId)).catch(() => null),
+          // A failed read counts as seen: better no moment than a replay.
+          AsyncStorage.getItem(startGuideCelebratedKey(userId)).catch(() => '1'),
         ]);
         if (!alive) return;
         // A failed read counts as "not yet": the worst case is a step that
@@ -102,7 +107,7 @@ export function StartGuideCard({ containerStyle, supabase, userId, createdAtMs, 
     return () => { alive = false; };
   }, [supabase, userId, tick]);
 
-  const view = facts && userId
+  const view = facts && userId && workoutsReady
     ? startGuideView({
         ready: true,
         accountAgeMs: createdAtMs != null ? Date.now() - createdAtMs : null,
