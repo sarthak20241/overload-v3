@@ -2953,7 +2953,7 @@ function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
       : String(c.last_logged_at),
     persistent: true, confirmed_at: String(c.confirmed_at),
     // Absent before migration 20261031125900 (select "*"), so absent is null.
-    brand: typeof c.brand === "string" && c.brand.trim() ? c.brand.trim() : null,
+    brand: typeof c.brand === "string" && c.brand.trim() ? c.brand.trim().slice(0, 80) : null,
     confirmed_aliases: Array.isArray(c.aliases) ? c.aliases.filter((a): a is string => typeof a === "string") : [],
   };
 }
@@ -3329,8 +3329,10 @@ function makeParseDeps(
 
 /** The user-scoped client as the auto-log store. RLS holds throughout: meals
  *  default user_id from the JWT's sub and entries are scoped through their
- *  parent meal, exactly as the client's own writes are. Never the admin client:
- *  a bug here must not be able to write into someone else's diary. */
+ *  parent meal, exactly as the client's own writes are. Never the admin client
+ *  for the diary: a bug here must not be able to write into someone else's
+ *  diary. The one admin write is brandSavedFoods, on this user's saved foods
+ *  only (users may not write user_food_cache themselves). */
 function supabaseAutoLogStore(userClient: SupabaseClient, admin: SupabaseClient, userId: string): AutoLogStore {
   const rows = (data: unknown) => (data ?? []) as Array<Record<string, unknown>>;
   return {

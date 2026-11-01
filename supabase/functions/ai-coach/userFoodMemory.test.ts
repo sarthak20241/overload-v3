@@ -23,7 +23,7 @@ import {
   servesTier,
   shortlist,
 } from "./userFoodMemory.ts";
-import { memoryLineName, memoryQuickItem, type ParseMealDeps, runParseMeal } from "./parseMeal.ts";
+import { memoryLineName, memoryQuickItem, type ParsedItem, type ParseMealDeps, type ResolvedItem, runParseMeal, stampBrands } from "./parseMeal.ts";
 
 const NOW = new Date("2026-09-27T12:00:00Z");
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
@@ -1107,4 +1107,39 @@ Deno.test("the choice question carries the rule, not the score's own framing", (
   assert(!/Score the candidate|Judge one thing/.test(text), text);
   // The body of the rule is still there.
   assert(text.includes("Judge intended identity, not exact wording."), text);
+});
+
+// ── Each line's brand, for the saved food it makes (stampBrands) ────────────
+
+const brandLine = (food_name: string, food_id: string | null): ParsedItem => ({
+  food_id, food_name, quantity: 1, serving_label: "serving", grams: 30, kcal: 110, protein_g: 4,
+  carb_g: 18, fat_g: 2, fiber_g: null, source: food_id ? "catalog" : "estimate", assumption: null, confidence: "medium",
+});
+const resolvedItem = (name: string, brand: string | null, candidates: { food_id: string; brand: string | null }[]) =>
+  ({ name, brand, quantity: 30, unit: "g", prep: null, candidates: candidates.map((c) => ({ ...c, name: c.food_id })) }) as unknown as ResolvedItem;
+
+Deno.test("a line takes its row's brand, else the brand typed for its item", () => {
+  const resolved = [
+    resolvedItem("kesar pista oats", "Yogabar", [{ food_id: "r1", brand: "Yoga Bar" }]),
+    resolvedItem("masala oats", "Too Yumm", [{ food_id: "r2", brand: null }]),
+  ];
+  const out = stampBrands([brandLine("Kesar Pista Oats", "r1"), brandLine("Masala Oats", "r2")], resolved);
+  assertEquals(out.map((i) => i.brand), ["Yoga Bar", "Too Yumm"]);
+});
+
+Deno.test("a row two items were offered names no brand: the line cannot say whose it is", () => {
+  const resolved = [
+    resolvedItem("oats", "Yogabar", [{ food_id: "shared", brand: null }]),
+    resolvedItem("protein oats", "Pintola", [{ food_id: "shared", brand: null }]),
+  ];
+  assertEquals(stampBrands([brandLine("Oats", "shared")], resolved)[0].brand, undefined);
+});
+
+Deno.test("an estimate line takes a brand only when its name carries it, as a whole word", () => {
+  const resolved = [resolvedItem("masala oats", "Too Yumm", []), resolvedItem("milk", "Go", [])];
+  const out = stampBrands([
+    brandLine("Too Yumm masala oats", null),
+    brandLine("mango lassi", null), // "go" inside "mango" is not the brand Go
+  ], resolved);
+  assertEquals(out.map((i) => i.brand), ["Too Yumm", undefined]);
 });
