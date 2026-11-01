@@ -132,15 +132,15 @@ export function StartGuideCard({ containerStyle, supabase, userId, createdAtMs, 
   // The all-done moment fires once, the first time it is seen, and is
   // remembered at once so it never replays.
   const finished = view?.finished ?? false;
+  const finishFired = useRef(false);
   useEffect(() => {
-    if (!finished || !userId || holdFinished) return;
+    if (!finished || !userId || finishFired.current) return;
+    finishFired.current = true;
     setHoldFinished(true);
     setCelebrating(true);
     haptics.success();
     track('start_guide_finished', {});
     AsyncStorage.setItem(startGuideCelebratedKey(userId), '1').catch(() => {});
-    // holdFinished only guards a re-fire; it is not a trigger.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finished, userId]);
 
   const shownOnce = view != null;
