@@ -29,14 +29,20 @@ import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from '@/lib/t
 import { readSwapOptions, type SwapOption } from '@/lib/variantSwap';
 import { relogColumns, type RelogLabels } from '@/lib/foodPatterns';
 import { deleteMealIfEmpty } from '@/lib/mealCleanup';
+import { buildYourFoods, type YourFood, type YourFoodEntry, type YourFoodMark } from '@/lib/yourFoods';
+import {
+  pendingRows, prunePending, settlePending as settleGroup, settledKeys, withPending, r0, r1,
+  type PendingGroup, type PendingSource,
+} from '@/lib/pendingEntries';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
 } from '@/lib/foods';
 
 type Supa = NonNullable<ReturnType<typeof useSupabaseClient>>;
-/** A food the picker can log: a catalog Food (has id) or a bundled FoodDef (no id). */
-export type PickerFood = FoodDef & { id?: string | null };
+/** A food the picker can log: a catalog Food (has id) or a bundled FoodDef (no id).
+ *  `yours` is set on a food rebuilt from the user's own diary (lib/yourFoods). */
+export type PickerFood = FoodDef & { id?: string | null; yours?: YourFoodMark };
 
 /**
  * The meal the logging flow is targeting. food-search / food-detail are RETAINED
@@ -55,8 +61,6 @@ let _logDate: Date = new Date();
 export const setLogDate = (d: Date) => { _logDate = d; };
 export const getLogDate = (): Date => _logDate;
 
-const r0 = (n: number) => Math.round(n);
-const r1 = (n: number) => Math.round(n * 10) / 10;
 const num = (v: unknown) => (v == null ? 0 : Number(v));
 
 export interface LoggedEntry {
@@ -70,6 +74,9 @@ export interface LoggedEntry {
   quantity: number;
   grams_logged: number | null;  // to rescale macros on a quantity edit
   kcal: number; protein_g: number; carb_g: number; fat_g: number;
+  /** Drawn the moment it was added, before its save landed (lib/pendingEntries).
+   *  Its id is not a row yet, so it cannot be edited or undone. */
+  pending?: boolean;
 }
 export interface DayTotals { kcal: number; protein_g: number; carb_g: number; fat_g: number }
 export interface DayData {
@@ -86,6 +93,16 @@ export interface DayData {
    *  tells "still loading" from "gave up". Cleared by the next success. */
   failedDayIso: string | null;
   reload: () => void;
+  /** Show `lines` under `mealType` on this day now, before their save lands.
+   *  Returns the group id the save reports back with. */
+  addPending: (lines: PendingSource[], mealType: MealType) => string;
+  /** The save landed with these row ids: the lines stay until a read shows them. */
+  settlePending: (groupId: string, realIds: string[]) => void;
+  /** The save failed: take the lines back off the screen. */
+  dropPending: (groupId: string) => void;
+  /** The React key for a row: the id it was first drawn with. A line added
+   *  here keeps one key from the tap, through the save, to the read. */
+  rowKey: (id: string) => string;
 }
 
 const emptyByMeal = (): Record<MealType, LoggedEntry[]> =>
@@ -235,6 +252,39 @@ export function useDayNutrition(dayIso: string): DayData {
   }, []);
   const reload = useCallback(() => setTick((t) => t + 1), []);
 
+  // Lines added from this screen whose save has not been read back yet. Kept
+  // out of every cache: only a read of the database ever goes to disk.
+  const [pending, setPending] = useState<PendingGroup<LoggedEntry>[]>([]);
+  const pendingSeq = useRef(0);
+  // The groups as last rendered, plus any added since, so settlePending reads
+  // them outside the state updater (updaters stay pure).
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
+  const addPending = useCallback((lines: PendingSource[], mealType: MealType) => {
+    const id = `${Date.now().toString(36)}-${++pendingSeq.current}`;
+    const entries: LoggedEntry[] = pendingRows(id, lines, mealType)
+      .map((e) => ({ ...e, meal_type: mealType, source: e.source as LoggedEntry['source'] }));
+    const group = { id, dayIso, entries, realIds: null };
+    // Into the ref now too: a save that lands before the next render must
+    // still find its group, or its rows lose their keys.
+    pendingRef.current = [...pendingRef.current, group];
+    setPending((cur) => [...cur, group]);
+    return id;
+  }, [dayIso]);
+  // Real id -> the pending id that row was drawn with. Never cleared: a few
+  // strings per add, and an Undo or a later read must still find the key.
+  const rowKeys = useRef(new Map<string, string>());
+  const settlePending = useCallback((groupId: string, realIds: string[]) => {
+    for (const [real, key] of settledKeys(pendingRef.current, groupId, realIds)) {
+      if (!rowKeys.current.has(real)) rowKeys.current.set(real, key);
+    }
+    setPending((cur) => settleGroup(cur, groupId, realIds));
+  }, []);
+  const rowKey = useCallback((id: string) => rowKeys.current.get(id) ?? id, []);
+  const dropPending = useCallback((groupId: string) => {
+    setPending((cur) => cur.filter((g) => g.id !== groupId));
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const fail = () => { if (!cancelled) { setFailedDayIso(dayIso); setLoading(false); } };
@@ -277,6 +327,7 @@ export function useDayNutrition(dayIso: string): DayData {
         _dayCache.set(key, grouped);
       }
       setByMealForDay(grouped, dayIso);
+      setPending((cur) => prunePending(cur, grouped, dayIso));
       setLoading(false);
     })().catch(fail);
     return () => { cancelled = true; };
@@ -297,8 +348,11 @@ export function useDayNutrition(dayIso: string): DayData {
   // came from until the effect runs. Answer from memory in THIS render, so the
   // screen goes straight from the old day to the new one with no loader frame.
   const fromMemory = !isToday && totalsDayIso !== dayIso ? _dayCache.get(key) : undefined;
-  const shownByMeal = fromMemory ?? byMeal;
   const shownDayIso = fromMemory ? dayIso : totalsDayIso;
+  const shownByMeal = useMemo(
+    () => withPending(fromMemory ?? byMeal, shownDayIso, pending),
+    [fromMemory, byMeal, shownDayIso, pending],
+  );
 
   const totals = useMemo<DayTotals>(() => {
     const t = { kcal: 0, protein_g: 0, carb_g: 0, fat_g: 0 };
@@ -313,6 +367,7 @@ export function useDayNutrition(dayIso: string): DayData {
   return {
     byMeal: shownByMeal, totals, totalsDayIso: shownDayIso,
     loading: fromMemory ? false : loading, failedDayIso, reload,
+    addPending, settlePending, dropPending, rowKey,
   };
 }
 
@@ -580,6 +635,36 @@ export async function recentFoods(supabase: Supa | null, limit = 20): Promise<Pi
     if (out.length >= limit) break;
   }
   return out;
+}
+
+/** Every food this user logged, one per name, for search to put first
+ *  (lib/yourFoods). One read of the newest 600 meals, any day, AI and manual
+ *  lines alike: search filters it on the device, so a keystroke never waits on
+ *  the network. The cap bounds the download for a heavy logger (about 300
+ *  meals in 90 days on prod, 2026-10-31). */
+export async function loadYourFoods(supabase: Supa | null): Promise<YourFood[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('meals')
+    .select('logged_at, meal_entries(food_id, food_name, serving_unit, grams_logged, quantity, kcal, protein_g, carb_g, fat_g, fiber_g, sugar_g, sat_fat_g, sodium_mg, logged_via, source, tier)')
+    .order('logged_at', { ascending: false })
+    .limit(600);
+  if (error || !data) return [];
+  const nul = (v: unknown) => (v == null ? null : Number(v));
+  const entries: YourFoodEntry[] = [];
+  for (const m of data as any[]) {
+    for (const e of (m.meal_entries ?? []) as any[]) {
+      entries.push({
+        food_id: e.food_id ?? null, food_name: String(e.food_name ?? ''),
+        serving_unit: e.serving_unit ?? null, quantity: nul(e.quantity), grams_logged: nul(e.grams_logged),
+        kcal: num(e.kcal), protein_g: num(e.protein_g), carb_g: num(e.carb_g), fat_g: num(e.fat_g),
+        fiber_g: nul(e.fiber_g), sugar_g: nul(e.sugar_g), sat_fat_g: nul(e.sat_fat_g), sodium_mg: nul(e.sodium_mg),
+        logged_via: e.logged_via ?? null, source: e.source ?? null, tier: e.tier ?? null,
+        logged_at: m.logged_at,
+      });
+    }
+  }
+  return buildYourFoods(entries);
 }
 
 /** A food's serving options. Bundled foods carry them; catalog foods load from
@@ -1397,14 +1482,18 @@ async function logSection(
   }));
 
   const { data: inserted, error } = await supabase
-    .from('meal_entries').insert(rows).select('id');
+    .from('meal_entries').insert(rows).select('id, position');
   if (error) {
     // If we created an empty meal and the entries failed, don't leave the
     // orphan meal behind.
     if (createdMeal) await deleteMealIfEmpty(supabase, mealId);
     return { error: error.message };
   }
-  const entryIds = (inserted ?? []).map((r: any) => String(r.id));
+  // In the order the lines were given: the screen pairs these with its
+  // pending rows one by one (settlePending), and RETURNING promises no order.
+  const entryIds = [...(inserted ?? [])]
+    .sort((a: any, b: any) => a.position - b.position)
+    .map((r: any) => String(r.id));
   return { ref: { mealType, mealId, entryIds, createdMeal } };
 }
 

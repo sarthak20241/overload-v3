@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  ActivityIndicator,
   BackHandler,
   Keyboard,
   Platform,
@@ -58,6 +57,7 @@ import { useAdminCheck } from '@/hooks/useAdminCheck';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { isLifetimeTier, PLAN_BENEFITS, tierLabel } from '@/lib/tiers';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 type Gender = 'M' | 'F' | 'O';
 type WeightUnit = 'kg' | 'lbs';
@@ -796,7 +796,7 @@ export default function ProfileScreen() {
   if (loading) {
     return (
       <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
-        <ActivityIndicator color={Colors.primary} style={{ marginTop: 100 }} />
+        <OrbLoader size="large" state="searching" style={{ marginTop: 100 }} />
       </SafeAreaView>
     );
   }
@@ -1578,7 +1578,7 @@ export default function ProfileScreen() {
                       style={[styles.deleteConfirmBtn, { backgroundColor: '#ef4444', opacity: deletingAccount ? 0.6 : 1 }]}
                     >
                       {deletingAccount
-                        ? <ActivityIndicator size="small" color="#fff" />
+                        ? <OrbLoader size="small" color="#fff" />
                         : <Feather name="trash-2" size={10} color="#fff" />}
                       <Text style={[styles.deleteConfirmBtnText, { color: '#fff' }]}>Delete</Text>
                     </TouchableOpacity>
@@ -1720,7 +1720,7 @@ export default function ProfileScreen() {
                 }]}
               >
                 {bugSubmitting ? (
-                  <ActivityIndicator color={Colors.primaryFg} />
+                  <OrbLoader color={Colors.primaryFg} />
                 ) : (
                   <>
                     <Feather name="send" size={14} color={Colors.primaryFg} />

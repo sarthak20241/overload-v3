@@ -14,7 +14,7 @@
  *   Add all          logs every usual (had more than half the time) at once
  *
  * Adding answers at once, before the write lands: the row fills in, its +
- * turns into a check with a small spring, and "Added" replaces the calories.
+ * turns into a check with a small dip, and "Added" replaces the calories.
  * When the diary reloads, the row leaves (fade, the list closes up) and the
  * logged line fades in above it. Add all runs the same beat down the rows,
  * a step apart, so the meal visibly fills itself. A failed write turns the
@@ -25,7 +25,7 @@ import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   FadeIn, FadeOut, LinearTransition,
-  useSharedValue, useAnimatedStyle, withDelay, withSequence, withSpring, withTiming,
+  useSharedValue, useAnimatedStyle, withDelay, withSequence, withTiming,
 } from 'react-native-reanimated';
 import { Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -141,9 +141,11 @@ function SuggestionRow({ item, added, delayMs, why, onAdd, onEdit }: {
       return;
     }
     fill.value = withDelay(delayMs, withTiming(1, { duration: 180 }));
+    // A dip and back, no overshoot: an underdamped spring here wobbled the
+    // icon and read as the whole row shaking.
     pop.value = withDelay(delayMs, withSequence(
-      withTiming(0.55, { duration: 90 }),
-      withSpring(1, { damping: 9, stiffness: 280, mass: 0.6 }),
+      withTiming(0.7, { duration: 90 }),
+      withTiming(1, { duration: 160 }),
     ));
     const t = setTimeout(() => setShownAdded(true), delayMs + 90);
     return () => clearTimeout(t);

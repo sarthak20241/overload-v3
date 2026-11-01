@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator,
-  Dimensions,
+  KeyboardAvoidingView, Platform, ScrollView, Dimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,6 +15,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import * as WebBrowser from 'expo-web-browser';
 import { setGuestMode, getGuestMode } from '@/lib/guestMode';
 import { getGuestWorkouts, getGuestRoutines } from '@/lib/guestStore';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 function useWarmUpBrowser() {
   useEffect(() => {
@@ -83,6 +83,13 @@ export default function AuthScreen() {
   const { isSignedIn, isLoaded: clerkLoaded } = useClerkUser();
 
   const [mode, setMode] = useState<Mode>('login');
+  // Only someone already in guest mode is offered the way back into it.
+  const [wasGuest, setWasGuest] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    getGuestMode().then((g) => { if (alive) setWasGuest(g); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -591,7 +598,7 @@ export default function AuthScreen() {
                   activeOpacity={0.7}
                 >
                   {appleLoading ? (
-                    <ActivityIndicator size="small" color={Colors.appleFg} />
+                    <OrbLoader size="small" color={Colors.appleFg} />
                   ) : (
                     <>
                       {/* Exception to the project's Feather-icons-at-24px convention.
@@ -636,7 +643,7 @@ export default function AuthScreen() {
                   activeOpacity={0.7}
                 >
                   {googleLoading ? (
-                    <ActivityIndicator size="small" color={C.textMuted} />
+                    <OrbLoader size="small" color={C.textMuted} />
                   ) : (
                     <>
                       <GoogleIcon />
@@ -813,7 +820,7 @@ export default function AuthScreen() {
                 activeOpacity={0.85}
               >
                 {loading ? (
-                  <ActivityIndicator size="small" color={Colors.primaryFg} />
+                  <OrbLoader size="small" color={Colors.primaryFg} />
                 ) : (
                   <>
                     <Text style={styles.submitText}>
@@ -879,8 +886,10 @@ export default function AuthScreen() {
             </Animated.View>
           </PostHogMaskView>
 
-          {/* Guest */}
-          {(mode === 'login' || mode === 'register') && (
+          {/* Guest: closed to new people (2026-10-31). A guest's plan never
+              reaches an account, and phase 1 can only be built for one. Someone
+              already in guest mode who lands here can still go back to it. */}
+          {wasGuest && (mode === 'login' || mode === 'register') && (
             <Animated.View entering={FadeInDown.delay(200).duration(500)} style={{ alignItems: 'center', marginTop: Spacing.lg }}>
               <TouchableOpacity onPress={async () => {
                 track('guest_mode_entered', { mode });

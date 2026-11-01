@@ -18,11 +18,9 @@ import {
   Text,
   Pressable,
   ScrollView,
-  ActivityIndicator,
   StyleSheet,
   Platform,
   Dimensions,
-  RefreshControl,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -54,6 +52,8 @@ import { haptics } from '@/lib/haptics';
 import { dailyMetricDef, type DailyMetricDef } from '@/lib/dailyMetrics';
 import { sourcesForHub, type HealthHub } from '@/lib/healthSources';
 import { Colors, Spacing, Radius, FontSize, FontWeight, IconSize, Shadow, colorWithAlpha } from '@/constants/theme';
+import { OrbLoader } from '@/components/ui/OrbLoader';
+import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 
 const HUB: HealthHub = Platform.OS === 'ios' ? 'healthkit' : 'health_connect';
 const HUB_LABEL = Platform.OS === 'ios' ? 'Apple Health' : 'Health Connect';
@@ -167,7 +167,6 @@ export default function HealthScreen() {
   const [series, setSeries] = useState<Record<string, { date: string; value: number }[]>>({});
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [loadError, setLoadError] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
   const [coachTopic, setCoachTopic] = useState<CoachTopic | undefined>(undefined);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -233,11 +232,8 @@ export default function HealthScreen() {
     }
   }, [params.log, userId, recentSleepReady]);
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await load();
-    setRefreshing(false);
-  }, [load]);
+  // The hook ends the orb even when load() throws.
+  const { refreshing, onRefresh } = usePullRefresh(load);
 
   // Open Drona on this metric (its value + the user's usual). Drona speaks first.
   function askAboutMetric(def: DailyMetricDef, pts: { date: string; value: number }[]) {
@@ -367,11 +363,12 @@ export default function HealthScreen() {
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ padding: Spacing.xl, paddingBottom: insets.bottom + Spacing.xxxl, gap: Spacing.lg }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={accent} colors={[accent]} />}
+        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
+        <RefreshOrb refreshing={refreshing} />
         {loading ? (
           <View style={{ paddingVertical: Spacing.xxxl * 2, alignItems: 'center' }}>
-            <ActivityIndicator color={accent} />
+            <OrbLoader size="large" state="searching" />
           </View>
         ) : (
           <>
@@ -426,7 +423,7 @@ export default function HealthScreen() {
                 // have made; the retry banner above owns the recovery path.
                 <View style={styles.heroBody}>
                   <ReadinessRing score={0} color={C.textMuted} track={C.muted} size={140} stroke={12}>
-                    {working ? <ActivityIndicator color={accent} /> : <Feather name="cloud-off" size={26} color={C.textMuted} />}
+                    {working ? <OrbLoader color={accent} /> : <Feather name="cloud-off" size={26} color={C.textMuted} />}
                   </ReadinessRing>
                   <Text style={[styles.emptyTitle, { color: C.foreground }]}>Can&apos;t load your readiness</Text>
                   <Text style={[styles.emptySub, { color: C.textMuted }]}>
@@ -439,7 +436,7 @@ export default function HealthScreen() {
                 // lives below in the connect block, never as the hero.
                 <View style={styles.heroBody}>
                   <ReadinessRing score={0} color={accent} track={C.muted} size={140} stroke={12}>
-                    {working ? <ActivityIndicator color={accent} /> : <Feather name="moon" size={26} color={C.textMuted} />}
+                    {working ? <OrbLoader color={accent} /> : <Feather name="moon" size={26} color={C.textMuted} />}
                   </ReadinessRing>
                   <Text style={[styles.emptyTitle, { color: C.foreground }]}>Log last night</Text>
                   <Text style={[styles.emptySub, { color: C.textMuted }]}>
@@ -548,7 +545,7 @@ export default function HealthScreen() {
                   style={({ pressed }) => [styles.ghost, { borderColor: C.border }, (pressed || working) && { opacity: 0.7 }]}
                 >
                   {working ? (
-                    <ActivityIndicator color={C.foreground} />
+                    <OrbLoader color={C.foreground} />
                   ) : (
                     <>
                       <Feather name="link" size={IconSize.md} color={C.foreground} />
@@ -567,7 +564,7 @@ export default function HealthScreen() {
                 style={({ pressed }) => [styles.ghost, { borderColor: C.border }, (pressed || working) && { opacity: 0.7 }]}
               >
                 {working ? (
-                  <ActivityIndicator color={C.foreground} />
+                  <OrbLoader color={C.foreground} />
                 ) : (
                   <>
                     <Feather name="refresh-cw" size={IconSize.md} color={C.foreground} />

@@ -7,10 +7,19 @@
  * (search_foods_ranked RPC). A row's "+" quick-logs one default serving and keeps
  * you here for multi-add; tapping the row opens the full food detail to choose a
  * portion. Calm/mature system: Inter, tabular figures, lime only on the action.
+ *
+ * Signed in, anything typed also gets a "Log it with Drona" row pinned above
+ * the results (the keyboard's send does the same): the sentence goes to the
+ * Nutrition food box with this meal and day (lib/pendingParse), so a user who
+ * came in by hand finds the AI log without leaving the place they looked.
+ *
+ * Foods the user logged before (by hand or with Drona) match first, tagged, at
+ * last time's portion (lib/yourFoods): most of a diary has no catalog row, so
+ * the catalog alone could not find the food they eat every day.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, TextInput, Pressable, FlatList, StyleSheet, ActivityIndicator, Keyboard,
+  View, Text, TextInput, Pressable, FlatList, StyleSheet, Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -22,13 +31,19 @@ import { track } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
-  searchCatalog, recentFoods, logFood, getLogMeal, setLogMeal, setQuickAddSeed,
-  listSavedMeals, logSavedMeal, parseMeal, capNotice, capUpgradeContext, setBuilderMeal,
-  type PickerFood, type SavedMeal, type ParsedMealItem,
+  searchCatalog, recentFoods, loadYourFoods, logFood, getLogMeal, setLogMeal, getLogDate, setQuickAddSeed,
+  listSavedMeals, logSavedMeal, setBuilderMeal,
+  type PickerFood, type SavedMeal,
 } from '@/lib/dietData';
-import { defaultServing, searchFoods, type MealType } from '@/lib/foods';
+import { defaultServing, resolveBaseAmount, searchFoods, type MealType } from '@/lib/foods';
+import { matchYourFoods, mergeYourFoods, portionText, type YourFood } from '@/lib/yourFoods';
 import { haptics } from '@/lib/haptics';
+import { dronaLogText, setPendingParse } from '@/lib/pendingParse';
+import { getParseSpeed, effectiveParseSpeed, PARSE_SPEED_COPY, type ParseSpeed } from '@/lib/parseSpeed';
+import { getAutoLog } from '@/lib/autoLog';
+import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 type SearchTab = 'all' | 'meals';
 /** 'quick' is not a pane — it opens the Quick add screen and the row stays on
@@ -56,15 +71,21 @@ export default function FoodSearchScreen() {
   const supabase = useSupabaseClient();
   const { isSignedIn } = useClerkUser();
 
-  // "Ask Drona" fallback when the catalog has no match (AI resolves via OFF/web/estimate).
-  const [aiBusy, setAiBusy] = useState(false);
-  const [aiError, setAiError] = useState<string | null>(null);
-
   const [meal, setMeal] = useState<MealType>(getLogMeal());
   const [mealOpen, setMealOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<SearchTab>('all');
   const [savedMeals, setSavedMeals] = useState<SavedMeal[]>([]);
+
+  // The tier and "Just log it" the Drona row will run with, read the same way
+  // Nutrition reads them (stored pick, degraded by live entitlement), so the
+  // row never names a mode the parse then does not use.
+  const [pickedSpeed, setPickedSpeed] = useState<ParseSpeed>('quick');
+  const [autoLog, setAutoLogOn] = useState(false);
+  const { access: coachAccess } = useCoachAccess();
+  const runningSpeed = effectiveParseSpeed(
+    pickedSpeed, coachAccess.state === 'paid' || coachAccess.state === 'trialing',
+  );
 
   // Re-sync the target meal from the store + clear the stale query each time this
   // retained Tabs screen is reopened (focus fires reliably even when router params
@@ -76,9 +97,20 @@ export default function FoodSearchScreen() {
       setQuery('');
       setTab('all'); // retained Tabs screen: reset to the catalog every reopen (deterministic)
       if (supabase) listSavedMeals(supabase).then(setSavedMeals).catch(() => {});
+      refreshYourFoods();
+      // The tier may have changed on Nutrition since the last visit.
+      getParseSpeed().then(setPickedSpeed);
+      getAutoLog().then(setAutoLogOn);
     }, [supabase]),
   );
   const [results, setResults] = useState<PickerFood[]>([]);
+  const [yourFoods, setYourFoods] = useState<YourFood[]>([]);
+  // Focus and a quick add can both reload the list; only the latest read lands.
+  const yourFoodsRead = useRef(0);
+  function refreshYourFoods() {
+    const n = ++yourFoodsRead.current;
+    loadYourFoods(supabase).then((f) => { if (n === yourFoodsRead.current) setYourFoods(f); }).catch(() => {});
+  }
   const [recents, setRecents] = useState<PickerFood[]>([]);
   const [searching, setSearching] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -93,7 +125,6 @@ export default function FoodSearchScreen() {
 
   useEffect(() => {
     const qq = query.trim();
-    setAiError(null); // a new search invalidates any prior "Ask Drona" error
     if (!qq) { setResults([]); setSearching(false); return; }
     setSearching(true);
     let cancelled = false;
@@ -122,20 +153,32 @@ export default function FoodSearchScreen() {
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
   const showingRecents = query.trim().length === 0;
-  const data = showingRecents ? recents : results;
+  // The user's own foods match on the device at once, ahead of the catalog,
+  // which arrives after the debounce and drops the copies shown here.
+  const mine = useMemo(() => matchYourFoods(yourFoods, query), [yourFoods, query]);
+  const data = showingRecents ? recents : mergeYourFoods(mine, results);
+  // What the Drona row would send, or null when it is hidden: guests (parse
+  // needs a session, so it would 401), the My Meals tab, and a query too short
+  // to be a meal. A single food name still gets the row; picking is the user's.
+  const dronaOffer = isSignedIn && tab === 'all' ? dronaLogText(query) : null;
 
   const keyOf = (f: PickerFood, i: number) => `${f.id ?? f.name}-${i}`;
 
   function openDetail(food: PickerFood) {
     Keyboard.dismiss();
-    track('food_picked', { action: 'open_detail', from: showingRecents ? 'recents' : 'results', meal, has_food_id: !!food.id });
+    track('food_picked', { action: 'open_detail', from: showingRecents ? 'recents' : 'results', meal, has_food_id: !!food.id, yours: !!food.yours });
     setLogMeal(meal); // detail reads the target meal from the store on focus
     router.push({
       pathname: '/food-detail',
       // Explicitly blank the AI params: /food-detail is a retained route, so a
       // prior "Ask Drona" visit's source/assumption would otherwise linger and
       // wrongly badge + AI-log this plain catalog tap.
-      params: { meal, food: encodeURIComponent(JSON.stringify(food)), source: '', assumption: '' },
+      // qty/unit: one of the user's own foods opens at last time's portion.
+      params: {
+        // key/ids only serve the merge here; leave them out of the route param.
+        meal, food: encodeURIComponent(JSON.stringify({ ...food, key: undefined, ids: undefined })), source: '', assumption: '',
+        qty: food.yours ? String(food.yours.quantity) : '', unit: food.yours?.servingLabel ?? '',
+      },
     });
   }
 
@@ -157,94 +200,35 @@ export default function FoodSearchScreen() {
     router.push({ pathname: '/quick-add', params: { meal } });
   }
 
-  // Catalog had no match → hand the (possibly partial) query to Drona's fallback
-  // ladder (live Open Food Facts → web → estimate). The resolved food opens in the
-  // normal picker, tagged with where it came from so the log records it as AI-found.
-  async function askDrona() {
-    const q = query.trim();
-    if (!q || !supabase || aiBusy) return;
+  // The whole sentence goes to Drona instead of one catalog row. Nutrition owns
+  // the review card (streaming, corrections, the tier, "Just log it"), so this
+  // screen does not build a second one: it leaves the words, the meal and the
+  // day in lib/pendingParse and goes back; Nutrition takes them once on focus.
+  // The day is the one a catalog log from here would land on (getLogDate), so
+  // both ways of logging agree when the diary is on another day.
+  function logWithDrona(from: 'row' | 'keyboard') {
+    const text = dronaOffer;
+    if (!text) return;
     Keyboard.dismiss();
-    setAiBusy(true); setAiError(null);
-    const askedAt = Date.now();
-    track('ask_drona_tapped', { query_length: q.length, result_count: results.length, meal });
-    const res = await parseMeal(supabase, { text: q, mealHint: meal });
-    setAiBusy(false);
-    track('ask_drona_result', {
-      outcome: res.kind === 'parsed' ? (res.meal.items.length ? 'found' : 'empty') : res.kind,
-      latency_ms: Date.now() - askedAt,
+    haptics.tick();
+    track('food_search_ai_log', {
+      meal, query_len: text.length, from, tier: runningSpeed, result_count: results.length,
     });
-    if (res.kind === 'declined') { setAiError(res.message); haptics.warning(); return; }
-    // Same paywall as the diet screen: the free tier's daily logs ran out, so
-    // open the upgrade screen instead of an error line blaming the app.
-    if (res.kind === 'cap') {
-      haptics.warning();
-      setAiError(capNotice(res));
-      router.push({ pathname: '/upgrade', params: { context: capUpgradeContext(res) } });
-      return;
-    }
-    // 'sent' only comes back from a "Just log it" stream, which this path never
-    // opens; handled so the type narrows to the parsed meal below.
-    if (res.kind === 'error' || res.kind === 'sent') { setAiError(res.message); haptics.warning(); return; }
-    // Never sent by the server here: this call does not ask for creates. Handled
-    // so the type narrows, and so a future change that sends one anyway points
-    // the user somewhere that works rather than failing silently.
-    if (res.kind === 'create') {
-      setAiError('To save a food, use Quick add above, or tell Drona on the Nutrition screen.');
-      return;
-    }
-    if (!res.meal.items.length) { setAiError('Drona could not pin that one down. Try a fuller name.'); haptics.warning(); return; }
-    haptics.success();
-    openDetailFromParsed(res.meal.items);
+    setPendingParse({ text, meal, day: getLogDate() });
+    router.navigate('/nutrition');
   }
-
-  // Parsed AI item(s) → a per-100 PickerFood the food-detail picker can rescale,
-  // carrying the source so food-detail badges it and logs it as AI-found. A single
-  // item keeps its own name/serving; multiple items (a composite dish) aggregate
-  // into one food named after the query, so no component is silently dropped.
-  function openDetailFromParsed(items: ParsedMealItem[]) {
-    const single = items.length === 1;
-    const grams = items.reduce((a, it) => a + (it.grams > 0 ? it.grams : 0), 0) || 100;
-    const per100 = 100 / grams;
-    const sum = items.reduce(
-      (a, it) => ({ kcal: a.kcal + it.kcal, p: a.p + it.protein_g, c: a.c + it.carb_g, f: a.f + it.fat_g, fib: a.fib + (it.fiber_g ?? 0) }),
-      { kcal: 0, p: 0, c: 0, f: 0, fib: 0 },
-    );
-    const servingQty = single && items[0].quantity > 0 ? items[0].quantity : 1;
-    const food: PickerFood = {
-      id: single ? (items[0].food_id ?? null) : null,
-      name: single ? items[0].food_name : query.trim(),
-      base_unit: 'g',
-      food_category: 'other',
-      kcal: sum.kcal * per100, protein_g: sum.p * per100, carb_g: sum.c * per100, fat_g: sum.f * per100,
-      fiber_g: sum.fib * per100,
-      servings: [{ label: single ? items[0].serving_label : '1 serving', grams: grams / servingQty, is_default: true }],
-    };
-    // Provenance = the least-confident source across items (estimate > web > off).
-    // 'manual' ranks with catalog: the user set those numbers themselves, so a
-    // corrected line is not less trustworthy than a matched one.
-    const rank: Record<ParsedMealItem['source'], number> = { estimate: 3, web: 2, off: 1, fatsecret: 1, manual: 0, catalog: 0 };
-    const src = items.reduce<ParsedMealItem['source']>((worst, it) => (rank[it.source] > rank[worst] ? it.source : worst), 'catalog');
-    setLogMeal(meal);
-    router.push({
-      pathname: '/food-detail',
-      params: {
-        meal, food: encodeURIComponent(JSON.stringify(food)),
-        source: src, assumption: single ? (items[0].assumption ?? '') : '',
-      },
-    });
-  }
-
   async function quickAdd(food: PickerFood, key: string) {
     if (!supabase || busyKey) return;
     setBusyKey(key);
-    track('food_picked', { action: 'quick_add', from: showingRecents ? 'recents' : 'results', meal, has_food_id: !!food.id });
+    track('food_picked', { action: 'quick_add', from: showingRecents ? 'recents' : 'results', meal, has_food_id: !!food.id, yours: !!food.yours });
     try {
       const ds = defaultServing(food);
+      // One of the user's own foods logs again at last time's portion.
       const { error } = await logFood(supabase, {
         mealType: meal,
         food: { ...food, servings: food.servings.length ? food.servings : [ds] },
-        servingLabel: ds.label,
-        quantity: 1,
+        servingLabel: food.yours?.servingLabel ?? ds.label,
+        quantity: food.yours?.quantity ?? 1,
       });
       if (error) { haptics.warning(); return; }
       haptics.success();
@@ -253,6 +237,7 @@ export default function FoodSearchScreen() {
       toastTimer.current = setTimeout(() => setToast(null), 1600);
       const r = await recentFoods(supabase, 20);
       setRecents(r);
+      refreshYourFoods();
     } catch {
       haptics.warning();
     } finally {
@@ -316,7 +301,7 @@ export default function FoodSearchScreen() {
           style={[s.addBtn, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}
         >
           {busyKey === key
-            ? <ActivityIndicator size="small" color={C.accentText} />
+            ? <OrbLoader size="small" color={C.accentText} />
             : <Feather name="plus" size={18} color={C.accentText} />}
         </Pressable>
       </View>
@@ -325,14 +310,28 @@ export default function FoodSearchScreen() {
 
   const renderItem = ({ item, index }: { item: PickerFood; index: number }) => {
     const ds = defaultServing(item);
-    const f = ds.grams / 100;
+    // One of the user's own foods shows last time's portion ("2 roti").
+    const yours = item.yours;
+    const grams = yours
+      ? resolveBaseAmount({ ...item, servings: item.servings.length ? item.servings : [ds] }, yours.servingLabel, yours.quantity) ?? ds.grams
+      : ds.grams;
+    const portion = yours ? portionText(yours) : ds.label;
+    const f = grams / 100;
     const kc = item.kcal * f;
     const key = keyOf(item, index);
     return (
       <Pressable style={s.row} onPress={() => openDetail(item)} android_ripple={{ color: C.surfaceHover }}>
         <View style={{ flex: 1, paddingRight: Spacing.md }}>
           <Text style={s.rowName} numberOfLines={2}>{item.name}</Text>
-          <Text style={s.rowMeta}>{round(kc)} cal<Text style={s.rowDot}>  ·  </Text>{ds.label}</Text>
+          <Text style={s.rowMeta}>{round(kc)} cal<Text style={s.rowDot}>  ·  </Text>{portion}</Text>
+          {yours && (
+            <View style={s.tags}>
+              <Text style={[s.tag, { color: C.textMuted, borderColor: C.border }]}>You logged this</Text>
+              {yours.estimate && (
+                <Text style={[s.tag, { color: C.textMuted, borderColor: C.border }]}>Estimate</Text>
+              )}
+            </View>
+          )}
           <View style={s.rowMacros}>
             <Text style={[s.macro, { color: C.macro.protein }]}>{round(item.protein_g * f)}<Text style={s.macroU}> P</Text></Text>
             <Text style={[s.macro, { color: C.macro.carbs }]}>{round(item.carb_g * f)}<Text style={s.macroU}> C</Text></Text>
@@ -345,7 +344,7 @@ export default function FoodSearchScreen() {
           style={[s.addBtn, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}
         >
           {busyKey === key
-            ? <ActivityIndicator size="small" color={C.accentText} />
+            ? <OrbLoader size="small" color={C.accentText} />
             : <Feather name="plus" size={18} color={C.accentText} />}
         </Pressable>
       </Pressable>
@@ -398,7 +397,10 @@ export default function FoodSearchScreen() {
           style={s.searchInput}
           autoCorrect={false}
           autoCapitalize="none"
-          returnKeyType="search"
+          // With the Drona row up, the keyboard's return key is its send: a
+          // typed sentence goes in without reaching for the row.
+          returnKeyType={dronaOffer ? 'send' : 'search'}
+          onSubmitEditing={() => logWithDrona('keyboard')}
           autoFocus={tab === 'all'}
         />
         {query.length > 0 && (
@@ -471,9 +473,39 @@ export default function FoodSearchScreen() {
         keyboardDismissMode="on-drag"
         contentContainerStyle={{ paddingBottom: insets.bottom + 80, flexGrow: 1 }}
         ItemSeparatorComponent={() => <View style={[s.sep, { backgroundColor: C.borderSubtle }]} />}
+        // Pinned above the catalog rows, never instead of them: the whole
+        // sentence to Drona, or one row from the list below. A list header, so
+        // it stays put while the results under it repaint and scrolls with them.
+        ListHeaderComponent={dronaOffer ? (
+          <View>
+            <Pressable
+              onPress={() => logWithDrona('row')}
+              style={({ pressed }) => [s.aiRow, pressed && { backgroundColor: C.surfaceHover }]}
+              android_ripple={{ color: C.surfaceHover }}
+              accessibilityRole="button"
+              accessibilityLabel={`Log ${dronaOffer} with Drona. ${PARSE_SPEED_COPY[runningSpeed].title} mode.`}
+            >
+              <View style={[s.aiIcon, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}>
+                <DronaMark size={15} color={C.accentText} state="static" />
+              </View>
+              <View style={{ flex: 1, paddingRight: Spacing.md }}>
+                <Text style={s.aiTitle} numberOfLines={2}>Log “{dronaOffer}” with Drona</Text>
+                <Text style={s.aiSub} numberOfLines={1}>
+                  {PARSE_SPEED_COPY[runningSpeed].title}
+                  <Text style={s.rowDot}>  ·  </Text>
+                  {autoLog ? 'Goes straight into your diary.' : PARSE_SPEED_COPY[runningSpeed].sub}
+                </Text>
+              </View>
+              <View style={s.aiSend}>
+                <Feather name={autoLog ? 'check' : 'arrow-up'} size={16} color={Colors.primaryFg} />
+              </View>
+            </Pressable>
+            <View style={[s.aiSep, { backgroundColor: C.borderSubtle }]} />
+          </View>
+        ) : null}
         ListEmptyComponent={
           searching ? (
-            <ActivityIndicator style={{ marginTop: 40 }} color={C.textMuted} />
+            <OrbLoader state="searching" style={{ marginTop: 40 }} color={C.textMuted} />
           ) : (
             <View style={s.empty}>
               <Feather name={showingRecents ? 'clock' : 'search'} size={26} color={C.textDim} />
@@ -483,23 +515,12 @@ export default function FoodSearchScreen() {
               <Text style={s.emptySub}>
                 {showingRecents
                   ? 'Search the catalog to log your first food. It’ll show up here next time.'
-                  : 'Not in the catalog. Type the full name above if it’s short, then let Drona look it up from product labels and the web.'}
+                  // The Drona row above is the AI way in, so this screen never
+                  // shows two different Drona buttons at once.
+                  : dronaOffer
+                  ? 'Not in the catalog. Log it with Drona above and he will work it out.'
+                  : 'Not in the catalog yet.'}
               </Text>
-              {!showingRecents && isSignedIn && (
-                <>
-                  <Pressable onPress={askDrona} disabled={aiBusy} style={[s.askBtn, { opacity: aiBusy ? 0.6 : 1 }]}>
-                    {aiBusy ? (
-                      <ActivityIndicator size="small" color={Colors.primaryFg} />
-                    ) : (
-                      <>
-                        <DronaMark size={15} color={Colors.primaryFg} state="static" />
-                        <Text style={s.askBtnTxt} numberOfLines={1}>Ask Drona to find “{query.trim()}”</Text>
-                      </>
-                    )}
-                  </Pressable>
-                  {aiError && <Text style={[s.askErr, { color: C.textMuted }]}>{aiError}</Text>}
-                </>
-              )}
               {!showingRecents && (
                 <Pressable onPress={() => openQuickAdd('no_match')} hitSlop={8} style={s.quickLink}>
                   <Text style={s.quickLinkTxt}>Or quick add the calories yourself</Text>
@@ -559,14 +580,22 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     macro: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },
     macroU: { fontSize: 10, fontWeight: FontWeight.semibold },
     addBtn: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+    tags: { flexDirection: 'row', gap: 6, marginTop: 6 },
+    tag: { fontSize: 10, fontWeight: FontWeight.semibold, borderWidth: 1, borderRadius: Radius.full, paddingHorizontal: 7, paddingVertical: 2, overflow: 'hidden' },
     sep: { height: 1, marginLeft: Spacing.xl },
 
     empty: { alignItems: 'center', paddingTop: 64, paddingHorizontal: Spacing.xxxl, gap: 8 },
     emptyTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: C.textSecondary, marginTop: 4 },
     emptySub: { fontSize: FontSize.sm, color: C.textMuted, textAlign: 'center', lineHeight: 19 },
-    askBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, minWidth: 200, height: 46, paddingHorizontal: Spacing.xl, borderRadius: Radius.full, backgroundColor: Colors.primary, marginTop: Spacing.lg },
-    askBtnTxt: { fontSize: FontSize.base, fontWeight: FontWeight.bold, color: Colors.primaryFg },
-    askErr: { fontSize: FontSize.sm, textAlign: 'center', marginTop: 4, paddingHorizontal: Spacing.lg },
+
+    // Same rhythm as a food row (34pt tile, title, meta line, 34pt control) so
+    // it reads as the first choice in the list. Lime only on the send circle.
+    aiRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingHorizontal: Spacing.xl, paddingVertical: 14 },
+    aiIcon: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+    aiTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: C.foreground, lineHeight: 19 },
+    aiSub: { fontSize: FontSize.sm, color: C.textMuted, marginTop: 3 },
+    aiSend: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.primary },
+    aiSep: { height: 1, marginLeft: Spacing.xl },
 
     toast: { position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: Colors.primary, paddingHorizontal: Spacing.lg, paddingVertical: 10, borderRadius: Radius.full, ...Shadow.elevated },
     toastTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primaryFg },

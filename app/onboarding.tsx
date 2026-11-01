@@ -33,7 +33,6 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
-  ActivityIndicator,
   TouchableOpacity,
   Pressable,
   BackHandler,
@@ -620,12 +619,9 @@ export default function OnboardingScreen() {
         if (answers.goalWeightKg && answers.goalWeightKg > 0) basicInfo.setGoalWeight(answers.goalWeightKg);
         // The program only. The workouts come from the Goal screen's build,
         // which the dashboard prompts for next.
-        if (opts.createPlan) await saveOnboardingProgram(finalProgram, target);
+        const firstPhaseId = opts.createPlan ? await saveOnboardingProgram(finalProgram, target) : null;
         await markOnboardingDone(identity);
-        if (opts.createPlan) {
-          void flushNow();
-          toast.success('Your program is saved. Next, we build your phase 1 workouts.');
-        }
+        if (opts.createPlan) void flushNow();
         track('onboarding_completed', {
           created_plan: opts.createPlan,
           goal: answers.goal ?? null,
@@ -638,6 +634,11 @@ export default function OnboardingScreen() {
           seconds_total: Math.round((Date.now() - onboardingStartedAt.current) / 1000),
           outcome: 'saved',
         });
+        // A saved program goes straight on to building phase 1's workouts.
+        if (firstPhaseId && opts.dest !== '/(app)/routines') {
+          router.replace({ pathname: '/goal-plan', params: { build: 'phase', auto: '1' } } as any);
+          return;
+        }
         router.replace(opts.dest);
       } catch {
         // Never trap the user at the finish line, but say what happened;

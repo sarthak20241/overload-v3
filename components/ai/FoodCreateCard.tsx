@@ -11,7 +11,7 @@
  * marked, because an unmarked guess reads as a number the user gave.
  */
 import React from 'react';
-import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Feather } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
@@ -19,6 +19,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { createActionLabel, type CoachFoodCreate, type CoachFoodCreateResult } from '@/lib/coachFoodCreate';
 import type { MealType } from '@/lib/foods';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 export function FoodCreateCard({
   create,
@@ -125,7 +126,7 @@ export function FoodCreateCard({
           accessibilityLabel={label}
         >
           {busy
-            ? <ActivityIndicator size="small" color={Colors.primaryFg} />
+            ? <OrbLoader size="small" color={Colors.primaryFg} />
             : <Feather name="bookmark" size={14} color={Colors.primaryFg} />}
           <Text style={s.applyText}>{label}</Text>
         </TouchableOpacity>

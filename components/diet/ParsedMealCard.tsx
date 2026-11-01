@@ -29,15 +29,15 @@
  * meal section underneath. Numbers carry receipts: catalog lines are silent,
  * sourced/estimated lines say where they came from.
  *
- * Two instances can be mounted at once: the inline card (hidden) and the one
- * in MealCardPopover. Keep this component free of side effects - no
- * analytics, no writes in effects - or they would fire twice. Those belong in
- * the screen's callbacks, which run once.
+ * A reviewed meal now opens full screen (MealResultScreen); this card shows
+ * it only as the folded strip that waits above the food box. Keep this
+ * component free of side effects - no analytics, no writes in effects. Those
+ * belong in the screen's callbacks, which run once.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { SignalOrb, signalOrbColor, type SignalOrbState } from '@/components/coach/SignalOrb';
 import { orbWebBox } from '@/components/coach/OrbStage';
-import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView, type ViewStyle } from 'react-native';
+import { View, Text, Pressable, StyleSheet, ScrollView, type ViewStyle } from 'react-native';
 import Animated, {
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, Easing,
   useReducedMotion, FadeIn,
@@ -53,6 +53,7 @@ import { DronaMark } from '@/components/coach/DronaMark';
 import { copyToClipboard } from '@/lib/clipboard';
 import { haptics } from '@/lib/haptics';
 import { splitCardSpace } from '@/lib/mealCardSplit';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 /** One more state for "Just log it": `sent` (the stream dropped after the
  *  request left; the diary will show what happened). A SUCCESSFUL auto-log has
@@ -202,12 +203,12 @@ const r0 = (n: number) => Math.round(n);
  * A line the user typed themselves (manual) is never questioned: their numbers
  * are the answer, not a guess to be improved on.
  */
-function uncertain(it: ParsedMealItem): boolean {
+export function uncertain(it: ParsedMealItem): boolean {
   if (it.source === 'manual') return false;
   return it.source === 'estimate' || it.confidence === 'low' || !!it.assumption;
 }
 
-function provenance(source: ParsedMealItem['source']): string | null {
+export function provenance(source: ParsedMealItem['source']): string | null {
   switch (source) {
     case 'off':
     case 'fatsecret':
@@ -513,7 +514,7 @@ export function ParsedMealCard({
             {checkingIndex === i
               ? (
                 <>
-                  <ActivityIndicator size="small" color={C.textSecondary} />
+                  <OrbLoader size="small" color={C.textSecondary} />
                   <Text style={s.checkTxt}>Checking…</Text>
                 </>
               )

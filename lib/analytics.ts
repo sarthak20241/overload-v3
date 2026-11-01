@@ -170,6 +170,9 @@ export type AnalyticsEvent =
   | 'parse_proposal_accepted'
   | 'parse_proposal_edited'
   | 'parse_proposal_rejected'
+  | 'meal_wait_closed'
+  | 'meal_ready_shown'
+  | 'meal_result_opened'
   | 'parse_tier_changed'
   | 'auto_log_toggled'
   | 'food_searched'
@@ -186,6 +189,10 @@ export type AnalyticsEvent =
   | 'food_tour_left'
   | 'food_tour_completed'
   | 'quick_add_opened'
+  // The food search's "Log it with Drona" row (or the keyboard's send): the
+  // typed words go to the Nutrition food box instead of a catalog row. Against
+  // food_picked, this is how often a manual search becomes an AI log.
+  | 'food_search_ai_log'
   // Drona built a food or meal out of what the user said. Two events, not one:
   // the gap between them is how many proposals get dismissed, which is the only
   // read we have on whether the cards are worth showing.
@@ -238,6 +245,20 @@ export type AnalyticsEvent =
   | 'program_viewed'
   | 'program_phase_expanded'
   | 'program_split_build_started'
+  // A built phase plan kept on the device until Save (lib/phaseDraft.ts).
+  | 'phase_draft_restored'
+  | 'phase_draft_saved'
+  // The next phase, built in the background for Pro (lib/phaseBuild.ts).
+  | 'phase_auto_built'
+  | 'phase_auto_build_failed'
+  | 'next_phase_card_shown'
+  | 'next_phase_card_tapped'
+  // The dashboard's getting-started checklist (lib/startGuide.ts).
+  | 'start_guide_shown'
+  | 'start_guide_step_tapped'
+  | 'start_guide_dismissed'
+  // The dashboard's floating log-food button (lib/homeLogHint.ts).
+  | 'home_log_food_tapped'
   | 'program_phase_advanced'
   | 'program_completed'
   | 'program_ended'

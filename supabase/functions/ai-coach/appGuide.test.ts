@@ -6,8 +6,9 @@ import {
   APP_GUIDE,
   APP_GUIDE_TOPICS,
   lookupAppGuide,
+  proCooldownText,
 } from "./appGuide.ts";
-import { AI_LIMITS } from "../_shared/aiLimits.ts";
+import { AI_LIMITS, PRO_COOLDOWN } from "../_shared/aiLimits.ts";
 import {
   FUEL_DEFAULT,
   FUEL_LABEL_MAX,
@@ -255,8 +256,14 @@ Deno.test("instructions use the same fuel bounds and AI allowances as enforcemen
     access,
     `${AI_LIMITS.freeChat} coach messages and ${AI_LIMITS.freeFood} AI food logs`,
   );
-  assertStringIncludes(
-    access,
-    `${AI_LIMITS.proChat} coach messages and ${AI_LIMITS.proFood} AI food logs`,
-  );
+  // Pro is sold as unlimited: Drona must never quote a daily cap for it, and
+  // the cooldown it describes must be the one enforcement uses.
+  assertStringIncludes(access, "no daily stop");
+  assertStringIncludes(access, proCooldownText);
+  assertStringIncludes(proCooldownText, `${PRO_COOLDOWN.chat.burst} coach messages`);
+  assertStringIncludes(proCooldownText, `${PRO_COOLDOWN.chat.heavyAfter} of either in 24 hours`);
+  for (const text of [access, APP_GUIDE.coach_chat.instructions]) {
+    assertEquals(/\b(30|40)\b coach messages|\b(30|40)\b AI food logs/.test(text), false);
+    assertEquals(text.includes("calls them unlimited"), false);
+  }
 });

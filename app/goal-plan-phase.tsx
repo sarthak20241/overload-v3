@@ -4,12 +4,12 @@
  * card:
  *   /goal-plan-phase            the current phase
  *   /goal-plan-phase?seq=2      that phase
- * The numbers-only stepper switches phases; under the phase card the same
- * three plan rows as the main screen open the pillar screens for the phase
- * being viewed.
+ * The phase timeline (phases top to bottom, ending in the goal) switches
+ * phases; under the phase card the same three plan rows as the main screen
+ * open the pillar screens for the phase being viewed.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, ScrollView, StyleSheet, RefreshControl } from 'react-native';
+import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -24,6 +24,7 @@ import { PhaseDetail } from '@/components/program/PhaseDetail';
 import { PlanRows } from '@/components/program/PlanRows';
 import { LoadFailed, ScreenSkeleton, Stagger, S, T } from '@/components/program/finish';
 import { FontWeight } from '@/constants/theme';
+import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
 
 export default function GoalPlanPhaseScreen() {
   const insets = useSafeAreaInsets();
@@ -47,7 +48,7 @@ export default function GoalPlanPhaseScreen() {
     return Number.isFinite(n) ? n : null;
   });
   // A new ?seq= while the screen is open (a deep link to another phase) moves
-  // the stepper to it; the stepper's own taps change seq without a param.
+  // the timeline to it; the timeline's own taps change seq without a param.
   useEffect(() => {
     const n = parseInt(seqParam ?? '', 10);
     if (Number.isFinite(n)) setSeq(n);
@@ -114,8 +115,9 @@ export default function GoalPlanPhaseScreen() {
 
       <ScrollView
         contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: S.xs, paddingBottom: insets.bottom + S.xxl }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={C.mutedFg} />}
+        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
       >
+        <RefreshOrb refreshing={refreshing} />
         {loading ? (
           <ScreenSkeleton variant="phase" />
         ) : !program || !shown ? (

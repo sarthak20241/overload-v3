@@ -185,10 +185,11 @@ Deno.test("a hand-made line's own serving is not divided again in a fast correct
 
 Deno.test("a remembered portion is the user's one unit, never divided", async () => {
   // Memory holds "2 pieces" at 100 g as ONE unit of what they logged.
+  // logged_at is relative: memory only reads the last MEMORY_DAYS (10).
   const bodies: string[] = [];
   const memoryEntry = {
     food_name: "Ghar ke momos", food_id: null, kcal: 200, protein_g: 8, carb_g: 26, fat_g: 7, fiber_g: null,
-    grams: 100, quantity: 1, serving_unit: "2 pieces", source: "catalog", logged_via: "ai", tier: "precise", logged_at: "2026-10-18T08:00:00Z",
+    grams: 100, quantity: 1, serving_unit: "2 pieces", source: "catalog", logged_via: "ai", tier: "precise", logged_at: new Date(Date.now() - 3 * 86_400_000).toISOString(),
   };
   const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init!.body));

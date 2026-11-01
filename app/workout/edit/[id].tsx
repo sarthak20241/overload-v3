@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView,
-  StyleSheet, ActivityIndicator, Platform,
+  StyleSheet, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -25,6 +25,7 @@ import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/ro
 import { metricTypeOf, metricTypeDef, type ExerciseDef, type MetricType, type MetricAxis } from '@/lib/exercises';
 import type { SetType } from '@/lib/types';
 import { SET_TYPE_META } from '@/components/workout/SetTypeBadge';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 type Backend = 'guest' | 'pending' | 'synced';
 
@@ -617,7 +618,7 @@ export default function EditWorkoutScreen() {
           style={[styles.saveBtn, { backgroundColor: Colors.primary, opacity: saving || loading || loadError ? 0.6 : 1 }]}
         >
           {saving ? (
-            <ActivityIndicator size="small" color={Colors.primaryFg} />
+            <OrbLoader size="small" color={Colors.primaryFg} />
           ) : (
             <Text style={styles.saveBtnText}>Save</Text>
           )}
@@ -626,7 +627,7 @@ export default function EditWorkoutScreen() {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color={Colors.primary} />
+          <OrbLoader size="large" state="searching" />
         </View>
       ) : loadError ? (
         <View style={styles.center}>

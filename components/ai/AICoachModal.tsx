@@ -9,7 +9,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, BackHandler, Pressable,
   TextInput, ScrollView, FlatList, Keyboard, Platform,
-  ActivityIndicator, Linking, useWindowDimensions,
+  Linking, useWindowDimensions,
 } from 'react-native';
 import Animated, {
   SlideInDown, SlideOutDown, FadeIn, FadeInDown, Easing,
@@ -65,10 +65,13 @@ import { haptics } from '@/lib/haptics';
 import { SelectTextSheet, coachPlainText, type MessageSheetTarget } from '@/components/coach/SelectTextSheet';
 import { MessageCopyButton } from '@/components/coach/MessageCopyButton';
 import { PastChatsList } from '@/components/coach/PastChatsList';
-import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
+import { coachErrorMessage, coachInvokeErrorMessage, cooldownMessageFromBody } from '@/lib/coachErrors';
 import { FRESH_TOKEN_BUDGET_MS, freshTokenAfterExpiry, tokenWithin } from '@/lib/authRetry';
 import { withChangeSource } from '@/lib/planChangeSource';
-import { ilikeExact, parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
+import { ilikeExact, planExerciseInsert, planRepsAndNote } from '@/lib/planExercise';
+import { structuredToPlan, structuredToWorkout, type GeneratedPlan, type GeneratedWorkout } from '@/lib/generatedPlan';
+import { clearPhaseDraft, readPhaseDraft, writePhaseDraft } from '@/lib/phaseDraft';
+import { phaseBuildPrompt } from '@/lib/phaseBuild';
 import { writeWithTargetFallback } from '@/lib/routineTargets';
 import { findCatalogExerciseByName } from '@/lib/exerciseResolve';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
@@ -107,79 +110,6 @@ const WORKOUT_STARTER_ID = 'wc-starter';
 interface CoachReply {
   text: string;
   citations: Citation[];
-}
-
-interface GeneratedExercise {
-  name: string;
-  sets: number;
-  reps: string;
-  rest: string;
-  // Phase 2.5: coaching cue. Examples: "RIR 2", "Go heavy, control eccentric",
-  // "Hams-focused, push hips back", "Last set to failure".
-  note?: string;
-  // Set when Drona invented this exercise because the catalog had nothing
-  // that fit (a stretch, a mobility drill). Saved as the user's own custom.
-  new_exercise?: NewExerciseDef;
-}
-
-interface GeneratedWorkout {
-  name: string;
-  exercises: GeneratedExercise[];
-  // Phase 2.5: explanation shown above the exercise list — why this workout
-  // fits THIS user. Set by the coach's generate_workout tool. Optional so
-  // older callers (mocks) still type-check.
-  rationale?: string;
-  focus?: string;
-  estimated_duration_min?: number;
-}
-
-interface GeneratedPlan {
-  name: string;
-  rationale: string;
-  split_type?: string;
-  days_per_week?: number;
-  workouts: Array<GeneratedWorkout & { note?: string }>;
-}
-
-// Normalize the structured input from generate_workout/generate_plan into
-// our GeneratedWorkout shape (the existing one used rest as "90s" strings;
-// the tool schema uses rest_seconds as int — we convert).
-function structuredToWorkout(input: Record<string, unknown>): GeneratedWorkout {
-  const exercises = Array.isArray(input.exercises)
-    ? (input.exercises as Array<Record<string, unknown>>).map((e) => ({
-        name: String(e.name ?? ''),
-        sets: Number(e.sets ?? 3),
-        reps: String(e.reps ?? '8-12'),
-        rest: typeof e.rest_seconds === 'number' ? `${e.rest_seconds}s` : '90s',
-        note: typeof e.note === 'string' && e.note.length > 0 ? e.note : undefined,
-        new_exercise: parseNewExercise(e.new_exercise),
-      }))
-    : [];
-  return {
-    name: String(input.name ?? 'New Workout'),
-    rationale: typeof input.rationale === 'string' ? input.rationale : undefined,
-    focus: typeof input.focus === 'string' ? input.focus : undefined,
-    estimated_duration_min: typeof input.estimated_duration_min === 'number'
-      ? input.estimated_duration_min
-      : undefined,
-    exercises,
-  };
-}
-
-function structuredToPlan(input: Record<string, unknown>): GeneratedPlan {
-  const workouts = Array.isArray(input.workouts)
-    ? (input.workouts as Array<Record<string, unknown>>).map((w) => ({
-        ...structuredToWorkout(w),
-        note: typeof w.note === 'string' && w.note.length > 0 ? w.note : undefined,
-      }))
-    : [];
-  return {
-    name: String(input.name ?? 'New Plan'),
-    rationale: String(input.rationale ?? ''),
-    split_type: typeof input.split_type === 'string' ? input.split_type : undefined,
-    days_per_week: typeof input.days_per_week === 'number' ? input.days_per_week : undefined,
-    workouts,
-  };
 }
 
 // ─── Coach mark ──────────────────────────────────────────────────────────────
@@ -726,6 +656,16 @@ function callAICoachStreaming(
               }
             }
           } catch { /* fall through to the generic failure */ }
+        }
+        // A Pro cooldown says how long to wait, which the generic busy line
+        // cannot.
+        if (response.status === 429) {
+          let cooldown: string | null = null;
+          try { cooldown = cooldownMessageFromBody(429, JSON.parse(body)); } catch { /* not JSON */ }
+          if (cooldown) {
+            if (!controller.signal.aborted) callbacks.onError(cooldown);
+            return;
+          }
         }
         fail(`HTTP ${response.status}: ${body.slice(0, 200)}`);
         return;
@@ -2517,6 +2457,7 @@ function GeneratePlanScreen({
   onRequestUpgrade,
   seed,
   phaseId,
+  autoStart,
 }: {
   onBack: () => void;
   onSaveRoutines: (routines: GeneratedWorkout[]) => void;
@@ -2525,8 +2466,14 @@ function GeneratePlanScreen({
   // the form + prompt so the generated split matches a specific program phase.
   seed?: { goal?: string; days?: string; note?: string };
   // The phase being built. Sent with the request so a free user's first
-  // phase-1 build is let through by the server.
+  // phase-1 build is let through by the server. Also keys the draft
+  // (lib/phaseDraft.ts): a built plan is kept on the device until Save, so
+  // leaving this screen, closing the sheet or opening the paywall never
+  // throws it away, and the next visit opens straight on it.
   phaseId?: string;
+  // Skip the form and build at once (the post-sign-up build and the
+  // dashboard's "Build phase 1"). Ignored when a draft is waiting.
+  autoStart?: boolean;
 }) {
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -2550,6 +2497,9 @@ function GeneratePlanScreen({
   const planDaysRef = useRef(0);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [result, setResult] = useState<GeneratedPlan | null>(null);
+  // True while the phase draft is being read, so the form never flashes
+  // before a waiting draft (or an auto build) takes the screen.
+  const [restoring, setRestoring] = useState(!!phaseId);
   // Toggled by the "Refine with AI" button on the result view. When true
   // (and result is non-null), we mount RefineChatScreen instead of the
   // result card. The chat hands back the updated plan via onRefined,
@@ -2597,6 +2547,9 @@ function GeneratePlanScreen({
   };
 
   const buildInitialPrompt = () =>
+    // An automatic build has no form answers, so it asks Drona to use what
+    // the profile already says rather than the form's defaults.
+    autoStart && seed?.note ? phaseBuildPrompt(seed.note) :
     // Gate on the NOTE, not just `seed`: the note is the entire substance of a
     // phase-seeded build (it carries the split + cadence). Without it this
     // branch would emit "Design my training split. undefined Keep sessions..."
@@ -2747,8 +2700,9 @@ function GeneratePlanScreen({
         },
       },
       // phaseId only on a fresh build: each request carrying it spends one of a
-      // free user's 3 phase-1 tries. (Refine runs through RefineChatScreen with
-      // a mode, which the server never counts.)
+      // free user's 3 phase-1 tries. (Refine runs through RefineChatScreen in
+      // refine_plan mode; with the phase id it spends one of the free user's
+      // 8 refine turns on that draft instead, try_claim_free_phase_refine.)
       {
         forceTool: 'generate_plan',
         phaseId: isRefine ? undefined : phaseId,
@@ -2763,6 +2717,35 @@ function GeneratePlanScreen({
     await runGeneration(conversationRef.current, false);
   };
 
+  // On open: a waiting draft wins (it is what the user built and has not
+  // saved); else an automatic build starts. Runs once per phase.
+  const openedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!phaseId) { setRestoring(false); return; }
+    if (openedFor.current === phaseId) return;
+    openedFor.current = phaseId;
+    let alive = true;
+    readPhaseDraft(phaseId).then((d) => {
+      if (!alive) return;
+      setRestoring(false);
+      if (d) {
+        setResult(d.plan);
+        conversationRef.current = [{ role: 'assistant', content: planToText(d.plan) }];
+        track('phase_draft_restored', { source: d.source, workouts: d.plan.workouts.length, age_hours: Math.round((Date.now() - d.builtAt) / 3600000) });
+        return;
+      }
+      if (autoStart && seed?.note) void handleGenerate();
+    });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phaseId]);
+
+  // Every plan this screen holds for a phase is kept as its draft, refined
+  // versions included, until Save clears it (handleSaveRoutines).
+  useEffect(() => {
+    if (phaseId && result) void writePhaseDraft(phaseId, result, 'build');
+  }, [phaseId, result]);
+
   // ── Discuss chat (pre-generate conversational) ──────────────────────────
   // Mounted instead of the form when the user taps "Or chat with Coach
   // Drona to refine" without having generated a plan yet. Coach Drona
@@ -2775,6 +2758,7 @@ function GeneratePlanScreen({
       <RefineChatScreen
         kind="discuss"
         mode="refine_plan"
+        phaseId={phaseId}
         onRequestUpgrade={onRequestUpgrade}
         onBack={() => setShowDiscussChat(false)}
         onRefined={(next) => {
@@ -2803,6 +2787,7 @@ function GeneratePlanScreen({
         kind="refine"
         mode="refine_plan"
         plan={result}
+        phaseId={phaseId}
         onRequestUpgrade={onRequestUpgrade}
         onBack={() => setShowRefineChat(false)}
         onRefined={(next) => {
@@ -2822,7 +2807,12 @@ function GeneratePlanScreen({
       <View style={{ flex: 1 }}>
         <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
           <TouchableOpacity
-            onPress={() => { setResult(null); setShowRefineChat(false); conversationRef.current = []; }}
+            // A phase plan is a draft: Back leaves it waiting instead of
+            // dropping the user on an empty form (one way plans were lost).
+            onPress={() => {
+              if (phaseId) { onBack(); return; }
+              setResult(null); setShowRefineChat(false); conversationRef.current = [];
+            }}
             style={[s.backBtn, { backgroundColor: C.muted }]}
             hitSlop={8}
             accessibilityRole="button"
@@ -2900,7 +2890,7 @@ function GeneratePlanScreen({
             style={[s.secondaryBtn, { backgroundColor: C.muted }, refining && { opacity: 0.6 }]}
           >
             <Feather name="message-circle" size={14} color={C.mutedFg} />
-            <Text style={[s.secondaryBtnText, { color: C.mutedFg }]}>Refine with AI</Text>
+            <Text style={[s.secondaryBtnText, { color: C.mutedFg }]}>{phaseId ? 'Talk it through with Drona' : 'Refine with AI'}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             onPress={() => onSaveRoutines(result.workouts)}
@@ -2908,12 +2898,20 @@ function GeneratePlanScreen({
             style={[s.primaryBtn, refining && { opacity: 0.6 }]}
           >
             <Feather name="check" size={16} color={Colors.primaryFg} />
-            <Text style={s.primaryBtnText}>Save All Routines</Text>
+            <Text style={s.primaryBtnText}>{phaseId ? 'Save these workouts' : 'Save All Routines'}</Text>
           </TouchableOpacity>
+          {phaseId ? (
+            <Text style={[s.draftNote, { color: C.textMuted }]}>
+              Nothing is saved until you tap Save. I keep this draft for you.
+            </Text>
+          ) : null}
         </View>
       </View>
     );
   }
+
+  // Reading the draft: a quiet frame, never the form.
+  if (restoring) return <View style={{ flex: 1 }} />;
 
   // ── Loading state (first generation only — refinement now happens in a
   // separate RefineChatScreen mounted via showRefineChat, not over the card).
@@ -3772,6 +3770,7 @@ function RefineChatScreen({
   onRequestUpgrade,
   initialDraft,
   existing,
+  phaseId,
 }: {
   // 'refine' — iterating on an already-generated workout/plan (workout or
   // plan must be provided). 'discuss' — talking with Coach Drona BEFORE any
@@ -3799,6 +3798,9 @@ function RefineChatScreen({
   initialDraft?: string;
   // Discuss-program opened to change the program the user already follows.
   existing?: ExistingProgramOpener;
+  // The program phase whose plan is being talked through. Sent so the server
+  // can let a free user discuss the phase 1 draft they were given for free.
+  phaseId?: string;
 }) {
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -4085,6 +4087,7 @@ function RefineChatScreen({
       },
     }, {
       mode: effectiveMode,
+      ...(phaseId && mode === 'refine_plan' ? { phaseId } : {}),
       // forceTool is the escape hatch for pure-affirmative turns —
       // guarantees the model emits structured output instead of writing
       // the refined workout as text in the chat. Backend accepts both
@@ -4095,7 +4098,7 @@ function RefineChatScreen({
       ...(shouldForceTool ? { forceTool: forceToolName } : {}),
       freshToken: freshTokenFrom(getToken),
     });
-  }, [input, loading, messages, getToken, recapText, starterText, mode, kind, handleStructured, onRequestUpgrade]);
+  }, [input, loading, messages, getToken, recapText, starterText, mode, kind, handleStructured, onRequestUpgrade, phaseId]);
 
   // Stop generating (see ChatScreen.handleStop). One difference: if the
   // terminal tool had already fired, the plan/workout exists server-side and
@@ -4262,6 +4265,7 @@ export function AICoachModal({
   initialScreen = 'menu',
   initialTopic,
   planSeed,
+  planAutoStart,
   programDraft,
   programExisting,
   linkRoutinesToPhaseId,
@@ -4288,6 +4292,9 @@ export function AICoachModal({
   // plan generator's form + prompt to a specific program phase. Pass
   // initialScreen="plan" alongside it.
   planSeed?: { goal?: string; days?: string; note?: string };
+  // Build at once instead of showing the plan form (a waiting phase draft
+  // still opens first). Pass with planSeed + linkRoutinesToPhaseId.
+  planAutoStart?: boolean;
   // When set, the program chat opens with this typed in, unsent (the goal
   // sheet's "Change my whole plan with Drona"). Pass initialScreen="program".
   programDraft?: string;
@@ -4703,6 +4710,11 @@ export function AICoachModal({
           await insertRoutineToBackend(workouts[i], phaseId);
         }
         toast.success(workouts.length > 1 ? `Saved ${workouts.length} routines` : 'Routine saved');
+        // The draft has done its job: the phase's workouts are real now.
+        if (phaseId) {
+          void clearPhaseDraft(phaseId);
+          track('phase_draft_saved', { workouts: workouts.length });
+        }
         onRoutineCreated?.();
       } catch (err: any) {
         // Log the real failure — a swallowed error here made "couldn't save"
@@ -4956,6 +4968,7 @@ export function AICoachModal({
                   onSaveRoutines={handleSaveRoutines}
                   seed={planSeed}
                   phaseId={linkRoutinesToPhaseId}
+                  autoStart={planAutoStart}
                   onRequestUpgrade={(kind) =>
                     handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')
                   }
@@ -5717,6 +5730,10 @@ const s = StyleSheet.create({
   planMetaText: {
     fontSize: FontSize.sm,
     fontWeight: FontWeight.medium,
+  },
+  draftNote: {
+    fontSize: FontSize.xs,
+    textAlign: 'center',
   },
   refineWrap: {
     paddingHorizontal: Spacing.xl,
