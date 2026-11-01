@@ -60,9 +60,8 @@ const MEAL_OPTIONS: { value: MealType; label: string }[] = [
 ];
 const mealLabel = (m: MealType) => MEAL_OPTIONS.find((o) => o.value === m)?.label ?? 'Snack';
 
-const TIER: Record<ParseSpeed, { icon: 'zap' | 'target' | 'award'; label: string }> = {
+const TIER: Record<ParseSpeed, { icon: 'zap' | 'award'; label: string }> = {
   quick: { icon: 'zap', label: 'Quick' },
-  thorough: { icon: 'target', label: 'Thorough' },
   precise: { icon: 'award', label: 'Precise' },
 };
 
@@ -121,6 +120,9 @@ export function MealResultScreen(props: Props) {
   } = props;
   const { C } = useTheme();
   const s = makeStyles(C);
+  // A meal stored as waiting before Thorough was retired can still carry
+  // 'thorough': no chip for it, rather than a lookup that finds nothing.
+  const tierFace = tier ? TIER[tier] : undefined;
   const insets = useSafeAreaInsets();
   const { kbHeight } = useKeyboardAwareScroll();
   const [fix, setFix] = useState('');
@@ -393,10 +395,10 @@ export function MealResultScreen(props: Props) {
               <Text style={s.words} numberOfLines={2}>{words}</Text>
               {!!onEditWords && !busy && <Feather name="corner-down-left" size={12} color={C.textMuted} />}
             </Pressable>
-            {tier && (
-              <View style={s.tier} accessibilityLabel={`Read with ${TIER[tier].label}`}>
-                <Feather name={TIER[tier].icon} size={11} color={tier === 'quick' ? C.textMuted : C.accentText} />
-                <Text style={[s.tierTxt, tier !== 'quick' && { color: C.accentText }]}>{TIER[tier].label}</Text>
+            {tierFace && (
+              <View style={s.tier} accessibilityLabel={`Read with ${tierFace.label}`}>
+                <Feather name={tierFace.icon} size={11} color={tier === 'quick' ? C.textMuted : C.accentText} />
+                <Text style={[s.tierTxt, tier !== 'quick' && { color: C.accentText }]}>{tierFace.label}</Text>
               </View>
             )}
           </View>
