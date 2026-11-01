@@ -239,6 +239,24 @@ Deno.test("write: a branded line hands its brand to the saved food it just made"
   assert(!store.calls.some((c) => c.startsWith("stampBrands")));
 });
 
+Deno.test("write: ids that do not line up with the lines stamp no brand", async () => {
+  // The insert is trusted to return ids in row order. If it returns a
+  // different count, no id can be tied to a line, so no brand is written.
+  const store = new FakeStore();
+  const insert = store.insertEntries.bind(store);
+  store.insertEntries = async (rows) => {
+    const res = await insert(rows);
+    return "ids" in res ? { ids: res.ids.slice(1) } : res;
+  };
+  const res = await writeAutoLog(store, writeArgs([
+    line("Kesar pista oats", { brand: "Yogabar" }),
+    line("milk"),
+  ]));
+  assert("logged" in res);
+  // Without the check, Yogabar would land on the milk's saved food.
+  assertEquals(store.brands, []);
+});
+
 Deno.test("write: a failed brand stamp still logs the food", async () => {
   const store = new FakeStore();
   store.failBrands = true;

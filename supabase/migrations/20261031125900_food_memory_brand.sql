@@ -15,6 +15,9 @@
 -- and keeps the brand the food already had.
 --
 -- Also fills the column for saved foods tied to a catalog row with a brand.
+--
+-- 20261031130000 replaces this write_snapshot: its trace casts go through
+-- trace_num, so one bad trace number cannot cost another line its brand.
 begin;
 
 alter table public.user_food_cache add column if not exists brand text;

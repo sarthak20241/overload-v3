@@ -3401,12 +3401,15 @@ function supabaseAutoLogStore(userClient: SupabaseClient, admin: SupabaseClient,
     },
     // Admin, because users may only read and delete their saved foods. Scoped
     // to this user and to the saved food each new entry just made.
+    // One update per line: each line has its own brand, and a meal has few.
     async stampBrands(pairs) {
-      for (const { entry_id, brand } of pairs) {
-        const { error } = await admin.from("user_food_cache").update({ brand })
-          .eq("user_id", userId).eq("last_entry_id", entry_id);
+      await Promise.all(pairs.map(async ({ entry_id, brand }) => {
+        const { data, error } = await admin.from("user_food_cache").update({ brand })
+          .eq("user_id", userId).eq("last_entry_id", entry_id).select("id");
         if (error) throw new Error(`brand stamp: ${error.message}`);
-      }
+        // The trigger saves no food for a line it skips (no weight, say).
+        if (!data?.length) console.log(`[parse_meal] auto-log brand stamp: no saved food for entry ${entry_id}`);
+      }));
     },
   };
 }

@@ -377,10 +377,14 @@ export async function writeAutoLog(
       return { error: inserted.error };
     }
     done.push({ meal_type: section.meal_type, meal_id: mealId, entry_ids: inserted.ids, created_meal: createdMeal });
-    section.items.forEach((it, idx) => {
-      const brand = it.brand?.trim().slice(0, 80);
-      if (brand && inserted.ids[idx]) brands.push({ entry_id: inserted.ids[idx], brand });
-    });
+    // Ids are taken to come back in row order. A different count means they
+    // cannot be tied to lines, and a wrong pairing would brand another food.
+    if (inserted.ids.length === section.items.length) {
+      section.items.forEach((it, idx) => {
+        const brand = it.brand?.trim().slice(0, 80);
+        if (brand) brands.push({ entry_id: inserted.ids[idx], brand });
+      });
+    }
   }
 
   if (brands.length > 0 && store.stampBrands) {
