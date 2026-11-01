@@ -3403,7 +3403,7 @@ function supabaseAutoLogStore(userClient: SupabaseClient, admin: SupabaseClient,
     // Admin, because users may only read and delete their saved foods. Scoped
     // to this user and to the saved food each new entry just made.
     // One update per line: each line has its own brand, and a meal has few.
-    async stampBrands(pairs) {
+    async brandSavedFoods(pairs) {
       await Promise.all(pairs.map(async ({ entry_id, brand }) => {
         const { data, error } = await admin.from("user_food_cache").update({ brand })
           .eq("user_id", userId).eq("last_entry_id", entry_id).select("id");

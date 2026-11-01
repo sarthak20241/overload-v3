@@ -220,7 +220,7 @@ export interface AutoLogStore {
    *  saved-food trigger reads brands off the parse trace, and this mode writes
    *  the diary before the trace, so the trigger finds none. Best effort: a
    *  failure costs the brand, never the log. */
-  stampBrands?(pairs: { entry_id: string; brand: string }[]): Promise<void>;
+  brandSavedFoods?(pairs: { entry_id: string; brand: string }[]): Promise<void>;
 }
 
 export interface LoggedSection {
@@ -384,11 +384,13 @@ export async function writeAutoLog(
         const brand = it.brand?.trim().slice(0, 80);
         if (brand) brands.push({ entry_id: inserted.ids[idx], brand });
       });
+    } else if (section.items.some((it) => it.brand?.trim())) {
+      console.log(`[parse_meal] auto-log brand stamp skipped: ${inserted.ids.length} ids for ${section.items.length} lines`);
     }
   }
 
-  if (brands.length > 0 && store.stampBrands) {
-    await store.stampBrands(brands).catch((e) => console.log(`[parse_meal] auto-log brand stamp failed: ${String(e)}`));
+  if (brands.length > 0 && store.brandSavedFoods) {
+    await store.brandSavedFoods(brands).catch((e) => console.log(`[parse_meal] auto-log brand stamp failed: ${String(e)}`));
   }
   return { logged: { sections: done }, replayed: false };
 }

@@ -181,8 +181,8 @@ class FakeStore implements AutoLogStore {
     this.entries = this.entries.filter((e) => !ids.includes(e.id));
     return Promise.resolve();
   }
-  stampBrands(pairs: { entry_id: string; brand: string }[]) {
-    this.calls.push(`stampBrands:${pairs.length}`);
+  brandSavedFoods(pairs: { entry_id: string; brand: string }[]) {
+    this.calls.push(`brandSavedFoods:${pairs.length}`);
     if (this.failBrands) return Promise.reject(new Error("no brand write"));
     this.brands.push(...pairs);
     return Promise.resolve();
@@ -237,7 +237,7 @@ Deno.test("write: a branded line hands its brand to the saved food it just made"
   // A retry writes nothing, so it stamps nothing.
   store.calls = [];
   await writeAutoLog(store, writeArgs([line("Kesar pista oats", { meal_type: "breakfast", brand: "Yogabar" })]));
-  assert(!store.calls.some((c) => c.startsWith("stampBrands")));
+  assert(!store.calls.some((c) => c.startsWith("brandSavedFoods")));
 });
 
 Deno.test("write: ids that do not line up with the lines stamp no brand", async () => {
