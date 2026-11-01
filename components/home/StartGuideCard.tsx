@@ -67,6 +67,8 @@ export function StartGuideCard({ containerStyle, supabase, userId, createdAtMs, 
   // The all-done card stays up until "Thanks", even though the moment is
   // stored as seen the instant it shows (so it can never replay).
   const [holdFinished, setHoldFinished] = useState(false);
+  // Stable, so the lesson sheet's Back handler is not re-added every render.
+  const closeLesson = useCallback(() => setLessonId(null), []);
   useFocusEffect(useCallback(() => { setTick((t) => t + 1); }, []));
 
   useEffect(() => {
@@ -150,7 +152,11 @@ export function StartGuideCard({ containerStyle, supabase, userId, createdAtMs, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownOnce]);
 
-  if (!view || !userId) return celebrating ? <Celebration onDone={() => setCelebrating(false)} /> : null;
+  // The confetti sits in the same slot of the same fragment whether or not
+  // the card is drawn, so closing the card mid-burst does not remount it
+  // (a remount would fire the cannons again).
+  const confetti = celebrating ? <Celebration onDone={() => setCelebrating(false)} /> : null;
+  if (!view || !userId) return <>{null}{confetti}</>;
 
   const open = (id: StartStepId) => {
     track('start_guide_step_tapped', { step: id, done_before: view.doneCount });
@@ -185,6 +191,7 @@ export function StartGuideCard({ containerStyle, supabase, userId, createdAtMs, 
   const others = view.steps.filter((x) => x.id !== view.nextId);
 
   return (
+    <>
     <View style={containerStyle}>
       <View style={[s.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
         <View style={s.head}>
@@ -298,11 +305,12 @@ export function StartGuideCard({ containerStyle, supabase, userId, createdAtMs, 
         stepId={lessonId}
         stepNumber={lessonId ? START_STEPS.findIndex((x) => x.id === lessonId) + 1 : 0}
         stepTotal={total}
-        onClose={() => setLessonId(null)}
+        onClose={closeLesson}
         onGo={open}
       />
-      {celebrating && <Celebration onDone={() => setCelebrating(false)} />}
     </View>
+    {confetti}
+    </>
   );
 }
 
