@@ -57,6 +57,18 @@ interface Props {
 // The ready popup shows once per phase; after that the phase waits in the bell.
 const readyPoppedKey = (phaseId: string) => `phase_ready_popped_v1:${phaseId}`;
 
+/** A ready phase behind the bell, until its draft is saved or dropped (CoachSheetHost). */
+function filePhaseInBell(phase: { id: string; seq: number; name: string }) {
+  readyInbox.add({
+    id: `phase:${phase.id}`,
+    title: `Phase ${phase.seq + 1} is ready`,
+    body: `${phase.name}. I built its workouts. Look them over, change anything with me, then save.`,
+    target: { route: `/goal-plan?build=phase&seq=${phase.seq}&auto=1` },
+    // Opening it and backing out unsaved must not lose it.
+    keepUntilDone: true,
+  });
+}
+
 export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, getToken, onReview, onUpgrade, popupAllowed }: Props) {
   const { C } = useTheme();
   const [draftIds, setDraftIds] = useState<Set<string> | null>(null);
@@ -138,15 +150,20 @@ export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, get
   useEffect(() => {
     if (!readyId) { setReady(null); return; }
     let alive = true;
+    const phase = action?.kind === 'review' ? action.phase : null;
     Promise.all([
-      // A failed read counts as shown: better one missed popup than the same
-      // one on every visit (storage that cannot read is rare and passing).
       AsyncStorage.getItem(readyPoppedKey(readyId)).catch(() => 'unreadable'),
       readPhaseDraft(readyId),
     ]).then(([popped, draft]) => {
-      if (alive) setReady({ id: readyId, popped: popped != null, workouts: draft?.plan.workouts.length ?? 0 });
+      if (!alive) return;
+      // A failed read counts as shown, so a storage error cannot replay the
+      // popup on every visit; the phase goes straight behind the bell so the
+      // result is never stranded.
+      if (popped === 'unreadable' && phase) filePhaseInBell(phase);
+      setReady({ id: readyId, popped: popped != null, workouts: draft?.plan.workouts.length ?? 0 });
     });
     return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per ready phase
   }, [readyId]);
 
   const kind = action?.kind ?? null;
@@ -167,15 +184,7 @@ export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, get
     const file = () => {
       void AsyncStorage.setItem(readyPoppedKey(action.phase.id), String(Date.now())).catch(() => {});
       setReady({ ...ready, popped: true });
-      readyInbox.add({
-        id: `phase:${action.phase.id}`,
-        title: `${label} is ready`,
-        body: `${name}. I built its workouts. Look them over, change anything with me, then save.`,
-        target: { route: `/goal-plan?build=phase&seq=${action.phase.seq}&auto=1` },
-        // Opening it and backing out unsaved must not lose it: it goes when
-        // the draft is saved or dropped (CoachSheetHost).
-        keepUntilDone: true,
-      });
+      filePhaseInBell(action.phase);
     };
     const card: SavedDronaCard = {
       id: `phase-${action.phase.id}`,

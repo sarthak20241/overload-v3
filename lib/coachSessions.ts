@@ -56,11 +56,12 @@ export type CoachSessionEvent<P extends CoachSessionProps> =
   | { type: 'finished'; session: CoachSession<P>; failed: boolean; hidden: boolean };
 
 /**
- * Kept sheets past this many lose their oldest idle one. A soft cap: a busy
- * sheet is never dropped (that would abort the work), so many busy ones can
- * go over it.
+ * Kept sheets past this many lose their oldest idle one. An idle kept sheet
+ * is always an unseen result (a seen, idle sheet is dropped when it closes),
+ * so the cap is high: only a pile of results nobody opened loses its oldest.
+ * A soft cap: a busy sheet is never dropped (that would abort the work).
  */
-export const MAX_KEPT = 4;
+export const MAX_KEPT = 8;
 
 function sameKeysAndValues(a: object, b: object, same: (x: unknown, y: unknown) => boolean): boolean {
   const ka = Object.keys(a);
