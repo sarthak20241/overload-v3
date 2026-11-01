@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import Animated, {
   SlideInDown, SlideOutDown, FadeIn, FadeInDown, Easing,
-  useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming,
+  useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming, runOnJS,
 } from 'react-native-reanimated';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -4487,6 +4487,27 @@ export function CoachSheet({
     coachSessions.report(sessionId, { screen, ...activity });
   }, [sessionId, screen, activity]);
 
+  // A kept sheet (closed while Drona works) slides down and fades, then is
+  // tucked out of sight (display: none) while staying mounted. Brought back,
+  // it slides up again. An idle sheet unmounts and plays its own exit.
+  const away = useSharedValue(0);
+  const [tucked, setTucked] = useState(false);
+  useEffect(() => {
+    if (visible) {
+      setTucked(false);
+      away.value = withTiming(0, { duration: 240, easing: Easing.out(Easing.cubic) });
+      return;
+    }
+    if (!kept) return;
+    away.value = withTiming(1, { duration: 200, easing: Easing.in(Easing.cubic) }, (done) => {
+      if (done) runOnJS(setTucked)(true);
+    });
+  }, [visible, kept, away]);
+  const awayStyle = useAnimatedStyle(() => ({
+    opacity: 1 - away.value,
+    transform: [{ translateY: away.value * 140 }],
+  }));
+
   // Back to the menu would unmount the screen Drona is working for and abort
   // it. While busy, back closes the sheet instead, and the store keeps it.
   const goMenu = () => {
@@ -4861,10 +4882,10 @@ export function CoachSheet({
           Pressable for tap-to-close (menu/gate only). The sheet itself is a
           plain View so inner ScrollViews keep their pan gestures.
         */
-      <View
+      <Animated.View
         // A kept sheet (closed while Drona works) stays mounted, so its stream
         // and state live on, but takes no space, touches or screen reader.
-        style={[s.backdrop, { backgroundColor: C.overlay }, !visible && s.keptHidden]}
+        style={[s.backdrop, { backgroundColor: C.overlay }, awayStyle, !visible && tucked && s.keptHidden]}
         pointerEvents={visible ? 'auto' : 'none'}
         accessibilityElementsHidden={!visible}
         importantForAccessibility={visible ? 'auto' : 'no-hide-descendants'}
@@ -5084,7 +5105,7 @@ export function CoachSheet({
         </Animated.View>
         </CoachCloseContext.Provider>
         </CoachBusyContext.Provider>
-      </View>
+      </Animated.View>
       )}
     </Portal>
   );

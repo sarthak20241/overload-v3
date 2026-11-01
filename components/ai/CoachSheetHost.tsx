@@ -149,9 +149,13 @@ export function CoachSheetHost() {
     show(n.title, { action: { label: 'View', onPress: () => go(n.target, inboxIdFor(n)) }, durationMs: 8000 });
   }, [toast, go]);
 
-  // A notice that landed while the app was in the background, shown as a
-  // banner when the user comes back. Cleared when they tap the notification.
-  const waitingRef = useRef<{ notice: ReadyNotice; shown: Promise<string | null> } | null>(null);
+  // Notices that landed while the app was in the background, newest last.
+  // On return the newest shows as the banner (one toast slot; the rest wait
+  // behind the bell), and every notification they posted is cleared.
+  type Waiting = { notice: ReadyNotice; shown: Promise<string | null> };
+  const waitingRef = useRef<Waiting[]>([]);
+  // The user came back by tapping one: no banner over what it opened.
+  const tappedRef = useRef(false);
 
   useEffect(() => {
     setReadyNoticeHandler((n) => {
@@ -163,7 +167,8 @@ export function CoachSheetHost() {
         return;
       }
       const shown = presentNotificationNow(n.title, n.body, targetData(n.target, inbox));
-      waitingRef.current = { notice: n, shown };
+      // One per thing: the same news twice keeps the newer words.
+      waitingRef.current = [...waitingRef.current.filter((w) => !sameTarget(w.notice.target, n.target)), { notice: n, shown }];
       void shown.then((id) => {
         track('ready_notice_sent', { channel: id ? 'notification' : 'none', failed: !!n.failed });
       });
@@ -174,25 +179,31 @@ export function CoachSheetHost() {
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const sub = AppState.addEventListener('change', (state) => {
-      if (state !== 'active' || !waitingRef.current) return;
-      const waiting = waitingRef.current;
-      // A beat first: when the user came back by tapping the notification,
-      // its tap can land just after 'active', and it opens the result itself
-      // (clearing waitingRef). The banner must not flash first.
+      if (state !== 'active') return;
+      if (waitingRef.current.length === 0) { tappedRef.current = false; return; }
+      // A beat first: when the user came back by tapping a notification, its
+      // tap can land just after 'active', and it opens the result itself. The
+      // banner must not flash first.
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
-        if (waitingRef.current !== waiting) return;
-        waitingRef.current = null;
-        const { notice, shown } = waiting;
+        const all = waitingRef.current;
+        waitingRef.current = [];
+        const tapped = tappedRef.current;
+        tappedRef.current = false;
+        // Tapped: the other notifications are still unread news; leave them.
+        if (tapped) return;
+        const latest = all[all.length - 1];
         // No banner for a sheet that is already on screen (left open when the
         // user switched apps): the result is right there.
-        const t = notice.target;
-        if (!notice.bannerless && !('coachSession' in t && coachSessions.get(t.coachSession)?.visible)) showBanner(notice);
-        // Back without tapping it: the banner says it now, so the notification
-        // would only be a stale copy in the list. (Often the work ended in the
-        // moment of coming back, before the app heard it was active.)
-        void shown.then((id) => { if (id) void dismissNotification(id); });
+        const t = latest.notice.target;
+        if (!latest.notice.bannerless && !('coachSession' in t && coachSessions.get(t.coachSession)?.visible)) {
+          showBanner(latest.notice);
+        }
+        // Back without tapping: the banner (and the bell) say it now, so the
+        // notifications would only be stale copies in the list. (Often the
+        // work ended in the moment of coming back.)
+        all.forEach((w) => { void w.shown.then((id) => { if (id) void dismissNotification(id); }); });
       }, TAP_WINDOW_MS);
     });
     return () => { sub.remove(); if (timer) clearTimeout(timer); };
@@ -210,13 +221,10 @@ export function CoachSheetHost() {
   useEffect(() => addNotificationTapListener((data) => {
     const t = readyTargetFromData(data);
     if (!t) return;
-    // The banner waiting for "back in the app" goes only if it is this same
-    // news: a tap on an older notification must not cancel a newer one.
-    const waiting = waitingRef.current?.notice.target;
-    if (waiting && sameTarget(waiting, t)) {
-      waitingRef.current = null;
-      toast.hide();
-    }
+    // The tapped news is handled; the "back in the app" banner stays away.
+    waitingRef.current = waitingRef.current.filter((w) => !sameTarget(w.notice.target, t));
+    tappedRef.current = true;
+    toast.hide();
     track('ready_notice_opened', { channel: 'notification' });
     go(t, typeof data.inbox === 'string' ? data.inbox : null);
   }), [go, toast]);

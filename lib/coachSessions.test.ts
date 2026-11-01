@@ -238,3 +238,12 @@ Deno.test('a report for a sheet that is gone changes nothing', () => {
   assertEquals(store.getSnapshot().length, 0);
   assertEquals(events.length, 0);
 });
+
+Deno.test('an inline object prop with the same fields counts as no change', () => {
+  assertEquals(sameProps({ planSeed: { goal: 'cut', days: '4' } }, { planSeed: { goal: 'cut', days: '4' } }), true);
+  assertEquals(sameProps({ planSeed: { goal: 'cut' } }, { planSeed: { goal: 'bulk' } }), false);
+  assertEquals(sameProps({ planSeed: { goal: 'cut' } }, { planSeed: { goal: 'cut', days: '4' } }), false);
+  const nested = { a: [1] };
+  assertEquals(sameProps({ x: { list: nested.a } }, { x: { list: nested.a } }), true);
+  assertEquals(sameProps({ x: { list: [1] } }, { x: { list: [1] } }), false); // one level only
+});

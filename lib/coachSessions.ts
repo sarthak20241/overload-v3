@@ -62,13 +62,26 @@ export type CoachSessionEvent<P extends CoachSessionProps> =
  */
 export const MAX_KEPT = 4;
 
-/** Same keys, same values (by identity). An opener's props are a fresh object every render. */
-export function sameProps(a: object, b: object): boolean {
-  if (a === b) return true;
+function sameKeysAndValues(a: object, b: object, same: (x: unknown, y: unknown) => boolean): boolean {
   const ka = Object.keys(a);
   const kb = Object.keys(b);
   if (ka.length !== kb.length) return false;
-  return ka.every((k) => Object.is((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+  return ka.every((k) => Object.prototype.hasOwnProperty.call(b, k)
+    && same((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+}
+
+const isPlainObject = (v: unknown): v is object =>
+  typeof v === 'object' && v !== null && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
+
+/**
+ * Same keys, same values. An opener's props are a fresh object every render,
+ * and so are inline ones inside it (`planSeed={{ goal }}`), so a plain-object
+ * prop is compared one level down; anything else by identity.
+ */
+export function sameProps(a: object, b: object): boolean {
+  if (a === b) return true;
+  return sameKeysAndValues(a, b, (x, y) => Object.is(x, y)
+    || (isPlainObject(x) && isPlainObject(y) && sameKeysAndValues(x, y, Object.is)));
 }
 
 type AnyFn = (...args: unknown[]) => unknown;
