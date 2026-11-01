@@ -13,12 +13,19 @@
 import {
   isHealthDataAvailableAsync,
   requestAuthorization,
+  getRequestStatusForAuthorization,
+  AuthorizationRequestStatus,
   queryStatisticsCollectionForQuantity,
   queryCategorySamples,
+  queryWorkoutSamples,
   CategoryValueSleepAnalysis,
 } from '@kingstinct/react-native-healthkit';
 import type { DailyReading, HealthAdapter, ReadableMetric } from '../healthSync';
+import type { HubWorkout } from '../healthCardio';
 
+// Workouts feed the cardio import (lib/healthCardioSync), not daily_metrics.
+// Asking for the list again only shows the sheet for types not yet asked
+// about, so a user who connected before workouts were added sees one switch.
 const READ_TYPES = [
   'HKQuantityTypeIdentifierStepCount',
   'HKQuantityTypeIdentifierActiveEnergyBurned',
@@ -26,6 +33,7 @@ const READ_TYPES = [
   'HKQuantityTypeIdentifierHeartRateVariabilitySDNN',
   'HKQuantityTypeIdentifierBodyMass',
   'HKCategoryTypeIdentifierSleepAnalysis',
+  'HKWorkoutTypeIdentifier',
 ] as const;
 
 type Stat = 'cumulativeSum' | 'discreteAverage' | 'mostRecent';
@@ -89,6 +97,55 @@ export const healthkitAdapter: HealthAdapter = {
   // the presence of fresh data plus the local "we asked" flag instead.
   async getGrantedReadTypes() {
     return null;
+  },
+
+  // Whether the SHEET would show, not whether read was granted (iOS never says).
+  async needsAuthorization() {
+    try {
+      const s = await getRequestStatusForAuthorization({ toRead: READ_TYPES as unknown as never });
+      if (s === AuthorizationRequestStatus.shouldRequest) return true;
+      if (s === AuthorizationRequestStatus.unnecessary) return false;
+      return null;
+    } catch {
+      return null;
+    }
+  },
+
+  async readWorkouts(sinceMs) {
+    try {
+      const samples = (await queryWorkoutSamples({
+        limit: 0,
+        ascending: true,
+        filter: { date: { startDate: new Date(sinceMs), endDate: new Date() } },
+      } as never)) as unknown as ReadonlyArray<{
+        uuid: string;
+        workoutActivityType: number;
+        startDate: string | Date;
+        endDate: string | Date;
+        duration?: { quantity?: number };
+        totalDistance?: { quantity?: number };
+        metadata?: Record<string, unknown>;
+      }>;
+      const out: HubWorkout[] = [];
+      for (const s of samples) {
+        const indoor = s.metadata?.HKIndoorWorkout;
+        out.push({
+          hub: 'healthkit',
+          externalId: s.uuid,
+          activityType: Number(s.workoutActivityType),
+          indoor: indoor === true || indoor === 1,
+          startMs: new Date(s.startDate).getTime(),
+          endMs: new Date(s.endDate).getTime(),
+          // HKWorkout.duration is active time (pauses left out), in seconds.
+          durationSeconds: s.duration?.quantity ?? null,
+          distanceM: s.totalDistance?.quantity ?? null,
+        });
+      }
+      return out;
+    } catch {
+      // Not authorized, or workouts unavailable: nothing to import this run.
+      return [];
+    }
   },
 
   async readDaily(sinceDate) {

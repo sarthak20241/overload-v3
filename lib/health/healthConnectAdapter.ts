@@ -22,7 +22,9 @@ import {
   SleepStageType,
   type Permission,
 } from 'react-native-health-connect';
+import * as Application from 'expo-application';
 import type { DailyReading, HealthAdapter, ReadableMetric } from '../healthSync';
+import type { HubWorkout } from '../healthCardio';
 
 const READ_PERMISSIONS: Permission[] = [
   { accessType: 'read', recordType: 'Steps' },
@@ -32,6 +34,35 @@ const READ_PERMISSIONS: Permission[] = [
   { accessType: 'read', recordType: 'Weight' },
   { accessType: 'read', recordType: 'SleepSession' },
 ];
+
+/**
+ * Workouts (and their distance) for the cardio import. Health Connect only
+ * grants what the manifest declares, and READ_EXERCISE / READ_DISTANCE first
+ * ship in the binary after 1.0.3: on an older binary (reached by an OTA) the
+ * ask would show nothing new, so these stay out of every request there.
+ */
+const WORKOUT_PERMISSIONS: Permission[] = [
+  { accessType: 'read', recordType: 'ExerciseSession' },
+  { accessType: 'read', recordType: 'Distance' },
+];
+const WORKOUTS_FROM_VERSION = [1, 0, 4];
+
+function binaryDeclaresWorkouts(): boolean {
+  const parts = (Application.nativeApplicationVersion ?? '').split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < WORKOUTS_FROM_VERSION.length; i++) {
+    const a = parts[i] ?? 0;
+    if (a !== WORKOUTS_FROM_VERSION[i]) return a > WORKOUTS_FROM_VERSION[i];
+  }
+  return true;
+}
+
+const requestedPermissions = (): Permission[] =>
+  binaryDeclaresWorkouts() ? [...READ_PERMISSIONS, ...WORKOUT_PERMISSIONS] : READ_PERMISSIONS;
+
+async function hasGrant(recordType: string): Promise<boolean> {
+  const granted = (await getGrantedPermissions()) as ReadonlyArray<{ accessType?: string; recordType?: string }>;
+  return granted.some((g) => g.accessType === 'read' && g.recordType === recordType);
+}
 
 /** Record type -> the daily_metrics metric it feeds, for permission read-back. */
 const RECORD_TO_METRIC: Record<string, ReadableMetric> = {
@@ -77,7 +108,14 @@ export const healthConnectAdapter: HealthAdapter = {
       // grants still connect the metrics that were allowed (per-metric connection
       // is inferred downstream from data presence). No history permission: the
       // backfill only reaches 28 days, well inside the 30-day no-history window.
-      const granted = await requestPermission(READ_PERMISSIONS);
+      let granted;
+      try {
+        granted = await requestPermission(requestedPermissions());
+      } catch {
+        // A binary that refuses the workout permissions must still connect
+        // the daily metrics.
+        granted = await requestPermission(READ_PERMISSIONS);
+      }
       return READ_PERMISSIONS.some((req) =>
         granted.some((g) => g.accessType === req.accessType && g.recordType === req.recordType),
       );
@@ -102,6 +140,63 @@ export const healthConnectAdapter: HealthAdapter = {
       return out;
     } catch {
       return null;
+    }
+  },
+
+  // Health Connect reports grants, so "the sheet would show" is "workouts
+  // are declared but not granted". A user who said no once is asked again
+  // only when they tap, never on their own.
+  async needsAuthorization() {
+    try {
+      if (!binaryDeclaresWorkouts()) return false;
+      return !(await hasGrant('ExerciseSession'));
+    } catch {
+      return null;
+    }
+  },
+
+  async readWorkouts(sinceMs) {
+    try {
+      if (!binaryDeclaresWorkouts() || !(await hasGrant('ExerciseSession'))) return [];
+      const { records } = (await readRecords('ExerciseSession', {
+        timeRangeFilter: { operator: 'between', startTime: new Date(sinceMs).toISOString(), endTime: new Date().toISOString() },
+        pageSize: 1000,
+      })) as unknown as {
+        records: Array<{ startTime: string; endTime: string; exerciseType: number; metadata?: { id?: string; dataOrigin?: string } }>;
+      };
+      const distanceAllowed = await hasGrant('Distance').catch(() => false);
+      const out: HubWorkout[] = [];
+      for (const r of records) {
+        const id = r.metadata?.id;
+        if (!id) continue;
+        let distanceM: number | null = null;
+        if (distanceAllowed) {
+          try {
+            // Only the app that recorded the session: a phone and a watch
+            // both writing distance would otherwise add up (see pushAgg).
+            const origin = r.metadata?.dataOrigin;
+            const agg = (await aggregateRecord({
+              recordType: 'Distance',
+              timeRangeFilter: { operator: 'between', startTime: r.startTime, endTime: r.endTime },
+              ...(origin ? { dataOriginFilter: [origin] } : {}),
+            } as never)) as { DISTANCE?: { inMeters?: number } };
+            distanceM = agg.DISTANCE?.inMeters ?? null;
+          } catch {
+            // Distance is a nice-to-have; the session still counts without it.
+          }
+        }
+        out.push({
+          hub: 'health_connect',
+          externalId: id,
+          activityType: Number(r.exerciseType),
+          startMs: Date.parse(r.startTime),
+          endMs: Date.parse(r.endTime),
+          distanceM,
+        });
+      }
+      return out;
+    } catch {
+      return [];
     }
   },
 

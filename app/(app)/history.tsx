@@ -34,6 +34,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache, evictWorkoutFromCaches } from '@/lib/localCache';
 import { getPendingWorkouts, removePendingWorkout } from '@/lib/syncQueue';
 import { pendingToHistoryRow } from '@/lib/pendingAdapters';
+import { importedFromLabel } from '@/lib/healthCardio';
 import { applyEditsToHistoryRows, getPendingEdit, removePendingEdit } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
@@ -83,6 +84,8 @@ interface WorkoutRaw {
   duration_seconds?: number;
   total_volume_kg?: number;
   routine_id?: string;
+  /** 'healthkit' / 'health_connect' for a session brought in from the hub; null when logged here. */
+  source?: string | null;
   workout_sets?: { id: string }[];
   exercises?: ExerciseDetail[];
   notes?: string;
@@ -493,6 +496,7 @@ function SessionCard({
             </Text>
             <Text style={[styles.wDate, { color: C.textMuted }]}>
               {formatDateShort(workout.started_at)}
+              {importedFromLabel(workout.source) ? ` · ${importedFromLabel(workout.source)}` : ''}
             </Text>
             <View style={styles.wMeta}>
               {workout.duration_seconds ? (

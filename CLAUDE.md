@@ -87,6 +87,7 @@ deno test --allow-all lib/coachSessions.test.ts # coach sheets kept while Drona 
 deno test --allow-all --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/readyInbox.test.ts # what waits behind the dashboard bell
 deno test --allow-all lib/backgroundHolds.test.ts # iOS background time: shared task, a hung hold lets go by itself
 deno test --allow-all lib/homeLogHint.test.ts  # home log button: the pill's words, and when it stops
+deno test --allow-all lib/healthCardio.test.ts  # watch runs -> cardio workouts: cardio types only, long enough, never twice
 ```
 
 There are no configured lint or build scripts.

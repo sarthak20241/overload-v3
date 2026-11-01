@@ -160,6 +160,8 @@ export type AnalyticsEvent =
   | 'health_connect_result'
   | 'health_sync_run'
   | 'health_sync_failed'
+  | 'health_cardio_imported'
+  | 'health_workouts_asked'
   | 'readiness_card_tapped'
   // ── Nutrition ────────────────────────────────────────────────────────────
   | 'meal_logged'
