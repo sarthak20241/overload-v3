@@ -139,7 +139,9 @@ export function NextPhaseCard({ containerStyle, program, isPro, accessKnown, get
     if (!readyId) { setReady(null); return; }
     let alive = true;
     Promise.all([
-      AsyncStorage.getItem(readyPoppedKey(readyId)).catch(() => null),
+      // A failed read counts as shown: better one missed popup than the same
+      // one on every visit (storage that cannot read is rare and passing).
+      AsyncStorage.getItem(readyPoppedKey(readyId)).catch(() => 'unreadable'),
       readPhaseDraft(readyId),
     ]).then(([popped, draft]) => {
       if (alive) setReady({ id: readyId, popped: popped != null, workouts: draft?.plan.workouts.length ?? 0 });

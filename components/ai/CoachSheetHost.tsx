@@ -44,7 +44,12 @@ let drawn: Drawn[] = [];
 const drawnListeners = new Set<() => void>();
 const emitDrawn = () => drawnListeners.forEach((l) => l());
 let lastSessions: Session[] = [];
-coachSessions.subscribe(() => {
+// Fast Refresh re-runs this module; drop the last run's subscription so they
+// do not stack up during development.
+const HMR_KEY = '__overloadCoachDrawnUnsub';
+const hmrGlobal = globalThis as unknown as Record<string, (() => void) | undefined>;
+hmrGlobal[HMR_KEY]?.();
+hmrGlobal[HMR_KEY] = coachSessions.subscribe(() => {
   const now = coachSessions.getSnapshot();
   const gone = lastSessions.filter((p) => p.visible && !now.some((s) => s.id === p.id));
   lastSessions = now;

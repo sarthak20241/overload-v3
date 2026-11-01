@@ -47,6 +47,7 @@ interface Props {
 }
 
 const FLY_MS = 560;
+const MEASURE_TIMEOUT_MS = 250;
 
 export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker, primaryLabel, secondary }: Props) {
   const { C } = useTheme();
@@ -92,13 +93,19 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker
   const later = useCallback(async () => {
     if (leaving.current) return;
     leaving.current = true;
+    // A measure that never calls back (a node detached mid-measure) must not
+    // leave Later dead: after a beat it counts as "no bell", a plain Later.
+    const orNull = <T,>(p: Promise<T | null>) => Promise.race([
+      p,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), MEASURE_TIMEOUT_MS)),
+    ]);
     const [to, from] = await Promise.all([
-      bellPoint(),
-      new Promise<{ x: number; y: number } | null>((resolve) => {
+      orNull(bellPoint()),
+      orNull(new Promise<{ x: number; y: number } | null>((resolve) => {
         const node = cardRef.current;
         if (!node) { resolve(null); return; }
         node.measureInWindow((x, y, w, h) => resolve(w > 0 ? { x: x + w / 2, y: y + h / 2 } : null));
-      }),
+      })),
     ]);
     if (!to || !from) { onLater(); return; }
     haptics.tick();
