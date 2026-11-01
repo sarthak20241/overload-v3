@@ -393,6 +393,14 @@ export async function writeAutoLog(
   return { logged: { sections: done }, replayed: false };
 }
 
+/** The ids an insert returned, in the order the rows were sent. insert ...
+ *  returning makes no promise about order, and writeAutoLog pairs ids with
+ *  lines by index (for the brand stamp). Rows carry position = base + index,
+ *  so sorting on it gives the sent order back. */
+export function idsInRowOrder(rows: { id: string; position: number }[]): string[] {
+  return [...rows].sort((a, b) => a.position - b.position).map((r) => r.id);
+}
+
 /** Rebuild the sections of an earlier attempt from its entries. */
 async function replay(
   store: AutoLogStore,

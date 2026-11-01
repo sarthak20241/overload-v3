@@ -96,6 +96,7 @@ import {
   type AutoLogSkip,
   type AutoLogStore,
   autoLogBlocker,
+  idsInRowOrder,
   type LoggedSection,
   parseAbortFor,
   readAutoLogRequest,
@@ -3380,7 +3381,7 @@ function supabaseAutoLogStore(userClient: SupabaseClient, admin: SupabaseClient,
       return count ?? 0;
     },
     async insertEntries(entryRows) {
-      const { data, error } = await userClient.from("meal_entries").insert(entryRows).select("id");
+      const { data, error } = await userClient.from("meal_entries").insert(entryRows).select("id, position");
       if (error) {
         // 23505 here is 0115's uq_meal_entries_client_id_slot: a concurrent
         // attempt of this same send already wrote these lines. Same meaning as
@@ -3389,7 +3390,7 @@ function supabaseAutoLogStore(userClient: SupabaseClient, admin: SupabaseClient,
         if (error.code === "23505") return { conflict: true };
         return { error: error.message };
       }
-      return { ids: rows(data).map((r) => String(r.id)) };
+      return { ids: idsInRowOrder(rows(data).map((r) => ({ id: String(r.id), position: Number(r.position) }))) };
     },
     async deleteEntries(ids) {
       await userClient.from("meal_entries").delete().in("id", ids);

@@ -12,6 +12,7 @@ import {
   autoLogBlocker,
   dayWindow,
   groupIntoSections,
+  idsInRowOrder,
   parseAbortFor,
   readAutoLogRequest,
   sectionClientId,
@@ -255,6 +256,15 @@ Deno.test("write: ids that do not line up with the lines stamp no brand", async 
   assert("logged" in res);
   // Without the check, Yogabar would land on the milk's saved food.
   assertEquals(store.brands, []);
+});
+
+Deno.test("insert ids are put back in row order by position", () => {
+  // insert ... returning has no order contract, and the brand stamp pairs ids
+  // with lines by index. position is base + index, so it gives the order back.
+  assertEquals(
+    idsInRowOrder([{ id: "b", position: 4 }, { id: "a", position: 3 }, { id: "c", position: 5 }]),
+    ["a", "b", "c"],
+  );
 });
 
 Deno.test("write: a failed brand stamp still logs the food", async () => {
