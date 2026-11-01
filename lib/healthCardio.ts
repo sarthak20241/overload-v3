@@ -219,3 +219,12 @@ export function importedFromLabel(source: string | null | undefined): string | n
   if (source === 'health_connect') return 'From Health Connect';
   return null;
 }
+
+/**
+ * Did saving this workout award XP? Only a workout logged in the app does:
+ * import_health_cardio never calls award_xp, so deleting an imported one must
+ * not refund any.
+ */
+export function earnedXp(source: string | null | undefined): boolean {
+  return source == null;
+}

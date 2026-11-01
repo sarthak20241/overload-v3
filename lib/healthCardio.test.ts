@@ -6,6 +6,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
   cardioKind,
+  earnedXp,
   importedFromLabel,
   planCardioImports,
   queuedCardioWindows,
@@ -117,6 +118,13 @@ Deno.test("queued workouts with a timed cardio set block their time; lifting and
     { startedAtIso: start, durationSeconds: 600, exercises: [{ def: { muscle_group: "Cardio", metric_type: "bodyweight_reps" }, sets: [{}] }] },
   ]);
   assertEquals(windows, [{ startMs: T0, endMs: T0 + 30 * MIN }]);
+});
+
+Deno.test("only a workout logged in the app carries XP, so only it refunds XP on delete", () => {
+  assertEquals(earnedXp(null), true);
+  assertEquals(earnedXp(undefined), true);
+  assertEquals(earnedXp("healthkit"), false);
+  assertEquals(earnedXp("health_connect"), false);
 });
 
 Deno.test("History tag names the hub; an in-app workout has none", () => {
