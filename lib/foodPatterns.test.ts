@@ -5,7 +5,7 @@
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
-  copyableFromDay, learnPatterns, mealsToSuggest, relogColumns, relogLabels, withPreviousDay,
+  copyableFromDay, historyIsCurrent, learnPatterns, mealsToSuggest, relogColumns, relogLabels, withPreviousDay,
   type FoodSuggestion, type HistoryEntry, type PatternMeal,
 } from "./foodPatterns.ts";
 
@@ -210,4 +210,15 @@ Deno.test("once the meal has food, the day before's rows leave", () => {
   const r = withPreviousDay(none(), prevDay());
   const shown = mealsToSuggest(r, { ...none(), breakfast: [{ food_name: "Eggs" }] });
   assertEquals(shown.breakfast, []);
+});
+
+Deno.test("history is current only after a server fetch for this diary version", () => {
+  assertEquals(historyIsCurrent({ fetched: true, fetchedFor: "v1" }, "v1"), true);
+  // A diary change (a new log): the refetch has not landed yet.
+  assertEquals(historyIsCurrent({ fetched: true, fetchedFor: "v1" }, "v2"), false);
+  // Disk cache only, never fetched this session.
+  assertEquals(historyIsCurrent({ fetched: false, fetchedFor: null }, "v1"), false);
+  // The diary is still loading.
+  assertEquals(historyIsCurrent({ fetched: true, fetchedFor: "v1" }, null), false);
+  assertEquals(historyIsCurrent(null, "v1"), false);
 });

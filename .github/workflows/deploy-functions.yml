@@ -144,6 +144,7 @@ jobs:
           deno test --allow-all lib/chartScale.test.ts
           deno test --allow-all lib/phasePick.test.ts
           deno test --allow-all lib/foodBoxTour.test.ts
+          deno test --allow-all lib/foodPatterns.test.ts
 
       - name: Pick functions
         id: pick

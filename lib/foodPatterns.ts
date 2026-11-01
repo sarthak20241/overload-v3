@@ -75,6 +75,16 @@ export interface FoodSuggestion {
 }
 
 export const PATTERN_WINDOW_DAYS = 28;
+
+/** The food history on hand came from the server for this diary version.
+ *  A diary change (every log) refetches; until that lands, the entries are
+ *  from before it. `version` null: the diary itself is still loading. */
+export function historyIsCurrent(
+  h: { fetched?: boolean; fetchedFor?: string | null } | null | undefined,
+  version: string | null,
+): boolean {
+  return !!h?.fetched && version !== null && h.fetchedFor === version;
+}
 const HALF_LIFE_DAYS = 14;
 /** Seen on fewer days than this is a one-off, not a habit. */
 const MIN_DAYS = 2;

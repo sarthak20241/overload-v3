@@ -17,7 +17,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { latestLogDay } from '@/lib/logDay';
 import { logParsedMeal, ymd, type LoggedParseRef, type ParsedMeal, type ParsedMealItem } from '@/lib/dietData';
-import { PATTERN_WINDOW_DAYS, relogLabels, type HistoryEntry } from '@/lib/foodPatterns';
+import { historyIsCurrent, PATTERN_WINDOW_DAYS, relogLabels, type HistoryEntry } from '@/lib/foodPatterns';
 import type { MealType } from '@/lib/foods';
 
 type Supa = NonNullable<ReturnType<typeof useSupabaseClient>>;
@@ -114,7 +114,7 @@ export function useFoodHistory(version: string | null, anchorIso: string): {
   // A fetch that fails leaves it false, so a caller waiting on it (the food
   // box tour) waits too. That is the safe side.
   const cur = state.key === key ? state : seedMem;
-  const loaded = !!cur?.fetched && version !== null && cur.fetchedFor === version;
+  const loaded = historyIsCurrent(cur, version);
 
   useEffect(() => {
     let cancelled = false;

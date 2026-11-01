@@ -888,7 +888,8 @@ export default function NutritionScreen() {
     if (!sig) return;
     if ('end' in sig) { endTour('left', sig.end); return; }
     // Someone who finds the box on their own never needs the tour later.
-    if (sig.event === 'sent' && tourStepRef.current === null && tourDone === false) markTourDone();
+    // Also while storage has not answered yet (null): a send is a send.
+    if (sig.event === 'sent' && tourStepRef.current === null && tourDone !== true) markTourDone();
     tourEvent(sig.event);
   }, [flow, tourDone, markTourDone, tourEvent, endTour]);
   // The food box's own events: tapped into, and left without sending.
