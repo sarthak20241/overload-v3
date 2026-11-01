@@ -312,6 +312,17 @@ Deno.test("Quick: an unsure match keeps the model's own estimate", async () => {
   assertEquals(r.parsed!.items[0].source, "estimate");
 });
 
+Deno.test("Quick: a maybe match (0.6 to 0.7) keeps the model's own estimate", async () => {
+  // A maybe needs decide to judge it, and Quick has no decide.
+  const calls: string[] = [], lookups: string[] = [];
+  const r = await runParseMeal(
+    deps([live()], { "grilled chicken breast": 0.65 }, calls, lookups, ESTIMATED),
+    { ...BASE, text: "150g grilled chicken breast", mode: "fast" },
+  );
+  assertEquals(r.parsed!.items[0].kcal, 260);
+  assertEquals(r.parsed!.items[0].source, "estimate");
+});
+
 Deno.test("an explicit research request never asks memory for the answer being challenged", async () => {
   const calls: string[] = [], lookups: string[] = [];
   const r = await runParseMeal(

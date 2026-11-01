@@ -5,7 +5,8 @@
  * mode send IS the commit: the user typed, hit send, and may have closed the
  * app already. So the parse keeps running after the client hangs up, and on a
  * good result the SERVER writes meals + meal_entries with the user's own JWT
- * (RLS holds; nothing here runs as admin).
+ * (RLS holds). The one admin write is the brand stamp on the saved food each
+ * new entry made (brandSavedFoods): users may not write saved foods themselves.
  *
  * Structural like parseMeal.ts: no supabase-js types. index.ts adapts the real
  * client to `AutoLogStore`; the tests hand in a fake.
