@@ -514,11 +514,12 @@ export default function OnboardingScreen() {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (step === 'welcome') return false; // let the OS handle it
       if (step === 'build') return true; // no backing out mid-build
+      if (celebrating) return true; // committed: the build screen is next
       goTo(STEP_ORDER[Math.max(STEP_ORDER.indexOf(step) - 1, 0)]);
       return true;
     });
     return () => sub.remove();
-  }, [step, goTo]);
+  }, [step, goTo, celebrating]);
 
   // Single-select answers advance on their own after a beat, so the user sees
   // the selected state land before the screen moves. One tap per question.
@@ -742,7 +743,8 @@ export default function OnboardingScreen() {
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
         {showHeader && (
           <OnboardingHeader
-            onBack={() => goTo(prevStep)}
+            // Once committed, the confetti hands straight to the build.
+            onBack={() => { if (!celebrating) goTo(prevStep); }}
             progressIndex={progressIndex}
             progressTotal={PROGRESS_STEPS.length}
           />
