@@ -89,6 +89,7 @@ deno test --allow-all lib/backgroundHolds.test.ts # iOS background time: shared 
 deno test --allow-all lib/homeLogHint.test.ts  # home log button: the pill's words, and when it stops
 deno test --allow-all lib/startGuide.test.ts   # Home's first-week path: what ticks a step, the hello, the all-done moment once
 deno test --allow-all --unstable-sloppy-imports lib/startLessons.test.ts # first-week lessons: every step has one, copy fits its card, no em dashes
+deno test --allow-all --unstable-sloppy-imports lib/cardioLog.test.ts # dashboard cardio sheet: a logged session counts, queued ones count before sync
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/parseSpeed.test.ts # food log mode: Quick / Precise, a stored Thorough reads as Quick
 ```
 
