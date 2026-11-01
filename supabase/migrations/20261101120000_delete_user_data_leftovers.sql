@@ -37,12 +37,15 @@
 --   (66 sets). Deleting it would cascade those sets away. A custom exercise is
 --   deleted only when, after this user's own workouts, routines and notes are
 --   gone, nothing else points at it. A shared one passes to the user with the
---   most rows on it. Not to null: created_by null means a catalog exercise,
---   which RLS shows to everyone.
+--   most rows on it, name and all. Not to null: created_by null means a
+--   catalog exercise, which RLS shows to everyone. (form_checks is SET NULL,
+--   not cascade, but another user's form check still keeps the exercise.)
 --   The not-exists checks name every FK to exercises on 2026-11-01. A new FK
 --   must be added there too; the test fails until it is.
 -- * token_usage_log is the cost ledger. The row stays; the user keys go.
 --   Indexed on the same expression, so the delete does not scan the ledger.
+--   No live row carries both keys (checked 2026-11-01). The index build locks
+--   ledger writes; the ledger is 5,355 rows (3 MB), so that lasts milliseconds.
 -- * redemption_codes: a code stays used. The "already redeemed" check reads
 --   redeemed_at, so clearing redeemed_by_clerk_user_id cannot reopen a code.
 --
@@ -79,7 +82,8 @@ begin
       and not exists (select 1 from public.workout_sets ws where ws.exercise_id = e.id)
       and not exists (select 1 from public.routine_exercises re where re.exercise_id = e.id)
       and not exists (select 1 from public.user_exercise_notes n where n.exercise_id = e.id)
-      and not exists (select 1 from public.workout_exercise_notes n where n.exercise_id = e.id);
+      and not exists (select 1 from public.workout_exercise_notes n where n.exercise_id = e.id)
+      and not exists (select 1 from public.form_checks f where f.exercise_id = e.id);
   update public.exercises e
      set created_by = (
        select u.user_id from (
@@ -90,6 +94,8 @@ begin
          select n.user_id from public.user_exercise_notes n where n.exercise_id = e.id
          union all
          select w.user_id from public.workout_exercise_notes n join public.workouts w on w.id = n.workout_id where n.exercise_id = e.id
+         union all
+         select f.user_id from public.form_checks f where f.exercise_id = e.id
        ) u
        group by u.user_id order by count(*) desc, u.user_id limit 1)
    where e.created_by = p_user_id;
