@@ -41,7 +41,7 @@ import { defaultServing, resolveBaseAmount, searchFoods, type MealType } from '@
 import { matchYourFoods, mergeYourFoods, portionText, type YourFood } from '@/lib/yourFoods';
 import { haptics } from '@/lib/haptics';
 import { dronaLogText, setPendingParse } from '@/lib/pendingParse';
-import { getParseSpeed, setParseSpeed, effectiveParseSpeed, PARSE_SPEED_COPY, type ParseSpeed } from '@/lib/parseSpeed';
+import { getParseSpeed, setParseSpeed, peekParseSpeed, effectiveParseSpeed, PARSE_SPEED_COPY, type ParseSpeed } from '@/lib/parseSpeed';
 import { getAutoLog } from '@/lib/autoLog';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { OrbLoader } from '@/components/ui/OrbLoader';
@@ -103,8 +103,12 @@ export default function FoodSearchScreen() {
       setTab('all'); // retained Tabs screen: reset to the catalog every reopen (deterministic)
       if (supabase) listSavedMeals(supabase).then(setSavedMeals).catch(() => {});
       refreshYourFoods();
-      // The tier may have changed on Nutrition since the last visit.
-      getParseSpeed().then(setPickedSpeed);
+      // The tier may have changed on Nutrition since the last visit. The
+      // in-memory pick first: a storage read resolving late could undo a tap
+      // made on this screen in the meantime.
+      const known = peekParseSpeed();
+      if (known) setPickedSpeed(known);
+      else getParseSpeed().then((v) => setPickedSpeed(peekParseSpeed() ?? v));
       getAutoLog().then(setAutoLogOn);
     }, [supabase]),
   );
@@ -233,9 +237,11 @@ export default function FoodSearchScreen() {
       router.push({ pathname: '/upgrade', params: { context: 'pro_feature' } });
       return;
     }
-    if (v === runningSpeed) return;
+    // Against the stored pick, not the running one: a lapsed Precise pick
+    // runs as Quick, and tapping Quick must still replace what is stored.
+    if (v === pickedSpeed) return;
     haptics.selection();
-    track('parse_tier_changed', { from: runningSpeed, to: v, screen: 'food_search' });
+    track('parse_tier_changed', { from: pickedSpeed, to: v, screen: 'food_search' });
     setPickedSpeed(v);
     void setParseSpeed(v);
   }
