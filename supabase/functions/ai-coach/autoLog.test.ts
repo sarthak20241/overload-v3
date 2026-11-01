@@ -130,6 +130,8 @@ class FakeStore implements AutoLogStore {
   entries: (AutoLogEntryRow & { id: string })[] = [];
   calls: string[] = [];
   failInsert = false;
+  brands: { entry_id: string; brand: string }[] = [];
+  failBrands = false;
   private seq = 0;
   private nextId(prefix: string) { return `${prefix}-${++this.seq}`; }
 
@@ -178,6 +180,12 @@ class FakeStore implements AutoLogStore {
     this.entries = this.entries.filter((e) => !ids.includes(e.id));
     return Promise.resolve();
   }
+  stampBrands(pairs: { entry_id: string; brand: string }[]) {
+    this.calls.push(`stampBrands:${pairs.length}`);
+    if (this.failBrands) return Promise.reject(new Error("no brand write"));
+    this.brands.push(...pairs);
+    return Promise.resolve();
+  }
   deleteMealIfEmpty(mealId: string) {
     this.calls.push(`deleteMealIfEmpty`);
     if (!this.entries.some((e) => e.meal_id === mealId)) this.meals = this.meals.filter((m) => m.id !== mealId);
@@ -210,6 +218,33 @@ Deno.test("write: a two-section message creates two meals and stamps every entry
   assert(store.entries.every((e) => e.client_id === CID && e.logged_via === "ai_auto"));
   assertEquals(store.entries.map((e) => e.position), [0, 0, 1]);
   assertEquals(store.entries[2].source, "catalog");
+});
+
+Deno.test("write: a branded line hands its brand to the saved food it just made", async () => {
+  // The saved-food trigger reads the brand off the parse trace, and in this
+  // mode the trace lands after the diary write, so the write passes it on.
+  const store = new FakeStore();
+  const res = await writeAutoLog(store, writeArgs([
+    line("Kesar pista oats", { meal_type: "breakfast", brand: " Yogabar " }),
+    line("milk", { meal_type: "breakfast" }),
+    line("dal", { meal_type: "lunch", brand: "" }),
+  ]));
+  assert("logged" in res);
+  const oats = store.entries.find((e) => e.food_name === "Kesar pista oats")!;
+  assertEquals(store.brands, [{ entry_id: oats.id, brand: "Yogabar" }]);
+
+  // A retry writes nothing, so it stamps nothing.
+  store.calls = [];
+  await writeAutoLog(store, writeArgs([line("Kesar pista oats", { meal_type: "breakfast", brand: "Yogabar" })]));
+  assert(!store.calls.some((c) => c.startsWith("stampBrands")));
+});
+
+Deno.test("write: a failed brand stamp still logs the food", async () => {
+  const store = new FakeStore();
+  store.failBrands = true;
+  const res = await writeAutoLog(store, writeArgs([line("Too Yumm oats", { brand: "Too Yumm" })]));
+  assert("logged" in res);
+  assertEquals(store.entries.length, 1);
 });
 
 Deno.test("write: an existing section meal is reused, not duplicated", async () => {

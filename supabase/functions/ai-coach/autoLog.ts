@@ -216,6 +216,11 @@ export interface AutoLogStore {
   ): Promise<{ ids: string[] } | { conflict: true } | { error: string }>;
   deleteEntries(ids: string[]): Promise<void>;
   deleteMealIfEmpty(mealId: string): Promise<void>;
+  /** Put each line's brand on the saved food its entry just made. The
+   *  saved-food trigger reads brands off the parse trace, and this mode writes
+   *  the diary before the trace, so the trigger finds none. Best effort: a
+   *  failure costs the brand, never the log. */
+  stampBrands?(pairs: { entry_id: string; brand: string }[]): Promise<void>;
 }
 
 export interface LoggedSection {
@@ -297,6 +302,7 @@ export async function writeAutoLog(
 
   const { start, end, loggedAt } = dayWindow(args.logDate, args.tzOffsetMin, args.nowMs);
   const done: LoggedSection[] = [];
+  const brands: { entry_id: string; brand: string }[] = [];
 
   const rollback = async () => {
     for (const s of done) {
@@ -371,8 +377,15 @@ export async function writeAutoLog(
       return { error: inserted.error };
     }
     done.push({ meal_type: section.meal_type, meal_id: mealId, entry_ids: inserted.ids, created_meal: createdMeal });
+    section.items.forEach((it, idx) => {
+      const brand = it.brand?.trim().slice(0, 80);
+      if (brand && inserted.ids[idx]) brands.push({ entry_id: inserted.ids[idx], brand });
+    });
   }
 
+  if (brands.length > 0 && store.stampBrands) {
+    await store.stampBrands(brands).catch((e) => console.log(`[parse_meal] auto-log brand stamp failed: ${String(e)}`));
+  }
   return { logged: { sections: done }, replayed: false };
 }
 

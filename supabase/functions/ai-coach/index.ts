@@ -3330,7 +3330,7 @@ function makeParseDeps(
  *  default user_id from the JWT's sub and entries are scoped through their
  *  parent meal, exactly as the client's own writes are. Never the admin client:
  *  a bug here must not be able to write into someone else's diary. */
-function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
+function supabaseAutoLogStore(userClient: SupabaseClient, admin: SupabaseClient, userId: string): AutoLogStore {
   const rows = (data: unknown) => (data ?? []) as Array<Record<string, unknown>>;
   return {
     async entriesByClientId(clientId) {
@@ -3398,6 +3398,15 @@ function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
       const { count } = await userClient
         .from("meal_entries").select("id", { count: "exact", head: true }).eq("meal_id", mealId);
       if ((count ?? 0) === 0) await userClient.from("meals").delete().eq("id", mealId);
+    },
+    // Admin, because users may only read and delete their saved foods. Scoped
+    // to this user and to the saved food each new entry just made.
+    async stampBrands(pairs) {
+      for (const { entry_id, brand } of pairs) {
+        const { error } = await admin.from("user_food_cache").update({ brand })
+          .eq("user_id", userId).eq("last_entry_id", entry_id);
+        if (error) throw new Error(`brand stamp: ${error.message}`);
+      }
     },
   };
 }
@@ -3648,7 +3657,7 @@ async function handleParseMealRequest(args: {
       extra = { auto_log_skipped: "implausible" };
     } else {
       try {
-        const write = await writeAutoLog(supabaseAutoLogStore(userClient), {
+        const write = await writeAutoLog(supabaseAutoLogStore(userClient, admin, userId), {
           clientId: auto.clientId,
           items: result.parsed.items,
           fallbackMeal: result.parsed.meal_type,
