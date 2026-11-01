@@ -1,10 +1,9 @@
 /**
  * ParseSpeedSheet — how should Drona log what you type?
  *
- * Three tiers, set once and sticky (lib/parseSpeed): Quick is the default
- * estimate-first fast parse, Thorough is the full catalog pipeline, Precise is
- * the Pro tier that reads the product's own numbers off the web and
- * cross-checks two sources. Below them, one switch: "Just log it"
+ * Two tiers, set once and sticky (lib/parseSpeed): Quick is the default
+ * estimate-first fast parse, Precise is the Pro tier that reads the product's
+ * own numbers off the web and cross-checks two sources. Below them, one switch: "Just log it"
  * (lib/autoLog), where send commits and the server writes the diary itself.
  * One sheet answers the whole question of how Drona logs, so the composer
  * grows no extra chrome. Portal sheet like the other diet sheets; no keyboard
@@ -45,13 +44,12 @@ interface Props {
 
 const OPTIONS: {
   key: ParseSpeed;
-  icon: 'zap' | 'target' | 'award';
+  icon: 'zap' | 'award';
   title: string;
   sub: string;
   pro?: boolean;
 }[] = [
   { key: 'quick', icon: 'zap', ...PARSE_SPEED_COPY.quick },
-  { key: 'thorough', icon: 'target', ...PARSE_SPEED_COPY.thorough },
   { key: 'precise', icon: 'award', ...PARSE_SPEED_COPY.precise, pro: true },
 ];
 
