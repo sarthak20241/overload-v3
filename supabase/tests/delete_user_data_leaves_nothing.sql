@@ -11,8 +11,15 @@ declare
   a constant text := 'del_leftover_a';
   w uuid; wb uuid; m uuid; sm uuid; pc uuid;
   own_ex uuid; shared_ex uuid;
-  r record; n bigint; leftovers text[] := '{}';
+  r record; n bigint; fks text; leftovers text[] := '{}';
 begin
+  -- delete_user_data keeps a custom exercise anything below still points at.
+  -- A new FK to exercises would cascade or block silently: add it there first.
+  select string_agg(conrelid::regclass::text, ',' order by conrelid::regclass::text) into fks
+    from pg_constraint where contype = 'f' and confrelid = 'public.exercises'::regclass;
+  if fks is distinct from 'form_checks,routine_exercises,user_exercise_notes,workout_exercise_notes,workout_sets' then
+    raise exception 'FKs to exercises changed (%): update the exercise checks in delete_user_data', fks; end if;
+
   -- Training: A's own custom exercise in A's workout, and a second custom
   -- exercise of A's that B also trains with.
   insert into public.exercises(name, muscle_group, created_by) values ('Leftover test press', 'chest', a) returning id into own_ex;
@@ -67,9 +74,7 @@ begin
        and c.column_name in ('user_id', 'clerk_user_id', 'created_by', 'redeemed_by_clerk_user_id')
      order by 1, 2
   loop
-    -- B still trains with shared_ex, so it stays (checked below).
-    execute format('select count(*) from %I.%I where %I::text = $1 %s', r.table_schema, r.table_name, r.column_name,
-                   case when r.table_name = 'exercises' then format('and id <> %L', shared_ex) else '' end)
+    execute format('select count(*) from %I.%I where %I::text = $1', r.table_schema, r.table_name, r.column_name)
       into n using a;
     if n > 0 then
       leftovers := leftovers || format('%s.%s.%s=%s', r.table_schema, r.table_name, r.column_name, n);
@@ -85,6 +90,8 @@ begin
   -- What must survive.
   if not exists (select 1 from public.workout_sets where workout_id = wb and exercise_id = shared_ex) then
     raise exception 'deleting A took B''s set on A''s shared custom exercise'; end if;
+  if (select created_by from public.exercises where id = shared_ex) is distinct from 'del_leftover_b' then
+    raise exception 'the shared custom exercise did not pass to B'; end if;
   if exists (select 1 from public.exercises where id = own_ex) then
     raise exception 'A''s unshared custom exercise survived'; end if;
   if (select count(*) from public.token_usage_log where pipeline = 'leftover_test') <> 2 then
