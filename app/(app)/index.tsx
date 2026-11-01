@@ -23,6 +23,7 @@ import { dronaCardTopic, insightTopic, type CoachTopic } from '@/lib/coachTopic'
 import { BuildSplitPrompt } from '@/components/program/BuildSplitPrompt';
 import { NextPhaseCard } from '@/components/program/NextPhaseCard';
 import { StartGuideCard } from '@/components/home/StartGuideCard';
+import { HomeLogButton, HOME_LOG_BUTTON_ROOM } from '@/components/home/HomeLogButton';
 import type { StartStepId } from '@/lib/startGuide';
 import { readPhaseDraft } from '@/lib/phaseDraft';
 import { hasCompletedOnboarding } from '@/lib/onboarding';
@@ -37,8 +38,9 @@ import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 import { DronaCardPopup } from '@/components/coach/DronaCardPopup';
 import { useToast } from '@/components/ui/Toast';
+import { InboxBell } from '@/components/ui/InboxBell';
 import {
-  currentWeekStart, deferCard, movesFor, readCheckinCard, readMomentCard, readWeeklyCard, requestWeeklyCard, setCardStatus,
+  countWaitingCards, currentWeekStart, deferCard, movesFor, readCheckinCard, readMomentCard, readWeeklyCard, requestWeeklyCard, setCardStatus,
   type SavedDronaCard,
 } from '@/lib/dronaCard';
 import { useWorkout } from '@/hooks/useWorkout';
@@ -51,7 +53,7 @@ import { groupSetsByExercise } from '@/lib/workoutSummary';
 import { weekPatternFor } from '@/lib/weekPattern';
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
-import { useTodayNutrition, useNutritionTargets } from '@/lib/dietData';
+import { useTodayNutrition, useNutritionTargets, ymd } from '@/lib/dietData';
 import { fuelOn } from '@/lib/fuelDays';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { PressableScale } from '@/components/ui/PressableScale';
@@ -321,6 +323,20 @@ export default function DashboardScreen() {
   // until the app restarted. The first focus is the mount, which already loads.
   const [focusTick, setFocusTick] = useState(0);
   const toast = useToast();
+  // The bell's share of server cards: the ones put off with Later.
+  const [cardsWaiting, setCardsWaiting] = useState(0);
+  // Bumped by a Later: a count read that started before it is stale, and
+  // must not overwrite the +1 (the next read sees the deferred card).
+  const countGenRef = useRef(0);
+  useEffect(() => {
+    if (!user?.id || isGuestSession) { setCardsWaiting(0); return; }
+    let live = true;
+    const gen = ++countGenRef.current;
+    void countWaitingCards(supabase, user.id).then((n) => {
+      if (live && gen === countGenRef.current) setCardsWaiting(n);
+    });
+    return () => { live = false; };
+  }, [user?.id, isGuestSession, supabase, focusTick]);
   useEffect(() => {
     if (focusTick > 0) reloadFuel();
   }, [focusTick, reloadFuel]);
@@ -727,11 +743,14 @@ export default function DashboardScreen() {
     track('drona_card_deferred', { kind: popupCard.kind, topic: popupCard.topic });
     const before = popupCard;
     setPopupCard({ ...popupCard, deferred_at: new Date().toISOString() });
+    countGenRef.current += 1;
+    setCardsWaiting((n) => n + 1);
     void deferCard(supabase, popupCard.id).then((result) => {
       // Not saved: the server row is still undeferred, so the popup would be
       // back on the next open with no explanation. Say so now instead.
       if (result !== 'ok') {
         setPopupCard(before);
+        setCardsWaiting((n) => Math.max(0, n - 1));
         toast.error('Could not save that for later. Try again.');
       }
     });
@@ -1083,11 +1102,22 @@ export default function DashboardScreen() {
   const weeklyVolumes = useMemo(() => weeklyTrend.map(w => w.volume), [weeklyTrend]);
   const weeklyLabels = useMemo(() => weeklyTrend.map(w => w.label), [weeklyTrend]);
 
+  const popupShowing = !!popupCard
+    && popupCard.status === 'pending'
+    && !popupCard.deferred_at
+    && screenFocused
+    && !splitPromptShowing
+    && !workoutActive
+    && !aiCoachOpen;
+  const showLogButton = !isGuestSession && !!user?.id;
+  const foodTodayRead = fuel.totalsDayIso === ymd(new Date());
+
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 100 }}
+        // Room under the last card for the floating log button.
+        contentContainerStyle={{ paddingBottom: 100 + (showLogButton ? HOME_LOG_BUTTON_ROOM : 0) }}
         refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         <RefreshOrb refreshing={refreshing} />
@@ -1099,6 +1129,16 @@ export default function DashboardScreen() {
             <XPBar xp={userXP} />
           </View>
           <View style={styles.headerRight}>
+            {/* What Drona left for later: Later cards and finished builds. */}
+            {!isGuestSession && user?.id ? (
+              <InboxBell
+                cardsWaiting={cardsWaiting}
+                onPress={() => {
+                  track('drona_inbox_opened', { from: 'dashboard' });
+                  router.push({ pathname: '/(app)/from-drona', params: { from: 'dashboard' } } as any);
+                }}
+              />
+            ) : null}
             {/* Goal & Plan entry (replaces the redundant Start button — a workout
                 still starts from the center ▶ tab and the coach's Quick Workout).
                 Leads to the coach-built program and this phase's targets. */}
@@ -1156,6 +1196,10 @@ export default function DashboardScreen() {
               accessKnown={coachAccess.state !== 'unknown'}
               getToken={getToken}
               onReview={(seq) => router.push({ pathname: '/goal-plan', params: { build: 'phase', seq: String(seq), auto: '1' } } as any)}
+              // The "ready" popup waits its turn: never over another popup,
+              // the coach sheet or a live workout.
+              popupAllowed={screenFocused && !splitPromptShowing && !workoutActive && !aiCoachOpen
+                && !(popupCard && popupCard.status === 'pending' && !popupCard.deferred_at)}
               onUpgrade={() => router.push('/upgrade' as any)}
             />
         ) : null}
@@ -1484,6 +1528,20 @@ export default function DashboardScreen() {
         </View>
       </ScrollView>
 
+      {/* Log food from home: opens Drona's food box on Nutrition. Out of the
+          way while a popup, the coach or a live workout (its mini bar sits
+          here) has the screen. */}
+      {showLogButton && user?.id ? (
+        <HomeLogButton
+          supabase={supabase}
+          userId={user.id}
+          todayReady={foodTodayRead}
+          loggedToday={foodTodayRead && Object.values(fuel.byMeal).some((rows) => rows.length > 0)}
+          hidden={popupShowing || splitPromptShowing || aiCoachOpen || workoutActive}
+          onLog={() => router.push({ pathname: '/nutrition', params: { focus: 'ai' } })}
+        />
+      ) : null}
+
       <DoneTodaySheet
         visible={doneSheetOpen && todaySuggestion.kind === 'complete'}
         workout={(todaySuggestion.completedWorkout as DoneWorkout | undefined) ?? null}
@@ -1527,14 +1585,7 @@ export default function DashboardScreen() {
       {/* Drona's card for the week, as a popup (every kind; owner's call
           2026-09-18). Never over BuildSplitPrompt, never mid-workout, and not
           once the user has said Later. */}
-      {popupCard
-        && popupCard.status === 'pending'
-        && !popupCard.deferred_at
-        && screenFocused
-        && !splitPromptShowing
-        && !workoutActive
-        && !aiCoachOpen
-        && (
+      {popupShowing && popupCard && (
           <DronaCardPopup
             card={popupCard}
             onAct={handleCardAct}
