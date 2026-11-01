@@ -15,9 +15,12 @@ declare
 begin
   -- delete_user_data keeps a custom exercise anything below still points at.
   -- A new FK to exercises would cascade or block silently: add it there first.
-  select string_agg(conrelid::regclass::text, ',' order by conrelid::regclass::text) into fks
-    from pg_constraint where contype = 'f' and confrelid = 'public.exercises'::regclass;
-  if fks is distinct from 'form_checks,routine_exercises,user_exercise_notes,workout_exercise_notes,workout_sets' then
+  select string_agg(format('%I.%I', ns.nspname, cl.relname), ',' order by ns.nspname, cl.relname) into fks
+    from pg_constraint con
+    join pg_class cl on cl.oid = con.conrelid
+    join pg_namespace ns on ns.oid = cl.relnamespace
+   where con.contype = 'f' and con.confrelid = 'public.exercises'::regclass;
+  if fks is distinct from 'public.form_checks,public.routine_exercises,public.user_exercise_notes,public.workout_exercise_notes,public.workout_sets' then
     raise exception 'FKs to exercises changed (%): update the exercise checks in delete_user_data', fks; end if;
 
   -- Training: A's own custom exercise in A's workout, and a second custom
@@ -28,6 +31,9 @@ begin
   insert into public.workout_sets(workout_id, exercise_id) values (w, own_ex), (w, shared_ex);
   insert into public.workouts(user_id, name) values ('del_leftover_b', 'Leftover test day B') returning id into wb;
   insert into public.workout_sets(workout_id, exercise_id) values (wb, shared_ex);
+  -- B already owns that name, and the first free suffix too.
+  insert into public.exercises(name, muscle_group, created_by) values
+    ('leftover TEST hinge', 'back', 'del_leftover_b'), ('Leftover test hinge (2)', 'back', 'del_leftover_b');
   insert into public.form_checks(user_id, exercise_id, exercise_name, summary) values (a, own_ex, 'Leftover test press', '{}');
   insert into public.form_check_rate_limit(user_id) values (a);
   -- Three more of A's custom exercises, each reaching B by one other path.
@@ -102,6 +108,8 @@ begin
    where id in (shared_ex, routine_ex, note_ex, check_ex) and created_by is distinct from 'del_leftover_b';
   if fks is not null or (select count(*) from public.exercises where id in (shared_ex, routine_ex, note_ex, check_ex)) <> 4 then
     raise exception 'shared custom exercises not kept and passed to B: %', coalesce(fks, 'one was deleted'); end if;
+  if (select name from public.exercises where id = shared_ex) is distinct from 'Leftover test hinge (3)' then
+    raise exception 'name clash on hand-on: got %', (select name from public.exercises where id = shared_ex); end if;
   if not exists (select 1 from public.form_checks where user_id = 'del_leftover_b' and exercise_id = check_ex) then
     raise exception 'B''s form check lost its exercise'; end if;
   if exists (select 1 from public.exercises where id = own_ex) then
