@@ -9,13 +9,16 @@
 -- The owner (matched by the email the code was sent to) earns 30 more days for
 -- each friend who redeems, up to max_rewards. A friend who joins before the
 -- owner has redeemed still counts: the owner's own redemption adds the months
--- already earned.
+-- already earned. A friend who joins while the owner is paying still uses one
+-- of the owner's rewards: a paying owner has no trial to extend.
 --
 -- One redemption per account, ever. A paying user is refused, not changed.
 
 create table if not exists invite_codes (
   code                 text primary key,
-  owner_email          text not null,
+  -- Never blank: user_profiles.email defaults to '', so a blank owner would
+  -- match every account without an email as the owner.
+  owner_email          text not null check (owner_email <> ''),
   owner_clerk_user_id  text references user_profiles (clerk_user_id) on delete set null,
   source               text not null default 'old_app',
   max_redemptions      int  not null default 20 check (max_redemptions > 0),

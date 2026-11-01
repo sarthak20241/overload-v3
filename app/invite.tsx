@@ -71,9 +71,15 @@ export default function InviteScreen() {
     if (!clean || busy) return;
     setBusy(true);
     setError(null);
-    const { data, error: rpcError } = await supabase.rpc('redeem_invite', { p_code: clean });
-    const result = readRedeemResult(data, rpcError);
-    setBusy(false);
+    let result;
+    try {
+      const { data, error: rpcError } = await supabase.rpc('redeem_invite', { p_code: clean });
+      result = readRedeemResult(data, rpcError);
+    } catch (e) {
+      result = readRedeemResult(null, e);
+    } finally {
+      setBusy(false);
+    }
     if (result.ok) {
       track('invite_redeemed', { days: result.days, is_owner: result.isOwner });
       clearPendingInvite();
