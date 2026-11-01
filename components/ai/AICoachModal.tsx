@@ -2369,7 +2369,7 @@ function WorkoutCard({
             <SparkleIcon size={11} color={C.accentText} />
             <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS WORKS FOR YOU</Text>
           </View>
-          <Text style={[s.rationaleText, { color: C.foreground }]}>
+          <Text style={[s.rationaleText, { color: C.foreground }]} numberOfLines={3}>
             {workout.rationale}
           </Text>
         </View>
@@ -2878,7 +2878,7 @@ function GeneratePlanScreen({
                   <SparkleIcon size={11} color={C.accentText} />
                   <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS PLAN FITS YOU</Text>
                 </View>
-                <Text style={[s.rationaleText, { color: C.foreground }]}>{result.rationale}</Text>
+                <Text style={[s.rationaleText, { color: C.foreground }]} numberOfLines={3}>{result.rationale}</Text>
               </View>
             )}
           </Animated.View>
