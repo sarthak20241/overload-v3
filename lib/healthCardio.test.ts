@@ -5,9 +5,11 @@
 
 import { assertEquals } from "jsr:@std/assert@1";
 import {
+  CARDIO_EXERCISES,
   cardioKind,
   earnedXp,
   importedFromLabel,
+  importErrorAction,
   planCardioImports,
   queuedCardioWindows,
   type HubWorkout,
@@ -118,6 +120,44 @@ Deno.test("queued workouts with a timed cardio set block their time; lifting and
     { startedAtIso: start, durationSeconds: 600, exercises: [{ def: { muscle_group: "Cardio", metric_type: "bodyweight_reps" }, sets: [{}] }] },
   ]);
   assertEquals(windows, [{ startMs: T0, endMs: T0 + 30 * MIN }]);
+});
+
+// The catalog rows a fresh database gets: 0092's inserts and renames, plus
+// the HIIT row the import migration adds. A name missing here is a session
+// the RPC rejects on every sync.
+async function seededCardioNames(): Promise<Set<string>> {
+  const read = (f: string) => Deno.readTextFile(new URL(`../supabase/migrations/${f}`, import.meta.url));
+  const names = new Set<string>();
+  const cardio = await read("0092_cardio_exercises.sql");
+  for (const m of cardio.matchAll(/\('[^']*',\s*'([^']+)'\)/g)) names.add(m[1]); // renames: (old, new)
+  for (const m of cardio.matchAll(/\('([^']+)','Cardio','[^']+','(?:duration|distance_duration|resistance_duration)'\)/g)) names.add(m[1]);
+  const imp = await read("20261101120000_health_cardio_import.sql");
+  for (const m of imp.matchAll(/select '([^']+)', 'Cardio', '[^']+', '(?:duration|distance_duration|resistance_duration)'/g)) names.add(m[1]);
+  return names;
+}
+
+Deno.test("every exercise an import can name is a seeded, timed Cardio row", async () => {
+  const seeded = await seededCardioNames();
+  assertEquals(seeded.has("Outdoor Run") && seeded.has("Treadmill Run") && seeded.has("HIIT"), true, "parser found the seeds");
+  const missing = CARDIO_EXERCISES.filter((n) => !seeded.has(n));
+  assertEquals(missing, []);
+});
+
+Deno.test("a hike imports as an outdoor walk named Hike", () => {
+  const [hike] = planCardioImports([hk({ activityType: 24, endMs: T0 + 90 * MIN })], [], NOW);
+  assertEquals([hike.exercise, hike.name], ["Outdoor Walk", "Hike"]);
+  assertEquals(cardioKind({ hub: "health_connect", activityType: 37 })?.exercise, "Outdoor Walk");
+});
+
+Deno.test("only a row that can never land is skipped; a passing database error retries", () => {
+  assertEquals(importErrorAction({ code: "PGRST202", message: "Could not find the function public.import_health_cardio" }), "missing");
+  assertEquals(importErrorAction({ code: "22023", message: "no cardio exercise X" }), "skip");
+  assertEquals(importErrorAction({ code: "23505", message: "duplicate key" }), "skip");
+  // Timeouts, deadlocks, lost connections, overload: the same row lands next time.
+  for (const code of ["57014", "40001", "40P01", "08006", "53300", "55P03", "PGRST301", ""]) {
+    assertEquals(importErrorAction({ code, message: "x" }), "stop", code);
+  }
+  assertEquals(importErrorAction(new TypeError("Network request failed")), "stop");
 });
 
 Deno.test("only a workout logged in the app carries XP, so only it refunds XP on delete", () => {

@@ -56,7 +56,9 @@ const RUN: CardioKind = { exercise: 'Outdoor Run', label: 'Run', minMinutes: MIN
 const TREADMILL_RUN: CardioKind = { exercise: 'Treadmill Run', label: 'Treadmill run', minMinutes: MIN_MINUTES };
 const WALK: CardioKind = { exercise: 'Outdoor Walk', label: 'Walk', minMinutes: WALK_MIN_MINUTES };
 const TREADMILL_WALK: CardioKind = { exercise: 'Treadmill Walk', label: 'Treadmill walk', minMinutes: WALK_MIN_MINUTES };
-const HIKE: CardioKind = { exercise: 'Trail Running/Walking', label: 'Hike', minMinutes: WALK_MIN_MINUTES };
+// Outdoor Walk, not the imported dataset's 'Trail Running/Walking': only rows
+// a migration creates are sure to exist (the catalog test checks every name).
+const HIKE: CardioKind = { exercise: 'Outdoor Walk', label: 'Hike', minMinutes: WALK_MIN_MINUTES };
 const RIDE: CardioKind = { exercise: 'Cycling', label: 'Ride', minMinutes: MIN_MINUTES };
 const BIKE: CardioKind = { exercise: 'Stationary Bike', label: 'Bike', minMinutes: MIN_MINUTES };
 const SWIM: CardioKind = { exercise: 'Swimming', label: 'Swim', minMinutes: MIN_MINUTES };
@@ -108,6 +110,12 @@ const HEALTH_CONNECT_KINDS: Record<number, CardioKind> = {
   69: STAIRS, // STAIR_CLIMBING_MACHINE
   36: HIIT, // HIGH_INTENSITY_INTERVAL_TRAINING
 };
+
+/** Every catalog exercise an import can name; each must exist in the catalog. */
+export const CARDIO_EXERCISES: readonly string[] = [...new Set([
+  ...Object.values(HEALTHKIT_KINDS).flatMap((k) => [k.outdoor, ...(k.indoor ? [k.indoor] : [])]),
+  ...Object.values(HEALTH_CONNECT_KINDS),
+].map((k) => k.exercise))];
 
 /** The cardio kind for a hub workout, or null when it is not cardio. */
 export function cardioKind(w: Pick<HubWorkout, 'hub' | 'activityType' | 'indoor'>): CardioKind | null {
@@ -211,6 +219,25 @@ export function queuedCardioWindows(queue: QueuedWorkoutLike[]): BusyWindow[] {
     out.push({ startMs, endMs: startMs + Math.max(0, q.durationSeconds) * 1000 });
   }
   return out;
+}
+
+/**
+ * What the import does after import_health_cardio fails for one row:
+ *   'missing' - the database has no such function yet: stop, import nothing;
+ *   'skip'    - this row can never land (SQLSTATE class 22 data exception or
+ *               23 integrity violation): move on to the next one;
+ *   'stop'    - anything else, timeouts, deadlocks and lost connections
+ *               included: stop and keep the cursor, so the next sync retries.
+ *               Skipping those would advance the cursor past a row that would
+ *               have landed.
+ */
+export type ImportErrorAction = 'missing' | 'skip' | 'stop';
+
+export function importErrorAction(err: unknown): ImportErrorAction {
+  const e = err as { code?: string; message?: string } | null;
+  const code = typeof e?.code === 'string' ? e.code : '';
+  if ((code === 'PGRST202' || code === '42883') && (e?.message ?? '').includes('import_health_cardio')) return 'missing';
+  return /^2[23][0-9A-Z]{3}$/.test(code) ? 'skip' : 'stop';
 }
 
 /** "From Apple Health" / "From Health Connect" for a workouts.source, or null for in-app. */

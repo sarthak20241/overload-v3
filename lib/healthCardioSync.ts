@@ -15,7 +15,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getHealthAdapter } from './healthSync';
-import { planCardioImports, queuedCardioWindows, type BusyWindow } from './healthCardio';
+import { importErrorAction, planCardioImports, queuedCardioWindows, type BusyWindow } from './healthCardio';
 import { getPendingWorkouts } from './syncQueue';
 import { getActiveWorkoutSnapshot } from './activeWorkoutPersistence';
 import { track } from './analytics';
@@ -45,18 +45,6 @@ async function setCursor(userId: string, ms: number): Promise<void> {
   } catch {
     // A lost cursor re-reads a wider window next time; the RPC is idempotent.
   }
-}
-
-/** The database has no import_health_cardio yet (app shipped before the migration). */
-function missingRpc(err: unknown): boolean {
-  const e = err as { code?: string; message?: string } | null;
-  return !!e && (e.code === 'PGRST202' || e.code === '42883') && (e.message ?? '').includes('import_health_cardio');
-}
-
-/** A Postgres error (5-char SQLSTATE) is about this row; anything else is the network. */
-function isDataError(err: unknown): boolean {
-  const code = (err as { code?: string } | null)?.code;
-  return typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code);
 }
 
 /** In-app cardio the server cannot see yet: queued workouts and the live session. */
@@ -94,6 +82,11 @@ export async function syncHealthCardio(
   const plan = planCardioImports(workouts, localBusyWindows(userId, now.getTime()), now.getTime());
   let imported = 0;
   for (const p of plan) {
+    // A null result is a row the RPC passed over: already imported, deleted
+    // after an import, or overlapping a cardio workout the server already
+    // has. The last one claims the hub id on purpose: the run counted once
+    // through that workout, and if the user later deletes it they deleted
+    // that session, so the watch copy must not come back in its place.
     const { data, error } = await supabase.rpc('import_health_cardio', {
       p_source: p.source,
       p_external_id: p.externalId,
@@ -104,9 +97,10 @@ export async function syncHealthCardio(
       p_distance_m: p.distanceM,
     });
     if (error) {
-      if (missingRpc(error)) return null;
-      // Offline mid-run: stop, keep the cursor, and the next sync retries.
-      if (!isDataError(error)) {
+      const action = importErrorAction(error);
+      if (action === 'missing') return null;
+      // Offline or a passing database error: stop, keep the cursor, retry next sync.
+      if (action === 'stop') {
         if (imported > 0) track('health_cardio_imported', { count: imported, hub: adapter.hub });
         return { imported };
       }
