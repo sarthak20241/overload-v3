@@ -170,6 +170,9 @@ export type AnalyticsEvent =
   | 'parse_proposal_accepted'
   | 'parse_proposal_edited'
   | 'parse_proposal_rejected'
+  | 'meal_wait_closed'
+  | 'meal_ready_shown'
+  | 'meal_result_opened'
   | 'parse_tier_changed'
   | 'auto_log_toggled'
   | 'food_searched'
@@ -212,6 +215,11 @@ export type AnalyticsEvent =
   | 'coach_failed'
   | 'coach_new_chat_started'
   | 'coach_generation_stopped'
+  // A sheet closed while Drona worked, kept to finish out of sight.
+  | 'coach_kept_working'
+  // Drona finished out of sight: a notification sent (or not), and opened.
+  | 'ready_notice_sent'
+  | 'ready_notice_opened'
   | 'coach_message_copied'
   | 'food_text_reused'
   | 'coach_message_select_opened'
@@ -239,6 +247,8 @@ export type AnalyticsEvent =
   | 'phase_auto_build_failed'
   | 'next_phase_card_shown'
   | 'next_phase_card_tapped'
+  // The phase-ready popup put off: it flew into the dashboard bell.
+  | 'next_phase_ready_later'
   // The dashboard's getting-started checklist (lib/startGuide.ts).
   | 'start_guide_shown'
   | 'start_guide_step_tapped'
@@ -265,6 +275,9 @@ export type AnalyticsEvent =
   // ── Money ────────────────────────────────────────────────────────────────
   | 'limit_reached'
   | 'upgrade_prompt_tapped'
+  | 'invite_opened'
+  | 'invite_redeemed'
+  | 'invite_failed'
   | 'milestone_upsell_shown'
   | 'milestone_upsell_snoozed'
   | 'paywall_viewed'

@@ -1008,6 +1008,19 @@ export default function ProfileScreen() {
                   </>
                 )}
               </TouchableOpacity>
+              {/* Invite codes give a free month (lib/invite.ts). Not offered
+                  to a paying user, whom redeem_invite() would refuse. */}
+              {!planUnknown && !isPro && (
+                <TouchableOpacity
+                  onPress={() => router.push('/invite' as any)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Enter an invite code"
+                  style={styles.inviteLink}
+                >
+                  <Feather name="gift" size={12} color={C.textMuted} />
+                  <Text style={[styles.inviteLinkText, { color: C.textMuted }]}>Have an invite code?</Text>
+                </TouchableOpacity>
+              )}
             </View>
           )}
 
@@ -1835,6 +1848,14 @@ const styles = StyleSheet.create({
   planBenefitText: { flex: 1, fontSize: FontSize.xs, fontWeight: FontWeight.medium },
   planCardAction: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   planCardActionText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
+  inviteLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: Spacing.md,
+  },
+  inviteLinkText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
   proBadge: {
     flexDirection: 'row',
     alignItems: 'center',

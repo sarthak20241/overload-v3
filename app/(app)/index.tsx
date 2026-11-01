@@ -38,8 +38,9 @@ import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 import { DronaCardPopup } from '@/components/coach/DronaCardPopup';
 import { useToast } from '@/components/ui/Toast';
+import { InboxBell } from '@/components/ui/InboxBell';
 import {
-  currentWeekStart, deferCard, movesFor, readCheckinCard, readMomentCard, readWeeklyCard, requestWeeklyCard, setCardStatus,
+  countWaitingCards, currentWeekStart, deferCard, movesFor, readCheckinCard, readMomentCard, readWeeklyCard, requestWeeklyCard, setCardStatus,
   type SavedDronaCard,
 } from '@/lib/dronaCard';
 import { useWorkout } from '@/hooks/useWorkout';
@@ -322,6 +323,20 @@ export default function DashboardScreen() {
   // until the app restarted. The first focus is the mount, which already loads.
   const [focusTick, setFocusTick] = useState(0);
   const toast = useToast();
+  // The bell's share of server cards: the ones put off with Later.
+  const [cardsWaiting, setCardsWaiting] = useState(0);
+  // Bumped by a Later: a count read that started before it is stale, and
+  // must not overwrite the +1 (the next read sees the deferred card).
+  const countGenRef = useRef(0);
+  useEffect(() => {
+    if (!user?.id || isGuestSession) { setCardsWaiting(0); return; }
+    let live = true;
+    const gen = ++countGenRef.current;
+    void countWaitingCards(supabase, user.id).then((n) => {
+      if (live && gen === countGenRef.current) setCardsWaiting(n);
+    });
+    return () => { live = false; };
+  }, [user?.id, isGuestSession, supabase, focusTick]);
   useEffect(() => {
     if (focusTick > 0) reloadFuel();
   }, [focusTick, reloadFuel]);
@@ -728,11 +743,14 @@ export default function DashboardScreen() {
     track('drona_card_deferred', { kind: popupCard.kind, topic: popupCard.topic });
     const before = popupCard;
     setPopupCard({ ...popupCard, deferred_at: new Date().toISOString() });
+    countGenRef.current += 1;
+    setCardsWaiting((n) => n + 1);
     void deferCard(supabase, popupCard.id).then((result) => {
       // Not saved: the server row is still undeferred, so the popup would be
       // back on the next open with no explanation. Say so now instead.
       if (result !== 'ok') {
         setPopupCard(before);
+        setCardsWaiting((n) => Math.max(0, n - 1));
         toast.error('Could not save that for later. Try again.');
       }
     });
@@ -1111,6 +1129,16 @@ export default function DashboardScreen() {
             <XPBar xp={userXP} />
           </View>
           <View style={styles.headerRight}>
+            {/* What Drona left for later: Later cards and finished builds. */}
+            {!isGuestSession && user?.id ? (
+              <InboxBell
+                cardsWaiting={cardsWaiting}
+                onPress={() => {
+                  track('drona_inbox_opened', { from: 'dashboard' });
+                  router.push({ pathname: '/(app)/from-drona', params: { from: 'dashboard' } } as any);
+                }}
+              />
+            ) : null}
             {/* Goal & Plan entry (replaces the redundant Start button — a workout
                 still starts from the center ▶ tab and the coach's Quick Workout).
                 Leads to the coach-built program and this phase's targets. */}
@@ -1168,6 +1196,10 @@ export default function DashboardScreen() {
               accessKnown={coachAccess.state !== 'unknown'}
               getToken={getToken}
               onReview={(seq) => router.push({ pathname: '/goal-plan', params: { build: 'phase', seq: String(seq), auto: '1' } } as any)}
+              // The "ready" popup waits its turn: never over another popup,
+              // the coach sheet or a live workout.
+              popupAllowed={screenFocused && !splitPromptShowing && !workoutActive && !aiCoachOpen
+                && !(popupCard && popupCard.status === 'pending' && !popupCard.deferred_at)}
               onUpgrade={() => router.push('/upgrade' as any)}
             />
         ) : null}

@@ -1,8 +1,13 @@
 /**
- * The user's food-parse tier: Quick (fast mode, estimate-first, the default),
- * Thorough (the full catalog + decide pipeline), or Precise (Pro: Drona reads
- * the product's real numbers off the web, cross-checks two sources, and banks
- * the answer so the next log of the same food is free and instant).
+ * The user's food-parse tier: Quick (fast mode, estimate-first, the default)
+ * or Precise (Pro: Drona reads the product's real numbers off the web,
+ * cross-checks two sources, and banks the answer so the next log of the same
+ * food is free and instant).
+ *
+ * There used to be a third, Thorough (the full catalog + decide pipeline with
+ * no speed field). It is no longer offered: a device that still stores it
+ * reads as Quick. Logged rows keep their 'thorough' tier label; only the pick
+ * is gone.
  *
  * Sticky per device via AsyncStorage, guestMode's idiom: the default is the
  * ABSENCE of the key, so a fresh install, a cleared cache, or a storage error
@@ -14,45 +19,66 @@
  * remembered "you were Pro" would strand a lapsed subscriber on a tier the
  * server now refuses. The stored value is only what the user asked for; who is
  * allowed to have it is read live from useCoachAccess at the call site
- * (effectiveParseSpeed), which degrades Precise to Thorough rather than letting
+ * (effectiveParseSpeed), which degrades Precise to Quick rather than letting
  * a stale preference turn into a 402 the user cannot log through.
+ *
+ * Two screens pick the tier (the Nutrition food box and the food search), so
+ * the last pick is also kept in memory: a screen that comes back into focus
+ * reads it at once (peekParseSpeed) instead of waiting on storage while a
+ * hand-off from the other screen is already parsing.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export type ParseSpeed = 'quick' | 'thorough' | 'precise';
+export type ParseSpeed = 'quick' | 'precise';
 
 const KEY = 'overload.parseSpeed';
 
 /** What each tier is called and does, one short line each. Shared by the
- *  tier sheet and the food search's "Log it with Drona" row, so the two never
- *  describe the same mode in different words. */
+ *  tier sheet and the food search's mode switch, so the two never describe
+ *  the same mode in different words. */
 export const PARSE_SPEED_COPY: Record<ParseSpeed, { title: string; sub: string }> = {
   quick: { title: 'Quick', sub: 'Fast estimate from your words.' },
-  thorough: { title: 'Thorough', sub: 'Checks each food against our catalog.' },
   precise: { title: 'Precise', sub: 'Reads the label. Best for packaged food.' },
 };
 
 /** Wire value for a tier. The stored keys are the words the UI uses; the
- *  server's are the pipeline's own ('fast' / 'super', with smart being the
- *  absence of the field). Keeping the two vocabularies apart means renaming a
- *  tier in the sheet never silently changes which pipeline runs. */
-export function parseSpeedWire(v: ParseSpeed): 'fast' | 'super' | null {
-  if (v === 'quick') return 'fast';
-  if (v === 'precise') return 'super';
-  return null;
+ *  server's are the pipeline's own ('fast' / 'super'). Keeping the two
+ *  vocabularies apart means renaming a tier in the sheet never silently
+ *  changes which pipeline runs. */
+export function parseSpeedWire(v: ParseSpeed): 'fast' | 'super' {
+  return v === 'precise' ? 'super' : 'fast';
+}
+
+let _last: ParseSpeed | null = null;
+/** Bumped by every pick. A storage read that started before a pick must not
+ *  write its older value over it when it resolves. */
+let _picks = 0;
+
+/** The last tier read or picked in this app run, or null before any. */
+export function peekParseSpeed(): ParseSpeed | null {
+  return _last;
 }
 
 export async function getParseSpeed(): Promise<ParseSpeed> {
+  const picks = _picks;
+  let read: ParseSpeed;
   try {
     const v = await AsyncStorage.getItem(KEY);
-    return v === 'thorough' || v === 'precise' ? v : 'quick';
+    // A stored 'thorough' (the retired tier) falls through to Quick here.
+    read = v === 'precise' ? 'precise' : 'quick';
   } catch {
     // Fail open to the default tier, never block logging on storage.
-    return 'quick';
+    read = 'quick';
   }
+  // A pick landed while this read ran: it is newer than what storage held.
+  if (picks !== _picks && _last) return _last;
+  _last = read;
+  return read;
 }
 
 export async function setParseSpeed(v: ParseSpeed): Promise<void> {
+  _picks += 1;
+  _last = v;
   try {
     if (v === 'quick') await AsyncStorage.removeItem(KEY);
     else await AsyncStorage.setItem(KEY, v);
@@ -62,10 +88,8 @@ export async function setParseSpeed(v: ParseSpeed): Promise<void> {
 }
 
 /** Which tier actually runs, given what the user picked and what they are
- *  entitled to. Precise without Pro falls back to Thorough: the closest tier we
- *  can honour, and the one that keeps the log going. Deliberately NOT a silent
- *  drop to Quick - someone who asked for the most careful answer should not be
- *  handed the fastest one. */
+ *  entitled to. Precise without Pro falls back to Quick, the one tier left,
+ *  so the log still goes through. */
 export function effectiveParseSpeed(picked: ParseSpeed, canUsePrecise: boolean): ParseSpeed {
-  return picked === 'precise' && !canUsePrecise ? 'thorough' : picked;
+  return picked === 'precise' && !canUsePrecise ? 'quick' : picked;
 }
