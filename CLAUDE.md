@@ -88,6 +88,7 @@ deno test --allow-all --unstable-sloppy-imports --import-map=lib/coachConversati
 deno test --allow-all lib/backgroundHolds.test.ts # iOS background time: shared task, a hung hold lets go by itself
 deno test --allow-all lib/homeLogHint.test.ts  # home log button: the pill's words, and when it stops
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/parseSpeed.test.ts # food log mode: Quick / Precise, a stored Thorough reads as Quick
+deno test --allow-all lib/sheetText.test.ts     # text boxes in Portal sheets: late owner values never put old text back (Android letter drops)
 ```
 
 There are no configured lint or build scripts.
