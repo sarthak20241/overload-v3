@@ -82,6 +82,42 @@ function messagesToText(messages: unknown[]): string {
   return parts.join("\n\n");
 }
 
+/**
+ * The same conversation as content blocks, for a request that carries images
+ * (Precise's label pictures). Text is flattened as messagesToText does; every
+ * image block is kept in place, so a picture still follows the words that
+ * name it. Sent on stdin as one stream-json user message, the only way the
+ * CLI takes an image.
+ */
+function messagesToBlocks(messages: unknown[]): unknown[] {
+  const blocks: unknown[] = [];
+  for (const m of messages) {
+    if (!m || typeof m !== "object") continue;
+    const { role, content } = m as { role: string; content: unknown };
+    const label = role === "assistant" ? "Assistant" : "User";
+    if (typeof content === "string") {
+      blocks.push({ type: "text", text: `${label}: ${content}` });
+      continue;
+    }
+    if (!Array.isArray(content)) continue;
+    for (const b of content) {
+      const block = b as Record<string, unknown>;
+      if (block?.type === "image") blocks.push(block);
+      else {
+        const text = messagesToText([{ role, content: [block] }]);
+        if (text) blocks.push({ type: "text", text });
+      }
+    }
+  }
+  return blocks;
+}
+
+const hasImages = (messages: unknown[]): boolean =>
+  messages.some((m) =>
+    Array.isArray((m as { content?: unknown })?.content) &&
+    ((m as { content: unknown[] }).content).some((b) => (b as { type?: string })?.type === "image")
+  );
+
 /** Pull the JSON object out of the CLI's reply, fenced or not. */
 function extractJson(text: string): unknown {
   const trimmed = text.trim();
@@ -193,16 +229,26 @@ export function makeClaudeCliFetch(model: string): typeof fetch {
         ];
     const system = [systemToText(payload.system), "", ...contract].filter(Boolean).join("\n");
 
+    const messages = payload.messages ?? [];
+    const images = hasImages(messages);
     const args = [
       "-p",
-      "--output-format", "json",
+      ...(images
+        ? ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
+        : ["--output-format", "json"]),
       "--model", model,
       "--system-prompt", system,
       "--max-turns", "1",
       "--disallowed-tools", "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,Task,TodoWrite",
     ];
 
-    const { code, stdout, stderr } = await runClaude(args, messagesToText(payload.messages ?? []));
+    const stdin = images
+      ? JSON.stringify({ type: "user", message: { role: "user", content: messagesToBlocks(messages) } }) + "\n"
+      : messagesToText(messages);
+    const { code, stdout: raw, stderr } = await runClaude(args, stdin);
+    // stream-json prints one event per line; the last is the same envelope
+    // --output-format json prints.
+    const stdout = images ? (raw.trim().split("\n").pop() ?? "") : raw;
 
     // Parse stdout FIRST, even on a nonzero exit: the CLI reports auth and API
     // failures in the JSON envelope's `result` and leaves stderr empty, so

@@ -63,8 +63,15 @@ export type TavilySearchResult =
   | { ok: true; results: TavilyResult[]; credits: number }
   | { ok: false; failure: TavilyFailure; detail: string; credits: number };
 
+export interface TavilyPage {
+  url: string;
+  raw_content: string;
+  /** Image urls on the page, in page order, when include_images was asked for. */
+  images?: string[];
+}
+
 export type TavilyExtractResult =
-  | { ok: true; pages: { url: string; raw_content: string }[]; credits: number }
+  | { ok: true; pages: TavilyPage[]; credits: number }
   | { ok: false; failure: TavilyFailure; detail: string; credits: number };
 
 function failureFor(status: number): TavilyFailure {
@@ -178,15 +185,35 @@ export async function tavilySearch(
  * Cleaned text of specific pages, for results Jev judged relevant whose search
  * text held no nutrition panel. Billed per 5 successful pages (basic), so up to
  * 5 urls cost 1 credit.
+ *
+ * includeImages also returns each page's image urls. A page that came back
+ * with images and no text is kept then: brand sites and Amazon often print the
+ * label only as a picture (seen live on tooyumm.com, 2026-10-18).
  */
-export async function tavilyExtract(urls: string[], deps: TavilyDeps): Promise<TavilyExtractResult> {
+export async function tavilyExtract(
+  urls: string[],
+  deps: TavilyDeps,
+  opts: { includeImages?: boolean } = {},
+): Promise<TavilyExtractResult> {
   const list = urls.slice(0, 5);
   if (list.length === 0) return { ok: true, pages: [], credits: 0 };
-  const res = await post(TAVILY_EXTRACT_URL, { urls: list, extract_depth: "basic", format: "text", timeout: 20 }, deps);
+  const res = await post(TAVILY_EXTRACT_URL, {
+    urls: list,
+    extract_depth: "basic",
+    format: "text",
+    timeout: 20,
+    ...(opts.includeImages ? { include_images: true } : {}),
+  }, deps);
   if (!res.ok) return { ...res, credits: 0 };
   const raw = Array.isArray(res.data.results) ? res.data.results : [];
-  const pages = raw
-    .map((p: any) => ({ url: str(p?.url), raw_content: str(p?.raw_content) }))
-    .filter((p: { url: string; raw_content: string }) => p.url && p.raw_content.trim());
+  const pages: TavilyPage[] = raw
+    .map((p: any) => ({
+      url: str(p?.url),
+      raw_content: str(p?.raw_content),
+      ...(opts.includeImages
+        ? { images: Array.isArray(p?.images) ? p.images.filter((i: unknown) => typeof i === "string" && i) : [] }
+        : {}),
+    }))
+    .filter((p: TavilyPage) => p.url && (p.raw_content.trim() || (p.images?.length ?? 0) > 0));
   return { ok: true, pages, credits: pages.length > 0 ? Math.ceil(pages.length / 5) : 0 };
 }

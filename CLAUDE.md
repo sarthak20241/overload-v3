@@ -22,6 +22,13 @@ EVAL_VIA_CLI=1 npx tsx scripts/parse-meal-eval/run.ts
 # Wrong-catalog-row set (Thorough): CASE_SET=thorough-match, and
 # THOROUGH_MATCH_MODE=on (or shadow) to run Jev's row check (needs JEV_API_KEY).
 
+# Precise on branded packets: estimate lines with the label-picture read off
+# vs on (EVAL_WEB_IMAGES=1, PRECISE_WEB_IMAGES=on in production). Needs
+# TAVILY_API_KEY + JEV_API_KEY.
+EVAL_VIA_CLI=1 CASE_SET=branded-oats npx tsx scripts/parse-meal-eval/run.ts
+# Cost and latency of the picture read per lookup: API key only, never the CLI.
+ANTHROPIC_API_KEY=sk-ant-... npx tsx scripts/web-images-probe/run.mts
+
 # Use the API key ONLY when the question is latency or token cost. The harness
 # warns that CLI timings are not comparable — they measure the CLI, not the
 # pipeline. Correctness and per-case pass/fail are identical either way.

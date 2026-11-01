@@ -27,6 +27,7 @@ import { searchFatSecret } from "../../supabase/functions/ai-coach/fatsecret";
 import { voyageRerank } from "../../supabase/functions/ai-coach/rerank";
 import { CASES, type EvalCase } from "./cases";
 import { THOROUGH_MATCH_CASES } from "./thoroughMatchCases";
+import { BRANDED_OATS_CASES } from "./brandedOatsCases";
 import { makeClaudeCliFetch } from "./claude-cli-fetch";
 
 // ── Env ─────────────────────────────────────────────────────────────────────
@@ -120,6 +121,18 @@ const THOROUGH_MATCH = (["shadow", "on"] as const)
 // server web_search tool. Spends Tavily credits; nothing is written to the
 // Precise cache (no preciseCachePut here).
 const BRAND_WEB = env("EVAL_BRAND_WEB") === "1" && !!env("TAVILY_API_KEY") && THOROUGH_MATCH !== "off";
+// CASE_SET=branded-oats runs Precise (mode "super") on the Tavily + Jev web
+// lookup, production's path. EVAL_WEB_IMAGES=1 adds the label-picture read
+// (PRECISE_WEB_IMAGES=on in production). Nothing is written to the Precise cache.
+const PRECISE = CASE_SET === "branded-oats";
+const WEB_IMAGES = PRECISE && env("EVAL_WEB_IMAGES") === "1";
+if (PRECISE && (!env("TAVILY_API_KEY") || !JEV_API_KEY)) {
+  console.error("CASE_SET=branded-oats needs TAVILY_API_KEY and JEV_API_KEY (env or .env.local).");
+  process.exit(1);
+}
+// Jev's own bill, which never reaches result.usage: tokens in, per call.
+let jevInTokens = 0;
+const onJevUsage = (u: { input_tokens: number }) => { jevInTokens += u.input_tokens; };
 async function embedQueryForEval(text: string): Promise<number[] | null> {
   if (!VOYAGE_API_KEY) return null;
   try {
@@ -279,6 +292,16 @@ const deps: ParseMealDeps = {
     }
     : undefined,
   ...(BRAND_WEB ? { webLookup: "tavily" as const, tavily: { apiKey: env("TAVILY_API_KEY"), timeoutMs: 20_000 } } : {}),
+  // Mirrors index.ts's Precise wiring (jev timeout, image budgets).
+  ...(PRECISE
+    ? {
+      webLookup: "tavily" as const,
+      tavily: { apiKey: env("TAVILY_API_KEY"), timeoutMs: 20_000 },
+      jev: { apiKey: JEV_API_KEY, timeoutMs: 5000, onUsage: onJevUsage },
+      searchCountry: "india",
+      webImages: WEB_IMAGES ? { timeoutMs: 6000, jevTimeoutMs: 15_000 } : null,
+    }
+    : {}),
   log: () => {},
 };
 
@@ -292,6 +315,9 @@ interface CaseOutcome {
   ms: number;
   tokens: number;
   summary: string;
+  /** Lines that ended as a model estimate, and all lines. */
+  estimates: number;
+  lines: number;
 }
 
 function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
@@ -384,11 +410,15 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const corpus = CASE_SET === "thorough-match" ? THOROUGH_MATCH_CASES : CASES;
+  const corpus = CASE_SET === "thorough-match"
+    ? THOROUGH_MATCH_CASES
+    : CASE_SET === "branded-oats"
+    ? BRANDED_OATS_CASES
+    : CASES;
   const cases = corpus.filter((c) => !ONLY || ONLY.has(c.id))
     .filter((c) => !c.expect.needsWebSearch || WEB_SEARCH);
   console.log(
-    `parse_meal eval: ${cases.length} cases (${CASE_SET}) | model=${MODEL} | web_search=${WEB_SEARCH ? "on" : "off"} | thorough_match=${THOROUGH_MATCH}${BRAND_WEB ? "+brand_web" : ""} | OFF backfill=DRY RUN\n`,
+    `parse_meal eval: ${cases.length} cases (${CASE_SET}) | model=${MODEL} | web_search=${WEB_SEARCH ? "on" : "off"} | thorough_match=${THOROUGH_MATCH}${BRAND_WEB ? "+brand_web" : ""}${PRECISE ? ` | precise web_images=${WEB_IMAGES ? "on" : "off"}` : ""} | OFF backfill=DRY RUN\n`,
   );
 
   const outcomes: CaseOutcome[] = [];
@@ -414,7 +444,7 @@ async function main() {
         // FAST_MODE=on runs every case through the no-decide fast path, so the
         // whole corpus doubles as fast's accuracy eval. Follow-ups carry
         // previousItems, so runParseMeal ignores the mode there by design.
-        mode: (env("FAST_MODE") === "on" ? "fast" : null) as "fast" | null,
+        mode: (PRECISE ? "super" : env("FAST_MODE") === "on" ? "fast" : null) as "fast" | "super" | null,
         recentFoods: [],
         todayTotals: null,
         targets: { daily_calorie_target: 2400, protein_target_g: 140 },
@@ -479,6 +509,8 @@ async function main() {
         tiers,
         ms: Date.now() - started,
         tokens,
+        estimates: (result.parsed?.items ?? []).filter((i) => i.source === "estimate").length,
+        lines: result.parsed?.items.length ?? 0,
         summary: result.parsed
           ? result.parsed.items
             .map((i) => `${i.food_name} ${i.grams}g ${i.kcal}kcal/${i.protein_g}p [${i.source}]`)
@@ -488,7 +520,7 @@ async function main() {
     } catch (e) {
       outcomes.push({
         id: c.id, pass: false, failures: [`threw: ${String(e).slice(0, 160)}`],
-        tiers: [], ms: Date.now() - started, tokens: 0, summary: "",
+        tiers: [], ms: Date.now() - started, tokens: 0, summary: "", estimates: 0, lines: 0,
       });
     }
     // THIS case's outcome, found by id. Reading outcomes[length - 1] worked
@@ -524,6 +556,7 @@ async function main() {
             "web_panels",
             "web_read",
             "web_fallback",
+            "web_images",
             "search_rewrite",
             "brand_check",
           ].includes(String(st.tool))
@@ -570,6 +603,10 @@ async function main() {
   console.log("\n──────── summary ────────");
   console.log(`passed:        ${passed}/${outcomes.length}  (${declineCases} decline cases)`);
   console.log(`tier mix:      ${JSON.stringify(tierCounts)}`);
+  console.log(
+    `estimate lines: ${outcomes.reduce((a, o) => a + o.estimates, 0)} of ${outcomes.reduce((a, o) => a + o.lines, 0)}`,
+  );
+  if (jevInTokens > 0) console.log(`jev tokens in:  ${jevInTokens}`);
   console.log(`avg latency:   ${avgMs}ms`);
   console.log(`total tokens:  ${totalTokens} (in ${inTokens}, out ${outTokens})`);
   if (!VIA_CLI) {

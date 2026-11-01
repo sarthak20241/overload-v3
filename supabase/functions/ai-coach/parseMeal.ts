@@ -1074,6 +1074,11 @@ export interface ParseMealDeps {
   searchRewrite?: boolean;
   /** Jev, for judging which search results are about exactly this food. */
   jev?: JevDeps;
+  /** Precise on Tavily: read the label off the pages' pictures when their text
+   *  holds no panel (tavilyLookup.ts readLabelImages). Needs jev. Off unless
+   *  set (PRECISE_WEB_IMAGES=on): TypeSafe calls Jev's images not yet
+   *  production-ready, and any failure on that path is a plain miss. */
+  webImages?: { timeoutMs: number; jevTimeoutMs: number; fetchFn?: typeof fetch } | null;
   /** Tavily country boost ("india"). Used when resolveSearchCountry is absent. */
   searchCountry?: string | null;
   /** The country for THIS user's searches, from their time zone (see
@@ -3326,7 +3331,7 @@ async function webFindingFor(
   onStep?: (step: ParseStep) => void,
   onRenamed?: (name: string) => void,
   onNoLabel?: () => void,
-): Promise<(SuperFinding & { searched_as?: string | null }) | undefined> {
+): Promise<(SuperFinding & { searched_as?: string | null; sold_name?: string | null }) | undefined> {
   if (deps.webLookup === "tavily" && deps.tavily) {
     const country = deps.resolveSearchCountry
       ? await deps.resolveSearchCountry().catch(() => deps.searchCountry ?? null)
@@ -3334,6 +3339,7 @@ async function webFindingFor(
     const out = await runTavilyLookup({
       tavily: deps.tavily,
       jev: deps.jev ?? null,
+      images: deps.webImages ?? null,
       country,
       model: deps.model,
       log: deps.log,
@@ -3439,11 +3445,13 @@ export async function superLookupOne(
   // foodLabel, not a bare "brand name": extract reports brand "Parle" AND name
   // "Parle Hide and Seek biscuits", which put "Parle Parle ..." on the card
   // and into precise_cache.display_name (live, ai-coach v186, 2026-09-26).
-  // Found under a rewritten name: the card shows the product as it is sold, so
+  // Found under a rewritten name, or read off a label picture on a page that
+  // prints the product's name: the card shows the product as it is sold, so
   // the user can see which one we took. The row is saved under that name and
   // the user's words become its alias (below), so both hit it next time.
-  const display = finding.searched_as
-    ? foodLabel({ name: finding.searched_as, brand: item.brand ?? null })
+  const soldAs = finding.searched_as ?? finding.sold_name ?? null;
+  const display = soldAs
+    ? foodLabel({ name: soldAs, brand: item.brand ?? null })
     : foodLabel(item);
   // The pages' brand when extract left it inside the name (brandFromPages):
   // one value for the cache row and for this turn's candidate.
@@ -3455,8 +3463,8 @@ export async function superLookupOne(
   // "<real name>" hit one row, and the row's name never claims to be the nickname.
   // A rewritten search keeps the line's preparation in its key too, or a cooked
   // and a dry line rewritten to the same name would share one row again.
-  const rowKey = finding.searched_as
-    ? itemCacheKey({ name: finding.searched_as, brand: item.brand, prep: item.prep })
+  const rowKey = soldAs
+    ? itemCacheKey({ name: soldAs, brand: item.brand, prep: item.prep })
     : itemCacheKey(item);
   if (deps.preciseCachePut) {
     // Never let a cache write cost the user their meal: the lookup already
@@ -3476,7 +3484,7 @@ export async function superLookupOne(
       source_note: finding.source_note,
     }).catch((e) => { deps.log?.(`[parse_meal] precise_cache write failed: ${String(e).slice(0, 120)}`); return null; });
     const userKey = itemCacheKey(item);
-    if (finding.searched_as && rowId && userKey !== rowKey && deps.preciseAliasPut) {
+    if (soldAs && rowId && userKey !== rowKey && deps.preciseAliasPut) {
       await deps.preciseAliasPut(userKey, rowId, null, "lookup")
         .catch((e) => deps.log?.(`[parse_meal] precise_alias write failed: ${String(e).slice(0, 120)}`));
     }

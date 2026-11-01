@@ -97,6 +97,19 @@ export interface JevDeps {
   /** Told what each answered call used, so the caller can price it. Jev was the
    *  one paid model that never reached token_usage_log. A throw here is ignored. */
   onUsage?: (usage: JevUsage) => void;
+  /** Lets a call carry images (the `assets` map and the
+   *  TypeSafe-Danger-Zone-Images header). Off unless the caller turns it on:
+   *  TypeSafe calls images "not yet production-ready", and the format may
+   *  change between releases. A call with assets while this is off is refused
+   *  here, without a request, as "images_off". */
+  images?: boolean;
+}
+
+/** One image for a call, by the reference string the state uses for it.
+ *  PNG or JPEG only, 280 to 1568 px per side: Jev rejects, it never resizes. */
+export interface JevImageAsset {
+  data_base64: string;
+  format: "png" | "jpeg";
 }
 
 /** What one answered Jev call used. Billed on input tokens ($0.042/M). */
@@ -126,7 +139,11 @@ export type JevFailure =
   | "overloaded"
   | "timeout"
   | "http_error"
-  | "bad_response";
+  | "bad_response"
+  /** Assets were passed while deps.images is off. No request was made. */
+  | "images_off"
+  /** 413: an image or the whole body was over a size limit. */
+  | "too_large";
 
 export type JevResult =
   | { ok: true; response: JevResponse }
@@ -143,6 +160,7 @@ const RETRY_BASE_MS = 250;
 function failureFor(status: number): JevFailure {
   if (status === 401 || status === 403) return "auth";
   if (status === 422 || status === 400) return "invalid_request";
+  if (status === 413) return "too_large";
   if (status === 429) return "rate_limited";
   if (status === 529 || status === 503) return "overloaded";
   return "http_error";
@@ -158,6 +176,9 @@ function failureFor(status: number): JevFailure {
  * Two sequential calls are only warranted when the second question's OPTIONS
  * depend on the first one's answer.
  *
+ * `assets` carries images, keyed by the reference string that stands for each
+ * one in the state. Only sent when deps.images is on (see JevDeps.images).
+ *
  * Never throws: a decision model that is down must degrade to the fallback,
  * never take a meal log with it.
  */
@@ -165,11 +186,21 @@ export async function askJev(
   state: string | Record<string, unknown> | unknown[],
   questions: Record<string, JevQuestion>,
   deps: JevDeps,
+  assets?: Record<string, JevImageAsset>,
 ): Promise<JevResult> {
   if (!deps.apiKey) return { ok: false, failure: "no_key", detail: "TYPESAFE_API_KEY not set" };
+  const withImages = !!assets && Object.keys(assets).length > 0;
+  if (withImages && !deps.images) return { ok: false, failure: "images_off", detail: "image assets need deps.images" };
 
   const fetchFn = deps.fetchFn ?? fetch;
-  const body = JSON.stringify({ state, model: deps.model ?? JEV_MODEL, questions });
+  const body = JSON.stringify({
+    state,
+    model: deps.model ?? JEV_MODEL,
+    questions,
+    ...(withImages
+      ? { assets: Object.fromEntries(Object.entries(assets!).map(([k, a]) => [k, { type: "image", ...a }])) }
+      : {}),
+  });
 
   let last: { failure: JevFailure; detail: string } = { failure: "http_error", detail: "no attempt made" };
 
@@ -190,6 +221,7 @@ export async function askJev(
         headers: {
           "Authorization": `Bearer ${deps.apiKey}`,
           "Content-Type": "application/json",
+          ...(withImages ? { "TypeSafe-Danger-Zone-Images": "true" } : {}),
         },
         body,
         signal: controller.signal,

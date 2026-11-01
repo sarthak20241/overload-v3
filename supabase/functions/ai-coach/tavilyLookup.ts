@@ -25,6 +25,18 @@
 import { type TavilyDeps, tavilyExtract, type TavilyResult, tavilySearch } from "./tavily.ts";
 import { asChoice, askJev, asNoul, type JevDeps, type JevQuestion } from "./jev.ts";
 import type { ReadingPer100, SourceReading } from "./preciseCache.ts";
+import {
+  assetRef,
+  type FetchedImage,
+  fetchImages,
+  IMAGE_FLOOR,
+  imageAssets,
+  imageCandidates,
+  imagePanelQuestions,
+  MAX_IMAGE_PAGES,
+  MAX_READ_IMAGES,
+  MAX_TOTAL_IMAGE_BYTES,
+} from "./webImages.ts";
 
 export interface WebFoodItem {
   name: string;
@@ -71,6 +83,9 @@ export interface WebFinding {
   /** Set when the label was found under a rewritten name (search_rewrite),
    *  not the user's words: the name the pages sell it as. */
   searched_as?: string | null;
+  /** The product's name as its page sells it, copied from the page title, when
+   *  the label was read off a picture on that page (soldNameFrom). */
+  sold_name?: string | null;
 }
 
 /** One result the first searches returned, for the search rewrite to learn from. */
@@ -105,6 +120,11 @@ export interface TavilyLookupDeps {
    *  food: reads what they DID return and proposes the name the product is
    *  sold under, plus searches for it. Absent: no second try. */
   suggestSearch?: (item: WebFoodItem, seen: SeenResult[]) => Promise<SearchRewrite | null>;
+  /** Read the label off the page's pictures when the pages Jev judged to be
+   *  this food carry no panel in their text. Needs jev. Absent or null: off,
+   *  the default, because TypeSafe calls Jev's images not production-ready.
+   *  Any failure on this path is a miss, the same as before it existed. */
+  images?: { fetchFn?: typeof fetch; timeoutMs: number; jevTimeoutMs: number } | null;
 }
 
 export interface LookupStep {
@@ -530,6 +550,237 @@ const READ_SYSTEM =
   "food.as_eaten, when present, is how the user ate it: set same_food false when the numbers you would copy are " +
   "for a different state of the food (the dry or raw panel of a food eaten cooked, or the reverse).";
 
+// ── The picture reader ──────────────────────────────────────────────────────
+
+const READ_IMAGE_TOOL = {
+  name: "report_label_pictures",
+  description: "Report the nutrition table printed in each picture, once, for every picture given.",
+  input_schema: {
+    type: "object",
+    properties: {
+      pages: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            ...READ_TOOL.input_schema.properties.pages.items.properties,
+            page_id: { type: "string", description: "The picture's page_id exactly as given." },
+            same_food: {
+              type: "boolean",
+              description: "True only if the picture is a nutrition table for exactly the food asked for and " +
+                "you can read its numbers clearly.",
+            },
+            product_name: {
+              type: ["string", "null"],
+              description: "The product's name as its page sells it, copied from the page title: leave out " +
+                "the pack size, price, site name and claims. Only words the title has.",
+            },
+          },
+          required: ["page_id", "same_food", "basis"],
+        },
+      },
+    },
+    required: ["pages"],
+  },
+};
+
+const READ_IMAGE_SYSTEM =
+  "You copy nutrition tables off pictures of product labels for a fitness app. Each picture comes from a web " +
+  "page about the food in food, and its page title is given. For each picture, report the numbers EXACTLY " +
+  "as printed, on the basis they are printed on. Do not convert, do not calculate, do not average and do not " +
+  "guess: the app does the arithmetic. If the table prints both per 100 g and per serving, report per 100 g. " +
+  "If it prints only per serving, report per_serving with the serving grams. Use null for any value the " +
+  "table does not print; 0 means it printed zero. Energy in kcal goes in kcal and energy in kJ goes in " +
+  "energy_kj, each only if printed. Ignore % daily value and %RDA columns. Set same_food false when the " +
+  "picture is not a nutrition table for this food, or when you cannot read a number clearly: never fill " +
+  "in a blurred digit. " +
+  "food.as_eaten, when present, is how the user ate it: set same_food false when the table is for a different " +
+  "state of the food (the dry or raw panel of a food eaten cooked, or the reverse).";
+
+/**
+ * The product's sold name from the reader, or null. Taken only when every
+ * word of it is on the page's own title or opening: copied, never written.
+ */
+export function soldNameFrom(name: unknown, pageText: string): string | null {
+  if (typeof name !== "string") return null;
+  const n = name.replace(/\s+/g, " ").trim();
+  if (n.length < 3 || n.length > 80) return null;
+  const words = (x: string) =>
+    x.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const have = new Set(words(pageText));
+  const want = words(n);
+  return want.length > 0 && want.every((w) => have.has(w)) ? n : null;
+}
+
+interface LabelImages {
+  readings: SourceReading[];
+  serving: { label: string; grams: number } | null;
+  pageBrands: string[];
+  soldName: string | null;
+  credits: number;
+}
+
+/**
+ * Find the label among the pictures of the pages Jev judged to be this food,
+ * and copy its numbers.
+ *
+ * 1. Tavily Extract lists each page's images (1 credit for up to 5 pages).
+ * 2. Code drops site furniture, asks Shopify and Amazon for a size inside
+ *    Jev's limits, fetches, and keeps only PNG/JPEG Jev would accept.
+ * 3. Jev, one request: "is this picture this food's nutrition table?" per
+ *    image. Kept at IMAGE_FLOOR, the best one per page.
+ * 4. The parse model copies the numbers off the kept pictures only.
+ * 5. readReport does the arithmetic and the physics, exactly as for text.
+ *
+ * Fails safe: any error on the way is an empty result, which the caller
+ * treats as a miss, the same answer as before this path existed.
+ */
+async function readLabelImages(
+  deps: TavilyLookupDeps,
+  item: WebFoodItem,
+  relevant: Relevant[],
+  steps: LookupStep[],
+): Promise<LabelImages> {
+  const result: LabelImages = { readings: [], serving: null, pageBrands: [], soldName: null, credits: 0 };
+  const trace: Record<string, unknown> = {};
+  const done = (extra: Record<string, unknown> = {}) => {
+    steps.push({ tool: "web_images", input: { pages: pages.length }, result: { ...trace, ...extra } });
+    return result;
+  };
+  const pages = relevant.slice(0, MAX_IMAGE_PAGES);
+  const opts = deps.images!;
+  try {
+    const ex = await tavilyExtract(pages.map((p) => p.r.url), deps.tavily, { includeImages: true });
+    result.credits += ex.credits;
+    if (!ex.ok) return done({ failure: ex.failure });
+
+    // Every candidate fetched at once; the byte budget is then spent in page
+    // order, so the most relevant page's pictures are the ones kept.
+    const lists = pages.map((pg) => imageCandidates(ex.pages.find((x) => x.url === pg.r.url)?.images ?? []));
+    trace.candidates = pages.map((pg, i) => ({ site: hostOf(pg.r.url), images: lists[i].length }));
+    const fetched = await Promise.all(lists.map((urls) =>
+      fetchImages(urls, { fetchFn: opts.fetchFn, timeoutMs: opts.timeoutMs, abortSignal: deps.tavily.abortSignal })
+    ));
+    const shown: Array<{ id: string; page: number; img: FetchedImage }> = [];
+    const skipped: Record<string, number> = {};
+    let bytes = 0;
+    fetched.forEach((list, page) => {
+      for (const f of list) {
+        if ("skip" in f) {
+          skipped[f.skip] = (skipped[f.skip] ?? 0) + 1;
+          continue;
+        }
+        if (bytes + f.bytes > MAX_TOTAL_IMAGE_BYTES) {
+          skipped.over_budget = (skipped.over_budget ?? 0) + 1;
+          continue;
+        }
+        bytes += f.bytes;
+        shown.push({ id: `i${shown.length + 1}`, page, img: f });
+      }
+    });
+    if (Object.keys(skipped).length) trace.skipped = skipped;
+    if (shown.length === 0) return done({ shown: 0 });
+
+    const jev: JevDeps = { ...deps.jev!, images: true, timeoutMs: opts.jevTimeoutMs };
+    const state: Record<string, unknown> = { food: foodState(item) };
+    for (const s of shown) {
+      const pg = pages[s.page].r;
+      state[`page_${s.id}`] = { site: hostOf(pg.url), title: pg.title };
+      state[`image_${s.id}`] = assetRef(s.id);
+    }
+    const res = await askJev(state, imagePanelQuestions(shown.map((s) => s.id)), jev, imageAssets(shown))
+      .catch(() => null);
+    if (!res || !res.ok) return done({ shown: shown.length, failure: res ? res.failure : "jev_threw" });
+    const scored = shown.map((s) => ({ ...s, p: asNoul(res.response.answers[s.id]) ?? 0 }));
+    trace.jev = {
+      model: res.response.model,
+      floor: IMAGE_FLOOR,
+      p: scored.map((s) => ({ id: s.id, site: hostOf(pages[s.page].r.url), p: round2(s.p) })),
+    };
+
+    const best = new Map<number, (typeof scored)[number]>();
+    for (const s of scored) {
+      if (s.p < IMAGE_FLOOR) continue;
+      const have = best.get(s.page);
+      if (!have || s.p > have.p) best.set(s.page, s);
+    }
+    const chosen = [...best.values()].sort((a, b) => b.p - a.p).slice(0, MAX_READ_IMAGES);
+    if (chosen.length === 0) return done({ chosen: 0 });
+
+    const data = await deps.callModel({
+      model: deps.model,
+      max_tokens: 1500,
+      system: READ_IMAGE_SYSTEM,
+      tools: [READ_IMAGE_TOOL],
+      tool_choice: { type: "tool", name: READ_IMAGE_TOOL.name },
+      messages: [{
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              food: foodState(item),
+              pictures: chosen.map((c) => {
+                const pg = pages[c.page];
+                return {
+                  page_id: c.id,
+                  site: hostOf(pg.r.url),
+                  title: pg.r.title,
+                  ...(pg.heading ? { top: pg.heading } : {}),
+                };
+              }),
+            }),
+          },
+          ...chosen.flatMap((c) => [
+            { type: "text", text: `Picture ${c.id}:` },
+            { type: "image", source: { type: "base64", media_type: `image/${c.img.format}`, data: c.img.base64 } },
+          ]),
+        ],
+      }],
+    });
+    const block = (data?.content ?? []).find((b: any) => b?.type === "tool_use" && b?.name === READ_IMAGE_TOOL.name);
+    const reports = parsePageReports(block?.input);
+    const names = new Map<string, unknown>(
+      (Array.isArray(block?.input?.pages) ? block.input.pages : [])
+        .map((p: any) => [String(p?.page_id), p?.product_name] as [string, unknown]),
+    );
+
+    const kept: unknown[] = [];
+    const dropped: unknown[] = [];
+    for (const c of chosen) {
+      const rep = reports.find((r) => r.page_id === c.id);
+      const pg = pages[c.page];
+      if (!rep) {
+        dropped.push({ site: hostOf(pg.r.url), why: "not_reported" });
+        continue;
+      }
+      const read = readReport(rep, pg.r.url);
+      if ("dropped" in read) {
+        dropped.push({ site: hostOf(pg.r.url), why: read.dropped });
+        continue;
+      }
+      result.readings.push(read.reading);
+      kept.push({ site: hostOf(pg.r.url), kcal: read.reading.per_100.kcal });
+      if (rep.brand) result.pageBrands.push(rep.brand);
+      if (!result.serving && rep.serving_label && rep.serving_grams && rep.serving_grams > 0 && rep.serving_grams <= 5000) {
+        result.serving = { label: rep.serving_label, grams: rep.serving_grams };
+      }
+      result.soldName ??= soldNameFrom(names.get(c.id), `${pg.r.title} ${pg.heading ?? ""}`);
+    }
+    return done({
+      shown: shown.length,
+      chosen: chosen.map((c) => ({ id: c.id, site: hostOf(pages[c.page].r.url), p: round2(c.p) })),
+      kept,
+      ...(dropped.length ? { dropped } : {}),
+      ...(result.soldName ? { sold_name: result.soldName } : {}),
+    });
+  } catch (e) {
+    result.readings = [];
+    result.soldName = null;
+    return done({ failure: "threw", detail: String(e).slice(0, 120) });
+  }
+}
+
 // ── Orchestration ───────────────────────────────────────────────────────────
 
 /** A page handed to the reader: the panel text Jev chose, whether it came from
@@ -556,6 +807,14 @@ interface Candidate {
   pieces: string[];
   /** Jev's first-look relevance, from title and snippet. */
   p: number | null;
+}
+
+/** A page Jev judged to be exactly this food, whether or not its text held a
+ *  panel: where the label pictures are looked for. */
+interface Relevant {
+  r: TavilyResult;
+  p: number;
+  heading: string | null;
 }
 
 function pageHeading(text: string | null | undefined): string | null {
@@ -726,7 +985,7 @@ async function selectPages(
   item: WebFoodItem,
   results: TavilyResult[],
   steps: LookupStep[],
-): Promise<{ pages: ReadPage[]; credits: number; seen: SeenResult[] }> {
+): Promise<{ pages: ReadPage[]; credits: number; seen: SeenResult[]; relevant: Relevant[] }> {
   let credits = 0;
   const cands: Candidate[] = [...results]
     .sort((a, b) => b.score - a.score)
@@ -771,7 +1030,8 @@ async function selectPages(
     const pages = top
       .map((c) => ({ r: c.r, panel: findPanelText(c.pieces.join(" ")), full: c.full, heading: c.heading }))
       .filter((x): x is ReadPage => !!x.panel);
-    return { pages, credits, seen: seenOf() };
+    // No Jev means no judge for the pictures either.
+    return { pages, credits, seen: seenOf(), relevant: [] };
   };
 
   const jev = deps.jev;
@@ -789,10 +1049,14 @@ async function selectPages(
     .filter((c) => (c.p ?? 0) >= UNSURE_FLOOR)
     .sort((a, b) => (b.p ?? 0) - (a.p ?? 0))
     .slice(0, MAX_PAGES_READ);
-  if (kept.length === 0) return { pages: [], credits, seen: seenOf() };
+  if (kept.length === 0) return { pages: [], credits, seen: seenOf(), relevant: [] };
   await fillBlind(kept);
   const withPieces = kept.filter((c) => c.pieces.length > 0);
-  if (withPieces.length === 0) return { pages: [], credits, seen: seenOf() };
+  // A page whose text has no nutrition words at all is never judged a second
+  // time, so its first look is the only relevance there is.
+  const firstLookRelevant = (list: Candidate[]): Relevant[] =>
+    list.filter((c) => (c.p ?? 0) >= RELEVANCE_FLOOR).map((c) => ({ r: c.r, p: c.p ?? 0, heading: c.heading }));
+  if (withPieces.length === 0) return { pages: [], credits, seen: seenOf(), relevant: firstLookRelevant(kept) };
 
   const second = await askSecondLook(jev, item, withPieces);
   if (!second) {
@@ -803,13 +1067,15 @@ async function selectPages(
       .map((c) => ({ r: c.r, panel: findPanelText(c.pieces.join(" ")), full: c.full, heading: c.heading }))
       .filter((x): x is ReadPage => !!x.panel);
     steps.push({ tool: "web_relevance", input: { mode: "jev", look: 2 }, result: { failure: "jev_failed", kept: pages.length } });
-    return { pages, credits, seen: seenOf() };
+    return { pages, credits, seen: seenOf(), relevant: firstLookRelevant(kept) };
   }
 
   const pages: Array<ReadPage & { p: number }> = [];
   const trace: unknown[] = [];
+  const relevant = firstLookRelevant(kept.filter((c) => c.pieces.length === 0));
   withPieces.forEach((c, i) => {
     const a = second[i];
+    if ((a.p ?? 0) >= RELEVANCE_FLOOR) relevant.push({ r: c.r, p: a.p ?? 0, heading: c.heading });
     const text = (a.p ?? 0) >= RELEVANCE_FLOOR ? textForReader(c.pieces, a) : null;
     if (text) pages.push({ r: c.r, panel: text, full: c.full, heading: c.heading, p: a.p ?? 0 });
     trace.push({
@@ -827,7 +1093,13 @@ async function selectPages(
     result: trace,
   });
   pages.sort((a, b) => b.p - a.p);
-  return { pages: pages.map(({ r, panel, full, heading }) => ({ r, panel, full, heading })), credits, seen: seenOf() };
+  relevant.sort((a, b) => b.p - a.p);
+  return {
+    pages: pages.map(({ r, panel, full, heading }) => ({ r, panel, full, heading })),
+    credits,
+    seen: seenOf(),
+    relevant,
+  };
 }
 
 /**
@@ -886,10 +1158,29 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
     const picked = await selectPages(deps, as, fresh, steps);
     credits += picked.credits;
     judged.push(...picked.seen);
+
+    /** The pages Jev judged to be this food gave no reading from their text:
+     *  look for the label among their pictures. Off unless deps.images. */
+    const fromPictures = async (): Promise<WebFinding | null> => {
+      if (!deps.images || !deps.jev || picked.relevant.length === 0) return null;
+      const got = await readLabelImages(deps, as, picked.relevant, steps);
+      credits += got.credits;
+      if (got.readings.length === 0) return null;
+      const sites = [...new Set(got.readings.map((r) => hostOf(r.ref)).filter(Boolean))];
+      return {
+        readings: got.readings,
+        serving_label: got.serving?.label ?? null,
+        serving_grams: got.serving?.grams ?? null,
+        source_note: sites.length ? `from ${sites.slice(0, 2).join(" and ")}`.slice(0, 80) : null,
+        brand: brandFromPages(item, got.pageBrands),
+        sold_name: got.soldName,
+      };
+    };
+
     const withPanel = picked.pages;
     if (withPanel.length === 0) {
       steps.push({ tool: "web_panels", input: { results: fresh.length }, result: { panels: 0 } });
-      return null;
+      return await fromPictures();
     }
 
     const byId = new Map(withPanel.map((p, i) => [`p${i + 1}`, p]));
@@ -952,7 +1243,7 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
         ...(dropped.length ? { dropped } : {}),
       },
     });
-    if (readings.length === 0) return null;
+    if (readings.length === 0) return await fromPictures();
 
     const sites = [...new Set(readings.map((r) => hostOf(r.ref)).filter(Boolean))];
     return {

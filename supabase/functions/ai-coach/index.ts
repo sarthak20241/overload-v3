@@ -905,6 +905,10 @@ const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on
 const USER_FOOD_MEMORY = (Deno.env.get("USER_FOOD_MEMORY") ?? "on").trim().toLowerCase() !== "off";
 // Precise on Tavily: one model-written retry search when the fixed ones miss.
 const SEARCH_REWRITE = (Deno.env.get("SEARCH_REWRITE") ?? "on").trim().toLowerCase() !== "off";
+// Precise on Tavily: read the label off the pages' pictures when their text has
+// no panel (Jev picks the label image, the parse model copies it). OFF unless
+// set to "on": TypeSafe calls Jev's images not production-ready yet.
+const PRECISE_WEB_IMAGES = (Deno.env.get("PRECISE_WEB_IMAGES") ?? "off").trim().toLowerCase() === "on";
 
 // Thorough's row check (thoroughMatch.ts): Jev asks whether the catalog row
 // IS the food named, and a "no" makes decide estimate. Same values and same
@@ -3236,6 +3240,7 @@ function makeParseDeps(
     preciseAliasPut: (aliasKey, rowId, confidence, source) => aliases.put(aliasKey, rowId, confidence, source),
     webLookup: PRECISE_WEB_PROVIDER,
     searchRewrite: SEARCH_REWRITE,
+    webImages: PRECISE_WEB_IMAGES ? { timeoutMs: 6000, jevTimeoutMs: 15_000 } : null,
     tavily: TAVILY_API_KEY ? { apiKey: TAVILY_API_KEY, timeoutMs: 20_000, log: (m) => console.log(m) } : undefined,
     // Time is not Precise's constraint, so relevance gets a longer leash than
     // the food-intent race does.
