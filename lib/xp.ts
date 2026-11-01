@@ -98,3 +98,19 @@ export function isMaxLevel(level: number): boolean {
 export function getXpForWorkout(sets: number, volume: number): number {
   return Math.floor(sets * 2 + volume / 100);
 }
+
+/**
+ * XP to award (or take back) when a synced workout is edited: the new XP less
+ * the XP its original version earned. A workout imported from Apple Health /
+ * Health Connect (workouts.source set) earned none and earns none on edit.
+ */
+export function editXpDelta(edit: {
+  source?: string | null;
+  newSetCount: number;
+  newVolumeKg: number;
+  baseSetCount: number;
+  baseVolumeKg: number;
+}): number {
+  if (edit.source != null) return 0;
+  return getXpForWorkout(edit.newSetCount, edit.newVolumeKg) - getXpForWorkout(edit.baseSetCount, edit.baseVolumeKg);
+}
