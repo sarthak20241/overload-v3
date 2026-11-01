@@ -79,7 +79,7 @@ import {
   wantsFoodAgent,
   cardQuestionFellToParse,
 } from "./foodIntent.ts";
-import { CARD_MAX_LINES, type CardLine, cardMayBeCut, readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
+import { type CardLine, cardMayBeCut, readFoodContext, readPreviousItems, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
 import { startHeartbeat } from "./streamHeartbeat.ts";
@@ -660,13 +660,13 @@ function startFoodAgent(args: {
   /** The meal waiting on a question; handed to the agent when it asked it. */
   pendingMeal: PendingFoodMeal | null;
   /** The card on screen, with what the correction path needs to rework it. */
-  card?: { lines: CardLine[]; previousText: string | null; previousWords: string | null; previousItems: PreviousItem[] } | null;
+  card?: { lines: CardLine[]; total: number | null; previousText: string | null; previousWords: string | null; previousItems: PreviousItem[] } | null;
   brandWeb: boolean;
   onStatus?: (label: string) => void;
 }): Promise<FoodAgentOutcome | null> {
   return args.intentP.then(async (d) => {
     // Open AND whole, the same rule index.ts applies (see `cardOpen` there).
-    const cardOpen = !!args.card?.lines.length && !cardMayBeCut(args.card.lines);
+    const cardOpen = !!args.card?.lines.length && !cardMayBeCut(args.card.lines, args.card.total);
     if (FOOD_INTENT_MODE !== "on" || !wantsFoodAgent(d, args.supportsCreate, cardOpen)) return null;
     if (!ANTHROPIC_API_KEY) return null;
     const t0 = Date.now();
@@ -680,6 +680,7 @@ function startFoodAgent(args: {
           ? { text: args.pendingMeal.text, question: args.pendingMeal.question }
           : null,
         card: args.card?.lines ?? null,
+        cardTotal: args.card?.total ?? null,
         savedHint: d?.savedMatch ?? null,
       },
       {
@@ -3540,50 +3541,13 @@ async function handleParseMealRequest(args: {
     : null;
   const baseFoodContext = readFoodContext(body.recent_turns, body.pending_meal);
   const recentTurns = baseFoodContext.recentTurns;
-  const previousItems: PreviousItem[] = Array.isArray(body.previous_items)
-    ? (body.previous_items as Array<Record<string, unknown>>).slice(0, CARD_MAX_LINES).flatMap((r) => {
-      const name = typeof r?.food_name === "string" ? r.food_name.trim().slice(0, 120) : "";
-      if (!name) return [];
-      const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
-      const src = r.source;
-      return [{
-        food_id: typeof r.food_id === "string" && r.food_id ? r.food_id : null,
-        food_name: name,
-        quantity: Number(r.quantity) > 0 ? Number(r.quantity) : 1,
-        serving_label: typeof r.serving_label === "string" ? r.serving_label.slice(0, 40) : "serving",
-        grams: Number(r.grams) > 0 ? Number(r.grams) : 0,
-        // Enough to hand an untouched line back exactly as the client had it.
-        kcal: n(r.kcal),
-        protein_g: n(r.protein_g),
-        carb_g: n(r.carb_g),
-        fat_g: n(r.fat_g),
-        fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : n(r.fiber_g),
-        source: src === "catalog" || src === "off" || src === "web" || src === "manual" || src === "estimate"
-          ? src
-          : "estimate",
-        assumption: typeof r.assumption === "string" && r.assumption.trim() ? r.assumption.trim().slice(0, 160) : null,
-        confidence: r.confidence === "high" || r.confidence === "low" ? r.confidence : "medium",
-        // The section the line is already in. Undefined for a client that
-        // predates full-day logging, and the parser falls back exactly as it
-        // did then, so an old build keeps working.
-        meal_type: r.meal_type === "breakfast" || r.meal_type === "lunch" ||
-            r.meal_type === "dinner" || r.meal_type === "snack"
-          ? r.meal_type
-          : undefined,
-        ...(typeof r.said_name === "string" && r.said_name.trim()
-          // Control characters stripped: it becomes a web search term and is
-          // shown back to extract inside previous_meal.
-          ? { said_name: r.said_name.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 100) }
-          : {}),
-        ...(r.research === true ? { research: true } : {}),
-      }];
-    })
-    : [];
+  const fromApp = readPreviousItems(body.previous_items, body.previous_items_total);
+  const previousItems: PreviousItem[] = fromApp.items;
   // The card on screen, as the router and the agent see it: the lines with
   // their numbers, so a message beside a card can be an edit, a question, a
   // save, or new food, and the agent can hand lines back exactly as they were.
-  // Same 12-line cap as previous_items above (CARD_MAX_LINES): the agent's
-  // remove_card_lines names lines by these numbers.
+  // The same list as previousItems, so the agent's remove_card_lines names
+  // lines by the numbers the correction path rebuilds from (CARD_MAX_LINES).
   const card: CardLine[] = previousItems.map((p) => ({
     food_name: p.food_name, quantity: p.quantity, serving_label: p.serving_label, grams: p.grams,
     kcal: p.kcal ?? 0, protein_g: p.protein_g, carb_g: p.carb_g, fat_g: p.fat_g,
@@ -3597,7 +3561,7 @@ async function handleParseMealRequest(args: {
   // of it, and with its card tools withheld an edit could only land as a
   // duplicate log_food line. Such a card stays on the parse path, exactly as a
   // message with no card does. Every check below reads this one value.
-  const cardOpen = card.length > 0 && !cardMayBeCut(card);
+  const cardOpen = card.length > 0 && !cardMayBeCut(card, fromApp.total);
 
   // "Just log it" (plan B). Honoured only with a uuid client_id (the
   // idempotency key), and never on a follow-up to a meal under review: a card
@@ -3835,7 +3799,7 @@ async function handleParseMealRequest(args: {
         const agentP = startFoodAgent({
           intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary,
           contextPromise, userClient, admin, userId, recentTurns, pendingMeal: foodContext.pendingMeal,
-          card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
+          card: card.length ? { lines: card, total: fromApp.total, previousText: previousText ?? null, previousWords, previousItems } : null,
           brandWeb: !parseFreeTier,
           // Builds that do not know this event skip it (dietData ignores
           // unknown events), so this needs no capability of its own.
@@ -4068,7 +4032,7 @@ async function handleParseMealRequest(args: {
       mode: wantsSuper ? "super" : wantsFast ? "fast" : null,
       savedMealsP, readDiary, contextPromise, userClient, admin, userId, recentTurns,
       pendingMeal: foodContext.pendingMeal,
-      card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
+      card: card.length ? { lines: card, total: fromApp.total, previousText: previousText ?? null, previousWords, previousItems } : null,
       brandWeb: !parseFreeTier,
     });
     const work = (async () => {

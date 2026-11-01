@@ -25,6 +25,7 @@ import {
   runParseMeal,
   STATES_FIX_NOTE,
 } from "./parseMeal.ts";
+import { readPreviousItems } from "./foodContext.ts";
 import type { MemoryFood } from "./userFoodMemory.ts";
 import type { PreciseCacheRow } from "./preciseCache.ts";
 
@@ -181,6 +182,46 @@ Deno.test("a hand-made line's own serving is not divided again in a fast correct
   });
   assert(r.tool_calls.includes("fast_correction"), r.tool_calls.join(","));
   assertEquals(r.parsed!.items[0].grams, 180);
+});
+
+Deno.test("the failure this prevents: a correction on a 15-line card dropped lines 13 to 15", async () => {
+  // A full day logged in one message can be up to 50 lines. The app sent only
+  // the first 12 and the server read only 12, and a correction rebuilds the
+  // whole card from what it was sent, so "make the momos 3" took the last
+  // three foods off the card without a word. Read here exactly as index.ts
+  // reads the request body.
+  const foods = ["momos", "poha", "chai", "banana", "rajma", "rice", "roti", "dal", "curd", "apple",
+    "paneer", "salad", "almonds", "dosa", "lassi"];
+  const sent = foods.map((name, i) => ({
+    food_id: null, food_name: name, quantity: 1, serving_label: i === 0 ? "2 pieces" : "serving", grams: 60,
+    kcal: 100 + i, protein_g: 1, carb_g: 1, fat_g: 1, source: "manual",
+  }));
+  const card = readPreviousItems(sent, sent.length);
+  assertEquals(card.items.length, 15, "the server must read every line the app sent");
+  assertEquals(card.total, 15);
+  const deps: ParseMealDeps = {
+    anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: false,
+    searchFoods: async () => [], backfillOffFood: async () => null, getFoodPer100: async () => null,
+    fetchFn: (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init!.body));
+      const tool = body.tool_choice?.name;
+      const input = tool === "extract_meal"
+        ? { declined: false, corrects_previous: true, meal_type_from_text: null, items: [
+          { name: "momos", brand: null, quantity: 3, unit: "2 pieces", prep: null, corrects_food_name: "momos" },
+        ] }
+        : { meal_type: "snack", drona_line: "ok", items: [] };
+      return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name: tool, input }] });
+    }) as typeof fetch,
+  };
+  const r = await runParseMeal(deps, {
+    text: "make the momos 3", previousText: foods.join(", "), localHour: 18, mealHint: "snack", recentFoods: [],
+    todayTotals: null, targets: null, previousItems: card.items,
+  });
+  assertEquals(r.parsed?.corrects_previous, true);
+  const names = r.parsed!.items.map((i) => i.food_name);
+  assertEquals(names.length, 15, `lines lost: ${foods.filter((f) => !names.includes(f)).join(", ")}`);
+  for (const f of ["almonds", "dosa", "lassi"]) assert(names.includes(f), `${f} must survive the correction`);
+  assertEquals(r.parsed!.items.find((i) => i.food_name === "momos")!.grams, 180);
 });
 
 Deno.test("a remembered portion is the user's one unit, never divided", async () => {

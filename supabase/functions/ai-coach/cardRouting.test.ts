@@ -12,7 +12,7 @@
 // save, or answer. Nothing here calls a real model or Jev.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { type CardLine, cardLines, cardMayBeCut, foodIntentState, readFoodContext } from "./foodContext.ts";
+import { CARD_MAX_LINES, type CardLine, cardLines, cardMayBeCut, foodIntentState, readFoodContext, readPreviousItems } from "./foodContext.ts";
 import { CARD_NOTE, type FoodAgentDeps, openingText, runFoodAgent, toolsFor } from "./foodAgent.ts";
 import {
   CARD_AGENT_FLOOR,
@@ -24,7 +24,7 @@ import {
   shouldRouteFoodIntent,
   wantsFoodAgent,
 } from "./foodIntent.ts";
-import type { ParseMealDeps, ParseMealResult } from "./parseMeal.ts";
+import { MAX_ITEMS_PER_PARSE, type ParseMealDeps, type ParseMealResult } from "./parseMeal.ts";
 
 const CARD: CardLine[] = [
   { food_name: "Rice, cooked, NFS", quantity: 150, serving_label: "g", grams: 150, kcal: 194, protein_g: 4, carb_g: 42, fat_g: 0.4, food_id: "r1", source: "catalog" },
@@ -258,11 +258,11 @@ Deno.test("a save marks estimated lines as estimated, and runs through the creat
   assertEquals(items.map((i) => i.estimated), [false, true, true, false]);
 });
 
-Deno.test("a card at the cap gets no card tools: it may be 12 of more, and the app sends no total", async () => {
-  // Known limit, pinned: the app cuts previous_items at 12 without a count, so
-  // a 30-line card arrives as 12. Editing it would drop lines 13+. At the cap
-  // the agent cannot tell, so it keeps only the plain tools and the parse
-  // path still runs. One under the cap is a whole card.
+Deno.test("an app with no count: a card at its old cap of 12 gets no card tools, it may be 12 of more", async () => {
+  // Builds before previous_items_total cut previous_items at 12 without a
+  // count, so a 30-line card arrives as 12. Editing it would drop lines 13+.
+  // With no count the agent cannot tell, so it keeps only the plain tools and
+  // the parse path still runs. One under that cap is a whole card.
   const twelve = Array.from({ length: 12 }, (_, i) => ({ ...CARD[0], food_name: `line ${i + 1}` }));
   assertEquals(toolsFor(twelve).some((t) => t.name === "remove_card_lines"), false);
   assertEquals(toolsFor(twelve.slice(0, 11)).some((t) => t.name === "remove_card_lines"), true);
@@ -274,10 +274,10 @@ Deno.test("a card at the cap gets no card tools: it may be 12 of more, and the a
   assertEquals(out.kind, "failed");
 });
 
-Deno.test("the failure this prevents: a card at the cap reached the agent with its card tools withheld", async () => {
+Deno.test("the failure this prevents: a card at the old cap reached the agent with its card tools withheld", async () => {
   // index.ts treats a card that may be cut as NOT open, so the policy keeps it
   // on the parse. Pinned here through the same switch that index.ts computes:
-  // cardOpen = card.length > 0 && !cardMayBeCut(card).
+  // cardOpen = card.length > 0 && !cardMayBeCut(card, total), total null here.
   const twelve = Array.from({ length: 12 }, (_, i) => ({ ...CARD[0], food_name: `line ${i + 1}` }));
   const cardOpen = twelve.length > 0 && !cardMayBeCut(twelve);
   assertEquals(cardOpen, false);
@@ -287,6 +287,46 @@ Deno.test("the failure this prevents: a card at the cap reached the agent with i
   // One line under the cap is whole, and the same edit goes to the agent.
   const eleven = twelve.slice(0, 11);
   assertEquals(wantsFoodAgent(d, true, eleven.length > 0 && !cardMayBeCut(eleven)), true);
+});
+
+Deno.test("the failure this prevents: a 15-line card arrived as 12, so the agent could not touch it", async () => {
+  // The app sends every line and the count; the server reads them all. The
+  // card is whole, its tools are offered, and line 14 means line 14.
+  const sent = Array.from({ length: 15 }, (_, i) => ({ ...CARD[0], food_name: `line ${i + 1}` }));
+  const { items, total } = readPreviousItems(sent, 15);
+  assertEquals(items.length, 15);
+  const card: CardLine[] = items.map((p) => ({ ...p, kcal: p.kcal ?? 0 }));
+  assertEquals(cardMayBeCut(card, total), false);
+  assertEquals(toolsFor(card, total).some((t) => t.name === "remove_card_lines"), true);
+  assertEquals(cardLines(card).length, 15, "the agent must see every line it can name");
+  const out = await runFoodAgent(
+    { text: "take line 14 off", defaultMeal: "lunch", card, cardTotal: total },
+    deps(scripted([[{ name: "remove_card_lines", input: { lines: [14], summary: "Took it off." } }]])),
+  );
+  assert(out.kind === "log", out.kind);
+  const names = out.result.parsed!.items.map((i) => i.food_name);
+  assertEquals(names.length, 14);
+  assertEquals(names.includes("line 14"), false);
+  assertEquals(names.includes("line 15"), true);
+});
+
+Deno.test("a card is cut when the app says it has more lines than it sent", () => {
+  const twelve = Array.from({ length: 12 }, (_, i) => ({ ...CARD[0], food_name: `line ${i + 1}` }));
+  // The real signal: a count above the lines sent.
+  assertEquals(cardMayBeCut(twelve, 30), true);
+  assertEquals(cardMayBeCut(twelve, 12), false);
+  // The server's own cap cuts too, and the count says so.
+  const sent = Array.from({ length: CARD_MAX_LINES + 5 }, (_, i) => ({ ...CARD[0], food_name: `line ${i + 1}` }));
+  const read = readPreviousItems(sent, sent.length);
+  assertEquals(read.items.length, CARD_MAX_LINES);
+  assertEquals(cardMayBeCut(read.items.map((p) => ({ ...p, kcal: p.kcal ?? 0 })), read.total), true);
+  // A count that is not a whole number is no count.
+  assertEquals(readPreviousItems(sent, "15").total, null);
+  assertEquals(readPreviousItems(sent, 2.5).total, null);
+});
+
+Deno.test("the card cap is the parse cap: any card one parse can make goes back whole", () => {
+  assertEquals(CARD_MAX_LINES, MAX_ITEMS_PER_PARSE);
 });
 
 Deno.test("a removal naming a line the card lacks says only what really came off", async () => {
