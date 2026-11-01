@@ -1143,3 +1143,11 @@ Deno.test("an estimate line takes a brand only when its name carries it, as a wh
   ], resolved);
   assertEquals(out.map((i) => i.brand), ["Too Yumm", undefined]);
 });
+
+Deno.test("a respelling the name cannot take is no respelling", () => {
+  // "Pintóle" is one edit from the saved brand "Pintola" once accents fold,
+  // but the raw name keeps the accent, so nothing in it can be replaced. The
+  // trace must not then say `respelled` for a name left as typed.
+  const foods = [{ ...food("Pintola protein oats", 380), brand: "Pintola" }];
+  assertEquals(respellForJev({ name: "Pintóle oats", brand: null }, foods), null);
+});

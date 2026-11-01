@@ -166,7 +166,7 @@ class FakeStore implements AutoLogStore {
   // unique index firing) cannot assign its replacement.
   insertEntries(
     rows: AutoLogEntryRow[],
-  ): Promise<{ ids: string[] } | { conflict: true } | { error: string }> {
+  ): Promise<{ ids: string[]; unordered?: true } | { conflict: true } | { error: string }> {
     this.calls.push(`insertEntries:${rows.length}`);
     if (this.failInsert) return Promise.resolve({ error: "boom" });
     const ids = rows.map((r) => {
@@ -265,6 +265,21 @@ Deno.test("insert ids are put back in row order by position", () => {
     idsInRowOrder([{ id: "b", position: 4 }, { id: "a", position: 3 }, { id: "c", position: 5 }]),
     ["a", "b", "c"],
   );
+  // A missing or repeated position cannot give the order back: no pairing.
+  assertEquals(idsInRowOrder([{ id: "a", position: 0 }, { id: "b", position: NaN }]), null);
+  assertEquals(idsInRowOrder([{ id: "a", position: 1 }, { id: "b", position: 1 }]), null);
+});
+
+Deno.test("write: ids in an unknown order stamp no brand", async () => {
+  const store = new FakeStore();
+  const insert = store.insertEntries.bind(store);
+  store.insertEntries = async (rows) => {
+    const res = await insert(rows);
+    return "ids" in res ? { ...res, unordered: true as const } : res;
+  };
+  const res = await writeAutoLog(store, writeArgs([line("Kesar pista oats", { brand: "Yogabar" }), line("milk")]));
+  assert("logged" in res);
+  assertEquals(store.brands, []);
 });
 
 Deno.test("write: a failed brand stamp still logs the food", async () => {

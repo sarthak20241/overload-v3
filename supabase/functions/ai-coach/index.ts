@@ -3392,7 +3392,11 @@ function supabaseAutoLogStore(userClient: SupabaseClient, admin: SupabaseClient,
         if (error.code === "23505") return { conflict: true };
         return { error: error.message };
       }
-      return { ids: idsInRowOrder(rows(data).map((r) => ({ id: String(r.id), position: Number(r.position) }))) };
+      const got = rows(data).map((r) => ({ id: String(r.id), position: r.position == null ? NaN : Number(r.position) }));
+      // No trusted order: the ids as returned, and a count that cannot match
+      // the lines, so writeAutoLog stamps no brand.
+      const ordered = idsInRowOrder(got);
+      return { ids: ordered ?? got.map((r) => r.id), ...(ordered ? {} : { unordered: true }) };
     },
     async deleteEntries(ids) {
       await userClient.from("meal_entries").delete().in("id", ids);

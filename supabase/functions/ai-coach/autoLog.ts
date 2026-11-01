@@ -214,7 +214,7 @@ export interface AutoLogStore {
    *  from 0115 - another attempt of this same send inserted these rows first. */
   insertEntries(
     rows: AutoLogEntryRow[],
-  ): Promise<{ ids: string[] } | { conflict: true } | { error: string }>;
+  ): Promise<{ ids: string[]; unordered?: true } | { conflict: true } | { error: string }>;
   deleteEntries(ids: string[]): Promise<void>;
   deleteMealIfEmpty(mealId: string): Promise<void>;
   /** Put each line's brand on the saved food its entry just made. The
@@ -380,13 +380,16 @@ export async function writeAutoLog(
     done.push({ meal_type: section.meal_type, meal_id: mealId, entry_ids: inserted.ids, created_meal: createdMeal });
     // Ids are taken to come back in row order. A different count means they
     // cannot be tied to lines, and a wrong pairing would brand another food.
-    if (inserted.ids.length === section.items.length) {
+    // The stamp finds each saved food by last_entry_id, which the saved-food
+    // trigger (cache_saved_food, AFTER INSERT) has set by the time the insert
+    // returns.
+    if (!inserted.unordered && inserted.ids.length === section.items.length) {
       section.items.forEach((it, idx) => {
         const brand = it.brand?.trim().slice(0, 80);
         if (brand) brands.push({ entry_id: inserted.ids[idx], brand });
       });
     } else if (section.items.some((it) => it.brand?.trim())) {
-      console.log(`[parse_meal] auto-log brand stamp skipped: ${inserted.ids.length} ids for ${section.items.length} lines`);
+      console.log(`[parse_meal] auto-log brand stamp skipped: ${inserted.ids.length} ids for ${section.items.length} lines${inserted.unordered ? ", order unknown" : ""}`);
     }
   }
 
@@ -399,8 +402,14 @@ export async function writeAutoLog(
 /** The ids an insert returned, in the order the rows were sent. insert ...
  *  returning makes no promise about order, and writeAutoLog pairs ids with
  *  lines by index (for the brand stamp). Rows carry position = base + index,
- *  so sorting on it gives the sent order back. */
-export function idsInRowOrder(rows: { id: string; position: number }[]): string[] {
+ *  so sorting on it gives the sent order back. Null when a position is
+ *  missing or repeated: then no order can be trusted, and no brand is paired. */
+export function idsInRowOrder(rows: { id: string; position: number }[]): string[] | null {
+  const seen = new Set<number>();
+  for (const r of rows) {
+    if (!Number.isFinite(r.position) || seen.has(r.position)) return null;
+    seen.add(r.position);
+  }
   return [...rows].sort((a, b) => a.position - b.position).map((r) => r.id);
 }
 

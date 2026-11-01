@@ -541,7 +541,11 @@ export function respellForJev(
   const words = typed.split(" ").map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const inName = new RegExp(`(^|[^\\p{L}\\p{N}])${words.join("[^\\p{L}\\p{N}]+")}(?=$|[^\\p{L}\\p{N}])`, "iu");
   const name = line.name.replace(inName, (_m, lead: string) => `${lead}${saved}`);
-  return { name, brand: line.brand?.trim() ? saved : line.brand };
+  const brand = line.brand?.trim() ? saved : line.brand;
+  // The words matched only once folded (an accent, say) and the raw name
+  // could not take them: nothing changed, so the trace must not say respelled.
+  if (name === line.name && brand === line.brand) return null;
+  return { name, brand };
 }
 
 /** Ask Jev whether one of the user's remembered foods is this line. Never
