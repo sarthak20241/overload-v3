@@ -85,3 +85,17 @@ Deno.test('coming back to the app lets the away time go; no work, no time taken'
   assertEquals(f.calls.filter((c) => c === 'end').length, 1);
   assertEquals(t.working(), 0);
 });
+
+Deno.test('time is taken already at inactive (the first step out), once', () => {
+  const f = fake();
+  const t = createWorkTracker(createHolds(f.native, f.timers));
+  const done = t.start();
+  f.fireAll(); // the start hold lapsed
+  t.appState('inactive');
+  assertEquals(f.calls, ['begin', 'end', 'begin']);
+  t.appState('background'); // already held: no second begin
+  assertEquals(f.calls, ['begin', 'end', 'begin']);
+  t.appState('active');
+  assertEquals(f.calls, ['begin', 'end', 'begin', 'end']);
+  done();
+});

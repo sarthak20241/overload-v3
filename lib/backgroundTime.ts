@@ -46,6 +46,9 @@ export async function withBackgroundTime<T>(work: () => Promise<T>): Promise<T> 
   try {
     return await work();
   } finally {
+    // A JS timer: if iOS suspends the app before it fires, the release waits
+    // until the app resumes, and the native task runs until iOS expires it.
+    // Harmless (it only holds the time iOS already granted).
     setTimeout(release, NOTICE_GRACE_MS);
   }
 }

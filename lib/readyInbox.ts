@@ -80,10 +80,33 @@ export function createReadyInbox(storage: Pick<typeof AsyncStorage, 'getItem' | 
   // False while the stored list is being read: a save then would overwrite
   // it with only what was added meanwhile.
   let loaded = false;
+  // A read of the stored list is in flight.
+  let reading = false;
   const listeners = new Set<() => void>();
   const emit = () => listeners.forEach((l) => l());
+
+  // Read the stored list and merge what is in memory on top. A failed read
+  // leaves `loaded` false (unread is not empty: never save over it); the next
+  // change tries again, so later items are not lost for the whole session.
+  const load = async (id: string) => {
+    reading = true;
+    let readFailed = false;
+    const raw = await storage.getItem(keyFor(id)).catch(() => { readFailed = true; return null; });
+    reading = false;
+    if (userId !== id || readFailed) return; // switched meanwhile, or unread
+    // Anything added while the read was in flight stays, on top.
+    const fresh = items;
+    const stored = parseStored(raw).filter((s) => !fresh.some((f) => f.id === s.id));
+    items = [...fresh, ...stored].slice(0, MAX_ITEMS);
+    loaded = true;
+    // What was added during the read is stored now, with the rest.
+    if (fresh.length > 0) save();
+    emit();
+  };
   const save = () => {
-    if (userId && loaded) void storage.setItem(keyFor(userId), JSON.stringify(storable(items))).catch(() => {});
+    if (!userId) return;
+    if (!loaded) { if (!reading) void load(userId); return; }
+    void storage.setItem(keyFor(userId), JSON.stringify(storable(items))).catch(() => {});
   };
 
   return {
@@ -110,19 +133,7 @@ export function createReadyInbox(storage: Pick<typeof AsyncStorage, 'getItem' | 
       if (!fromNobody || !id) items = [];
       emit();
       if (!id) return;
-      let readFailed = false;
-      const raw = await storage.getItem(keyFor(id)).catch(() => { readFailed = true; return null; });
-      if (userId !== id) return; // switched again meanwhile
-      // Unread is not empty: never save over a list we could not read.
-      if (readFailed) return;
-      // Anything added while the read was in flight stays, on top.
-      const fresh = items;
-      const stored = parseStored(raw).filter((s) => !fresh.some((f) => f.id === s.id));
-      items = [...fresh, ...stored].slice(0, MAX_ITEMS);
-      loaded = true;
-      // What was added during the read is stored now, with the rest.
-      if (fresh.length > 0) save();
-      emit();
+      await load(id);
     },
 
     /** Add, or move to the top with new words. Newest first. */

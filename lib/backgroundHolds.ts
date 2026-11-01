@@ -75,9 +75,12 @@ export function createWorkTracker(holds: { hold(): () => void }) {
       };
     },
     appState(state: string) {
-      if (state === 'background' && working > 0) {
-        dropAway();
-        away = holds.hold();
+      // iOS says 'inactive' first on the way out, and the native begin hops
+      // to the main queue, so the hold is taken there: by 'background' there
+      // is little time left. A peek at the notification shade is 'inactive'
+      // too; coming back to 'active' lets it go.
+      if ((state === 'inactive' || state === 'background') && working > 0) {
+        if (!away) away = holds.hold();
       } else if (state === 'active') {
         dropAway();
       }

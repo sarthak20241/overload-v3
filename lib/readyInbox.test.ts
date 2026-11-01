@@ -161,3 +161,21 @@ Deno.test('news from start-up (before sign-in is known) stays with the account t
   await inbox.hydrate('u2');
   assertEquals(inbox.getSnapshot().length, 0);
 });
+
+Deno.test('a failed read is tried again on the next change, so later items are saved', async () => {
+  const store = memory();
+  const first = createReadyInbox(store);
+  await first.hydrate('u1');
+  first.add({ ...phase, at: 1 });
+  let fail = true;
+  const flaky = {
+    getItem: (k: string) => (fail ? Promise.reject(new Error('disk')) : store.getItem(k)),
+    setItem: store.setItem,
+  };
+  const inbox = createReadyInbox(flaky);
+  await inbox.hydrate('u1');
+  fail = false;
+  inbox.add({ ...phase, id: 'meal', target: { route: '/nutrition' }, at: 2 });
+  await new Promise((r) => setTimeout(r, 0));
+  assertEquals(parseStored(store.m.get('ready_inbox_v1:u1') ?? null).map((i) => i.id), ['meal', 'phase:p1']);
+});
