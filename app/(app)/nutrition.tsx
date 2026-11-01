@@ -530,6 +530,9 @@ export default function NutritionScreen() {
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
       appActiveRef.current = next === 'active';
+      // Back in the app on this tab: the meal is on screen, so its bell entry
+      // (filed while the app was away) is done.
+      if (next === 'active' && focusedRef.current) readyInbox.remove('meal');
       if (next !== 'active' || !tellLaterRef.current) return;
       const show = tellLaterRef.current;
       tellLaterRef.current = null;

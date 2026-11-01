@@ -93,6 +93,9 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker
   const later = useCallback(async () => {
     if (leaving.current) return;
     leaving.current = true;
+    // The buttons stop answering now, not after the measures: a tap in that
+    // gap would act on a card that is already on its way to Later.
+    setFlying(true);
     // A measure that never calls back (a node detached mid-measure) must not
     // leave Later dead: after a beat it counts as "no bell", a plain Later.
     const orNull = <T,>(p: Promise<T | null>) => Promise.race([
@@ -109,7 +112,6 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker
     ]);
     if (!to || !from) { onLater(); return; }
     haptics.tick();
-    setFlying(true);
     // Small first, then the trip, so the eye follows a chip into the bell
     // rather than a big card sliding off. Visible until the last stretch.
     const travel = { duration: FLY_MS, easing: Easing.inOut(Easing.cubic) };
