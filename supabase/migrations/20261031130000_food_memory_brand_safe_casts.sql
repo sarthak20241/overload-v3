@@ -1,6 +1,6 @@
 -- A bad number in one parse trace no longer costs another line its brand.
 --
--- 20261031120000's brand lookup cast trace grams and kcal with ::numeric in
+-- 20261031125900's brand lookup cast trace grams and kcal with ::numeric in
 -- the same WHERE as the name match. Postgres does not promise to filter by
 -- name first, so one non-numeric value in any of the user's traces from the
 -- last 6 hours raised, and the guard block then dropped the brand for every
@@ -16,7 +16,7 @@ returns numeric language sql immutable set search_path = '' as $$
     when jsonb_typeof(v) = 'string' and (v #>> '{}') ~ '^\s*-?[0-9]+(\.[0-9]+)?\s*$' then trim(v #>> '{}')::numeric
   end $$;
 
--- As 20261031120000, with the two casts through trace_num.
+-- As 20261031125900, with the two casts through trace_num.
 create or replace function food_memory_private.write_snapshot(p_entry uuid, confirmed timestamptz)
 returns uuid language plpgsql security definer set search_path = '' as $$
 declare e public.meal_entries; meal public.meals; key text; level text; cache_id uuid; v_brand text;

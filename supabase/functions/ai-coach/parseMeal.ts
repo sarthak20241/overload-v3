@@ -7156,6 +7156,9 @@ async function runParseMealCore(
         steps.push({ iter: 2, tool: "fast_fill", input: { item: r.name, unit: r.unit }, result: { used: "stated" } });
         return statedLine;
       }
+      // Only a served match (`food`) fills a Quick line. A 0.6 to 0.7 `maybe`
+      // needs decide to judge it, and Quick has no decide, so it is ignored
+      // here and the line keeps its estimate.
       const remembered = memory[idx]?.food
         ? memoryQuickItem(memory[idx]!.food!, { ...r, name: memoryLineName(r), est: r.est ?? null }, memTimeZone)
         : null;

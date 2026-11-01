@@ -1,4 +1,4 @@
--- Integration checks for 20261031120000_food_memory_brand on an already
+-- Integration checks for 20261031125900_food_memory_brand on an already
 -- migrated database: a saved food takes its brand from the parse that
 -- proposed it, keeps it when a later save carries none, and takes a new one
 -- when a later matching parse names another. Synthetic fixtures; rolls back.
