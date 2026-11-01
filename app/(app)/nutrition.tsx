@@ -24,6 +24,9 @@ import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
+import { announceReady } from '@/lib/readyNotice';
+import { readyInbox } from '@/lib/readyInbox';
+import { holdBackgroundTime, NOTICE_GRACE_MS } from '@/lib/backgroundTime';
 import {
   Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow,
 } from '@/constants/theme';
@@ -426,6 +429,13 @@ export default function NutritionScreen() {
   // (runParse would otherwise capture a stale flow or churn its identity).
   const flowRef = useRef<ParseFlow>(flow);
   useEffect(() => { flowRef.current = flow; }, [flow]);
+  // Time to finish a parse if the user leaves the app mid-way (lib/backgroundTime).
+  const parseWorking = flow.status === 'analysing' || flow.status === 'streaming';
+  useEffect(() => {
+    if (!parseWorking) return;
+    const release = holdBackgroundTime();
+    return () => { setTimeout(release, NOTICE_GRACE_MS); };
+  }, [parseWorking]);
   // What was said, so a bare "yes" can answer whatever Drona just offered.
   // Kept in a ref (never rendered) and trimmed to the last few turns.
   const turnsRef = useRef<{ role: 'user' | 'drona'; text: string }[]>([]);
@@ -508,6 +518,8 @@ export default function NutritionScreen() {
   // while this one is in front. Leaving closes them; nothing is thrown away.
   useFocusEffect(useCallback(() => {
     focusedRef.current = true;
+    // Back on the tab: the meal waiting behind the bell is right here.
+    readyInbox.remove('meal');
     return () => {
       focusedRef.current = false;
       setWaitOpen(false);
@@ -518,6 +530,9 @@ export default function NutritionScreen() {
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
       appActiveRef.current = next === 'active';
+      // Back in the app on this tab: the meal is on screen, so its bell entry
+      // (filed while the app was away) is done.
+      if (next === 'active' && focusedRef.current) readyInbox.remove('meal');
       if (next !== 'active' || !tellLaterRef.current) return;
       const show = tellLaterRef.current;
       tellLaterRef.current = null;
@@ -535,6 +550,19 @@ export default function NutritionScreen() {
   }, []);
   /** Tell the user a parse landed while they were not watching it. */
   const tell = useCallback((kind: ReadyKind, meals: MealType[]) => {
+    // The same news behind the dashboard bell, and as a phone notification
+    // when the app is in the background (lib/readyNotice). Bannerless: the
+    // toast below is this screen's own banner.
+    announceReady({
+      title: readyLine(kind, meals),
+      body: kind === 'review' ? 'Tap to check it and add it.' : 'Tap to open it.',
+      failed: kind === 'error',
+      target: { route: '/nutrition' },
+      // On this tab with the app open, the meal is right here: nothing to
+      // file behind the bell.
+      inbox: focusedRef.current && appActiveRef.current ? false : 'meal',
+      bannerless: true,
+    });
     const show = () => toastRef.current.show({
       type: kind === 'error' ? 'error' : 'success',
       text: readyLine(kind, meals),
