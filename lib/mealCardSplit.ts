@@ -1,6 +1,9 @@
 /**
- * How the big food card (MealCardPopover) shares out its free height between
- * the two parts that can give way: the food list and Drona's note.
+ * How ParsedMealCard, drawn in a box of fixed height (its `expanded` mode),
+ * shares out its free height between the two parts that can give way: the
+ * food list and Drona's note. That box was the popover card, which the
+ * full-screen result (MealResultScreen) replaced; nothing draws the card
+ * expanded today, and this stays with the card's `expanded` prop.
  *
  * The card is laid out in a box of fixed height. Left to Yoga, a box shorter
  * than the content came out wrong: the list held at its floor and the note on
