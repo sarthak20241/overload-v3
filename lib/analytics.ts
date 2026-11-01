@@ -275,6 +275,9 @@ export type AnalyticsEvent =
   // ── Money ────────────────────────────────────────────────────────────────
   | 'limit_reached'
   | 'upgrade_prompt_tapped'
+  | 'invite_opened'
+  | 'invite_redeemed'
+  | 'invite_failed'
   | 'milestone_upsell_shown'
   | 'milestone_upsell_snoozed'
   | 'paywall_viewed'
