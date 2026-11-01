@@ -27,21 +27,29 @@
 -- cascade from user_profiles; the phase metric tables cascade from
 -- coach_programs; workout_exercise_notes cascades from workouts.
 --
--- Left alone on purpose: admin_users. It is the owner's hand-kept access list,
--- not user data, and removing a row there is an access decision.
+-- Left alone on purpose: admin_users (the owner's hand-kept access list; a row
+-- there is an access decision) and redemption_codes.created_by (which admin
+-- made a code; an audit field, not the account's data).
 --
 -- Three of the new steps keep a row and remove only the link to the person:
 --
 -- * exercises: one live custom exercise is used in another user's workout
 --   (66 sets). Deleting it would cascade those sets away. A custom exercise is
 --   deleted only when, after this user's own workouts, routines and notes are
---   gone, nothing else points at it. A shared one keeps its created_by.
+--   gone, nothing else points at it. A shared one passes to the user with the
+--   most rows on it. Not to null: created_by null means a catalog exercise,
+--   which RLS shows to everyone.
+--   The not-exists checks name every FK to exercises on 2026-11-01. A new FK
+--   must be added there too; the test fails until it is.
 -- * token_usage_log is the cost ledger. The row stays; the user keys go.
+--   Indexed on the same expression, so the delete does not scan the ledger.
 -- * redemption_codes: a code stays used. The "already redeemed" check reads
 --   redeemed_at, so clearing redeemed_by_clerk_user_id cannot reopen a code.
 --
--- Body is otherwise the live definition, unchanged. Apply via Supabase MCP
--- apply_migration only. Test: supabase/tests/delete_user_data_leaves_nothing.sql.
+-- Body is otherwise the live definition, unchanged. A later migration that
+-- redefines delete_user_data must start from this body, not an older copy.
+-- Apply via Supabase MCP apply_migration only. CI has no SQL suite: run
+-- supabase/tests/delete_user_data_leaves_nothing.sql by hand, before and after.
 create or replace function public.delete_user_data(p_user_id text)
 returns void
 language plpgsql
@@ -72,6 +80,19 @@ begin
       and not exists (select 1 from public.routine_exercises re where re.exercise_id = e.id)
       and not exists (select 1 from public.user_exercise_notes n where n.exercise_id = e.id)
       and not exists (select 1 from public.workout_exercise_notes n where n.exercise_id = e.id);
+  update public.exercises e
+     set created_by = (
+       select u.user_id from (
+         select w.user_id from public.workout_sets ws join public.workouts w on w.id = ws.workout_id where ws.exercise_id = e.id
+         union all
+         select r.user_id from public.routine_exercises re join public.routines r on r.id = re.routine_id where re.exercise_id = e.id
+         union all
+         select n.user_id from public.user_exercise_notes n where n.exercise_id = e.id
+         union all
+         select w.user_id from public.workout_exercise_notes n join public.workouts w on w.id = n.workout_id where n.exercise_id = e.id
+       ) u
+       group by u.user_id order by count(*) desc, u.user_id limit 1)
+   where e.created_by = p_user_id;
 
   delete from public.meals where user_id = p_user_id;
   delete from public.user_nutrition_stats where user_id = p_user_id;
@@ -162,7 +183,7 @@ begin
   -- Rows kept, link to the person removed (see header).
   update public.token_usage_log
      set metadata = metadata - 'user_id' - 'user'
-   where metadata->>'user_id' = p_user_id or metadata->>'user' = p_user_id;
+   where coalesce(metadata->>'user_id', metadata->>'user') = p_user_id;
   update public.redemption_codes
      set redeemed_by_clerk_user_id = null
    where redeemed_by_clerk_user_id = p_user_id;
@@ -170,6 +191,10 @@ begin
   delete from public.user_profiles where clerk_user_id = p_user_id;
 end;
 $function$;
+
+-- drona_card writes the id as 'user'; every other pipeline as 'user_id'.
+create index if not exists token_usage_log_user_idx
+  on public.token_usage_log ((coalesce(metadata->>'user_id', metadata->>'user')));
 
 revoke all on function public.delete_user_data(text) from public, anon, authenticated;
 grant execute on function public.delete_user_data(text) to service_role;
