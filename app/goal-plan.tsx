@@ -92,6 +92,9 @@ export default function GoalPlanScreen() {
   const { build: buildParam, seq: seqParam, auto: autoParam, then: thenParam, drona: dronaParam, kcal: kcalParam, tour: tourParam } =
     useLocalSearchParams<{ build?: string; seq?: string; auto?: string; then?: string; drona?: string; kcal?: string; tour?: string }>();
   const [tourOn, setTourOn] = useState(tourParam === '1');
+  // Read by the paywall hand-off below, which must not cut the tour short.
+  const tourOnRef = useRef(tourOn);
+  tourOnRef.current = tourOn;
   const autoBuildFired = useRef(false);
   // ?drona=calories&kcal=N arrives from the goal sheet's "Change my whole plan
   // with Drona": open the program chat once, the request typed and unsent.
@@ -278,9 +281,12 @@ export default function GoalPlanScreen() {
   }, [buildParam, seqParam, autoParam, currentPhase, program, buildSplitFor]);
 
   // Sign-up's build came first; the onboarding paywall follows it, once.
+  // While the tour plays it waits, and goes when the tour ends.
   const upgradeFired = useRef(false);
+  const upgradeWaiting = useRef(false);
   const continueToUpgrade = useCallback(() => {
     if (thenParam !== 'upgrade' || upgradeFired.current) return;
+    if (tourOnRef.current) { upgradeWaiting.current = true; return; }
     upgradeFired.current = true;
     router.replace({ pathname: '/upgrade', params: { flow: 'onboarding' } } as any);
   }, [thenParam, router]);
@@ -667,7 +673,11 @@ export default function GoalPlanScreen() {
         <SignupTour
           firstName={user?.firstName ?? null}
           phaseLine={phaseLineFor(tourPhase?.name, tourPhase?.duration_weeks)}
-          onDone={() => setTourOn(false)}
+          onDone={() => {
+            tourOnRef.current = false;
+            setTourOn(false);
+            if (upgradeWaiting.current) { upgradeWaiting.current = false; continueToUpgrade(); }
+          }}
         />
       )}
     </View>

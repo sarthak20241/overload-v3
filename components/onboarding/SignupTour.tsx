@@ -132,6 +132,16 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
   const [leaving, setLeaving] = useState(false);
   const progress = useSharedValue(0);
   const ended = useRef(false);
+  // The scene index for callbacks that fire late (the auto-advance from the
+  // UI thread, analytics on finish), so they never read a stale one.
+  const indexRef = useRef(index);
+  indexRef.current = index;
+  const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The owner's onDone is usually an inline arrow; a ref keeps finish (and so
+  // go) stable, so the scene timer below never restarts on an owner render.
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
+  useEffect(() => () => { if (doneTimer.current) clearTimeout(doneTimer.current); }, []);
   const scene = scenes[index];
 
   useEffect(() => { track('signup_tour_shown', {}); }, []);
@@ -139,20 +149,21 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
   const finish = useCallback((how: 'finished' | 'skipped') => {
     if (ended.current) return;
     ended.current = true;
-    track('signup_tour_done', { how, scene: index });
+    track('signup_tour_done', { how, scene: indexRef.current });
     setLeaving(true);
     // The fade-out plays, then the owner unmounts the tour.
-    setTimeout(() => onDone(how), 280);
-  }, [index, onDone]);
+    doneTimer.current = setTimeout(() => onDoneRef.current(how), 280);
+  }, []);
 
   const go = useCallback((step: -1 | 1) => {
     if (ended.current) return;
-    const to = nextScene(index, step, scenes.length);
+    const from = indexRef.current;
+    const to = nextScene(from, step, scenes.length);
     if (to === 'done') { finish('finished'); return; }
-    if (to === index) { progress.value = 0; return; }
+    if (to === from) { progress.value = 0; return; }
     haptics.selection();
     setIndex(to);
-  }, [index, scenes.length, finish, progress]);
+  }, [scenes.length, finish, progress]);
 
   // Each scene fills its bar, then moves on. The last one waits for the button.
   useEffect(() => {
@@ -164,7 +175,7 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
       if (done && !isLast) runOnJS(go)(1);
     });
     return () => cancelAnimation(progress);
-    // go changes with index; the timer restarts per scene, which is the point.
+    // Per scene only: go, progress and last are stable for the tour's life.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index]);
 
