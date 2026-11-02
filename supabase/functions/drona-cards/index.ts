@@ -32,7 +32,7 @@ import {
 import { askJev, type JevUsage } from "../ai-coach/jev.ts";
 import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "../_shared/dronaMemory.ts";
 import { type MomentPerson, momentRow, pickMoment } from "../_shared/dronaMoments.ts";
-import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
+import { cronDays, isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
 import { type Db as MetricsDb, dueReadFailure, metricsPassBlocked, metricsStep } from "./metrics.ts";
 
@@ -475,7 +475,7 @@ async function runCron(): Promise<Response> {
     const users: { clerk_user_id: string | null; timezone: string | null }[] = [];
     for (let from = 0; ; from += USER_PAGE) {
       const { data, error } = await retried(() =>
-        db.from("user_profiles").select("clerk_user_id, timezone").not("timezone", "is", null)
+        db.from("user_profiles").select("clerk_user_id, timezone")
           .order("clerk_user_id", { ascending: true }).range(from, from + USER_PAGE - 1)
       );
       if (error) return json({ error: error.message, stage: "users" }, 500);
@@ -483,12 +483,9 @@ async function runCron(): Promise<Response> {
       if (!data || data.length < USER_PAGE) break;
     }
 
-    const weeks = users
-      .filter((u) => u.clerk_user_id && isTimeZone(u.timezone))
-      .map((u) => {
-        const day = wallClock(now, u.timezone as string)!.slice(0, 10);
-        return { userId: u.clerk_user_id as string, day, week: weekStartOf(day) };
-      })
+    // No saved zone is read in UTC, not skipped (cronDays).
+    const weeks = cronDays(users, now)
+      .map(({ userId, day }) => ({ userId, day, week: weekStartOf(day) }))
       .filter((u): u is { userId: string; day: string; week: string } => !!u.week);
 
     // Who already has this week's card, per slot (from an earlier run, or the
