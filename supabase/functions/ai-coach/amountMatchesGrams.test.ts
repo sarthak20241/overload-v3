@@ -57,6 +57,10 @@ Deno.test("the app's copy rewrites every line exactly as the server does", () =>
     [1, "250 g", 250], [1.5, "100 g", 150], [13, "g", 13], [250, "ml", 250], [1, "250 ml", 258],
     [2, "1 large", 100], [1, "1 scoop (31 g)", 31], [3, "fork", 60], [15, "gm", 15], [20, "GRAMS", 20],
     [2, "1/2 g", 1], [2, "1,5 g", 30], [10, "100g", 10], [1, "1 kg", 1000],
+    // On and just past each edge: 10% for a bare "g", half again otherwise.
+    [110, "g", 100], [111, "g", 100], [100, "g", 110], [100, "g", 112],
+    [1.5, "100 g", 100], [1.51, "100 g", 100], [1, "100 g", 150], [1, "100 g", 152],
+    [150, "ml", 100], [151, "mls", 100], [12, "gms", 12], [12, "gms", 20], [1, "250 mls", 250], [1, "250 mls", 100],
   ];
   for (const [q, l, g] of cases) {
     const server = amountMatchesGrams(line(q, l, g));
