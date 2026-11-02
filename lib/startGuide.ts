@@ -31,6 +31,12 @@ export const START_STEPS: readonly StartStep[] = [
 /** The card shows for this long after sign-up, then gets out of the way. */
 export const START_GUIDE_DAYS = 21;
 
+/**
+ * Off until the owner has reworked the checklist (2026-11-02). The rules and
+ * the card stay as they are; flipping this back to true shows it again.
+ */
+export const START_GUIDE_ENABLED = false;
+
 export interface StartGuideFacts {
   /** False until the reads below have settled. */
   ready: boolean;

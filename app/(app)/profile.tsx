@@ -35,6 +35,7 @@ import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { selectedGoals, toggleGoal } from '@/lib/fitnessGoals';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
 import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
@@ -1696,7 +1697,7 @@ export default function ProfileScreen() {
                 })}
               </View>
 
-              <TextInput
+              <SheetTextInput
                 value={bugTitle}
                 onChangeText={setBugTitle}
                 placeholder="Brief summary..."
@@ -1709,7 +1710,7 @@ export default function ProfileScreen() {
                 }]}
               />
 
-              <TextInput
+              <SheetTextInput
                 value={bugDescription}
                 onChangeText={setBugDescription}
                 placeholder="What happened?"

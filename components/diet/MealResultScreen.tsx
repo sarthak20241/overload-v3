@@ -43,6 +43,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import { Colors, Spacing, Radius, FontWeight, LetterSpacing } from '@/constants/theme';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 import { PulsingStatus } from '@/components/coach/OrbStage';
 import { sectionsOfItems, type ParsedMeal, type ParsedMealItem } from '@/lib/dietData';
@@ -537,7 +538,7 @@ export function MealResultScreen(props: Props) {
           {/* Voice comes later: the mic will sit left of the send circle, so
               the field keeps that room now. */}
           <View style={s.fixBox}>
-            <TextInput
+            <SheetTextInput
               style={s.fixInput}
               value={fix}
               onChangeText={setFix}

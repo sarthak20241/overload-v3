@@ -32,7 +32,6 @@ import { Colors, FontFamily, FontSize, FontWeight, LetterSpacing, Radius, Spacin
 import { useTheme } from '@/hooks/useTheme';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { PARSE_SPEED_COPY, type ParseSpeed } from '@/lib/parseSpeed';
-import { HOME_LOG_HINT_FIRST } from '@/lib/homeLogHint';
 import type { LessonDemo as DemoId } from '@/lib/startLessons';
 
 export const DEMO_HEIGHT = 184;
@@ -211,9 +210,6 @@ function FoodWhere({ active }: { active: boolean }) {
         <View style={[f.skel, { height: 38, width: '40%', backgroundColor: C.card }]} />
       </View>
       <View style={f.fabWrap}>
-        <View style={[f.hintPill, { backgroundColor: C.card, borderColor: C.border }]}>
-          <Text style={[f.hintText, { color: C.foreground }]}>{HOME_LOG_HINT_FIRST}</Text>
-        </View>
         <View>
           <Animated.View style={[f.fab, f.fabRing, { borderColor: Colors.primary }, ringStyle]} />
           <View style={[f.fab, { backgroundColor: Colors.primary }]}>
@@ -538,8 +534,6 @@ const f = StyleSheet.create({
 
   skel: { borderRadius: Radius.md },
   fabWrap: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  hintPill: { borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, paddingVertical: 6 },
-  hintText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   fab: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   fabRing: { position: 'absolute', borderWidth: 2 },
 

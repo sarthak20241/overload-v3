@@ -17,6 +17,7 @@ import { announceReady } from '@/lib/readyNotice';
 import { readyInbox } from '@/lib/readyInbox';
 import { holdBackgroundTime, NOTICE_GRACE_MS } from '@/lib/backgroundTime';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { fromKg, weightLogInUnit } from '@/lib/bodyLog';
@@ -473,7 +474,7 @@ function AddEntryModal({
       </View>
       <View style={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.xl }}>
         <Text style={[styles.fieldLabel, { color: C.textMuted }]}>{label} ({unit})</Text>
-        <TextInput
+        <SheetTextInput
           value={value}
           onChangeText={onChange}
           keyboardType="decimal-pad"
@@ -862,7 +863,7 @@ function LogMeasurementsDrawer({
         keyboardShouldPersistTaps="handled"
       >
         <Text style={[styles.mGroupLabel, { color: C.textMuted, marginBottom: 6 }]}>DATE</Text>
-        <TextInput
+        <SheetTextInput
           value={date}
           onChangeText={setDate}
           placeholder="YYYY-MM-DD"
@@ -879,7 +880,7 @@ function LogMeasurementsDrawer({
                   <View style={[styles.mDot, { backgroundColor: f.color }]} />
                   <Text style={[styles.mInputLabel, { color: C.foreground }]} numberOfLines={1}>{f.label}</Text>
                   <View style={{ flex: 1 }}>
-                    <TextInput
+                    <SheetTextInput
                       value={values[f.key] || ''}
                       onChangeText={(t) => setValues((p) => ({ ...p, [f.key]: t }))}
                       keyboardType="decimal-pad"

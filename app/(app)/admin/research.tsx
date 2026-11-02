@@ -28,6 +28,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
@@ -515,7 +516,7 @@ function PaperDetailSheet({
           <View>
             {rejectMode ? (
               <View style={[s.actionBar, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
-                <TextInput
+                <SheetTextInput
                   value={rejectReason}
                   onChangeText={setRejectReason}
                   placeholder="Reason (small-n, irrelevant population, paywall, etc.)"
