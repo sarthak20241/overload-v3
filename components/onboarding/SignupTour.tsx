@@ -154,7 +154,10 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
     ended.current = true;
     track('signup_tour_done', { how, scene: indexRef.current });
     setLeaving(true);
-    // The fade-out plays, then the owner unmounts the tour.
+    // The fade-out plays, then the owner unmounts the tour. The owner must
+    // keep the tour mounted until onDone: unmounting it first clears this
+    // timer, onDone never fires, and anything waiting on it (the Goal
+    // screen's paywall hand-off) would wait for good.
     doneTimer.current = setTimeout(() => onDoneRef.current(how), 280);
   }, []);
 
