@@ -111,6 +111,14 @@ Deno.test("a stated weight is not a serving, even when the line was saved wrong"
   assertEquals(milk.serving, null);
 });
 
+Deno.test("a remembered food logged as '1 x 250 ml' uses the 250 ml, not the guess", () => {
+  // The memory keeps no "250 ml" serving any more, so the stated amount is
+  // read off the unit instead of falling back to the model's own weight.
+  const it = memoryQuickItem(food("toned milk", 60), { name: "milk", brand: null, quantity: 1, unit: "250 ml", est: { total_g: 180 } })!;
+  assertEquals(it.grams, 250);
+  assertEquals(it.kcal, 150);
+});
+
 Deno.test("a unit the user logged in is kept as a serving", () => {
   const [egg] = buildMemory([entry({ food_name: "boiled egg", kcal: 155, grams: 100, quantity: 2, serving_unit: "piece" })], "fast", NOW);
   assertEquals(egg.serving, { label: "piece", grams: 50 });

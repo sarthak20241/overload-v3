@@ -5080,8 +5080,13 @@ export function memoryQuickItem(
 ): ParsedItem | null {
   const qty = line.quantity > 0 ? line.quantity : 1;
   const unit = line.unit.trim().toLowerCase();
+  // "1 x 250 ml" states its amount. The memory used to hold "250 ml" as a
+  // serving of 250 and answer it there; it keeps no stated weight as a serving
+  // now (userFoodMemory STATED_WEIGHT), so the amount is read off the unit.
+  const stated = unit.match(/^(\d+(?:\.\d+)?)\s*([a-z]+)$/);
   let grams: number | null = null;
   if (MASS_UNITS.has(unit)) grams = qty;
+  else if (stated && MASS_UNITS.has(stated[2]) && Number(stated[1]) > 0) grams = qty * Number(stated[1]);
   else if (food.serving && unitKey(food.serving.label) === unitKey(unit)) grams = qty * food.serving.grams;
   else if (line.est && line.est.total_g > 0) grams = line.est.total_g;
   if (!grams || !(grams > 0) || grams > 5000) return null;
