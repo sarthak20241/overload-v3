@@ -8,7 +8,7 @@ import {
   buildCardioLogEntry, cardioChoices, cardioDays, cardioStartedAt, queuedCardioRows,
   takeCardioStart, setCardioStart, CARDIO_START_TTL_MS, type CardioExercise,
 } from "./cardioLog.ts";
-import { countCardioSessions, isCardioSet } from "./activityGoals.ts";
+import { cardioRowsFromWorkouts, countCardioSessions, isCardioSet } from "./activityGoals.ts";
 
 const NOW = new Date(2026, 10, 4, 19, 30); // Wed 4 Nov 2026
 const WEEK_START = new Date(2026, 10, 2); // Mon 2 Nov
@@ -113,4 +113,17 @@ Deno.test("a start hand-off nobody took goes stale: a later new workout starts e
   // Still taken in time when the workout screen opens right away.
   setCardioStart(RUN, 1_000);
   assertEquals(takeCardioStart(1_000 + 2_000)?.name, "Outdoor Run");
+});
+
+Deno.test("a session logged by hand hides a watch run already imported that day", () => {
+  // The watch run synced at 7 am on Tuesday; the user logs the same run by hand that evening.
+  const watch = cardioRowsFromWorkouts([{
+    id: "watch", source: "healthkit", started_at: new Date(2026, 10, 3, 7).toISOString(),
+    workout_sets: [{ completed: true, set_type: "normal", exercises: { muscle_group: "Cardio", metric_type: "distance_duration" } }],
+  }]);
+  const byHand = queuedCardioRows([log({ dayIso: "2026-11-03" })], WEEK_START, new Set());
+  assertEquals(countCardioSessions([...watch, ...byHand]), 1);
+  // Logged for another day, it is its own session.
+  const otherDay = queuedCardioRows([log({ dayIso: "2026-11-04" })], WEEK_START, new Set());
+  assertEquals(countCardioSessions([...watch, ...otherDay]), 2);
 });
