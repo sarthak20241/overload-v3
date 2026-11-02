@@ -81,7 +81,10 @@ const Video: VideoModule | null = (() => {
  *  scene plays once and holds its final frame (the silhouette). */
 function Film({ id }: { id: TourSceneId }) {
   // Starts on the current scene, so a remount mid-tour does not jump back.
-  const player = Video!.useVideoPlayer(FILMS[id], (p) => {
+  // The source must stay fixed after mount: the hook builds a new player
+  // whenever its source changes, which would undo the one-player swap below.
+  const initial = useRef(FILMS[id]).current;
+  const player = Video!.useVideoPlayer(initial, (p) => {
     p.muted = true;
     p.loop = true;
     p.play();

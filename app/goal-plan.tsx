@@ -80,6 +80,8 @@ const GOAL_CHART_HEIGHT = CHART_HEIGHT - 7;
 
 // Set when the sign-up tour ends, so a remount that still carries ?tour=1
 // (before the param is cleared) never plays it a second time this launch.
+// It is never reset, so a second account made in the same launch (sign out,
+// sign up again) gets no tour; a fresh launch shows it again.
 let tourPlayed = false;
 
 export default function GoalPlanScreen() {

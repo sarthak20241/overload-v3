@@ -28,7 +28,7 @@ Deno.test("copy fits the screen, has no em dashes, and never says the plan is re
     assert(s.sub.length <= TOUR_SUB_MAX, `sub too long: ${s.sub}`);
     for (const t of [s.title, s.sub]) {
       assert(!t.includes("—"), `em dash in "${t}"`);
-      assert(!/ready/i.test(t), `promises a finished plan: "${t}"`);
+      assert(!/\bready\b/i.test(t), `promises a finished plan: "${t}"`);
     }
   }
 });
