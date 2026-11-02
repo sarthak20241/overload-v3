@@ -143,16 +143,19 @@ export function servingText(
 }
 
 // Units whose amount IS the line's grams (ml lines store their ml as grams).
-const GRAM_LIKE = new Set(['g', 'gm', 'gms', 'gram', 'grams', 'ml']);
+const GRAM_UNITS = new Set(['g', 'gm', 'gms', 'gram', 'grams']);
+const ML_UNITS = new Set(['ml', 'mls']);
 
 /**
- * A line whose label is a stated weight ("100 g") but whose quantity is
- * already the grams: 15 x "100 g" with 15 g behind it. The food log wrote
- * these from a remembered food, and the card read "1500 g". The grams are
- * what the numbers were worked out from, so they win: 15 "g".
+ * A line whose weight label disagrees with its grams: 15 x "100 g" with 15 g
+ * behind it, or 100 "g" with 130 g. The food log wrote these, and the card
+ * read "1500 g". The grams are what the numbers were worked out from, so they
+ * win: 15 "g".
  *
- * Only a far-off pair is rewritten (more than half again either way). A ml
- * line a few percent off its grams is density, not this bug.
+ * The same rules as the server's amountMatchesGrams (ai-coach/parseMeal.ts),
+ * so a saved line reads the way a new parse would: a bare "g" moves when more
+ * than 10% off, a stated weight or ml when more than half again either way. A
+ * ml line a little off its grams is density, not this bug.
  */
 export function fixWeightLabel(
   quantity: number,
@@ -160,13 +163,19 @@ export function fixWeightLabel(
   grams: number,
 ): { quantity: number; serving_label: string } {
   const keep = { quantity, serving_label: label };
-  const m = label.trim().match(LEAD);
-  if (!m || !(grams > 0) || !(quantity > 0)) return keep;
-  const unit = m[2].trim();
-  if (!GRAM_LIKE.has(unit.toLowerCase())) return keep;
+  if (!(grams > 0) || !(quantity > 0)) return keep;
+  const asGrams = (unit: string) => ({ quantity: Math.round(grams * 10) / 10, serving_label: unit });
+  const off = (amount: number, tolerance: number) => {
+    const ratio = amount / grams;
+    return ratio > 1 + tolerance || ratio < 1 / (1 + tolerance);
+  };
+  const l = label.trim().toLowerCase();
+  if (GRAM_UNITS.has(l)) return off(quantity, 0.1) ? asGrams('g') : keep;
+  if (ML_UNITS.has(l)) return off(quantity, 0.5) ? asGrams('ml') : keep;
+  const m = l.match(LEAD);
+  if (!m) return keep;
   const size = parseNum(m[1]);
-  if (!(size > 0)) return keep;
-  const ratio = (quantity * size) / grams;
-  if (ratio <= 1.5 && ratio >= 1 / 1.5) return keep;
-  return { quantity: Math.round(grams * 10) / 10, serving_label: unit };
+  const unit = GRAM_UNITS.has(m[2].trim()) ? 'g' : ML_UNITS.has(m[2].trim()) ? 'ml' : null;
+  if (!unit || !(size > 0)) return keep;
+  return off(quantity * size, 0.5) ? asGrams(unit) : keep;
 }

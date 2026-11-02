@@ -97,6 +97,14 @@ Deno.test("a weight label whose quantity is already the grams reads as the grams
   assertEquals(fixWeightLabel(250, "250 ml", 250), { quantity: 250, serving_label: "ml" });
 });
 
+Deno.test("a bare gram line follows its grams, as the server's check does", () => {
+  // 130 g of rice came back 100 "g" (decide's quantity is capped at 100).
+  assertEquals(fixWeightLabel(100, "g", 130), { quantity: 130, serving_label: "g" });
+  assertEquals(fixWeightLabel(100, "ml", 250), { quantity: 250, serving_label: "ml" });
+  // A liquid a little off its ml is density.
+  assertEquals(fixWeightLabel(15, "ml", 13.8), { quantity: 15, serving_label: "ml" });
+});
+
 Deno.test("a weight label that agrees with its grams is left alone", () => {
   assertEquals(fixWeightLabel(1.5, "100 g", 150), { quantity: 1.5, serving_label: "100 g" });
   assertEquals(fixWeightLabel(1, "250 ml", 258), { quantity: 1, serving_label: "250 ml" });
