@@ -96,6 +96,7 @@ import {
   type AutoLogSkip,
   type AutoLogStore,
   autoLogBlocker,
+  idsInRowOrder,
   type LoggedSection,
   parseAbortFor,
   readAutoLogRequest,
@@ -2951,6 +2952,8 @@ function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
       ? (c.confirmed_at ? String(c.confirmed_at) : new Date().toISOString())
       : String(c.last_logged_at),
     persistent: true, confirmed_at: String(c.confirmed_at),
+    // Absent before migration 20261031125900 (select "*"), so absent is null.
+    brand: typeof c.brand === "string" && c.brand.trim() ? c.brand.trim().slice(0, 80) : null,
     confirmed_aliases: Array.isArray(c.aliases) ? c.aliases.filter((a): a is string => typeof a === "string") : [],
   };
 }
@@ -3326,9 +3329,11 @@ function makeParseDeps(
 
 /** The user-scoped client as the auto-log store. RLS holds throughout: meals
  *  default user_id from the JWT's sub and entries are scoped through their
- *  parent meal, exactly as the client's own writes are. Never the admin client:
- *  a bug here must not be able to write into someone else's diary. */
-function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
+ *  parent meal, exactly as the client's own writes are. Never the admin client
+ *  for the diary: a bug here must not be able to write into someone else's
+ *  diary. The one admin write is brandSavedFoods, on this user's saved foods
+ *  only (users may not write user_food_cache themselves). */
+function supabaseAutoLogStore(userClient: SupabaseClient, admin: SupabaseClient, userId: string): AutoLogStore {
   const rows = (data: unknown) => (data ?? []) as Array<Record<string, unknown>>;
   return {
     async entriesByClientId(clientId) {
@@ -3378,7 +3383,7 @@ function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
       return count ?? 0;
     },
     async insertEntries(entryRows) {
-      const { data, error } = await userClient.from("meal_entries").insert(entryRows).select("id");
+      const { data, error } = await userClient.from("meal_entries").insert(entryRows).select("id, position");
       if (error) {
         // 23505 here is 0115's uq_meal_entries_client_id_slot: a concurrent
         // attempt of this same send already wrote these lines. Same meaning as
@@ -3387,7 +3392,11 @@ function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
         if (error.code === "23505") return { conflict: true };
         return { error: error.message };
       }
-      return { ids: rows(data).map((r) => String(r.id)) };
+      const got = rows(data).map((r) => ({ id: String(r.id), position: r.position == null ? NaN : Number(r.position) }));
+      // No trusted order: the ids as returned, and a count that cannot match
+      // the lines, so writeAutoLog stamps no brand.
+      const ordered = idsInRowOrder(got);
+      return { ids: ordered ?? got.map((r) => r.id), ...(ordered ? {} : { unordered: true }) };
     },
     async deleteEntries(ids) {
       await userClient.from("meal_entries").delete().in("id", ids);
@@ -3396,6 +3405,18 @@ function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
       const { count } = await userClient
         .from("meal_entries").select("id", { count: "exact", head: true }).eq("meal_id", mealId);
       if ((count ?? 0) === 0) await userClient.from("meals").delete().eq("id", mealId);
+    },
+    // Admin, because users may only read and delete their saved foods. Scoped
+    // to this user and to the saved food each new entry just made.
+    // One update per line: each line has its own brand, and a meal has few.
+    async brandSavedFoods(pairs) {
+      await Promise.all(pairs.map(async ({ entry_id, brand }) => {
+        const { data, error } = await admin.from("user_food_cache").update({ brand })
+          .eq("user_id", userId).eq("last_entry_id", entry_id).select("id");
+        if (error) throw new Error(`brand stamp: ${error.message}`);
+        // The trigger saves no food for a line it skips (no weight, say).
+        if (!data?.length) console.log(`[parse_meal] auto-log brand stamp: no saved food for entry ${entry_id}`);
+      }));
     },
   };
 }
@@ -3646,7 +3667,7 @@ async function handleParseMealRequest(args: {
       extra = { auto_log_skipped: "implausible" };
     } else {
       try {
-        const write = await writeAutoLog(supabaseAutoLogStore(userClient), {
+        const write = await writeAutoLog(supabaseAutoLogStore(userClient, admin, userId), {
           clientId: auto.clientId,
           items: result.parsed.items,
           fallbackMeal: result.parsed.meal_type,

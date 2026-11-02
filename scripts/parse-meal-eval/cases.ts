@@ -43,6 +43,9 @@ export interface EvalCase {
   /** Assert how the follow-up was classified: true = corrects the pending
    *  meal (replaces it), false = new food (client appends). */
   expectCorrection?: boolean;
+  /** Foods this user saved (logged yesterday, Precise), as her food memory
+   *  holds them: name, then the logged grams and macros. Needs JEV_API_KEY. */
+  memory?: Array<[name: string, grams: number, kcal: number, protein_g: number, carb_g: number, fat_g: number, brand?: string]>;
   expect: {
     declined?: boolean;
     minItems?: number;

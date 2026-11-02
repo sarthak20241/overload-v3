@@ -15,10 +15,15 @@ import {
   type MemoryEntry,
   type MemoryFood,
   memoryNote,
+  respellForJev,
+  brandApart,
+  memoryQuestions,
+  memoryChoiceQuestion,
+  MEMORY_CHOICE_NONE,
   servesTier,
   shortlist,
 } from "./userFoodMemory.ts";
-import { memoryLineName, memoryQuickItem, type ParseMealDeps, runParseMeal } from "./parseMeal.ts";
+import { memoryLineName, memoryQuickItem, type ParsedItem, type ParseMealDeps, type ResolvedItem, runParseMeal, stampBrands } from "./parseMeal.ts";
 
 const NOW = new Date("2026-09-27T12:00:00Z");
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
@@ -307,6 +312,17 @@ Deno.test("Quick: an unsure match keeps the model's own estimate", async () => {
   assertEquals(r.parsed!.items[0].source, "estimate");
 });
 
+Deno.test("Quick: a maybe match (0.6 to 0.7) keeps the model's own estimate", async () => {
+  // A maybe needs decide to judge it, and Quick has no decide.
+  const calls: string[] = [], lookups: string[] = [];
+  const r = await runParseMeal(
+    deps([live()], { "grilled chicken breast": 0.65 }, calls, lookups, ESTIMATED),
+    { ...BASE, text: "150g grilled chicken breast", mode: "fast" },
+  );
+  assertEquals(r.parsed!.items[0].kcal, 260);
+  assertEquals(r.parsed!.items[0].source, "estimate");
+});
+
 Deno.test("an explicit research request never asks memory for the answer being challenged", async () => {
   const calls: string[] = [], lookups: string[] = [];
   const r = await runParseMeal(
@@ -559,8 +575,10 @@ Deno.test("a variant just under the floor competes when its sibling cleared it",
   const d = decideMemory(list, [0.73, 0.91]);
   assertEquals(d.food?.name, "chocolate whey");
   assertEquals(d.food?.also, ["vanilla whey"]);
-  // With no sibling over the floor, 0.73 still serves nothing.
-  assertEquals(decideMemory([list[0]], [0.73]).food, null);
+  // With no sibling over the floor, a score under it still serves nothing.
+  assertEquals(decideMemory([list[0]], [0.65]).food, null);
+  // 0.73 alone clears the 0.7 floor (owner decision 2026-10-31).
+  assertEquals(decideMemory([list[0]], [0.73]).food?.name, "chocolate whey");
 });
 
 Deno.test("when the user names the variant, habit cannot swap it for the sibling they log more", () => {
@@ -762,4 +780,374 @@ Deno.test("a confirmed alias is not overruled by the variant rule, and never thr
   const m = await matchMemory(down, rows, { name: "chocolate vanilla whey", brand: null });
   assertEquals(m.trace.path, "confirmed_alias");
   assertEquals(m.food?.name, "chocolate whey");
+});
+
+// ── A maybe band, and brand spelling (owner decision 2026-10-31) ───────────
+// Live, 2026-10-18..28: one user's saved Too Yumm label scored 0.51-0.72 every
+// time she typed "too yum protein oats", so it never served and the line was a
+// guess (or, once, another company's oats). 0.7 serves; 0.6-0.7 goes to decide
+// to judge; and Jev is asked with the brand spelled as her saved food spells it.
+
+/** A Jev that answers every question with this "same" chance, and records what it was asked. */
+const jevSame = (same: number, asked: unknown[] = []) => ({
+  apiKey: "k",
+  timeoutMs: 1000,
+  fetchFn: (async (_u: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body));
+    asked.push(body);
+    const answers = Object.fromEntries(Object.keys(body.questions).map((k) => [k, {
+      type: "score", probabilities: { "0": 1 - same - 0.01, "1": 0.01, "2": same },
+    }]));
+    return new Response(JSON.stringify({ model: "test", answers, usage: {} }), { status: 200 });
+  }) as unknown as typeof fetch,
+});
+
+const label = () => food("Too Yumm! High Protein Super Oats - Masala", 365);
+
+Deno.test("0.7 serves a saved food; 0.6-0.7 is a maybe for decide; under 0.6 is neither", async () => {
+  const at = async (same: number) => await matchMemory(jevSame(same), [label()], { name: "too yum protein oats", brand: "Too Yum" });
+  const served = await at(0.72);
+  assertEquals([served.food?.name, served.maybe ?? null], [label().name, null]);
+  const maybe = await at(0.65);
+  assertEquals([maybe.food, maybe.maybe?.name, maybe.confidence], [null, label().name, 0.65]);
+  const none = await at(0.55);
+  assertEquals([none.food, none.maybe ?? null], [null, null]);
+});
+
+Deno.test("Jev is asked with the brand spelled as her saved food spells it", async () => {
+  const asked: Array<{ state: { foods: Array<{ name: string; brand: string | null }> }; questions: Record<string, { instructions: string }> }> = [];
+  await matchMemory(jevSame(0.8, asked), [label()], { name: "too yum protein oats", brand: "Too Yum" });
+  assertEquals(asked[0].state.foods[0], { id: "f1", name: "Too Yumm protein oats", brand: "Too Yumm" } as never);
+  assert(asked[0].questions.m1.instructions.includes("Input food: Too Yumm protein oats."));
+});
+
+Deno.test("brand spelling: fixed from the saved name, with or without a brand field", () => {
+  const foods = [label(), food("Pintola protein oats", 393)];
+  assertEquals(respellForJev({ name: "too yum protein oats", brand: "Too Yum" }, foods), { name: "Too Yumm protein oats", brand: "Too Yumm" });
+  assertEquals(respellForJev({ name: "too yum protein oats", brand: null }, foods), { name: "Too Yumm protein oats", brand: null });
+  // Brand field set, name without it: only the field changes.
+  assertEquals(respellForJev({ name: "protein masala oats", brand: "Too Yum" }, foods), { name: "protein masala oats", brand: "Too Yumm" });
+});
+
+Deno.test("brand spelling: left alone when right, when another word, or when unsure", () => {
+  // Already spelled as saved.
+  assertEquals(respellForJev({ name: "too yumm protein oats", brand: "Too Yumm" }, [label()]), null);
+  // Two letters off is another brand: rival snack brands sit exactly there.
+  assertEquals(respellForJev({ name: "bikano bhujia", brand: "Bikano" }, [food("Bikaji Bhujia", 560)]), null);
+  // Short words are never respelled: "oat" is not a typo of "oats".
+  assertEquals(respellForJev({ name: "oat milk", brand: null }, [food("oats", 380)]), null);
+  // Two saved foods disagree on the spelling: no guess.
+  assertEquals(respellForJev({ name: "pintola oats", brand: "Pintola" }, [food("Pintolo oats", 380), food("Pintala oats", 380)]), null);
+});
+
+// ── The maybe band end to end: decide judges it ─────────────────────────────
+
+/** deps() with the decide call recorded, and told to take the saved food or not. */
+function maybeDeps(score: number, takeSaved: boolean, seen: { decide?: Record<string, unknown> }, lookups: string[]) {
+  const calls: string[] = [];
+  const d = deps([live({ tier: "precise" })], { "grilled chicken breast": score }, calls, lookups, EXTRACTED);
+  const inner = d.fetchFn!;
+  const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    const tool = (body.tools ?? [])[0]?.name;
+    if (tool === "log_meal") {
+      seen.decide = JSON.parse(body.messages[0].content);
+      if (!takeSaved) {
+        return Response.json({
+          stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 },
+          content: [{ type: "tool_use", name: tool, input: {
+            meal_type: "lunch", drona_line: "ok",
+            items: [{ food_name: "grilled chicken breast", food_id: null, quantity: 150, serving_label: "g", grams: 150, kcal: 250, protein_g: 45, carb_g: 0, fat_g: 7, confidence: "medium", assumption: "my estimate" }],
+          } }],
+        });
+      }
+    }
+    return inner(url, init);
+  }) as typeof fetch;
+  return { ...d, fetchFn, jev: { ...d.jev!, fetchFn } };
+}
+
+type DecideItem = { saved_food_check?: { food_id: string; name: string; jev_same: number }; candidates: Array<{ food_id: string }> };
+
+Deno.test("Thorough: a saved food at 0.65 goes to decide, which takes it", async () => {
+  const seen: { decide?: Record<string, unknown> } = {}, lookups: string[] = [];
+  const r = await runParseMeal(maybeDeps(0.65, true, seen, lookups), { ...BASE, text: "150g grilled chicken breast", mode: null });
+  const asked = (seen.decide!.items as DecideItem[])[0];
+  // The normal lookup still ran, so decide has the catalog beside it.
+  assert(lookups.some((l) => l.startsWith("search:")), JSON.stringify(lookups));
+  assertEquals(asked.saved_food_check?.name, "grilled chicken breast");
+  assertEquals(asked.saved_food_check?.jev_same, 0.65);
+  // Not among the candidates: it is a question, not a row to pick by rank.
+  assert(!asked.candidates.some((c) => c.food_id === asked.saved_food_check?.food_id));
+  const item = r.parsed!.items[0];
+  assertEquals(item.assumption, memoryNote({ ...food("x", 1), last_logged_at: liveAgo(1) }, "Asia/Kolkata"));
+  // Her words ride along, so keeping the line teaches them as a name for it.
+  assertEquals(item.memory_input_name, "grilled chicken breast");
+  // Her own numbers: 226 kcal for the 150 g she logged.
+  assertEquals([item.confidence, item.food_id, item.kcal], ["high", null, 226]);
+});
+
+Deno.test("Thorough: decide says different, and the saved food is not used", async () => {
+  const seen: { decide?: Record<string, unknown> } = {}, lookups: string[] = [];
+  const r = await runParseMeal(maybeDeps(0.65, false, seen, lookups), { ...BASE, text: "150g grilled chicken breast", mode: null });
+  assert((seen.decide!.items as DecideItem[])[0].saved_food_check);
+  const item = r.parsed!.items[0];
+  assertEquals(item.memory_input_name, undefined);
+  assertEquals(item.assumption, "my estimate");
+});
+
+Deno.test("under 0.6 decide is not asked about the saved food", async () => {
+  const seen: { decide?: Record<string, unknown> } = {}, lookups: string[] = [];
+  await runParseMeal(maybeDeps(0.55, true, seen, lookups), { ...BASE, text: "150g grilled chicken breast", mode: null });
+  assertEquals((seen.decide!.items as DecideItem[])[0].saved_food_check, undefined);
+});
+
+Deno.test("Quick has no decide call: a 0.65 saved food is not used", async () => {
+  const seen: { decide?: Record<string, unknown> } = {}, lookups: string[] = [];
+  const d = maybeDeps(0.65, true, seen, lookups);
+  const r = await runParseMeal(
+    { ...d, fetchFn: net({ scores: { "grilled chicken breast": 0.65 }, calls: [], line: ESTIMATED }), jev: { ...d.jev!, fetchFn: net({ scores: { "grilled chicken breast": 0.65 }, calls: [], line: ESTIMATED }) } },
+    { ...BASE, text: "150g grilled chicken breast", mode: "fast" },
+  );
+  assertEquals(r.parsed!.items[0].source, "estimate");
+  assertEquals(seen.decide, undefined);
+});
+
+// ── A saved food's brand, set apart for Jev (owner decision 2026-10-31) ──────
+// Saved as "Kesar pista oats yogabar", her food scored 0.11 for "kesar pista
+// oats": Jev read "oats ... yoga bar" as a snack bar. With the brand known and
+// shown apart, "Kesar pista oats (Yogabar)", it scored 0.94-0.99, and the eval
+// went from 52 to 56 of 60 served with no wrong food (memory-identity-eval,
+// CAND_BRAND=brackets).
+
+Deno.test("the brand comes out of the name and goes in brackets", () => {
+  assertEquals(brandApart("Kesar pista oats yogabar", "Yogabar"), "Kesar pista oats (Yogabar)");
+  // Spaced or joined, it is the same brand.
+  assertEquals(brandApart("Kesar pista oats yogabar", "Yoga Bar"), "Kesar pista oats (Yoga Bar)");
+  assertEquals(brandApart("Too Yumm! High Protein Super Oats - Masala", "Too Yumm"), "High Protein Super Oats - Masala (Too Yumm)");
+  // A brand the name does not carry is added; no brand changes nothing.
+  assertEquals(brandApart("Toned milk", "Amul"), "Toned milk (Amul)");
+  assertEquals(brandApart("casein", null), "casein");
+  // A name that is only the brand keeps its name.
+  assertEquals(brandApart("Yogabar", "Yogabar"), "Yogabar");
+});
+
+Deno.test("Jev sees a saved food with its brand apart", () => {
+  const q = memoryQuestions({ name: "kesar pista oats", brand: null }, [{ ...food("Kesar pista oats yogabar", 340), brand: "Yogabar" }]);
+  const text = String(q.m1.instructions);
+  assert(text.endsWith("Candidate previously logged by this user: Kesar pista oats (Yogabar)."), text);
+});
+
+Deno.test("a saved food keeps the brand its rows carry", () => {
+  const foods = buildMemory([
+    { ...entry({ food_name: "Kesar pista oats yogabar", logged_at: daysAgo(3) }), brand: null },
+    { ...entry({ food_name: "Kesar pista oats yogabar", logged_at: daysAgo(1) }), brand: "Yogabar", persistent: true },
+  ], "precise", NOW);
+  assertEquals(foods[0].brand, "Yogabar");
+});
+
+Deno.test("a logged line carries its brand, so saving it can store it", async () => {
+  const calls: string[] = [], lookups: string[] = [];
+  // Memory answers (a saved food with a brand; Jev is asked about it by its
+  // name with the brand apart)...
+  const r = await runParseMeal(
+    deps([live({ tier: "precise" }), { ...live({ tier: "precise" }), brand: "Brand A", persistent: true }], { "grilled chicken breast (Brand A)": 0.97 }, calls, lookups, EXTRACTED),
+    { ...BASE, text: "150g grilled chicken breast", mode: null },
+  );
+  assert(r.tool_calls.includes("user_memory_match"), JSON.stringify(r.tool_calls));
+  assertEquals(r.parsed!.items[0].brand, "Brand A");
+  // ...and Quick's own estimate keeps the brand extract read.
+  const q = await runParseMeal(
+    deps([], {}, [], [], { ...ESTIMATED, brand: "Brand B" }),
+    { ...BASE, text: "150g brand b grilled chicken breast", mode: "fast" },
+  );
+  assertEquals(q.parsed!.items[0].brand, "Brand B");
+});
+
+Deno.test("brand spelling: a one-word food is never respelled toward a saved name", () => {
+  // "mango" is one letter from "Mange", and is another food.
+  assertEquals(respellForJev({ name: "mango shake", brand: null }, [food("Mange tout", 40)]), null);
+  // A typo of her saved brand still is, when the saved food knows its brand.
+  assertEquals(
+    respellForJev({ name: "pintolla oats", brand: null }, [{ ...food("Chocolate protein oats", 390), brand: "Pintola" }]),
+    { name: "Pintola oats", brand: null },
+  );
+  // And a two-word brand slip with no brand known yet, as on 10-18.
+  assertEquals(respellForJev({ name: "too yum protein oats", brand: null }, [label()]), { name: "Too Yumm protein oats", brand: null });
+});
+
+// ── A choice question when no saved food scored (owner decision 2026-10-31) ─
+// The score asks about each saved food alone. When none reaches the maybe
+// floor, one choice question asks which saved food it is, or none. Its top
+// answer goes to decide only when it is a food, not "none", with 0.3 or more.
+// Eval: "masala tea" -> her "Masala chai" (86%) now reaches decide; "peanut
+// chikki" (none 49%, peanuts 47%) does not.
+
+/** A Jev that scores every saved food at `score`, and answers the choice question with `choice`. */
+const jevScoreThenChoice = (score: number, choice: Record<string, number>, asked: string[] = []) => ({
+  apiKey: "k",
+  timeoutMs: 1000,
+  fetchFn: (async (_u: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body));
+    const answers: Record<string, unknown> = {};
+    for (const [k, q] of Object.entries(body.questions as Record<string, { type: string; criteria: Record<string, string> | string[] }>)) {
+      asked.push(q.type);
+      if (q.type === "choice") {
+        // Map names to the question's own keys.
+        const probs: Record<string, number> = {};
+        for (const [key, name] of Object.entries(q.criteria as Record<string, string>)) {
+          probs[key] = key === "none" ? choice.none ?? 0 : choice[name] ?? 0;
+        }
+        const top = Object.entries(probs).sort((a, b) => b[1] - a[1])[0];
+        answers[k] = { type: "choice", choice: top[0], confidence: top[1], probabilities: probs };
+      } else {
+        answers[k] = { type: "score", probabilities: { "0": 1 - score - 0.01, "1": 0.01, "2": score } };
+      }
+    }
+    return new Response(JSON.stringify({ model: "test", answers, usage: {} }), { status: 200 });
+  }) as unknown as typeof fetch,
+});
+
+Deno.test("no saved food scored: the choice's top food goes to decide", async () => {
+  const asked: string[] = [];
+  const chai = food("Masala chai", 45), powder = food("Tea masala powder", 300);
+  const m = await matchMemory(jevScoreThenChoice(0.4, { "Masala chai": 0.86, none: 0.13, "Tea masala powder": 0.01 }, asked), [chai, powder], { name: "masala tea", brand: null });
+  assertEquals([m.food, m.maybe?.name, m.confidence], [null, "Masala chai", 0.86]);
+  assert(asked.includes("choice"));
+  assertEquals((m.trace.choice as { pick: string }).pick, "Masala chai");
+});
+
+Deno.test("the choice says none ahead of a food: nothing goes to decide", async () => {
+  // Live eval, 2026-10-31: "peanut chikki" -> none 49%, peanuts 47%.
+  const m = await matchMemory(jevScoreThenChoice(0.4, { peanuts: 0.47, none: 0.49, "Pintola peanut butter": 0.04 }), [food("peanuts", 580), food("Pintola peanut butter", 590)], { name: "peanut chikki", brand: null });
+  assertEquals([m.food, m.maybe ?? null], [null, null]);
+});
+
+Deno.test("the choice's top food under 0.3 does not go to decide", async () => {
+  const m = await matchMemory(jevScoreThenChoice(0.4, { "grilled chicken breast": 0.25, "raw chicken breast": 0.24, none: 0.2 }), [food("grilled chicken breast", 165), food("raw chicken breast", 120)], { name: "chicken curry", brand: null });
+  assertEquals([m.food, m.maybe ?? null], [null, null]);
+});
+
+Deno.test("a score in the maybe band needs no choice question", async () => {
+  const asked: string[] = [];
+  const m = await matchMemory(jevScoreThenChoice(0.65, { none: 1 }, asked), [label()], { name: "too yum protein oats", brand: "Too Yum" });
+  assertEquals(m.maybe?.name, label().name);
+  assert(!asked.includes("choice"));
+});
+
+Deno.test("the choice question shows each saved food with its brand apart", () => {
+  const q = memoryChoiceQuestion({ name: "kesar pista oats", brand: null }, [{ ...food("Kesar pista oats yogabar", 340), brand: "Yogabar" }, food("rolled oats", 380)]);
+  assertEquals(q.type, "choice");
+  assertEquals((q as { criteria: Record<string, string> }).criteria, { m1: "Kesar pista oats (Yogabar)", m2: "rolled oats", none: MEMORY_CHOICE_NONE });
+  assert(String(q.instructions).endsWith("Input food: kesar pista oats."));
+});
+
+Deno.test("Quick asks no choice question: it has no decide step to use one", async () => {
+  // In Quick the choice answer cannot be used, so the call would be wasted.
+  const asked: string[] = [];
+  const net = jevScoreThenChoice(0.4, { "Masala chai": 0.86, none: 0.14 }, asked);
+  const m = await matchMemory(net, [food("Masala chai", 45)], { name: "masala tea", brand: null }, { choice: false });
+  assertEquals([m.food, m.maybe ?? null], [null, null]);
+  assert(!asked.includes("choice"), JSON.stringify(asked));
+});
+
+Deno.test("a Quick log sends no choice question; a Thorough one does", async () => {
+  const typesFor = async (mode: "fast" | null) => {
+    const types: string[] = [];
+    const d = deps([live({ tier: "precise" })], { "grilled chicken breast": 0.4 }, [], [], mode === "fast" ? ESTIMATED : EXTRACTED);
+    const inner = d.fetchFn!;
+    const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("typesafe.ai")) {
+        for (const q of Object.values(JSON.parse(String(init?.body)).questions as Record<string, { type: string }>)) types.push(q.type);
+      }
+      return inner(url, init);
+    }) as typeof fetch;
+    await runParseMeal({ ...d, fetchFn, jev: { ...d.jev!, fetchFn } }, { ...BASE, text: "150g grilled chicken breast", mode });
+    return types;
+  };
+  assert(!(await typesFor("fast")).includes("choice"));
+  assert((await typesFor(null)).includes("choice"));
+});
+
+Deno.test("no saved food scored 0.3: no choice question at all", async () => {
+  // The choice cost a second Jev call on most new foods. In the
+  // eval it only ever helped where a saved food had scored (masala tea: 0.91,
+  // then blocked by the word veto); with every score under 0.15 it found
+  // nothing right and once sent peanuts for "peanut chikki".
+  const asked: string[] = [];
+  const m = await matchMemory(jevScoreThenChoice(0.13, { peanuts: 0.49, none: 0.47 }, asked), [food("peanuts", 580)], { name: "peanut chikki", brand: null });
+  assertEquals(m.maybe ?? null, null);
+  assert(!asked.includes("choice"), JSON.stringify(asked));
+  assertEquals((m.trace.choice as { skipped: string }).skipped, "low_scores");
+});
+
+Deno.test("brand spelling: a two-word spelling variant is respelled to her saved one", () => {
+  // Same food, her spelling: Jev reads it as
+  // she saved it. Only Jev's input changes, never the card or the alias.
+  assertEquals(respellForJev({ name: "greek yogurt", brand: null }, [food("Greek yoghurt", 60)]), { name: "Greek yoghurt", brand: null });
+});
+
+Deno.test("brand spelling: two saved brands one letter apart", () => {
+  // Saved brands "Pintola" and "Pintala" are one edit apart.
+  const foods = [{ ...food("protein oats", 390), brand: "Pintola" }, { ...food("peanut butter", 600), brand: "Pintala" }];
+  // A slip one edit from both: no guess.
+  assertEquals(respellForJev({ name: "oats", brand: "Pintula" }, foods), null);
+  // Typed exactly as one of them: nothing to change.
+  assertEquals(respellForJev({ name: "oats", brand: "Pintala" }, foods), null);
+  // One edit from one, two from the other: that one.
+  assertEquals(respellForJev({ name: "oats", brand: "Pintolla" }, foods), { name: "oats", brand: "Pintola" });
+});
+
+Deno.test("the choice question carries the rule, not the score's own framing", () => {
+  // It is built by cutting the score's first and last sentences out of
+  // MEMORY_RULE. If that wording changes and a cut misses, the choice would
+  // ask Jev to "score the candidate": this fails instead.
+  const text = String(memoryChoiceQuestion({ name: "oats", brand: null }, [food("rolled oats", 380)]).instructions);
+  assert(text.startsWith("Which of these foods, each one this user logged before, is the food the user's words describe? "), text);
+  assert(!/Score the candidate|Judge one thing/.test(text), text);
+  // The body of the rule is still there.
+  assert(text.includes("Judge intended identity, not exact wording."), text);
+});
+
+// ── Each line's brand, for the saved food it makes (stampBrands) ────────────
+
+const brandLine = (food_name: string, food_id: string | null): ParsedItem => ({
+  food_id, food_name, quantity: 1, serving_label: "serving", grams: 30, kcal: 110, protein_g: 4,
+  carb_g: 18, fat_g: 2, fiber_g: null, source: food_id ? "catalog" : "estimate", assumption: null, confidence: "medium",
+});
+const resolvedItem = (name: string, brand: string | null, candidates: { food_id: string; brand: string | null }[]) =>
+  ({ name, brand, quantity: 30, unit: "g", prep: null, candidates: candidates.map((c) => ({ ...c, name: c.food_id })) }) as unknown as ResolvedItem;
+
+Deno.test("a line takes its row's brand, else the brand typed for its item", () => {
+  const resolved = [
+    resolvedItem("kesar pista oats", "Yogabar", [{ food_id: "r1", brand: "Yoga Bar" }]),
+    resolvedItem("masala oats", "Too Yumm", [{ food_id: "r2", brand: null }]),
+  ];
+  const out = stampBrands([brandLine("Kesar Pista Oats", "r1"), brandLine("Masala Oats", "r2")], resolved);
+  assertEquals(out.map((i) => i.brand), ["Yoga Bar", "Too Yumm"]);
+});
+
+Deno.test("a row two items were offered names no brand: the line cannot say whose it is", () => {
+  const resolved = [
+    resolvedItem("oats", "Yogabar", [{ food_id: "shared", brand: null }]),
+    resolvedItem("protein oats", "Pintola", [{ food_id: "shared", brand: null }]),
+  ];
+  assertEquals(stampBrands([brandLine("Oats", "shared")], resolved)[0].brand, undefined);
+});
+
+Deno.test("an estimate line takes a brand only when its name carries it, as a whole word", () => {
+  const resolved = [resolvedItem("masala oats", "Too Yumm", []), resolvedItem("milk", "Go", [])];
+  const out = stampBrands([
+    brandLine("Too Yumm masala oats", null),
+    brandLine("mango lassi", null), // "go" inside "mango" is not the brand Go
+  ], resolved);
+  assertEquals(out.map((i) => i.brand), ["Too Yumm", undefined]);
+});
+
+Deno.test("a respelling the name cannot take is no respelling", () => {
+  // "Pintóle" is one edit from the saved brand "Pintola" once accents fold,
+  // but the raw name keeps the accent, so nothing in it can be replaced. The
+  // trace must not then say `respelled` for a name left as typed.
+  const foods = [{ ...food("Pintola protein oats", 380), brand: "Pintola" }];
+  assertEquals(respellForJev({ name: "Pintóle oats", brand: null }, foods), null);
 });

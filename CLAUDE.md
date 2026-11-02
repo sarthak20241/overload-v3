@@ -21,6 +21,14 @@ EVAL_VIA_CLI=1 npx tsx scripts/parse-meal-eval/run.ts
 # Composable: ONLY=case-a,case-b  FAST_MODE=on  EVAL_WEB_SEARCH=1  DEBUG_STEPS=1
 # Wrong-catalog-row set (Thorough): CASE_SET=thorough-match, and
 # THOROUGH_MATCH_MODE=on (or shadow) to run Jev's row check (needs JEV_API_KEY).
+# Brand not in our catalog (generic or other-brand rows): CASE_SET=branded-oats.
+
+# Saved-food match (Jev only, no model calls): is a food she logged before served?
+# ONLY=too-yum,doctors-banana-caramel REPEAT=3 to see how steady a score is.
+# ASK=prod CAND_BRAND=brackets runs the app's own matchMemory end to end (score,
+# 0.6-0.7 to decide, then the choice question); other knobs are listed at the
+# top of the script (FLOOR, MAYBE_FLOOR, RESPELL=0, DROP_RULE, ASK=choice|pipeline).
+deno run -A scripts/memory-identity-eval/run.ts
 
 # Use the API key ONLY when the question is latency or token cost. The harness
 # warns that CLI timings are not comparable — they measure the CLI, not the
@@ -91,6 +99,8 @@ deno test --allow-all lib/healthCardio.test.ts  # watch runs -> cardio workouts:
 deno test --allow-all --unstable-sloppy-imports lib/cardioLog.test.ts # dashboard cardio sheet: a logged session counts, queued ones count before sync
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/parseSpeed.test.ts # food log mode: Quick / Precise, a stored Thorough reads as Quick
 deno test --allow-all lib/sheetText.test.ts     # text boxes in Portal sheets: late owner values never put old text back (Android letter drops)
+# Saved-food triggers (aliases, delete, repair, brand) on an in-memory Postgres:
+deno run --node-modules-dir=none --allow-read --allow-env --allow-net --allow-write --allow-sys supabase/tests/food_memory_local.ts
 ```
 
 There are no configured lint or build scripts.

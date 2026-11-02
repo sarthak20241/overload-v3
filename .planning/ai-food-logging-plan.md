@@ -298,3 +298,22 @@ name + macro snapshots, grams_logged. One additive migration:
   from eval-set behavior.
 - Whether the browse icon opens food-search prefilled with the unparsed text on failure.
 - Streaming the result per-item vs one shot (one shot first; haiku is fast enough).
+
+## Future (parked)
+
+### Precise: read the label from a page's pictures (parked 2026-11-01)
+
+**Status:** built and tested in PR #323 (branch `claude/brave-visvesvaraya-00b249`), NOT merged. Owner parked it on 2026-11-01. Behind `PRECISE_WEB_IMAGES`, off by default.
+
+**Problem:** many brand pages and Amazon show the nutrition table only as a picture. Tavily finds the right page, but its text has no numbers, so no web row is picked. The line becomes an estimate, and the model names it ("Too Yumm High Protein Super Oats Masala (estimate)").
+
+**What #323 does:** when a right page has no panel in its text, it gets that page's pictures. Jev (image input, 1.13/1.14) asks "is this the nutrition table for this food?" with a floor of 0.7. Haiku copies the numbers from the chosen picture only. The usual Atwater checks run. The result becomes a normal web row with the product's sold name, and the user's words become an alias. Any error gives the same result as today.
+
+**Measured:** estimate lines dropped from 4 to 2 of 10 (branded-oats eval, CLI). No wrong picture readings. About $0.009 and 3 to 8 s per picture step (API key). Worst case on a full miss: about +$0.035 and +15 s.
+
+**Before picking it up:**
+- TypeSafe still calls Jev image input not ready for production. Check that first.
+- Rebase #323 on main.
+- Decide whether the extra latency on a miss is acceptable.
+
+**Related, not built:** an estimate line could take the product name the search found (search rewrite) instead of the model's name. That keeps notes like "(estimate)" out of saved food names. Three saved foods have such a note today.
