@@ -294,6 +294,19 @@ const candidate = (over: Partial<CandidateFood> = {}): CandidateFood => ({
   ...over,
 });
 
+Deno.test("decide never sees the per-100 basis as a serving", () => {
+  // Live 2026-10-18: Peanuts' only serving was "100 g", and "30 g peanuts" came
+  // back as 30 x "100 g". Real portions still go through.
+  const p = candidatePayload(candidate({
+    servings: [
+      { label: "100 g", grams: 100, is_default: true },
+      { label: "1 serving (100 g)", grams: 100 },
+      { label: "1 scoop (31 g)", grams: 31 },
+    ],
+  }));
+  assertEquals(p.servings, [{ label: "1 scoop (31 g)", grams: 31 }]);
+});
+
 Deno.test("a candidate its sources agreed on says NOTHING to decide", () => {
   // The payload is cached input tokens on every meal anyone logs. A per-item
   // "sources agreed" line would pay for itself on none of them, and silence is

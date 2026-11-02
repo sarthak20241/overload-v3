@@ -9,7 +9,7 @@
 // True answers are ~22 g / ~105 kcal and ~20 g / ~63 kcal, so the card was ~9x
 // and ~5x high. The count was multiplied against the row's per-100 BASIS
 // serving, which states a mass and not a portion. Smart mode never shows this
-// because buildDecideSystemPrompt carries the household piece weights; Fast
+// because buildDecideSystemPrompt tells decide to weigh pieces; Fast
 // skips the decide call, so the refusal has to live in the conversion itself.
 
 import { assertEquals } from "jsr:@std/assert@1";
