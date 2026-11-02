@@ -10,6 +10,7 @@ import {
   View, Text, TouchableOpacity, StyleSheet, BackHandler, Pressable,
   TextInput, ScrollView, FlatList, Keyboard, Platform,
   Linking, useWindowDimensions,
+  type LayoutChangeEvent,
 } from 'react-native';
 import Animated, {
   SlideInDown, SlideOutDown, FadeIn, FadeInDown, Easing,
@@ -20,6 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
 import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
+import { pinOffset, pinRoom, tailAfterReply } from '@/lib/questionPin';
 import { fuelDaysText } from '@/lib/fuelDays';
 import { invalidateUserProgram } from '@/lib/screenCache';
 import { activityText } from '@/lib/activityGoals';
@@ -747,7 +749,6 @@ type SetMessagesFn = React.Dispatch<React.SetStateAction<ChatMessage[]>>;
 function createTypewriter(
   messageId: string,
   setMessages: SetMessagesFn,
-  scrollRef: React.RefObject<ScrollView | null>,
   // An opening holds its first line back until it is clearly not a pre-tool
   // "let me check" line (a tool call starts, a line break, or it grows past
   // what that line can be), so the line never flashes on screen.
@@ -792,8 +793,8 @@ function createTypewriter(
     setMessages(prev => prev.map(m =>
       m.id === messageId ? { ...m, content: displayed } : m
     ));
-    // Auto-scroll while typing — animated:false keeps it cheap.
-    scrollRef.current?.scrollToEnd({ animated: false });
+    // No scroll while typing: the reader stays on the reply's first lines and
+    // scrolls on when they are ready.
   };
 
   const start = () => {
@@ -1063,6 +1064,99 @@ function WorkoutEditCard({
   );
 }
 
+// When a reply starts, scroll once so the question it answers sits at the top
+// of the screen; the reply then types in under it with no more scrolling. A
+// tail space under the thread gives that scroll room: one full screen while
+// the reply types (it follows the screen's height), then only what a short
+// reply still needs, so the question does not drop when it ends. Once per
+// reply, so a lookup mid-reply never pulls the reader back.
+function useQuestionPin(
+  scrollRef: React.RefObject<ScrollView | null>,
+  messages: ChatMessage[],
+  loading: boolean,
+  // Read as the reply starts: false leaves that reply where it is.
+  shouldPin: () => boolean = () => true,
+) {
+  const lastUserYRef = useRef(0);
+  const contentHRef = useRef(0);
+  // Where the thread ends: the tail's own top, so it never counts the tail.
+  const threadEndRef = useRef(0);
+  const pinnedIdRef = useRef<string | null>(null);
+  // The scroll waits until the tail space is in, or it would stop short. A
+  // reply that ends first still gets it: the wait outlives the reply.
+  const pendingRef = useRef(false);
+  const shouldPinRef = useRef(shouldPin);
+  shouldPinRef.current = shouldPin;
+  const [viewH, setViewH] = useState(0);
+  const [tail, setTail] = useState<'fill' | number>(0);
+  const tailRef = useRef(tail);
+  tailRef.current = tail;
+  const tailSpace = tail === 'fill' ? viewH : tail;
+
+  const last = messages[messages.length - 1];
+  const writingId = loading && last?.role === 'assistant' && last.content !== '' ? last.id : null;
+  const lastUserId = [...messages].reverse().find((m) => m.role === 'user' && !m.context)?.id ?? null;
+
+  const neededH = () => pinRoom(lastUserYRef.current, Spacing.md, viewH);
+  const pin = () => {
+    pendingRef.current = false;
+    scrollRef.current?.scrollTo({ y: pinOffset(lastUserYRef.current, Spacing.md), animated: true });
+  };
+  const settleTail = () => {
+    const next = tailAfterReply(threadEndRef.current, lastUserYRef.current, Spacing.md, viewH);
+    if (next !== tailRef.current) setTail(next);
+  };
+
+  useEffect(() => {
+    if (!writingId || pinnedIdRef.current === writingId) return;
+    pinnedIdRef.current = writingId;
+    if (!shouldPinRef.current()) return;
+    setTail('fill');
+    // Room already there: no new content size is coming to wait for.
+    if (contentHRef.current >= neededH()) pin();
+    else pendingRef.current = true;
+  }, [writingId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (loading || tailRef.current === 0) return;
+    settleTail();
+  }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The screen's height changed (first layout, or the keyboard closing) while
+  // a pin waits: the room it needs moved, and no content change may follow.
+  useEffect(() => {
+    if (pendingRef.current && contentHRef.current >= neededH()) pin();
+  }, [viewH]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A new turn, or another chat opened: no tail, no scroll waiting.
+  const reset = useCallback(() => {
+    pendingRef.current = false;
+    pinnedIdRef.current = null;
+    setTail(0);
+  }, []);
+
+  return {
+    tailSpace,
+    reset,
+    onScrollLayout: (e: LayoutChangeEvent) => setViewH(e.nativeEvent.layout.height),
+    onContentSizeChange: (_w: number, h: number) => {
+      contentHRef.current = h;
+      if (pendingRef.current && h >= neededH()) pin();
+    },
+    // onLayout for the tail space. The reply's last rows (copy button,
+    // sources) land after loading ends and move the tail down, so a finished
+    // reply's tail is worked out again each time it moves.
+    onTailLayout: (e: LayoutChangeEvent) => {
+      threadEndRef.current = e.nativeEvent.layout.y;
+      if (!loading && tailRef.current !== 0) settleTail();
+    },
+    // onLayout for a message row: only the latest question is measured.
+    userLayout: (id: string) => (id === lastUserId
+      ? (e: LayoutChangeEvent) => { lastUserYRef.current = e.nativeEvent.layout.y; }
+      : undefined),
+  };
+}
+
 // ─── Chat Screen ─────────────────────────────────────────────────────────────
 function ChatScreen({
   onBack,
@@ -1181,6 +1275,12 @@ function ChatScreen({
   // re-answers regardless.
   const [capHit, setCapHit] = useState<null | 'cap' | 'pro'>(null);
   const scrollRef = useRef<ScrollView>(null);
+  // The very first reply needs no pin: the hero folds away and the thread
+  // starts at the top anyway. This reads heroVisible as the first words land;
+  // the hero only hides after its fold (setHeroVisible(false) on a timer), so
+  // it is still true then. Hiding it sooner would pin the first reply too.
+  const questionPin = useQuestionPin(scrollRef, messages, loading,
+    () => stage === 'chat' && !(heroVisible && !workoutContext));
   // Tracks the in-flight stream so we can abort it on screen dismiss /
   // unmount and avoid late callbacks firing into an unmounted component
   // (also stops burning Anthropic tokens after the user has left).
@@ -1250,6 +1350,8 @@ function ChatScreen({
     // reply's text.
     typewriterRef.current = null;
     if (!opens) setInput('');
+    Keyboard.dismiss();
+    questionPin.reset();
     setLoading(true);
     setTurnFailed(false);
     const askedAt = Date.now();
@@ -1333,7 +1435,7 @@ function ChatScreen({
     // if the server delivers in chunky bursts the user sees smooth typing.
     // This is how ChatGPT/Claude.ai/Perplexity all do it: the network is
     // bursty, the animation is smooth.
-    const typewriter = createTypewriter(assistantId, setMessages, scrollRef, { holdFirstLine: opens });
+    const typewriter = createTypewriter(assistantId, setMessages, { holdFirstLine: opens });
     typewriterRef.current = typewriter;
     // Per-invocation flag: did the live `structured` event already deliver this
     // turn's workout edit? Guards the onDone fallback against a double card.
@@ -1848,12 +1950,19 @@ function ChatScreen({
     auraBreath.value = lifted
       ? withRepeat(withSequence(withTiming(0.7, { duration: 1600 }), withTiming(1, { duration: 1600 })), -1)
       : withTiming(1, { duration: 300 });
-    if (lifted) {
+    // Only the first wait scrolls down to the orb. A lookup after the reply
+    // has started leaves the reader where they are. pendingMsg is read
+    // outside the deps on purpose: lifted flips in the same render that sets
+    // it, so this render's value is the one that lifted.
+    if (lifted && pendingMsg?.content === '') {
       const a = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
       const b = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 650);
       return () => { clearTimeout(a); clearTimeout(b); };
     }
   }, [lifted]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A new chat starts with no tail space.
+  useEffect(() => { if (stage !== 'chat') questionPin.reset(); }, [stage, questionPin.reset]);
 
   const dockStyle = useAnimatedStyle(() => ({
     opacity: dockO.value,
@@ -1953,6 +2062,8 @@ function ChatScreen({
         contentContainerStyle={s.chatMessages}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        onLayout={questionPin.onScrollLayout}
+        onContentSizeChange={questionPin.onContentSizeChange}
       >
         {/* Hero: the empty chat and the first wait. Folds away (height to 0)
             once the first words arrive and the orb has left for the dock. */}
@@ -2027,7 +2138,10 @@ function ChatScreen({
           // Derived from state, so render never reads a mutable ref.
           const streaming = loading && idx === messages.length - 1 && msg.role === 'assistant';
           return (
-            <View key={msg.id}>
+            <View
+              key={msg.id}
+              onLayout={questionPin.userLayout(msg.id)}
+            >
               {!bubbleOnlyHoldsTheCard && (
               <>
               <Pressable
@@ -2088,6 +2202,10 @@ function ChatScreen({
             </View>
           );
         })}
+        {/* The question pin's tail space sits right under the thread, above
+            the lifted orb's room, so the orb's room shrinking away never
+            moves the point it measures from. */}
+        <View style={{ height: questionPin.tailSpace }} onLayout={questionPin.onTailLayout} />
         {/* Room for the lifted orb, so it never sits on the last message. */}
         <Animated.View style={liftSpaceStyle} />
       </ScrollView>
@@ -2238,7 +2356,7 @@ function ChatScreen({
             </TouchableOpacity>
           )}
         </View>
-        <MedicalDisclaimer variant="short" style={{ marginTop: Spacing.sm }} />
+        <MedicalDisclaimer variant="line" style={{ marginTop: Spacing.sm }} />
 
         {/* What Drona is doing, under the lifted orb. */}
         <Animated.View style={[s.liftLabel, liftLabelStyle]} pointerEvents="none">
@@ -2301,6 +2419,7 @@ function ChatScreen({
               // A reply still streaming belongs to the thread being left.
               handleStop();
               openConversation(id);
+              questionPin.reset();
               setShowHistory(false);
               setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 50);
             }}
@@ -3917,6 +4036,8 @@ function RefineChatScreen({
   }, [loading]);
   const headerMarkState: DronaMarkState = loading ? 'thinking' : everLoadedRef.current ? 'answer' : 'static';
   const scrollRef = useRef<ScrollView>(null);
+  // See ChatScreen: a reply types in under its question at the top.
+  const questionPin = useQuestionPin(scrollRef, messages, loading);
   // Stable abort handle — refine turns can run long when the model
   // decides to fetch the user's volume series before proposing changes.
   const streamRef = useRef<{ abort: () => void } | null>(null);
@@ -3977,6 +4098,8 @@ function RefineChatScreen({
     // reply's text.
     typewriterRef.current = null;
     setInput('');
+    Keyboard.dismiss();
+    questionPin.reset();
     setLoading(true);
     setTurnFailed(false);
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
@@ -4070,7 +4193,7 @@ function RefineChatScreen({
     }
 
     streamRef.current?.abort();
-    const typewriter = createTypewriter(assistantId, setMessages, scrollRef);
+    const typewriter = createTypewriter(assistantId, setMessages);
     typewriterRef.current = typewriter;
     streamRef.current = callAICoachStreaming(apiMessages, token, {
       onDelta: (chunk) => typewriter.append(chunk),
@@ -4213,12 +4336,14 @@ function RefineChatScreen({
         contentContainerStyle={s.chatMessages}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        onLayout={questionPin.onScrollLayout}
+        onContentSizeChange={questionPin.onContentSizeChange}
       >
         {messages.map((msg, idx) => {
           // See ChatScreen: the running turn's bubble is always the last one.
           const streaming = loading && idx === messages.length - 1 && msg.role === 'assistant';
           return (
-          <View key={msg.id}>
+          <View key={msg.id} onLayout={questionPin.userLayout(msg.id)}>
             <Pressable
               onLongPress={() => openSelectSheet(msg)}
               delayLongPress={350}
@@ -4259,6 +4384,7 @@ function RefineChatScreen({
           </View>
           );
         })}
+        <View style={{ height: questionPin.tailSpace }} onLayout={questionPin.onTailLayout} />
       </ScrollView>
 
       {/* Input */}
