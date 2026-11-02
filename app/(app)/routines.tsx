@@ -55,6 +55,7 @@ import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
 import { RoutineDetailSheet } from '@/components/routines/RoutineDetailSheet';
 import ReorderableList, {
@@ -625,7 +626,7 @@ function ExerciseEditorCard({
                 >
                   {distanceLabel(exercise.targetDistance).text}
                 </Text>
-                <TextInput
+                <SheetTextInput
                   value={exercise.targetDistance}
                   onChangeText={(v) => onChange({ ...exercise, targetDistance: v })}
                   onFocus={onInputFocus}
@@ -646,7 +647,7 @@ function ExerciseEditorCard({
                 >
                   {timeLabel(exercise.targetDuration).text}
                 </Text>
-                <TextInput
+                <SheetTextInput
                   value={exercise.targetDuration}
                   onChangeText={(v) => onChange({ ...exercise, targetDuration: v })}
                   onFocus={onInputFocus}
@@ -689,7 +690,7 @@ function ExerciseEditorCard({
               on the workout screen. */}
           <View>
             <Text style={[styles.editorLabel, { color: C.textMuted }]}>Note for this routine (optional)</Text>
-            <TextInput
+            <SheetTextInput
               value={exercise.notes}
               onChangeText={(v) => onChange({ ...exercise, notes: v })}
               onFocus={onInputFocus}
