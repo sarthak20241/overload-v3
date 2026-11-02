@@ -129,6 +129,10 @@ export function memoryKey(name: string): string {
 }
 
 const MASS_UNIT = /^(g|gm|gms|gram|grams|kg|ml|mls|l|litre|liter)$/i;
+// A stated weight ("100 g", "250 ml") is an amount, not a portion, just like a
+// bare "g". Kept as a serving, a line saved as 15 x "100 g" (15 g) became a
+// "100 g" serving weighing 1 g, and every later log printed "1500 g".
+const STATED_WEIGHT = /^\d+(?:[.,]\d+)?\s*(g|gm|gms|gram|grams|kg|ml|mls|l|litre|liter)$/i;
 const r1 = (n: number) => Math.round(n * 10) / 10;
 
 /**
@@ -176,7 +180,7 @@ export function buildMemory(
         fat_g: r1(e.fat_g * f),
         fiber_g: e.fiber_g == null ? null : r1(e.fiber_g * f),
       },
-      serving: unit && !MASS_UNIT.test(unit) && perUnit && perUnit > 0 && perUnit <= 2000
+      serving: unit && !MASS_UNIT.test(unit) && !STATED_WEIGHT.test(unit) && perUnit && perUnit > 0 && perUnit <= 2000
         ? { label: unit, grams: r1(perUnit) }
         : null,
       source: e.source,

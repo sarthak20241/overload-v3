@@ -141,3 +141,32 @@ export function servingText(
   const qty = formatCount(quantity);
   return qty === '1' ? l : `${qty} × ${l}`;
 }
+
+// Units whose amount IS the line's grams (ml lines store their ml as grams).
+const GRAM_LIKE = new Set(['g', 'gm', 'gms', 'gram', 'grams', 'ml']);
+
+/**
+ * A line whose label is a stated weight ("100 g") but whose quantity is
+ * already the grams: 15 x "100 g" with 15 g behind it. The food log wrote
+ * these from a remembered food, and the card read "1500 g". The grams are
+ * what the numbers were worked out from, so they win: 15 "g".
+ *
+ * Only a far-off pair is rewritten (more than half again either way). A ml
+ * line a few percent off its grams is density, not this bug.
+ */
+export function fixWeightLabel(
+  quantity: number,
+  label: string,
+  grams: number,
+): { quantity: number; serving_label: string } {
+  const keep = { quantity, serving_label: label };
+  const m = label.trim().match(LEAD);
+  if (!m || !(grams > 0) || !(quantity > 0)) return keep;
+  const unit = m[2].trim();
+  if (!GRAM_LIKE.has(unit.toLowerCase())) return keep;
+  const size = parseNum(m[1]);
+  if (!(size > 0)) return keep;
+  const ratio = (quantity * size) / grams;
+  if (ratio <= 1.5 && ratio >= 1 / 1.5) return keep;
+  return { quantity: Math.round(grams * 10) / 10, serving_label: unit };
+}

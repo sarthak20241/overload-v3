@@ -5946,8 +5946,48 @@ export async function runParseMeal(
   input: ParseMealInput,
 ): Promise<ParseMealResult> {
   const result = await runParseMealOnce(deps, input);
+  if (result.parsed) result.parsed.items = result.parsed.items.map(amountMatchesGrams);
+  if (result.proposal) result.proposal.items = result.proposal.items.map(amountMatchesGrams);
   if (input.variantChips && result.parsed) result.parsed.items = result.parsed.items.map(forSwapChips);
   return result;
+}
+
+const GRAM_UNITS = new Set(["g", "gm", "gms", "gram", "grams"]);
+const ML_UNITS = new Set(["ml", "mls"]);
+
+/**
+ * quantity x serving_label is what the card prints, and it must say the grams
+ * the numbers were worked out from.
+ *
+ * decide returns quantity, serving_label and grams as three free numbers, and
+ * only grams drives the macros, so nothing ever checked the other two. It
+ * wrote "30 g peanuts" as 30 x "100 g" (the row's basis label, which the
+ * schema offers as an example) and "4 g chia" as 4 x "4 g": the card read
+ * "3000 g" and "16 g" over correct calories. The saved line then taught the
+ * food memory a "100 g" serving of 1 g, so the next log came back wrong too.
+ * sanitizeItems also caps quantity at 100, which turned 130 g of rice into
+ * 100 x "100 g".
+ *
+ * A weight label that disagrees with the grams is rewritten in the grams'
+ * terms, the same shape the editor saves: 30 "g". A ml label only moves when
+ * it is far off, since a liquid's grams can sit a little off its ml.
+ */
+export function amountMatchesGrams(it: ParsedItem): ParsedItem {
+  if (!(it.grams > 0) || !(it.quantity > 0)) return it;
+  const label = it.serving_label.trim().toLowerCase();
+  const asGrams = (unit: string): ParsedItem => ({ ...it, quantity: round1(it.grams), serving_label: unit });
+  const off = (amount: number, tolerance: number) => {
+    const ratio = amount / it.grams;
+    return ratio > 1 + tolerance || ratio < 1 / (1 + tolerance);
+  };
+  if (GRAM_UNITS.has(label)) return off(it.quantity, 0.1) ? asGrams("g") : it;
+  if (ML_UNITS.has(label)) return off(it.quantity, 0.5) ? asGrams("ml") : it;
+  const m = label.match(/^(\d+(?:\.\d+)?)\s*([a-z]+)$/);
+  if (!m) return it;
+  const size = Number(m[1]);
+  const unit = GRAM_UNITS.has(m[2]) ? "g" : ML_UNITS.has(m[2]) ? "ml" : null;
+  if (!unit || !(size > 0)) return it;
+  return off(it.quantity * size, 0.5) ? asGrams(unit) : it;
 }
 
 async function runParseMealOnce(

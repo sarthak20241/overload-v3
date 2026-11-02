@@ -4,7 +4,7 @@
 // check is a copy of the two tables' keys in lib/units.ts.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { joinServing, splitServing, sizeForUnitChange, scaleServingNutrition, servingText, formatCount } from "./servingSize.ts";
+import { joinServing, splitServing, sizeForUnitChange, scaleServingNutrition, servingText, formatCount, fixWeightLabel } from "./servingSize.ts";
 
 const UNITS = new Set(["g", "kg", "oz", "lb", "ml", "l", "cup", "tbsp", "tsp"]);
 const isM = (u: string) => UNITS.has(u.trim().toLowerCase());
@@ -88,4 +88,20 @@ Deno.test("ordinary portions read as before", () => {
   assertEquals(servingText(1, "1 large egg", isM), "1 large egg");
   assertEquals(servingText(1.25, "roti", isM), "1.3 × roti");
   assertEquals(formatCount(0), "0");
+});
+
+Deno.test("a weight label whose quantity is already the grams reads as the grams", () => {
+  // The reported card: "18g casein" came back as 18 x "100 g" with 18 g behind it.
+  assertEquals(fixWeightLabel(18, "100 g", 18), { quantity: 18, serving_label: "g" });
+  assertEquals(fixWeightLabel(0.75, "100 g", 184), { quantity: 184, serving_label: "g" });
+  assertEquals(fixWeightLabel(250, "250 ml", 250), { quantity: 250, serving_label: "ml" });
+});
+
+Deno.test("a weight label that agrees with its grams is left alone", () => {
+  assertEquals(fixWeightLabel(1.5, "100 g", 150), { quantity: 1.5, serving_label: "100 g" });
+  assertEquals(fixWeightLabel(1, "250 ml", 258), { quantity: 1, serving_label: "250 ml" });
+  assertEquals(fixWeightLabel(2, "1 roti", 80), { quantity: 2, serving_label: "1 roti" });
+  assertEquals(fixWeightLabel(15, "g", 15), { quantity: 15, serving_label: "g" });
+  // No grams to check against: nothing to go on.
+  assertEquals(fixWeightLabel(18, "100 g", 0), { quantity: 18, serving_label: "100 g" });
 });

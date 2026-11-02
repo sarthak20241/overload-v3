@@ -102,6 +102,15 @@ Deno.test("a line with no weight cannot give a per-100 and is left out", () => {
   assertEquals(buildMemory([entry({ grams: null })], "fast", NOW), []);
 });
 
+Deno.test("a stated weight is not a serving, even when the line was saved wrong", () => {
+  // The reported card: 15 g of cocoa saved as 15 x "100 g", then remembered as
+  // a "100 g" serving of 1 g, so the next log read "1500 g".
+  const [cocoa] = buildMemory([entry({ food_name: "cocoa powder", kcal: 38, grams: 15, quantity: 15, serving_unit: "100 g" })], "fast", NOW);
+  assertEquals(cocoa.serving, null);
+  const [milk] = buildMemory([entry({ food_name: "milk", kcal: 100, grams: 250, quantity: 1, serving_unit: "250 ml" })], "fast", NOW);
+  assertEquals(milk.serving, null);
+});
+
 Deno.test("a unit the user logged in is kept as a serving", () => {
   const [egg] = buildMemory([entry({ food_name: "boiled egg", kcal: 155, grams: 100, quantity: 2, serving_unit: "piece" })], "fast", NOW);
   assertEquals(egg.serving, { label: "piece", grams: 50 });

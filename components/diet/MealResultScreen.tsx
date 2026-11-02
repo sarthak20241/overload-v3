@@ -149,10 +149,13 @@ export function MealResultScreen(props: Props) {
   const sum = items.reduce(
     (a, it) => ({
       kcal: a.kcal + it.kcal, p: a.p + it.protein_g, c: a.c + it.carb_g, f: a.f + it.fat_g,
-      fib: it.fiber_g == null ? a.fib : (a.fib ?? 0) + it.fiber_g,
+      fib: a.fib + (it.fiber_g ?? 0),
     }),
-    { kcal: 0, p: 0, c: 0, f: 0, fib: null as number | null },
+    { kcal: 0, p: 0, c: 0, f: 0, fib: 0 },
   );
+  // Fiber is said only when every line knows its own. A line with no fiber
+  // number left out of the sum made "15g oats + 3g dates" read "0g fiber".
+  const fiberKnown = items.every((it) => it.fiber_g != null);
   const sections = sectionsOfItems(items, mealType);
   const multi = sections.length > 1;
   const destination = multi ? `${sections.length} meals` : mealLabel(mealType);
@@ -224,10 +227,10 @@ export function MealResultScreen(props: Props) {
               disabled={frozen}
               style={({ pressed }) => [s.amountTxtBox, !stepper && s.amountPlain, pressed && s.pressed]}
               accessibilityRole="button"
-              accessibilityLabel={`Amount ${formatServing(it.quantity, it.serving_label)}`}
+              accessibilityLabel={`Amount ${formatServing(it.quantity, it.serving_label, it.grams)}`}
               accessibilityHint="Opens the editor to change the amount or the unit"
             >
-              <Text style={s.amountTxt} numberOfLines={1}>{formatServing(it.quantity, it.serving_label)}</Text>
+              <Text style={s.amountTxt} numberOfLines={1}>{formatServing(it.quantity, it.serving_label, it.grams)}</Text>
             </Pressable>
             {stepper && (
               <Pressable
@@ -424,8 +427,8 @@ export function MealResultScreen(props: Props) {
                 </View>
               ))}
             </View>
-            {sum.fib != null && sum.fib > 0 && (
-              <Text style={s.fiber}>{r0(sum.fib)}g fiber</Text>
+            {fiberKnown && sum.fib >= 0.05 && (
+              <Text style={s.fiber}>{formatMacroGrams(sum.fib)}g fiber</Text>
             )}
           </View>
 
