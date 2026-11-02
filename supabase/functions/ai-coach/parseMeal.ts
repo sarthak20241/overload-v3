@@ -1549,8 +1549,8 @@ const LOG_MEAL_TOOL = {
               type: "number",
               description:
                 "How many serving_labels the user ate. The card prints quantity, then serving_label, " +
-                'so the two must read as what was eaten: 2 + "roti" reads "2 roti", 150 + "g" reads ' +
-                '"150 g", 1.5 + "1 katori" reads "1.5 x 1 katori".',
+                'so the two must read as what was eaten: 2 + "roti" reads "2 × roti", 150 + "g" reads ' +
+                '"150 g", 1.5 + "1 katori" reads "1.5 × 1 katori".',
             },
             serving_label: {
               type: "string",
