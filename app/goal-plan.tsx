@@ -676,6 +676,8 @@ export default function GoalPlanScreen() {
           onDone={() => {
             tourOnRef.current = false;
             setTourOn(false);
+            // Once only: a remount with the same params must not replay it.
+            router.setParams({ tour: undefined } as any);
             if (upgradeWaiting.current) { upgradeWaiting.current = false; continueToUpgrade(); }
           }}
         />

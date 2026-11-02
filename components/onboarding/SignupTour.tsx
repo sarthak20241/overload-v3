@@ -79,7 +79,8 @@ const Video: VideoModule | null = (() => {
 /** One player for the whole tour; each scene swaps its film in. The last
  *  scene plays once and holds its final frame (the silhouette). */
 function Film({ id }: { id: TourSceneId }) {
-  const player = Video!.useVideoPlayer(FILMS.welcome, (p) => {
+  // Starts on the current scene, so a remount mid-tour does not jump back.
+  const player = Video!.useVideoPlayer(FILMS[id], (p) => {
     p.muted = true;
     p.loop = true;
     p.play();
@@ -129,6 +130,8 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
   const scenes = tourScenes(firstName, phaseLine);
   const last = scenes.length - 1;
   const [index, setIndex] = useState(0);
+  // Bumped to restart the current scene's timer (back on the first scene).
+  const [round, setRound] = useState(0);
   const [leaving, setLeaving] = useState(false);
   const progress = useSharedValue(0);
   const ended = useRef(false);
@@ -160,14 +163,16 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
     const from = indexRef.current;
     const to = nextScene(from, step, scenes.length);
     if (to === 'done') { finish('finished'); return; }
-    if (to === from) { progress.value = 0; return; }
+    // Back on the first scene: replay its timer. Zeroing the value alone
+    // would cancel the running timing and stall the tour there.
+    if (to === from) { setRound((r) => r + 1); return; }
     haptics.selection();
     setIndex(to);
   }, [scenes.length, finish, progress]);
 
   // Each scene fills its bar, then moves on. The last one waits for the button.
   useEffect(() => {
-    track('signup_tour_scene', { scene: index, id: scene.id });
+    if (round === 0 || index !== 0) track('signup_tour_scene', { scene: index, id: scene.id });
     cancelAnimation(progress);
     progress.value = 0;
     const isLast = index === last;
@@ -177,7 +182,7 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
     return () => cancelAnimation(progress);
     // Per scene only: go, progress and last are stable for the tour's life.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [index]);
+  }, [index, round]);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => { finish('skipped'); return true; });
