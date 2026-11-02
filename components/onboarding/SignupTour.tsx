@@ -168,7 +168,7 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
     if (to === from) { setRound((r) => r + 1); return; }
     haptics.selection();
     setIndex(to);
-  }, [scenes.length, finish, progress]);
+  }, [scenes.length, finish]);
 
   // Each scene fills its bar, then moves on. The last one waits for the button.
   useEffect(() => {
@@ -209,12 +209,13 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
             pointerEvents="none"
           />
 
+          {/* Tap anywhere to move on, left third to go back. Hidden from
+              screen readers, which use the Next and Skip buttons instead. */}
           <Pressable
             style={StyleSheet.absoluteFill}
             onPress={onTap}
-            accessibilityRole="button"
-            accessibilityLabel="Next"
-            accessibilityHint="Tap the left side to go back"
+            accessible={false}
+            importantForAccessibility="no"
           />
 
           <View style={[s.top, { paddingTop: insets.top + Spacing.sm }]} pointerEvents="none">
