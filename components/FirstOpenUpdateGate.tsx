@@ -57,8 +57,10 @@ export function FirstOpenUpdateGate({ children }: { children: ReactNode }) {
       } catch {
         state = parseState(null);
       }
+      // The backstop may have opened the app while storage was slow.
+      if (cancelled) return;
       if (!shouldCheckOnOpen(env, state)) {
-        if (!cancelled) setOpen(true);
+        setOpen(true);
         return;
       }
       const t0 = Date.now();
@@ -67,6 +69,8 @@ export function FirstOpenUpdateGate({ children }: { children: ReactNode }) {
         fetch: () => Updates.fetchUpdateAsync(),
         beforeReload: () => saveState(nextState(state, 'reloading')),
         reload: () => Updates.reloadAsync(),
+        // Flips when the backstop opens the app (the effect cleans up).
+        isCancelled: () => cancelled,
       });
       track('first_open_update', { outcome, ms: Date.now() - t0, try: state.tries + 1 });
       // Reloading: stay closed, the new code takes over in a moment. If the

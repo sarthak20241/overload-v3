@@ -23,6 +23,7 @@ function steps(opts: {
   checkMs?: number;
   fetchMs?: number;
   checkThrows?: boolean;
+  rollBack?: boolean;
 }) {
   const calls: string[] = [];
   return {
@@ -38,7 +39,7 @@ function steps(opts: {
       fetch: async () => {
         calls.push("fetch");
         await sleep(opts.fetchMs ?? 0);
-        return { isNew: opts.isNew ?? true };
+        return { isNew: opts.isNew ?? true, isRollBackToEmbedded: opts.rollBack ?? false };
       },
       beforeReload: async () => {
         calls.push("save");
@@ -63,10 +64,36 @@ Deno.test("nothing newer: opens the built-in code, no download", async () => {
   assertEquals(calls, ["check"]);
 });
 
-Deno.test("downloaded but not new: no reload", async () => {
-  const { calls, steps: s } = steps({ available: true, isNew: false });
+Deno.test("a rollback to the built-in code: already running it, no reload", async () => {
+  const { calls, steps: s } = steps({ available: true, isNew: false, rollBack: true });
   assertEquals(await runFirstOpenUpdate(s), "up_to_date");
   assertEquals(calls, ["check", "fetch"]);
+});
+
+Deno.test("a failed download (not new, not a rollback) keeps the retries", async () => {
+  const { calls, steps: s } = steps({ available: true, isNew: false });
+  const outcome = await runFirstOpenUpdate(s);
+  assertEquals(outcome, "failed");
+  assertEquals(nextState(FRESH_STATE, outcome).done, false);
+  assertEquals(calls, ["check", "fetch"]);
+});
+
+Deno.test("the app opened another way mid-download: never reloads", async () => {
+  // The gate's backstop opened the app while a slow storage read had pushed
+  // the cap past it. The download lands inside the cap, after the opening.
+  const { calls, steps: s } = steps({ available: true, fetchMs: 20 });
+  let open = false;
+  setTimeout(() => (open = true), 10);
+  const outcome = await runFirstOpenUpdate({ ...s, capMs: 1000, isCancelled: () => open });
+  assertEquals(outcome, "timed_out");
+  await sleep(30);
+  assertEquals(calls, ["check", "fetch"]);
+});
+
+Deno.test("already open before it starts: nothing runs", async () => {
+  const { calls, steps: s } = steps({ available: true });
+  assertEquals(await runFirstOpenUpdate({ ...s, isCancelled: () => true }), "timed_out");
+  assertEquals(calls, []);
 });
 
 Deno.test("a check that hangs: opens at the cap", async () => {

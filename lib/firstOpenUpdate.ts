@@ -75,12 +75,16 @@ export function parseState(raw: string | null): FirstOpenState {
 export type FirstOpenSteps = {
   /** Updates.checkForUpdateAsync */
   check: () => Promise<{ isAvailable: boolean }>;
-  /** Updates.fetchUpdateAsync */
-  fetch: () => Promise<{ isNew: boolean }>;
+  /** Updates.fetchUpdateAsync. A failed download comes back as isNew false
+   *  WITHOUT isRollBackToEmbedded, not as a throw. */
+  fetch: () => Promise<{ isNew: boolean; isRollBackToEmbedded?: boolean }>;
   /** Saves the state before a reload, so the new code never waits again. */
   beforeReload: () => Promise<void>;
   /** Updates.reloadAsync */
   reload: () => Promise<void>;
+  /** True once the app has opened some other way (the gate's backstop).
+   *  Nothing starts after that, so nothing can reload under the user. */
+  isCancelled?: () => boolean;
   capMs?: number;
 };
 
@@ -100,16 +104,23 @@ export function runFirstOpenUpdate(steps: FirstOpenSteps): Promise<FirstOpenOutc
       resolve(outcome);
     };
     const timer = setTimeout(() => settle('timed_out'), capMs);
+    const stopped = () => {
+      if (!settled && steps.isCancelled?.()) settle('timed_out');
+      return settled;
+    };
 
     (async () => {
+      if (stopped()) return;
       const { isAvailable } = await steps.check();
-      if (settled) return;
+      if (stopped()) return;
       if (!isAvailable) return settle('up_to_date');
-      const { isNew } = await steps.fetch();
-      if (settled) return;
-      if (!isNew) return settle('up_to_date');
+      const { isNew, isRollBackToEmbedded } = await steps.fetch();
+      if (stopped()) return;
+      // A rollback to the built-in code is what is already running. Anything
+      // else that is not new is a failed download: keep the retries.
+      if (!isNew) return settle(isRollBackToEmbedded ? 'up_to_date' : 'failed');
       await steps.beforeReload();
-      if (settled) return;
+      if (stopped()) return;
       // Settle first: reloadAsync tears the JS down and may never resolve.
       settle('reloading');
       await steps.reload();
