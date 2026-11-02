@@ -1,9 +1,10 @@
 /**
  * The commitment ritual (Phase 4): a pledge card and a tap-and-hold ring.
  * Holding fills a lime arc around Drona's mark over ~1.4 s; letting go early
- * rewinds it. Completing fires the success haptic, a restrained lime confetti
- * burst, and hands off to the build moment. Endowment beats a checkbox: the
- * user physically holds the promise.
+ * rewinds it. Completing fires the success haptic and onCommitted; the owner
+ * runs the full-screen confetti (components/ui/Celebration) and moves on to
+ * the build moment once it lands. Endowment beats a checkbox: the user
+ * physically holds the promise.
  */
 import React, { useMemo, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
@@ -15,7 +16,6 @@ import {
   useSharedValue,
   withTiming,
 } from 'react-native-reanimated';
-import { Confetti } from 'react-native-fast-confetti';
 import { Colors, FontFamily, FontSize, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
@@ -25,8 +25,6 @@ const SIZE = 132;
 const STROKE = 7;
 const HOLD_MS = 1400;
 
-const CONFETTI_COLORS = ['#c8ff00', '#9fcc00', '#5a6069', '#e7f5c2', '#ffffff'];
-
 export function CommitmentHold({
   pledgeTitle,
   pledgeBody,
@@ -34,6 +32,7 @@ export function CommitmentHold({
 }: {
   pledgeTitle: string;
   pledgeBody: string;
+  /** The hold completed. */
   onCommitted: () => void;
 }) {
   const { C } = useTheme();
@@ -51,7 +50,7 @@ export function CommitmentHold({
   const complete = () => {
     setCommitted(true);
     haptics.success();
-    setTimeout(onCommitted, 2100);
+    onCommitted();
   };
   const tickStart = () => haptics.tick();
 
@@ -118,12 +117,6 @@ export function CommitmentHold({
       <Text style={[c.caption, { color: committed ? C.accentText : C.textDim }]}>
         {committed ? 'Committed.' : 'Tap and hold to make it yours'}
       </Text>
-
-      {committed && (
-        <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-          <Confetti count={140} colors={CONFETTI_COLORS} fadeOutOnEnd />
-        </View>
-      )}
     </View>
   );
 }
