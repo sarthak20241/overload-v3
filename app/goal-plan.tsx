@@ -78,6 +78,10 @@ function addDaysISO(iso: string, delta: number): string {
 /** The Goal screen's line chart, 7pt shorter than the default so the page fits above the button. */
 const GOAL_CHART_HEIGHT = CHART_HEIGHT - 7;
 
+// Set when the sign-up tour ends, so a remount that still carries ?tour=1
+// (before the param is cleared) never plays it a second time this launch.
+let tourPlayed = false;
+
 export default function GoalPlanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -91,7 +95,7 @@ export default function GoalPlanScreen() {
   // underneath, so the wait for phase 1 is the tour (components/onboarding/SignupTour).
   const { build: buildParam, seq: seqParam, auto: autoParam, then: thenParam, drona: dronaParam, kcal: kcalParam, tour: tourParam } =
     useLocalSearchParams<{ build?: string; seq?: string; auto?: string; then?: string; drona?: string; kcal?: string; tour?: string }>();
-  const [tourOn, setTourOn] = useState(tourParam === '1');
+  const [tourOn, setTourOn] = useState(tourParam === '1' && !tourPlayed);
   // Read by the paywall hand-off below, which must not cut the tour short.
   const tourOnRef = useRef(tourOn);
   tourOnRef.current = tourOn;
@@ -677,6 +681,7 @@ export default function GoalPlanScreen() {
           phaseLine={phaseLineFor(tourPhase?.name, tourPhase?.duration_weeks)}
           onDone={() => {
             tourOnRef.current = false;
+            tourPlayed = true;
             setTourOn(false);
             // Once only: a remount with the same params must not replay it.
             router.setParams({ tour: undefined } as any);

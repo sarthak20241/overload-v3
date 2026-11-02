@@ -17,6 +17,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AccessibilityInfo,
   BackHandler,
   Image,
   Pressable,
@@ -86,12 +87,20 @@ function Film({ id }: { id: TourSceneId }) {
     p.play();
   });
   const first = useRef(true);
+  // A swap that fails leaves the last film playing over the new scene's
+  // still; stop it and let the still show instead.
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     player.loop = id !== 'plan';
     if (first.current) { first.current = false; return; }
-    player.replaceAsync(FILMS[id]).then(() => player.play()).catch(() => {});
+    let live = true;
+    player.replaceAsync(FILMS[id])
+      .then(() => { if (!live) return; setFailed(false); player.play(); })
+      .catch(() => { if (!live) return; player.pause(); setFailed(true); });
+    return () => { live = false; };
   }, [id, player]);
   const VideoView = Video!.VideoView;
+  if (failed) return null;
   return (
     <VideoView
       player={player}
@@ -127,6 +136,15 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const reduced = useReducedMotion();
+  // With a screen reader on, scenes wait for Next: a 4.5s timer moves on
+  // before the words are read out.
+  const [readerOn, setReaderOn] = useState(false);
+  useEffect(() => {
+    let live = true;
+    AccessibilityInfo.isScreenReaderEnabled().then((on) => { if (live) setReaderOn(on); }).catch(() => {});
+    const sub = AccessibilityInfo.addEventListener('screenReaderChanged', setReaderOn);
+    return () => { live = false; sub.remove(); };
+  }, []);
   const scenes = tourScenes(firstName, phaseLine);
   const last = scenes.length - 1;
   const [index, setIndex] = useState(0);
@@ -173,19 +191,21 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
     setIndex(to);
   }, [scenes.length, finish]);
 
-  // Each scene fills its bar, then moves on. The last one waits for the button.
+  // Each scene fills its bar, then moves on. The last one waits for the button,
+  // and so does every scene while a screen reader is on.
   useEffect(() => {
     if (round === 0 || index !== 0) track('signup_tour_scene', { scene: index, id: scene.id });
     cancelAnimation(progress);
     progress.value = 0;
     const isLast = index === last;
+    if (readerOn) return;
     progress.value = withTiming(1, { duration: TOUR_SCENE_MS, easing: Easing.linear }, (done) => {
       if (done && !isLast) runOnJS(go)(1);
     });
     return () => cancelAnimation(progress);
     // Per scene only: go, progress and last are stable for the tour's life.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [index, round]);
+  }, [index, round, readerOn]);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => { finish('skipped'); return true; });
