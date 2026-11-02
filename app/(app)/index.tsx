@@ -53,7 +53,7 @@ import { groupSetsByExercise } from '@/lib/workoutSummary';
 import { weekPatternFor } from '@/lib/weekPattern';
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
-import { useTodayNutrition, useNutritionTargets, ymd } from '@/lib/dietData';
+import { useTodayNutrition, useNutritionTargets } from '@/lib/dietData';
 import { fuelOn } from '@/lib/fuelDays';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { PressableScale } from '@/components/ui/PressableScale';
@@ -1110,7 +1110,6 @@ export default function DashboardScreen() {
     && !workoutActive
     && !aiCoachOpen;
   const showLogButton = !isGuestSession && !!user?.id;
-  const foodTodayRead = fuel.totalsDayIso === ymd(new Date());
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
@@ -1531,12 +1530,8 @@ export default function DashboardScreen() {
       {/* Log food from home: opens Drona's food box on Nutrition. Out of the
           way while a popup, the coach or a live workout (its mini bar sits
           here) has the screen. */}
-      {showLogButton && user?.id ? (
+      {showLogButton ? (
         <HomeLogButton
-          supabase={supabase}
-          userId={user.id}
-          todayReady={foodTodayRead}
-          loggedToday={foodTodayRead && Object.values(fuel.byMeal).some((rows) => rows.length > 0)}
           hidden={popupShowing || splitPromptShowing || aiCoachOpen || workoutActive}
           onLog={() => router.push({ pathname: '/nutrition', params: { focus: 'ai' } })}
         />
