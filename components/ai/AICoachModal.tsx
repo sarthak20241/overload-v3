@@ -4311,6 +4311,9 @@ function RefineChatScreen({
 export interface AICoachModalProps {
   visible: boolean;
   onClose: () => void;
+  /** Something drawn above the sheet owns Android back for now (the sign-up
+   *  tour), so the sheet's handler stands aside instead of consuming it. */
+  deferHardwareBack?: boolean;
   /** Which surface opened the sheet (dashboard hero, insight, in-workout...). Analytics only. */
   source?: string;
   onRoutineCreated?: () => void;
@@ -4374,6 +4377,7 @@ export function CoachSheet({
   kept,
   visible,
   onClose,
+  deferHardwareBack,
   onRoutineCreated,
   onProgramApplied,
   initialScreen = 'menu',
@@ -4576,6 +4580,7 @@ export function CoachSheet({
   useEffect(() => {
     if (!visible) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (deferHardwareBack) return false;
       // Gate or menu owns the modal → close it entirely (nothing to lose).
       if (!accessAllowed || screen === 'menu') { handleClose(); return true; }
       // Paywall overlay (trialing upgrade) → dismiss back to the menu.
@@ -4589,7 +4594,7 @@ export function CoachSheet({
     });
     return () => sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, accessAllowed, screen, showPaywall, workoutContext, activity.busy]);
+  }, [visible, accessAllowed, screen, showPaywall, workoutContext, activity.busy, deferHardwareBack]);
 
   // Live-workout edit: hand the operations to the workout screen, then get out
   // of the way. Anything that actually landed is on the screen behind this

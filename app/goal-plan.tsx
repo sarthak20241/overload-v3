@@ -651,6 +651,8 @@ export default function GoalPlanScreen() {
 
       <AICoachModal
         visible={coachOpen}
+        // The tour above it owns Android back until it ends.
+        deferHardwareBack={tourOn}
         source="goal_plan"
         onClose={() => { setCoachOpen(false); setBuildSeed(null); setBuildPhaseId(null); setBuildAuto(false); setProgramDraft(undefined); load(); continueToUpgrade(); }}
         initialScreen={buildSeed ? 'plan' : 'program'}

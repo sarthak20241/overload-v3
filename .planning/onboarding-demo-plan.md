@@ -32,53 +32,45 @@ a paywall wall, empty orb-only screens, a plan that starts next week, and a
 ## What we already have
 
 - 16-step intake, commit hold, build moment, plan reveal, phase 1 draft.
-- Getting-started checklist on the dashboard (`lib/startGuide.ts`,
-  `components/home/StartGuideCard.tsx`, first 21 days).
-- Floating log button with a hint pill (`lib/homeLogHint.ts`).
+- Getting-started checklist (`lib/startGuide.ts`, `components/home/StartGuideCard.tsx`).
+  **Switched off** on main (`START_GUIDE_ENABLED = false`, 2026-11-02) until it
+  is reworked; anything that builds on it must turn it back on or replace it.
+- Home log button (`components/home/HomeLogButton.tsx`, no hint pill since #333).
 - Pace slider and projected curve (`components/onboarding/PaceSlider.tsx`,
   `ProjectedCurve.tsx`), demo loop (`DemoLoop.tsx`).
-- Commit confetti: now full screen and colourful (this branch).
 
 The gap is not the intake. It is the first week: about 6 of 20 new users did
 nothing after onboarding, and only 1 logged a real workout (2026-10-31 data).
 
-## Plan, in order
+## Done in PR #328 (2026-11-02)
 
-### Phase 1. First-week path (the "learning into the app")
-Turn the Getting-started checklist into a guided path, one step open at a time.
-- Drona greets on the first home visit: one line, then the path card.
-- Steps: Log a meal, Start your first workout, Check in your weight,
-  Ask Drona one question. Each step: 2-3 swipe cards (what it is, why it
-  matters, where to tap), then a button that opens the real screen.
-- Doing the step ticks it and opens the next one ("Your next step").
-- All steps done: full-screen confetti (reuse `CommitConfetti`) and a short
-  Drona line. The card goes away.
-- Nothing is locked. Tabs stay as they are. The path only suggests order.
-- Done when: a fresh account walks all 4 steps on the sim, the path survives
-  an app restart, and a step done elsewhere still ticks.
+- **Commit confetti:** one slow, full-screen, colourful burst
+  (`components/ui/Celebration.tsx`); no rain over the plan screen.
+- **Sign-up tour (replaces the first idea, a Home path with lesson sheets,
+  which the owner turned down):** right after sign-up the Goal screen shows
+  five full-screen films while phase 1 builds underneath
+  (`components/onboarding/SignupTour.tsx`, words in `lib/signupTour.ts`,
+  films in `assets/tour/`). Style follows the owner's reference, Nike Run
+  Club's opener. Films are Higgsfield Cinema Studio 3.0 clips, checked frame
+  by frame for third-party logos.
 
-### Phase 2. Celebration kit
+## Still open, in order
+
+### 1. Celebration kit
 One shared set of moments, used everywhere a "first" happens.
 - First meal logged: toast + one reminder offer for the next meal.
-- First workout saved: full-screen confetti + the PR card if there is one.
+- First workout saved: full-screen confetti (`Celebration`) + the PR card if there is one.
 - Streak day 3 and 7: small flame moment on the dashboard.
 - One component, one rule file with tests, one analytics event per moment.
 
-### Phase 3. Spotlight tips on first visit
+### 2. Spotlight tips on first visit
 - First time on Nutrition, Workout, Drona chat: dim the screen, light up the
   one control that matters, one sentence in coach voice, "Got it".
 - Once per screen per device. Use a proven library (react-native-copilot or
   similar), not a hand-made mask.
 
-### Phase 4. Intake polish
+### 3. Intake polish
 - "Why we ask" link and sheet on sex, age, height, weight, target.
 - Red "Not recommended" band on the pace slider.
 - Split the progress bar into 3 named parts (You, Your body, Your pace), so
   16 steps feel like 3.
-- Optional: 2 feature preview pages before the first question, using
-  `DemoLoop`. Test with real users first; it adds taps before value.
-
-## Open decision
-
-Which phase first. Recommendation: Phase 1, because the drop is after
-onboarding, not inside it.
