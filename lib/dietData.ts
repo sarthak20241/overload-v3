@@ -811,6 +811,12 @@ export const FOOD_BAR_CAPABILITIES = ['food_create', 'variant_swap'] as const;
 export const FOOD_TURNS_KEPT = 10;
 export const FOOD_TURN_CHARS = 400;
 
+/** Card lines sent with a follow-up. Mirrors CARD_MAX_LINES in the ai-coach
+ *  function's foodContext.ts (the parse cap, 50). A correction rebuilds the
+ *  whole card from what is sent, so the count rides along too: a card longer
+ *  than this reads as cut and the server's card tools leave it alone. */
+export const CARD_MAX_LINES = 50;
+
 export interface PendingFoodMeal {
   status: 'awaiting_clarification';
   text: string;
@@ -1324,7 +1330,7 @@ export async function parseMeal(
             // Macros ride along so the server can hand an UNTOUCHED line back
             // verbatim: a correction replaces the whole meal, so anything it
             // cannot reconstruct would be silently dropped.
-            previous_items: args.previous.items.slice(0, 12).map((it, idx) => ({
+            previous_items: args.previous.items.slice(0, CARD_MAX_LINES).map((it, idx) => ({
               food_id: it.food_id,
               food_name: it.food_name,
               quantity: it.quantity,
@@ -1346,6 +1352,9 @@ export async function parseMeal(
               ...(it.said_name ? { said_name: it.said_name } : {}),
               ...(idx === args.researchLine ? { research: true } : {}),
             })),
+            // How many lines the card really has, so the server can tell a
+            // whole card from one cut at CARD_MAX_LINES.
+            previous_items_total: args.previous.items.length,
           }
           : {}),
       },

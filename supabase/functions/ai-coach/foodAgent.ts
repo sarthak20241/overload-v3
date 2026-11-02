@@ -68,6 +68,9 @@ export interface FoodAgentInput {
    *  agent can edit it, add to it, remove from it, save it as a meal, or talk
    *  about it. Its numbers are the user's working copy, never to be re-guessed. */
   card?: CardLine[] | null;
+  /** How many lines the app says the card has (previous_items_total). Null or
+   *  absent for an app that sends no count; see cardMayBeCut. */
+  cardTotal?: number | null;
   /** The router's read of the message: which saved meal it names, and how
    *  sure (0-1). One line in the opening message, so the agent can fetch that
    *  one meal with list_saved_meals instead of reading them all. A pointer,
@@ -250,8 +253,8 @@ const FINISH_TOOLS = new Set([
  *  first-shot message cannot "edit" nothing. A card that may be cut at the cap
  *  gets no card tools either: editing, removing from, or saving a card the
  *  agent cannot see all of would drop the lines past the cap (cardMayBeCut). */
-export function toolsFor(card: CardLine[] | null | undefined): AnthropicTool[] {
-  return card?.length && !cardMayBeCut(card) ? [...FOOD_AGENT_TOOLS, ...CARD_TOOLS] : FOOD_AGENT_TOOLS;
+export function toolsFor(card: CardLine[] | null | undefined, total?: number | null): AnthropicTool[] {
+  return card?.length && !cardMayBeCut(card, total) ? [...FOOD_AGENT_TOOLS, ...CARD_TOOLS] : FOOD_AGENT_TOOLS;
 }
 
 /** Said to the agent when a card is on screen: what it is and what to do with it. */
@@ -435,7 +438,7 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
       // 2000 under Sonnet 4.6; ~30% up for Sonnet 5.5's tokenizer.
       max_tokens: 2600,
       system: input.card?.length ? `${FOOD_AGENT_SYSTEM}\n${CARD_NOTE}` : FOOD_AGENT_SYSTEM,
-      tools: toolsFor(input.card),
+      tools: toolsFor(input.card, input.cardTotal),
       // Always a tool: free text would be a reply that skipped the reply tool's
       // rules, and it would end the loop without saying so. Sonnet 5.5 rejects
       // a forced tool_choice, so the system prompt says it and the code below
@@ -589,7 +592,7 @@ async function finishWith(
   // The card tools act on the card, so a card that may be cut at the cap
   // refuses them HERE too, not only in toolsFor: a model can name a tool it
   // was not offered, and the refusal has to sit where the tool would act.
-  if (cardMayBeCut(card) && (u.name === EDIT_CARD_TOOL.name || u.name === REMOVE_CARD_LINES_TOOL.name || u.name === SAVE_CARD_AS_MEAL_TOOL.name)) {
+  if (cardMayBeCut(card, input.cardTotal) && (u.name === EDIT_CARD_TOOL.name || u.name === REMOVE_CARD_LINES_TOOL.name || u.name === SAVE_CARD_AS_MEAL_TOOL.name)) {
     return { kind: "failed", reason: "card_may_be_cut", turns };
   }
   if (u.name === EDIT_CARD_TOOL.name) {
