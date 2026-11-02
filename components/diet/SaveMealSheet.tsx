@@ -15,6 +15,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
 import { createSavedMeal, type ParsedMealItem } from '@/lib/dietData';
@@ -133,7 +134,7 @@ export function SaveMealSheet({ open, items, onClose, onSaved }: Props) {
             {/* Name */}
             <View style={[s.field, { borderColor: C.borderSubtle }]}>
               <Text style={[s.fieldLabel, { color: C.textSecondary }]}>Name</Text>
-              <TextInput
+              <SheetTextInput
                 style={[s.nameInput, { color: C.foreground, backgroundColor: C.muted }]}
                 value={name}
                 onChangeText={setName}

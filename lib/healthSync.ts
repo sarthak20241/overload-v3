@@ -23,6 +23,7 @@ import Constants, { ExecutionEnvironment } from 'expo-constants';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { dailyMetricDef, type DailyMetricType, type MetricSource } from './dailyMetrics';
 import type { HealthHub } from './healthSources';
+import type { HubWorkout } from './healthCardio';
 
 /**
  * The metric types a platform hub can populate. Excludes the derived readiness
@@ -67,6 +68,18 @@ export interface HealthAdapter {
    * Connect can, so this is our one source of truth for "denied" there.
    */
   getGrantedReadTypes?(): Promise<ReadableMetric[] | null>;
+  /**
+   * Every workout the hub recorded that started at or after `sinceMs`, any
+   * activity type: lib/healthCardioSync keeps the cardio ones. Empty when
+   * workout read access was never granted (or, on iOS, was denied).
+   */
+  readWorkouts?(sinceMs: number): Promise<HubWorkout[]>;
+  /**
+   * Would asking for access now show the permission sheet? True once a type
+   * was added after the user connected (workouts, 2026-11), so the health
+   * screen can ask again on a tap. Null when the platform cannot tell.
+   */
+  needsAuthorization?(): Promise<boolean | null>;
 }
 
 // ── cursors (per-user, AsyncStorage, same keying convention as syncQueue) ─────
@@ -156,6 +169,22 @@ export async function requestHealthAuthorization(): Promise<boolean> {
   if (!adapter) return false;
   if (!(await adapter.isAvailable())) return false;
   return adapter.requestAuthorization(READABLE_METRICS);
+}
+
+/**
+ * Has the hub got a type to ask about that the user has not been asked for
+ * yet (workouts, for someone who connected before cardio import)? False when
+ * there is no hub or the platform cannot tell, so the screen never nags.
+ */
+export async function needsHealthAuthorization(): Promise<boolean> {
+  const adapter = getHealthAdapter();
+  if (!adapter?.needsAuthorization) return false;
+  try {
+    if (!(await adapter.isAvailable())) return false;
+    return (await adapter.needsAuthorization()) === true;
+  } catch {
+    return false;
+  }
 }
 
 /**

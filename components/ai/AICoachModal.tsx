@@ -2318,6 +2318,23 @@ function ChatScreen({
   );
 }
 
+// The "why" under a generated workout or plan shows 3 lines. Drona is asked
+// for 25 words, but an older reply or a refine can run long, so a tap opens
+// the rest instead of losing it behind the ellipsis.
+function BriefRationale({ text, color }: { text: string; color: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Text
+      style={[s.rationaleText, { color }]}
+      numberOfLines={open ? undefined : 3}
+      onPress={() => setOpen((o) => !o)}
+      suppressHighlighting
+    >
+      {text}
+    </Text>
+  );
+}
+
 // ─── WorkoutCard (Phase 2.5) ─────────────────────────────────────────────────
 // Shared renderer for a single generated workout. Used standalone by
 // GenerateWorkoutScreen and as the inner-day card by GeneratePlanScreen.
@@ -2369,9 +2386,7 @@ function WorkoutCard({
             <SparkleIcon size={11} color={C.accentText} />
             <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS WORKS FOR YOU</Text>
           </View>
-          <Text style={[s.rationaleText, { color: C.foreground }]}>
-            {workout.rationale}
-          </Text>
+          <BriefRationale text={workout.rationale} color={C.foreground} />
         </View>
       )}
 
@@ -2878,7 +2893,7 @@ function GeneratePlanScreen({
                   <SparkleIcon size={11} color={C.accentText} />
                   <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS PLAN FITS YOU</Text>
                 </View>
-                <Text style={[s.rationaleText, { color: C.foreground }]}>{result.rationale}</Text>
+                <BriefRationale text={result.rationale} color={C.foreground} />
               </View>
             )}
           </Animated.View>

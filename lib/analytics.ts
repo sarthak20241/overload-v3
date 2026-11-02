@@ -160,7 +160,14 @@ export type AnalyticsEvent =
   | 'health_connect_result'
   | 'health_sync_run'
   | 'health_sync_failed'
+  | 'health_cardio_imported'
+  | 'health_cardio_skipped'
+  | 'health_workouts_asked'
   | 'readiness_card_tapped'
+  // Dashboard cardio row: the sheet, a session started from it, one logged after the fact.
+  | 'cardio_sheet_opened'
+  | 'cardio_started'
+  | 'cardio_logged'
   // ── Nutrition ────────────────────────────────────────────────────────────
   | 'meal_logged'
   | 'meal_undone'

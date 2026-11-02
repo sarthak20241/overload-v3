@@ -21,7 +21,7 @@ const migrations = [
   "supabase/migrations/20261012160000_food_memory_survives_delete.sql",
   "supabase/migrations/20261031125900_food_memory_brand.sql",
   "supabase/migrations/20261031130000_food_memory_brand_safe_casts.sql",
-  "supabase/migrations/20261101120000_food_memory_trace_num_revoke.sql",
+  "supabase/migrations/20261101120930_food_memory_trace_num_revoke.sql",
 ];
 const tests = [
   "supabase/tests/personal_food_aliases.sql",

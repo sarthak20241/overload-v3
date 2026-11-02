@@ -12,6 +12,8 @@ import {
   stepsProgressFromReading, type GoalProgress, type WorkoutWithSets,
 } from '@/lib/activityGoals';
 import { computeActivePhaseSeq, todayLocalISO } from '@/lib/programData';
+import { getPendingWorkouts } from '@/lib/syncQueue';
+import { queuedCardioRows } from '@/lib/cardioLog';
 
 export interface ActivityProgress {
   /** Today's steps vs the phase's step goal; null = no step goal. */
@@ -72,7 +74,7 @@ export async function loadActivityProgress(
         .maybeSingle(),
       cardioTarget == null ? null : supabase
         .from('workouts')
-        .select('id, workout_sets(completed, set_type, exercises(muscle_group, metric_type))')
+        .select('id, client_id, workout_sets(completed, set_type, exercises(muscle_group, metric_type))')
         .eq('user_id', clerkId)
         .not('finished_at', 'is', null)
         .gte('started_at', localWeekStart().toISOString()),
@@ -82,11 +84,18 @@ export async function loadActivityProgress(
     const steps = stepsRes && !stepsRes.error
       ? stepsProgressFromReading((stepsRes.data as { value?: unknown } | null)?.value, stepsTarget)
       : null;
+    // Saved but not yet synced workouts count too, so a cardio session moves
+    // the card the moment it is saved (never gate on the flush landing).
     const cardio = cardioRes && !cardioRes.error
-      ? goalProgress(
-          countCardioSessions(cardioRowsFromWorkouts((cardioRes.data ?? []) as unknown as WorkoutWithSets[])),
-          cardioTarget,
-        )
+      ? (() => {
+          const server = (cardioRes.data ?? []) as unknown as (WorkoutWithSets & { client_id?: string | null })[];
+          const serverClientIds = new Set(server.map((w) => w.client_id).filter((c): c is string => !!c));
+          const rows = [
+            ...cardioRowsFromWorkouts(server),
+            ...queuedCardioRows(getPendingWorkouts(clerkId), localWeekStart(), serverClientIds),
+          ];
+          return goalProgress(countCardioSessions(rows), cardioTarget);
+        })()
       : null;
     if (!steps && !cardio) return null;
     return { steps, cardio };

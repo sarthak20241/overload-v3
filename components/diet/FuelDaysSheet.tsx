@@ -16,6 +16,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
 import { saveFuelDays, savePlannedFuelDays } from '@/lib/dietData';
@@ -244,9 +245,9 @@ export function FuelDaysSheet({ open, initial, baseKcal, source, phaseId, planOn
                 <Animated.View key={dow} entering={FadeInDown.duration(180)} style={[s.row, { borderColor: C.borderSubtle }]}>
                   <View style={{ flex: 1, gap: 4 }}>
                     <Text style={[s.dayName, { color: C.foreground }]}>{DAY_NAMES[dow]}</Text>
-                    <TextInput
-                      // Uncontrolled on purpose: a controlled input inside the
-                      // Portal can drop keystrokes while the sheet re-renders.
+                    <SheetTextInput
+                      // SheetTextInput: a plain input fed from this sheet's state
+                      // drops keystrokes on Android through the Portal.
                       defaultValue={d.label ?? ''}
                       onChangeText={(t) => setLabel(dow, t)}
                       placeholder="What's on? Long run, leg day..."

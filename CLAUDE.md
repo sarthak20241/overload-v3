@@ -95,7 +95,10 @@ deno test --allow-all lib/coachSessions.test.ts # coach sheets kept while Drona 
 deno test --allow-all --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/readyInbox.test.ts # what waits behind the dashboard bell
 deno test --allow-all lib/backgroundHolds.test.ts # iOS background time: shared task, a hung hold lets go by itself
 deno test --allow-all lib/homeLogHint.test.ts  # home log button: the pill's words, and when it stops
+deno test --allow-all lib/healthCardio.test.ts  # watch runs -> cardio workouts: cardio types only, long enough, never twice
+deno test --allow-all --unstable-sloppy-imports lib/cardioLog.test.ts # dashboard cardio sheet: a logged session counts, queued ones count before sync
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/parseSpeed.test.ts # food log mode: Quick / Precise, a stored Thorough reads as Quick
+deno test --allow-all lib/sheetText.test.ts     # text boxes in Portal sheets: late owner values never put old text back (Android letter drops)
 # Saved-food triggers (aliases, delete, repair, brand) on an in-memory Postgres:
 deno run --node-modules-dir=none --allow-read --allow-env --allow-net --allow-write --allow-sys supabase/tests/food_memory_local.ts
 ```

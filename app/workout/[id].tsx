@@ -23,6 +23,7 @@ import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, u
 import { getActiveWorkoutSnapshot, clearActiveWorkout, takeResumeCapture, type ActiveWorkoutCapture, type InputDraft } from '@/lib/activeWorkoutPersistence';
 import { findCatalogExerciseByName, resolveExerciseRow } from '@/lib/exerciseResolve';
 import { enqueueWorkout, newClientId, type PendingWorkout } from '@/lib/syncQueue';
+import { takeCardioStart } from '@/lib/cardioLog';
 import { enqueueRoutine, applyRoutineToCache, type PendingRoutine } from '@/lib/routineQueue';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { getLocalPreviousPerformance, getLocalAllTimeBestWeight } from '@/lib/previousPerformance';
@@ -45,6 +46,7 @@ import { RpePickerSheet } from '@/components/workout/RpePickerSheet';
 import { StartTimeEditor } from '@/components/workout/StartTimeEditor';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useToast } from '@/components/ui/Toast';
 import { openMusicApp } from '@/lib/musicLinks';
@@ -720,6 +722,25 @@ export default function ActiveWorkoutScreen() {
       editedForExRef.current = null;
       resumePendingRef.current = null;
       if (id === 'new') {
+        // "Start cardio" from the dashboard hands over one exercise (one-shot,
+        // lib/cardioLog). A fallback row without an id resolves like a library
+        // add: temp id now, the real row in the background.
+        const cardio = takeCardioStart();
+        if (cardio) {
+          const exId = cardio.id ?? `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          const def: ExerciseDef = { name: cardio.name, muscle_group: 'Cardio', category: cardio.category, metric_type: cardio.metric_type };
+          workout.startWorkout('new', cardio.name, [{
+            exercise: { id: exId, ...def },
+            sets: [{ weight_kg: 0, reps: 0, completed: false }],
+            targetSets: 1,
+            repsMin: 0,
+            repsMax: 0,
+            restSeconds: 90,
+          }], { ownerId: user?.id ?? null, isGuestSession });
+          if (!cardio.id) void reconcileExerciseRow(def, exId);
+          setLoading(false);
+          return;
+        }
         workout.startWorkout('new', 'New Workout', [], { ownerId: user?.id ?? null, isGuestSession });
         setLoading(false);
         return;
@@ -4075,12 +4096,12 @@ export default function ActiveWorkoutScreen() {
 
                 {/* Workout name — pre-filled suggestion, selectTextOnFocus so
                     replacing it is a single tap + type */}
-                {/* Uncontrolled + autocorrect off, same reasoning as the
+                {/* SheetTextInput + autocorrect off, same reasoning as the
                     custom-exercise field in ExercisePickerSheet; the per-second
-                    `elapsed` re-render gives this sheet the most to lose. Safe
-                    because prefill runs before setShowFinishSheet mounts it. */}
+                    `elapsed` re-render gives this sheet the most to lose.
+                    Prefill runs before setShowFinishSheet mounts it. */}
                 <Text style={[styles.formLabel, { color: C.textDim }]}>WORKOUT NAME</Text>
-                <TextInput
+                <SheetTextInput
                   key={`name-${finishOpenId}`}
                   defaultValue={finishName}
                   onChangeText={setFinishName}
@@ -4097,7 +4118,7 @@ export default function ActiveWorkoutScreen() {
                 {/* Notes — a workout-level reflection written at finish. Saved
                     to workouts.notes and shown in history. */}
                 <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>NOTES (OPTIONAL)</Text>
-                <TextInput
+                <SheetTextInput
                   key={`notes-${finishOpenId}`}
                   defaultValue={finishNotes}
                   onChangeText={setFinishNotes}
@@ -4151,7 +4172,7 @@ export default function ActiveWorkoutScreen() {
                 {saveAsRoutine && (
                   <Animated.View entering={FadeIn.duration(200)}>
                     <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>ROUTINE NAME</Text>
-                    <TextInput
+                    <SheetTextInput
                       key={`routine-${finishOpenId}`}
                       defaultValue={routineNameInput}
                       onChangeText={setRoutineNameInput}

@@ -12,6 +12,7 @@ import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -521,15 +522,12 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                   showsVerticalScrollIndicator={true}
                   keyboardShouldPersistTaps="handled"
                 >
-                  {/* Uncontrolled (defaultValue) on purpose — don't "fix" it back
-                      to value. This sheet renders through <Portal>, which syncs
-                      its children in a passive effect, so a controlled value can
-                      reach the native input a frame or two late and let RN revert
-                      characters typed in between. Safe here because the form
-                      remounts on every open (openCustomForm seeds state before
-                      setShowCustom), so defaultValue always starts fresh. */}
+                  {/* SheetTextInput, not TextInput: this sheet's state lives
+                      outside its <Portal>, and a plain input here drops letters
+                      on Android (see components/ui/SheetTextInput.tsx). Seeded
+                      by openCustomForm before setShowCustom. */}
                   <Text style={[s.formLabel, { color: C.textDim }]}>EXERCISE NAME</Text>
-                  <TextInput
+                  <SheetTextInput
                     defaultValue={customName}
                     onChangeText={setCustomName}
                     // Exercise names are gym jargon ("Pendlay", "Zercher", "JM
@@ -591,7 +589,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                   <View style={{ flexDirection: 'row', gap: 10, marginTop: Spacing.lg }}>
                     <View style={{ flex: 1 }}>
                       <Text style={[s.formLabel, { color: C.textDim }]}>SETS</Text>
-                      <TextInput
+                      <SheetTextInput
                         value={customSets}
                         onChangeText={setCustomSets}
                         keyboardType="number-pad"
@@ -600,7 +598,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={[s.formLabel, { color: C.textDim }]}>REST (S)</Text>
-                      <TextInput
+                      <SheetTextInput
                         value={customRest}
                         onChangeText={setCustomRest}
                         keyboardType="number-pad"
@@ -613,7 +611,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                   <View style={{ flexDirection: 'row', gap: 10, marginTop: Spacing.md }}>
                     <View style={{ flex: 1 }}>
                       <Text style={[s.formLabel, { color: C.textDim }]}>REPS MIN</Text>
-                      <TextInput
+                      <SheetTextInput
                         value={customRepsMin}
                         onChangeText={setCustomRepsMin}
                         keyboardType="number-pad"
@@ -622,7 +620,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={[s.formLabel, { color: C.textDim }]}>REPS MAX</Text>
-                      <TextInput
+                      <SheetTextInput
                         value={customRepsMax}
                         onChangeText={setCustomRepsMax}
                         keyboardType="number-pad"
@@ -650,9 +648,12 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                 <View style={[s.searchWrap, { marginHorizontal: Spacing.xl }]}>
                   <View style={[s.searchBox, { backgroundColor: C.inputBg, borderColor: C.border }]}>
                     <Feather name="search" size={14} color={C.textMuted} />
+                    {/* Truly uncontrolled: no value AND no defaultValue. On
+                        Android a defaultValue fed from `search` is sent down as
+                        the native text on every render, and through the Portal
+                        that put old text back mid-typing (see SheetTextInput). */}
                     <TextInput
                       ref={searchInputRef}
-                      defaultValue={search}
                       onChangeText={setSearch}
                       autoCorrect={false}
                       spellCheck={false}
