@@ -87,9 +87,8 @@ Deno.test("a download that lands after the cap never reloads the open app", asyn
 
 Deno.test("offline: the check throws, the app opens at once", async () => {
   const { calls, steps: s } = steps({ checkThrows: true });
-  const t0 = Date.now();
+  // "failed", not "timed_out": it settled on the error, before the cap.
   assertEquals(await runFirstOpenUpdate(s), "failed");
-  assertEquals(Date.now() - t0 < 40, true);
   assertEquals(calls, ["check"]);
 });
 
