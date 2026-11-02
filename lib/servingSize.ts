@@ -152,8 +152,9 @@ const ML_UNITS = new Set(['ml', 'mls']);
  * read "1500 g". The grams are what the numbers were worked out from, so they
  * win: 15 "g".
  *
- * The same rules as the server's amountMatchesGrams (ai-coach/parseMeal.ts),
- * so a saved line reads the way a new parse would: a bare "g" moves when more
+ * The same rules as the server's amountMatchesGrams (ai-coach/parseMeal.ts,
+ * tested in amountMatchesGrams.test.ts): change both together, so a saved
+ * line reads the way a new parse would: a bare "g" moves when more
  * than 10% off, a stated weight or ml when more than half again either way. A
  * ml line a little off its grams is density, not this bug.
  */

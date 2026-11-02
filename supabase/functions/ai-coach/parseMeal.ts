@@ -5971,6 +5971,10 @@ const ML_UNITS = new Set(["ml", "mls"]);
  * A weight label that disagrees with the grams is rewritten in the grams'
  * terms, the same shape the editor saves: 30 "g". A ml label only moves when
  * it is far off, since a liquid's grams can sit a little off its ml.
+ *
+ * lib/servingSize.ts fixWeightLabel is the app's copy, for lines already
+ * saved. Change the rules in both, and in both test files
+ * (amountMatchesGrams.test.ts, lib/servingSize.test.ts).
  */
 export function amountMatchesGrams(it: ParsedItem): ParsedItem {
   if (!(it.grams > 0) || !(it.quantity > 0)) return it;
