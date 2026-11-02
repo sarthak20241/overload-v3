@@ -143,8 +143,6 @@ jobs:
           deno test --allow-all lib/screenCache.test.ts
           deno test --allow-all lib/chartScale.test.ts
           deno test --allow-all lib/phasePick.test.ts
-          deno test --allow-all lib/startGuide.test.ts
-          deno test --allow-all --unstable-sloppy-imports lib/startLessons.test.ts
 
       - name: Pick functions
         id: pick
@@ -320,6 +318,9 @@ jobs:
 
           for fn in $TARGETS; do
             echo "::group::deploy $fn"
-            supabase functions deploy "$fn" --project-ref "$ref"
+            # --yes: the CLI (installed at "latest" above) now asks to confirm
+            # a deploy and refuses when stdout is not a terminal, so every
+            # run stopped with "Nothing was changed" (2026-11-02, #331).
+            supabase functions deploy "$fn" --project-ref "$ref" --yes
             echo "::endgroup::"
           done

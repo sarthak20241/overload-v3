@@ -1182,7 +1182,6 @@ export default function DashboardScreen() {
               userId={user.id}
               createdAtMs={user.createdAt ? new Date(user.createdAt).getTime() : null}
               workoutsLogged={workouts.length}
-              workoutsReady={!loading}
               onOpen={openStartStep}
             />
         ) : null}
