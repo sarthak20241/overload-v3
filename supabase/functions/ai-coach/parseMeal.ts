@@ -1547,19 +1547,27 @@ const LOG_MEAL_TOOL = {
             food_name: { type: "string", description: "Display name for the log." },
             quantity: {
               type: "number",
-              description: "How many of serving_label the user ate, e.g. 2 for '2 rotis'.",
+              description:
+                "How many serving_labels the user ate. The card prints quantity, then serving_label, " +
+                'so the two must read as what was eaten: 2 + "roti" reads "2 roti", 150 + "g" reads ' +
+                '"150 g", 1.5 + "1 katori" reads "1.5 x 1 katori".',
             },
             serving_label: {
               type: "string",
               description:
-                'Human-readable unit, e.g. "roti", "katori", "100 g", "scoop", "500 ml". ' +
-                "Prefer a serving option label from the chosen candidate when one fits.",
+                'The unit quantity counts. When the user gave a weight or volume ("30 g", "250 ml"), ' +
+                'use the bare unit "g" or "ml" and put the number in quantity: "30 g peanuts" is ' +
+                'quantity 30, serving_label "g". Otherwise use a candidate serving option label that ' +
+                'fits ("1 scoop (31 g)", "1 large") or the user\'s own unit ("roti", "katori"). ' +
+                'A candidate\'s "100 g" option is the per-100 basis, not a portion: never pair it ' +
+                'with a gram count (30 x "100 g" means 3000 g).',
             },
             grams: {
               type: "number",
               description:
-                "TOTAL amount in grams (or ml for liquids) for this line: quantity times the " +
-                "per-serving weight. This drives the macro math, so convert carefully.",
+                "TOTAL amount of this line in the candidate's base_unit: grams, or ml for a food " +
+                "measured per 100 ml. It must equal quantity times one serving_label's weight " +
+                '(2 roti at 40 g = 80; 30 "g" = 30). This drives the macro math, so convert carefully.',
             },
             kcal: { type: "number", description: "TOTAL kcal. OMIT for catalog/off items (food_id set) — the app computes them from grams. REQUIRED only for estimate/web items." },
             protein_g: { type: "number", description: "TOTAL protein grams. Omit when food_id is set; required for estimate/web." },
