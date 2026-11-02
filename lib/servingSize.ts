@@ -145,6 +145,9 @@ export function servingText(
 // Units whose amount IS the line's grams (ml lines store their ml as grams).
 const GRAM_UNITS = new Set(['g', 'gm', 'gms', 'gram', 'grams']);
 const ML_UNITS = new Set(['ml', 'mls']);
+// The server's label pattern, not LEAD: "1/2 g" and "1,5 g" are left alone on
+// both sides, so a saved line reads the way a new parse of it would.
+const WEIGHT_LABEL = /^(\d+(?:\.\d+)?)\s*([a-z]+)$/;
 
 /**
  * A line whose weight label disagrees with its grams: 15 x "100 g" with 15 g
@@ -173,10 +176,10 @@ export function fixWeightLabel(
   const l = label.trim().toLowerCase();
   if (GRAM_UNITS.has(l)) return off(quantity, 0.1) ? asGrams('g') : keep;
   if (ML_UNITS.has(l)) return off(quantity, 0.5) ? asGrams('ml') : keep;
-  const m = l.match(LEAD);
+  const m = l.match(WEIGHT_LABEL);
   if (!m) return keep;
-  const size = parseNum(m[1]);
-  const unit = GRAM_UNITS.has(m[2].trim()) ? 'g' : ML_UNITS.has(m[2].trim()) ? 'ml' : null;
+  const size = Number(m[1]);
+  const unit = GRAM_UNITS.has(m[2]) ? 'g' : ML_UNITS.has(m[2]) ? 'ml' : null;
   if (!unit || !(size > 0)) return keep;
   return off(quantity * size, 0.5) ? asGrams(unit) : keep;
 }

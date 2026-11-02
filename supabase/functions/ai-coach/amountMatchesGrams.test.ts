@@ -44,3 +44,22 @@ Deno.test("a liquid a little off its ml is density, not a wrong amount", () => {
 Deno.test("no grams means nothing to check against", () => {
   assertEquals(amount(amountMatchesGrams(line(30, "100 g", 0))), [30, "100 g", 0]);
 });
+
+// The app keeps its own copy for lines already saved (lib/servingSize.ts
+// fixWeightLabel). Every case here goes through both, so the copies cannot
+// drift apart without a test going red.
+import { fixWeightLabel } from "../../../lib/servingSize.ts";
+
+Deno.test("the app's copy rewrites every line exactly as the server does", () => {
+  const cases: [number, string, number][] = [
+    [30, "100 g", 30], [100, "100 g", 130], [0.75, "100 g", 184], [4, "4 g", 4], [25, "25 g", 25],
+    [100, "g", 130], [100, "ml", 250], [15, "ml", 13.8], [30, "100 g", 0],
+    [1, "250 g", 250], [1.5, "100 g", 150], [13, "g", 13], [250, "ml", 250], [1, "250 ml", 258],
+    [2, "1 large", 100], [1, "1 scoop (31 g)", 31], [3, "fork", 60], [15, "gm", 15], [20, "GRAMS", 20],
+    [2, "1/2 g", 1], [2, "1,5 g", 30], [10, "100g", 10], [1, "1 kg", 1000],
+  ];
+  for (const [q, l, g] of cases) {
+    const server = amountMatchesGrams(line(q, l, g));
+    assertEquals(fixWeightLabel(q, l, g), { quantity: server.quantity, serving_label: server.serving_label }, `${q} x ${l} @ ${g}`);
+  }
+});
