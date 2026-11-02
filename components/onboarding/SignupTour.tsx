@@ -247,7 +247,7 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
                 <Bar key={sc.id} state={i < index ? 'done' : i === index ? 'now' : 'ahead'} progress={progress} />
               ))}
             </View>
-            <Text style={s.mark} accessibilityElementsHidden>
+            <Text style={s.mark} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
               OVER<Text style={{ color: Colors.primary }}>LOAD</Text>
             </Text>
           </View>
