@@ -65,7 +65,7 @@ export function parseState(raw: string | null): FirstOpenState {
     const v = JSON.parse(raw) as Partial<FirstOpenState>;
     return {
       done: v.done === true,
-      tries: typeof v.tries === 'number' && Number.isFinite(v.tries) ? v.tries : 0,
+      tries: typeof v.tries === 'number' && Number.isFinite(v.tries) ? Math.max(0, Math.floor(v.tries)) : 0,
     };
   } catch {
     return FRESH_STATE;

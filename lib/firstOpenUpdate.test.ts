@@ -143,4 +143,6 @@ Deno.test("parseState: anything unreadable counts as a fresh install", () => {
   assertEquals(parseState("not json"), FRESH_STATE);
   assertEquals(parseState('{"tries":"x"}'), FRESH_STATE);
   assertEquals(parseState('{"done":true,"tries":2}'), { done: true, tries: 2 });
+  assertEquals(parseState('{"tries":-3}'), FRESH_STATE);
+  assertEquals(parseState('{"tries":1.7}'), { done: false, tries: 1 });
 });

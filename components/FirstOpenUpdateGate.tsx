@@ -49,7 +49,13 @@ export function FirstOpenUpdateGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (open) return;
     let cancelled = false;
-    const backstop = setTimeout(() => setOpen(true), BACKSTOP_MS);
+    const startedAt = Date.now();
+    // Flip `cancelled` here, not only in the cleanup: the cleanup runs after
+    // React re-renders, and a step that lands in between must not go on.
+    const backstop = setTimeout(() => {
+      cancelled = true;
+      setOpen(true);
+    }, BACKSTOP_MS);
     (async () => {
       let state: FirstOpenState;
       try {
@@ -67,10 +73,14 @@ export function FirstOpenUpdateGate({ children }: { children: ReactNode }) {
       const outcome = await runFirstOpenUpdate({
         check: () => Updates.checkForUpdateAsync(),
         fetch: () => Updates.fetchUpdateAsync(),
+        // Saved before the reload, as nothing runs after one. If the reload
+        // fails, the downloaded update still runs on the next cold start.
         beforeReload: () => saveState(nextState(state, 'reloading')),
         reload: () => Updates.reloadAsync(),
-        // Flips when the backstop opens the app (the effect cleans up).
         isCancelled: () => cancelled,
+        // The cap counts from the gate's start, storage read included, so a
+        // reload always begins well before the backstop can open the app.
+        capMs: Math.max(0, FIRST_OPEN_CAP_MS - (Date.now() - startedAt)),
       });
       track('first_open_update', { outcome, ms: Date.now() - t0, try: state.tries + 1 });
       // Reloading: stay closed, the new code takes over in a moment. If the
