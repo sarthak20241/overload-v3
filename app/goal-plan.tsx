@@ -59,6 +59,8 @@ import { phaseBuildSeed, type PhaseBuildSeed } from '@/lib/phaseBuild';
 import { onPhaseDraftChange, readPhaseDraft } from '@/lib/phaseDraft';
 import { Colors, Radius, FontWeight } from '@/constants/theme';
 import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
+import { SignupTour } from '@/components/onboarding/SignupTour';
+import { phaseLineFor } from '@/lib/signupTour';
 
 function fmtShortISO(iso: string): string {
   const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
@@ -85,8 +87,11 @@ export default function GoalPlanScreen() {
   // once; a draft waiting for the phase opens first either way.
   // &then=upgrade (sign-up only): when the sheet closes, carry on to the
   // onboarding paywall that used to come straight after sign-up.
-  const { build: buildParam, seq: seqParam, auto: autoParam, then: thenParam, drona: dronaParam, kcal: kcalParam } =
-    useLocalSearchParams<{ build?: string; seq?: string; auto?: string; then?: string; drona?: string; kcal?: string }>();
+  // &tour=1 (sign-up only): the film tour plays on top while the build runs
+  // underneath, so the wait for phase 1 is the tour (components/onboarding/SignupTour).
+  const { build: buildParam, seq: seqParam, auto: autoParam, then: thenParam, drona: dronaParam, kcal: kcalParam, tour: tourParam } =
+    useLocalSearchParams<{ build?: string; seq?: string; auto?: string; then?: string; drona?: string; kcal?: string; tour?: string }>();
+  const [tourOn, setTourOn] = useState(tourParam === '1');
   const autoBuildFired = useRef(false);
   // ?drona=calories&kcal=N arrives from the goal sheet's "Change my whole plan
   // with Drona": open the program chat once, the request typed and unsent.
@@ -525,6 +530,8 @@ export default function GoalPlanScreen() {
   // mock put it lower, under the home bar; that ignored the safe area.
   const footerBottom = insets.bottom + 8;
   const pal = useGoalPalette();
+  // The phase the tour's last scene names: the one being built, else the first.
+  const tourPhase = (program?.phases.find((ph) => ph.id === buildPhaseId) ?? currentPhase ?? program?.phases[0]) || null;
 
   return (
     <View style={[styles.root, { backgroundColor: pal.bg, paddingTop: insets.top }]}>
@@ -655,6 +662,14 @@ export default function GoalPlanScreen() {
         onRoutineCreated={() => load()}
         onProgramApplied={() => load()}
       />
+
+      {tourOn && (
+        <SignupTour
+          firstName={user?.firstName ?? null}
+          phaseLine={phaseLineFor(tourPhase?.name, tourPhase?.duration_weeks)}
+          onDone={() => setTourOn(false)}
+        />
+      )}
     </View>
   );
 }

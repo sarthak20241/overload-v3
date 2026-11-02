@@ -648,7 +648,7 @@ export default function OnboardingScreen() {
         });
         // A saved program goes straight on to building phase 1's workouts.
         if (firstPhaseId && opts.dest !== '/(app)/routines') {
-          router.replace({ pathname: '/goal-plan', params: { build: 'phase', auto: '1' } } as any);
+          router.replace({ pathname: '/goal-plan', params: { build: 'phase', auto: '1', tour: '1' } } as any);
           return;
         }
         router.replace(opts.dest);
