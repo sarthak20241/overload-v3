@@ -19,7 +19,8 @@ import { Colors, Spacing } from '@/constants/theme';
 
 // components/ui/BottomNav.tsx draws the bar at 64 + the bottom inset.
 const TAB_BAR_HEIGHT = 64;
-const SIZE = 52;
+// The tab bar's play button is 58 too: the two round buttons read as a pair.
+const SIZE = 58;
 /** Scroll room a screen leaves under its content so the button never covers
  *  the last card: the button plus its gap above the tab bar. */
 export const HOME_LOG_BUTTON_ROOM = SIZE + Spacing.lg + Spacing.xs;
@@ -55,7 +56,7 @@ export function HomeLogButton({ hidden, onLog }: Props) {
       accessibilityHint="Opens the food box. Type what you ate."
     >
       {/* Dark ink on the light dark-theme blue; white on the deep light-theme blue. */}
-      <SaladIcon size={24} strokeWidth={2} color={mode === 'dark' ? Colors.primaryFg : '#ffffff'} />
+      <SaladIcon size={28} strokeWidth={2} color={mode === 'dark' ? Colors.primaryFg : '#ffffff'} />
     </PressableScale>
   );
 }
