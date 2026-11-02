@@ -18,7 +18,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 import { buildSuggestion, type SuggestionProgram, type SuggestionRow } from "../_shared/dailySuggestion.ts";
-import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
+import { isTimeZone } from "../_shared/wallClock.ts";
+import { readCronDays } from "../_shared/cronUsers.ts";
 import { retried } from "../_shared/retried.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -114,22 +115,11 @@ async function runCron(): Promise<Response> {
   const prune = retried(() => db.from("daily_suggestions").delete().lt("day", cutoff));
 
   try {
-    // PostgREST caps a read at 1000 rows: page through, or users past the first
-    // thousand silently never get a midnight pick.
-    const users: { clerk_user_id: string | null; timezone: string | null }[] = [];
-    for (let from = 0; ; from += USER_PAGE) {
-      const { data, error } = await retried(() => db.from("user_profiles")
-        .select("clerk_user_id, timezone").not("timezone", "is", null)
-        .order("clerk_user_id", { ascending: true })
-        .range(from, from + USER_PAGE - 1));
-      if (error) return json({ error: error.message, stage: "users" }, 500);
-      users.push(...(data ?? []));
-      if (!data || data.length < USER_PAGE) break;
-    }
-
-    const todays = users
-      .filter((u) => u.clerk_user_id && isTimeZone(u.timezone))
-      .map((u) => ({ userId: u.clerk_user_id as string, tz: u.timezone as string, day: wallClock(now, u.timezone as string)!.slice(0, 10) }));
+    // No saved zone is read in UTC, not skipped: someone who onboarded and
+    // never came back still gets a pick waiting (readCronDays).
+    const read = await readCronDays(db, now, USER_PAGE);
+    if ("error" in read) return json({ error: read.error, stage: "users" }, 500);
+    const todays = read.users;
 
     // Who already has a pick for their current day (made by the app, or an earlier run).
     const days = [...new Set(todays.map((t) => t.day))];
