@@ -87,6 +87,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import type { MealType } from '@/lib/foods';
 import { formatServing, formatMacroGrams } from '@/lib/foods';
+import { fixWeightLabel } from '@/lib/servingSize';
 import { swapToAlternative } from '@/lib/variantSwap';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { MealSuggestions } from '@/components/diet/MealSuggestions';
@@ -649,7 +650,13 @@ export default function NutritionScreen() {
       .then((raw) => {
         if (!alive) return;
         const back = unpackReady<Extract<ParseFlow, { status: 'review' }>>(raw);
-        if (back) setFlow((f) => (f.status === 'idle' ? back : f));
+        if (!back) return;
+        // A meal waiting since before the weight fix still carries 15 x "100 g"
+        // behind 15 g. New results are fixed on arrival (toParsedItem); this is
+        // the one way in that skips it, and - / + steps the stored amount.
+        const items = back.meal.items.map((it) => ({ ...it, ...fixWeightLabel(it.quantity, it.serving_label, it.grams) }));
+        const fixed = { ...back, meal: { ...back.meal, items } };
+        setFlow((f) => (f.status === 'idle' ? fixed : f));
       })
       .catch(() => {})
       .finally(() => { if (alive) setRestoredKey(readyKey); });
@@ -2444,7 +2451,7 @@ export default function NutritionScreen() {
                     >
                       <View style={{ flex: 1 }}>
                         <Text style={s.entryName}>
-                          {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit)}</Text>
+                          {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit, e.grams_logged)}</Text>
                         </Text>
                         <View style={s.macros}>
                           <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
