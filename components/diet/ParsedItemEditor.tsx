@@ -301,6 +301,10 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
       protein_g: !changed ? item.protein_g : macrosTouched ? numOr(protein, 0) : scaled.protein,
       carb_g: !changed ? item.carb_g : macrosTouched ? numOr(carb, 0) : scaled.carb,
       fat_g: !changed ? item.fat_g : macrosTouched ? numOr(fat, 0) : scaled.fat,
+      // Fiber has no box, so it moves with the weight like everything else did.
+      // Kept as it was, 3 roti cut to 1 still carried three rotis of fiber.
+      fiber_g: !changed || item.fiber_g == null ? item.fiber_g
+        : grams > 0 && item.grams > 0 ? Math.round(item.fiber_g * (grams / item.grams) * 10) / 10 : item.fiber_g,
       // A corrected line carries the user's numbers, not the parser's.
       source: changed ? 'manual' : item.source,
       confidence: changed ? 'high' : item.confidence,

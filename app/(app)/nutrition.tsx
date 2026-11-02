@@ -2444,7 +2444,7 @@ export default function NutritionScreen() {
                     >
                       <View style={{ flex: 1 }}>
                         <Text style={s.entryName}>
-                          {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit)}</Text>
+                          {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit, e.grams_logged)}</Text>
                         </Text>
                         <View style={s.macros}>
                           <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>

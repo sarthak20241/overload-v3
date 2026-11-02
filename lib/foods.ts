@@ -21,7 +21,7 @@
  */
 
 import { MASS_UNITS, VOLUME_UNITS, massToGrams, volumeToMl, isMeasurementUnit } from './units';
-import { servingText } from './servingSize';
+import { servingText, fixWeightLabel } from './servingSize';
 
 // ── Enums (mirror the DB CHECK constraints in migrations 0046 + 0065) ────────
 
@@ -221,8 +221,10 @@ export function formatMacroGrams(grams: number): string {
 }
 
 /** How a logged portion reads under a food name. Rules in lib/servingSize.ts. */
-export function formatServing(quantity: number, unit: string): string {
-  return servingText(quantity, unit, isMeasurementUnit);
+export function formatServing(quantity: number, unit: string, grams?: number | null): string {
+  // With the grams known, a "15 x 100 g" line already saved reads "15 g".
+  const fixed = grams ? fixWeightLabel(quantity, unit, grams) : { quantity, serving_label: unit };
+  return servingText(fixed.quantity, fixed.serving_label, isMeasurementUnit);
 }
 
 // ── Search ───────────────────────────────────────────────────────────────────
