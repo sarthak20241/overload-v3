@@ -24,7 +24,7 @@ import { BuildSplitPrompt } from '@/components/program/BuildSplitPrompt';
 import { NextPhaseCard } from '@/components/program/NextPhaseCard';
 import { StartGuideCard } from '@/components/home/StartGuideCard';
 import { HomeLogButton, HOME_LOG_BUTTON_ROOM } from '@/components/home/HomeLogButton';
-import type { StartStepId } from '@/lib/startGuide';
+import { START_GUIDE_ENABLED, type StartStepId } from '@/lib/startGuide';
 import { readPhaseDraft } from '@/lib/phaseDraft';
 import { hasCompletedOnboarding } from '@/lib/onboarding';
 import { loadActiveProgram, type ActiveProgram } from '@/lib/programData';
@@ -1174,8 +1174,9 @@ export default function DashboardScreen() {
         </View>
 
         {/* First-week checklist: where food logging, the AI modes, the phases
-            and the weight log live. Gone once done, hidden, or after 3 weeks. */}
-        {!isGuestSession && user?.id ? (
+            and the weight log live. Gone once done, hidden, or after 3 weeks.
+            Switched off for now (START_GUIDE_ENABLED in lib/startGuide). */}
+        {START_GUIDE_ENABLED && !isGuestSession && user?.id ? (
             <StartGuideCard
               containerStyle={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}
               supabase={supabase}
