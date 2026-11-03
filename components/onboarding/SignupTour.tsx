@@ -229,8 +229,15 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
           {Video && !reduced ? <Film id={scene.id} /> : null}
 
           {/* A light wash over the whole frame, then a deeper fade where the
-              words sit, so white type reads on any frame of the film. */}
+              words sit, so white type reads on any frame of the film. A
+              softer fade at the top does the same for the bars, wordmark and
+              Skip (the gym film has bright windows up there). */}
           <View style={[StyleSheet.absoluteFill, s.wash]} pointerEvents="none" />
+          <LinearGradient
+            colors={['rgba(0,0,0,0.45)', 'rgba(0,0,0,0)']}
+            style={s.topScrim}
+            pointerEvents="none"
+          />
           <LinearGradient
             colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.65)']}
             style={s.scrim}
@@ -311,6 +318,7 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
 const s = StyleSheet.create({
   root: { ...StyleSheet.absoluteFillObject, backgroundColor: '#0b0b0b' },
   wash: { backgroundColor: 'rgba(0,0,0,0.18)' },
+  topScrim: { position: 'absolute', left: 0, right: 0, top: 0, height: '22%' },
   scrim: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '55%' },
   top: { position: 'absolute', left: Spacing.xl, right: Spacing.xl, top: 0 },
   bars: { flexDirection: 'row', gap: 4 },
@@ -325,7 +333,7 @@ const s = StyleSheet.create({
   },
   bottom: { position: 'absolute', left: Spacing.xl, right: Spacing.xl, bottom: 0 },
   skip: { minHeight: 44, minWidth: 44, alignItems: 'flex-end', justifyContent: 'center' },
-  skipText: { color: 'rgba(255,255,255,0.85)', fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
+  skipText: { color: '#ffffff', fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
   title: {
     color: '#ffffff',
     fontFamily: FontFamily.tourHeadline,
