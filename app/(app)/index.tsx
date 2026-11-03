@@ -21,8 +21,13 @@ import { ActivityGoalsCard } from '@/components/program/ActivityGoalsCard';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { dronaCardTopic, insightTopic, type CoachTopic } from '@/lib/coachTopic';
 import { BuildSplitPrompt } from '@/components/program/BuildSplitPrompt';
+import { NextPhaseCard } from '@/components/program/NextPhaseCard';
+import { StartGuideCard } from '@/components/home/StartGuideCard';
+import { HomeLogButton, HOME_LOG_BUTTON_ROOM } from '@/components/home/HomeLogButton';
+import { START_GUIDE_ENABLED, type StartStepId } from '@/lib/startGuide';
+import { readPhaseDraft } from '@/lib/phaseDraft';
 import { hasCompletedOnboarding } from '@/lib/onboarding';
-import { loadActiveProgram } from '@/lib/programData';
+import { loadActiveProgram, type ActiveProgram } from '@/lib/programData';
 import { InsightsStrip } from '@/components/insights/InsightsStrip';
 import { MilestoneUpsellCard } from '@/components/insights/MilestoneUpsellCard';
 import { detectInsights } from '@/lib/insights';
@@ -33,8 +38,9 @@ import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 import { DronaCardPopup } from '@/components/coach/DronaCardPopup';
 import { useToast } from '@/components/ui/Toast';
+import { InboxBell } from '@/components/ui/InboxBell';
 import {
-  currentWeekStart, deferCard, movesFor, readCheckinCard, readMomentCard, readWeeklyCard, requestWeeklyCard, setCardStatus,
+  countWaitingCards, currentWeekStart, deferCard, movesFor, readCheckinCard, readMomentCard, readWeeklyCard, requestWeeklyCard, setCardStatus,
   type SavedDronaCard,
 } from '@/lib/dronaCard';
 import { useWorkout } from '@/hooks/useWorkout';
@@ -169,7 +175,7 @@ export default function DashboardScreen() {
   const aiChipBg = C.muted;
   const aiChipBorder = C.border;
   const aiChipFg = C.foreground;
-  const { user, isLoaded: clerkLoaded } = useClerkUser();
+  const { user, isLoaded: clerkLoaded, getToken } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const { pendingCount } = useSync();
@@ -317,6 +323,20 @@ export default function DashboardScreen() {
   // until the app restarted. The first focus is the mount, which already loads.
   const [focusTick, setFocusTick] = useState(0);
   const toast = useToast();
+  // The bell's share of server cards: the ones put off with Later.
+  const [cardsWaiting, setCardsWaiting] = useState(0);
+  // Bumped by a Later: a count read that started before it is stale, and
+  // must not overwrite the +1 (the next read sees the deferred card).
+  const countGenRef = useRef(0);
+  useEffect(() => {
+    if (!user?.id || isGuestSession) { setCardsWaiting(0); return; }
+    let live = true;
+    const gen = ++countGenRef.current;
+    void countWaitingCards(supabase, user.id).then((n) => {
+      if (live && gen === countGenRef.current) setCardsWaiting(n);
+    });
+    return () => { live = false; };
+  }, [user?.id, isGuestSession, supabase, focusTick]);
   useEffect(() => {
     if (focusTick > 0) reloadFuel();
   }, [focusTick, reloadFuel]);
@@ -383,8 +403,11 @@ export default function DashboardScreen() {
   // life of the tab. A failed read keeps the last good state; before the first
   // good read that is null, which reads as "say nothing".
   const [splitState, setSplitState] = useState<
-    { done: boolean; hasProgram: boolean; count: number | null; phaseId: string | null } | null
+    { done: boolean; hasProgram: boolean; count: number | null; phaseId: string | null; hasDraft: boolean } | null
   >(null);
+  // The full active program, for the next-phase card (the TODAY pick keeps its
+  // own leaner read below).
+  const [activeProgram, setActiveProgram] = useState<ActiveProgram | null>(null);
   // The prompt is a root-Portal overlay, so it would otherwise float above the
   // paywall. Gate it on this screen actually being the one in front.
   const [screenFocused, setScreenFocused] = useState(false);
@@ -398,7 +421,8 @@ export default function DashboardScreen() {
         const done = await hasCompletedOnboarding(clerkId);
         if (cancelled) return;
         if (!done || !clerkId) {
-          setSplitState({ done, hasProgram: false, count: null, phaseId: null });
+          setSplitState({ done, hasProgram: false, count: null, phaseId: null, hasDraft: false });
+          setActiveProgram(null);
           return;
         }
         try {
@@ -407,11 +431,18 @@ export default function DashboardScreen() {
           const phase = program
             ? program.phases.find((ph) => ph.seq === program.currentPhaseSeq) ?? program.phases[0]
             : null;
+          // This popup is about phase 1 only. A later phase that is running
+          // unbuilt belongs to the next-phase card, which knows Pro from free.
+          const isFirst = phase?.seq === 0;
+          const hasDraft = phase && isFirst ? (await readPhaseDraft(phase.id)) != null : false;
+          if (cancelled) return;
+          setActiveProgram(program);
           setSplitState({
             done: true,
             hasProgram: !!program,
-            count: phase ? phase.routines.length : null,
+            count: phase && isFirst ? phase.routines.length : null,
             phaseId: phase?.id ?? null,
+            hasDraft,
           });
         } catch {
           // Offline or RLS hiccup. Keep whatever was last read: on a first
@@ -712,11 +743,14 @@ export default function DashboardScreen() {
     track('drona_card_deferred', { kind: popupCard.kind, topic: popupCard.topic });
     const before = popupCard;
     setPopupCard({ ...popupCard, deferred_at: new Date().toISOString() });
+    countGenRef.current += 1;
+    setCardsWaiting((n) => n + 1);
     void deferCard(supabase, popupCard.id).then((result) => {
       // Not saved: the server row is still undeferred, so the popup would be
       // back on the next open with no explanation. Say so now instead.
       if (result !== 'ok') {
         setPopupCard(before);
+        setCardsWaiting((n) => Math.max(0, n - 1));
         toast.error('Could not save that for later. Try again.');
       }
     });
@@ -837,6 +871,17 @@ export default function DashboardScreen() {
   // exercises, ask Drona about it, or start it. 'new' opens the coach to build one.
   // 'complete' opens the done-today sheet: the session, the body map, up next.
   // 'rest' previews the session that follows the rest, for anyone who wants it early.
+  // The getting-started checklist's rows, each to the screen where it is done.
+  const openStartStep = (id: StartStepId) => {
+    switch (id) {
+      case 'workout': handleTodayPress(); break;
+      case 'ai_food': router.push('/nutrition' as any); break;
+      case 'modes': router.push({ pathname: '/nutrition', params: { modes: String(Date.now()) } } as any); break;
+      case 'phases': router.push('/goal-plan-phase' as any); break;
+      case 'weight': router.push({ pathname: '/(app)/analytics', params: { logWeight: String(Date.now()) } } as any); break;
+    }
+  };
+
   const handleTodayPress = () => {
     track('today_suggestion_tapped', {
       kind: todaySuggestion.kind,
@@ -1057,11 +1102,21 @@ export default function DashboardScreen() {
   const weeklyVolumes = useMemo(() => weeklyTrend.map(w => w.volume), [weeklyTrend]);
   const weeklyLabels = useMemo(() => weeklyTrend.map(w => w.label), [weeklyTrend]);
 
+  const popupShowing = !!popupCard
+    && popupCard.status === 'pending'
+    && !popupCard.deferred_at
+    && screenFocused
+    && !splitPromptShowing
+    && !workoutActive
+    && !aiCoachOpen;
+  const showLogButton = !isGuestSession && !!user?.id;
+
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 100 }}
+        // Room under the last card for the floating log button.
+        contentContainerStyle={{ paddingBottom: 100 + (showLogButton ? HOME_LOG_BUTTON_ROOM : 0) }}
         refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         <RefreshOrb refreshing={refreshing} />
@@ -1073,6 +1128,16 @@ export default function DashboardScreen() {
             <XPBar xp={userXP} />
           </View>
           <View style={styles.headerRight}>
+            {/* What Drona left for later: Later cards and finished builds. */}
+            {!isGuestSession && user?.id ? (
+              <InboxBell
+                cardsWaiting={cardsWaiting}
+                onPress={() => {
+                  track('drona_inbox_opened', { from: 'dashboard' });
+                  router.push({ pathname: '/(app)/from-drona', params: { from: 'dashboard' } } as any);
+                }}
+              />
+            ) : null}
             {/* Goal & Plan entry (replaces the redundant Start button — a workout
                 still starts from the center ▶ tab and the coach's Quick Workout).
                 Leads to the coach-built program and this phase's targets. */}
@@ -1106,6 +1171,38 @@ export default function DashboardScreen() {
         <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
           <TodaySuggestionCard suggestion={todaySuggestion} onPress={handleTodayPress} />
         </View>
+
+        {/* First-week checklist: where food logging, the AI modes, the phases
+            and the weight log live. Gone once done, hidden, or after 3 weeks.
+            Switched off for now (START_GUIDE_ENABLED in lib/startGuide). */}
+        {START_GUIDE_ENABLED && !isGuestSession && user?.id ? (
+            <StartGuideCard
+              containerStyle={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}
+              supabase={supabase}
+              userId={user.id}
+              createdAtMs={user.createdAt ? new Date(user.createdAt).getTime() : null}
+              workoutsLogged={workouts.length}
+              onOpen={openStartStep}
+            />
+        ) : null}
+
+        {/* The next phase, before it starts: built in the background for Pro
+            (as a draft to review and save), announced for free. */}
+        {!isGuestSession && activeProgram ? (
+            <NextPhaseCard
+              containerStyle={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}
+              program={activeProgram}
+              isPro={coachAccess.state === 'paid' || coachAccess.state === 'trialing'}
+              accessKnown={coachAccess.state !== 'unknown'}
+              getToken={getToken}
+              onReview={(seq) => router.push({ pathname: '/goal-plan', params: { build: 'phase', seq: String(seq), auto: '1' } } as any)}
+              // The "ready" popup waits its turn: never over another popup,
+              // the coach sheet or a live workout.
+              popupAllowed={screenFocused && !splitPromptShowing && !workoutActive && !aiCoachOpen
+                && !(popupCard && popupCard.status === 'pending' && !popupCard.deferred_at)}
+              onUpgrade={() => router.push('/upgrade' as any)}
+            />
+        ) : null}
 
 
         {/* AI Coach Hero Card */}
@@ -1431,6 +1528,16 @@ export default function DashboardScreen() {
         </View>
       </ScrollView>
 
+      {/* Log food from home: opens Drona's food box on Nutrition. Out of the
+          way while a popup, the coach or a live workout (its mini bar sits
+          here) has the screen. */}
+      {showLogButton ? (
+        <HomeLogButton
+          hidden={popupShowing || splitPromptShowing || aiCoachOpen || workoutActive}
+          onLog={() => router.push({ pathname: '/nutrition', params: { focus: 'ai' } })}
+        />
+      ) : null}
+
       <DoneTodaySheet
         visible={doneSheetOpen && todaySuggestion.kind === 'complete'}
         workout={(todaySuggestion.completedWorkout as DoneWorkout | undefined) ?? null}
@@ -1464,8 +1571,9 @@ export default function DashboardScreen() {
         isGuest={isGuestSession || !user?.id}
         hasProgram={!!splitState?.hasProgram}
         phaseRoutineCount={splitState?.count ?? null}
+        hasDraft={!!splitState?.hasDraft}
         phaseId={splitState?.phaseId ?? null}
-        onBuild={() => router.push({ pathname: '/goal-plan', params: { build: 'phase' } })}
+        onBuild={() => router.push({ pathname: '/goal-plan', params: { build: 'phase', auto: '1' } } as any)}
         onSignIn={() => router.push('/(auth)')}
         onVisibleChange={setSplitPromptShowing}
       />
@@ -1473,14 +1581,7 @@ export default function DashboardScreen() {
       {/* Drona's card for the week, as a popup (every kind; owner's call
           2026-09-18). Never over BuildSplitPrompt, never mid-workout, and not
           once the user has said Later. */}
-      {popupCard
-        && popupCard.status === 'pending'
-        && !popupCard.deferred_at
-        && screenFocused
-        && !splitPromptShowing
-        && !workoutActive
-        && !aiCoachOpen
-        && (
+      {popupShowing && popupCard && (
           <DronaCardPopup
             card={popupCard}
             onAct={handleCardAct}

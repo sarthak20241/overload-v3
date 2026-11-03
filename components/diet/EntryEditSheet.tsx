@@ -4,6 +4,7 @@ import { Keyboard } from 'react-native';
 import { ParsedItemEditor } from './ParsedItemEditor';
 import { deleteMealEntry, updateLoggedEntry, type LoggedEntry, type ParsedMealItem } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
+import { fixWeightLabel } from '@/lib/servingSize';
 import { haptics } from '@/lib/haptics';
 import { track } from '@/lib/analytics';
 
@@ -20,9 +21,11 @@ export function EntryEditSheet({ entry, date, onClose, onSaved }: Props) {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => { setBusy(false); setError(null); }, [entry]);
   // Stable identity keeps the draft intact through pending or failed saves.
+  // A line saved as 15 x "100 g" behind 15 g opens as 15 g, the way the diary
+  // row reads it; saving it rewrites only the amount, the numbers stay.
   const item = useMemo<ParsedMealItem | null>(() => entry ? {
     food_id: entry.food_id ?? null, food_name: entry.food_name,
-    quantity: entry.quantity, serving_label: entry.serving_unit,
+    ...fixWeightLabel(entry.quantity, entry.serving_unit, entry.grams_logged ?? 0),
     grams: entry.grams_logged ?? 0, kcal: entry.kcal,
     protein_g: entry.protein_g, carb_g: entry.carb_g, fat_g: entry.fat_g,
     fiber_g: null, source: entry.source ?? 'manual', assumption: null,
@@ -39,7 +42,7 @@ export function EntryEditSheet({ entry, date, onClose, onSaved }: Props) {
         : await deleteMealEntry(supabase, entry);
       if (result.error) { setError(result.error); haptics.warning(); return; }
       track(patch ? 'meal_entry_updated' : 'meal_entry_deleted', patch ? {
-        rescaled: patch.quantity !== entry.quantity, moved: patch.meal_type !== entry.meal_type,
+        rescaled: patch.quantity !== item?.quantity, moved: patch.meal_type !== entry.meal_type,
         from_meal: entry.meal_type, to_meal: patch.meal_type,
       } : { meal_type: entry.meal_type, kcal: Math.round(entry.kcal) });
       Keyboard.dismiss();

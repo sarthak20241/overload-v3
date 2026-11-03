@@ -635,7 +635,7 @@ export function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number
   // production on 2026-08-28: "2 oreo biscuits and 1 amul cheese slice" logged
   // 200 g / 966 kcal and 100 g / 316 kcal against a true ~22 g / ~105 kcal and
   // ~20 g / ~63 kcal, because both rows carry "100 g" and nothing else. Smart
-  // never hits this - buildDecideSystemPrompt spells the household weights out
+  // never hits this - buildDecideSystemPrompt tells decide to weigh pieces
   // ("2 biscuits is ~15-20 g, never 90") - and Fast skips decide entirely, so
   // the refusal here IS Fast's version of that knowledge: the caller drops to
   // the model's own est_total_g, which the fused extract call already returned
@@ -1547,19 +1547,20 @@ const LOG_MEAL_TOOL = {
             food_name: { type: "string", description: "Display name for the log." },
             quantity: {
               type: "number",
-              description: "How many of serving_label the user ate, e.g. 2 for '2 rotis'.",
+              description: 'How many serving_labels the user ate: 2 for "2 roti", 150 for "150 g".',
             },
             serving_label: {
               type: "string",
               description:
-                'Human-readable unit, e.g. "roti", "katori", "100 g", "scoop", "500 ml". ' +
-                "Prefer a serving option label from the chosen candidate when one fits.",
+                'The unit for quantity. If the user gave a weight or volume, use "g" or "ml": ' +
+                '"30 g peanuts" is quantity 30, serving_label "g". Otherwise use a serving option ' +
+                'from the chosen candidate ("1 scoop (31 g)") or the user\'s own unit ("roti", "katori").',
             },
             grams: {
               type: "number",
               description:
-                "TOTAL amount in grams (or ml for liquids) for this line: quantity times the " +
-                "per-serving weight. This drives the macro math, so convert carefully.",
+                "TOTAL grams for this line (ml for liquids): quantity times the weight of one " +
+                "serving_label. This drives the macro math, so convert carefully.",
             },
             kcal: { type: "number", description: "TOTAL kcal. OMIT for catalog/off items (food_id set) — the app computes them from grams. REQUIRED only for estimate/web items." },
             protein_g: { type: "number", description: "TOTAL protein grams. Omit when food_id is set; required for estimate/web." },
@@ -2669,10 +2670,10 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
 <quantity_rules>
 - Macros output: for any item you matched to a candidate (food_id set, source catalog or off), give ONLY grams and OMIT kcal/protein_g/carb_g/fat_g/fiber_g — the app computes them from grams and the food row. For estimate or web items (food_id null) you MUST include all four macros, since there is no row to compute from.
 - Candidates list macros PER 100 of base_unit (g or ml). grams on each logged item is the TOTAL amount eaten; when you do provide macros (estimate/web only) compute them as per100 * grams / 100.
-- Use the candidate's serving options to convert household units. When the user gives an explicit amount ("50g", "500 ml"), that wins over any serving default.
-- Spoon and cup weights DEPEND ON THE FOOD; a tablespoon is 15 g only for water-like liquids. If the candidate has a cup serving, derive from it (1 cup = 16 tbsp = 48 tsp). Otherwise: 1 tbsp of nuts, seeds, or roasted snacks ~8 g; powders (protein, flour, spices) ~7-9 g; oil or ghee ~14 g; nut butter, honey ~16-20 g. A guessed spoon weight is never confidence high.
-- Indian household defaults when the user gives no amount and no serving option fits: 1 roti ~40 g, 1 katori ~150 g cooked, 1 glass ~250 ml, 1 cup ~200 ml, 1 bowl ~250 g, 1 scoop whey ~32 g, 1 egg ~50 g. Record any such guess in assumption.
-- Piece counts for small foods use the candidate's per-piece serving when one exists; otherwise: 1 almond ~1.2 g, 1 cashew ~1.5 g, 1 walnut half ~2 g, 1 peanut ~0.9 g, 1 kimia date ~8 g, 1 medjool date ~24 g, 1 small packaged biscuit (Good Day, Marie, Parle-G) ~5-10 g. "5 almonds" is ~6 g, never 25; "2 biscuits" is ~15-20 g, never 90.
+- When the user gives an explicit amount ("50g", "500 ml"), that wins over any serving option.
+- When the user names their own unit (scoop, bottle, katori, piece) and the chosen candidate has a serving option for that unit or for one pack or piece of this product, use that option's weight. Keep the user's word and show the weight: serving_label "scoop (31 g)".
+- When no serving option fits, estimate the weight of one unit of this exact food from what you know: a scoop, spoon, katori, cup or piece weighs different amounts for different foods. Put the weight you used in assumption ("Took a scoop as about 30 g"), and never set confidence high on it.
+- Small foods counted by the piece (nuts, dates, biscuits) weigh a few grams each: a count of them is never a full serving per piece.
 - Match the preparation state the user typed: "roasted" or "dried" foods are 2-3x more calorie-dense per gram than "cooked" or "boiled" ones. Never log a roasted/dried item against a cooked/boiled candidate row; prefer a correct-state candidate or estimate instead.
 - "half" quantities are fine (quantity 0.5).
 </quantity_rules>
@@ -2681,7 +2682,7 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
 - The user's recent foods (below) are strong hints: "milk" from someone who always logs Toned Milk means toned milk. Say so in assumption when you rely on this.
 - meal_type: if the text names a meal ("for lunch", "dinner was"), use that. Otherwise use the hint EXACTLY: ${hint}. Do NOT infer the meal from what the food "usually" is: paneer bhurji at 9pm is dinner, not breakfast. Time of day decides, never the dish.
 - Multiple foods in one text = multiple items in ONE log_meal call.
-- NEVER ask the user a question. This is a one-shot logger, not a chat: the user gets no chance to reply. If an amount is missing, assume ONE standard serving (use the household defaults above) and note it in assumption, e.g. "Took that as one katori, 150 g." If a brand/variant is ambiguous, pick the most common one and say so. Estimate and log; do not stall for clarification.
+- NEVER ask the user a question. This is a one-shot logger, not a chat: the user gets no chance to reply. If an amount is missing, assume ONE typical serving of this food and put the weight you used in assumption, the same way. If a brand/variant is ambiguous, pick the most common one and say so. Estimate and log; do not stall for clarification.
 - An item with no candidates is NEVER dropped: estimate the macros from your own knowledge (source "estimate"), note it in assumption, and log it. A branded snack you recognize (Haldiram's bhujia, Epigamia yogurt, etc.) always gets logged with an estimate, never skipped.
 - You MUST finish by calling log_meal exactly once, covering every extracted item. Never write the parsed meal, macros, or a follow-up question as assistant text.
 - USE THE USER'S OWN STAPLES when the text is VAGUE. The context lists what this person actually eats, with how many times and their usual amount. If they say "milk" and the list shows "Toned Milk (7 times, usually 200 ml)", log THEIR toned milk at THEIR 200 ml. Do not fall back to a generic or whole-fat default and then tell them their history says otherwise: they told you what they eat by eating it. Same for the amount, prefer their usual over a standard serving.
@@ -2790,7 +2791,10 @@ export function candidatePayload(c: CandidateFood): Record<string, unknown> {
       fat_g: c.fat_g,
       ...(c.fiber_g !== null ? { fiber_g: c.fiber_g } : {}),
     },
-    servings: c.servings.slice(0, 6),
+    // The per-100 basis ("100 g") is how the numbers are stored, not a portion
+    // anyone eats. Offered as a serving, decide took it as the label for a
+    // gram count: "30 g peanuts" came back 30 x "100 g".
+    servings: c.servings.filter((sv) => !isBasisServing(sv)).slice(0, 6),
     source: c.source,
     // Emitted ONLY when the sources fought, which is the rare case. Sending a
     // spread (or a `verified` flag) on every candidate would add a line to
@@ -5080,8 +5084,13 @@ export function memoryQuickItem(
 ): ParsedItem | null {
   const qty = line.quantity > 0 ? line.quantity : 1;
   const unit = line.unit.trim().toLowerCase();
+  // "1 x 250 ml" states its amount. The memory used to hold "250 ml" as a
+  // serving of 250 and answer it there; it keeps no stated weight as a serving
+  // now (userFoodMemory STATED_WEIGHT), so the amount is read off the unit.
+  const stated = unit.match(/^(\d+(?:\.\d+)?)\s*([a-z]+)$/);
   let grams: number | null = null;
   if (MASS_UNITS.has(unit)) grams = qty;
+  else if (stated && MASS_UNITS.has(stated[2]) && Number(stated[1]) > 0) grams = qty * Number(stated[1]);
   else if (food.serving && unitKey(food.serving.label) === unitKey(unit)) grams = qty * food.serving.grams;
   else if (line.est && line.est.total_g > 0) grams = line.est.total_g;
   if (!grams || !(grams > 0) || grams > 5000) return null;
@@ -5946,8 +5955,52 @@ export async function runParseMeal(
   input: ParseMealInput,
 ): Promise<ParseMealResult> {
   const result = await runParseMealOnce(deps, input);
+  if (result.parsed) result.parsed.items = result.parsed.items.map(amountMatchesGrams);
+  if (result.proposal) result.proposal.items = result.proposal.items.map(amountMatchesGrams);
   if (input.variantChips && result.parsed) result.parsed.items = result.parsed.items.map(forSwapChips);
   return result;
+}
+
+const GRAM_UNITS = new Set(["g", "gm", "gms", "gram", "grams"]);
+const ML_UNITS = new Set(["ml", "mls"]);
+
+/**
+ * quantity x serving_label is what the card prints, and it must say the grams
+ * the numbers were worked out from.
+ *
+ * decide returns quantity, serving_label and grams as three free numbers, and
+ * only grams drives the macros, so nothing ever checked the other two. It
+ * wrote "30 g peanuts" as 30 x "100 g" (the row's basis label, which the
+ * schema offers as an example) and "4 g chia" as 4 x "4 g": the card read
+ * "3000 g" and "16 g" over correct calories. The saved line then taught the
+ * food memory a "100 g" serving of 1 g, so the next log came back wrong too.
+ * sanitizeItems also caps quantity at 100, which turned 130 g of rice into
+ * 100 x "100 g".
+ *
+ * A weight label that disagrees with the grams is rewritten in the grams'
+ * terms, the same shape the editor saves: 30 "g". A ml label only moves when
+ * it is far off, since a liquid's grams can sit a little off its ml.
+ *
+ * lib/servingSize.ts fixWeightLabel is the app's copy, for lines already
+ * saved. Change the rules in both, and in both test files
+ * (amountMatchesGrams.test.ts, lib/servingSize.test.ts).
+ */
+export function amountMatchesGrams(it: ParsedItem): ParsedItem {
+  if (!(it.grams > 0) || !(it.quantity > 0)) return it;
+  const label = it.serving_label.trim().toLowerCase();
+  const asGrams = (unit: string): ParsedItem => ({ ...it, quantity: round1(it.grams), serving_label: unit });
+  const off = (amount: number, tolerance: number) => {
+    const ratio = amount / it.grams;
+    return ratio > 1 + tolerance || ratio < 1 / (1 + tolerance);
+  };
+  if (GRAM_UNITS.has(label)) return off(it.quantity, 0.1) ? asGrams("g") : it;
+  if (ML_UNITS.has(label)) return off(it.quantity, 0.5) ? asGrams("ml") : it;
+  const m = label.match(/^(\d+(?:\.\d+)?)\s*([a-z]+)$/);
+  if (!m) return it;
+  const size = Number(m[1]);
+  const unit = GRAM_UNITS.has(m[2]) ? "g" : ML_UNITS.has(m[2]) ? "ml" : null;
+  if (!unit || !(size > 0)) return it;
+  return off(it.quantity * size, 0.5) ? asGrams(unit) : it;
 }
 
 async function runParseMealOnce(

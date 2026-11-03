@@ -22,6 +22,7 @@ import { sendStreamWithFreshTokenRetry } from '@/lib/authRetry';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { coachInvokeErrorMessage, coachInvokeCapSignal } from '@/lib/coachErrors';
 import { isMeasurementUnit } from '@/lib/units';
+import { fixWeightLabel } from '@/lib/servingSize';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { track } from '@/lib/analytics';
 import { normalizeFuelDays, type FuelDay } from '@/lib/fuelDays';
@@ -29,6 +30,7 @@ import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from '@/lib/t
 import { readSwapOptions, type SwapOption } from '@/lib/variantSwap';
 import { relogColumns, type RelogLabels } from '@/lib/foodPatterns';
 import { deleteMealIfEmpty } from '@/lib/mealCleanup';
+import { buildYourFoods, type YourFood, type YourFoodEntry, type YourFoodMark } from '@/lib/yourFoods';
 import {
   pendingRows, prunePending, settlePending as settleGroup, settledKeys, withPending, r0, r1,
   type PendingGroup, type PendingSource,
@@ -39,8 +41,9 @@ import {
 } from '@/lib/foods';
 
 type Supa = NonNullable<ReturnType<typeof useSupabaseClient>>;
-/** A food the picker can log: a catalog Food (has id) or a bundled FoodDef (no id). */
-export type PickerFood = FoodDef & { id?: string | null };
+/** A food the picker can log: a catalog Food (has id) or a bundled FoodDef (no id).
+ *  `yours` is set on a food rebuilt from the user's own diary (lib/yourFoods). */
+export type PickerFood = FoodDef & { id?: string | null; yours?: YourFoodMark };
 
 /**
  * The meal the logging flow is targeting. food-search / food-detail are RETAINED
@@ -635,6 +638,36 @@ export async function recentFoods(supabase: Supa | null, limit = 20): Promise<Pi
   return out;
 }
 
+/** Every food this user logged, one per name, for search to put first
+ *  (lib/yourFoods). One read of the newest 600 meals, any day, AI and manual
+ *  lines alike: search filters it on the device, so a keystroke never waits on
+ *  the network. The cap bounds the download for a heavy logger (about 300
+ *  meals in 90 days on prod, 2026-10-31). */
+export async function loadYourFoods(supabase: Supa | null): Promise<YourFood[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('meals')
+    .select('logged_at, meal_entries(food_id, food_name, serving_unit, grams_logged, quantity, kcal, protein_g, carb_g, fat_g, fiber_g, sugar_g, sat_fat_g, sodium_mg, logged_via, source, tier)')
+    .order('logged_at', { ascending: false })
+    .limit(600);
+  if (error || !data) return [];
+  const nul = (v: unknown) => (v == null ? null : Number(v));
+  const entries: YourFoodEntry[] = [];
+  for (const m of data as any[]) {
+    for (const e of (m.meal_entries ?? []) as any[]) {
+      entries.push({
+        food_id: e.food_id ?? null, food_name: String(e.food_name ?? ''),
+        serving_unit: e.serving_unit ?? null, quantity: nul(e.quantity), grams_logged: nul(e.grams_logged),
+        kcal: num(e.kcal), protein_g: num(e.protein_g), carb_g: num(e.carb_g), fat_g: num(e.fat_g),
+        fiber_g: nul(e.fiber_g), sugar_g: nul(e.sugar_g), sat_fat_g: nul(e.sat_fat_g), sodium_mg: nul(e.sodium_mg),
+        logged_via: e.logged_via ?? null, source: e.source ?? null, tier: e.tier ?? null,
+        logged_at: m.logged_at,
+      });
+    }
+  }
+  return buildYourFoods(entries);
+}
+
 /** A food's serving options. Bundled foods carry them; catalog foods load from
  *  food_servings; everything always has a canonical "100 <base>" fallback. */
 export async function loadServings(supabase: Supa | null, food: PickerFood): Promise<FoodServing[]> {
@@ -856,6 +889,8 @@ const isMealType = (v: unknown): v is MealType =>
  *  rather than merely caught, which is worth more than a test here: lib/ has
  *  no test harness, so a test could not have run anyway. */
 function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
+  // 15 x "100 g" behind 15 g reads, and logs, as 15 "g" (lib/servingSize).
+  const amount = fixWeightLabel(num(i.quantity) || 1, String(i.serving_label ?? 'serving'), num(i.grams));
   return {
     // NULL is how a caller says "this line has no section of its own": a
     // proposal line belongs wherever the line it replaces is, and
@@ -864,8 +899,8 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
     meal_type: isMealType(i.meal_type) ? i.meal_type : (fallbackMeal as MealType),
     food_id: typeof i.food_id === 'string' && i.food_id ? i.food_id : null,
     food_name: String(i.food_name ?? 'Food'),
-    quantity: num(i.quantity) || 1,
-    serving_label: String(i.serving_label ?? 'serving'),
+    quantity: amount.quantity,
+    serving_label: amount.serving_label,
     grams: num(i.grams),
     kcal: num(i.kcal), protein_g: num(i.protein_g), carb_g: num(i.carb_g), fat_g: num(i.fat_g),
     fiber_g: i.fiber_g == null ? null : num(i.fiber_g),

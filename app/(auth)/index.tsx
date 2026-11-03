@@ -83,6 +83,13 @@ export default function AuthScreen() {
   const { isSignedIn, isLoaded: clerkLoaded } = useClerkUser();
 
   const [mode, setMode] = useState<Mode>('login');
+  // Only someone already in guest mode is offered the way back into it.
+  const [wasGuest, setWasGuest] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    getGuestMode().then((g) => { if (alive) setWasGuest(g); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -879,8 +886,10 @@ export default function AuthScreen() {
             </Animated.View>
           </PostHogMaskView>
 
-          {/* Guest */}
-          {(mode === 'login' || mode === 'register') && (
+          {/* Guest: closed to new people (2026-10-31). A guest's plan never
+              reaches an account, and phase 1 can only be built for one. Someone
+              already in guest mode who lands here can still go back to it. */}
+          {wasGuest && (mode === 'login' || mode === 'register') && (
             <Animated.View entering={FadeInDown.delay(200).duration(500)} style={{ alignItems: 'center', marginTop: Spacing.lg }}>
               <TouchableOpacity onPress={async () => {
                 track('guest_mode_entered', { mode });

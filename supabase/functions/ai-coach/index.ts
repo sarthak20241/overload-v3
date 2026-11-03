@@ -31,7 +31,7 @@ import { cooldownBody, reserveProSlot } from "../_shared/aiCooldown.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { AREAS as WORD_AREAS, QUESTIONS as WORD_QUESTIONS, YES as WORD_YES } from "../_shared/dronaWords.ts";
 import { decideMoment, type MomentCandidate, momentRow } from "../_shared/dronaMoments.ts";
-import { asNoul, type JevAnswer } from "./jev.ts";
+import { asNoul, type JevAnswer, type JevUsage } from "./jev.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
 import { withPhaseActivity } from "./programActivity.ts";
@@ -106,7 +106,7 @@ import { preciseAliasStore } from "./preciseAlias.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
-import { freePhaseBuildCandidate } from "./freePhaseBuild.ts";
+import { freePhaseBuildCandidate, freePhaseRefineCandidate } from "./freePhaseBuild.ts";
 import { selectMatchRows } from "./ourSources.ts";
 import { MEMORY_DAYS, type MemoryEntry } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
@@ -116,6 +116,11 @@ import {
   buildAnonProgramMessage,
   sanitizeAnonIntake,
 } from "./anonOnboarding.ts";
+import { type HeldSections, leanUserContext, readHeldSections } from "./userContextLean.ts";
+
+// Chat sends a short user summary and reads the big sections on demand
+// (userContextLean.ts). LEAN_CHAT_CONTEXT=off sends the whole context again.
+const LEAN_CHAT_CONTEXT = Deno.env.get("LEAN_CHAT_CONTEXT") !== "off";
 
 // Auth model: Supabase third-party Clerk auth covers PostgREST/Realtime but
 // NOT Edge Functions. We deploy verify_jwt:false and verify the Clerk JWT
@@ -367,11 +372,12 @@ function toSavedSummaries(saved: SavedMealForParse[]): SavedMealSummary[] {
 function makeFoodIntentDeps(
   savedMeals: SavedMealSummary[],
   abortSignal?: AbortSignal,
+  onUsage?: (u: JevUsage) => void,
 ): FoodIntentDeps {
   return {
     savedMeals,
     jev: JEV_API_KEY
-      ? { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, abortSignal, log: (m) => console.log(m) }
+      ? { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, abortSignal, log: (m) => console.log(m), onUsage }
       : undefined,
     classify: classifyFoodIntentWithModel,
     log: (m) => console.log(m),
@@ -399,11 +405,12 @@ function startFoodIntent(
   text: string,
   context: FoodConversationContext,
   abortSignal?: AbortSignal,
+  onUsage?: (u: JevUsage) => void,
 ): Promise<FoodIntentDecision | null> {
   if (!shouldRouteFoodIntent(FOOD_INTENT_MODE)) return Promise.resolve(null);
   // The same saved-meal read the parser uses, so one query serves both.
   return savedMealsP
-    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal), context))
+    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal, onUsage), context))
     // routeFoodIntent is documented never to throw. This is the belt on top of
     // the braces: nothing about a shadow measurement may fail a meal log.
     .catch((e) => {
@@ -1107,6 +1114,30 @@ function logTavilyCost(admin: SupabaseClient, credits: number | undefined, metad
   });
 }
 
+/** Jev's usage hook for one caller: a token_usage_log row per answered call,
+ *  priced by model_pricing (input tokens only). Kept alive past the response. */
+function jevUsageLogger(
+  admin: SupabaseClient,
+  pipeline: string,
+  via: string,
+  userId: string | null,
+): (u: JevUsage) => void {
+  return (u) =>
+    keepAlive(logTokenUsage(admin, {
+      pipeline,
+      provider: "typesafe",
+      model: u.model,
+      input_tokens: u.input_tokens,
+      output_tokens: u.output_tokens,
+      latency_ms: u.latency_ms,
+      metadata: {
+        via, questions: u.questions, ...(u.served_model ? { served_model: u.served_model } : {}),
+        ...(u.usage_missing ? { usage_missing: true } : {}),
+        ...(userId ? { user_id: userId } : {}),
+      },
+    }));
+}
+
 async function logTokenUsage(
   admin: SupabaseClient,
   rec: {
@@ -1189,7 +1220,10 @@ function catchMemoryAfterReply(admin: SupabaseClient, trace: CoachTrace, traceId
               pain: WORD_QUESTIONS.pain, area: WORD_QUESTIONS.area, ask: WORD_QUESTIONS.ask, change: WORD_QUESTIONS.change,
             } }
           : {}),
-        jev: { apiKey: JEV_API_KEY, timeoutMs: 6000, log: (m) => console.log(`[ai-coach] memory ${m}`) },
+        jev: {
+          apiKey: JEV_API_KEY, timeoutMs: 6000, log: (m) => console.log(`[ai-coach] memory ${m}`),
+          onUsage: jevUsageLogger(admin, "drona_memory", `gate_${kind}`, userId),
+        },
         anthropicKey: ANTHROPIC_API_KEY,
         today: new Date().toISOString().slice(0, 10),
         readMemory: () => readMemoryRows(admin as never, userId),
@@ -1391,7 +1425,12 @@ async function executeTool(
   // The resolved mode, recorded as coach_memory.source so a fact can be traced
   // to the conversation kind that saved it. Optional: the RPC defaults to chat.
   source?: string | null,
+  // The sections a lean chat held back from user_context (userContextLean.ts).
+  held?: HeldSections | null,
 ): Promise<unknown> {
+  // Read from the context already fetched for this request; no database call.
+  if (name === "coach_get_user_details") return readHeldSections(held ?? {}, input);
+
   // Memory (migration 20260919023437). Both RPCs return {saved|forgotten, reason} and
   // never raise for bad input, so the model reads the reason and moves on.
   if (name === "remember_fact") {
@@ -1670,7 +1709,8 @@ async function runMemorySideEffects(
   if (side.length === 0) return;
   await Promise.all(
     side.map(async (b) => {
-      const result = await executeTool(userClient, b.name ?? "", b.input ?? {}, trace.mode);
+      // Memory tools only: no held sections to read here.
+      const result = await executeTool(userClient, b.name ?? "", b.input ?? {}, trace.mode, null);
       recordToolCall(trace, b.name ?? "<unknown>", result);
     }),
   );
@@ -1987,6 +2027,7 @@ async function runStreamingToolLoop(
   trace: CoachTrace,
   forceTool: string | null,
   maxTokens: number,
+  held: HeldSections | null = null,
 ): Promise<StreamingLoopResult> {
   // Per-iteration wall clock, recorded in spans.stream_iterations. The whole
   // reason the program-chat report was hard to diagnose is that a turn's only
@@ -2212,7 +2253,7 @@ async function runStreamingToolLoop(
     }
     const toolResults = await Promise.all(
       toolUses.map(async (block: any) => {
-        const result = await executeTool(userClient, block.name ?? "", block.input ?? {}, trace.mode);
+        const result = await executeTool(userClient, block.name ?? "", block.input ?? {}, trace.mode, held);
         // Record after the call, not before: the result is what tells us
         // whether the tool actually worked.
         recordToolCall(trace, block.name ?? "<unknown>", result);
@@ -3199,7 +3240,10 @@ function makeParseDeps(
     // Time is not Precise's constraint, so relevance gets a longer leash than
     // the food-intent race does.
     jev: JEV_API_KEY
-      ? { apiKey: JEV_API_KEY, timeoutMs: Math.max(JEV_TIMEOUT_MS, 5000), log: (m) => console.log(m) }
+      ? {
+        apiKey: JEV_API_KEY, timeoutMs: Math.max(JEV_TIMEOUT_MS, 5000), log: (m) => console.log(m),
+        onUsage: jevUsageLogger(admin, "parse_meal", "parse", userId),
+      }
       : undefined,
     searchCountry: PRECISE_SEARCH_COUNTRY,
     // This user's own log, last 10 days, through THEIR client: RLS keeps it
@@ -3782,7 +3826,7 @@ async function handleParseMealRequest(args: {
         // Kicked off BEFORE the parse is awaited, so the two overlap and the
         // common path (log, almost always) pays nothing for the question.
         const savedMealsP = fetchSavedMealsForParse(userClient);
-        const intentP = startFoodIntent(savedMealsP, text, foodContext, abort.signal);
+        const intentP = startFoodIntent(savedMealsP, text, foodContext, abort.signal, jevUsageLogger(admin, "parse_meal", "food_intent", userId));
         const supportsCreate = clientSupportsFoodCreate(body);
         // Settled into a plain variable so the progress gate below can read it
         // synchronously. Awaiting inside onProgress would stall the stream.
@@ -4012,7 +4056,7 @@ async function handleParseMealRequest(args: {
   // a parse that blew up is exactly when knowing what the user was asking for is
   // most useful.
   const savedMealsP = fetchSavedMealsForParse(userClient);
-  const intentP = startFoodIntent(savedMealsP, text, foodContext);
+  const intentP = startFoodIntent(savedMealsP, text, foodContext, undefined, jevUsageLogger(admin, "parse_meal", "food_intent", userId));
   const supportsCreate = clientSupportsFoodCreate(body);
 
   try {
@@ -4470,6 +4514,9 @@ Deno.serve(async (req) => {
   // A free user's one free phase-1 build (see the claim below). It runs with
   // the Pro prompt and toolkit and does not spend a chat message.
   let freePhaseBuild = false;
+  // A refine turn on that free build while it is still an unsaved draft (see
+  // the claim below). Runs like the build: Pro prompt and toolkit, no chat slot.
+  let freePhaseRefine = false;
   try {
     const { data: accessData, error: accessErr } = await userClient.rpc(
       "get_coach_access_status",
@@ -4525,7 +4572,28 @@ Deno.serve(async (req) => {
           trace.spans = { ...(trace.spans ?? {}), free_phase_build: claim.reason ?? "claimed" };
         }
       }
-      if (wantsProFlow && !freePhaseBuild) {
+      // The draft phase 1 that build made can be talked over with Drona before
+      // Save (mode 'refine_plan', a few turns). freePhaseRefineCandidate says
+      // which requests may ask; the RPC checks it is this user's claimed,
+      // still-unsaved phase 1 with turns left. An RPC error falls through to
+      // the paywall, same as the build.
+      const refinePhaseId = freePhaseRefineCandidate(body);
+      if (wantsProFlow && !freePhaseBuild && refinePhaseId !== null) {
+        const { data: refineData, error: refineErr } = await userClient.rpc(
+          "try_claim_free_phase_refine",
+          { p_phase_id: refinePhaseId },
+        );
+        const refine = (Array.isArray(refineData) ? refineData[0] : refineData) as
+          | { allowed?: boolean; reason?: string }
+          | null;
+        if (refineErr) console.log("[ai-coach] free phase refine claim error:", refineErr.message);
+        if (!refineErr && refine?.allowed) {
+          freePhaseRefine = true;
+          freeTier = false;
+          trace.spans = { ...(trace.spans ?? {}), free_phase_refine: refine.reason ?? "refine" };
+        }
+      }
+      if (wantsProFlow && !freePhaseBuild && !freePhaseRefine) {
         trace.status = "unauthorized";
         trace.error_message = `pro_required:${String(peekMode ?? peekForce)}`;
         return respond(
@@ -4555,6 +4623,7 @@ Deno.serve(async (req) => {
   // normal use (_shared/aiCooldown.ts), same lock, same table.
   // The free phase-1 build skips this: its own claim (max 3 tries, once per
   // account) is the limit, and it must not eat one of the 3 free messages.
+  // Its refine turns skip it the same way (their own cap is in the RPC).
   if (freeTier) {
     const { data: slotData, error: slotErr } = await userClient
       .rpc("try_reserve_ai_coach_slot", { p_cap: FREE_CHAT_LIMIT });
@@ -4579,7 +4648,7 @@ Deno.serve(async (req) => {
         402,
       );
     }
-  } else if (!freePhaseBuild) {
+  } else if (!freePhaseBuild && !freePhaseRefine) {
     const slot = await reserveProSlot((fn, args) => userClient.rpc(fn, args), "chat");
     if (slot.kind === "error") {
       trace.status = "internal_error";
@@ -5103,7 +5172,15 @@ Deno.serve(async (req) => {
   // older app sends nothing and keeps getting plain markdown.
   const clientUi = (body as { ui?: unknown }).ui;
   const richReplies = Array.isArray(clientUi) && clientUi.includes("blocks_v1");
-  let { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode, freeTier, richReplies });
+  // Chat sends the short summary; the held sections answer coach_get_user_details.
+  // userContext itself stays whole for everything after this point.
+  const leanContext = LEAN_CHAT_CONTEXT && mode === "chat";
+  const leaned = leanContext ? leanUserContext(userContext) : null;
+  const leanHeld: HeldSections | null = leaned?.held ?? null;
+  let { system, tools } = buildSystemPrompt({
+    userContext: leaned ? leaned.summary : userContext,
+    retrievedResearch, mode, freeTier, richReplies, leanContext,
+  });
   // Free tier is chat-only: strip the terminal generation tools (plan /
   // workout emission is Pro) and tell Drona so it answers in coach voice
   // instead of attempting a tool that isn't there. Appended AFTER the
@@ -5228,7 +5305,7 @@ Deno.serve(async (req) => {
                 ? 'programming'
                 : 'thinking';
         sse.write("status", { phase: statusPhase });
-        const result = await runStreamingToolLoop(sse, system, tools, initialConversation, userClient, trace, effectiveForceTool, maxTokens);
+        const result = await runStreamingToolLoop(sse, system, tools, initialConversation, userClient, trace, effectiveForceTool, maxTokens, leanHeld);
 
         // Citations: same regex as non-streaming path
         const refs = new Set<number>();
@@ -5453,7 +5530,7 @@ Deno.serve(async (req) => {
       // turns, loop again.
       const toolResults = await Promise.all(
         toolUses.map(async (block) => {
-          const result = await executeTool(userClient, block.name ?? "", block.input ?? {}, trace.mode);
+          const result = await executeTool(userClient, block.name ?? "", block.input ?? {}, trace.mode, leanHeld);
           // Record after the call, not before: the result is what tells us
           // whether the tool actually worked.
           recordToolCall(trace, block.name ?? "<unknown>", result);

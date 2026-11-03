@@ -32,6 +32,8 @@ interface Props {
   hasProgram: boolean;
   /** Routines linked to the current phase; null until loaded. */
   phaseRoutineCount: number | null;
+  /** A built, unsaved plan for this phase waits on the device (lib/phaseDraft.ts). */
+  hasDraft?: boolean;
   /** The phase being asked about. Its id scopes "Not now"; null for a guest. */
   phaseId: string | null;
   /** Signed in: open the Goal screen on phase 1's build flow. */
@@ -85,6 +87,7 @@ export function BuildSplitPrompt(props: Props) {
         isGuest: props.isGuest,
         hasProgram: props.hasProgram,
         phaseRoutineCount: props.phaseRoutineCount,
+        hasDraft: props.hasDraft,
         dismissedAt,
         nowMs: Date.now(),
       });
@@ -138,13 +141,15 @@ export function BuildSplitPrompt(props: Props) {
                 <DronaMark size={12} state="static" />
               </View>
               <Text style={[styles.title, { color: C.foreground }]}>
-                {action === 'signin' ? 'Save your program' : 'Your program is ready'}
+                {action === 'signin' ? 'Save your program' : action === 'review' ? 'Your phase 1 is waiting' : 'Your program is ready'}
               </Text>
             </View>
             <Text style={[styles.body, { color: C.mutedFg }]}>
               {action === 'signin'
                 ? 'I mapped out every phase for you, but without an account it will not be here tomorrow. Sign in and I will keep it, then build your first week.'
-                : 'I have your phases mapped out. Now let me build the actual workouts for phase one, so you know exactly what to do on day one.'}
+                : action === 'review'
+                  ? 'I built your phase 1 workouts and kept them for you. Look them over, change anything with me, then save.'
+                  : 'I have your phases mapped out. Now let me build the actual workouts for phase one, so you know exactly what to do on day one.'}
             </Text>
 
             <Pressable
@@ -155,7 +160,7 @@ export function BuildSplitPrompt(props: Props) {
               ]}
             >
               <Text style={[styles.primaryText, { color: Colors.primaryFg }]}>
-                {action === 'signin' ? 'Sign in to save it' : 'Build phase 1'}
+                {action === 'signin' ? 'Sign in to save it' : action === 'review' ? 'Review and save' : 'Build phase 1'}
               </Text>
               <Feather name="arrow-right" size={13} color={Colors.primaryFg} />
             </Pressable>

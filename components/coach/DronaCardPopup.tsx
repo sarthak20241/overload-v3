@@ -1,6 +1,10 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, StyleSheet, BackHandler, AccessibilityInfo, findNodeHandle } from 'react-native';
-import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
+import Animated, {
+  Easing, FadeIn, FadeOut, ZoomIn, useAnimatedStyle, useSharedValue, withSequence, withTiming,
+} from 'react-native-reanimated';
+import { haptics } from '@/lib/haptics';
+import { bellPoint, bumpBell } from '@/lib/bellTarget';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
@@ -16,6 +20,8 @@ import type { SavedDronaCard } from '@/lib/dronaCard';
 //   the quiet no            Skip this week / Keep the plan / Undo
 //   Later                   the card leaves and waits on From Drona
 // Tapping outside, or the Android back button, is Later: nobody answered.
+// Later shrinks the card into the dashboard's bell (lib/bellTarget), so the
+// user sees where it went. With no bell on screen it just fades, as before.
 //
 // Laid out to be read top to bottom in one breath, then answered. Every
 // spacing step is deliberate (owner's ask, 2026-09-19):
@@ -33,23 +39,98 @@ interface Props {
   onDismiss: () => void;
   onUndo: () => void;
   onLater: () => void;
+  /** A card the app made, not the server (the phase build): its own words. */
+  kicker?: string;
+  primaryLabel?: string;
+  /** null: no second button. */
+  secondary?: { label: string; press: () => void } | null;
 }
 
-export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater }: Props) {
+const FLY_MS = 560;
+const MEASURE_TIMEOUT_MS = 250;
+
+export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker, primaryLabel, secondary }: Props) {
   const { C } = useTheme();
   const isNotice = card.kind === 'notice';
   const undoable = isNotice && card.payload.action === 'undo_swap';
-  const primary = { label: isNotice ? 'Got it' : primaryLabelFor(card.payload), press: isNotice ? onDismiss : onAct };
-  const second = undoable
-    ? { label: 'Undo', press: onUndo }
-    : card.kind === 'act'
-      ? { label: 'Keep the plan', press: onDismiss }
-      : isNotice
-        ? null
-        : { label: 'Skip this week', press: onDismiss };
+  const primary = {
+    label: primaryLabel ?? (isNotice ? 'Got it' : primaryLabelFor(card.payload)),
+    press: isNotice ? onDismiss : onAct,
+  };
+  const second = secondary !== undefined
+    ? secondary
+    : undoable
+      ? { label: 'Undo', press: onUndo }
+      : card.kind === 'act'
+        ? { label: 'Keep the plan', press: onDismiss }
+        : isNotice
+          ? null
+          : { label: 'Skip this week', press: onDismiss };
   const evidence = card.evidence.slice(0, 3);
 
-  const later = useCallback(() => onLater(), [onLater]);
+  // Later: the card shrinks into the bell, the bell bumps, then it is gone.
+  const cardRef = useRef<View>(null);
+  const leaving = useRef(false);
+  // Flying: the card's buttons stop answering, so a tap mid-flight cannot act
+  // on a card that is already on its way to Later.
+  const [flying, setFlying] = useState(false);
+  const landRef = useRef<{ timer: ReturnType<typeof setTimeout>; land: () => void } | null>(null);
+  // Unmounted mid-flight (the screen went away): the user still said Later.
+  const mountedRef = useRef(true);
+  useEffect(() => () => {
+    mountedRef.current = false;
+    const pending = landRef.current;
+    if (pending) { clearTimeout(pending.timer); pending.land(); }
+  }, []);
+  const dx = useSharedValue(0);
+  const dy = useSharedValue(0);
+  const shrink = useSharedValue(1);
+  const fade = useSharedValue(1);
+  const dim = useSharedValue(1);
+  const flyStyle = useAnimatedStyle(() => ({
+    opacity: fade.value,
+    transform: [{ translateX: dx.value }, { translateY: dy.value }, { scale: shrink.value }],
+  }));
+  const backdropStyle = useAnimatedStyle(() => ({ opacity: dim.value }));
+  const later = useCallback(async () => {
+    if (leaving.current) return;
+    leaving.current = true;
+    // The buttons stop answering now, not after the measures: a tap in that
+    // gap would act on a card that is already on its way to Later.
+    setFlying(true);
+    // A measure that never calls back (a node detached mid-measure) must not
+    // leave Later dead: after a beat it counts as "no bell", a plain Later.
+    const orNull = <T,>(p: Promise<T | null>) => Promise.race([
+      p,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), MEASURE_TIMEOUT_MS)),
+    ]);
+    const [to, from] = await Promise.all([
+      orNull(bellPoint()),
+      orNull(new Promise<{ x: number; y: number } | null>((resolve) => {
+        const node = cardRef.current;
+        if (!node) { resolve(null); return; }
+        node.measureInWindow((x, y, w, h) => resolve(w > 0 ? { x: x + w / 2, y: y + h / 2 } : null));
+      })),
+    ]);
+    // Unmounted while measuring: nothing to animate, but Later still counts.
+    if (!mountedRef.current) { onLater(); return; }
+    if (!to || !from) { setFlying(false); onLater(); return; }
+    haptics.tick();
+    // Small first, then the trip, so the eye follows a chip into the bell
+    // rather than a big card sliding off. Visible until the last stretch.
+    const travel = { duration: FLY_MS, easing: Easing.inOut(Easing.cubic) };
+    // A bell scrolled out of view: aim for the top of the screen instead.
+    dx.value = withTiming(to.x - from.x, travel);
+    dy.value = withTiming(Math.max(to.y, 40) - from.y, travel);
+    shrink.value = withTiming(0.1, { duration: FLY_MS * 0.6, easing: Easing.out(Easing.cubic) });
+    fade.value = withSequence(
+      withTiming(1, { duration: FLY_MS * 0.75 }),
+      withTiming(0, { duration: FLY_MS * 0.25, easing: Easing.in(Easing.quad) }),
+    );
+    dim.value = withTiming(0, { duration: FLY_MS * 0.6 });
+    const land = () => { landRef.current = null; bumpBell(); onLater(); };
+    landRef.current = { timer: setTimeout(land, FLY_MS), land };
+  }, [onLater, dx, dy, shrink, fade, dim]);
 
   // A screen reader stays on whatever the dashboard control was until told
   // otherwise; accessibilityViewIsModal fences traversal but does not move
@@ -77,21 +158,27 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater }: Prop
       <Animated.View
         entering={FadeIn.duration(220)}
         exiting={FadeOut.duration(150)}
-        style={[s.backdrop, { backgroundColor: C.overlay }]}
+        style={s.backdrop}
         // Keep screen readers inside the popup while it is up: the dashboard
         // is still mounted underneath it in the same window.
         accessibilityViewIsModal
         importantForAccessibility="yes"
       >
-        <Pressable
-          style={StyleSheet.absoluteFill}
-          onPress={later}
-          accessibilityElementsHidden
-          importantForAccessibility="no"
-        />
+        {/* The dim, its own view so the fly can fade it (a layout animation
+            owns the outer view's opacity). */}
+        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }, backdropStyle]}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={later}
+            accessibilityElementsHidden
+            importantForAccessibility="no"
+          />
+        </Animated.View>
+        <Animated.View entering={ZoomIn.duration(240)} style={s.cardSlot}>
         <Animated.View
-          entering={ZoomIn.duration(240)}
-          style={[s.card, { backgroundColor: C.elevated, borderColor: C.borderSubtle }]}
+          ref={cardRef}
+          pointerEvents={flying ? 'none' : 'auto'}
+          style={[s.card, { backgroundColor: C.elevated, borderColor: C.borderSubtle }, flyStyle]}
         >
           {/* Who is talking */}
           <View style={s.head}>
@@ -100,7 +187,7 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater }: Prop
             <View style={s.mark}>
               <OrbStage size={32} state="listening" level={0.15} />
             </View>
-            <Text style={[s.kicker, { color: C.textMuted }]}>{kickerFor(card, undoable)}</Text>
+            <Text style={[s.kicker, { color: C.textMuted }]}>{kicker ?? kickerFor(card, undoable)}</Text>
           </View>
 
           {/* What, and why */}
@@ -147,6 +234,7 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater }: Prop
             <Text style={[s.laterText, { color: C.mutedFg }]}>Later</Text>
           </Pressable>
         </Animated.View>
+        </Animated.View>
       </Animated.View>
     </Portal>
   );
@@ -188,6 +276,7 @@ const s = StyleSheet.create({
     justifyContent: 'center',
     padding: Spacing.xxl,
   },
+  cardSlot: { width: '100%', maxWidth: 360 },
   // Wider than a prompt, narrower than the screen: a sheet of paper held up,
   // not a wall. Generous padding so nothing touches an edge.
   card: {

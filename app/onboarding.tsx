@@ -74,6 +74,7 @@ import { NumberWheel, RulerSlider } from '@/components/onboarding/BodyPickers';
 import { FrequencyStory } from '@/components/onboarding/FrequencyStory';
 import { PaceSlider } from '@/components/onboarding/PaceSlider';
 import { CommitmentHold } from '@/components/onboarding/CommitmentHold';
+import { Celebration } from '@/components/ui/Celebration';
 import { BuildMoment } from '@/components/onboarding/BuildMoment';
 import { ProjectedCurve } from '@/components/onboarding/ProjectedCurve';
 import { DronaMark } from '@/components/coach/DronaMark';
@@ -181,6 +182,7 @@ export default function OnboardingScreen() {
     frequency: 3,
   });
   const [finishing, setFinishing] = useState(false);
+  const [celebrating, setCelebrating] = useState(false);
 
   // "Something else" opens a text box under six cards; once the keyboard is
   // up, scroll it into view or the user types blind.
@@ -489,6 +491,15 @@ export default function OnboardingScreen() {
     setStep(next);
   }, [reportStepChange]);
 
+  // The commit confetti plays on the commit screen and the build screen
+  // follows once it lands, so nothing falls over the plan being built.
+  // Celebration's own backstop calls this even if the burst never reports
+  // its end.
+  const finishCelebration = useCallback(() => {
+    setCelebrating(false);
+    if (step === 'commit') goTo('build');
+  }, [step, goTo]);
+
   const stepIndex = STEP_ORDER.indexOf(step);
   const nextStep = STEP_ORDER[Math.min(stepIndex + 1, STEP_ORDER.length - 1)];
   const prevStep: Step =
@@ -503,11 +514,12 @@ export default function OnboardingScreen() {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (step === 'welcome') return false; // let the OS handle it
       if (step === 'build') return true; // no backing out mid-build
+      if (celebrating) return true; // committed: the build screen is next
       goTo(STEP_ORDER[Math.max(STEP_ORDER.indexOf(step) - 1, 0)]);
       return true;
     });
     return () => sub.remove();
-  }, [step, goTo]);
+  }, [step, goTo, celebrating]);
 
   // Single-select answers advance on their own after a beat, so the user sees
   // the selected state land before the screen moves. One tap per question.
@@ -619,12 +631,9 @@ export default function OnboardingScreen() {
         if (answers.goalWeightKg && answers.goalWeightKg > 0) basicInfo.setGoalWeight(answers.goalWeightKg);
         // The program only. The workouts come from the Goal screen's build,
         // which the dashboard prompts for next.
-        if (opts.createPlan) await saveOnboardingProgram(finalProgram, target);
+        const firstPhaseId = opts.createPlan ? await saveOnboardingProgram(finalProgram, target) : null;
         await markOnboardingDone(identity);
-        if (opts.createPlan) {
-          void flushNow();
-          toast.success('Your program is saved. Next, we build your phase 1 workouts.');
-        }
+        if (opts.createPlan) void flushNow();
         track('onboarding_completed', {
           created_plan: opts.createPlan,
           goal: answers.goal ?? null,
@@ -637,6 +646,11 @@ export default function OnboardingScreen() {
           seconds_total: Math.round((Date.now() - onboardingStartedAt.current) / 1000),
           outcome: 'saved',
         });
+        // A saved program goes straight on to building phase 1's workouts.
+        if (firstPhaseId && opts.dest !== '/(app)/routines') {
+          router.replace({ pathname: '/goal-plan', params: { build: 'phase', auto: '1', tour: '1' } } as any);
+          return;
+        }
         router.replace(opts.dest);
       } catch {
         // Never trap the user at the finish line, but say what happened;
@@ -729,7 +743,8 @@ export default function OnboardingScreen() {
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
         {showHeader && (
           <OnboardingHeader
-            onBack={() => goTo(prevStep)}
+            // Once committed, the confetti hands straight to the build.
+            onBack={() => { if (!celebrating) goTo(prevStep); }}
             progressIndex={progressIndex}
             progressTotal={PROGRESS_STEPS.length}
           />
@@ -1202,7 +1217,7 @@ export default function OnboardingScreen() {
               <CommitmentHold
                 pledgeTitle="I'm in."
                 pledgeBody={`${joinGoals(selectedGoals(answers).map((g, i) => i === 0 ? GOAL_PHRASES[g] : GOAL_PHRASES[g].toLowerCase()))}, ${answers.frequency ?? 3} days a week${paceCtx && paceDate ? `, ${Math.abs(toKg(targetVal) - toKg(weightVal)).toFixed(1)} kg ${targetVal < weightVal ? 'down' : 'up'} by ${paceDate}` : ''}. I log my sessions, even the rough ones.`}
-                onCommitted={() => goTo('build')}
+                onCommitted={() => setCelebrating(true)}
               />
           </QuestionStep>
         )}
@@ -1447,6 +1462,7 @@ export default function OnboardingScreen() {
           </QuestionStep>
         )}
       </KeyboardAvoidingView>
+      {celebrating && <Celebration onDone={finishCelebration} />}
     </SafeAreaView>
   );
 }

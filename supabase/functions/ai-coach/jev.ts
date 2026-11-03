@@ -94,6 +94,24 @@ export interface JevDeps {
    *  just stop reading it. */
   abortSignal?: AbortSignal;
   log?: (msg: string) => void;
+  /** Told what each answered call used, so the caller can price it. Jev was the
+   *  one paid model that never reached token_usage_log. A throw here is ignored. */
+  onUsage?: (usage: JevUsage) => void;
+}
+
+/** What one answered Jev call used. Billed on input tokens ($0.042/M). */
+export interface JevUsage {
+  /** The model we asked for: the key model_pricing prices. */
+  model: string;
+  /** The id the response says answered, which may differ from the one asked for. */
+  served_model: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  questions: number;
+  latency_ms: number;
+  /** The answer carried no usage, so the token counts are 0 by default, not
+   *  by measurement. Logged, so a cost page can tell it from a free call. */
+  usage_missing: boolean;
 }
 
 /** Why a call produced nothing. Callers branch on this rather than on a thrown
@@ -159,6 +177,8 @@ export async function askJev(
     // A fresh controller per attempt: an aborted one stays aborted, so reusing
     // it would make the retry fail instantly with the previous timeout.
     const controller = new AbortController();
+    // Timed per attempt: the answering call's latency, not the backoff before it.
+    const started = Date.now();
     const timeoutId = setTimeout(() => controller.abort(), deps.timeoutMs);
     const onCallerAbort = () => controller.abort();
     if (deps.abortSignal?.aborted) controller.abort();
@@ -185,6 +205,17 @@ export async function askJev(
         if (!parsed || typeof parsed !== "object" || !parsed.answers) {
           return { ok: false, failure: "bad_response", detail: "no answers in body" };
         }
+        try {
+          deps.onUsage?.({
+            model: deps.model ?? JEV_MODEL,
+            served_model: typeof parsed.model === "string" && parsed.model ? parsed.model : null,
+            input_tokens: Number(parsed.usage?.input_tokens) || 0,
+            output_tokens: Number(parsed.usage?.output_tokens) || 0,
+            questions: Object.keys(questions).length,
+            latency_ms: Date.now() - started,
+            usage_missing: !parsed.usage || typeof parsed.usage !== "object",
+          });
+        } catch { /* a logger must never cost the answer */ }
         return { ok: true, response: parsed };
       }
 

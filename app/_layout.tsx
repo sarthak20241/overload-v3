@@ -25,6 +25,7 @@ import { ToastProvider } from '@/components/ui/Toast';
 import { AnalyticsBridge } from '@/components/AnalyticsBridge';
 import { posthog } from '@/lib/analytics';
 import { PortalProvider } from '@/components/ui/Portal';
+import { CoachSheetHost } from '@/components/ai/CoachSheetHost';
 import { PostHogProvider } from 'posthog-react-native';
 
 // Required for OAuth flows to complete when the auth session returns.
@@ -80,10 +81,14 @@ function AppInner() {
                 <Stack.Screen name="(auth)" options={{ headerShown: false }} />
                 <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'fade' }} />
                 <Stack.Screen name="upgrade" options={{ headerShown: false, animation: 'fade' }} />
+                <Stack.Screen name="invite" options={{ headerShown: false, animation: 'fade' }} />
                 <Stack.Screen name="sso-callback" options={{ headerShown: false }} />
                 <Stack.Screen name="workout/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
                 <Stack.Screen name="workout/edit/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
               </Stack>
+              {/* Every coach sheet draws here, so one closed (or left) while
+                  Drona works keeps going and says when it is ready. */}
+              <CoachSheetHost />
             </PortalProvider>
           </SyncProvider>
         </WorkoutProvider>

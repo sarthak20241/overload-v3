@@ -21,6 +21,7 @@ import { hydrateCache, readCache } from '@/lib/localCache';
 import { getGuestWorkouts, updateGuestWorkout, type GuestWorkout } from '@/lib/guestStore';
 import { getPendingWorkouts, updatePendingWorkout, hydrateSyncQueue, type PendingExercise } from '@/lib/syncQueue';
 import { getPendingEdit, enqueueEdit, hydrateEditQueue, type PendingEditExercise } from '@/lib/editQueue';
+import { missingColumn } from '@/lib/missingColumn';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
 import { metricTypeOf, metricTypeDef, type ExerciseDef, type MetricType, type MetricAxis } from '@/lib/exercises';
 import type { SetType } from '@/lib/types';
@@ -152,7 +153,9 @@ export default function EditWorkoutScreen() {
   const [exercises, setExercises] = useState<EditExercise[]>([]);
   const [meta, setMeta] = useState<{ startedAt?: string; durationSeconds?: number }>({});
   // Original server set count + volume — the baseline for the synced XP delta.
-  const [base, setBase] = useState<{ setCount: number; volume: number }>({ setCount: 0, volume: 0 });
+  // source: workouts.source, set for a workout imported from Apple Health /
+  // Health Connect; an edit to one moves no XP (lib/xp editXpDelta).
+  const [base, setBase] = useState<{ setCount: number; volume: number; source?: string | null }>({ setCount: 0, volume: 0 });
   // The full original guest workout, kept so a guest save preserves its other fields.
   const [guestOriginal, setGuestOriginal] = useState<GuestWorkout | null>(null);
 
@@ -301,7 +304,7 @@ export default function EditWorkoutScreen() {
             supersetGroup: ex.supersetGroup ?? null,
             sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
           })));
-          setBase({ setCount: existingEdit.baseSetCount, volume: existingEdit.baseVolumeKg });
+          setBase({ setCount: existingEdit.baseSetCount, volume: existingEdit.baseVolumeKg, source: existingEdit.source ?? null });
           setMeta(cacheMeta);
           setLoading(false);
         });
@@ -309,13 +312,14 @@ export default function EditWorkoutScreen() {
       }
 
       try {
-        const { data, error } = await supabase
-          .from('workouts')
-          // The notes embed carries its own exercises() join because a note-only
-          // exercise has no workout_sets row to read the name/type from.
-          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_exercise_notes(exercise_id, note, exercises(id, name, muscle_group, category, metric_type)), workout_sets(id, exercise_id, weight_kg, reps, "order", duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, superset_group, exercises(id, name, muscle_group, category, metric_type))')
-          .eq('id', id)
-          .single();
+        // The notes embed carries its own exercises() join because a note-only
+        // exercise has no workout_sets row to read the name/type from.
+        const rest = 'name, notes, total_volume_kg, started_at, duration_seconds, workout_exercise_notes(exercise_id, note, exercises(id, name, muscle_group, category, metric_type)), workout_sets(id, exercise_id, weight_kg, reps, "order", duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, superset_group, exercises(id, name, muscle_group, category, metric_type))';
+        let { data, error } = await supabase.from('workouts').select(`id, source, ${rest}`).eq('id', id).single();
+        // A database before migration 20261101120000 has no workouts.source.
+        if (error && missingColumn(error, ['source'])) {
+          ({ data, error } = await supabase.from('workouts').select(`id, ${rest}`).eq('id', id).single());
+        }
         if (error || !data) throw error ?? new Error('not found');
         const rows = (data as any).workout_sets ?? [];
         setIfLive(() => {
@@ -323,7 +327,7 @@ export default function EditWorkoutScreen() {
           setName((data as any).name ?? '');
           setNotes((data as any).notes ?? '');
           setExercises(mapServerSetsToExercises(rows, (data as any).workout_exercise_notes ?? []));
-          setBase({ setCount: rows.length, volume: Number((data as any).total_volume_kg ?? 0) });
+          setBase({ setCount: rows.length, volume: Number((data as any).total_volume_kg ?? 0), source: (data as any).source ?? null });
           setMeta({ startedAt: (data as any).started_at, durationSeconds: (data as any).duration_seconds });
           setLoading(false);
         });
@@ -348,7 +352,7 @@ export default function EditWorkoutScreen() {
               note: ex.note ?? null,
               sets: (ex.sets ?? []).map((s: any) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
             })));
-            setBase({ setCount: cacheRow.workout_sets?.length ?? 0, volume: Number(cacheRow.total_volume_kg ?? 0) });
+            setBase({ setCount: cacheRow.workout_sets?.length ?? 0, volume: Number(cacheRow.total_volume_kg ?? 0), source: cacheRow.source ?? null });
             setMeta(cacheMeta);
             setLoading(false);
           });
@@ -589,6 +593,7 @@ export default function EditWorkoutScreen() {
         totalVolumeKg: newVolume,
         baseSetCount: base.setCount,
         baseVolumeKg: base.volume,
+        source: base.source ?? null,
       });
       track('workout_edited', editedProps);
       toast.success('Workout updated');
