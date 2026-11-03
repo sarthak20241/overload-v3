@@ -20,6 +20,7 @@ Deno.test("the last scene names the phase when it is known", () => {
   assertEquals(phaseLineFor("Deload", 1), "Deload. 1\u00a0week.");
   assertEquals(phaseLineFor("Get stronger.", null), "Get stronger.");
   assertEquals(phaseLineFor("", 4), null);
+  assertEquals(phaseLineFor("Beginner's base", 4), "Beginner’s base. 4\u00a0weeks.");
 });
 
 Deno.test("copy fits the screen, has no em dashes, and never says the plan is ready", () => {

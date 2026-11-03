@@ -39,7 +39,9 @@ export function tourScenes(firstName: string | null, phaseLine: string | null): 
 
 /** The grey line on the last scene: "Build the base. 4 weeks." */
 export function phaseLineFor(name: string | null | undefined, weeks: number | null | undefined): string | null {
-  const n = name?.trim();
+  // The phase name comes from the coach, so it may carry a straight
+  // apostrophe; the headline face draws that as a tick.
+  const n = name?.trim().replace(/'/g, '’');
   if (!n) return null;
   const w = weeks != null && Number.isFinite(weeks) && weeks > 0 ? Math.round(weeks) : null;
   const head = /[.!?]$/.test(n) ? n : `${n}.`;
