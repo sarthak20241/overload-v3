@@ -140,3 +140,24 @@ Deno.test("a stated gram or ml amount is the amount the line shows", async () =>
   // The calories are still the model's: only the weight label is pinned.
   assertEquals(items.map((i) => i.kcal), [310, 150, 220]);
 });
+
+Deno.test("an amount the model wrote as grams x '100 g' reads as the grams", async () => {
+  // Live 2026-10-18: "30 g peanuts" came back 30 x "100 g" behind 30 g, and the
+  // card read "3000 g". runParseMeal is the one exit, so every path is held.
+  const deps = stub([]);
+  deps.fetchFn = (async () =>
+    new Response(JSON.stringify({
+      stop_reason: "tool_use",
+      usage: { input_tokens: 1, output_tokens: 1 },
+      content: [{
+        type: "tool_use", name: "estimate_meal",
+        input: {
+          declined: false, meal_type_from_text: null,
+          items: [{ ...EST_ITEMS[0], name: "peanuts", quantity: 30, unit: "100 g", est_kcal: 170, est_protein_g: 8, est_carb_g: 5, est_fat_g: 15, est_total_g: 30 }],
+        },
+      }],
+    }), { status: 200 })) as typeof fetch;
+  const [peanuts] = (await runParseMeal(deps, INPUT)).parsed!.items;
+  assertEquals([peanuts.quantity, peanuts.serving_label, peanuts.grams], [30, "g", 30]);
+  assertEquals(peanuts.kcal, 170);
+});

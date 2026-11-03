@@ -22,6 +22,7 @@ import { sendStreamWithFreshTokenRetry } from '@/lib/authRetry';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { coachInvokeErrorMessage, coachInvokeCapSignal } from '@/lib/coachErrors';
 import { isMeasurementUnit } from '@/lib/units';
+import { fixWeightLabel } from '@/lib/servingSize';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { track } from '@/lib/analytics';
 import { normalizeFuelDays, type FuelDay } from '@/lib/fuelDays';
@@ -888,6 +889,8 @@ const isMealType = (v: unknown): v is MealType =>
  *  rather than merely caught, which is worth more than a test here: lib/ has
  *  no test harness, so a test could not have run anyway. */
 function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
+  // 15 x "100 g" behind 15 g reads, and logs, as 15 "g" (lib/servingSize).
+  const amount = fixWeightLabel(num(i.quantity) || 1, String(i.serving_label ?? 'serving'), num(i.grams));
   return {
     // NULL is how a caller says "this line has no section of its own": a
     // proposal line belongs wherever the line it replaces is, and
@@ -896,8 +899,8 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
     meal_type: isMealType(i.meal_type) ? i.meal_type : (fallbackMeal as MealType),
     food_id: typeof i.food_id === 'string' && i.food_id ? i.food_id : null,
     food_name: String(i.food_name ?? 'Food'),
-    quantity: num(i.quantity) || 1,
-    serving_label: String(i.serving_label ?? 'serving'),
+    quantity: amount.quantity,
+    serving_label: amount.serving_label,
     grams: num(i.grams),
     kcal: num(i.kcal), protein_g: num(i.protein_g), carb_g: num(i.carb_g), fat_g: num(i.fat_g),
     fiber_g: i.fiber_g == null ? null : num(i.fiber_g),
