@@ -8,9 +8,9 @@ import { nextScene, phaseLineFor, tapStep, TOUR_SUB_MAX, TOUR_TITLE_MAX, tourSce
 Deno.test("five scenes, greeting by first name only", () => {
   const s = tourScenes("Sarthak Kumar", null);
   assertEquals(s.length, 5);
-  assertEquals(s[0].title, "You're in, Sarthak.");
-  assertEquals(tourScenes(null, null)[0].title, "You're in.");
-  assertEquals(tourScenes("  ", null)[0].title, "You're in.");
+  assertEquals(s[0].title, "You’re in, Sarthak.");
+  assertEquals(tourScenes(null, null)[0].title, "You’re in.");
+  assertEquals(tourScenes("  ", null)[0].title, "You’re in.");
 });
 
 Deno.test("the last scene names the phase when it is known", () => {
@@ -28,6 +28,7 @@ Deno.test("copy fits the screen, has no em dashes, and never says the plan is re
     assert(s.sub.length <= TOUR_SUB_MAX, `sub too long: ${s.sub}`);
     for (const t of [s.title, s.sub]) {
       assert(!t.includes("—"), `em dash in "${t}"`);
+      assert(!t.includes("'"), `straight apostrophe in "${t}"`);
       assert(!/\bready\b/i.test(t), `promises a finished plan: "${t}"`);
     }
   }
