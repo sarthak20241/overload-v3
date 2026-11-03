@@ -39,10 +39,15 @@ import React, {
 } from 'react';
 import { View, StyleSheet } from 'react-native';
 
-type Nodes = Record<string, React.ReactNode>;
+// `layer` orders portals: higher paints on top. Equal layers keep the order
+// they were first mounted in (later on top), which is what every sheet relies
+// on. A full-screen takeover (the sign-up tour) uses a higher layer so a sheet
+// opened underneath it after it mounted stays hidden until it ends.
+type Entry = { node: React.ReactNode; layer: number };
+type Nodes = Record<string, Entry>;
 
 type PortalStore = {
-  set: (key: string, node: React.ReactNode) => void;
+  set: (key: string, node: React.ReactNode, layer?: number) => void;
   remove: (key: string) => void;
   subscribe: (listener: () => void) => () => void;
   getSnapshot: () => Nodes;
@@ -58,8 +63,8 @@ function createPortalStore(): PortalStore {
   const emit = () => listeners.forEach((l) => l());
 
   return {
-    set(key, node) {
-      nodes = { ...nodes, [key]: node };
+    set(key, node, layer = 0) {
+      nodes = { ...nodes, [key]: { node, layer } };
       emit();
     },
     remove(key) {
@@ -100,6 +105,10 @@ export function PortalProvider({ children }: { children: React.ReactNode }) {
 
 function PortalHost({ store }: { store: PortalStore }) {
   const nodes = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  // Mount order within a layer; the index tiebreak keeps the sort stable.
+  const ordered = Object.entries(nodes)
+    .map(([key, entry], i) => ({ key, entry, i }))
+    .sort((a, b) => a.entry.layer - b.entry.layer || a.i - b.i);
   return (
     <>
       {/*
@@ -107,16 +116,16 @@ function PortalHost({ store }: { store: PortalStore }) {
         itself ignore touches while its children (e.g. a backdrop Pressable)
         handle them — so when nothing is mounted, touches pass straight through.
       */}
-      {Object.entries(nodes).map(([key, node]) => (
+      {ordered.map(({ key, entry }) => (
         <View key={key} style={StyleSheet.absoluteFill} pointerEvents="box-none">
-          {node}
+          {entry.node}
         </View>
       ))}
     </>
   );
 }
 
-export function Portal({ children }: { children: React.ReactNode }) {
+export function Portal({ children, layer = 0 }: { children: React.ReactNode; layer?: number }) {
   const store = useContext(PortalContext);
   const key = useId();
 
@@ -125,7 +134,7 @@ export function Portal({ children }: { children: React.ReactNode }) {
   // which re-renders ONLY <PortalHost> — never this component — so it can't
   // loop. See the file header for why that separation matters.
   useEffect(() => {
-    store?.set(key, children);
+    store?.set(key, children, layer);
   });
 
   // Remove the entry only when this Portal unmounts for good.

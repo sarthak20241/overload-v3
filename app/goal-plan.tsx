@@ -59,6 +59,8 @@ import { phaseBuildSeed, type PhaseBuildSeed } from '@/lib/phaseBuild';
 import { onPhaseDraftChange, readPhaseDraft } from '@/lib/phaseDraft';
 import { Colors, Radius, FontWeight } from '@/constants/theme';
 import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
+import { SignupTour } from '@/components/onboarding/SignupTour';
+import { phaseLineFor } from '@/lib/signupTour';
 
 function fmtShortISO(iso: string): string {
   const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
@@ -76,6 +78,12 @@ function addDaysISO(iso: string, delta: number): string {
 /** The Goal screen's line chart, 7pt shorter than the default so the page fits above the button. */
 const GOAL_CHART_HEIGHT = CHART_HEIGHT - 7;
 
+// Set when the sign-up tour ends, so a remount that still carries ?tour=1
+// (before the param is cleared) never plays it a second time this launch.
+// It is never reset, so a second account made in the same launch (sign out,
+// sign up again) gets no tour; a fresh launch shows it again.
+let tourPlayed = false;
+
 export default function GoalPlanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -85,8 +93,14 @@ export default function GoalPlanScreen() {
   // once; a draft waiting for the phase opens first either way.
   // &then=upgrade (sign-up only): when the sheet closes, carry on to the
   // onboarding paywall that used to come straight after sign-up.
-  const { build: buildParam, seq: seqParam, auto: autoParam, then: thenParam, drona: dronaParam, kcal: kcalParam } =
-    useLocalSearchParams<{ build?: string; seq?: string; auto?: string; then?: string; drona?: string; kcal?: string }>();
+  // &tour=1 (sign-up only): the film tour plays on top while the build runs
+  // underneath, so the wait for phase 1 is the tour (components/onboarding/SignupTour).
+  const { build: buildParam, seq: seqParam, auto: autoParam, then: thenParam, drona: dronaParam, kcal: kcalParam, tour: tourParam } =
+    useLocalSearchParams<{ build?: string; seq?: string; auto?: string; then?: string; drona?: string; kcal?: string; tour?: string }>();
+  const [tourOn, setTourOn] = useState(tourParam === '1' && !tourPlayed);
+  // Read by the paywall hand-off below, which must not cut the tour short.
+  const tourOnRef = useRef(tourOn);
+  tourOnRef.current = tourOn;
   const autoBuildFired = useRef(false);
   // ?drona=calories&kcal=N arrives from the goal sheet's "Change my whole plan
   // with Drona": open the program chat once, the request typed and unsent.
@@ -273,9 +287,12 @@ export default function GoalPlanScreen() {
   }, [buildParam, seqParam, autoParam, currentPhase, program, buildSplitFor]);
 
   // Sign-up's build came first; the onboarding paywall follows it, once.
+  // While the tour plays it waits, and goes when the tour ends.
   const upgradeFired = useRef(false);
+  const upgradeWaiting = useRef(false);
   const continueToUpgrade = useCallback(() => {
     if (thenParam !== 'upgrade' || upgradeFired.current) return;
+    if (tourOnRef.current) { upgradeWaiting.current = true; return; }
     upgradeFired.current = true;
     router.replace({ pathname: '/upgrade', params: { flow: 'onboarding' } } as any);
   }, [thenParam, router]);
@@ -525,6 +542,8 @@ export default function GoalPlanScreen() {
   // mock put it lower, under the home bar; that ignored the safe area.
   const footerBottom = insets.bottom + 8;
   const pal = useGoalPalette();
+  // The phase the tour's last scene names: the one being built, else the first.
+  const tourPhase = (program?.phases.find((ph) => ph.id === buildPhaseId) ?? currentPhase ?? program?.phases[0]) || null;
 
   return (
     <View style={[styles.root, { backgroundColor: pal.bg, paddingTop: insets.top }]}>
@@ -638,6 +657,8 @@ export default function GoalPlanScreen() {
 
       <AICoachModal
         visible={coachOpen}
+        // The tour above it owns Android back until it ends.
+        deferHardwareBack={tourOn}
         source="goal_plan"
         onClose={() => { setCoachOpen(false); setBuildSeed(null); setBuildPhaseId(null); setBuildAuto(false); setProgramDraft(undefined); load(); continueToUpgrade(); }}
         initialScreen={buildSeed ? 'plan' : 'program'}
@@ -655,6 +676,21 @@ export default function GoalPlanScreen() {
         onRoutineCreated={() => load()}
         onProgramApplied={() => load()}
       />
+
+      {tourOn && (
+        <SignupTour
+          firstName={user?.firstName ?? null}
+          phaseLine={phaseLineFor(tourPhase?.name, tourPhase?.duration_weeks)}
+          onDone={() => {
+            tourOnRef.current = false;
+            tourPlayed = true;
+            setTourOn(false);
+            // Once only: a remount with the same params must not replay it.
+            router.setParams({ tour: undefined } as any);
+            if (upgradeWaiting.current) { upgradeWaiting.current = false; continueToUpgrade(); }
+          }}
+        />
+      )}
     </View>
   );
 }
