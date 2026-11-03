@@ -4,7 +4,8 @@
  * (components/onboarding/SignupTour.tsx draws it). Pure on purpose (no
  * imports) so `deno test` reaches it.
  *
- * Copy rules (tested): no em dashes; a headline fits two lines, the grey line
+ * Copy rules (tested): curly apostrophes, since the headline face draws a
+ * straight one as a tick; no em dashes; a headline fits two lines, the grey line
  * under it fits two more. The last scene makes no promise that the plan is
  * done, because the build may still be running when it shows.
  */
@@ -28,7 +29,7 @@ export const TOUR_SCENE_MS = 4500;
 export function tourScenes(firstName: string | null, phaseLine: string | null): TourScene[] {
   const name = firstName?.trim().split(/\s+/)[0] ?? '';
   return [
-    { id: 'welcome', title: name ? `You're in, ${name}.` : "You're in.", sub: "I'm building your first week now." },
+    { id: 'welcome', title: name ? `You’re in, ${name}.` : 'You’re in.', sub: 'I’m building your first week now.' },
     { id: 'train', title: 'Every set counts.', sub: 'Log weight and reps in one tap.' },
     { id: 'eat', title: 'Just say what you ate.', sub: 'I work out the calories and protein.' },
     { id: 'adapt', title: 'I adjust as you go.', sub: 'Your plan changes when you do.' },
@@ -38,7 +39,9 @@ export function tourScenes(firstName: string | null, phaseLine: string | null): 
 
 /** The grey line on the last scene: "Build the base. 4 weeks." */
 export function phaseLineFor(name: string | null | undefined, weeks: number | null | undefined): string | null {
-  const n = name?.trim();
+  // The phase name comes from the coach, so it may carry a straight
+  // apostrophe; the headline face draws that as a tick.
+  const n = name?.trim().replace(/'/g, '’');
   if (!n) return null;
   const w = weeks != null && Number.isFinite(weeks) && weeks > 0 ? Math.round(weeks) : null;
   const head = /[.!?]$/.test(n) ? n : `${n}.`;

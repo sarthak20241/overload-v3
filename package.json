@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@clerk/clerk-expo": "^2.7.2",
+    "@expo-google-fonts/inter-tight": "^0.4.2",
     "@expo-google-fonts/space-grotesk": "^0.4.1",
     "@expo/vector-icons": "^15.0.2",
     "@kingstinct/react-native-healthkit": "^14.0.2",

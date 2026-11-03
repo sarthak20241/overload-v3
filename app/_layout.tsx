@@ -9,6 +9,7 @@ import {
   SpaceGrotesk_500Medium,
   SpaceGrotesk_700Bold,
 } from '@expo-google-fonts/space-grotesk';
+import { InterTight_600SemiBold } from '@expo-google-fonts/inter-tight';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { WorkoutProvider } from '@/hooks/useWorkout';
@@ -120,8 +121,9 @@ function AppContent() {
 export default function RootLayout() {
   // Display face (Space Grotesk) for questions/headlines/big numbers; body/UI
   // stays on the system font. Non-blocking: screens render with the system
-  // font for the instant before the load resolves, then re-render.
-  useFonts({ SpaceGrotesk_500Medium, SpaceGrotesk_700Bold });
+  // font for the instant before the load resolves, then re-render. Inter
+  // Tight is the sign-up tour's headline face.
+  useFonts({ SpaceGrotesk_500Medium, SpaceGrotesk_700Bold, InterTight_600SemiBold });
 
   const tree = !publishableKey ? (
     <AppContent />

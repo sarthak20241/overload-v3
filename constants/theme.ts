@@ -249,6 +249,8 @@ export const FontWeight = {
 export const FontFamily = {
   display: 'SpaceGrotesk_700Bold',
   displayMedium: 'SpaceGrotesk_500Medium',
+  // The sign-up tour's film headlines.
+  tourHeadline: 'InterTight_600SemiBold',
 };
 
 // Letter-spacing scale. The app tracks titles/big numbers tight and all-caps
