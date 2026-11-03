@@ -263,7 +263,11 @@ export type AnalyticsEvent =
   | 'start_guide_shown'
   | 'start_guide_step_tapped'
   | 'start_guide_dismissed'
-  // The dashboard's floating log-food button (lib/homeLogHint.ts).
+  // The film tour after sign-up (components/onboarding/SignupTour.tsx).
+  | 'signup_tour_shown'
+  | 'signup_tour_scene'
+  | 'signup_tour_done'
+  // The dashboard's floating log-food button (components/home/HomeLogButton.tsx).
   | 'home_log_food_tapped'
   | 'program_phase_advanced'
   | 'program_completed'
