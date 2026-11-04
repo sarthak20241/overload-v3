@@ -767,702 +767,702 @@ export default function OnboardingScreen() {
           />
         </>
       )}
-    <SafeAreaView style={[s.safeArea, { backgroundColor: welcome ? 'transparent' : C.background }]}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-        {showHeader && (
-          <OnboardingHeader
-            // Once committed, the confetti hands straight to the build.
-            onBack={() => { if (!celebrating) goTo(prevStep); }}
-            progressIndex={progressIndex}
-            progressTotal={PROGRESS_STEPS.length}
-          />
-        )}
-
-        {step === 'welcome' && (
-          <View style={[s.stepFill, s.welcomeFill]}>
-            {/* The film carries the promise and the three features; only the
-                buttons sit on top of it, in the bottom quarter it keeps clear. */}
-            <Animated.View entering={FadeInDown.delay(500).duration(450)} style={s.footer}>
-              <PrimaryCta
-                label="Start with my goal"
-                onPress={() => goTo('goal')}
-                accessibilityLabel="Start setup"
-              />
-              <TouchableOpacity
-                onPress={skipEverything}
-                disabled={finishing}
-                style={s.ghostLink}
-                accessibilityRole="button"
-                accessibilityLabel={isFreshVisitor ? 'I already have an account' : 'Skip setup'}
-              >
-                <Text style={[s.ghostLinkText, { color: WELCOME_LINK }]}>
-                  {isFreshVisitor ? 'I already have an account' : 'I know my way around'}
-                </Text>
-              </TouchableOpacity>
-            </Animated.View>
-          </View>
-        )}
-
-        {step === 'goal' && (
-          <QuestionStep
-            stepKey="goal"
-            question="What are you training for?"
-            sub="Pick all that apply. Change them anytime."
-            // One short line, only when it changes something: the goal step
-            // must fit one screen with no scroll.
-            caption={selectedGoals(answers).includes('fat_loss')
-              ? 'Fat loss starts your nutrition in a deficit.'
-              : undefined}
-            compact
-            keyboardTaps
-            scrollRef={goalScrollRef}
-            footer={
-              <PrimaryCta
-                label="Continue"
-                disabled={!goalStepReady}
-                onPress={() => goTo('experience')}
-              />
-            }
-          >
-            <View style={s.optionsCompact}>
-              {GOAL_OPTIONS.map((opt, idx) => (
-                <OptionCard
-                  key={opt.value}
-                  index={idx}
-                  icon={opt.icon}
-                  title={opt.title}
-                  multiple
-                  compact
-                  selected={selectedGoals(answers).includes(opt.value)}
-                  onPress={() => setAnswers((a) => ({ ...a, ...toggleGoal(a, opt.value) }))}
-                />
-              ))}
-              {/* A goal in their own words: the plan builder and Drona's
-                  memory both get it (goal_detail), so a niche goal like a race
-                  date or a comeback from injury shapes the program. */}
-              <OptionCard
-                index={GOAL_OPTIONS.length}
-                icon="edit-3"
-                title="Something else"
-                multiple
-                compact
-                selected={answers.goalNote != null}
-                onPress={() => {
-                  if (answers.goalNote != null) stashedGoalNote.current = answers.goalNote;
-                  const next = answers.goalNote == null ? stashedGoalNote.current : null;
-                  setAnswers((a) => ({ ...a, goalNote: next }));
-                }}
-              />
-            </View>
-            {answers.goalNote != null && (
-              <TextAreaField
-                value={answers.goalNote}
-                onChangeText={(text) => setAnswers((a) => ({ ...a, goalNote: text }))}
-                placeholder="e.g. Run a half marathon in March"
-                accessibilityLabel="Your goal in your own words"
-                autoFocus
-                compact
-              />
-            )}
-          </QuestionStep>
-        )}
-
-        {step === 'experience' && (
-          <QuestionStep
-            stepKey="experience"
-            question="How long have you been lifting?"
-            sub="Sets your starting volume. It grows as you do."
-          >
-            <View style={s.options}>
-              {EXPERIENCE_OPTIONS.map((opt, idx) => (
-                <OptionCard
-                  key={opt.value}
-                  index={idx}
-                  icon={opt.icon}
-                  title={opt.title}
-                  sub={opt.sub}
-                  selected={answers.experience === opt.value}
-                  onPress={() => selectAndAdvance({ experience: opt.value })}
-                />
-              ))}
-            </View>
-          </QuestionStep>
-        )}
-
-        {step === 'frequency' && (
-          <QuestionStep
-            stepKey="frequency"
-            question="How many days a week?"
-            sub="Be honest. A plan you keep beats a plan you admire."
-            footer={<PrimaryCta label="Continue" onPress={() => goTo('health')} />}
-          >
-              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={{ marginTop: Spacing.lg }}>
-                <FrequencyStory
-                  value={answers.frequency ?? 3}
-                  onChange={(days) => setAnswers((a) => ({ ...a, frequency: days }))}
-                />
-              </Animated.View>
-          </QuestionStep>
-        )}
-
-        {step === 'health' && (
-          <QuestionStep
-            stepKey="health"
-            question="Anything I should train around?"
-            sub="Injuries, joint pain, past surgeries, anything that changes how you should move. I will plan around it."
-            caption="Optional. Leave it blank if there is nothing."
-            keyboardTaps
-            footer={
-              <PrimaryCta
-                label={answers.healthNotes?.trim() ? 'Continue' : 'Skip for now'}
-                onPress={() => goTo('prefs')}
-              />
-            }
-          >
-              <TextAreaField
-                value={answers.healthNotes ?? ''}
-                onChangeText={(text) => setAnswers((a) => ({ ...a, healthNotes: text }))}
-                placeholder="e.g. Sore left knee"
-                accessibilityLabel="Physical or medical notes"
-              />
-              <MedicalDisclaimer variant="line" style={{ marginTop: Spacing.lg }} />
-          </QuestionStep>
-        )}
-
-        {step === 'prefs' && (
-          <QuestionStep
-            stepKey="prefs"
-            question="How do you like to train?"
-            sub="Lifts you love or hate, equipment you have, home or gym, time per session. I will shape the plan to fit."
-            caption="Optional. Leave it blank and I will use what works best."
-            keyboardTaps
-            footer={
-              <PrimaryCta
-                label={answers.routinePrefs?.trim() ? 'Continue' : 'Skip for now'}
-                onPress={() => goTo('gender')}
-              />
-            }
-          >
-              <TextAreaField
-                value={answers.routinePrefs ?? ''}
-                onChangeText={(text) => setAnswers((a) => ({ ...a, routinePrefs: text }))}
-                placeholder="e.g. Home, dumbbells, 45 min"
-                accessibilityLabel="Routine preferences"
-              />
-          </QuestionStep>
-        )}
-
-        {step === 'gender' && (
-          <QuestionStep
-            stepKey="gender"
-            question="How should the math read you?"
-            sub="Gender changes the calorie equation, nothing else."
-          >
-              <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.genderCol}>
-                {(
-                  [
-                    { value: 'M', label: 'Male' },
-                    { value: 'F', label: 'Female' },
-                    { value: 'O', label: 'Other' },
-                  ] as const
-                ).map((g) => {
-                  const selected = answers.gender === g.value;
-                  return (
-                    <PressableScale
-                      key={g.value}
-                      onPress={() => selectAndAdvance({ gender: g.value })}
-                      style={[
-                        s.genderChip,
-                        {
-                          backgroundColor: selected ? C.primaryMuted : C.card,
-                          borderColor: selected ? C.primaryBorder : C.borderSubtle,
-                        },
-                      ]}
-                      accessibilityRole="button"
-                      accessibilityLabel={g.label}
-                      accessibilityState={{ selected }}
-                    >
-                      <Text
-                        style={[
-                          s.genderChipText,
-                          { color: selected ? C.accentText : C.textSecondary },
-                        ]}
-                      >
-                        {g.label}
-                      </Text>
-                    </PressableScale>
-                  );
-                })}
-              </Animated.View>
-          </QuestionStep>
-        )}
-
-        {step === 'age' && (
-          <QuestionStep
-            stepKey="age"
-            question="How old are you?"
-            sub="Age tunes your calorie baseline."
-            footer={<PrimaryCta label="Continue" onPress={commitAgeStep} />}
-          >
-              <View style={s.heroCenter}>
-                <NumberWheel
-                  min={MIN_AGE_YEARS}
-                  max={100}
-                  value={ageYears}
-                  onChange={setAgeYears}
-                  accessibilityLabel="Age in years"
-                />
-              </View>
-          </QuestionStep>
-        )}
-
-        {step === 'height' && (
-          <QuestionStep
-            stepKey="height"
-            question="How tall are you?"
-            sub="Height anchors your calorie baseline."
-            footer={<PrimaryCta label="Continue" onPress={commitHeightStep} />}
-          >
-              <View style={s.heroCenter}>
-                <View style={s.wheelRow}>
-                  {heightUnit === 'cm' ? (
-                    <NumberWheel
-                      min={MIN_HEIGHT_CM}
-                      max={220}
-                      width={140}
-                      value={heightCm}
-                      onChange={setHeightCm}
-                      accessibilityLabel="Height in centimeters"
-                    />
-                  ) : (
-                    <>
-                      <NumberWheel
-                        min={4}
-                        max={7}
-                        width={70}
-                        value={heightFt}
-                        onChange={setHeightFt}
-                        accessibilityLabel="Height, feet"
-                      />
-                      <NumberWheel
-                        min={0}
-                        max={11}
-                        width={70}
-                        value={heightIn}
-                        onChange={setHeightIn}
-                        accessibilityLabel="Height, inches"
-                      />
-                    </>
-                  )}
-                  <UnitWheel
-                    options={HEIGHT_UNITS}
-                    value={heightUnit}
-                    onChange={setHeightUnitTo}
-                    accessibilityLabel={`Height unit, now ${heightUnit === 'cm' ? 'centimeters' : 'feet and inches'}`}
-                  />
-                </View>
-              </View>
-          </QuestionStep>
-        )}
-
-        {step === 'weight' && (
-          <QuestionStep
-            stepKey="weight"
-            question="What do you weigh today?"
-            sub="Just a starting point. The trend is what we train."
-            footer={<PrimaryCta label="Continue" onPress={commitWeightStep} />}
-          >
-              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
-                <View style={s.wheelRow}>
-                  <WeightWheel
-                    // A new unit is a new scale: start the wheels fresh on it.
-                    key={weightUnit}
-                    min={WEIGHT_WHEEL[weightUnit].min}
-                    max={WEIGHT_WHEEL[weightUnit].max}
-                    value={weightVal}
-                    onChange={(v) => {
-                      setWeightVal(v);
-                      // Mirror every stop into answers so the saved number, the
-                      // reveal and the program all read the wheel's final value.
-                      const kg = toKg(v);
-                      setAnswers((a) => ({ ...a, weightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null }));
-                    }}
-                    accessibilityLabel={`Weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
-                  />
-                  <UnitWheel
-                    options={WEIGHT_UNITS}
-                    value={weightUnit}
-                    onChange={setWeightUnitTo}
-                    width={72}
-                    accessibilityLabel={`Weight unit, now ${weightUnit}`}
-                  />
-                </View>
-              </Animated.View>
-          </QuestionStep>
-        )}
-
-        {step === 'target' && (
-          <QuestionStep
-            stepKey="target"
-            question="Where are we heading?"
-            sub="A goal weight points your calories the right way. You can change it anytime."
-            footer={<PrimaryCta label="Continue" onPress={commitTargetStep} />}
-          >
-              <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.heroCenter}>
-                <View style={s.wheelRow}>
-                  <WeightWheel
-                    key={weightUnit}
-                    min={WEIGHT_WHEEL[weightUnit].min}
-                    max={WEIGHT_WHEEL[weightUnit].max}
-                    value={targetVal}
-                    onChange={(v) => {
-                      targetTouched.current = true;
-                      setTargetVal(v);
-                      // Same mirror as the weight wheel.
-                      const kg = toKg(v);
-                      setAnswers((a) => ({ ...a, goalWeightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null }));
-                    }}
-                    accessibilityLabel={`Goal weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
-                  />
-                  <UnitWheel
-                    options={WEIGHT_UNITS}
-                    value={weightUnit}
-                    onChange={setWeightUnitTo}
-                    width={72}
-                    accessibilityLabel={`Weight unit, now ${weightUnit}`}
-                  />
-                </View>
-                <Text style={[s.targetHint, { color: C.textDim, textAlign: 'center' }]}>{targetHint}</Text>
-              </Animated.View>
-          </QuestionStep>
-        )}
-
-        {step === 'pace' && (
-          <QuestionStep
-            stepKey="pace"
-            question="How fast do we go?"
-            sub="Pick a pace you can hold. The date follows the math."
-            footer={<PrimaryCta label="Continue" onPress={() => goTo('interlude')} />}
-          >
-              {paceCtx && weeklyRate != null && (
-                <Animated.View entering={FadeInDown.delay(100).duration(400)} style={{ flexGrow: 1, justifyContent: 'center' }}>
-                  <PaceSlider
-                    min={paceCtx.bounds.min}
-                    max={paceCtx.bounds.max}
-                    recommended={paceCtx.bounds.recommended}
-                    value={weeklyRate}
-                    unitLabel="kg"
-                    onChange={setWeeklyRate}
-                  />
-                  <View style={[s.paceCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-                    <Text style={[s.paceCardTitle, { color: C.foreground }]}>
-                      Goal by <Text style={{ color: C.accentText }}>{paceDate ?? '...'}</Text>
-                    </Text>
-                    {pacedPreview && (
-                      <Text style={[s.paceCardSub, { color: C.textMuted }]}>
-                        Daily fuel: {pacedPreview.kcal.toLocaleString()} kcal · {pacedPreview.protein}g protein
-                      </Text>
-                    )}
-                    <Text style={[s.paceCardLine, { color: C.textDim }]}>
-                      {weeklyRate < paceCtx.bounds.recommended - 0.05
-                        ? 'A gentler pace. Easier to hold on hard weeks.'
-                        : weeklyRate > paceCtx.bounds.recommended + 0.05
-                          ? 'Aggressive. Protein and sleep stop being optional.'
-                          : 'The balanced pace most people can keep.'}
-                    </Text>
-                  </View>
-                </Animated.View>
-              )}
-          </QuestionStep>
-        )}
-
-        {step === 'interlude' && (
-          <QuestionStep
-            stepKey="interlude"
-            question="I set the route. You walk it."
-            sub={`${answers.frequency ?? 3} days a week${paceDate ? `, on track for ${paceDate}` : ''}${targets ? `, ${targets.kcal.toLocaleString()} kcal a day` : ''}.`}
-            footer={<PrimaryCta label="Lock it in" onPress={() => goTo('commit')} />}
-          >
-              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
-                {/* The same orb as the paywall's trust screen, so Drona reads
-                    as the one setting the route. */}
-                <DronaHeroOrb />
-                <View style={s.claimList}>
-                  {[
-                    'I watch your training, food and recovery',
-                    'When things go off track, I adjust your plan',
-                    'So you get there on time',
-                  ].map((line, idx) => (
-                    <Animated.View
-                      key={line}
-                      entering={FadeInDown.delay(260 + idx * 120).duration(400)}
-                      style={s.claimRow}
-                    >
-                      <Feather name="check" size={IconSize.xs} color={C.accentText} />
-                      <Text style={[s.claimText, { color: C.textSecondary }]}>{line}</Text>
-                    </Animated.View>
-                  ))}
-                </View>
-              </Animated.View>
-          </QuestionStep>
-        )}
-
-        {step === 'commit' && (
-          <QuestionStep
-            stepKey="commit"
-            question="Commit to it."
-            sub="A plan only works if you show up."
-          >
-              <CommitmentHold
-                pledgeTitle="I'm in."
-                pledgeBody={`${joinGoals(selectedGoals(answers).map((g, i) => i === 0 ? GOAL_PHRASES[g] : GOAL_PHRASES[g].toLowerCase()))}, ${answers.frequency ?? 3} days a week${paceCtx && paceDate ? `, ${Math.abs(toKg(targetVal) - toKg(weightVal)).toFixed(1)} kg ${targetVal < weightVal ? 'down' : 'up'} by ${paceDate}` : ''}. I log my sessions, even the rough ones.`}
-                onCommitted={() => setCelebrating(true)}
-              />
-          </QuestionStep>
-        )}
-
-        {step === 'build' && (
-          <Animated.View key="build" entering={FadeIn.duration(250)} style={s.stepFill}>
-            <BuildMoment
-              lines={[
-                'Reading your answers',
-                'Mapping the road to your goal',
-                'Picking exercises for you',
-                'Setting fuel targets',
-                'Locking your first week',
-              ]}
-              ready={buildReady}
-              onDone={() => goTo('plan')}
+      <SafeAreaView style={[s.safeArea, { backgroundColor: welcome ? 'transparent' : C.background }]}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+          {showHeader && (
+            <OnboardingHeader
+              // Once committed, the confetti hands straight to the build.
+              onBack={() => { if (!celebrating) goTo(prevStep); }}
+              progressIndex={progressIndex}
+              progressTotal={PROGRESS_STEPS.length}
             />
-          </Animated.View>
-        )}
+          )}
 
-        {step === 'plan' && (
-          <QuestionStep
-            stepKey="plan"
-            question={revealTitle}
-            sub={`${finalProgram.phases.length} ${finalProgram.phases.length === 1 ? 'phase' : 'phases'}, ${answers.frequency ?? 3} days a week${targets ? ', with daily fuel targets' : ''}. Tap a phase to see its week.`}
-            footer={
-              <>
+          {step === 'welcome' && (
+            <View style={[s.stepFill, s.welcomeFill]}>
+              {/* The film carries the promise and the three features; only the
+                  buttons sit on top of it, in the bottom quarter it keeps clear. */}
+              <Animated.View entering={FadeInDown.delay(500).duration(450)} style={s.footer}>
                 <PrimaryCta
-                  label={isFreshVisitor ? 'Save my plan' : 'Start my plan'}
-                  onPress={() => finishOnboarding({ createPlan: true, dest: '/(app)' })}
-                  loading={finishing}
-                  accessibilityLabel={isFreshVisitor ? 'Save my plan' : 'Start my plan'}
+                  label="Start with my goal"
+                  onPress={() => goTo('goal')}
+                  accessibilityLabel="Start setup"
                 />
                 <TouchableOpacity
-                  onPress={() => finishOnboarding({ createPlan: false, dest: '/(app)/routines' })}
+                  onPress={skipEverything}
                   disabled={finishing}
                   style={s.ghostLink}
                   accessibilityRole="button"
-                  accessibilityLabel="Build my own routines"
+                  accessibilityLabel={isFreshVisitor ? 'I already have an account' : 'Skip setup'}
                 >
-                  <Text style={[s.ghostLinkText, { color: C.textMuted }]}>I'll build my own routines</Text>
+                  <Text style={[s.ghostLinkText, { color: WELCOME_LINK }]}>
+                    {isFreshVisitor ? 'I already have an account' : 'I know my way around'}
+                  </Text>
                 </TouchableOpacity>
-              </>
-            }
-          >
-              {paceCtx && paceDate && (
-                <Animated.View entering={FadeInDown.delay(80).duration(400)}>
-                  <ProjectedCurve
-                    direction={paceCtx.direction}
-                    startLabel={`Now · ${weightVal} ${weightUnit}`}
-                    endLabel={`${paceDate} · ${targetVal} ${weightUnit}`}
+              </Animated.View>
+            </View>
+          )}
+
+          {step === 'goal' && (
+            <QuestionStep
+              stepKey="goal"
+              question="What are you training for?"
+              sub="Pick all that apply. Change them anytime."
+              // One short line, only when it changes something: the goal step
+              // must fit one screen with no scroll.
+              caption={selectedGoals(answers).includes('fat_loss')
+                ? 'Fat loss starts your nutrition in a deficit.'
+                : undefined}
+              compact
+              keyboardTaps
+              scrollRef={goalScrollRef}
+              footer={
+                <PrimaryCta
+                  label="Continue"
+                  disabled={!goalStepReady}
+                  onPress={() => goTo('experience')}
+                />
+              }
+            >
+              <View style={s.optionsCompact}>
+                {GOAL_OPTIONS.map((opt, idx) => (
+                  <OptionCard
+                    key={opt.value}
+                    index={idx}
+                    icon={opt.icon}
+                    title={opt.title}
+                    multiple
+                    compact
+                    selected={selectedGoals(answers).includes(opt.value)}
+                    onPress={() => setAnswers((a) => ({ ...a, ...toggleGoal(a, opt.value) }))}
+                  />
+                ))}
+                {/* A goal in their own words: the plan builder and Drona's
+                    memory both get it (goal_detail), so a niche goal like a race
+                    date or a comeback from injury shapes the program. */}
+                <OptionCard
+                  index={GOAL_OPTIONS.length}
+                  icon="edit-3"
+                  title="Something else"
+                  multiple
+                  compact
+                  selected={answers.goalNote != null}
+                  onPress={() => {
+                    if (answers.goalNote != null) stashedGoalNote.current = answers.goalNote;
+                    const next = answers.goalNote == null ? stashedGoalNote.current : null;
+                    setAnswers((a) => ({ ...a, goalNote: next }));
+                  }}
+                />
+              </View>
+              {answers.goalNote != null && (
+                <TextAreaField
+                  value={answers.goalNote}
+                  onChangeText={(text) => setAnswers((a) => ({ ...a, goalNote: text }))}
+                  placeholder="e.g. Run a half marathon in March"
+                  accessibilityLabel="Your goal in your own words"
+                  autoFocus
+                  compact
+                />
+              )}
+            </QuestionStep>
+          )}
+
+          {step === 'experience' && (
+            <QuestionStep
+              stepKey="experience"
+              question="How long have you been lifting?"
+              sub="Sets your starting volume. It grows as you do."
+            >
+              <View style={s.options}>
+                {EXPERIENCE_OPTIONS.map((opt, idx) => (
+                  <OptionCard
+                    key={opt.value}
+                    index={idx}
+                    icon={opt.icon}
+                    title={opt.title}
+                    sub={opt.sub}
+                    selected={answers.experience === opt.value}
+                    onPress={() => selectAndAdvance({ experience: opt.value })}
+                  />
+                ))}
+              </View>
+            </QuestionStep>
+          )}
+
+          {step === 'frequency' && (
+            <QuestionStep
+              stepKey="frequency"
+              question="How many days a week?"
+              sub="Be honest. A plan you keep beats a plan you admire."
+              footer={<PrimaryCta label="Continue" onPress={() => goTo('health')} />}
+            >
+                <Animated.View entering={FadeInDown.delay(120).duration(400)} style={{ marginTop: Spacing.lg }}>
+                  <FrequencyStory
+                    value={answers.frequency ?? 3}
+                    onChange={(days) => setAnswers((a) => ({ ...a, frequency: days }))}
                   />
                 </Animated.View>
-              )}
+            </QuestionStep>
+          )}
 
-              {/* The road: the program's phases, so the reveal shows the whole
-                  route to the goal and not just week one. */}
-              <Animated.View
-                entering={FadeInDown.delay(90).duration(400)}
-                style={[s.roadCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
-              >
-                <Text style={[s.fuelEyebrow, { color: C.textMuted }]}>THE ROAD</Text>
-                <Text style={[s.roadTitle, { color: C.foreground }]}>{finalProgram.title}</Text>
-                {finalProgram.objective ? (
-                  <Text style={[s.roadObjective, { color: C.textSecondary }]}>{finalProgram.objective}</Text>
-                ) : null}
-                <View style={s.roadList}>
-                  {roadRows.map((row) => {
-                    const open = openPhase === row.key;
+          {step === 'health' && (
+            <QuestionStep
+              stepKey="health"
+              question="Anything I should train around?"
+              sub="Injuries, joint pain, past surgeries, anything that changes how you should move. I will plan around it."
+              caption="Optional. Leave it blank if there is nothing."
+              keyboardTaps
+              footer={
+                <PrimaryCta
+                  label={answers.healthNotes?.trim() ? 'Continue' : 'Skip for now'}
+                  onPress={() => goTo('prefs')}
+                />
+              }
+            >
+                <TextAreaField
+                  value={answers.healthNotes ?? ''}
+                  onChangeText={(text) => setAnswers((a) => ({ ...a, healthNotes: text }))}
+                  placeholder="e.g. Sore left knee"
+                  accessibilityLabel="Physical or medical notes"
+                />
+                <MedicalDisclaimer variant="line" style={{ marginTop: Spacing.lg }} />
+            </QuestionStep>
+          )}
+
+          {step === 'prefs' && (
+            <QuestionStep
+              stepKey="prefs"
+              question="How do you like to train?"
+              sub="Lifts you love or hate, equipment you have, home or gym, time per session. I will shape the plan to fit."
+              caption="Optional. Leave it blank and I will use what works best."
+              keyboardTaps
+              footer={
+                <PrimaryCta
+                  label={answers.routinePrefs?.trim() ? 'Continue' : 'Skip for now'}
+                  onPress={() => goTo('gender')}
+                />
+              }
+            >
+                <TextAreaField
+                  value={answers.routinePrefs ?? ''}
+                  onChangeText={(text) => setAnswers((a) => ({ ...a, routinePrefs: text }))}
+                  placeholder="e.g. Home, dumbbells, 45 min"
+                  accessibilityLabel="Routine preferences"
+                />
+            </QuestionStep>
+          )}
+
+          {step === 'gender' && (
+            <QuestionStep
+              stepKey="gender"
+              question="How should the math read you?"
+              sub="Gender changes the calorie equation, nothing else."
+            >
+                <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.genderCol}>
+                  {(
+                    [
+                      { value: 'M', label: 'Male' },
+                      { value: 'F', label: 'Female' },
+                      { value: 'O', label: 'Other' },
+                    ] as const
+                  ).map((g) => {
+                    const selected = answers.gender === g.value;
                     return (
-                      <View key={row.key}>
-                        <Pressable
-                          onPress={() => setOpenPhase(open ? null : row.key)}
-                          style={s.roadRow}
-                          hitSlop={6}
+                      <PressableScale
+                        key={g.value}
+                        onPress={() => selectAndAdvance({ gender: g.value })}
+                        style={[
+                          s.genderChip,
+                          {
+                            backgroundColor: selected ? C.primaryMuted : C.card,
+                            borderColor: selected ? C.primaryBorder : C.borderSubtle,
+                          },
+                        ]}
+                        accessibilityRole="button"
+                        accessibilityLabel={g.label}
+                        accessibilityState={{ selected }}
+                      >
+                        <Text
+                          style={[
+                            s.genderChipText,
+                            { color: selected ? C.accentText : C.textSecondary },
+                          ]}
                         >
-                          <Text style={[s.roadWeeks, { color: C.accentText }]}>{row.weeks}</Text>
-                          <View style={{ flex: 1, minWidth: 0 }}>
-                            <Text style={[s.roadName, { color: C.foreground }]} numberOfLines={open ? undefined : 1}>
-                              {row.name}
-                            </Text>
-                            {row.meta && !open ? (
-                              <Text style={[s.roadMeta, { color: C.textMuted }]} numberOfLines={2}>{row.meta}</Text>
-                            ) : null}
-                          </View>
-                          <Feather
-                            name={open ? 'chevron-up' : 'chevron-down'}
-                            size={14}
-                            color={C.textMuted}
-                            style={{ marginTop: 2 }}
-                          />
-                        </Pressable>
-
-                        {open && (
-                          <Animated.View entering={FadeIn.duration(180)} style={s.roadDetail}>
-                            {(row.kcal != null || row.macros.length > 0) && (
-                              <View style={s.roadChipRow}>
-                                {row.kcal != null && (
-                                  <View
-                                    style={[
-                                      s.roadChip,
-                                      { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder },
-                                    ]}
-                                  >
-                                    <Text style={[s.roadChipValue, { color: C.accentText }]}>
-                                      {row.kcal.toLocaleString()}
-                                    </Text>
-                                    <Text style={[s.roadChipLabel, { color: C.accentText }]}>KCAL / DAY</Text>
-                                  </View>
-                                )}
-                                {row.macros.map((m) => (
-                                  <View
-                                    key={m.label}
-                                    style={[s.roadChip, { backgroundColor: C.muted, borderColor: 'transparent' }]}
-                                  >
-                                    <Text style={[s.roadChipValue, { color: C.foreground }]}>{m.value}</Text>
-                                    <Text style={[s.roadChipLabel, { color: C.textMuted }]}>{m.label}</Text>
-                                  </View>
-                                ))}
-                              </View>
-                            )}
-
-                            {row.week && (
-                              <View style={{ marginTop: Spacing.md }}>
-                                <Text style={[s.roadDetailLabel, { color: C.textMuted }]}>
-                                  {row.split ? `YOUR WEEK · ${row.split}` : 'YOUR WEEK'}
-                                </Text>
-                                <View style={s.roadWeekStrip}>
-                                  <View style={[s.roadWeekRule, { backgroundColor: C.borderSubtle }]} />
-                                  {row.week.map((label, i) => {
-                                    const rest = label === REST;
-                                    return (
-                                      <View key={i} style={s.roadWeekCell}>
-                                        <View
-                                          style={[
-                                            s.roadWeekDot,
-                                            rest
-                                              ? { backgroundColor: C.background, borderColor: C.borderSubtle }
-                                              : { backgroundColor: C.accentText, borderColor: C.accentText },
-                                          ]}
-                                        />
-                                        <Text style={[s.roadWeekDay, { color: C.textMuted }]}>D{i + 1}</Text>
-                                        <Text
-                                          numberOfLines={1}
-                                          style={[
-                                            s.roadWeekLabel,
-                                            {
-                                              color: rest ? C.textMuted : C.foreground,
-                                              fontWeight: rest ? FontWeight.medium : FontWeight.semibold,
-                                            },
-                                          ]}
-                                        >
-                                          {shortDayLabel(label)}
-                                        </Text>
-                                      </View>
-                                    );
-                                  })}
-                                </View>
-                              </View>
-                            )}
-
-                            {row.directives.map((d) => (
-                              <View key={d.label} style={s.roadDirectiveRow}>
-                                <View style={[s.roadDirectiveIcon, { backgroundColor: C.primaryMuted }]}>
-                                  <Feather name={d.icon} size={12} color={C.accentText} />
-                                </View>
-                                <View style={{ flex: 1, minWidth: 0 }}>
-                                  <Text style={[s.roadDetailLabel, { color: C.textMuted }]}>{d.label}</Text>
-                                  <Text style={[s.roadDetailText, { color: C.textSecondary }]}>{d.text}</Text>
-                                </View>
-                              </View>
-                            ))}
-                          </Animated.View>
-                        )}
-                      </View>
+                          {g.label}
+                        </Text>
+                      </PressableScale>
                     );
                   })}
-                </View>
-              </Animated.View>
+                </Animated.View>
+            </QuestionStep>
+          )}
 
-              {/* Daily fuel targets: the diet half of the intake payoff */}
-              {targets ? (
-                <Animated.View
-                  entering={FadeInDown.delay(320).duration(400)}
-                  style={[s.fuelCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
-                >
-                  <Text style={[s.fuelEyebrow, { color: C.textMuted }]}>DAILY FUEL</Text>
-                  <View style={s.fuelKcalRow}>
-                    <Text style={[s.fuelKcal, { color: C.foreground }]}>{targets.kcal.toLocaleString()}</Text>
-                    <Text style={[s.fuelKcalUnit, { color: C.textMuted }]}>kcal a day</Text>
+          {step === 'age' && (
+            <QuestionStep
+              stepKey="age"
+              question="How old are you?"
+              sub="Age tunes your calorie baseline."
+              footer={<PrimaryCta label="Continue" onPress={commitAgeStep} />}
+            >
+                <View style={s.heroCenter}>
+                  <NumberWheel
+                    min={MIN_AGE_YEARS}
+                    max={100}
+                    value={ageYears}
+                    onChange={setAgeYears}
+                    accessibilityLabel="Age in years"
+                  />
+                </View>
+            </QuestionStep>
+          )}
+
+          {step === 'height' && (
+            <QuestionStep
+              stepKey="height"
+              question="How tall are you?"
+              sub="Height anchors your calorie baseline."
+              footer={<PrimaryCta label="Continue" onPress={commitHeightStep} />}
+            >
+                <View style={s.heroCenter}>
+                  <View style={s.wheelRow}>
+                    {heightUnit === 'cm' ? (
+                      <NumberWheel
+                        min={MIN_HEIGHT_CM}
+                        max={220}
+                        width={140}
+                        value={heightCm}
+                        onChange={setHeightCm}
+                        accessibilityLabel="Height in centimeters"
+                      />
+                    ) : (
+                      <>
+                        <NumberWheel
+                          min={4}
+                          max={7}
+                          width={70}
+                          value={heightFt}
+                          onChange={setHeightFt}
+                          accessibilityLabel="Height, feet"
+                        />
+                        <NumberWheel
+                          min={0}
+                          max={11}
+                          width={70}
+                          value={heightIn}
+                          onChange={setHeightIn}
+                          accessibilityLabel="Height, inches"
+                        />
+                      </>
+                    )}
+                    <UnitWheel
+                      options={HEIGHT_UNITS}
+                      value={heightUnit}
+                      onChange={setHeightUnitTo}
+                      accessibilityLabel={`Height unit, now ${heightUnit === 'cm' ? 'centimeters' : 'feet and inches'}`}
+                    />
                   </View>
-                  <View style={s.macroRow}>
-                    {(
-                      [
-                        { key: 'protein', label: 'Protein', grams: targets.protein },
-                        { key: 'carbs', label: 'Carbs', grams: targets.carb },
-                        { key: 'fat', label: 'Fat', grams: targets.fat },
-                      ] as const
-                    ).map((m) => (
-                      <View key={m.key} style={s.macroItem}>
-                        <View style={[s.macroDot, { backgroundColor: C.macro[m.key] }]} />
-                        <Text style={[s.macroText, { color: C.textSecondary }]}>
-                          {m.label} <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>{m.grams}g</Text>
+                </View>
+            </QuestionStep>
+          )}
+
+          {step === 'weight' && (
+            <QuestionStep
+              stepKey="weight"
+              question="What do you weigh today?"
+              sub="Just a starting point. The trend is what we train."
+              footer={<PrimaryCta label="Continue" onPress={commitWeightStep} />}
+            >
+                <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
+                  <View style={s.wheelRow}>
+                    <WeightWheel
+                      // A new unit is a new scale: start the wheels fresh on it.
+                      key={weightUnit}
+                      min={WEIGHT_WHEEL[weightUnit].min}
+                      max={WEIGHT_WHEEL[weightUnit].max}
+                      value={weightVal}
+                      onChange={(v) => {
+                        setWeightVal(v);
+                        // Mirror every stop into answers so the saved number, the
+                        // reveal and the program all read the wheel's final value.
+                        const kg = toKg(v);
+                        setAnswers((a) => ({ ...a, weightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null }));
+                      }}
+                      accessibilityLabel={`Weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
+                    />
+                    <UnitWheel
+                      options={WEIGHT_UNITS}
+                      value={weightUnit}
+                      onChange={setWeightUnitTo}
+                      width={72}
+                      accessibilityLabel={`Weight unit, now ${weightUnit}`}
+                    />
+                  </View>
+                </Animated.View>
+            </QuestionStep>
+          )}
+
+          {step === 'target' && (
+            <QuestionStep
+              stepKey="target"
+              question="Where are we heading?"
+              sub="A goal weight points your calories the right way. You can change it anytime."
+              footer={<PrimaryCta label="Continue" onPress={commitTargetStep} />}
+            >
+                <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.heroCenter}>
+                  <View style={s.wheelRow}>
+                    <WeightWheel
+                      key={weightUnit}
+                      min={WEIGHT_WHEEL[weightUnit].min}
+                      max={WEIGHT_WHEEL[weightUnit].max}
+                      value={targetVal}
+                      onChange={(v) => {
+                        targetTouched.current = true;
+                        setTargetVal(v);
+                        // Same mirror as the weight wheel.
+                        const kg = toKg(v);
+                        setAnswers((a) => ({ ...a, goalWeightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null }));
+                      }}
+                      accessibilityLabel={`Goal weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
+                    />
+                    <UnitWheel
+                      options={WEIGHT_UNITS}
+                      value={weightUnit}
+                      onChange={setWeightUnitTo}
+                      width={72}
+                      accessibilityLabel={`Weight unit, now ${weightUnit}`}
+                    />
+                  </View>
+                  <Text style={[s.targetHint, { color: C.textDim, textAlign: 'center' }]}>{targetHint}</Text>
+                </Animated.View>
+            </QuestionStep>
+          )}
+
+          {step === 'pace' && (
+            <QuestionStep
+              stepKey="pace"
+              question="How fast do we go?"
+              sub="Pick a pace you can hold. The date follows the math."
+              footer={<PrimaryCta label="Continue" onPress={() => goTo('interlude')} />}
+            >
+                {paceCtx && weeklyRate != null && (
+                  <Animated.View entering={FadeInDown.delay(100).duration(400)} style={{ flexGrow: 1, justifyContent: 'center' }}>
+                    <PaceSlider
+                      min={paceCtx.bounds.min}
+                      max={paceCtx.bounds.max}
+                      recommended={paceCtx.bounds.recommended}
+                      value={weeklyRate}
+                      unitLabel="kg"
+                      onChange={setWeeklyRate}
+                    />
+                    <View style={[s.paceCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+                      <Text style={[s.paceCardTitle, { color: C.foreground }]}>
+                        Goal by <Text style={{ color: C.accentText }}>{paceDate ?? '...'}</Text>
+                      </Text>
+                      {pacedPreview && (
+                        <Text style={[s.paceCardSub, { color: C.textMuted }]}>
+                          Daily fuel: {pacedPreview.kcal.toLocaleString()} kcal · {pacedPreview.protein}g protein
                         </Text>
-                      </View>
+                      )}
+                      <Text style={[s.paceCardLine, { color: C.textDim }]}>
+                        {weeklyRate < paceCtx.bounds.recommended - 0.05
+                          ? 'A gentler pace. Easier to hold on hard weeks.'
+                          : weeklyRate > paceCtx.bounds.recommended + 0.05
+                            ? 'Aggressive. Protein and sleep stop being optional.'
+                            : 'The balanced pace most people can keep.'}
+                      </Text>
+                    </View>
+                  </Animated.View>
+                )}
+            </QuestionStep>
+          )}
+
+          {step === 'interlude' && (
+            <QuestionStep
+              stepKey="interlude"
+              question="I set the route. You walk it."
+              sub={`${answers.frequency ?? 3} days a week${paceDate ? `, on track for ${paceDate}` : ''}${targets ? `, ${targets.kcal.toLocaleString()} kcal a day` : ''}.`}
+              footer={<PrimaryCta label="Lock it in" onPress={() => goTo('commit')} />}
+            >
+                <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
+                  {/* The same orb as the paywall's trust screen, so Drona reads
+                      as the one setting the route. */}
+                  <DronaHeroOrb />
+                  <View style={s.claimList}>
+                    {[
+                      'I watch your training, food and recovery',
+                      'When things go off track, I adjust your plan',
+                      'So you get there on time',
+                    ].map((line, idx) => (
+                      <Animated.View
+                        key={line}
+                        entering={FadeInDown.delay(260 + idx * 120).duration(400)}
+                        style={s.claimRow}
+                      >
+                        <Feather name="check" size={IconSize.xs} color={C.accentText} />
+                        <Text style={[s.claimText, { color: C.textSecondary }]}>{line}</Text>
+                      </Animated.View>
                     ))}
                   </View>
-                  <Text style={[s.fuelNote, { color: C.textDim }]}>
-                    Log food by typing it. "Two rotis and dal" just works.
-                  </Text>
-                  {!isSignedIn && (
-                    <Text style={[s.fuelNote, { color: C.textDim }]}>
-                      Guest targets live on this screen only. Sign in and they follow you to the nutrition tab.
-                    </Text>
-                  )}
                 </Animated.View>
-              ) : (
-                <Animated.Text
-                  entering={FadeInDown.delay(320).duration(400)}
-                  style={[s.fuelSkipped, { color: C.textDim }]}
-                >
-                  Skipped the stats, so no calorie targets yet. Add age and weight in Profile and I will size them.
-                </Animated.Text>
-              )}
+            </QuestionStep>
+          )}
 
-              {/* Expectation setting, from the narrator */}
-              <Animated.View
-                entering={FadeInDown.delay(440).duration(400)}
-                style={[s.coachCard, { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder }]}
-              >
-                <View style={[s.coachIcon, { backgroundColor: C.muted }]}>
-                  <DronaMark size={12} state="static" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[s.coachText, { color: C.foreground }]}>
-                    {dronaProgram?.rationale ??
-                      `Log every session, even the rough ones. I read your sets, watch the trend, and tell you when to add weight. ${targets ? 'Eat to your targets, show' : 'Show'} up ${answers.frequency ?? 3} days a week and the numbers take care of themselves.`}
-                  </Text>
-                  <Text style={[s.coachSig, { color: C.accentText }]}>COACH DRONA</Text>
-                </View>
-              </Animated.View>
-          </QuestionStep>
-        )}
-      </KeyboardAvoidingView>
-      {celebrating && <Celebration onDone={finishCelebration} />}
-    </SafeAreaView>
+          {step === 'commit' && (
+            <QuestionStep
+              stepKey="commit"
+              question="Commit to it."
+              sub="A plan only works if you show up."
+            >
+                <CommitmentHold
+                  pledgeTitle="I'm in."
+                  pledgeBody={`${joinGoals(selectedGoals(answers).map((g, i) => i === 0 ? GOAL_PHRASES[g] : GOAL_PHRASES[g].toLowerCase()))}, ${answers.frequency ?? 3} days a week${paceCtx && paceDate ? `, ${Math.abs(toKg(targetVal) - toKg(weightVal)).toFixed(1)} kg ${targetVal < weightVal ? 'down' : 'up'} by ${paceDate}` : ''}. I log my sessions, even the rough ones.`}
+                  onCommitted={() => setCelebrating(true)}
+                />
+            </QuestionStep>
+          )}
+
+          {step === 'build' && (
+            <Animated.View key="build" entering={FadeIn.duration(250)} style={s.stepFill}>
+              <BuildMoment
+                lines={[
+                  'Reading your answers',
+                  'Mapping the road to your goal',
+                  'Picking exercises for you',
+                  'Setting fuel targets',
+                  'Locking your first week',
+                ]}
+                ready={buildReady}
+                onDone={() => goTo('plan')}
+              />
+            </Animated.View>
+          )}
+
+          {step === 'plan' && (
+            <QuestionStep
+              stepKey="plan"
+              question={revealTitle}
+              sub={`${finalProgram.phases.length} ${finalProgram.phases.length === 1 ? 'phase' : 'phases'}, ${answers.frequency ?? 3} days a week${targets ? ', with daily fuel targets' : ''}. Tap a phase to see its week.`}
+              footer={
+                <>
+                  <PrimaryCta
+                    label={isFreshVisitor ? 'Save my plan' : 'Start my plan'}
+                    onPress={() => finishOnboarding({ createPlan: true, dest: '/(app)' })}
+                    loading={finishing}
+                    accessibilityLabel={isFreshVisitor ? 'Save my plan' : 'Start my plan'}
+                  />
+                  <TouchableOpacity
+                    onPress={() => finishOnboarding({ createPlan: false, dest: '/(app)/routines' })}
+                    disabled={finishing}
+                    style={s.ghostLink}
+                    accessibilityRole="button"
+                    accessibilityLabel="Build my own routines"
+                  >
+                    <Text style={[s.ghostLinkText, { color: C.textMuted }]}>I'll build my own routines</Text>
+                  </TouchableOpacity>
+                </>
+              }
+            >
+                {paceCtx && paceDate && (
+                  <Animated.View entering={FadeInDown.delay(80).duration(400)}>
+                    <ProjectedCurve
+                      direction={paceCtx.direction}
+                      startLabel={`Now · ${weightVal} ${weightUnit}`}
+                      endLabel={`${paceDate} · ${targetVal} ${weightUnit}`}
+                    />
+                  </Animated.View>
+                )}
+
+                {/* The road: the program's phases, so the reveal shows the whole
+                    route to the goal and not just week one. */}
+                <Animated.View
+                  entering={FadeInDown.delay(90).duration(400)}
+                  style={[s.roadCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+                >
+                  <Text style={[s.fuelEyebrow, { color: C.textMuted }]}>THE ROAD</Text>
+                  <Text style={[s.roadTitle, { color: C.foreground }]}>{finalProgram.title}</Text>
+                  {finalProgram.objective ? (
+                    <Text style={[s.roadObjective, { color: C.textSecondary }]}>{finalProgram.objective}</Text>
+                  ) : null}
+                  <View style={s.roadList}>
+                    {roadRows.map((row) => {
+                      const open = openPhase === row.key;
+                      return (
+                        <View key={row.key}>
+                          <Pressable
+                            onPress={() => setOpenPhase(open ? null : row.key)}
+                            style={s.roadRow}
+                            hitSlop={6}
+                          >
+                            <Text style={[s.roadWeeks, { color: C.accentText }]}>{row.weeks}</Text>
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                              <Text style={[s.roadName, { color: C.foreground }]} numberOfLines={open ? undefined : 1}>
+                                {row.name}
+                              </Text>
+                              {row.meta && !open ? (
+                                <Text style={[s.roadMeta, { color: C.textMuted }]} numberOfLines={2}>{row.meta}</Text>
+                              ) : null}
+                            </View>
+                            <Feather
+                              name={open ? 'chevron-up' : 'chevron-down'}
+                              size={14}
+                              color={C.textMuted}
+                              style={{ marginTop: 2 }}
+                            />
+                          </Pressable>
+
+                          {open && (
+                            <Animated.View entering={FadeIn.duration(180)} style={s.roadDetail}>
+                              {(row.kcal != null || row.macros.length > 0) && (
+                                <View style={s.roadChipRow}>
+                                  {row.kcal != null && (
+                                    <View
+                                      style={[
+                                        s.roadChip,
+                                        { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder },
+                                      ]}
+                                    >
+                                      <Text style={[s.roadChipValue, { color: C.accentText }]}>
+                                        {row.kcal.toLocaleString()}
+                                      </Text>
+                                      <Text style={[s.roadChipLabel, { color: C.accentText }]}>KCAL / DAY</Text>
+                                    </View>
+                                  )}
+                                  {row.macros.map((m) => (
+                                    <View
+                                      key={m.label}
+                                      style={[s.roadChip, { backgroundColor: C.muted, borderColor: 'transparent' }]}
+                                    >
+                                      <Text style={[s.roadChipValue, { color: C.foreground }]}>{m.value}</Text>
+                                      <Text style={[s.roadChipLabel, { color: C.textMuted }]}>{m.label}</Text>
+                                    </View>
+                                  ))}
+                                </View>
+                              )}
+
+                              {row.week && (
+                                <View style={{ marginTop: Spacing.md }}>
+                                  <Text style={[s.roadDetailLabel, { color: C.textMuted }]}>
+                                    {row.split ? `YOUR WEEK · ${row.split}` : 'YOUR WEEK'}
+                                  </Text>
+                                  <View style={s.roadWeekStrip}>
+                                    <View style={[s.roadWeekRule, { backgroundColor: C.borderSubtle }]} />
+                                    {row.week.map((label, i) => {
+                                      const rest = label === REST;
+                                      return (
+                                        <View key={i} style={s.roadWeekCell}>
+                                          <View
+                                            style={[
+                                              s.roadWeekDot,
+                                              rest
+                                                ? { backgroundColor: C.background, borderColor: C.borderSubtle }
+                                                : { backgroundColor: C.accentText, borderColor: C.accentText },
+                                            ]}
+                                          />
+                                          <Text style={[s.roadWeekDay, { color: C.textMuted }]}>D{i + 1}</Text>
+                                          <Text
+                                            numberOfLines={1}
+                                            style={[
+                                              s.roadWeekLabel,
+                                              {
+                                                color: rest ? C.textMuted : C.foreground,
+                                                fontWeight: rest ? FontWeight.medium : FontWeight.semibold,
+                                              },
+                                            ]}
+                                          >
+                                            {shortDayLabel(label)}
+                                          </Text>
+                                        </View>
+                                      );
+                                    })}
+                                  </View>
+                                </View>
+                              )}
+
+                              {row.directives.map((d) => (
+                                <View key={d.label} style={s.roadDirectiveRow}>
+                                  <View style={[s.roadDirectiveIcon, { backgroundColor: C.primaryMuted }]}>
+                                    <Feather name={d.icon} size={12} color={C.accentText} />
+                                  </View>
+                                  <View style={{ flex: 1, minWidth: 0 }}>
+                                    <Text style={[s.roadDetailLabel, { color: C.textMuted }]}>{d.label}</Text>
+                                    <Text style={[s.roadDetailText, { color: C.textSecondary }]}>{d.text}</Text>
+                                  </View>
+                                </View>
+                              ))}
+                            </Animated.View>
+                          )}
+                        </View>
+                      );
+                    })}
+                  </View>
+                </Animated.View>
+
+                {/* Daily fuel targets: the diet half of the intake payoff */}
+                {targets ? (
+                  <Animated.View
+                    entering={FadeInDown.delay(320).duration(400)}
+                    style={[s.fuelCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+                  >
+                    <Text style={[s.fuelEyebrow, { color: C.textMuted }]}>DAILY FUEL</Text>
+                    <View style={s.fuelKcalRow}>
+                      <Text style={[s.fuelKcal, { color: C.foreground }]}>{targets.kcal.toLocaleString()}</Text>
+                      <Text style={[s.fuelKcalUnit, { color: C.textMuted }]}>kcal a day</Text>
+                    </View>
+                    <View style={s.macroRow}>
+                      {(
+                        [
+                          { key: 'protein', label: 'Protein', grams: targets.protein },
+                          { key: 'carbs', label: 'Carbs', grams: targets.carb },
+                          { key: 'fat', label: 'Fat', grams: targets.fat },
+                        ] as const
+                      ).map((m) => (
+                        <View key={m.key} style={s.macroItem}>
+                          <View style={[s.macroDot, { backgroundColor: C.macro[m.key] }]} />
+                          <Text style={[s.macroText, { color: C.textSecondary }]}>
+                            {m.label} <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>{m.grams}g</Text>
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                    <Text style={[s.fuelNote, { color: C.textDim }]}>
+                      Log food by typing it. "Two rotis and dal" just works.
+                    </Text>
+                    {!isSignedIn && (
+                      <Text style={[s.fuelNote, { color: C.textDim }]}>
+                        Guest targets live on this screen only. Sign in and they follow you to the nutrition tab.
+                      </Text>
+                    )}
+                  </Animated.View>
+                ) : (
+                  <Animated.Text
+                    entering={FadeInDown.delay(320).duration(400)}
+                    style={[s.fuelSkipped, { color: C.textDim }]}
+                  >
+                    Skipped the stats, so no calorie targets yet. Add age and weight in Profile and I will size them.
+                  </Animated.Text>
+                )}
+
+                {/* Expectation setting, from the narrator */}
+                <Animated.View
+                  entering={FadeInDown.delay(440).duration(400)}
+                  style={[s.coachCard, { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder }]}
+                >
+                  <View style={[s.coachIcon, { backgroundColor: C.muted }]}>
+                    <DronaMark size={12} state="static" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[s.coachText, { color: C.foreground }]}>
+                      {dronaProgram?.rationale ??
+                        `Log every session, even the rough ones. I read your sets, watch the trend, and tell you when to add weight. ${targets ? 'Eat to your targets, show' : 'Show'} up ${answers.frequency ?? 3} days a week and the numbers take care of themselves.`}
+                    </Text>
+                    <Text style={[s.coachSig, { color: C.accentText }]}>COACH DRONA</Text>
+                  </View>
+                </Animated.View>
+            </QuestionStep>
+          )}
+        </KeyboardAvoidingView>
+        {celebrating && <Celebration onDone={finishCelebration} />}
+      </SafeAreaView>
     </View>
   );
 }

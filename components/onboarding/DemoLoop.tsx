@@ -17,9 +17,10 @@ import React from 'react';
 import { Image, StyleSheet, View } from 'react-native';
 import { useReducedMotion } from 'react-native-reanimated';
 
-// 14.2 s, 720 x 1560, made in Remotion from simulator recordings (comp
-// WelcomeDemoMediumPhone in ~/Movies/overload-launch/a-quiet-power/film/src/
-// signup.tsx) and encoded with ffmpeg. It starts and ends on the dark stage,
+// 14.2 s, 720 x 1560, 1.5 MB, made in Remotion from simulator recordings
+// and encoded with ffmpeg. The Remotion project is not in this repo; it lives
+// on the owner's Mac (comp WelcomeDemoMediumPhone in
+// ~/Movies/overload-launch/a-quiet-power/film/src/signup.tsx). It starts and ends on the dark stage,
 // so the loop has no visible seam. The bottom ~24% holds nothing the story
 // needs: the welcome screen's buttons sit there. Re-record when the three
 // screens change materially.
