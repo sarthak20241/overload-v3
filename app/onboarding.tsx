@@ -37,12 +37,13 @@ import {
   Pressable,
   BackHandler,
   Keyboard,
-  useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
+import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import {
   Colors,
   FontFamily,
@@ -70,7 +71,7 @@ import {
   QuestionStep,
   TextAreaField,
 } from '@/components/onboarding/OnboardingKit';
-import { NumberWheel, RulerSlider } from '@/components/onboarding/BodyPickers';
+import { NumberWheel, UnitWheel, WeightWheel } from '@/components/onboarding/BodyPickers';
 import { FrequencyStory } from '@/components/onboarding/FrequencyStory';
 import { PaceSlider } from '@/components/onboarding/PaceSlider';
 import { CommitmentHold } from '@/components/onboarding/CommitmentHold';
@@ -107,6 +108,16 @@ import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 import { joinGoals, selectedGoals, toggleGoal } from '@/lib/fitnessGoals';
 
 const LBS_PER_KG = 2.20462;
+/** The weight wheels' range, per display unit. */
+const WEIGHT_WHEEL = { kg: { min: 30, max: 200 }, lbs: { min: 66, max: 440 } } as const;
+const WEIGHT_UNITS = [
+  { value: 'kg', label: 'kg' },
+  { value: 'lbs', label: 'lbs' },
+] as const;
+const HEIGHT_UNITS = [
+  { value: 'cm', label: 'cm' },
+  { value: 'ft', label: 'ft, in' },
+] as const;
 const MIN_AGE_YEARS = 13;
 const MAX_AGE_YEARS = 120;
 const MIN_WEIGHT_KG = 25;
@@ -164,11 +175,6 @@ export default function OnboardingScreen() {
   const supabaseClient = useSupabaseClient();
   const basicInfo = useBasicInfo();
   const toast = useToast();
-  // The welcome hero is the demo video: as wide as the content column, and as
-  // tall as the screen allows once the promise and the CTA have their room.
-  const { width: winW, height: winH } = useWindowDimensions();
-  const heroWidth = winW - Spacing.xxl * 2;
-  const heroHeight = Math.round(Math.min(heroWidth * (5 / 4), Math.max(240, winH * 0.46)));
 
   const [step, setStep] = useState<Step>('welcome');
   // Smart defaults (plan, psychology layer): goal and single-select steps arrive
@@ -539,8 +545,10 @@ export default function OnboardingScreen() {
 
   const toggleWeightUnit = useCallback(() => {
     const nextUnit = weightUnit === 'kg' ? 'lbs' : 'kg';
+    const { min, max } = WEIGHT_WHEEL[nextUnit];
+    // One decimal, the same as the wheels show.
     const convert = (v: number) =>
-      nextUnit === 'lbs' ? Math.round(v * LBS_PER_KG) : Math.round((v / LBS_PER_KG) * 2) / 2;
+      Math.min(max, Math.max(min, Math.round((nextUnit === 'lbs' ? v * LBS_PER_KG : v / LBS_PER_KG) * 10) / 10));
     setWeightVal(convert);
     setTargetVal(convert);
     setWeightUnit(nextUnit);
@@ -738,8 +746,27 @@ export default function OnboardingScreen() {
   const showHeader = step !== 'welcome' && step !== 'build';
   const progressIndex = PROGRESS_STEPS.indexOf(step);
 
+  const welcome = step === 'welcome';
+
   return (
-    <SafeAreaView style={[s.safeArea, { backgroundColor: C.background }]}>
+    <View style={[s.safeArea, { backgroundColor: welcome ? WELCOME_STAGE : C.background }]}>
+      {/* The welcome screen IS the demo: the film fills the screen, status bar
+          included, and loops behind the two buttons. */}
+      {welcome && (
+        <>
+          <StatusBar style="light" />
+          <DemoLoop />
+          <LinearGradient
+            // Dark well before the link: the food scene's keyboard is near white.
+            // It starts below the film's opening words, so it never dims them.
+            colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.85)', 'rgba(0,0,0,0.96)']}
+            locations={[0, 0.3, 1]}
+            style={s.welcomeScrim}
+            pointerEvents="none"
+          />
+        </>
+      )}
+    <SafeAreaView style={[s.safeArea, { backgroundColor: welcome ? 'transparent' : C.background }]}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
         {showHeader && (
           <OnboardingHeader
@@ -751,37 +778,10 @@ export default function OnboardingScreen() {
         )}
 
         {step === 'welcome' && (
-          <View style={s.stepFill}>
-            <View style={s.welcomeCenter}>
-              <Animated.View entering={FadeInUp.duration(500)}>
-                <Text style={[s.logoText, { color: C.foreground }]}>
-                  OVER<Text style={{ color: C.accentText }}>LOAD</Text>
-                </Text>
-              </Animated.View>
-
-              {/* The product demos itself, as the hero: goal in, road out,
-                  log the work, the coach adjusts. Captions live in the video. */}
-              <Animated.View entering={FadeIn.delay(120).duration(600)} style={s.demoWrap}>
-                <DemoLoop width={heroWidth} height={heroHeight} />
-              </Animated.View>
-
-              <Animated.Text
-                entering={FadeInDown.delay(320).duration(500)}
-                style={[s.heroTitle, { color: C.foreground }]}
-              >
-                {/* A hard break: the two clauses are the two halves of the deal, and
-                    a natural wrap left a lone "I" hanging at the end of line one. */}
-                Say where you want to be.{'\n'}I handle the rest.
-              </Animated.Text>
-              <Animated.Text
-                entering={FadeInDown.delay(420).duration(500)}
-                style={[s.heroSub, { color: C.textSecondary }]}
-              >
-                Training, food and recovery, planned around you and adjusted as you log. You just show up.
-              </Animated.Text>
-            </View>
-
-            <Animated.View entering={FadeInDown.delay(700).duration(450)} style={s.footer}>
+          <View style={[s.stepFill, s.welcomeFill]}>
+            {/* The film carries the promise and the three features; only the
+                buttons sit on top of it, in the bottom quarter it keeps clear. */}
+            <Animated.View entering={FadeInDown.delay(500).duration(450)} style={s.footer}>
               <PrimaryCta
                 label="Start with my goal"
                 onPress={() => goTo('goal')}
@@ -794,7 +794,7 @@ export default function OnboardingScreen() {
                 accessibilityRole="button"
                 accessibilityLabel={isFreshVisitor ? 'I already have an account' : 'Skip setup'}
               >
-                <Text style={[s.ghostLinkText, { color: C.textMuted }]}>
+                <Text style={[s.ghostLinkText, { color: WELCOME_LINK }]}>
                   {isFreshVisitor ? 'I already have an account' : 'I know my way around'}
                 </Text>
               </TouchableOpacity>
@@ -1023,48 +1023,43 @@ export default function OnboardingScreen() {
             footer={<PrimaryCta label="Continue" onPress={commitHeightStep} />}
           >
               <View style={s.heroCenter}>
-                <View style={s.fieldLabelRow}>
-                  <Text style={[s.fieldLabel, { color: C.textMuted }]}>HEIGHT</Text>
-                  <TouchableOpacity
-                    onPress={toggleHeightUnit}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Switch height unit, currently ${heightUnit === 'cm' ? 'centimeters' : 'feet and inches'}`}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  >
-                    <Text style={[s.unitToggle, { color: C.accentText }]}>
-                      {heightUnit === 'cm' ? 'cm' : 'ft, in'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-                {heightUnit === 'cm' ? (
-                  <NumberWheel
-                    min={MIN_HEIGHT_CM}
-                    max={220}
-                    width={170}
-                    value={heightCm}
-                    onChange={setHeightCm}
-                    accessibilityLabel="Height in centimeters"
+                <View style={s.wheelRow}>
+                  {heightUnit === 'cm' ? (
+                    <NumberWheel
+                      min={MIN_HEIGHT_CM}
+                      max={220}
+                      width={140}
+                      value={heightCm}
+                      onChange={setHeightCm}
+                      accessibilityLabel="Height in centimeters"
+                    />
+                  ) : (
+                    <>
+                      <NumberWheel
+                        min={4}
+                        max={7}
+                        width={70}
+                        value={heightFt}
+                        onChange={setHeightFt}
+                        accessibilityLabel="Height, feet"
+                      />
+                      <NumberWheel
+                        min={0}
+                        max={11}
+                        width={70}
+                        value={heightIn}
+                        onChange={setHeightIn}
+                        accessibilityLabel="Height, inches"
+                      />
+                    </>
+                  )}
+                  <UnitWheel
+                    options={HEIGHT_UNITS}
+                    value={heightUnit}
+                    onChange={toggleHeightUnit}
+                    accessibilityLabel={`Height unit, now ${heightUnit === 'cm' ? 'centimeters' : 'feet and inches'}`}
                   />
-                ) : (
-                  <View style={{ flexDirection: 'row', gap: 12 }}>
-                    <NumberWheel
-                      min={4}
-                      max={7}
-                      width={84}
-                      value={heightFt}
-                      onChange={setHeightFt}
-                      accessibilityLabel="Height, feet"
-                    />
-                    <NumberWheel
-                      min={0}
-                      max={11}
-                      width={84}
-                      value={heightIn}
-                      onChange={setHeightIn}
-                      accessibilityLabel="Height, inches"
-                    />
-                  </View>
-                )}
+                </View>
               </View>
           </QuestionStep>
         )}
@@ -1076,35 +1071,31 @@ export default function OnboardingScreen() {
             sub="Just a starting point. The trend is what we train."
             footer={<PrimaryCta label="Continue" onPress={commitWeightStep} />}
           >
-              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={{ flexGrow: 1, justifyContent: 'center' }}>
-                <View style={s.fieldLabelRow}>
-                  <Text style={[s.fieldLabel, { color: C.textMuted }]}>WEIGHT</Text>
-                  <TouchableOpacity
-                    onPress={toggleWeightUnit}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Switch weight unit, currently ${weightUnit}`}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  >
-                    <Text style={[s.unitToggle, { color: C.accentText }]}>{weightUnit}</Text>
-                  </TouchableOpacity>
+              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
+                <View style={s.wheelRow}>
+                  <WeightWheel
+                    // A new unit is a new scale: start the wheels fresh on it.
+                    key={weightUnit}
+                    min={WEIGHT_WHEEL[weightUnit].min}
+                    max={WEIGHT_WHEEL[weightUnit].max}
+                    value={weightVal}
+                    onChange={(v) => {
+                      setWeightVal(v);
+                      // Mirror every stop into answers so the saved number, the
+                      // reveal and the program all read the wheel's final value.
+                      const kg = toKg(v);
+                      setAnswers((a) => ({ ...a, weightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null }));
+                    }}
+                    accessibilityLabel={`Weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
+                  />
+                  <UnitWheel
+                    options={WEIGHT_UNITS}
+                    value={weightUnit}
+                    onChange={toggleWeightUnit}
+                    width={72}
+                    accessibilityLabel={`Weight unit, now ${weightUnit}`}
+                  />
                 </View>
-                <RulerSlider
-                  min={weightUnit === 'kg' ? 30 : 66}
-                  max={weightUnit === 'kg' ? 200 : 440}
-                  step={weightUnit === 'kg' ? 0.5 : 1}
-                  value={weightVal}
-                  onChange={(v) => {
-                    setWeightVal(v);
-                    // The ruler keeps settling for a beat after a flick, so a
-                    // quick Continue can commit a value one tick stale. Mirror
-                    // every tick into answers so the saved number, the reveal
-                    // and the program all read the ruler's final stop.
-                    const kg = toKg(v);
-                    setAnswers((a) => ({ ...a, weightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null }));
-                  }}
-                  unitLabel={weightUnit}
-                  accessibilityLabel={`Weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
-                />
               </Animated.View>
           </QuestionStep>
         )}
@@ -1116,24 +1107,31 @@ export default function OnboardingScreen() {
             sub="A goal weight points your calories the right way. You can change it anytime."
             footer={<PrimaryCta label="Continue" onPress={commitTargetStep} />}
           >
-              <Animated.View entering={FadeInDown.delay(100).duration(400)} style={{ marginTop: Spacing.xl }}>
-                <RulerSlider
-                  min={weightUnit === 'kg' ? 30 : 66}
-                  max={weightUnit === 'kg' ? 200 : 440}
-                  step={weightUnit === 'kg' ? 0.5 : 1}
-                  value={targetVal}
-                  onChange={(v) => {
-                    targetTouched.current = true;
-                    setTargetVal(v);
-                    // Same late-tick guard as the weight ruler.
-                    const kg = toKg(v);
-                    setAnswers((a) => ({ ...a, goalWeightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null }));
-                  }}
-                  unitLabel={weightUnit}
-                  accessibilityLabel={`Goal weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
-                />
+              <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.heroCenter}>
+                <View style={s.wheelRow}>
+                  <WeightWheel
+                    key={weightUnit}
+                    min={WEIGHT_WHEEL[weightUnit].min}
+                    max={WEIGHT_WHEEL[weightUnit].max}
+                    value={targetVal}
+                    onChange={(v) => {
+                      targetTouched.current = true;
+                      setTargetVal(v);
+                      // Same mirror as the weight wheel.
+                      const kg = toKg(v);
+                      setAnswers((a) => ({ ...a, goalWeightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null }));
+                    }}
+                    accessibilityLabel={`Goal weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
+                  />
+                  <UnitWheel
+                    options={WEIGHT_UNITS}
+                    value={weightUnit}
+                    onChange={toggleWeightUnit}
+                    width={72}
+                    accessibilityLabel={`Weight unit, now ${weightUnit}`}
+                  />
+                </View>
                 <Text style={[s.targetHint, { color: C.textDim, textAlign: 'center' }]}>{targetHint}</Text>
-
               </Animated.View>
           </QuestionStep>
         )}
@@ -1464,38 +1462,23 @@ export default function OnboardingScreen() {
       </KeyboardAvoidingView>
       {celebrating && <Celebration onDone={finishCelebration} />}
     </SafeAreaView>
+    </View>
   );
 }
+
+/** The welcome film's dark stage, shown before the first frame paints. */
+const WELCOME_STAGE = '#0a0a0a';
+/** The secondary link on the film: light in either theme. */
+const WELCOME_LINK = 'rgba(255,255,255,0.72)';
 
 const s = StyleSheet.create({
   safeArea: { flex: 1 },
   stepFill: { flex: 1 },
 
   // Welcome
-  welcomeCenter: {
-    flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: Spacing.xxl,
-  },
-  logoText: {
-    fontSize: FontSize.xl,
-    fontWeight: FontWeight.black,
-    letterSpacing: LetterSpacing.caps,
-    marginBottom: Spacing.lg,
-  },
-  heroTitle: {
-    fontSize: FontSize.xxl,
-    fontWeight: FontWeight.black,
-    letterSpacing: LetterSpacing.tight,
-    lineHeight: 34,
-    marginTop: Spacing.xl,
-  },
-  heroSub: {
-    fontSize: FontSize.md,
-    lineHeight: 22,
-    marginTop: Spacing.md,
-  },
-  demoWrap: { alignSelf: 'stretch' },
+  welcomeFill: { justifyContent: 'flex-end' },
+  // Under the buttons only: the film keeps its bottom quarter clear for them.
+  welcomeScrim: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '26%' },
 
   // Question steps
   options: { gap: Spacing.md },
@@ -1503,12 +1486,6 @@ const s = StyleSheet.create({
 
 
   // Body basics + target
-  fieldLabel: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.semibold,
-    letterSpacing: LetterSpacing.label,
-    marginBottom: Spacing.sm,
-  },
   genderCol: { gap: Spacing.md, marginTop: Spacing.lg },
   genderChip: {
     paddingVertical: Spacing.lg,
@@ -1518,13 +1495,8 @@ const s = StyleSheet.create({
   },
   genderChipText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
   heroCenter: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.md },
-  fieldLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    justifyContent: 'center',
-  },
-  unitToggle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  // A value wheel (or two) and the unit wheel beside it.
+  wheelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm },
   targetHint: {
     fontSize: FontSize.sm,
     lineHeight: 19,

@@ -1,30 +1,34 @@
 /**
- * The welcome hero's proof: a muted, looping capture of the real app inside
- * a device frame. No narration, no chrome; the product demos itself while
- * the copy above makes the promise.
+ * The welcome screen's demo: a muted film that fills the whole screen and
+ * loops behind the two buttons. No device box and no text around it; the
+ * film carries its own words ("Meet Drona. Say where you want to be.", then
+ * log a set, say what you ate, a plan built for you, each on a real app
+ * screen).
  *
- * The loop is DECORATIVE, so it must never be load-bearing. expo-video is a
+ * The film is DECORATIVE, so it must never be load-bearing. expo-video is a
  * native module, and a binary without it (an OTA update landing on an older
  * build, or a build made before the dependency was linked) throws
  * "Cannot find native module 'ExpoVideo'" at import time. Imported at module
  * scope that takes the whole onboarding screen down with it. So we resolve
- * expo-video defensively and fall back to a still frame of the same capture:
- * the hero still shows the product, just without motion.
+ * expo-video defensively and fall back to a still of the film's first scene.
+ * Reduced Motion shows that still too.
  */
 import React from 'react';
 import { Image, StyleSheet, View } from 'react-native';
-import { useTheme } from '@/hooks/useTheme';
+import { useReducedMotion } from 'react-native-reanimated';
 
-// A 4:5 composition cut in Palmier Pro from simulator captures: goal in, the
-// road out, log a set, the coach adjusts. Captions are burned in, so the
-// hero reads even muted. Re-capture via the workflow in
-// .planning/onboarding-redesign-plan.md when the UI changes materially.
+// 14.2 s, 720 x 1560, made in Remotion from simulator recordings (comp
+// WelcomeDemoMediumPhone in ~/Movies/overload-launch/a-quiet-power/film/src/
+// signup.tsx) and encoded with ffmpeg. It starts and ends on the dark stage,
+// so the loop has no visible seam. The bottom ~24% holds nothing the story
+// needs: the welcome screen's buttons sit there. Re-record when the three
+// screens change materially.
 const DEMO = require('@/assets/onboarding/welcome-demo.mp4');
 const POSTER = require('@/assets/onboarding/welcome-demo-poster.jpg');
 
-// Export is 1080x1350 (4:5). The hero passes its own height and the video
-// covers it, so a shorter screen crops the dark margins, never the phone.
-const ASPECT = 1350 / 1080;
+/** What a screen reader hears in place of the film. */
+export const WELCOME_DEMO_LABEL =
+  'Meet Drona. Say where you want to be, I handle the rest. Log a set in one tap. Say what you ate. A plan built for you.';
 
 type VideoModule = typeof import('expo-video');
 
@@ -40,7 +44,7 @@ const Video: VideoModule | null = (() => {
 })();
 
 /** Only mounted when expo-video resolved, so its hooks are never conditional. */
-function VideoLoop({ width, height }: { width: number; height: number }) {
+function VideoLoop() {
   const player = Video!.useVideoPlayer(DEMO, (p) => {
     p.loop = true;
     p.muted = true;
@@ -50,39 +54,32 @@ function VideoLoop({ width, height }: { width: number; height: number }) {
   return (
     <View_
       player={player}
-      style={{ width, height }}
+      style={StyleSheet.absoluteFill}
       contentFit="cover"
       nativeControls={false}
+      // iOS can put a Live Text button on a paused frame.
+      allowsVideoFrameAnalysis={false}
       pointerEvents="none"
     />
   );
 }
 
-export function DemoLoop({ width = 200, height: heightProp }: { width?: number; height?: number }) {
-  const { C } = useTheme();
-  const height = heightProp ?? Math.round(width * ASPECT);
-
+/** Fills its parent. The owner places it behind the welcome screen's content. */
+export function DemoLoop() {
+  const reduced = useReducedMotion();
   return (
     <View
-      style={[
-        d.frame,
-        { width, height, borderColor: C.border, backgroundColor: C.card },
-      ]}
+      style={[StyleSheet.absoluteFill, d.stage]}
+      accessible
+      accessibilityRole="image"
+      accessibilityLabel={WELCOME_DEMO_LABEL}
     >
-      {Video ? (
-        <VideoLoop width={width} height={height} />
-      ) : (
-        <Image source={POSTER} style={{ width, height }} resizeMode="cover" />
-      )}
+      <Image source={POSTER} style={StyleSheet.absoluteFill} resizeMode="cover" />
+      {Video && !reduced ? <VideoLoop /> : null}
     </View>
   );
 }
 
 const d = StyleSheet.create({
-  frame: {
-    borderRadius: 24,
-    borderWidth: 1,
-    overflow: 'hidden',
-    alignSelf: 'center',
-  },
+  stage: { backgroundColor: '#0a0a0a' },
 });

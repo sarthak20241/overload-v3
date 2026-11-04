@@ -1,24 +1,15 @@
 /**
- * Physical inputs for the onboarding body/target steps (Phase 1 of the
- * redesign): a themed number wheel and a horizontal ruler slider. Both arrive
- * prefilled with sensible medians (smart defaults) so Continue is always one
- * tap, and both tick haptically per detent.
+ * Physical inputs for the onboarding body/target steps: themed wheels for
+ * numbers and a second wheel beside them for the unit (kg / lbs, cm / ft-in).
+ * They arrive prefilled with sensible medians (smart defaults) so Continue is
+ * always one tap, and they tick haptically per detent.
  *
- * The wheel wraps @quidone/react-native-wheel-picker (pure JS, no native dep).
- * The ruler is a snap-interval FlatList: standard list physics, not hand-rolled
- * gestures (feedback rule), with a Space Grotesk readout above.
+ * The wheels wrap @quidone/react-native-wheel-picker (pure JS, no native dep).
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  FlatList,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import React, { useMemo } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 import WheelPicker from '@quidone/react-native-wheel-picker';
-import { FontFamily, FontSize, Radius } from '@/constants/theme';
+import { FontFamily, Radius } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
 
@@ -75,143 +66,100 @@ export function NumberWheel({
   );
 }
 
-// ─── Ruler slider ───────────────────────────────────────────────────────────
+// ─── Unit wheel ─────────────────────────────────────────────────────────────
 
-const TICK_GAP = 11; // px per step
-
-export function RulerSlider({
-  min,
-  max,
-  step,
+/**
+ * A short second wheel beside the number: scroll it to switch units (kg / lbs,
+ * cm / ft-in). The unit sits where the eye already is, not in a small text
+ * toggle above the picker.
+ */
+export function UnitWheel<T extends string>({
+  options,
   value,
   onChange,
-  unitLabel,
+  width = 84,
   accessibilityLabel,
 }: {
-  min: number;
-  max: number;
-  /** Value distance between adjacent ticks (e.g. 0.5 kg). */
-  step: number;
-  value: number;
-  onChange: (v: number) => void;
-  unitLabel: string;
+  options: readonly { value: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+  width?: number;
   accessibilityLabel: string;
 }) {
   const { C } = useTheme();
-  const count = Math.round((max - min) / step) + 1;
-  const lastIdx = useRef(Math.round((value - min) / step));
-  const listRef = useRef<FlatList<number>>(null);
-  // Measured so the side padding centers tick 0 under the indicator exactly.
-  const [viewportW, setViewportW] = useState(0);
-  const sidePad = Math.max(0, viewportW / 2 - TICK_GAP / 2);
-
-  const data = useMemo(() => Array.from({ length: count }, (_, i) => i), [count]);
-
-  // A unit toggle rewrites the scale under a list that keeps its pixel offset
-  // (kg 30-200 by 0.5 becomes lbs 66-440 by 1), so the marker ends up on a
-  // different weight than the readout and the next nudge snaps to it. Re-anchor
-  // on scale change only, so this never fights an in-progress drag.
-  const scaleKey = `${min}:${max}:${step}`;
-  const prevScale = useRef(scaleKey);
-  useEffect(() => {
-    if (prevScale.current === scaleKey) return;
-    prevScale.current = scaleKey;
-    const idx = Math.min(count - 1, Math.max(0, Math.round((value - min) / step)));
-    lastIdx.current = idx;
-    listRef.current?.scrollToOffset({ offset: TICK_GAP * idx, animated: false });
-  }, [scaleKey, value, min, step, count]);
-
-  const onScroll = useCallback(
-    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const idx = Math.min(count - 1, Math.max(0, Math.round(e.nativeEvent.contentOffset.x / TICK_GAP)));
-      if (idx !== lastIdx.current) {
-        lastIdx.current = idx;
-        haptics.tick();
-        onChange(min + idx * step);
-      }
-    },
-    [count, min, step, onChange],
-  );
-
-  const display = Number.isInteger(step) ? String(value) : value.toFixed(1).replace(/\.0$/, '');
-
+  const data = useMemo(() => options.map((o) => ({ value: o.value, label: o.label })), [options]);
   return (
-    <View accessibilityLabel={accessibilityLabel}>
-      <View style={r.readout}>
-        <Text style={[r.value, { color: C.foreground }]}>{display}</Text>
-        <Text style={[r.unit, { color: C.textMuted }]}>{unitLabel}</Text>
-      </View>
-      <View style={r.rulerWrap} onLayout={(e) => setViewportW(e.nativeEvent.layout.width)}>
-        {viewportW > 0 && (
-        <FlatList
-          ref={listRef}
-          data={data}
-          keyExtractor={(i) => String(i)}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          snapToInterval={TICK_GAP}
-          decelerationRate="fast"
-          getItemLayout={(_, index) => ({ length: TICK_GAP, offset: TICK_GAP * index, index })}
-          initialScrollIndex={Math.round((value - min) / step)}
-          onScroll={onScroll}
-          scrollEventThrottle={16}
-          contentContainerStyle={{ paddingHorizontal: sidePad }}
-          renderItem={({ index }) => {
-            const major = index % 5 === 0;
-            return (
-              <View style={[r.tickSlot]}>
-                <View
-                  style={[
-                    r.tick,
-                    {
-                      height: major ? 34 : 20,
-                      backgroundColor: C.border,
-                      opacity: major ? 1 : 0.6,
-                    },
-                  ]}
-                />
-              </View>
-            );
-          }}
-        />
-        )}
-        <View pointerEvents="none" style={[r.centerLine, { backgroundColor: C.accentText }]} />
-      </View>
+    <View style={{ width }} accessibilityLabel={accessibilityLabel}>
+      <WheelPicker
+        data={data}
+        value={value}
+        onValueChanged={({ item }) => {
+          if (item.value !== value) onChange(item.value);
+        }}
+        onValueChanging={() => haptics.tick()}
+        itemHeight={56}
+        visibleItemCount={5}
+        enableScrollByTapOnItem
+        itemTextStyle={{
+          fontFamily: FontFamily.displayMedium,
+          fontSize: 20,
+          color: C.foreground,
+        }}
+        overlayItemStyle={{
+          backgroundColor: C.muted,
+          borderRadius: Radius.lg,
+          opacity: 0.55,
+        }}
+      />
     </View>
   );
 }
 
-const RULER_H = 48;
+// ─── Weight wheel ───────────────────────────────────────────────────────────
 
-const r = StyleSheet.create({
-  readout: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'center',
-    gap: 8,
-    marginBottom: 14,
-  },
-  value: {
-    fontFamily: FontFamily.display,
-    fontSize: 48,
-    letterSpacing: -1,
-  },
-  unit: { fontSize: FontSize.lg, fontFamily: FontFamily.displayMedium },
-  rulerWrap: { height: RULER_H, justifyContent: 'center' },
-  tickSlot: {
-    width: TICK_GAP,
-    height: RULER_H,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tick: { width: 2, borderRadius: 1 },
-  centerLine: {
-    position: 'absolute',
-    left: '50%',
-    marginLeft: -1.5,
-    top: -4,
-    width: 3,
-    height: RULER_H + 8,
-    borderRadius: 1.5,
-  },
+/** Whole number, a dot, one decimal digit: "72 . 5". Values carry one decimal. */
+export function WeightWheel({
+  min,
+  max,
+  value,
+  onChange,
+  accessibilityLabel,
+}: {
+  min: number;
+  max: number;
+  value: number;
+  onChange: (v: number) => void;
+  accessibilityLabel: string;
+}) {
+  const { C } = useTheme();
+  const whole = Math.floor(value + 1e-6);
+  const tenth = Math.min(9, Math.max(0, Math.round((value - whole) * 10)));
+  const set = (w: number, t: number) =>
+    onChange(Math.min(max, Math.max(min, Math.round((w + t / 10) * 10) / 10)));
+  return (
+    <View style={w.row} accessibilityLabel={accessibilityLabel}>
+      <NumberWheel
+        min={min}
+        max={max}
+        width={104}
+        value={whole}
+        onChange={(v) => set(v, tenth)}
+        accessibilityLabel={`${accessibilityLabel}, whole number`}
+      />
+      <Text style={[w.dot, { color: C.textMuted }]}>.</Text>
+      <NumberWheel
+        min={0}
+        max={9}
+        width={60}
+        value={tenth}
+        onChange={(v) => set(whole, v)}
+        accessibilityLabel={`${accessibilityLabel}, decimal`}
+      />
+    </View>
+  );
+}
+
+const w = StyleSheet.create({
+  row: { flexDirection: 'row', alignItems: 'center' },
+  dot: { fontFamily: FontFamily.displayMedium, fontSize: 28, width: 16, textAlign: 'center' },
 });
