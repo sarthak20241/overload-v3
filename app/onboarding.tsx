@@ -543,8 +543,8 @@ export default function OnboardingScreen() {
     [nextStep, reportStepChange],
   );
 
-  const toggleWeightUnit = useCallback(() => {
-    const nextUnit = weightUnit === 'kg' ? 'lbs' : 'kg';
+  const setWeightUnitTo = useCallback((nextUnit: 'kg' | 'lbs') => {
+    if (nextUnit === weightUnit) return;
     const { min, max } = WEIGHT_WHEEL[nextUnit];
     // One decimal, the same as the wheels show.
     const convert = (v: number) =>
@@ -554,8 +554,9 @@ export default function OnboardingScreen() {
     setWeightUnit(nextUnit);
   }, [weightUnit]);
 
-  const toggleHeightUnit = useCallback(() => {
-    if (heightUnit === 'cm') {
+  const setHeightUnitTo = useCallback((nextUnit: 'cm' | 'ft') => {
+    if (nextUnit === heightUnit) return;
+    if (nextUnit === 'ft') {
       const totalInches = heightCm / 2.54;
       let feet = Math.floor(totalInches / 12);
       let inches = Math.round(totalInches - feet * 12);
@@ -1056,7 +1057,7 @@ export default function OnboardingScreen() {
                   <UnitWheel
                     options={HEIGHT_UNITS}
                     value={heightUnit}
-                    onChange={toggleHeightUnit}
+                    onChange={setHeightUnitTo}
                     accessibilityLabel={`Height unit, now ${heightUnit === 'cm' ? 'centimeters' : 'feet and inches'}`}
                   />
                 </View>
@@ -1091,7 +1092,7 @@ export default function OnboardingScreen() {
                   <UnitWheel
                     options={WEIGHT_UNITS}
                     value={weightUnit}
-                    onChange={toggleWeightUnit}
+                    onChange={setWeightUnitTo}
                     width={72}
                     accessibilityLabel={`Weight unit, now ${weightUnit}`}
                   />
@@ -1126,7 +1127,7 @@ export default function OnboardingScreen() {
                   <UnitWheel
                     options={WEIGHT_UNITS}
                     value={weightUnit}
-                    onChange={toggleWeightUnit}
+                    onChange={setWeightUnitTo}
                     width={72}
                     accessibilityLabel={`Weight unit, now ${weightUnit}`}
                   />

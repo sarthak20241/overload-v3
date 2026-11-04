@@ -94,7 +94,7 @@ export function UnitWheel<T extends string>({
         data={data}
         value={value}
         onValueChanged={({ item }) => {
-          if (item.value !== value) onChange(item.value);
+          if (item.value !== value) onChange(item.value as T);
         }}
         onValueChanging={() => haptics.tick()}
         itemHeight={56}
@@ -149,7 +149,9 @@ export function WeightWheel({
       <Text style={[w.dot, { color: C.textMuted }]}>.</Text>
       <NumberWheel
         min={0}
-        max={9}
+        // At the top of the scale there is no room for a decimal: 200.0 kg is
+        // the last stop, so the wheel never offers a tenth it would clamp away.
+        max={whole >= max ? 0 : 9}
         width={60}
         value={tenth}
         onChange={(v) => set(whole, v)}
