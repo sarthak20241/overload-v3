@@ -921,7 +921,7 @@ export default function OnboardingScreen() {
               <TextAreaField
                 value={answers.healthNotes ?? ''}
                 onChangeText={(text) => setAnswers((a) => ({ ...a, healthNotes: text }))}
-                placeholder="e.g. Trick left knee, avoid heavy squats. Sore right shoulder on overhead pressing."
+                placeholder="e.g. Sore left knee"
                 accessibilityLabel="Physical or medical notes"
               />
               <MedicalDisclaimer variant="line" style={{ marginTop: Spacing.lg }} />
@@ -945,7 +945,7 @@ export default function OnboardingScreen() {
               <TextAreaField
                 value={answers.routinePrefs ?? ''}
                 onChangeText={(text) => setAnswers((a) => ({ ...a, routinePrefs: text }))}
-                placeholder="e.g. Love deadlifts, hate burpees. Dumbbells only at home. Keep sessions under 45 min."
+                placeholder="e.g. Home, dumbbells, 45 min"
                 accessibilityLabel="Routine preferences"
               />
           </QuestionStep>
