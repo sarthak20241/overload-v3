@@ -9,7 +9,7 @@ import { displayFromKg, joinWeight, kgFromDisplay, splitWeight, tenthsMax, WEIGH
 Deno.test("a value splits into its whole number and one decimal", () => {
   assertEquals(splitWeight(72.5), { whole: 72, tenth: 5 });
   assertEquals(splitWeight(72), { whole: 72, tenth: 0 });
-  // Float noise never drops a whole number: 72.9999 is 73.0, not 72.10.
+  // The tenth never rolls over into a 10: 72.96 reads as 72 and 9.
   assertEquals(splitWeight(72.96), { whole: 72, tenth: 9 });
   assertEquals(splitWeight(159.8), { whole: 159, tenth: 8 });
 });
@@ -43,17 +43,18 @@ Deno.test("a unit switch keeps one decimal and stays on the wheel", () => {
 });
 
 Deno.test("flipping units many times never drifts: the wheels read the kept kg", () => {
-  for (const start of [30, 66.3, 72.3, 88.8, 150.1, 200]) {
-    let kg = start;
-    let shown = displayFromKg(kg, "kg");
+  // What the weight screen does: a wheel stop sets the kept kg, and every unit
+  // switch shows displayFromKg(kept kg, the new unit).
+  for (const [stop, unit] of [[72.3, "kg"], [159.4, "lbs"], [88.8, "kg"], [441, "lbs"], [30, "kg"]] as const) {
+    const kept = kgFromDisplay(stop, unit);
+    const other = unit === "kg" ? "lbs" : "kg";
+    const first = { [unit]: stop, [other]: displayFromKg(kept, other) } as Record<"kg" | "lbs", number>;
+    let shown: number = stop;
     for (let i = 0; i < 10; i++) {
-      shown = displayFromKg(kg, "lbs");
-      shown = displayFromKg(kg, "kg");
+      shown = displayFromKg(kept, other);
+      assertEquals(shown, first[other]);
+      shown = displayFromKg(kept, unit);
+      assertEquals(shown, stop);
     }
-    assertEquals(shown, start);
-    // A stop on the lbs wheel becomes the kept kg, and reads back the same.
-    const lbs = displayFromKg(kg, "lbs");
-    kg = kgFromDisplay(lbs, "lbs");
-    assertEquals(displayFromKg(kg, "lbs"), lbs);
   }
 });
