@@ -48,7 +48,14 @@ export function NumberWheel({
         data={data}
         value={value}
         onValueChanged={({ item }) => onChange(item.value)}
-        onValueChanging={() => haptics.tick()}
+        // Every tick, not only where the wheel stops: a quick Continue during
+        // a flick saves the number under the marker, never the one before it.
+        // Safe for a controlled wheel: it scrolls to a new value only when the
+        // value is not already the one in the middle.
+        onValueChanging={({ item }) => {
+          haptics.tick();
+          onChange(item.value);
+        }}
         itemHeight={itemHeight}
         visibleItemCount={visibleItemCount}
         enableScrollByTapOnItem

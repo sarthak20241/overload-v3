@@ -13,8 +13,8 @@
  * expo-video defensively and fall back to a still of the film's first scene.
  * Reduced Motion shows that still too.
  */
-import React from 'react';
-import { Image, StyleSheet, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { AccessibilityInfo, Image, StyleSheet, View } from 'react-native';
 import { useReducedMotion } from 'react-native-reanimated';
 
 // 14.2 s, 720 x 1560, 1.5 MB, made in Remotion from simulator recordings
@@ -65,9 +65,30 @@ function VideoLoop() {
   );
 }
 
+/**
+ * Reduce Motion, kept current: Reanimated's hook reads it once at start-up, so
+ * turning it on with the app open would leave the film playing.
+ */
+function useReduceMotionLive(): boolean {
+  const atStart = useReducedMotion();
+  const [on, setOn] = useState(atStart);
+  useEffect(() => {
+    let alive = true;
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then((v) => { if (alive) setOn(v); })
+      .catch(() => {});
+    const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', setOn);
+    return () => {
+      alive = false;
+      sub.remove();
+    };
+  }, []);
+  return on;
+}
+
 /** Fills its parent. The owner places it behind the welcome screen's content. */
 export function DemoLoop() {
-  const reduced = useReducedMotion();
+  const reduced = useReduceMotionLive();
   return (
     <View
       style={[StyleSheet.absoluteFill, d.stage]}
