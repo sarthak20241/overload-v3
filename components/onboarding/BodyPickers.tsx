@@ -104,7 +104,11 @@ export function UnitWheel<T extends string>({
         onValueChanged={({ item }) => {
           if (item.value !== value) onChange(item.value as T);
         }}
-        onValueChanging={() => haptics.tick()}
+        // Every tick, like NumberWheel: a quick Continue saves the unit shown.
+        onValueChanging={({ item }) => {
+          haptics.tick();
+          if (item.value !== value) onChange(item.value as T);
+        }}
         itemHeight={56}
         visibleItemCount={5}
         enableScrollByTapOnItem

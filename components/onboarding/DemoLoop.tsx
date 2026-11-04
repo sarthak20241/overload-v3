@@ -27,7 +27,7 @@ import { useReducedMotion } from 'react-native-reanimated';
 const DEMO = require('@/assets/onboarding/welcome-demo.mp4');
 const POSTER = require('@/assets/onboarding/welcome-demo-poster.jpg');
 
-/** What a screen reader hears in place of the film. */
+/** What a screen reader hears in place of the film. Re-write it when the film is re-cut. */
 export const WELCOME_DEMO_LABEL =
   'Meet Drona. Say where you want to be, I handle the rest. Log a set in one tap. Say what you ate. A plan built for you.';
 
