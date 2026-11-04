@@ -12,6 +12,7 @@ import WheelPicker from '@quidone/react-native-wheel-picker';
 import { FontFamily, Radius } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
+import { joinWeight, splitWeight, tenthsMax } from '@/lib/weightWheel';
 
 // ─── Number wheel ───────────────────────────────────────────────────────────
 
@@ -132,10 +133,8 @@ export function WeightWheel({
   accessibilityLabel: string;
 }) {
   const { C } = useTheme();
-  const whole = Math.floor(value + 1e-6);
-  const tenth = Math.min(9, Math.max(0, Math.round((value - whole) * 10)));
-  const set = (w: number, t: number) =>
-    onChange(Math.min(max, Math.max(min, Math.round((w + t / 10) * 10) / 10)));
+  const { whole, tenth } = splitWeight(value);
+  const set = (w: number, t: number) => onChange(joinWeight(w, t, min, max));
   return (
     <View style={w.row} accessibilityLabel={accessibilityLabel}>
       <NumberWheel
@@ -151,7 +150,7 @@ export function WeightWheel({
         min={0}
         // At the top of the scale there is no room for a decimal: 200.0 kg is
         // the last stop, so the wheel never offers a tenth it would clamp away.
-        max={whole >= max ? 0 : 9}
+        max={tenthsMax(whole, max)}
         width={60}
         value={tenth}
         onChange={(v) => set(whole, v)}

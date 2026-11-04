@@ -72,6 +72,7 @@ import {
   TextAreaField,
 } from '@/components/onboarding/OnboardingKit';
 import { NumberWheel, UnitWheel, WeightWheel } from '@/components/onboarding/BodyPickers';
+import { convertWeight, LBS_PER_KG, WEIGHT_WHEEL } from '@/lib/weightWheel';
 import { FrequencyStory } from '@/components/onboarding/FrequencyStory';
 import { PaceSlider } from '@/components/onboarding/PaceSlider';
 import { CommitmentHold } from '@/components/onboarding/CommitmentHold';
@@ -107,9 +108,6 @@ import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 import { joinGoals, selectedGoals, toggleGoal } from '@/lib/fitnessGoals';
 
-const LBS_PER_KG = 2.20462;
-/** The weight wheels' range, per display unit. */
-const WEIGHT_WHEEL = { kg: { min: 30, max: 200 }, lbs: { min: 66, max: 440 } } as const;
 const WEIGHT_UNITS = [
   { value: 'kg', label: 'kg' },
   { value: 'lbs', label: 'lbs' },
@@ -545,10 +543,8 @@ export default function OnboardingScreen() {
 
   const setWeightUnitTo = useCallback((nextUnit: 'kg' | 'lbs') => {
     if (nextUnit === weightUnit) return;
-    const { min, max } = WEIGHT_WHEEL[nextUnit];
-    // One decimal, the same as the wheels show.
-    const convert = (v: number) =>
-      Math.min(max, Math.max(min, Math.round((nextUnit === 'lbs' ? v * LBS_PER_KG : v / LBS_PER_KG) * 10) / 10));
+    // One decimal, the same as the wheels show, and inside the new wheel.
+    const convert = (v: number) => convertWeight(v, nextUnit);
     setWeightVal(convert);
     setTargetVal(convert);
     setWeightUnit(nextUnit);

@@ -93,6 +93,7 @@ deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coac
 deno test --allow-all lib/sheetText.test.ts     # text boxes in Portal sheets: late owner values never put old text back (Android letter drops)
 deno test --allow-all lib/firstOpenUpdate.test.ts # fresh store install: newest update before onboarding, 5 s cap, never reloads an open app
 deno test --allow-all lib/signupTour.test.ts    # the film tour after sign-up: its words, the tap rules, no promise the plan is done
+deno test --allow-all lib/weightWheel.test.ts    # onboarding weight wheels: whole + one decimal, the top of the scale, kg <-> lbs
 ```
 
 There are no configured lint or build scripts.
