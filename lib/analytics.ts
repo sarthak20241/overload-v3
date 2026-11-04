@@ -90,6 +90,9 @@ export type AnalyticsEvent =
   | 'session_refreshed'
   | 'session_refresh_skipped'
   | 'session_refresh_failed'
+  // Fresh store install waiting on the splash for the newest update
+  // (FirstOpenUpdateGate): outcome reloading / up_to_date / timed_out / failed.
+  | 'first_open_update'
   | 'account_deleted'
   | 'guest_mode_entered'
   | 'guest_converted'
