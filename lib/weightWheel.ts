@@ -34,9 +34,18 @@ export function tenthsMax(whole: number, max: number): number {
   return whole >= max ? 0 : 9;
 }
 
-/** A display value in the other unit: one decimal, inside that unit's wheel. */
-export function convertWeight(value: number, to: WeightUnit): number {
-  const { min, max } = WEIGHT_WHEEL[to];
-  const raw = to === 'lbs' ? value * LBS_PER_KG : value / LBS_PER_KG;
+/**
+ * What a wheel shows for a weight kept in kg: one decimal, inside that unit's
+ * wheel. A unit switch starts from the kept kg, not from the other unit's
+ * rounded number, so flipping back and forth never drifts.
+ */
+export function displayFromKg(kg: number, unit: WeightUnit): number {
+  const { min, max } = WEIGHT_WHEEL[unit];
+  const raw = unit === 'lbs' ? kg * LBS_PER_KG : kg;
   return Math.min(max, Math.max(min, Math.round(raw * 10) / 10));
+}
+
+/** A wheel's value back to kg, unrounded. */
+export function kgFromDisplay(value: number, unit: WeightUnit): number {
+  return unit === 'lbs' ? value / LBS_PER_KG : value;
 }

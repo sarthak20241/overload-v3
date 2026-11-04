@@ -52,6 +52,8 @@ interface Props {
 }
 
 const FLY_MS = 560;
+/** Later with no bell to fly to: the card fades where it is. */
+const FADE_MS = 180;
 const MEASURE_TIMEOUT_MS = 250;
 
 export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker, primaryLabel, secondary, flyToBell = true }: Props) {
@@ -103,7 +105,13 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker
     // The buttons stop answering now, not after the measures: a tap in that
     // gap would act on a card that is already on its way to Later.
     setFlying(true);
-    if (!flyToBell) { onLater(); return; }
+    if (!flyToBell) {
+      fade.value = withTiming(0, { duration: FADE_MS });
+      dim.value = withTiming(0, { duration: FADE_MS });
+      const done = () => { landRef.current = null; onLater(); };
+      landRef.current = { timer: setTimeout(done, FADE_MS), land: done };
+      return;
+    }
     // A measure that never calls back (a node detached mid-measure) must not
     // leave Later dead: after a beat it counts as "no bell", a plain Later.
     const orNull = <T,>(p: Promise<T | null>) => Promise.race([

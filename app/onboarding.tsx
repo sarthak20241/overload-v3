@@ -72,7 +72,7 @@ import {
   TextAreaField,
 } from '@/components/onboarding/OnboardingKit';
 import { NumberWheel, UnitWheel, WeightWheel } from '@/components/onboarding/BodyPickers';
-import { convertWeight, LBS_PER_KG, WEIGHT_WHEEL } from '@/lib/weightWheel';
+import { displayFromKg, kgFromDisplay, LBS_PER_KG, WEIGHT_WHEEL } from '@/lib/weightWheel';
 import { FrequencyStory } from '@/components/onboarding/FrequencyStory';
 import { PaceSlider } from '@/components/onboarding/PaceSlider';
 import { CommitmentHold } from '@/components/onboarding/CommitmentHold';
@@ -253,6 +253,10 @@ export default function OnboardingScreen() {
   /** Goal weight in the DISPLAY unit; seeded from weight on first visit. */
   const [targetVal, setTargetVal] = useState(72.5);
   const targetTouched = useRef(false);
+  // The same two weights in kg, unrounded: a unit switch reads these, so
+  // flipping kg and lbs back and forth never drifts the number.
+  const weightKgKept = useRef(72.5);
+  const targetKgKept = useRef(72.5);
   /** Chosen weekly rate (kg/week); null until a weight direction exists. */
   const [weeklyRate, setWeeklyRate] = useState<number | null>(null);
 
@@ -261,10 +265,6 @@ export default function OnboardingScreen() {
     if (advanceTimer.current) clearTimeout(advanceTimer.current);
   }, []);
 
-  const toDisplay = useCallback(
-    (kg: number) => (weightUnit === 'lbs' ? Math.round(kg * LBS_PER_KG) : Math.round(kg * 2) / 2),
-    [weightUnit],
-  );
   const toKg = useCallback(
     (v: number) => (weightUnit === 'lbs' ? Math.round((v / LBS_PER_KG) * 10) / 10 : v),
     [weightUnit],
@@ -543,10 +543,8 @@ export default function OnboardingScreen() {
 
   const setWeightUnitTo = useCallback((nextUnit: 'kg' | 'lbs') => {
     if (nextUnit === weightUnit) return;
-    // One decimal, the same as the wheels show, and inside the new wheel.
-    const convert = (v: number) => convertWeight(v, nextUnit);
-    setWeightVal(convert);
-    setTargetVal(convert);
+    setWeightVal(displayFromKg(weightKgKept.current, nextUnit));
+    setTargetVal(displayFromKg(targetKgKept.current, nextUnit));
     setWeightUnit(nextUnit);
   }, [weightUnit]);
 
@@ -594,7 +592,10 @@ export default function OnboardingScreen() {
     }));
     // Seed the goal weight from the current weight the first time through, so
     // the target step opens on "holding steady" and one flick sets direction.
-    if (!targetTouched.current) setTargetVal(weightVal);
+    if (!targetTouched.current) {
+      setTargetVal(weightVal);
+      targetKgKept.current = weightKgKept.current;
+    }
     goTo('target');
   }, [weightVal, toKg, goTo]);
 
@@ -1078,6 +1079,7 @@ export default function OnboardingScreen() {
                       value={weightVal}
                       onChange={(v) => {
                         setWeightVal(v);
+                        weightKgKept.current = kgFromDisplay(v, weightUnit);
                         // Mirror every stop into answers so the saved number, the
                         // reveal and the program all read the wheel's final value.
                         const kg = toKg(v);
@@ -1114,6 +1116,7 @@ export default function OnboardingScreen() {
                       onChange={(v) => {
                         targetTouched.current = true;
                         setTargetVal(v);
+                        targetKgKept.current = kgFromDisplay(v, weightUnit);
                         // Same mirror as the weight wheel.
                         const kg = toKg(v);
                         setAnswers((a) => ({ ...a, goalWeightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null }));

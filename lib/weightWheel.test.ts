@@ -4,7 +4,7 @@
 // the kg / lbs switch.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { convertWeight, joinWeight, splitWeight, tenthsMax, WEIGHT_WHEEL } from "./weightWheel.ts";
+import { displayFromKg, joinWeight, kgFromDisplay, splitWeight, tenthsMax, WEIGHT_WHEEL } from "./weightWheel.ts";
 
 Deno.test("a value splits into its whole number and one decimal", () => {
   assertEquals(splitWeight(72.5), { whole: 72, tenth: 5 });
@@ -29,15 +29,31 @@ Deno.test("no decimal past the top of the scale", () => {
 });
 
 Deno.test("a unit switch keeps one decimal and stays on the wheel", () => {
-  assertEquals(convertWeight(72.5, "lbs"), 159.8);
-  assertEquals(convertWeight(159.8, "kg"), 72.5);
+  assertEquals(displayFromKg(72.5, "lbs"), 159.8);
+  assertEquals(displayFromKg(kgFromDisplay(159.8, "lbs"), "kg"), 72.5);
   // Ends of the scale land inside the other unit's wheel.
-  assertEquals(convertWeight(30, "lbs"), 66.1);
-  assertEquals(convertWeight(200, "lbs"), 440.9);
-  assertEquals(convertWeight(66, "kg"), 30);
-  // The round trip moves by 0.1 at most.
+  assertEquals(displayFromKg(30, "lbs"), 66.1);
+  assertEquals(displayFromKg(200, "lbs"), 440.9);
+  assertEquals(displayFromKg(kgFromDisplay(66, "lbs"), "kg"), 30);
+  // A stop on the lbs wheel, read back in kg, moves by 0.1 at most.
   for (const kg of [30, 45.5, 72.5, 88.3, 120, 199.9, 200]) {
-    const back = convertWeight(convertWeight(kg, "lbs"), "kg");
+    const back = displayFromKg(kgFromDisplay(displayFromKg(kg, "lbs"), "lbs"), "kg");
     if (Math.abs(back - kg) > 0.1 + 1e-9) throw new Error(`${kg} kg came back as ${back}`);
+  }
+});
+
+Deno.test("flipping units many times never drifts: the wheels read the kept kg", () => {
+  for (const start of [30, 66.3, 72.3, 88.8, 150.1, 200]) {
+    let kg = start;
+    let shown = displayFromKg(kg, "kg");
+    for (let i = 0; i < 10; i++) {
+      shown = displayFromKg(kg, "lbs");
+      shown = displayFromKg(kg, "kg");
+    }
+    assertEquals(shown, start);
+    // A stop on the lbs wheel becomes the kept kg, and reads back the same.
+    const lbs = displayFromKg(kg, "lbs");
+    kg = kgFromDisplay(lbs, "lbs");
+    assertEquals(displayFromKg(kg, "lbs"), lbs);
   }
 });
