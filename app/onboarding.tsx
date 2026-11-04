@@ -254,7 +254,9 @@ export default function OnboardingScreen() {
   const [targetVal, setTargetVal] = useState(72.5);
   const targetTouched = useRef(false);
   // The same two weights in kg, unrounded: a unit switch reads these, so
-  // flipping kg and lbs back and forth never drifts the number.
+  // flipping kg and lbs back and forth never drifts the number. Anything that
+  // sets weightVal or targetVal (a future prefill from a saved profile, say)
+  // must set these too, or the next unit switch jumps back to the old weight.
   const weightKgKept = useRef(72.5);
   const targetKgKept = useRef(72.5);
   /** Chosen weekly rate (kg/week); null until a weight direction exists. */
