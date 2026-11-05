@@ -338,7 +338,9 @@ export default function OnboardingScreen() {
         ph.diet.calories != null ? `${ph.diet.calories.toLocaleString()} kcal` : null,
         // A phase without a named split still says how often you train.
         ph.training_block?.split_type ??
-          (ph.training_block?.days_per_week ? `${ph.training_block.days_per_week} days a week` : null),
+          (ph.training_block?.days_per_week
+            ? `${ph.training_block.days_per_week} ${ph.training_block.days_per_week === 1 ? 'day' : 'days'} a week`
+            : null),
       ]
         .filter(Boolean)
         .join(' · ');
@@ -1247,7 +1249,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="plan"
               question={revealTitle}
-              sub={`${finalProgram.phases.length} ${finalProgram.phases.length === 1 ? 'phase' : 'phases'}, ${answers.frequency ?? 3} days a week${targets ? ', daily fuel set' : ''}.`}
+              sub={`${finalProgram.phases.length} ${finalProgram.phases.length === 1 ? 'phase' : 'phases'}, ${answers.frequency ?? 3} ${(answers.frequency ?? 3) === 1 ? 'day' : 'days'} a week${targets ? ', daily fuel set' : ''}.`}
               footer={
                 <>
                   <PrimaryCta
