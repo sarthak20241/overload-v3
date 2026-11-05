@@ -72,7 +72,7 @@ import { coachErrorMessage, coachInvokeErrorMessage, cooldownMessageFromBody } f
 import { FRESH_TOKEN_BUDGET_MS, freshTokenAfterExpiry, tokenWithin } from '@/lib/authRetry';
 import { withChangeSource } from '@/lib/planChangeSource';
 import { ilikeExact, planExerciseInsert, planRepsAndNote } from '@/lib/planExercise';
-import { structuredToPlan, structuredToWorkout, type GeneratedPlan, type GeneratedWorkout } from '@/lib/generatedPlan';
+import { structuredToPlan, structuredToWorkout, type GeneratedExercise, type GeneratedPlan, type GeneratedWorkout } from '@/lib/generatedPlan';
 import { clearPhaseDraft, readPhaseDraft, writePhaseDraft } from '@/lib/phaseDraft';
 import { phaseBuildPrompt } from '@/lib/phaseBuild';
 import { writeWithTargetFallback } from '@/lib/routineTargets';
@@ -2443,7 +2443,7 @@ function ChatScreen({
   );
 }
 
-// The "why" under a generated workout or plan shows 3 lines. Drona is asked
+// The "why" under a generated workout or plan shows 2 lines. Drona is asked
 // for 25 words, but an older reply or a refine can run long, so a tap opens
 // the rest instead of losing it behind the ellipsis.
 function BriefRationale({ text, color }: { text: string; color: string }) {
@@ -2451,12 +2451,44 @@ function BriefRationale({ text, color }: { text: string; color: string }) {
   return (
     <Text
       style={[s.rationaleText, { color }]}
-      numberOfLines={open ? undefined : 3}
+      numberOfLines={open ? undefined : 2}
       onPress={() => setOpen((o) => !o)}
       suppressHighlighting
+      accessibilityHint={open ? undefined : 'Shows the rest'}
     >
       {text}
     </Text>
+  );
+}
+
+// One exercise, compact: number, name, sets x reps. A tap opens its rest and
+// the coach's cue underneath, so the day reads as a short list, not a page.
+function PlanExerciseRow({ ex, index, first }: { ex: GeneratedExercise; index: number; first: boolean }) {
+  const { C } = useTheme();
+  const [open, setOpen] = useState(false);
+  return (
+    <Pressable
+      onPress={() => setOpen((o) => !o)}
+      style={[s.exRow, !first && { borderTopWidth: StyleSheet.hairlineWidth, borderColor: C.borderSubtle }]}
+      accessibilityRole="button"
+      accessibilityState={{ expanded: open }}
+      accessibilityLabel={`${ex.name}, ${ex.sets} sets of ${ex.reps}`}
+    >
+      <View style={s.exRowTop}>
+        <Text style={[s.exIndex, { color: C.textMuted }]}>{String(index + 1).padStart(2, '0')}</Text>
+        <Text style={[s.exName, { color: C.foreground }]} numberOfLines={1}>{ex.name}</Text>
+        <Text style={[s.exSets, { color: C.textSecondary }]}>{ex.sets} × {ex.reps}</Text>
+        <Feather name={open ? 'chevron-up' : 'chevron-down'} size={12} color={C.textMuted} />
+      </View>
+      {open && (
+        <Animated.View entering={FadeIn.duration(160)} style={s.exDetail}>
+          {ex.rest ? (
+            <Text style={[s.exDetailMeta, { color: C.textMuted }]}>Rest {ex.rest}</Text>
+          ) : null}
+          {ex.note ? <Text style={[s.exDetailNote, { color: C.textSecondary }]}>{ex.note}</Text> : null}
+        </Animated.View>
+      )}
+    </Pressable>
   );
 }
 
@@ -2481,7 +2513,9 @@ function WorkoutCard({
 }) {
   const { C } = useTheme();
   const exerciseCountLabel = `${workout.exercises.length} exercise${workout.exercises.length === 1 ? '' : 's'}`;
-  const durationLabel = workout.estimated_duration_min ? ` · ~${workout.estimated_duration_min} min` : '';
+  const durationLabel = workout.estimated_duration_min ? ` · ${workout.estimated_duration_min} min` : '';
+  // One line under the title: the day's theme, or its focus.
+  const subLine = workoutNote ?? workout.focus ?? null;
   const Wrapper: any = animated ? Animated.View : View;
   const wrapperProps: any = animated
     ? { entering: FadeInDown.delay(delayMs).duration(300) }
@@ -2491,45 +2525,25 @@ function WorkoutCard({
       {...wrapperProps}
       style={[s.resultCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
     >
-      <Text style={[s.resultCardTitle, { color: C.foreground }]}>{workout.name}</Text>
-      {workout.focus && (
-        <Text style={[s.resultCardFocus, { color: C.accentText }]}>{workout.focus}</Text>
-      )}
-      <Text style={[s.resultCardSub, { color: C.mutedFg }]}>
-        {exerciseCountLabel}{durationLabel}
-      </Text>
-
-      {workoutNote && (
-        <Text style={[s.workoutNoteCaption, { color: C.mutedFg }]}>
-          {workoutNote}
-        </Text>
-      )}
+      <View style={s.dayHead}>
+        <Text style={[s.dayTitle, { color: C.foreground }]} numberOfLines={1}>{workout.name}</Text>
+        <Text style={[s.dayCount, { color: C.textMuted }]}>{exerciseCountLabel}{durationLabel}</Text>
+      </View>
+      {subLine ? (
+        <Text style={[s.daySub, { color: C.textMuted }]} numberOfLines={1}>{subLine}</Text>
+      ) : null}
 
       {showRationale && workout.rationale && (
-        <View style={[s.rationaleCallout, { backgroundColor: C.primarySubtle, borderColor: C.borderSubtle }]}>
-          <View style={s.rationaleHeader}>
-            <SparkleIcon size={11} color={C.accentText} />
-            <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS WORKS FOR YOU</Text>
-          </View>
-          <BriefRationale text={workout.rationale} color={C.foreground} />
+        <View style={s.whyBlock}>
+          <BriefRationale text={workout.rationale} color={C.textSecondary} />
         </View>
       )}
 
-      {workout.exercises.map((ex, ei) => (
-        <View key={ei} style={[s.resultExRowOuter, { borderColor: C.borderSubtle }]}>
-          <View style={s.resultExRowTop}>
-            <Text style={[s.resultExName, { color: C.foreground, flex: 1 }]} numberOfLines={2}>{ex.name}</Text>
-            <Text style={[s.resultExDetail, { color: C.mutedFg }]}>
-              {ex.sets}×{ex.reps} · {ex.rest}
-            </Text>
-          </View>
-          {ex.note && (
-            <Text style={[s.resultExNote, { color: C.mutedFg }]} numberOfLines={3}>
-              {ex.note}
-            </Text>
-          )}
-        </View>
-      ))}
+      <View style={s.exList}>
+        {workout.exercises.map((ex, ei) => (
+          <PlanExerciseRow key={ei} ex={ex} index={ei} first={ei === 0} />
+        ))}
+      </View>
     </Wrapper>
   );
 }
@@ -2996,29 +3010,18 @@ function GeneratePlanScreen({
             entering={FadeInDown.duration(300)}
             style={[s.resultCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
           >
-            <Text style={[s.resultCardTitle, { color: C.foreground }]}>{result.name}</Text>
+            <Text style={[s.planTitle, { color: C.foreground }]}>{result.name}</Text>
             {(result.split_type || result.days_per_week) && (
-              <View style={s.planMetaRow}>
-                {result.split_type && (
-                  <Text style={[s.planMetaText, { color: C.accentText }]}>{result.split_type}</Text>
-                )}
-                {result.split_type && result.days_per_week && (
-                  <Text style={[s.planMetaText, { color: C.mutedFg }]}>·</Text>
-                )}
-                {result.days_per_week && (
-                  <Text style={[s.planMetaText, { color: C.mutedFg }]}>
-                    {result.days_per_week} day{result.days_per_week === 1 ? '' : 's'}/week
-                  </Text>
-                )}
-              </View>
+              <Text style={[s.planMeta, { color: C.textMuted }]}>
+                {[
+                  result.split_type,
+                  result.days_per_week ? `${result.days_per_week} day${result.days_per_week === 1 ? '' : 's'} a week` : null,
+                ].filter(Boolean).join(' · ')}
+              </Text>
             )}
             {result.rationale && (
-              <View style={[s.rationaleCallout, { backgroundColor: C.primarySubtle, borderColor: C.borderSubtle }]}>
-                <View style={s.rationaleHeader}>
-                  <SparkleIcon size={11} color={C.accentText} />
-                  <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS PLAN FITS YOU</Text>
-                </View>
-                <BriefRationale text={result.rationale} color={C.foreground} />
+              <View style={s.whyBlock}>
+                <BriefRationale text={result.rationale} color={C.textSecondary} />
               </View>
             )}
           </Animated.View>
@@ -5944,23 +5947,12 @@ const s = StyleSheet.create({
     fontWeight: FontWeight.bold,
     marginBottom: 2,
   },
-  resultCardSub: {
-    fontSize: FontSize.sm,
-    marginBottom: Spacing.md,
-  },
   resultExRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 10,
     borderTopWidth: 1,
-  },
-  resultExName: {
-    fontSize: FontSize.base,
-    fontWeight: FontWeight.medium,
-  },
-  resultExDetail: {
-    fontSize: FontSize.sm,
   },
   resultActions: {
     position: 'absolute',
@@ -5975,27 +5967,6 @@ const s = StyleSheet.create({
 
   // ── Phase 2.5: generated card extras (rationale callout, exercise notes,
   //              refine chat strip, loading + error states) ────────────────
-  resultCardFocus: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.medium,
-    marginBottom: 2,
-  },
-  resultExRowOuter: {
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    gap: 4,
-  },
-  resultExRowTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 12,
-  },
-  resultExNote: {
-    fontSize: FontSize.xs,
-    fontStyle: 'italic',
-    lineHeight: 14,
-  },
   rationaleCallout: {
     marginTop: Spacing.xs,
     marginBottom: Spacing.sm,
@@ -6018,11 +5989,23 @@ const s = StyleSheet.create({
     fontSize: FontSize.sm,
     lineHeight: 18,
   },
-  workoutNoteCaption: {
-    fontSize: FontSize.xs,
-    fontStyle: 'italic',
-    marginBottom: 4,
-  },
+  // ── Compact plan: one line per exercise, details on tap ──────────────────
+  planTitle: { fontSize: FontSize.xl, fontWeight: FontWeight.bold, letterSpacing: -0.3 },
+  planMeta: { fontSize: FontSize.sm, marginTop: 4 },
+  whyBlock: { marginTop: Spacing.md },
+  dayHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: Spacing.md },
+  dayTitle: { flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.bold },
+  dayCount: { fontSize: FontSize.xs, fontWeight: FontWeight.medium },
+  daySub: { fontSize: FontSize.sm, marginTop: 2 },
+  exList: { marginTop: Spacing.md },
+  exRow: { paddingVertical: 11 },
+  exRowTop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  exIndex: { width: 18, fontSize: FontSize.xs, fontWeight: FontWeight.semibold, fontVariant: ['tabular-nums'] },
+  exName: { flex: 1, fontSize: FontSize.base, fontWeight: FontWeight.medium },
+  exSets: { fontSize: FontSize.sm, fontWeight: FontWeight.medium, fontVariant: ['tabular-nums'] },
+  exDetail: { marginTop: 6, marginLeft: 28, marginRight: 22, gap: 3 },
+  exDetailMeta: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
+  exDetailNote: { fontSize: FontSize.sm, lineHeight: 18 },
   planMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',

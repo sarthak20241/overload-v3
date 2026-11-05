@@ -37,6 +37,8 @@ import {
   Pressable,
   BackHandler,
   Keyboard,
+  type StyleProp,
+  type TextStyle,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -331,9 +333,10 @@ export default function OnboardingScreen() {
       const end = offset + ph.duration_weeks;
       offset = end;
       const weeks = start === end ? `Wk ${start}` : `Wk ${start}-${end}`;
+      // A closed row says only how you eat and train; the why is inside.
       const meta = [
         ph.diet.calories != null ? `${ph.diet.calories.toLocaleString()} kcal` : null,
-        ph.training_directive ?? ph.diet_directive ?? null,
+        ph.training_block?.split_type ?? null,
       ]
         .filter(Boolean)
         .join(' · ');
@@ -1242,7 +1245,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="plan"
               question={revealTitle}
-              sub={`${finalProgram.phases.length} ${finalProgram.phases.length === 1 ? 'phase' : 'phases'}, ${answers.frequency ?? 3} days a week${targets ? ', with daily fuel targets' : ''}. Tap a phase to see its week.`}
+              sub={`${finalProgram.phases.length} ${finalProgram.phases.length === 1 ? 'phase' : 'phases'}, ${answers.frequency ?? 3} days a week${targets ? ', daily fuel set' : ''}.`}
               footer={
                 <>
                   <PrimaryCta
@@ -1282,7 +1285,11 @@ export default function OnboardingScreen() {
                   <Text style={[s.fuelEyebrow, { color: C.textMuted }]}>THE ROAD</Text>
                   <Text style={[s.roadTitle, { color: C.foreground }]}>{finalProgram.title}</Text>
                   {finalProgram.objective ? (
-                    <Text style={[s.roadObjective, { color: C.textSecondary }]}>{finalProgram.objective}</Text>
+                    <ClampedText
+                      text={finalProgram.objective}
+                      lines={2}
+                      style={[s.roadObjective, { color: C.textSecondary }]}
+                    />
                   ) : null}
                   <View style={s.roadList}>
                     {roadRows.map((row) => {
@@ -1300,7 +1307,7 @@ export default function OnboardingScreen() {
                                 {row.name}
                               </Text>
                               {row.meta && !open ? (
-                                <Text style={[s.roadMeta, { color: C.textMuted }]} numberOfLines={2}>{row.meta}</Text>
+                                <Text style={[s.roadMeta, { color: C.textMuted }]} numberOfLines={1}>{row.meta}</Text>
                               ) : null}
                             </View>
                             <Feather
@@ -1425,9 +1432,6 @@ export default function OnboardingScreen() {
                         </View>
                       ))}
                     </View>
-                    <Text style={[s.fuelNote, { color: C.textDim }]}>
-                      Log food by typing it. "Two rotis and dal" just works.
-                    </Text>
                     {!isSignedIn && (
                       <Text style={[s.fuelNote, { color: C.textDim }]}>
                         Guest targets live on this screen only. Sign in and they follow you to the nutrition tab.
@@ -1452,10 +1456,12 @@ export default function OnboardingScreen() {
                     <DronaMark size={12} state="static" />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={[s.coachText, { color: C.foreground }]}>
-                      {dronaProgram?.rationale ??
+                    <ClampedText
+                      lines={3}
+                      style={[s.coachText, { color: C.foreground }]}
+                      text={dronaProgram?.rationale ??
                         `Log every session, even the rough ones. I read your sets, watch the trend, and tell you when to add weight. ${targets ? 'Eat to your targets, show' : 'Show'} up ${answers.frequency ?? 3} days a week and the numbers take care of themselves.`}
-                    </Text>
+                    />
                     <Text style={[s.coachSig, { color: C.accentText }]}>COACH DRONA</Text>
                   </View>
                 </Animated.View>
@@ -1472,6 +1478,22 @@ export default function OnboardingScreen() {
 const WELCOME_STAGE = '#0a0a0a';
 /** The secondary link on the film: light in either theme. */
 const WELCOME_LINK = 'rgba(255,255,255,0.72)';
+
+/** A long line held to a few lines; a tap opens the rest. */
+function ClampedText({ text, lines, style }: { text: string; lines: number; style: StyleProp<TextStyle> }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Text
+      style={style}
+      numberOfLines={open ? undefined : lines}
+      onPress={() => setOpen((o) => !o)}
+      suppressHighlighting
+      accessibilityHint={open ? undefined : 'Shows the rest'}
+    >
+      {text}
+    </Text>
+  );
+}
 
 const s = StyleSheet.create({
   safeArea: { flex: 1 },
