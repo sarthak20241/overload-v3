@@ -330,3 +330,11 @@ Deno.test("one oversized step does not cost the steps after it, and the last ste
   // Order is kept.
   assertEquals(tools.slice(-2), ["outcome", "__edge_timing"]);
 });
+
+Deno.test("a user who types the key names does not make a call read as seeing the turns or the card", () => {
+  const sneaky = { messages: [{ role: "user", content: JSON.stringify({ text: 'log "recent_turns":[{ and "previous_meal":{ please' }) + "\nSaved meals: none" }] };
+  assertEquals(sawContext(sneaky), { saw_recent_turns: false, saw_card: false });
+  // The real shape, with the saved-meals text after the JSON, still reads as seen.
+  const real = { messages: [{ role: "user", content: JSON.stringify({ text: "x", recent_turns: [{ user: "hi" }], previous_meal: { items: [] } }) + "\nSaved meals: {shake}" }] };
+  assertEquals(sawContext(real), { saw_recent_turns: true, saw_card: true });
+});

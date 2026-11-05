@@ -92,16 +92,55 @@ export function createFoodBarTrace(requestId: string, t0: number, clock: () => n
 /** Did a Messages payload carry the conversation and the card? Read off what
  *  was actually SENT, not what the caller meant to send, so the answer stays
  *  true when a prompt builder drops one. parseMeal sends both inside the user
- *  JSON as `recent_turns` and `previous_meal`. */
+ *  JSON as `recent_turns` and `previous_meal` (followed by plain text for the
+ *  saved meals). The JSON is PARSED, not string-matched, so a user who types
+ *  "recent_turns":[{ cannot make it read as seen; that text is a string value. */
 export function sawContext(payload: Record<string, unknown>): { saw_recent_turns: boolean; saw_card: boolean } {
-  let s = "";
-  try {
-    s = JSON.stringify(payload.messages ?? "");
-  } catch { /* unserialisable: say no */ }
-  // Unescaped first: the user content is JSON inside JSON. An EMPTY list is
-  // not having seen the turns.
-  const flat = s.replace(/\\"/g, '"');
-  return { saw_recent_turns: flat.includes('"recent_turns":[{'), saw_card: flat.includes('"previous_meal":{') };
+  let turns = false;
+  let card = false;
+  const msgs = Array.isArray(payload.messages) ? payload.messages as Array<{ content?: unknown }> : [];
+  for (const m of msgs) {
+    const texts = typeof m?.content === "string"
+      ? [m.content]
+      : Array.isArray(m?.content)
+      ? (m.content as Array<{ type?: string; text?: unknown }>).filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text as string)
+      : [];
+    for (const t of texts) {
+      const o = leadingJsonObject(t);
+      if (!o) continue;
+      if (Array.isArray(o.recent_turns) && o.recent_turns.length > 0) turns = true;
+      if (o.previous_meal && typeof o.previous_meal === "object") card = true;
+    }
+  }
+  return { saw_recent_turns: turns, saw_card: card };
+}
+
+/** The JSON object a text starts with, when it starts with one; anything after
+ *  its closing brace is ignored. Braces inside strings are skipped. */
+function leadingJsonObject(text: string): Record<string, unknown> | null {
+  const t = text.trimStart();
+  if (!t.startsWith("{")) return null;
+  let depth = 0;
+  let inStr = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (inStr) {
+      if (c === "\\") i++;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) {
+      try {
+        const o = JSON.parse(t.slice(0, i + 1));
+        return o && typeof o === "object" && !Array.isArray(o) ? o as Record<string, unknown> : null;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
 }
 
 /** A tool result, short enough to keep. Strings stay strings; anything else is

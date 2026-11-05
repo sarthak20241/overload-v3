@@ -1279,8 +1279,6 @@ function logTavilyCost(admin: SupabaseClient, credits: number | undefined, metad
   });
 }
 
-/** Jev's usage hook for one caller: a token_usage_log row per answered call,
- *  priced by model_pricing (input tokens only). Kept alive past the response. */
 /** Jev's failure hook for one caller: a failed call on the food box trace,
  *  beside the answered ones jevUsageLogger records. */
 function jevFailureLogger(
@@ -1305,6 +1303,8 @@ function jevFailureLogger(
     });
 }
 
+/** Jev's usage hook for one caller: a token_usage_log row per answered call,
+ *  priced by model_pricing (input tokens only). Kept alive past the response. */
 function jevUsageLogger(
   admin: SupabaseClient,
   pipeline: string,
