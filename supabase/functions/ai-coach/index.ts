@@ -3631,6 +3631,13 @@ function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
   };
 }
 
+/** The stream gate, as the trace records it: the same rule as wantsStream
+ *  in handleParseMealRequest (stream asked for, Fast asked for, Fast on). One
+ *  place, so a refused row and a served row read `streamed` the same way. */
+function wouldStream(body: Record<string, unknown>): boolean {
+  return body.stream === true && body.speed === "fast" && PARSE_FAST_MODE !== "off";
+}
+
 /** How long the food box trace waits for a router that has not answered yet.
  *  Above Jev's own cap (10 s) plus the model rung, so only a hung router hits it. */
 const FOOD_BAR_ROUTER_WAIT_MS = 20_000;
@@ -3687,7 +3694,7 @@ async function handleParseMealRequest(args: {
         const outcome = o.outcome ?? null;
         const req = fbRequest ?? readRequestView(body, { recentTurns: [], pendingMeal: body.pending_meal ?? null }, {
           text: typeof body.text === "string" ? body.text : "", mealHint: null, localDate: null, localHour: null,
-          streamed: body.stream === true, autoLog: body.auto_log === true, clientId: typeof body.client_id === "string" ? body.client_id : null,
+          streamed: wouldStream(body), autoLog: body.auto_log === true, clientId: typeof body.client_id === "string" ? body.client_id : null,
           canCreate: clientSupportsFoodCreate(body),
         });
         const answeredBy = !outcome
@@ -3946,7 +3953,7 @@ async function handleParseMealRequest(args: {
   const auto = readAutoLogRequest(body, localDate);
   const autoLogArmed = auto.autoLog && previousItems.length === 0;
   fbRequest = readRequestView(body, { recentTurns, pendingMeal: baseFoodContext.pendingMeal }, {
-    text, mealHint, localDate, localHour, streamed: body.stream === true && body.speed === "fast" && PARSE_FAST_MODE !== "off",
+    text, mealHint, localDate, localHour, streamed: wouldStream(body),
     autoLog: auto.autoLog, clientId: auto.clientId, canCreate: clientSupportsFoodCreate(body),
   });
   fbCard = { lines: card.length, may_be_cut: cardMayBeCut(card), open: cardOpen };
@@ -4151,7 +4158,7 @@ async function handleParseMealRequest(args: {
   // gap in the Super wiring - Super runs entirely in the non-streaming branch
   // below, and the hardcoded "fast" in this block's trace line is correct
   // because this block cannot be reached any other way.
-  const wantsStream = body.stream === true && wantsFast;
+  const wantsStream = wouldStream(body);
 
   if (wantsStream) {
     const enc = new TextEncoder();
