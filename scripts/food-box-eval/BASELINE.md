@@ -6,7 +6,7 @@ The recorded adapter grades what the live food box served on the day of each mes
 (parse_traces, 2026-10-02 to 2026-11-05). It is not a run of today's main: a later fix
 shows only when a live adapter re-runs the case.
 
-**12 of 43 recorded cases pass.** 7 cases have no recording (synthetic).
+**11 of 43 recorded cases pass.** 7 cases have no recording (synthetic).
 
 | Tag | Passed |
 |---|---|
@@ -18,14 +18,14 @@ shows only when a live adapter re-runs the case.
 | diary | 0/3 |
 | duplicate | 0/1 |
 | false-claim | 0/2 |
-| lookup | 1/2 |
+| lookup | 0/2 |
 | lost-lines | 0/3 |
 | memory | 0/1 |
 | pack-size | 1/3 |
-| plain | 5/8 |
+| plain | 4/8 |
 | question | 5/11 |
 | recipe | 0/5 |
-| region | 1/2 |
+| region | 0/2 |
 | restore | 0/2 |
 | save | 1/5 |
 | saved-meal | 0/1 |
@@ -44,7 +44,7 @@ shows only when a live adapter re-runs the case.
 | nov5-use-saved-meal | FAIL | line:paneer; line:jeera rice; noDuplicates; lineCount 4..4 |
 | nov5-use-150-one | FAIL | line:paneer; line:jeera rice; line:methi/aloo |
 | nov5-undo-other-items | FAIL | line:paneer; line:jeera rice; line:methi/aloo; line:soya; lineCount 4..4 |
-| nov5-latte-and-local-coffee | pass |  |
+| nov5-latte-and-local-coffee | FAIL | line:^(?!.*latte).*coffee |
 | nov5-latte-label-lookup | FAIL | line:latte |
 | nov5-user-gives-menu-number | pass |  |
 | oct22-save-and-log-part | FAIL | does:save; savedMeal |
@@ -57,7 +57,7 @@ shows only when a live adapter re-runs the case.
 | nov2-dal-and-oil-keeps-rice | FAIL | keep:^rice; line:^rice; totalKcal 380..560 |
 | oct28-dal-poured-keeps-rice | FAIL | does:answer; keep:^rice; line:^dal; line:paneer |
 | nov4-only-aloo-beans-changes | FAIL | line:aloo beans; line:roti |
-| oct17-add-milk-to-oatmeal | FAIL | keep:cornflakes; keep:cashew; keep:almond; keep:walnut; keep:peanut; keep:banana; keep:chana; noDuplicates; lineCount 9..9 |
+| oct17-add-milk-to-oatmeal | FAIL | keep:cornflakes; keep:cashew; keep:almond; keep:walnut; keep:peanut; keep:banana; keep:chana; line:milk; noDuplicates; lineCount 9..9 |
 | oct18-small-banana-butter-coffee | pass |  |
 | oct19-navratri-chana | FAIL | remove:^boiled chana |
 | oct19-small-puris | FAIL | does:edit; line:poori/puri; reply avoids /my own estimate for/ |

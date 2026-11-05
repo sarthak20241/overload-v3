@@ -57,21 +57,26 @@ export function grade(c: FoodBoxCase, o: Outcome): Grade {
   }
 
   for (const spec of e.lines ?? []) {
-    const hits = card.filter((l) => re(spec.match).test(l.name) && (!spec.meal || !l.meal || l.meal === spec.meal));
+    const hits = card.filter((l) => re(spec.match).test(l.name));
     const label = `line:${spec.match}`;
     if (hits.length === 0) {
       add(label, false, `no line matches; card=[${card.map((l) => l.name).join(" | ")}]`);
       continue;
     }
-    const l = hits[0];
+    // EVERY matching line is judged, not only the first: a stray duplicate
+    // with the wrong numbers must fail even when the case does not ask for
+    // noDuplicates (PR #347 review).
     const bad: string[] = [];
-    if (spec.kcal && !inRange(l.kcal, spec.kcal)) bad.push(`kcal ${l.kcal} not in ${showRange(spec.kcal)}`);
-    if (spec.grams && !inRange(l.grams ?? null, spec.grams)) bad.push(`grams ${l.grams ?? "none"} not in ${showRange(spec.grams)}`);
-    if (spec.protein_g && !inRange(l.protein_g ?? null, spec.protein_g)) {
-      bad.push(`protein ${l.protein_g ?? "none"} not in ${showRange(spec.protein_g)}`);
+    for (const l of hits) {
+      const tag = hits.length > 1 ? `"${l.name}": ` : "";
+      if (spec.kcal && !inRange(l.kcal, spec.kcal)) bad.push(`${tag}kcal ${l.kcal} not in ${showRange(spec.kcal)}`);
+      if (spec.grams && !inRange(l.grams ?? null, spec.grams)) bad.push(`${tag}grams ${l.grams ?? "none"} not in ${showRange(spec.grams)}`);
+      if (spec.protein_g && !inRange(l.protein_g ?? null, spec.protein_g)) {
+        bad.push(`${tag}protein ${l.protein_g ?? "none"} not in ${showRange(spec.protein_g)}`);
+      }
+      if (spec.source && !spec.source.includes(l.source ?? "")) bad.push(`${tag}source ${l.source ?? "none"} not in [${spec.source.join(",")}]`);
+      if (spec.meal && l.meal && l.meal !== spec.meal) bad.push(`${tag}meal ${l.meal} is not ${spec.meal}`);
     }
-    if (spec.source && !spec.source.includes(l.source ?? "")) bad.push(`source ${l.source ?? "none"} not in [${spec.source.join(",")}]`);
-    if (spec.meal && l.meal && l.meal !== spec.meal) bad.push(`meal ${l.meal} is not ${spec.meal}`);
     add(label, bad.length === 0, bad.join("; ") || undefined);
   }
 

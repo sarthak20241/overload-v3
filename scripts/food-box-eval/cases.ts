@@ -2,8 +2,9 @@
 //
 // Built from real food box traffic (parse_traces, 2026-10-02 .. 2026-11-05) and
 // a few synthetic cases for rules that have no recording yet. The owner's own
-// messages are kept word for word. Other users' messages are reworded and carry
-// no account id.
+// messages are kept word for word. Other users' messages are reworded, except
+// short generic ones ("Copy lunch from yesterday", "Add 100 cals of butter")
+// that name nothing personal. None carries an account id (a test checks this).
 //
 // `recorded` is what today's food box actually served for that message. It is
 // what the user saw at the time, from the code live on that day: some of those
@@ -348,7 +349,7 @@ export const CASES: FoodBoxCase[] = [
       lines: [
         { match: "latte", kcal: [100, 260], meal: "snack" },
         // A local-shop coffee in India is a milk coffee, not black.
-        { match: "coffee(?!.*latte)", kcal: [40, 180] },
+        { match: "^(?!.*latte).*coffee", kcal: [40, 180] },
       ],
       lineCount: [2, 2],
     },
@@ -406,7 +407,7 @@ export const CASES: FoodBoxCase[] = [
     message: "hot coffee is milk coffee it couldn't be 2cals also blue tokai vannilla bean latte in pay Milk was 161 cals as per their menu",
     expect: {
       does: ["edit"],
-      lines: [{ match: "latte", kcal: [160, 162] }, { match: "coffee(?!.*latte)", kcal: [40, 180] }],
+      lines: [{ match: "latte", kcal: [160, 162] }, { match: "^(?!.*latte).*coffee", kcal: [40, 180] }],
       noDuplicates: true,
       lineCount: [2, 2],
     },

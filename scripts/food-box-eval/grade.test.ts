@@ -54,6 +54,17 @@ Deno.test("line spec checks kcal, grams, protein, source and meal", () => {
   assert(detail.includes("kcal 57") && detail.includes("protein 3.6") && detail.includes("source manual"), detail);
 });
 
+Deno.test("every line a spec matches is judged, so a stray duplicate with wrong numbers fails", () => {
+  const c = base({ lines: [{ match: "paneer", kcal: [145, 155] }] });
+  assertEquals(failed(c, out([L("paneer sabji", 150), L("paneer sabji (old)", 57)])), ["line:paneer"]);
+  assertEquals(failed(c, out([L("paneer sabji", 150)])), []);
+});
+
+Deno.test("a line on the wrong meal fails its meal check", () => {
+  const c = base({ lines: [{ match: "rajma", meal: "dinner" }] });
+  assertEquals(failed(c, out([L("Rajma", 220, { meal: "lunch" })])), ["line:rajma"]);
+});
+
 Deno.test("a line spec with no matching line fails", () => {
   assertEquals(failed(base({ lines: [{ match: "milk" }] }), out([L("oats", 180)])), ["line:milk"]);
 });
