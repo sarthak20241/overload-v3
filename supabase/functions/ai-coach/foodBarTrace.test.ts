@@ -175,6 +175,7 @@ Deno.test("one row: the planned and served actions, sums over Anthropic only, st
   assertEquals(steps.map((s) => s.tool), ["food_intent", "extract_done", "search_foods", "decideFoodAction", "draftFoodCreate"]);
   assertEquals(row.latency_ms, 2410);
   assertEquals(row.served_text, "save card: Shake");
+  assertEquals(row.calls_dropped, 0);
   assert(Array.isArray(row.model_calls));
 });
 

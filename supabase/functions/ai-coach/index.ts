@@ -4210,6 +4210,10 @@ async function handleParseMealRequest(args: {
           // here, inside the block whose finally stops it, so no path between
           // the two can leave the interval running.
           const stopHeartbeat = startHeartbeat((frame) => controller.enqueue(enc.encode(frame)));
+          // Read by the catch, like the JSON path: a failure after the parse or
+          // the decision still traces what got that far.
+          let streamFirstParse: ParseMealResult | null = null;
+          let streamOutcome: FoodBarOutcome | null = null;
           try {
             const pendingMeal = foodContext.pendingMeal && continuesPendingMeal(await intentP)
               ? foodContext.pendingMeal : null;
@@ -4249,9 +4253,11 @@ async function handleParseMealRequest(args: {
                 variantChips: clientSupportsVariantSwap(body),
               },
             );
+            streamFirstParse = firstParse;
             const outcome = await resolveFoodBarOutcome({
               result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen, fbTrace,
             });
+            streamOutcome = outcome;
             // The agent's meal replaces the first parse when it finished with a log.
             const result = outcome.result ?? firstParse;
             // What `end` carried, for the food box trace.
@@ -4392,7 +4398,13 @@ async function handleParseMealRequest(args: {
             // the failure has to arrive as an event; there is no status code left
             // to change. The client treats this exactly like a failed request.
             send("error", { message: String(e).slice(0, 200) });
-            writeFoodBar({ served: { kind: "error", http_status: 200, error: String(e).slice(0, 200) }, status: "error", error: String(e) });
+            writeFoodBar({
+              served: { kind: "error", http_status: 200, error: String(e).slice(0, 200) },
+              status: "error",
+              error: String(e),
+              outcome: streamOutcome,
+              firstParse: streamFirstParse,
+            });
             // The stream still cost tokens and still has to appear in the cost
             // table, so record the failure rather than dropping it silently.
             // usage is unavailable on this path (the throw may predate it), so

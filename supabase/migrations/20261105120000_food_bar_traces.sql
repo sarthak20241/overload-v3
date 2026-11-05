@@ -71,6 +71,7 @@ create table if not exists public.food_bar_traces (
   steps              jsonb,
   steps_dropped      integer,
   model_calls        jsonb,
+  calls_dropped      integer,
   anthropic_calls    integer,
   jev_calls          integer,
   input_tokens       integer,

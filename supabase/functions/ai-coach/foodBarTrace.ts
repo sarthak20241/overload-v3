@@ -530,6 +530,8 @@ export function buildFoodBarTraceRow(i: FoodBarTraceInput): Record<string, unkno
     steps: fit.kept,
     steps_dropped: fit.dropped,
     model_calls: calls.slice(0, CALLS_MAX),
+    // Counted like steps_dropped; the token sums below use every call.
+    calls_dropped: Math.max(0, calls.length - CALLS_MAX),
     anthropic_calls: anthropic.length,
     jev_calls: i.calls.length - anthropic.length,
     input_tokens: sum(anthropic, "input_tokens"),
