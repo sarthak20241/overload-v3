@@ -3578,6 +3578,10 @@ function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
   };
 }
 
+/** How long the food box trace waits for a router that has not answered yet.
+ *  Above Jev's own cap (10 s) plus the model rung, so only a hung router hits it. */
+const FOOD_BAR_ROUTER_WAIT_MS = 20_000;
+
 async function handleParseMealRequest(args: {
   admin: SupabaseClient;
   userClient: SupabaseClient;
@@ -3615,7 +3619,18 @@ async function handleParseMealRequest(args: {
     fbWritten = true;
     const p = (async () => {
       try {
-        const d = fbIntent ? await fbIntent.p.catch(() => null) : null;
+        // The router has nearly always answered by now (the outcome waited on
+        // it). In shadow mode it may not have: wait a bounded time, then write
+        // the row without it rather than hold the row, and this task, open.
+        let routerLate = false;
+        let waitTimer: ReturnType<typeof setTimeout> | undefined;
+        const d = fbIntent
+          ? await Promise.race([
+            fbIntent.p.catch(() => null),
+            new Promise<null>((r) => { waitTimer = setTimeout(() => { routerLate = true; r(null); }, FOOD_BAR_ROUTER_WAIT_MS); }),
+          ])
+          : null;
+        clearTimeout(waitTimer);
         const outcome = o.outcome ?? null;
         const req = fbRequest ?? readRequestView(body, { recentTurns: [], pendingMeal: body.pending_meal ?? null }, {
           text: typeof body.text === "string" ? body.text : "", mealHint: null, localDate: null, localHour: null,
@@ -3637,7 +3652,7 @@ async function handleParseMealRequest(args: {
           requestId,
           userId,
           request: req,
-          router: routerView(d, fbIntent?.ms() ?? null),
+          router: routerView(d, fbIntent?.ms() ?? null, routerLate ? "router_still_running" : "router_did_not_run"),
           card: fbCard,
           planned: outcome?.planned ?? null,
           action: outcome?.action ?? null,

@@ -17,6 +17,7 @@
 //
 // Deps are injected so the loop is testable without the network.
 
+import { summarize } from "./foodBarTrace.ts";
 import { type CardLine, cardLines, cardMayBeCut, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { sonnetSettings } from "../_shared/sonnet.ts";
 import {
@@ -113,17 +114,6 @@ export interface AgentTurn {
   results?: { name: string; summary: string | null }[];
 }
 
-/** A read result short enough to keep on the trace. */
-function resultSummary(v: unknown, max = 400): string | null {
-  if (v === undefined || v === null) return null;
-  let s: string;
-  try {
-    s = typeof v === "string" ? v : JSON.stringify(v);
-  } catch {
-    s = String(v);
-  }
-  return s.length > max ? `${s.slice(0, max)}…(${s.length})` : s;
-}
 
 export type FoodAgentOutcome =
   | { kind: "log"; result: ParseMealResult; turns: AgentTurn[] }
@@ -494,7 +484,7 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
       remember(seen, out);
       return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) };
     }));
-    turns[turns.length - 1].results = uses.map((u, i) => ({ name: u.name, summary: resultSummary(outs[i]) }));
+    turns[turns.length - 1].results = uses.map((u, i) => ({ name: u.name, summary: summarize(outs[i]) }));
     messages.push({ role: "assistant", content: blocks }, { role: "user", content: results });
   }
   // Unreachable: the last turn always returns. Kept so a future edit to the

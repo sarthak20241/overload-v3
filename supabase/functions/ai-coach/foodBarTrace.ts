@@ -128,19 +128,41 @@ export function fromParseSteps(
     src,
     tool: s.tool,
     ...(typeof s.at_ms === "number" ? { at_ms: s.at_ms } : {}),
-    ...(s.input !== undefined ? { input: s.input } : {}),
-    ...(s.result !== undefined ? { result: s.result } : {}),
+    ...(s.input !== undefined ? { input: capped(s.input) } : {}),
+    ...(s.result !== undefined ? { result: capped(s.result) } : {}),
   }));
+}
+
+/** Step payloads big enough to keep whole (a search's hits, a lookup's row)
+ *  stay as they are; past this they become a cut string, so one huge step
+ *  cannot make the row huge. */
+export const STEP_PAYLOAD_MAX = 4000;
+
+export function capped(v: unknown): unknown {
+  if (v === null || typeof v !== "object") {
+    return typeof v === "string" && v.length > STEP_PAYLOAD_MAX ? summarize(v, STEP_PAYLOAD_MAX) : v;
+  }
+  let n = 0;
+  try {
+    n = JSON.stringify(v).length;
+  } catch {
+    return summarize(v, STEP_PAYLOAD_MAX);
+  }
+  return n > STEP_PAYLOAD_MAX ? summarize(v, STEP_PAYLOAD_MAX) : v;
 }
 
 /** Every step in the order it happened. Untimed steps inherit the time of the
  *  step before them FROM THE SAME SOURCE, so a source's own order is never
- *  broken, and ties keep the order they were given in. */
+ *  broken, and ties keep the order they were given in. A source whose first
+ *  step is untimed takes the time of the step just before it in the list, so
+ *  it is not pulled to the very front. */
 export function orderSteps(steps: TraceStep[]): TraceStep[] {
   const last = new Map<string, number>();
+  let prev = 0;
   const timed = steps.map((s, i) => {
-    const t = typeof s.at_ms === "number" ? s.at_ms : (last.get(s.src) ?? 0);
+    const t = typeof s.at_ms === "number" ? s.at_ms : (last.get(s.src) ?? prev);
     last.set(s.src, t);
+    prev = t;
     return { s, t, i };
   });
   timed.sort((a, b) => a.t - b.t || a.i - b.i);
@@ -234,7 +256,7 @@ export interface RouterView {
   jev_miss: string | null;
 }
 
-export function routerView(d: RouterDecisionLike | null, ms: number | null): RouterView {
+export function routerView(d: RouterDecisionLike | null, ms: number | null, missing = "router_did_not_run"): RouterView {
   return {
     ran: !!d,
     ms,
@@ -246,7 +268,7 @@ export function routerView(d: RouterDecisionLike | null, ms: number | null): Rou
     saved_match: d?.savedMatch ? { id: d.savedMatch.id, name: d.savedMatch.name, confidence: d.savedMatch.confidence } : null,
     has_food: d?.hasFood ?? null,
     pending_action: d?.pendingAction ?? null,
-    jev_miss: d?.jevMiss ?? (d ? null : "router_did_not_run"),
+    jev_miss: d?.jevMiss ?? (d ? null : missing),
   };
 }
 

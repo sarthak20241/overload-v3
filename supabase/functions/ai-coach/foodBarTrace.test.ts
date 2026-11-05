@@ -1,6 +1,8 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
   buildFoodBarTraceRow,
+  capped,
+  STEP_PAYLOAD_MAX,
   createFoodBarTrace,
   fallbackReason,
   fromParseSteps,
@@ -229,4 +231,30 @@ Deno.test("without the hooks a parse is exactly as before: no at_ms on any step"
   });
   assertEquals(calls.length, 0);
   assertEquals(r.steps.filter((s) => s.at_ms !== undefined).length, 0);
+});
+
+Deno.test("a source whose first step is untimed stays where it was listed, not at the front", () => {
+  const out = orderSteps([
+    { src: "parse", tool: "extract", at_ms: 300 },
+    { src: "router", tool: "food_intent", at_ms: 700 },
+    { src: "edge", tool: "__auto_log" }, // untimed, and edge has no earlier step
+    { src: "edge", tool: "__edge_timing" },
+  ]);
+  assertEquals(out.map((s) => s.tool), ["extract", "food_intent", "__auto_log", "__edge_timing"]);
+});
+
+Deno.test("a huge step payload is cut to a string; an ordinary one is kept whole", () => {
+  const small = { query: "whey", hits: 4 };
+  assertEquals(capped(small), small);
+  const big = { rows: "x".repeat(STEP_PAYLOAD_MAX + 10) };
+  const c = capped(big);
+  assertEquals(typeof c, "string");
+  assert((c as string).length < STEP_PAYLOAD_MAX + 20);
+  const steps = fromParseSteps("parse", [{ tool: "search_foods", input: { query: "whey" }, result: big }]);
+  assertEquals(typeof steps[0].result, "string");
+  assertEquals(steps[0].input, { query: "whey" });
+});
+
+Deno.test("a router still running when the row is written says so", () => {
+  assertEquals(routerView(null, null, "router_still_running").jev_miss, "router_still_running");
 });

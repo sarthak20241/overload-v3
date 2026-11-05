@@ -6420,6 +6420,9 @@ async function runParseMealCore(
         ? JSON.stringify({
           text: userText.text,
           // What was actually SAID, so "yes" / "no, the other one" resolve.
+          // The keys `recent_turns` and `previous_meal` are what the food box
+          // trace reads to say this call saw the turns and the card
+          // (foodBarTrace.ts sawContext). Rename them there too.
           recent_turns: (input.recentTurns ?? []).slice(-FOOD_TURNS_KEPT).map((t) => ({
             [t.role === "user" ? "user" : "drona"]: t.text.slice(0, FOOD_TURN_CHARS),
           })),
