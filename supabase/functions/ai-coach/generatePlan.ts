@@ -508,8 +508,13 @@ export async function runGeneratePlan(
     const r = await deps.call({
       system,
       messages: [{ role: "user", content: skelPrompt }],
-      // 1500 / 900 / 500 under Sonnet 4.6; ~30% up for Sonnet 5.5's tokenizer.
-      maxTokens: 2000,
+      // At least 2x the most a good skeleton has needed. coach_traces,
+      // successful builds, 60 days to 2026-11-05: n=36, p50 460, p95 829,
+      // max 853. 4000 is ~4.7x. The old 2000 cap was hit twice with no usable
+      // text (both used exactly 2000). Only tokens used are billed, so the
+      // headroom costs nothing on a normal build; it adds time only in a
+      // runaway, which the one retry below still catches.
+      maxTokens: 4000,
       model: deps.model,
       label,
     });
@@ -587,7 +592,9 @@ export async function runGeneratePlan(
           FILL_FORMAT_SPEC,
         ].join("\n"),
       }],
-      maxTokens: 1200,
+      // At least 2x the most a fill has needed: max 614 over 157 fills in
+      // coach_traces (60 days to 2026-11-05). 2400 is ~3.9x.
+      maxTokens: 2400,
       model: deps.fillModel ?? deps.model,
       label: `fill:d${i + 1}`,
     });
@@ -614,6 +621,9 @@ export async function runGeneratePlan(
           `Write ONLY the rationale: 1-2 short sentences, 25 words at most, plain prose, no lists, no headings, no preamble, no em dashes. Why this split at this frequency fits their goal.`,
         ].join("\n"),
       }],
+      // Already over 2x: since #327 (25 words, live 2026-11-01) rationales
+      // have used at most 78 tokens. The 629 in older traces was the
+      // paragraph prompt under the old 700 cap.
       maxTokens: 200,
       model: deps.model,
       label: "rationale",

@@ -240,3 +240,21 @@ Deno.test("a good skeleton is not called twice", async () => {
   assertEquals(r.plan !== null, true);
   assertEquals(labels.filter((l) => l.startsWith("skeleton")), ["skeleton"]);
 });
+
+Deno.test("every plan call has at least 2x the most it has needed in production", async () => {
+  // Max output tokens seen in coach_traces (successful builds, 60 days to
+  // 2026-11-05; rationale since the 25-word prompt in #327).
+  const MAX_SEEN: Record<string, number> = { skeleton: 853, fill: 614, rationale: 78 };
+  const caps: Record<string, number> = {};
+  const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+  const call: TextCaller = ({ label, maxTokens }) => {
+    caps[label.startsWith("fill:") ? "fill" : label] = maxTokens;
+    if (label === "skeleton") return Promise.resolve({ text: SKELETON, usage });
+    if (label === "rationale") return Promise.resolve({ text: "Because.", usage });
+    return Promise.resolve({ text: "EX | Bench Press | 3 | 5 | 120", usage });
+  };
+  await runGeneratePlan("Build me a plan.", { call, catalog: CATALOG, system: [] });
+  for (const [label, seen] of Object.entries(MAX_SEEN)) {
+    assertEquals(caps[label] >= 2 * seen, true, `${label} cap ${caps[label]} < 2 x ${seen}`);
+  }
+});
