@@ -2486,7 +2486,7 @@ function PlanExerciseRow({ ex, index, first }: { ex: GeneratedExercise; index: n
     >
       <View style={s.exRowTop}>
         <Text style={[s.exIndex, { color: C.textMuted }]}>{String(index + 1).padStart(2, '0')}</Text>
-        <Text style={[s.exName, { color: C.foreground }]} numberOfLines={1}>{ex.name}</Text>
+        <Text style={[s.exName, { color: C.foreground }]} numberOfLines={open ? undefined : 1}>{ex.name}</Text>
         <Text style={[s.exSets, { color: C.textSecondary }]}>{setsText}</Text>
         <Feather name={open ? 'chevron-up' : 'chevron-down'} size={12} color={C.textMuted} />
       </View>
@@ -2524,8 +2524,10 @@ function WorkoutCard({
   const { C } = useTheme();
   const exerciseCountLabel = `${workout.exercises.length} exercise${workout.exercises.length === 1 ? '' : 's'}`;
   const durationLabel = workout.estimated_duration_min ? ` · ${workout.estimated_duration_min} min` : '';
-  // One line under the title: the day's theme, or its focus.
+  // One line under the title: the day's theme, or its focus. A tap opens a
+  // longer one; the card is the only place the day note is shown.
   const subLine = workoutNote ?? workout.focus ?? null;
+  const [subOpen, setSubOpen] = useState(false);
   const Wrapper: any = animated ? Animated.View : View;
   const wrapperProps: any = animated
     ? { entering: FadeInDown.delay(delayMs).duration(300) }
@@ -2540,7 +2542,16 @@ function WorkoutCard({
         <Text style={[s.dayCount, { color: C.textMuted }]}>{exerciseCountLabel}{durationLabel}</Text>
       </View>
       {subLine ? (
-        <Text style={[s.daySub, { color: C.textMuted }]} numberOfLines={1}>{subLine}</Text>
+        <Text
+          style={[s.daySub, { color: C.textMuted }]}
+          numberOfLines={subOpen ? undefined : 1}
+          onPress={() => setSubOpen((o) => !o)}
+          suppressHighlighting
+          accessibilityRole="button"
+          accessibilityState={{ expanded: subOpen }}
+        >
+          {subLine}
+        </Text>
       ) : null}
 
       {showRationale && workout.rationale && (
