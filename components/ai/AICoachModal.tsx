@@ -2470,11 +2470,12 @@ function PlanExerciseRow({ ex, index, first }: { ex: GeneratedExercise; index: n
   const [open, setOpen] = useState(false);
   // A reply can leave reps out; then the row says the sets alone.
   const setsText = ex.reps ? `${ex.sets} × ${ex.reps}` : `${ex.sets} sets`;
-  // A screen reader hears the rest always, and the cue once the row is open.
+  // A screen reader hears the rest always, and the cue once the row is open;
+  // closed, it hears that there is one to open.
   const spoken = [
     ex.reps ? `${ex.name}, ${ex.sets} sets of ${ex.reps}` : `${ex.name}, ${ex.sets} sets`,
     ex.rest ? `rest ${ex.rest}` : null,
-    open && ex.note ? ex.note : null,
+    ex.note ? (open ? ex.note : 'has a coaching tip') : null,
   ].filter(Boolean).join(', ');
   return (
     <Pressable
