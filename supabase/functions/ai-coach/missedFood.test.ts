@@ -172,3 +172,18 @@ Deno.test("a total for some foods takes their own lines, never a look-alike", ()
   // No line called "egg" and two that look like it: neither is guessed.
   assertEquals(linesForFoods(at("whole egg", "egg whites", "Poha"), ["egg"]), []);
 });
+
+Deno.test("a total for egg skips the lookup for the egg line only, never egg whites", async () => {
+  const whites = { name: "egg whites", brand: null, quantity: 2, unit: "piece", prep: null };
+  const h = harness(
+    [{ ...EGG, name: "egg" }, whites, POHA_PLAIN],
+    [[{ ...eggLine, food_name: "egg", food_id: null, kcal: 78, protein_g: 6, carb_g: 0.6, fat_g: 5.5, source: "estimate" }, eggLine, pohaLine]],
+    { stated_meal_total: { kcal: 90, protein_g: null, carb_g: null, fat_g: null, fiber_g: null, foods: ["egg"] } },
+  );
+  const r = await runParseMeal(h.deps, { ...BASE, text: "egg (90 cals), 2 egg whites and a bowl of poha" });
+  const sent = h.decidePayloads[0].items as Array<{ name: string; candidates: unknown[]; shares_user_total?: boolean }>;
+  assertEquals(sent.filter((i) => i.shares_user_total).map((i) => i.name), ["egg"]);
+  // Egg whites kept their lookup and their rows.
+  assert(h.searched.some((x) => /egg whites/.test(x)), h.searched.join(" | "));
+  assertEquals(named(r.parsed!.items, /^egg$/i)[0].kcal, 90);
+});

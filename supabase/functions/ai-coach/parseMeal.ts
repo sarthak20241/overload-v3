@@ -2684,6 +2684,7 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
 - label_not_found on an item means the web was searched for this product's label and none was found. If no candidate is acceptable, say so in assumption ("Couldn't find this exact label, so this is my estimate").
 - No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
 - user_total on an item is the total the user wrote for that whole line; a null field is one they did not give. We did not look this food up, so it has no candidates. Estimate it (food_id null, source "estimate") with grams and macros that fit their numbers, and keep the food's name in the user's own words.
+- shares_user_total on an item means the user gave one total for it and other foods together, and it was not looked up either. Estimate it the same way and keep its name in the user's own words; the app shares their total across those foods.
 - already_logged, when present, lists foods from user_text that are logged already. Log only the items you are given, and none of those again.
 </candidate_rules>
 
@@ -5001,7 +5002,7 @@ export function captureStatedTotals(extMealTotal: unknown, extItems: ExtractedIt
     ? named.filter((f): f is string => typeof f === "string" && !!f.trim()).map((f) => f.trim().slice(0, 120))
     : [];
   // Every food named means the whole message: the old meaning, kept exactly.
-  const some = foods.length > 0 && extItems.some((it) => !foods.some((f) => sameFood(foodLabel(it), f)));
+  const some = foods.length > 0 && pickByFoods(extItems.map((it) => [foodLabel(it)]), foods).length < extItems.length;
   return { meal, lines, ignored, ...(meal && some ? { mealFoods: foods } : {}) };
 }
 
@@ -5016,12 +5017,18 @@ function sameFood(a: string, b: string): boolean {
  *  overlap it, and nothing when several do. Loose matching alone let a total
  *  for "egg" take "egg whites" as well. */
 export function linesForFoods(items: ParsedItem[], foods: string[]): number[] {
-  const names = (it: ParsedItem) => [it.food_name, it.said_name].filter((n): n is string => !!n);
+  return pickByFoods(items.map((it) => [it.food_name, it.said_name].filter((n): n is string => !!n)), foods);
+}
+
+/** linesForFoods' rule over any list of names per entry. The extracted foods
+ *  that skip their lookup are picked by it too, so a food skips its lookup
+ *  only when the total will reach its line. */
+export function pickByFoods(entries: string[][], foods: string[]): number[] {
   const picked = new Set<number>();
   for (const f of foods) {
     const key = memoryKey(f);
-    const exact = items.map((it, i) => (key && names(it).some((n) => memoryKey(n) === key) ? i : -1)).filter((i) => i >= 0);
-    const loose = exact.length ? exact : items.map((it, i) => (names(it).some((n) => sameFood(n, f)) ? i : -1)).filter((i) => i >= 0);
+    const exact = entries.map((names, i) => (key && names.some((n) => memoryKey(n) === key) ? i : -1)).filter((i) => i >= 0);
+    const loose = exact.length ? exact : entries.map((names, i) => (names.some((n) => sameFood(n, f)) ? i : -1)).filter((i) => i >= 0);
     if (exact.length || loose.length === 1) loose.forEach((i) => picked.add(i));
   }
   return [...picked].sort((a, b) => a - b);
@@ -7359,6 +7366,7 @@ async function runParseMealCore(
     };
   }
 
+  const sharedIdx = new Set(statedOut.mealFoods ? pickByFoods(toResolve.map((it) => [foodLabel(it)]), statedOut.mealFoods) : []);
   let resolved: ResolvedItem[] = await Promise.all(
     toResolve.map(async (item, idx) => {
       // The user's own numbers first. A full panel answers with no lookup; a
@@ -7426,7 +7434,7 @@ async function runParseMealCore(
       // The same for a food inside a total the user gave for a few foods
       // together: their number answers it, and decide's estimate only shapes
       // its share. A total for the whole message keeps its lookups.
-      if (statedOut.mealFoods?.some((f) => sameFood(foodLabel(item), f))) {
+      if (sharedIdx.has(idx)) {
         toolCalls.push("user_stated");
         steps.push({ iter: 1, tool: "user_stated", input: { item: item.name }, result: { lookup: "skipped", total: "shared" } });
         return { ...item, candidates: [], sharesUserTotal: true } as ResolvedItem;
@@ -7650,6 +7658,7 @@ async function runParseMealCore(
     // userLineTotal): decide estimates the food around these numbers, and
     // honourStatedTotals then sets them exactly.
     ...(r.userTotal ? { user_total: r.userTotal } : {}),
+    ...(r.sharesUserTotal ? { shares_user_total: true } : {}),
   });
   const decidePayload = {
     // The same clamped text extract saw. Decide reads this to place quantities
