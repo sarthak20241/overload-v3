@@ -217,6 +217,13 @@ export const MAX_NEW_PER_DAY = 3;
 export const MAX_NEW_PER_PLAN = 8;
 
 /**
+ * Slowest first skeleton that still gets a second try. See runGeneratePlan:
+ * past this, a retry plus the fills would not land before the client's 75s
+ * abort.
+ */
+export const SKELETON_RETRY_BUDGET_MS = 35_000;
+
+/**
  * Clean an invented name before it can become a permanent custom exercise:
  * drop control characters and *, then cut a runaway name at a word boundary.
  * The * goes because PostgREST reads it as a wildcard in the app's ILIKE
@@ -529,19 +536,37 @@ export async function runGeneratePlan(
   const why = (r: TextCallResult) =>
     `stop=${r.stop_reason ?? "?"} blocks=${r.block_types?.join(",") || "none"}`;
 
+  // A call that THROWS (timeout, 429, 5xx) is not retried here: callAnthropic
+  // owns transport errors, and a hung upstream already spent up to 80s.
+  const firstStart = now();
   let first: Awaited<ReturnType<typeof runSkeleton>>;
   try {
     first = await runSkeleton("skeleton");
   } catch (e) {
     return { plan: null, error: `skeleton call failed: ${String(e).slice(0, 200)}`, usage, calls, stages };
   }
+  const firstMs = now() - firstStart;
 
-  // An empty or cut-off skeleton (seen in production: no text, or only the
-  // PLAN line, with output_tokens at the cap) is a one-off far more often
-  // than a bad prompt, and a second try by hand usually works. So try once
-  // more here, with the same prompt, before the user sees an error. Only the
-  // skeleton gets this: a dead fill already falls back to defaults.
+  // A reply that came back but gave no skeleton (seen in production: no
+  // text, or only the PLAN line, with output_tokens at the cap) is a one-off
+  // far more often than a bad prompt, and a second try by hand usually works.
+  // So try once more, with the same prompt, before returning the error. Only
+  // the skeleton gets this: a dead fill already falls back to defaults.
+  //
+  // Not when the first try was slow. The onboarding client gives up at 75s
+  // (lib/onboardingDrona.ts), and a second skeleton plus the fills must fit
+  // inside that. The two failed skeletons spent 2000 tokens in ~15s, so a
+  // runaway to the 4000 cap is ~30s: two of those plus ~10s of fills still
+  // fit. A first try slower than this budget means something else is wrong.
   let skeleton = first.skeleton;
+  if (!skeleton && firstMs > SKELETON_RETRY_BUDGET_MS) {
+    const head = first.r.text.replace(/\s+/g, " ").trim().slice(0, 200) || "<empty>";
+    return {
+      plan: null,
+      error: `skeleton parse failed (${why(first.r)}), no retry after ${Math.round(firstMs / 1000)}s: "${head}"`,
+      usage, calls, stages,
+    };
+  }
   if (!skeleton) {
     console.log(`[generatePlan] skeleton gave no plan (${why(first.r)}), retrying once`);
     let second: Awaited<ReturnType<typeof runSkeleton>>;

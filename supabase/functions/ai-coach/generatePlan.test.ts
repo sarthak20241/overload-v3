@@ -3,6 +3,7 @@ import {
   MAX_NEW_NAME,
   MAX_NEW_PER_DAY,
   MAX_NEW_PER_PLAN,
+  SKELETON_RETRY_BUDGET_MS,
   assemblePlan,
   groundSkeleton,
   parseSkeleton,
@@ -243,7 +244,9 @@ Deno.test("a good skeleton is not called twice", async () => {
 
 Deno.test("every plan call has at least 2x the most it has needed in production", async () => {
   // Max output tokens seen in coach_traces (successful builds, 60 days to
-  // 2026-11-05; rationale since the 25-word prompt in #327).
+  // 2026-11-05; rationale since the 25-word prompt in #327). A guard on the
+  // constants, not on behaviour: bump these by hand when a re-query of
+  // spans.stages[].output_tokens finds a new max.
   const MAX_SEEN: Record<string, number> = { skeleton: 853, fill: 614, rationale: 78 };
   const caps: Record<string, number> = {};
   const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
@@ -257,4 +260,31 @@ Deno.test("every plan call has at least 2x the most it has needed in production"
   for (const [label, seen] of Object.entries(MAX_SEEN)) {
     assertEquals(caps[label] >= 2 * seen, true, `${label} cap ${caps[label]} < 2 x ${seen}`);
   }
+});
+
+Deno.test("a slow empty skeleton is not retried, so the client is not left waiting past its abort", async () => {
+  const { call: inner, labels } = flakySkeletonCaller(["", SKELETON]);
+  let clock = 0;
+  // The first skeleton takes 1s longer than the retry budget.
+  const call: TextCaller = (args) => {
+    if (args.label === "skeleton") clock += SKELETON_RETRY_BUDGET_MS + 1000;
+    return inner(args);
+  };
+  const r = await runGeneratePlan("Build me a plan.", { call, catalog: CATALOG, system: [], now: () => clock });
+  assertEquals(r.plan, null);
+  assertEquals(labels, ["skeleton"]);
+  assertEquals(r.error?.includes("stop=max_tokens blocks=thinking"), true);
+  assertEquals(r.error?.includes("no retry after 36s"), true);
+});
+
+Deno.test("an empty skeleton inside the budget is still retried", async () => {
+  const { call: inner, labels } = flakySkeletonCaller(["", SKELETON]);
+  let clock = 0;
+  const call: TextCaller = (args) => {
+    if (args.label === "skeleton") clock += SKELETON_RETRY_BUDGET_MS - 1000;
+    return inner(args);
+  };
+  const r = await runGeneratePlan("Build me a plan.", { call, catalog: CATALOG, system: [], now: () => clock });
+  assertEquals(r.plan !== null, true);
+  assertEquals(labels.filter((l) => l.startsWith("skeleton")), ["skeleton", "skeleton_retry"]);
 });
