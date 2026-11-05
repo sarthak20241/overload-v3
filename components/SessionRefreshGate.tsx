@@ -41,9 +41,14 @@ import {
 import { track } from '@/lib/analytics';
 
 const CLERK_LOAD_WAIT_MS = 4000;
-const TICKET_WAIT_MS = 9000;
+// The ticket wait is long on purpose. At 8s it lost real refreshes: the server
+// made the ticket, but a slow phone network (or a slow Clerk call, up to ~8s
+// on the server) got the answer back just after the app gave up, and the
+// session ran out before the next cold start. The splash stays up this long
+// only on a slow start in the session's last 3 days.
+const TICKET_WAIT_MS = 16000;
 const SWAP_MAX_MS = 30000;
-const TICKET_FETCH_MS = 8000;
+const TICKET_FETCH_MS = 15000;
 
 // A backstop so no path can leave the splash up for good. Cleared when the
 // gate hides the splash itself, so it never hides one a later caller holds.
