@@ -44,6 +44,12 @@ EVAL_VIA_CLI=1 npx tsx scripts/program-activity-eval/run.mts
 # answers? Same CLI rule.
 EVAL_VIA_CLI=1 npx tsx scripts/lean-context-eval/run.mts
 
+# Food box (Precise): 50 real conversations graded on the outcome (card kept,
+# lines not lost, saves with macros, no false claims). ADAPTER=recorded grades
+# what the live box served; no model call. Plan: .planning/precise-food-logger-plan.md
+npx tsx scripts/food-box-eval/run.mts            # TAG=correction  ONLY=id  WRITE_BASELINE=1
+deno test --allow-all scripts/food-box-eval/grade.test.ts
+
 # Edge function unit tests (the one real test suite).
 deno test --allow-all supabase/functions/ai-coach/
 deno test --allow-all supabase/functions/revenuecat-webhook/

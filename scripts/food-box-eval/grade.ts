@@ -1,0 +1,116 @@
+// Grades one food box outcome against its case. Pure: no model, no network.
+//
+// Every check is a fact about the outcome a user would see: is the line still
+// on the card, is the number in range, did the reply claim a save that never
+// happened. Nothing here asks how the pipeline decided, so a change of design
+// (router + parser today, one agent later) is scored by the same rules.
+
+import { claimsAction } from "../../supabase/functions/ai-coach/foodIntent.ts";
+import type { CheckResult, FoodBoxCase, Grade, Line, Outcome, Range } from "./types.ts";
+
+const re = (src: string) => new RegExp(src, "i");
+
+export function inRange(v: number | null | undefined, r: Range): boolean {
+  if (typeof v !== "number" || !Number.isFinite(v)) return false;
+  const [lo, hi] = r;
+  return (lo === null || v >= lo) && (hi === null || v <= hi);
+}
+
+const showRange = (r: Range) => `${r[0] ?? "-inf"}..${r[1] ?? "inf"}`;
+
+/** Lowercase, words only, simple plural folded: "Boiled Eggs" and "boiled egg" are one name. */
+export function nameKey(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w))
+    .join(" ");
+}
+
+function linesOf(o: Outcome): Line[] {
+  return o.card ?? [];
+}
+
+function sameCard(a: Line[] | null, b: Line[] | null): boolean {
+  const norm = (c: Line[] | null) =>
+    (c ?? []).map((l) => `${nameKey(l.name)}|${Math.round(l.kcal)}|${l.grams ?? ""}|${l.quantity ?? ""}`).sort().join("\n");
+  return norm(a) === norm(b);
+}
+
+export function grade(c: FoodBoxCase, o: Outcome): Grade {
+  const checks: CheckResult[] = [];
+  const add = (name: string, pass: boolean, detail?: string) => checks.push({ name, pass, ...(detail ? { detail } : {}) });
+  const e = c.expect;
+  const card = linesOf(o);
+
+  for (const a of e.does ?? []) add(`does:${a}`, o.actions.includes(a), `actions=[${o.actions.join(",")}]`);
+  for (const a of e.mustNot ?? []) add(`mustNot:${a}`, !o.actions.includes(a), `actions=[${o.actions.join(",")}]`);
+
+  for (const k of e.keepLines ?? []) {
+    add(`keep:${k}`, card.some((l) => re(k).test(l.name)), `card=[${card.map((l) => l.name).join(" | ")}]`);
+  }
+  for (const k of e.removeLines ?? []) {
+    add(`remove:${k}`, !card.some((l) => re(k).test(l.name)));
+  }
+
+  for (const spec of e.lines ?? []) {
+    const hits = card.filter((l) => re(spec.match).test(l.name) && (!spec.meal || !l.meal || l.meal === spec.meal));
+    const label = `line:${spec.match}`;
+    if (hits.length === 0) {
+      add(label, false, `no line matches; card=[${card.map((l) => l.name).join(" | ")}]`);
+      continue;
+    }
+    const l = hits[0];
+    const bad: string[] = [];
+    if (spec.kcal && !inRange(l.kcal, spec.kcal)) bad.push(`kcal ${l.kcal} not in ${showRange(spec.kcal)}`);
+    if (spec.grams && !inRange(l.grams ?? null, spec.grams)) bad.push(`grams ${l.grams ?? "none"} not in ${showRange(spec.grams)}`);
+    if (spec.protein_g && !inRange(l.protein_g ?? null, spec.protein_g)) {
+      bad.push(`protein ${l.protein_g ?? "none"} not in ${showRange(spec.protein_g)}`);
+    }
+    if (spec.source && !spec.source.includes(l.source ?? "")) bad.push(`source ${l.source ?? "none"} not in [${spec.source.join(",")}]`);
+    if (spec.meal && l.meal && l.meal !== spec.meal) bad.push(`meal ${l.meal} is not ${spec.meal}`);
+    add(label, bad.length === 0, bad.join("; ") || undefined);
+  }
+
+  if (e.noDuplicates) {
+    const seen = new Map<string, number>();
+    for (const l of card) seen.set(nameKey(l.name), (seen.get(nameKey(l.name)) ?? 0) + 1);
+    const dupNames = [...seen].filter(([, n]) => n > 1).map(([k]) => k);
+    const dupSpecs = (e.lines ?? []).filter((s) => card.filter((l) => re(s.match).test(l.name)).length > 1).map((s) => s.match);
+    add("noDuplicates", dupNames.length === 0 && dupSpecs.length === 0, [...dupNames, ...dupSpecs].join(", ") || undefined);
+  }
+
+  if (e.lineCount) add(`lineCount ${showRange(e.lineCount)}`, inRange(card.length, e.lineCount), `got ${card.length}`);
+  if (e.totalKcal) {
+    const total = Math.round(card.reduce((t, l) => t + (l.kcal || 0), 0));
+    add(`totalKcal ${showRange(e.totalKcal)}`, inRange(total, e.totalKcal), `got ${total}`);
+  }
+  if (e.cardUnchanged) add("cardUnchanged", sameCard(c.thread.card, o.card));
+
+  if (e.reply) {
+    const text = o.reply ?? "";
+    for (const m of e.reply.mustMention ?? []) add(`reply mentions /${m}/`, re(m).test(text), text.slice(0, 120) || "(no reply)");
+    for (const m of e.reply.mustNotSay ?? []) add(`reply avoids /${m}/`, !re(m).test(text));
+    if (e.reply.noFalseClaim) {
+      const acted = o.actions.some((a) => a === "log" || a === "edit" || a === "save" || a === "restore");
+      add("reply makes no false claim", !text || acted || !claimsAction(text), text.slice(0, 120));
+    }
+  }
+
+  if (e.savedMeal) {
+    const s = o.savedMeal;
+    if (!s) add("savedMeal", false, "nothing saved");
+    else {
+      const bad: string[] = [];
+      if (e.savedMeal.kcal && !inRange(s.kcal, e.savedMeal.kcal)) bad.push(`kcal ${s.kcal} not in ${showRange(e.savedMeal.kcal)}`);
+      if (e.savedMeal.proteinMin !== undefined && !(s.protein_g >= e.savedMeal.proteinMin)) bad.push(`protein ${s.protein_g} < ${e.savedMeal.proteinMin}`);
+      if (e.savedMeal.nameMatch && !re(e.savedMeal.nameMatch).test(s.name)) bad.push(`name "${s.name}"`);
+      add("savedMeal", bad.length === 0, bad.join("; ") || undefined);
+    }
+  }
+
+  return { id: c.id, pass: checks.length > 0 && checks.every((k) => k.pass), checks };
+}
