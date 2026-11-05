@@ -18,16 +18,29 @@ export function inRange(v: number | null | undefined, r: Range): boolean {
 
 const showRange = (r: Range) => `${r[0] ?? "-inf"}..${r[1] ?? "inf"}`;
 
-/** Lowercase, words only, simple plural folded: "Boiled Eggs" and "boiled egg" are one name. */
+/** Lowercase, words only, simple plural folded: "Boiled Eggs" and "boiled egg" are one name.
+ *  Bracketed text is dropped ("Rice (cooked)" is rice), unless the whole name
+ *  is in brackets: then the bracket text IS the name, never an empty key. */
 export function nameKey(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/\([^)]*\)/g, " ")
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w))
-    .join(" ");
+  const words = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w))
+      .join(" ");
+  return words(name.replace(/\([^)]*\)/g, " ")) || words(name);
+}
+
+/** Which action a reply claims, by its verb: "saved" claims a save, "logged"
+ *  or "added" claims a log. A claim passes only when THAT action happened, so
+ *  "I've saved it" after a plain edit is still a false claim. */
+function claimedActions(text: string): Set<"save" | "log"> {
+  const out = new Set<"save" | "log">();
+  if (/\b(sav(e|ed|ing)|stor(e|ed|ing))\b/i.test(text)) out.add("save");
+  if (/\b(log(ged|ging)?|add(ed|ing)?|record(ed|ing)?|updat(e|ed|ing))\b/i.test(text)) out.add("log");
+  return out;
 }
 
 function linesOf(o: Outcome): Line[] {
@@ -103,8 +116,16 @@ export function grade(c: FoodBoxCase, o: Outcome): Grade {
     for (const m of e.reply.mustMention ?? []) add(`reply mentions /${m}/`, re(m).test(text), text.slice(0, 120) || "(no reply)");
     for (const m of e.reply.mustNotSay ?? []) add(`reply avoids /${m}/`, !re(m).test(text));
     if (e.reply.noFalseClaim) {
-      const acted = o.actions.some((a) => a === "log" || a === "edit" || a === "save" || a === "restore");
-      add("reply makes no false claim", !text || acted || !claimsAction(text), text.slice(0, 120));
+      const changedCard = o.actions.some((a) => a === "log" || a === "edit" || a === "restore");
+      const saved = o.actions.includes("save");
+      let honest = true;
+      if (text && claimsAction(text)) {
+        const claimed = claimedActions(text);
+        honest = claimed.size === 0
+          ? changedCard || saved
+          : (!claimed.has("save") || saved) && (!claimed.has("log") || changedCard);
+      }
+      add("reply makes no false claim", honest, text.slice(0, 120));
     }
   }
 

@@ -47,6 +47,14 @@ const TAG = env("TAG") || null;
 const VERBOSE = env("VERBOSE") === "1";
 
 const picked = CASES.filter((c) => (!ONLY || ONLY.has(c.id)) && (!TAG || c.tags.includes(TAG)));
+// A typo in ONLY or TAG must not look like a clean run.
+const unknownIds = ONLY ? [...ONLY].filter((id) => !CASES.some((c) => c.id === id)) : [];
+if (picked.length === 0 || unknownIds.length > 0) {
+  console.error(
+    picked.length === 0 ? "No case matches ONLY / TAG." : `Unknown case id(s): ${unknownIds.join(", ")}.`,
+  );
+  process.exit(1);
+}
 
 const results: { c: FoodBoxCase; g: Grade | null }[] = [];
 for (const c of picked) {

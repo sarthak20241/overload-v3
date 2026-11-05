@@ -38,6 +38,9 @@ Deno.test("nameKey folds case, brackets, punctuation and simple plurals", () => 
   assertEquals(nameKey("Rice (cooked, 150 g)"), "rice");
   // "grass" keeps its double s.
   assertEquals(nameKey("grass"), "grass");
+  // A name that is all brackets keeps its words, not an empty key.
+  assertEquals(nameKey("(2 eggs)"), "2 egg");
+  assert(nameKey("(2 eggs)") !== nameKey("(1 banana)"));
 });
 
 Deno.test("keepLines fails when a line the user did not remove is gone", () => {
@@ -94,6 +97,15 @@ Deno.test("a reply that claims a log with no log behind it fails; the same words
   assertEquals(failed(c, out(null, ["answer"], "Tell me the foods and I'll log them.")), []);
 });
 
+Deno.test("a claim must match the action it names: 'saved' after only an edit is false", () => {
+  const c = base({ reply: { noFalseClaim: true } });
+  assertEquals(failed(c, out([L("paneer sabji", 150)], ["edit"], "I've saved it as a meal.")), ["reply makes no false claim"]);
+  assertEquals(failed(c, out([L("paneer sabji", 150)], ["edit", "save"], "I've saved it as a meal.")), []);
+  // "logged" after only a save is false too.
+  assertEquals(failed(c, out(null, ["save"], "I've logged your lunch.")), ["reply makes no false claim"]);
+  assertEquals(failed(c, out([L("rice", 171)], ["log"], "I've logged your lunch.")), []);
+});
+
 Deno.test("reply mustMention / mustNotSay", () => {
   const c = base({ reply: { mustMention: ["paneer"], mustNotSay: ["the label says"] } });
   assertEquals(failed(c, out(null, ["answer"], "Rice: the label says 129 kcal per 100 g.")), ["reply mentions /paneer/", "reply avoids /the label says/"]);
@@ -141,11 +153,19 @@ Deno.test("cases: unique ids, valid regexes, at least one expectation each", () 
   assert(CASES.length >= 45, `only ${CASES.length} cases`);
 });
 
-Deno.test("cases: other users' messages carry no account id", () => {
+// A guard, not a privacy proof: it catches the Clerk ids this app uses
+// (user_...) and email addresses, in the cases and in the report made from them.
+const PERSONAL = /user_[0-9A-Za-z]{6,}|[\w.+-]+@[\w-]+\.[\w.]{2,}/;
+
+Deno.test("cases: other users' messages carry no account id or email", () => {
   for (const c of CASES) {
-    const text = JSON.stringify(c);
-    assert(!/user_[0-9A-Za-z]{6,}/.test(text), `${c.id} contains an account id`);
+    assert(!PERSONAL.test(JSON.stringify(c)), `${c.id} contains an account id or email`);
   }
+});
+
+Deno.test("BASELINE.md carries no account id or email", async () => {
+  const text = await Deno.readTextFile(new URL("./BASELINE.md", import.meta.url));
+  assert(!PERSONAL.test(text));
 });
 
 // ── Facts about the recorded baseline ───────────────────────────────────────
