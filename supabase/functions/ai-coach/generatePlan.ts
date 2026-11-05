@@ -99,7 +99,20 @@ export type TextCaller = (args: {
   maxTokens: number;
   model?: string;
   label: string;
-}) => Promise<{ text: string; usage: PlanUsage }>;
+}) => Promise<TextCallResult>;
+
+export interface TextCallResult {
+  text: string;
+  usage: PlanUsage;
+  /**
+   * Why the model stopped ("end_turn", "max_tokens", ...) and the type of
+   * every content block it sent. Optional because the eval callers do not
+   * have them. Only `text` blocks reach `text`, so a reply that hit the cap
+   * with no text says which block types took the tokens.
+   */
+  stop_reason?: string;
+  block_types?: string[];
+}
 
 export interface PlanUsage {
   input_tokens: number;
@@ -489,30 +502,62 @@ export async function runGeneratePlan(
   const intake = stripToolDirectives(userMessage);
 
   // ── Stage 1: skeleton ─────────────────────────────────────────────────────
-  const skelStart = now();
-  let skelText: string;
-  try {
+  const skelPrompt = `${stripRationaleDirective(intake)}\n\n${VARIANT_RULE}\n\n${SKELETON_FORMAT_SPEC}`;
+  const runSkeleton = async (label: "skeleton" | "skeleton_retry") => {
+    const started = now();
     const r = await deps.call({
       system,
-      messages: [{ role: "user", content: `${stripRationaleDirective(intake)}\n\n${VARIANT_RULE}\n\n${SKELETON_FORMAT_SPEC}` }],
+      messages: [{ role: "user", content: skelPrompt }],
       // 1500 / 900 / 500 under Sonnet 4.6; ~30% up for Sonnet 5.5's tokenizer.
       maxTokens: 2000,
       model: deps.model,
-      label: "skeleton",
+      label,
     });
-    skelText = r.text;
     add(r.usage);
     calls++;
-    stages.push({ label: "skeleton", ms: now() - skelStart, output_tokens: r.usage.output_tokens, startedAt: skelStart - t0 });
+    stages.push({ label, ms: now() - started, output_tokens: r.usage.output_tokens, startedAt: started - t0 });
+    const parsed = parseSkeleton(r.text);
+    return { r, skeleton: parsed && groundSkeleton(parsed, deps.catalog) };
+  };
+  // Why a reply gave no skeleton: the stop reason and the block types. Kept
+  // short and put BEFORE the reply text, since the trace keeps 200 chars.
+  const why = (r: TextCallResult) =>
+    `stop=${r.stop_reason ?? "?"} blocks=${r.block_types?.join(",") || "none"}`;
+
+  let first: Awaited<ReturnType<typeof runSkeleton>>;
+  try {
+    first = await runSkeleton("skeleton");
   } catch (e) {
     return { plan: null, error: `skeleton call failed: ${String(e).slice(0, 200)}`, usage, calls, stages };
   }
 
-  const parsed = parseSkeleton(skelText);
-  const skeleton = parsed && groundSkeleton(parsed, deps.catalog);
+  // An empty or cut-off skeleton (seen in production: no text, or only the
+  // PLAN line, with output_tokens at the cap) is a one-off far more often
+  // than a bad prompt, and a second try by hand usually works. So try once
+  // more here, with the same prompt, before the user sees an error. Only the
+  // skeleton gets this: a dead fill already falls back to defaults.
+  let skeleton = first.skeleton;
   if (!skeleton) {
-    const head = skelText.replace(/\s+/g, " ").trim().slice(0, 200) || "<empty>";
-    return { plan: null, error: `skeleton parse failed: "${head}"`, usage, calls, stages };
+    console.log(`[generatePlan] skeleton gave no plan (${why(first.r)}), retrying once`);
+    let second: Awaited<ReturnType<typeof runSkeleton>>;
+    try {
+      second = await runSkeleton("skeleton_retry");
+    } catch (e) {
+      return {
+        plan: null,
+        error: `skeleton parse failed (${why(first.r)}), retry call failed: ${String(e).slice(0, 160)}`,
+        usage, calls, stages,
+      };
+    }
+    skeleton = second.skeleton;
+    if (!skeleton) {
+      const head = second.r.text.replace(/\s+/g, " ").trim().slice(0, 200) || "<empty>";
+      return {
+        plan: null,
+        error: `skeleton parse failed twice (${why(first.r)}; retry ${why(second.r)}): "${head}"`,
+        usage, calls, stages,
+      };
+    }
   }
   deps.onSkeleton?.(skeleton);
 

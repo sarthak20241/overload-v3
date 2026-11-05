@@ -2328,6 +2328,9 @@ function makeTextCaller(): TextCaller {
     const u = res.data.usage ?? {};
     return {
       text: blocks.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n"),
+      // A reply with no text says why: hit the cap, and spent on which blocks.
+      stop_reason: res.data.stop_reason ?? undefined,
+      block_types: blocks.map((b) => b.type),
       usage: {
         input_tokens: u.input_tokens ?? 0,
         output_tokens: u.output_tokens ?? 0,
