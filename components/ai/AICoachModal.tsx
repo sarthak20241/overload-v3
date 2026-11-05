@@ -2454,6 +2454,8 @@ function BriefRationale({ text, color }: { text: string; color: string }) {
       numberOfLines={open ? undefined : 2}
       onPress={() => setOpen((o) => !o)}
       suppressHighlighting
+      accessibilityRole="button"
+      accessibilityState={{ expanded: open }}
       accessibilityHint={open ? undefined : 'Shows the rest'}
     >
       {text}

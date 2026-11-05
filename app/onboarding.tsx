@@ -336,7 +336,9 @@ export default function OnboardingScreen() {
       // A closed row says only how you eat and train; the why is inside.
       const meta = [
         ph.diet.calories != null ? `${ph.diet.calories.toLocaleString()} kcal` : null,
-        ph.training_block?.split_type ?? null,
+        // A phase without a named split still says how often you train.
+        ph.training_block?.split_type ??
+          (ph.training_block?.days_per_week ? `${ph.training_block.days_per_week} days a week` : null),
       ]
         .filter(Boolean)
         .join(' · ');
@@ -1488,6 +1490,8 @@ function ClampedText({ text, lines, style }: { text: string; lines: number; styl
       numberOfLines={open ? undefined : lines}
       onPress={() => setOpen((o) => !o)}
       suppressHighlighting
+      accessibilityRole="button"
+      accessibilityState={{ expanded: open }}
       accessibilityHint={open ? undefined : 'Shows the rest'}
     >
       {text}
