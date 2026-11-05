@@ -2466,18 +2466,26 @@ function BriefRationale({ text, color }: { text: string; color: string }) {
 function PlanExerciseRow({ ex, index, first }: { ex: GeneratedExercise; index: number; first: boolean }) {
   const { C } = useTheme();
   const [open, setOpen] = useState(false);
+  // A reply can leave reps out; then the row says the sets alone.
+  const setsText = ex.reps ? `${ex.sets} × ${ex.reps}` : `${ex.sets} sets`;
+  // A screen reader hears the rest always, and the cue once the row is open.
+  const spoken = [
+    ex.reps ? `${ex.name}, ${ex.sets} sets of ${ex.reps}` : `${ex.name}, ${ex.sets} sets`,
+    ex.rest ? `rest ${ex.rest}` : null,
+    open && ex.note ? ex.note : null,
+  ].filter(Boolean).join(', ');
   return (
     <Pressable
       onPress={() => setOpen((o) => !o)}
       style={[s.exRow, !first && { borderTopWidth: StyleSheet.hairlineWidth, borderColor: C.borderSubtle }]}
       accessibilityRole="button"
       accessibilityState={{ expanded: open }}
-      accessibilityLabel={`${ex.name}, ${ex.sets} sets of ${ex.reps}`}
+      accessibilityLabel={spoken}
     >
       <View style={s.exRowTop}>
         <Text style={[s.exIndex, { color: C.textMuted }]}>{String(index + 1).padStart(2, '0')}</Text>
         <Text style={[s.exName, { color: C.foreground }]} numberOfLines={1}>{ex.name}</Text>
-        <Text style={[s.exSets, { color: C.textSecondary }]}>{ex.sets} × {ex.reps}</Text>
+        <Text style={[s.exSets, { color: C.textSecondary }]}>{setsText}</Text>
         <Feather name={open ? 'chevron-up' : 'chevron-down'} size={12} color={C.textMuted} />
       </View>
       {open && (
