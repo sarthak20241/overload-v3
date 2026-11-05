@@ -55,6 +55,11 @@ if (picked.length === 0 || unknownIds.length > 0) {
   );
   process.exit(1);
 }
+// The baseline is the whole set. A filtered run must never overwrite it.
+if (env("WRITE_BASELINE") === "1" && (ONLY || TAG)) {
+  console.error("WRITE_BASELINE=1 cannot be combined with ONLY or TAG: BASELINE.md covers every case.");
+  process.exit(1);
+}
 
 const results: { c: FoodBoxCase; g: Grade | null }[] = [];
 for (const c of picked) {
