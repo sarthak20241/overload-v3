@@ -374,3 +374,29 @@ Deno.test("Sonnet 5.5: no forced tool_choice, and no thinking, on every turn", a
     assertEquals(b.thinking, { type: "between_tools" });
   }
 });
+
+// The food box trace stamps agent turn i at the end of model call i
+// (index.ts startFoodAgent callEnds). That holds only while every call that
+// came back is a turn, and a failed call ends the run without one.
+Deno.test("one model call per turn: call i is turn i, and a failed call adds no turn and ends the run", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const ok = await runFoodAgent(INPUT, deps(scripted([
+    [{ name: "coach_list_logged_meals", input: { days_ago: 1 } }],
+    [{ name: "coach_list_saved_meals", input: {} }],
+    [{ name: "reply", input: { text: "Done looking." } }],
+  ], bodies)));
+  assertEquals(ok.turns.length, bodies.length);
+  assertEquals(ok.turns.map((t) => t.turn), bodies.map((_, i) => i + 1));
+  // Read turns carry what each read returned.
+  assert(ok.turns[0].results?.[0].summary?.includes("oats"));
+
+  let calls = 0;
+  const failing: FoodAgentDeps["callModel"] = async () => {
+    calls++;
+    if (calls === 2) return { ok: false, status: 529, body: "overloaded" };
+    return { ok: true, data: { usage: {}, content: [{ type: "tool_use", id: `t${calls}`, name: "coach_list_saved_meals", input: {} }] } };
+  };
+  const failed = await runFoodAgent(INPUT, deps(failing));
+  assertEquals(failed.kind, "failed");
+  assertEquals([calls, failed.turns.length], [2, 1]);
+});

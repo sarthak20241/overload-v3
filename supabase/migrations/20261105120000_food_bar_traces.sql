@@ -81,9 +81,11 @@ create table if not exists public.food_bar_traces (
 alter table public.food_bar_traces enable row level security;
 
 -- Supabase grants every new public table to anon and authenticated by default
--- (project_supabase_default_grants). RLS already hides the rows; this takes
--- the table away from clients entirely. The edge function writes as
--- service_role, which keeps its grant.
+-- (project_supabase_default_grants). Revoke everything first, then give
+-- authenticated back SELECT only, so the admin pages can read. That SELECT
+-- reaches every signed-in user at the grant layer: it is the is_admin()
+-- policy below, not the grant, that keeps the rows to admins. No client can
+-- write. The edge function writes as service_role, which keeps its grant.
 revoke all on public.food_bar_traces from anon, authenticated;
 grant select on public.food_bar_traces to authenticated;
 
@@ -117,6 +119,12 @@ create index if not exists idx_token_usage_log_request on public.token_usage_log
 -- Unscheduled first so re-running this file does not add a second job.
 do $$
 begin
+  -- Without pg_cron (a local or branch database) the table still lands; the
+  -- warning says retention is not running there. Prod has pg_cron.
+  if to_regnamespace('cron') is null then
+    raise warning 'pg_cron missing: food_bar_traces retention job NOT scheduled';
+    return;
+  end if;
   begin
     perform cron.unschedule('food-bar-traces-retention');
   exception when others then
