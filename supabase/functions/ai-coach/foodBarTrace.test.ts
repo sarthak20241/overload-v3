@@ -338,3 +338,11 @@ Deno.test("a user who types the key names does not make a call read as seeing th
   const real = { messages: [{ role: "user", content: JSON.stringify({ text: "x", recent_turns: [{ user: "hi" }], previous_meal: { items: [] } }) + "\nSaved meals: {shake}" }] };
   assertEquals(sawContext(real), { saw_recent_turns: true, saw_card: true });
 });
+
+Deno.test("a big step recorded live is cut, not dropped whole", () => {
+  const t = createFoodBarTrace("r", 0, () => 5);
+  t.step({ src: "agent", tool: "turn_1", input: [{ name: "parse_food", input: { text: "p".repeat(STEP_PAYLOAD_MAX * 2) } }], result: { ok: true } });
+  assertEquals(typeof t.steps[0].input, "string");
+  assertEquals(t.steps[0].result, { ok: true });
+  assertEquals(fitSteps(t.steps).kept.length, 1);
+});

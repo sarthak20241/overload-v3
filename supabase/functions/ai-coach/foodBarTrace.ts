@@ -81,7 +81,15 @@ export function createFoodBarTrace(requestId: string, t0: number, clock: () => n
     },
     step: (s) => {
       try {
-        steps.push({ ...s, src: prefix ? `${prefix}:${s.src}` : s.src, at_ms: s.at_ms ?? clock() - t0 });
+        // Cut here, like fromParseSteps, so a big agent turn or follow-up is
+        // shortened rather than skipped whole by fitSteps.
+        steps.push({
+          ...s,
+          ...(s.input !== undefined ? { input: capped(s.input) } : {}),
+          ...(s.result !== undefined ? { result: capped(s.result) } : {}),
+          src: prefix ? `${prefix}:${s.src}` : s.src,
+          at_ms: s.at_ms ?? clock() - t0,
+        });
       } catch { /* never */ }
     },
     scoped: (p) => make(prefix ? `${prefix}:${p}` : p),
