@@ -125,6 +125,7 @@ import {
   type FoodBarRequestView,
   type FoodBarTraceCollector,
   fromParseSteps,
+  isRefusal,
   readRequestView,
   routerView,
   type ServedBody,
@@ -3694,7 +3695,7 @@ async function handleParseMealRequest(args: {
       const bb = (b ?? {}) as ServedBody;
       writeFoodBar({
         served: servedView(bb, status, null),
-        status: status >= 500 ? "error" : status >= 400 ? "refused" : "ok",
+        status: isRefusal(status) ? "refused" : status >= 400 ? "error" : "ok",
         error: status >= 400 ? (trace.error_message ?? bb.error ?? null) : null,
       });
     }

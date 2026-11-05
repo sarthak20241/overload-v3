@@ -114,7 +114,6 @@ export interface AgentTurn {
   results?: { name: string; summary: string | null }[];
 }
 
-
 export type FoodAgentOutcome =
   | { kind: "log"; result: ParseMealResult; turns: AgentTurn[] }
   | { kind: "create"; create: { tool: string; input: Record<string, unknown> }; turns: AgentTurn[] }

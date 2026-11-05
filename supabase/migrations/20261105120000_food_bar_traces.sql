@@ -29,7 +29,9 @@ create table if not exists public.food_bar_traces (
   user_id            text        not null,
   created_at         timestamptz not null default now(),
 
-  -- ok | error | refused (402/429/400 before the parse ran)
+  -- ok | refused (400 empty text, 402 no access or cap, 429 cooldown) | error (any other failure)
+  -- Retention: none yet, same as parse_traces. Holds user food text and chat
+  -- turns (admin read only). How long to keep it is the owner's decision.
   status             text        not null,
   error              text,
 

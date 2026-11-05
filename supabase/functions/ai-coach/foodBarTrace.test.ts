@@ -2,6 +2,9 @@ import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
   buildFoodBarTraceRow,
   capped,
+  fitSteps,
+  isRefusal,
+  STEPS_BYTES_MAX,
   STEP_PAYLOAD_MAX,
   createFoodBarTrace,
   fallbackReason,
@@ -261,4 +264,54 @@ Deno.test("a huge step payload is cut to a string; an ordinary one is kept whole
 
 Deno.test("a router still running when the row is written says so", () => {
   assertEquals(routerView(null, null, "router_still_running").jev_miss, "router_still_running");
+});
+
+Deno.test("only 400, 402 and 429 are refusals; any other failure is an error", () => {
+  assertEquals([400, 402, 429].map(isRefusal), [true, true, true]);
+  assertEquals([401, 404, 500, 502].map(isRefusal), [false, false, false, false]);
+  assertEquals(servedView({ error: "Unauthorized" }, 401, null).kind, "error");
+});
+
+Deno.test("a long run of big steps stops at the byte budget and counts what it dropped", () => {
+  const big = "y".repeat(STEP_PAYLOAD_MAX - 100);
+  const steps = Array.from({ length: 200 }, (_, i) => ({ src: "agent_parse:parse", tool: `s${i}`, at_ms: i, result: big }));
+  const { kept, dropped } = fitSteps(steps);
+  assert(kept.length < 200 && kept.length > 0);
+  assertEquals(kept.length + dropped, 200);
+  assert(JSON.stringify(kept).length <= STEPS_BYTES_MAX + kept.length);
+  // And in the row: never a megabyte.
+  const row = buildFoodBarTraceRow({
+    requestId: "r", userId: "u",
+    request: readRequestView({}, { recentTurns: [], pendingMeal: null }, { text: "x", mealHint: null, localDate: null, localHour: null, streamed: false, autoLog: false, clientId: null, canCreate: false }),
+    router: routerView(null, null), card: { lines: 0, may_be_cut: false, open: false }, planned: null, action: null,
+    fallback: null, answeredBy: null, tierUsed: null, served: servedView({ error: "x" }, 502, null),
+    steps, calls: [], latencyMs: 1, status: "error", error: null,
+  });
+  assertEquals(row.steps_dropped, dropped);
+});
+
+Deno.test("a waiting meal and the auto-log result are capped like step payloads", () => {
+  const huge = { text: "z".repeat(STEP_PAYLOAD_MAX * 2), question: "which one?" };
+  const v = readRequestView({}, { recentTurns: [], pendingMeal: huge }, { text: "x", mealHint: null, localDate: null, localHour: null, streamed: false, autoLog: false, clientId: null, canCreate: false });
+  assertEquals(typeof v.pending_meal, "string");
+  const served = servedView({ parsed: { items: [] }, logged: { sections: "q".repeat(STEP_PAYLOAD_MAX * 2) } }, 200, "log");
+  assertEquals(typeof served.logged, "string");
+});
+
+// The real prompt builder, not hand-built JSON: if extract stops sending the
+// turns and the card under these keys, saw_* would go quietly false.
+Deno.test("the real extract payload with a card and earlier turns reads as seeing both", async () => {
+  const calls: ParseModelCall[] = [];
+  const deps = quickParseDeps(calls, true);
+  try {
+    await runParseMeal(deps, {
+      text: "make it two", localHour: 9, mealHint: null, mode: "fast" as const, recentFoods: [], todayTotals: null, targets: null,
+      recentTurns: [{ role: "user" as const, text: "a banana" }, { role: "drona" as const, text: "Logged a banana." }],
+      previousText: "a banana",
+      previousItems: [{ food_id: null, food_name: "banana", quantity: 1, serving_label: "piece", grams: 118, kcal: 105, protein_g: 1, carb_g: 27, fat_g: 0 }],
+    });
+  } catch { /* the stub answers every call the same; only the first call matters here */ }
+  const extract = calls.find((c) => c.stage === "extract");
+  assert(extract, "extract was called");
+  assertEquals([extract!.saw_recent_turns, extract!.saw_card], [true, true]);
 });

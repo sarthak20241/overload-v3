@@ -142,13 +142,14 @@ export function capped(v: unknown): unknown {
   if (v === null || typeof v !== "object") {
     return typeof v === "string" && v.length > STEP_PAYLOAD_MAX ? summarize(v, STEP_PAYLOAD_MAX) : v;
   }
-  let n = 0;
+  let s: string;
   try {
-    n = JSON.stringify(v).length;
+    s = JSON.stringify(v);
   } catch {
-    return summarize(v, STEP_PAYLOAD_MAX);
+    return summarize(String(v), STEP_PAYLOAD_MAX);
   }
-  return n > STEP_PAYLOAD_MAX ? summarize(v, STEP_PAYLOAD_MAX) : v;
+  // Serialised once: summarize gets the string, not the object again.
+  return s.length > STEP_PAYLOAD_MAX ? summarize(s, STEP_PAYLOAD_MAX) : v;
 }
 
 /** Every step in the order it happened. Untimed steps inherit the time of the
@@ -219,7 +220,7 @@ export function readRequestView(
     previous_words: str(body.previous_words, TEXT_MAX),
     recent_turns_sent: Array.isArray(body.recent_turns) ? body.recent_turns.length : 0,
     recent_turns: kept.recentTurns.map((t) => ({ role: t.role, text: t.text.slice(0, TURN_MAX) })),
-    pending_meal: kept.pendingMeal ?? null,
+    pending_meal: capped(kept.pendingMeal ?? null),
   };
 }
 
@@ -306,11 +307,18 @@ export interface ServedView {
   error?: string | null;
 }
 
+/** The statuses that mean the box turned a message away on purpose: empty
+ *  text (400), no access or the free cap (402), a cooldown (429). Any other
+ *  failure status is an error. */
+export function isRefusal(httpStatus: number): boolean {
+  return httpStatus === 400 || httpStatus === 402 || httpStatus === 429;
+}
+
 /** What the app got. `servedAction` is the server's own word for it, because
  *  a reply rides the decline channel: the body alone cannot tell them apart. */
 export function servedView(body: ServedBody, httpStatus: number, servedAction: string | null): ServedView {
   if (httpStatus >= 400 || body.error) {
-    return { kind: httpStatus === 402 || httpStatus === 429 ? "refused" : "error", http_status: httpStatus, error: body.error ?? null, message: body.message ?? null };
+    return { kind: isRefusal(httpStatus) ? "refused" : "error", http_status: httpStatus, error: body.error ?? null, message: body.message ?? null };
   }
   if (body.create) {
     const input = body.create.input ?? {};
@@ -337,8 +345,8 @@ export function servedView(body: ServedBody, httpStatus: number, servedAction: s
       corrects_previous: body.parsed.corrects_previous === true,
       proposal: !!body.proposal,
       saved_suggestions: body.saved_suggestions?.length ?? 0,
-      ...(body.logged !== undefined ? { logged: body.logged } : {}),
-      ...(body.auto_log_skipped !== undefined ? { auto_log_skipped: body.auto_log_skipped } : {}),
+      ...(body.logged !== undefined ? { logged: capped(body.logged) } : {}),
+      ...(body.auto_log_skipped !== undefined ? { auto_log_skipped: capped(body.auto_log_skipped) } : {}),
     };
   }
   return {
@@ -346,8 +354,8 @@ export function servedView(body: ServedBody, httpStatus: number, servedAction: s
     http_status: httpStatus,
     message: body.declined?.message ?? null,
     ...(body.declined?.cleared ? { cleared: true } : {}),
-    ...(body.declined?.pending_meal ? { pending_meal: body.declined.pending_meal } : {}),
-    ...(body.auto_log_skipped !== undefined ? { auto_log_skipped: body.auto_log_skipped } : {}),
+    ...(body.declined?.pending_meal ? { pending_meal: capped(body.declined.pending_meal) } : {}),
+    ...(body.auto_log_skipped !== undefined ? { auto_log_skipped: capped(body.auto_log_skipped) } : {}),
   };
 }
 
@@ -393,12 +401,31 @@ export interface FoodBarTraceInput {
 }
 
 const STEPS_MAX = 400;
+/** The steps' whole budget, serialised. Each step is already cut at
+ *  STEP_PAYLOAD_MAX; this stops a long agent run from making a megabyte row.
+ *  Steps past it are counted in steps_dropped, never silently lost. */
+export const STEPS_BYTES_MAX = 256_000;
+
+/** The steps that fit both caps, in order, and how many did not. */
+export function fitSteps(steps: TraceStep[]): { kept: TraceStep[]; dropped: number } {
+  const kept: TraceStep[] = [];
+  let bytes = 0;
+  for (const s of steps) {
+    if (kept.length >= STEPS_MAX) break;
+    let n = 0;
+    try { n = JSON.stringify(s).length; } catch { n = STEP_PAYLOAD_MAX; }
+    if (bytes + n > STEPS_BYTES_MAX) break;
+    bytes += n;
+    kept.push(s);
+  }
+  return { kept, dropped: steps.length - kept.length };
+}
 const CALLS_MAX = 80;
 
 export function buildFoodBarTraceRow(i: FoodBarTraceInput): Record<string, unknown> {
   const anthropic = i.calls.filter((c) => c.provider === "anthropic");
   const sum = (xs: ModelCallRecord[], k: "input_tokens" | "output_tokens") => xs.reduce((n, c) => n + (c[k] ?? 0), 0);
-  const ordered = orderSteps(i.steps);
+  const fit = fitSteps(orderSteps(i.steps));
   const calls = [...i.calls].sort((a, b) => a.at_ms - b.at_ms);
   return {
     request_id: i.requestId,
@@ -429,8 +456,8 @@ export function buildFoodBarTraceRow(i: FoodBarTraceInput): Record<string, unkno
     served_kind: i.served.kind,
     served_text: servedText(i.served),
     served: i.served,
-    steps: ordered.slice(0, STEPS_MAX),
-    steps_dropped: Math.max(0, ordered.length - STEPS_MAX),
+    steps: fit.kept,
+    steps_dropped: fit.dropped,
     model_calls: calls.slice(0, CALLS_MAX),
     anthropic_calls: anthropic.length,
     jev_calls: i.calls.length - anthropic.length,
