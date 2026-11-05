@@ -442,23 +442,28 @@ export function preserveManual(
  * with no error. For any extracted item not represented in decide's output, we
  * append a best-effort line built from the candidate we had already resolved
  * for it, marked as a low-confidence estimate. That makes the food VISIBLE and
- * flagged rather than silently missing, and because it is an estimate the web
- * refine (phase 2) will then try to ground it.
+ * flagged rather than silently missing. runParseMealCore asks decide once more for
+ * such a food first, so this is the last resort.
  */
 export function reconcileExtracted(
   items: ParsedItem[],
   resolved: ResolvedItem[],
   candidatePer100: Map<string, Per100>,
 ): ParsedItem[] {
-  if (resolved.length === 0) return items;
-  const represented = (r: ResolvedItem): boolean => {
-    const candIds = new Set(r.candidates.map((c) => c.food_id).filter(Boolean) as string[]);
-    return items.some((it) =>
-      (it.food_id && candIds.has(it.food_id)) || wordsOverlap(it.food_name, r.name)
-    );
-  };
-  const missing = resolved.filter((r) => !represented(r)).map((r) => fallbackFromResolved(r, candidatePer100));
+  const missing = missingFrom(items, resolved).map((r) => fallbackFromResolved(r, candidatePer100));
   return missing.length > 0 ? [...items, ...missing] : items;
+}
+
+/** A logged line stands for this extracted food: it carries one of the food's
+ *  candidate rows, or every word of the shorter name is in the longer. */
+export function representsFood(it: ParsedItem, r: ResolvedItem): boolean {
+  const candIds = new Set(r.candidates.map((c) => c.food_id).filter(Boolean) as string[]);
+  return (!!it.food_id && candIds.has(it.food_id)) || wordsOverlap(it.food_name, r.name);
+}
+
+/** The extracted foods no line stands for. */
+export function missingFrom(items: ParsedItem[], resolved: ResolvedItem[]): ResolvedItem[] {
+  return resolved.filter((r) => !items.some((it) => representsFood(it, r)));
 }
 
 /**
@@ -904,7 +909,12 @@ export function fallbackFromResolved(r: ResolvedItem, candidatePer100: Map<strin
     // Keep that id until stripEphemeralIds stamps provenance and verification.
     // Ordinary ranked candidates remain estimates when decide omitted them.
     food_id: r.resolvedIdentity ? top?.food_id ?? null : null,
-    food_name: top?.name ?? r.name,
+    // The user's words unless the row is confirmed to be their food. An
+    // unconfirmed first row is only the search's best guess, and its name on
+    // the card reads as an answer: "poha + vegetable dalia" showed as
+    // "Groundcherries (Cape-Gooseberries or Poha)" (live, 2026-11-04). The
+    // user's words also let their stated total find the line.
+    food_name: r.resolvedIdentity && top ? top.name : foodLabel(r),
     quantity: qty,
     // The label that DROVE the gram math, so quantity x serving_label still
     // reads as grams on the card. Filling the raw user word here printed
@@ -2665,6 +2675,8 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
 - similar_products on an item are other companies' products we found. They are NEVER the food: do not log one, and do not copy its numbers. Use them, with what you know of the user's brand and its range, only to keep your estimate in a sensible range.
 - label_not_found on an item means the web was searched for this product's label and none was found. If no candidate is acceptable, say so in assumption ("Couldn't find this exact label, so this is my estimate").
 - No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
+- user_total on an item is the total the user wrote for that whole line; a null field is one they did not give. We did not look this food up, so it has no candidates. Estimate it (food_id null, source "estimate") with grams and macros that fit their numbers, and keep the food's name in the user's own words.
+- already_logged, when present, lists foods from user_text that are logged already. Log only the items you are given, and none of those again.
 </candidate_rules>
 
 <quantity_rules>
@@ -2854,6 +2866,10 @@ export interface ResolvedItem extends ExtractedItem {
   /** Rows the brand check took out (another company's product). Never logged;
    *  decide sees them only as a range for its own estimate. */
   similar?: CandidateFood[];
+  /** The user's own total for this line (userLineTotal). Set only when it
+   *  replaced the lookup: such a line has no candidates and decide estimates
+   *  it around these numbers. */
+  userTotal?: StatedTotal;
 }
 
 // A cup serving anchors every spoon: 1 cup = 16 tbsp = 48 tsp. Deriving the
@@ -4864,6 +4880,14 @@ export function statedFor(it: ExtractedItem): StatedPer100 | null {
   return statedPer100(it.stated, lineGrams, PLAUSIBLE.maxKcalPer100);
 }
 
+/** The user's own total for one line that statedFor cannot put per 100 g: a
+ *  total with no typed weight ("280 cals of poha"), or a per-serving panel
+ *  with no serving weight. null when there is none. */
+export function userLineTotal(it: ExtractedItem): StatedTotal | null {
+  if (!it.stated || statedFor(it)) return null;
+  return statedLineTotal(it.stated, it.quantity, MASS_UNITS.has(it.unit.trim().toLowerCase()));
+}
+
 /** What a line answered by the user's own numbers carries onto the card. They
  *  are the user's, so the saved line is 'manual' and serves every tier. */
 export function statedStamp(s: StatedPer100, filled: "looked up" | "estimated"): MemoryStamp {
@@ -4950,7 +4974,7 @@ export function captureStatedTotals(extMealTotal: unknown, extItems: ExtractedIt
     // Numbers statedFor can use are applied in the pipeline itself, where a
     // partial panel is filled from a row that is the right food.
     if (!it.stated || statedFor(it)) continue;
-    const totals = statedLineTotal(it.stated, it.quantity, MASS_UNITS.has(it.unit.trim().toLowerCase()));
+    const totals = userLineTotal(it);
     if (totals) lines.push({ name: foodLabel(it), correctsFoodName: it.correctsFoodName ?? null, totals });
     else ignored.push(`${foodLabel(it).slice(0, 60)}: ${it.stated.basis} numbers could not be used (past what any food carries, or a serving with no weight)`);
   }
@@ -4968,7 +4992,15 @@ function lineForTotal(items: ParsedItem[], t: StatedCapture["lines"][number]): n
   const hits = items
     .map((it, i) => ({ k: memoryKey(it.food_name), i }))
     .filter(({ k }) => k && keys.some((want) => k === want || k.includes(want) || want.includes(k)));
-  return hits.length === 1 ? hits[0].i : -1;
+  if (hits.length > 0) return hits.length === 1 ? hits[0].i : -1;
+  // Decide names an estimate in its own words: "Vegetable poha with dalia" for
+  // "poha + vegetable dalia" contains neither way round. Every word of one in
+  // the other, on exactly one line, is still that food.
+  const said = [t.name, t.correctsFoodName].filter((k): k is string => !!k);
+  const loose = items
+    .map((it, i) => ({ it, i }))
+    .filter(({ it }) => said.some((want) => wordsOverlap(it.food_name, want) || (!!it.said_name && wordsOverlap(it.said_name, want))));
+  return loose.length === 1 ? loose[0].i : -1;
 }
 
 const sameNumbers = (a: ParsedItem, b: ParsedItem) =>
@@ -7326,6 +7358,19 @@ async function runParseMealCore(
           return { ...item, candidates: [cand], resolvedIdentity: true } as ResolvedItem;
         });
       }
+      // The user gave this line's total and no weight to put it per 100 g
+      // ("280 cals of poha + vegetable dalia"). Their number is the answer, so
+      // no lookup: a row could only shape the split of the macros they left
+      // out, and decide estimates that well enough. On 2026-11-04 this line
+      // spent four web searches and a page read, found nothing, and FatSecret's
+      // "Groundcherries (Cape-Gooseberries or Poha)" became the line. A
+      // remembered food above still wins: it is the user's own split.
+      const userTotal = userLineTotal(item);
+      if (userTotal) {
+        toolCalls.push("user_stated");
+        steps.push({ iter: 1, tool: "user_stated", input: { item: item.name }, result: { lookup: "skipped", total: userTotal } });
+        return { ...item, candidates: [], userTotal } as ResolvedItem;
+      }
       return resolveOneItem(
         deps,
         item,
@@ -7355,7 +7400,8 @@ async function runParseMealCore(
     // A line with no rows at all is asked too when it names a brand: Jev's
     // kind answer is what lets a branded product with nothing of ours reach
     // the label lookup below. With no brand there is nothing to ask.
-    const asked = resolved.map((r) => !r.resolvedIdentity && (r.candidates.length > 0 || !!r.brand?.trim()));
+    // Nor a line the user gave a total for: it skipped the lookup on purpose.
+    const asked = resolved.map((r) => !r.resolvedIdentity && !r.userTotal && (r.candidates.length > 0 || !!r.brand?.trim()));
     if (asked.some(Boolean)) {
       // Catalog rows only. A FatSecret row carries "fs:<id>", which is not a
       // foods id: one in the list fails the whole lookup. Its origin is its
@@ -7510,6 +7556,41 @@ async function runParseMealCore(
     };
   }
   const decideSystem = buildDecideSystemPrompt(input);
+  // One food as decide sees it. Shared by the main call and the retry for a
+  // food it left out, so both read the same evidence.
+  const itemPayload = (r: ResolvedItem) => ({
+    name: r.name,
+    ...(r.brand ? { brand: r.brand } : {}),
+    quantity: r.quantity,
+    unit: r.unit,
+    ...(r.prep ? { prep: r.prep } : {}),
+    // I11: computed in CODE, not left for the model to notice. When the user
+    // named a grade and not one candidate stocks it, say so plainly here so
+    // decide estimates instead of dressing a generic row as a match.
+    ...((() => {
+      const g = gradeNotStocked(r.name, r.candidates);
+      return g ? { grade_not_stocked: g } : {};
+    })()),
+    // Top 4 candidates: the ranked search already puts the right row first;
+    // extra candidates only inflate decide-call input tokens (latency).
+    candidates: r.candidates.slice(0, 4).map(candidatePayload),
+    ...(r.lookedUpAs ? { looked_up_as: r.lookedUpAs } : {}),
+    ...(r.labelNotFound ? { label_not_found: true } : {}),
+    // No food_id on purpose: these can inform an estimate, never be logged.
+    ...(r.similar?.length
+      ? {
+        similar_products: r.similar.map((c) => ({
+          name: c.name,
+          ...(c.brand ? { brand: c.brand } : {}),
+          per_100: { kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g },
+        })),
+      }
+      : {}),
+    // The user's own total for this line. No lookup was made for it (see
+    // userLineTotal): decide estimates the food around these numbers, and
+    // honourStatedTotals then sets them exactly.
+    ...(r.userTotal ? { user_total: r.userTotal } : {}),
+  });
   const decidePayload = {
     // The same clamped text extract saw. Decide reads this to place quantities
     // and sections against the user's own words, so feeding it a shorter cut
@@ -7531,35 +7612,7 @@ async function runParseMealCore(
       }
       : {}),
     meal_type_from_text: mealFromText,
-    items: resolved.map((r) => ({
-      name: r.name,
-      ...(r.brand ? { brand: r.brand } : {}),
-      quantity: r.quantity,
-      unit: r.unit,
-      ...(r.prep ? { prep: r.prep } : {}),
-      // I11: computed in CODE, not left for the model to notice. When the user
-      // named a grade and not one candidate stocks it, say so plainly here so
-      // decide estimates instead of dressing a generic row as a match.
-      ...((() => {
-        const g = gradeNotStocked(r.name, r.candidates);
-        return g ? { grade_not_stocked: g } : {};
-      })()),
-      // Top 4 candidates: the ranked search already puts the right row first;
-      // extra candidates only inflate decide-call input tokens (latency).
-      candidates: r.candidates.slice(0, 4).map(candidatePayload),
-      ...(r.lookedUpAs ? { looked_up_as: r.lookedUpAs } : {}),
-      ...(r.labelNotFound ? { label_not_found: true } : {}),
-      // No food_id on purpose: these can inform an estimate, never be logged.
-      ...(r.similar?.length
-        ? {
-          similar_products: r.similar.map((c) => ({
-            name: c.name,
-            ...(c.brand ? { brand: c.brand } : {}),
-            per_100: { kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g },
-          })),
-        }
-        : {}),
-    })),
+    items: resolved.map(itemPayload),
   };
 
   const result = await callAnthropicOnce(deps, {
@@ -7613,6 +7666,60 @@ async function runParseMealCore(
         input: { dropped: before.filter((i) => !items.includes(i)).map((i) => i.food_name) },
       });
     }
+  }
+  // A food decide left out gets ONE more decide call, for it alone. Decide
+  // writes the whole list fresh and nothing makes it keep every food, so on a
+  // long list it can skip one (live: kiwi in a 9-food log on 2026-10-28, "poha
+  // + vegetable dalia" in a 13-food log on 2026-11-04). The fallback in
+  // reconcileExtracted used to be the only answer, and it logs the first
+  // search row whatever that row is: the poha became Groundcherries. The retry
+  // reads the same evidence for that food, is told what is already logged, and
+  // a line it returns for any other food is dropped here. What it still
+  // misses, the fallback below catches. Only for a food whose row is not
+  // confirmed: a remembered, stated or cached food already has its answer,
+  // and the fallback logs that answer as it is.
+  const missed = missingFrom(items, resolved).filter((r) => !r.resolvedIdentity);
+  if (missed.length > 0) {
+    const tRetry0 = Date.now();
+    const retry = await callAnthropicOnce(deps, {
+      model: deps.model,
+      max_tokens: deps.maxTokens,
+      system: cacheableSystem(decideSystem),
+      tools: withToolCache([LOG_MEAL_TOOL]),
+      tool_choice: { type: "tool", name: PARSE_TERMINAL_TOOL },
+      messages: [{
+        role: "user",
+        content: JSON.stringify({
+          ...decidePayload,
+          items: missed.map(itemPayload),
+          already_logged: items.map((i) => i.food_name),
+        }),
+      }],
+    }).catch(() => null);
+    let returned = 0;
+    let found: ParsedItem[] = [];
+    if (retry?.ok) {
+      anthropicCalls++;
+      accumulate(retry.data);
+      const block = (retry.data.content ?? []).find((b: Record<string, any>) => b.type === "tool_use" && b.name === PARSE_TERMINAL_TOOL);
+      const rawRetry = block?.input?.items;
+      returned = Array.isArray(rawRetry) ? rawRetry.length : 0;
+      const lines = await verifyItems(
+        deps,
+        retargetMismatchedIds(clampVolumetricGrams(sanitizeItems(rawRetry)), missed, deps.log),
+        candidatePer100,
+      );
+      found = lines.filter((l) => missed.some((r) => representsFood(l, r)));
+    }
+    steps.push({
+      iter: 2,
+      tool: "decide_retry",
+      input: { missed: missed.map(foodLabel) },
+      result: retry?.ok
+        ? { returned, kept: found.map((i) => i.food_name), ms: Date.now() - tRetry0 }
+        : { failed: retry ? retry.status : "error", ms: Date.now() - tRetry0 },
+    });
+    items = [...items, ...found];
   }
   if (correctsPrevious) {
     // Enforce the correction contract on every line the user did not re-target:
