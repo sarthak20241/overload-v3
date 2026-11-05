@@ -11,7 +11,9 @@ export const AI_LIMITS = {
   freeChat: 3,
   // 9 since 2026-11-05 (was 3): new free users ran out of AI food logs within
   // hours of joining. Raised quietly to watch real use; the app's own copy
-  // (profile, paywall) still says 3, on purpose.
+  // (profile, paywall) still says 3, on purpose. Two places say 9, also on
+  // purpose: the cap-hit line (it reads the server's number) and Drona's app
+  // guide (appGuide.ts), which must state the real limit if asked.
   freeFood: 9,
   // The old Pro daily caps. Enforced ONLY while the cooldown migration is not
   // applied yet (reserveProSlot falls back to the old RPC), so a deploy that

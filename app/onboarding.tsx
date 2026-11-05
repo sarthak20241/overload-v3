@@ -92,7 +92,7 @@ import {
   onboardingIdentity,
 } from '@/lib/onboarding';
 import { buildAnonIntake, requestAnonOnboardingProgram } from '@/lib/onboardingDrona';
-import { requestOnboardingProgramSignedIn } from '@/lib/onboardingPlanRoute';
+import { requestOnboardingProgramSignedIn, type OnboardingPlanVia } from '@/lib/onboardingPlanRoute';
 import { weekPatternFor, shortDayLabel, REST } from '@/lib/weekPattern';
 import { getDeviceId } from '@/lib/deviceId';
 import { setPendingOnboarding, saveOnboardingProgram } from '@/lib/pendingOnboarding';
@@ -443,7 +443,7 @@ export default function OnboardingScreen() {
           });
           return requestAnonOnboardingProgram({ deviceId, intake });
         };
-        let via: string = 'guest';
+        let via: OnboardingPlanVia | 'guest' = 'guest';
         if (isSignedIn && getToken) {
           // Signed-in (re-onboarding / signed in before the intake). The
           // authenticated path is Pro-only (generate_program), so a free user
