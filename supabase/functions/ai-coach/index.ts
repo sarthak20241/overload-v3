@@ -31,7 +31,7 @@ import { cooldownBody, reserveProSlot } from "../_shared/aiCooldown.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { AREAS as WORD_AREAS, QUESTIONS as WORD_QUESTIONS, YES as WORD_YES } from "../_shared/dronaWords.ts";
 import { decideMoment, type MomentCandidate, momentRow } from "../_shared/dronaMoments.ts";
-import { asNoul, type JevAnswer, type JevUsage } from "./jev.ts";
+import { asNoul, type JevAnswer, type JevDeps, type JevUsage } from "./jev.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
 import { withPhaseActivity } from "./programActivity.ts";
@@ -301,6 +301,20 @@ function recordAnthropicCall(
   });
 }
 
+/** Did the router's state carry earlier turns, and a card? Non-empty only. */
+function routerStateSaw(state: string): { turns: boolean; card: boolean } {
+  if (!state.startsWith("{")) return { turns: false, card: false };
+  try {
+    const o = JSON.parse(state) as { recent_turns?: unknown; card?: unknown };
+    return {
+      turns: Array.isArray(o.recent_turns) && o.recent_turns.length > 0,
+      card: Array.isArray(o.card) && o.card.length > 0,
+    };
+  } catch {
+    return { turns: false, card: false };
+  }
+}
+
 /** Step 2 of the ladder: a small forced-tool Haiku call, used when Jev is
  *  absent, rate limited, or honest about not knowing. Forced tool_choice so the
  *  answer is an enum rather than a sentence we would have to parse. Cheap
@@ -346,10 +360,10 @@ async function classifyFoodIntentWithModel(text: string, fbTrace?: FoodBarTraceC
     messages: [{ role: "user", content: text }],
   };
   const res = await callAnthropic(payload, 6000);
-  // The router's state is the text it classifies, turns and card included.
-  recordAnthropicCall(fbTrace, "router_model", payload, res, Date.now() - c0, {
-    turns: text.includes('"recent_turns":[{'), card: text.includes('"card":'),
-  });
+  // The router's state is the text it classifies: plain text, or JSON with
+  // the turns and the card (foodIntentState). Parsed, not string-matched, so a
+  // user who types "card": cannot make it read as seen.
+  recordAnthropicCall(fbTrace, "router_model", payload, res, Date.now() - c0, routerStateSaw(text));
   if (!res.ok) {
     console.log(`[food_intent] model fallback failed: ${res.status}`);
     return null;
@@ -425,11 +439,12 @@ function makeFoodIntentDeps(
   abortSignal?: AbortSignal,
   onUsage?: (u: JevUsage) => void,
   fbTrace?: FoodBarTraceCollector,
+  onFailure?: JevDeps["onFailure"],
 ): FoodIntentDeps {
   return {
     savedMeals,
     jev: JEV_API_KEY
-      ? { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, abortSignal, log: (m) => console.log(m), onUsage }
+      ? { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, abortSignal, log: (m) => console.log(m), onUsage, onFailure }
       : undefined,
     classify: (state) => classifyFoodIntentWithModel(state, fbTrace),
     log: (m) => console.log(m),
@@ -459,6 +474,7 @@ function startFoodIntent(
   abortSignal?: AbortSignal,
   onUsage?: (u: JevUsage) => void,
   fbTrace?: FoodBarTraceCollector,
+  onFailure?: JevDeps["onFailure"],
 ): Promise<FoodIntentDecision | null> {
   if (!shouldRouteFoodIntent(FOOD_INTENT_MODE)) {
     fbTrace?.step({ src: "router", tool: "food_intent", result: { ran: false, reason: `mode_${FOOD_INTENT_MODE}` } });
@@ -467,7 +483,7 @@ function startFoodIntent(
   const r0 = Date.now();
   // The same saved-meal read the parser uses, so one query serves both.
   return savedMealsP
-    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal, onUsage, fbTrace), context))
+    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal, onUsage, fbTrace, onFailure), context))
     // routeFoodIntent is documented never to throw. This is the belt on top of
     // the braces: nothing about a shadow measurement may fail a meal log.
     .catch((e) => {
@@ -1261,6 +1277,30 @@ function logTavilyCost(admin: SupabaseClient, credits: number | undefined, metad
 
 /** Jev's usage hook for one caller: a token_usage_log row per answered call,
  *  priced by model_pricing (input tokens only). Kept alive past the response. */
+/** Jev's failure hook for one caller: a failed call on the food box trace,
+ *  beside the answered ones jevUsageLogger records. */
+function jevFailureLogger(
+  fbTrace: FoodBarTraceCollector | undefined,
+  via: string,
+  saw: { turns: boolean; card: boolean } = { turns: false, card: false },
+): JevDeps["onFailure"] {
+  if (!fbTrace) return undefined;
+  return (f) =>
+    fbTrace.call({
+      stage: `jev:${via}`,
+      provider: "typesafe",
+      model: null,
+      ms: f.latency_ms,
+      ok: false,
+      error: `${f.failure}: ${f.detail}`.slice(0, 200),
+      input_tokens: null,
+      output_tokens: null,
+      saw_recent_turns: saw.turns,
+      saw_card: saw.card,
+      questions: f.questions,
+    });
+}
+
 function jevUsageLogger(
   admin: SupabaseClient,
   pipeline: string,
@@ -3417,6 +3457,7 @@ function makeParseDeps(
       ? {
         apiKey: JEV_API_KEY, timeoutMs: Math.max(JEV_TIMEOUT_MS, 5000), log: (m) => console.log(m),
         onUsage: jevUsageLogger(admin, "parse_meal", "parse", userId, fb),
+        onFailure: jevFailureLogger(fb, "parse"),
       }
       : undefined,
     // The food box trace: every step stamped with its time, every model call
@@ -3912,6 +3953,7 @@ async function handleParseMealRequest(args: {
       savedMealsPFor(), text, foodContext, signal,
       jevUsageLogger(admin, "parse_meal", "food_intent", userId, fbTrace, { turns: recentTurns.length > 0, card: card.length > 0 }),
       fbTrace,
+      jevFailureLogger(fbTrace, "food_intent", { turns: recentTurns.length > 0, card: card.length > 0 }),
     );
     void p.then(() => { ms = Date.now() - i0; }, () => {});
     fbIntent = { p, ms: () => ms };
