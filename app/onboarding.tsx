@@ -408,6 +408,10 @@ export default function OnboardingScreen() {
     // the request is in flight, and the result must still land. Post-unmount
     // setState is a no-op in React 18, so this is safe.
     (async () => {
+      // Which path built (or tried to build) the program. Read `via`, not
+      // `authed`: a signed-in free user is authed but lands on the guest path.
+      // Outside the try so a failure reports it too.
+      let via: OnboardingPlanVia | 'guest' = 'guest';
       try {
         const direction =
           answers.goalWeightKg && answers.weightKg && Math.abs(answers.goalWeightKg - answers.weightKg) >= 1
@@ -443,7 +447,6 @@ export default function OnboardingScreen() {
           });
           return requestAnonOnboardingProgram({ deviceId, intake });
         };
-        let via: OnboardingPlanVia | 'guest' = 'guest';
         if (isSignedIn && getToken) {
           // Signed-in (re-onboarding / signed in before the intake). The
           // authenticated path is Pro-only (generate_program), so a free user
@@ -483,6 +486,7 @@ export default function OnboardingScreen() {
         // design, and it is the single best predictor of a weak first plan.
         track('onboarding_plan_failed', {
           authed: !!(isSignedIn && getToken),
+          via,
           duration_ms: Date.now() - genStartedAt,
         });
       } finally {
