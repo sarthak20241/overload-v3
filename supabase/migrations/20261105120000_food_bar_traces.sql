@@ -30,8 +30,8 @@ create table if not exists public.food_bar_traces (
   created_at         timestamptz not null default now(),
 
   -- ok | refused (400 empty text, 402 no access or cap, 429 cooldown) | error (any other failure)
-  -- Retention: none yet, same as parse_traces. Holds user food text and chat
-  -- turns (admin read only). How long to keep it is the owner's decision.
+  -- Retention: 30 days (owner's decision, 2026-11-05). Rows hold user food
+  -- text and chat turns; the daily job at the end of this file deletes older ones.
   status             text        not null,
   error              text,
 
@@ -110,6 +110,25 @@ create index if not exists idx_coach_traces_request on public.coach_traces (requ
 -- token_usage_log carries it in metadata (no new column: log_token_usage is unchanged).
 create index if not exists idx_token_usage_log_request on public.token_usage_log ((metadata->>'request_id'))
   where metadata ? 'request_id';
+
+-- Retention: keep 30 days. Owner's decision 2026-11-05: the rows hold the
+-- user's own food text and chat turns, and a review only needs recent chats.
+-- Daily at 21:30 UTC (03:00 IST), off peak. Uses idx_food_bar_traces_created.
+-- Unscheduled first so re-running this file does not add a second job.
+do $$
+begin
+  begin
+    perform cron.unschedule('food-bar-traces-retention');
+  exception when others then
+    null;
+  end;
+  perform cron.schedule(
+    'food-bar-traces-retention',
+    '30 21 * * *',
+    $cmd$delete from public.food_bar_traces where created_at < now() - interval '30 days'$cmd$
+  );
+end
+$$;
 
 -- New table: PostgREST must reload or the first insert fails (reference_postgrest_schema_reload).
 notify pgrst, 'reload schema';
