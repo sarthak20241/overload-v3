@@ -108,6 +108,21 @@ export interface AgentTurn {
   tools: { name: string; input: unknown }[];
   input_tokens: number | null;
   output_tokens: number | null;
+  /** What each read returned, cut short, in the order of `tools`. Absent on
+   *  the finishing turn: what a finish did is the agent's outcome. */
+  results?: { name: string; summary: string | null }[];
+}
+
+/** A read result short enough to keep on the trace. */
+function resultSummary(v: unknown, max = 400): string | null {
+  if (v === undefined || v === null) return null;
+  let s: string;
+  try {
+    s = typeof v === "string" ? v : JSON.stringify(v);
+  } catch {
+    s = String(v);
+  }
+  return s.length > max ? `${s.slice(0, max)}…(${s.length})` : s;
 }
 
 export type FoodAgentOutcome =
@@ -472,11 +487,14 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
       const label = statusFor(u.name, u.input ?? {});
       if (label) deps.onStatus?.(label);
     }
-    const results = await Promise.all(uses.map(async (u) => {
+    const outs: unknown[] = [];
+    const results = await Promise.all(uses.map(async (u, i) => {
       const out = await runRead(u, deps, parse);
+      outs[i] = out;
       remember(seen, out);
       return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) };
     }));
+    turns[turns.length - 1].results = uses.map((u, i) => ({ name: u.name, summary: resultSummary(outs[i]) }));
     messages.push({ role: "assistant", content: blocks }, { role: "user", content: results });
   }
   // Unreachable: the last turn always returns. Kept so a future edit to the
