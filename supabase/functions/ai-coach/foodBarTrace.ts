@@ -258,10 +258,14 @@ export function readRequestView(
     streamed: derived.streamed,
     local_date: derived.localDate,
     local_hour: derived.localHour,
-    client_id: derived.clientId,
+    // Client values are capped like the text: a refused request is traced
+    // from the raw body, before anything has checked them.
+    client_id: derived.clientId ? derived.clientId.slice(0, 100) : null,
     auto_log: derived.autoLog,
     can_create: derived.canCreate,
-    supports: Array.isArray(body.supports) ? (body.supports as unknown[]).filter((s) => typeof s === "string").slice(0, 10) as string[] : [],
+    supports: Array.isArray(body.supports)
+      ? (body.supports as unknown[]).filter((s): s is string => typeof s === "string").slice(0, 10).map((s) => s.slice(0, 40))
+      : [],
     previous_items_sent: Array.isArray(body.previous_items) ? body.previous_items.length : 0,
     previous_text: str(body.previous_text, TEXT_MAX),
     previous_words: str(body.previous_words, TEXT_MAX),

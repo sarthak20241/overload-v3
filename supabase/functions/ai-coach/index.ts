@@ -809,6 +809,8 @@ function startFoodAgent(args: {
           const res = await callAnthropic(b, 15000);
           // When each turn's model call ENDED: the turn's step is stamped
           // there, so tool time between turns is real, not summed away.
+          // Assumes one callModel per turn (foodAgent.test.ts pins it): a
+          // retry added here must push one end time, not one per attempt.
           if (fb) callEnds.push(Date.now() - fb.t0);
           // The agent is sent the earlier turns as messages and the card in
           // its opening text (foodAgent.ts openingText).

@@ -355,3 +355,11 @@ Deno.test("the step budget counts UTF-8 bytes, so multi-byte text cannot fit thr
   const bytes = new TextEncoder().encode(JSON.stringify(kept)).length;
   assert(bytes <= STEPS_BYTES_MAX + kept.length + 2, `kept ${bytes} bytes`);
 });
+
+Deno.test("client id and capability strings from a raw body are capped", () => {
+  const v = readRequestView({ supports: ["food_create", "s".repeat(500)] }, { recentTurns: [], pendingMeal: null }, {
+    text: "x", mealHint: null, localDate: null, localHour: null, streamed: false, autoLog: false, clientId: "c".repeat(5000), canCreate: false,
+  });
+  assertEquals(v.client_id?.length, 100);
+  assertEquals(v.supports.map((s) => s.length), [11, 40]);
+});
