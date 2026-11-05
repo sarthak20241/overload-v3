@@ -36,7 +36,7 @@ const pohaLine = {
 
 /** Extract returns `items`; each decide call returns the next of `decides`
  *  (the last one repeats). Every lookup and every decide payload is kept. */
-function harness(items: Record<string, unknown>[], decides: Record<string, unknown>[][]) {
+function harness(items: Record<string, unknown>[], decides: Record<string, unknown>[][], extraction: Record<string, unknown> = {}) {
   const searched: string[] = [];
   const decidePayloads: Record<string, any>[] = [];
   const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -47,7 +47,7 @@ function harness(items: Record<string, unknown>[], decides: Record<string, unkno
     const body = JSON.parse(String(init?.body ?? "{}"));
     const name: string = body.tool_choice?.name ?? (body.tools ?? [])[0]?.name ?? "";
     if (name === "extract_meal") {
-      return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name, input: { declined: false, meal_type_from_text: "lunch", items } }] });
+      return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name, input: { declined: false, meal_type_from_text: "lunch", items, ...extraction } }] });
     }
     decidePayloads.push(JSON.parse(body.messages[0].content));
     const out = decides[Math.min(decidePayloads.length - 1, decides.length - 1)];
@@ -129,4 +129,38 @@ Deno.test("the user's total still finds a line decide named in its own words", a
   const h = harness([EGG, POHA_TOTAL], [[eggLine, { ...pohaLine, kcal: 410, protein_g: 11, carb_g: 70, fat_g: 10 }]]);
   const r = await runParseMeal(h.deps, { ...BASE, text: 'Lunch: 1 whole egg, 280 cals of "poha + vegetable dalia"' });
   assertEquals(named(r.parsed!.items, /poha/i).map((i) => [i.food_name, i.kcal]), [["Vegetable poha with dalia", 280]]);
+});
+
+// The same words read the other way (eval via the CLI, 3 runs of 3): extract
+// split poha and dalia into two foods and put the 280 in stated_meal_total,
+// which then shrank all fourteen foods of the day to 280 kcal together.
+Deno.test("the failure this prevents: a total for two foods shrank the whole day to 280 kcal", async () => {
+  const dalia = { ...pohaLine, food_name: "Vegetable dalia", kcal: 200, protein_g: 6, carb_g: 34, fat_g: 4.5, grams: 200 };
+  const poha = { ...pohaLine, food_name: "Poha", kcal: 300 };
+  const h = harness(
+    [EGG, { ...POHA_PLAIN, unit: "serving" }, { name: "vegetable dalia", brand: null, quantity: 1, unit: "serving", prep: null }],
+    [[eggLine, poha, dalia]],
+    { stated_meal_total: { kcal: 280, protein_g: null, carb_g: null, fat_g: null, fiber_g: null, foods: ["poha", "vegetable dalia"] } },
+  );
+  const r = await runParseMeal(h.deps, { ...BASE, text: 'Lunch: 1 whole egg, 280 cals of "poha + vegetable dalia"' });
+  const items = r.parsed!.items;
+  // The egg keeps its own numbers: the catalog row at 50 g.
+  assertEquals(named(items, /egg/i)[0].kcal, 77.5);
+  const shared = items.filter((i) => /poha|dalia/i.test(i.food_name));
+  assertEquals(shared.length, 2);
+  assertEquals(Math.round(shared.reduce((a, i) => a + i.kcal, 0)), 280);
+  assertEquals(shared[0].assumption, "Scaled to fit your total for these foods: 280 kcal");
+  // Neither food was looked up: the user's number answers them.
+  assertEquals(h.searched.filter((x) => /poha|dalia/i.test(x)), []);
+});
+
+Deno.test("a total that names every food is still the whole meal's", async () => {
+  const h = harness(
+    [EGG, POHA_PLAIN],
+    [[eggLine, pohaLine]],
+    { stated_meal_total: { kcal: 300, protein_g: null, carb_g: null, fat_g: null, fiber_g: null, foods: ["whole egg", "poha"] } },
+  );
+  const r = await runParseMeal(h.deps, { ...BASE, text: "1 whole egg and a bowl of poha, 300 cals" });
+  assertEquals(Math.round(r.parsed!.items.reduce((a, i) => a + i.kcal, 0)), 300);
+  assertEquals(r.parsed!.items[0].assumption, "Scaled to fit your meal total: 300 kcal");
 });

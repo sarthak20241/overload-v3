@@ -1365,6 +1365,14 @@ const EXTRACT_TOOL = {
           carb_g: { type: ["number", "null"] },
           fat_g: { type: ["number", "null"] },
           fiber_g: { type: ["number", "null"] },
+          foods: {
+            type: ["array", "null"],
+            items: { type: "string" },
+            description:
+              "When the numbers are for only SOME of the foods in the message (\"280 cals of " +
+              "poha + dalia\" among other foods), the names of those items exactly as you " +
+              "listed them. null when they are for everything in the message.",
+          },
         },
       },
       requests_research: {
@@ -2543,7 +2551,7 @@ const EXTRACT_SYSTEM_HEAD = `You segment free-text food logs for OVERLOAD, a lif
  *  buy output tokens for numbers the second call overwrites anyway. In FAST
  *  there IS no second call, so this sentence must not be sent: it told the
  *  model not to do the exact thing FAST_EXTRACT_TOOL makes required. */
-const EXTRACT_NO_NUTRITION = ` Do NOT resolve nutrition. The one exception is numbers the user wrote themselves for a food ("per 100 g: 130 kcal, 22 g protein"): copy them into that item's stated field exactly as written, never estimated or completed. Numbers for several foods together or the whole meal ("about 650 kcal with 30 g protein") go in stated_meal_total the same way.`;
+const EXTRACT_NO_NUTRITION = ` Do NOT resolve nutrition. The one exception is numbers the user wrote themselves for a food ("per 100 g: 130 kcal, 22 g protein"): copy them into that item's stated field exactly as written, never estimated or completed. Numbers for several foods together or the whole meal ("about 650 kcal with 30 g protein") go in stated_meal_total the same way; when they are for only some of the foods, name those in its foods.`;
 
 /** Smart only, since fast carries its own standalone prompt below. quantity
  *  and unit mirror what the user SAID; inventing an amount nobody typed is
@@ -2591,7 +2599,7 @@ One item per food the user LISTED. A composite dish is one item ("rajma chawal")
 
 Indian context: plain "tea" or "chai" is milk tea; plain "coffee" is milk coffee.
 
-When the user writes nutrition numbers for a food themselves (a label they read out, or their own tracking), copy them into that item's stated field exactly as written, with what they are per, and base the est_ numbers on them. Never fill in a number they did not write. Leave stated out otherwise. Numbers for several foods together or the whole meal ("about 650 kcal with 30 g protein, the rest carbs") go in stated_meal_total the same way, and every food is still its own item.
+When the user writes nutrition numbers for a food themselves (a label they read out, or their own tracking), copy them into that item's stated field exactly as written, with what they are per, and base the est_ numbers on them. Never fill in a number they did not write. Leave stated out otherwise. Numbers for several foods together or the whole meal ("about 650 kcal with 30 g protein, the rest carbs") go in stated_meal_total the same way, and every food is still its own item. When they are for only some of the foods, name those in its foods.
 
 If there is nothing to log (a question, chatter, a workout), decline.
 
@@ -2870,6 +2878,9 @@ export interface ResolvedItem extends ExtractedItem {
    *  replaced the lookup: such a line has no candidates and decide estimates
    *  it around these numbers. */
   userTotal?: StatedTotal;
+  /** In a total the user gave for this food and others (StatedCapture
+   *  mealFoods). Like userTotal, it skipped the lookup. */
+  sharesUserTotal?: boolean;
 }
 
 // A cup serving anchors every spoon: 1 cup = 16 tbsp = 48 tsp. Deriving the
@@ -4959,6 +4970,10 @@ export function statedQuickItem(s: StatedPer100, it: ExtractedItem): ParsedItem 
 export interface StatedCapture {
   /** For the whole meal (extract's stated_meal_total). */
   meal: StatedTotal | null;
+  /** The foods `meal` is for, when it is for only some of the message's:
+   *  "280 cals of poha + vegetable dalia" among thirteen other foods. Absent
+   *  when it is for everything. */
+  mealFoods?: string[];
   /** For one line each: totals statedFor could not put on a per-100 basis. */
   lines: { name: string; correctsFoodName: string | null; totals: StatedTotal }[];
   /** Numbers the user wrote that could not be used, with why. Traced, so "my
@@ -4981,7 +4996,19 @@ export function captureStatedTotals(extMealTotal: unknown, extItems: ExtractedIt
   const meal = readStatedTotal(extMealTotal);
   const rawMeal = extMealTotal && typeof extMealTotal === "object" ? Object.values(extMealTotal as Record<string, unknown>) : [];
   if (!meal && rawMeal.some((v) => typeof v === "number")) ignored.push("meal total past what any meal carries");
-  return { meal, lines, ignored };
+  const named = extMealTotal && typeof extMealTotal === "object" ? (extMealTotal as Record<string, unknown>).foods : null;
+  const foods = Array.isArray(named)
+    ? named.filter((f): f is string => typeof f === "string" && !!f.trim()).map((f) => f.trim().slice(0, 120))
+    : [];
+  // Every food named means the whole message: the old meaning, kept exactly.
+  const some = foods.length > 0 && extItems.some((it) => !foods.some((f) => sameFood(foodLabel(it), f)));
+  return { meal, lines, ignored, ...(meal && some ? { mealFoods: foods } : {}) };
+}
+
+/** One food named twice: the same words, or every word of one in the other. */
+function sameFood(a: string, b: string): boolean {
+  const ka = memoryKey(a), kb = memoryKey(b);
+  return (!!ka && ka === kb) || wordsOverlap(a, b);
 }
 
 /** The one line a named total belongs to, or -1 when it is not exactly one. */
@@ -5043,21 +5070,30 @@ export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, step
     steps.push({ iter: 8, tool: "user_stated_total", input: { line: t.name }, result: { applied: true, kcal: out[i].kcal } });
   }
 
-  if (cap.meal) {
+  // A total for only some of the foods is shared by those lines alone. Spread
+  // over the whole message it shrank every food: "280 cals of poha + vegetable
+  // dalia" in a 14-food day logged the whole day at 280 kcal (eval, 2026-11-05).
+  const scope = cap.meal && cap.mealFoods
+    ? out.map((it, i) => (cap.mealFoods!.some((f) => sameFood(it.food_name, f) || (!!it.said_name && sameFood(it.said_name, f))) ? i : -1)).filter((i) => i >= 0)
+    : out.map((_, i) => i);
+  if (cap.meal && scope.length === 0) {
+    steps.push({ iter: 8, tool: "user_stated_total", input: { meal: cap.meal, foods: cap.mealFoods }, result: { applied: false, reason: "no line for the foods it names" } });
+  } else if (cap.meal) {
     const meal = cap.meal;
-    const fixedIdx = out.map((it, i) => (it.source === "manual" ? i : -1)).filter((i) => i >= 0);
-    const restIdx = out.map((_, i) => i).filter((i) => !fixedIdx.includes(i));
+    const fixedIdx = scope.filter((i) => out[i].source === "manual");
+    const restIdx = scope.filter((i) => !fixedIdx.includes(i));
     const left = restIdx.length ? remainingTotal(meal, fixedIdx.map((i) => out[i])) : null;
     // The total wins: when the user's own lines leave nothing to share, every
     // line shares the total.
-    const pool = left ? restIdx : out.map((_, i) => i);
+    const pool = left ? restIdx : scope;
     const target = left ?? meal;
-    if (pool.length === 1 && out.length === 1) {
-      out[0] = {
-        ...honourLineTotals(out[0], meal),
+    if (pool.length === 1 && scope.length === 1) {
+      const i = scope[0];
+      out[i] = {
+        ...honourLineTotals(out[i], meal),
         source: "manual",
         numbers_tier: "precise",
-        assumption: totalNote(meal, "meal"),
+        assumption: totalNote(meal, cap.mealFoods ? "line" : "meal"),
         confidence: "high",
       };
     } else {
@@ -5080,14 +5116,14 @@ export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, step
           // exists.
           source: "estimate",
           numbers_tier: "fast",
-          assumption: shareNote(meal),
+          assumption: shareNote(meal, cap.mealFoods ? "foods" : "meal"),
           confidence: "medium",
         };
       });
     }
     changed = true;
     steps.push({
-      iter: 8, tool: "user_stated_total", input: { meal },
+      iter: 8, tool: "user_stated_total", input: { meal, ...(cap.mealFoods ? { foods: cap.mealFoods } : {}) },
       result: { applied: true, lines: pool.length, kept: left ? fixedIdx.length : 0, kcal: round1(out.reduce((a, it) => a + it.kcal, 0)) },
     });
   }
@@ -7371,6 +7407,14 @@ async function runParseMealCore(
         steps.push({ iter: 1, tool: "user_stated", input: { item: item.name }, result: { lookup: "skipped", total: userTotal } });
         return { ...item, candidates: [], userTotal } as ResolvedItem;
       }
+      // The same for a food inside a total the user gave for a few foods
+      // together: their number answers it, and decide's estimate only shapes
+      // its share. A total for the whole message keeps its lookups.
+      if (statedOut.mealFoods?.some((f) => sameFood(foodLabel(item), f))) {
+        toolCalls.push("user_stated");
+        steps.push({ iter: 1, tool: "user_stated", input: { item: item.name }, result: { lookup: "skipped", total: "shared" } });
+        return { ...item, candidates: [], sharesUserTotal: true } as ResolvedItem;
+      }
       return resolveOneItem(
         deps,
         item,
@@ -7401,7 +7445,7 @@ async function runParseMealCore(
     // kind answer is what lets a branded product with nothing of ours reach
     // the label lookup below. With no brand there is nothing to ask.
     // Nor a line the user gave a total for: it skipped the lookup on purpose.
-    const asked = resolved.map((r) => !r.resolvedIdentity && !r.userTotal && (r.candidates.length > 0 || !!r.brand?.trim()));
+    const asked = resolved.map((r) => !r.resolvedIdentity && !r.userTotal && !r.sharesUserTotal && (r.candidates.length > 0 || !!r.brand?.trim()));
     if (asked.some(Boolean)) {
       // Catalog rows only. A FatSecret row carries "fs:<id>", which is not a
       // foods id: one in the list fails the whole lookup. Its origin is its
