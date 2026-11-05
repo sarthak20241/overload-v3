@@ -1,11 +1,13 @@
 -- Account deletion also removes the food box traces (food_bar_traces,
--- 20261105120000). They hold the user's own food text, chat turns and waiting
+-- 20261105120000) and the parse traces (parse_traces). They hold the user's own food text, chat turns and waiting
 -- meals; without this a deleted account's rows would stay up to the 30-day
 -- retention job.
 --
 -- Body copied from the LIVE definition (pg_get_functiondef on prod,
 -- 2026-11-05, md5 df87f2afec766c47b689b512acfc971f, identical to
--- 20261102120000). The only change is the one food_bar_traces line.
+-- 20261102120000). The only changes are two lines: food_bar_traces, and
+-- parse_traces, which holds the same food text and was never removed on
+-- account deletion before.
 -- Must run after 20261105120000, which creates the table.
 
 CREATE OR REPLACE FUNCTION public.delete_user_data(p_user_id text)
@@ -91,6 +93,7 @@ begin
 
   delete from public.coach_traces where user_id = p_user_id;
   delete from public.food_bar_traces where user_id = p_user_id;
+  delete from public.parse_traces where user_id = p_user_id;
   delete from public.coach_trials where clerk_user_id = p_user_id;
   delete from public.ai_coach_rate_limit where user_id = p_user_id;
   -- Chat history tables exist only where 0042 was applied (not on the live

@@ -346,3 +346,12 @@ Deno.test("a big step recorded live is cut, not dropped whole", () => {
   assertEquals(t.steps[0].result, { ok: true });
   assertEquals(fitSteps(t.steps).kept.length, 1);
 });
+
+Deno.test("the step budget counts UTF-8 bytes, so multi-byte text cannot fit three times the budget", () => {
+  // 1300 Devanagari characters: about 1300 string length, about 3900 bytes.
+  const hindi = "दाल".repeat(433);
+  const steps = Array.from({ length: 200 }, (_, i) => ({ src: "parse", tool: `s${i}`, at_ms: i, result: hindi }));
+  const { kept } = fitSteps(steps);
+  const bytes = new TextEncoder().encode(JSON.stringify(kept)).length;
+  assert(bytes <= STEPS_BYTES_MAX + kept.length + 2, `kept ${bytes} bytes`);
+});

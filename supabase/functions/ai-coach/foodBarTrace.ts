@@ -455,8 +455,11 @@ export const STEPS_BYTES_MAX = 256_000;
 
 /** The steps that fit both caps, in order, and how many did not. */
 export function fitSteps(steps: TraceStep[]): { kept: TraceStep[]; dropped: number } {
+  // UTF-8 bytes, not string length: a Hindi food name is 3 bytes a character
+  // in the row, and the budget is a byte budget.
+  const enc = new TextEncoder();
   const size = (s: TraceStep) => {
-    try { return JSON.stringify(s).length; } catch { return STEP_PAYLOAD_MAX; }
+    try { return enc.encode(JSON.stringify(s)).length; } catch { return STEP_PAYLOAD_MAX; }
   };
   // The last steps are the ones a review wants most (the agent's outcome, the
   // auto-log, edge timing), so they get a reserve of their own and are fitted
