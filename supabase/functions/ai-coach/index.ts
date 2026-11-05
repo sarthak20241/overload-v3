@@ -874,6 +874,8 @@ function startFoodAgent(args: {
     if (fb) {
       let at = t0 - fb.t0;
       for (const [i, turn] of out.turns.entries()) {
+        // runFoodAgent makes exactly one model call per turn and adds no turn
+        // for a failed call (it ends the run), so call i belongs to turn i.
         at = callEnds[i] ?? at + turn.ms;
         fb.step({
           src: "agent",

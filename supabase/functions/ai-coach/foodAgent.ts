@@ -451,13 +451,16 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
 
     const blocks = (res.data?.content ?? []) as Record<string, unknown>[];
     const uses = blocks.filter((b) => b?.type === "tool_use") as unknown as ToolUse[];
-    turns.push({
+    // One model call, one turn: index.ts stamps turn i at call i's end
+    // (startFoodAgent callEnds). A failed call returns above, before a turn.
+    const thisTurn: AgentTurn = {
       turn,
       ms: Date.now() - t0,
       tools: uses.map((u) => ({ name: u.name, input: u.input })),
       input_tokens: res.data?.usage?.input_tokens ?? null,
       output_tokens: res.data?.usage?.output_tokens ?? null,
-    });
+    };
+    turns.push(thisTurn);
     if (uses.length === 0) return { kind: "failed", reason: "no_tool_call", turns };
 
     // A finish ends the agent even when reads came with it: the model has
@@ -483,7 +486,7 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
       remember(seen, out);
       return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) };
     }));
-    turns[turns.length - 1].results = uses.map((u, i) => ({ name: u.name, summary: summarize(outs[i]) }));
+    thisTurn.results = uses.map((u, i) => ({ name: u.name, summary: summarize(outs[i]) }));
     messages.push({ role: "assistant", content: blocks }, { role: "user", content: results });
   }
   // Unreachable: the last turn always returns. Kept so a future edit to the
