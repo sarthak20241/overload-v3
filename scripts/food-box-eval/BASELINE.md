@@ -47,7 +47,7 @@ shows only when a live adapter re-runs the case.
 | nov5-latte-and-local-coffee | FAIL | line:^(?!.*latte).*coffee |
 | nov5-latte-label-lookup | FAIL | line:latte |
 | nov5-user-gives-menu-number | pass |  |
-| oct22-save-and-log-part | FAIL | does:save; savedMeal |
+| oct22-save-and-log-part | FAIL | does:save; line:paneer; savedMeal |
 | oct22-did-you-save | pass |  |
 | oct22-please-just-save | FAIL | does:save; savedMeal |
 | oct21-make-it-a-meal-plus-oil | FAIL | does:save; savedMeal |

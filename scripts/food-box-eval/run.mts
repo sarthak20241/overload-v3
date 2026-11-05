@@ -15,6 +15,8 @@
 //
 // Options: ONLY=id,id  TAG=correction  VERBOSE=1 (print passing checks too)
 //          WRITE_BASELINE=1 (rewrite BASELINE.md from this run)
+//          MIN_PASS=30 (exit 1 when fewer cases pass; for a future CI gate.
+//          Without it the run always exits 0.)
 
 import { writeFileSync } from "node:fs";
 import { CASES } from "./cases.ts";
@@ -108,4 +110,10 @@ if (env("WRITE_BASELINE") === "1") {
   ];
   writeFileSync(new URL("./BASELINE.md", import.meta.url), lines.join("\n"));
   console.log("\nWrote scripts/food-box-eval/BASELINE.md");
+}
+
+const minPass = env("MIN_PASS") ? Number(env("MIN_PASS")) : null;
+if (minPass !== null && Number.isFinite(minPass) && passed.length < minPass) {
+  console.error(`\n${passed.length} passed, below MIN_PASS=${minPass}.`);
+  process.exit(1);
 }

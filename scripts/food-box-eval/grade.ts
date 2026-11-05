@@ -65,7 +65,8 @@ export function grade(c: FoodBoxCase, o: Outcome): Grade {
     }
     // EVERY matching line is judged, not only the first: a stray duplicate
     // with the wrong numbers must fail even when the case does not ask for
-    // noDuplicates (PR #347 review).
+    // noDuplicates. Judging only the first once let "Latte Coffee" (135 kcal)
+    // stand in for a 2 kcal hot coffee.
     const bad: string[] = [];
     for (const l of hits) {
       const tag = hits.length > 1 ? `"${l.name}": ` : "";
@@ -75,7 +76,9 @@ export function grade(c: FoodBoxCase, o: Outcome): Grade {
         bad.push(`${tag}protein ${l.protein_g ?? "none"} not in ${showRange(spec.protein_g)}`);
       }
       if (spec.source && !spec.source.includes(l.source ?? "")) bad.push(`${tag}source ${l.source ?? "none"} not in [${spec.source.join(",")}]`);
-      if (spec.meal && l.meal && l.meal !== spec.meal) bad.push(`${tag}meal ${l.meal} is not ${spec.meal}`);
+      // Strict: a spec that names a meal needs a line that says which meal it
+      // is in. An adapter that drops the meal must not pass by saying nothing.
+      if (spec.meal && l.meal !== spec.meal) bad.push(`${tag}meal ${l.meal ?? "missing"} is not ${spec.meal}`);
     }
     add(label, bad.length === 0, bad.join("; ") || undefined);
   }

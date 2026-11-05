@@ -63,6 +63,9 @@ Deno.test("every line a spec matches is judged, so a stray duplicate with wrong 
 Deno.test("a line on the wrong meal fails its meal check", () => {
   const c = base({ lines: [{ match: "rajma", meal: "dinner" }] });
   assertEquals(failed(c, out([L("Rajma", 220, { meal: "lunch" })])), ["line:rajma"]);
+  // A line that does not say its meal does not pass a meal check.
+  assertEquals(failed(c, out([L("Rajma", 220)])), ["line:rajma"]);
+  assertEquals(failed(c, out([L("Rajma", 220, { meal: "dinner" })])), []);
 });
 
 Deno.test("a line spec with no matching line fails", () => {

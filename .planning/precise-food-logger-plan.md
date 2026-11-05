@@ -67,6 +67,13 @@ Removed: the chat reply step, the separate save step, and the router as the boss
 - the app's version is older than the server's, or
 - the agent asks for something older (an earlier card, older turns).
 
+**The version check (one rule, done by the database):**
+
+1. Each card has a `version` number on the server. The app sends the version its copy started from (`base_version`).
+2. The server uses the app's copy only when `base_version` equals the server's version. Otherwise it uses its own copy, works on that, and sends it back, so the app replaces its stale copy.
+3. The save is one conditional write: "write version N+1 only if the current version is still N" (`update ... where card_id = $1 and version = $2`). If it changed in between (two devices, or a retry), nothing is written, and the server reloads and runs the message again once.
+4. One message changes one card version. A retry of the same message (same `client_id`) does not make a second version.
+
 Why not keep it in the server's memory: each food box message can start a new copy of the edge function (the logs show "booted" and "shutdown" around each message on Nov 5). Server memory does not live from one message to the next. The app's memory and the database do.
 
 Tables (names are a first idea):
@@ -89,13 +96,13 @@ A save card no longer replaces the meal card. It is a second card in the same th
 first_message: "i lunch i had 100g jeera rice and milky mist paneer sabji made of 60g paneer ..."
 summary: Logging lunch. User says the sabji is 60 g low fat paneer + oil + onion, about 150 kcal.
 open_card (lunch, Nov 5, v4):
-  1. Jeera rice, 100 g, 171 kcal [your log, Oct 30]
-  2. Milky Mist low fat paneer sabji, 1 serving, 150 kcal [your number]
-  3. Soyabean sabji, 15 g, 18 kcal [catalog]
-  4. Methi aloo, 20 g, 27 kcal [catalog]
+  [L1] Jeera rice, 100 g, 171 kcal [your log, Oct 30]
+  [L2] Milky Mist low fat paneer sabji, 1 serving, 150 kcal [your number]
+  [L3] Soyabean sabji, 15 g, 18 kcal [catalog]
+  [L4] Methi aloo, 20 g, 27 kcal [catalog]
 last_turns: (the last 3, word for word)
 matches (for this message, using today's cutoffs):
-  saved meal "Milky Mist Low Fat Paneer Sabji": 1 serving, 150 kcal, P 11 C 4 F 10. Score 0.95. Saved Nov 5. Same food as card line 2.
+  saved meal "Milky Mist Low Fat Paneer Sabji": 1 serving, 150 kcal, P 11 C 4 F 10. Score 0.95. Saved Nov 5. Same food as card line [L2].
   your food "Jeera Rice": logged 6 times, usually 100 g, 171 kcal per 100 g (label). Score 0.92.
   maybe your food "Milky Mist low fat paneer": score 0.64 (check before using).
 index: 2 earlier cards in this thread (save card v1, lunch v3). 12 saved meals. 41 foods you log. Diary: 30 days.
@@ -193,7 +200,15 @@ What exists today:
 5. **Write rules stay where they are:** the trigger runs after the user adds a card. New rule: a `guess` never replaces a `user_typed` or `label` row; it waits as a lower version.
 6. **Saved meal match:** when Jev finds a saved meal at 0.8 or more, it goes into the agent's hot context ("saved meal match: Milky Mist Low Fat Paneer Sabji, 0.95, 150 kcal"). The agent reads the user's words ("use that") next to the match, and calls `edit_line` on the right line. Code then copies the saved meal's numbers. Today the parser only shows the match as a button, it can pick the wrong line, and it cannot follow an instruction like "use that".
 
-Migration of today's rows: a fixed rule picks the current row (newest row the user typed, else highest trust, else newest). The owner approves the result once. **End users are never asked.**
+Migration of today's rows: today's `manual` cannot tell what the user typed from what was copied, so the migration never trusts that word alone.
+
+1. **Recover the real source from evidence**, row by row:
+   - `user_typed` only with proof: the line's trace has a `user_stated` / `user_stated_total` step, or its note starts "Your numbers", or the user changed the numbers by hand in the edit sheet (`loggedEntryEdit`).
+   - `catalog`, `label` or `web`: the line has a food row id, or its trace shows that lookup.
+   - Copied lines ("Same as you logged on ...", diary copies, saved meals, card lines kept through a correction): follow the copy back to the line it came from, and take that line's source.
+2. **No proof: `unknown`.** It is trusted like a guess, below catalog. It is never promoted to `user_typed`.
+3. Then the fixed rule picks the current row: newest `user_typed`, else highest trust, else newest.
+4. The owner sees the list and approves it once. **End users are never asked.**
 
 **Questions to end users:** at most 1 or 2 choices, with a default already applied. The card shows the default; the user taps only to change it.
 
@@ -207,11 +222,16 @@ Real traffic (59 agent runs): 15 used 1 turn, 31 used 2, 5 used 3, none used mor
 | `log_foods(text)` | Today's pipeline: extract, search (memory, cache, catalog, web), decide. Returns lines with sources. On the first message, its result is already running. |
 | `find_label(product)` | Helper for one product's web label. Returns per-100, serving, link, confidence. Its search steps stay out of the agent's context. |
 | `build_recipe(name, parts)` | Gets each part's row, adds them up in code. |
-| `add_lines`, `edit_line(n, change)`, `remove_lines(n...)` | Change the open card one line at a time. `edit_line` changes line n only. |
+| `add_lines`, `edit_line(line_id, change)`, `remove_lines(line_ids)` | Change the open card one line at a time. `edit_line` changes that line only. |
 | `restore_card(id, version)` | Brings back an earlier card. |
 | `save_meal(from_card, lines, name)` | Saves a meal with all macros copied. |
 | `recall_food`, `read_diary`, `list_saved_meals`, `read_thread`, `search_threads` | Warm reads. |
 | `reply(text)` | The line shown to the user. Always last. |
+
+**Card changes in one turn have a fixed order.** Reads and lookups in one turn run in parallel. Card changes do not:
+- Every line has a stable `line_id` (shown in the hot context as `[L2]`, not a position). A removal never renumbers what another call points at.
+- Code collects all card changes from the turn and applies them in one fixed order: edits, then removals, then additions, then a restore (a restore replaces the whole card, so it cannot share a turn with line changes: code rejects that mix and asks the agent to choose).
+- Two changes to the same `line_id` in one turn are rejected with a message to the agent. Nothing is half-applied.
 
 ## 8. Pipeline on the first message (keep)
 
