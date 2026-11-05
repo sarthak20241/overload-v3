@@ -2550,6 +2550,7 @@ function WorkoutCard({
           suppressHighlighting
           accessibilityRole="button"
           accessibilityState={{ expanded: subOpen }}
+          accessibilityHint={subOpen ? undefined : 'Shows the rest'}
         >
           {subLine}
         </Text>
