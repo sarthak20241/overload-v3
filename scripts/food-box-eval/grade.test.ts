@@ -104,6 +104,8 @@ Deno.test("a claim must match the action it names: 'saved' after only an edit is
   // "logged" after only a save is false too.
   assertEquals(failed(c, out(null, ["save"], "I've logged your lunch.")), ["reply makes no false claim"]);
   assertEquals(failed(c, out([L("rice", 171)], ["log"], "I've logged your lunch.")), []);
+  // A bare verb is plain talk, not a second claim: "store" here is no save claim.
+  assertEquals(failed(c, out([L("dal", 150)], ["log"], "I've logged the dal; store the rest in the fridge.")), []);
 });
 
 Deno.test("reply mustMention / mustNotSay", () => {

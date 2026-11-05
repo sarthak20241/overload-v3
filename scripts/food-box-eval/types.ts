@@ -33,6 +33,10 @@ export interface Line {
  *  ask      asked the user a question back */
 export type Action = "log" | "edit" | "save" | "answer" | "restore" | "look_up" | "ask";
 
+/** The actions that change what is on the card. One list, so the grader and
+ *  every adapter agree on it: a new card-changing action goes here. */
+export const CARD_ACTIONS: readonly Action[] = ["log", "edit", "restore"];
+
 export interface SavedMeal {
   name: string;
   kcal: number;

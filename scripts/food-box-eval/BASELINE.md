@@ -6,6 +6,9 @@ The recorded adapter grades what the live food box served on the day of each mes
 (parse_traces, 2026-10-02 to 2026-11-05). It is not a run of today's main: a later fix
 shows only when a live adapter re-runs the case.
 
+The false-claim check uses the live `claimsAction` (`supabase/functions/ai-coach/foodIntent.ts`).
+A change there can move this baseline with no change to the cases.
+
 **11 of 43 recorded cases pass.** 7 cases have no recording (synthetic).
 
 | Tag | Passed |

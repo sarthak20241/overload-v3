@@ -101,6 +101,9 @@ if (env("WRITE_BASELINE") === "1") {
     "(parse_traces, 2026-10-02 to 2026-11-05). It is not a run of today's main: a later fix",
     "shows only when a live adapter re-runs the case.",
     "",
+    "The false-claim check uses the live `claimsAction` (`supabase/functions/ai-coach/foodIntent.ts`).",
+    "A change there can move this baseline with no change to the cases.",
+    "",
     `**${passed.length} of ${ran.length} recorded cases pass.** ${results.length - ran.length} cases have no recording (synthetic).`,
     "",
     "| Tag | Passed |",
@@ -121,7 +124,12 @@ if (env("WRITE_BASELINE") === "1") {
 }
 
 const minPass = env("MIN_PASS") ? Number(env("MIN_PASS")) : null;
-if (minPass !== null && Number.isFinite(minPass) && passed.length < minPass) {
+if (minPass !== null && !(Number.isInteger(minPass) && minPass >= 0)) {
+  // A gate that silently turns itself off is worse than no gate.
+  console.error(`\nMIN_PASS must be a whole number, got "${env("MIN_PASS")}".`);
+  process.exit(1);
+}
+if (minPass !== null && passed.length < minPass) {
   console.error(`\n${passed.length} passed, below MIN_PASS=${minPass}.`);
   process.exit(1);
 }

@@ -6,7 +6,7 @@
 // (router + parser today, one agent later) is scored by the same rules.
 
 import { claimsAction } from "../../supabase/functions/ai-coach/foodIntent.ts";
-import type { CheckResult, FoodBoxCase, Grade, Line, Outcome, Range } from "./types.ts";
+import { CARD_ACTIONS, type CheckResult, type FoodBoxCase, type Grade, type Line, type Outcome, type Range } from "./types.ts";
 
 const re = (src: string) => new RegExp(src, "i");
 
@@ -37,9 +37,12 @@ export function nameKey(name: string): string {
  *  or "added" claims a log. A claim passes only when THAT action happened, so
  *  "I've saved it" after a plain edit is still a false claim. */
 function claimedActions(text: string): Set<"save" | "log"> {
+  // Done or doing forms only ("saved", "adding"): a bare "add" or "store" is
+  // an offer or plain talk ("I'll add that if you like", "store it cold").
+  // Judged only when claimsAction already found a claim in the reply.
   const out = new Set<"save" | "log">();
-  if (/\b(sav(e|ed|ing)|stor(e|ed|ing))\b/i.test(text)) out.add("save");
-  if (/\b(log(ged|ging)?|add(ed|ing)?|record(ed|ing)?|updat(e|ed|ing))\b/i.test(text)) out.add("log");
+  if (/\b(saved|saving|stored)\b/i.test(text)) out.add("save");
+  if (/\b(logged|logging|added|adding|recorded|recording|updated|updating)\b/i.test(text)) out.add("log");
   return out;
 }
 
@@ -116,7 +119,7 @@ export function grade(c: FoodBoxCase, o: Outcome): Grade {
     for (const m of e.reply.mustMention ?? []) add(`reply mentions /${m}/`, re(m).test(text), text.slice(0, 120) || "(no reply)");
     for (const m of e.reply.mustNotSay ?? []) add(`reply avoids /${m}/`, !re(m).test(text));
     if (e.reply.noFalseClaim) {
-      const changedCard = o.actions.some((a) => a === "log" || a === "edit" || a === "restore");
+      const changedCard = o.actions.some((a) => CARD_ACTIONS.includes(a));
       const saved = o.actions.includes("save");
       let honest = true;
       if (text && claimsAction(text)) {
