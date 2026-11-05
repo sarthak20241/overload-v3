@@ -92,6 +92,7 @@ import {
   onboardingIdentity,
 } from '@/lib/onboarding';
 import { buildAnonIntake, requestAnonOnboardingProgram } from '@/lib/onboardingDrona';
+import { requestOnboardingProgramSignedIn } from '@/lib/onboardingPlanRoute';
 import { weekPatternFor, shortDayLabel, REST } from '@/lib/weekPattern';
 import { getDeviceId } from '@/lib/deviceId';
 import { setPendingOnboarding, saveOnboardingProgram } from '@/lib/pendingOnboarding';
@@ -432,29 +433,39 @@ export default function OnboardingScreen() {
         // is no longer generated here: it is built after sign-up from the Goal
         // screen, so it lands against a real user id instead of a guest blob.
         let phases = 0;
-        if (isSignedIn && getToken) {
-          // Signed-in (re-onboarding / demo): authenticated coach path. One
-          // request, so it reserves one of the day's coach slots.
-          const token = await getToken();
-          if (!token) throw new Error('no token');
-          phases = applyProgram(
-            await requestDronaOnboardingProgram({
-              token,
-              freshToken: () => getToken({ skipCache: true }),
-              message: buildOnboardingProgramMessage(answers, programExtras),
-            }),
-          );
-        } else {
-          // Guest-first funnel: no account yet. Anonymous, device-rate-limited
-          // route. A 429 or any error just falls through to the deterministic
-          // program below; the reveal never knows.
+        // The guest path: structured intake + device id, no account needed.
+        const requestGuest = async () => {
           const deviceId = await getDeviceId();
           const intake = buildAnonIntake(answers, {
             weeklyRateKg: weeklyRate,
             direction,
             targets: targetsPayload,
           });
-          phases = applyProgram(await requestAnonOnboardingProgram({ deviceId, intake }));
+          return requestAnonOnboardingProgram({ deviceId, intake });
+        };
+        let via: string = 'guest';
+        if (isSignedIn && getToken) {
+          // Signed-in (re-onboarding / signed in before the intake). The
+          // authenticated path is Pro-only (generate_program), so a free user
+          // gets 402 and is sent down the guest path instead of the
+          // deterministic fallback (lib/onboardingPlanRoute.ts).
+          const token = await getToken();
+          if (!token) throw new Error('no token');
+          const res = await requestOnboardingProgramSignedIn(
+            () => requestDronaOnboardingProgram({
+              token,
+              freshToken: () => getToken({ skipCache: true }),
+              message: buildOnboardingProgramMessage(answers, programExtras),
+            }),
+            requestGuest,
+          );
+          via = res.via;
+          phases = applyProgram(res.program);
+        } else {
+          // Guest-first funnel: no account yet. Anonymous, device-rate-limited
+          // route. A 429 or any error just falls through to the deterministic
+          // program below; the reveal never knows.
+          phases = applyProgram(await requestGuest());
         }
         // Event names kept as they are so the existing funnel still lines
         // up; what onboarding generates is now the program, so it reports
@@ -462,6 +473,7 @@ export default function OnboardingScreen() {
         track('onboarding_plan_generated', {
           source: 'drona',
           authed: !!(isSignedIn && getToken),
+          via,
           phases,
           duration_ms: Date.now() - genStartedAt,
         });

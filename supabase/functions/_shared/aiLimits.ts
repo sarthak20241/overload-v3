@@ -9,7 +9,10 @@
 // so this file is the one place they are set.
 export const AI_LIMITS = {
   freeChat: 3,
-  freeFood: 3,
+  // 9 since 2026-11-05 (was 3): new free users ran out of AI food logs within
+  // hours of joining. Raised quietly to watch real use; the app's own copy
+  // (profile, paywall) still says 3, on purpose.
+  freeFood: 9,
   // The old Pro daily caps. Enforced ONLY while the cooldown migration is not
   // applied yet (reserveProSlot falls back to the old RPC), so a deploy that
   // lands before the migration keeps today's behaviour instead of failing.
