@@ -221,7 +221,7 @@ export const MAX_NEW_PER_PLAN = 8;
  * past this, a retry plus the fills would not land before the client's 75s
  * abort.
  */
-export const SKELETON_RETRY_BUDGET_MS = 35_000;
+export const SKELETON_RETRY_BUDGET_MS = 25_000;
 
 /**
  * Clean an invented name before it can become a permanent custom exercise:
@@ -556,8 +556,10 @@ export async function runGeneratePlan(
   // Not when the first try was slow. The onboarding client gives up at 75s
   // (lib/onboardingDrona.ts), and a second skeleton plus the fills must fit
   // inside that. The two failed skeletons spent 2000 tokens in ~15s, so a
-  // runaway to the 4000 cap is ~30s: two of those plus ~10s of fills still
-  // fit. A first try slower than this budget means something else is wrong.
+  // runaway to the 4000 cap is ~30s. Worst case that still retries: a first
+  // try at the 25s budget, a ~30s runaway retry, ~10s of fills, and a few
+  // seconds of setup before the first call: ~68s, under 75s. A 35s budget
+  // would have allowed ~80s.
   let skeleton = first.skeleton;
   if (!skeleton && firstMs > SKELETON_RETRY_BUDGET_MS) {
     const head = first.r.text.replace(/\s+/g, " ").trim().slice(0, 200) || "<empty>";

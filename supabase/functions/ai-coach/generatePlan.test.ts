@@ -274,7 +274,10 @@ Deno.test("a slow empty skeleton is not retried, so the client is not left waiti
   assertEquals(r.plan, null);
   assertEquals(labels, ["skeleton"]);
   assertEquals(r.error?.includes("stop=max_tokens blocks=thinking"), true);
-  assertEquals(r.error?.includes("no retry after 36s"), true);
+  assertEquals(r.error?.includes(`no retry after ${(SKELETON_RETRY_BUDGET_MS + 1000) / 1000}s`), true);
+  // Worst case that still retries: budget + a 4000-token runaway (~30s) +
+  // fills (~10s) + setup (~3s) must land before the client's 75s abort.
+  assertEquals(SKELETON_RETRY_BUDGET_MS + 30_000 + 10_000 + 3_000 < 75_000, true);
 });
 
 Deno.test("an empty skeleton inside the budget is still retried", async () => {
