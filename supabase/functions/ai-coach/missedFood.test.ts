@@ -10,7 +10,7 @@
 //   3. The stated 280 kcal then found no line by its name and was dropped.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { type CandidateFood, type ParseMealDeps, type ParsedItem, runParseMeal } from "./parseMeal.ts";
+import { type CandidateFood, linesForFoods, type ParseMealDeps, type ParsedItem, runParseMeal } from "./parseMeal.ts";
 
 const BERRY: CandidateFood = {
   food_id: "row-berry", name: "Groundcherries (Cape-Gooseberries or Poha)", brand: null, base_unit: "g",
@@ -163,4 +163,12 @@ Deno.test("a total that names every food is still the whole meal's", async () =>
   const r = await runParseMeal(h.deps, { ...BASE, text: "1 whole egg and a bowl of poha, 300 cals" });
   assertEquals(Math.round(r.parsed!.items.reduce((a, i) => a + i.kcal, 0)), 300);
   assertEquals(r.parsed!.items[0].assumption, "Scaled to fit your meal total: 300 kcal");
+});
+
+Deno.test("a total for some foods takes their own lines, never a look-alike", () => {
+  const at = (...names: string[]) => names.map((food_name) => ({ ...pohaLine, food_name }) as unknown as ParsedItem);
+  // "egg" has its own line, so "Egg whites" is not in the total.
+  assertEquals(linesForFoods(at("Egg", "Egg whites", "Poha (veggie, cooked)", "Toast"), ["egg", "poha"]), [0, 2]);
+  // No line called "egg" and two that look like it: neither is guessed.
+  assertEquals(linesForFoods(at("whole egg", "egg whites", "Poha"), ["egg"]), []);
 });

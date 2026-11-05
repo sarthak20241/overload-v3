@@ -5011,6 +5011,22 @@ function sameFood(a: string, b: string): boolean {
   return (!!ka && ka === kb) || wordsOverlap(a, b);
 }
 
+/** The lines a total for these foods is shared by, in order. A food takes
+ *  every line with exactly its name; with none, the one line whose words
+ *  overlap it, and nothing when several do. Loose matching alone let a total
+ *  for "egg" take "egg whites" as well. */
+export function linesForFoods(items: ParsedItem[], foods: string[]): number[] {
+  const names = (it: ParsedItem) => [it.food_name, it.said_name].filter((n): n is string => !!n);
+  const picked = new Set<number>();
+  for (const f of foods) {
+    const key = memoryKey(f);
+    const exact = items.map((it, i) => (key && names(it).some((n) => memoryKey(n) === key) ? i : -1)).filter((i) => i >= 0);
+    const loose = exact.length ? exact : items.map((it, i) => (names(it).some((n) => sameFood(n, f)) ? i : -1)).filter((i) => i >= 0);
+    if (exact.length || loose.length === 1) loose.forEach((i) => picked.add(i));
+  }
+  return [...picked].sort((a, b) => a - b);
+}
+
 /** The one line a named total belongs to, or -1 when it is not exactly one. */
 function lineForTotal(items: ParsedItem[], t: StatedCapture["lines"][number]): number {
   // An empty key (a name in another script, or only symbols) would "contain"
@@ -5074,7 +5090,7 @@ export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, step
   // over the whole message it shrank every food: "280 cals of poha + vegetable
   // dalia" in a 14-food day logged the whole day at 280 kcal (eval, 2026-11-05).
   const scope = cap.meal && cap.mealFoods
-    ? out.map((it, i) => (cap.mealFoods!.some((f) => sameFood(it.food_name, f) || (!!it.said_name && sameFood(it.said_name, f))) ? i : -1)).filter((i) => i >= 0)
+    ? linesForFoods(out, cap.mealFoods)
     : out.map((_, i) => i);
   if (cap.meal && scope.length === 0) {
     steps.push({ iter: 8, tool: "user_stated_total", input: { meal: cap.meal, foods: cap.mealFoods }, result: { applied: false, reason: "no line for the foods it names" } });
