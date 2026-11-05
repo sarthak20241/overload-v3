@@ -408,18 +408,35 @@ export const STEPS_BYTES_MAX = 256_000;
 
 /** The steps that fit both caps, in order, and how many did not. */
 export function fitSteps(steps: TraceStep[]): { kept: TraceStep[]; dropped: number } {
-  const kept: TraceStep[] = [];
+  const size = (s: TraceStep) => {
+    try { return JSON.stringify(s).length; } catch { return STEP_PAYLOAD_MAX; }
+  };
+  // The last steps are the ones a review wants most (the agent's outcome, the
+  // auto-log, edge timing), so they get a reserve of their own and are fitted
+  // first. A step too big for what is left is skipped, never a stop: smaller
+  // steps after it still go in.
+  const tailFrom = Math.max(0, steps.length - TAIL_STEPS);
+  const keep = new Array<boolean>(steps.length).fill(false);
   let bytes = 0;
-  for (const s of steps) {
-    if (kept.length >= STEPS_MAX) break;
-    let n = 0;
-    try { n = JSON.stringify(s).length; } catch { n = STEP_PAYLOAD_MAX; }
-    if (bytes + n > STEPS_BYTES_MAX) break;
-    bytes += n;
-    kept.push(s);
-  }
+  let count = 0;
+  const fit = (from: number, to: number, budget: number) => {
+    for (let i = from; i < to; i++) {
+      if (count >= STEPS_MAX) return;
+      const n = size(steps[i]);
+      if (bytes + n > budget) continue;
+      bytes += n;
+      count++;
+      keep[i] = true;
+    }
+  };
+  fit(tailFrom, steps.length, TAIL_RESERVE_BYTES);
+  fit(0, tailFrom, STEPS_BYTES_MAX);
+  const kept = steps.filter((_, i) => keep[i]);
   return { kept, dropped: steps.length - kept.length };
 }
+/** How many of the last steps are fitted first, and the bytes kept for them. */
+const TAIL_STEPS = 10;
+const TAIL_RESERVE_BYTES = 40_000;
 const CALLS_MAX = 80;
 
 export function buildFoodBarTraceRow(i: FoodBarTraceInput): Record<string, unknown> {

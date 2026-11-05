@@ -315,3 +315,18 @@ Deno.test("the real extract payload with a card and earlier turns reads as seein
   assert(extract, "extract was called");
   assertEquals([extract!.saw_recent_turns, extract!.saw_card], [true, true]);
 });
+
+Deno.test("one oversized step does not cost the steps after it, and the last steps are kept", () => {
+  const huge = "h".repeat(STEP_PAYLOAD_MAX - 100);
+  const steps = [
+    ...Array.from({ length: 80 }, (_, i) => ({ src: "agent_parse:parse", tool: `big${i}`, at_ms: i, result: huge })),
+    { src: "agent", tool: "outcome", at_ms: 900, result: { kind: "log" } },
+    { src: "edge", tool: "__edge_timing", at_ms: 901 },
+  ];
+  const { kept, dropped } = fitSteps(steps);
+  const tools = kept.map((s) => s.tool);
+  assert(tools.includes("outcome") && tools.includes("__edge_timing"), "the tail survives");
+  assert(dropped > 0);
+  // Order is kept.
+  assertEquals(tools.slice(-2), ["outcome", "__edge_timing"]);
+});

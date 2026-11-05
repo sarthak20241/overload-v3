@@ -789,6 +789,7 @@ function startFoodAgent(args: {
     if (FOOD_INTENT_MODE !== "on" || !wantsFoodAgent(d, args.supportsCreate, cardOpen)) return null;
     if (!ANTHROPIC_API_KEY) return null;
     const t0 = Date.now();
+    const callEnds: number[] = [];
     const out = await runFoodAgent(
       {
         text: args.text,
@@ -806,6 +807,9 @@ function startFoodAgent(args: {
         callModel: async (b) => {
           const c0 = Date.now();
           const res = await callAnthropic(b, 15000);
+          // When each turn's model call ENDED: the turn's step is stamped
+          // there, so tool time between turns is real, not summed away.
+          if (fb) callEnds.push(Date.now() - fb.t0);
           // The agent is sent the earlier turns as messages and the card in
           // its opening text (foodAgent.ts openingText).
           recordAnthropicCall(fb, "agent", b, res, Date.now() - c0, {
@@ -869,8 +873,8 @@ function startFoodAgent(args: {
     // what each read returned. Stamped at the turn's end.
     if (fb) {
       let at = t0 - fb.t0;
-      for (const turn of out.turns) {
-        at += turn.ms;
+      for (const [i, turn] of out.turns.entries()) {
+        at = callEnds[i] ?? at + turn.ms;
         fb.step({
           src: "agent",
           tool: `turn_${turn.turn}`,
