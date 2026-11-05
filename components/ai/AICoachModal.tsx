@@ -2448,6 +2448,8 @@ function ChatScreen({
 // the rest instead of losing it behind the ellipsis.
 function BriefRationale({ text, color }: { text: string; color: string }) {
   const [open, setOpen] = useState(false);
+  // A refine swaps the text: start it closed again.
+  useEffect(() => setOpen(false), [text]);
   return (
     <Text
       style={[s.rationaleText, { color }]}

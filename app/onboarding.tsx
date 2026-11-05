@@ -1484,6 +1484,8 @@ const WELCOME_LINK = 'rgba(255,255,255,0.72)';
 /** A long line held to a few lines; a tap opens the rest. */
 function ClampedText({ text, lines, style }: { text: string; lines: number; style: StyleProp<TextStyle> }) {
   const [open, setOpen] = useState(false);
+  // New text starts closed again.
+  useEffect(() => setOpen(false), [text]);
   return (
     <Text
       style={style}
