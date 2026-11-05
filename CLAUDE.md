@@ -93,7 +93,7 @@ deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coac
 deno test --allow-all lib/sheetText.test.ts     # text boxes in Portal sheets: late owner values never put old text back (Android letter drops)
 deno test --allow-all lib/firstOpenUpdate.test.ts # fresh store install: newest update before onboarding, 5 s cap, never reloads an open app
 deno test --allow-all lib/signupTour.test.ts    # the film tour after sign-up: its words, the tap rules, no promise the plan is done
-deno test --allow-all lib/onboardingPlanRoute.test.ts # signed-in free user in onboarding: a 402 goes to the guest plan path, not the backup plan
+deno test --allow-all lib/onboardingPlanRoute.test.ts # signed-in user in onboarding: any 402 (Pro gate or other refusal) goes to the guest plan path, not the backup plan
 ```
 
 There are no configured lint or build scripts.

@@ -8,6 +8,12 @@
 // to 11-04. The guest path (mode 'onboarding_plan', device rate-limited)
 // builds the same program for anyone, so a 402 now goes there instead.
 //
+// ANY 402, not only pro_required: ai-coach also answers 402 for
+// drona_access_required and free_cap_hit. Each one means "this account may not
+// build it here", and the guest path is the right answer to all of them, so
+// the status alone decides. `guest_after_402` therefore means "the signed-in
+// path refused", not specifically "the Pro gate".
+//
 // No imports on purpose: lib/onboardingPlanRoute.test.ts runs it under Deno.
 
 /** Thrown by the authenticated request so a caller can read the status. */
@@ -21,7 +27,7 @@ export class OnboardingHttpError extends Error {
 export type OnboardingPlanVia = 'authed' | 'guest_after_402';
 
 /**
- * Runs `authed`; on a 402 (the Pro gate) runs `guest` instead. Any other
+ * Runs `authed`; on any 402 (the Pro gate, or another refusal) runs `guest` instead. Any other
  * failure is thrown as before, so the caller still falls back to the
  * deterministic program.
  */
