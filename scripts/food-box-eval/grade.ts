@@ -52,7 +52,13 @@ function linesOf(o: Outcome): Line[] {
 
 function sameCard(a: Line[] | null, b: Line[] | null): boolean {
   const norm = (c: Line[] | null) =>
-    (c ?? []).map((l) => `${nameKey(l.name)}|${Math.round(l.kcal)}|${l.grams ?? ""}|${l.quantity ?? ""}`).sort().join("\n");
+    (c ?? [])
+      .map((l) =>
+        [nameKey(l.name), Math.round(l.kcal), l.grams ?? "", l.quantity ?? "", l.protein_g ?? "", l.carb_g ?? "", l.fat_g ?? "", l.source ?? ""]
+          .join("|")
+      )
+      .sort()
+      .join("\n");
   return norm(a) === norm(b);
 }
 

@@ -55,6 +55,14 @@ if (picked.length === 0 || unknownIds.length > 0) {
   );
   process.exit(1);
 }
+// Checked before anything runs or is written: a bad value must not leave a
+// rewritten BASELINE.md behind, and a gate that silently turns itself off is
+// worse than no gate.
+const minPass = env("MIN_PASS") ? Number(env("MIN_PASS")) : null;
+if (minPass !== null && !(Number.isInteger(minPass) && minPass >= 0)) {
+  console.error(`MIN_PASS must be a whole number, got "${env("MIN_PASS")}".`);
+  process.exit(1);
+}
 // The baseline is the whole set. A filtered run must never overwrite it.
 if (env("WRITE_BASELINE") === "1" && (ONLY || TAG)) {
   console.error("WRITE_BASELINE=1 cannot be combined with ONLY or TAG: BASELINE.md covers every case.");
@@ -128,12 +136,6 @@ if (env("WRITE_BASELINE") === "1") {
   console.log("\nWrote scripts/food-box-eval/BASELINE.md");
 }
 
-const minPass = env("MIN_PASS") ? Number(env("MIN_PASS")) : null;
-if (minPass !== null && !(Number.isInteger(minPass) && minPass >= 0)) {
-  // A gate that silently turns itself off is worse than no gate.
-  console.error(`\nMIN_PASS must be a whole number, got "${env("MIN_PASS")}".`);
-  process.exit(1);
-}
 if (minPass !== null && passed.length < minPass) {
   console.error(`\n${passed.length} passed, below MIN_PASS=${minPass}.`);
   process.exit(1);

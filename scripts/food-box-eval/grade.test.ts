@@ -118,6 +118,10 @@ Deno.test("cardUnchanged compares names, kcal and amounts, not order", () => {
   const c = base({ cardUnchanged: true }, card);
   assertEquals(failed(c, out([L("dal", 150), L("roti", 240, { quantity: 2 })])), []);
   assertEquals(failed(c, out([L("Roti", 240, { quantity: 2 })])), ["cardUnchanged"]);
+  // A silent change to macros or source is a change too.
+  const sourced = base({ cardUnchanged: true }, [L("Dal", 150, { protein_g: 9, source: "catalog" })]);
+  assertEquals(failed(sourced, out([L("Dal", 150, { protein_g: 4, source: "catalog" })])), ["cardUnchanged"]);
+  assertEquals(failed(sourced, out([L("Dal", 150, { protein_g: 9, source: "manual" })])), ["cardUnchanged"]);
 });
 
 Deno.test("savedMeal needs a save with real macros", () => {

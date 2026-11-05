@@ -44,7 +44,7 @@ EVAL_VIA_CLI=1 npx tsx scripts/program-activity-eval/run.mts
 # answers? Same CLI rule.
 EVAL_VIA_CLI=1 npx tsx scripts/lean-context-eval/run.mts
 
-# Food box (Precise): 50 real conversations graded on the outcome (card kept,
+# Food box (Precise): 50 cases (43 real conversations, 7 synthetic) graded on the outcome (card kept,
 # lines not lost, saves with macros, no false claims). ADAPTER=recorded grades
 # what the live box served; no model call. Plan: .planning/precise-food-logger-plan.md
 # NOT a regression test yet: `recorded` replays stored answers, so a run says
