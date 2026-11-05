@@ -351,6 +351,19 @@ export function servedView(body: ServedBody, httpStatus: number, servedAction: s
   };
 }
 
+/** The words the user saw, as one line: the reply or decline, the meal's
+ *  Drona line with its foods, the save card's name, or the refusal. The one
+ *  column a review reads first, so it never needs the jsonb. */
+export function servedText(v: ServedView): string | null {
+  if (v.kind === "meal") {
+    const names = (v.items ?? []).map((i) => String(i.food_name ?? "")).filter(Boolean).join(", ");
+    return `${v.drona_line ?? ""} [${names}]`.trim();
+  }
+  if (v.kind === "create") return `save card: ${String(v.create?.name ?? v.create?.tool ?? "")}`.trim();
+  if (v.kind === "reply" || v.kind === "declined") return v.message ?? null;
+  return v.error ?? v.message ?? null;
+}
+
 // ── The row ─────────────────────────────────────────────────────────────────
 
 export interface FoodBarTraceInput {
@@ -414,6 +427,7 @@ export function buildFoodBarTraceRow(i: FoodBarTraceInput): Record<string, unkno
     fallback: i.fallback,
     answered_by: i.answeredBy,
     served_kind: i.served.kind,
+    served_text: servedText(i.served),
     served: i.served,
     steps: ordered.slice(0, STEPS_MAX),
     steps_dropped: Math.max(0, ordered.length - STEPS_MAX),

@@ -10,6 +10,7 @@ import {
   readRequestView,
   routerView,
   sawContext,
+  servedText,
   servedView,
   summarize,
 } from "./foodBarTrace.ts";
@@ -32,6 +33,8 @@ Deno.test("a reply rides the decline channel, so only the server's action tells 
   const body = { parsed: null, declined: { message: "Hey! Tell me what you ate." }, proposal: null };
   assertEquals(servedView(body, 200, "reply").kind, "reply");
   assertEquals(servedView(body, 200, "log").kind, "declined");
+  // The words the user saw are a column of their own.
+  assertEquals(servedText(servedView(body, 200, "reply")), "Hey! Tell me what you ate.");
 });
 
 Deno.test("a served meal keeps each line's name, amount and calories", () => {
@@ -168,6 +171,7 @@ Deno.test("one row: the planned and served actions, sums over Anthropic only, st
   const steps = row.steps as { tool: string }[];
   assertEquals(steps.map((s) => s.tool), ["food_intent", "extract_done", "search_foods", "decideFoodAction", "draftFoodCreate"]);
   assertEquals(row.latency_ms, 2410);
+  assertEquals(row.served_text, "save card: Shake");
   assert(Array.isArray(row.model_calls));
 });
 

@@ -128,6 +128,7 @@ import {
   readRequestView,
   routerView,
   type ServedBody,
+  servedText,
   type ServedView,
   servedView,
   summarize,
@@ -998,6 +999,8 @@ function foodIntentStep(d: FoodIntentDecision | null, outcome?: FoodBarOutcome):
       source: d.source,
       confidence: d.confidence,
       note: d.note,
+      // Why Jev's verdict was not used (timeout, error, under the floor).
+      jev_miss: d.jevMiss ?? null,
       // The waiting-meal questions (carryPendingMeal): what Jev made of food
       // in this message, and of the meal that was waiting, if any.
       has_food: d.hasFood ?? null,
@@ -3287,7 +3290,7 @@ function recordParseTrace(
       // Deploy-order resilience: request_id and served_action arrive with the
       // food_bar_traces migration. Before it, keep the row without them.
       if (error && /column .* does not exist|could not find the '.*' column/i.test(error.message ?? "")) {
-        const { request_id: _r, served_action: _s, ...legacy } = row;
+        const { request_id: _r, served_action: _s, served_text: _t, ...legacy } = row;
         const retry = await admin.from("parse_traces").insert(legacy);
         if (retry.error) console.log("[parse_meal] parse_trace insert failed:", retry.error.message);
       } else if (error) {
@@ -4244,8 +4247,9 @@ async function handleParseMealRequest(args: {
                 streamed: true,
               },
             };
+            const servedNow = servedView(endBody, 200, outcome.action);
             writeFoodBar({
-              served: servedView(endBody, 200, outcome.action),
+              served: servedNow,
               status: "ok",
               outcome,
               firstParse,
@@ -4273,6 +4277,7 @@ async function handleParseMealRequest(args: {
               // save card or the agent may have replaced.
               request_id: requestId,
               served_action: outcome.action,
+              served_text: servedText(servedNow),
               items: result.parsed?.items ?? null,
               input_tokens: result.usage.input_tokens,
               output_tokens: result.usage.output_tokens,
@@ -4327,11 +4332,9 @@ async function handleParseMealRequest(args: {
             trace.cache_creation_input_tokens = result.usage.cache_creation_input_tokens || null;
             trace.cache_read_input_tokens = result.usage.cache_read_input_tokens || null;
             trace.tool_calls = result.tool_calls;
-            trace.response_preview = preview(
-              result.parsed
-                ? `${result.parsed.drona_line} [${result.parsed.items.map((i) => i.food_name).join(", ")}]`
-                : result.declined?.message ?? null,
-            );
+            // What the box SERVED, not the parallel parse: a reply or a save
+            // card replaces the parse's own answer.
+            trace.response_preview = preview(servedText(servedNow));
             await recordTrace(admin, trace, startedAtMs);
           } catch (e) {
             // The client has already been given a 200 and possibly some rows, so
@@ -4509,25 +4512,6 @@ async function handleParseMealRequest(args: {
         },
       },
     ];
-    void recordParseTrace(admin, {
-      user_id: userId,
-      // The tier the parse ran in (0149): stamps the lines the client logs.
-      tier: result.tier ?? null,
-      input_text: text.slice(0, USER_TEXT_MAX_CHARS),
-      meal_hint: mealHint,
-      model: PARSE_MEAL_MODEL,
-      outcome: result.parsed ? "meal" : "declined",
-      message: result.declined?.message ?? null,
-      iterations: result.iterations,
-      steps: edgeSteps,
-      items: result.parsed?.items ?? null,
-      input_tokens: result.usage.input_tokens,
-      output_tokens: result.usage.output_tokens,
-      web_search_requests: result.usage.web_search_requests,
-      latency_ms: Date.now() - startedAtMs,
-      request_id: requestId,
-      served_action: outcome.action,
-    }, intentP.then((d) => foodIntentStep(d, outcome)));
 
     const resBody: Record<string, unknown> = outcome.action === "create"
       ? { parsed: null, declined: null, proposal: null, create: outcome.create, usage: result.usage, tool_calls: result.tool_calls }
@@ -4551,8 +4535,32 @@ async function handleParseMealRequest(args: {
         usage: result.usage,
         tool_calls: result.tool_calls,
       };
+    const servedNow = servedView(resBody as ServedBody, 200, outcome.action);
+    void recordParseTrace(admin, {
+      user_id: userId,
+      // The tier the parse ran in (0149): stamps the lines the client logs.
+      tier: result.tier ?? null,
+      input_text: text.slice(0, USER_TEXT_MAX_CHARS),
+      meal_hint: mealHint,
+      model: PARSE_MEAL_MODEL,
+      outcome: result.parsed ? "meal" : "declined",
+      message: result.declined?.message ?? null,
+      iterations: result.iterations,
+      steps: edgeSteps,
+      items: result.parsed?.items ?? null,
+      input_tokens: result.usage.input_tokens,
+      output_tokens: result.usage.output_tokens,
+      web_search_requests: result.usage.web_search_requests,
+      latency_ms: Date.now() - startedAtMs,
+      request_id: requestId,
+      served_action: outcome.action,
+      served_text: servedText(servedNow),
+    }, intentP.then((d) => foodIntentStep(d, outcome)));
+    // What the box SERVED, not the parallel parse: a reply or a save card
+    // replaces the parse's own answer.
+    trace.response_preview = preview(servedText(servedNow));
     writeFoodBar({
-      served: servedView(resBody as ServedBody, 200, outcome.action),
+      served: servedNow,
       status: "ok",
       outcome,
       firstParse,

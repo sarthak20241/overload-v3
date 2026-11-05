@@ -60,6 +60,9 @@ create table if not exists public.food_bar_traces (
   fallback           text,
   answered_by        text,
   served_kind        text,
+  -- The words the user saw, as one line (reply, decline, Drona line + foods,
+  -- save card name, refusal). First-class so a review needs no jsonb.
+  served_text        text,
   served             jsonb,
 
   -- Every step in time order, and every model call
@@ -91,10 +94,13 @@ create index if not exists idx_food_bar_traces_created on public.food_bar_traces
 
 -- The join keys on the tables that already exist. Nullable: rows written
 -- before this migration, and coach turns that are not food box messages,
--- have none. served_action says what the box did, beside parse_traces.outcome
--- (which is the parse's own result and stays as it was).
+-- have none. served_action and served_text say what the box did and what
+-- the user saw, beside parse_traces.outcome / message (the parse's own result,
+-- unchanged). The router verdict stays where it already was, the
+-- __food_intent step in parse_traces.steps, now with jev_miss.
 alter table public.parse_traces add column if not exists request_id uuid;
 alter table public.parse_traces add column if not exists served_action text;
+alter table public.parse_traces add column if not exists served_text text;
 alter table public.coach_traces add column if not exists request_id uuid;
 
 create index if not exists idx_parse_traces_request on public.parse_traces (request_id) where request_id is not null;
