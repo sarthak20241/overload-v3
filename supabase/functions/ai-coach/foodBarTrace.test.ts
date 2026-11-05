@@ -364,3 +364,11 @@ Deno.test("client id and capability strings from a raw body are capped", () => {
   assertEquals(v.client_id?.length, 100);
   assertEquals(v.supports.map((s) => s.length), [11, 40]);
 });
+
+Deno.test("a tail step too big for the tail reserve still gets a place from the main budget", () => {
+  const big = "b".repeat(STEP_PAYLOAD_MAX - 100); // about 3.9 KB each
+  // Twelve big tail-sized steps: the 40 KB reserve holds about ten.
+  const steps = Array.from({ length: 12 }, (_, i) => ({ src: "agent", tool: `t${i}`, at_ms: i, input: big, result: big }));
+  const { kept, dropped } = fitSteps(steps);
+  assertEquals([kept.length, dropped], [12, 0]);
+});

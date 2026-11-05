@@ -476,6 +476,7 @@ export function fitSteps(steps: TraceStep[]): { kept: TraceStep[]; dropped: numb
   const fit = (from: number, to: number, budget: number) => {
     for (let i = from; i < to; i++) {
       if (count >= STEPS_MAX) return;
+      if (keep[i]) continue;
       const n = size(steps[i]);
       if (bytes + n > budget) continue;
       bytes += n;
@@ -484,7 +485,9 @@ export function fitSteps(steps: TraceStep[]): { kept: TraceStep[]; dropped: numb
     }
   };
   fit(tailFrom, steps.length, TAIL_RESERVE_BYTES);
-  fit(0, tailFrom, STEPS_BYTES_MAX);
+  // Then everything, the tail included: a tail step too big for the reserve
+  // still gets a place from the main budget when there is room.
+  fit(0, steps.length, STEPS_BYTES_MAX);
   const kept = steps.filter((_, i) => keep[i]);
   return { kept, dropped: steps.length - kept.length };
 }

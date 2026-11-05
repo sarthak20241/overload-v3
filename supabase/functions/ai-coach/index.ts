@@ -4635,6 +4635,9 @@ async function handleParseMealRequest(args: {
       outcome,
       firstParse,
       result,
+      // edgeSteps is result.steps followed by the auto-log and edge-timing
+      // steps; only those extras are new here (the parse steps come in as
+      // firstParse, and an agent's own parses through agent_parse).
       extraSteps: edgeSteps.slice(result.steps.length),
     });
     return respond(resBody, 200);
