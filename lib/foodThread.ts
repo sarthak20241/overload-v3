@@ -37,7 +37,7 @@ export interface FoodThreadSend {
   card_id: string | null;
   base_version: number | null;
   next_card_id: string;
-  closed: { id: string; why: 'added' | 'replaced' } | null;
+  closed: { id: string; why: 'added' } | null;
 }
 
 /** What the answer did to the meal card. */
@@ -50,7 +50,7 @@ export type FoodThreadAnswer = 'meal' | 'cleared' | 'unchanged';
  *  server stores the app's copy under it. */
 export function beginSend(
   state: FoodThreadState | null,
-  o: { now: number; hasCard: boolean; ended: { id: string; why: 'added' | 'replaced' } | null; newId: () => string },
+  o: { now: number; hasCard: boolean; ended: { id: string; why: 'added' } | null; newId: () => string },
 ): { state: FoodThreadState; send: FoodThreadSend; fresh: boolean } {
   const fresh = !(state && o.now - state.lastAt < THREAD_IDLE_MS);
   let s = !fresh && state ? state : { id: o.newId(), cardId: null, version: 0, lastAt: o.now };

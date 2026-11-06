@@ -44,6 +44,14 @@ import {
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { CREATE_CUSTOM_FOOD_TOOL, CREATE_CUSTOM_MEAL_TOOL, LIST_LOGGED_MEALS_TOOL } from "./prompt.ts";
 
+/** Whether this message could use the thread's earlier cards: no card on
+ *  screen (restore is offered only then), and a verdict the agent would take
+ *  if the thread had them. The ONE test for both the agent start and the
+ *  outcome (index.ts earlierCardsFor), so the two can never disagree. */
+export function agentCouldUseThread(d: FoodIntentDecision | null, supportsCreate: boolean, cardLines: number): boolean {
+  return cardLines === 0 && wantsFoodAgent(d, supportsCreate, false, true);
+}
+
 /** The thread store as the agent sees it (foodThreads.ts). */
 export interface FoodBarThread {
   /** threadIndexLine: the earlier cards, by ref. Null: nothing to bring back. */
@@ -533,11 +541,9 @@ export function startFoodAgent(args: {
     // is for NO card on screen, not for a card the agent cannot hold whole.
     const noCard = !args.card?.lines.length;
     if (env().intentMode !== "on") return null;
-    // The thread is waited for only when it can matter: no card on screen
-    // (restore is offered only then), and a verdict that would send the
-    // message to the agent if the thread had earlier cards. Every other
-    // message skips the read.
-    const couldUseThread = noCard && !!args.thread && wantsFoodAgent(d, args.supportsCreate, cardOpen, true);
+    // The thread is waited for only when it can matter (agentCouldUseThread,
+    // the same test index.ts uses for the outcome).
+    const couldUseThread = !!args.thread && agentCouldUseThread(d, args.supportsCreate, args.card?.lines.length ?? 0);
     const thread = couldUseThread ? await args.thread!.catch(() => null) : null;
     if (!wantsFoodAgent(d, args.supportsCreate, cardOpen, !!thread?.index && noCard)) return null;
     if (!env().anthropicApiKey) return null;

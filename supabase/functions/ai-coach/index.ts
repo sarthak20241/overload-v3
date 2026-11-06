@@ -93,6 +93,7 @@ import {
   threadForAgent,
 } from "./foodThreads.ts";
 import {
+  agentCouldUseThread,
   configureFoodBar,
   type DiaryReader,
   type FoodBarOutcome,
@@ -3384,6 +3385,8 @@ async function handleParseMealRequest(args: {
       new Promise<null>((r) => {
         threadTimer = setTimeout(() => {
           console.log("[food_threads] thread read over 800 ms; served with no earlier cards");
+          // On the food box trace too, so the timeout rate can be counted.
+          fbTrace.step({ src: "router", tool: "food_threads", result: { ran: false, reason: "read_timeout_800ms" } });
           r(null);
         }, 800);
       }),
@@ -3393,14 +3396,14 @@ async function handleParseMealRequest(args: {
    *  conditional write on the app's base version. Never on the hot path. */
   // The agent (startFoodAgent) and this write read the SAME threadP, so they
   // agree: on a timeout neither had a thread, and restoredFrom stays null.
-  const writeThread = async (outcome: FoodBarOutcome, result: ParseMealResult) => {
+  const writeThread = async (outcome: FoodBarOutcome, result: ParseMealResult): Promise<void> => {
     if (!threadReq || !threadStore) return;
     const restored = result.tool_calls.includes("restore_card") ? (await threadP)?.restoredFrom ?? null : null;
     const dronaText = outcome.action === "create"
       ? (typeof outcome.create?.input?.summary === "string" ? outcome.create.input.summary : null)
       : outcome.action === "reply" ? outcome.reply ?? null
       : result.parsed?.drona_line ?? result.declined?.message ?? null;
-    keepAlive(recordThreadMessage(threadStore, {
+    await recordThreadMessage(threadStore, {
       userId,
       req: threadReq,
       // The send's own id: the auto-log id when there is one, else the fresh
@@ -3420,7 +3423,7 @@ async function handleParseMealRequest(args: {
       mealType: card[0]?.meal_type ?? result.parsed?.meal_type ?? mealHint,
       restoredFrom: restored,
       log: (m) => console.log(m),
-    }));
+    });
   };
   // NO card on screen, not merely "not open": a card cut at the cap is on
   // screen, and a restore would replace it whole (foodBar.ts startFoodAgent).
@@ -3430,7 +3433,7 @@ async function handleParseMealRequest(args: {
   // The router's promise and the create flag are passed in: each request path
   // (stream, JSON) has its own, declared after this.
   const earlierCardsFor = async (intent: Promise<FoodIntentDecision | null>, canCreate: boolean) =>
-    card.length === 0 && wantsFoodAgent(await intent.catch(() => null), canCreate, false, true) && !!(await threadP)?.index;
+    agentCouldUseThread(await intent.catch(() => null), canCreate, card.length) && !!(await threadP)?.index;
 
   const readDiary = makeDiaryReader(userClient, {
     todayLocal: localDate,
@@ -3768,7 +3771,7 @@ async function handleParseMealRequest(args: {
               },
             };
             const servedNow = servedView(endBody, 200, outcome.action);
-            void writeThread(outcome, result);
+            keepAlive(writeThread(outcome, result)); // the whole write, its first await included
             writeFoodBar({
               served: servedNow,
               status: "ok",
@@ -4066,7 +4069,7 @@ async function handleParseMealRequest(args: {
         tool_calls: result.tool_calls,
       };
     const servedNow = servedView(resBody as ServedBody, 200, outcome.action);
-    void writeThread(outcome, result);
+    keepAlive(writeThread(outcome, result)); // the whole write, its first await included
     void recordParseTrace(admin, {
       user_id: userId,
       // The tier the parse ran in (0149): stamps the lines the client logs.

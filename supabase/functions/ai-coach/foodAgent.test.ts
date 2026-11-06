@@ -564,6 +564,8 @@ Deno.test("restore_card is not offered while a card is on screen (it would repla
 Deno.test("the last-turn note names restore_card only when it is offered", () => {
   assert(!LAST_TURN_NOTE.includes("restore_card"));
   assert(LAST_TURN_NOTE_RESTORE.includes("restore_card"));
+  // Built by a replace on the base note: if its wording changes, this fails.
+  assert(LAST_TURN_NOTE_RESTORE !== LAST_TURN_NOTE);
 });
 
 Deno.test("a meal line copied from a card line with some macros missing keeps the model's estimate mark", async () => {

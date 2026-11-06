@@ -244,8 +244,10 @@ create trigger trg_delete_food_threads_on_profile_delete
 -- debugging uses food_bar_traces (30 days).
 --
 -- Daily at 21:45 UTC (03:15 IST), off peak, after the food_bar_traces job.
---   1. Close threads idle past 30 minutes (the app has already moved to a new
---      thread id; the server never closes on idle by itself).
+--   1. Close threads idle past 35 minutes: the app's 30, plus the server's
+--      5-minute grace (THREAD_IDLE_GRACE_MS), so a message the app still sends
+--      on a live id is never caught by the job. The server never closes on
+--      idle by itself.
 --   2. Delete CLOSED threads whose last message is older than 15 days. Their
 --      turns, cards and card lines go with them (on delete cascade). An open
 --      thread is never deleted mid-use: it was active in the last 30 minutes.
@@ -260,7 +262,7 @@ as $$
   update public.food_threads
      set status = 'closed', closed_why = 'idle'
    where status = 'open'
-     and last_at < now() - interval '30 minutes';
+     and last_at < now() - interval '35 minutes';
   delete from public.food_threads
    where status = 'closed'
      and last_at < now() - interval '15 days';
