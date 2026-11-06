@@ -1147,6 +1147,9 @@ export default function NutritionScreen() {
     if (!sendText) return;
     setSavedReview(false);
     setCardMinimized(false);
+    // Only this send's own answer may set it again (below), so a stray value
+    // can never close the next result screen.
+    saveArrivedRef.current = false;
     // A save card that is done (saved, or failed with its reason shown) has
     // said its piece. One still waiting for its tap stays.
     if (!retry) setSaveCard((c) => (c?.result ? null : c));
@@ -1366,8 +1369,8 @@ export default function NutritionScreen() {
       // A newer save card takes the place of one not tapped yet: the latest
       // ask is the one the user means. The meal card is not touched.
       setSaveCard({ create, result: null, busy: false });
-      const kept = cardAfter(prevReview?.meal.items ?? null, { kind: 'create' });
-      setFlow(prevReview && kept ? { ...prevReview, notice: null, proposal: null } : { status: 'idle' });
+      // cardAfter's rule for a save card: the meal card stays as it was.
+      setFlow(prevReview ? { ...prevReview, notice: null, proposal: null } : { status: 'idle' });
       return;
     }
     settleThread('meal');
