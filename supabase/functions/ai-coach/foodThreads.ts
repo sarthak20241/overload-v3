@@ -45,6 +45,8 @@ export interface ThreadLine {
   fat_g: number | null;
   fiber_g?: number | null;
   source?: string | null;
+  /** The catalog row (food_id), so a restored line keeps its link. */
+  source_ref?: string | null;
   confidence?: string | null;
   note?: string | null;
   meal_type?: MealType | null;
@@ -114,10 +116,12 @@ function nameKey(name: string): string {
  * new one, above the highest id the card has used. So an edit keeps [L2] as
  * L2, a removal never renumbers what is left, and an added line is new.
  */
-export function withLineIds<T extends { name: string }>(prev: ThreadLine[] | null, next: T[]): (T & { line_id: string })[] {
+export function withLineIds<T extends { name: string }>(prev: ThreadLine[] | null, next: T[], usedUpTo = 0): (T & { line_id: string })[] {
   const taken = new Set<string>();
   const free = new Map<string, string[]>();
-  let max = 0;
+  // `usedUpTo`: the highest id the card ever had, so a new line never takes
+  // the id of one that was removed.
+  let max = usedUpTo;
   for (const l of prev ?? []) {
     const n = Number(l.line_id.replace(/^L/, ""));
     if (Number.isFinite(n)) max = Math.max(max, n);
@@ -133,7 +137,12 @@ export function withLineIds<T extends { name: string }>(prev: ThreadLine[] | nul
   });
 }
 
-export function itemsAsLines(items: ParsedItem[], prev: ThreadLine[] | null): ThreadLine[] {
+/** The highest line number among these lines ("L7" is 7). */
+export function maxLineNo(lines: ThreadLine[] | null | undefined): number {
+  return Math.max(0, ...(lines ?? []).map((l) => Number(l.line_id.replace(/^L/, ""))).filter(Number.isFinite));
+}
+
+export function itemsAsLines(items: ParsedItem[], prev: ThreadLine[] | null, usedUpTo = 0): ThreadLine[] {
   return withLineIds(prev, items.map((i) => ({
     name: i.food_name,
     said_name: i.said_name ?? null,
@@ -146,10 +155,11 @@ export function itemsAsLines(items: ParsedItem[], prev: ThreadLine[] | null): Th
     fat_g: i.fat_g ?? null,
     fiber_g: i.fiber_g ?? null,
     source: i.source ?? null,
+    source_ref: i.food_id ?? null,
     confidence: i.confidence ?? null,
     note: i.assumption ?? null,
     meal_type: i.meal_type ?? null,
-  })));
+  })), usedUpTo);
 }
 
 /** The app's card (previous_items as CardLine) as stored lines, for a thread
@@ -167,6 +177,7 @@ export function cardAsLines(card: CardLine[], prev: ThreadLine[] | null = null):
     fat_g: l.fat_g ?? null,
     fiber_g: l.fiber_g ?? null,
     source: l.source ?? null,
+    source_ref: l.food_id ?? null,
     confidence: l.confidence ?? null,
     note: l.assumption ?? null,
     meal_type: l.meal_type ?? null,
@@ -177,7 +188,7 @@ export function cardAsLines(card: CardLine[], prev: ThreadLine[] | null = null):
 export function lineAsItem(l: ThreadLine, mealDefault: MealType): ParsedItem {
   const src = l.source;
   return {
-    food_id: null,
+    food_id: l.source_ref ?? null,
     food_name: l.name,
     quantity: l.quantity ?? 1,
     serving_label: l.unit ?? "serving",
@@ -195,9 +206,11 @@ export function lineAsItem(l: ThreadLine, mealDefault: MealType): ParsedItem {
   };
 }
 
-/** Short refs for the model: C1, C2, ... in the order the cards were made. */
+/** Short refs for the model: C1, C2, ... in the order the cards were made.
+ *  Only meal cards with lines: a save card is not a meal to bring back, and a
+ *  cleared card's latest version is empty. */
 export function cardRefs(t: StoredThread): Map<string, StoredCard> {
-  const sorted = [...t.cards].sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const sorted = t.cards.filter((c) => c.kind === "meal" && c.lines.length > 0).sort((a, b) => a.created_at.localeCompare(b.created_at));
   return new Map(sorted.map((c, i) => [`C${i + 1}`, c]));
 }
 
@@ -211,7 +224,7 @@ export function threadIndexLine(t: StoredThread | null, onScreenCardId: string |
   if (others.length === 0) return null;
   const desc = others.map(([ref, c]) => {
     const kcal = Math.round(c.lines.reduce((a, l) => a + (Number(l.kcal) || 0), 0));
-    const what = c.kind === "save" ? `save card "${c.lines[0]?.name ?? "meal"}"` : `${c.meal_type ?? "meal"} card`;
+    const what = `${c.meal_type ?? "meal"} card`;
     return `[${ref} v${c.version}] ${what}, ${c.lines.length} ${c.lines.length === 1 ? "line" : "lines"}, ${kcal} kcal, ${c.status}`;
   });
   return `index: ${others.length} earlier ${others.length === 1 ? "card" : "cards"} in this thread: ${desc.join("; ")}. ` +
@@ -262,6 +275,7 @@ function rowAsLine(r: Record<string, unknown>): ThreadLine {
     fat_g: num(r.fat_g),
     fiber_g: num(r.fiber_g),
     source: typeof r.source === "string" ? r.source : null,
+    source_ref: typeof r.source_ref === "string" ? r.source_ref : null,
     confidence: typeof r.confidence === "string" ? r.confidence : null,
     note: typeof r.note === "string" ? r.note : null,
     meal_type: typeof r.meal_type === "string" ? r.meal_type as MealType : null,
@@ -412,11 +426,13 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
     const onScreen = req.card_id ? t.cards.find((c) => c.id === req.card_id) ?? null : null;
     // The app's card is stored as the base, at the app's own version, when
     // the server has none of it. Both sides then count from the same number.
-    // When the server's copy is BEHIND the app's (it missed a write), the
-    // app's copy is the newer one: its lines are the base, and the write
-    // below lands at the app's count (food_card_write allows a base ahead).
-    let base = onScreen && req.base_version !== null && onScreen.version < req.base_version && args.card.length
-      ? { ...onScreen, version: req.base_version, lines: cardAsLines(args.card, onScreen.lines) }
+    // When the server has it, the app's copy is still the base lines: the
+    // user can change lines on the card (edit, remove) with no message, so
+    // the copy the app sent is the newer one. Ids carry over by name. When
+    // the server is BEHIND the app's count (a missed write), the write below
+    // lands at the app's count (food_card_write allows a base ahead).
+    let base = onScreen && args.card.length
+      ? { ...onScreen, version: Math.max(onScreen.version, req.base_version ?? 0), lines: cardAsLines(args.card, onScreen.lines) }
       : onScreen;
     if (req.card_id && !onScreen && args.card.length) {
       const v = req.base_version ?? 1;
@@ -440,7 +456,8 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
     // A meal: new lines join the card, a correction replaces it.
     if (base) {
       const items = s.corrects ? s.items : [...base.lines.map((l) => lineAsItem(l, args.mealType ?? "snack")), ...s.items];
-      const w = await store.writeCard(base.id, req.base_version ?? base.version, itemsAsLines(items, base.lines), args.clientId);
+      const used = Math.max(maxLineNo(base.lines), maxLineNo(onScreen?.lines));
+      const w = await store.writeCard(base.id, req.base_version ?? base.version, itemsAsLines(items, base.lines, used), args.clientId);
       if (!w.written) log(`[food_threads] card ${base.id} base ${req.base_version} stale (server at ${w.version}); not written`);
       return { ok: w.written, card_version: w.version };
     }

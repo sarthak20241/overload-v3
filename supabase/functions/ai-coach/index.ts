@@ -3372,8 +3372,13 @@ async function handleParseMealRequest(args: {
   // ready long before the router answers, so the common path waits for nothing.
   const threadReq = FOOD_THREADS !== "off" ? readThreadRequest(body.thread) : null;
   const threadStore = threadReq ? supabaseThreadStore(admin) : null;
+  // At most 800 ms: a slow read must never hold up the answer. Past it the
+  // message is served as if the thread had no earlier cards.
   const threadP: Promise<FoodBarThread | null> = FOOD_THREADS === "on" && threadReq && threadStore
-    ? threadForAgent(threadStore, userId, threadReq).catch(() => null)
+    ? Promise.race([
+      threadForAgent(threadStore, userId, threadReq).catch(() => null),
+      new Promise<null>((r) => setTimeout(() => r(null), 800)),
+    ])
     : Promise.resolve(null);
   /** After the answer is sent: this message's turns and card change, as one
    *  conditional write on the app's base version. Never on the hot path. */

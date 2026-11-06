@@ -13,6 +13,7 @@ import {
   memoryThreadStore,
   readThreadRequest,
   recordThreadMessage,
+  threadForAgent,
   threadIndexLine,
   threadIsOpen,
   THREAD_IDLE_MS,
@@ -82,9 +83,11 @@ Deno.test("Nov 5: a save card is a second card; the lunch card and its versions 
   assertEquals(t!.cards.map((c) => [c.kind, c.version, c.lines.length]), [["meal", 2, 4], ["save", 1, 1]]);
   assertEquals(t!.last_seq, 6);
   assertEquals((await s.cardAt(MEAL, 1))?.length, 4);
+  // The index lists meal cards to bring back; a save card is not one.
   const index = threadIndexLine(t, SAVE)!;
   assert(index.includes("[C1 v2] lunch card, 4 lines, 359 kcal"), index);
-  assertEquals(threadIndexLine(t, null)?.startsWith("index: 2 earlier cards"), true);
+  assertEquals(threadIndexLine(t, null)?.startsWith("index: 1 earlier card"), true);
+  assertEquals(threadIndexLine(t, MEAL), null);
 });
 
 Deno.test("a stale base or a retried message writes nothing", async () => {
@@ -137,6 +140,27 @@ Deno.test("the server behind the app (a missed write) takes the app's copy and c
   assertEquals(r, { ok: true, card_version: 3 });
   const t = await s.load("u1", T);
   assertEquals(t!.cards[0].lines.map((l) => [l.line_id, l.name, l.kcal]), [["L1", "Rice", 180], ["L2", "Dal", 120], ["L3", "Curd", 60]]);
+});
+
+Deno.test("the app's card is the base: a line removed on screen with no message stays removed", async () => {
+  const s = memoryThreadStore();
+  const base = { userId: "u1", userText: "x", dronaText: null, mealType: "lunch" as const };
+  await recordThreadMessage(s, { ...base, card: [], req: { id: T, card_id: null, base_version: null, next_card_id: MEAL, closed: null }, clientId: "m1", served: { kind: "meal", items: [item("Rice", 200), item("Dal", 120)], corrects: false } });
+  // The user swiped Dal off the card (no message), then typed "and curd".
+  await recordThreadMessage(s, { ...base, card: card([["Rice", 200]]), req: { id: T, card_id: MEAL, base_version: 1, next_card_id: null, closed: null }, clientId: "m2", served: { kind: "meal", items: [item("Curd", 60)], corrects: false } });
+  const t = await s.load("u1", T);
+  assertEquals(t!.cards[0].lines.map((l) => [l.line_id, l.name]), [["L1", "Rice"], ["L3", "Curd"]]);
+});
+
+Deno.test("restore lists meal cards with lines only, and a restored line keeps its catalog id", async () => {
+  const s = memoryThreadStore();
+  await s.ensure("u1", T);
+  await s.createCard(T, MEAL, "meal", [{ ...cardAsLines(card([["Rice", 200]]))[0], source_ref: "food-123" }], null, "lunch");
+  await s.createCard(T, SAVE, "save", cardAsLines(card([["Sabji", 150]])), null, null);
+  const th = await threadForAgent(s, "u1", { id: T, card_id: null, base_version: null, next_card_id: null, closed: null });
+  assert(th!.index!.includes("1 earlier card"), th!.index!);
+  assertEquals((await th!.restore("C1", null))!.items[0].food_id, "food-123");
+  assertEquals(await th!.restore("C2", null), null);
 });
 
 Deno.test("closing a thread needs its owner", async () => {
