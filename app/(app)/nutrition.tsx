@@ -656,6 +656,8 @@ export default function NutritionScreen() {
       setWaitOpen(false);
       setResultOpen(false);
       setFlow({ status: 'idle' });
+      // A save card waiting for its tap was the last account's ask.
+      setSaveCard(null);
     }
     lastReadyKey.current = readyKey;
     // Any change, a sign-out included, means this account's meal is not read
