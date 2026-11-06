@@ -277,3 +277,19 @@ Deno.test("a restore whose copy fails to save leaves its source card listed", as
   assertEquals(r.ok, false);
   assertEquals(s.dump().cards.get(MEAL)!.status, "open");
 });
+
+Deno.test("a restore onto a card emptied on screen marks its source too", async () => {
+  const s = memoryThreadStore();
+  await s.ensure("u1", T);
+  const OLD = "66666666-6666-4666-8666-666666666666";
+  await s.createCard(T, OLD, "meal", cardAsLines(LUNCH), null, "lunch");
+  await s.createCard(T, MEAL, "meal", cardAsLines(card([["Poha", 250]])), null, "breakfast");
+  const r = await recordThreadMessage(s, {
+    userId: "u1", req: { id: T, card_id: MEAL, base_version: 1, next_card_id: SAVE, closed: null }, clientId: "m9",
+    userText: "bring back lunch", dronaText: null, card: [], served: { kind: "meal", items: [item("Jeera Rice", 171)], corrects: true },
+    mealType: "lunch", restoredFrom: OLD,
+  });
+  assertEquals(r.ok, true);
+  assertEquals(s.dump().cards.get(OLD)!.status, "replaced");
+  assertEquals((await s.load("u1", T))!.cards.find((c) => c.id === MEAL)!.lines.map((l) => l.name), ["Jeera Rice"]);
+});

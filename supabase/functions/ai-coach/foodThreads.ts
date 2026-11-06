@@ -329,11 +329,16 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
       // Each card's CURRENT version only. Reading every version and filtering
       // here would hit PostgREST's 1000-row cap on a long thread and drop
       // lines silently.
-      const lines = list.length
-        ? ((await admin.from("food_card_lines").select("*")
+      let lines: Record<string, unknown>[] = [];
+      if (list.length) {
+        const res = await admin.from("food_card_lines").select("*")
           .or(list.map((c) => `and(card_id.eq.${c.id},version.eq.${Number(c.version)})`).join(","))
-          .order("line_no")).data ?? []) as Record<string, unknown>[]
-        : [];
+          .order("line_no");
+        // Thrown, never read as empty: empty cards drop out of the index and
+        // restore would say "not found" for a card that is there.
+        if (res.error) throw new Error(`food_card_lines: ${res.error.message}`);
+        lines = (res.data ?? []) as Record<string, unknown>[];
+      }
       return {
         id: String(t.id),
         user_id: String(t.user_id),
@@ -522,6 +527,12 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
       const used = Math.max(maxLineNo(base.lines), maxLineNo(onScreen?.lines), onScreen?.max_line_no ?? 0);
       const w = await store.writeCard(base.id, req.base_version ?? base.version, itemsAsLines(items, base.lines, used), args.clientId, undefined, args.mealType);
       if (!w.written) log(`[food_threads] card ${base.id} base ${req.base_version} stale (server at ${w.version}); not written`);
+      // A restore onto a card still named on screen (emptied there): the
+      // restored lines are now this card, so the source is marked too.
+      if (w.written && args.restoredFrom && args.restoredFrom !== base.id) {
+        await store.setCardStatus(t.id, args.restoredFrom, "replaced")
+          .catch((e) => log(`[food_threads] restored card not marked: ${String(e).slice(0, 120)}`));
+      }
       return { ok: w.written, card_version: w.version };
     }
     if (req.next_card_id) {
