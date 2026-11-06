@@ -12,13 +12,13 @@ Grades what the live food box served on the day of each message
 (parse_traces, 2026-10-02 to 2026-11-05). It is not a run of today's main: a later fix
 shows only in the live section below.
 
-**11 of 43 recorded cases pass.** 9 cases have no recording (synthetic, or replayed in a state the app never showed).
+**12 of 44 recorded cases pass.** 9 cases have no recording (synthetic, or replayed in a state the app never showed).
 
 | Tag | Passed |
 |---|---|
 | card | 1/5 |
 | choose | 0/3 |
-| context | 0/5 |
+| context | 1/6 |
 | copy-day | 0/2 |
 | correction | 2/15 |
 | diary | 0/3 |
@@ -28,7 +28,7 @@ shows only in the live section below.
 | lost-lines | 0/3 |
 | memory | 0/1 |
 | pack-size | 1/3 |
-| plain | 4/8 |
+| plain | 5/9 |
 | question | 5/11 |
 | recipe | 0/5 |
 | region | 0/2 |
@@ -49,6 +49,7 @@ shows only in the live section below.
 | nov5-pull-my-message | FAIL | does:restore; keep:jeera rice; keep:paneer; keep:soya; keep:methi; reply avoids /can'?t see (our/your/the) earlier/ |
 | nov5-bring-back-card-kept | no recording |  |
 | nov5-pull-my-message-kept | no recording |  |
+| nov6-stale-turns-green-tea | pass |  |
 | nov5-use-saved-meal | FAIL | line:paneer; line:jeera rice; noDuplicates; lineCount 4..4 |
 | nov5-use-150-one | FAIL | line:paneer; line:jeera rice; line:methi/aloo |
 | nov5-undo-other-items | FAIL | line:paneer; line:jeera rice; line:methi/aloo; line:soya; lineCount 4..4 |
