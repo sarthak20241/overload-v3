@@ -1346,8 +1346,10 @@ export default function NutritionScreen() {
       // card leaves the lunch the user was logging right where it was.
       saveArrivedRef.current = token;
       // A newer save card takes the place of one not tapped yet: the latest
-      // ask is the one the user means. The meal card is not touched.
-      setSaveCard({ create, result: null, busy: false, day: logDay });
+      // ask is the one the user means. The meal card is not touched. One that
+      // is saving right now stays until its answer lands: replacing it would
+      // hide that result and leave a card a second tap could save twice.
+      setSaveCard((cur) => (cur?.busy ? cur : { create, result: null, busy: false, day: logDay }));
       // The shared rule (lib/foodBarCard.ts, the eval uses it too): a save card
       // leaves the meal card's lines as they were. Its notice and proposal
       // answered the message before this one, so they go.
