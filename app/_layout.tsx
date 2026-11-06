@@ -9,6 +9,7 @@ import {
   SpaceGrotesk_500Medium,
   SpaceGrotesk_700Bold,
 } from '@expo-google-fonts/space-grotesk';
+import { InterTight_600SemiBold } from '@expo-google-fonts/inter-tight';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { WorkoutProvider } from '@/hooks/useWorkout';
@@ -18,6 +19,7 @@ import { PreferencesProvider } from '@/hooks/usePreferences';
 import { hydrateGuestStore } from '@/lib/guestStore';
 import { hydrateActiveWorkout } from '@/lib/activeWorkoutPersistence';
 import { holdSplashForGate, SessionRefreshGate } from '@/components/SessionRefreshGate';
+import { FirstOpenUpdateGate } from '@/components/FirstOpenUpdateGate';
 import { ClerkSupabaseBridge } from '@/components/ClerkSupabaseBridge';
 import { RevenueCatBridge } from '@/components/RevenueCatBridge';
 import { SyncProvider } from '@/components/SyncProvider';
@@ -120,21 +122,26 @@ function AppContent() {
 export default function RootLayout() {
   // Display face (Space Grotesk) for questions/headlines/big numbers; body/UI
   // stays on the system font. Non-blocking: screens render with the system
-  // font for the instant before the load resolves, then re-render.
-  useFonts({ SpaceGrotesk_500Medium, SpaceGrotesk_700Bold });
+  // font for the instant before the load resolves, then re-render. Inter
+  // Tight is the sign-up tour's headline face.
+  useFonts({ SpaceGrotesk_500Medium, SpaceGrotesk_700Bold, InterTight_600SemiBold });
 
+  // A fresh store install first catches up to the newest update, before
+  // Clerk or anything else starts (components/FirstOpenUpdateGate.tsx).
   const tree = !publishableKey ? (
     <AppContent />
   ) : (
-    <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
-      {/* Swaps a nearly expired session for a fresh one before anything
-          that reacts to auth mounts (components/SessionRefreshGate.tsx). */}
-      <SessionRefreshGate>
-        <ClerkSupabaseBridge />
-        <RevenueCatBridge />
-        <AppContent />
-      </SessionRefreshGate>
-    </ClerkProvider>
+    <FirstOpenUpdateGate>
+      <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
+        {/* Swaps a nearly expired session for a fresh one before anything
+            that reacts to auth mounts (components/SessionRefreshGate.tsx). */}
+        <SessionRefreshGate>
+          <ClerkSupabaseBridge />
+          <RevenueCatBridge />
+          <AppContent />
+        </SessionRefreshGate>
+      </ClerkProvider>
+    </FirstOpenUpdateGate>
   );
 
   // No PostHog key configured (local dev, CI) -> no provider, no network, no

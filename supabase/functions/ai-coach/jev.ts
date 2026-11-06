@@ -97,6 +97,10 @@ export interface JevDeps {
   /** Told what each answered call used, so the caller can price it. Jev was the
    *  one paid model that never reached token_usage_log. A throw here is ignored. */
   onUsage?: (usage: JevUsage) => void;
+  /** Told about each call that came back with no answer (timeout, HTTP error,
+   *  bad body), so a trace shows failed calls, not only answered ones. A
+   *  throw here is ignored. */
+  onFailure?: (f: { failure: JevFailure; detail: string; latency_ms: number; questions: number }) => void;
 }
 
 /** What one answered Jev call used. Billed on input tokens ($0.042/M). */
@@ -162,6 +166,21 @@ function failureFor(status: number): JevFailure {
  * never take a meal log with it.
  */
 export async function askJev(
+  state: string | Record<string, unknown> | unknown[],
+  questions: Record<string, JevQuestion>,
+  deps: JevDeps,
+): Promise<JevResult> {
+  const t0 = Date.now();
+  const res = await askJevOnce(state, questions, deps);
+  if (!res.ok && deps.onFailure && res.failure !== "no_key") {
+    try {
+      deps.onFailure({ failure: res.failure, detail: res.detail, latency_ms: Date.now() - t0, questions: Object.keys(questions).length });
+    } catch { /* a logger must never cost the answer */ }
+  }
+  return res;
+}
+
+async function askJevOnce(
   state: string | Record<string, unknown> | unknown[],
   questions: Record<string, JevQuestion>,
   deps: JevDeps,

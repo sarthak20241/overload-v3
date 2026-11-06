@@ -27,6 +27,7 @@ import { buildWeekPattern, splitCycle, weekPatternFor } from '@/lib/weekPattern'
 import type { CoachGoal } from '@/lib/types';
 import { GOAL_LABELS, goalLabels, goalNoteBriefLine, joinGoals, primaryGoal, programGoalFor, selectedGoals } from '@/lib/fitnessGoals';
 import { FRESH_TOKEN_BUDGET_MS, sendWithFreshTokenRetry, tokenWithin } from '@/lib/authRetry';
+import { onboardingProgramRequestBody } from '@/lib/onboardingRequest';
 
 const REQUEST_TIMEOUT_MS = 75_000;
 
@@ -303,10 +304,7 @@ export async function requestDronaOnboardingProgram(args: {
             apikey: anonKey,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            messages: [{ role: 'user', content: args.message }],
-            force_tool: 'generate_program',
-          }),
+          body: JSON.stringify(onboardingProgramRequestBody(args.message)),
           signal: controller.signal,
         }),
       args.token,

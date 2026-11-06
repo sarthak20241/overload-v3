@@ -5,9 +5,10 @@
  * lib/signupTour.ts.
  *
  * The look follows the owner's reference (Nike Run Club's opener): the film
- * fills the screen with only a soft scrim, a small wordmark top left, story
- * bars on top, and a big two-tone headline at the lower left (white line,
- * grey line, same size) over round pill buttons.
+ * fills the screen with only a soft scrim, story bars on top, a small
+ * wordmark top left with Skip across from it, and a big two-tone headline at
+ * the lower left (white line, grey line, same size). One round arrow under
+ * the headline moves on; the last scene has one wide "See my plan" button.
  *
  * Drawn through the root Portal on a high layer, so the build sheet that opens
  * underneath after it mounts stays hidden until the tour ends.
@@ -40,6 +41,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Feather } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, FontFamily, FontSize, FontWeight, LetterSpacing, Spacing } from '@/constants/theme';
@@ -227,8 +229,15 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
           {Video && !reduced ? <Film id={scene.id} /> : null}
 
           {/* A light wash over the whole frame, then a deeper fade where the
-              words sit, so white type reads on any frame of the film. */}
+              words sit, so white type reads on any frame of the film. A
+              softer fade at the top does the same for the bars, wordmark and
+              Skip (the gym film has bright windows up there). */}
           <View style={[StyleSheet.absoluteFill, s.wash]} pointerEvents="none" />
+          <LinearGradient
+            colors={['rgba(0,0,0,0.45)', 'rgba(0,0,0,0)']}
+            style={s.topScrim}
+            pointerEvents="none"
+          />
           <LinearGradient
             colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.65)']}
             style={s.scrim}
@@ -244,18 +253,33 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
             importantForAccessibility="no"
           />
 
-          <View style={[s.top, { paddingTop: insets.top + Spacing.sm }]} pointerEvents="none">
-            <View style={s.bars}>
+          <View style={[s.top, { paddingTop: insets.top + Spacing.sm }]} pointerEvents="box-none">
+            <View style={s.bars} pointerEvents="none">
               {scenes.map((sc, i) => (
                 <Bar key={sc.id} state={i < index ? 'done' : i === index ? 'now' : 'ahead'} progress={progress} />
               ))}
             </View>
-            <Text style={s.mark} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-              OVER<Text style={{ color: Colors.primary }}>LOAD</Text>
-            </Text>
+            <View style={s.topRow} pointerEvents="box-none">
+              <Text style={s.mark} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+                OVER<Text style={{ color: Colors.primary }}>LOAD</Text>
+              </Text>
+              {!isLast ? (
+                <Pressable
+                  onPress={() => finish('skipped')}
+                  hitSlop={12}
+                  style={s.skip}
+                  accessibilityRole="button"
+                  accessibilityLabel="Skip the tour"
+                >
+                  <Text style={s.skipText}>Skip</Text>
+                </Pressable>
+              ) : null}
+            </View>
           </View>
 
-          <View style={[s.bottom, { paddingBottom: insets.bottom + Spacing.xl }]} pointerEvents="box-none">
+          {/* The home bar can be 0 (older phones) or 34; keep the button a
+              steady distance above whichever it is. */}
+          <View style={[s.bottom, { paddingBottom: Math.max(insets.bottom, Spacing.lg) + Spacing.lg }]} pointerEvents="box-none">
             <Animated.View key={scene.id} entering={reduced ? undefined : FadeInDown.duration(520)} pointerEvents="none">
               <Text style={s.title} accessibilityRole="header">
                 {scene.title}
@@ -264,39 +288,26 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
               </Text>
             </Animated.View>
 
-            <View style={s.buttons}>
-              {isLast ? (
-                <PressableScale
-                  onPress={() => finish('finished')}
-                  style={[s.pill, s.pillSolid, { flex: 1 }]}
-                  accessibilityRole="button"
-                  accessibilityLabel="See my plan"
-                >
-                  <Text style={s.pillSolidText}>See my plan</Text>
-                </PressableScale>
-              ) : (
-                <>
-                  <PressableScale
-                    onPress={() => go(1)}
-                    haptic={false}
-                    style={[s.pill, s.pillSolid]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Next"
-                  >
-                    <Text style={s.pillSolidText}>Next</Text>
-                  </PressableScale>
-                  <PressableScale
-                    onPress={() => finish('skipped')}
-                    haptic="tick"
-                    style={[s.pill, s.pillLine]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Skip the tour"
-                  >
-                    <Text style={s.pillLineText}>Skip</Text>
-                  </PressableScale>
-                </>
-              )}
-            </View>
+            {isLast ? (
+              <PressableScale
+                onPress={() => finish('finished')}
+                style={s.pill}
+                accessibilityRole="button"
+                accessibilityLabel="See my plan"
+              >
+                <Text style={s.pillText}>See my plan</Text>
+              </PressableScale>
+            ) : (
+              <PressableScale
+                onPress={() => go(1)}
+                haptic={false}
+                style={s.next}
+                accessibilityRole="button"
+                accessibilityLabel="Next"
+              >
+                <Feather name="arrow-right" size={24} color="#0a0a0a" />
+              </PressableScale>
+            )}
           </View>
         </Animated.View>
       )}
@@ -307,31 +318,42 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
 const s = StyleSheet.create({
   root: { ...StyleSheet.absoluteFillObject, backgroundColor: '#0b0b0b' },
   wash: { backgroundColor: 'rgba(0,0,0,0.18)' },
+  topScrim: { position: 'absolute', left: 0, right: 0, top: 0, height: '22%' },
   scrim: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '55%' },
   top: { position: 'absolute', left: Spacing.xl, right: Spacing.xl, top: 0 },
   bars: { flexDirection: 'row', gap: 4 },
   bar: { flex: 1, height: 2.5, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.3)', overflow: 'hidden' },
   barFill: { flex: 1, backgroundColor: '#ffffff', transformOrigin: 'left' },
+  topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: Spacing.md },
   mark: {
-    marginTop: Spacing.lg,
     color: '#ffffff',
     fontSize: FontSize.md,
     fontWeight: FontWeight.black,
     letterSpacing: LetterSpacing.eyebrow,
   },
   bottom: { position: 'absolute', left: Spacing.xl, right: Spacing.xl, bottom: 0 },
+  skip: { minHeight: 44, minWidth: 44, alignItems: 'flex-end', justifyContent: 'center' },
+  skipText: { color: '#ffffff', fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
   title: {
     color: '#ffffff',
-    fontFamily: FontFamily.displayMedium,
-    fontSize: 34,
-    lineHeight: 39,
-    letterSpacing: LetterSpacing.tight,
+    fontFamily: FontFamily.tourHeadline,
+    fontSize: 35,
+    lineHeight: 40,
+    letterSpacing: -0.3,
   },
   sub: { color: 'rgba(255,255,255,0.55)' },
-  buttons: { flexDirection: 'row', gap: Spacing.md, marginTop: Spacing.xxl },
-  pill: { flex: 1, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center' },
-  pillSolid: { backgroundColor: '#ffffff' },
-  pillSolidText: { color: '#0a0a0a', fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
-  pillLine: { borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.85)' },
-  pillLineText: { color: '#ffffff', fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
+  // The arrow sits under the headline at the right, so the words keep the
+  // full width and wrap the same on every scene.
+  next: {
+    alignSelf: 'flex-end',
+    marginTop: Spacing.xxl,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pill: { marginTop: Spacing.xxl, height: 60, borderRadius: 30, backgroundColor: '#ffffff', alignItems: 'center', justifyContent: 'center' },
+  pillText: { color: '#0a0a0a', fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
 });

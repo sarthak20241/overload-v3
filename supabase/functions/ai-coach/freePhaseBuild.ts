@@ -29,3 +29,19 @@ export function freePhaseRefineCandidate(body: unknown): string | null {
   if (typeof b.phase_id !== "string" || b.phase_id === "") return null;
   return b.phase_id;
 }
+
+// Which free-tier requests may ask for a turn of the one free goal plan.
+//
+// 'build' is the onboarding request: a plain forced generate_program, no mode.
+// 'edit' is one turn of the Goal screen's program chat (discuss_program or
+// refine_program), including its "yes, do it" turn that forces
+// generate_program. Any other forced tool in those modes stays Pro. This only
+// decides whether to ASK; try_claim_free_goal_turn decides whether the
+// account still has that turn (migration 20261106130000).
+export function freeGoalTurnKind(body: unknown): "build" | "edit" | null {
+  const b = (body ?? {}) as { mode?: unknown; force_tool?: unknown };
+  if (b.mode === undefined) return b.force_tool === "generate_program" ? "build" : null;
+  if (b.mode !== "discuss_program" && b.mode !== "refine_program") return null;
+  if (b.force_tool !== undefined && b.force_tool !== "generate_program") return null;
+  return "edit";
+}

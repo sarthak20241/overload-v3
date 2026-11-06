@@ -57,7 +57,11 @@ function db({ cooldown = true } = {}): Promise<PGlite> {
       const pg = await startPglite();
       await pg.exec(SCHEMA);
       await pg.exec(await read("0089_atomic_ai_cap.sql"));
-      if (cooldown) await pg.exec(await read("20261026120000_pro_ai_cooldown.sql"));
+      if (cooldown) {
+        await pg.exec(await read("20261026120000_pro_ai_cooldown.sql"));
+        // Later redefinitions of get_coach_access_status(), in order.
+        await pg.exec(await read("20261105130000_free_food_limit_9.sql"));
+      }
       return pg;
     })());
   }
@@ -224,7 +228,7 @@ Deno.test("signed out, or a user id passed in by hand, reserves nothing", async 
   assertEquals(grants.rows[0], { inner: false, outer: true, anon: false });
 });
 
-Deno.test("the access meter no longer reports a 30/40 Pro allowance; free stays 3 + 3", async () => {
+Deno.test("the access meter no longer reports a 30/40 Pro allowance; free matches AI_LIMITS", async () => {
   const pg = await db();
   await pg.exec(`
     insert into user_profiles values ('paid', 'annual', now() + interval '1 year'), ('free', 'free', null);

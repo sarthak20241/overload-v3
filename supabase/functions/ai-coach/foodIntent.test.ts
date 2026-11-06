@@ -7,7 +7,7 @@
 // cases against a real key, and it belongs in the harness rather than in a unit
 // test that would then fail whenever their service hiccups.
 
-import { assertEquals } from "jsr:@std/assert@1";
+import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
   type FoodIntent,
   type FoodIntentDeps,
@@ -559,4 +559,27 @@ Deno.test("steps: the floor is 0.6 and unsure steps fall to log or reply", () =>
   // so it gets a spoken answer, not a decline.
   assertEquals(decideFoodAction({ ...on, decision: dec("steps", 0.49), parseFoundFood: false }), "reply");
   assertEquals(decideFoodAction({ ...on, decision: dec("steps", 0.49), parseFoundFood: true }), "log");
+});
+
+// ── Earlier cards in the thread (FOOD_THREADS=on) ─────────────────────────────
+// Live 2026-11-05: three "bring back that card" asks with no card on screen
+// went to the plain reply, which cannot act. With earlier cards in the thread
+// they go to the agent, which has restore_card. Food in the message still logs.
+
+Deno.test("policy: no card, earlier cards in the thread, a question or edit goes to the agent", () => {
+  const noFood = { ...on, parseFoundFood: false, cardOpen: false };
+  assertEquals(decideFoodAction({ ...noFood, earlierCards: true, decision: dec("other", 0.5) }), "agent");
+  assert(wantsFoodAgent(dec("other", 0.5), true, false, true));
+  // Without earlier cards it is the plain reply, as before.
+  assertEquals(decideFoodAction({ ...noFood, decision: dec("other", 0.5) }), "reply");
+  assert(!wantsFoodAgent(dec("other", 0.5), true, false, false));
+});
+
+Deno.test("policy: earlier cards never cost a meal: food in the message still logs", () => {
+  assertEquals(decideFoodAction({ ...on, cardOpen: false, earlierCards: true, decision: dec("other", 0.9) }), "log");
+  assertEquals(decideFoodAction({ ...on, cardOpen: false, earlierCards: true, parseFoundFood: false, decision: dec("log", 0.9) }), "log");
+});
+
+Deno.test("policy: earlier cards do not lower the agent's bar", () => {
+  assertEquals(decideFoodAction({ ...on, cardOpen: false, earlierCards: true, parseFoundFood: false, decision: dec("other", 0.3) }), "reply");
 });

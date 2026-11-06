@@ -52,6 +52,20 @@ EVAL_VIA_CLI=1 npx tsx scripts/program-activity-eval/run.mts
 # answers? Same CLI rule.
 EVAL_VIA_CLI=1 npx tsx scripts/lean-context-eval/run.mts
 
+# Food box (Precise): 52 cases (43 recorded conversations, 9 with no recording) graded on the outcome
+# (card kept, lines not lost, saves with macros, no false claims). ADAPTER=recorded grades
+# what the live box served; no model call. Plan: .planning/precise-food-logger-plan.md
+# `recorded` replays stored answers, so it says nothing about today's code and
+# always exits 0. ADAPTER=live (below) is the run that measures today's code.
+npx tsx scripts/food-box-eval/run.mts            # TAG=correction  ONLY=id  WRITE_BASELINE=1
+# Today's food box code on each case, with the case's saved meals, memory and
+# diary. Reads the live catalog, writes nothing. Same CLI rule as above.
+EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts   # EVAL_CONCURRENCY=6  DEBUG_STEPS=1
+# FOOD_THREADS=on: the case's earlier cards go in an in-memory thread store, the
+# agent gets restore_card. Its own BASELINE.md section (live_threads).
+FOOD_THREADS=on EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts
+deno test --allow-all scripts/food-box-eval/grade.test.ts
+
 # Edge function unit tests (the one real test suite).
 deno test --allow-all supabase/functions/ai-coach/
 deno test --allow-all supabase/functions/revenuecat-webhook/
@@ -88,8 +102,13 @@ deno test --allow-all lib/mealReady.test.ts   # AI food log: open the result or 
 deno test --allow-all lib/calorieBars.test.ts  # Analytics calorie bars: each day against its own goal ±10%
 deno test --allow-all lib/pendingEntries.test.ts # an added suggestion or copy shows at once, swapped for the saved row
 deno test --allow-all lib/pendingParse.test.ts  # food search "Log it with Drona": handed to Nutrition once, with its meal and day
+deno test --allow-all lib/foodBarCard.test.ts   # food box: a save card sits beside the meal card, never replaces it
+deno test --allow-all lib/foodThread.test.ts    # food box thread ids + card versions, counted the way the server counts
+deno test --allow-all supabase/functions/ai-coach/foodThreads.test.ts # thread store: stable line ids, one conditional write, restore
+deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_threads.check.ts # the food_threads migration on PGlite (real Postgres, downloads it; not in CI)
 deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
+deno test --allow-all lib/questionPin.test.ts  # Drona chat: a reply types in under its question at the top
 deno test --allow-all lib/orbTheme.test.ts     # loading orb: which way a tinted orb fades
 deno test --allow-all lib/coachSessions.test.ts # coach sheets kept while Drona works: when kept, brought back, dropped
 deno test --allow-all --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/readyInbox.test.ts # what waits behind the dashboard bell
@@ -98,7 +117,9 @@ deno test --allow-all lib/healthCardio.test.ts  # watch runs -> cardio workouts:
 deno test --allow-all --unstable-sloppy-imports lib/cardioLog.test.ts # dashboard cardio sheet: a logged session counts, queued ones count before sync
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/parseSpeed.test.ts # food log mode: Quick / Precise, a stored Thorough reads as Quick
 deno test --allow-all lib/sheetText.test.ts     # text boxes in Portal sheets: late owner values never put old text back (Android letter drops)
+deno test --allow-all lib/firstOpenUpdate.test.ts # fresh store install: newest update before onboarding, 5 s cap, never reloads an open app
 deno test --allow-all lib/signupTour.test.ts    # the film tour after sign-up: its words, the tap rules, no promise the plan is done
+deno test --allow-all supabase/functions/ai-coach/freeGoalBuild.test.ts # one free goal plan per account: 1 build, 8 edit turns, a guest build spends it
 # Saved-food triggers (aliases, delete, repair, brand) on an in-memory Postgres:
 deno run --node-modules-dir=none --allow-read --allow-env --allow-net --allow-write --allow-sys supabase/tests/food_memory_local.ts
 ```
