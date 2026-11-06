@@ -16,6 +16,9 @@
 // What differs from production, and why:
 //   - Model calls go through `claude -p` with EVAL_VIA_CLI=1 (owner rule).
 //     Times and token counts are then the CLI's, never the pipeline's.
+//   - A CLI process that dies (HTTP 502 from the shim) is retried once. That
+//     can also hide a real 502, which the pipeline never sees in production
+//     from the CLI anyway: read a case's failure detail before blaming either.
 //   - The web label lookup is off unless EVAL_WEB=1 (Tavily, spends credits).
 //     Production uses Anthropic's server web search, which the CLI cannot run.
 //   - The app sends no earlier cards today, so `thread.earlierCards` is not
@@ -60,6 +63,8 @@ function dotEnv(): Record<string, string> {
   const paths = [process.env.EVAL_ENV_FILE, ".env.local", `${process.env.HOME}/Coding/overload-v3/.env.local`].filter((p): p is string => !!p);
   for (const path of paths) {
     try {
+      readFileSync(path, "utf8");
+      console.log(`[eval] env from ${path}`);
       const out: Record<string, string> = {};
       for (const line of readFileSync(path, "utf8").split("\n")) {
         const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
@@ -84,7 +89,8 @@ const match = (k: string): "off" | "shadow" | "on" => (["shadow", "on"] as const
 const SUPABASE_URL = env("EXPO_PUBLIC_SUPABASE_URL");
 const ANON = env("EXPO_PUBLIC_SUPABASE_ANON_KEY");
 // The shared label cache is revoked from anon (0109): its read needs the
-// service role. Read only; the eval never writes it.
+// service role. Its ONLY use below is the precise_cache_get rpc (a select).
+// Do not hand this client to anything that writes.
 const SERVICE = env("SUPABASE_SERVICE_ROLE_KEY");
 
 export function liveReady(): string | null {

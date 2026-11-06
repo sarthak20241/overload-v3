@@ -170,7 +170,12 @@ type ParseFlow =
  *  Its own state, not a ParseFlow: it sits BESIDE the meal card. As a flow it
  *  replaced the card, and live 2026-11-05 a lunch the user had not added yet
  *  was lost to "save this sabji as a meal" (lib/foodBarCard). */
-type SaveCard = { create: CoachFoodCreate; result: CoachFoodCreateResult | null; busy: boolean };
+type SaveCard = {
+  create: CoachFoodCreate; result: CoachFoodCreateResult | null; busy: boolean;
+  /** The diary day the message was sent for. A "log it too" save lands here,
+   *  even if the user pages to another day before tapping. */
+  day: Date;
+};
 
 /** The "use your saved meal?" offer for a reviewed card, or null. The FIRST
  *  suggestion whose line is still on the card wins; the proposal is the whole
@@ -1338,7 +1343,7 @@ export default function NutritionScreen() {
       saveArrivedRef.current = token;
       // A newer save card takes the place of one not tapped yet: the latest
       // ask is the one the user means. The meal card is not touched.
-      setSaveCard({ create, result: null, busy: false });
+      setSaveCard({ create, result: null, busy: false, day: logDay });
       // The shared rule (lib/foodBarCard.ts, the eval uses it too): a save card
       // leaves the meal card's lines as they were. Its notice and proposal
       // answered the message before this one, so they go.
@@ -1415,7 +1420,8 @@ export default function NutritionScreen() {
     // dropping the samosa the user already reviewed.
     const reviewFlow: ParseFlow = (pending && !res.meal.corrects_previous)
       ? (() => {
-          const items = cardAfter(pending.items, { kind: 'meal', items: res.meal.items, correctsPrevious: false }) ?? res.meal.items;
+          // Never null here: a card on screen plus new lines is that card, longer.
+          const items = cardAfter(pending.items, { kind: 'meal', items: res.meal.items, correctsPrevious: false })!;
           const head = keptMealType ?? headOf(items);
           return {
             status: 'review',
@@ -1896,7 +1902,7 @@ export default function NutritionScreen() {
     if (!saveCard || saveCard.busy || saveCard.result || !supabase) return;
     const { create } = saveCard;
     setSaveCard({ ...saveCard, busy: true });
-    const res = await applyCoachFoodCreate(supabase, create, mealForNow(), viewDate);
+    const res = await applyCoachFoodCreate(supabase, create, mealForNow(), saveCard.day);
     track('drona_food_create_applied', { kind: create.kind, logged: res.logged, ok: !res.error });
     setSaveCard((cur) => (cur && cur.create === create ? { ...cur, busy: false, result: res } : cur));
     if (res.savedMealId) {
@@ -1905,7 +1911,7 @@ export default function NutritionScreen() {
     } else {
       haptics.warning();
     }
-  }, [saveCard, supabase, viewDate, reload]);
+  }, [saveCard, supabase, reload]);
 
   /** Close the card with no verdict on it. Discard calls this after counting a
    *  rejection; editing your words calls it without one, since taking the words
