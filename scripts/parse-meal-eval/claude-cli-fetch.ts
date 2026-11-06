@@ -135,17 +135,36 @@ function runClaude(args: string[], stdin: string): Promise<{ code: number; stdou
  * Drop-in for `deps.fetchFn`. Only understands the Messages endpoint; anything
  * else falls through to real fetch (the eval also calls Voyage for embeddings).
  */
-export function makeClaudeCliFetch(model: string): typeof fetch {
+export interface CliFetchOptions {
+  /** Run each call on the model its body names (the food box mixes Haiku and
+   *  Sonnet), not the one fixed model. */
+  modelFromBody?: boolean;
+  /** Free tool choice, the way the API does it when tool_choice is absent or
+   *  "auto": the model may answer in words, or call one or more tools at once.
+   *  tool_choice "none", or no tools, is a plain text answer. Off by default,
+   *  so parse_meal's forced-tool calls keep their exact contract. */
+  freeChoice?: boolean;
+}
+
+export function makeClaudeCliFetch(model: string, opts: CliFetchOptions = {}): typeof fetch {
   return (async (url: string | URL | Request, init?: RequestInit) => {
     const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
     if (!href.includes("api.anthropic.com")) return fetch(url as never, init);
 
     const payload = JSON.parse(String(init?.body ?? "{}")) as {
+      model?: string;
       system?: unknown;
       messages?: unknown[];
       tools?: ToolDef[];
       tool_choice?: { type: string; name?: string };
     };
+    const callModel = opts.modelFromBody && typeof payload.model === "string" ? payload.model : model;
+    if (opts.freeChoice) {
+      const choice = payload.tool_choice?.type ?? "auto";
+      if (choice === "auto" || choice === "none" || !(payload.tools ?? []).length) {
+        return freeChoiceCall(callModel, payload, choice === "none" ? [] : payload.tools ?? []);
+      }
+    }
 
     const forced = payload.tool_choice?.name;
     const tools = payload.tools ?? [];
@@ -196,7 +215,7 @@ export function makeClaudeCliFetch(model: string): typeof fetch {
     const args = [
       "-p",
       "--output-format", "json",
-      "--model", model,
+      "--model", callModel,
       "--system-prompt", system,
       "--max-turns", "1",
       "--disallowed-tools", "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,Task,TodoWrite",
@@ -242,7 +261,7 @@ export function makeClaudeCliFetch(model: string): typeof fetch {
         id: "msg_claude_cli",
         type: "message",
         role: "assistant",
-        model,
+        model: callModel,
         content: [{ type: "tool_use", id: "toolu_claude_cli", name: chosen, input }],
         stop_reason: "tool_use",
         usage: {
@@ -253,4 +272,94 @@ export function makeClaudeCliFetch(model: string): typeof fetch {
       { status: 200, headers: { "Content-Type": "application/json" } },
     );
   }) as typeof fetch;
+}
+
+/** One CLI call where the model may answer in words or call tools, as with
+ *  the API's tool_choice "auto". Several tool calls in one answer are allowed,
+ *  as the API allows parallel tool use. */
+async function freeChoiceCall(
+  model: string,
+  payload: { system?: unknown; messages?: unknown[] },
+  tools: ToolDef[],
+): Promise<Response> {
+  const contract = tools.length
+    ? [
+      "## Output contract",
+      "",
+      "You may call these functions:",
+      "",
+      ...tools.flatMap((t) => [
+        `### ${t.name}`,
+        t.description ? t.description : "",
+        "Arguments JSON Schema:",
+        JSON.stringify(t.input_schema, null, 2),
+        "",
+      ]),
+      "Reply with ONLY one JSON object, nothing else. Either:",
+      '  {"calls": [{"tool": "<function name>", "input": { ...its arguments... }}, ...]}  to call one or more functions (all run at once), or',
+      '  {"text": "<your words to the user>"}  to answer without calling any.',
+      "No prose outside the JSON, no code fence.",
+      "Do not use any tools of your own; answer from the conversation alone.",
+    ]
+    : [
+      "## Output contract",
+      "",
+      "Answer in plain words. Do not use any tools; answer from the conversation alone.",
+    ];
+  const system = [systemToText(payload.system), "", ...contract].filter(Boolean).join("\n");
+  const args = [
+    "-p",
+    "--output-format", "json",
+    "--model", model,
+    "--system-prompt", system,
+    "--max-turns", "1",
+    "--disallowed-tools", "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,Task,TodoWrite",
+  ];
+  const { code, stdout, stderr } = await runClaude(args, messagesToText(payload.messages ?? []));
+  let envelope: { result?: string; usage?: { input_tokens?: number; output_tokens?: number }; is_error?: boolean } | null = null;
+  try {
+    envelope = JSON.parse(stdout);
+  } catch { /* below */ }
+  if (!envelope) {
+    return new Response(`claude -p exited ${code} with no JSON envelope: ${(stdout || stderr).slice(0, 400) || "(no output)"}`, { status: 502 });
+  }
+  if (envelope.is_error || code !== 0) {
+    return new Response(`claude -p failed (exit ${code}): ${String(envelope.result).slice(0, 400)}`, { status: 502 });
+  }
+  const raw = String(envelope.result ?? "");
+  let content: unknown[];
+  if (!tools.length) {
+    content = [{ type: "text", text: raw.trim() }];
+  } else {
+    try {
+      const o = extractJson(raw) as { calls?: unknown; text?: unknown; tool?: unknown; input?: unknown };
+      const calls = Array.isArray(o.calls) ? o.calls : typeof o.tool === "string" ? [{ tool: o.tool, input: o.input }] : [];
+      if (calls.length) {
+        content = calls.map((c, i) => {
+          const cc = c as { tool?: unknown; input?: unknown };
+          const name = typeof cc.tool === "string" ? cc.tool : "";
+          if (!tools.some((t) => t.name === name)) throw new Error(`picked an unknown tool: ${name}`);
+          return { type: "tool_use", id: `toolu_claude_cli_${i}`, name, input: cc.input ?? {} };
+        });
+      } else {
+        content = [{ type: "text", text: typeof o.text === "string" ? o.text : raw.trim() }];
+      }
+    } catch (e) {
+      // Words with no JSON around them are still an answer in words.
+      if (String(e).includes("unknown tool")) return new Response(`claude-cli shim: ${String(e).slice(0, 400)}`, { status: 502 });
+      content = [{ type: "text", text: raw.trim() }];
+    }
+  }
+  return new Response(
+    JSON.stringify({
+      id: "msg_claude_cli",
+      type: "message",
+      role: "assistant",
+      model,
+      content,
+      stop_reason: content.some((b) => (b as { type: string }).type === "tool_use") ? "tool_use" : "end_turn",
+      usage: { input_tokens: envelope.usage?.input_tokens ?? 0, output_tokens: envelope.usage?.output_tokens ?? 0 },
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
 }
