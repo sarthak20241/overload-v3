@@ -55,6 +55,9 @@ export interface FoodAgentDeps {
    *  copy_lines and read_card. Present with the thread store on and earlier
    *  cards in the thread. */
   threadCard?(ref: string, version: number | null): Promise<ThreadCardLines | null>;
+  /** The ref the card on screen has in this thread (C2), when it has one, so
+   *  read_card and copy_lines can say "that is the card on screen". */
+  threadOnScreenRef?: string | null;
   /** The diary like readDiary, with each line's catalog id and source too
    *  (loggedMeals.ts full), for copy_lines. Absent: no copy from the diary. */
   readDiaryLines?(input: Record<string, unknown>): Promise<unknown>;
@@ -148,7 +151,7 @@ export type AgentEvent =
     error: string | null;
   }
   | { tool: "restore_card"; ok: boolean; reason: "restored" | "not_found" | "card_open" | "no_thread" }
-  | { tool: "read_card"; found: boolean };
+  | { tool: "read_card"; found: boolean; on_screen?: boolean };
 
 export type FoodAgentOutcome =
   | { kind: "log"; result: ParseMealResult; turns: AgentTurn[] }
@@ -319,9 +322,9 @@ const COPY_LINES_TOOL: AnthropicTool = {
         type: "boolean",
         description: "True only after the user chose to add a second portion of a food already on the card.",
       },
-      summary: { type: "string", description: "One short line saying what was put on the card, as an offer. No em dashes." },
     },
-    required: ["source", "summary"],
+    // No summary: the app writes the line the user reads from what it copied.
+    required: ["source"],
   },
 };
 
@@ -678,12 +681,16 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
         const label = statusFor(u.name, u.input ?? {});
         if (label) deps.onStatus?.(label);
       }
-      const runs = await Promise.all(copies.map((u) => runCopy(u.input ?? {}, input, deps)));
+      // Every source is read at once; then the lines are sorted in call order
+      // against ONE on-card set, so two copies of a food in one turn are caught.
+      const sources = await Promise.all(copies.map((u) => loadCopySource(u.input ?? {}, deps)));
+      const onCard = onCardOf(input.card ?? []);
+      const runs = sources.map((src, i) => classifyCopy(src, copies[i].input ?? {}, input, onCard));
       copies.forEach((u, i) => copyRuns.set(u, runs[i]));
       const whole = runs.every((r) => !r.error && r.results.length > 0 && r.results.every((x) => x.status === "copied"));
       const partial = last && !whole && runs.some((r) => r.items.length > 0);
       for (const r of runs) deps.onEvent?.(copyEvent(r, whole || partial));
-      if (whole || partial) return copyFinish(copies, runs, input, turns, partial);
+      if (whole || partial) return copyFinish(runs, input, turns, partial);
     }
     if (last) {
       if (refused.size) return { kind: "failed", reason: "restore_card_open", turns };
@@ -729,6 +736,10 @@ async function runRead(
     if (u.name === READ_CARD_TOOL.name) {
       const ref = typeof u.input?.card === "string" ? u.input.card.trim().toUpperCase() : "";
       const version = Number.isInteger(u.input?.version) && (u.input.version as number) >= 1 ? u.input.version as number : null;
+      if (ref && deps.threadOnScreenRef && ref === deps.threadOnScreenRef) {
+        deps.onEvent?.({ tool: "read_card", found: false, on_screen: true });
+        return { error: `${ref} is the card on screen now: its lines are the card shown above, not an earlier card.` };
+      }
       const got = ref && deps.threadCard ? await deps.threadCard(ref, version) : null;
       deps.onEvent?.({ tool: "read_card", found: !!got });
       if (!got) return { error: `No card ${ref || "(no ref)"}${version ? ` version ${version}` : ""} in this conversation.` };
@@ -1083,14 +1094,23 @@ function threadSourceLine(l: ThreadLine): SourceLine {
 
 /** A diary line (loggedMeals.ts, full) as a card line: every number and the
  *  source as the diary holds them. A diary line with no source was logged by
- *  hand (meal_entries.source is null for the manual picker): "manual". */
+ *  hand (meal_entries.source is null for the manual picker): "manual".
+ *  A source we do not know is never relabelled "manual" (the user's own
+ *  number): it is "estimate", with a note naming what the diary said, so the
+ *  card asks for a look. Not kept raw: meal_entries_source_check (0114)
+ *  allows only the six known values, so an auto-log of a raw unknown value
+ *  would fail, and the app reads any other value as "estimate" anyway
+ *  (lib/dietData.ts). A line with no grams stays at 0 = no weight known: the
+ *  app and the auto-log both write that as grams_logged null (0069). */
 function diarySourceLine(r: Record<string, unknown>): SourceLine | null {
   const name = typeof r.name === "string" ? r.name.trim() : "";
   const kcal = typeof r.kcal === "number" && Number.isFinite(r.kcal) ? r.kcal : null;
   if (!name || kcal === null) return null;
   const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
   const src = r.source;
-  const source: ParsedItem["source"] = src === "catalog" || src === "off" || src === "fatsecret" || src === "web" || src === "estimate" ? src : "manual";
+  const known = src === "catalog" || src === "off" || src === "fatsecret" || src === "web" || src === "estimate" || src === "manual";
+  const unknownSource = src !== null && src !== undefined && !known;
+  const source: ParsedItem["source"] = known ? src : unknownSource ? "estimate" : "manual";
   const food_id = typeof r.food_id === "string" ? r.food_id : null;
   return {
     id: null,
@@ -1108,32 +1128,60 @@ function diarySourceLine(r: Record<string, unknown>): SourceLine | null {
       fat_g: n(r.fat_g) ?? 0,
       fiber_g: n(r.fiber_g),
       source,
-      assumption: null,
-      confidence: "high",
+      assumption: unknownSource ? `Copied from your diary, where its source reads "${String(src).slice(0, 40)}". Check this one.` : null,
+      confidence: unknownSource ? "medium" : "high",
       meal_type: meal,
     }),
   };
 }
 
-/** Run one copy_lines call. Never throws: a bad source is an error result. */
-export async function runCopy(args: Record<string, unknown>, input: FoodAgentInput, deps: Pick<FoodAgentDeps, "threadCard" | "readDiaryLines">): Promise<CopyRun> {
+/** The foods on the card for the duplicate check, by food key and catalog id.
+ *  ONE set per turn: every line a copy takes joins it, so a second copy_lines
+ *  in the same turn, or a second source line of the same food, is caught as
+ *  already_on_card too ("code catches duplicates every time"). */
+export interface OnCard {
+  keys: Set<string>;
+  ids: Set<string>;
+}
+
+export function onCardOf(card: CardLine[]): OnCard {
+  return {
+    keys: new Set(card.map((l) => sameFoodKey(l.food_name))),
+    ids: new Set(card.map((l) => l.food_id).filter((x): x is string => !!x)),
+  };
+}
+
+/** A copy's source, read: its lines, or why there are none. */
+export interface CopySource {
+  kind: CopyRun["kind"];
+  label: string;
+  lines: SourceLine[];
+  error: string | null;
+}
+
+/** Read one copy_lines call's source. Never throws: a bad source is an error. */
+export async function loadCopySource(
+  args: Record<string, unknown>,
+  deps: Pick<FoodAgentDeps, "threadCard" | "readDiaryLines" | "threadOnScreenRef">,
+): Promise<CopySource> {
   const src = (args.source && typeof args.source === "object" ? args.source : {}) as Record<string, unknown>;
   const asked = Array.isArray(args.lines) ? args.lines.filter((x): x is string => typeof x === "string") : [];
-  const fail = (kind: CopyRun["kind"], error: string): CopyRun => ({ kind, label: "", results: [], items: [], error });
+  const fail = (kind: CopyRun["kind"], error: string): CopySource => ({ kind, label: "", lines: [], error });
   let kind: CopyRun["kind"] = "unknown";
-  let label = "";
-  let lines: SourceLine[] = [];
   try {
     if (typeof src.card === "string" && src.card.trim()) {
       kind = "thread";
       const ref = src.card.trim().toUpperCase();
       const version = Number.isInteger(src.version) && (src.version as number) >= 1 ? src.version as number : null;
+      if (deps.threadOnScreenRef && ref === deps.threadOnScreenRef) {
+        return fail(kind, `${ref} is the card on screen now, so there is nothing to copy onto it. Copy from an earlier card, or change this one.`);
+      }
       if (!deps.threadCard) return fail(kind, "There are no earlier cards in this conversation to copy from.");
       const got = await deps.threadCard(ref, version);
       if (!got) return fail(kind, `No card ${ref}${version ? ` version ${version}` : ""} in this conversation.`);
-      label = `${got.ref} v${got.version}`;
-      lines = got.lines.map(threadSourceLine);
-    } else if (typeof src.days_ago === "number" || typeof src.date === "string") {
+      return { kind, label: `${got.ref} v${got.version}`, lines: got.lines.map(threadSourceLine), error: null };
+    }
+    if (typeof src.days_ago === "number" || typeof src.date === "string") {
       kind = "diary";
       if (!deps.readDiaryLines) return fail(kind, "The diary cannot be copied from here.");
       const meal = isMeal(src.meal_type) ? src.meal_type : null;
@@ -1141,38 +1189,57 @@ export async function runCopy(args: Record<string, unknown>, input: FoodAgentInp
       const q: Record<string, unknown> = { ...(typeof src.date === "string" ? { date: src.date } : { days_ago: src.days_ago }), ...(meal ? { meal_type: meal } : {}) };
       const day = await deps.readDiaryLines(q) as { error?: string; date?: string; meals?: { items?: Record<string, unknown>[] }[] };
       if (!day || day.error) return fail(kind, day?.error ?? "The diary read failed.");
-      label = `diary ${day.date ?? ""} ${meal ?? ""}`.replace(/\s+/g, " ").trim();
-      lines = (day.meals ?? []).flatMap((m) => m.items ?? []).map(diarySourceLine).filter((l): l is SourceLine => !!l);
+      const label = `diary ${day.date ?? ""} ${meal ?? ""}`.replace(/\s+/g, " ").trim();
+      const lines = (day.meals ?? []).flatMap((m) => m.items ?? []).map(diarySourceLine).filter((l): l is SourceLine => !!l);
       if (lines.length === 0) return fail(kind, `Nothing is logged for ${label.replace(/^diary /, "")}.`);
-    } else {
-      return fail(kind, "source needs a card ref (card), or a diary day (days_ago or date) with meal_type.");
+      return { kind, label, lines, error: null };
     }
+    return fail(kind, "source needs a card ref (card), or a diary day (days_ago or date) with meal_type.");
   } catch (e) {
     return fail(kind, `The read failed: ${String(e).slice(0, 120)}`);
   }
+}
+
+/** Sort one call's lines into copied / already_on_card / not_found, against
+ *  the turn's shared on-card set, and add every copied line to that set.
+ *  Synchronous, and run in call order, so the result does not depend on
+ *  which source read came back first. */
+export function classifyCopy(source: CopySource, args: Record<string, unknown>, input: FoodAgentInput, onCard: OnCard): CopyRun {
+  if (source.error) return { kind: source.kind, label: source.label, results: [], items: [], error: source.error };
+  const asked = Array.isArray(args.lines) ? args.lines.filter((x): x is string => typeof x === "string") : [];
   // Where the copies go: the user's word, the card's meal, the hour's meal.
   const meal: MealType = isMeal(args.meal_type) ? args.meal_type : input.card?.[0]?.meal_type ?? input.defaultMeal;
-  const card = input.card ?? [];
-  const onCard = new Set(card.map((l) => sameFoodKey(l.food_name)));
-  const onCardIds = new Set(card.map((l) => l.food_id).filter((x): x is string => !!x));
   const again = args.add_again === true;
   const results: CopyRun["results"] = [];
   const items: ParsedItem[] = [];
-  for (const p of pickLines(lines, asked)) {
+  for (const p of pickLines(source.lines, asked)) {
     if (p.index === null) {
       results.push({ line: p.line, name: null, status: "not_found" });
       continue;
     }
-    const l = lines[p.index];
-    const there = onCard.has(sameFoodKey(l.name)) || (!!l.food_id && onCardIds.has(l.food_id));
+    const l = source.lines[p.index];
+    const key = sameFoodKey(l.name);
+    const there = onCard.keys.has(key) || (!!l.food_id && onCard.ids.has(l.food_id));
     if (there && !again) {
       results.push({ line: p.line, name: l.name, status: "already_on_card" });
       continue;
     }
     results.push({ line: p.line, name: l.name, status: "copied" });
     items.push(l.item(meal));
+    onCard.keys.add(key);
+    if (l.food_id) onCard.ids.add(l.food_id);
   }
-  return { kind, label, results, items, error: null };
+  return { kind: source.kind, label: source.label, results, items, error: null };
+}
+
+/** One copy_lines call on its own (the card as it is). */
+export async function runCopy(
+  args: Record<string, unknown>,
+  input: FoodAgentInput,
+  deps: Pick<FoodAgentDeps, "threadCard" | "readDiaryLines" | "threadOnScreenRef">,
+  onCard: OnCard = onCardOf(input.card ?? []),
+): Promise<CopyRun> {
+  return classifyCopy(await loadCopySource(args, deps), args, input, onCard);
 }
 
 function copyEvent(r: CopyRun, finished: boolean): AgentEvent {
@@ -1194,7 +1261,8 @@ function copyResultForAgent(r: CopyRun): unknown {
   if (r.error) return { error: r.error };
   return {
     source: r.label,
-    results: r.results.map((x) => ({ line: x.line, ...(x.name ? { food_name: x.name } : {}), status: x.status })),
+    // "copied" here only means it could be: nothing from this turn was added.
+    results: r.results.map((x) => ({ line: x.line, ...(x.name ? { food_name: x.name } : {}), status: x.status === "copied" ? "would_copy" : x.status })),
     note: "Nothing was added. Call copy_lines again with only the lines to add (add_again true for a food the user " +
       "chose to add a second portion of), or reply.",
   };
@@ -1203,21 +1271,22 @@ function copyResultForAgent(r: CopyRun): unknown {
 const names = (xs: string[]) => xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
 
 /** A copy that finished: the copied lines join the card (a new card when
- *  none is on screen). `partial`: the last turn, so the lines that were not
- *  copied are named in a line the code writes, never claimed as added. */
-function copyFinish(uses: ToolUse[], runs: CopyRun[], input: FoodAgentInput, turns: AgentTurn[], partial: boolean): FoodAgentOutcome {
+ *  none is on screen). The line the user reads is built HERE from the lines
+ *  really copied, never from the model's own words, so the card can never
+ *  claim a line that was not added. `partial`: the last turn, so the lines
+ *  that were not copied are named as such. */
+function copyFinish(runs: CopyRun[], input: FoodAgentInput, turns: AgentTurn[], partial: boolean): FoodAgentOutcome {
   const items = runs.flatMap((r) => r.items);
-  const summary = clean(uses.map((u) => typeof u.input?.summary === "string" ? u.input.summary : "").find((x) => x.trim()) ?? "");
-  let line = summary || `Added ${names(items.map((i) => i.food_name))}.`;
-  if (partial) {
-    const dup = runs.flatMap((r) => r.results.filter((x) => x.status === "already_on_card").map((x) => x.name ?? x.line));
-    const miss = runs.flatMap((r) => r.results.filter((x) => x.status === "not_found").map((x) => x.line));
-    line = [
-      `Added ${names(items.map((i) => i.food_name))}.`,
-      dup.length ? `${names(dup)} ${dup.length === 1 ? "is" : "are"} already on the card: add a second portion, or skip?` : null,
-      miss.length ? `I could not find ${names(miss)} there.` : null,
-    ].filter(Boolean).join(" ");
-  }
+  const what = names(items.map((i) => i.food_name));
+  // Beside a card the lines join it; with none they are a new card to Add.
+  const lead = input.card?.length ? `Put ${what} on the card.` : `${what}, ready to add.`;
+  const dup = partial ? runs.flatMap((r) => r.results.filter((x) => x.status === "already_on_card").map((x) => x.name ?? x.line)) : [];
+  const miss = partial ? runs.flatMap((r) => r.results.filter((x) => x.status === "not_found").map((x) => x.line)) : [];
+  const line = [
+    lead,
+    dup.length ? `${names(dup)} ${dup.length === 1 ? "is" : "are"} already on the card: add a second portion, or skip?` : null,
+    miss.length ? `I could not find ${names(miss)} there.` : null,
+  ].filter(Boolean).join(" ");
   const emptyUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0 };
   return {
     kind: "log",

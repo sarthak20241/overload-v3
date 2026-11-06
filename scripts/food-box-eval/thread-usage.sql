@@ -23,7 +23,8 @@ select
   count(*) filter (where tool = 'food_threads' and r->>'reason' = 'read_timeout_800ms') as read_timeouts,
   count(*) filter (where tool = 'copy_lines' and r->>'source_kind' = 'thread') as copy_calls_thread,
   count(*) filter (where tool = 'copy_lines' and r->>'source_kind' = 'diary') as copy_calls_diary,
-  coalesce(sum((r->>'copied')::int) filter (where tool = 'copy_lines'), 0) as lines_copied,
+  -- Only a copy that finished added its lines; an unfinished one added nothing.
+  coalesce(sum((r->>'copied')::int) filter (where tool = 'copy_lines' and (r->>'finished')::boolean), 0) as lines_copied,
   coalesce(sum((r->>'already_on_card')::int) filter (where tool = 'copy_lines'), 0) as lines_already_on_card,
   coalesce(sum((r->>'not_found')::int) filter (where tool = 'copy_lines'), 0) as lines_not_found,
   count(*) filter (where tool = 'copy_lines' and r->>'error' is not null) as copy_errors,

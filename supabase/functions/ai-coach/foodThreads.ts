@@ -818,6 +818,7 @@ export async function threadForAgent(
     index: idx.text,
     indexStats: { chars: idx.chars, names: idx.names, cards_listed: idx.cards_listed, cards_total: idx.cards_total },
     restoredFrom: null,
+    onScreenRef: [...refs].find(([, c]) => c.id === req.card_id)?.[0] ?? null,
     lines,
     restore: async (ref, version) => {
       const got = await lines(ref, version);

@@ -77,6 +77,8 @@ export interface FoodBarThread {
   indexStats?: { chars: number; names: number; cards_listed: number; cards_total: number };
   /** The card restore() last brought back, so the thread write can mark it. */
   restoredFrom?: string | null;
+  /** The ref the card on screen has in this thread, when it has one. */
+  onScreenRef?: string | null;
   restore(ref: string, version: number | null): Promise<{ items: ParsedItem[]; meal_type: MealType | null } | null>;
   /** An earlier card's lines (latest version when null), or null when there
    *  is no such card or version. Never the card on screen. */
@@ -645,7 +647,7 @@ export function startFoodAgent(args: {
           : undefined,
         onStatus: args.onStatus,
         ...(thread?.index ? { restoreCard: thread.restore } : {}),
-        ...(thread?.index && thread.lines ? { threadCard: thread.lines } : {}),
+        ...(thread?.index && thread.lines ? { threadCard: thread.lines, threadOnScreenRef: thread.onScreenRef ?? null } : {}),
         // copy_lines, read_card and restore_card calls (and refusals), one
         // step each on the food box trace: the per-user usage report reads them.
         onEvent: fb ? (e) => fb.step({ src: "agent", tool: e.tool, result: e }) : undefined,

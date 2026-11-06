@@ -421,8 +421,9 @@ Deno.test("thread lines: an older version by number, never the card on screen", 
   assertEquals((await th!.lines!("C1", 1))?.lines.length, 4);
   assertEquals((await th!.lines!("c1", null))?.lines.map((l) => l.line_id), ["L1", "L2"]);
   assertEquals(await th!.lines!("C1", 7), null);
-  // C2 is on screen: not an earlier card.
+  // C2 is on screen: not an earlier card, and the agent is told its ref.
   assertEquals(await th!.lines!("C2", null), null);
+  assertEquals(th!.onScreenRef, "C2");
 });
 
 Deno.test("a message on a thread the nightly job already closed: no earlier cards, and the card is still written", async () => {

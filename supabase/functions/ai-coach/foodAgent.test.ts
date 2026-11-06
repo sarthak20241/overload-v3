@@ -695,7 +695,7 @@ Deno.test("copy_lines on the last turn: the copied lines are added and the rest 
   );
   if (out.kind !== "log") throw new Error(out.kind);
   assertEquals(out.result.parsed!.items.map((i) => i.food_name), ["Jeera Rice"]);
-  assertEquals(out.result.parsed!.drona_line, "Added Jeera Rice. Dal tadka is already on the card: add a second portion, or skip? I could not find L9 there.");
+  assertEquals(out.result.parsed!.drona_line, "Put Jeera Rice on the card. Dal tadka is already on the card: add a second portion, or skip? I could not find L9 there.");
   assertEquals(events.at(-1), { tool: "copy_lines", source_kind: "thread", asked: 3, copied: 1, already_on_card: 1, not_found: 1, finished: true, error: null });
 });
 
@@ -789,4 +789,105 @@ Deno.test("pickLines: line id, then exact name, then the name without brackets; 
   assertEquals(pickLines(src, ["l2", "jeera rice", "Jeera Rice", "paneer sabji", "naan"]).map((p) => p.index), [1, 0, null, null]);
   assertEquals(pickLines(src, ["Paneer sabji"]).map((p) => p.index), [1]);
   assertEquals(pickLines(src, ["L1", "L1"]).map((p) => p.index), [0]);
+});
+
+// ── #351 review: duplicates within one turn, the card line from what was copied ──
+
+const WITH_DUP_ROTI: ThreadCardLines = {
+  ...EARLIER,
+  lines: [tl("L1", "Roti", 120), tl("L2", "Dal tadka", 140), tl("L3", "Roti", 120)],
+};
+
+Deno.test("copy_lines: a food copied earlier in the SAME turn is already_on_card (two calls, or two source lines)", async () => {
+  // Two copy_lines calls in one turn, the same food from two sources.
+  const bodies: Record<string, unknown>[] = [];
+  const events: AgentEvent[] = [];
+  const out = await runFoodAgent(
+    { text: "add the rice from lunch and from yesterday", defaultMeal: "dinner", card: ONE_ROTI, threadIndex: THREAD_INDEX },
+    {
+      ...threadDeps(scripted([
+        [
+          { name: "copy_lines", input: { source: { card: "C1" }, lines: ["L1"] } },
+          { name: "copy_lines", input: { source: { days_ago: 1, meal_type: "lunch" }, lines: ["Jeera rice"] } },
+        ],
+        [{ name: "reply", input: { text: "Jeera rice is coming in twice. Add a second portion, or skip?" } }],
+      ], bodies), events),
+      readDiaryLines: async () => ({ date: "2026-11-05", meals: [{ items: [{ name: "Jeera rice", quantity: 1, serving_unit: "bowl", grams: 150, kcal: 195, protein_g: 4, carb_g: 42, fat_g: 0.4, food_id: null, source: "catalog" }] }] }),
+    },
+  );
+  // Nothing finished with the rice twice; the agent was told, and asked.
+  assertEquals(out.kind, "reply");
+  assertEquals(events.map((e) => e.tool === "copy_lines" ? [e.copied, e.already_on_card, e.finished] : null), [[1, 0, false], [0, 1, false]]);
+  const told = JSON.stringify(bodies[1].messages);
+  assert(told.includes("would_copy") && told.includes("already_on_card"), told);
+
+  // One call whose source has the same food twice: the second is caught.
+  const one = await runFoodAgent(
+    { text: "add the lunch card", defaultMeal: "dinner", card: [{ ...ONE_ROTI[0], food_name: "Chicken curry", kcal: 250 }], threadIndex: THREAD_INDEX },
+    {
+      ...threadDeps(scripted([
+        [{ name: "copy_lines", input: { source: { card: "C1" } } }],
+        [{ name: "reply", input: { text: "Roti is on that card twice. Add both, or one?" } }],
+      ])),
+      threadCard: async () => WITH_DUP_ROTI,
+    },
+  );
+  assertEquals(one.kind, "reply");
+});
+
+Deno.test("copy_lines: the card line names only what was copied, never the model's own summary", async () => {
+  const out = await runFoodAgent(
+    { text: "add the dal", defaultMeal: "dinner", card: ONE_ROTI, threadIndex: THREAD_INDEX },
+    threadDeps(scripted([[{ name: "copy_lines", input: { source: { card: "C1" }, lines: ["L2"], summary: "Added the dal, rice and paneer." } }]])),
+  );
+  if (out.kind !== "log") throw new Error(out.kind);
+  assertEquals(out.result.parsed!.drona_line, "Put Dal tadka on the card.");
+  // With no card on screen the lines are a new card, not yet added.
+  const fresh = await runFoodAgent(
+    { text: "the dal and rice from lunch", defaultMeal: "dinner", threadIndex: THREAD_INDEX },
+    { ...threadDeps(scripted([[{ name: "copy_lines", input: { source: { card: "C1" }, lines: ["L1", "L2"] } }]])), restoreCard: async () => null },
+  );
+  if (fresh.kind !== "log") throw new Error(fresh.kind);
+  assertEquals(fresh.result.parsed!.drona_line, "Jeera Rice and Dal tadka, ready to add.");
+});
+
+Deno.test("copy_lines from the diary: an unknown source is never relabelled manual; a line with no grams keeps its unit", async () => {
+  const out = await runFoodAgent(
+    { text: "add yesterday's lunch", defaultMeal: "lunch" },
+    {
+      ...deps(scripted([[{ name: "copy_lines", input: { source: { days_ago: 1, meal_type: "lunch" } } }]])),
+      readDiaryLines: async () => ({
+        date: "2026-11-05",
+        meals: [{ items: [
+          { name: "Mystery bar", quantity: 1, serving_unit: "bar", kcal: 210, protein_g: 10, carb_g: 25, fat_g: 7, food_id: null, source: "partner_feed" },
+          { name: "Dal", quantity: 2, serving_unit: "katori", kcal: 320, protein_g: 18, carb_g: 44, fat_g: 8, food_id: null, source: null },
+        ] }],
+      }),
+    },
+  );
+  if (out.kind !== "log") throw new Error(out.kind);
+  const [bar, dal] = out.result.parsed!.items;
+  assertEquals([bar.source, bar.confidence], ["estimate", "medium"]);
+  assert(bar.assumption!.includes("partner_feed"), bar.assumption!);
+  // No weight in the diary: 0 = no weight known, the unit and count kept.
+  // (Saved as grams_logged null: autoLog.test.ts and lib/dietData.ts.)
+  assertEquals([dal.grams, dal.quantity, dal.serving_label, dal.kcal, dal.source], [0, 2, "katori", 320, "manual"]);
+});
+
+Deno.test("read_card and copy_lines on the card on screen say so, not 'no card'", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const events: AgentEvent[] = [];
+  await runFoodAgent(
+    { text: "what's on C2?", defaultMeal: "dinner", card: ONE_ROTI, threadIndex: THREAD_INDEX },
+    {
+      ...threadDeps(scripted([
+        [{ name: "read_card", input: { card: "C2" } }, { name: "copy_lines", input: { source: { card: "c2" } } }],
+        [{ name: "reply", input: { text: "ok" } }],
+      ], bodies), events),
+      threadOnScreenRef: "C2",
+    },
+  );
+  const told = JSON.stringify(bodies[1].messages);
+  assert(told.includes("C2 is the card on screen now") && !told.includes("No card C2"), told);
+  assertEquals(events.find((e) => e.tool === "read_card"), { tool: "read_card", found: false, on_screen: true });
 });
