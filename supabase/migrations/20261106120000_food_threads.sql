@@ -238,7 +238,7 @@ create trigger trg_delete_food_threads_on_profile_delete
   after delete on public.user_profiles
   for each row execute function public.delete_food_threads_on_profile_delete();
 
--- Retention: 15 days (owner's decision, 2026-11-06). The rows hold the
+-- Retention: 20 days (owner's decision, 2026-11-06). The rows hold the
 -- user's own food text and chat turns. No summaries and no cold storage:
 -- lasting facts go to food memory when a card is added (plan step 4), and
 -- debugging uses food_bar_traces (30 days).
@@ -248,7 +248,7 @@ create trigger trg_delete_food_threads_on_profile_delete
 --      5-minute grace (THREAD_IDLE_GRACE_MS), so a message the app still sends
 --      on a live id is never caught by the job. The server never closes on
 --      idle by itself.
---   2. Delete CLOSED threads whose last message is older than 15 days. Their
+--   2. Delete CLOSED threads whose last message is older than 20 days. Their
 --      turns, cards and card lines go with them (on delete cascade). An open
 --      thread is never deleted mid-use: it was active in the last 30 minutes.
 -- Account deletion still removes a user's threads at once (the trigger above).
@@ -265,7 +265,7 @@ as $$
      and last_at < now() - interval '35 minutes';
   delete from public.food_threads
    where status = 'closed'
-     and last_at < now() - interval '15 days';
+     and last_at < now() - interval '20 days';
 $$;
 
 revoke all on function public.food_threads_retention() from public, anon, authenticated;

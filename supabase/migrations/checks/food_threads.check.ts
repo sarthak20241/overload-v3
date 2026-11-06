@@ -73,17 +73,19 @@ Deno.test("grants: only service_role can touch the tables and run the functions"
   assertEquals(g, { a1: false, a2: false, f1: false, f2: false, f3: false, s1: true });
 });
 
-Deno.test("retention: closes idle threads, deletes closed ones past 15 days with their rows, keeps live ones", async () => {
+Deno.test("retention: closes idle threads, deletes closed ones past 20 days with their rows, keeps the rest", async () => {
   const { q } = await db();
   await q(`insert into food_threads (id, user_id, last_at, status) values
-    ('11111111-1111-4111-8111-000000000001', 'u1', now() - interval '20 days', 'closed'),
-    ('11111111-1111-4111-8111-000000000002', 'u1', now() - interval '20 days', 'open'),
+    ('11111111-1111-4111-8111-000000000001', 'u1', now() - interval '25 days', 'closed'),
+    ('11111111-1111-4111-8111-000000000002', 'u1', now() - interval '25 days', 'open'),
     ('11111111-1111-4111-8111-000000000003', 'u1', now() - interval '10 minutes', 'open'),
-    ('11111111-1111-4111-8111-000000000004', 'u1', now() - interval '3 days', 'closed')`);
+    ('11111111-1111-4111-8111-000000000004', 'u1', now() - interval '3 days', 'closed'),
+    ('11111111-1111-4111-8111-000000000005', 'u1', now() - interval '17 days', 'closed')`);
   await q(`select food_card_create('22222222-2222-4222-8222-000000000001', '11111111-1111-4111-8111-000000000001', 'meal', $1::jsonb)`, [L("x")]);
   await q(`select public.food_threads_retention()`);
   const left = await q<{ id: string; status: string }>(`select right(id::text, 1) id, status from food_threads order by id`);
-  assertEquals(left, [{ id: "3", status: "open" }, { id: "4", status: "closed" }]);
+  // 17 days closed is kept: it is inside the 20.
+  assertEquals(left, [{ id: "3", status: "open" }, { id: "4", status: "closed" }, { id: "5", status: "closed" }]);
   assertEquals((await q(`select count(*)::int n from food_card_lines`))[0].n, 0);
 });
 
