@@ -6,7 +6,7 @@
  *
  * The wheels wrap @quidone/react-native-wheel-picker (pure JS, no native dep).
  */
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import WheelPicker from '@quidone/react-native-wheel-picker';
 import { FontFamily, Radius } from '@/constants/theme';
@@ -145,7 +145,18 @@ export function WeightWheel({
 }) {
   const { C } = useTheme();
   const { whole, tenth } = splitWeight(value);
-  const set = (w: number, t: number) => onChange(joinWeight(w, t, min, max));
+  // The latest value, not the last render's: both wheels report every tick,
+  // so two spinning at once must each build on what the other just set.
+  const latest = useRef(value);
+  latest.current = value;
+  const setWhole = (v: number) => {
+    latest.current = joinWeight(v, splitWeight(latest.current).tenth, min, max);
+    onChange(latest.current);
+  };
+  const setTenth = (v: number) => {
+    latest.current = joinWeight(splitWeight(latest.current).whole, v, min, max);
+    onChange(latest.current);
+  };
   return (
     <View style={w.row} accessibilityLabel={accessibilityLabel}>
       <NumberWheel
@@ -153,7 +164,7 @@ export function WeightWheel({
         max={max}
         width={104}
         value={whole}
-        onChange={(v) => set(v, tenth)}
+        onChange={setWhole}
         accessibilityLabel={`${accessibilityLabel}, whole number`}
       />
       <Text style={[w.dot, { color: C.textMuted }]}>.</Text>
@@ -164,7 +175,7 @@ export function WeightWheel({
         max={tenthsMax(whole, max)}
         width={60}
         value={tenth}
-        onChange={(v) => set(whole, v)}
+        onChange={setTenth}
         accessibilityLabel={`${accessibilityLabel}, decimal`}
       />
     </View>
