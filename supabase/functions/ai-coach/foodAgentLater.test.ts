@@ -426,3 +426,30 @@ Deno.test("a later log that finds no food goes back to the agent, which can try 
   // The first parse is not paid twice.
   assertEquals(log.filter((l) => l === "parse:a rough dinner").length, 1);
 });
+
+Deno.test("a diary read in the same turn holds the change: the read runs, the addition waits, nothing is lost", async () => {
+  const log: string[] = [];
+  const bodies: Record<string, unknown>[] = [];
+  const d = deps(scripted([
+    [{ name: "coach_list_logged_meals", input: { days_ago: 1 } }, { name: "add_lines", input: { text: "2 boiled eggs" } }],
+    [{ name: "add_lines", input: { text: "2 boiled eggs" } }, { name: "add_lines", input: { text: "dal" } }],
+  ], bodies), log);
+  d.readDiary = async () => { log.push("diary"); return { meals: [] }; };
+  const out = await runFoodAgent(LATER, d);
+  assertEquals(log.filter((l) => l === "diary").length, 1);
+  assertEquals(out.turns.length, 2);
+  const turn2 = bodies[1].messages as { content: { content?: string }[] }[];
+  assert(String(turn2.at(-1)!.content[1].content).includes("Not applied yet"));
+  if (out.kind === "log") assertEquals(out.result.parsed?.items.map((i) => i.food_name), ["Roti", "Dal", "Onion salad", "2 boiled eggs"]);
+});
+
+Deno.test("an addition never puts a second copy of a food that stays on the card", async () => {
+  const d = deps(scripted([[{ name: "add_lines", input: { text: "dal and some oil", summary: "Added oil." } }]]));
+  d.parseFood = async () => result([item("Dal", 300), item("Oil", 40)]);
+  const out = await runFoodAgent(LATER, d);
+  assertEquals(out.kind, "log");
+  if (out.kind !== "log" || !out.result.parsed) return;
+  assertEquals(out.result.parsed.items.map((i) => i.food_name), ["Roti", "Dal", "Onion salad", "Oil"]);
+  assertEquals(out.result.parsed.items[1].kcal, 150);
+  assert(out.result.parsed.drona_line.includes("Dal is already on the card"));
+});

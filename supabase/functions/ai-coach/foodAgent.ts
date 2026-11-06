@@ -599,10 +599,11 @@ export const CARD_NOTE_LATER =
   "user's working copy: never re-guess them. Change it one line at a time:\n" +
   "- edit_line: one line changes (amount, size, preparation, which food it is, a number the user gives for it). Only " +
   "that line is worked out again.\n" +
-  "- remove_lines: a line that should not be there at all. When a dish already contains a food that is also listed " +
-  "on its own line, remove the separate line.\n" +
-  "- add_lines: food that is not on the card yet, even when it went into a dish that is on the card. edit_line only " +
-  "changes what a line already is.\n" +
+  "- remove_lines: a line the user says they did not have, or that should not be there at all. When a dish already " +
+  "contains a food that is also listed on its own line, remove the separate line. When a request could mean taking a " +
+  "line off or changing it back, keep the line: change it, or ask.\n" +
+  "- add_lines: food that is not on the card yet, even when it went into a dish that is on the card. Give it only the " +
+  "new food, never a dish already on the card. edit_line only changes what a line already is.\n" +
   "Every line you do not name stays exactly as it is. Make all the changes a message needs in ONE turn, together: they " +
   "apply in a fixed order (edits, then removals, then additions). Never give one line two changes in the same turn. " +
   "A question or complaint about the card with nothing to change is reply, using the card's own numbers (how a figure " +
@@ -901,6 +902,19 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
         if (replyUse) rejected.set(replyUse, "Not sent: the card changes in this turn were refused, so nothing happened. Fix them first.");
         deps.onEvent?.({ tool: "card_changes", ok: false, edits: 0, edits_failed: 0, removed: 0, added: 0, error: p.error });
       }
+    }
+    // A later message that reads data in the same turn as it finishes: the
+    // finish waits. Its reads run, and every change, log, save or reply in the
+    // turn goes back unapplied, so a copy the agent meant to make from what it
+    // reads is not lost to an addition that ended the run first. Not on the
+    // last turn: there the reads never run, and the finish stands.
+    if (later && !last && uses.some((u) => HOLD_READS.has(u.name))) {
+      const held = uses.filter((u) => !READ_TOOLS.has(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u));
+      for (const u of held) {
+        rejected.set(u, "Not applied yet: this turn also reads data. Look at what the reads return, then send every change, " +
+          "log, save or reply together in your next turn.");
+      }
+      if (held.length) plan = null;
     }
     // A finish ends the agent even when reads came with it: the model has
     // decided, and running reads it will never see is cost with no reader.
@@ -1337,6 +1351,10 @@ async function logFindsNoFood(u: ToolUse, parse: (text: string) => Promise<Parse
     "or ask them one short question with reply.";
 }
 
+/** Reads whose results a later-message agent acts on: a finish in the same
+ *  turn waits for them. parse_food is not one (its result is reused). */
+const HOLD_READS = new Set([LIST_LOGGED_MEALS_TOOL.name, LIST_SAVED_MEALS_TOOL.name, READ_CARD_TOOL.name]);
+
 /** What ends a later-message run other than a card change (or a reply). */
 const LATER_FINISHES = new Set([
   LOG_FOOD_TOOL.name, CREATE_CUSTOM_MEAL_TOOL.name, CREATE_CUSTOM_FOOD_TOOL.name, SAVE_CARD_AS_MEAL_TOOL.name, RESTORE_CARD_TOOL.name,
@@ -1499,8 +1517,19 @@ async function applyCardChanges(
   ]);
   const edited = new Map<number, ParsedItem>();
   for (const x of editsOut) if (x.item) edited.set(x.e.index, x.item);
-  const added = addsOut.flatMap((x) => x.items);
   const removes = new Set(plan.removes);
+  // An addition never puts a second copy of a food that stays on the card
+  // (an edit changes the line; a second portion is a copy_lines add_again or
+  // an edit). It is left off and named.
+  const staying = card.flatMap((l, i) => removes.has(i) ? [] : [edited.get(i) ?? { food_name: l.food_name, food_id: l.food_id ?? null }]);
+  const keys = new Set(staying.map((l) => sameFoodKey(l.food_name)));
+  const ids = new Set(staying.map((l) => l.food_id).filter((x): x is string => !!x));
+  const dupAdds: string[] = [];
+  const added = addsOut.flatMap((x) => x.items).filter((i) => {
+    const dup = keys.has(sameFoodKey(i.food_name)) || (!!i.food_id && ids.has(i.food_id));
+    if (dup) dupAdds.push(i.food_name);
+    return !dup;
+  });
   const items = buildChangedCard(card, removes, edited, added, input.defaultMeal);
 
   const failedEdits = editsOut.filter((x) => !x.item).map((x) => card[x.e.index].food_name);
@@ -1512,10 +1541,11 @@ async function applyCardChanges(
     added.length ? `Added ${names(added.map((i) => i.food_name))}.` : null,
     failedEdits.length ? `I could not change ${names(failedEdits)}, so ${failedEdits.length === 1 ? "it is" : "they are"} as before.` : null,
     failedAdds.length ? `I could not work out ${names(failedAdds.map((t) => `"${t.slice(0, 60)}"`))}.` : null,
+    dupAdds.length ? `${names(dupAdds)} ${dupAdds.length === 1 ? "is" : "are"} already on the card, so I did not add ${dupAdds.length === 1 ? "it" : "them"} again.` : null,
   ].filter(Boolean).join(" ");
   const agentText = replyText || clean(plan.summaries.join(" "));
   const falseClaim = !!agentText && falseAgentClaim(agentText, { cardChanged: changed });
-  const line = agentText && !falseClaim && !failedEdits.length && !failedAdds.length ? agentText : codeLine;
+  const line = agentText && !falseClaim && !failedEdits.length && !failedAdds.length && !dupAdds.length ? agentText : codeLine;
   deps.onEvent?.({
     tool: "card_changes", ok: true, edits: edited.size, edits_failed: failedEdits.length, removed: removes.size,
     added: added.length, error: null, ...(falseClaim ? { false_claim: true } : {}),
