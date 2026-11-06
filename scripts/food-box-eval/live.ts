@@ -445,7 +445,7 @@ export async function runLive(c: FoodBoxCase): Promise<Outcome> {
   });
   const outcome = await resolveFoodBarOutcome({
     result: firstParse, intentP, supportsCreate: true, text: c.message, mealHint, readDiary, agentP, recentTurns, cardOpen,
-    earlierCards: !cardOpen && !!(await threadP)?.index,
+    earlierCards: card.length === 0 && !!(await threadP)?.index,
   });
 
   if (env("DEBUG_STEPS") === "1") {

@@ -1203,7 +1203,6 @@ export default function NutritionScreen() {
     });
     if (thread) {
       threadRef.current = thread.state;
-      threadEndedRef.current = null;
       // A new conversation (the last card was added, or 30 minutes idle)
       // starts with no turns: an old chat must not steer this message.
       if (thread.fresh) turnsRef.current = [];
@@ -1213,6 +1212,9 @@ export default function NutritionScreen() {
       if (thread && threadRef.current?.id === thread.state.id) {
         threadRef.current = afterAnswer(threadRef.current, thread.send, answer, Date.now());
       }
+      // The server has this send, so it has the close it carried. Cleared
+      // here, not at send time: a send that never arrives keeps it for the next.
+      if (thread?.send.closed && threadEndedRef.current?.id === thread.send.closed.id) threadEndedRef.current = null;
     };
     setFlow({ status: 'analysing', raw: t, auto: !!auto });
     // A correction typed on the result screen is read there. Anything else
@@ -1290,10 +1292,10 @@ export default function NutritionScreen() {
     // transport failure cannot say whether the request arrived, and the card's
     // Retry re-uses the same id so the server writes at most once.
     if (auto && res.kind !== 'sent' && res.kind !== 'error') void removePending(auto.clientId);
-    // Every answer that did not change the card still counts as activity, so
-    // the thread's idle clock matches the server's (a cap, an error, a send
-    // still settling). The branches below that change the card settle again.
-    if (res.kind === 'sent' || res.kind === 'cap' || res.kind === 'error') settleThread('unchanged');
+    // A send still settling reached the server, which writes its thread
+    // after it finishes. A cap or an error never reaches the thread write, so
+    // it does not count as activity: the two idle clocks stay the same.
+    if (res.kind === 'sent') settleThread('unchanged');
     if (res.kind === 'sent') {
       setFlow({ status: 'sent', raw: t, message: res.message, clientId: auto?.clientId ?? '' });
       if (sentTimerRef.current) clearTimeout(sentTimerRef.current);

@@ -95,6 +95,9 @@ create table if not exists public.food_card_lines (
 
 create index if not exists idx_food_threads_user_open on public.food_threads (user_id, last_at desc) where status = 'open';
 create index if not exists idx_food_cards_thread on public.food_cards (thread_id, created_at);
+-- A retried send adds its turns once: one user turn and one Drona turn per
+-- client id (the code checks first; this makes it hold under a race too).
+create unique index if not exists uq_food_thread_turns_client on public.food_thread_turns (thread_id, client_id, role) where client_id is not null;
 
 -- New public tables start fully granted to anon and authenticated
 -- (project_supabase_default_grants). Revoke everything: only the edge

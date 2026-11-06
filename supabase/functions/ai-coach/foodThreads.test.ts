@@ -147,3 +147,15 @@ Deno.test("closing a thread needs its owner", async () => {
   await s.close("u1", T, "added");
   assertEquals(s.dump().threads.get(T)!.status, "closed");
 });
+
+Deno.test("a retried send adds its turns once", async () => {
+  const s = memoryThreadStore();
+  await s.ensure("u1", T);
+  await s.addTurns(T, 1, [{ role: "user", text: "rice" }, { role: "drona", text: "ok" }], "m1");
+  await s.addTurns(T, 3, [{ role: "user", text: "rice" }, { role: "drona", text: "ok" }], "m1");
+  assertEquals(s.dump().threads.get(T)!.turns.length, 2);
+});
+
+Deno.test("a base_version past the cap is no base", () => {
+  assertEquals(readThreadRequest({ id: T, card_id: MEAL, base_version: 2 ** 40 })?.base_version, null);
+});

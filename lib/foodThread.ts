@@ -6,6 +6,9 @@
 //   - a reply or a save card leaves the meal card's version alone
 // A thread ends when its card is added (the next message tells the server),
 // or after 30 minutes with no message (both sides apply that on their own).
+// Only an answer the server also wrote to the thread counts as activity (a
+// meal, a reply, a save card, a send still settling), never a cap or an error,
+// so the two idle clocks agree.
 //
 // The server ignores `thread` unless FOOD_THREADS is on or shadow, and an old
 // server ignores it entirely, so sending it changes nothing a user sees.

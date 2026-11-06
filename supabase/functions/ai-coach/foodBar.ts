@@ -526,8 +526,12 @@ export function startFoodAgent(args: {
   return args.intentP.then(async (d) => {
     // Open AND whole, the same rule index.ts applies (see `cardOpen` there).
     const cardOpen = !!args.card?.lines.length && !cardMayBeCut(args.card.lines);
-    const thread = args.thread ? await args.thread.catch(() => null) : null;
-    if (env().intentMode !== "on" || !wantsFoodAgent(d, args.supportsCreate, cardOpen, !!thread?.index && !cardOpen)) return null;
+    // A card cut at the cap gets no thread: restore_card replaces the whole
+    // card, and the lines past the cap would be lost. The earlier-cards route
+    // is for NO card on screen, not for a card the agent cannot hold whole.
+    const noCard = !args.card?.lines.length;
+    const thread = args.thread && !cardMayBeCut(args.card?.lines) ? await args.thread.catch(() => null) : null;
+    if (env().intentMode !== "on" || !wantsFoodAgent(d, args.supportsCreate, cardOpen, !!thread?.index && noCard)) return null;
     if (!env().anthropicApiKey) return null;
     const t0 = Date.now();
     const callEnds: number[] = [];

@@ -91,7 +91,10 @@ export function readThreadRequest(v: unknown): ThreadRequest | null {
   const o = v as Record<string, unknown>;
   if (typeof o.id !== "string" || !UUID.test(o.id)) return null;
   const id = (x: unknown) => (typeof x === "string" && UUID.test(x) ? x : null);
-  const base = typeof o.base_version === "number" && Number.isInteger(o.base_version) && o.base_version >= 1 ? o.base_version : null;
+  // Capped: a card changes a few dozen times at most, and a huge value would
+  // overflow the integer column.
+  const base = typeof o.base_version === "number" && Number.isInteger(o.base_version) && o.base_version >= 1 && o.base_version <= 100_000
+    ? o.base_version : null;
   const c = o.closed as Record<string, unknown> | undefined;
   const closed = c && id(c.id) && (c.why === "added" || c.why === "replaced") ? { id: c.id as string, why: c.why as "added" | "replaced" } : null;
   return { id: o.id, card_id: id(o.card_id), base_version: id(o.card_id) ? base : null, next_card_id: id(o.next_card_id), closed };
@@ -307,6 +310,11 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
         thread_id: threadId, seq: seq + i, role: t.role, text: t.text.slice(0, 4000), client_id: clientId,
       }));
       const rows = rowsFrom(fromSeq);
+      // A retried send (same client id) adds its turns once.
+      if (clientId && rows.length) {
+        const { data: seen } = await admin.from("food_thread_turns").select("seq").eq("thread_id", threadId).eq("client_id", clientId).limit(1);
+        if (seen?.length) return;
+      }
       if (rows.length) {
         let { error } = await admin.from("food_thread_turns").insert(rows);
         // Two quick messages read the same last seq: the second one's seqs
@@ -451,8 +459,8 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
 
 /** A FoodThreadStore in memory, with the database's one conditional write
  *  rule (food_card_write). Used by foodThreads.test.ts and the food box eval. */
-export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<string, { user_id: string; status: string; last_at: string; turns: { seq: number; role: string; text: string }[] }>; cards: Map<string, { thread_id: string; kind: "meal" | "save"; version: number; status: StoredCard["status"]; meal_type: MealType | null; created_at: string; last_client_id: string | null; versions: Map<number, ThreadLine[]> }> } } {
-  const threads = new Map<string, { user_id: string; status: string; last_at: string; turns: { seq: number; role: string; text: string }[] }>();
+export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<string, { user_id: string; status: string; last_at: string; turns: { seq: number; role: string; text: string; client_id?: string | null }[] }>; cards: Map<string, { thread_id: string; kind: "meal" | "save"; version: number; status: StoredCard["status"]; meal_type: MealType | null; created_at: string; last_client_id: string | null; versions: Map<number, ThreadLine[]> }> } } {
+  const threads = new Map<string, { user_id: string; status: string; last_at: string; turns: { seq: number; role: string; text: string; client_id?: string | null }[] }>();
   const cards = new Map<string, { thread_id: string; kind: "meal" | "save"; version: number; status: StoredCard["status"]; meal_type: MealType | null; created_at: string; last_client_id: string | null; versions: Map<number, ThreadLine[]> }>();
   let tick = 0;
   const stamp = () => new Date(Date.now() + tick++).toISOString();
@@ -489,12 +497,13 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
       threads.set(threadId, { user_id: userId, status: "open", last_at: stamp(), turns: [] });
       return true;
     },
-    async addTurns(threadId, fromSeq, turns) {
+    async addTurns(threadId, fromSeq, turns, clientId) {
       const t = threads.get(threadId);
       if (!t) throw new Error("no thread");
+      if (clientId && t.turns.some((y) => y.client_id === clientId)) return;
       turns.filter((x) => x.text.trim()).forEach((x, i) => {
         if (t.turns.some((y) => y.seq === fromSeq + i)) throw new Error("duplicate seq");
-        t.turns.push({ seq: fromSeq + i, role: x.role, text: x.text });
+        t.turns.push({ seq: fromSeq + i, role: x.role, text: x.text, client_id: clientId });
       });
       t.last_at = stamp();
     },

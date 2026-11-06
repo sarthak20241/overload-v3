@@ -3402,7 +3402,9 @@ async function handleParseMealRequest(args: {
       log: (m) => console.log(m),
     }));
   };
-  const earlierCardsFor = async () => !cardOpen && !!(await threadP)?.index;
+  // NO card on screen, not merely "not open": a card cut at the cap is on
+  // screen, and a restore would replace it whole (foodBar.ts startFoodAgent).
+  const earlierCardsFor = async () => card.length === 0 && !!(await threadP)?.index;
 
   const readDiary = makeDiaryReader(userClient, {
     todayLocal: localDate,
