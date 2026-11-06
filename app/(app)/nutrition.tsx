@@ -1311,15 +1311,17 @@ export default function NutritionScreen() {
     if (res.kind === 'declined') {
       settleThread(res.cleared ? 'cleared' : 'unchanged');
       pushTurn('drona', res.message);
-      // The user removed the last line, so there is no card left to protect.
-      // Keeping it would show the line they just deleted under a message saying
-      // it is gone. Matches what the X button already does at the last item.
+      // The shared rule (lib/foodBarCard.ts): a reply keeps the card; the user
+      // removing the last line clears it. Keeping it would show the line they
+      // just deleted under a message saying it is gone, which is also what the
+      // X button already does at the last item.
+      const kept = cardAfter(prevReview?.meal.items ?? null, { kind: 'declined', cleared: !!res.cleared });
       if (res.cleared) {
         setFlow({ status: 'idle' });
         return;
       }
-      if (prevReview) {
-        setFlow({ ...prevReview, notice: res.message, proposal: res.proposal ?? null });
+      if (prevReview && kept) {
+        setFlow({ ...prevReview, meal: { ...prevReview.meal, items: kept }, notice: res.message, proposal: res.proposal ?? null });
         return;
       }
       setFlow({ status: 'declined', raw: t, message: res.message, pendingMeal: res.pendingMeal });

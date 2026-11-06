@@ -869,7 +869,9 @@ export function fillFromCard(tool: string, input: Record<string, unknown>, card:
     if (!line) return o;
     for (const m of MACROS) if (typeof line[m] === "number") o[m] = line[m];
     // The card line decides, the same rule as the food branch: a copy of a
-    // catalog line is not the model's guess, whatever the model marked.
+    // catalog line is not the model's guess, whatever the model marked. A meal
+    // line has one `estimated` flag for the whole line (a food has a list of
+    // fields), so it is set or dropped as a whole.
     if (guessed(line)) o.estimated = true;
     else delete o.estimated;
     return o;
