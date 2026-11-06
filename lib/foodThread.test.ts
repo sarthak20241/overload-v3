@@ -58,3 +58,16 @@ Deno.test('a card on screen with no thread id gets one at v1; removing the last 
   state = afterAnswer(state, send, 'cleared', 10);
   assertEquals([state.cardId, state.version], [null, 0]);
 });
+
+Deno.test('every send gets a fresh next_card_id, also after a reply or a save card used none', () => {
+  n = 0;
+  let { state, send } = beginSend(null, { now: 0, hasCard: false, ended: null, newId });
+  const seen = new Set([send.next_card_id]);
+  state = afterAnswer(state, send, 'meal', 1);
+  for (const answer of ['unchanged', 'unchanged', 'meal'] as const) {
+    ({ state, send } = beginSend(state, { now: 2, hasCard: true, ended: null, newId }));
+    assertEquals(seen.has(send.next_card_id), false);
+    seen.add(send.next_card_id);
+    state = afterAnswer(state, send, answer, 3);
+  }
+});

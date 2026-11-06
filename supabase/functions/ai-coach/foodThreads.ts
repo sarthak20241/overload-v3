@@ -209,7 +209,10 @@ export function cardAsLines(card: CardLine[], prev: ThreadLine[] | null = null, 
   })), usedUpTo);
 }
 
-/** A stored line back as a parsed item, numbers unchanged. */
+/** A stored line back as a parsed item. Stored numbers come back as they
+ *  were (kcal was stored rounded); a macro or weight the line never had comes
+ *  back as 0, which is ParsedItem's shape for "none". A line written from a
+ *  parse always has them. */
 export function lineAsItem(l: ThreadLine, mealDefault: MealType): ParsedItem {
   const src = l.source;
   return {
