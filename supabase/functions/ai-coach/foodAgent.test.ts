@@ -8,7 +8,7 @@
 
 import { FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { FOOD_AGENT_SYSTEM, type FoodAgentDeps, historyMessages, LAST_TURN_NOTE, MAX_TURNS, recentDays, runFoodAgent, statusFor } from "./foodAgent.ts";
+import { FOOD_AGENT_SYSTEM, type FoodAgentDeps, historyMessages, LAST_TURN_NOTE, LAST_TURN_NOTE_RESTORE, MAX_TURNS, openingText, recentDays, runFoodAgent, statusFor } from "./foodAgent.ts";
 import type { ParseMealResult } from "./parseMeal.ts";
 import { SONNET_MODEL } from "../_shared/sonnet.ts";
 
@@ -373,4 +373,208 @@ Deno.test("Sonnet 5.5: no forced tool_choice, and no thinking, on every turn", a
     assertEquals(b.tool_choice, undefined);
     assertEquals(b.thinking, { type: "between_tools" });
   }
+});
+
+// The food box trace stamps agent turn i at the end of model call i
+// (index.ts startFoodAgent callEnds). That holds only while every call that
+// came back is a turn, and a failed call ends the run without one.
+Deno.test("one model call per turn: call i is turn i, and a failed call adds no turn and ends the run", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const ok = await runFoodAgent(INPUT, deps(scripted([
+    [{ name: "coach_list_logged_meals", input: { days_ago: 1 } }],
+    [{ name: "coach_list_saved_meals", input: {} }],
+    [{ name: "reply", input: { text: "Done looking." } }],
+  ], bodies)));
+  assertEquals(ok.turns.length, bodies.length);
+  assertEquals(ok.turns.map((t) => t.turn), bodies.map((_, i) => i + 1));
+  // Read turns carry what each read returned.
+  assert(ok.turns[0].results?.[0].summary?.includes("oats"));
+
+  let calls = 0;
+  const failing: FoodAgentDeps["callModel"] = async () => {
+    calls++;
+    if (calls === 2) return { ok: false, status: 529, body: "overloaded" };
+    return { ok: true, data: { usage: {}, content: [{ type: "tool_use", id: `t${calls}`, name: "coach_list_saved_meals", input: {} }] } };
+  };
+  const failed = await runFoodAgent(INPUT, deps(failing));
+  assertEquals(failed.kind, "failed");
+  assertEquals([calls, failed.turns.length], [2, 1]);
+});
+
+// Live 2026-11-05 15:23: "save this paneer sabji as a meal" beside a lunch
+// card. The agent saw the card as names and calories only, called
+// create_custom_food with the kcal alone, and the saved meal had 0 g macros.
+const NOV5_CARD = [
+  { food_name: "Milky Mist Low Fat Paneer Sabji (60 g paneer, onion, oil)", quantity: 60, serving_label: "g", grams: 60, kcal: 150, protein_g: 11, carb_g: 4, fat_g: 10, source: "estimate" as const, meal_type: "lunch" as const },
+  { food_name: "Jeera Rice", quantity: 100, serving_label: "g", grams: 100, kcal: 171, protein_g: 2.6, carb_g: 26.6, fat_g: 5.6, source: "catalog" as const, meal_type: "lunch" as const },
+];
+
+Deno.test("a save drafted from one card line copies that line's macros", async () => {
+  const out = await runFoodAgent(
+    { text: "now save this milky mist low fat paneer sabji as a meal", defaultMeal: "lunch", card: NOV5_CARD },
+    deps(scripted([[{
+      name: "create_custom_food",
+      input: { name: "Milky Mist Low Fat Paneer Sabji", kcal: 150, log_now: false, summary: "Milky Mist sabji, 150 cal. Want it in My Meals?" },
+    }]])),
+  );
+  assertEquals(out.kind, "create");
+  if (out.kind !== "create") return;
+  const i = out.create.input;
+  assertEquals([i.protein_g, i.carb_g, i.fat_g], [11, 4, 10]);
+  // The card line was itself an estimate, so the save says so.
+  assert((i.estimated as string[]).includes("protein_g"));
+});
+
+Deno.test("a save meal built from card lines copies each line's macros; an unmatched line is left alone", async () => {
+  const out = await runFoodAgent(
+    { text: "save the rice and a banana as my lunch bowl", defaultMeal: "lunch", card: NOV5_CARD },
+    deps(scripted([[{
+      name: "create_custom_meal",
+      input: {
+        name: "Lunch bowl",
+        items: [{ name: "Jeera rice", kcal: 171 }, { name: "Banana", kcal: 105, protein_g: 1.3, estimated: true }],
+        log_now: false, summary: "Lunch bowl. Want it saved?",
+      },
+    }]])),
+  );
+  assertEquals(out.kind, "create");
+  if (out.kind !== "create") return;
+  const [rice, banana] = out.create.input.items as Record<string, unknown>[];
+  assertEquals([rice.protein_g, rice.carb_g, rice.fat_g], [2.6, 26.6, 5.6]);
+  // Copied from a catalog line on the card: the user's working copy, not a guess.
+  assertEquals(rice.estimated, undefined);
+  assertEquals([banana.protein_g, banana.carb_g, banana.estimated], [1.3, undefined, true]);
+});
+
+Deno.test("a save whose calories differ from every card line takes nothing from the card", async () => {
+  const out = await runFoodAgent(
+    { text: "save half the sabji as a snack", defaultMeal: "lunch", card: NOV5_CARD },
+    deps(scripted([[{ name: "create_custom_food", input: { name: "Milky Mist Low Fat Paneer Sabji", kcal: 75, log_now: false, summary: "Half the sabji?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  assertEquals(out.create.input.protein_g, undefined);
+});
+
+Deno.test("a card line with no figure for a macro leaves the model's figure, never a 0 g", async () => {
+  const card = [{ food_name: "Masala dosa", quantity: 1, serving_label: "dosa", grams: 0, kcal: 350, protein_g: 7, source: "catalog" as const }];
+  const out = await runFoodAgent(
+    { text: "save this dosa", defaultMeal: "breakfast", card },
+    deps(scripted([[{ name: "create_custom_food", input: { name: "Masala dosa", kcal: 350, carb_g: 45, fat_g: 15, estimated: ["carb_g", "fat_g"], log_now: false, summary: "Dosa?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  const i = out.create.input;
+  assertEquals([i.protein_g, i.carb_g, i.fat_g], [7, 45, 15]);
+  assertEquals(i.estimated, ["carb_g", "fat_g"]);
+});
+
+Deno.test("two card lines that both fit a save line: nothing is copied (no guessing which)", async () => {
+  const card = [
+    { food_name: "Roti", quantity: 1, serving_label: "roti", grams: 40, kcal: 120, protein_g: 3, carb_g: 20, fat_g: 3 },
+    { food_name: "Roti (ghee)", quantity: 1, serving_label: "roti", grams: 40, kcal: 120, protein_g: 4, carb_g: 18, fat_g: 4 },
+  ];
+  const out = await runFoodAgent(
+    { text: "save the roti", defaultMeal: "lunch", card },
+    deps(scripted([[{ name: "create_custom_food", input: { name: "Roti", kcal: 120, log_now: false, summary: "Roti?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  assertEquals(out.create.input.protein_g, undefined);
+});
+
+Deno.test("a meal line matched to a card line under a shorter name is a copy, not a guess", async () => {
+  const card = [{ food_name: "Paneer sabji (60 g paneer, onion, oil)", quantity: 1, serving_label: "serving", grams: 120, kcal: 150, protein_g: 11, carb_g: 4, fat_g: 10, source: "catalog" as const }];
+  const out = await runFoodAgent(
+    { text: "save the sabji and a banana as my bowl", defaultMeal: "lunch", card },
+    deps(scripted([[{ name: "create_custom_meal", input: { name: "Bowl", items: [{ name: "Paneer sabji", kcal: 150, estimated: true }, { name: "Banana", kcal: 105 }], log_now: false, summary: "Bowl?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  const [sabji, banana] = out.create.input.items as Record<string, unknown>[];
+  assertEquals([sabji.protein_g, sabji.estimated], [11, undefined]);
+  assertEquals(banana.estimated, true);
+});
+
+Deno.test("the agent's card view shows ? for a macro the line has no figure for, never 0", () => {
+  const view = openingText({ text: "save it", card: [{ food_name: "Dosa", quantity: 1, serving_label: "dosa", grams: 0, kcal: 350, protein_g: 7 }] }, null);
+  assert(view.includes("P 7 C ? F ?"), view);
+});
+
+Deno.test("a food save copied from a catalog card line drops a model-set kcal estimate mark", async () => {
+  const out = await runFoodAgent(
+    { text: "save the rice", defaultMeal: "lunch", card: NOV5_CARD },
+    deps(scripted([[{ name: "create_custom_food", input: { name: "Jeera Rice", kcal: 171, estimated: ["kcal"], log_now: false, summary: "Rice?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  assertEquals(out.create.input.estimated, []);
+});
+
+// ── restore_card (FOOD_THREADS=on) ───────────────────────────────────────────
+
+const INDEX = "index: 1 earlier card in this thread: [C1 v2] lunch card, 4 lines, 359 kcal, open. restore_card brings one back as the card on screen.";
+
+Deno.test("restore_card brings an earlier card back whole, as the card on screen", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const asked: [string, number | null][] = [];
+  const out = await runFoodAgent(
+    { text: "can u bring back that card", defaultMeal: "lunch", threadIndex: INDEX },
+    {
+      ...deps(scripted([[{ name: "restore_card", input: { card: "c1", summary: "Your lunch is back." } }]], bodies)),
+      restoreCard: async (ref, version) => {
+        asked.push([ref, version]);
+        return { items: parseResult([["Jeera Rice", 171], ["Paneer sabji", 150]]).parsed!.items, meal_type: "lunch" };
+      },
+    },
+  );
+  assertEquals(asked, [["C1", null]]);
+  if (out.kind !== "log") throw new Error(out.kind);
+  assertEquals(out.result.parsed!.items.map((i) => [i.food_name, i.kcal]), [["Jeera Rice", 171], ["Paneer sabji", 150]]);
+  assertEquals(out.result.parsed!.corrects_previous, true);
+  // The index line was in the agent's opening message, and the tool was offered.
+  assert(JSON.stringify(bodies[0].messages).includes("[C1 v2] lunch card"));
+  assert((bodies[0].tools as { name: string }[]).some((t) => t.name === "restore_card"));
+});
+
+Deno.test("restore_card is not offered without a thread, and fails when called anyway", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const out = await runFoodAgent(
+    { text: "bring back that card", defaultMeal: "lunch" },
+    deps(scripted([[{ name: "restore_card", input: { card: "C1", summary: "Back." } }]], bodies)),
+  );
+  assert(!(bodies[0].tools as { name: string }[]).some((t) => t.name === "restore_card"));
+  assertEquals(out.kind === "failed" && out.reason, "restore_without_thread");
+});
+
+Deno.test("restore_card on a ref the thread does not have fails honestly", async () => {
+  const out = await runFoodAgent(
+    { text: "bring back that card", defaultMeal: "lunch", threadIndex: INDEX },
+    { ...deps(scripted([[{ name: "restore_card", input: { card: "C7", summary: "Back." } }]])), restoreCard: async () => null },
+  );
+  assertEquals(out.kind === "failed" && out.reason, "restore_not_found");
+});
+
+Deno.test("restore_card is not offered while a card is on screen (it would replace the card whole)", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  await runFoodAgent(
+    { text: "make the rice 150 g", defaultMeal: "lunch", card: NOV5_CARD, threadIndex: INDEX },
+    { ...deps(scripted([[{ name: "reply", input: { text: "ok" } }]], bodies)), restoreCard: async () => null },
+  );
+  assert(!(bodies[0].tools as { name: string }[]).some((t) => t.name === "restore_card"));
+  // Nor the index that promises it.
+  assert(!JSON.stringify(bodies[0].messages).includes("earlier card in this thread"));
+});
+
+Deno.test("the last-turn note names restore_card only when it is offered", () => {
+  assert(!LAST_TURN_NOTE.includes("restore_card"));
+  assert(LAST_TURN_NOTE_RESTORE.includes("restore_card"));
+  // Built by a replace on the base note: if its wording changes, this fails.
+  assert(LAST_TURN_NOTE_RESTORE !== LAST_TURN_NOTE);
+});
+
+Deno.test("a meal line copied from a card line with some macros missing keeps the model's estimate mark", async () => {
+  const card = [{ food_name: "Dal", quantity: 1, serving_label: "katori", grams: 150, kcal: 180, protein_g: 9, source: "catalog" as const }];
+  const out = await runFoodAgent(
+    { text: "save the dal and a roti as my thali", defaultMeal: "lunch", card },
+    deps(scripted([[{ name: "create_custom_meal", input: { name: "Thali", items: [{ name: "Dal", kcal: 180, carb_g: 25, fat_g: 5, estimated: true }, { name: "Roti", kcal: 120 }], log_now: false, summary: "Thali?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  const [dal] = out.create.input.items as Record<string, unknown>[];
+  assertEquals([dal.protein_g, dal.carb_g, dal.fat_g, dal.estimated], [9, 25, 5, true]);
 });

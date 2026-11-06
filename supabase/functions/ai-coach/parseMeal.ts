@@ -24,6 +24,7 @@
 // passes the deterministic guardrails (density clamp, Atwater, prep-state),
 // so catalog-backed numbers are never model-invented.
 
+import { sawContext } from "./foodBarTrace.ts";
 import { continuationText, FOOD_TURN_CHARS, FOOD_TURNS_KEPT, type PendingFoodMeal } from "./foodContext.ts";
 import { nearWord } from "./textMatch.ts";
 import {
@@ -220,6 +221,39 @@ export interface ParseStep {
   tool: string;
   input?: unknown;
   result?: unknown;
+  /** ms since the request began, stamped when the step was recorded. Only
+   *  when deps.stepClock is set (the food box trace), so tests see no change. */
+  at_ms?: number;
+}
+
+/** One Anthropic round trip, as the food box trace keeps it. */
+export interface ParseModelCall {
+  stage: string;
+  model: string | null;
+  ms: number;
+  ok: boolean;
+  http_status: number | null;
+  error: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  saw_recent_turns: boolean;
+  saw_card: boolean;
+}
+
+/** A step list that stamps each step with when it was recorded. The step is
+ *  stamped in place, not copied, so code that pushes a step and fills in its
+ *  result afterwards still fills in the same object. */
+function stampedSteps(t0: number | undefined): ParseStep[] {
+  const steps: ParseStep[] = [];
+  if (typeof t0 !== "number") return steps;
+  const push = steps.push.bind(steps);
+  steps.push = (...items: ParseStep[]) => {
+    const now = Date.now() - t0;
+    for (const it of items) if (it && typeof it === "object" && it.at_ms === undefined) it.at_ms = now;
+    return push(...items);
+  };
+  return steps;
 }
 
 export interface ParseMealResult {
@@ -1157,6 +1191,10 @@ export interface ParseMealDeps {
    *  correction path simply falls back to the full pipeline. */
   getFoodServings?(foodId: string): Promise<ServingOption[]>;
   fetchFn?: typeof fetch;
+  /** The food box trace: request start (epoch ms) for stamping steps, and a
+   *  hook told about every model call. Both optional; absent, nothing changes. */
+  stepClock?: number;
+  onModelCall?: (call: ParseModelCall) => void;
   /** Aborts the model calls when the caller no longer wants the answer.
    *
    *  The SSE transport hands this the stream's own cancellation, so a client
@@ -1894,7 +1932,7 @@ async function runWebLookup(
       tools: [WEB_SEARCH_TOOL, WEB_LOOKUP_TOOL],
       messages: conversation,
       ...(lastTurn ? { tool_choice: { type: "tool", name: "report_labels" } } : {}),
-    });
+    }, "web_label");
     if (!result.ok) {
       deps.log?.(`[parse_meal] web lookup failed: ${result.status}`);
       return null;
@@ -2072,7 +2110,7 @@ export async function runSuperLookup(
       tools: [WEB_SEARCH_TOOL, SUPER_LOOKUP_TOOL],
       messages: conversation,
       ...(lastTurn ? { tool_choice: { type: "tool", name: "report_sources" } } : {}),
-    });
+    }, "web_sources");
     if (!result.ok) {
       deps.log?.(`[parse_meal] super lookup failed: ${result.status}`);
       return null;
@@ -2725,6 +2763,32 @@ function withToolCache(tools: unknown[]): unknown[] {
 async function callAnthropicOnce(
   deps: ParseMealDeps,
   payload: Record<string, unknown>,
+  stage = "unknown",
+): Promise<{ ok: true; data: any } | { ok: false; status: number; body: string }> {
+  if (!deps.onModelCall) return callAnthropicRaw(deps, payload);
+  const t0 = Date.now();
+  const res = await callAnthropicRaw(deps, payload);
+  try {
+    const u = res.ok ? res.data?.usage : null;
+    deps.onModelCall({
+      stage,
+      model: typeof payload.model === "string" ? payload.model : null,
+      ms: Date.now() - t0,
+      ok: res.ok,
+      http_status: res.ok ? null : res.status,
+      error: res.ok ? null : String(res.body ?? "").slice(0, 200),
+      input_tokens: typeof u?.input_tokens === "number" ? u.input_tokens : null,
+      output_tokens: typeof u?.output_tokens === "number" ? u.output_tokens : null,
+      cache_read_tokens: typeof u?.cache_read_input_tokens === "number" ? u.cache_read_input_tokens : null,
+      ...sawContext(payload),
+    });
+  } catch { /* a trace hook never costs the parse */ }
+  return res;
+}
+
+async function callAnthropicRaw(
+  deps: ParseMealDeps,
+  payload: Record<string, unknown>,
 ): Promise<{ ok: true; data: any } | { ok: false; status: number; body: string }> {
   const fetchFn = deps.fetchFn ?? fetch;
   const controller = new AbortController();
@@ -3342,7 +3406,7 @@ async function webFindingFor(
       model: deps.model,
       log: deps.log,
       callModel: async (payload) => {
-        const r = await callAnthropicOnce(deps, payload);
+        const r = await callAnthropicOnce(deps, payload, "tavily_read");
         if (!r.ok) {
           deps.log?.(`[parse_meal] tavily read failed: ${r.status}`);
           return null;
@@ -3352,7 +3416,7 @@ async function webFindingFor(
         return r.data;
       },
       suggestSearch: deps.searchRewrite === false ? undefined : async (food, seen) => {
-        const r = await callAnthropicOnce(deps, suggestSearchPayload(deps.model, food, seen));
+        const r = await callAnthropicOnce(deps, suggestSearchPayload(deps.model, food, seen), "suggest_search");
         if (!r.ok) {
           deps.log?.(`[parse_meal] search rewrite failed: ${r.status}`);
           return null;
@@ -6226,7 +6290,7 @@ async function runParseMealCore(
     tavily_credits: 0,
   };
   const toolCalls: string[] = [];
-  const steps: ParseStep[] = [];
+  const steps: ParseStep[] = stampedSteps(deps.stepClock);
   let anthropicCalls = 0;
   // Stage timing (temporary #1 latency instrumentation, folded into steps).
   const T: Record<string, number> = {};
@@ -6356,6 +6420,9 @@ async function runParseMealCore(
         ? JSON.stringify({
           text: userText.text,
           // What was actually SAID, so "yes" / "no, the other one" resolve.
+          // The keys `recent_turns` and `previous_meal` are what the food box
+          // trace reads to say this call saw the turns and the card
+          // (foodBarTrace.ts sawContext). Rename them there too.
           recent_turns: (input.recentTurns ?? []).slice(-FOOD_TURNS_KEPT).map((t) => ({
             [t.role === "user" ? "user" : "drona"]: t.text.slice(0, FOOD_TURN_CHARS),
           })),
@@ -6376,7 +6443,7 @@ async function runParseMealCore(
         ? JSON.stringify({ text: userText.text, pending_meal: input.pendingMeal }) + savedMealsBlock(saved, hint.forPrompt())
         : userText.text + savedMealsBlock(saved, hint.forPrompt()),
     }],
-  });
+  }, "extract");
   const extractRes = await callExtract();
   if (extractRes && !extractRes.ok) {
     throw new Error(`anthropic_${extractRes.status}: ${extractRes.body.slice(0, 300)}`);
@@ -7569,7 +7636,7 @@ async function runParseMealCore(
     tools: withToolCache([LOG_MEAL_TOOL]),
     tool_choice: { type: "tool", name: PARSE_TERMINAL_TOOL },
     messages: [{ role: "user", content: JSON.stringify(decidePayload) }],
-  });
+  }, "decide");
   if (!result.ok) {
     throw new Error(`anthropic_${result.status}: ${result.body.slice(0, 300)}`);
   }
