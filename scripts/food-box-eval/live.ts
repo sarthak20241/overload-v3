@@ -31,6 +31,7 @@
 //     Each can be set in the environment to match a deploy.
 
 import "../parse-meal-eval/denoShim";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import { makeClaudeCliFetch } from "../parse-meal-eval/claude-cli-fetch";
@@ -68,10 +69,22 @@ import type { Action, FoodBoxCase, Line, Outcome, SavedMeal } from "./types";
 
 // ── Env ─────────────────────────────────────────────────────────────────────
 
+/** The main checkout of this repo, from git (a worktree's common .git sits in
+ *  it), so a worktree with no .env.local can use the main one. Null outside git. */
+function mainCheckout(): string | null {
+  try {
+    const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim();
+    return common.endsWith("/.git") ? common.slice(0, -"/.git".length) : null;
+  } catch {
+    return null;
+  }
+}
+
 function dotEnv(): Record<string, string> {
-  // The worktree, then the main checkout (a worktree has no .env.local).
-  // EVAL_ENV_FILE names another file; the main checkout's is the last resort.
-  const paths = [process.env.EVAL_ENV_FILE, ".env.local", `${process.env.HOME}/Coding/overload-v3/.env.local`].filter((p): p is string => !!p);
+  // EVAL_ENV_FILE, then this checkout's .env.local, then the main checkout's
+  // (a git worktree has none of its own). Which one is read is printed.
+  const main = mainCheckout();
+  const paths = [process.env.EVAL_ENV_FILE, ".env.local", main ? `${main}/.env.local` : null].filter((p): p is string => !!p);
   for (const path of paths) {
     try {
       const text = readFileSync(path, "utf8");
