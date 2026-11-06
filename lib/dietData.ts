@@ -12,6 +12,7 @@
  * Catalog: searchCatalog() merges the bundled FOOD_LIBRARY (Indian staples, always
  * offline) with the Supabase `foods` table (the 7.4k USDA catalog), deduped by name.
  */
+import type { FoodThreadSend } from '@/lib/foodThread';
 import { persistLoggedEntryEdit } from './loggedEntryEdit';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
@@ -1160,6 +1161,7 @@ export async function parseMealStreaming(
           ? { recent_turns: args.turns.slice(-FOOD_TURNS_KEPT).map((t) => ({ role: t.role, text: t.text.slice(0, FOOD_TURN_CHARS) })) }
           : {}),
         ...(args.pendingMeal ? { pending_meal: args.pendingMeal } : {}),
+        ...(args.thread ? { thread: args.thread } : {}),
         ...autoLogFields(args.autoLog, now),
       }),
     });
@@ -1284,6 +1286,10 @@ export async function parseMeal(
      *  itself still runs the full pipeline, but a fresh re-parse it triggers
      *  ("not from saved meals") must come back in the user's tier. */
     speed?: 'super' | 'fast';
+    /** The food box thread this message belongs to (lib/foodThread.ts). The
+     *  server keeps a durable copy under it when FOOD_THREADS is on or shadow,
+     *  and ignores it otherwise. */
+    thread?: FoodThreadSend | null;
   },
 ): Promise<ParseMealResult> {
   const text = args.text.trim();
@@ -1316,6 +1322,7 @@ export async function parseMeal(
           ? { recent_turns: args.turns.slice(-FOOD_TURNS_KEPT).map((t) => ({ role: t.role, text: t.text.slice(0, FOOD_TURN_CHARS) })) }
           : {}),
         ...(args.pendingMeal ? { pending_meal: args.pendingMeal } : {}),
+        ...(args.thread ? { thread: args.thread } : {}),
         ...autoLogFields(args.autoLog, now),
         ...(args.previous && args.previous.items.length > 0
           ? {

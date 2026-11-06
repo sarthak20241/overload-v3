@@ -53,6 +53,8 @@ npx tsx scripts/food-box-eval/run.mts            # TAG=correction  ONLY=id  WRIT
 # Today's food box code on each case, with the case's saved meals, memory and
 # diary. Reads the live catalog, writes nothing. Same CLI rule as above.
 EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts   # EVAL_CONCURRENCY=6  DEBUG_STEPS=1
+# FOOD_THREADS=on: the case's earlier cards go in an in-memory thread store, the
+# agent gets restore_card. Its own BASELINE.md section (live_threads).
 deno test --allow-all scripts/food-box-eval/grade.test.ts
 
 # Edge function unit tests (the one real test suite).
@@ -92,6 +94,8 @@ deno test --allow-all lib/calorieBars.test.ts  # Analytics calorie bars: each da
 deno test --allow-all lib/pendingEntries.test.ts # an added suggestion or copy shows at once, swapped for the saved row
 deno test --allow-all lib/pendingParse.test.ts  # food search "Log it with Drona": handed to Nutrition once, with its meal and day
 deno test --allow-all lib/foodBarCard.test.ts   # food box: a save card sits beside the meal card, never replaces it
+deno test --allow-all lib/foodThread.test.ts    # food box thread ids + card versions, counted the way the server counts
+deno test --allow-all supabase/functions/ai-coach/foodThreads.test.ts # thread store: stable line ids, one conditional write, restore
 deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
 deno test --allow-all lib/questionPin.test.ts  # Drona chat: a reply types in under its question at the top

@@ -85,9 +85,18 @@ import type { SavedMealForParse } from "./savedMeals.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
 import { startHeartbeat } from "./streamHeartbeat.ts";
 import {
+  parseFoodThreadsMode,
+  readThreadRequest,
+  recordThreadMessage,
+  servedForThread,
+  supabaseThreadStore,
+  threadForAgent,
+} from "./foodThreads.ts";
+import {
   configureFoodBar,
   type DiaryReader,
   type FoodBarOutcome,
+  type FoodBarThread,
   resolveFoodBarOutcome,
   startFoodAgent,
   startFoodIntent,
@@ -272,6 +281,12 @@ const JEV_API_KEY = Deno.env.get("JEV_API_KEY");
  * 46 messages I wrote myself gets checked against messages real people type.
  */
 const FOOD_INTENT_MODE = parseFoodIntentMode(Deno.env.get("FOOD_INTENT_MODE"));
+
+/** The food box thread store (foodThreads.ts, migration 20261106120000).
+ *  off: nothing read or written (default). shadow: every message written after
+ *  the answer, nothing read. on: also read, for the agent's index line and
+ *  restore_card. The tables must exist before this leaves off. */
+const FOOD_THREADS = parseFoodThreadsMode(Deno.env.get("FOOD_THREADS"));
 
 /** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
  *  of a race it is supposed to win (measured ~700ms against a parse of 1.2s and
@@ -3352,6 +3367,41 @@ async function handleParseMealRequest(args: {
   // lunch". The phone's own date anchors "today"; the offset only when the
   // client actually sent one (readAutoLogRequest defaults a missing one to 0,
   // which would be a guess dressed as a fact).
+  // The food box thread (FOOD_THREADS). The app names it; the server keeps the
+  // durable copy. Read up front only when on, and only for the agent: it is
+  // ready long before the router answers, so the common path waits for nothing.
+  const threadReq = FOOD_THREADS !== "off" ? readThreadRequest(body.thread) : null;
+  const threadStore = threadReq ? supabaseThreadStore(admin) : null;
+  const threadP: Promise<FoodBarThread | null> = FOOD_THREADS === "on" && threadReq && threadStore
+    ? threadForAgent(threadStore, userId, threadReq).catch(() => null)
+    : Promise.resolve(null);
+  /** After the answer is sent: this message's turns and card change, as one
+   *  conditional write on the app's base version. Never on the hot path. */
+  const writeThread = (outcome: FoodBarOutcome, result: ParseMealResult) => {
+    if (!threadReq || !threadStore) return;
+    const dronaText = outcome.action === "create"
+      ? (typeof outcome.create?.input?.summary === "string" ? outcome.create.input.summary : null)
+      : outcome.action === "reply" ? outcome.reply ?? null
+      : result.parsed?.drona_line ?? result.declined?.message ?? null;
+    keepAlive(recordThreadMessage(threadStore, {
+      userId,
+      req: threadReq,
+      clientId: auto.clientId ?? (typeof body.client_id === "string" ? body.client_id : null),
+      userText: text,
+      dronaText,
+      card,
+      served: servedForThread({
+        action: outcome.action,
+        create: outcome.create ?? null,
+        parsed: outcome.action === "log" ? result.parsed : null,
+        cleared: !!result.declined?.cleared,
+      }),
+      mealType: card[0]?.meal_type ?? result.parsed?.meal_type ?? mealHint,
+      log: (m) => console.log(m),
+    }));
+  };
+  const earlierCardsFor = async () => !cardOpen && !!(await threadP)?.index;
+
   const readDiary = makeDiaryReader(userClient, {
     todayLocal: localDate,
     tzOffsetMin: typeof body.tz_offset_min === "number" ? auto.tzOffsetMin : null,
@@ -3582,6 +3632,7 @@ async function handleParseMealRequest(args: {
           // Builds that do not know this event skip it (dietData ignores
           // unknown events), so this needs no capability of its own.
           onStatus: (label) => send("status", { label }),
+          thread: threadP,
           fbTrace,
         });
         const work = (async () => {
@@ -3636,7 +3687,8 @@ async function handleParseMealRequest(args: {
             );
             streamFirstParse = firstParse;
             const outcome = await resolveFoodBarOutcome({
-              result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen, fbTrace,
+              result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen,
+              earlierCards: await earlierCardsFor(), fbTrace,
             });
             streamOutcome = outcome;
             // The agent's meal replaces the first parse when it finished with a log.
@@ -3686,6 +3738,7 @@ async function handleParseMealRequest(args: {
               },
             };
             const servedNow = servedView(endBody, 200, outcome.action);
+            writeThread(outcome, result);
             writeFoodBar({
               served: servedNow,
               status: "ok",
@@ -3851,6 +3904,7 @@ async function handleParseMealRequest(args: {
       card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
       parseDeps: (fb) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
       logUsage: (row) => void logTokenUsage(admin, row),
+      thread: threadP,
       fbTrace,
     });
     const work = (async () => {
@@ -3886,7 +3940,8 @@ async function handleParseMealRequest(args: {
       // create or a reply must not log the parsed meal behind the user's back.
       firstParseSeen = firstParse;
       const outcome = await resolveFoodBarOutcome({
-        result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen, fbTrace,
+        result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen,
+        earlierCards: await earlierCardsFor(), fbTrace,
       });
       outcomeSeen = outcome;
       // The agent's meal replaces the first parse when it finished with a log.
@@ -3981,6 +4036,7 @@ async function handleParseMealRequest(args: {
         tool_calls: result.tool_calls,
       };
     const servedNow = servedView(resBody as ServedBody, 200, outcome.action);
+    writeThread(outcome, result);
     void recordParseTrace(admin, {
       user_id: userId,
       // The tier the parse ran in (0149): stamps the lines the client logs.

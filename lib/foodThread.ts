@@ -1,0 +1,68 @@
+// The app's side of a food box thread (plan step 1b; server: ai-coach
+// foodThreads.ts). The app makes the ids, so it never waits on the server to
+// learn them, and both sides count a card's versions the same way:
+//   - a new card starts at version 1, with the id the app sent as next_card_id
+//   - every answer that changes the card on screen makes it base_version + 1
+//   - a reply or a save card leaves the meal card's version alone
+// A thread ends when its card is added (the next message tells the server),
+// or after 30 minutes with no message (both sides apply that on their own).
+//
+// The server ignores `thread` unless FOOD_THREADS is on or shadow, and an old
+// server ignores it entirely, so sending it changes nothing a user sees.
+
+export const THREAD_IDLE_MS = 30 * 60_000;
+
+export interface FoodThreadState {
+  id: string;
+  /** The meal card on screen, as the server knows it. Null: none yet. */
+  cardId: string | null;
+  version: number;
+  lastAt: number;
+}
+
+/** body.thread, as the server reads it (readThreadRequest). */
+export interface FoodThreadSend {
+  id: string;
+  card_id: string | null;
+  base_version: number | null;
+  next_card_id: string;
+  closed: { id: string; why: 'added' | 'replaced' } | null;
+}
+
+/** What the answer did to the meal card. */
+export type FoodThreadAnswer = 'meal' | 'cleared' | 'unchanged';
+
+/** The thread for this send: the current one, or a new one when there is none
+ *  or it went idle. `hasCard`: a meal card is on screen and goes with the send
+ *  as previous_items. A card the thread has no id for yet (a suggestion opened
+ *  as a card, a card back from a restart) gets one now, at version 1, and the
+ *  server stores the app's copy under it. */
+export function beginSend(
+  state: FoodThreadState | null,
+  o: { now: number; hasCard: boolean; ended: { id: string; why: 'added' | 'replaced' } | null; newId: () => string },
+): { state: FoodThreadState; send: FoodThreadSend } {
+  let s = state && o.now - state.lastAt < THREAD_IDLE_MS ? state : { id: o.newId(), cardId: null, version: 0, lastAt: o.now };
+  if (o.hasCard && !s.cardId) s = { ...s, cardId: o.newId(), version: 1 };
+  if (!o.hasCard && s.cardId) s = { ...s, cardId: null, version: 0 };
+  return {
+    state: s,
+    send: {
+      id: s.id,
+      card_id: o.hasCard ? s.cardId : null,
+      base_version: o.hasCard ? s.version : null,
+      next_card_id: o.newId(),
+      closed: o.ended && o.ended.id !== s.id ? o.ended : null,
+    },
+  };
+}
+
+/** The thread after the answer, by the same rule the server counts with. */
+export function afterAnswer(state: FoodThreadState, send: FoodThreadSend, answer: FoodThreadAnswer, now: number): FoodThreadState {
+  if (answer === 'cleared') return { ...state, cardId: null, version: 0, lastAt: now };
+  if (answer === 'meal') {
+    return send.card_id
+      ? { ...state, version: state.version + 1, lastAt: now }
+      : { ...state, cardId: send.next_card_id, version: 1, lastAt: now };
+  }
+  return { ...state, lastAt: now };
+}

@@ -698,6 +698,9 @@ export interface FoodActionInputs {
    *  about it all go to the food agent, which holds the card and can change it,
    *  remove from it, save it, or answer about it. */
   cardOpen?: boolean;
+  /** No card on screen, but the food box thread holds earlier cards the agent
+   *  can bring back (foodThreads.ts, FOOD_THREADS=on). Never set otherwise. */
+  earlierCards?: boolean;
 }
 
 /**
@@ -770,7 +773,7 @@ export function continuesPendingMeal(d: FoodIntentDecision | null): boolean {
  *  because the agent is STARTED as soon as the router answers, long before the
  *  parse that decideFoodAction also looks at has finished. The agent can end in
  *  a save card, so it needs a client that can draw one. */
-export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreate: boolean, cardOpen = false): boolean {
+export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreate: boolean, cardOpen = false, earlierCards = false): boolean {
   // An answer to the agent's own question goes back to it at any confidence
   // that cleared "proceed": the agent asked, so it is the one that can finish.
   if (d?.resumeAgent) return clientSupportsCreate;
@@ -783,6 +786,10 @@ export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreat
   // offered a save card. A save is never inferred from a weak verdict.
   if (cardOpen && d.intent === "create") return d.confidence >= CREATE_ACTION_FLOOR;
   if (cardOpen && (d.intent === "edit" || d.intent === "other")) return d.confidence >= CARD_AGENT_FLOOR;
+  // No card on screen, and earlier cards in the thread: "bring back that card"
+  // and "use the lunch from before" need the agent, which can restore one.
+  // The plain reply cannot (live 2026-11-05, three asks in a row).
+  if (!cardOpen && earlierCards && (d.intent === "edit" || d.intent === "other")) return d.confidence >= CARD_AGENT_FLOOR;
   return false;
 }
 
@@ -799,6 +806,11 @@ export function decideFoodAction(i: FoodActionInputs): FoodAction {
   // 'continue' keeps its own routing below: a pending meal and a card rarely
   // coexist, but when they do the answer to Drona's question comes first.
   if (i.cardOpen && intent !== "steps" && intent !== "continue") return "log";
+  // Earlier cards and none on screen: the agent, unless the parse found food
+  // to log (log wins every tie, so a meal is never lost to this rule).
+  if (!i.cardOpen && i.earlierCards && !i.parseFoundFood && wantsFoodAgent(i.decision, i.clientSupportsCreate, false, true)) {
+    return "agent";
+  }
 
   if (intent === "create") {
     if (!i.clientSupportsCreate) return "log";

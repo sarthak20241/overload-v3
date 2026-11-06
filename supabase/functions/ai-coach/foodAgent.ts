@@ -45,6 +45,10 @@ export interface FoodAgentDeps {
    *  each line's own numbers, so the agent decides WHAT changes and the code
    *  decides the numbers. `text` is the change in plain words. */
   correctCard?(text: string): Promise<ParseMealResult>;
+  /** An earlier card of this thread, as items, or null when there is none by
+   *  that ref (foodThreads.ts). `version` null: the card's latest version.
+   *  Present only when the thread store is on and the thread has cards. */
+  restoreCard?(ref: string, version: number | null): Promise<{ items: ParsedItem[]; meal_type: MealType | null } | null>;
   /** A line for the user while the agent works. Never awaited. */
   onStatus?(label: string): void;
   log?(msg: string): void;
@@ -77,13 +81,17 @@ export interface FoodAgentInput {
    *  picked it from that same list, and the agent must list_saved_meals
    *  before it copies a line anyway, so a stale pick simply comes back empty. */
   savedHint?: { id: string; name: string; confidence: number } | null;
+  /** The thread's index line (foodThreads.ts threadIndexLine): the earlier
+   *  cards that exist, by ref. With it the agent gets restore_card. */
+  threadIndex?: string | null;
 }
 
 /** The opening user message: the date, then (when this answers the agent's
  *  question) what was asked, then the user's words. */
-export function openingText(input: Pick<FoodAgentInput, "text" | "answering" | "card" | "savedHint">, days: string | null): string {
+export function openingText(input: Pick<FoodAgentInput, "text" | "answering" | "card" | "savedHint" | "threadIndex">, days: string | null): string {
   const parts: string[] = [];
   if (days) parts.push(`(${days})`);
+  if (input.threadIndex) parts.push(`(${input.threadIndex})`);
   if (input.card?.length) parts.push(`(card on screen:\n${cardLines(input.card, { macros: true }).join("\n")})`);
   if (input.savedHint) {
     const name = JSON.stringify(input.savedHint.name);
@@ -231,6 +239,23 @@ const SAVE_CARD_AS_MEAL_TOOL: AnthropicTool = {
   },
 };
 
+const RESTORE_CARD_TOOL: AnthropicTool = {
+  name: "restore_card",
+  description:
+    "FINISH: bring back an earlier card of this conversation as the meal card on screen, with its lines and numbers " +
+    "exactly as they were. Name it by its ref from the thread index (C1, C2, ...). Use it when the user wants a card " +
+    "back that is no longer on screen. It replaces whatever card is on screen now.",
+  input_schema: {
+    type: "object",
+    properties: {
+      card: { type: "string", description: "The card's ref from the thread index, e.g. C1." },
+      version: { type: "integer", description: "An earlier version of that card. Omit for its latest version." },
+      summary: { type: "string", description: "One short line saying which card is back. No em dashes." },
+    },
+    required: ["card", "summary"],
+  },
+};
+
 const REPLY_TOOL: AnthropicTool = {
   name: "reply",
   description:
@@ -248,15 +273,16 @@ const CARD_TOOLS: AnthropicTool[] = [EDIT_CARD_TOOL, REMOVE_CARD_LINES_TOOL, SAV
 const READ_TOOLS = new Set([LIST_LOGGED_MEALS_TOOL.name, LIST_SAVED_MEALS_TOOL.name, PARSE_FOOD_TOOL.name]);
 const FINISH_TOOLS = new Set([
   CREATE_CUSTOM_FOOD_TOOL.name, CREATE_CUSTOM_MEAL_TOOL.name, LOG_FOOD_TOOL.name, REPLY_TOOL.name,
-  EDIT_CARD_TOOL.name, REMOVE_CARD_LINES_TOOL.name, SAVE_CARD_AS_MEAL_TOOL.name,
+  EDIT_CARD_TOOL.name, REMOVE_CARD_LINES_TOOL.name, SAVE_CARD_AS_MEAL_TOOL.name, RESTORE_CARD_TOOL.name,
 ]);
 
 /** The tools for this run: the card tools only when a card is on screen, so a
  *  first-shot message cannot "edit" nothing. A card that may be cut at the cap
  *  gets no card tools either: editing, removing from, or saving a card the
  *  agent cannot see all of would drop the lines past the cap (cardMayBeCut). */
-export function toolsFor(card: CardLine[] | null | undefined): AnthropicTool[] {
-  return card?.length && !cardMayBeCut(card) ? [...FOOD_AGENT_TOOLS, ...CARD_TOOLS] : FOOD_AGENT_TOOLS;
+export function toolsFor(card: CardLine[] | null | undefined, canRestore = false): AnthropicTool[] {
+  const base = card?.length && !cardMayBeCut(card) ? [...FOOD_AGENT_TOOLS, ...CARD_TOOLS] : FOOD_AGENT_TOOLS;
+  return canRestore ? [...base, RESTORE_CARD_TOOL] : base;
 }
 
 /** Said to the agent when a card is on screen: what it is and what to do with it. */
@@ -309,7 +335,8 @@ export const FOOD_AGENT_SYSTEM =
 
 export const LAST_TURN_NOTE =
   "This is your LAST turn. You must finish now with create_custom_meal, create_custom_food, log_food, reply, or (with a " +
-  "card on screen) edit_card, remove_card_lines or save_card_as_meal. Do not call any other tool.";
+  "card on screen) edit_card, remove_card_lines or save_card_as_meal, or (with a thread index) restore_card. " +
+  "Do not call any other tool.";
 
 // ── Status lines ────────────────────────────────────────────────────────────
 
@@ -334,6 +361,7 @@ export function statusFor(name: string, input: Record<string, unknown>): string 
   if (name === EDIT_CARD_TOOL.name) return "Reworking the card";
   if (name === REMOVE_CARD_LINES_TOOL.name) return "Taking that off the card";
   if (name === SAVE_CARD_AS_MEAL_TOOL.name) return "Building your meal";
+  if (name === RESTORE_CARD_TOOL.name) return "Bringing that card back";
   return null;
 }
 
@@ -413,6 +441,9 @@ interface ToolUse {
 
 export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): Promise<FoodAgentOutcome> {
   const turns: AgentTurn[] = [];
+  // restore_card only with both halves: the index the agent reads refs from,
+  // and the store that answers them.
+  const canRestore = !!input.threadIndex && !!deps.restoreCard;
   // An undated `today` still goes in as written rather than being dropped.
   const days = input.today ? recentDays(input.today) ?? `Today is ${input.today}.` : null;
   const messages: unknown[] = historyMessages(input.recentTurns, openingText(input, days));
@@ -445,7 +476,7 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
       // 2000 under Sonnet 4.6; ~30% up for Sonnet 5.5's tokenizer.
       max_tokens: 2600,
       system: input.card?.length ? `${FOOD_AGENT_SYSTEM}\n${CARD_NOTE}` : FOOD_AGENT_SYSTEM,
-      tools: toolsFor(input.card),
+      tools: toolsFor(input.card, canRestore),
       // Always a tool: free text would be a reply that skipped the reply tool's
       // rules, and it would end the loop without saying so. Sonnet 5.5 rejects
       // a forced tool_choice, so the system prompt says it and the code below
@@ -475,6 +506,7 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
     if (finish) {
       const label = statusFor(finish.name, finish.input ?? {});
       if (label) deps.onStatus?.(label);
+      if (finish.name === RESTORE_CARD_TOOL.name && !canRestore) return { kind: "failed", reason: "restore_without_thread", turns };
       return await finishWith(finish, input, parse, turns, seen, deps);
     }
     const unknown = uses.find((u) => !READ_TOOLS.has(u.name));
@@ -594,9 +626,36 @@ async function finishWith(
   parse: (text: string) => Promise<ParseMealResult>,
   turns: AgentTurn[],
   seen: Seen,
-  deps: Pick<FoodAgentDeps, "correctCard"> = {},
+  deps: Pick<FoodAgentDeps, "correctCard" | "restoreCard"> = {},
 ): Promise<FoodAgentOutcome> {
   const args = u.input ?? {};
+  if (u.name === RESTORE_CARD_TOOL.name) {
+    const ref = typeof args.card === "string" ? args.card.trim().toUpperCase() : "";
+    const version = Number.isInteger(args.version) && (args.version as number) >= 1 ? args.version as number : null;
+    const got = ref && deps.restoreCard ? await deps.restoreCard(ref, version) : null;
+    if (!got || got.items.length === 0) return { kind: "failed", reason: "restore_not_found", turns };
+    const summary = clean(typeof args.summary === "string" ? args.summary : "");
+    const emptyUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0 };
+    // The card comes back whole, numbers unchanged, and takes the place of
+    // whatever is on screen (corrects_previous: the app replaces, not appends).
+    return {
+      kind: "log",
+      result: {
+        parsed: {
+          meal_type: got.meal_type ?? got.items[0]?.meal_type ?? input.defaultMeal,
+          items: got.items,
+          drona_line: summary || "Here it is again.",
+          corrects_previous: true,
+        },
+        declined: null,
+        usage: emptyUsage,
+        tool_calls: ["food_agent", "restore_card"],
+        steps: [],
+        iterations: turns.length,
+      },
+      turns,
+    };
+  }
   if (u.name === REPLY_TOOL.name) {
     const text = clean(typeof args.text === "string" ? args.text : "");
     return text ? { kind: "reply", text, turns } : { kind: "failed", reason: "empty_reply", turns };

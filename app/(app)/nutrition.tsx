@@ -77,6 +77,7 @@ import {
 } from '@/lib/coachFoodCreate';
 import { FoodCreateCard } from '@/components/ai/FoodCreateCard';
 import { cardAfter } from '@/lib/foodBarCard';
+import { afterAnswer, beginSend, type FoodThreadAnswer, type FoodThreadState } from '@/lib/foodThread';
 import { haptics } from '@/lib/haptics';
 import {
   getAutoLog, setAutoLog, newAutoLogClientId, addPending, removePending, touchPending,
@@ -435,6 +436,11 @@ export default function NutritionScreen() {
   // after a parse, never on another path: there it would wait and wrongly close
   // the next arrival's result screen.
   const saveArrivedRef = useRef(false);
+  // The food box thread (lib/foodThread.ts): its id, and the card on screen as
+  // the server counts it. `threadEndedRef` is a thread whose card was added,
+  // closed on the server by the next message.
+  const threadRef = useRef<FoodThreadState | null>(null);
+  const threadEndedRef = useRef<{ id: string; why: 'added' } | null>(null);
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).
   const flowRef = useRef<ParseFlow>(flow);
@@ -1187,6 +1193,21 @@ export default function NutritionScreen() {
       else await addPending({ client_id: auto.clientId, text: t, sent_at: Date.now(), log_date: auto.logDate });
       setLostSends((l) => l.filter((x) => x.client_id !== auto.clientId));
     }
+    // The thread this message belongs to. A retry re-sends one past message
+    // with no context (see `pending`), so it carries no thread either.
+    const thread = retry ? null : beginSend(threadRef.current, {
+      now: Date.now(), hasCard: !!pending, ended: threadEndedRef.current, newId: newAutoLogClientId,
+    });
+    if (thread) {
+      threadRef.current = thread.state;
+      threadEndedRef.current = null;
+    }
+    /** What this answer did to the card, counted the way the server counts. */
+    const settleThread = (answer: FoodThreadAnswer) => {
+      if (thread && threadRef.current?.id === thread.state.id) {
+        threadRef.current = afterAnswer(threadRef.current, thread.send, answer, Date.now());
+      }
+    };
     setFlow({ status: 'analysing', raw: t, auto: !!auto });
     // A correction typed on the result screen is read there. Anything else
     // gets the calm wait.
@@ -1215,6 +1236,7 @@ export default function NutritionScreen() {
       autoLog: auto,
       // The food bar can draw a save card, so it asks for creates.
       canCreate: true,
+      thread: thread?.send ?? null,
     };
     // Streaming is only worth it on a first-shot log: a correction needs the
     // full pipeline anyway, and parseMealStreaming falls back on its own, but
@@ -1272,6 +1294,7 @@ export default function NutritionScreen() {
     // meal still under review — that is unlogged work the user would have to
     // retype. Keep the card and show the reply as a notice on it.
     if (res.kind === 'declined') {
+      settleThread(res.cleared ? 'cleared' : 'unchanged');
       pushTurn('drona', res.message);
       // The user removed the last line, so there is no card left to protect.
       // Keeping it would show the line they just deleted under a message saying
@@ -1331,6 +1354,7 @@ export default function NutritionScreen() {
         log_now: create.logNow,
         estimated: create.estimated.length > 0 || create.lines.some((l) => l.estimated),
       });
+      settleThread('unchanged');
       pushTurn('drona', create.summary || `Save ${create.name}?`);
       // The save card goes BESIDE the meal card. The meal card comes back as
       // it was, with its words and turns, so a Discard or a Save on the save
@@ -1343,6 +1367,7 @@ export default function NutritionScreen() {
       setFlow(prevReview && kept ? { ...prevReview, notice: null, proposal: null } : { status: 'idle' });
       return;
     }
+    settleThread('meal');
     pushTurn('drona', res.meal.drona_line);
     // "Just log it": the server already wrote these lines, so there is nothing
     // left to review and no card to show. The rows themselves are the receipt -
@@ -1374,6 +1399,9 @@ export default function NutritionScreen() {
       });
       markAddedByDrona(res.logged);
       reload();
+      // In the diary: this thread is done, and the next message starts one.
+      if (threadRef.current) threadEndedRef.current = { id: threadRef.current.id, why: 'added' };
+      threadRef.current = null;
       turnsRef.current = [];
       autoLandedRef.current = sectionsOf(res.meal);
       setFlow({ status: 'idle' });
@@ -1854,6 +1882,9 @@ export default function NutritionScreen() {
       return;
     }
     editCountRef.current = 0;
+    // The card is in the diary, so its thread is done (lib/foodThread.ts).
+    if (threadRef.current) threadEndedRef.current = { id: threadRef.current.id, why: 'added' };
+    threadRef.current = null;
     for (const g of groups) {
       const sec = ref.sections.find((x) => x.mealType === g.sec);
       if (sec) settlePendingLines(g.id, sec.entryIds);

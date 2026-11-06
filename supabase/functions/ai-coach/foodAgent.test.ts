@@ -496,3 +496,47 @@ Deno.test("the agent's card view shows ? for a macro the line has no figure for,
   const view = openingText({ text: "save it", card: [{ food_name: "Dosa", quantity: 1, serving_label: "dosa", grams: 0, kcal: 350, protein_g: 7 }] }, null);
   assert(view.includes("P 7 C ? F ?"), view);
 });
+
+// ── restore_card (FOOD_THREADS=on) ───────────────────────────────────────────
+
+const INDEX = "index: 1 earlier card in this thread: [C1 v2] lunch card, 4 lines, 359 kcal, open. restore_card brings one back as the card on screen.";
+
+Deno.test("restore_card brings an earlier card back whole, as the card on screen", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const asked: [string, number | null][] = [];
+  const out = await runFoodAgent(
+    { text: "can u bring back that card", defaultMeal: "lunch", threadIndex: INDEX },
+    {
+      ...deps(scripted([[{ name: "restore_card", input: { card: "c1", summary: "Your lunch is back." } }]], bodies)),
+      restoreCard: async (ref, version) => {
+        asked.push([ref, version]);
+        return { items: parseResult([["Jeera Rice", 171], ["Paneer sabji", 150]]).parsed!.items, meal_type: "lunch" };
+      },
+    },
+  );
+  assertEquals(asked, [["C1", null]]);
+  if (out.kind !== "log") throw new Error(out.kind);
+  assertEquals(out.result.parsed!.items.map((i) => [i.food_name, i.kcal]), [["Jeera Rice", 171], ["Paneer sabji", 150]]);
+  assertEquals(out.result.parsed!.corrects_previous, true);
+  // The index line was in the agent's opening message, and the tool was offered.
+  assert(JSON.stringify(bodies[0].messages).includes("[C1 v2] lunch card"));
+  assert((bodies[0].tools as { name: string }[]).some((t) => t.name === "restore_card"));
+});
+
+Deno.test("restore_card is not offered without a thread, and fails when called anyway", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const out = await runFoodAgent(
+    { text: "bring back that card", defaultMeal: "lunch" },
+    deps(scripted([[{ name: "restore_card", input: { card: "C1", summary: "Back." } }]], bodies)),
+  );
+  assert(!(bodies[0].tools as { name: string }[]).some((t) => t.name === "restore_card"));
+  assertEquals(out.kind === "failed" && out.reason, "restore_without_thread");
+});
+
+Deno.test("restore_card on a ref the thread does not have fails honestly", async () => {
+  const out = await runFoodAgent(
+    { text: "bring back that card", defaultMeal: "lunch", threadIndex: INDEX },
+    { ...deps(scripted([[{ name: "restore_card", input: { card: "C7", summary: "Back." } }]])), restoreCard: async () => null },
+  );
+  assertEquals(out.kind === "failed" && out.reason, "restore_not_found");
+});
