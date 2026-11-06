@@ -218,7 +218,8 @@ const SAVE_CARD_AS_MEAL_TOOL: AnthropicTool = {
   name: "save_card_as_meal",
   description:
     "FINISH: offer to save the meal card on screen as a reusable saved meal, with every line copied exactly. " +
-    "Use it when the user asks to keep, save, or make a meal of what is on the card. The user taps the card to save.",
+    "Use it when the user asks to keep, save, or make a meal of what is on the card. The user taps the card to save. " +
+    "It saves the WHOLE card: when they name one dish on it, save that line with create_custom_food instead.",
   input_schema: {
     type: "object",
     properties: {
