@@ -29,6 +29,8 @@ import {
 } from "./prompt.ts";
 import type { MealType, ParsedItem, ParseMealResult, ParseStep } from "./parseMeal.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
+import { lineAsItem, type ThreadLine } from "./foodThreads.ts";
+import type { ThreadCardLines } from "./foodBar.ts";
 
 export const MAX_TURNS = 5;
 
@@ -49,6 +51,16 @@ export interface FoodAgentDeps {
    *  that ref (foodThreads.ts). `version` null: the card's latest version.
    *  Present only when the thread store is on and the thread has cards. */
   restoreCard?(ref: string, version: number | null): Promise<{ items: ParsedItem[]; meal_type: MealType | null } | null>;
+  /** An earlier card's stored lines (latest version when null), for
+   *  copy_lines and read_card. Present with the thread store on and earlier
+   *  cards in the thread. */
+  threadCard?(ref: string, version: number | null): Promise<ThreadCardLines | null>;
+  /** The diary like readDiary, with each line's catalog id and source too
+   *  (loggedMeals.ts full), for copy_lines. Absent: no copy from the diary. */
+  readDiaryLines?(input: Record<string, unknown>): Promise<unknown>;
+  /** One record per copy_lines, read_card and restore_card call (and each
+   *  refusal), for the food box trace. Never awaited. */
+  onEvent?(e: AgentEvent): void;
   /** A line for the user while the agent works. Never awaited. */
   onStatus?(label: string): void;
   log?(msg: string): void;
@@ -122,6 +134,22 @@ export interface AgentTurn {
   results?: { name: string; summary: string | null }[];
 }
 
+/** What the trace keeps of a copy, read or restore (food_bar_traces steps). */
+export type AgentEvent =
+  | {
+    tool: "copy_lines";
+    source_kind: "thread" | "diary" | "unknown";
+    asked: number;
+    copied: number;
+    already_on_card: number;
+    not_found: number;
+    /** The copy finished the agent (every line copied, or the last turn). */
+    finished: boolean;
+    error: string | null;
+  }
+  | { tool: "restore_card"; ok: boolean; reason: "restored" | "not_found" | "card_open" | "no_thread" }
+  | { tool: "read_card"; found: boolean };
+
 export type FoodAgentOutcome =
   | { kind: "log"; result: ParseMealResult; turns: AgentTurn[] }
   | { kind: "create"; create: { tool: string; input: Record<string, unknown> }; turns: AgentTurn[] }
@@ -149,8 +177,9 @@ const LOG_FOOD_TOOL: AnthropicTool = {
   name: "log_food",
   description:
     "FINISH: log food to TODAY's diary. Give `text` for food to be worked out (it runs parse_food, reusing a " +
-    "parse you already did for the same text), and/or `items` to copy lines exactly as they are from the diary " +
-    "or a saved meal (repeat a line with a different meal_type to put the same food in two sections). " +
+    "parse you already did for the same text), and/or `items` to copy lines from a saved meal, or diary lines " +
+    "whose amount the user changed (repeat a line with a different meal_type to put the same food in two " +
+    "sections). Unchanged lines from the diary or an earlier card go through copy_lines when it is offered. " +
     "Logs to today only.",
   input_schema: {
     type: "object",
@@ -256,6 +285,61 @@ const RESTORE_CARD_TOOL: AnthropicTool = {
   },
 };
 
+const COPY_LINES_TOOL: AnthropicTool = {
+  name: "copy_lines",
+  description:
+    "Put foods on the meal card from ONE source, with the numbers and source copied by the app exactly as stored: " +
+    "an earlier card of this conversation (source.card, its ref from the thread index, e.g. C1) or a meal in the " +
+    "diary (source.days_ago or source.date, with source.meal_type). Name the lines by their line id from the index " +
+    "or read_card (L2), or by their name as the diary shows it; omit `lines` for every line of that source. It only " +
+    "adds: lines already on the card stay exactly as they are. With no card on screen it makes the card. When every " +
+    "line is copied this finishes. Otherwise nothing is added and you get each line's result: already_on_card (that " +
+    "food is on the card now) or not_found.",
+  input_schema: {
+    type: "object",
+    properties: {
+      source: {
+        type: "object",
+        description: "Where the lines come from: { card, version? } or { days_ago | date, meal_type }.",
+        properties: {
+          card: { type: "string", description: "An earlier card's ref from the thread index, e.g. C1." },
+          version: { type: "integer", description: "An older version of that card. Omit for its latest." },
+          days_ago: { type: "integer", description: "Diary day: 0 today, 1 yesterday." },
+          date: { type: "string", description: "Diary day as YYYY-MM-DD, instead of days_ago." },
+          meal_type: { type: "string", enum: ["breakfast", "lunch", "dinner", "snack"], description: "The diary meal." },
+        },
+      },
+      lines: { type: "array", items: { type: "string" }, description: "Line ids (L2) or diary food names. Omit for all lines." },
+      meal_type: {
+        type: "string",
+        enum: ["breakfast", "lunch", "dinner", "snack"],
+        description: "Where the copied lines go today. Omit: the card's meal, else the meal of the hour.",
+      },
+      add_again: {
+        type: "boolean",
+        description: "True only after the user chose to add a second portion of a food already on the card.",
+      },
+      summary: { type: "string", description: "One short line saying what was put on the card, as an offer. No em dashes." },
+    },
+    required: ["source", "summary"],
+  },
+};
+
+const READ_CARD_TOOL: AnthropicTool = {
+  name: "read_card",
+  description:
+    "Read an earlier card of this conversation by its ref (C1): its lines with line ids and numbers. Give `version` " +
+    "to read an older version of it. Logs nothing.",
+  input_schema: {
+    type: "object",
+    properties: {
+      card: { type: "string", description: "The card's ref, e.g. C1." },
+      version: { type: "integer", description: "An older version. Omit for its latest." },
+    },
+    required: ["card"],
+  },
+};
+
 const REPLY_TOOL: AnthropicTool = {
   name: "reply",
   description:
@@ -270,7 +354,7 @@ const REPLY_TOOL: AnthropicTool = {
 };
 
 const CARD_TOOLS: AnthropicTool[] = [EDIT_CARD_TOOL, REMOVE_CARD_LINES_TOOL, SAVE_CARD_AS_MEAL_TOOL];
-const READ_TOOLS = new Set([LIST_LOGGED_MEALS_TOOL.name, LIST_SAVED_MEALS_TOOL.name, PARSE_FOOD_TOOL.name]);
+const READ_TOOLS = new Set([LIST_LOGGED_MEALS_TOOL.name, LIST_SAVED_MEALS_TOOL.name, PARSE_FOOD_TOOL.name, READ_CARD_TOOL.name]);
 const FINISH_TOOLS = new Set([
   CREATE_CUSTOM_FOOD_TOOL.name, CREATE_CUSTOM_MEAL_TOOL.name, LOG_FOOD_TOOL.name, REPLY_TOOL.name,
   EDIT_CARD_TOOL.name, REMOVE_CARD_LINES_TOOL.name, SAVE_CARD_AS_MEAL_TOOL.name, RESTORE_CARD_TOOL.name,
@@ -279,10 +363,19 @@ const FINISH_TOOLS = new Set([
 /** The tools for this run: the card tools only when a card is on screen, so a
  *  first-shot message cannot "edit" nothing. A card that may be cut at the cap
  *  gets no card tools either: editing, removing from, or saving a card the
- *  agent cannot see all of would drop the lines past the cap (cardMayBeCut). */
-export function toolsFor(card: CardLine[] | null | undefined, canRestore = false): AnthropicTool[] {
-  const base = card?.length && !cardMayBeCut(card) ? [...FOOD_AGENT_TOOLS, ...CARD_TOOLS] : FOOD_AGENT_TOOLS;
-  return canRestore ? [...base, RESTORE_CARD_TOOL] : base;
+ *  agent cannot see all of would drop the lines past the cap (cardMayBeCut).
+ *  copy_lines when it has a source (the diary, or the thread's earlier cards),
+ *  read_card with earlier cards, restore_card only with no card on screen. */
+export function toolsFor(
+  card: CardLine[] | null | undefined,
+  canRestore = false,
+  copy: { thread?: boolean; diary?: boolean } = {},
+): AnthropicTool[] {
+  const out = card?.length && !cardMayBeCut(card) ? [...FOOD_AGENT_TOOLS, ...CARD_TOOLS] : [...FOOD_AGENT_TOOLS];
+  if (copy.thread || copy.diary) out.push(COPY_LINES_TOOL);
+  if (copy.thread) out.push(READ_CARD_TOOL);
+  if (canRestore) out.push(RESTORE_CARD_TOOL);
+  return out;
 }
 
 /** Said to the agent when a card is on screen: what it is and what to do with it. */
@@ -333,17 +426,46 @@ export const FOOD_AGENT_SYSTEM =
   "When the user says they already saved or logged something, that is done: never offer that same save or log again. " +
   "Do what they ask for next.";
 
+/** Said to the agent when copy_lines is offered (after CARD_NOTE, which it
+ *  refines: food from the diary or an earlier card is a copy, not log_food). */
+export const COPY_NOTE =
+  "Food the user logged before, or food from an earlier card of this conversation, goes on the card with copy_lines: " +
+  "the app copies each line's numbers and source exactly, so you never retype them. Use log_food items only for " +
+  "saved-meal lines or for an amount they asked to change. copy_lines only adds. When it reports a food " +
+  "already_on_card, ask one short question with two choices: add a second portion, or skip. Call copy_lines with " +
+  "add_again true only after they choose to add it. When it reports not_found, read the source first (read_card or " +
+  "the diary) and use the line ids or names it shows.";
+
 const LAST_TURN_BASE =
   "This is your LAST turn. You must finish now with create_custom_meal, create_custom_food, log_food, reply, or (with a " +
   "card on screen) edit_card, remove_card_lines or save_card_as_meal.";
 const LAST_TURN_END = "Do not call any other tool.";
 
-export const LAST_TURN_NOTE: string = `${LAST_TURN_BASE} ${LAST_TURN_END}`;
+/** The last-turn note, naming copy_lines and restore_card only when they are
+ *  offered, so a run without a tool is never told of it. */
+export function lastTurnNote(restore: boolean, copy: boolean): string {
+  return [
+    LAST_TURN_BASE,
+    copy ? "You may also finish with copy_lines." : null,
+    restore ? "With no card on screen you may also finish with restore_card." : null,
+    LAST_TURN_END,
+  ].filter(Boolean).join(" ");
+}
 
-/** The last-turn note when restore_card is offered: the same note, naming it.
- *  Only then, so a run without the tool is never told of it. Built from the
- *  same parts, so the two can never silently become one. */
-export const LAST_TURN_NOTE_RESTORE: string = `${LAST_TURN_BASE} With no card on screen you may also finish with restore_card. ${LAST_TURN_END}`;
+export const LAST_TURN_NOTE: string = lastTurnNote(false, false);
+
+/** The last-turn note when restore_card is offered. */
+export const LAST_TURN_NOTE_RESTORE: string = lastTurnNote(true, false);
+
+/** What follows the index line in the opening message: which thread tools
+ *  this run has. With a card on screen restore_card is not one of them. */
+export function threadToolsNote(canRestore: boolean): string {
+  return canRestore
+    ? "copy_lines adds foods from one of these cards (or makes a new card from them); restore_card brings one back " +
+      "whole as the card on screen; read_card shows a card's numbers or an older version."
+    : "A card is on screen, so restore_card is not available: copy_lines adds foods from one of these cards to it, " +
+      "and read_card shows a card's numbers or an older version.";
+}
 
 // ── Status lines ────────────────────────────────────────────────────────────
 
@@ -369,6 +491,8 @@ export function statusFor(name: string, input: Record<string, unknown>): string 
   if (name === REMOVE_CARD_LINES_TOOL.name) return "Taking that off the card";
   if (name === SAVE_CARD_AS_MEAL_TOOL.name) return "Building your meal";
   if (name === RESTORE_CARD_TOOL.name) return "Bringing that card back";
+  if (name === COPY_LINES_TOOL.name) return "Copying that over";
+  if (name === READ_CARD_TOOL.name) return "Checking that card";
   return null;
 }
 
@@ -452,11 +576,23 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
   // and the store that answers them), and only with NO card on screen: a
   // restore replaces the card whole, so it must never land on lines the
   // user is still working on.
-  const canRestore = !!input.threadIndex && !!deps.restoreCard && !input.card?.length;
+  const cardOnScreen = !!input.card?.length;
+  const canRestore = !!input.threadIndex && !!deps.restoreCard && !cardOnScreen;
+  // copy_lines and read_card from the thread: the index the agent reads refs
+  // from, and the store that answers them. Beside a card too (it only adds).
+  const canCopyThread = !!input.threadIndex && !!deps.threadCard;
+  const canCopyDiary = !!deps.readDiaryLines;
+  const canCopy = canCopyThread || canCopyDiary;
   // An undated `today` still goes in as written rather than being dropped.
   const days = input.today ? recentDays(input.today) ?? `Today is ${input.today}.` : null;
-  // The index promises restore_card, so it goes in only when the tool does.
-  const messages: unknown[] = historyMessages(input.recentTurns, openingText({ ...input, threadIndex: canRestore ? input.threadIndex : null }, days));
+  // The index goes in only with the tools it names: restore_card (no card on
+  // screen) or copy_lines from the thread.
+  const indexLine = canRestore || canCopyThread
+    ? `${input.threadIndex} ${canCopyThread ? threadToolsNote(canRestore) : "restore_card brings one back as the card on screen."}`
+    : null;
+  const messages: unknown[] = historyMessages(input.recentTurns, openingText({ ...input, threadIndex: indexLine }, days));
+  const system = [FOOD_AGENT_SYSTEM, cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n");
+  const tools = toolsFor(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary });
   // Every food line a read returned, by name, with the calories it carried.
   // A line the agent says it COPIED is checked against this: the model is told
   // never to invent numbers, and this is how the code knows whether it did.
@@ -480,13 +616,13 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
     // system prompt: changing the system prompt mid-loop would edit history the
     // model already answered (and break the prompt cache).
     // A copy, so the note can never leak into a later turn's history.
-    const sent = last ? [...messages, { role: "system", content: canRestore ? LAST_TURN_NOTE_RESTORE : LAST_TURN_NOTE }] : messages;
+    const sent = last ? [...messages, { role: "system", content: lastTurnNote(canRestore, canCopy) }] : messages;
     const res = await deps.callModel({
       model: deps.model,
       // 2000 under Sonnet 4.6; ~30% up for Sonnet 5.5's tokenizer.
       max_tokens: 2600,
-      system: input.card?.length ? `${FOOD_AGENT_SYSTEM}\n${CARD_NOTE}` : FOOD_AGENT_SYSTEM,
-      tools: toolsFor(input.card, canRestore),
+      system,
+      tools,
       // Always a tool: free text would be a reply that skipped the reply tool's
       // rules, and it would end the loop without saying so. Sonnet 5.5 rejects
       // a forced tool_choice, so the system prompt says it and the code below
@@ -510,28 +646,69 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
     turns.push(thisTurn);
     if (uses.length === 0) return { kind: "failed", reason: "no_tool_call", turns };
 
+    // restore_card with a card on screen is refused HERE, not only by leaving
+    // it out of the tools: a model can name a tool it was not offered, and a
+    // restore replaces the card whole. The agent hears why and can copy
+    // lines instead; on the last turn the run ends.
+    const refused = new Set(uses.filter((u) => u.name === RESTORE_CARD_TOOL.name && cardOnScreen));
+    for (const _ of refused) deps.onEvent?.({ tool: "restore_card", ok: false, reason: "card_open" });
+
     // A finish ends the agent even when reads came with it: the model has
     // decided, and running reads it will never see is cost with no reader.
-    const finish = uses.find((u) => FINISH_TOOLS.has(u.name));
+    const finish = uses.find((u) => FINISH_TOOLS.has(u.name) && !refused.has(u));
     if (finish) {
       const label = statusFor(finish.name, finish.input ?? {});
       if (label) deps.onStatus?.(label);
-      if (finish.name === RESTORE_CARD_TOOL.name && !canRestore) return { kind: "failed", reason: "restore_without_thread", turns };
+      if (finish.name === RESTORE_CARD_TOOL.name && !canRestore) {
+        deps.onEvent?.({ tool: "restore_card", ok: false, reason: "no_thread" });
+        return { kind: "failed", reason: "restore_without_thread", turns };
+      }
       return await finishWith(finish, input, parse, turns, seen, deps);
     }
-    const unknown = uses.find((u) => !READ_TOOLS.has(u.name));
+    const copies = uses.filter((u) => u.name === COPY_LINES_TOOL.name);
+    const unknown = uses.find((u) => !READ_TOOLS.has(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u));
     if (unknown) return { kind: "failed", reason: `unknown_tool_${unknown.name}`, turns };
-    if (last) return { kind: "failed", reason: "read_on_last_turn", turns };
+
+    // copy_lines: finishes when every line it was asked for is copied. Any
+    // already_on_card or not_found line comes back to the agent instead, and
+    // nothing is added: it asks the user, or copies again with what to add.
+    const copyRuns = new Map<ToolUse, CopyRun>();
+    if (copies.length) {
+      for (const u of copies) {
+        const label = statusFor(u.name, u.input ?? {});
+        if (label) deps.onStatus?.(label);
+      }
+      const runs = await Promise.all(copies.map((u) => runCopy(u.input ?? {}, input, deps)));
+      copies.forEach((u, i) => copyRuns.set(u, runs[i]));
+      const whole = runs.every((r) => !r.error && r.results.length > 0 && r.results.every((x) => x.status === "copied"));
+      const partial = last && !whole && runs.some((r) => r.items.length > 0);
+      for (const r of runs) deps.onEvent?.(copyEvent(r, whole || partial));
+      if (whole || partial) return copyFinish(copies, runs, input, turns, partial);
+    }
+    if (last) {
+      if (refused.size) return { kind: "failed", reason: "restore_card_open", turns };
+      if (copies.length) return { kind: "failed", reason: "copy_nothing_copied", turns };
+      return { kind: "failed", reason: "read_on_last_turn", turns };
+    }
 
     for (const u of uses) {
+      if (copyRuns.has(u) || refused.has(u)) continue;
       const label = statusFor(u.name, u.input ?? {});
       if (label) deps.onStatus?.(label);
     }
     const outs: unknown[] = [];
     const results = await Promise.all(uses.map(async (u, i) => {
-      const out = await runRead(u, deps, parse);
+      const run = copyRuns.get(u);
+      const out = run
+        ? copyResultForAgent(run)
+        : refused.has(u)
+        ? {
+          error: "A card is on screen, and restore_card would replace it, so it is not available now. To put foods " +
+            "from that earlier card on this one, use copy_lines.",
+        }
+        : await runRead(u, deps, parse);
       outs[i] = out;
-      remember(seen, out);
+      if (!run && !refused.has(u)) remember(seen, out);
       return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) };
     }));
     thisTurn.results = uses.map((u, i) => ({ name: u.name, summary: summarize(outs[i]) }));
@@ -549,6 +726,23 @@ async function runRead(
 ): Promise<unknown> {
   try {
     if (u.name === LIST_LOGGED_MEALS_TOOL.name) return await deps.readDiary(u.input ?? {});
+    if (u.name === READ_CARD_TOOL.name) {
+      const ref = typeof u.input?.card === "string" ? u.input.card.trim().toUpperCase() : "";
+      const version = Number.isInteger(u.input?.version) && (u.input.version as number) >= 1 ? u.input.version as number : null;
+      const got = ref && deps.threadCard ? await deps.threadCard(ref, version) : null;
+      deps.onEvent?.({ tool: "read_card", found: !!got });
+      if (!got) return { error: `No card ${ref || "(no ref)"}${version ? ` version ${version}` : ""} in this conversation.` };
+      return {
+        card: got.ref,
+        version: got.version,
+        latest_version: got.latest_version,
+        meal_type: got.meal_type,
+        lines: got.lines.map((l) => ({
+          line_id: l.line_id, food_name: l.name, quantity: l.quantity, serving_label: l.unit, grams: l.grams,
+          kcal: l.kcal, protein_g: l.protein_g, carb_g: l.carb_g, fat_g: l.fat_g,
+        })),
+      };
+    }
     if (u.name === LIST_SAVED_MEALS_TOOL.name) {
       const q = typeof u.input?.query === "string" ? u.input.query.trim().toLowerCase() : "";
       const all = await deps.savedMeals();
@@ -636,13 +830,20 @@ async function finishWith(
   parse: (text: string) => Promise<ParseMealResult>,
   turns: AgentTurn[],
   seen: Seen,
-  deps: Pick<FoodAgentDeps, "correctCard" | "restoreCard"> = {},
+  deps: Pick<FoodAgentDeps, "correctCard" | "restoreCard" | "onEvent"> = {},
 ): Promise<FoodAgentOutcome> {
   const args = u.input ?? {};
   if (u.name === RESTORE_CARD_TOOL.name) {
+    // A card on screen: never replaced (runFoodAgent refuses before this; the
+    // same rule here, where the restore would act).
+    if (input.card?.length) {
+      deps.onEvent?.({ tool: "restore_card", ok: false, reason: "card_open" });
+      return { kind: "failed", reason: "restore_card_open", turns };
+    }
     const ref = typeof args.card === "string" ? args.card.trim().toUpperCase() : "";
     const version = Number.isInteger(args.version) && (args.version as number) >= 1 ? args.version as number : null;
     const got = ref && deps.restoreCard ? await deps.restoreCard(ref, version) : null;
+    deps.onEvent?.({ tool: "restore_card", ok: !!got?.items.length, reason: got?.items.length ? "restored" : "not_found" });
     if (!got || got.items.length === 0) return { kind: "failed", reason: "restore_not_found", turns };
     const summary = clean(typeof args.summary === "string" ? args.summary : "");
     // No model or lookup ran for the restore itself: the agent's own tokens
@@ -815,6 +1016,224 @@ async function finishWith(
       steps,
       iterations: turns.length,
       tier,
+    },
+    turns,
+  };
+}
+
+// ── copy_lines ──────────────────────────────────────────────────────────────
+
+type CopyStatus = "copied" | "already_on_card" | "not_found";
+
+export interface CopyRun {
+  kind: "thread" | "diary" | "unknown";
+  /** "C1 v2" or "diary 2026-11-05 lunch", for the agent. */
+  label: string;
+  results: { line: string; name: string | null; status: CopyStatus }[];
+  /** The copied lines, numbers and source as stored. */
+  items: ParsedItem[];
+  error: string | null;
+}
+
+/** One line of a source, with how to make it a card line. */
+interface SourceLine {
+  id: string | null;
+  name: string;
+  food_id: string | null;
+  item: (meal: MealType) => ParsedItem;
+}
+
+/** A food name for "same food": lowercase words, bracketed detail dropped
+ *  ("Paneer sabji (60 g paneer, oil)" is paneer sabji). */
+function sameFoodKey(name: string): string {
+  const words = (x: string) => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return words(name.replace(/\([^)]*\)/g, " ")) || words(name);
+}
+
+/** The lines asked for, in order: a line id (L2) first, then the exact name,
+ *  then the name without its brackets. Each source line is picked once. An
+ *  empty ask is every line. */
+export function pickLines(source: { id: string | null; name: string }[], asked: string[]): { line: string; index: number | null }[] {
+  if (asked.length === 0) return source.map((l, i) => ({ line: l.id ?? l.name, index: i }));
+  const used = new Set<number>();
+  const words = (x: string) => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const find = (test: (l: { id: string | null; name: string }) => boolean) => {
+    const i = source.findIndex((l, j) => !used.has(j) && test(l));
+    return i >= 0 ? i : null;
+  };
+  const out: { line: string; index: number | null }[] = [];
+  for (const raw of asked) {
+    const a = raw.trim();
+    if (!a) continue;
+    // The same line named twice ("L2", "L2") is one line.
+    const dup = out.find((o) => o.index !== null && words(o.line) === words(a));
+    if (dup) continue;
+    const i = find((l) => !!l.id && l.id.toUpperCase() === a.toUpperCase()) ??
+      find((l) => words(l.name) === words(a)) ??
+      find((l) => sameFoodKey(l.name) === sameFoodKey(a));
+    if (i !== null) used.add(i);
+    out.push({ line: a, index: i });
+  }
+  return out;
+}
+
+function threadSourceLine(l: ThreadLine): SourceLine {
+  return { id: l.line_id, name: l.name, food_id: l.source_ref ?? null, item: (meal) => ({ ...lineAsItem(l, meal), meal_type: meal }) };
+}
+
+/** A diary line (loggedMeals.ts, full) as a card line: every number and the
+ *  source as the diary holds them. A diary line with no source was logged by
+ *  hand (meal_entries.source is null for the manual picker): "manual". */
+function diarySourceLine(r: Record<string, unknown>): SourceLine | null {
+  const name = typeof r.name === "string" ? r.name.trim() : "";
+  const kcal = typeof r.kcal === "number" && Number.isFinite(r.kcal) ? r.kcal : null;
+  if (!name || kcal === null) return null;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const src = r.source;
+  const source: ParsedItem["source"] = src === "catalog" || src === "off" || src === "fatsecret" || src === "web" || src === "estimate" ? src : "manual";
+  const food_id = typeof r.food_id === "string" ? r.food_id : null;
+  return {
+    id: null,
+    name,
+    food_id,
+    item: (meal) => ({
+      food_id,
+      food_name: name,
+      quantity: n(r.quantity) ?? 1,
+      serving_label: typeof r.serving_unit === "string" && r.serving_unit ? r.serving_unit : "serving",
+      grams: n(r.grams) ?? 0,
+      kcal: Math.round(kcal),
+      protein_g: n(r.protein_g) ?? 0,
+      carb_g: n(r.carb_g) ?? 0,
+      fat_g: n(r.fat_g) ?? 0,
+      fiber_g: n(r.fiber_g),
+      source,
+      assumption: null,
+      confidence: "high",
+      meal_type: meal,
+    }),
+  };
+}
+
+/** Run one copy_lines call. Never throws: a bad source is an error result. */
+export async function runCopy(args: Record<string, unknown>, input: FoodAgentInput, deps: Pick<FoodAgentDeps, "threadCard" | "readDiaryLines">): Promise<CopyRun> {
+  const src = (args.source && typeof args.source === "object" ? args.source : {}) as Record<string, unknown>;
+  const asked = Array.isArray(args.lines) ? args.lines.filter((x): x is string => typeof x === "string") : [];
+  const fail = (kind: CopyRun["kind"], error: string): CopyRun => ({ kind, label: "", results: [], items: [], error });
+  let kind: CopyRun["kind"] = "unknown";
+  let label = "";
+  let lines: SourceLine[] = [];
+  try {
+    if (typeof src.card === "string" && src.card.trim()) {
+      kind = "thread";
+      const ref = src.card.trim().toUpperCase();
+      const version = Number.isInteger(src.version) && (src.version as number) >= 1 ? src.version as number : null;
+      if (!deps.threadCard) return fail(kind, "There are no earlier cards in this conversation to copy from.");
+      const got = await deps.threadCard(ref, version);
+      if (!got) return fail(kind, `No card ${ref}${version ? ` version ${version}` : ""} in this conversation.`);
+      label = `${got.ref} v${got.version}`;
+      lines = got.lines.map(threadSourceLine);
+    } else if (typeof src.days_ago === "number" || typeof src.date === "string") {
+      kind = "diary";
+      if (!deps.readDiaryLines) return fail(kind, "The diary cannot be copied from here.");
+      const meal = isMeal(src.meal_type) ? src.meal_type : null;
+      if (!meal && asked.length === 0) return fail(kind, "Say which meal (source.meal_type), or name the lines.");
+      const q: Record<string, unknown> = { ...(typeof src.date === "string" ? { date: src.date } : { days_ago: src.days_ago }), ...(meal ? { meal_type: meal } : {}) };
+      const day = await deps.readDiaryLines(q) as { error?: string; date?: string; meals?: { items?: Record<string, unknown>[] }[] };
+      if (!day || day.error) return fail(kind, day?.error ?? "The diary read failed.");
+      label = `diary ${day.date ?? ""} ${meal ?? ""}`.replace(/\s+/g, " ").trim();
+      lines = (day.meals ?? []).flatMap((m) => m.items ?? []).map(diarySourceLine).filter((l): l is SourceLine => !!l);
+      if (lines.length === 0) return fail(kind, `Nothing is logged for ${label.replace(/^diary /, "")}.`);
+    } else {
+      return fail(kind, "source needs a card ref (card), or a diary day (days_ago or date) with meal_type.");
+    }
+  } catch (e) {
+    return fail(kind, `The read failed: ${String(e).slice(0, 120)}`);
+  }
+  // Where the copies go: the user's word, the card's meal, the hour's meal.
+  const meal: MealType = isMeal(args.meal_type) ? args.meal_type : input.card?.[0]?.meal_type ?? input.defaultMeal;
+  const card = input.card ?? [];
+  const onCard = new Set(card.map((l) => sameFoodKey(l.food_name)));
+  const onCardIds = new Set(card.map((l) => l.food_id).filter((x): x is string => !!x));
+  const again = args.add_again === true;
+  const results: CopyRun["results"] = [];
+  const items: ParsedItem[] = [];
+  for (const p of pickLines(lines, asked)) {
+    if (p.index === null) {
+      results.push({ line: p.line, name: null, status: "not_found" });
+      continue;
+    }
+    const l = lines[p.index];
+    const there = onCard.has(sameFoodKey(l.name)) || (!!l.food_id && onCardIds.has(l.food_id));
+    if (there && !again) {
+      results.push({ line: p.line, name: l.name, status: "already_on_card" });
+      continue;
+    }
+    results.push({ line: p.line, name: l.name, status: "copied" });
+    items.push(l.item(meal));
+  }
+  return { kind, label, results, items, error: null };
+}
+
+function copyEvent(r: CopyRun, finished: boolean): AgentEvent {
+  const count = (s: CopyStatus) => r.results.filter((x) => x.status === s).length;
+  return {
+    tool: "copy_lines",
+    source_kind: r.kind,
+    asked: r.results.length,
+    copied: count("copied"),
+    already_on_card: count("already_on_card"),
+    not_found: count("not_found"),
+    finished,
+    error: r.error,
+  };
+}
+
+/** What a copy that did not finish says to the agent. */
+function copyResultForAgent(r: CopyRun): unknown {
+  if (r.error) return { error: r.error };
+  return {
+    source: r.label,
+    results: r.results.map((x) => ({ line: x.line, ...(x.name ? { food_name: x.name } : {}), status: x.status })),
+    note: "Nothing was added. Call copy_lines again with only the lines to add (add_again true for a food the user " +
+      "chose to add a second portion of), or reply.",
+  };
+}
+
+const names = (xs: string[]) => xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
+
+/** A copy that finished: the copied lines join the card (a new card when
+ *  none is on screen). `partial`: the last turn, so the lines that were not
+ *  copied are named in a line the code writes, never claimed as added. */
+function copyFinish(uses: ToolUse[], runs: CopyRun[], input: FoodAgentInput, turns: AgentTurn[], partial: boolean): FoodAgentOutcome {
+  const items = runs.flatMap((r) => r.items);
+  const summary = clean(uses.map((u) => typeof u.input?.summary === "string" ? u.input.summary : "").find((x) => x.trim()) ?? "");
+  let line = summary || `Added ${names(items.map((i) => i.food_name))}.`;
+  if (partial) {
+    const dup = runs.flatMap((r) => r.results.filter((x) => x.status === "already_on_card").map((x) => x.name ?? x.line));
+    const miss = runs.flatMap((r) => r.results.filter((x) => x.status === "not_found").map((x) => x.line));
+    line = [
+      `Added ${names(items.map((i) => i.food_name))}.`,
+      dup.length ? `${names(dup)} ${dup.length === 1 ? "is" : "are"} already on the card: add a second portion, or skip?` : null,
+      miss.length ? `I could not find ${names(miss)} there.` : null,
+    ].filter(Boolean).join(" ");
+  }
+  const emptyUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0 };
+  return {
+    kind: "log",
+    result: {
+      parsed: {
+        meal_type: items[0]?.meal_type ?? input.card?.[0]?.meal_type ?? input.defaultMeal,
+        items,
+        drona_line: line,
+        // Added beside the card on screen, never in place of it.
+        corrects_previous: false,
+      },
+      declined: null,
+      usage: emptyUsage,
+      tool_calls: ["food_agent", "copy_lines"],
+      steps: [],
+      iterations: turns.length,
     },
     turns,
   };

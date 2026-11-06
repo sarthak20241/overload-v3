@@ -143,3 +143,18 @@ Deno.test("a store error is passed through, never turned into 'nothing logged'",
   const out = await listLoggedMeals({}, { timeZone: "Asia/Kolkata", nowMs: NOW }, store);
   assertEquals(out, { error: "boom" });
 });
+
+Deno.test("the full read (copy_lines) keeps each line's food id, source and fiber; the model's read leaves them out", () => {
+  const rows: MealRowIn[] = [{
+    meal_type: "lunch",
+    logged_at: "2026-09-21T07:45:00Z",
+    meal_entries: [
+      { food_name: "Rice", food_id: "f-1", source: "catalog", fiber_g: 0.6, quantity: 1, serving_unit: "bowl", kcal: 195, protein_g: 4, carb_g: 42, fat_g: 0.4, position: 0 },
+      { food_name: "Dal", food_id: null, source: null, quantity: 1, serving_unit: "katori", kcal: 180, protein_g: 9, carb_g: 25, fat_g: 4, position: 1 },
+    ],
+  }];
+  const full = shapeLoggedMeals(rows, DAY, "lunch", true).meals[0].items;
+  assertEquals(full.map((i) => [i.name, i.food_id, i.source, i.fiber_g]), [["Rice", "f-1", "catalog", 0.6], ["Dal", null, null, null]]);
+  const lean = shapeLoggedMeals(rows, DAY, "lunch").meals[0].items;
+  assertEquals("food_id" in lean[0] || "source" in lean[0], false);
+});
