@@ -3109,6 +3109,9 @@ async function handleParseMealRequest(args: {
           ? "canned_agent_failed"
           : outcome.agent
           ? "food_agent"
+          : outcome.action === "reply" && !outcome.followup
+          // A later message's bare ack beside a card: no call at all.
+          ? "bare_ack"
           : outcome.action === "reply"
           ? "reply_call"
           : "create_call";

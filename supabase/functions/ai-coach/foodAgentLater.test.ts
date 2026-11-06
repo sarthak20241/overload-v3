@@ -368,8 +368,8 @@ Deno.test("runLaterMessage: a bare ack beside a card starts nothing and changes 
 });
 
 Deno.test("runLaterMessage: a failed agent beside a card keeps the card, and no parse runs", async () => {
-  // Plain text, no tool call: the agent fails.
-  configure(async () => ({ ok: true, data: { content: [{ type: "text", text: "hmm" }], usage: {} } }));
+  // The model call fails: so does the agent.
+  configure((async () => ({ ok: false, status: 500, body: "down" })) as never);
   let parsed = false;
   const r = await runLaterMessage({
     agent: agentArgs({ text: "make the dal a big bowl" }),
@@ -383,7 +383,7 @@ Deno.test("runLaterMessage: a failed agent beside a card keeps the card, and no 
 });
 
 Deno.test("runLaterMessage: a failed agent with no card falls back to the parse, so the food is logged", async () => {
-  configure(async () => ({ ok: true, data: { content: [{ type: "text", text: "hmm" }], usage: {} } }));
+  configure((async () => ({ ok: false, status: 500, body: "down" })) as never);
   const r = await runLaterMessage({
     agent: agentArgs({ text: "2 eggs", card: null }),
     cardOpen: false,
@@ -392,4 +392,37 @@ Deno.test("runLaterMessage: a failed agent with no card falls back to the parse,
   assertEquals(r.outcome.action, "log");
   assertEquals(r.result.parsed?.items[0].food_name, "Egg");
   assert(r.firstParse);
+});
+
+Deno.test("words with no tool call: a later message answers with them (checked); the off path still fails", async () => {
+  const words = (text: string): FoodAgentDeps["callModel"] => async () => ({
+    ok: true,
+    data: { usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: "text", text }] },
+  });
+  const later = await runFoodAgent(LATER, deps(words("The dal is 150 kcal for one katori — it is the catalog figure.")));
+  assertEquals(later.kind, "reply");
+  if (later.kind === "reply") assertEquals(later.text, "The dal is 150 kcal for one katori, it is the catalog figure.");
+  // A claimed log in plain words is replaced too.
+  const claim = await runFoodAgent(LATER, deps(words("Logged your dinner.")));
+  if (claim.kind === "reply") assertFalse(claim.text.includes("Logged your dinner"));
+  const off = await runFoodAgent({ ...LATER, later: false }, deps(words("The dal is 150 kcal.")));
+  assertEquals(off.kind, "failed");
+});
+
+Deno.test("a later log that finds no food goes back to the agent, which can try again", async () => {
+  const log: string[] = [];
+  const d = deps(scripted([
+    [{ name: "log_food", input: { text: "a rough dinner" } }, { name: "reply", input: { text: "Put it on the card." } }],
+    [{ name: "log_food", input: { text: "dal and 2 roti" } }],
+  ]), log);
+  d.parseFood = async (t) => {
+    log.push(`parse:${t}`);
+    return t === "a rough dinner" ? { ...noParseResult(), declined: { message: "no food" } } : result([item("Dal", 150), item("Roti", 240)]);
+  };
+  const out = await runFoodAgent({ text: "x", defaultMeal: "dinner", later: true }, d);
+  assertEquals(out.kind, "log");
+  if (out.kind === "log") assertEquals(out.result.parsed?.items.length, 2);
+  assertEquals(out.turns.length, 2);
+  // The first parse is not paid twice.
+  assertEquals(log.filter((l) => l === "parse:a rough dinner").length, 1);
 });

@@ -588,8 +588,7 @@ export const FOOD_AGENT_SYSTEM_LATER =
   "- Which date a weekday was is written at the top of the message: use those days_ago, never your own arithmetic.\n" +
   "- The card reaches the diary only when the user taps its Add button, and a save card only when they tap it. Never " +
   "say anything was logged or saved. A summary is a line about the card, never a promise.\n" +
-  "Act only through the tools. Every turn calls at least one; plain text with no tool call ends the work without an " +
-  "answer. No em dashes anywhere.\n" +
+  "Act only through the tools. Every turn calls at least one; to talk to the user, use reply. No em dashes anywhere.\n" +
   "Never repeat your previous reply word for word. If the user says you did not answer, answer the specific thing they asked.\n" +
   "When the user says they already saved or logged something, that is done: never offer that same save or log again. " +
   "Do what they ask for next.";
@@ -602,7 +601,8 @@ export const CARD_NOTE_LATER =
   "that line is worked out again.\n" +
   "- remove_lines: a line that should not be there at all. When a dish already contains a food that is also listed " +
   "on its own line, remove the separate line.\n" +
-  "- add_lines: food that is not on the card yet.\n" +
+  "- add_lines: food that is not on the card yet, even when it went into a dish that is on the card. edit_line only " +
+  "changes what a line already is.\n" +
   "Every line you do not name stays exactly as it is. Make all the changes a message needs in ONE turn, together: they " +
   "apply in a fixed order (edits, then removals, then additions). Never give one line two changes in the same turn. " +
   "A question or complaint about the card with nothing to change is reply, using the card's own numbers (how a figure " +
@@ -863,7 +863,17 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
       output_tokens: res.data?.usage?.output_tokens ?? null,
     };
     turns.push(thisTurn);
-    if (uses.length === 0) return { kind: "failed", reason: "no_tool_call", turns };
+    if (uses.length === 0) {
+      // A later message: words with no tool call are still an answer. They
+      // get the reply tool's checks in code (no claimed log or save, no em
+      // dash, the length cap), so a plain answer is not lost to a missing
+      // tool call. Beside a card that failure used to cost the user the answer.
+      const words = later
+        ? clean(blocks.filter((b) => b?.type === "text").map((b) => String(b.text ?? "")).join(" "))
+        : "";
+      if (words) return checkedLater({ kind: "reply", text: words, turns }, input, "");
+      return { kind: "failed", reason: "no_tool_call", turns };
+    }
 
     // restore_card with a card on screen is refused HERE, not only by leaving
     // it out of the tools: a model can name a tool it was not offered, and a
@@ -949,8 +959,24 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
         deps.onEvent?.({ tool: "restore_card", ok: false, reason: "no_thread" });
         return { kind: "failed", reason: "restore_without_thread", turns };
       }
-      const out = await finishWith(finish, input, parse, turns, seen, deps);
-      return later ? checkedLater(out, input, replyText) : out;
+      // A later message whose log finds no food is sent back while turns are
+      // left, so the agent can try the user's own words or answer, instead of
+      // the food being lost to a failed run.
+      const noFood = later && !last && finish.name === LOG_FOOD_TOOL.name ? await logFindsNoFood(finish, parse) : null;
+      if (!noFood) {
+        const out = await finishWith(finish, input, parse, turns, seen, deps);
+        return later ? checkedLater(out, input, replyText) : out;
+      }
+      thisTurn.results = uses.map((u) => ({ name: u.name, summary: u === finish ? noFood : "not run" }));
+      messages.push({ role: "assistant", content: blocks }, {
+        role: "user",
+        content: uses.map((u) => ({
+          type: "tool_result",
+          tool_use_id: u.id,
+          content: JSON.stringify(u === finish ? { error: noFood } : { error: "Not done: the log in this turn found no food, so nothing was sent." }),
+        })),
+      });
+      continue;
     }
     if (last) {
       if (rejected.size) return { kind: "failed", reason: "card_changes_rejected", turns };
@@ -1296,6 +1322,20 @@ async function finishWith(
 }
 
 // ── Later messages: one-line card changes, applied in a fixed order ────────
+
+/** A log_food that only names text, and the parse of that text found no food:
+ *  the reason the agent reads. Null when it found food or carries items. The
+ *  parse is cached by text, so finishWith does not pay for it again. */
+async function logFindsNoFood(u: ToolUse, parse: (text: string) => Promise<ParseMealResult>): Promise<string | null> {
+  const text = typeof u.input?.text === "string" ? u.input.text.trim() : "";
+  if (!text || (Array.isArray(u.input?.items) && u.input.items.length > 0)) return null;
+  try {
+    const r = await parse(text);
+    if (r.parsed?.items.length) return null;
+  } catch { /* the same as nothing found */ }
+  return `No food was found in "${text.slice(0, 120)}". Nothing was logged. Pass the user's own words for the food, ` +
+    "or ask them one short question with reply.";
+}
 
 /** What ends a later-message run other than a card change (or a reply). */
 const LATER_FINISHES = new Set([
