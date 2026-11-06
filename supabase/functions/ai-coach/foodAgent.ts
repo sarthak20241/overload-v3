@@ -776,9 +776,12 @@ export function fillFromCard(tool: string, input: Record<string, unknown>, card:
     const line = cardLineFor(input.name, input.kcal, card);
     if (!line) return input;
     const out: Record<string, unknown> = { ...input };
-    for (const m of MACROS) out[m] = line[m] ?? 0;
-    const est = Array.isArray(input.estimated) ? input.estimated.filter((f) => !(MACROS as readonly unknown[]).includes(f)) : [];
-    out.estimated = guessed(line) ? [...new Set([...est, "kcal", ...MACROS])] : est;
+    // Only the macros the card line HAS. A line with none for a field leaves
+    // the model's own figure (and its estimate mark) alone, never a 0 g.
+    const copied = MACROS.filter((m) => typeof line[m] === "number");
+    for (const m of copied) out[m] = line[m];
+    const est = Array.isArray(input.estimated) ? input.estimated.filter((f) => !(copied as readonly unknown[]).includes(f)) : [];
+    out.estimated = guessed(line) ? [...new Set([...est, "kcal", ...copied])] : est;
     return out;
   }
   if (!Array.isArray(input.items)) return input;
@@ -787,7 +790,7 @@ export function fillFromCard(tool: string, input: Record<string, unknown>, card:
     const o = { ...(raw as Record<string, unknown>) };
     const line = cardLineFor(o.name ?? o.food_name, o.kcal, card);
     if (!line) return o;
-    for (const m of MACROS) o[m] = line[m] ?? 0;
+    for (const m of MACROS) if (typeof line[m] === "number") o[m] = line[m];
     if (guessed(line)) o.estimated = true;
     return o;
   });

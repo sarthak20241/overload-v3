@@ -454,3 +454,28 @@ Deno.test("a save whose calories differ from every card line takes nothing from 
   if (out.kind !== "create") throw new Error(out.kind);
   assertEquals(out.create.input.protein_g, undefined);
 });
+
+Deno.test("a card line with no figure for a macro leaves the model's figure, never a 0 g", async () => {
+  const card = [{ food_name: "Masala dosa", quantity: 1, serving_label: "dosa", grams: 0, kcal: 350, protein_g: 7, source: "catalog" as const }];
+  const out = await runFoodAgent(
+    { text: "save this dosa", defaultMeal: "breakfast", card },
+    deps(scripted([[{ name: "create_custom_food", input: { name: "Masala dosa", kcal: 350, carb_g: 45, fat_g: 15, estimated: ["carb_g", "fat_g"], log_now: false, summary: "Dosa?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  const i = out.create.input;
+  assertEquals([i.protein_g, i.carb_g, i.fat_g], [7, 45, 15]);
+  assertEquals(i.estimated, ["carb_g", "fat_g"]);
+});
+
+Deno.test("two card lines that both fit a save line: nothing is copied (no guessing which)", async () => {
+  const card = [
+    { food_name: "Roti", quantity: 1, serving_label: "roti", grams: 40, kcal: 120, protein_g: 3, carb_g: 20, fat_g: 3 },
+    { food_name: "Roti (ghee)", quantity: 1, serving_label: "roti", grams: 40, kcal: 120, protein_g: 4, carb_g: 18, fat_g: 4 },
+  ];
+  const out = await runFoodAgent(
+    { text: "save the roti", defaultMeal: "lunch", card },
+    deps(scripted([[{ name: "create_custom_food", input: { name: "Roti", kcal: 120, log_now: false, summary: "Roti?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  assertEquals(out.create.input.protein_g, undefined);
+});

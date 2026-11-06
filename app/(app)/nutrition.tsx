@@ -430,7 +430,10 @@ export default function NutritionScreen() {
   const [saveCard, setSaveCard] = useState<SaveCard | null>(null);
   // Set when a save card arrives, read once by the arrival effect: the answer
   // is a reply (the meal card did not change), so the result screen closes and
-  // both cards show above the food box.
+  // both cards show above the food box. Only that effect clears it, and it runs
+  // only when a parse leaves analysing/streaming. So set it ONLY in runParse,
+  // after a parse, never on another path: there it would wait and wrongly close
+  // the next arrival's result screen.
   const saveArrivedRef = useRef(false);
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).
@@ -1333,6 +1336,8 @@ export default function NutritionScreen() {
       // it was, with its words and turns, so a Discard or a Save on the save
       // card leaves the lunch the user was logging right where it was.
       saveArrivedRef.current = true;
+      // A newer save card takes the place of one not tapped yet: the latest
+      // ask is the one the user means. The meal card is not touched.
       setSaveCard({ create, result: null, busy: false });
       const kept = cardAfter(prevReview?.meal.items ?? null, { kind: 'create' });
       setFlow(prevReview && kept ? { ...prevReview, notice: null, proposal: null } : { status: 'idle' });
