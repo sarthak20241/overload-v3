@@ -430,7 +430,8 @@ export async function runLive(c: FoodBoxCase): Promise<Outcome> {
   }
   if (outcome.action === "reply") {
     const reply = outcome.reply ?? null;
-    return { card: cardAfter(prevLines, { kind: "declined" }), reply, actions: [reply && /\?\s*$/.test(reply) ? "ask" : "answer"] };
+    // A reply is a spoken answer; one that ends in a question also asks back.
+    return { card: cardAfter(prevLines, { kind: "declined" }), reply, actions: reply && /\?\s*$/.test(reply) ? ["answer", "ask"] : ["answer"] };
   }
   const result = outcome.result ?? firstParse;
   if (!result.parsed || result.parsed.items.length === 0) {
@@ -439,7 +440,7 @@ export async function runLive(c: FoodBoxCase): Promise<Outcome> {
     return {
       card: cardAfter(prevLines, { kind: "declined", cleared }),
       reply: msg,
-      actions: cleared ? ["edit"] : withLookup([msg && /\?\s*$/.test(msg) ? "ask" : "answer"]),
+      actions: cleared ? ["edit"] : withLookup(msg && /\?\s*$/.test(msg) ? ["answer", "ask"] : ["answer"]),
     };
   }
   const items = result.parsed.items.map(asLine);

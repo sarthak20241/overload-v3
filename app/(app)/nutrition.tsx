@@ -428,13 +428,12 @@ export default function NutritionScreen() {
   }, [focus, isSignedIn]));
   const [flow, setFlow] = useState<ParseFlow>({ status: 'idle' });
   const [saveCard, setSaveCard] = useState<SaveCard | null>(null);
-  // Set when a save card arrives, read once by the arrival effect: the answer
-  // is a reply (the meal card did not change), so the result screen closes and
-  // both cards show above the food box. Only that effect clears it, and it runs
-  // only when a parse leaves analysing/streaming. So set it ONLY in runParse,
-  // after a parse, never on another path: there it would wait and wrongly close
-  // the next arrival's result screen.
-  const saveArrivedRef = useRef(false);
+  // The send (its parse token) whose answer was a save card, read once by the
+  // arrival effect: that answer is a reply (the meal card did not change), so
+  // the result screen closes and both cards show above the food box. Tied to
+  // the send, not a bare flag: a value left from an older send can never match
+  // a later one, so it cannot close the wrong result screen.
+  const saveArrivedRef = useRef<number | null>(null);
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).
   const flowRef = useRef<ParseFlow>(flow);
@@ -610,8 +609,8 @@ export default function NutritionScreen() {
     setWaitOpen(false);
     const landed = autoLandedRef.current;
     autoLandedRef.current = null;
-    const saveArrived = saveArrivedRef.current;
-    saveArrivedRef.current = false;
+    const saveArrived = saveArrivedRef.current !== null && saveArrivedRef.current === parseTokenRef.current;
+    saveArrivedRef.current = null;
     const kind: ReadyKind | null = saveArrived ? 'reply'
       : flow.status === 'review' ? 'review'
       : flow.status === 'idle' ? (landed ? 'logged' : null)
@@ -1141,9 +1140,7 @@ export default function NutritionScreen() {
     if (!sendText) return;
     setSavedReview(false);
     setCardMinimized(false);
-    // Only this send's own answer may set it again (below), so a stray value
-    // can never close the next result screen.
-    saveArrivedRef.current = false;
+    saveArrivedRef.current = null;
     // A save card that is done (saved, or failed with its reason shown) has
     // said its piece. One still waiting for its tap stays.
     if (!retry) setSaveCard((c) => (c?.result ? null : c));
@@ -1338,7 +1335,7 @@ export default function NutritionScreen() {
       // The save card goes BESIDE the meal card. The meal card comes back as
       // it was, with its words and turns, so a Discard or a Save on the save
       // card leaves the lunch the user was logging right where it was.
-      saveArrivedRef.current = true;
+      saveArrivedRef.current = token;
       // A newer save card takes the place of one not tapped yet: the latest
       // ask is the one the user means. The meal card is not touched.
       setSaveCard({ create, result: null, busy: false });

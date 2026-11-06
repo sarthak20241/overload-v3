@@ -496,3 +496,12 @@ Deno.test("the agent's card view shows ? for a macro the line has no figure for,
   const view = openingText({ text: "save it", card: [{ food_name: "Dosa", quantity: 1, serving_label: "dosa", grams: 0, kcal: 350, protein_g: 7 }] }, null);
   assert(view.includes("P 7 C ? F ?"), view);
 });
+
+Deno.test("a food save copied from a catalog card line drops a model-set kcal estimate mark", async () => {
+  const out = await runFoodAgent(
+    { text: "save the rice", defaultMeal: "lunch", card: NOV5_CARD },
+    deps(scripted([[{ name: "create_custom_food", input: { name: "Jeera Rice", kcal: 171, estimated: ["kcal"], log_now: false, summary: "Rice?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  assertEquals(out.create.input.estimated, []);
+});
