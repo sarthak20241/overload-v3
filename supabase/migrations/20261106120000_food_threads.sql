@@ -238,4 +238,57 @@ create trigger trg_delete_food_threads_on_profile_delete
   after delete on public.user_profiles
   for each row execute function public.delete_food_threads_on_profile_delete();
 
+-- Retention: 15 days (owner's decision, 2026-11-06). The rows hold the
+-- user's own food text and chat turns. No summaries and no cold storage:
+-- lasting facts go to food memory when a card is added (plan step 4), and
+-- debugging uses food_bar_traces (30 days).
+--
+-- Daily at 21:45 UTC (03:15 IST), off peak, after the food_bar_traces job.
+--   1. Close threads idle past 30 minutes (the app has already moved to a new
+--      thread id; the server never closes on idle by itself).
+--   2. Delete CLOSED threads whose last message is older than 15 days. Their
+--      turns, cards and card lines go with them (on delete cascade). An open
+--      thread is never deleted mid-use: it was active in the last 30 minutes.
+-- Account deletion still removes a user's threads at once (the trigger above).
+-- Unscheduled first so re-running this file does not add a second job.
+create or replace function public.food_threads_retention()
+returns void
+language sql
+security definer
+set search_path to 'public', 'pg_temp'
+as $$
+  update public.food_threads
+     set status = 'closed', closed_why = 'idle'
+   where status = 'open'
+     and last_at < now() - interval '30 minutes';
+  delete from public.food_threads
+   where status = 'closed'
+     and last_at < now() - interval '15 days';
+$$;
+
+revoke all on function public.food_threads_retention() from public, anon, authenticated;
+
+create index if not exists idx_food_threads_closed_last on public.food_threads (last_at) where status = 'closed';
+
+do $$
+begin
+  -- Without pg_cron (a local or branch database) the tables still land; the
+  -- warning says retention is not running there. Prod has pg_cron.
+  if to_regnamespace('cron') is null then
+    raise warning 'pg_cron missing: food_threads retention job NOT scheduled';
+    return;
+  end if;
+  begin
+    perform cron.unschedule('food-threads-retention');
+  exception when others then
+    null;
+  end;
+  perform cron.schedule(
+    'food-threads-retention',
+    '45 21 * * *',
+    $cmd$select public.food_threads_retention()$cmd$
+  );
+end
+$$;
+
 notify pgrst, 'reload schema';

@@ -85,6 +85,8 @@ Tables (names are a first idea):
 
 A thread closes when its card is added, or after 30 minutes with no message (owner decision).
 
+**Retention: 15 days** (owner decision, 2026-11-06). A daily job closes threads idle for more than 30 minutes, then deletes closed threads whose last message is older than 15 days, with their turns, cards and card lines. An open thread is never deleted mid-use. Account deletion removes a user's threads at once. No summaries and no cold storage: lasting facts go to food memory when a card is added (step 4), and debugging uses `food_bar_traces` (30 days).
+
 A save card no longer replaces the meal card. It is a second card in the same thread. The meal card stays.
 
 ## 4. Hot, warm and cold context
@@ -308,6 +310,7 @@ Each step ships behind an on/off switch, shadow first where possible.
 - Keep the first-message pipeline start.
 - Jev as the first-message gate: "fully plain food log, asks nothing else".
 - Thread closes when the card is added, or after 30 minutes idle.
+- Threads are kept 15 days, then deleted (only closed ones). No summaries, no cold storage.
 - A part with no amount (oil): assume one from the dish, show it, and ask once. Remember the answer in the recipe so it is not asked again.
 - Agent turns: max 6.
 - End users get at most 1 or 2 choices, with a default already applied. Memory clean-up is never asked of end users.
