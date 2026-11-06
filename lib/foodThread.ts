@@ -15,7 +15,11 @@
 // message the app sends a little past the line is still the same chat.
 //
 // The server ignores `thread` unless FOOD_THREADS is on or shadow, and an old
-// server ignores it entirely, so sending it changes nothing a user sees.
+// server ignores it entirely, so SENDING it changes nothing a user sees. One
+// app-side rule does, whatever the switch: a new thread (after Add, or 30 idle
+// minutes, with no card on screen) starts with no earlier chat turns. That is
+// deliberate (live 2026-11-06, an added lunch's turns steered a new "green
+// tea" message), and it does not depend on the server.
 
 export const THREAD_IDLE_MS = 30 * 60_000;
 

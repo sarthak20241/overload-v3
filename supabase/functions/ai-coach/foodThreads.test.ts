@@ -296,3 +296,13 @@ Deno.test("a restore onto a card emptied on screen marks its source too", async 
   assertEquals(s.dump().cards.get(OLD)!.status, "replaced");
   assertEquals((await s.load("u1", T))!.cards.find((c) => c.id === MEAL)!.lines.map((l) => l.name), ["Jeera Rice"]);
 });
+
+Deno.test("a card cleared on screen can be brought back: its last lines come back", async () => {
+  const s = memoryThreadStore();
+  const base = { userId: "u1", userText: "x", dronaText: null, mealType: "lunch" as const };
+  await recordThreadMessage(s, { ...base, card: [], req: { id: T, card_id: null, base_version: null, next_card_id: MEAL, closed: null }, clientId: "m1", served: { kind: "meal", items: [item("Rice", 200), item("Dal", 120)], corrects: false } });
+  await recordThreadMessage(s, { ...base, card: card([["Rice", 200], ["Dal", 120]]), req: { id: T, card_id: MEAL, base_version: 1, next_card_id: null, closed: null }, clientId: "m2", served: { kind: "cleared" } });
+  const th = await threadForAgent(s, "u1", { id: T, card_id: null, base_version: null, next_card_id: null, closed: null });
+  assert(th!.index!.includes("cleared"), th!.index!);
+  assertEquals((await th!.restore("C1", null))!.items.map((i) => i.food_name), ["Rice", "Dal"]);
+});

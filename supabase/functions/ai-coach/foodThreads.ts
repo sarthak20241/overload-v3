@@ -242,9 +242,12 @@ export function cardRefs(t: StoredThread): Map<string, StoredCard> {
   // Ties on created_at (two cards in one instant) break on id, so the order
   // is the same on every load.
   const meals = t.cards.filter((c) => c.kind === "meal")
-    .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+    .sort((a, b) => (Date.parse(a.created_at) - Date.parse(b.created_at)) || a.id.localeCompare(b.id));
+  // A card emptied on screen (every line taken off) stays listed while it has
+  // an earlier version with lines: "bring back the lunch I just cleared"
+  // brings back its last lines (threadForAgent restore).
   return new Map(
-    meals.map((c, i) => [`C${i + 1}`, c] as const).filter(([, c]) => c.status !== "replaced" && c.lines.length > 0),
+    meals.map((c, i) => [`C${i + 1}`, c] as const).filter(([, c]) => c.status !== "replaced" && (c.lines.length > 0 || c.version > 1)),
   );
 }
 
@@ -257,8 +260,9 @@ export function threadIndexLine(t: StoredThread | null, onScreenCardId: string |
   const others = [...cardRefs(t)].filter(([, c]) => c.id !== onScreenCardId);
   if (others.length === 0) return null;
   const desc = others.map(([ref, c]) => {
-    const kcal = Math.round(c.lines.reduce((a, l) => a + (Number(l.kcal) || 0), 0));
     const what = `${c.meal_type ?? "meal"} card`;
+    if (c.lines.length === 0) return `[${ref} v${c.version}] ${what}, cleared (restore brings back its last lines)`;
+    const kcal = Math.round(c.lines.reduce((a, l) => a + (Number(l.kcal) || 0), 0));
     return `[${ref} v${c.version}] ${what}, ${c.lines.length} ${c.lines.length === 1 ? "line" : "lines"}, ${kcal} kcal, ${c.status}`;
   });
   return `index: ${others.length} earlier ${others.length === 1 ? "card" : "cards"} in this thread: ${desc.join("; ")}. ` +
@@ -415,6 +419,7 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
       });
       if (error) throw new Error(`food_card_write: ${error.message}`);
       const row = (Array.isArray(data) ? data[0] : data) as { out_version?: number; out_written?: boolean; out_retry?: boolean } | null;
+      if (!row || typeof row.out_version !== "number") console.log(`[food_threads] food_card_write returned no row for card ${cardId}`);
       return { version: Number(row?.out_version ?? base), written: row?.out_written === true, retry: row?.out_retry === true };
     },
     async cardAt(cardId, version) {
@@ -676,7 +681,10 @@ export async function threadForAgent(
     restore: async (ref, version) => {
       const c = refs.get(ref);
       if (!c) return null;
-      const lines = version !== null && version !== c.version ? await store.cardAt(c.id, version) : c.lines;
+      // A cleared card's latest version is empty: its last lines are the
+      // version before.
+      const v = version ?? (c.lines.length ? c.version : c.version - 1);
+      const lines = v !== c.version ? await store.cardAt(c.id, v) : c.lines;
       if (!lines?.length) return null;
       // Only a restore that brings lines back marks its source.
       out.restoredFrom = c.id;
