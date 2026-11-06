@@ -2526,7 +2526,8 @@ function WorkoutCard({
 }) {
   const { C } = useTheme();
   const exerciseCountLabel = `${workout.exercises.length} exercise${workout.exercises.length === 1 ? '' : 's'}`;
-  const durationLabel = workout.estimated_duration_min ? ` · ${workout.estimated_duration_min} min` : '';
+  // An estimate, so it keeps its ~.
+  const durationLabel = workout.estimated_duration_min ? ` · ~${workout.estimated_duration_min} min` : '';
   // One line under the title: the day's theme, or its focus. A tap opens a
   // longer one; the card is the only place the day note is shown.
   const subLine = workoutNote ?? workout.focus ?? null;
