@@ -16,6 +16,7 @@ import {
   threadForAgent,
   threadIndexLine,
   threadIsOpen,
+  THREAD_IDLE_GRACE_MS,
   THREAD_IDLE_MS,
   withLineIds,
 } from "./foodThreads.ts";
@@ -54,7 +55,9 @@ Deno.test("readThreadRequest: ids must be uuids; a base needs a card", () => {
 Deno.test("threads close after 30 idle minutes", () => {
   const now = Date.parse("2026-11-05T15:00:00Z");
   assert(threadIsOpen({ status: "open", last_at: new Date(now - THREAD_IDLE_MS + 1000).toISOString() }, now));
-  assert(!threadIsOpen({ status: "open", last_at: new Date(now - THREAD_IDLE_MS - 1000).toISOString() }, now));
+  // The server gives the app's own 30-minute rule a few minutes of slack.
+  assert(threadIsOpen({ status: "open", last_at: new Date(now - THREAD_IDLE_MS - 1000).toISOString() }, now));
+  assert(!threadIsOpen({ status: "open", last_at: new Date(now - THREAD_IDLE_MS - THREAD_IDLE_GRACE_MS - 1000).toISOString() }, now));
   assert(!threadIsOpen({ status: "closed", last_at: new Date(now).toISOString() }, now));
 });
 
@@ -201,18 +204,22 @@ Deno.test("a restored card's source is marked replaced, so the index lists the c
   assertEquals(threadIndexLine(t, null)?.startsWith("index: 1 earlier card"), true);
 });
 
-Deno.test("a message after 30 idle minutes is kept, closes the thread, and the agent then gets no thread", async () => {
+Deno.test("a late message on the app's thread id keeps the chat open; a long-idle thread reads as closed", async () => {
   const s = memoryThreadStore();
   await s.ensure("u1", T);
   await s.createCard(T, MEAL, "meal", cardAsLines(LUNCH), null, "lunch");
-  s.dump().threads.get(T)!.last_at = new Date(Date.now() - THREAD_IDLE_MS - 60_000).toISOString();
   s.dump().threads.get(T)!.turns.push({ seq: 1, role: "user", text: "lunch" });
+  // A minute past 30: the app still sent this id, so it is the same chat.
+  s.dump().threads.get(T)!.last_at = new Date(Date.now() - THREAD_IDLE_MS - 60_000).toISOString();
   await recordThreadMessage(s, {
     userId: "u1", req: { id: T, card_id: null, base_version: null, next_card_id: SAVE, closed: null }, clientId: "m2",
     userText: "hi", dronaText: "Hello.", card: [], served: { kind: "reply" }, mealType: null,
   });
-  assertEquals(s.dump().threads.get(T)!.status, "closed");
+  assertEquals(s.dump().threads.get(T)!.status, "open");
   assertEquals(s.dump().threads.get(T)!.turns.length, 3);
+  assert(await threadForAgent(s, "u1", { id: T, card_id: null, base_version: null, next_card_id: null, closed: null }));
+  // Left alone for an hour: reads treat it as closed.
+  s.dump().threads.get(T)!.last_at = new Date(Date.now() - 60 * 60_000).toISOString();
   assertEquals(await threadForAgent(s, "u1", { id: T, card_id: null, base_version: null, next_card_id: null, closed: null }), null);
 });
 

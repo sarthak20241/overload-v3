@@ -35,6 +35,11 @@ export function parseFoodThreadsMode(v: string | undefined | null): FoodThreadsM
 /** A thread with no message for this long is closed (owner decision). */
 export const THREAD_IDLE_MS = 30 * 60_000;
 
+/** The server's slack on top: the APP decides when 30 minutes are up (it
+ *  starts a new thread id), so a message the app still sends on a thread a
+ *  little past the line, by network time or clock drift, is the same chat. */
+export const THREAD_IDLE_GRACE_MS = 5 * 60_000;
+
 /** One card line as stored. `line_id` is stable across the card's versions. */
 export interface ThreadLine {
   line_id: string;
@@ -109,7 +114,7 @@ export function readThreadRequest(v: unknown): ThreadRequest | null {
 }
 
 export function threadIsOpen(t: Pick<StoredThread, "status" | "last_at">, nowMs: number): boolean {
-  return t.status === "open" && nowMs - Date.parse(t.last_at) < THREAD_IDLE_MS;
+  return t.status === "open" && nowMs - Date.parse(t.last_at) < THREAD_IDLE_MS + THREAD_IDLE_GRACE_MS;
 }
 
 function nameKey(name: string): string {
@@ -184,7 +189,7 @@ export function itemsAsLines(items: ParsedItem[], prev: ThreadLine[] | null, use
 
 /** The app's card (previous_items as CardLine) as stored lines, for a thread
  *  that has no copy of it yet. */
-export function cardAsLines(card: CardLine[], prev: ThreadLine[] | null = null): ThreadLine[] {
+export function cardAsLines(card: CardLine[], prev: ThreadLine[] | null = null, usedUpTo = 0): ThreadLine[] {
   return withLineIds(prev, card.map((l) => ({
     name: l.food_name,
     said_name: l.said_name ?? null,
@@ -201,7 +206,7 @@ export function cardAsLines(card: CardLine[], prev: ThreadLine[] | null = null):
     confidence: l.confidence ?? null,
     note: l.assumption ?? null,
     meal_type: l.meal_type ?? null,
-  })));
+  })), usedUpTo);
 }
 
 /** A stored line back as a parsed item, numbers unchanged. */
@@ -450,12 +455,11 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
     }
     const t = await store.load(args.userId, req.id);
     if (!t) return { ok: false, card_version: null };
-    if (!threadIsOpen(t, args.nowMs ?? Date.now()) && t.last_seq > 0) {
-      // The app should have started a new thread after 30 idle minutes. It
-      // did not, so this message reopens nothing: it is kept, the thread is
-      // marked closed, and the card is still written below.
-      await store.close(args.userId, t.id, "idle");
-    }
+    // No close on idle here: the app owns the 30-minute rule (it starts a new
+    // thread id), so a message on this id is still this chat. Closing it would
+    // shut restore off for the rest of a chat the app is still in. A thread
+    // the app left behind just stops getting messages, and reads treat it as
+    // closed (threadIsOpen).
     // A failed turn write is logged and the card is still written: the card
     // is the part a user can lose.
     await store.addTurns(t.id, t.last_seq + 1, [
@@ -472,7 +476,11 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
     // the server is BEHIND the app's count (a missed write), the write below
     // lands at the app's count (food_card_write allows a base ahead).
     let base = onScreen && args.card.length
-      ? { ...onScreen, version: Math.max(onScreen.version, req.base_version ?? 0), lines: cardAsLines(args.card, onScreen.lines) }
+      ? {
+        ...onScreen,
+        version: Math.max(onScreen.version, req.base_version ?? 0),
+        lines: cardAsLines(args.card, onScreen.lines, Math.max(maxLineNo(onScreen.lines), onScreen.max_line_no ?? 0)),
+      }
       : onScreen;
     if (req.card_id && !onScreen && args.card.length) {
       const v = req.base_version ?? 1;
