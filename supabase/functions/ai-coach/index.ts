@@ -62,6 +62,7 @@ import {
   type FoodIntentDecision,
   type FoodIntentDeps,
   JEV_INTENT_FLOOR,
+  isPreciseRequest,
   parseFoodAgentLaterMode,
   parseFoodIntentMode,
   laterMessageGoesToAgent,
@@ -3966,7 +3967,9 @@ async function handleParseMealRequest(args: {
     // thread goes to the agent whatever the router says. Only a first message
     // with no card takes the router's path below.
     const later = laterMessageGoesToAgent({
-      mode: FOOD_AGENT_LATER, precise: wantsSuper, supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
+      // speed "super" (a first message) or tier "precise" (any message from an
+      // app that sends it): a Precise correction carries no speed.
+      mode: FOOD_AGENT_LATER, precise: isPreciseRequest(body), supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
       turns: recentTurns.length, cardLines: card.length, cardOpen, pending: !!foodContext.pendingMeal,
     });
     const agentP = later ? Promise.resolve(null) : startFoodAgent(agentArgs);

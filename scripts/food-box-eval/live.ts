@@ -58,6 +58,7 @@ import type { CardLine, FoodConversationContext } from "../../supabase/functions
 import { cardMayBeCut, readFoodContext } from "../../supabase/functions/ai-coach/foodContext";
 import {
   continuesPendingMeal,
+  isPreciseRequest,
   laterMessageGoesToAgent,
   parseFoodAgentLaterMode,
   parseFoodIntentMode,
@@ -543,8 +544,14 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
   const threadP = threadOf(c, card);
   const pendingIn = foodContext.pendingMeal;
   const intentP = startFoodIntent(savedMealsP, c.message, foodContext);
+  // What the app sends (nutrition.tsx): speed "super" on a first Precise
+  // message only, tier "precise" on every message. The server reads both the
+  // same way here as in index.ts, and the agent's parses run in the tier the
+  // speed asks for (a correction stays on smart).
+  const body: { speed?: string; tier: string } = { ...(prevLines ? {} : { speed: "super" }), tier: "precise" };
   const agentArgs = {
-    intentP, supportsCreate: true, text: c.message, mealHint, localHour, localDate, mode: "super" as const,
+    intentP, supportsCreate: true, text: c.message, mealHint, localHour, localDate,
+    mode: (body.speed === "super" ? "super" : null) as "super" | null,
     savedMealsP, readDiary, readDiaryLines, contextPromise, userId: "eval", recentTurns, pendingMeal: pendingIn,
     card: card.length ? { lines: card, previousText, previousWords, previousItems } : null,
     parseDeps: () => deps,
@@ -579,7 +586,7 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
   // hasModelKey true: this eval measures the agent's answers, so the no-key
   // fallback (today's path) is never exercised here; foodAgentLater.test.ts pins it.
   const later = laterMessageGoesToAgent({
-    mode: LATER, precise: true, supportsCreate: true, hasModelKey: true,
+    mode: LATER, precise: isPreciseRequest(body), supportsCreate: true, hasModelKey: true,
     turns: recentTurns.length, cardLines: card.length, cardOpen, pending: !!pendingIn,
   });
   let outcome: Awaited<ReturnType<typeof resolveFoodBarOutcome>>;

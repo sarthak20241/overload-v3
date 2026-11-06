@@ -596,3 +596,17 @@ Deno.test("answeredByLabel: a bare ack is marked; a later run whose agent never 
   assertEquals(answeredByLabel({ action: "reply", planned: "agent", decision: null, reply: AGENT_FAILED_CARD_REPLY }), "canned_agent_failed");
   assertEquals(answeredByLabel(null), null);
 });
+
+Deno.test("a Precise correction (tier precise, no speed) is a later message for the agent", async () => {
+  const { isPreciseRequest } = await import("./foodIntent.ts");
+  const later = (body: Record<string, unknown>) => laterMessageGoesToAgent({
+    mode: "on", precise: isPreciseRequest(body), supportsCreate: true, hasModelKey: true,
+    turns: 2, cardLines: 3, cardOpen: true, pending: false,
+  });
+  // What the app sends for a correction beside a Precise card: no speed.
+  assert(later({ tier: "precise" }));
+  assert(later({ speed: "super" }));
+  // Quick, and an app too old to send tier: today's path.
+  assertFalse(later({ tier: "quick" }));
+  assertFalse(later({}));
+});

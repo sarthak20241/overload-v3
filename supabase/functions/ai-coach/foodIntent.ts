@@ -807,6 +807,14 @@ export function parseFoodAgentLaterMode(raw: string | undefined): FoodAgentLater
   return raw?.trim().toLowerCase() === "on" ? "on" : "off";
 }
 
+/** Is this food box message from a Precise thread? A first message says so in
+ *  `speed` ("super"). A correction sends no speed (it stays on the smart
+ *  pipeline), so the app sends the picked mode in `tier` on every message. An
+ *  app without `tier` keeps today's reading: Precise only with speed "super". */
+export function isPreciseRequest(body: { speed?: unknown; tier?: unknown }): boolean {
+  return body.speed === "super" || body.tier === "precise";
+}
+
 export interface LaterMessageInputs {
   mode: FoodAgentLaterMode;
   /** The user picked Precise for this message (speed "super"). */
