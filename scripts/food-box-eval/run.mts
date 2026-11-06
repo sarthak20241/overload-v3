@@ -232,7 +232,7 @@ function writeBaselineSection(name: string, section: string) {
     "# Food box eval baseline",
     "",
     "One section per adapter. **Each section is one run.** Run-to-run noise is large: cases near a range edge flip",
-    "both ways between runs of the same code (step 2's on runs scored 43, 43, 43 and 44 of 66). Read a gap of a few",
+    "both ways between runs of the same code. Read a gap of a few",
     "cases between sections as weak evidence. CLI runs give no latency numbers.",
     "",
     "The false-claim check uses the live `claimsAction`",
