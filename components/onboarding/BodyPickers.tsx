@@ -1,26 +1,18 @@
 /**
- * Physical inputs for the onboarding body/target steps (Phase 1 of the
- * redesign): a themed number wheel and a horizontal ruler slider. Both arrive
- * prefilled with sensible medians (smart defaults) so Continue is always one
- * tap, and both tick haptically per detent.
+ * Physical inputs for the onboarding body/target steps: themed wheels for
+ * numbers and a second wheel beside them for the unit (kg / lbs, cm / ft-in).
+ * They arrive prefilled with sensible medians (smart defaults) so Continue is
+ * always one tap, and they tick haptically per detent.
  *
- * The wheel wraps @quidone/react-native-wheel-picker (pure JS, no native dep).
- * The ruler is a snap-interval FlatList: standard list physics, not hand-rolled
- * gestures (feedback rule), with a Space Grotesk readout above.
+ * The wheels wrap @quidone/react-native-wheel-picker (pure JS, no native dep).
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  FlatList,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import React, { useMemo, useRef } from 'react';
+import { Platform, StyleSheet, Text, View } from 'react-native';
 import WheelPicker from '@quidone/react-native-wheel-picker';
-import { FontFamily, FontSize, Radius } from '@/constants/theme';
+import { FontFamily, Radius } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
+import { joinWeight, splitWeight, tenthsMax } from '@/lib/weightWheel';
 
 // ─── Number wheel ───────────────────────────────────────────────────────────
 
@@ -34,11 +26,14 @@ export function NumberWheel({
   visibleItemCount = 5,
   fontSize = 28,
   accessibilityLabel,
+  tapToScroll = true,
 }: {
   min: number;
   max: number;
   value: number;
   onChange: (v: number) => void;
+  /** A tap on a row scrolls to it. Swiping always works. */
+  tapToScroll?: boolean;
   width?: number;
   itemHeight?: number;
   visibleItemCount?: number;
@@ -56,10 +51,17 @@ export function NumberWheel({
         data={data}
         value={value}
         onValueChanged={({ item }) => onChange(item.value)}
-        onValueChanging={() => haptics.tick()}
+        // Every tick, not only where the wheel stops: a quick Continue during
+        // a flick saves the number under the marker, never the one before it.
+        // Safe for a controlled wheel: it scrolls to a new value only when the
+        // value is not already the one in the middle.
+        onValueChanging={({ item }) => {
+          haptics.tick();
+          onChange(item.value);
+        }}
         itemHeight={itemHeight}
         visibleItemCount={visibleItemCount}
-        enableScrollByTapOnItem
+        enableScrollByTapOnItem={tapToScroll}
         itemTextStyle={{
           fontFamily: FontFamily.displayMedium,
           fontSize,
@@ -75,143 +77,121 @@ export function NumberWheel({
   );
 }
 
-// ─── Ruler slider ───────────────────────────────────────────────────────────
+// ─── Unit wheel ─────────────────────────────────────────────────────────────
 
-const TICK_GAP = 11; // px per step
-
-export function RulerSlider({
-  min,
-  max,
-  step,
+/**
+ * A short second wheel beside the number: scroll it to switch units (kg / lbs,
+ * cm / ft-in). The unit sits where the eye already is, not in a small text
+ * toggle above the picker.
+ */
+export function UnitWheel<T extends string>({
+  options,
   value,
   onChange,
-  unitLabel,
+  width = 84,
   accessibilityLabel,
 }: {
-  min: number;
-  max: number;
-  /** Value distance between adjacent ticks (e.g. 0.5 kg). */
-  step: number;
-  value: number;
-  onChange: (v: number) => void;
-  unitLabel: string;
+  options: readonly { value: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+  width?: number;
   accessibilityLabel: string;
 }) {
   const { C } = useTheme();
-  const count = Math.round((max - min) / step) + 1;
-  const lastIdx = useRef(Math.round((value - min) / step));
-  const listRef = useRef<FlatList<number>>(null);
-  // Measured so the side padding centers tick 0 under the indicator exactly.
-  const [viewportW, setViewportW] = useState(0);
-  const sidePad = Math.max(0, viewportW / 2 - TICK_GAP / 2);
-
-  const data = useMemo(() => Array.from({ length: count }, (_, i) => i), [count]);
-
-  // A unit toggle rewrites the scale under a list that keeps its pixel offset
-  // (kg 30-200 by 0.5 becomes lbs 66-440 by 1), so the marker ends up on a
-  // different weight than the readout and the next nudge snaps to it. Re-anchor
-  // on scale change only, so this never fights an in-progress drag.
-  const scaleKey = `${min}:${max}:${step}`;
-  const prevScale = useRef(scaleKey);
-  useEffect(() => {
-    if (prevScale.current === scaleKey) return;
-    prevScale.current = scaleKey;
-    const idx = Math.min(count - 1, Math.max(0, Math.round((value - min) / step)));
-    lastIdx.current = idx;
-    listRef.current?.scrollToOffset({ offset: TICK_GAP * idx, animated: false });
-  }, [scaleKey, value, min, step, count]);
-
-  const onScroll = useCallback(
-    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const idx = Math.min(count - 1, Math.max(0, Math.round(e.nativeEvent.contentOffset.x / TICK_GAP)));
-      if (idx !== lastIdx.current) {
-        lastIdx.current = idx;
-        haptics.tick();
-        onChange(min + idx * step);
-      }
-    },
-    [count, min, step, onChange],
-  );
-
-  const display = Number.isInteger(step) ? String(value) : value.toFixed(1).replace(/\.0$/, '');
-
+  const data = useMemo(() => options.map((o) => ({ value: o.value, label: o.label })), [options]);
   return (
-    <View accessibilityLabel={accessibilityLabel}>
-      <View style={r.readout}>
-        <Text style={[r.value, { color: C.foreground }]}>{display}</Text>
-        <Text style={[r.unit, { color: C.textMuted }]}>{unitLabel}</Text>
-      </View>
-      <View style={r.rulerWrap} onLayout={(e) => setViewportW(e.nativeEvent.layout.width)}>
-        {viewportW > 0 && (
-        <FlatList
-          ref={listRef}
-          data={data}
-          keyExtractor={(i) => String(i)}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          snapToInterval={TICK_GAP}
-          decelerationRate="fast"
-          getItemLayout={(_, index) => ({ length: TICK_GAP, offset: TICK_GAP * index, index })}
-          initialScrollIndex={Math.round((value - min) / step)}
-          onScroll={onScroll}
-          scrollEventThrottle={16}
-          contentContainerStyle={{ paddingHorizontal: sidePad }}
-          renderItem={({ index }) => {
-            const major = index % 5 === 0;
-            return (
-              <View style={[r.tickSlot]}>
-                <View
-                  style={[
-                    r.tick,
-                    {
-                      height: major ? 34 : 20,
-                      backgroundColor: C.border,
-                      opacity: major ? 1 : 0.6,
-                    },
-                  ]}
-                />
-              </View>
-            );
-          }}
-        />
-        )}
-        <View pointerEvents="none" style={[r.centerLine, { backgroundColor: C.accentText }]} />
-      </View>
+    <View style={{ width }} accessibilityLabel={accessibilityLabel}>
+      <WheelPicker
+        data={data}
+        value={value}
+        onValueChanged={({ item }) => {
+          if (item.value !== value) onChange(item.value as T);
+        }}
+        // Every tick, like NumberWheel: a quick Continue saves the unit shown.
+        onValueChanging={({ item }) => {
+          haptics.tick();
+          if (item.value !== value) onChange(item.value as T);
+        }}
+        itemHeight={56}
+        visibleItemCount={5}
+        enableScrollByTapOnItem
+        itemTextStyle={{
+          fontFamily: FontFamily.displayMedium,
+          fontSize: 20,
+          color: C.foreground,
+        }}
+        overlayItemStyle={{
+          backgroundColor: C.muted,
+          borderRadius: Radius.lg,
+          opacity: 0.55,
+        }}
+      />
     </View>
   );
 }
 
-const RULER_H = 48;
+// ─── Weight wheel ───────────────────────────────────────────────────────────
 
-const r = StyleSheet.create({
-  readout: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'center',
-    gap: 8,
-    marginBottom: 14,
-  },
-  value: {
-    fontFamily: FontFamily.display,
-    fontSize: 48,
-    letterSpacing: -1,
-  },
-  unit: { fontSize: FontSize.lg, fontFamily: FontFamily.displayMedium },
-  rulerWrap: { height: RULER_H, justifyContent: 'center' },
-  tickSlot: {
-    width: TICK_GAP,
-    height: RULER_H,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tick: { width: 2, borderRadius: 1 },
-  centerLine: {
-    position: 'absolute',
-    left: '50%',
-    marginLeft: -1.5,
-    top: -4,
-    width: 3,
-    height: RULER_H + 8,
-    borderRadius: 1.5,
-  },
+/** Whole number, a dot, one decimal digit: "72 . 5". Values carry one decimal. */
+export function WeightWheel({
+  min,
+  max,
+  value,
+  onChange,
+  accessibilityLabel,
+}: {
+  min: number;
+  max: number;
+  value: number;
+  onChange: (v: number) => void;
+  accessibilityLabel: string;
+}) {
+  const { C } = useTheme();
+  const { whole, tenth } = splitWeight(value);
+  // On Android a tap on a row of these wheels lands about 49 rows away
+  // (72 -> 121 -> 170, seen on the emulator; the height and age wheels tap
+  // fine). Swipes are exact, so Android swipes only, like its own pickers.
+  const tapToScroll = Platform.OS !== 'android';
+  // The latest value, not the last render's: both wheels report every tick,
+  // so two spinning at once must each build on what the other just set.
+  const latest = useRef(value);
+  latest.current = value;
+  const setWhole = (v: number) => {
+    latest.current = joinWeight(v, splitWeight(latest.current).tenth, min, max);
+    onChange(latest.current);
+  };
+  const setTenth = (v: number) => {
+    latest.current = joinWeight(splitWeight(latest.current).whole, v, min, max);
+    onChange(latest.current);
+  };
+  return (
+    <View style={w.row} accessibilityLabel={accessibilityLabel}>
+      <NumberWheel
+        min={min}
+        max={max}
+        width={104}
+        value={whole}
+        onChange={setWhole}
+        tapToScroll={tapToScroll}
+        accessibilityLabel={`${accessibilityLabel}, whole number`}
+      />
+      <Text style={[w.dot, { color: C.textMuted }]}>.</Text>
+      <NumberWheel
+        min={0}
+        // At the top of the scale there is no room for a decimal: 200.0 kg is
+        // the last stop, so the wheel never offers a tenth it would clamp away.
+        max={tenthsMax(whole, max)}
+        width={60}
+        value={tenth}
+        onChange={setTenth}
+        tapToScroll={tapToScroll}
+        accessibilityLabel={`${accessibilityLabel}, decimal`}
+      />
+    </View>
+  );
+}
+
+const w = StyleSheet.create({
+  row: { flexDirection: 'row', alignItems: 'center' },
+  dot: { fontFamily: FontFamily.displayMedium, fontSize: 28, width: 16, textAlign: 'center' },
 });
