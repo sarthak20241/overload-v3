@@ -10,11 +10,18 @@ const PGLITE = "https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.2.17/dist/in
 // @deno-types="https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.2.17/dist/index.d.ts"
 import type { PGlite } from "https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.2.17/dist/index.js";
 import { freeGoalTurnKind } from "./freePhaseBuild.ts";
+import { onboardingProgramRequestBody } from "../../../lib/onboardingRequest.ts";
 
 // ── Which requests may ask ────────────────────────────────────────────────────
 
 Deno.test("onboarding's plain forced generate_program asks for the build", () => {
   assertEquals(freeGoalTurnKind({ force_tool: "generate_program" }), "build");
+});
+
+Deno.test("the app's real onboarding request is read as the build", () => {
+  // The body lib/onboardingProgram.ts sends. If it ever gains a mode, free
+  // users would quietly get the phone-made plan again; this fails first.
+  assertEquals(freeGoalTurnKind(onboardingProgramRequestBody("intake")), "build");
 });
 
 Deno.test("the Goal screen's program chat asks for an edit turn, its apply turn too", () => {

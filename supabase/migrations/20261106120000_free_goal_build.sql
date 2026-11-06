@@ -21,6 +21,9 @@
 --     message or two plus the "yes, do it" turn that re-emits the program, so
 --     8 is about three rounds of changes. A free user whose onboarding plan was
 --     the phone-made one builds their Drona plan here, inside these turns.
+--     Edits are counted at claim time too, so a dropped turn spends one; 8
+--     leaves room for that. They are not tied to an existing program on
+--     purpose: discuss_program is how a user with no Drona plan makes one.
 --   * a goal plan Drona built during guest onboarding (before the account
 --     existed) spends the build: the app calls mark_free_goal_build_used()
 --     when it saves that plan under the new account. That call can only take
