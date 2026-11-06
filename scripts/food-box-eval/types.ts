@@ -68,7 +68,7 @@ export interface CaseMetrics {
   calls: number;
   /** At the model_pricing rows. Through the CLI the token counts are the CLI's. */
   costUsd: number;
-  byModel: Record<string, { calls: number; input: number; output: number }>;
+  byModel: Record<string, { calls: number; input: number; output: number; cache_read: number; cache_write: number }>;
 }
 
 export interface MemoryFood {

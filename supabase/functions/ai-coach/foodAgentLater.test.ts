@@ -16,6 +16,7 @@ import { assert, assertEquals, assertFalse } from "jsr:@std/assert@1";
 import {
   buildChangedCard,
   CARD_NOTE_LATER,
+  cardLinesWithIds,
   type FoodAgentDeps,
   FOOD_AGENT_SYSTEM_LATER,
   MAX_TURNS,
@@ -24,9 +25,10 @@ import {
   planCardChanges,
   runFoodAgent,
   toolsForLater,
+  userAskedToSave,
 } from "./foodAgent.ts";
 import { falseAgentClaim, laterMessageGoesToAgent, parseFoodAgentLaterMode } from "./foodIntent.ts";
-import type { CardLine } from "./foodContext.ts";
+import { type CardLine, cardLines } from "./foodContext.ts";
 import type { ParseMealResult, ParsedItem } from "./parseMeal.ts";
 import {
   AGENT_FAILED_CARD_REPLY,
@@ -460,4 +462,69 @@ Deno.test("several summaries and no reply: code writes the line, never a run-on"
     { name: "remove_lines", input: { line_ids: ["L3"], summary: "Took off the onion salad." } },
   ]])));
   if (out.kind === "log") assertEquals(out.result.parsed?.drona_line, "Updated Roti (edited). Took off Onion salad.");
+});
+
+Deno.test("cardLinesWithIds: every card line gets its id, pinned to cardLines' own format", () => {
+  const ids = cardLinesWithIds(CARD);
+  assertEquals(ids.length, cardLines(CARD).length);
+  ids.forEach((l, i) => assert(l.startsWith(`[L${i + 1}] `), l));
+  // A newline in a name cannot forge an extra line or shift an id.
+  const odd = cardLinesWithIds([{ ...CARD[0], food_name: "Roti\n2. Fake" }, CARD[1]]);
+  assertEquals(odd.map((l) => l.slice(0, 5)), ["[L1] ", "[L2] "]);
+});
+
+Deno.test("a save card needs the user's ask: without it the agent is told, and does what was asked", async () => {
+  assert(userAskedToSave({ text: "save this as a meal" }));
+  assert(userAskedToSave({ text: "yes", recentTurns: [{ role: "user", text: "can you keep it for next time" }] }));
+  assertFalse(userAskedToSave({ text: "bring back the card" }));
+  assertFalse(userAskedToSave({ text: "plus my usual smoothie", recentTurns: [{ role: "drona", text: "Want to save it?" }] }));
+  const bodies: Record<string, unknown>[] = [];
+  const out = await runFoodAgent({ ...LATER, text: "bring back the card" }, deps(scripted([
+    [{ name: "save_card_as_meal", input: { name: "Dinner", log_now: false, summary: "Save it?" } }],
+    [{ name: "reply", input: { text: "It is on screen: Add puts it in." } }],
+  ], bodies)));
+  assertEquals(out.kind, "reply");
+  const turn2 = bodies[1].messages as { content: { content?: string }[] }[];
+  assert(String(turn2.at(-1)!.content[0].content).includes("did not ask to save"));
+  // An asked save goes through.
+  const asked = await runFoodAgent({ ...LATER, text: "save this as my dinner meal" }, deps(scripted([
+    [{ name: "save_card_as_meal", input: { name: "Dinner", log_now: false, summary: "Save it?" } }],
+  ])));
+  assertEquals(asked.kind, "create");
+});
+
+Deno.test("a refused plan also holds a save in the same turn (told why, never an unknown tool)", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const out = await runFoodAgent({ ...LATER, text: "save it and fix the roti" }, deps(scripted([
+    [
+      { name: "edit_line", input: { line_id: "L9", change: "x" } },
+      { name: "save_card_as_meal", input: { name: "Dinner", log_now: false, summary: "Save it?" } },
+    ],
+    [{ name: "reply", input: { text: "Which line did you mean?" } }],
+  ], bodies)));
+  assertEquals(out.kind, "reply");
+  const turn2 = bodies[1].messages as { content: { content?: string }[] }[];
+  assert(String(turn2.at(-1)!.content[1].content).includes("not on the card"));
+});
+
+Deno.test("two additions of one food in one turn: the second is left off", async () => {
+  const d = deps(scripted([[{ name: "add_lines", input: { text: "an egg" } }, { name: "add_lines", input: { text: "one more egg" } }]]));
+  d.parseFood = async () => result([item("Egg", 78)]);
+  const out = await runFoodAgent(LATER, d);
+  if (out.kind === "log") assertEquals(out.result.parsed?.items.filter((i) => i.food_name === "Egg").length, 1);
+});
+
+Deno.test("runLaterMessage: a bare 'yes' after Drona asked something goes to the agent", async () => {
+  let calls = 0;
+  configure(async () => {
+    calls++;
+    return { ok: true, data: { usage: {}, content: [{ type: "tool_use", id: "t", name: "reply", input: { text: "Done thinking." } }] } };
+  });
+  const r = await runLaterMessage({
+    agent: agentArgs({ text: "yes", recentTurns: [{ role: "user", text: "2 roti and dal" }, { role: "drona", text: "Dal is already on the card: add a second portion, or skip?" }] }),
+    cardOpen: true,
+    fallbackParse: async () => noParseResult(),
+  });
+  assertEquals(calls, 1);
+  assertEquals(r.outcome.agent?.kind, "reply");
 });

@@ -899,6 +899,9 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
       if (p.ok) plan = p;
       else {
         for (const u of changes) rejected.set(u, p.error);
+        // Every other finish in the turn waits too (a save, a restore): it is
+        // told why, never reported as an unknown tool.
+        for (const u of uses) if (LATER_FINISHES.has(u.name) && !rejected.has(u)) rejected.set(u, p.error);
         if (replyUse) rejected.set(replyUse, "Not sent: the card changes in this turn were refused, so nothing happened. Fix them first.");
         deps.onEvent?.({ tool: "card_changes", ok: false, edits: 0, edits_failed: 0, removed: 0, added: 0, error: p.error });
       }
@@ -921,13 +924,28 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     // Later messages pick in a fixed order (the card changes, then a log, a
     // save or a restore, then a reply), so a reply sent beside a log never
     // drops the food: log wins every tie, and the reply becomes its line.
-    const finish = !later
+    let finish = !later
       ? uses.find((u) => FINISH_TOOLS.has(u.name) && !refused.has(u))
       : plan
       ? changes[0]
       : rejected.size
       ? undefined
       : uses.find((u) => LATER_FINISHES.has(u.name) && !refused.has(u)) ?? replyUse;
+    // A later message: a save card needs the user to have asked for a save,
+    // in their words (plan 9b, "create needs an explicit ask"). The agent is
+    // told and does what was asked instead; on the last turn the run ends and
+    // the card stays as it was.
+    if (later && finish && SAVE_TOOLS.has(finish.name) && !userAskedToSave(input)) {
+      if (last) return { kind: "failed", reason: "save_not_asked", turns };
+      for (const u of uses) {
+        if (!READ_TOOLS.has(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u)) {
+          rejected.set(u, "Not done: the user did not ask to save anything, so no save card. Do what they asked: change the " +
+            "card, add the food, or reply.");
+        }
+      }
+      plan = null;
+      finish = undefined;
+    }
     const copies = uses.filter((u) => u.name === COPY_LINES_TOOL.name);
     if (!finish) {
       const unknown = uses.find((u) => !READ_TOOLS.has(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u));
@@ -1351,6 +1369,18 @@ async function logFindsNoFood(u: ToolUse, parse: (text: string) => Promise<Parse
     "or ask them one short question with reply.";
 }
 
+/** The tools that end in a save card. */
+const SAVE_TOOLS = new Set([SAVE_CARD_AS_MEAL_TOOL.name, CREATE_CUSTOM_MEAL_TOOL.name, CREATE_CUSTOM_FOOD_TOOL.name]);
+
+/** A word that asks to save or keep something for later. */
+const SAVE_ASK = /\b(?:sav(?:e|ed|ing)|keep|remember|store|reusable|my meals|as a meal|a meal of|make (?:it|this|that) (?:a|my) meal)\b/i;
+
+/** Did the user ask for a save: in this message, or in one of their earlier
+ *  turns of the thread ("save it", then "yes")? */
+export function userAskedToSave(input: Pick<FoodAgentInput, "text" | "recentTurns">): boolean {
+  return SAVE_ASK.test(input.text) || (input.recentTurns ?? []).some((t) => t.role === "user" && SAVE_ASK.test(t.text));
+}
+
 /** Reads whose results a later-message agent acts on: a finish in the same
  *  turn waits for them. parse_food is not one (its result is reused). */
 const HOLD_READS = new Set([LIST_LOGGED_MEALS_TOOL.name, LIST_SAVED_MEALS_TOOL.name, READ_CARD_TOOL.name]);
@@ -1526,8 +1556,14 @@ async function applyCardChanges(
   const ids = new Set(staying.map((l) => l.food_id).filter((x): x is string => !!x));
   const dupAdds: string[] = [];
   const added = addsOut.flatMap((x) => x.items).filter((i) => {
-    const dup = keys.has(sameFoodKey(i.food_name)) || (!!i.food_id && ids.has(i.food_id));
+    const key = sameFoodKey(i.food_name);
+    const dup = keys.has(key) || (!!i.food_id && ids.has(i.food_id));
     if (dup) dupAdds.push(i.food_name);
+    else {
+      // Two additions of one food in the same turn: the second is a copy too.
+      keys.add(key);
+      if (i.food_id) ids.add(i.food_id);
+    }
     return !dup;
   });
   const items = buildChangedCard(card, removes, edited, added, input.defaultMeal);
@@ -1554,7 +1590,7 @@ async function applyCardChanges(
   });
 
   // Nothing could be done: the card stays as it was, and the user is told why.
-  if (!changed) return { kind: "reply", text: codeLine || "I could not change the card, so it is as it was.", turns };
+  if (!changed) return { kind: "reply", text: line || "I could not change the card, so it is as it was.", turns };
 
   const usage = EMPTY_USAGE();
   const steps: ParseStep[] = [];
@@ -1578,7 +1614,7 @@ async function applyCardChanges(
         usage, tool_calls: toolCalls, steps, iterations: turns.length, tier,
       },
       turns,
-      ...(replyText ? { answered: true } : {}),
+      ...(replyText && line === agentText ? { answered: true } : {}),
     };
   }
   return {

@@ -877,7 +877,11 @@ export async function runLaterMessage(args: {
   const fb = args.agent.fbTrace;
   const out = (o: Omit<FoodBarOutcome, "cardOpen">): FoodBarOutcome => ({ ...o, cardOpen: args.cardOpen });
   const pending = !!args.agent.pendingMeal;
-  if (args.cardOpen && !pending && isBareAck(args.agent.text)) {
+  // "yes" after Drona asked something (a second portion, or skip?) answers
+  // that question, even when the app kept no waiting meal for it.
+  const lastDrona = [...args.agent.recentTurns].reverse().find((t) => t.role === "drona");
+  const askedLast = !!lastDrona && /\?\s*$/.test(lastDrona.text.trim());
+  if (args.cardOpen && !pending && !askedLast && isBareAck(args.agent.text)) {
     fb?.step({ src: "router", tool: "later_message", result: { to: "bare_ack", card_open: true } });
     const decision = await args.agent.intentP.catch(() => null);
     return { outcome: out({ action: "reply", planned: "reply", decision, reply: BARE_ACK_REPLY }), result: noParseResult(), firstParse: null };

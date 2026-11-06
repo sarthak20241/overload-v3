@@ -146,6 +146,9 @@ export function liveName(): string {
 export function liveReady(): string | null {
   if (!SUPABASE_URL || !ANON) return "Missing EXPO_PUBLIC_SUPABASE_URL / _ANON_KEY (env or .env.local).";
   if (!VIA_CLI && !API_KEY) return "Set EVAL_VIA_CLI=1 (owner rule), or ANTHROPIC_API_KEY for a latency run.";
+  // live_later is measured with the thread store on; a run without it would
+  // write its numbers under the same name.
+  if (LATER === "on" && THREADS !== "on") return "FOOD_AGENT_LATER=on is measured with FOOD_THREADS=on. Set both.";
   return null;
 }
 
@@ -167,15 +170,15 @@ const rawCliFetch = VIA_CLI ? makeClaudeCliFetch(PARSE_MODEL, { modelFromBody: t
 
 // ── Cost and turns per case ─────────────────────────────────────────────────
 
-/** $ per million tokens, input and output: the model_pricing rows
- *  (20261011120000, 20261011150000). */
-const PRICE: Record<string, [number, number]> = {
-  "claude-haiku-5-5": [0.10, 0.50],
-  "claude-sonnet-5-5": [2.00, 10.00],
+/** $ per million tokens: input, output, cache read, cache write. A copy of
+ *  the model_pricing rows (20261011120000, 20261011150000): update both. */
+const PRICE: Record<string, [number, number, number, number]> = {
+  "claude-haiku-5-5": [0.10, 0.50, 0.01, 0.125],
+  "claude-sonnet-5-5": [2.00, 10.00, 0.20, 2.50],
 };
 interface Meter {
   calls: number;
-  byModel: Record<string, { calls: number; input: number; output: number }>;
+  byModel: Record<string, { calls: number; input: number; output: number; cache_read: number; cache_write: number }>;
 }
 const meter = new AsyncLocalStorage<Meter>();
 
@@ -187,13 +190,18 @@ function metered(f: typeof fetch): typeof fetch {
     if (!m || !r.ok) return r;
     try {
       const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
-      const data = await r.clone().json() as { usage?: { input_tokens?: number; output_tokens?: number } };
+      const data = await r.clone().json() as {
+        usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+      };
       // A body with no model runs on the parse model (the CLI shim's default).
       const model = body.model ?? PARSE_MODEL;
-      const row = (m.byModel[model] ??= { calls: 0, input: 0, output: 0 });
+      const row = (m.byModel[model] ??= { calls: 0, input: 0, output: 0, cache_read: 0, cache_write: 0 });
       row.calls++;
       row.input += data.usage?.input_tokens ?? 0;
       row.output += data.usage?.output_tokens ?? 0;
+      // API runs only: the CLI does not exercise prompt caching.
+      row.cache_read += data.usage?.cache_read_input_tokens ?? 0;
+      row.cache_write += data.usage?.cache_creation_input_tokens ?? 0;
       m.calls++;
     } catch { /* metering never fails a case */ }
     return r;
@@ -220,8 +228,8 @@ function metricsOf(m: Meter, route: CaseMetrics["route"], agentTurns: number): C
       warnedModels.add(model);
       console.warn(`[eval] no price for model "${model}": its calls count as $0 (add it to PRICE in live.ts)`);
     }
-    const [i, o] = PRICE[model] ?? [0, 0];
-    cost += (v.input * i + v.output * o) / 1_000_000;
+    const [i, o, cr, cw] = PRICE[model] ?? [0, 0, 0, 0];
+    cost += (v.input * i + v.output * o + v.cache_read * cr + v.cache_write * cw) / 1_000_000;
   }
   return { route, agentTurns, calls: m.calls, costUsd: Math.round(cost * 100000) / 100000, byModel: m.byModel };
 }
@@ -576,18 +584,22 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
   });
   let outcome: Awaited<ReturnType<typeof resolveFoodBarOutcome>>;
   let firstParse: Awaited<ReturnType<typeof runParseMeal>>;
+  let routerAgent: ReturnType<typeof startFoodAgent> | null = null;
   if (later) {
     const l = await runLaterMessage({ agent: agentArgs, cardOpen, fallbackParse: parseNow });
     outcome = l.outcome;
     firstParse = l.firstParse ?? noParseResult();
   } else {
-    const agentP = startFoodAgent(agentArgs);
+    const agentP = (routerAgent = startFoodAgent(agentArgs));
     firstParse = await parseNow();
     outcome = await resolveFoodBarOutcome({
       result: firstParse, intentP, supportsCreate: true, text: c.message, mealHint, readDiary, agentP, recentTurns, cardOpen,
       earlierCards: card.length === 0 && !!(await threadP)?.index,
     });
   }
+  // The router's agent can still be working after a log was served: its calls
+  // count against this message too.
+  if (routerAgent) await routerAgent;
   const metrics = metricsOf(m, later ? "agent" : outcome.agent ? "router_agent" : "parse", outcome.agent?.turns.length ?? 0);
 
   if (env("DEBUG_STEPS") === "1") {
@@ -597,7 +609,9 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
       for (const r of t.results ?? []) console.log(`      ${r.name} -> ${String(r.summary).slice(0, 300)}`);
     }
   }
-  const lookedUp = (firstParse.steps ?? []).some((s) => /web|lookup_packaged|fatsecret|tavily/i.test(String(s.tool)));
+  // The agent's own parses (a later message) carry their steps in its result.
+  const lookedUp = [...(firstParse.steps ?? []), ...(outcome.result?.steps ?? [])]
+    .some((s) => /web|lookup_packaged|fatsecret|tavily/i.test(String(s.tool)));
   const withLookup = (a: Action[]): Action[] => (lookedUp && !a.includes("look_up") ? [...a, "look_up"] : a);
 
   if (outcome.action === "create" && outcome.create) {
