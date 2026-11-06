@@ -3386,7 +3386,9 @@ async function handleParseMealRequest(args: {
     keepAlive(recordThreadMessage(threadStore, {
       userId,
       req: threadReq,
-      clientId: auto.clientId ?? (typeof body.client_id === "string" ? body.client_id : null),
+      // The send's own id: the auto-log id when there is one, else the fresh
+      // next_card_id the app makes for every send.
+      clientId: auto.clientId ?? threadReq.next_card_id,
       userText: text,
       dronaText,
       card,
