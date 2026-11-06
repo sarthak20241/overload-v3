@@ -334,3 +334,21 @@ Deno.test("a retried send that makes the same new card again is done, not an err
   assertEquals(s.dump().cards.size, 1);
   assertEquals(s.dump().threads.get(T)!.turns.length, 1);
 });
+
+Deno.test("new lines joining a card keep the card's own lines exactly, unknown macros included", async () => {
+  const s = memoryThreadStore();
+  await s.ensure("u1", T);
+  const line = { ...cardAsLines(card([["Chai", 90]]))[0], protein_g: null, carb_g: null, fat_g: null, grams: null };
+  await s.createCard(T, MEAL, "meal", [line], null, "snack");
+  await recordThreadMessage(s, {
+    userId: "u1", req: { id: T, card_id: MEAL, base_version: 1, next_card_id: null, closed: null }, clientId: "m2",
+    userText: "and a rusk", dronaText: null,
+    // The app sends the card it shows: the chai line with no macros known.
+    card: [{ food_name: "Chai", quantity: 1, serving_label: "cup", grams: 0, kcal: 90 }],
+    served: { kind: "meal", items: [item("Rusk", 40)], corrects: false }, mealType: "snack",
+  });
+  const t = await s.load("u1", T);
+  const [chai, rusk] = t!.cards[0].lines;
+  assertEquals([chai.line_id, chai.protein_g, chai.carb_g, chai.fat_g], ["L1", null, null, null]);
+  assertEquals([rusk.line_id, rusk.name], ["L2", "Rusk"]);
+});

@@ -3398,6 +3398,13 @@ async function handleParseMealRequest(args: {
   // agree: on a timeout neither had a thread, and restoredFrom stays null.
   const writeThread = async (outcome: FoodBarOutcome, result: ParseMealResult): Promise<void> => {
     if (!threadReq || !threadStore) return;
+    // No id for this send (no auto-log id, and the app sent no valid
+    // next_card_id): skipped, since a retry of it could not be told apart.
+    const clientId = auto.clientId ?? threadReq.next_card_id;
+    if (!clientId) {
+      console.log("[food_threads] send has no client id; thread not written");
+      return;
+    }
     const restored = result.tool_calls.includes("restore_card") ? (await threadP)?.restoredFrom ?? null : null;
     const dronaText = outcome.action === "create"
       ? (typeof outcome.create?.input?.summary === "string" ? outcome.create.input.summary : null)
@@ -3408,9 +3415,7 @@ async function handleParseMealRequest(args: {
       req: threadReq,
       // The send's own id: the auto-log id when there is one, else the fresh
       // next_card_id the app makes for every send.
-      // A send with neither (an app that sent a malformed next_card_id) still
-      // gets an id, so its turns are written once in this call.
-      clientId: auto.clientId ?? threadReq.next_card_id ?? crypto.randomUUID(),
+      clientId,
       userText: text,
       dronaText,
       card,

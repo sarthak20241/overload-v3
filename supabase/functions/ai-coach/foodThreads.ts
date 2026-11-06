@@ -549,9 +549,14 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
     }
     // A meal: new lines join the card, a correction replaces it.
     if (base) {
-      const items = s.corrects ? s.items : [...base.lines.map((l) => lineAsItem(l, args.mealType ?? "snack")), ...s.items];
       const used = Math.max(maxLineNo(base.lines), maxLineNo(onScreen?.lines), onScreen?.max_line_no ?? 0);
-      const lines = itemsAsLines(items, base.lines, used);
+      // New lines joining the card: the card's own lines stay exactly as
+      // stored (an unknown macro stays unknown, ids unchanged), and the new
+      // ones get new ids above every id the card used. A correction rebuilds
+      // the card, keeping ids by name.
+      const lines = s.corrects
+        ? itemsAsLines(s.items, base.lines, used)
+        : [...base.lines, ...itemsAsLines(s.items, null, used)];
       let w = await store.writeCard(base.id, req.base_version ?? base.version, lines, args.clientId, undefined, args.mealType);
       // A base older than the server's: another write got there first (a
       // second device, or an answer the app never counted). The app's card is

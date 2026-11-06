@@ -247,7 +247,9 @@ create trigger trg_delete_food_threads_on_profile_delete
 --   1. Close threads idle past 35 minutes: the app's 30, plus the server's
 --      5-minute grace (THREAD_IDLE_GRACE_MS), so a message the app still sends
 --      on a live id is never caught by the job. The server never closes on
---      idle by itself.
+--      idle by itself, so until this runs (up to a day) an idle thread still
+--      reads status 'open'. The code decides "open" with threadIsOpen (status
+--      AND last_at); anything else reading status alone sees stale rows.
 --   2. Delete CLOSED threads whose last message is older than 20 days. Their
 --      turns, cards and card lines go with them (on delete cascade). An open
 --      thread is never deleted mid-use: it was active in the last 30 minutes.
