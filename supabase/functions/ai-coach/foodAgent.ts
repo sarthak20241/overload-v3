@@ -448,7 +448,8 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
   const canRestore = !!input.threadIndex && !!deps.restoreCard && !input.card?.length;
   // An undated `today` still goes in as written rather than being dropped.
   const days = input.today ? recentDays(input.today) ?? `Today is ${input.today}.` : null;
-  const messages: unknown[] = historyMessages(input.recentTurns, openingText(input, days));
+  // The index promises restore_card, so it goes in only when the tool does.
+  const messages: unknown[] = historyMessages(input.recentTurns, openingText({ ...input, threadIndex: canRestore ? input.threadIndex : null }, days));
   // Every food line a read returned, by name, with the calories it carried.
   // A line the agent says it COPIED is checked against this: the model is told
   // never to invent numbers, and this is how the code knows whether it did.

@@ -239,7 +239,10 @@ export function cardRefs(t: StoredThread): Map<string, StoredCard> {
   // Numbered over EVERY meal card in the order made, then filtered: a card
   // that is replaced or emptied keeps its number, so C2 means the same card
   // in every message of the thread, including ones quoted in earlier turns.
-  const meals = t.cards.filter((c) => c.kind === "meal").sort((a, b) => a.created_at.localeCompare(b.created_at));
+  // Ties on created_at (two cards in one instant) break on id, so the order
+  // is the same on every load.
+  const meals = t.cards.filter((c) => c.kind === "meal")
+    .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
   return new Map(
     meals.map((c, i) => [`C${i + 1}`, c] as const).filter(([, c]) => c.status !== "replaced" && c.lines.length > 0),
   );

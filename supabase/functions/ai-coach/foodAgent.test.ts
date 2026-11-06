@@ -557,6 +557,8 @@ Deno.test("restore_card is not offered while a card is on screen (it would repla
     { ...deps(scripted([[{ name: "reply", input: { text: "ok" } }]], bodies)), restoreCard: async () => null },
   );
   assert(!(bodies[0].tools as { name: string }[]).some((t) => t.name === "restore_card"));
+  // Nor the index that promises it.
+  assert(!JSON.stringify(bodies[0].messages).includes("earlier card in this thread"));
 });
 
 Deno.test("a meal line copied from a card line with some macros missing keeps the model's estimate mark", async () => {
