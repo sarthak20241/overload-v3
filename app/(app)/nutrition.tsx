@@ -76,6 +76,7 @@ import {
   type CoachFoodCreateResult,
 } from '@/lib/coachFoodCreate';
 import { FoodCreateCard } from '@/components/ai/FoodCreateCard';
+import { cardAfter } from '@/lib/foodBarCard';
 import { haptics } from '@/lib/haptics';
 import {
   getAutoLog, setAutoLog, newAutoLogClientId, addPending, removePending, touchPending,
@@ -162,13 +163,14 @@ type ParseFlow =
        *  restart, which stores this as waiting) still means the same meal. */
       dayIso?: string;
       tier?: ParseSpeed;
-    }
-  // The user asked to SAVE a food or meal, and Drona drafted it. Nothing is
-  // written until the card is tapped; `result` is what came back from that tap.
-  | {
-      status: 'create'; raw: string; create: CoachFoodCreate;
-      result: CoachFoodCreateResult | null; busy: boolean;
     };
+
+/** The user asked to SAVE a food or meal, and Drona drafted it. Nothing is
+ *  written until the card is tapped; `result` is what came back from that tap.
+ *  Its own state, not a ParseFlow: it sits BESIDE the meal card. As a flow it
+ *  replaced the card, and live 2026-11-05 a lunch the user had not added yet
+ *  was lost to "save this sabji as a meal" (lib/foodBarCard). */
+type SaveCard = { create: CoachFoodCreate; result: CoachFoodCreateResult | null; busy: boolean };
 
 /** The "use your saved meal?" offer for a reviewed card, or null. The FIRST
  *  suggestion whose line is still on the card wins; the proposal is the whole
@@ -425,6 +427,11 @@ export default function NutritionScreen() {
     return () => clearTimeout(t);
   }, [focus, isSignedIn]));
   const [flow, setFlow] = useState<ParseFlow>({ status: 'idle' });
+  const [saveCard, setSaveCard] = useState<SaveCard | null>(null);
+  // Set when a save card arrives, read once by the arrival effect: the answer
+  // is a reply (the meal card did not change), so the result screen closes and
+  // both cards show above the food box.
+  const saveArrivedRef = useRef(false);
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).
   const flowRef = useRef<ParseFlow>(flow);
@@ -600,14 +607,18 @@ export default function NutritionScreen() {
     setWaitOpen(false);
     const landed = autoLandedRef.current;
     autoLandedRef.current = null;
-    const kind: ReadyKind | null = flow.status === 'review' ? 'review'
+    const saveArrived = saveArrivedRef.current;
+    saveArrivedRef.current = false;
+    const kind: ReadyKind | null = saveArrived ? 'reply'
+      : flow.status === 'review' ? 'review'
       : flow.status === 'idle' ? (landed ? 'logged' : null)
-      : flow.status === 'declined' || flow.status === 'create' ? 'reply'
+      : flow.status === 'declined' ? 'reply'
       : flow.status === 'error' ? 'error'
       : null;
     // Not a meal to check (it went in, or it is a reply or a failure, which
-    // show above the food box): the result screen has nothing to show.
-    if (flow.status !== 'review') setResultOpen(false);
+    // show above the food box): the result screen has nothing to show. A save
+    // card shows above the food box too, beside the meal card's strip.
+    if (flow.status !== 'review' || saveArrived) setResultOpen(false);
     if (!kind) return;
     // Counted when the user can see it (lib/mealReady showPlan).
     const shown = () => track('meal_ready_shown', { kind, how });
@@ -1127,6 +1138,9 @@ export default function NutritionScreen() {
     if (!sendText) return;
     setSavedReview(false);
     setCardMinimized(false);
+    // A save card that is done (saved, or failed with its reason shown) has
+    // said its piece. One still waiting for its tap stays.
+    if (!retry) setSaveCard((c) => (c?.result ? null : c));
     // A meal still under review is context for the next line: "make it a small
     // one" should correct THAT samosa, not log a second one. Captured before we
     // switch to 'analysing' (which drops the reviewed meal from flow).
@@ -1302,7 +1316,9 @@ export default function NutritionScreen() {
     if (res.kind === 'create') {
       const create = parseCoachFoodCreate(res.tool, res.input);
       if (!create) {
-        setFlow({ status: 'declined', raw: t, message: 'I could not put that one together. Give me the name and the calories and I will save it.' });
+        const line = 'I could not put that one together. Give me the name and the calories and I will save it.';
+        if (prevReview) setFlow({ ...prevReview, notice: line, proposal: null });
+        else setFlow({ status: 'declined', raw: t, message: line });
         return;
       }
       track('drona_food_create_proposed', {
@@ -1313,7 +1329,13 @@ export default function NutritionScreen() {
         estimated: create.estimated.length > 0 || create.lines.some((l) => l.estimated),
       });
       pushTurn('drona', create.summary || `Save ${create.name}?`);
-      setFlow({ status: 'create', raw: t, create, result: null, busy: false });
+      // The save card goes BESIDE the meal card. The meal card comes back as
+      // it was, with its words and turns, so a Discard or a Save on the save
+      // card leaves the lunch the user was logging right where it was.
+      saveArrivedRef.current = true;
+      setSaveCard({ create, result: null, busy: false });
+      const kept = cardAfter(prevReview?.meal.items ?? null, { kind: 'create' });
+      setFlow(prevReview && kept ? { ...prevReview, notice: null, proposal: null } : { status: 'idle' });
       return;
     }
     pushTurn('drona', res.meal.drona_line);
@@ -1383,7 +1405,7 @@ export default function NutritionScreen() {
     // dropping the samosa the user already reviewed.
     const reviewFlow: ParseFlow = (pending && !res.meal.corrects_previous)
       ? (() => {
-          const items = [...pending.items, ...res.meal.items];
+          const items = cardAfter(pending.items, { kind: 'meal', items: res.meal.items, correctsPrevious: false }) ?? res.meal.items;
           const head = keptMealType ?? headOf(items);
           return {
             status: 'review',
@@ -1861,19 +1883,19 @@ export default function NutritionScreen() {
   // ate it. Guarded against a double tap, which would put a duplicate in My
   // Meals. Logs to the day on screen, same as every other add from this box.
   const onApplyCreate = useCallback(async () => {
-    if (flow.status !== 'create' || flow.busy || flow.result || !supabase) return;
-    const { create } = flow;
-    setFlow({ ...flow, busy: true });
+    if (!saveCard || saveCard.busy || saveCard.result || !supabase) return;
+    const { create } = saveCard;
+    setSaveCard({ ...saveCard, busy: true });
     const res = await applyCoachFoodCreate(supabase, create, mealForNow(), viewDate);
     track('drona_food_create_applied', { kind: create.kind, logged: res.logged, ok: !res.error });
-    setFlow((cur) => (cur.status === 'create' && cur.create === create ? { ...cur, busy: false, result: res } : cur));
+    setSaveCard((cur) => (cur && cur.create === create ? { ...cur, busy: false, result: res } : cur));
     if (res.savedMealId) {
       if (res.logged) reload();
       haptics.success();
     } else {
       haptics.warning();
     }
-  }, [flow, supabase, viewDate, reload]);
+  }, [saveCard, supabase, viewDate, reload]);
 
   /** Close the card with no verdict on it. Discard calls this after counting a
    *  rejection; editing your words calls it without one, since taking the words
@@ -2072,7 +2094,7 @@ export default function NutritionScreen() {
   const dismissNotice = () => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f));
   const editWordsBlocked = parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && (!!flow.clientId || !!flow.meal));
   const editWords = () => {
-    if (flow.status === 'idle' || flow.status === 'create') return;
+    if (flow.status === 'idle') return;
     // The whole conversation, not just a correction's own words.
     const raw = flow.status === 'review' && flow.words ? flow.words : flow.raw;
     track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
@@ -2092,7 +2114,7 @@ export default function NutritionScreen() {
    *  it" send still settling, and a reviewed meal folded to its one-line
    *  strip while it waits (the meal itself opens full screen). */
   const renderParseCard = (extra: Partial<React.ComponentProps<typeof ParsedMealCard>>) => {
-    if (flow.status === 'idle' || flow.status === 'create') return null;
+    if (flow.status === 'idle') return null;
     return (
       <ParsedMealCard
         state={flow.status as ParseCardState}
@@ -2525,22 +2547,23 @@ export default function NutritionScreen() {
         s.inputWrap,
         { bottom: kbHeight, paddingBottom: barPadBottom },
       ]}>
-        {flow.status === 'create' && (
+        {saveCard && (
           <View style={{ marginBottom: Spacing.sm }}>
             <FoodCreateCard
-              create={flow.create}
-              result={flow.result}
-              busy={flow.busy}
+              create={saveCard.create}
+              result={saveCard.result}
+              busy={saveCard.busy}
               fallbackMeal={mealForNow()}
               onApply={() => void onApplyCreate()}
-              onDismiss={() => setFlow({ status: 'idle' })}
+              // Only the save card goes. The meal card beside it stays.
+              onDismiss={() => setSaveCard(null)}
               fullWidth
             />
           </View>
         )}
         {/* Hidden while the sheet or the result is up: they are this card,
             bigger, and two live orbs on one screen is one too many. */}
-        {flow.status !== 'idle' && flow.status !== 'create' && !resultOpen && !(parseInFlight && waitOpen) && (
+        {flow.status !== 'idle' && !resultOpen && !(parseInFlight && waitOpen) && (
           <View style={{ marginBottom: Spacing.sm }}>
             {parseInFlight ? (
               // The sheet was closed. The parse runs on; one quiet line says

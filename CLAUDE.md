@@ -44,12 +44,15 @@ EVAL_VIA_CLI=1 npx tsx scripts/program-activity-eval/run.mts
 # answers? Same CLI rule.
 EVAL_VIA_CLI=1 npx tsx scripts/lean-context-eval/run.mts
 
-# Food box (Precise): 50 cases (43 real conversations, 7 synthetic) graded on the outcome (card kept,
-# lines not lost, saves with macros, no false claims). ADAPTER=recorded grades
+# Food box (Precise): 52 cases (43 recorded conversations, 9 with no recording) graded on the outcome
+# (card kept, lines not lost, saves with macros, no false claims). ADAPTER=recorded grades
 # what the live box served; no model call. Plan: .planning/precise-food-logger-plan.md
-# NOT a regression test yet: `recorded` replays stored answers, so a run says
-# nothing about today's code, and it always exits 0. A live adapter comes next.
+# `recorded` replays stored answers, so it says nothing about today's code and
+# always exits 0. ADAPTER=live (below) is the run that measures today's code.
 npx tsx scripts/food-box-eval/run.mts            # TAG=correction  ONLY=id  WRITE_BASELINE=1
+# Today's food box code on each case, with the case's saved meals, memory and
+# diary. Reads the live catalog, writes nothing. Same CLI rule as above.
+EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts   # EVAL_CONCURRENCY=6  DEBUG_STEPS=1
 deno test --allow-all scripts/food-box-eval/grade.test.ts
 
 # Edge function unit tests (the one real test suite).
@@ -88,6 +91,7 @@ deno test --allow-all lib/mealReady.test.ts   # AI food log: open the result or 
 deno test --allow-all lib/calorieBars.test.ts  # Analytics calorie bars: each day against its own goal ±10%
 deno test --allow-all lib/pendingEntries.test.ts # an added suggestion or copy shows at once, swapped for the saved row
 deno test --allow-all lib/pendingParse.test.ts  # food search "Log it with Drona": handed to Nutrition once, with its meal and day
+deno test --allow-all lib/foodBarCard.test.ts   # food box: a save card sits beside the meal card, never replaces it
 deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
 deno test --allow-all lib/questionPin.test.ts  # Drona chat: a reply types in under its question at the top
