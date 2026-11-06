@@ -297,7 +297,7 @@ Deno.test("the failure this prevents: a 15-line card arrived as 12, so the agent
   assertEquals(items.length, 15);
   const card: CardLine[] = items.map((p) => ({ ...p, kcal: p.kcal ?? 0 }));
   assertEquals(cardMayBeCut(card, total), false);
-  assertEquals(toolsFor(card, total).some((t) => t.name === "remove_card_lines"), true);
+  assertEquals(toolsFor(card, false, {}, total).some((t) => t.name === "remove_card_lines"), true);
   assertEquals(cardLines(card).length, 15, "the agent must see every line it can name");
   const out = await runFoodAgent(
     { text: "take line 14 off", defaultMeal: "lunch", card, cardTotal: total },

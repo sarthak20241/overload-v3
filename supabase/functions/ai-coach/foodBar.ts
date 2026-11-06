@@ -36,12 +36,54 @@ import {
   type MealType,
   type ParseMealDeps,
   type ParseMealInput,
+  type ParsedItem,
   type ParseMealResult,
   type PreviousItem,
   runParseMeal,
 } from "./parseMeal.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
+import type { ThreadLine } from "./foodThreads.ts";
 import { CREATE_CUSTOM_FOOD_TOOL, CREATE_CUSTOM_MEAL_TOOL, LIST_LOGGED_MEALS_TOOL } from "./prompt.ts";
+
+/** Whether this message could use the thread's earlier cards. With no card
+ *  on screen: a verdict the agent would take if the thread had them (it can
+ *  restore or copy one). With a whole card on screen (`cardOpen`): a verdict
+ *  that already sends the message to the agent, which can copy lines from an
+ *  earlier card onto it. A card cut at the cap gets no thread.
+ *  The ONE test for both the agent start and the outcome (index.ts
+ *  earlierCardsFor, which passes no cardOpen: its "earlier cards" input is
+ *  about NO card on screen only), so the two can never disagree. */
+export function agentCouldUseThread(d: FoodIntentDecision | null, supportsCreate: boolean, cardLines: number, cardOpen = false): boolean {
+  if (cardLines === 0) return wantsFoodAgent(d, supportsCreate, false, true);
+  return cardOpen && wantsFoodAgent(d, supportsCreate, true);
+}
+
+/** One earlier card's lines, as stored (foodThreads.ts threadForAgent). */
+export interface ThreadCardLines {
+  id: string;
+  ref: string;
+  version: number;
+  /** The newest version that has lines. */
+  latest_version: number;
+  meal_type: MealType | null;
+  lines: ThreadLine[];
+}
+
+/** The thread store as the agent sees it (foodThreads.ts). */
+export interface FoodBarThread {
+  /** threadIndex: the earlier cards, by ref, with their foods. Null: nothing to bring back. */
+  index: string | null;
+  /** The index line's size, for the trace. */
+  indexStats?: { chars: number; names: number; cards_listed: number; cards_total: number };
+  /** The card restore() last brought back, so the thread write can mark it. */
+  restoredFrom?: string | null;
+  /** The ref the card on screen has in this thread, when it has one. */
+  onScreenRef?: string | null;
+  restore(ref: string, version: number | null): Promise<{ items: ParsedItem[]; meal_type: MealType | null } | null>;
+  /** An earlier card's lines (latest version when null), or null when there
+   *  is no such card or version. Never the card on screen. */
+  lines?(ref: string, version: number | null): Promise<ThreadCardLines | null>;
+}
 
 export type AnthropicCallResult = { ok: true; data: any } | { ok: false; status: number; body: string };
 
@@ -486,6 +528,9 @@ export function startFoodAgent(args: {
   mode: "fast" | "super" | null;
   savedMealsP: Promise<SavedMealForParse[]>;
   readDiary: DiaryReader;
+  /** The diary with each line's catalog id and source, for copy_lines
+   *  (index.ts makeDiaryReader full). Absent: copy_lines from the diary is off. */
+  readDiaryLines?: DiaryReader;
   contextPromise: ParseMealInput["contextPromise"];
   /** The parser's deps for one of the agent's own parses (index.ts makeParseDeps). */
   parseDeps: (fbTrace?: FoodBarTraceCollector) => ParseMealDeps;
@@ -499,6 +544,9 @@ export function startFoodAgent(args: {
   card?: { lines: CardLine[]; total: number | null; previousText: string | null; previousWords: string | null; previousItems: PreviousItem[] } | null;
   onStatus?: (label: string) => void;
   fbTrace?: FoodBarTraceCollector;
+  /** FOOD_THREADS=on: the thread's earlier cards, as an index line and a way
+   *  to bring one back. Resolves null when there is none. */
+  thread?: Promise<FoodBarThread | null>;
 }): Promise<FoodAgentOutcome | null> {
   const fb = args.fbTrace;
   // The agent's own parses: their steps and model calls land on the trace
@@ -515,7 +563,17 @@ export function startFoodAgent(args: {
   return args.intentP.then(async (d) => {
     // Open AND whole, the same rule index.ts applies (see `cardOpen` there).
     const cardOpen = !!args.card?.lines.length && !cardMayBeCut(args.card.lines, args.card.total);
-    if (env().intentMode !== "on" || !wantsFoodAgent(d, args.supportsCreate, cardOpen)) return null;
+    // A card cut at the cap gets no thread: copy_lines checks the new lines
+    // against the whole card, and the agent cannot see past the cap. The
+    // earlier-cards ROUTE is for NO card on screen; beside a whole card the
+    // thread only rides along with a verdict that already goes to the agent.
+    const noCard = !args.card?.lines.length;
+    if (env().intentMode !== "on") return null;
+    // The thread is waited for only when it can matter (agentCouldUseThread,
+    // the same test index.ts uses for the outcome).
+    const couldUseThread = !!args.thread && agentCouldUseThread(d, args.supportsCreate, args.card?.lines.length ?? 0, cardOpen);
+    const thread = couldUseThread ? await args.thread!.catch(() => null) : null;
+    if (!wantsFoodAgent(d, args.supportsCreate, cardOpen, !!thread?.index && noCard)) return null;
     if (!env().anthropicApiKey) return null;
     const t0 = Date.now();
     const callEnds: number[] = [];
@@ -531,6 +589,7 @@ export function startFoodAgent(args: {
         card: args.card?.lines ?? null,
         cardTotal: args.card?.total ?? null,
         savedHint: d?.savedMatch ?? null,
+        threadIndex: thread?.index ?? null,
       },
       {
         model: env().agentModel,
@@ -550,6 +609,7 @@ export function startFoodAgent(args: {
           return res;
         },
         readDiary: args.readDiary,
+        ...(args.readDiaryLines ? { readDiaryLines: args.readDiaryLines } : {}),
         savedMeals: () => args.savedMealsP,
         // A fresh parse without onProgress: the agent's parses must not paint
         // rows on the card behind its back.
@@ -587,6 +647,11 @@ export function startFoodAgent(args: {
             }), `correct_card: ${change}`)
           : undefined,
         onStatus: args.onStatus,
+        ...(thread?.index ? { restoreCard: thread.restore } : {}),
+        ...(thread?.index && thread.lines ? { threadCard: thread.lines, threadOnScreenRef: thread.onScreenRef ?? null } : {}),
+        // copy_lines, read_card and restore_card calls (and refusals), one
+        // step each on the food box trace: the per-user usage report reads them.
+        onEvent: fb ? (e) => fb.step({ src: "agent", tool: e.tool, result: e }) : undefined,
         log: (m) => console.log(m),
       },
     );
@@ -648,6 +713,8 @@ export async function resolveFoodBarOutcome(args: {
   agentP?: Promise<FoodAgentOutcome | null>;
   recentTurns?: { role: "user" | "drona"; text: string }[];
   cardOpen?: boolean;
+  /** No card on screen and earlier cards in the thread (FOOD_THREADS=on). */
+  earlierCards?: boolean;
   fbTrace?: FoodBarTraceCollector;
 }): Promise<FoodBarOutcome> {
   // Every outcome says whether a card was open, so the trace can tell a card
@@ -662,6 +729,7 @@ export async function resolveFoodBarOutcome(args: {
     parseFoundFood,
     clientSupportsCreate: args.supportsCreate,
     cardOpen: args.cardOpen,
+    earlierCards: args.earlierCards,
   });
   // The policy's inputs and its answer, as one step.
   args.fbTrace?.step({
@@ -670,6 +738,7 @@ export async function resolveFoodBarOutcome(args: {
     input: {
       intent: decision?.intent ?? null, confidence: decision?.confidence ?? null, source: decision?.source ?? null,
       parse_found_food: parseFoundFood, card_open: !!args.cardOpen, can_create: args.supportsCreate, mode: env().intentMode,
+      ...(args.earlierCards ? { earlier_cards: true } : {}),
     },
     result: action,
   });

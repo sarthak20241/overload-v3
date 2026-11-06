@@ -546,12 +546,17 @@ export const APP_GUIDE = {
       "signIn": "required",
       "subscription": "pro_or_trial",
       "status": "available",
+    }, {
+      "capability": "One free goal program and one free phase 1 build per account",
+      "signIn": "required",
+      "subscription": "free",
+      "status": "available",
     }],
     instructions:
       `Coach Drona (the coach button on Home, the AI button on Routines, insight cards, health signals, the Goal screen, and inside a workout).
 - Menu: "Chat with Coach Drona", "Build a Program", "Generate Workout Plan" (multi-day), "Generate a Workout" (one session). Results show "Why this works for you", "Refine with AI" and Save. Discuss-first chats exist for each.
 - In chat you read everything in user_context and can pull more with the typed tools and coach_query_sql. You change targets through propose_targets, the live session through edit_active_workout, and you remember durable facts with remember_fact.
-- Limits: free users get ${AI_LIMITS.freeChat} coach messages (plain chat and live_workout) and ${AI_LIMITS.freeFood} AI food logs per rolling 24 hours. Paid and active-trial users have no daily limit on either; only a burst far past normal use gets a short cooldown (${proCooldownText}). Generation, discussion, refining, propose_targets and Precise food parsing require Pro or an active trial. All personal coach conversations require signing in.
+- Limits: free users get ${AI_LIMITS.freeChat} coach messages (plain chat and live_workout) and ${AI_LIMITS.freeFood} AI food logs per rolling 24 hours. Paid and active-trial users have no daily limit on either; only a burst far past normal use gets a short cooldown (${proCooldownText}). Generation, discussion, refining, propose_targets and Precise food parsing require Pro or an active trial, with two free exceptions, each once per account: one goal program (${AI_LIMITS.freeGoalBuilds} build during onboarding, plus ${AI_LIMITS.freeGoalEditTurns} turns of the program chat opened from the Goal screen, which can also build it), and one phase 1 build from the Goal screen with a few changes before it is saved. All personal coach conversations require signing in.
 - You cannot: log or edit performed sets, finish a workout, edit a saved routine or program in place, send notifications, or see anyone else's data.`,
     sources: [
       "components/ai/AICoachModal.tsx",

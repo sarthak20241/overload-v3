@@ -85,9 +85,19 @@ import type { SavedMealForParse } from "./savedMeals.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
 import { startHeartbeat } from "./streamHeartbeat.ts";
 import {
+  parseFoodThreadsMode,
+  readThreadRequest,
+  recordThreadMessage,
+  servedForThread,
+  supabaseThreadStore,
+  threadForAgent,
+} from "./foodThreads.ts";
+import {
+  agentCouldUseThread,
   configureFoodBar,
   type DiaryReader,
   type FoodBarOutcome,
+  type FoodBarThread,
   resolveFoodBarOutcome,
   startFoodAgent,
   startFoodIntent,
@@ -116,7 +126,7 @@ import { preciseAliasStore } from "./preciseAlias.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
-import { freePhaseBuildCandidate, freePhaseRefineCandidate } from "./freePhaseBuild.ts";
+import { freeGoalTurnKind, freePhaseBuildCandidate, freePhaseRefineCandidate } from "./freePhaseBuild.ts";
 import { selectMatchRows } from "./ourSources.ts";
 import { MEMORY_DAYS, type MemoryEntry } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
@@ -273,6 +283,12 @@ const JEV_API_KEY = Deno.env.get("JEV_API_KEY");
  */
 const FOOD_INTENT_MODE = parseFoodIntentMode(Deno.env.get("FOOD_INTENT_MODE"));
 
+/** The food box thread store (foodThreads.ts, migration 20261106120000).
+ *  off: nothing read or written (default). shadow: every message written after
+ *  the answer, nothing read. on: also read, for the agent's index line and
+ *  restore_card. The tables must exist before this leaves off. */
+const FOOD_THREADS = parseFoodThreadsMode(Deno.env.get("FOOD_THREADS"));
+
 /** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
  *  of a race it is supposed to win (measured ~700ms against a parse of 1.2s and
  *  up); one that takes longer than this has already lost its reason to exist,
@@ -354,12 +370,17 @@ function clientSupportsVariantSwap(body: Record<string, unknown>): boolean {
   return Array.isArray(body?.supports) && (body.supports as unknown[]).includes(CLIENT_CAP_VARIANT_SWAP);
 }
 
-function makeDiaryReader(userClient: SupabaseClient, extra: { todayLocal?: string | null; tzOffsetMin?: number | null }): DiaryReader {
+function makeDiaryReader(
+  userClient: SupabaseClient,
+  extra: { todayLocal?: string | null; tzOffsetMin?: number | null },
+  /** Each line's food_id, source and fiber too (copy_lines). */
+  full = false,
+): DiaryReader {
   let clockP: Promise<DayClock> | null = null;
   return async (input) => {
     clockP ??= coachDayClock(userClient, extra);
     try {
-      return await listLoggedMeals(input, await clockP, loggedMealsStore(userClient));
+      return await listLoggedMeals(input, await clockP, loggedMealsStore(userClient), full);
     } catch (e) {
       return { error: String(e) };
     }
@@ -972,7 +993,7 @@ function loggedMealsStore(userClient: SupabaseClient): LoggedMealsStore {
     async mealsBetween(startIso, endIso) {
       const { data, error } = await userClient
         .from("meals")
-        .select("meal_type, logged_at, meal_entries(food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, position)")
+        .select("meal_type, logged_at, meal_entries(food_id, source, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, position)")
         .gte("logged_at", startIso)
         .lte("logged_at", endIso)
         .order("logged_at", { ascending: true })
@@ -1913,6 +1934,9 @@ function makeTextCaller(): TextCaller {
     const u = res.data.usage ?? {};
     return {
       text: blocks.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n"),
+      // A reply with no text says why: hit the cap, and spent on which blocks.
+      stop_reason: res.data.stop_reason ?? undefined,
+      block_types: blocks.map((b) => b.type),
       usage: {
         input_tokens: u.input_tokens ?? 0,
         output_tokens: u.output_tokens ?? 0,
@@ -3311,14 +3335,97 @@ async function handleParseMealRequest(args: {
     return p;
   };
 
+  // The food box thread (FOOD_THREADS). The app names it; the server keeps the
+  // durable copy. Read up front only when on: it starts at once, beside the
+  // router. The agent start (foodBar.ts) and, with no card on screen, the
+  // outcome (earlierCardsFor) wait for it, at most 800 ms, so a slow
+  // database can add up to that much. A new thread is one query (load stops
+  // when the thread row is missing).
+  const threadReq = FOOD_THREADS !== "off" ? readThreadRequest(body.thread) : null;
+  const threadStore = threadReq ? supabaseThreadStore(admin) : null;
+  // At most 800 ms: a slow read must never hold up the answer. Past it the
+  // message is served as if the thread had no earlier cards.
+  let threadTimer: ReturnType<typeof setTimeout> | undefined;
+  const threadP: Promise<FoodBarThread | null> = FOOD_THREADS === "on" && threadReq && threadStore
+    ? Promise.race([
+      threadForAgent(threadStore, userId, threadReq).catch(() => null).then((th) => {
+        // The index line's size on every message that has one, so the cost of
+        // the hot context can be counted per user (PR body has the query).
+        if (th?.indexStats) fbTrace.step({ src: "router", tool: "food_threads_index", result: th.indexStats });
+        return th;
+      }),
+      new Promise<null>((r) => {
+        threadTimer = setTimeout(() => {
+          console.log("[food_threads] thread read over 800 ms; served with no earlier cards");
+          // On the food box trace too, so the timeout rate can be counted.
+          fbTrace.step({ src: "router", tool: "food_threads", result: { ran: false, reason: "read_timeout_800ms" } });
+          r(null);
+        }, 800);
+      }),
+    ]).finally(() => clearTimeout(threadTimer))
+    : Promise.resolve(null);
+  /** After the answer is sent: this message's turns and card change, as one
+   *  conditional write on the app's base version. Never on the hot path. */
+  // The agent (startFoodAgent) and this write read the SAME threadP, so they
+  // agree: on a timeout neither had a thread, and restoredFrom stays null.
+  const writeThread = async (outcome: FoodBarOutcome, result: ParseMealResult): Promise<void> => {
+    if (!threadReq || !threadStore) return;
+    // No id for this send (no auto-log id, and the app sent no valid
+    // next_card_id): skipped, since a retry of it could not be told apart.
+    const clientId = auto.clientId ?? threadReq.next_card_id;
+    if (!clientId) {
+      console.log("[food_threads] send has no client id; thread not written");
+      return;
+    }
+    const restored = result.tool_calls.includes("restore_card") ? (await threadP)?.restoredFrom ?? null : null;
+    const dronaText = outcome.action === "create"
+      ? (typeof outcome.create?.input?.summary === "string" ? outcome.create.input.summary : null)
+      : outcome.action === "reply" ? outcome.reply ?? null
+      : result.parsed?.drona_line ?? result.declined?.message ?? null;
+    await recordThreadMessage(threadStore, {
+      userId,
+      req: threadReq,
+      // The send's own id: the auto-log id when there is one, else the fresh
+      // next_card_id the app makes for every send.
+      clientId,
+      userText: text,
+      dronaText,
+      card,
+      served: servedForThread({
+        action: outcome.action,
+        create: outcome.create ?? null,
+        parsed: outcome.action === "log" ? result.parsed : null,
+        cleared: !!result.declined?.cleared,
+      }),
+      mealType: card[0]?.meal_type ?? result.parsed?.meal_type ?? mealHint,
+      restoredFrom: restored,
+      log: (m) => console.log(m),
+    });
+  };
+  // NO card on screen, not merely "not open": a card cut at the cap is on
+  // screen, and a restore would replace it whole (foodBar.ts startFoodAgent).
+  // Waited for only when the verdict could send the message to the agent with
+  // earlier cards, the same test startFoodAgent uses, so a plain log never
+  // waits on the thread read.
+  // The router's promise and the create flag are passed in: each request path
+  // (stream, JSON) has its own, declared after this.
+  // Off (or no thread sent): false at once, so "off changes nothing" holds.
+  // agentCouldUseThread with no cardOpen is false for any card on screen.
+  const earlierCardsFor = async (intent: Promise<FoodIntentDecision | null>, canCreate: boolean) =>
+    FOOD_THREADS === "on" && !!threadReq && card.length === 0 &&
+    agentCouldUseThread(await intent.catch(() => null), canCreate, card.length) && !!(await threadP)?.index;
+
   // The diary, for "save yesterday's breakfast" and "what did I have for
   // lunch". The phone's own date anchors "today"; the offset only when the
   // client actually sent one (readAutoLogRequest defaults a missing one to 0,
   // which would be a guess dressed as a fact).
-  const readDiary = makeDiaryReader(userClient, {
+  const diaryClock = {
     todayLocal: localDate,
     tzOffsetMin: typeof body.tz_offset_min === "number" ? auto.tzOffsetMin : null,
-  });
+  };
+  const readDiary = makeDiaryReader(userClient, diaryClock);
+  // copy_lines' read: the same days, with each line's catalog id and source.
+  const readDiaryLines = makeDiaryReader(userClient, diaryClock, true);
 
   /** After a parse in auto mode: write the diary, or say why not. Never
    *  throws. Returns the fields the response carries (`logged` when the write
@@ -3537,7 +3644,7 @@ async function handleParseMealRequest(args: {
         let settledIntent: FoodIntentDecision | null = null;
         void intentP.then((d) => { settledIntent = d; });
         const agentP = startFoodAgent({
-          intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary,
+          intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary, readDiaryLines,
           contextPromise, userId, recentTurns, pendingMeal: foodContext.pendingMeal,
           card: card.length ? { lines: card, total: fromApp.total, previousText: previousText ?? null, previousWords, previousItems } : null,
           parseDeps: (fb) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
@@ -3545,6 +3652,7 @@ async function handleParseMealRequest(args: {
           // Builds that do not know this event skip it (dietData ignores
           // unknown events), so this needs no capability of its own.
           onStatus: (label) => send("status", { label }),
+          thread: threadP,
           fbTrace,
         });
         const work = (async () => {
@@ -3599,7 +3707,8 @@ async function handleParseMealRequest(args: {
             );
             streamFirstParse = firstParse;
             const outcome = await resolveFoodBarOutcome({
-              result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen, fbTrace,
+              result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen,
+              earlierCards: await earlierCardsFor(intentP, supportsCreate), fbTrace,
             });
             streamOutcome = outcome;
             // The agent's meal replaces the first parse when it finished with a log.
@@ -3649,6 +3758,7 @@ async function handleParseMealRequest(args: {
               },
             };
             const servedNow = servedView(endBody, 200, outcome.action);
+            keepAlive(writeThread(outcome, result)); // the whole write, its first await included
             writeFoodBar({
               served: servedNow,
               status: "ok",
@@ -3809,11 +3919,12 @@ async function handleParseMealRequest(args: {
     const agentP = startFoodAgent({
       intentP, supportsCreate, text, mealHint, localHour, localDate,
       mode: wantsSuper ? "super" : wantsFast ? "fast" : null,
-      savedMealsP, readDiary, contextPromise, userId, recentTurns,
+      savedMealsP, readDiary, readDiaryLines, contextPromise, userId, recentTurns,
       pendingMeal: foodContext.pendingMeal,
       card: card.length ? { lines: card, total: fromApp.total, previousText: previousText ?? null, previousWords, previousItems } : null,
       parseDeps: (fb) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
       logUsage: (row) => void logTokenUsage(admin, row),
+      thread: threadP,
       fbTrace,
     });
     const work = (async () => {
@@ -3849,7 +3960,8 @@ async function handleParseMealRequest(args: {
       // create or a reply must not log the parsed meal behind the user's back.
       firstParseSeen = firstParse;
       const outcome = await resolveFoodBarOutcome({
-        result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen, fbTrace,
+        result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen,
+        earlierCards: await earlierCardsFor(intentP, supportsCreate), fbTrace,
       });
       outcomeSeen = outcome;
       // The agent's meal replaces the first parse when it finished with a log.
@@ -3944,6 +4056,7 @@ async function handleParseMealRequest(args: {
         tool_calls: result.tool_calls,
       };
     const servedNow = servedView(resBody as ServedBody, 200, outcome.action);
+    keepAlive(writeThread(outcome, result)); // the whole write, its first await included
     void recordParseTrace(admin, {
       user_id: userId,
       // The tier the parse ran in (0149): stamps the lines the client logs.
@@ -4294,6 +4407,10 @@ Deno.serve(async (req) => {
   // A refine turn on that free build while it is still an unsaved draft (see
   // the claim below). Runs like the build: Pro prompt and toolkit, no chat slot.
   let freePhaseRefine = false;
+  // A turn of the free user's one free goal plan: the onboarding build, or a
+  // turn of the Goal screen's program chat (see the claim below). Runs like
+  // the phase build: Pro prompt and toolkit, no chat slot.
+  let freeGoalTurn = false;
   try {
     const { data: accessData, error: accessErr } = await userClient.rpc(
       "get_coach_access_status",
@@ -4370,7 +4487,29 @@ Deno.serve(async (req) => {
           trace.spans = { ...(trace.spans ?? {}), free_phase_refine: refine.reason ?? "refine" };
         }
       }
-      if (wantsProFlow && !freePhaseBuild && !freePhaseRefine) {
+      // One free goal plan per account, for life: the onboarding build plus a
+      // few turns of the Goal screen's program chat. freeGoalTurnKind says
+      // which requests may ask; the RPC counts them. An RPC error (or the
+      // migration not applied yet) falls through to the paywall.
+      const goalKind = freeGoalTurnKind(body);
+      if (wantsProFlow && !freePhaseBuild && !freePhaseRefine && goalKind !== null) {
+        const { data: goalData, error: goalErr } = await userClient.rpc(
+          "try_claim_free_goal_turn",
+          { p_kind: goalKind },
+        );
+        const goal = (Array.isArray(goalData) ? goalData[0] : goalData) as
+          | { allowed?: boolean; reason?: string }
+          | null;
+        if (goalErr) console.log("[ai-coach] free goal turn claim error:", goalErr.message);
+        if (!goalErr && goal?.allowed) {
+          freeGoalTurn = true;
+          freeTier = false;
+          trace.spans = { ...(trace.spans ?? {}), free_goal_turn: goal.reason ?? goalKind };
+        } else if (!goalErr && goal?.reason) {
+          trace.spans = { ...(trace.spans ?? {}), free_goal_turn: goal.reason };
+        }
+      }
+      if (wantsProFlow && !freePhaseBuild && !freePhaseRefine && !freeGoalTurn) {
         trace.status = "unauthorized";
         trace.error_message = `pro_required:${String(peekMode ?? peekForce)}`;
         return respond(
@@ -4400,7 +4539,8 @@ Deno.serve(async (req) => {
   // normal use (_shared/aiCooldown.ts), same lock, same table.
   // The free phase-1 build skips this: its own claim (max 3 tries, once per
   // account) is the limit, and it must not eat one of the 3 free messages.
-  // Its refine turns skip it the same way (their own cap is in the RPC).
+  // Its refine turns skip it the same way (their own cap is in the RPC), and
+  // so do the free goal plan's turns (try_claim_free_goal_turn is their cap).
   if (freeTier) {
     const { data: slotData, error: slotErr } = await userClient
       .rpc("try_reserve_ai_coach_slot", { p_cap: FREE_CHAT_LIMIT });
@@ -4425,7 +4565,7 @@ Deno.serve(async (req) => {
         402,
       );
     }
-  } else if (!freePhaseBuild && !freePhaseRefine) {
+  } else if (!freePhaseBuild && !freePhaseRefine && !freeGoalTurn) {
     const slot = await reserveProSlot((fn, args) => userClient.rpc(fn, args), "chat");
     if (slot.kind === "error") {
       trace.status = "internal_error";

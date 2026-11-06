@@ -55,6 +55,12 @@ const NOV5_LUNCH_SCALED: Line[] = [
   L("Soyabean sabji", 9, { grams: 6.8, source: "estimate", meal: "lunch" }),
 ];
 
+/** A dinner card for the copy cases: on screen, not yet added. */
+const DINNER_CARD: Line[] = [
+  L("Roti", 240, { quantity: 2, unit: "piece", grams: 80, protein_g: 7, carb_g: 36, fat_g: 7.4, source: "catalog", meal: "dinner" }),
+  L("Chicken curry", 250, { quantity: 1, unit: "bowl", grams: 200, protein_g: 24, carb_g: 8, fat_g: 14, source: "estimate", meal: "dinner" }),
+];
+
 const MILKY_MIST_MEMORY = [
   {
     name: "Milky Mist low fat paneer sabji",
@@ -297,6 +303,47 @@ export const CASES: FoodBoxCase[] = [
       noDuplicates: true,
       mustNot: ["save"],
       reply: { mustNotSay: ["can'?t see (our|your|the) earlier"], noFalseClaim: true },
+    },
+  },
+  // Live 2026-11-06 07:29 (food_bar_traces): a fresh message with no card,
+  // sent with 10 turns of an earlier lunch chat whose card was already added
+  // (the app never cleared turns on Add). Jev read the old talk as an edit
+  // (0.44, unusable with no card) and the Haiku fallback answered. The log
+  // came out right, 785 ms late. The app now starts a new thread with no
+  // turns after Add (lib/foodThread.ts); this case keeps the server honest
+  // when stale turns still arrive (an older build).
+  {
+    id: "nov6-stale-turns-green-tea",
+    tags: ["context", "plain"],
+    origin: { date: "2026-11-06T07:29:43Z", who: "owner" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "i meant I had my protein kulfi whey protein" },
+        { role: "drona", text: "Solid snack protein. That whey alone pushes you closer to your 115 g target." },
+        { role: "user", text: "why did u add protein kulfi seperately and whole truth whey, i said I will have Myprotein whey protein kulfi flavoured" },
+        { role: "drona", text: "Sorry for the mix-up. \"Protein kulfi\" was your Myprotein kulfi-flavoured whey, not a separate food. Now it's one scoop of Myprotein Kulfi whey (124 kcal, 24 g protein) plus the mathri." },
+        { role: "user", text: "i had 2 rotis and milky mist paneer sabji made of 55g paneer and baingan sabji 30g and I had a fig and 4 almonds 5g raisins" },
+        { role: "drona", text: "Good lunch effort, but protein is still short; add a whey shake or dal next." },
+        { role: "user", text: "i don't find calories for milky mist sabji accurate i told u it's made of 55g milky mist low fat paneer and some oil and some onions" },
+        { role: "drona", text: "Rebuilt the paneer sabji from 55 g paneer, a tsp of oil and some onion, about 123 kcal instead of 52." },
+        { role: "user", text: "paneer is highly inaccurate in its calories" },
+        { role: "drona", text: "Paneer fixed to about 105 kcal for 55 g, so the sabji with oil and onion is roughly 155 kcal." },
+      ],
+      card: null,
+    },
+    message: "we had 1 lipton green tea in snacks",
+    expect: {
+      does: ["log"],
+      mustNot: ["edit", "save"],
+      lines: [{ match: "green tea", kcal: [0, 10], meal: "snack" }],
+      lineCount: [1, 1],
+      removeLines: ["paneer", "roti", "whey", "kulfi"],
+    },
+    recorded: {
+      card: [L("Lipton green tea", 2, { quantity: 1, unit: "1 cup (medium) (240 g)", grams: 240, protein_g: 0, carb_g: 0.5, fat_g: 0, source: "catalog", meal: "snack" })],
+      reply: "Green tea is a clean pick, but protein is still lagging, so add dal, paneer, or whey.",
+      actions: ["log"],
     },
   },
   {
@@ -1308,6 +1355,145 @@ export const CASES: FoodBoxCase[] = [
     thread: { turns: [], card: null },
     message: "lunch today was around 700 calories, is that too much for a cut?",
     expect: { does: ["log", "answer"], totalKcal: [690, 710] },
+  },
+
+  // ── Copy lines: from an earlier card or the diary onto the open card (synthetic) ──
+  // The thread store design of 2026-11-06: copy_lines adds lines with the
+  // numbers and source the store holds, never retyped; a food already on the
+  // card is asked about, never doubled; a restore never replaces an open card.
+  {
+    id: "copy-earlier-card-line",
+    tags: ["copy", "restore"],
+    origin: { date: "2026-11-06T19:40:00Z", who: "synthetic" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "lunch was jeera rice 100g, milky mist low fat paneer sabji with 60g paneer, soya curry and methi aloo" },
+        { role: "drona", text: "Lunch: jeera rice, the paneer sabji, soya curry and methi aloo, 359 cal." },
+        { role: "user", text: "dinner is 2 roti and chicken curry" },
+        { role: "drona", text: "2 roti and chicken curry, 490 cal. Ready to add." },
+      ],
+      card: DINNER_CARD,
+      earlierCards: [{ label: "lunch", lines: NOV5_LUNCH_150 }],
+    },
+    message: "put the paneer sabji from the lunch card on this one too",
+    expect: {
+      keepLines: ["roti", "chicken"],
+      // The lunch card's own line: 150 kcal as it was there, not a new guess.
+      lines: [{ match: "paneer", kcal: [145, 155] }],
+      lineCount: [3, 3],
+      noDuplicates: true,
+      mustNot: ["restore"],
+      reply: { noFalseClaim: true },
+    },
+  },
+  {
+    id: "copy-diary-meal-line",
+    tags: ["copy", "diary"],
+    origin: { date: "2026-11-06T19:40:00Z", who: "synthetic" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "dinner is 2 roti and chicken curry" },
+        { role: "drona", text: "2 roti and chicken curry, 490 cal. Ready to add." },
+      ],
+      card: DINNER_CARD,
+    },
+    fixtures: {
+      diary: [{
+        daysAgo: 1,
+        meal: "lunch",
+        lines: [
+          L("Dal tadka", 162, { quantity: 1, unit: "katori", grams: 150, protein_g: 8.1, carb_g: 21, fat_g: 5.2, source: "catalog" }),
+          L("Jeera Rice", 195, { quantity: 1, unit: "bowl", grams: 150, protein_g: 3.9, carb_g: 40, fat_g: 2.4, source: "catalog" }),
+        ],
+      }],
+    },
+    message: "add the dal i had at lunch yesterday to this",
+    expect: {
+      keepLines: ["roti", "chicken"],
+      // Copied from the diary: its numbers and its source, not "manual".
+      lines: [{ match: "dal", kcal: [160, 164], source: ["catalog"] }],
+      lineCount: [3, 3],
+      noDuplicates: true,
+      reply: { noFalseClaim: true },
+    },
+  },
+  {
+    id: "copy-plus-new-food",
+    tags: ["copy", "diary", "lost-lines"],
+    origin: { date: "2026-11-06T13:40:00Z", who: "synthetic" },
+    region: "india",
+    thread: { turns: [], card: null },
+    fixtures: {
+      diary: [{
+        daysAgo: 1,
+        meal: "lunch",
+        lines: [
+          L("Dal tadka", 162, { quantity: 1, unit: "katori", grams: 150, protein_g: 8.1, carb_g: 21, fat_g: 5.2, source: "catalog" }),
+          L("Jeera Rice", 195, { quantity: 1, unit: "bowl", grams: 150, protein_g: 3.9, carb_g: 40, fat_g: 2.4, source: "catalog" }),
+        ],
+      }],
+    },
+    // A copy and a new food in one message: neither may be dropped.
+    message: "the dal from yesterday's lunch and 2 boiled eggs",
+    expect: {
+      lines: [{ match: "dal", kcal: [160, 164], source: ["catalog"] }, { match: "egg", kcal: [120, 180] }],
+      removeLines: ["rice"],
+      noDuplicates: true,
+      reply: { noFalseClaim: true },
+    },
+  },
+  {
+    id: "copy-already-on-card",
+    tags: ["copy", "duplicate"],
+    origin: { date: "2026-11-06T19:40:00Z", who: "synthetic" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "lunch was jeera rice 100g, milky mist low fat paneer sabji with 60g paneer, soya curry and methi aloo" },
+        { role: "drona", text: "Lunch: jeera rice, the paneer sabji, soya curry and methi aloo, 359 cal." },
+        { role: "user", text: "actually make that jeera rice and 2 roti for dinner" },
+        { role: "drona", text: "Jeera rice and 2 roti, 411 cal. Ready to add." },
+      ],
+      card: [
+        L("Jeera Rice", 171, { quantity: 100, unit: "g", grams: 100, protein_g: 2.6, source: "catalog", meal: "dinner" }),
+        L("Roti", 240, { quantity: 2, unit: "piece", grams: 80, protein_g: 7, source: "catalog", meal: "dinner" }),
+      ],
+      earlierCards: [{ label: "lunch", lines: NOV5_LUNCH_150 }],
+    },
+    message: "bring the jeera rice over from the lunch card too",
+    expect: {
+      // The rice is on the card already: ask (a second portion, or skip), never double it.
+      does: ["ask"],
+      cardUnchanged: true,
+      mustNot: ["restore"],
+      reply: { mustMention: ["already|on (the|this|your) card"], noFalseClaim: true },
+    },
+  },
+  {
+    id: "restore-while-card-open",
+    tags: ["restore", "copy"],
+    origin: { date: "2026-11-06T19:40:00Z", who: "synthetic" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "lunch was jeera rice 100g, milky mist low fat paneer sabji with 60g paneer, soya curry and methi aloo" },
+        { role: "drona", text: "Lunch: jeera rice, the paneer sabji, soya curry and methi aloo, 359 cal." },
+        { role: "user", text: "dinner is 2 roti and chicken curry" },
+        { role: "drona", text: "2 roti and chicken curry, 490 cal. Ready to add." },
+      ],
+      card: DINNER_CARD,
+      earlierCards: [{ label: "lunch", lines: NOV5_LUNCH_150 }],
+    },
+    message: "bring back the lunch card",
+    expect: {
+      // The dinner card on screen is never replaced.
+      mustNot: ["restore"],
+      keepLines: ["roti", "chicken"],
+      noDuplicates: true,
+      reply: { noFalseClaim: true },
+    },
   },
 
   // ── Region defaults (synthetic) ──

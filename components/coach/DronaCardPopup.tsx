@@ -44,12 +44,19 @@ interface Props {
   primaryLabel?: string;
   /** null: no second button. */
   secondary?: { label: string; press: () => void } | null;
+  /**
+   * False: Later just fades the card. For a card that is not filed behind the
+   * bell, so it never looks like it went there.
+   */
+  flyToBell?: boolean;
 }
 
 const FLY_MS = 560;
+/** Later with no bell to fly to: the card fades where it is. */
+const FADE_MS = 180;
 const MEASURE_TIMEOUT_MS = 250;
 
-export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker, primaryLabel, secondary }: Props) {
+export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker, primaryLabel, secondary, flyToBell = true }: Props) {
   const { C } = useTheme();
   const isNotice = card.kind === 'notice';
   const undoable = isNotice && card.payload.action === 'undo_swap';
@@ -98,6 +105,13 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker
     // The buttons stop answering now, not after the measures: a tap in that
     // gap would act on a card that is already on its way to Later.
     setFlying(true);
+    if (!flyToBell) {
+      fade.value = withTiming(0, { duration: FADE_MS });
+      dim.value = withTiming(0, { duration: FADE_MS });
+      const done = () => { landRef.current = null; onLater(); };
+      landRef.current = { timer: setTimeout(done, FADE_MS), land: done };
+      return;
+    }
     // A measure that never calls back (a node detached mid-measure) must not
     // leave Later dead: after a beat it counts as "no bell", a plain Later.
     const orNull = <T,>(p: Promise<T | null>) => Promise.race([
@@ -130,7 +144,7 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater, kicker
     dim.value = withTiming(0, { duration: FLY_MS * 0.6 });
     const land = () => { landRef.current = null; bumpBell(); onLater(); };
     landRef.current = { timer: setTimeout(land, FLY_MS), land };
-  }, [onLater, dx, dy, shrink, fade, dim]);
+  }, [onLater, flyToBell, dx, dy, shrink, fade, dim]);
 
   // A screen reader stays on whatever the dashboard control was until told
   // otherwise; accessibilityViewIsModal fences traversal but does not move
