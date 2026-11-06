@@ -27,7 +27,7 @@ import { buildWeekPattern, splitCycle, weekPatternFor } from '@/lib/weekPattern'
 import type { CoachGoal } from '@/lib/types';
 import { GOAL_LABELS, goalLabels, goalNoteBriefLine, joinGoals, primaryGoal, programGoalFor, selectedGoals } from '@/lib/fitnessGoals';
 import { FRESH_TOKEN_BUDGET_MS, sendWithFreshTokenRetry, tokenWithin } from '@/lib/authRetry';
-import { OnboardingHttpError } from '@/lib/onboardingPlanRoute';
+import { onboardingProgramRequestBody } from '@/lib/onboardingRequest';
 
 const REQUEST_TIMEOUT_MS = 75_000;
 
@@ -304,17 +304,13 @@ export async function requestDronaOnboardingProgram(args: {
             apikey: anonKey,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            messages: [{ role: 'user', content: args.message }],
-            force_tool: 'generate_program',
-          }),
+          body: JSON.stringify(onboardingProgramRequestBody(args.message)),
           signal: controller.signal,
         }),
       args.token,
       freshToken ? () => tokenWithin(freshToken, FRESH_TOKEN_BUDGET_MS) : () => Promise.resolve(null),
     );
-    // A typed error so the caller can tell the Pro gate (402) from a failure.
-    if (!response.ok) throw new OnboardingHttpError(response.status);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const json = (await response.json()) as {
       structured?: { name?: string; input?: Record<string, unknown> } | null;
     };
