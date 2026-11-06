@@ -558,3 +558,14 @@ Deno.test("restore_card is not offered while a card is on screen (it would repla
   );
   assert(!(bodies[0].tools as { name: string }[]).some((t) => t.name === "restore_card"));
 });
+
+Deno.test("a meal line copied from a card line with some macros missing keeps the model's estimate mark", async () => {
+  const card = [{ food_name: "Dal", quantity: 1, serving_label: "katori", grams: 150, kcal: 180, protein_g: 9, source: "catalog" as const }];
+  const out = await runFoodAgent(
+    { text: "save the dal and a roti as my thali", defaultMeal: "lunch", card },
+    deps(scripted([[{ name: "create_custom_meal", input: { name: "Thali", items: [{ name: "Dal", kcal: 180, carb_g: 25, fat_g: 5, estimated: true }, { name: "Roti", kcal: 120 }], log_now: false, summary: "Thali?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  const [dal] = out.create.input.items as Record<string, unknown>[];
+  assertEquals([dal.protein_g, dal.carb_g, dal.fat_g, dal.estimated], [9, 25, 5, true]);
+});

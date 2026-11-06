@@ -821,7 +821,9 @@ function lineKey(name: string): string {
 
 /** The card line a save line is a copy of: the same calories (to the kcal)
  *  and the same food by name, one name the start of the other. Null when no
- *  line fits, or when two do. */
+ *  line fits, or when two do. Loose on purpose ("Rice" fits "Rice (cooked)"):
+ *  the kcal match and the one-hit rule are what keep it on the right line,
+ *  and a miss only leaves the model's own figures. */
 export function cardLineFor(name: unknown, kcal: unknown, card: CardLine[]): CardLine | null {
   const k = num(kcal);
   if (typeof name !== "string" || k === null) return null;
@@ -867,13 +869,14 @@ export function fillFromCard(tool: string, input: Record<string, unknown>, card:
     const o = { ...(raw as Record<string, unknown>) };
     const line = cardLineFor(o.name ?? o.food_name, o.kcal, card);
     if (!line) return o;
-    for (const m of MACROS) if (typeof line[m] === "number") o[m] = line[m];
+    const copied = MACROS.filter((m) => typeof line[m] === "number");
+    for (const m of copied) o[m] = line[m];
     // The card line decides, the same rule as the food branch: a copy of a
-    // catalog line is not the model's guess, whatever the model marked. A meal
-    // line has one `estimated` flag for the whole line (a food has a list of
-    // fields), so it is set or dropped as a whole.
+    // catalog line is not the model's guess. A meal line has ONE `estimated`
+    // flag (a food has a list of fields), so it is dropped only when the card
+    // gave every macro; a figure still from the model keeps the line marked.
     if (guessed(line)) o.estimated = true;
-    else delete o.estimated;
+    else if (copied.length === MACROS.length) delete o.estimated;
     return o;
   });
   return { ...input, items };
