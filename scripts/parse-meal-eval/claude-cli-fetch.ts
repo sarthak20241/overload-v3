@@ -341,8 +341,11 @@ async function freeChoiceCall(
           if (!tools.some((t) => t.name === name)) throw new Error(`picked an unknown tool: ${name}`);
           return { type: "tool_use", id: `toolu_claude_cli_${i}`, name, input: cc.input ?? {} };
         });
+      } else if (typeof o.text === "string") {
+        content = [{ type: "text", text: o.text }];
       } else {
-        content = [{ type: "text", text: typeof o.text === "string" ? o.text : raw.trim() }];
+        // Valid JSON with neither calls nor text ({}): the harness, not a reply.
+        return new Response(`claude-cli shim: no calls and no text in ${raw.slice(0, 200)}`, { status: 502 });
       }
     } catch (e) {
       // Words are an answer in words, even words that mention a brace. A

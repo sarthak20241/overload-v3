@@ -1460,9 +1460,8 @@ export default function NutritionScreen() {
     // dropping the samosa the user already reviewed.
     const reviewFlow: ParseFlow = (pending && !res.meal.corrects_previous)
       ? (() => {
-          // A card on screen plus new lines is that card, longer (cardAfter's
-          // rule for a meal that does not correct the card).
-          const items = pending.items.concat(res.meal.items);
+          // The shared rule: new lines join the card on screen.
+          const items = cardAfter(pending.items, { kind: 'meal', items: res.meal.items, correctsPrevious: false });
           const head = keptMealType ?? headOf(items);
           return {
             status: 'review',

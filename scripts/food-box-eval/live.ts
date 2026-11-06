@@ -74,10 +74,10 @@ function dotEnv(): Record<string, string> {
   const paths = [process.env.EVAL_ENV_FILE, ".env.local", `${process.env.HOME}/Coding/overload-v3/.env.local`].filter((p): p is string => !!p);
   for (const path of paths) {
     try {
-      readFileSync(path, "utf8");
+      const text = readFileSync(path, "utf8");
       console.log(`[eval] env from ${path}`);
       const out: Record<string, string> = {};
-      for (const line of readFileSync(path, "utf8").split("\n")) {
+      for (const line of text.split("\n")) {
         const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
         if (m) out[m[1]] = m[2].replace(/^["']|["']$/g, "");
       }
@@ -118,7 +118,14 @@ export function liveReady(): string | null {
 }
 
 const anon = createClient(SUPABASE_URL || "http://x", ANON || "x", { auth: { persistSession: false, autoRefreshToken: false } });
-const service = SERVICE ? createClient(SUPABASE_URL, SERVICE, { auth: { persistSession: false, autoRefreshToken: false } }) : null;
+/** The one thing the service role is used for. The client stays inside this
+ *  closure, so nothing else in the eval can reach it to write. */
+const preciseCacheRead: ((key: string) => Promise<unknown>) | null = SERVICE
+  ? (() => {
+    const service = createClient(SUPABASE_URL, SERVICE, { auth: { persistSession: false, autoRefreshToken: false } });
+    return async (key: string) => (await service.rpc("precise_cache_get", { p_key: key }).maybeSingle()).data ?? null;
+  })()
+  : null;
 
 // Each body names its own model (Haiku for the parse and the router, Sonnet
 // for the agent), so the CLI runs each on that one.
@@ -320,12 +327,7 @@ function parseDeps(c: FoodBoxCase, zone: string): ParseMealDeps {
     // Never write the catalog from an eval.
     backfillOffFood: async () => null,
     // Read only: no preciseCachePut, no preciseAliasPut.
-    preciseCacheGet: service
-      ? async (key: string) => {
-        const { data } = await service.rpc("precise_cache_get", { p_key: key }).maybeSingle();
-        return (data ?? null) as never;
-      }
-      : undefined,
+    preciseCacheGet: preciseCacheRead ? async (key: string) => (await preciseCacheRead(key)) as never : undefined,
     ...(WEB ? { webLookup: "tavily" as const, tavily: { apiKey: env("TAVILY_API_KEY"), timeoutMs: 20_000 } } : {}),
     searchRewrite: true,
     jev: JEV_API_KEY ? { apiKey: JEV_API_KEY, timeoutMs: 5000 } : undefined,

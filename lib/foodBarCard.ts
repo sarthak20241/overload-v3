@@ -2,9 +2,8 @@
 //
 // The rule the food box eval's live adapter (scripts/food-box-eval) uses to
 // score the card the app would show. The Nutrition screen (runParse) calls it
-// for a save card and for a reply (kept, or cleared); the append of new lines
-// and an error are written inline there to the same rules, so a change to one
-// side must be made on the other too.
+// for a save card, a reply (kept, or cleared) and new lines joining the card.
+// An error leaves the card alone there, the same as `other` here.
 //
 // The rule that matters most: a card the user has not added yet leaves the
 // screen only when the user asks. A save card is a SECOND card beside it, never
@@ -24,7 +23,10 @@ export type FoodBarAnswer<I> =
   | { kind: 'other' };
 
 /** The meal card after the answer. `prev` is the card on screen when the
- *  message was sent (null for none). */
+ *  message was sent (null for none). With a card on screen and an answer
+ *  that cannot clear it, the result is always a card. */
+export function cardAfter<I>(prev: I[], a: Exclude<FoodBarAnswer<I>, { kind: 'declined' }>): I[];
+export function cardAfter<I>(prev: I[] | null, a: FoodBarAnswer<I>): I[] | null;
 export function cardAfter<I>(prev: I[] | null, a: FoodBarAnswer<I>): I[] | null {
   if (a.kind === 'meal') return prev && !a.correctsPrevious ? [...prev, ...a.items] : a.items;
   if (a.kind === 'declined') return a.cleared ? null : prev;
