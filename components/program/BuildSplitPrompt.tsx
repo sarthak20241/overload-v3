@@ -148,11 +148,12 @@ export function BuildSplitPrompt(props: Props) {
     }
   }, [snoozeKey, action, phaseId]);
 
+  const { onSignIn, onBuild } = props;
   const go = useCallback(() => {
     setAnswered(true);
-    if (action === 'signin') props.onSignIn();
-    else props.onBuild();
-  }, [action, props]);
+    if (action === 'signin') onSignIn();
+    else onBuild();
+  }, [action, onSignIn, onBuild]);
 
   if (!action) return null;
   const words = WORDS[action];

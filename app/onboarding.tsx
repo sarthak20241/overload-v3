@@ -260,6 +260,11 @@ export default function OnboardingScreen() {
   // sets weightVal or targetVal (a future prefill from a saved profile, say)
   // must set these too, or the next unit switch jumps back to the old weight.
   const weightKgKept = useRef(72.5);
+  // Height the same way: kept in exact cm, so cm -> ft, in -> cm never turns
+  // 172 into 173. The ft and in refs let each wheel read the other's latest.
+  const heightCmKept = useRef(172);
+  const heightFtLatest = useRef(5);
+  const heightInLatest = useRef(8);
   const targetKgKept = useRef(72.5);
   /** Chosen weekly rate (kg/week); null until a weight direction exists. */
   const [weeklyRate, setWeeklyRate] = useState<number | null>(null);
@@ -575,21 +580,39 @@ export default function OnboardingScreen() {
   const setHeightUnitTo = useCallback((nextUnit: 'cm' | 'ft') => {
     if (nextUnit === heightUnit) return;
     if (nextUnit === 'ft') {
-      const totalInches = heightCm / 2.54;
+      const totalInches = heightCmKept.current / 2.54;
       let feet = Math.floor(totalInches / 12);
       let inches = Math.round(totalInches - feet * 12);
       if (inches >= 12) {
         feet += 1;
         inches = 0;
       }
-      setHeightFt(Math.min(7, Math.max(4, feet)));
+      const ft = Math.min(7, Math.max(4, feet));
+      setHeightFt(ft);
       setHeightIn(inches);
+      heightFtLatest.current = ft;
+      heightInLatest.current = inches;
       setHeightUnit('ft');
       return;
     }
-    setHeightCm(Math.min(MAX_HEIGHT_CM, Math.max(MIN_HEIGHT_CM, Math.round(heightFt * 30.48 + heightIn * 2.54))));
+    setHeightCm(Math.min(MAX_HEIGHT_CM, Math.max(MIN_HEIGHT_CM, Math.round(heightCmKept.current))));
     setHeightUnit('cm');
-  }, [heightUnit, heightCm, heightFt, heightIn]);
+  }, [heightUnit]);
+
+  const onHeightCm = useCallback((v: number) => {
+    setHeightCm(v);
+    heightCmKept.current = v;
+  }, []);
+  const onHeightFt = useCallback((v: number) => {
+    setHeightFt(v);
+    heightFtLatest.current = v;
+    heightCmKept.current = v * 30.48 + heightInLatest.current * 2.54;
+  }, []);
+  const onHeightIn = useCallback((v: number) => {
+    setHeightIn(v);
+    heightInLatest.current = v;
+    heightCmKept.current = heightFtLatest.current * 30.48 + v * 2.54;
+  }, []);
 
   const commitAgeStep = useCallback(() => {
     setAnswers((a) => ({
@@ -1053,7 +1076,7 @@ export default function OnboardingScreen() {
                         max={220}
                         width={140}
                         value={heightCm}
-                        onChange={setHeightCm}
+                        onChange={onHeightCm}
                         accessibilityLabel="Height in centimeters"
                       />
                     ) : (
@@ -1063,7 +1086,7 @@ export default function OnboardingScreen() {
                           max={7}
                           width={70}
                           value={heightFt}
-                          onChange={setHeightFt}
+                          onChange={onHeightFt}
                           accessibilityLabel="Height, feet"
                         />
                         <NumberWheel
@@ -1071,7 +1094,7 @@ export default function OnboardingScreen() {
                           max={11}
                           width={70}
                           value={heightIn}
-                          onChange={setHeightIn}
+                          onChange={onHeightIn}
                           accessibilityLabel="Height, inches"
                         />
                       </>
