@@ -3972,7 +3972,10 @@ async function handleParseMealRequest(args: {
     const later = laterMessageGoesToAgent({
       // speed "super" (a first message) or tier "precise" (any message from an
       // app that sends it): a Precise correction carries no speed.
-      mode: FOOD_AGENT_LATER, precise: isPreciseRequest(body), supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
+      // Behind the same server gate speed "super" passes (Precise on, not the
+      // free tier): the client's tier never unlocks the agent path alone.
+      mode: FOOD_AGENT_LATER, precise: isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier }),
+      supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
       turns: recentTurns.length, cardLines: card.length, cardOpen, pending: !!foodContext.pendingMeal,
     });
     const agentP = later ? Promise.resolve(null) : startFoodAgent(agentArgs);

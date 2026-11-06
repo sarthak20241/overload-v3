@@ -1396,11 +1396,16 @@ const SAVE_ASK = /\b(?:save|saving|(?:to|in|into) my meals|as a (?:saved )?meal|
 /** A no in front of the ask ("don't save", "no need to save"): not an ask. */
 const NEGATED = /\b(?:don['’]?t|do not|no need to|not|never|didn['’]?t|won['’]?t|stop|without)\b[\w\s'’]{0,40}$/i;
 
+/** "don't forget to", "never forget to": a no that asks. */
+const DONT_FORGET = /\b(?:don['’]?t|do not|never)\s+forget\b[\w\s'’]{0,20}$/i;
+
 /** An ask to save in this text: a save word, not negated. Past tense
  *  ("already saved") is not in the pattern, and neither is a bare "my meals". */
 function asksToSave(text: string): boolean {
   for (const m of text.matchAll(SAVE_ASK)) {
-    if (!NEGATED.test(text.slice(Math.max(0, (m.index ?? 0) - 40), m.index ?? 0))) return true;
+    const before = text.slice(Math.max(0, (m.index ?? 0) - 40), m.index ?? 0);
+    // "do not forget to save it" asks; "don't save it" does not.
+    if (DONT_FORGET.test(before) || !NEGATED.test(before)) return true;
   }
   return false;
 }
@@ -1426,6 +1431,9 @@ const HOLD_READS = new Set([LIST_LOGGED_MEALS_TOOL.name, LIST_SAVED_MEALS_TOOL.n
 const LATER_FINISHES = new Set([
   LOG_FOOD_TOOL.name, CREATE_CUSTOM_MEAL_TOOL.name, CREATE_CUSTOM_FOOD_TOOL.name, SAVE_CARD_AS_MEAL_TOOL.name, RESTORE_CARD_TOOL.name,
 ]);
+
+/** Most edits plus additions one turn may carry (each one is a parse). */
+export const MAX_CARD_WORK_PER_TURN = 8;
 
 /** One turn's card changes, checked and in the order they apply. */
 export interface CardPlan {
@@ -1484,6 +1492,11 @@ export function planCardChanges(
       if (!text && !items.length) return fail(`${u.name} has no text and no items.`);
       adds.push({ text, items, meal: isMeal(a.meal_type) ? a.meal_type : null });
     }
+  }
+  // Each edit and each addition is a whole parse (lookups, maybe the web), all
+  // run at once: a turn may hold at most this many. Removals cost nothing.
+  if (edits.length + adds.length > MAX_CARD_WORK_PER_TURN) {
+    return fail(`${edits.length + adds.length} edits and additions in one turn; at most ${MAX_CARD_WORK_PER_TURN}.`);
   }
   const count = new Map<number, number>();
   for (const e of edits) count.set(e.index, (count.get(e.index) ?? 0) + 1);
@@ -1605,7 +1618,9 @@ async function applyCardChanges(
     }
     return !dup;
   });
-  const items = buildChangedCard(card, removes, edited, added, input.defaultMeal);
+  // The same meal the result says, so a line with no section of its own
+  // lands where the card is.
+  const items = buildChangedCard(card, removes, edited, added, meal);
 
   const failedEdits = editsOut.filter((x) => !x.item).map((x) => card[x.e.index].food_name);
   const failedAdds = addsOut.filter((x) => x.a.text && x.items.length === 0).map((x) => x.a.text!);

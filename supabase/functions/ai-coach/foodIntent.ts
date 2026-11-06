@@ -811,7 +811,14 @@ export function parseFoodAgentLaterMode(raw: string | undefined): FoodAgentLater
  *  `speed` ("super"). A correction sends no speed (it stays on the smart
  *  pipeline), so the app sends the picked mode in `tier` on every message. An
  *  app without `tier` keeps today's reading: Precise only with speed "super". */
-export function isPreciseRequest(body: { speed?: unknown; tier?: unknown }): boolean {
+export function isPreciseRequest(
+  body: { speed?: unknown; tier?: unknown },
+  /** The server's own gate, the same one speed "super" passes today: Precise
+   *  switched on (PARSE_SUPER_MODE) and an account that may use it (not the
+   *  free tier). `tier` is the client's word and never unlocks it alone. */
+  gate: { superOn: boolean; freeTier: boolean },
+): boolean {
+  if (!gate.superOn || gate.freeTier) return false;
   return body.speed === "super" || body.tier === "precise";
 }
 

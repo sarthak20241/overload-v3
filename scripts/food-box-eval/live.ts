@@ -586,7 +586,8 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
   // hasModelKey true: this eval measures the agent's answers, so the no-key
   // fallback (today's path) is never exercised here; foodAgentLater.test.ts pins it.
   const later = laterMessageGoesToAgent({
-    mode: LATER, precise: isPreciseRequest(body), supportsCreate: true, hasModelKey: true,
+    // The eval account is a Pro account with Precise on.
+    mode: LATER, precise: isPreciseRequest(body, { superOn: true, freeTier: false }), supportsCreate: true, hasModelKey: true,
     turns: recentTurns.length, cardLines: card.length, cardOpen, pending: !!pendingIn,
   });
   let outcome: Awaited<ReturnType<typeof resolveFoodBarOutcome>>;

@@ -600,7 +600,7 @@ Deno.test("answeredByLabel: a bare ack is marked; a later run whose agent never 
 Deno.test("a Precise correction (tier precise, no speed) is a later message for the agent", async () => {
   const { isPreciseRequest } = await import("./foodIntent.ts");
   const later = (body: Record<string, unknown>) => laterMessageGoesToAgent({
-    mode: "on", precise: isPreciseRequest(body), supportsCreate: true, hasModelKey: true,
+    mode: "on", precise: isPreciseRequest(body, { superOn: true, freeTier: false }), supportsCreate: true, hasModelKey: true,
     turns: 2, cardLines: 3, cardOpen: true, pending: false,
   });
   // What the app sends for a correction beside a Precise card: no speed.
@@ -609,4 +609,43 @@ Deno.test("a Precise correction (tier precise, no speed) is a later message for 
   // Quick, and an app too old to send tier: today's path.
   assertFalse(later({ tier: "quick" }));
   assertFalse(later({}));
+});
+
+// ── Before the switch goes on (review of 01780201) ─────────────────────────
+
+Deno.test("planCardChanges: at most 8 edits and additions in one turn, else the plan goes back", () => {
+  const many = Array.from({ length: 12 }, (_, i) => ({ name: "add_lines", input: { text: `food ${i}` } }));
+  const p = planCardChanges(CARD, many);
+  assertFalse(p.ok);
+  if (!p.ok) assert(p.error.includes("at most 8"), p.error);
+  const eight = planCardChanges(CARD, many.slice(0, 8));
+  assert(eight.ok);
+});
+
+Deno.test("isPreciseRequest: tier alone never unlocks Precise for an account that may not use it", async () => {
+  const { isPreciseRequest } = await import("./foodIntent.ts");
+  const ok = { superOn: true, freeTier: false };
+  assert(isPreciseRequest({ tier: "precise" }, ok));
+  assert(isPreciseRequest({ speed: "super" }, ok));
+  // A free account, or Precise switched off on the server: today's path.
+  assertFalse(isPreciseRequest({ tier: "precise" }, { superOn: true, freeTier: true }));
+  assertFalse(isPreciseRequest({ tier: "precise" }, { superOn: false, freeTier: false }));
+  assertFalse(isPreciseRequest({ speed: "super" }, { superOn: false, freeTier: false }));
+});
+
+Deno.test("applyCardChanges: a line with no section gets the card's own meal, the same one the result says", async () => {
+  const card: CardLine[] = [{ ...CARD[0], meal_type: "lunch" }, { ...CARD[1], meal_type: undefined }];
+  const out = await runFoodAgent({ ...LATER, card, defaultMeal: "dinner" }, deps(scripted([[
+    { name: "edit_line", input: { line_id: "L1", change: "3 pieces" } },
+  ]])));
+  assertEquals(out.kind, "log");
+  if (out.kind !== "log" || !out.result.parsed) return;
+  assertEquals(out.result.parsed.meal_type, "lunch");
+  assertEquals(out.result.parsed.items[1].meal_type, "lunch");
+});
+
+Deno.test("save gate: 'do not forget to save it' is an ask", () => {
+  assert(userAskedToSave({ text: "do not forget to save it" }));
+  assert(userAskedToSave({ text: "don't forget to save this as a meal" }));
+  assertFalse(userAskedToSave({ text: "don't save it" }));
 });
