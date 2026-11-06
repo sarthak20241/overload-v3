@@ -7,7 +7,7 @@
  * The wheels wrap @quidone/react-native-wheel-picker (pure JS, no native dep).
  */
 import React, { useMemo, useRef } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Platform, StyleSheet, Text, View } from 'react-native';
 import WheelPicker from '@quidone/react-native-wheel-picker';
 import { FontFamily, Radius } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -26,11 +26,14 @@ export function NumberWheel({
   visibleItemCount = 5,
   fontSize = 28,
   accessibilityLabel,
+  tapToScroll = true,
 }: {
   min: number;
   max: number;
   value: number;
   onChange: (v: number) => void;
+  /** A tap on a row scrolls to it. Swiping always works. */
+  tapToScroll?: boolean;
   width?: number;
   itemHeight?: number;
   visibleItemCount?: number;
@@ -58,7 +61,7 @@ export function NumberWheel({
         }}
         itemHeight={itemHeight}
         visibleItemCount={visibleItemCount}
-        enableScrollByTapOnItem
+        enableScrollByTapOnItem={tapToScroll}
         itemTextStyle={{
           fontFamily: FontFamily.displayMedium,
           fontSize,
@@ -145,6 +148,10 @@ export function WeightWheel({
 }) {
   const { C } = useTheme();
   const { whole, tenth } = splitWeight(value);
+  // On Android a tap on a row of these wheels lands about 49 rows away
+  // (72 -> 121 -> 170, seen on the emulator; the height and age wheels tap
+  // fine). Swipes are exact, so Android swipes only, like its own pickers.
+  const tapToScroll = Platform.OS !== 'android';
   // The latest value, not the last render's: both wheels report every tick,
   // so two spinning at once must each build on what the other just set.
   const latest = useRef(value);
@@ -165,6 +172,7 @@ export function WeightWheel({
         width={104}
         value={whole}
         onChange={setWhole}
+        tapToScroll={tapToScroll}
         accessibilityLabel={`${accessibilityLabel}, whole number`}
       />
       <Text style={[w.dot, { color: C.textMuted }]}>.</Text>
@@ -176,6 +184,7 @@ export function WeightWheel({
         width={60}
         value={tenth}
         onChange={setTenth}
+        tapToScroll={tapToScroll}
         accessibilityLabel={`${accessibilityLabel}, decimal`}
       />
     </View>
