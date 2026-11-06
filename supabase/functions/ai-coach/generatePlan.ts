@@ -99,7 +99,20 @@ export type TextCaller = (args: {
   maxTokens: number;
   model?: string;
   label: string;
-}) => Promise<{ text: string; usage: PlanUsage }>;
+}) => Promise<TextCallResult>;
+
+export interface TextCallResult {
+  text: string;
+  usage: PlanUsage;
+  /**
+   * Why the model stopped ("end_turn", "max_tokens", ...) and the type of
+   * every content block it sent. Optional because the eval callers do not
+   * have them. Only `text` blocks reach `text`, so a reply that hit the cap
+   * with no text says which block types took the tokens.
+   */
+  stop_reason?: string;
+  block_types?: string[];
+}
 
 export interface PlanUsage {
   input_tokens: number;
@@ -202,6 +215,13 @@ export const MAX_NEW_PER_DAY = 3;
  * mobility plan used at most six.
  */
 export const MAX_NEW_PER_PLAN = 8;
+
+/**
+ * Slowest first skeleton that still gets a second try. See runGeneratePlan:
+ * past this, a retry plus the fills would not land before the client's 75s
+ * abort.
+ */
+export const SKELETON_RETRY_BUDGET_MS = 25_000;
 
 /**
  * Clean an invented name before it can become a permanent custom exercise:
@@ -489,30 +509,87 @@ export async function runGeneratePlan(
   const intake = stripToolDirectives(userMessage);
 
   // ── Stage 1: skeleton ─────────────────────────────────────────────────────
-  const skelStart = now();
-  let skelText: string;
-  try {
+  const skelPrompt = `${stripRationaleDirective(intake)}\n\n${VARIANT_RULE}\n\n${SKELETON_FORMAT_SPEC}`;
+  const runSkeleton = async (label: "skeleton" | "skeleton_retry") => {
+    const started = now();
     const r = await deps.call({
       system,
-      messages: [{ role: "user", content: `${stripRationaleDirective(intake)}\n\n${VARIANT_RULE}\n\n${SKELETON_FORMAT_SPEC}` }],
-      // 1500 / 900 / 500 under Sonnet 4.6; ~30% up for Sonnet 5.5's tokenizer.
-      maxTokens: 2000,
+      messages: [{ role: "user", content: skelPrompt }],
+      // At least 2x the most a good skeleton has needed. coach_traces,
+      // successful builds, 60 days to 2026-11-05: n=36, p50 460, p95 829,
+      // max 853. 4000 is ~4.7x. The old 2000 cap was hit twice with no usable
+      // text (both used exactly 2000). Only tokens used are billed, so the
+      // headroom costs nothing on a normal build; it adds time only in a
+      // runaway, which the one retry below still catches.
+      maxTokens: 4000,
       model: deps.model,
-      label: "skeleton",
+      label,
     });
-    skelText = r.text;
     add(r.usage);
     calls++;
-    stages.push({ label: "skeleton", ms: now() - skelStart, output_tokens: r.usage.output_tokens, startedAt: skelStart - t0 });
+    stages.push({ label, ms: now() - started, output_tokens: r.usage.output_tokens, startedAt: started - t0 });
+    const parsed = parseSkeleton(r.text);
+    return { r, skeleton: parsed && groundSkeleton(parsed, deps.catalog) };
+  };
+  // Why a reply gave no skeleton: the stop reason and the block types. Kept
+  // short and put BEFORE the reply text, since the trace keeps 200 chars.
+  const why = (r: TextCallResult) =>
+    `stop=${r.stop_reason ?? "?"} blocks=${r.block_types?.join(",") || "none"}`;
+
+  // A call that THROWS (timeout, 429, 5xx) is not retried here: callAnthropic
+  // owns transport errors, and a hung upstream already spent up to 80s.
+  const firstStart = now();
+  let first: Awaited<ReturnType<typeof runSkeleton>>;
+  try {
+    first = await runSkeleton("skeleton");
   } catch (e) {
     return { plan: null, error: `skeleton call failed: ${String(e).slice(0, 200)}`, usage, calls, stages };
   }
+  const firstMs = now() - firstStart;
 
-  const parsed = parseSkeleton(skelText);
-  const skeleton = parsed && groundSkeleton(parsed, deps.catalog);
+  // A reply that came back but gave no skeleton (seen in production: no
+  // text, or only the PLAN line, with output_tokens at the cap) is a one-off
+  // far more often than a bad prompt, and a second try by hand usually works.
+  // So try once more, with the same prompt, before returning the error. Only
+  // the skeleton gets this: a dead fill already falls back to defaults.
+  //
+  // Not when the first try was slow. The onboarding client gives up at 75s
+  // (lib/onboardingDrona.ts), and a second skeleton plus the fills must fit
+  // inside that. The two failed skeletons spent 2000 tokens in ~15s, so a
+  // runaway to the 4000 cap is ~30s. Worst case that still retries: a first
+  // try at the 25s budget, a ~30s runaway retry, ~10s of fills, and a few
+  // seconds of setup before the first call: ~68s, under 75s. A 35s budget
+  // would have allowed ~80s.
+  let skeleton = first.skeleton;
+  if (!skeleton && firstMs > SKELETON_RETRY_BUDGET_MS) {
+    const head = first.r.text.replace(/\s+/g, " ").trim().slice(0, 200) || "<empty>";
+    return {
+      plan: null,
+      error: `skeleton parse failed (${why(first.r)}), no retry after ${Math.round(firstMs / 1000)}s: "${head}"`,
+      usage, calls, stages,
+    };
+  }
   if (!skeleton) {
-    const head = skelText.replace(/\s+/g, " ").trim().slice(0, 200) || "<empty>";
-    return { plan: null, error: `skeleton parse failed: "${head}"`, usage, calls, stages };
+    console.log(`[generatePlan] skeleton gave no plan (${why(first.r)}), retrying once`);
+    let second: Awaited<ReturnType<typeof runSkeleton>>;
+    try {
+      second = await runSkeleton("skeleton_retry");
+    } catch (e) {
+      return {
+        plan: null,
+        error: `skeleton parse failed (${why(first.r)}), retry call failed: ${String(e).slice(0, 160)}`,
+        usage, calls, stages,
+      };
+    }
+    skeleton = second.skeleton;
+    if (!skeleton) {
+      const head = second.r.text.replace(/\s+/g, " ").trim().slice(0, 200) || "<empty>";
+      return {
+        plan: null,
+        error: `skeleton parse failed twice (${why(first.r)}; retry ${why(second.r)}): "${head}"`,
+        usage, calls, stages,
+      };
+    }
   }
   deps.onSkeleton?.(skeleton);
 
@@ -542,7 +619,9 @@ export async function runGeneratePlan(
           FILL_FORMAT_SPEC,
         ].join("\n"),
       }],
-      maxTokens: 1200,
+      // At least 2x the most a fill has needed: max 614 over 157 fills in
+      // coach_traces (60 days to 2026-11-05). 2400 is ~3.9x.
+      maxTokens: 2400,
       model: deps.fillModel ?? deps.model,
       label: `fill:d${i + 1}`,
     });
@@ -569,6 +648,9 @@ export async function runGeneratePlan(
           `Write ONLY the rationale: 1-2 short sentences, 25 words at most, plain prose, no lists, no headings, no preamble, no em dashes. Why this split at this frequency fits their goal.`,
         ].join("\n"),
       }],
+      // Already over 2x: since #327 (25 words, live 2026-11-01) rationales
+      // have used at most 78 tokens. The 629 in older traces was the
+      // paragraph prompt under the old 700 cap.
       maxTokens: 200,
       model: deps.model,
       label: "rationale",
