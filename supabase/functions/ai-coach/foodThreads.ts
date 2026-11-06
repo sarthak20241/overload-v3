@@ -569,7 +569,8 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
         await store.setCardStatus(t.id, args.restoredFrom, "replaced")
           .catch((e) => log(`[food_threads] restored card not marked: ${String(e).slice(0, 120)}`));
       }
-      return { ok: w.written, card_version: w.version };
+      // A deduplicated retry is fine, not a failure.
+      return { ok: w.written || !!w.retry, card_version: w.version };
     }
     if (req.next_card_id) {
       await store.createCard(t.id, req.next_card_id, "meal", itemsAsLines(s.items, null), args.clientId, args.mealType);
