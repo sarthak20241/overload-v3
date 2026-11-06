@@ -1,8 +1,10 @@
 // What the food box's meal card holds after the server answers one message.
 //
-// One rule, shared by the Nutrition screen (runParse) and the food box eval's
-// live adapter (scripts/food-box-eval), so the eval scores the card the app
-// would really show and not a card the adapter guessed at.
+// The rule the food box eval's live adapter (scripts/food-box-eval) uses to
+// score the card the app would show. The Nutrition screen (runParse) calls it
+// for a save card; its other branches (a reply, a cleared card, an error) are
+// written inline there to the same rules, so a change to one side must be
+// made on the other too.
 //
 // The rule that matters most: a card the user has not added yet leaves the
 // screen only when the user asks. A save card is a SECOND card beside it, never
