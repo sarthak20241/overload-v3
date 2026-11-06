@@ -488,7 +488,9 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
     // the copy the app sent is the newer one. Ids carry over by name. When
     // the server is BEHIND the app's count (a missed write), the write below
     // lands at the app's count (food_card_write allows a base ahead).
-    let base = onScreen && args.card.length
+    // An empty card from the app is an empty base (every line was taken off
+    // on screen), never a fall back to the server's older lines.
+    let base = onScreen && req.card_id
       ? {
         ...onScreen,
         version: Math.max(onScreen.version, req.base_version ?? 0),
@@ -501,10 +503,6 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
       base = { id: req.card_id, kind: "meal", version: v, status: "open", meal_type: args.mealType, created_at: new Date().toISOString(), lines: cardAsLines(args.card) };
     }
 
-    if (args.restoredFrom) {
-      await store.setCardStatus(t.id, args.restoredFrom, "replaced")
-        .catch((e) => log(`[food_threads] restored card not marked: ${String(e).slice(0, 120)}`));
-    }
     const s = args.served;
     if (s.kind === "save") {
       if (req.next_card_id) await store.createCard(t.id, req.next_card_id, "save", s.lines, args.clientId, null);
@@ -528,6 +526,12 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
     }
     if (req.next_card_id) {
       await store.createCard(t.id, req.next_card_id, "meal", itemsAsLines(s.items, null), args.clientId, args.mealType);
+      // A restore's source is marked only once its copy is saved, so a
+      // failed write never leaves the thread with neither.
+      if (args.restoredFrom) {
+        await store.setCardStatus(t.id, args.restoredFrom, "replaced")
+          .catch((e) => log(`[food_threads] restored card not marked: ${String(e).slice(0, 120)}`));
+      }
       return { ok: true, card_version: 1 };
     }
     return { ok: true, card_version: null };

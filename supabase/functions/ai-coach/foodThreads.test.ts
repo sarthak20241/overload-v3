@@ -263,3 +263,17 @@ Deno.test("card refs stay the same after a restore: a replaced card keeps its nu
   assert(index.includes("[C2 v1] breakfast card"), index);
   assert(!index.includes("[C1"), index);
 });
+
+Deno.test("a restore whose copy fails to save leaves its source card listed", async () => {
+  const s = memoryThreadStore();
+  await s.ensure("u1", T);
+  await s.createCard(T, MEAL, "meal", cardAsLines(LUNCH), null, "lunch");
+  const broken = { ...s, createCard: async () => { throw new Error("db down"); } };
+  const r = await recordThreadMessage(broken, {
+    userId: "u1", req: { id: T, card_id: null, base_version: null, next_card_id: SAVE, closed: null }, clientId: "m9",
+    userText: "bring it back", dronaText: null, card: [], served: { kind: "meal", items: [item("Rice", 171)], corrects: true },
+    mealType: "lunch", restoredFrom: MEAL,
+  });
+  assertEquals(r.ok, false);
+  assertEquals(s.dump().cards.get(MEAL)!.status, "open");
+});
