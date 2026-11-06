@@ -853,7 +853,9 @@ export function fillFromCard(tool: string, input: Record<string, unknown>, card:
     // the model's own figure (and its estimate mark) alone, never a 0 g.
     const copied = MACROS.filter((m) => typeof line[m] === "number");
     for (const m of copied) out[m] = line[m];
-    const est = Array.isArray(input.estimated) ? input.estimated.filter((f) => !(copied as readonly unknown[]).includes(f)) : [];
+    // The line matched on kcal too, so kcal is the card's figure, not a guess:
+    // the same rule the meal branch applies to a whole line.
+    const est = Array.isArray(input.estimated) ? input.estimated.filter((f) => f !== "kcal" && !(copied as readonly unknown[]).includes(f)) : [];
     out.estimated = guessed(line) ? [...new Set([...est, "kcal", ...copied])] : est;
     return out;
   }
