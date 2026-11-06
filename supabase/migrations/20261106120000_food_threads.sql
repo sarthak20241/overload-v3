@@ -94,6 +94,8 @@ create table if not exists public.food_card_lines (
 );
 
 create index if not exists idx_food_threads_user_open on public.food_threads (user_id, last_at desc) where status = 'open';
+-- Every thread of a user, for the account-delete trigger.
+create index if not exists idx_food_threads_user on public.food_threads (user_id);
 create index if not exists idx_food_cards_thread on public.food_cards (thread_id, created_at);
 -- A retried send adds its turns once: one user turn and one Drona turn per
 -- client id (the code checks first; this makes it hold under a race too).

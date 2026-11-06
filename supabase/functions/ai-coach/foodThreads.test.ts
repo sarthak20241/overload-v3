@@ -183,3 +183,35 @@ Deno.test("a retried send adds its turns once", async () => {
 Deno.test("a base_version past the cap is no base", () => {
   assertEquals(readThreadRequest({ id: T, card_id: MEAL, base_version: 2 ** 40 })?.base_version, null);
 });
+
+Deno.test("a restored card's source is marked replaced, so the index lists the copy once", async () => {
+  const s = memoryThreadStore();
+  await s.ensure("u1", T);
+  await s.createCard(T, MEAL, "meal", cardAsLines(LUNCH), null, "lunch");
+  const th = await threadForAgent(s, "u1", { id: T, card_id: null, base_version: null, next_card_id: SAVE, closed: null });
+  const got = await th!.restore("C1", null);
+  assertEquals(th!.restoredFrom, MEAL);
+  await recordThreadMessage(s, {
+    userId: "u1", req: { id: T, card_id: null, base_version: null, next_card_id: SAVE, closed: null }, clientId: "m9",
+    userText: "bring it back", dronaText: "Here it is.", card: [], served: { kind: "meal", items: got!.items, corrects: true },
+    mealType: "lunch", restoredFrom: th!.restoredFrom,
+  });
+  const t = await s.load("u1", T);
+  assertEquals(t!.cards.map((c) => [c.id, c.status]), [[MEAL, "replaced"], [SAVE, "open"]]);
+  assertEquals(threadIndexLine(t, null)?.startsWith("index: 1 earlier card"), true);
+});
+
+Deno.test("a message after 30 idle minutes is kept, closes the thread, and the agent then gets no thread", async () => {
+  const s = memoryThreadStore();
+  await s.ensure("u1", T);
+  await s.createCard(T, MEAL, "meal", cardAsLines(LUNCH), null, "lunch");
+  s.dump().threads.get(T)!.last_at = new Date(Date.now() - THREAD_IDLE_MS - 60_000).toISOString();
+  s.dump().threads.get(T)!.turns.push({ seq: 1, role: "user", text: "lunch" });
+  await recordThreadMessage(s, {
+    userId: "u1", req: { id: T, card_id: null, base_version: null, next_card_id: SAVE, closed: null }, clientId: "m2",
+    userText: "hi", dronaText: "Hello.", card: [], served: { kind: "reply" }, mealType: null,
+  });
+  assertEquals(s.dump().threads.get(T)!.status, "closed");
+  assertEquals(s.dump().threads.get(T)!.turns.length, 3);
+  assertEquals(await threadForAgent(s, "u1", { id: T, card_id: null, base_version: null, next_card_id: null, closed: null }), null);
+});

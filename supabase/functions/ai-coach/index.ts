@@ -3374,16 +3374,18 @@ async function handleParseMealRequest(args: {
   const threadStore = threadReq ? supabaseThreadStore(admin) : null;
   // At most 800 ms: a slow read must never hold up the answer. Past it the
   // message is served as if the thread had no earlier cards.
+  let threadTimer: ReturnType<typeof setTimeout> | undefined;
   const threadP: Promise<FoodBarThread | null> = FOOD_THREADS === "on" && threadReq && threadStore
     ? Promise.race([
       threadForAgent(threadStore, userId, threadReq).catch(() => null),
-      new Promise<null>((r) => setTimeout(() => r(null), 800)),
-    ])
+      new Promise<null>((r) => { threadTimer = setTimeout(() => r(null), 800); }),
+    ]).finally(() => clearTimeout(threadTimer))
     : Promise.resolve(null);
   /** After the answer is sent: this message's turns and card change, as one
    *  conditional write on the app's base version. Never on the hot path. */
-  const writeThread = (outcome: FoodBarOutcome, result: ParseMealResult) => {
+  const writeThread = async (outcome: FoodBarOutcome, result: ParseMealResult) => {
     if (!threadReq || !threadStore) return;
+    const restored = result.tool_calls.includes("restore_card") ? (await threadP)?.restoredFrom ?? null : null;
     const dronaText = outcome.action === "create"
       ? (typeof outcome.create?.input?.summary === "string" ? outcome.create.input.summary : null)
       : outcome.action === "reply" ? outcome.reply ?? null
@@ -3404,6 +3406,7 @@ async function handleParseMealRequest(args: {
         cleared: !!result.declined?.cleared,
       }),
       mealType: card[0]?.meal_type ?? result.parsed?.meal_type ?? mealHint,
+      restoredFrom: restored,
       log: (m) => console.log(m),
     }));
   };
@@ -3747,7 +3750,7 @@ async function handleParseMealRequest(args: {
               },
             };
             const servedNow = servedView(endBody, 200, outcome.action);
-            writeThread(outcome, result);
+            void writeThread(outcome, result);
             writeFoodBar({
               served: servedNow,
               status: "ok",
@@ -4045,7 +4048,7 @@ async function handleParseMealRequest(args: {
         tool_calls: result.tool_calls,
       };
     const servedNow = servedView(resBody as ServedBody, 200, outcome.action);
-    writeThread(outcome, result);
+    void writeThread(outcome, result);
     void recordParseTrace(admin, {
       user_id: userId,
       // The tier the parse ran in (0149): stamps the lines the client logs.

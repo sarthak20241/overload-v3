@@ -207,10 +207,11 @@ export function lineAsItem(l: ThreadLine, mealDefault: MealType): ParsedItem {
 }
 
 /** Short refs for the model: C1, C2, ... in the order the cards were made.
- *  Only meal cards with lines: a save card is not a meal to bring back, and a
- *  cleared card's latest version is empty. */
+ *  Only meal cards with lines: a save card is not a meal to bring back, a
+ *  cleared card's latest version is empty, and a card that was brought back
+ *  lives on as its copy ('replaced'). */
 export function cardRefs(t: StoredThread): Map<string, StoredCard> {
-  const sorted = t.cards.filter((c) => c.kind === "meal" && c.lines.length > 0).sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const sorted = t.cards.filter((c) => c.kind === "meal" && c.status !== "replaced" && c.lines.length > 0).sort((a, b) => a.created_at.localeCompare(b.created_at));
   return new Map(sorted.map((c, i) => [`C${i + 1}`, c]));
 }
 
@@ -249,6 +250,8 @@ export interface FoodThreadStore {
   cardAt(cardId: string, version: number): Promise<ThreadLine[] | null>;
   /** Close one of THIS user's threads. Another user's id changes nothing. */
   close(userId: string, threadId: string, why: "added" | "idle" | "replaced"): Promise<void>;
+  /** Mark a card of this thread (a restored card's source becomes 'replaced'). */
+  setCardStatus(threadId: string, cardId: string, status: StoredCard["status"]): Promise<void>;
   touch(threadId: string): Promise<void>;
 }
 
@@ -293,8 +296,13 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
         admin.from("food_thread_turns").select("seq").eq("thread_id", threadId).order("seq", { ascending: false }).limit(1),
       ]);
       const list = (cards ?? []) as Record<string, unknown>[];
+      // Each card's CURRENT version only. Reading every version and filtering
+      // here would hit PostgREST's 1000-row cap on a long thread and drop
+      // lines silently.
       const lines = list.length
-        ? ((await admin.from("food_card_lines").select("*").in("card_id", list.map((c) => c.id)).order("line_no")).data ?? []) as Record<string, unknown>[]
+        ? ((await admin.from("food_card_lines").select("*")
+          .or(list.map((c) => `and(card_id.eq.${c.id},version.eq.${Number(c.version)})`).join(","))
+          .order("line_no")).data ?? []) as Record<string, unknown>[]
         : [];
       return {
         id: String(t.id),
@@ -333,6 +341,8 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
         let { error } = await admin.from("food_thread_turns").insert(rows);
         // Two quick messages read the same last seq: the second one's seqs
         // are taken. Read the newest seq again and try once more.
+        // The same send racing itself: its turns are already in. Done.
+        if (error?.code === "23505" && clientId && /uq_food_thread_turns_client/.test(`${error.message} ${error.details ?? ""}`)) return;
         if (error?.code === "23505") {
           const { data } = await admin.from("food_thread_turns").select("seq").eq("thread_id", threadId).order("seq", { ascending: false }).limit(1);
           ({ error } = await admin.from("food_thread_turns").insert(rowsFrom(Number(data?.[0]?.seq ?? 0) + 1)));
@@ -367,6 +377,9 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
     async touch(threadId) {
       await admin.from("food_threads").update({ last_at: new Date().toISOString() }).eq("id", threadId);
     },
+    async setCardStatus(threadId, cardId, status) {
+      await admin.from("food_cards").update({ status, updated_at: new Date().toISOString() }).eq("id", cardId).eq("thread_id", threadId);
+    },
   };
 }
 
@@ -397,6 +410,9 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
   card: CardLine[];
   served: ServedForThread;
   mealType: MealType | null;
+  /** This answer brought back that card (restore_card): the copy on screen
+   *  takes its place, so the source is marked 'replaced'. */
+  restoredFrom?: string | null;
   nowMs?: number;
   log?: (m: string) => void;
 }): Promise<{ ok: boolean; card_version: number | null }> {
@@ -440,6 +456,10 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
       base = { id: req.card_id, kind: "meal", version: v, status: "open", meal_type: args.mealType, created_at: new Date().toISOString(), lines: cardAsLines(args.card) };
     }
 
+    if (args.restoredFrom) {
+      await store.setCardStatus(t.id, args.restoredFrom, "replaced")
+        .catch((e) => log(`[food_threads] restored card not marked: ${String(e).slice(0, 120)}`));
+    }
     const s = args.served;
     if (s.kind === "save") {
       if (req.next_card_id) await store.createCard(t.id, req.next_card_id, "save", s.lines, args.clientId, null);
@@ -545,6 +565,10 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
       const t = threads.get(threadId);
       if (t) t.last_at = stamp();
     },
+    async setCardStatus(threadId, cardId, status) {
+      const c = cards.get(cardId);
+      if (c && c.thread_id === threadId) c.status = status;
+    },
   };
 }
 
@@ -563,17 +587,20 @@ export async function threadForAgent(
   const index = threadIndexLine(t, req.card_id);
   if (!index) return null;
   const refs = cardRefs(t);
-  return {
+  const out: FoodBarThread = {
     index,
+    restoredFrom: null,
     restore: async (ref, version) => {
       const c = refs.get(ref);
       if (!c) return null;
+      out.restoredFrom = c.id;
       const lines = version !== null && version !== c.version ? await store.cardAt(c.id, version) : c.lines;
       if (!lines?.length) return null;
       const meal = c.meal_type ?? lines[0]?.meal_type ?? "snack";
       return { items: lines.map((l) => lineAsItem(l, meal)), meal_type: c.meal_type };
     },
   };
+  return out;
 }
 
 /** What the box served, for recordThreadMessage. `create` is the save card's

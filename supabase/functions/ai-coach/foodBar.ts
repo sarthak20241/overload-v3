@@ -48,6 +48,8 @@ import { CREATE_CUSTOM_FOOD_TOOL, CREATE_CUSTOM_MEAL_TOOL, LIST_LOGGED_MEALS_TOO
 export interface FoodBarThread {
   /** threadIndexLine: the earlier cards, by ref. Null: nothing to bring back. */
   index: string | null;
+  /** The card restore() last brought back, so the thread write can mark it. */
+  restoredFrom?: string | null;
   restore(ref: string, version: number | null): Promise<{ items: ParsedItem[]; meal_type: MealType | null } | null>;
 }
 
