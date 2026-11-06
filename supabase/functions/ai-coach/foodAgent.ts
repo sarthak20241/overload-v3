@@ -603,7 +603,8 @@ export const CARD_NOTE_LATER =
   "contains a food that is also listed on its own line, remove the separate line. When a request could mean taking a " +
   "line off or changing it back, keep the line: change it, or ask.\n" +
   "- add_lines: food that is not on the card yet, even when it went into a dish that is on the card. Give it only the " +
-  "new food, never a dish already on the card. edit_line only changes what a line already is.\n" +
+  "new food, never a dish already on the card. edit_line only changes what a line already is. More of a food that is " +
+  "already on the card (another roti, a second egg) is edit_line on its line with the new total, never add_lines.\n" +
   "Every line you do not name stays exactly as it is. Make all the changes a message needs in ONE turn, together: they " +
   "apply in a fixed order (edits, then removals, then additions). Never give one line two changes in the same turn. " +
   "A question or complaint about the card with nothing to change is reply, using the card's own numbers (how a figure " +
@@ -986,7 +987,18 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
       const label = statusFor(finish.name, finish.input ?? {});
       if (label) deps.onStatus?.(label);
       const replyText = replyUse && replyUse !== finish ? clean(typeof replyUse.input?.text === "string" ? replyUse.input.text : "") : "";
-      if (plan) return await applyCardChanges(plan, input, deps, parse, seen, turns, replyText);
+      if (plan) {
+        const out = await applyCardChanges(plan, input, deps, parse, seen, turns, replyText);
+        // A save asked for in the same turn as card changes: the changes win,
+        // and the user is told the save has not happened (a save card cannot
+        // ride with a changed meal card).
+        if (!uses.some((u) => SAVE_TOOLS.has(u.name))) return out;
+        const note = "Ask me to save it once the card looks right.";
+        if (out.kind === "log" && out.result.parsed) {
+          return { ...out, result: { ...out.result, parsed: { ...out.result.parsed, drona_line: `${out.result.parsed.drona_line} ${note}`.trim() } } };
+        }
+        return out.kind === "reply" ? { ...out, text: `${out.text} ${note}` } : out;
+      }
       if (finish.name === RESTORE_CARD_TOOL.name && !canRestore) {
         deps.onEvent?.({ tool: "restore_card", ok: false, reason: "no_thread" });
         return { kind: "failed", reason: "restore_without_thread", turns };
@@ -1373,12 +1385,19 @@ async function logFindsNoFood(u: ToolUse, parse: (text: string) => Promise<Parse
 const SAVE_TOOLS = new Set([SAVE_CARD_AS_MEAL_TOOL.name, CREATE_CUSTOM_MEAL_TOOL.name, CREATE_CUSTOM_FOOD_TOOL.name]);
 
 /** A word that asks to save or keep something for later. */
-const SAVE_ASK = /\b(?:sav(?:e|ed|ing)|keep|remember|store|reusable|my meals|as a meal|a meal of|make (?:it|this|that) (?:a|my) meal)\b/i;
+const SAVE_ASK = /\b(?:sav(?:e|ed|ing)|my meals|as a (?:saved )?meal|make (?:it|this|that) (?:a|my) meal|(?:keep|remember) (?:it|this|that) (?:as|for))\b/i;
 
-/** Did the user ask for a save: in this message, or in one of their earlier
- *  turns of the thread ("save it", then "yes")? */
+/** Did the user ask for a save? In this message, or in their message just
+ *  before it when Drona then asked them something ("save it" -> "save it as
+ *  Dinner?" -> "yes"). Not any earlier turn: one "save" early in a thread does
+ *  not leave the gate open for the rest of it. "keep" and "remember" count only
+ *  as "keep it as / for": "keep the rice" is not a save. */
 export function userAskedToSave(input: Pick<FoodAgentInput, "text" | "recentTurns">): boolean {
-  return SAVE_ASK.test(input.text) || (input.recentTurns ?? []).some((t) => t.role === "user" && SAVE_ASK.test(t.text));
+  if (SAVE_ASK.test(input.text)) return true;
+  const turns = input.recentTurns ?? [];
+  const last = turns.at(-1);
+  const before = turns.at(-2);
+  return last?.role === "drona" && /\?\s*$/.test(last.text.trim()) && before?.role === "user" && SAVE_ASK.test(before.text);
 }
 
 /** Reads whose results a later-message agent acts on: a finish in the same
@@ -1485,10 +1504,12 @@ export function pickEditedLine(original: CardLine, r: ParseMealResult | null): P
   if (items.length <= 1) return items[0] ?? null;
   const key = sameFoodKey(original.said_name ?? original.food_name);
   const own = sameFoodKey(original.food_name);
+  // Several items and none is this food: no guess. The edit fails, the line
+  // stays as it was, and the card's line says so.
   return items.find((i) => {
     const k = sameFoodKey(i.food_name);
     return k === key || k === own || k.includes(own) || own.includes(k);
-  }) ?? items[0];
+  }) ?? null;
 }
 
 const EMPTY_USAGE = (): ParseMealResult["usage"] => ({

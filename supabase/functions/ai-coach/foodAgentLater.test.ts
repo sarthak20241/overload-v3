@@ -196,6 +196,8 @@ Deno.test("pickEditedLine: one item, else the same food, never a second line", (
   assertEquals(pickEditedLine(CARD[0], result([item("Roti", 360)]))?.kcal, 360);
   assertEquals(pickEditedLine(CARD[0], result([item("Onion", 20), item("Roti, whole wheat", 360)]))?.food_name, "Roti, whole wheat");
   assertEquals(pickEditedLine(CARD[0], result([])), null);
+  // Several items and none is this food: no guess, the line stays.
+  assertEquals(pickEditedLine(CARD[0], result([item("Onion", 20), item("Paneer", 200)])), null);
   assertEquals(pickEditedLine(CARD[0], null), null);
 });
 
@@ -475,9 +477,18 @@ Deno.test("cardLinesWithIds: every card line gets its id, pinned to cardLines' o
 
 Deno.test("a save card needs the user's ask: without it the agent is told, and does what was asked", async () => {
   assert(userAskedToSave({ text: "save this as a meal" }));
-  assert(userAskedToSave({ text: "yes", recentTurns: [{ role: "user", text: "can you keep it for next time" }] }));
+  assert(userAskedToSave({ text: "can you keep it for next time" }));
   assertFalse(userAskedToSave({ text: "bring back the card" }));
   assertFalse(userAskedToSave({ text: "plus my usual smoothie", recentTurns: [{ role: "drona", text: "Want to save it?" }] }));
+  // Ordinary food words are not a save, and an old "save" does not keep the gate open.
+  assertFalse(userAskedToSave({ text: "keep the rice, drop the dal" }));
+  assertFalse(userAskedToSave({ text: "store-bought paneer" }));
+  assertFalse(userAskedToSave({
+    text: "add 2 eggs",
+    recentTurns: [{ role: "user", text: "save my shake" }, { role: "drona", text: "Saved card ready." }, { role: "user", text: "ok" }, { role: "drona", text: "Done." }],
+  }));
+  // "save it" -> Drona asks -> "yes" is still the user's ask.
+  assert(userAskedToSave({ text: "yes", recentTurns: [{ role: "user", text: "save this as my lunch" }, { role: "drona", text: "Save it as Lunch?" }] }));
   const bodies: Record<string, unknown>[] = [];
   const out = await runFoodAgent({ ...LATER, text: "bring back the card" }, deps(scripted([
     [{ name: "save_card_as_meal", input: { name: "Dinner", log_now: false, summary: "Save it?" } }],
@@ -527,4 +538,13 @@ Deno.test("runLaterMessage: a bare 'yes' after Drona asked something goes to the
   });
   assertEquals(calls, 1);
   assertEquals(r.outcome.agent?.kind, "reply");
+});
+
+Deno.test("a save in the same turn as card changes: the changes land, and the user is told the save waits", async () => {
+  const out = await runFoodAgent({ ...LATER, text: "make it 3 roti and save it" }, deps(scripted([[
+    { name: "edit_line", input: { line_id: "L1", change: "3 pieces" } },
+    { name: "save_card_as_meal", input: { name: "Dinner", log_now: false, summary: "Save it?" } },
+  ]])));
+  assertEquals(out.kind, "log");
+  if (out.kind === "log") assert(out.result.parsed?.drona_line.endsWith("Ask me to save it once the card looks right."));
 });
