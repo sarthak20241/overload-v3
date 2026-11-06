@@ -208,9 +208,18 @@ const cliFetch: typeof fetch | null = rawCliFetch
   : null;
 const fetchFn: typeof fetch = cliFetch ?? metered(fetch);
 
+const warnedModels = new Set<string>();
+
 function metricsOf(m: Meter, route: CaseMetrics["route"], agentTurns: number): CaseMetrics {
   let cost = 0;
   for (const [model, v] of Object.entries(m.byModel)) {
+    // A model with no price row here is costed at 0: say so once, so a model
+    // change cannot make the cost look lower without anyone seeing it. The
+    // rates copy model_pricing; update both together.
+    if (!PRICE[model] && !warnedModels.has(model)) {
+      warnedModels.add(model);
+      console.warn(`[eval] no price for model "${model}": its calls count as $0 (add it to PRICE in live.ts)`);
+    }
     const [i, o] = PRICE[model] ?? [0, 0];
     cost += (v.input * i + v.output * o) / 1_000_000;
   }
@@ -559,6 +568,8 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
   };
   // index.ts's rule (FOOD_AGENT_LATER, Precise): a later message goes to the
   // agent whatever the router says.
+  // hasModelKey true: this eval measures the agent's answers, so the no-key
+  // fallback (today's path) is never exercised here; foodAgentLater.test.ts pins it.
   const later = laterMessageGoesToAgent({
     mode: LATER, precise: true, supportsCreate: true, hasModelKey: true,
     turns: recentTurns.length, cardLines: card.length, cardOpen, pending: !!pendingIn,

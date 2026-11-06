@@ -1543,7 +1543,9 @@ async function applyCardChanges(
     failedAdds.length ? `I could not work out ${names(failedAdds.map((t) => `"${t.slice(0, 60)}"`))}.` : null,
     dupAdds.length ? `${names(dupAdds)} ${dupAdds.length === 1 ? "is" : "are"} already on the card, so I did not add ${dupAdds.length === 1 ? "it" : "them"} again.` : null,
   ].filter(Boolean).join(" ");
-  const agentText = replyText || clean(plan.summaries.join(" "));
+  // The agent's words: its reply, else its one summary. Several summaries
+  // joined read as a run-on, so then code writes the line from what changed.
+  const agentText = replyText || (plan.summaries.length === 1 ? clean(plan.summaries[0]) : "");
   const falseClaim = !!agentText && falseAgentClaim(agentText, { cardChanged: changed });
   const line = agentText && !falseClaim && !failedEdits.length && !failedAdds.length && !dupAdds.length ? agentText : codeLine;
   deps.onEvent?.({

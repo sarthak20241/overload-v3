@@ -453,3 +453,11 @@ Deno.test("an addition never puts a second copy of a food that stays on the card
   assertEquals(out.result.parsed.items[1].kcal, 150);
   assert(out.result.parsed.drona_line.includes("Dal is already on the card"));
 });
+
+Deno.test("several summaries and no reply: code writes the line, never a run-on", async () => {
+  const out = await runFoodAgent(LATER, deps(scripted([[
+    { name: "edit_line", input: { line_id: "L1", change: "3 pieces", summary: "Made it 3 roti." } },
+    { name: "remove_lines", input: { line_ids: ["L3"], summary: "Took off the onion salad." } },
+  ]])));
+  if (out.kind === "log") assertEquals(out.result.parsed?.drona_line, "Updated Roti (edited). Took off Onion salad.");
+});
