@@ -66,6 +66,9 @@ create table if not exists public.food_cards (
   day             date,
   -- The message that made the current version (idempotency key).
   last_client_id  text,
+  -- The highest line number any version ever used ("L7" is 7), so a new line
+  -- never takes the id of one that was removed.
+  max_line_no     integer     not null default 0,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
@@ -144,6 +147,11 @@ begin
          last_client_id = p_client_id,
          status = coalesce(p_status, c.status),
          meal_type = coalesce(p_meal_type, c.meal_type),
+         max_line_no = greatest(c.max_line_no, coalesce((
+           select max(substring(e->>'line_id' from 2)::integer)
+             from jsonb_array_elements(coalesce(p_lines, '[]'::jsonb)) e
+            where e->>'line_id' ~ '^L[0-9]{1,6}$'
+         ), 0)),
          updated_at = now()
    where c.id = p_card_id
      and c.version <= p_base_version

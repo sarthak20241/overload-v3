@@ -441,9 +441,11 @@ interface ToolUse {
 
 export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): Promise<FoodAgentOutcome> {
   const turns: AgentTurn[] = [];
-  // restore_card only with both halves: the index the agent reads refs from,
-  // and the store that answers them.
-  const canRestore = !!input.threadIndex && !!deps.restoreCard;
+  // restore_card only with both halves (the index the agent reads refs from,
+  // and the store that answers them), and only with NO card on screen: a
+  // restore replaces the card whole, so it must never land on lines the
+  // user is still working on.
+  const canRestore = !!input.threadIndex && !!deps.restoreCard && !input.card?.length;
   // An undated `today` still goes in as written rather than being dropped.
   const days = input.today ? recentDays(input.today) ?? `Today is ${input.today}.` : null;
   const messages: unknown[] = historyMessages(input.recentTurns, openingText(input, days));

@@ -3378,7 +3378,12 @@ async function handleParseMealRequest(args: {
   const threadP: Promise<FoodBarThread | null> = FOOD_THREADS === "on" && threadReq && threadStore
     ? Promise.race([
       threadForAgent(threadStore, userId, threadReq).catch(() => null),
-      new Promise<null>((r) => { threadTimer = setTimeout(() => r(null), 800); }),
+      new Promise<null>((r) => {
+        threadTimer = setTimeout(() => {
+          console.log("[food_threads] thread read over 800 ms; served with no earlier cards");
+          r(null);
+        }, 800);
+      }),
     ]).finally(() => clearTimeout(threadTimer))
     : Promise.resolve(null);
   /** After the answer is sent: this message's turns and card change, as one

@@ -215,3 +215,23 @@ Deno.test("a message after 30 idle minutes is kept, closes the thread, and the a
   assertEquals(s.dump().threads.get(T)!.turns.length, 3);
   assertEquals(await threadForAgent(s, "u1", { id: T, card_id: null, base_version: null, next_card_id: null, closed: null }), null);
 });
+
+Deno.test("removing the highest line never hands its id to the next new line", async () => {
+  const s = memoryThreadStore();
+  const base = { userId: "u1", userText: "x", dronaText: null, mealType: "lunch" as const };
+  await recordThreadMessage(s, { ...base, card: [], req: { id: T, card_id: null, base_version: null, next_card_id: MEAL, closed: null }, clientId: "m1", served: { kind: "meal", items: [item("Rice", 200), item("Dal", 120), item("Curd", 60)], corrects: false } });
+  // Curd (L3) is removed by a correction, then a new line comes.
+  await recordThreadMessage(s, { ...base, card: card([["Rice", 200], ["Dal", 120], ["Curd", 60]]), req: { id: T, card_id: MEAL, base_version: 1, next_card_id: null, closed: null }, clientId: "m2", served: { kind: "meal", items: [item("Rice", 200), item("Dal", 120)], corrects: true } });
+  await recordThreadMessage(s, { ...base, card: card([["Rice", 200], ["Dal", 120]]), req: { id: T, card_id: MEAL, base_version: 2, next_card_id: null, closed: null }, clientId: "m3", served: { kind: "meal", items: [item("Salad", 40)], corrects: false } });
+  const t = await s.load("u1", T);
+  assertEquals(t!.cards[0].lines.map((l) => [l.line_id, l.name]), [["L1", "Rice"], ["L2", "Dal"], ["L4", "Salad"]]);
+});
+
+Deno.test("a restore that finds no lines marks nothing", async () => {
+  const s = memoryThreadStore();
+  await s.ensure("u1", T);
+  await s.createCard(T, MEAL, "meal", cardAsLines(LUNCH), null, "lunch");
+  const th = await threadForAgent(s, "u1", { id: T, card_id: null, base_version: null, next_card_id: null, closed: null });
+  assertEquals(await th!.restore("C1", 9), null);
+  assertEquals(th!.restoredFrom, null);
+});

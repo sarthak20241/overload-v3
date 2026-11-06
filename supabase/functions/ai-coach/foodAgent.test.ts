@@ -549,3 +549,12 @@ Deno.test("restore_card on a ref the thread does not have fails honestly", async
   );
   assertEquals(out.kind === "failed" && out.reason, "restore_not_found");
 });
+
+Deno.test("restore_card is not offered while a card is on screen (it would replace the card whole)", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  await runFoodAgent(
+    { text: "make the rice 150 g", defaultMeal: "lunch", card: NOV5_CARD, threadIndex: INDEX },
+    { ...deps(scripted([[{ name: "reply", input: { text: "ok" } }]], bodies)), restoreCard: async () => null },
+  );
+  assert(!(bodies[0].tools as { name: string }[]).some((t) => t.name === "restore_card"));
+});
