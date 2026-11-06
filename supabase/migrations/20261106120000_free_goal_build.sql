@@ -45,6 +45,14 @@ create table if not exists public.free_goal_builds (
 alter table public.free_goal_builds enable row level security;
 revoke all on table public.free_goal_builds from anon, authenticated;
 
+-- How many build claims an account gets: one build plus a spare (see the
+-- header). One place, read by both functions below.
+create or replace function free_goal_build_tries()
+returns integer
+language sql
+immutable
+as $$ select 2 $$;
+
 create or replace function try_claim_free_goal_turn(p_kind text)
 returns table (allowed boolean, reason text)
 language plpgsql
@@ -53,8 +61,8 @@ security definer
 set search_path = public
 as $$
 declare
-  -- See the header. mark_free_goal_build_used() writes c_build_tries too.
-  c_build_tries constant integer := 2;
+  -- See the header.
+  c_build_tries constant integer := free_goal_build_tries();
   c_edit_turns  constant integer := 8;
   v_uid  text;
   v_row  public.free_goal_builds%rowtype;
@@ -115,8 +123,7 @@ security definer
 set search_path = public
 as $$
 declare
-  -- Must match c_build_tries in try_claim_free_goal_turn.
-  c_build_tries constant integer := 2;
+  c_build_tries constant integer := free_goal_build_tries();
   v_uid text;
 begin
   v_uid := current_clerk_user_id();
@@ -133,6 +140,7 @@ $$;
 
 -- Supabase's default privileges grant anon EXECUTE on new public functions;
 -- revoking from public does not remove that explicit grant.
+revoke all on function free_goal_build_tries() from public, anon;
 revoke all on function try_claim_free_goal_turn(text) from public, anon;
 grant execute on function try_claim_free_goal_turn(text) to authenticated;
 revoke all on function mark_free_goal_build_used() from public, anon;
