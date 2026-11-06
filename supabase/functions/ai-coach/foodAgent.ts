@@ -17,6 +17,7 @@
 //
 // Deps are injected so the loop is testable without the network.
 
+import { summarize } from "./foodBarTrace.ts";
 import { type CardLine, cardLines, cardMayBeCut, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { sonnetSettings } from "../_shared/sonnet.ts";
 import {
@@ -108,6 +109,9 @@ export interface AgentTurn {
   tools: { name: string; input: unknown }[];
   input_tokens: number | null;
   output_tokens: number | null;
+  /** What each read returned, cut short, in the order of `tools`. Absent on
+   *  the finishing turn: what a finish did is the agent's outcome. */
+  results?: { name: string; summary: string | null }[];
 }
 
 export type FoodAgentOutcome =
@@ -447,13 +451,16 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
 
     const blocks = (res.data?.content ?? []) as Record<string, unknown>[];
     const uses = blocks.filter((b) => b?.type === "tool_use") as unknown as ToolUse[];
-    turns.push({
+    // One model call, one turn: index.ts stamps turn i at call i's end
+    // (startFoodAgent callEnds). A failed call returns above, before a turn.
+    const thisTurn: AgentTurn = {
       turn,
       ms: Date.now() - t0,
       tools: uses.map((u) => ({ name: u.name, input: u.input })),
       input_tokens: res.data?.usage?.input_tokens ?? null,
       output_tokens: res.data?.usage?.output_tokens ?? null,
-    });
+    };
+    turns.push(thisTurn);
     if (uses.length === 0) return { kind: "failed", reason: "no_tool_call", turns };
 
     // A finish ends the agent even when reads came with it: the model has
@@ -472,11 +479,14 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
       const label = statusFor(u.name, u.input ?? {});
       if (label) deps.onStatus?.(label);
     }
-    const results = await Promise.all(uses.map(async (u) => {
+    const outs: unknown[] = [];
+    const results = await Promise.all(uses.map(async (u, i) => {
       const out = await runRead(u, deps, parse);
+      outs[i] = out;
       remember(seen, out);
       return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) };
     }));
+    thisTurn.results = uses.map((u, i) => ({ name: u.name, summary: summarize(outs[i]) }));
     messages.push({ role: "assistant", content: blocks }, { role: "user", content: results });
   }
   // Unreachable: the last turn always returns. Kept so a future edit to the

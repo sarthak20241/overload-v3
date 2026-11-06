@@ -31,7 +31,7 @@ import { cooldownBody, reserveProSlot } from "../_shared/aiCooldown.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { AREAS as WORD_AREAS, QUESTIONS as WORD_QUESTIONS, YES as WORD_YES } from "../_shared/dronaWords.ts";
 import { decideMoment, type MomentCandidate, momentRow } from "../_shared/dronaMoments.ts";
-import { asNoul, type JevAnswer, type JevUsage } from "./jev.ts";
+import { asNoul, type JevAnswer, type JevDeps, type JevUsage } from "./jev.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
 import { withPhaseActivity } from "./programActivity.ts";
@@ -47,6 +47,7 @@ import {
   type ParseMealDeps,
   type ParseMealInput,
   type ParseMealResult,
+  type ParseModelCall,
   type ParseStep,
   type ParseTier,
   type PreviousItem,
@@ -117,6 +118,22 @@ import {
   sanitizeAnonIntake,
 } from "./anonOnboarding.ts";
 import { type HeldSections, leanUserContext, readHeldSections } from "./userContextLean.ts";
+import {
+  buildFoodBarTraceRow,
+  createFoodBarTrace,
+  fallbackReason,
+  type FoodBarRequestView,
+  type FoodBarTraceCollector,
+  fromParseSteps,
+  isRefusal,
+  readRequestView,
+  routerView,
+  type ServedBody,
+  servedText,
+  type ServedView,
+  servedView,
+  summarize,
+} from "./foodBarTrace.ts";
 
 // Chat sends a short user summary and reads the big sections on demand
 // (userContextLean.ts). LEAN_CHAT_CONTEXT=off sends the whole context again.
@@ -256,14 +273,57 @@ const FOOD_INTENT_MODE = parseFoodIntentMode(Deno.env.get("FOOD_INTENT_MODE"));
 // anyone cared.
 const JEV_TIMEOUT_MS = Math.min(Math.max(envInt("JEV_TIMEOUT_MS", 2500), 500), 10_000);
 
+/** One index.ts Anthropic call onto the food box trace. `saw` is what the
+ *  caller put in the payload: the earlier turns, the card on screen. */
+function recordAnthropicCall(
+  fbTrace: FoodBarTraceCollector | undefined,
+  stage: string,
+  payload: Record<string, unknown>,
+  res: { ok: true; data: any } | { ok: false; status: number; body: string },
+  ms: number,
+  saw: { turns: boolean; card: boolean },
+): void {
+  if (!fbTrace) return;
+  const u = res.ok ? res.data?.usage : null;
+  fbTrace.call({
+    stage,
+    provider: "anthropic",
+    model: typeof payload.model === "string" ? payload.model : null,
+    ms,
+    ok: res.ok,
+    http_status: res.ok ? null : res.status,
+    error: res.ok ? null : String(res.body ?? "").slice(0, 200),
+    input_tokens: typeof u?.input_tokens === "number" ? u.input_tokens : null,
+    output_tokens: typeof u?.output_tokens === "number" ? u.output_tokens : null,
+    cache_read_tokens: typeof u?.cache_read_input_tokens === "number" ? u.cache_read_input_tokens : null,
+    saw_recent_turns: saw.turns,
+    saw_card: saw.card,
+  });
+}
+
+/** Did the router's state carry earlier turns, and a card? Non-empty only. */
+function routerStateSaw(state: string): { turns: boolean; card: boolean } {
+  if (!state.startsWith("{")) return { turns: false, card: false };
+  try {
+    const o = JSON.parse(state) as { recent_turns?: unknown; card?: unknown };
+    return {
+      turns: Array.isArray(o.recent_turns) && o.recent_turns.length > 0,
+      card: Array.isArray(o.card) && o.card.length > 0,
+    };
+  } catch {
+    return { turns: false, card: false };
+  }
+}
+
 /** Step 2 of the ladder: a small forced-tool Haiku call, used when Jev is
  *  absent, rate limited, or honest about not knowing. Forced tool_choice so the
  *  answer is an enum rather than a sentence we would have to parse. Cheap
  *  enough to be the thing we do when unsure: it fires on a few percent of
  *  messages, and only ever on the ones that were genuinely ambiguous. */
-async function classifyFoodIntentWithModel(text: string): Promise<FoodIntent | null> {
+async function classifyFoodIntentWithModel(text: string, fbTrace?: FoodBarTraceCollector): Promise<FoodIntent | null> {
   if (!ANTHROPIC_API_KEY) return null;
-  const res = await callAnthropic({
+  const c0 = Date.now();
+  const payload: Record<string, unknown> = {
     model: PARSE_MEAL_MODEL,
     // 96, not 64: Haiku 5.5 counts the same text as ~30% more tokens.
     max_tokens: 96,
@@ -298,7 +358,12 @@ async function classifyFoodIntentWithModel(text: string): Promise<FoodIntent | n
     }],
     tool_choice: { type: "tool", name: "route_food_text" },
     messages: [{ role: "user", content: text }],
-  }, 6000);
+  };
+  const res = await callAnthropic(payload, 6000);
+  // The router's state is the text it classifies: plain text, or JSON with
+  // the turns and the card (foodIntentState). Parsed, not string-matched, so a
+  // user who types "card": cannot make it read as seen.
+  recordAnthropicCall(fbTrace, "router_model", payload, res, Date.now() - c0, routerStateSaw(text));
   if (!res.ok) {
     console.log(`[food_intent] model fallback failed: ${res.status}`);
     return null;
@@ -373,13 +438,15 @@ function makeFoodIntentDeps(
   savedMeals: SavedMealSummary[],
   abortSignal?: AbortSignal,
   onUsage?: (u: JevUsage) => void,
+  fbTrace?: FoodBarTraceCollector,
+  onFailure?: JevDeps["onFailure"],
 ): FoodIntentDeps {
   return {
     savedMeals,
     jev: JEV_API_KEY
-      ? { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, abortSignal, log: (m) => console.log(m), onUsage }
+      ? { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, abortSignal, log: (m) => console.log(m), onUsage, onFailure }
       : undefined,
-    classify: classifyFoodIntentWithModel,
+    classify: (state) => classifyFoodIntentWithModel(state, fbTrace),
     log: (m) => console.log(m),
   };
 }
@@ -406,16 +473,29 @@ function startFoodIntent(
   context: FoodConversationContext,
   abortSignal?: AbortSignal,
   onUsage?: (u: JevUsage) => void,
+  fbTrace?: FoodBarTraceCollector,
+  onFailure?: JevDeps["onFailure"],
 ): Promise<FoodIntentDecision | null> {
-  if (!shouldRouteFoodIntent(FOOD_INTENT_MODE)) return Promise.resolve(null);
+  if (!shouldRouteFoodIntent(FOOD_INTENT_MODE)) {
+    fbTrace?.step({ src: "router", tool: "food_intent", result: { ran: false, reason: `mode_${FOOD_INTENT_MODE}` } });
+    return Promise.resolve(null);
+  }
+  const r0 = Date.now();
   // The same saved-meal read the parser uses, so one query serves both.
   return savedMealsP
-    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal, onUsage), context))
+    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal, onUsage, fbTrace, onFailure), context))
     // routeFoodIntent is documented never to throw. This is the belt on top of
     // the braces: nothing about a shadow measurement may fail a meal log.
     .catch((e) => {
       console.log(`[food_intent] router threw: ${String(e).slice(0, 120)}`);
+      fbTrace?.step({ src: "router", tool: "food_intent", result: { ran: false, reason: `threw:${String(e).slice(0, 120)}` } });
       return null;
+    })
+    .then((d) => {
+      // The verdict, its score and source, and why Jev was not used if it was
+      // not: the record a review reads first.
+      if (d) fbTrace?.step({ src: "router", tool: "food_intent", result: routerView(d, Date.now() - r0) });
+      return d;
     });
 }
 
@@ -465,6 +545,10 @@ async function callWithDiaryReads(
   payload: Record<string, unknown>,
   readDiary: DiaryReader | null,
   timeoutMs: number,
+  /** Told about each round trip, for the food box trace. */
+  onCall?: (body: Record<string, unknown>, res: { ok: true; data: any } | { ok: false; status: number; body: string }, ms: number) => void,
+  /** Told about each diary read and what it returned. */
+  onRead?: (input: unknown, out: unknown) => void,
 ): Promise<{ ok: true; data: any; reads: number } | { ok: false; status: number; body: string }> {
   const messages = [...(payload.messages as unknown[])];
   let reads = 0;
@@ -478,7 +562,9 @@ async function callWithDiaryReads(
     const offered = canRead || reads > 0 ? [LIST_LOGGED_MEALS_TOOL, ...tools] : tools;
     if (offered.length > 0) body.tools = offered;
     if (!canRead && reads > 0 && tools.length === 0) body.tool_choice = { type: "none" };
+    const c0 = Date.now();
     const res = await callAnthropic(body, timeoutMs);
+    try { onCall?.(body, res, Date.now() - c0); } catch { /* trace only */ }
     if (!res.ok) return res;
     const blocks = (res.data?.content ?? []) as { type?: string; name?: string; id?: string; input?: unknown }[];
     const readCalls = blocks.filter((b) => b.type === "tool_use" && b.name === LIST_LOGGED_MEALS_TOOL.name);
@@ -486,14 +572,32 @@ async function callWithDiaryReads(
     // Past the cap a create draft that reaches for the diary again comes back
     // with no create in it, and the caller serves the parse as a log.
     if (readCalls.length === 0 || otherCalls.length > 0 || !canRead) return { ok: true, data: res.data, reads };
-    const results = await Promise.all(readCalls.map(async (b) => ({
-      type: "tool_result",
-      tool_use_id: b.id ?? "",
-      content: JSON.stringify(await readDiary!((b.input ?? {}) as Record<string, unknown>)),
-    })));
+    const results = await Promise.all(readCalls.map(async (b) => {
+      const out = await readDiary!((b.input ?? {}) as Record<string, unknown>);
+      try { onRead?.(b.input ?? {}, out); } catch { /* trace only */ }
+      return { type: "tool_result", tool_use_id: b.id ?? "", content: JSON.stringify(out) };
+    }));
     reads += readCalls.length;
     messages.push({ role: "assistant", content: blocks }, { role: "user", content: results });
   }
+}
+
+/** The two callWithDiaryReads hooks for a reply or create call: every round
+ *  trip and every diary read land on the food box trace. Neither call is sent
+ *  the card (historyMessages carries the turns only). */
+function followupTrace(
+  fbTrace: FoodBarTraceCollector | undefined,
+  stage: "reply" | "create",
+  sawTurns: boolean,
+): [
+  ((body: Record<string, unknown>, res: { ok: true; data: any } | { ok: false; status: number; body: string }, ms: number) => void) | undefined,
+  ((input: unknown, out: unknown) => void) | undefined,
+] {
+  if (!fbTrace) return [undefined, undefined];
+  return [
+    (body, res, ms) => recordAnthropicCall(fbTrace, stage, body, res, ms, { turns: sawTurns, card: false }),
+    (input, out) => fbTrace.step({ src: stage, tool: "coach_list_logged_meals", input, result: summarize(out) }),
+  ];
 }
 
 /**
@@ -513,6 +617,7 @@ async function replyToFoodBarChat(
   supportsCreate: boolean,
   readDiary: DiaryReader | null = null,
   recentTurns: { role: "user" | "drona"; text: string }[] = [],
+  fbTrace?: FoodBarTraceCollector,
 ): Promise<{ reply: string | null; followup: FoodFollowup }> {
   if (!ANTHROPIC_API_KEY) return { reply: null, followup: skippedFollowup("reply") };
   const t0 = Date.now();
@@ -547,7 +652,7 @@ async function replyToFoodBarChat(
       "Never claim you did anything: you logged nothing and saved nothing. Never use em dashes. " +
       "Earlier turns of this conversation come with the message: a bare \"yes\" answers whatever you last asked.",
     messages: historyMessages(recentTurns, text),
-  }, readDiary, 6000);
+  }, readDiary, 6000, ...followupTrace(fbTrace, "reply", recentTurns.length > 0));
   if (!res.ok) console.log(`[food_intent] chat reply failed: ${res.status}`);
   return readReplyResult(res, Date.now() - t0);
 }
@@ -567,6 +672,7 @@ async function draftFoodCreate(
   mealHint: MealType | null,
   readDiary: DiaryReader | null = null,
   recentTurns: { role: "user" | "drona"; text: string }[] = [],
+  fbTrace?: FoodBarTraceCollector,
 ): Promise<{ create: { tool: string; input: Record<string, unknown> } | null; followup: FoodFollowup }> {
   if (!ANTHROPIC_API_KEY) return { create: null, followup: skippedFollowup("create") };
   const t0 = Date.now();
@@ -597,7 +703,7 @@ async function draftFoodCreate(
     // "any" and not a named tool: which of the two it is IS the judgment.
     tool_choice: { type: "any" },
     messages: historyMessages(recentTurns, text),
-  }, readDiary, 12000);
+  }, readDiary, 12000, ...followupTrace(fbTrace, "create", recentTurns.length > 0));
   if (!res.ok) console.log(`[food_intent] create draft failed: ${res.status}`);
   return readDraftResult(res, Date.now() - t0);
 }
@@ -663,13 +769,27 @@ function startFoodAgent(args: {
   card?: { lines: CardLine[]; previousText: string | null; previousWords: string | null; previousItems: PreviousItem[] } | null;
   brandWeb: boolean;
   onStatus?: (label: string) => void;
+  fbTrace?: FoodBarTraceCollector;
 }): Promise<FoodAgentOutcome | null> {
+  const fb = args.fbTrace;
+  // The agent's own parses: their steps and model calls land on the trace
+  // under agent_parse, so a review sees what each parse_food call looked up.
+  const agentParse = fb?.scoped("agent_parse");
+  const tracedParse = (p: Promise<ParseMealResult>, input: string): Promise<ParseMealResult> =>
+    p.then((r) => {
+      if (agentParse) {
+        agentParse.step({ src: "parse", tool: "parse_food", input, result: { items: r.parsed?.items.length ?? 0, declined: r.declined?.message ?? null, tier: r.tier ?? null } });
+        for (const st of fromParseSteps("parse", r.steps)) agentParse.step(st);
+      }
+      return r;
+    });
   return args.intentP.then(async (d) => {
     // Open AND whole, the same rule index.ts applies (see `cardOpen` there).
     const cardOpen = !!args.card?.lines.length && !cardMayBeCut(args.card.lines);
     if (FOOD_INTENT_MODE !== "on" || !wantsFoodAgent(d, args.supportsCreate, cardOpen)) return null;
     if (!ANTHROPIC_API_KEY) return null;
     const t0 = Date.now();
+    const callEnds: number[] = [];
     const out = await runFoodAgent(
       {
         text: args.text,
@@ -684,13 +804,27 @@ function startFoodAgent(args: {
       },
       {
         model: MODEL,
-        callModel: (b) => callAnthropic(b, 15000),
+        callModel: async (b) => {
+          const c0 = Date.now();
+          const res = await callAnthropic(b, 15000);
+          // When each turn's model call ENDED: the turn's step is stamped
+          // there, so tool time between turns is real, not summed away.
+          // Assumes one callModel per turn (foodAgent.test.ts pins it): a
+          // retry added here must push one end time, not one per attempt.
+          if (fb) callEnds.push(Date.now() - fb.t0);
+          // The agent is sent the earlier turns as messages and the card in
+          // its opening text (foodAgent.ts openingText).
+          recordAnthropicCall(fb, "agent", b, res, Date.now() - c0, {
+            turns: args.recentTurns.length > 0, card: !!args.card?.lines.length,
+          });
+          return res;
+        },
         readDiary: args.readDiary,
         savedMeals: () => args.savedMealsP,
         // A fresh parse without onProgress: the agent's parses must not paint
         // rows on the card behind its back.
         parseFood: (t) =>
-          runParseMeal(makeParseDeps(args.userClient, args.admin, args.userId, { brandWeb: args.brandWeb }), {
+          tracedParse(runParseMeal(makeParseDeps(args.userClient, args.admin, args.userId, { brandWeb: args.brandWeb, fbTrace: agentParse }), {
             text: t,
             localHour: args.localHour,
             mealHint: args.mealHint,
@@ -700,12 +834,12 @@ function startFoodAgent(args: {
             todayTotals: null,
             targets: null,
             contextPromise: args.contextPromise,
-          }),
+          }), t),
         // The correction path against the card: the agent says the change in
         // words, this reworks the numbers from each line's own figures.
         correctCard: args.card
           ? (change) =>
-            runParseMeal(makeParseDeps(args.userClient, args.admin, args.userId, { brandWeb: args.brandWeb }), {
+            tracedParse(runParseMeal(makeParseDeps(args.userClient, args.admin, args.userId, { brandWeb: args.brandWeb, fbTrace: agentParse }), {
               text: change,
               localHour: args.localHour,
               mealHint: args.mealHint,
@@ -720,7 +854,7 @@ function startFoodAgent(args: {
               previousWords: args.card!.previousWords,
               previousItems: args.card!.previousItems,
               recentTurns: args.recentTurns,
-            })
+            }), `correct_card: ${change}`)
           : undefined,
         onStatus: args.onStatus,
         log: (m) => console.log(m),
@@ -735,8 +869,26 @@ function startFoodAgent(args: {
       output_tokens: out.turns.reduce((n, t) => n + (t.output_tokens ?? 0), 0),
       latency_ms: Date.now() - t0,
       status: out.kind === "failed" ? "error" : "success",
-      metadata: { user_id: args.userId, kind: out.kind, turns: out.turns.length },
+      metadata: { user_id: args.userId, kind: out.kind, turns: out.turns.length, ...(fb ? { request_id: fb.requestId } : {}) },
     });
+    // Each turn as a step: the tools it called together, their inputs, and
+    // what each read returned. Stamped at the turn's end.
+    if (fb) {
+      let at = t0 - fb.t0;
+      for (const [i, turn] of out.turns.entries()) {
+        // runFoodAgent makes exactly one model call per turn and adds no turn
+        // for a failed call (it ends the run), so call i belongs to turn i.
+        at = callEnds[i] ?? at + turn.ms;
+        fb.step({
+          src: "agent",
+          tool: `turn_${turn.turn}`,
+          at_ms: at,
+          input: turn.tools,
+          result: { results: turn.results ?? null, input_tokens: turn.input_tokens, output_tokens: turn.output_tokens, ms: turn.ms },
+        });
+      }
+      fb.step({ src: "agent", tool: "outcome", result: { kind: out.kind, reason: out.kind === "failed" ? out.reason : null } });
+    }
     return out;
   }).catch((e) => {
     console.log(`[food_agent] threw: ${String(e).slice(0, 160)}`);
@@ -766,6 +918,7 @@ async function resolveFoodBarOutcome(args: {
   agentP?: Promise<FoodAgentOutcome | null>;
   recentTurns?: { role: "user" | "drona"; text: string }[];
   cardOpen?: boolean;
+  fbTrace?: FoodBarTraceCollector;
 }): Promise<FoodBarOutcome> {
   // Every outcome says whether a card was open, so the trace can tell a card
   // question that fell to the parse from a plain one. One place, not per return.
@@ -779,6 +932,16 @@ async function resolveFoodBarOutcome(args: {
     parseFoundFood,
     clientSupportsCreate: args.supportsCreate,
     cardOpen: args.cardOpen,
+  });
+  // The policy's inputs and its answer, as one step.
+  args.fbTrace?.step({
+    src: "router",
+    tool: "decideFoodAction",
+    input: {
+      intent: decision?.intent ?? null, confidence: decision?.confidence ?? null, source: decision?.source ?? null,
+      parse_found_food: parseFoundFood, card_open: !!args.cardOpen, can_create: args.supportsCreate, mode: FOOD_INTENT_MODE,
+    },
+    result: action,
   });
 
   if (action === "agent") {
@@ -803,16 +966,18 @@ async function resolveFoodBarOutcome(args: {
   }
   if (action === "reply") {
     const { reply, followup } = await replyToFoodBarChat(
-      args.text, args.supportsCreate, args.readDiary ?? null, args.recentTurns ?? [],
+      args.text, args.supportsCreate, args.readDiary ?? null, args.recentTurns ?? [], args.fbTrace,
     );
+    args.fbTrace?.step({ src: "reply", tool: "replyToFoodBarChat", result: followup });
     return reply
       ? out({ action, planned: action, decision, reply, followup })
       : out({ action: "log", planned: action, decision, followup });
   }
   if (action === "create") {
     const { create, followup } = await draftFoodCreate(
-      args.text, args.mealHint, args.readDiary ?? null, args.recentTurns ?? [],
+      args.text, args.mealHint, args.readDiary ?? null, args.recentTurns ?? [], args.fbTrace,
     );
+    args.fbTrace?.step({ src: "create", tool: "draftFoodCreate", result: followup });
     return create
       ? out({ action, planned: action, decision, create, followup })
       : out({ action: "log", planned: action, decision, followup });
@@ -859,6 +1024,8 @@ function foodIntentStep(d: FoodIntentDecision | null, outcome?: FoodBarOutcome):
       source: d.source,
       confidence: d.confidence,
       note: d.note,
+      // Why Jev's verdict was not used (timeout, error, under the floor).
+      jev_miss: d.jevMiss ?? null,
       // The waiting-meal questions (carryPendingMeal): what Jev made of food
       // in this message, and of the meal that was waiting, if any.
       has_food: d.hasFood ?? null,
@@ -1044,6 +1211,8 @@ interface CoachTrace {
   retrieval_rewrite_error?: string;
   citation_ids: string[];
   tool_calls: string[];
+  /** The food box request id (food_bar_traces.request_id). Food box only. */
+  request_id?: string;
   last_user_message_preview: string | null;
   response_preview: string | null;
   // Migration 0080. Free-form diagnostic bag. What actually gets written today:
@@ -1114,6 +1283,30 @@ function logTavilyCost(admin: SupabaseClient, credits: number | undefined, metad
   });
 }
 
+/** Jev's failure hook for one caller: a failed call on the food box trace,
+ *  beside the answered ones jevUsageLogger records. */
+function jevFailureLogger(
+  fbTrace: FoodBarTraceCollector | undefined,
+  via: string,
+  saw: { turns: boolean; card: boolean } = { turns: false, card: false },
+): JevDeps["onFailure"] {
+  if (!fbTrace) return undefined;
+  return (f) =>
+    fbTrace.call({
+      stage: `jev:${via}`,
+      provider: "typesafe",
+      model: null,
+      ms: f.latency_ms,
+      ok: false,
+      error: `${f.failure}: ${f.detail}`.slice(0, 200),
+      input_tokens: null,
+      output_tokens: null,
+      saw_recent_turns: saw.turns,
+      saw_card: saw.card,
+      questions: f.questions,
+    });
+}
+
 /** Jev's usage hook for one caller: a token_usage_log row per answered call,
  *  priced by model_pricing (input tokens only). Kept alive past the response. */
 function jevUsageLogger(
@@ -1121,8 +1314,24 @@ function jevUsageLogger(
   pipeline: string,
   via: string,
   userId: string | null,
+  fbTrace?: FoodBarTraceCollector,
+  /** What the state Jev was handed carried: the router's state holds the turns
+   *  and the card when there are any (foodIntentState). */
+  saw: { turns: boolean; card: boolean } = { turns: false, card: false },
 ): (u: JevUsage) => void {
-  return (u) =>
+  return (u) => {
+    fbTrace?.call({
+      stage: `jev:${via}`,
+      provider: "typesafe",
+      model: u.served_model ?? u.model,
+      ms: u.latency_ms ?? 0,
+      ok: true,
+      input_tokens: u.input_tokens ?? null,
+      output_tokens: u.output_tokens ?? null,
+      saw_recent_turns: saw.turns,
+      saw_card: saw.card,
+      questions: u.questions,
+    });
     keepAlive(logTokenUsage(admin, {
       pipeline,
       provider: "typesafe",
@@ -1134,8 +1343,10 @@ function jevUsageLogger(
         via, questions: u.questions, ...(u.served_model ? { served_model: u.served_model } : {}),
         ...(u.usage_missing ? { usage_missing: true } : {}),
         ...(userId ? { user_id: userId } : {}),
+        ...(fbTrace ? { request_id: fbTrace.requestId } : {}),
       },
     }));
+  };
 }
 
 async function logTokenUsage(
@@ -1362,6 +1573,7 @@ async function recordTrace(
         retrieval_query_rewritten: _rqr,
         retrieval_query: _rq,
         retrieval_rewrite_error: _rre,
+        request_id: _reqId,
         ...legacy
       } = row;
       const { data: legacyRow, error: retryErr } = await admin.from("coach_traces").insert(legacy).select("id").maybeSingle();
@@ -3123,7 +3335,16 @@ function recordParseTrace(
           row = { ...row, steps: [...existing, ...extra] };
         }
       }
-      await admin.from("parse_traces").insert(row);
+      const { error } = await admin.from("parse_traces").insert(row);
+      // Deploy-order resilience: request_id and served_action arrive with the
+      // food_bar_traces migration. Before it, keep the row without them.
+      if (error && /column .* does not exist|could not find the '.*' column/i.test(error.message ?? "")) {
+        const { request_id: _r, served_action: _s, served_text: _t, ...legacy } = row;
+        const retry = await admin.from("parse_traces").insert(legacy);
+        if (retry.error) console.log("[parse_meal] parse_trace insert failed:", retry.error.message);
+      } else if (error) {
+        console.log("[parse_meal] parse_trace insert failed:", error.message);
+      }
     } catch (e) {
       console.log("[parse_meal] parse_trace insert failed:", String(e));
     }
@@ -3149,9 +3370,10 @@ function makeParseDeps(
   userId: string,
   /** Pro and trialing only. A web lookup is Anthropic's or Tavily's fee, the
    *  same reason Precise is Pro-only; absent means no web. */
-  opts: { brandWeb?: boolean } = {},
+  opts: { brandWeb?: boolean; fbTrace?: FoodBarTraceCollector } = {},
 ): ParseMealDeps {
   let searchCountryP: Promise<string | null> | undefined;
+  const fb = opts.fbTrace;
   const aliases = preciseAliasStore(admin, userId);
   return {
     anthropicApiKey: ANTHROPIC_API_KEY!,
@@ -3242,9 +3464,18 @@ function makeParseDeps(
     jev: JEV_API_KEY
       ? {
         apiKey: JEV_API_KEY, timeoutMs: Math.max(JEV_TIMEOUT_MS, 5000), log: (m) => console.log(m),
-        onUsage: jevUsageLogger(admin, "parse_meal", "parse", userId),
+        onUsage: jevUsageLogger(admin, "parse_meal", "parse", userId, fb),
+        onFailure: jevFailureLogger(fb, "parse"),
       }
       : undefined,
+    // The food box trace: every step stamped with its time, every model call
+    // recorded with its stage and whether it saw the turns and the card.
+    ...(fb
+      ? {
+        stepClock: fb.t0,
+        onModelCall: (c: ParseModelCall) => fb.call({ ...c, provider: "anthropic" }),
+      }
+      : {}),
     searchCountry: PRECISE_SEARCH_COUNTRY,
     // This user's own log, last 10 days, through THEIR client: RLS keeps it
     // theirs. Started now so it is ready by the time extract finishes.
@@ -3400,6 +3631,17 @@ function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
   };
 }
 
+/** The stream gate, as the trace records it: the same rule as wantsStream
+ *  in handleParseMealRequest (stream asked for, Fast asked for, Fast on). One
+ *  place, so a refused row and a served row read `streamed` the same way. */
+function wouldStream(body: Record<string, unknown>): boolean {
+  return body.stream === true && body.speed === "fast" && PARSE_FAST_MODE !== "off";
+}
+
+/** How long the food box trace waits for a router that has not answered yet.
+ *  Above Jev's own cap (10 s) plus the model rung, so only a hung router hits it. */
+const FOOD_BAR_ROUTER_WAIT_MS = 20_000;
+
 async function handleParseMealRequest(args: {
   admin: SupabaseClient;
   userClient: SupabaseClient;
@@ -3409,8 +3651,112 @@ async function handleParseMealRequest(args: {
   body: Record<string, unknown>;
   respond: (body: unknown, status: number) => Promise<Response>;
 }): Promise<Response> {
-  const { admin, userClient, trace, userId, startedAtMs, body, respond } = args;
+  const { admin, userClient, trace, userId, startedAtMs, body } = args;
   PARSE_ISOLATE_REQUESTS++;
+
+  // ONE food_bar_traces row per food box message, joinable by request_id to
+  // parse_traces, coach_traces and token_usage_log. Collected as the request
+  // runs and inserted once, after the answer is on its way.
+  const requestId = crypto.randomUUID();
+  const fbTrace = createFoodBarTrace(requestId, startedAtMs);
+  trace.request_id = requestId;
+  let fbWritten = false;
+  // Filled in once the request is read; a request turned away before that
+  // (empty text, no access, a cap, a cooldown) is traced from the raw body.
+  let fbRequest: FoodBarRequestView | null = null;
+  let fbCard = { lines: 0, may_be_cut: false, open: false };
+  let fbIntent: { p: Promise<FoodIntentDecision | null>; ms: () => number | null } | null = null;
+  const writeFoodBar = (o: {
+    served: ServedView;
+    status: "ok" | "error" | "refused";
+    error?: string | null;
+    outcome?: FoodBarOutcome | null;
+    firstParse?: ParseMealResult | null;
+    result?: ParseMealResult | null;
+    extraSteps?: ParseStep[];
+  }) => {
+    if (fbWritten) return;
+    fbWritten = true;
+    const p = (async () => {
+      try {
+        // The router has nearly always answered by now (the outcome waited on
+        // it). In shadow mode it may not have: wait a bounded time, then write
+        // the row without it rather than hold the row, and this task, open.
+        let routerLate = false;
+        let waitTimer: ReturnType<typeof setTimeout> | undefined;
+        const d = fbIntent
+          ? await Promise.race([
+            fbIntent.p.catch(() => null),
+            new Promise<null>((r) => { waitTimer = setTimeout(() => { routerLate = true; r(null); }, FOOD_BAR_ROUTER_WAIT_MS); }),
+          ])
+          : null;
+        clearTimeout(waitTimer);
+        const outcome = o.outcome ?? null;
+        const req = fbRequest ?? readRequestView(body, { recentTurns: [], pendingMeal: body.pending_meal ?? null }, {
+          text: typeof body.text === "string" ? body.text : "", mealHint: null, localDate: null, localHour: null,
+          streamed: wouldStream(body), autoLog: body.auto_log === true, clientId: typeof body.client_id === "string" ? body.client_id : null,
+          canCreate: clientSupportsFoodCreate(body),
+        });
+        const answeredBy = !outcome
+          ? null
+          : outcome.action === "log"
+          ? (outcome.result ? "food_agent" : "parse")
+          : outcome.agent?.kind === "failed"
+          ? "canned_agent_failed"
+          : outcome.agent
+          ? "food_agent"
+          : outcome.action === "reply"
+          ? "reply_call"
+          : "create_call";
+        const row = buildFoodBarTraceRow({
+          requestId,
+          userId,
+          request: req,
+          router: routerView(d, fbIntent?.ms() ?? null, routerLate ? "router_still_running" : "router_did_not_run"),
+          card: fbCard,
+          planned: outcome?.planned ?? null,
+          action: outcome?.action ?? null,
+          fallback: outcome
+            ? fallbackReason({
+              planned: outcome.planned, action: outcome.action, followupError: outcome.followup?.error ?? null,
+              agentKind: outcome.agent?.kind ?? null, agentReason: outcome.agent?.reason ?? null, agentRan: !!outcome.agent,
+            })
+            : null,
+          answeredBy,
+          tierUsed: (o.result ?? o.firstParse)?.tier ?? null,
+          served: o.served,
+          steps: [
+            ...fbTrace.steps,
+            // The first parse ran beside the router whatever was served; its
+            // steps are the search, lookups and decide behind a served meal.
+            ...fromParseSteps("parse", o.firstParse?.steps),
+            ...fromParseSteps("edge", o.extraSteps),
+          ],
+          calls: fbTrace.calls,
+          latencyMs: Date.now() - startedAtMs,
+          status: o.status,
+          error: o.error ?? null,
+        });
+        const { error } = await admin.from("food_bar_traces").insert(row);
+        if (error) console.log(`[parse_meal] food_bar_trace insert failed: ${(error.message ?? "").slice(0, 200)}`);
+      } catch (e) {
+        console.log(`[parse_meal] food_bar_trace threw: ${String(e).slice(0, 200)}`);
+      }
+    })();
+    keepAlive(p);
+  };
+  // Every early return goes through here, so a refused message is traced too.
+  const respond = (b: unknown, status: number): Promise<Response> => {
+    if (!fbWritten) {
+      const bb = (b ?? {}) as ServedBody;
+      writeFoodBar({
+        served: servedView(bb, status, null),
+        status: isRefusal(status) ? "refused" : status >= 400 ? "error" : "ok",
+        error: status >= 400 ? (trace.error_message ?? bb.error ?? null) : null,
+      });
+    }
+    return args.respond(b, status);
+  };
 
   const text = typeof body.text === "string" ? body.text.trim() : "";
   if (!text) {
@@ -3606,6 +3952,28 @@ async function handleParseMealRequest(args: {
   // review card was still holding back.
   const auto = readAutoLogRequest(body, localDate);
   const autoLogArmed = auto.autoLog && previousItems.length === 0;
+  fbRequest = readRequestView(body, { recentTurns, pendingMeal: baseFoodContext.pendingMeal }, {
+    text, mealHint, localDate, localHour, streamed: wouldStream(body),
+    autoLog: auto.autoLog, clientId: auto.clientId, canCreate: clientSupportsFoodCreate(body),
+  });
+  fbCard = { lines: card.length, may_be_cut: cardMayBeCut(card), open: cardOpen };
+  // One saved-meal read per request, shared by the router, the parse and the agent.
+  let savedMealsShared: Promise<SavedMealForParse[]> | null = null;
+  const savedMealsPFor = () => (savedMealsShared ??= fetchSavedMealsForParse(userClient));
+  /** The router, started with the trace's hooks, and timed for the trace. */
+  const startTracedIntent = (signal?: AbortSignal) => {
+    const i0 = Date.now();
+    let ms: number | null = null;
+    const p = startFoodIntent(
+      savedMealsPFor(), text, foodContext, signal,
+      jevUsageLogger(admin, "parse_meal", "food_intent", userId, fbTrace, { turns: recentTurns.length > 0, card: card.length > 0 }),
+      fbTrace,
+      jevFailureLogger(fbTrace, "food_intent", { turns: recentTurns.length > 0, card: card.length > 0 }),
+    );
+    void p.then(() => { ms = Date.now() - i0; }, () => {});
+    fbIntent = { p, ms: () => ms };
+    return p;
+  };
 
   // The diary, for "save yesterday's breakfast" and "what did I have for
   // lunch". The phone's own date anchors "today"; the offset only when the
@@ -3790,7 +4158,7 @@ async function handleParseMealRequest(args: {
   // gap in the Super wiring - Super runs entirely in the non-streaming branch
   // below, and the hardcoded "fast" in this block's trace line is correct
   // because this block cannot be reached any other way.
-  const wantsStream = body.stream === true && wantsFast;
+  const wantsStream = wouldStream(body);
 
   if (wantsStream) {
     const enc = new TextEncoder();
@@ -3805,7 +4173,7 @@ async function handleParseMealRequest(args: {
     // path (type, send, close the app), so cancel() is a no-op and the parse
     // runs through to the diary write. parseAbortFor scopes that to the flag.
     const abort = parseAbortFor(autoLogArmed);
-    const deps = { ...makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier }), abortSignal: abort.signal };
+    const deps = { ...makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace }), abortSignal: abort.signal };
     const stream = new ReadableStream({
       cancel() {
         abort.cancel();
@@ -3825,8 +4193,8 @@ async function handleParseMealRequest(args: {
         // the client leaving aborts the parse (see parseAbortFor above).
         // Kicked off BEFORE the parse is awaited, so the two overlap and the
         // common path (log, almost always) pays nothing for the question.
-        const savedMealsP = fetchSavedMealsForParse(userClient);
-        const intentP = startFoodIntent(savedMealsP, text, foodContext, abort.signal, jevUsageLogger(admin, "parse_meal", "food_intent", userId));
+        const savedMealsP = savedMealsPFor();
+        const intentP = startTracedIntent(abort.signal);
         const supportsCreate = clientSupportsFoodCreate(body);
         // Settled into a plain variable so the progress gate below can read it
         // synchronously. Awaiting inside onProgress would stall the stream.
@@ -3840,6 +4208,7 @@ async function handleParseMealRequest(args: {
           // Builds that do not know this event skip it (dietData ignores
           // unknown events), so this needs no capability of its own.
           onStatus: (label) => send("status", { label }),
+          fbTrace,
         });
         const work = (async () => {
           // A silent stream gets dropped on the way to the phone (see
@@ -3848,6 +4217,10 @@ async function handleParseMealRequest(args: {
           // here, inside the block whose finally stops it, so no path between
           // the two can leave the interval running.
           const stopHeartbeat = startHeartbeat((frame) => controller.enqueue(enc.encode(frame)));
+          // Read by the catch, like the JSON path: a failure after the parse or
+          // the decision still traces what got that far.
+          let streamFirstParse: ParseMealResult | null = null;
+          let streamOutcome: FoodBarOutcome | null = null;
           try {
             const pendingMeal = foodContext.pendingMeal && continuesPendingMeal(await intentP)
               ? foodContext.pendingMeal : null;
@@ -3887,29 +4260,35 @@ async function handleParseMealRequest(args: {
                 variantChips: clientSupportsVariantSwap(body),
               },
             );
+            streamFirstParse = firstParse;
             const outcome = await resolveFoodBarOutcome({
-              result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen,
+              result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen, fbTrace,
             });
+            streamOutcome = outcome;
             // The agent's meal replaces the first parse when it finished with a log.
             const result = outcome.result ?? firstParse;
+            // What `end` carried, for the food box trace.
+            let endBody: ServedBody = {};
             // A create is NOT a log: the user asked to save, so "Just log it"
             // must not write the parsed meal behind the save card's back. A reply
             // has nothing to log. Only the log path runs the diary write.
             let autoRes: Awaited<ReturnType<typeof finishAutoLog>> | null = null;
             if (outcome.action === "create") {
-              send("end", { parsed: null, declined: null, proposal: null, create: outcome.create });
+              endBody = { parsed: null, declined: null, proposal: null, create: outcome.create };
+              send("end", endBody);
             } else if (outcome.action === "reply") {
               // The existing decline channel, which every build already draws.
-              send("end", {
+              endBody = {
                 parsed: null,
                 declined: withPendingMeal({ message: outcome.reply! }, { decision: outcome.decision, incoming: foodContext.pendingMeal, text, fromAgent: agentAsked(outcome.agent) }),
                 proposal: null,
-              });
+              };
+              send("end", endBody);
             } else {
               // The diary write happens BEFORE `end` so a connected client's
               // strip goes straight to "Added" with the ids Undo needs.
               autoRes = await finishAutoLog(result);
-              send("end", {
+              endBody = {
                 parsed: result.parsed,
                 declined: withPendingMeal(result.declined, { decision: outcome.decision, incoming: foodContext.pendingMeal, text }),
                 proposal: result.proposal ?? null,
@@ -3917,8 +4296,30 @@ async function handleParseMealRequest(args: {
                 saved_suggestions: result.saved_suggestions ?? [],
                 // Just log it: `logged` when the diary was written, else why not.
                 ...autoRes.extra,
-              });
+              };
+              send("end", endBody);
             }
+            const streamTiming: ParseStep = {
+              iter: 9,
+              tool: "__edge_timing",
+              input: {
+                pre_parse_ms: preParseMs,
+                run_parse_ms: Date.now() - runParse0,
+                cold_isolate: PARSE_ISOLATE_REQUESTS <= 1,
+                region: Deno.env.get("SB_REGION") ?? Deno.env.get("SB_EXECUTION_REGION") ??
+                  Deno.env.get("DENO_REGION") ?? Deno.env.get("AWS_REGION") ?? "unknown",
+                streamed: true,
+              },
+            };
+            const servedNow = servedView(endBody, 200, outcome.action);
+            writeFoodBar({
+              served: servedNow,
+              status: "ok",
+              outcome,
+              firstParse,
+              result,
+              extraSteps: [...(autoRes?.step ? [autoRes.step] : []), streamTiming],
+            });
             void recordParseTrace(admin, {
               user_id: userId,
               // The tier the parse ran in (0149): stamps the lines the client logs.
@@ -3934,18 +4335,13 @@ async function handleParseMealRequest(args: {
               // unexplained latency. pre_parse_ms is auth + the rate-limit write
               // before the parse starts; run_parse_ms brackets the parse itself,
               // so latency - pre - run is what the response and trace cost.
-              steps: [...result.steps, ...(autoRes?.step ? [autoRes.step] : []), {
-                iter: 9,
-                tool: "__edge_timing",
-                input: {
-                  pre_parse_ms: preParseMs,
-                  run_parse_ms: Date.now() - runParse0,
-                  cold_isolate: PARSE_ISOLATE_REQUESTS <= 1,
-                  region: Deno.env.get("SB_REGION") ?? Deno.env.get("SB_EXECUTION_REGION") ??
-                    Deno.env.get("DENO_REGION") ?? Deno.env.get("AWS_REGION") ?? "unknown",
-                  streamed: true,
-                },
-              }],
+              steps: [...result.steps, ...(autoRes?.step ? [autoRes.step] : []), streamTiming],
+              // The food box row this parse belongs to, and what the box SERVED:
+              // `outcome` above is the parse's own result, which a reply, a
+              // save card or the agent may have replaced.
+              request_id: requestId,
+              served_action: outcome.action,
+              served_text: servedText(servedNow),
               items: result.parsed?.items ?? null,
               input_tokens: result.usage.input_tokens,
               output_tokens: result.usage.output_tokens,
@@ -3970,6 +4366,7 @@ async function handleParseMealRequest(args: {
               status: "success",
               metadata: {
                 user_id: userId,
+                request_id: requestId,
                 mode: "parse_meal",
                 streamed: true,
                 tier_selected: tierSelected,
@@ -3984,6 +4381,7 @@ async function handleParseMealRequest(args: {
             });
             logTavilyCost(admin, result.usage.tavily_credits, {
               user_id: userId,
+              request_id: requestId,
               tier_selected: tierSelected,
               tier_used: result.tier ?? null,
               streamed: true,
@@ -3998,17 +4396,22 @@ async function handleParseMealRequest(args: {
             trace.cache_creation_input_tokens = result.usage.cache_creation_input_tokens || null;
             trace.cache_read_input_tokens = result.usage.cache_read_input_tokens || null;
             trace.tool_calls = result.tool_calls;
-            trace.response_preview = preview(
-              result.parsed
-                ? `${result.parsed.drona_line} [${result.parsed.items.map((i) => i.food_name).join(", ")}]`
-                : result.declined?.message ?? null,
-            );
+            // What the box SERVED, not the parallel parse: a reply or a save
+            // card replaces the parse's own answer.
+            trace.response_preview = preview(servedText(servedNow));
             await recordTrace(admin, trace, startedAtMs);
           } catch (e) {
             // The client has already been given a 200 and possibly some rows, so
             // the failure has to arrive as an event; there is no status code left
             // to change. The client treats this exactly like a failed request.
             send("error", { message: String(e).slice(0, 200) });
+            writeFoodBar({
+              served: { kind: "error", http_status: 200, error: String(e).slice(0, 200) },
+              status: "error",
+              error: String(e),
+              outcome: streamOutcome,
+              firstParse: streamFirstParse,
+            });
             // The stream still cost tokens and still has to appear in the cost
             // table, so record the failure rather than dropping it silently.
             // usage is unavailable on this path (the throw may predate it), so
@@ -4023,7 +4426,7 @@ async function handleParseMealRequest(args: {
               latency_ms: Date.now() - startedAtMs,
               status: "error",
               error_message: String(e).slice(0, 300),
-              metadata: { user_id: userId, mode: "parse_meal", streamed: true, tier_selected: tierSelected },
+              metadata: { user_id: userId, request_id: requestId, mode: "parse_meal", streamed: true, tier_selected: tierSelected },
             });
             trace.status = "internal_error";
             trace.http_status = 200;
@@ -4055,9 +4458,12 @@ async function handleParseMealRequest(args: {
   // waits for neither. Declared OUTSIDE the try because the catch traces it too:
   // a parse that blew up is exactly when knowing what the user was asking for is
   // most useful.
-  const savedMealsP = fetchSavedMealsForParse(userClient);
-  const intentP = startFoodIntent(savedMealsP, text, foodContext, undefined, jevUsageLogger(admin, "parse_meal", "food_intent", userId));
+  const savedMealsP = savedMealsPFor();
+  const intentP = startTracedIntent();
   const supportsCreate = clientSupportsFoodCreate(body);
+  // Read by the catch: a parse that threw still traces what it got through.
+  let firstParseSeen: ParseMealResult | null = null;
+  let outcomeSeen: FoodBarOutcome | null = null;
 
   try {
     // Just log it on the JSON path: the parse AND the diary write stay alive
@@ -4070,12 +4476,13 @@ async function handleParseMealRequest(args: {
       pendingMeal: foodContext.pendingMeal,
       card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
       brandWeb: !parseFreeTier,
+      fbTrace,
     });
     const work = (async () => {
       const pendingMeal = foodContext.pendingMeal && continuesPendingMeal(await intentP)
         ? foodContext.pendingMeal : null;
       const firstParse = await runParseMeal(
-        makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier }),
+        makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace }),
         {
           text,
           localHour,
@@ -4102,16 +4509,18 @@ async function handleParseMealRequest(args: {
       );
       // Decided before the diary write, for the same reason as the stream: a
       // create or a reply must not log the parsed meal behind the user's back.
+      firstParseSeen = firstParse;
       const outcome = await resolveFoodBarOutcome({
-        result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen,
+        result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen, fbTrace,
       });
+      outcomeSeen = outcome;
       // The agent's meal replaces the first parse when it finished with a log.
       const result = outcome.result ?? firstParse;
       const autoRes = outcome.action === "log" ? await finishAutoLog(result) : null;
-      return { result, autoRes, outcome };
+      return { result, autoRes, outcome, firstParse };
     })();
     if (autoLogArmed) keepAlive(work);
-    const { result, autoRes, outcome } = await work;
+    const { result, autoRes, outcome, firstParse } = await work;
 
     trace.status = "success";
     trace.input_tokens = result.usage.input_tokens || null;
@@ -4137,6 +4546,7 @@ async function handleParseMealRequest(args: {
       status: "success",
       metadata: {
         user_id: userId,
+        request_id: requestId,
         mode: "parse_meal",
         tier_selected: tierSelected,
         tier_used: result.tier ?? null,
@@ -4150,6 +4560,7 @@ async function handleParseMealRequest(args: {
     });
     logTavilyCost(admin, result.usage.tavily_credits, {
       user_id: userId,
+      request_id: requestId,
       tier_selected: tierSelected,
       tier_used: result.tier ?? null,
     });
@@ -4171,6 +4582,30 @@ async function handleParseMealRequest(args: {
         },
       },
     ];
+
+    const resBody: Record<string, unknown> = outcome.action === "create"
+      ? { parsed: null, declined: null, proposal: null, create: outcome.create, usage: result.usage, tool_calls: result.tool_calls }
+      : outcome.action === "reply"
+      ? {
+        parsed: null,
+        declined: withPendingMeal({ message: outcome.reply! }, { decision: outcome.decision, incoming: foodContext.pendingMeal, text, fromAgent: agentAsked(outcome.agent) }),
+        proposal: null,
+        usage: result.usage,
+        tool_calls: result.tool_calls,
+      }
+      : {
+        parsed: result.parsed,
+        declined: withPendingMeal(result.declined, { decision: outcome.decision, incoming: foodContext.pendingMeal, text }),
+        // Researched alternative for the user to accept or reject on the card.
+        proposal: result.proposal ?? null,
+        // "Use your saved X?" chips: a food that is only part of a saved meal.
+        saved_suggestions: result.saved_suggestions ?? [],
+        // Just log it: `logged` when the diary was written, else why not.
+        ...(autoRes?.extra ?? {}),
+        usage: result.usage,
+        tool_calls: result.tool_calls,
+      };
+    const servedNow = servedView(resBody as ServedBody, 200, outcome.action);
     void recordParseTrace(admin, {
       user_id: userId,
       // The tier the parse ran in (0149): stamps the lines the client logs.
@@ -4187,41 +4622,25 @@ async function handleParseMealRequest(args: {
       output_tokens: result.usage.output_tokens,
       web_search_requests: result.usage.web_search_requests,
       latency_ms: Date.now() - startedAtMs,
+      request_id: requestId,
+      served_action: outcome.action,
+      served_text: servedText(servedNow),
     }, intentP.then((d) => foodIntentStep(d, outcome)));
-
-    if (outcome.action === "create") {
-      return respond(
-        { parsed: null, declined: null, proposal: null, create: outcome.create, usage: result.usage, tool_calls: result.tool_calls },
-        200,
-      );
-    }
-    if (outcome.action === "reply") {
-      return respond(
-        {
-          parsed: null,
-          declined: withPendingMeal({ message: outcome.reply! }, { decision: outcome.decision, incoming: foodContext.pendingMeal, text, fromAgent: agentAsked(outcome.agent) }),
-          proposal: null,
-          usage: result.usage,
-          tool_calls: result.tool_calls,
-        },
-        200,
-      );
-    }
-    return respond(
-      {
-        parsed: result.parsed,
-        declined: withPendingMeal(result.declined, { decision: outcome.decision, incoming: foodContext.pendingMeal, text }),
-        // Researched alternative for the user to accept or reject on the card.
-        proposal: result.proposal ?? null,
-        // "Use your saved X?" chips: a food that is only part of a saved meal.
-        saved_suggestions: result.saved_suggestions ?? [],
-        // Just log it: `logged` when the diary was written, else why not.
-        ...(autoRes?.extra ?? {}),
-        usage: result.usage,
-        tool_calls: result.tool_calls,
-      },
-      200,
-    );
+    // What the box SERVED, not the parallel parse: a reply or a save card
+    // replaces the parse's own answer.
+    trace.response_preview = preview(servedText(servedNow));
+    writeFoodBar({
+      served: servedNow,
+      status: "ok",
+      outcome,
+      firstParse,
+      result,
+      // edgeSteps is result.steps followed by the auto-log and edge-timing
+      // steps; only those extras are new here (the parse steps come in as
+      // firstParse, and an agent's own parses through agent_parse).
+      extraSteps: edgeSteps.slice(result.steps.length),
+    });
+    return respond(resBody, 200);
   } catch (e) {
     trace.status = "anthropic_error";
     trace.error_message = `parse_meal_threw: ${String(e)}`.slice(0, 200);
@@ -4232,7 +4651,7 @@ async function handleParseMealRequest(args: {
       latency_ms: Date.now() - startedAtMs,
       status: "error",
       error_message: trace.error_message,
-      metadata: { user_id: userId, mode: "parse_meal", tier_selected: tierSelected },
+      metadata: { user_id: userId, request_id: requestId, mode: "parse_meal", tier_selected: tierSelected },
     });
     void recordParseTrace(admin, {
       user_id: userId,
@@ -4242,7 +4661,16 @@ async function handleParseMealRequest(args: {
       outcome: "error",
       message: trace.error_message,
       latency_ms: Date.now() - startedAtMs,
+      request_id: requestId,
+      served_action: "error",
     }, intentP.then(foodIntentStep));
+    writeFoodBar({
+      served: { kind: "error", http_status: 502, error: "parse_failed" },
+      status: "error",
+      error: trace.error_message,
+      outcome: outcomeSeen,
+      firstParse: firstParseSeen,
+    });
     return respond(
       {
         error: "parse_failed",
