@@ -8,7 +8,11 @@
 // or after 30 minutes with no message (both sides apply that on their own).
 // Only an answer the server also wrote to the thread counts as activity (a
 // meal, a reply, a save card, a send still settling), never a cap or an error,
-// so the two idle clocks agree.
+// so the two idle clocks agree. Each side measures 30 minutes on its OWN clock
+// (the app from its own lastAt, the server from its own last_at), so a phone
+// clock that is off does not matter. Network time can still put one side a
+// few seconds past 30 minutes and not the other: the server then keeps the
+// message and closes the thread, and the app starts a new one next time.
 //
 // The server ignores `thread` unless FOOD_THREADS is on or shadow, and an old
 // server ignores it entirely, so sending it changes nothing a user sees.

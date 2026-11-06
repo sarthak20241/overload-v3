@@ -121,6 +121,9 @@ function nameKey(name: string): string {
  * line of the version before keeps that line's id; every other line gets a
  * new one, above the highest id the card has used. So an edit keeps [L2] as
  * L2, a removal never renumbers what is left, and an added line is new.
+ * Same food means the same name (brackets dropped): a rename gets a new id,
+ * the same as a removal and an addition. Two lines with one name keep their
+ * ids in order.
  */
 export function withLineIds<T extends { name: string }>(prev: ThreadLine[] | null, next: T[], usedUpTo = 0): (T & { line_id: string })[] {
   const taken = new Set<string>();
@@ -402,7 +405,9 @@ export type ServedForThread =
 /**
  * Write one message to its thread: the two turns, then the card change, as one
  * conditional write on top of the app's base version. Never throws: a failed
- * write is logged and the user's answer is already on its way.
+ * write (a clash on a card id, a stale base, a database error) is logged and
+ * returns ok false. It runs after the answer is sent (index.ts keepAlive), so
+ * it can never turn a food answer into an error.
  *
  * `card` is the app's copy of the card on screen (previous_items). When the
  * server has no copy of that card yet (the thread is new to it, or shadow
