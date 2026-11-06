@@ -8,7 +8,7 @@
 
 import { FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { FOOD_AGENT_SYSTEM, type FoodAgentDeps, historyMessages, LAST_TURN_NOTE, MAX_TURNS, recentDays, runFoodAgent, statusFor } from "./foodAgent.ts";
+import { FOOD_AGENT_SYSTEM, type FoodAgentDeps, historyMessages, LAST_TURN_NOTE, MAX_TURNS, openingText, recentDays, runFoodAgent, statusFor } from "./foodAgent.ts";
 import type { ParseMealResult } from "./parseMeal.ts";
 import { SONNET_MODEL } from "../_shared/sonnet.ts";
 
@@ -399,4 +399,120 @@ Deno.test("one model call per turn: call i is turn i, and a failed call adds no 
   const failed = await runFoodAgent(INPUT, deps(failing));
   assertEquals(failed.kind, "failed");
   assertEquals([calls, failed.turns.length], [2, 1]);
+});
+
+// Live 2026-11-05 15:23: "save this paneer sabji as a meal" beside a lunch
+// card. The agent saw the card as names and calories only, called
+// create_custom_food with the kcal alone, and the saved meal had 0 g macros.
+const NOV5_CARD = [
+  { food_name: "Milky Mist Low Fat Paneer Sabji (60 g paneer, onion, oil)", quantity: 60, serving_label: "g", grams: 60, kcal: 150, protein_g: 11, carb_g: 4, fat_g: 10, source: "estimate" as const, meal_type: "lunch" as const },
+  { food_name: "Jeera Rice", quantity: 100, serving_label: "g", grams: 100, kcal: 171, protein_g: 2.6, carb_g: 26.6, fat_g: 5.6, source: "catalog" as const, meal_type: "lunch" as const },
+];
+
+Deno.test("a save drafted from one card line copies that line's macros", async () => {
+  const out = await runFoodAgent(
+    { text: "now save this milky mist low fat paneer sabji as a meal", defaultMeal: "lunch", card: NOV5_CARD },
+    deps(scripted([[{
+      name: "create_custom_food",
+      input: { name: "Milky Mist Low Fat Paneer Sabji", kcal: 150, log_now: false, summary: "Milky Mist sabji, 150 cal. Want it in My Meals?" },
+    }]])),
+  );
+  assertEquals(out.kind, "create");
+  if (out.kind !== "create") return;
+  const i = out.create.input;
+  assertEquals([i.protein_g, i.carb_g, i.fat_g], [11, 4, 10]);
+  // The card line was itself an estimate, so the save says so.
+  assert((i.estimated as string[]).includes("protein_g"));
+});
+
+Deno.test("a save meal built from card lines copies each line's macros; an unmatched line is left alone", async () => {
+  const out = await runFoodAgent(
+    { text: "save the rice and a banana as my lunch bowl", defaultMeal: "lunch", card: NOV5_CARD },
+    deps(scripted([[{
+      name: "create_custom_meal",
+      input: {
+        name: "Lunch bowl",
+        items: [{ name: "Jeera rice", kcal: 171 }, { name: "Banana", kcal: 105, protein_g: 1.3, estimated: true }],
+        log_now: false, summary: "Lunch bowl. Want it saved?",
+      },
+    }]])),
+  );
+  assertEquals(out.kind, "create");
+  if (out.kind !== "create") return;
+  const [rice, banana] = out.create.input.items as Record<string, unknown>[];
+  assertEquals([rice.protein_g, rice.carb_g, rice.fat_g], [2.6, 26.6, 5.6]);
+  // Copied from a catalog line on the card: the user's working copy, not a guess.
+  assertEquals(rice.estimated, undefined);
+  assertEquals([banana.protein_g, banana.carb_g, banana.estimated], [1.3, undefined, true]);
+});
+
+Deno.test("a save whose calories differ from every card line takes nothing from the card", async () => {
+  const out = await runFoodAgent(
+    { text: "save half the sabji as a snack", defaultMeal: "lunch", card: NOV5_CARD },
+    deps(scripted([[{ name: "create_custom_food", input: { name: "Milky Mist Low Fat Paneer Sabji", kcal: 75, log_now: false, summary: "Half the sabji?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  assertEquals(out.create.input.protein_g, undefined);
+});
+
+Deno.test("a card line with no figure for a macro leaves the model's figure, never a 0 g", async () => {
+  const card = [{ food_name: "Masala dosa", quantity: 1, serving_label: "dosa", grams: 0, kcal: 350, protein_g: 7, source: "catalog" as const }];
+  const out = await runFoodAgent(
+    { text: "save this dosa", defaultMeal: "breakfast", card },
+    deps(scripted([[{ name: "create_custom_food", input: { name: "Masala dosa", kcal: 350, carb_g: 45, fat_g: 15, estimated: ["carb_g", "fat_g"], log_now: false, summary: "Dosa?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  const i = out.create.input;
+  assertEquals([i.protein_g, i.carb_g, i.fat_g], [7, 45, 15]);
+  assertEquals(i.estimated, ["carb_g", "fat_g"]);
+});
+
+Deno.test("two card lines that both fit a save line: nothing is copied (no guessing which)", async () => {
+  const card = [
+    { food_name: "Roti", quantity: 1, serving_label: "roti", grams: 40, kcal: 120, protein_g: 3, carb_g: 20, fat_g: 3 },
+    { food_name: "Roti (ghee)", quantity: 1, serving_label: "roti", grams: 40, kcal: 120, protein_g: 4, carb_g: 18, fat_g: 4 },
+  ];
+  const out = await runFoodAgent(
+    { text: "save the roti", defaultMeal: "lunch", card },
+    deps(scripted([[{ name: "create_custom_food", input: { name: "Roti", kcal: 120, log_now: false, summary: "Roti?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  assertEquals(out.create.input.protein_g, undefined);
+});
+
+Deno.test("a meal line matched to a card line under a shorter name is a copy, not a guess", async () => {
+  const card = [{ food_name: "Paneer sabji (60 g paneer, onion, oil)", quantity: 1, serving_label: "serving", grams: 120, kcal: 150, protein_g: 11, carb_g: 4, fat_g: 10, source: "catalog" as const }];
+  const out = await runFoodAgent(
+    { text: "save the sabji and a banana as my bowl", defaultMeal: "lunch", card },
+    deps(scripted([[{ name: "create_custom_meal", input: { name: "Bowl", items: [{ name: "Paneer sabji", kcal: 150, estimated: true }, { name: "Banana", kcal: 105 }], log_now: false, summary: "Bowl?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  const [sabji, banana] = out.create.input.items as Record<string, unknown>[];
+  assertEquals([sabji.protein_g, sabji.estimated], [11, undefined]);
+  assertEquals(banana.estimated, true);
+});
+
+Deno.test("the agent's card view shows ? for a macro the line has no figure for, never 0", () => {
+  const view = openingText({ text: "save it", card: [{ food_name: "Dosa", quantity: 1, serving_label: "dosa", grams: 0, kcal: 350, protein_g: 7 }] }, null);
+  assert(view.includes("P 7 C ? F ?"), view);
+});
+
+Deno.test("a food save copied from a catalog card line drops a model-set kcal estimate mark", async () => {
+  const out = await runFoodAgent(
+    { text: "save the rice", defaultMeal: "lunch", card: NOV5_CARD },
+    deps(scripted([[{ name: "create_custom_food", input: { name: "Jeera Rice", kcal: 171, estimated: ["kcal"], log_now: false, summary: "Rice?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  assertEquals(out.create.input.estimated, []);
+});
+
+Deno.test("a meal line copied from a card line with some macros missing keeps the model's estimate mark", async () => {
+  const card = [{ food_name: "Dal", quantity: 1, serving_label: "katori", grams: 150, kcal: 180, protein_g: 9, source: "catalog" as const }];
+  const out = await runFoodAgent(
+    { text: "save the dal and a roti as my thali", defaultMeal: "lunch", card },
+    deps(scripted([[{ name: "create_custom_meal", input: { name: "Thali", items: [{ name: "Dal", kcal: 180, carb_g: 25, fat_g: 5, estimated: true }, { name: "Roti", kcal: 120 }], log_now: false, summary: "Thali?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  const [dal] = out.create.input.items as Record<string, unknown>[];
+  assertEquals([dal.protein_g, dal.carb_g, dal.fat_g, dal.estimated], [9, 25, 5, true]);
 });

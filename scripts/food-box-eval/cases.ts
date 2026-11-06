@@ -249,6 +249,56 @@ export const CASES: FoodBoxCase[] = [
       actions: ["answer"],
     },
   },
+  // The two asks above, as they reach the box once the save card stops
+  // replacing the meal card (nutrition.tsx, lib/foodBarCard.ts): the lunch is
+  // still on screen, so the right answer keeps it exactly as it is and never
+  // says it is gone. No recording: the app never showed this state on Nov 5.
+  {
+    id: "nov5-bring-back-card-kept",
+    tags: ["restore", "card"],
+    origin: { date: "2026-11-05T15:23:51Z", who: "owner", note: "Nov 5 message, replayed with the lunch card kept beside the save card." },
+    region: "india",
+    thread: {
+      turns: [
+        ...NOV5_TURNS_TO_1521,
+        { role: "user", text: "now save this milky mist low fat paneer sabji as a meal" },
+        { role: "drona", text: "Milky Mist Low Fat Paneer Sabji (60 g paneer, onion, oil), 150 cal. Want it in My Meals?" },
+      ],
+      card: NOV5_LUNCH_150,
+    },
+    fixtures: { savedMeals: [SAVED_SABJI] },
+    message: "cool I saved it as a meal but we were just logging out lunch and I couldnt save it, can u bring back that card",
+    expect: {
+      keepLines: ["jeera rice", "paneer", "soya", "methi"],
+      lineCount: [4, 4],
+      noDuplicates: true,
+      mustNot: ["save"],
+      reply: { mustNotSay: ["can'?t (bring|get) (it |that |the card )?back", "can'?t see"], noFalseClaim: true },
+    },
+  },
+  {
+    id: "nov5-pull-my-message-kept",
+    tags: ["restore", "context", "card"],
+    origin: { date: "2026-11-05T15:24:42Z", who: "owner", note: "Nov 5 message, replayed with the lunch card kept beside the save card." },
+    region: "india",
+    thread: {
+      turns: [
+        ...NOV5_TURNS_TO_1521,
+        { role: "user", text: "now save this milky mist low fat paneer sabji as a meal" },
+        { role: "drona", text: "Milky Mist Low Fat Paneer Sabji (60 g paneer, onion, oil), 150 cal. Want it in My Meals?" },
+      ],
+      card: NOV5_LUNCH_150,
+    },
+    fixtures: { savedMeals: [SAVED_SABJI] },
+    message: "that is fine, but I just previously told you what I had in lunch and u answered me the card can u not pull my message or ur reply",
+    expect: {
+      keepLines: ["jeera rice", "paneer", "soya", "methi"],
+      lineCount: [4, 4],
+      noDuplicates: true,
+      mustNot: ["save"],
+      reply: { mustNotSay: ["can'?t see (our|your|the) earlier"], noFalseClaim: true },
+    },
+  },
   {
     id: "nov5-use-saved-meal",
     tags: ["saved-meal", "correction"],
