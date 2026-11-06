@@ -43,6 +43,14 @@ Deno.test('after Add, the next send starts a new thread and closes the old one',
   assertEquals(next.send.closed, { id: old.id, why: 'added' });
 });
 
+Deno.test('a new thread is fresh (no old turns go with it); the same thread is not', () => {
+  n = 0;
+  const first = beginSend(null, { now: 0, hasCard: false, ended: null, newId });
+  assertEquals(first.fresh, true);
+  assertEquals(beginSend(first.state, { now: 60_000, hasCard: false, ended: null, newId }).fresh, false);
+  assertEquals(beginSend(first.state, { now: THREAD_IDLE_MS + 1, hasCard: false, ended: null, newId }).fresh, true);
+});
+
 Deno.test('a card on screen with no thread id gets one at v1; removing the last line clears it', () => {
   n = 0;
   let { state, send } = beginSend(null, { now: 0, hasCard: true, ended: null, newId });

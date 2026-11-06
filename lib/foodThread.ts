@@ -40,12 +40,17 @@ export type FoodThreadAnswer = 'meal' | 'cleared' | 'unchanged';
 export function beginSend(
   state: FoodThreadState | null,
   o: { now: number; hasCard: boolean; ended: { id: string; why: 'added' | 'replaced' } | null; newId: () => string },
-): { state: FoodThreadState; send: FoodThreadSend } {
-  let s = state && o.now - state.lastAt < THREAD_IDLE_MS ? state : { id: o.newId(), cardId: null, version: 0, lastAt: o.now };
+): { state: FoodThreadState; send: FoodThreadSend; fresh: boolean } {
+  const fresh = !(state && o.now - state.lastAt < THREAD_IDLE_MS);
+  let s = !fresh && state ? state : { id: o.newId(), cardId: null, version: 0, lastAt: o.now };
   if (o.hasCard && !s.cardId) s = { ...s, cardId: o.newId(), version: 1 };
   if (!o.hasCard && s.cardId) s = { ...s, cardId: null, version: 0 };
   return {
     state: s,
+    // A new thread: the caller starts it with no earlier turns. Live
+    // 2026-11-06 a fresh "1 green tea" went out with 10 turns of an earlier,
+    // already added lunch chat, and the router read it as an edit.
+    fresh,
     send: {
       id: s.id,
       card_id: o.hasCard ? s.cardId : null,

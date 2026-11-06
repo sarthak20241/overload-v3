@@ -1201,6 +1201,9 @@ export default function NutritionScreen() {
     if (thread) {
       threadRef.current = thread.state;
       threadEndedRef.current = null;
+      // A new conversation (the last card was added, or 30 minutes idle)
+      // starts with no turns: an old chat must not steer this message.
+      if (thread.fresh) turnsRef.current = [];
     }
     /** What this answer did to the card, counted the way the server counts. */
     const settleThread = (answer: FoodThreadAnswer) => {
