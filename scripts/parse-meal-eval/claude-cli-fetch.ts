@@ -345,10 +345,10 @@ async function freeChoiceCall(
         content = [{ type: "text", text: typeof o.text === "string" ? o.text : raw.trim() }];
       }
     } catch (e) {
-      // Words with no JSON at all are an answer in words. Anything that tried
-      // to be JSON and broke (or named a tool that does not exist) is a
-      // harness error, never scored as a reply.
-      if (String(e).includes("unknown tool") || /[{}]/.test(raw)) {
+      // Words are an answer in words, even words that mention a brace. A
+      // reply that STARTS like JSON (or a code fence) and broke, or that names
+      // a tool that does not exist, is a harness error, never scored as a reply.
+      if (String(e).includes("unknown tool") || /^\s*(\{|```)/.test(raw)) {
         return new Response(`claude-cli shim: ${String(e).slice(0, 400)}`, { status: 502 });
       }
       content = [{ type: "text", text: raw.trim() }];
