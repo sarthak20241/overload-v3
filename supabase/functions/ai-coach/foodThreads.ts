@@ -324,10 +324,14 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
     async load(userId, threadId) {
       const { data: t, error } = await admin.from("food_threads").select("id, user_id, status, last_at").eq("id", threadId).maybeSingle();
       if (error || !t || t.user_id !== userId) return null;
-      const [{ data: cards }, { data: seq }] = await Promise.all([
+      const [{ data: cards, error: cardsErr }, { data: seq, error: seqErr }] = await Promise.all([
         admin.from("food_cards").select("id, kind, version, status, meal_type, created_at, max_line_no").eq("thread_id", threadId).order("created_at"),
         admin.from("food_thread_turns").select("seq").eq("thread_id", threadId).order("seq", { ascending: false }).limit(1),
       ]);
+      // Thrown, never read as "no cards" or "no turns": either would lose a
+      // card write or a restore (the same rule as the lines read below).
+      if (cardsErr) throw new Error(`food_cards: ${cardsErr.message}`);
+      if (seqErr) throw new Error(`food_thread_turns: ${seqErr.message}`);
       const list = (cards ?? []) as Record<string, unknown>[];
       // Each card's CURRENT version only. Reading every version and filtering
       // here would hit PostgREST's 1000-row cap on a long thread and drop

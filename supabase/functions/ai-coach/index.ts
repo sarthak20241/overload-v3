@@ -3405,7 +3405,9 @@ async function handleParseMealRequest(args: {
       req: threadReq,
       // The send's own id: the auto-log id when there is one, else the fresh
       // next_card_id the app makes for every send.
-      clientId: auto.clientId ?? threadReq.next_card_id,
+      // A send with neither (an app that sent a malformed next_card_id) still
+      // gets an id, so its turns are written once in this call.
+      clientId: auto.clientId ?? threadReq.next_card_id ?? crypto.randomUUID(),
       userText: text,
       dronaText,
       card,
@@ -3422,7 +3424,13 @@ async function handleParseMealRequest(args: {
   };
   // NO card on screen, not merely "not open": a card cut at the cap is on
   // screen, and a restore would replace it whole (foodBar.ts startFoodAgent).
-  const earlierCardsFor = async () => card.length === 0 && !!(await threadP)?.index;
+  // Waited for only when the verdict could send the message to the agent with
+  // earlier cards, the same test startFoodAgent uses, so a plain log never
+  // waits on the thread read.
+  // The router's promise and the create flag are passed in: each request path
+  // (stream, JSON) has its own, declared after this.
+  const earlierCardsFor = async (intent: Promise<FoodIntentDecision | null>, canCreate: boolean) =>
+    card.length === 0 && wantsFoodAgent(await intent.catch(() => null), canCreate, false, true) && !!(await threadP)?.index;
 
   const readDiary = makeDiaryReader(userClient, {
     todayLocal: localDate,
@@ -3710,7 +3718,7 @@ async function handleParseMealRequest(args: {
             streamFirstParse = firstParse;
             const outcome = await resolveFoodBarOutcome({
               result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen,
-              earlierCards: await earlierCardsFor(), fbTrace,
+              earlierCards: await earlierCardsFor(intentP, supportsCreate), fbTrace,
             });
             streamOutcome = outcome;
             // The agent's meal replaces the first parse when it finished with a log.
@@ -3963,7 +3971,7 @@ async function handleParseMealRequest(args: {
       firstParseSeen = firstParse;
       const outcome = await resolveFoodBarOutcome({
         result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns, cardOpen,
-        earlierCards: await earlierCardsFor(), fbTrace,
+        earlierCards: await earlierCardsFor(intentP, supportsCreate), fbTrace,
       });
       outcomeSeen = outcome;
       // The agent's meal replaces the first parse when it finished with a log.

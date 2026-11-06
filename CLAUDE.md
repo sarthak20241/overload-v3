@@ -55,6 +55,7 @@ npx tsx scripts/food-box-eval/run.mts            # TAG=correction  ONLY=id  WRIT
 EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts   # EVAL_CONCURRENCY=6  DEBUG_STEPS=1
 # FOOD_THREADS=on: the case's earlier cards go in an in-memory thread store, the
 # agent gets restore_card. Its own BASELINE.md section (live_threads).
+FOOD_THREADS=on EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts
 deno test --allow-all scripts/food-box-eval/grade.test.ts
 
 # Edge function unit tests (the one real test suite).

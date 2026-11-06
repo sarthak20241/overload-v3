@@ -120,9 +120,10 @@ revoke all on public.food_card_lines   from anon, authenticated;
 -- The one conditional write. Returns the card's version after the call and
 -- whether this call wrote it:
 --   out_written = true   out_version is base + 1, with p_lines as its lines
---   out_written = false  nothing changed (out_retry says which): the base was older than the server's, or this client_id
---                    already made the current version (a retry). `out_version`
---                    is the current one, so the caller can reload.
+--   out_written = false  nothing changed. out_retry = true: this client_id made
+--                        the current version (a retried send). out_retry =
+--                        false: the base was older than the server's.
+--                        out_version is the current one either way.
 -- p_lines: [{line_id, name, kcal, ...}] in card order.
 create or replace function public.food_card_write(
   p_card_id uuid,

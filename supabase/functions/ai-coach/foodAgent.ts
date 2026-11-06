@@ -335,8 +335,14 @@ export const FOOD_AGENT_SYSTEM =
 
 export const LAST_TURN_NOTE =
   "This is your LAST turn. You must finish now with create_custom_meal, create_custom_food, log_food, reply, or (with a " +
-  "card on screen) edit_card, remove_card_lines or save_card_as_meal, or (with a thread index) restore_card. " +
-  "Do not call any other tool.";
+  "card on screen) edit_card, remove_card_lines or save_card_as_meal. Do not call any other tool.";
+
+/** The last-turn note when restore_card is offered: the same note, naming it.
+ *  Only then, so a run without the tool is never told of it. */
+export const LAST_TURN_NOTE_RESTORE = LAST_TURN_NOTE.replace(
+  "Do not call any other tool.",
+  "With no card on screen you may also finish with restore_card. Do not call any other tool.",
+);
 
 // ── Status lines ────────────────────────────────────────────────────────────
 
@@ -473,7 +479,7 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
     // system prompt: changing the system prompt mid-loop would edit history the
     // model already answered (and break the prompt cache).
     // A copy, so the note can never leak into a later turn's history.
-    const sent = last ? [...messages, { role: "system", content: LAST_TURN_NOTE }] : messages;
+    const sent = last ? [...messages, { role: "system", content: canRestore ? LAST_TURN_NOTE_RESTORE : LAST_TURN_NOTE }] : messages;
     const res = await deps.callModel({
       model: deps.model,
       // 2000 under Sonnet 4.6; ~30% up for Sonnet 5.5's tokenizer.

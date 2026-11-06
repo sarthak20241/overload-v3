@@ -8,7 +8,7 @@
 
 import { FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { FOOD_AGENT_SYSTEM, type FoodAgentDeps, historyMessages, LAST_TURN_NOTE, MAX_TURNS, openingText, recentDays, runFoodAgent, statusFor } from "./foodAgent.ts";
+import { FOOD_AGENT_SYSTEM, type FoodAgentDeps, historyMessages, LAST_TURN_NOTE, LAST_TURN_NOTE_RESTORE, MAX_TURNS, openingText, recentDays, runFoodAgent, statusFor } from "./foodAgent.ts";
 import type { ParseMealResult } from "./parseMeal.ts";
 import { SONNET_MODEL } from "../_shared/sonnet.ts";
 
@@ -559,6 +559,11 @@ Deno.test("restore_card is not offered while a card is on screen (it would repla
   assert(!(bodies[0].tools as { name: string }[]).some((t) => t.name === "restore_card"));
   // Nor the index that promises it.
   assert(!JSON.stringify(bodies[0].messages).includes("earlier card in this thread"));
+});
+
+Deno.test("the last-turn note names restore_card only when it is offered", () => {
+  assert(!LAST_TURN_NOTE.includes("restore_card"));
+  assert(LAST_TURN_NOTE_RESTORE.includes("restore_card"));
 });
 
 Deno.test("a meal line copied from a card line with some macros missing keeps the model's estimate mark", async () => {
