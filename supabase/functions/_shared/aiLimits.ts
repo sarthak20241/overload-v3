@@ -9,7 +9,19 @@
 // so this file is the one place they are set.
 export const AI_LIMITS = {
   freeChat: 3,
-  freeFood: 3,
+  // 9 since 2026-11-05 (was 3): new free users ran out of AI food logs within
+  // hours of joining. Raised quietly to watch real use; the app's own copy
+  // (profile, paywall) still says 3, on purpose. Two places say 9, also on
+  // purpose: the cap-hit line (it reads the server's number) and Drona's app
+  // guide (appGuide.ts), which must state the real limit if asked.
+  freeFood: 9,
+  // One Drona goal plan per free account, for life: the onboarding build plus
+  // turns of the Goal screen's program chat. Enforced by
+  // try_claim_free_goal_turn (migration 20261106130000), which must hold the
+  // same numbers: freeGoalBuild.test.ts runs that SQL against these. Drona's
+  // app guide states them.
+  freeGoalBuilds: 1,
+  freeGoalEditTurns: 8,
   // The old Pro daily caps. Enforced ONLY while the cooldown migration is not
   // applied yet (reserveProSlot falls back to the old RPC), so a deploy that
   // lands before the migration keeps today's behaviour instead of failing.
