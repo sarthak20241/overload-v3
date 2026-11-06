@@ -237,6 +237,7 @@ Deno.test("access requirements describe each capability without gating the whole
   assertEquals(APP_GUIDE.coach_chat.availability.map((a) => a.subscription), [
     "free",
     "pro_or_trial",
+    "free",
   ]);
   assertEquals(APP_GUIDE.form_check.availability[0].status, "unreachable");
   assertEquals(APP_GUIDE.pro_and_free.availability[2].status, "unavailable");
@@ -266,4 +267,10 @@ Deno.test("instructions use the same fuel bounds and AI allowances as enforcemen
     assertEquals(/\b(30|40)\b coach messages|\b(30|40)\b AI food logs/.test(text), false);
     assertEquals(text.includes("calls them unlimited"), false);
   }
+});
+
+Deno.test("Drona states the free goal plan and phase 1 build, with the enforced numbers", () => {
+  const coach = APP_GUIDE.coach_chat.instructions;
+  assertStringIncludes(coach, `one goal program (${AI_LIMITS.freeGoalBuilds} build during onboarding, plus ${AI_LIMITS.freeGoalEditTurns} turns`);
+  assertStringIncludes(coach, "one phase 1 build from the Goal screen");
 });

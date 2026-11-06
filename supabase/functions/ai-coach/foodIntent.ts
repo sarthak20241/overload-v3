@@ -76,6 +76,10 @@ export interface FoodIntentDecision {
   /** The answer to a question the FOOD AGENT asked: send it back to the agent,
    *  which can read the diary again, not to the parse. */
   resumeAgent?: boolean;
+  /** Why Jev's verdict was not the one used: no key, a timeout or HTTP error,
+   *  an unusable answer, or a score under the floor. Set only on the model and
+   *  default rungs; for the trace, never read by the policy. */
+  jevMiss?: string | null;
 }
 
 /**
@@ -500,6 +504,7 @@ export async function routeFoodIntent(
   let savedMatch: SavedMealMatch | null = null;
   let hasFood: number | null = null;
   let pendingAction: PendingAction | null = null;
+  let jevMiss: string | null = deps.jev?.apiKey ? null : "no_jev_key";
 
   // ── Step 1: Jev ───────────────────────────────────────────────────────────
   if (deps.jev?.apiKey) {
@@ -611,11 +616,14 @@ export async function routeFoodIntent(
         deps.log?.(
           `[food_intent] jev unsure (${choice.choice} @ ${choice.confidence.toFixed(2)} < ${JEV_INTENT_FLOOR}), falling through`,
         );
+        jevMiss = `unsure:${choice.choice}@${choice.confidence.toFixed(2)}<${JEV_INTENT_FLOOR}`;
       } else {
         deps.log?.("[food_intent] jev returned an unusable answer, falling through");
+        jevMiss = choice ? `unusable:${choice.choice}@${choice.confidence.toFixed(2)}` : "unusable:no_intent_answer";
       }
     } else {
       deps.log?.(`[food_intent] jev ${res.failure}: ${res.detail}`);
+      jevMiss = `${res.failure}:${String(res.detail ?? "").slice(0, 120)}`;
     }
   }
 
@@ -625,7 +633,7 @@ export async function routeFoodIntent(
       const guess = await deps.classify(state);
       if (isIntent(guess) && (guess !== "continue" || context?.pendingMeal) && (guess !== "edit" || context?.card?.length)) {
         deps.log?.(`[food_intent] model=${guess}`);
-        return { intent: guess, source: "model", confidence: null, note: "model fallback", savedMatch, hasFood, pendingAction };
+        return { intent: guess, source: "model", confidence: null, note: "model fallback", savedMatch, hasFood, pendingAction, jevMiss };
       }
     } catch (e) {
       deps.log?.(`[food_intent] model classify threw: ${String(e).slice(0, 120)}`);
@@ -637,7 +645,7 @@ export async function routeFoodIntent(
   // a card they dismiss; getting it wrong in the log direction loses the meal
   // they sat down to record.
   deps.log?.("[food_intent] defaulted to log");
-  return { intent: "log", source: "default", confidence: null, note: "no router available", savedMatch, hasFood, pendingAction };
+  return { intent: "log", source: "default", confidence: null, note: "no router available", savedMatch, hasFood, pendingAction, jevMiss };
 }
 
 // ── Policy: what the food bar actually DOES ─────────────────────────────────
@@ -690,6 +698,9 @@ export interface FoodActionInputs {
    *  about it all go to the food agent, which holds the card and can change it,
    *  remove from it, save it, or answer about it. */
   cardOpen?: boolean;
+  /** No card on screen, but the food box thread holds earlier cards the agent
+   *  can bring back (foodThreads.ts, FOOD_THREADS=on). Never set otherwise. */
+  earlierCards?: boolean;
 }
 
 /**
@@ -762,7 +773,7 @@ export function continuesPendingMeal(d: FoodIntentDecision | null): boolean {
  *  because the agent is STARTED as soon as the router answers, long before the
  *  parse that decideFoodAction also looks at has finished. The agent can end in
  *  a save card, so it needs a client that can draw one. */
-export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreate: boolean, cardOpen = false): boolean {
+export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreate: boolean, cardOpen = false, earlierCards = false): boolean {
   // An answer to the agent's own question goes back to it at any confidence
   // that cleared "proceed": the agent asked, so it is the one that can finish.
   if (d?.resumeAgent) return clientSupportsCreate;
@@ -775,6 +786,10 @@ export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreat
   // offered a save card. A save is never inferred from a weak verdict.
   if (cardOpen && d.intent === "create") return d.confidence >= CREATE_ACTION_FLOOR;
   if (cardOpen && (d.intent === "edit" || d.intent === "other")) return d.confidence >= CARD_AGENT_FLOOR;
+  // No card on screen, and earlier cards in the thread: "bring back that card"
+  // and "use the lunch from before" need the agent, which can restore one.
+  // The plain reply cannot (live 2026-11-05, three asks in a row).
+  if (!cardOpen && earlierCards && (d.intent === "edit" || d.intent === "other")) return d.confidence >= CARD_AGENT_FLOOR;
   return false;
 }
 
@@ -791,6 +806,11 @@ export function decideFoodAction(i: FoodActionInputs): FoodAction {
   // 'continue' keeps its own routing below: a pending meal and a card rarely
   // coexist, but when they do the answer to Drona's question comes first.
   if (i.cardOpen && intent !== "steps" && intent !== "continue") return "log";
+  // Earlier cards and none on screen: the agent, unless the parse found food
+  // to log (log wins every tie, so a meal is never lost to this rule).
+  if (!i.cardOpen && i.earlierCards && !i.parseFoundFood && wantsFoodAgent(i.decision, i.clientSupportsCreate, false, true)) {
+    return "agent";
+  }
 
   if (intent === "create") {
     if (!i.clientSupportsCreate) return "log";
