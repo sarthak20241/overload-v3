@@ -120,7 +120,7 @@ revoke all on public.food_card_lines   from anon, authenticated;
 -- The one conditional write. Returns the card's version after the call and
 -- whether this call wrote it:
 --   out_written = true   out_version is base + 1, with p_lines as its lines
---   out_written = false  nothing changed: the base was older than the server's, or this client_id
+--   out_written = false  nothing changed (out_retry says which): the base was older than the server's, or this client_id
 --                    already made the current version (a retry). `out_version`
 --                    is the current one, so the caller can reload.
 -- p_lines: [{line_id, name, kcal, ...}] in card order.
@@ -132,7 +132,7 @@ create or replace function public.food_card_write(
   p_status text default null,
   p_meal_type text default null
 )
-returns table (out_version integer, out_written boolean)
+returns table (out_version integer, out_written boolean, out_retry boolean)
 language plpgsql
 security definer
 set search_path to 'public', 'pg_temp'
@@ -140,6 +140,7 @@ as $$
 declare
   v_new integer;
   v_cur integer;
+  v_last text;
 begin
   update public.food_cards c
      set version = p_base_version + 1,
@@ -158,8 +159,10 @@ begin
   returning c.version into v_new;
 
   if v_new is null then
-    select c.version into v_cur from public.food_cards c where c.id = p_card_id;
-    return query select v_cur, false;
+    select c.version, c.last_client_id into v_cur, v_last from public.food_cards c where c.id = p_card_id;
+    -- out_retry: this client id made the current version (a retried send),
+    -- as against a base older than the server's (another write got there).
+    return query select v_cur, false, (p_client_id is not null and v_last is not distinct from p_client_id);
     return;
   end if;
 
@@ -174,7 +177,7 @@ begin
          e.j->>'source', e.j->>'source_ref', e.j->>'confidence', e.j->>'note', e.j->>'meal_type'
     from jsonb_array_elements(coalesce(p_lines, '[]'::jsonb)) with ordinality as e(j, ord);
 
-  return query select v_new, true;
+  return query select v_new, true, false;
 end;
 $$;
 

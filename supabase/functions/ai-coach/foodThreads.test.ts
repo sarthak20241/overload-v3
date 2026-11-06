@@ -93,7 +93,7 @@ Deno.test("Nov 5: a save card is a second card; the lunch card and its versions 
   assertEquals(threadIndexLine(t, MEAL), null);
 });
 
-Deno.test("a stale base or a retried message writes nothing", async () => {
+Deno.test("a retried message writes nothing; a stale base is written on top", async () => {
   const s = memoryThreadStore();
   const base = { userId: "u1", userText: "x", dronaText: null, mealType: "lunch" as const, card: [] as CardLine[] };
   await recordThreadMessage(s, { ...base, req: { id: T, card_id: null, base_version: null, next_card_id: MEAL, closed: null }, clientId: "m1", served: { kind: "meal", items: [item("Rice", 200)], corrects: false } });
@@ -102,11 +102,14 @@ Deno.test("a stale base or a retried message writes nothing", async () => {
   // The same message again (a retry): no third version.
   const retry = await recordThreadMessage(s, { ...base, card: card([["Rice", 200]]), req: { id: T, card_id: MEAL, base_version: 2, next_card_id: null, closed: null }, clientId: "m2", served: { kind: "meal", items: [item("Dal", 120)], corrects: false } });
   assertEquals(retry.card_version, 2);
-  // Another device on the old base: nothing written, the server's version comes back.
+  // Another device on the old base (or an answer the app never counted): the
+  // app's card goes on top of the server's version, so the copy keeps moving.
   const stale = await recordThreadMessage(s, { ...base, card: card([["Rice", 200]]), req: { id: T, card_id: MEAL, base_version: 1, next_card_id: null, closed: null }, clientId: "m3", served: { kind: "meal", items: [item("Curd", 60)], corrects: false } });
-  assertEquals(stale, { ok: false, card_version: 2 });
+  assertEquals(stale, { ok: true, card_version: 3 });
   const t = await s.load("u1", T);
-  assertEquals(t!.cards[0].lines.map((l) => [l.line_id, l.name]), [["L1", "Rice"], ["L2", "Dal"]]);
+  // v3 is the app's card (Rice) plus Curd; v2 (Rice, Dal) is still stored.
+  assertEquals(t!.cards[0].lines.map((l) => [l.line_id, l.name]), [["L1", "Rice"], ["L3", "Curd"]]);
+  assertEquals((await s.cardAt(MEAL, 2))?.map((l) => l.name), ["Rice", "Dal"]);
 });
 
 Deno.test("another user's thread id is never written to", async () => {

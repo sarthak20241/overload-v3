@@ -445,6 +445,12 @@ export default function NutritionScreen() {
   // closed on the server by the next message.
   const threadRef = useRef<FoodThreadState | null>(null);
   const threadEndedRef = useRef<{ id: string; why: 'added' } | null>(null);
+  /** The card went into the diary: its thread is done. The next send starts
+   *  a new one and tells the server this one closed. */
+  const endThreadOnAdd = useCallback(() => {
+    if (threadRef.current) threadEndedRef.current = { id: threadRef.current.id, why: 'added' };
+    threadRef.current = null;
+  }, []);
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).
   const flowRef = useRef<ParseFlow>(flow);
@@ -1426,8 +1432,7 @@ export default function NutritionScreen() {
       markAddedByDrona(res.logged);
       reload();
       // In the diary: this thread is done, and the next message starts one.
-      if (threadRef.current) threadEndedRef.current = { id: threadRef.current.id, why: 'added' };
-      threadRef.current = null;
+      endThreadOnAdd();
       turnsRef.current = [];
       autoLandedRef.current = sectionsOf(res.meal);
       setFlow({ status: 'idle' });
@@ -1910,8 +1915,7 @@ export default function NutritionScreen() {
     }
     editCountRef.current = 0;
     // The card is in the diary, so its thread is done (lib/foodThread.ts).
-    if (threadRef.current) threadEndedRef.current = { id: threadRef.current.id, why: 'added' };
-    threadRef.current = null;
+    endThreadOnAdd();
     for (const g of groups) {
       const sec = ref.sections.find((x) => x.mealType === g.sec);
       if (sec) settlePendingLines(g.id, sec.entryIds);

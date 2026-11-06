@@ -3391,6 +3391,8 @@ async function handleParseMealRequest(args: {
     : Promise.resolve(null);
   /** After the answer is sent: this message's turns and card change, as one
    *  conditional write on the app's base version. Never on the hot path. */
+  // The agent (startFoodAgent) and this write read the SAME threadP, so they
+  // agree: on a timeout neither had a thread, and restoredFrom stays null.
   const writeThread = async (outcome: FoodBarOutcome, result: ParseMealResult) => {
     if (!threadReq || !threadStore) return;
     const restored = result.tool_calls.includes("restore_card") ? (await threadP)?.restoredFrom ?? null : null;

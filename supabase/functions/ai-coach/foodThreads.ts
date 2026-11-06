@@ -279,7 +279,7 @@ export interface FoodThreadStore {
   createCard(threadId: string, cardId: string, kind: "meal" | "save", lines: ThreadLine[], clientId: string | null, mealType: MealType | null, version?: number): Promise<void>;
   /** The one conditional write: version base + 1, only if the card is at base
    *  or behind it (food_card_write). An older base writes nothing. */
-  writeCard(cardId: string, base: number, lines: ThreadLine[], clientId: string | null, status?: StoredCard["status"], mealType?: MealType | null): Promise<{ version: number; written: boolean }>;
+  writeCard(cardId: string, base: number, lines: ThreadLine[], clientId: string | null, status?: StoredCard["status"], mealType?: MealType | null): Promise<{ version: number; written: boolean; retry?: boolean }>;
   cardAt(cardId: string, version: number): Promise<ThreadLine[] | null>;
   /** Close one of THIS user's threads. Another user's id changes nothing. */
   close(userId: string, threadId: string, why: "added" | "idle" | "replaced"): Promise<void>;
@@ -410,8 +410,8 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
         p_meal_type: mealType ?? null,
       });
       if (error) throw new Error(`food_card_write: ${error.message}`);
-      const row = (Array.isArray(data) ? data[0] : data) as { out_version?: number; out_written?: boolean } | null;
-      return { version: Number(row?.out_version ?? base), written: row?.out_written === true };
+      const row = (Array.isArray(data) ? data[0] : data) as { out_version?: number; out_written?: boolean; out_retry?: boolean } | null;
+      return { version: Number(row?.out_version ?? base), written: row?.out_written === true, retry: row?.out_retry === true };
     },
     async cardAt(cardId, version) {
       const { data, error } = await admin.from("food_card_lines").select("*").eq("card_id", cardId).eq("version", version).order("line_no");
@@ -528,8 +528,18 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
     if (base) {
       const items = s.corrects ? s.items : [...base.lines.map((l) => lineAsItem(l, args.mealType ?? "snack")), ...s.items];
       const used = Math.max(maxLineNo(base.lines), maxLineNo(onScreen?.lines), onScreen?.max_line_no ?? 0);
-      const w = await store.writeCard(base.id, req.base_version ?? base.version, itemsAsLines(items, base.lines, used), args.clientId, undefined, args.mealType);
-      if (!w.written) log(`[food_threads] card ${base.id} base ${req.base_version} stale (server at ${w.version}); not written`);
+      const lines = itemsAsLines(items, base.lines, used);
+      let w = await store.writeCard(base.id, req.base_version ?? base.version, lines, args.clientId, undefined, args.mealType);
+      // A base older than the server's: another write got there first (a
+      // second device, or an answer the app never counted). The app's card is
+      // what the user sees, so it is written on top of the server's version,
+      // once. Every older version is kept, so nothing is lost, and the copy
+      // never silently stops moving. A retried send is not rewritten.
+      if (!w.written && !w.retry && w.version > (req.base_version ?? 0)) {
+        log(`[food_threads] card ${base.id} base ${req.base_version} behind the server (${w.version}); written on top`);
+        w = await store.writeCard(base.id, w.version, lines, args.clientId, undefined, args.mealType);
+      }
+      if (!w.written && !w.retry) log(`[food_threads] card ${base.id} not written (server at ${w.version})`);
       // A restore onto a card still named on screen (emptied there): the
       // restored lines are now this card, so the source is marked too.
       if (w.written && args.restoredFrom && args.restoredFrom !== base.id) {
@@ -567,7 +577,8 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
   const write = (cardId: string, base: number, lines: ThreadLine[], clientId: string | null, status?: StoredCard["status"], mealType?: MealType | null) => {
     const c = cards.get(cardId);
     if (!c) return { version: 0, written: false };
-    if (c.version > base || (clientId !== null && c.last_client_id === clientId)) return { version: c.version, written: false };
+    if (clientId !== null && c.last_client_id === clientId) return { version: c.version, written: false, retry: true };
+    if (c.version > base) return { version: c.version, written: false, retry: false };
     c.version = base + 1;
     c.last_client_id = clientId;
     if (status) c.status = status;
