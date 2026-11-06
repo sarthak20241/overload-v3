@@ -271,6 +271,8 @@ $$;
 revoke all on function public.food_threads_retention() from public, anon, authenticated;
 
 create index if not exists idx_food_threads_closed_last on public.food_threads (last_at) where status = 'closed';
+-- The job's first step (close idle open threads) filters on last_at alone.
+create index if not exists idx_food_threads_open_last on public.food_threads (last_at) where status = 'open';
 
 do $$
 begin
