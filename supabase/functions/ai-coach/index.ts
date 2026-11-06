@@ -3368,8 +3368,10 @@ async function handleParseMealRequest(args: {
   // client actually sent one (readAutoLogRequest defaults a missing one to 0,
   // which would be a guess dressed as a fact).
   // The food box thread (FOOD_THREADS). The app names it; the server keeps the
-  // durable copy. Read up front only when on, and only for the agent: it is
-  // ready long before the router answers, so the common path waits for nothing.
+  // durable copy. Read up front only when on: it starts at once and is
+  // usually done before the router answers. With no card on screen the
+  // outcome waits for it (earlierCardsFor), at most 800 ms. A new thread is
+  // one query (load stops when the thread row is missing).
   const threadReq = FOOD_THREADS !== "off" ? readThreadRequest(body.thread) : null;
   const threadStore = threadReq ? supabaseThreadStore(admin) : null;
   // At most 800 ms: a slow read must never hold up the answer. Past it the

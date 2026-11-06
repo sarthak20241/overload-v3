@@ -140,7 +140,6 @@ as $$
 declare
   v_new integer;
   v_cur integer;
-  v_last text;
 begin
   update public.food_cards c
      set version = p_base_version + 1,
@@ -159,7 +158,7 @@ begin
   returning c.version into v_new;
 
   if v_new is null then
-    select c.version, c.last_client_id into v_cur, v_last from public.food_cards c where c.id = p_card_id;
+    select c.version into v_cur from public.food_cards c where c.id = p_card_id;
     return query select v_cur, false;
     return;
   end if;

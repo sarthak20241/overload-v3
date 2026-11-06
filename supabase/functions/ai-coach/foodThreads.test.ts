@@ -235,3 +235,11 @@ Deno.test("a restore that finds no lines marks nothing", async () => {
   assertEquals(await th!.restore("C1", 9), null);
   assertEquals(th!.restoredFrom, null);
 });
+
+Deno.test("two lines that differ only in brackets keep their own ids", () => {
+  const v1 = cardAsLines(card([["Rice (raw)", 100], ["Rice (cooked)", 200]]));
+  const v2 = withLineIds(v1, [{ name: "Rice (cooked)" }, { name: "Rice (raw)" }]);
+  assertEquals(v2.map((l) => [l.name, l.line_id]), [["Rice (cooked)", "L2"], ["Rice (raw)", "L1"]]);
+  // An edit to the bracket text still keeps the id.
+  assertEquals(withLineIds(v1, [{ name: "Rice (cooked, 150 g)" }, { name: "Rice (raw)" }]).map((l) => l.line_id), ["L2", "L1"]);
+});

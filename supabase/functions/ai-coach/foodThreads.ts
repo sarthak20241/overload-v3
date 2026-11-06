@@ -131,15 +131,26 @@ export function withLineIds<T extends { name: string }>(prev: ThreadLine[] | nul
   // `usedUpTo`: the highest id the card ever had, so a new line never takes
   // the id of one that was removed.
   let max = usedUpTo;
+  // Two passes: the exact name first ("Rice (cooked)" keeps its own id when
+  // "Rice (raw)" is also on the card), then the name without its brackets
+  // ("Rice (cooked)" edited to "Rice (cooked, 150 g)").
+  const exact = new Map<string, string[]>();
+  const full = (x: string) => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   for (const l of prev ?? []) {
     const n = Number(l.line_id.replace(/^L/, ""));
     if (Number.isFinite(n)) max = Math.max(max, n);
     const k = nameKey(l.name);
     free.set(k, [...(free.get(k) ?? []), l.line_id]);
+    const e = full(l.name);
+    exact.set(e, [...(exact.get(e) ?? []), l.line_id]);
   }
-  return next.map((l) => {
-    const ids = free.get(nameKey(l.name));
-    const keep = ids?.find((id) => !taken.has(id));
+  const ids: (string | undefined)[] = next.map((l) => {
+    const keep = exact.get(full(l.name))?.find((id) => !taken.has(id));
+    if (keep) taken.add(keep);
+    return keep;
+  });
+  return next.map((l, i) => {
+    const keep = ids[i] ?? free.get(nameKey(l.name))?.find((id) => !taken.has(id));
     const line_id = keep ?? `L${++max}`;
     taken.add(line_id);
     return { ...l, line_id };
@@ -255,7 +266,7 @@ export interface FoodThreadStore {
   createCard(threadId: string, cardId: string, kind: "meal" | "save", lines: ThreadLine[], clientId: string | null, mealType: MealType | null, version?: number): Promise<void>;
   /** The one conditional write: version base + 1, only if the card is at base
    *  or behind it (food_card_write). An older base writes nothing. */
-  writeCard(cardId: string, base: number, lines: ThreadLine[], clientId: string | null, status?: StoredCard["status"]): Promise<{ version: number; written: boolean }>;
+  writeCard(cardId: string, base: number, lines: ThreadLine[], clientId: string | null, status?: StoredCard["status"], mealType?: MealType | null): Promise<{ version: number; written: boolean }>;
   cardAt(cardId: string, version: number): Promise<ThreadLine[] | null>;
   /** Close one of THIS user's threads. Another user's id changes nothing. */
   close(userId: string, threadId: string, why: "added" | "idle" | "replaced"): Promise<void>;
@@ -367,9 +378,10 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
       });
       if (error) throw new Error(`food_card_create: ${error.message}`);
     },
-    async writeCard(cardId, base, lines, clientId, status) {
+    async writeCard(cardId, base, lines, clientId, status, mealType) {
       const { data, error } = await admin.rpc("food_card_write", {
         p_card_id: cardId, p_base_version: base, p_lines: lines, p_client_id: clientId, p_status: status ?? null,
+        p_meal_type: mealType ?? null,
       });
       if (error) throw new Error(`food_card_write: ${error.message}`);
       const row = (Array.isArray(data) ? data[0] : data) as { out_version?: number; out_written?: boolean } | null;
@@ -489,7 +501,7 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
     if (base) {
       const items = s.corrects ? s.items : [...base.lines.map((l) => lineAsItem(l, args.mealType ?? "snack")), ...s.items];
       const used = Math.max(maxLineNo(base.lines), maxLineNo(onScreen?.lines), onScreen?.max_line_no ?? 0);
-      const w = await store.writeCard(base.id, req.base_version ?? base.version, itemsAsLines(items, base.lines, used), args.clientId);
+      const w = await store.writeCard(base.id, req.base_version ?? base.version, itemsAsLines(items, base.lines, used), args.clientId, undefined, args.mealType);
       if (!w.written) log(`[food_threads] card ${base.id} base ${req.base_version} stale (server at ${w.version}); not written`);
       return { ok: w.written, card_version: w.version };
     }
@@ -513,13 +525,14 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
   const cards = new Map<string, { thread_id: string; kind: "meal" | "save"; version: number; status: StoredCard["status"]; meal_type: MealType | null; created_at: string; last_client_id: string | null; max_line_no: number; versions: Map<number, ThreadLine[]> }>();
   let tick = 0;
   const stamp = () => new Date(Date.now() + tick++).toISOString();
-  const write = (cardId: string, base: number, lines: ThreadLine[], clientId: string | null, status?: StoredCard["status"]) => {
+  const write = (cardId: string, base: number, lines: ThreadLine[], clientId: string | null, status?: StoredCard["status"], mealType?: MealType | null) => {
     const c = cards.get(cardId);
     if (!c) return { version: 0, written: false };
     if (c.version > base || (clientId !== null && c.last_client_id === clientId)) return { version: c.version, written: false };
     c.version = base + 1;
     c.last_client_id = clientId;
     if (status) c.status = status;
+    if (mealType) c.meal_type = mealType;
     c.versions.set(c.version, lines.map((l) => ({ ...l })));
     c.max_line_no = Math.max(c.max_line_no, maxLineNo(lines));
     return { version: c.version, written: true };
@@ -563,8 +576,8 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
       cards.set(cardId, { thread_id: threadId, kind, version: start, status: "open", meal_type: mealType, created_at: stamp(), last_client_id: null, max_line_no: 0, versions: new Map() });
       write(cardId, start, lines, clientId);
     },
-    async writeCard(cardId, base, lines, clientId, status) {
-      return write(cardId, base, lines, clientId, status);
+    async writeCard(cardId, base, lines, clientId, status, mealType) {
+      return write(cardId, base, lines, clientId, status, mealType);
     },
     async cardAt(cardId, version) {
       const v = cards.get(cardId)?.versions.get(version);
