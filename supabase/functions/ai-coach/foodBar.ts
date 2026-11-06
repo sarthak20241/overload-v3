@@ -36,12 +36,30 @@ import {
   type MealType,
   type ParseMealDeps,
   type ParseMealInput,
+  type ParsedItem,
   type ParseMealResult,
   type PreviousItem,
   runParseMeal,
 } from "./parseMeal.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { CREATE_CUSTOM_FOOD_TOOL, CREATE_CUSTOM_MEAL_TOOL, LIST_LOGGED_MEALS_TOOL } from "./prompt.ts";
+
+/** Whether this message could use the thread's earlier cards: no card on
+ *  screen (restore is offered only then), and a verdict the agent would take
+ *  if the thread had them. The ONE test for both the agent start and the
+ *  outcome (index.ts earlierCardsFor), so the two can never disagree. */
+export function agentCouldUseThread(d: FoodIntentDecision | null, supportsCreate: boolean, cardLines: number): boolean {
+  return cardLines === 0 && wantsFoodAgent(d, supportsCreate, false, true);
+}
+
+/** The thread store as the agent sees it (foodThreads.ts). */
+export interface FoodBarThread {
+  /** threadIndexLine: the earlier cards, by ref. Null: nothing to bring back. */
+  index: string | null;
+  /** The card restore() last brought back, so the thread write can mark it. */
+  restoredFrom?: string | null;
+  restore(ref: string, version: number | null): Promise<{ items: ParsedItem[]; meal_type: MealType | null } | null>;
+}
 
 export type AnthropicCallResult = { ok: true; data: any } | { ok: false; status: number; body: string };
 
@@ -499,6 +517,9 @@ export function startFoodAgent(args: {
   card?: { lines: CardLine[]; previousText: string | null; previousWords: string | null; previousItems: PreviousItem[] } | null;
   onStatus?: (label: string) => void;
   fbTrace?: FoodBarTraceCollector;
+  /** FOOD_THREADS=on: the thread's earlier cards, as an index line and a way
+   *  to bring one back. Resolves null when there is none. */
+  thread?: Promise<FoodBarThread | null>;
 }): Promise<FoodAgentOutcome | null> {
   const fb = args.fbTrace;
   // The agent's own parses: their steps and model calls land on the trace
@@ -515,7 +536,16 @@ export function startFoodAgent(args: {
   return args.intentP.then(async (d) => {
     // Open AND whole, the same rule index.ts applies (see `cardOpen` there).
     const cardOpen = !!args.card?.lines.length && !cardMayBeCut(args.card.lines);
-    if (env().intentMode !== "on" || !wantsFoodAgent(d, args.supportsCreate, cardOpen)) return null;
+    // A card cut at the cap gets no thread: restore_card replaces the whole
+    // card, and the lines past the cap would be lost. The earlier-cards route
+    // is for NO card on screen, not for a card the agent cannot hold whole.
+    const noCard = !args.card?.lines.length;
+    if (env().intentMode !== "on") return null;
+    // The thread is waited for only when it can matter (agentCouldUseThread,
+    // the same test index.ts uses for the outcome).
+    const couldUseThread = !!args.thread && agentCouldUseThread(d, args.supportsCreate, args.card?.lines.length ?? 0);
+    const thread = couldUseThread ? await args.thread!.catch(() => null) : null;
+    if (!wantsFoodAgent(d, args.supportsCreate, cardOpen, !!thread?.index && noCard)) return null;
     if (!env().anthropicApiKey) return null;
     const t0 = Date.now();
     const callEnds: number[] = [];
@@ -530,6 +560,7 @@ export function startFoodAgent(args: {
           : null,
         card: args.card?.lines ?? null,
         savedHint: d?.savedMatch ?? null,
+        threadIndex: thread?.index ?? null,
       },
       {
         model: env().agentModel,
@@ -586,6 +617,7 @@ export function startFoodAgent(args: {
             }), `correct_card: ${change}`)
           : undefined,
         onStatus: args.onStatus,
+        ...(thread?.index ? { restoreCard: thread.restore } : {}),
         log: (m) => console.log(m),
       },
     );
@@ -647,6 +679,8 @@ export async function resolveFoodBarOutcome(args: {
   agentP?: Promise<FoodAgentOutcome | null>;
   recentTurns?: { role: "user" | "drona"; text: string }[];
   cardOpen?: boolean;
+  /** No card on screen and earlier cards in the thread (FOOD_THREADS=on). */
+  earlierCards?: boolean;
   fbTrace?: FoodBarTraceCollector;
 }): Promise<FoodBarOutcome> {
   // Every outcome says whether a card was open, so the trace can tell a card
@@ -661,6 +695,7 @@ export async function resolveFoodBarOutcome(args: {
     parseFoundFood,
     clientSupportsCreate: args.supportsCreate,
     cardOpen: args.cardOpen,
+    earlierCards: args.earlierCards,
   });
   // The policy's inputs and its answer, as one step.
   args.fbTrace?.step({
@@ -669,6 +704,7 @@ export async function resolveFoodBarOutcome(args: {
     input: {
       intent: decision?.intent ?? null, confidence: decision?.confidence ?? null, source: decision?.source ?? null,
       parse_found_food: parseFoundFood, card_open: !!args.cardOpen, can_create: args.supportsCreate, mode: env().intentMode,
+      ...(args.earlierCards ? { earlier_cards: true } : {}),
     },
     result: action,
   });

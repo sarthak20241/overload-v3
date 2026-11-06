@@ -21,8 +21,11 @@
 //     from the CLI anyway: read a case's failure detail before blaming either.
 //   - The web label lookup is off unless EVAL_WEB=1 (Tavily, spends credits).
 //     Production uses Anthropic's server web search, which the CLI cannot run.
-//   - The app sends no earlier cards today, so `thread.earlierCards` is not
-//     sent. Restoring one is step 1b of the plan.
+//   - FOOD_THREADS (off by default, as live) decides whether the thread store
+//     is in play. With FOOD_THREADS=on the case's `thread.earlierCards` and its
+//     card on screen are loaded into an in-memory store (foodThreads.ts
+//     memoryThreadStore, the same rules as the tables), and the agent gets the
+//     index line and restore_card. Off: earlier cards are not sent, as today.
 //   - The secrets the live function reads are not visible here. Defaults:
 //     FOOD_INTENT_MODE=on, THOROUGH_MATCH_MODE / PRECISE_MATCH_MODE off.
 //     Each can be set in the environment to match a deploy.
@@ -53,6 +56,14 @@ import type { SavedMealForParse } from "../../supabase/functions/ai-coach/savedM
 import type { MemoryEntry } from "../../supabase/functions/ai-coach/userFoodMemory";
 import { listLoggedMeals, type MealRowIn } from "../../supabase/functions/ai-coach/loggedMeals";
 import { SONNET_MODEL } from "../../supabase/functions/_shared/sonnet";
+import {
+  cardAsLines,
+  memoryThreadStore,
+  parseFoodThreadsMode,
+  threadForAgent,
+} from "../../supabase/functions/ai-coach/foodThreads";
+import type { FoodBarThread } from "../../supabase/functions/ai-coach/foodBar";
+import { randomUUID } from "node:crypto";
 import { cardAfter } from "../../lib/foodBarCard";
 import type { Action, FoodBoxCase, Line, Outcome, SavedMeal } from "./types";
 
@@ -97,6 +108,7 @@ const API_KEY = env("ANTHROPIC_API_KEY");
 const JEV_API_KEY = env("JEV_API_KEY");
 const WEB = env("EVAL_WEB") === "1" && !!env("TAVILY_API_KEY");
 const INTENT_MODE = parseFoodIntentMode(env("FOOD_INTENT_MODE") || "on");
+const THREADS = parseFoodThreadsMode(env("FOOD_THREADS"));
 const match = (k: string): "off" | "shadow" | "on" => (["shadow", "on"] as const).find((m) => m === env(k)) ?? "off";
 
 const SUPABASE_URL = env("EXPO_PUBLIC_SUPABASE_URL");
@@ -105,6 +117,12 @@ const ANON = env("EXPO_PUBLIC_SUPABASE_ANON_KEY");
 // service role. Its ONLY use below is the precise_cache_get rpc (a select).
 // Do not hand this client to anything that writes.
 const SERVICE = env("SUPABASE_SERVICE_ROLE_KEY");
+
+/** The adapter's name, and its BASELINE.md section: the thread store changes
+ *  what is measured, so a run with it on keeps its own section. */
+export function liveName(): string {
+  return THREADS === "on" ? "live_threads" : "live";
+}
 
 export function liveReady(): string | null {
   if (!SUPABASE_URL || !ANON) return "Missing EXPO_PUBLIC_SUPABASE_URL / _ANON_KEY (env or .env.local).";
@@ -380,6 +398,21 @@ function savedMealOf(tool: string, input: Record<string, unknown>): SavedMeal {
   return { name, kcal: n(input.kcal), protein_g: n(input.protein_g), carb_g: n(input.carb_g), fat_g: n(input.fat_g) };
 }
 
+/** FOOD_THREADS=on: the case's thread as the store would hold it. */
+async function threadOf(c: FoodBoxCase, card: CardLine[]): Promise<FoodBarThread | null> {
+  if (THREADS !== "on") return null;
+  const store = memoryThreadStore();
+  const id = randomUUID();
+  await store.ensure("eval", id);
+  for (const e of c.thread.earlierCards ?? []) {
+    const kind = /save/i.test(e.label) ? "save" as const : "meal" as const;
+    await store.createCard(id, randomUUID(), kind, cardAsLines(cardOf(e.lines)), null, e.lines[0]?.meal ?? null);
+  }
+  const onScreen = card.length ? randomUUID() : null;
+  if (onScreen) await store.createCard(id, onScreen, "meal", cardAsLines(card), null, card[0]?.meal_type ?? null);
+  return threadForAgent(store, "eval", { id, card_id: onScreen, base_version: onScreen ? 1 : null, next_card_id: randomUUID(), closed: null });
+}
+
 export async function runLive(c: FoodBoxCase): Promise<Outcome> {
   const { zone, localDate, localHour } = clockOf(c);
   const prevLines = c.thread.card?.length ? c.thread.card : null;
@@ -402,6 +435,7 @@ export async function runLive(c: FoodBoxCase): Promise<Outcome> {
   const mealHint = prevLines?.[0]?.meal ?? MEAL_OF_HOUR(localHour);
   const contextPromise = Promise.resolve({ recentFoods: [], todayTotals: null, targets: null });
 
+  const threadP = threadOf(c, card);
   const intentP = startFoodIntent(savedMealsP, c.message, foodContext);
   const agentP = startFoodAgent({
     intentP, supportsCreate: true, text: c.message, mealHint, localHour, localDate, mode: "super",
@@ -409,6 +443,7 @@ export async function runLive(c: FoodBoxCase): Promise<Outcome> {
     card: card.length ? { lines: card, previousText, previousWords, previousItems } : null,
     parseDeps: () => deps,
     logUsage: () => {},
+    thread: threadP,
   });
   const firstParse = await runParseMeal(deps, {
     text: c.message,
@@ -431,6 +466,7 @@ export async function runLive(c: FoodBoxCase): Promise<Outcome> {
   });
   const outcome = await resolveFoodBarOutcome({
     result: firstParse, intentP, supportsCreate: true, text: c.message, mealHint, readDiary, agentP, recentTurns, cardOpen,
+    earlierCards: card.length === 0 && !!(await threadP)?.index,
   });
 
   if (env("DEBUG_STEPS") === "1") {
@@ -468,6 +504,6 @@ export async function runLive(c: FoodBoxCase): Promise<Outcome> {
   return {
     card: cardAfter(prevLines, { kind: "meal", items, correctsPrevious: !!result.parsed.corrects_previous }),
     reply: result.parsed.drona_line || null,
-    actions: withLookup([prevLines ? "edit" : "log"]),
+    actions: result.tool_calls.includes("restore_card") ? ["restore"] : withLookup([prevLines ? "edit" : "log"]),
   };
 }
