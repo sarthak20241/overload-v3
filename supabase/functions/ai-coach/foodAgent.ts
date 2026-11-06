@@ -574,6 +574,15 @@ interface ToolUse {
 }
 
 export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): Promise<FoodAgentOutcome> {
+  // Lines copy_lines took that wait for the agent's finish. Whatever the run
+  // ends in, they are served (withStaged): food the user named is never
+  // dropped because other work came in the same turn ("log wins every tie").
+  const staged: Staged = { items: [], dup: [], miss: [] };
+  const out = await agentLoop(input, deps, staged);
+  return withStaged(out, staged, input);
+}
+
+async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Staged): Promise<FoodAgentOutcome> {
   const turns: AgentTurn[] = [];
   // restore_card only with both halves (the index the agent reads refs from,
   // and the store that answers them), and only with NO card on screen: a
@@ -611,6 +620,9 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
     remember(seen, r.parsed?.items ?? []);
     return r;
   };
+  // The foods on the card for copy_lines' duplicate check: the card as sent,
+  // plus every line already staged in this run.
+  const onCard = onCardOf(input.card ?? []);
 
   for (let turn = 1; turn <= MAX_TURNS; turn++) {
     const last = turn === MAX_TURNS;
@@ -659,6 +671,42 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
     // A finish ends the agent even when reads came with it: the model has
     // decided, and running reads it will never see is cost with no reader.
     const finish = uses.find((u) => FINISH_TOOLS.has(u.name) && !refused.has(u));
+    const copies = uses.filter((u) => u.name === COPY_LINES_TOOL.name);
+    if (!finish) {
+      const unknown = uses.find((u) => !READ_TOOLS.has(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u));
+      if (unknown) return { kind: "failed", reason: `unknown_tool_${unknown.name}`, turns };
+    }
+
+    // copy_lines. The sources are read at once; then the lines are sorted in
+    // call order against the run's on-card set (a copy for this turn, so a
+    // copy that does not land leaves no trace in it).
+    const copyRuns = new Map<ToolUse, CopyRun>();
+    if (copies.length) {
+      for (const u of copies) {
+        const label = statusFor(u.name, u.input ?? {});
+        if (label) deps.onStatus?.(label);
+      }
+      const sources = await Promise.all(copies.map((u) => loadCopySource(u.input ?? {}, deps)));
+      const turnSet: OnCard = { keys: new Set(onCard.keys), ids: new Set(onCard.ids) };
+      const runs = sources.map((src, i) => classifyCopy(src, copies[i].input ?? {}, input, turnSet));
+      copies.forEach((u, i) => copyRuns.set(u, runs[i]));
+      const whole = runs.every((r) => !r.error && r.results.length > 0 && r.results.every((x) => x.status === "copied"));
+      // When the copied lines land:
+      //  - beside a finish in this turn: they join that finish, and the lines
+      //    that did not copy are named in the card's line (the agent never
+      //    sees these results);
+      //  - every line copied: they land now. Alone in the turn, that is the
+      //    finish; beside reads, the agent goes on and they join its finish;
+      //  - the last turn: whatever copied lands, the rest is named;
+      //  - otherwise nothing lands, and the agent sees each line's result.
+      const lands = !!finish || whole || (last && runs.some((r) => r.items.length > 0));
+      for (const r of runs) deps.onEvent?.(copyEvent(r, lands && r.items.length > 0));
+      if (lands) {
+        stage(staged, runs, onCard, { nameTheRest: !!finish || !whole });
+        if (!finish && (uses.every((u) => u.name === COPY_LINES_TOOL.name) || last)) return { kind: "failed", reason: "copy_staged_only", turns };
+      }
+    }
+
     if (finish) {
       const label = statusFor(finish.name, finish.input ?? {});
       if (label) deps.onStatus?.(label);
@@ -667,30 +715,6 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
         return { kind: "failed", reason: "restore_without_thread", turns };
       }
       return await finishWith(finish, input, parse, turns, seen, deps);
-    }
-    const copies = uses.filter((u) => u.name === COPY_LINES_TOOL.name);
-    const unknown = uses.find((u) => !READ_TOOLS.has(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u));
-    if (unknown) return { kind: "failed", reason: `unknown_tool_${unknown.name}`, turns };
-
-    // copy_lines: finishes when every line it was asked for is copied. Any
-    // already_on_card or not_found line comes back to the agent instead, and
-    // nothing is added: it asks the user, or copies again with what to add.
-    const copyRuns = new Map<ToolUse, CopyRun>();
-    if (copies.length) {
-      for (const u of copies) {
-        const label = statusFor(u.name, u.input ?? {});
-        if (label) deps.onStatus?.(label);
-      }
-      // Every source is read at once; then the lines are sorted in call order
-      // against ONE on-card set, so two copies of a food in one turn are caught.
-      const sources = await Promise.all(copies.map((u) => loadCopySource(u.input ?? {}, deps)));
-      const onCard = onCardOf(input.card ?? []);
-      const runs = sources.map((src, i) => classifyCopy(src, copies[i].input ?? {}, input, onCard));
-      copies.forEach((u, i) => copyRuns.set(u, runs[i]));
-      const whole = runs.every((r) => !r.error && r.results.length > 0 && r.results.every((x) => x.status === "copied"));
-      const partial = last && !whole && runs.some((r) => r.items.length > 0);
-      for (const r of runs) deps.onEvent?.(copyEvent(r, whole || partial));
-      if (whole || partial) return copyFinish(runs, input, turns, partial);
     }
     if (last) {
       if (refused.size) return { kind: "failed", reason: "restore_card_open", turns };
@@ -707,7 +731,7 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
     const results = await Promise.all(uses.map(async (u, i) => {
       const run = copyRuns.get(u);
       const out = run
-        ? copyResultForAgent(run)
+        ? copyResultForAgent(run, staged.items.length > 0 && run.items.every((i) => staged.items.includes(i)) && run.items.length > 0)
         : refused.has(u)
         ? {
           error: "A card is on screen, and restore_card would replace it, so it is not available now. To put foods " +
@@ -1136,9 +1160,9 @@ function diarySourceLine(r: Record<string, unknown>): SourceLine | null {
 }
 
 /** The foods on the card for the duplicate check, by food key and catalog id.
- *  ONE set per turn: every line a copy takes joins it, so a second copy_lines
- *  in the same turn, or a second source line of the same food, is caught as
- *  already_on_card too ("code catches duplicates every time"). */
+ *  Every line a copy takes joins it, so a second copy_lines in the same turn
+ *  (or a later turn of the run) is caught as already_on_card. The lines of one
+ *  source in one call are copied together. */
 export interface OnCard {
   keys: Set<string>;
   ids: Set<string>;
@@ -1201,7 +1225,8 @@ export async function loadCopySource(
 }
 
 /** Sort one call's lines into copied / already_on_card / not_found, against
- *  the turn's shared on-card set, and add every copied line to that set.
+ *  the on-card set (the card, lines staged earlier in the run, and other
+ *  copies earlier in this turn), then add this call's copied lines to it.
  *  Synchronous, and run in call order, so the result does not depend on
  *  which source read came back first. */
 export function classifyCopy(source: CopySource, args: Record<string, unknown>, input: FoodAgentInput, onCard: OnCard): CopyRun {
@@ -1212,6 +1237,7 @@ export function classifyCopy(source: CopySource, args: Record<string, unknown>, 
   const again = args.add_again === true;
   const results: CopyRun["results"] = [];
   const items: ParsedItem[] = [];
+  const took: SourceLine[] = [];
   for (const p of pickLines(source.lines, asked)) {
     if (p.index === null) {
       results.push({ line: p.line, name: null, status: "not_found" });
@@ -1226,7 +1252,12 @@ export function classifyCopy(source: CopySource, args: Record<string, unknown>, 
     }
     results.push({ line: p.line, name: l.name, status: "copied" });
     items.push(l.item(meal));
-    onCard.keys.add(key);
+    took.push(l);
+  }
+  // Added only now: the lines of ONE source are copied together (a meal with
+  // two roti rows keeps both), while a later copy in the turn sees them.
+  for (const l of took) {
+    onCard.keys.add(sameFoodKey(l.name));
     if (l.food_id) onCard.ids.add(l.food_id);
   }
   return { kind: source.kind, label: source.label, results, items, error: null };
@@ -1256,9 +1287,17 @@ function copyEvent(r: CopyRun, finished: boolean): AgentEvent {
   };
 }
 
-/** What a copy that did not finish says to the agent. */
-function copyResultForAgent(r: CopyRun): unknown {
+/** What a copy says to the agent when the run goes on. `landed`: its lines
+ *  are on the card now (they go in with the agent's finish). */
+function copyResultForAgent(r: CopyRun, landed = false): unknown {
   if (r.error) return { error: r.error };
+  if (landed) {
+    return {
+      source: r.label,
+      results: r.results.map((x) => ({ line: x.line, ...(x.name ? { food_name: x.name } : {}), status: x.status })),
+      note: "These lines are on the card now and go in with your finish. Do not copy them again.",
+    };
+  }
   return {
     source: r.label,
     // "copied" here only means it could be: nothing from this turn was added.
@@ -1270,42 +1309,97 @@ function copyResultForAgent(r: CopyRun): unknown {
 
 const names = (xs: string[]) => xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
 
-/** A copy that finished: the copied lines join the card (a new card when
- *  none is on screen). The line the user reads is built HERE from the lines
+/** Lines copy_lines took, waiting for the run's finish, and the names of the
+ *  lines that did not copy when the agent will not see why. */
+interface Staged {
+  items: ParsedItem[];
+  dup: string[];
+  miss: string[];
+}
+
+/** Stage what these copies took, and add it to the run's on-card set. */
+function stage(staged: Staged, runs: CopyRun[], onCard: OnCard, o: { nameTheRest: boolean }): void {
+  for (const r of runs) {
+    for (const i of r.items) {
+      staged.items.push(i);
+      onCard.keys.add(sameFoodKey(i.food_name));
+      if (i.food_id) onCard.ids.add(i.food_id);
+    }
+    if (!o.nameTheRest) continue;
+    staged.dup.push(...r.results.filter((x) => x.status === "already_on_card").map((x) => x.name ?? x.line));
+    staged.miss.push(...r.results.filter((x) => x.status === "not_found").map((x) => x.line));
+  }
+}
+
+/** The line the user reads about the staged lines, built HERE from the lines
  *  really copied, never from the model's own words, so the card can never
- *  claim a line that was not added. `partial`: the last turn, so the lines
- *  that were not copied are named as such. */
-function copyFinish(runs: CopyRun[], input: FoodAgentInput, turns: AgentTurn[], partial: boolean): FoodAgentOutcome {
-  const items = runs.flatMap((r) => r.items);
-  const what = names(items.map((i) => i.food_name));
-  // Beside a card the lines join it; with none they are a new card to Add.
-  const lead = input.card?.length ? `Put ${what} on the card.` : `${what}, ready to add.`;
-  const dup = partial ? runs.flatMap((r) => r.results.filter((x) => x.status === "already_on_card").map((x) => x.name ?? x.line)) : [];
-  const miss = partial ? runs.flatMap((r) => r.results.filter((x) => x.status === "not_found").map((x) => x.line)) : [];
-  const line = [
+ *  claim a line that was not added. `beside`: other new lines come with them. */
+function stagedLine(staged: Staged, input: FoodAgentInput, beside: boolean): string {
+  const what = names(staged.items.map((i) => i.food_name));
+  const lead = !staged.items.length ? null
+    : beside ? `Also put ${what} on the card.`
+    : input.card?.length ? `Put ${what} on the card.`
+    : `${what}, ready to add.`;
+  return [
     lead,
-    dup.length ? `${names(dup)} ${dup.length === 1 ? "is" : "are"} already on the card: add a second portion, or skip?` : null,
-    miss.length ? `I could not find ${names(miss)} there.` : null,
+    staged.dup.length ? `${names(staged.dup)} ${staged.dup.length === 1 ? "is" : "are"} already on the card: add a second portion, or skip?` : null,
+    staged.miss.length ? `I could not find ${names(staged.miss)} there.` : null,
   ].filter(Boolean).join(" ");
-  const emptyUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0 };
-  return {
+}
+
+const NO_USAGE = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0 };
+
+/**
+ * The run's outcome with its staged copies in it. Lines a copy took are never
+ * dropped, whatever the run ended in:
+ *  - a meal (log_food, edit_card, remove_card_lines, restore): they join its
+ *    lines (after an edit or a removal the result replaces the card, so the
+ *    copies ride on top of it);
+ *  - the card cleared, a reply, a save card, or a failure: they are the card,
+ *    and the reply (or the cleared line) is said beside them. A save card
+ *    cannot carry them, so the user is told to ask for the save again.
+ */
+export function withStaged(out: FoodAgentOutcome, staged: Staged, input: FoodAgentInput): FoodAgentOutcome {
+  if (!staged.items.length && !staged.dup.length && !staged.miss.length) return out;
+  const turns = out.turns;
+  const asCard = (extra: (string | null)[], corrects: boolean, tools: string[]): FoodAgentOutcome => ({
     kind: "log",
     result: {
       parsed: {
-        meal_type: items[0]?.meal_type ?? input.card?.[0]?.meal_type ?? input.defaultMeal,
-        items,
-        drona_line: line,
-        // Added beside the card on screen, never in place of it.
-        corrects_previous: false,
+        meal_type: staged.items[0]?.meal_type ?? input.card?.[0]?.meal_type ?? input.defaultMeal,
+        items: staged.items,
+        drona_line: [stagedLine(staged, input, false), ...extra].filter((x) => x && x.trim()).join(" "),
+        corrects_previous: corrects,
       },
       declined: null,
-      usage: emptyUsage,
-      tool_calls: ["food_agent", "copy_lines"],
+      usage: NO_USAGE,
+      tool_calls: ["food_agent", ...tools, "copy_lines"],
       steps: [],
       iterations: turns.length,
     },
     turns,
-  };
+  });
+  if (out.kind === "log" && out.result.parsed) {
+    const p = out.result.parsed;
+    return {
+      ...out,
+      result: {
+        ...out.result,
+        parsed: {
+          ...p,
+          items: [...p.items, ...staged.items],
+          drona_line: [p.drona_line, stagedLine(staged, input, p.items.length > 0)].filter((x) => x && x.trim()).join(" "),
+        },
+        tool_calls: out.result.tool_calls.includes("copy_lines") ? out.result.tool_calls : [...out.result.tool_calls, "copy_lines"],
+      },
+    };
+  }
+  if (!staged.items.length) return out;
+  // Every line of the card was taken off: the card is the copies alone.
+  if (out.kind === "log") return asCard([out.result.declined?.message ?? null], true, out.result.tool_calls.filter((t) => t !== "food_agent"));
+  if (out.kind === "reply") return asCard([out.text], false, ["reply"]);
+  if (out.kind === "create") return asCard(["Ask me to save it again once this is on the card."], false, []);
+  return asCard([], false, []);
 }
 
 /** A name for matching a save line to a card line: lowercase, words only,

@@ -798,7 +798,7 @@ const WITH_DUP_ROTI: ThreadCardLines = {
   lines: [tl("L1", "Roti", 120), tl("L2", "Dal tadka", 140), tl("L3", "Roti", 120)],
 };
 
-Deno.test("copy_lines: a food copied earlier in the SAME turn is already_on_card (two calls, or two source lines)", async () => {
+Deno.test("copy_lines: a food copied by ANOTHER copy earlier in the same turn is already_on_card", async () => {
   // Two copy_lines calls in one turn, the same food from two sources.
   const bodies: Record<string, unknown>[] = [];
   const events: AgentEvent[] = [];
@@ -821,18 +821,77 @@ Deno.test("copy_lines: a food copied earlier in the SAME turn is already_on_card
   const told = JSON.stringify(bodies[1].messages);
   assert(told.includes("would_copy") && told.includes("already_on_card"), told);
 
-  // One call whose source has the same food twice: the second is caught.
-  const one = await runFoodAgent(
+});
+
+Deno.test("copy_lines: one source with the same food twice copies both (its lines go together)", async () => {
+  const out = await runFoodAgent(
     { text: "add the lunch card", defaultMeal: "dinner", card: [{ ...ONE_ROTI[0], food_name: "Chicken curry", kcal: 250 }], threadIndex: THREAD_INDEX },
+    { ...threadDeps(scripted([[{ name: "copy_lines", input: { source: { card: "C1" } } }]])), threadCard: async () => WITH_DUP_ROTI },
+  );
+  if (out.kind !== "log") throw new Error(out.kind);
+  assertEquals(out.result.parsed!.items.map((i) => i.food_name), ["Roti", "Dal tadka", "Roti"]);
+  // Against the card as it was, a roti already there is still caught.
+  const there = await runFoodAgent(
+    { text: "add the lunch card", defaultMeal: "dinner", card: ONE_ROTI, threadIndex: THREAD_INDEX },
     {
-      ...threadDeps(scripted([
-        [{ name: "copy_lines", input: { source: { card: "C1" } } }],
-        [{ name: "reply", input: { text: "Roti is on that card twice. Add both, or one?" } }],
-      ])),
+      ...threadDeps(scripted([[{ name: "copy_lines", input: { source: { card: "C1" } } }], [{ name: "reply", input: { text: "Roti is already on the card. Add a second portion, or skip?" } }]])),
       threadCard: async () => WITH_DUP_ROTI,
     },
   );
-  assertEquals(one.kind, "reply");
+  assertEquals(there.kind, "reply");
+});
+
+Deno.test("copy_lines beside other work in the SAME turn: the copy never drops it (copy + log_food)", async () => {
+  const events: AgentEvent[] = [];
+  const out = await runFoodAgent(
+    { text: "add the dal from lunch and 2 eggs", defaultMeal: "dinner", card: ONE_ROTI, threadIndex: THREAD_INDEX },
+    threadDeps(scripted([[
+      { name: "copy_lines", input: { source: { card: "C1" }, lines: ["L2"] } },
+      { name: "log_food", input: { text: "2 eggs", meal_type: "dinner", summary: "2 eggs, ready to add." } },
+    ]]), events),
+  );
+  if (out.kind !== "log") throw new Error(out.kind);
+  // Both: the parsed eggs and the copied dal, numbers as stored.
+  assertEquals(out.result.parsed!.items.map((i) => [i.food_name, i.kcal]), [["2 eggs", 250], ["Dal tadka", 140]]);
+  assertEquals(out.result.parsed!.corrects_previous, false);
+  assertEquals(out.result.parsed!.drona_line, "2 eggs, ready to add. Also put Dal tadka on the card.");
+  assertEquals(events[0], { tool: "copy_lines", source_kind: "thread", asked: 1, copied: 1, already_on_card: 0, not_found: 0, finished: true, error: null });
+});
+
+Deno.test("copy_lines beside a read in the same turn: the copy lands, the agent goes on, both are on the card", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const out = await runFoodAgent(
+    { text: "add the dal from lunch and 2 eggs", defaultMeal: "dinner", card: ONE_ROTI, threadIndex: THREAD_INDEX },
+    threadDeps(scripted([
+      [{ name: "copy_lines", input: { source: { card: "C1" }, lines: ["L2"] } }, { name: "parse_food", input: { text: "2 eggs" } }],
+      [{ name: "log_food", input: { text: "2 eggs", summary: "2 eggs, ready to add." } }],
+    ], bodies)),
+  );
+  if (out.kind !== "log") throw new Error(out.kind);
+  assertEquals(out.result.parsed!.items.map((i) => i.food_name), ["2 eggs", "Dal tadka"]);
+  assert(JSON.stringify(bodies[1].messages).includes("Do not copy them again"));
+});
+
+Deno.test("staged copies survive any finish: a reply, or a failed run, still serves them", async () => {
+  const reply = await runFoodAgent(
+    { text: "add the dal from lunch, and is that a lot of carbs?", defaultMeal: "dinner", card: ONE_ROTI, threadIndex: THREAD_INDEX },
+    threadDeps(scripted([
+      [{ name: "copy_lines", input: { source: { card: "C1" }, lines: ["L2"] } }, { name: "coach_list_saved_meals", input: {} }],
+      [{ name: "reply", input: { text: "Not much, about 16 g." } }],
+    ])),
+  );
+  if (reply.kind !== "log") throw new Error(reply.kind);
+  assertEquals(reply.result.parsed!.items.map((i) => i.food_name), ["Dal tadka"]);
+  assertEquals(reply.result.parsed!.drona_line, "Put Dal tadka on the card. Not much, about 16 g.");
+  const failed = await runFoodAgent(
+    { text: "add the dal from lunch", defaultMeal: "dinner", card: ONE_ROTI, threadIndex: THREAD_INDEX },
+    threadDeps(scripted([
+      [{ name: "copy_lines", input: { source: { card: "C1" }, lines: ["L2"] } }, { name: "coach_list_saved_meals", input: {} }],
+      [{ name: "made_up_tool", input: {} }],
+    ])),
+  );
+  if (failed.kind !== "log") throw new Error(failed.kind);
+  assertEquals(failed.result.parsed!.items.map((i) => i.food_name), ["Dal tadka"]);
 });
 
 Deno.test("copy_lines: the card line names only what was copied, never the model's own summary", async () => {

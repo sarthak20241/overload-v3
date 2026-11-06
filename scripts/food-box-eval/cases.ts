@@ -1420,6 +1420,31 @@ export const CASES: FoodBoxCase[] = [
     },
   },
   {
+    id: "copy-plus-new-food",
+    tags: ["copy", "diary", "lost-lines"],
+    origin: { date: "2026-11-06T13:40:00Z", who: "synthetic" },
+    region: "india",
+    thread: { turns: [], card: null },
+    fixtures: {
+      diary: [{
+        daysAgo: 1,
+        meal: "lunch",
+        lines: [
+          L("Dal tadka", 162, { quantity: 1, unit: "katori", grams: 150, protein_g: 8.1, carb_g: 21, fat_g: 5.2, source: "catalog" }),
+          L("Jeera Rice", 195, { quantity: 1, unit: "bowl", grams: 150, protein_g: 3.9, carb_g: 40, fat_g: 2.4, source: "catalog" }),
+        ],
+      }],
+    },
+    // A copy and a new food in one message: neither may be dropped.
+    message: "the dal from yesterday's lunch and 2 boiled eggs",
+    expect: {
+      lines: [{ match: "dal", kcal: [160, 164], source: ["catalog"] }, { match: "egg", kcal: [120, 180] }],
+      removeLines: ["rice"],
+      noDuplicates: true,
+      reply: { noFalseClaim: true },
+    },
+  },
+  {
     id: "copy-already-on-card",
     tags: ["copy", "duplicate"],
     origin: { date: "2026-11-06T19:40:00Z", who: "synthetic" },
