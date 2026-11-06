@@ -2,9 +2,9 @@
 //
 // The rule the food box eval's live adapter (scripts/food-box-eval) uses to
 // score the card the app would show. The Nutrition screen (runParse) calls it
-// for a save card; its other branches (a reply, a cleared card, an error) are
-// written inline there to the same rules, so a change to one side must be
-// made on the other too.
+// for a save card and for a reply (kept, or cleared); the append of new lines
+// and an error are written inline there to the same rules, so a change to one
+// side must be made on the other too.
 //
 // The rule that matters most: a card the user has not added yet leaves the
 // screen only when the user asks. A save card is a SECOND card beside it, never
