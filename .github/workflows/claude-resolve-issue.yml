@@ -32,12 +32,27 @@ jobs:
       issues: write          # comment back on the issue
       id-token: write
     steps:
+      - name: Avoid duplicate fixes during vacation coverage
+        id: coverage
+        env:
+          VACATION_ENABLED: ${{ vars.VACATION_ISSUES_ENABLED == 'true' && vars.VACATION_NIGHTLY_ENABLED == 'true' }}
+        run: |
+          python3 - <<'PY'
+          import datetime as dt
+          import os
+          end = dt.datetime(2026, 10, 9, 18, 30, tzinfo=dt.timezone.utc)
+          covered = os.environ['VACATION_ENABLED'] == 'true' and dt.datetime.now(dt.timezone.utc) < end
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write('allowed=' + ('false' if covered else 'true') + '\n')
+          PY
       - name: Checkout
+        if: steps.coverage.outputs.allowed == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0     # full history so branching/diffing is clean
 
       - name: Claude resolve
+        if: steps.coverage.outputs.allowed == 'true'
         uses: anthropics/claude-code-action@v1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

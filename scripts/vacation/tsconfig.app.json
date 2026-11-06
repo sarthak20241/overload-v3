@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {"allowImportingTsExtensions": true},
+  "include": ["../../app/**/*.ts", "../../app/**/*.tsx", "../../components/**/*.ts", "../../components/**/*.tsx", "../../hooks/**/*.ts", "../../hooks/**/*.tsx", "../../lib/**/*.ts", "../../constants/**/*.ts", "../../contexts/**/*.tsx", "../../expo-env.d.ts", "../../.expo/types/**/*.ts"],
+  "exclude": ["../../node_modules", "../../lib/**/*.test.ts"]
+}
