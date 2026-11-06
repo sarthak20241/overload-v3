@@ -532,8 +532,14 @@ export function startFoodAgent(args: {
     // card, and the lines past the cap would be lost. The earlier-cards route
     // is for NO card on screen, not for a card the agent cannot hold whole.
     const noCard = !args.card?.lines.length;
-    const thread = args.thread && !cardMayBeCut(args.card?.lines) ? await args.thread.catch(() => null) : null;
-    if (env().intentMode !== "on" || !wantsFoodAgent(d, args.supportsCreate, cardOpen, !!thread?.index && noCard)) return null;
+    if (env().intentMode !== "on") return null;
+    // The thread is waited for only when it can matter: no card on screen
+    // (restore is offered only then), and a verdict that would send the
+    // message to the agent if the thread had earlier cards. Every other
+    // message skips the read.
+    const couldUseThread = noCard && !!args.thread && wantsFoodAgent(d, args.supportsCreate, cardOpen, true);
+    const thread = couldUseThread ? await args.thread!.catch(() => null) : null;
+    if (!wantsFoodAgent(d, args.supportsCreate, cardOpen, !!thread?.index && noCard)) return null;
     if (!env().anthropicApiKey) return null;
     const t0 = Date.now();
     const callEnds: number[] = [];

@@ -250,3 +250,16 @@ Deno.test("two lines that differ only in brackets keep their own ids", () => {
   // An edit to the bracket text still keeps the id.
   assertEquals(withLineIds(v1, [{ name: "Rice (cooked, 150 g)" }, { name: "Rice (raw)" }]).map((l) => l.line_id), ["L2", "L1"]);
 });
+
+Deno.test("card refs stay the same after a restore: a replaced card keeps its number", async () => {
+  const s = memoryThreadStore();
+  await s.ensure("u1", T);
+  const A = "55555555-5555-4555-8555-555555555555";
+  await s.createCard(T, MEAL, "meal", cardAsLines(LUNCH), null, "lunch");
+  await s.createCard(T, A, "meal", cardAsLines(card([["Poha", 250]])), null, "breakfast");
+  await s.setCardStatus(T, MEAL, "replaced");
+  const t = await s.load("u1", T);
+  const index = threadIndexLine(t, null)!;
+  assert(index.includes("[C2 v1] breakfast card"), index);
+  assert(!index.includes("[C1"), index);
+});

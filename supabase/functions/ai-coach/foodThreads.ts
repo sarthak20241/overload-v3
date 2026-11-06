@@ -236,8 +236,13 @@ export function lineAsItem(l: ThreadLine, mealDefault: MealType): ParsedItem {
  *  cleared card's latest version is empty, and a card that was brought back
  *  lives on as its copy ('replaced'). */
 export function cardRefs(t: StoredThread): Map<string, StoredCard> {
-  const sorted = t.cards.filter((c) => c.kind === "meal" && c.status !== "replaced" && c.lines.length > 0).sort((a, b) => a.created_at.localeCompare(b.created_at));
-  return new Map(sorted.map((c, i) => [`C${i + 1}`, c]));
+  // Numbered over EVERY meal card in the order made, then filtered: a card
+  // that is replaced or emptied keeps its number, so C2 means the same card
+  // in every message of the thread, including ones quoted in earlier turns.
+  const meals = t.cards.filter((c) => c.kind === "meal").sort((a, b) => a.created_at.localeCompare(b.created_at));
+  return new Map(
+    meals.map((c, i) => [`C${i + 1}`, c] as const).filter(([, c]) => c.status !== "replaced" && c.lines.length > 0),
+  );
 }
 
 /**
@@ -348,10 +353,15 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
       };
     },
     async ensure(userId, threadId) {
+      // Look first: after a thread's first message the row exists, and an
+      // insert would fail on every later message.
+      const { data } = await admin.from("food_threads").select("user_id").eq("id", threadId).maybeSingle();
+      if (data) return data.user_id === userId;
       const ins = await admin.from("food_threads").insert({ id: threadId, user_id: userId }).select("id");
       if (!ins.error) return true;
-      const { data } = await admin.from("food_threads").select("user_id").eq("id", threadId).maybeSingle();
-      return data?.user_id === userId;
+      // Two first messages raced: the other one made it.
+      const again = await admin.from("food_threads").select("user_id").eq("id", threadId).maybeSingle();
+      return again.data?.user_id === userId;
     },
     async addTurns(threadId, fromSeq, turns, clientId) {
       const rowsFrom = (seq: number) => turns.filter((t) => t.text.trim()).map((t, i) => ({
@@ -361,7 +371,10 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
       // A retried send (same client id) adds its turns once.
       if (clientId && rows.length) {
         const { data: seen } = await admin.from("food_thread_turns").select("seq").eq("thread_id", threadId).eq("client_id", clientId).limit(1);
-        if (seen?.length) return;
+        if (seen?.length) {
+          await admin.from("food_threads").update({ last_at: new Date().toISOString() }).eq("id", threadId);
+          return;
+        }
       }
       if (rows.length) {
         let { error } = await admin.from("food_thread_turns").insert(rows);
@@ -571,7 +584,10 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
     async addTurns(threadId, fromSeq, turns, clientId) {
       const t = threads.get(threadId);
       if (!t) throw new Error("no thread");
-      if (clientId && t.turns.some((y) => y.client_id === clientId)) return;
+      if (clientId && t.turns.some((y) => y.client_id === clientId)) {
+        t.last_at = stamp();
+        return;
+      }
       turns.filter((x) => x.text.trim()).forEach((x, i) => {
         if (t.turns.some((y) => y.seq === fromSeq + i)) throw new Error("duplicate seq");
         t.turns.push({ seq: fromSeq + i, role: x.role, text: x.text, client_id: clientId });
