@@ -60,7 +60,7 @@ function db({ cooldown = true } = {}): Promise<PGlite> {
       if (cooldown) {
         await pg.exec(await read("20261026120000_pro_ai_cooldown.sql"));
         // Later redefinitions of get_coach_access_status(), in order.
-        await pg.exec(await read("20261105120000_free_food_limit_9.sql"));
+        await pg.exec(await read("20261105130000_free_food_limit_9.sql"));
       }
       return pg;
     })());

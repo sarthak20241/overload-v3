@@ -45,13 +45,15 @@ Deno.test("other tools and modes do not ask", () => {
 
 // ── The RPCs, run for real ────────────────────────────────────────────────────
 
-const MIGRATION = new URL("../../migrations/20261106120000_free_goal_build.sql", import.meta.url);
+const MIGRATION = new URL("../../migrations/20261106130000_free_goal_build.sql", import.meta.url);
+const ACCOUNT_DELETE = new URL("../../migrations/20261106130100_free_goal_build_account_delete.sql", import.meta.url);
 
 const SCHEMA = `
   create role anon; create role authenticated;
   create function current_clerk_user_id() returns text language sql stable as $$
     select nullif(current_setting('request.jwt.claims', true)::jsonb ->> 'sub', '')
   $$;
+  create table user_profiles (clerk_user_id text primary key);
 `;
 
 // PGlite takes Deno for Node (the global `process`) and then reaches for
@@ -69,6 +71,7 @@ function db(): Promise<PGlite> {
       await pg.waitReady;
       await pg.exec(SCHEMA);
       await pg.exec(await Deno.readTextFile(MIGRATION));
+      await pg.exec(await Deno.readTextFile(ACCOUNT_DELETE));
       return pg;
     } finally {
       g.process = saved;
@@ -157,4 +160,18 @@ Deno.test("no account, or an unknown kind, is refused and writes nothing", async
     `select count(*)::int n from free_goal_builds where user_id in ('odd-kind')`,
   );
   assertEquals(n.rows[0].n, 0);
+});
+
+Deno.test("deleting the account's profile removes its ledger row, and only its own", async () => {
+  const pg = await db();
+  for (const u of ["leaver", "stayer"]) {
+    await pg.query(`insert into user_profiles(clerk_user_id) values ($1)`, [u]);
+    await signIn(pg, u);
+    await claim(pg, "build");
+  }
+  await pg.query(`delete from user_profiles where clerk_user_id = 'leaver'`);
+  const rows = await pg.query<{ user_id: string }>(
+    `select user_id from free_goal_builds where user_id in ('leaver', 'stayer') order by user_id`,
+  );
+  assertEquals(rows.rows.map((r: { user_id: string }) => r.user_id), ["stayer"]);
 });

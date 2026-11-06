@@ -37,7 +37,7 @@ export function freePhaseRefineCandidate(body: unknown): string | null {
 // refine_program), including its "yes, do it" turn that forces
 // generate_program. Any other forced tool in those modes stays Pro. This only
 // decides whether to ASK; try_claim_free_goal_turn decides whether the
-// account still has that turn (migration 20261106120000).
+// account still has that turn (migration 20261106130000).
 export function freeGoalTurnKind(body: unknown): "build" | "edit" | null {
   const b = (body ?? {}) as { mode?: unknown; force_tool?: unknown };
   if (b.mode === undefined) return b.force_tool === "generate_program" ? "build" : null;

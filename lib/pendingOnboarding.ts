@@ -155,7 +155,7 @@ export async function saveOnboardingProgram(
 
 /**
  * Spend the account's one free goal plan build (migration
- * 20261106120000_free_goal_build). Best-effort: a failure leaves the build
+ * 20261106130000_free_goal_build). Best-effort: a failure leaves the build
  * unspent, which only means a free user may get one more Drona build later.
  * Never blocks the finish line.
  */

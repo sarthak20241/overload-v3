@@ -1,4 +1,4 @@
--- 20261106120000_free_goal_build.sql
+-- 20261106130000_free_goal_build.sql
 --
 -- One free goal plan for free-tier users, for life, plus a few edit turns.
 -- Goal plan work (generate_program, and the discuss_program / refine_program
