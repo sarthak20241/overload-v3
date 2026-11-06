@@ -56,7 +56,9 @@ import type { Action, FoodBoxCase, Line, Outcome, SavedMeal } from "./types";
 
 function dotEnv(): Record<string, string> {
   // The worktree, then the main checkout (a worktree has no .env.local).
-  for (const path of [".env.local", `${process.env.HOME}/Coding/overload-v3/.env.local`]) {
+  // EVAL_ENV_FILE names another file; the main checkout's is the last resort.
+  const paths = [process.env.EVAL_ENV_FILE, ".env.local", `${process.env.HOME}/Coding/overload-v3/.env.local`].filter((p): p is string => !!p);
+  for (const path of paths) {
     try {
       const out: Record<string, string> = {};
       for (const line of readFileSync(path, "utf8").split("\n")) {
@@ -343,7 +345,7 @@ function parseDeps(c: FoodBoxCase, zone: string): ParseMealDeps {
 
 // ── One case ────────────────────────────────────────────────────────────────
 
-const MEAL_OF_HOUR = (h: number) => (h < 11 ? "breakfast" : h < 16 ? "lunch" : h < 19 ? "snack" : "dinner") as const;
+const MEAL_OF_HOUR = (h: number): "breakfast" | "lunch" | "snack" | "dinner" => (h < 11 ? "breakfast" : h < 16 ? "lunch" : h < 19 ? "snack" : "dinner");
 
 /** The save card's meal as the user would save it with one tap. */
 function savedMealOf(tool: string, input: Record<string, unknown>): SavedMeal {
