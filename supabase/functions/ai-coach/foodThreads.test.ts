@@ -127,3 +127,23 @@ Deno.test("a card the server never saw is stored as the base first", async () =>
   assertEquals(t!.cards[0].lines.map((l) => l.name), ["Samosa", "Dosa"]);
   assertEquals((await s.cardAt(MEAL, 4))?.map((l) => l.name), ["Samosa"]);
 });
+
+Deno.test("the server behind the app (a missed write) takes the app's copy and count", async () => {
+  const s = memoryThreadStore();
+  const base = { userId: "u1", userText: "x", dronaText: null, mealType: "lunch" as const };
+  await recordThreadMessage(s, { ...base, card: [], req: { id: T, card_id: null, base_version: null, next_card_id: MEAL, closed: null }, clientId: "m1", served: { kind: "meal", items: [item("Rice", 200)], corrects: false } });
+  // The app counted v2 (an edit the server never got) and sends its card at v2.
+  const r = await recordThreadMessage(s, { ...base, card: card([["Rice", 180], ["Dal", 120]]), req: { id: T, card_id: MEAL, base_version: 2, next_card_id: null, closed: null }, clientId: "m3", served: { kind: "meal", items: [item("Curd", 60)], corrects: false } });
+  assertEquals(r, { ok: true, card_version: 3 });
+  const t = await s.load("u1", T);
+  assertEquals(t!.cards[0].lines.map((l) => [l.line_id, l.name, l.kcal]), [["L1", "Rice", 180], ["L2", "Dal", 120], ["L3", "Curd", 60]]);
+});
+
+Deno.test("closing a thread needs its owner", async () => {
+  const s = memoryThreadStore();
+  await s.ensure("u1", T);
+  await s.close("u2", T, "added");
+  assertEquals(s.dump().threads.get(T)!.status, "open");
+  await s.close("u1", T, "added");
+  assertEquals(s.dump().threads.get(T)!.status, "closed");
+});

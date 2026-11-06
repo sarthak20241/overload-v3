@@ -635,6 +635,8 @@ async function finishWith(
     const got = ref && deps.restoreCard ? await deps.restoreCard(ref, version) : null;
     if (!got || got.items.length === 0) return { kind: "failed", reason: "restore_not_found", turns };
     const summary = clean(typeof args.summary === "string" ? args.summary : "");
+    // No model or lookup ran for the restore itself: the agent's own tokens
+    // are logged by its caller (logUsage), so zero here is the true cost.
     const emptyUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0 };
     // The card comes back whole, numbers unchanged, and takes the place of
     // whatever is on screen (corrects_previous: the app replaces, not appends).

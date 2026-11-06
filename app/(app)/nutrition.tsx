@@ -1290,6 +1290,10 @@ export default function NutritionScreen() {
     // transport failure cannot say whether the request arrived, and the card's
     // Retry re-uses the same id so the server writes at most once.
     if (auto && res.kind !== 'sent' && res.kind !== 'error') void removePending(auto.clientId);
+    // Every answer that did not change the card still counts as activity, so
+    // the thread's idle clock matches the server's (a cap, an error, a send
+    // still settling). The branches below that change the card settle again.
+    if (res.kind === 'sent' || res.kind === 'cap' || res.kind === 'error') settleThread('unchanged');
     if (res.kind === 'sent') {
       setFlow({ status: 'sent', raw: t, message: res.message, clientId: auto?.clientId ?? '' });
       if (sentTimerRef.current) clearTimeout(sentTimerRef.current);

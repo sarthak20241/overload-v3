@@ -17,11 +17,13 @@
 --                      a removal never renumbers what another change points at.
 --
 -- One write per change, and only on top of the version it started from:
--- food_card_write() bumps the version only `where version = p_base_version`,
--- in one statement, and adds the new version's lines in the same transaction.
--- A stale base (two devices, a retry racing the first try) writes nothing and
--- returns the current version, so the caller reloads and runs once more. A
--- retry of the same message (same client_id) does not make a second version.
+-- food_card_write() writes version p_base_version + 1, in one statement, and
+-- adds the new version's lines in the same transaction. It writes only when
+-- the server is AT that base, or behind it (a write it missed: the app sent
+-- its whole card, so the app's copy is the newer one and its count wins).
+-- A base older than the server's (two devices, a retry racing the first try)
+-- writes nothing and returns the current version. A retry of the same message
+-- (same client_id) does not make a second version.
 --
 -- Written by the ai-coach edge function only (service role), behind the
 -- FOOD_THREADS switch (off | shadow | on). No client reads or writes them.
@@ -110,7 +112,7 @@ revoke all on public.food_card_lines   from anon, authenticated;
 -- The one conditional write. Returns the card's version after the call and
 -- whether this call wrote it:
 --   out_written = true   out_version is base + 1, with p_lines as its lines
---   out_written = false  nothing changed: the base was stale, or this client_id
+--   out_written = false  nothing changed: the base was older than the server's, or this client_id
 --                    already made the current version (a retry). `out_version`
 --                    is the current one, so the caller can reload.
 -- p_lines: [{line_id, name, kcal, ...}] in card order.
@@ -133,13 +135,13 @@ declare
   v_last text;
 begin
   update public.food_cards c
-     set version = c.version + 1,
+     set version = p_base_version + 1,
          last_client_id = p_client_id,
          status = coalesce(p_status, c.status),
          meal_type = coalesce(p_meal_type, c.meal_type),
          updated_at = now()
    where c.id = p_card_id
-     and c.version = p_base_version
+     and c.version <= p_base_version
      and (p_client_id is null or c.last_client_id is distinct from p_client_id)
   returning c.version into v_new;
 

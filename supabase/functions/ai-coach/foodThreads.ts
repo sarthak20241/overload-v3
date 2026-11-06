@@ -227,10 +227,12 @@ export interface FoodThreadStore {
   /** A new card (the app's id) with its first lines as `version` (1 for a new
    *  card; the app's own version when adopting a card the server never saw). */
   createCard(threadId: string, cardId: string, kind: "meal" | "save", lines: ThreadLine[], clientId: string | null, mealType: MealType | null, version?: number): Promise<void>;
-  /** The one conditional write: version base + 1, only if the card is still at base. */
+  /** The one conditional write: version base + 1, only if the card is at base
+   *  or behind it (food_card_write). An older base writes nothing. */
   writeCard(cardId: string, base: number, lines: ThreadLine[], clientId: string | null, status?: StoredCard["status"]): Promise<{ version: number; written: boolean }>;
   cardAt(cardId: string, version: number): Promise<ThreadLine[] | null>;
-  close(threadId: string, why: "added" | "idle" | "replaced"): Promise<void>;
+  /** Close one of THIS user's threads. Another user's id changes nothing. */
+  close(userId: string, threadId: string, why: "added" | "idle" | "replaced"): Promise<void>;
   touch(threadId: string): Promise<void>;
 }
 
@@ -301,11 +303,18 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
       return data?.user_id === userId;
     },
     async addTurns(threadId, fromSeq, turns, clientId) {
-      const rows = turns.filter((t) => t.text.trim()).map((t, i) => ({
-        thread_id: threadId, seq: fromSeq + i, role: t.role, text: t.text.slice(0, 4000), client_id: clientId,
+      const rowsFrom = (seq: number) => turns.filter((t) => t.text.trim()).map((t, i) => ({
+        thread_id: threadId, seq: seq + i, role: t.role, text: t.text.slice(0, 4000), client_id: clientId,
       }));
+      const rows = rowsFrom(fromSeq);
       if (rows.length) {
-        const { error } = await admin.from("food_thread_turns").insert(rows);
+        let { error } = await admin.from("food_thread_turns").insert(rows);
+        // Two quick messages read the same last seq: the second one's seqs
+        // are taken. Read the newest seq again and try once more.
+        if (error?.code === "23505") {
+          const { data } = await admin.from("food_thread_turns").select("seq").eq("thread_id", threadId).order("seq", { ascending: false }).limit(1);
+          ({ error } = await admin.from("food_thread_turns").insert(rowsFrom(Number(data?.[0]?.seq ?? 0) + 1)));
+        }
         if (error) throw new Error(`food_thread_turns: ${error.message}`);
       }
       await admin.from("food_threads").update({ last_at: new Date().toISOString() }).eq("id", threadId);
@@ -329,8 +338,9 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
       if (error || !data?.length) return null;
       return (data as Record<string, unknown>[]).map(rowAsLine);
     },
-    async close(threadId, why) {
-      await admin.from("food_threads").update({ status: "closed", closed_why: why }).eq("id", threadId).eq("status", "open");
+    async close(userId, threadId, why) {
+      await admin.from("food_threads").update({ status: "closed", closed_why: why })
+        .eq("id", threadId).eq("user_id", userId).eq("status", "open");
     },
     async touch(threadId) {
       await admin.from("food_threads").update({ last_at: new Date().toISOString() }).eq("id", threadId);
@@ -371,7 +381,7 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
   const log = args.log ?? (() => {});
   const { req } = args;
   try {
-    if (req.closed && req.closed.id !== req.id) await store.close(req.closed.id, req.closed.why);
+    if (req.closed && req.closed.id !== req.id) await store.close(args.userId, req.closed.id, req.closed.why);
     if (!(await store.ensure(args.userId, req.id))) {
       log(`[food_threads] thread ${req.id} is not this user's; nothing written`);
       return { ok: false, card_version: null };
@@ -382,17 +392,24 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
       // The app should have started a new thread after 30 idle minutes. It
       // did not, so this message reopens nothing: it is kept, the thread is
       // marked closed, and the card is still written below.
-      await store.close(t.id, "idle");
+      await store.close(args.userId, t.id, "idle");
     }
+    // A failed turn write is logged and the card is still written: the card
+    // is the part a user can lose.
     await store.addTurns(t.id, t.last_seq + 1, [
       { role: "user", text: args.userText },
       ...(args.dronaText ? [{ role: "drona" as const, text: args.dronaText }] : []),
-    ], args.clientId);
+    ], args.clientId).catch((e) => log(`[food_threads] turns not written: ${String(e).slice(0, 160)}`));
 
     const onScreen = req.card_id ? t.cards.find((c) => c.id === req.card_id) ?? null : null;
     // The app's card is stored as the base, at the app's own version, when
     // the server has none of it. Both sides then count from the same number.
-    let base = onScreen;
+    // When the server's copy is BEHIND the app's (it missed a write), the
+    // app's copy is the newer one: its lines are the base, and the write
+    // below lands at the app's count (food_card_write allows a base ahead).
+    let base = onScreen && req.base_version !== null && onScreen.version < req.base_version && args.card.length
+      ? { ...onScreen, version: req.base_version, lines: cardAsLines(args.card, onScreen.lines) }
+      : onScreen;
     if (req.card_id && !onScreen && args.card.length) {
       const v = req.base_version ?? 1;
       await store.createCard(t.id, req.card_id, "meal", cardAsLines(args.card), null, args.mealType, v);
@@ -442,7 +459,7 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
   const write = (cardId: string, base: number, lines: ThreadLine[], clientId: string | null, status?: StoredCard["status"]) => {
     const c = cards.get(cardId);
     if (!c) return { version: 0, written: false };
-    if (c.version !== base || (clientId !== null && c.last_client_id === clientId)) return { version: c.version, written: false };
+    if (c.version > base || (clientId !== null && c.last_client_id === clientId)) return { version: c.version, written: false };
     c.version = base + 1;
     c.last_client_id = clientId;
     if (status) c.status = status;
@@ -494,9 +511,9 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
       const v = cards.get(cardId)?.versions.get(version);
       return v ? v.map((l) => ({ ...l })) : null;
     },
-    async close(threadId, _why) {
+    async close(userId, threadId, _why) {
       const t = threads.get(threadId);
-      if (t) t.status = "closed";
+      if (t && t.user_id === userId) t.status = "closed";
     },
     async touch(threadId) {
       const t = threads.get(threadId);
