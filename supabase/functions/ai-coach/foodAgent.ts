@@ -889,7 +889,9 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     // A later message (FOOD_AGENT_LATER): the turn's card changes are planned
     // together and checked before anything runs. A conflict (one line, two
     // changes) or an unknown line id sends every change back to the agent with
-    // the reason: nothing is half-applied. log_food beside a card is an
+    // the reason, and none of them is applied. A plan that passes is applied
+    // line by line: an edit whose parse fails leaves its own line as it was,
+    // the others land, and the card's line names the one that did not. log_food beside a card is an
     // addition here, so it lands in the same fixed order.
     const changes = later && lineTools
       ? uses.filter((u) => CARD_CHANGE_TOOLS.has(u.name) || u.name === LOG_FOOD_TOOL.name)
@@ -1392,7 +1394,7 @@ const SAVE_TOOLS = new Set([SAVE_CARD_AS_MEAL_TOOL.name, CREATE_CUSTOM_MEAL_TOOL
 const SAVE_ASK = /\b(?:save|saving|(?:to|in|into) my meals|as a (?:saved )?meal|make (?:it|this|that) (?:a|my) meal|(?:keep|remember) (?:it|this|that) (?:as|for))\b/gi;
 
 /** A no in front of the ask ("don't save", "no need to save"): not an ask. */
-const NEGATED = /\b(?:don['’]?t|do not|no need to|not|never|didn['’]?t|won['’]?t|stop|without)\b[\w\s]{0,16}$/i;
+const NEGATED = /\b(?:don['’]?t|do not|no need to|not|never|didn['’]?t|won['’]?t|stop|without)\b[\w\s'’]{0,40}$/i;
 
 /** An ask to save in this text: a save word, not negated. Past tense
  *  ("already saved") is not in the pattern, and neither is a bare "my meals". */

@@ -569,7 +569,7 @@ Deno.test("editLineInput: the line's own change goes to its parse, and nothing e
 });
 
 Deno.test("save gate: negation and past tense are not an ask", () => {
-  for (const t of ["don't save it", "no need to save this", "I already saved it", "my meals today were light", "do not save, just log"]) {
+  for (const t of ["don't save it", "no need to save this", "I already saved it", "my meals today were light", "do not save, just log", "I don't think I'd want to save this"]) {
     assertFalse(userAskedToSave({ text: t }), t);
   }
   for (const t of ["save this as a meal", "can you save it", "add it to my meals"]) assert(userAskedToSave({ text: t }), t);

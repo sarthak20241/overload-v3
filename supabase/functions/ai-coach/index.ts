@@ -3679,6 +3679,9 @@ async function handleParseMealRequest(args: {
         // synchronously. Awaiting inside onProgress would stall the stream.
         let settledIntent: FoodIntentDecision | null = null;
         void intentP.then((d) => { settledIntent = d; });
+        // FOOD_AGENT_LATER is not wired here on purpose: only Quick streams
+        // (wouldStream needs speed "fast"), and step 2 is Precise only, which
+        // always takes the JSON path below.
         const agentP = startFoodAgent({
           intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary, readDiaryLines,
           contextPromise, userId, recentTurns, pendingMeal: foodContext.pendingMeal,
