@@ -21,6 +21,7 @@ import {
   withLineIds,
 } from "./foodThreads.ts";
 import type { CardLine } from "./foodContext.ts";
+import { THREAD_IDLE_MS as APP_THREAD_IDLE_MS } from "../../../lib/foodThread.ts";
 import type { ParsedItem } from "./parseMeal.ts";
 
 const T = "11111111-1111-4111-8111-111111111111";
@@ -305,4 +306,19 @@ Deno.test("a card cleared on screen can be brought back: its last lines come bac
   const th = await threadForAgent(s, "u1", { id: T, card_id: null, base_version: null, next_card_id: null, closed: null });
   assert(th!.index!.includes("cleared"), th!.index!);
   assertEquals((await th!.restore("C1", null))!.items.map((i) => i.food_name), ["Rice", "Dal"]);
+});
+
+Deno.test("the app and the server use the same 30-minute idle rule", () => {
+  assertEquals(THREAD_IDLE_MS, APP_THREAD_IDLE_MS);
+});
+
+Deno.test("clearing a card on an older base is written on top, so it reads as cleared", async () => {
+  const s = memoryThreadStore();
+  const base = { userId: "u1", userText: "x", dronaText: null, mealType: "lunch" as const };
+  await recordThreadMessage(s, { ...base, card: [], req: { id: T, card_id: null, base_version: null, next_card_id: MEAL, closed: null }, clientId: "m1", served: { kind: "meal", items: [item("Rice", 200)], corrects: false } });
+  await recordThreadMessage(s, { ...base, card: card([["Rice", 200]]), req: { id: T, card_id: MEAL, base_version: 1, next_card_id: null, closed: null }, clientId: "m2", served: { kind: "meal", items: [item("Dal", 120)], corrects: false } });
+  // The app still thinks v1, and clears the card.
+  const r = await recordThreadMessage(s, { ...base, card: card([["Rice", 200]]), req: { id: T, card_id: MEAL, base_version: 1, next_card_id: null, closed: null }, clientId: "m3", served: { kind: "cleared" } });
+  assertEquals(r, { ok: true, card_version: 3 });
+  assertEquals(s.dump().cards.get(MEAL)!.status, "discarded");
 });

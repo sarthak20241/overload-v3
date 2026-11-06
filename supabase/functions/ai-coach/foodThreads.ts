@@ -528,8 +528,12 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
     if (s.kind === "reply") return { ok: true, card_version: base?.version ?? null };
     if (s.kind === "cleared") {
       if (base) {
-        const w = await store.writeCard(base.id, req.base_version ?? base.version, [], args.clientId, "discarded");
-        return { ok: w.written, card_version: w.version };
+        let w = await store.writeCard(base.id, req.base_version ?? base.version, [], args.clientId, "discarded");
+        // Same rule as a meal: an older base is written on top, once.
+        if (!w.written && !w.retry && w.version > (req.base_version ?? 0)) {
+          w = await store.writeCard(base.id, w.version, [], args.clientId, "discarded");
+        }
+        return { ok: w.written || !!w.retry, card_version: w.version };
       }
       return { ok: true, card_version: null };
     }
