@@ -1,0 +1,395 @@
+// Run with: deno test --allow-all supabase/functions/ai-coach/foodAgentLater.test.ts
+//
+// Step 2 of .planning/precise-food-logger-plan.md (FOOD_AGENT_LATER): every
+// later message goes to the food agent, and the card changes one line at a
+// time. What these pin:
+//   - which messages go to the agent (later ones, Precise, switch on)
+//   - one turn's card changes apply in a fixed order (edits, removals,
+//     additions), and two changes to one line are refused with nothing applied
+//   - edit_line works out ONE line again; every other line is copied by code
+//   - no line leaves the card except through remove_lines (the correction guard)
+//   - a reply beside a log never drops the food, and becomes its line
+//   - claims of a log or a save are replaced by code
+//   - a bare ack beside a card starts nothing; a failed agent keeps the card
+
+import { assert, assertEquals, assertFalse } from "jsr:@std/assert@1";
+import {
+  buildChangedCard,
+  CARD_NOTE_LATER,
+  type FoodAgentDeps,
+  FOOD_AGENT_SYSTEM_LATER,
+  MAX_TURNS,
+  MAX_TURNS_LATER,
+  pickEditedLine,
+  planCardChanges,
+  runFoodAgent,
+  toolsForLater,
+} from "./foodAgent.ts";
+import { falseAgentClaim, laterMessageGoesToAgent, parseFoodAgentLaterMode } from "./foodIntent.ts";
+import type { CardLine } from "./foodContext.ts";
+import type { ParseMealResult, ParsedItem } from "./parseMeal.ts";
+import {
+  AGENT_FAILED_CARD_REPLY,
+  BARE_ACK_REPLY,
+  configureFoodBar,
+  noParseResult,
+  runLaterMessage,
+} from "./foodBar.ts";
+
+type Use = { name: string; input: Record<string, unknown> };
+
+function scripted(script: Use[][], bodies: Record<string, unknown>[] = []): FoodAgentDeps["callModel"] {
+  let n = 0;
+  return async (body) => {
+    bodies.push(JSON.parse(JSON.stringify(body)));
+    const uses = script[Math.min(n, script.length - 1)];
+    n++;
+    return {
+      ok: true,
+      data: {
+        usage: { input_tokens: 100, output_tokens: 20 },
+        content: uses.map((u, i) => ({ type: "tool_use", id: `t${n}_${i}`, name: u.name, input: u.input })),
+      },
+    };
+  };
+}
+
+const USAGE = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0 };
+
+function item(food_name: string, kcal: number, more: Partial<ParsedItem> = {}): ParsedItem {
+  return {
+    food_id: null, food_name, quantity: 1, serving_label: "serving", grams: 100, kcal,
+    protein_g: 5, carb_g: 10, fat_g: 2, fiber_g: null, source: "catalog", assumption: null, confidence: "medium",
+    ...more,
+  };
+}
+
+function result(items: ParsedItem[]): ParseMealResult {
+  return {
+    parsed: { meal_type: "dinner", items, drona_line: "", corrects_previous: true },
+    declined: null, usage: { ...USAGE, input_tokens: 50 }, tool_calls: ["extract_meal"], steps: [], iterations: 1, tier: "precise",
+  };
+}
+
+const CARD: CardLine[] = [
+  { food_name: "Roti", quantity: 2, serving_label: "piece", grams: 80, kcal: 240, protein_g: 7, carb_g: 36, fat_g: 7.4, source: "catalog", meal_type: "dinner" },
+  { food_name: "Dal", quantity: 1, serving_label: "katori", grams: 150, kcal: 150, protein_g: 7, carb_g: 20, fat_g: 4, source: "catalog", meal_type: "dinner" },
+  { food_name: "Onion salad", quantity: 1, serving_label: "bowl", grams: 80, kcal: 35, protein_g: 1, carb_g: 7, fat_g: 0.1, source: "estimate", meal_type: "dinner" },
+];
+
+function deps(callModel: FoodAgentDeps["callModel"], log: string[] = []): FoodAgentDeps {
+  return {
+    model: "sonnet",
+    callModel,
+    readDiary: async () => ({ meals: [] }),
+    savedMeals: async () => [],
+    parseFood: async (t) => {
+      log.push(`parse:${t}`);
+      return result([item(t, 155, { source: "estimate" })]);
+    },
+    editLine: async (i, change) => {
+      log.push(`edit:${i}:${change}`);
+      return result([item(`${CARD[i].food_name} (edited)`, 360)]);
+    },
+  };
+}
+
+const LATER = { text: "x", defaultMeal: "dinner" as const, card: CARD, later: true };
+
+// ── Which messages go to the agent ─────────────────────────────────────────
+
+Deno.test("laterMessageGoesToAgent: later messages only, Precise only, switch on only", () => {
+  const base = { mode: "on" as const, precise: true, supportsCreate: true, hasModelKey: true, turns: 0, cardLines: 0, cardOpen: false, pending: false };
+  // A first message with no card keeps today's path.
+  assertFalse(laterMessageGoesToAgent(base));
+  assert(laterMessageGoesToAgent({ ...base, turns: 2 }));
+  assert(laterMessageGoesToAgent({ ...base, cardLines: 3, cardOpen: true }));
+  assert(laterMessageGoesToAgent({ ...base, pending: true }));
+  // Off, Quick or Thorough, an old client, or no key: today's path.
+  assertFalse(laterMessageGoesToAgent({ ...base, turns: 2, mode: "off" }));
+  assertFalse(laterMessageGoesToAgent({ ...base, turns: 2, precise: false }));
+  assertFalse(laterMessageGoesToAgent({ ...base, turns: 2, supportsCreate: false }));
+  assertFalse(laterMessageGoesToAgent({ ...base, turns: 2, hasModelKey: false }));
+  // A card cut at the cap: the agent could not see all of it.
+  assertFalse(laterMessageGoesToAgent({ ...base, turns: 2, cardLines: 12, cardOpen: false }));
+});
+
+Deno.test("parseFoodAgentLaterMode: only 'on' is on", () => {
+  assertEquals(parseFoodAgentLaterMode("on"), "on");
+  assertEquals(parseFoodAgentLaterMode(" ON "), "on");
+  assertEquals(parseFoodAgentLaterMode("shadow"), "off");
+  assertEquals(parseFoodAgentLaterMode(undefined), "off");
+});
+
+// ── Claims ──────────────────────────────────────────────────────────────────
+
+Deno.test("falseAgentClaim: a log or a save never happened; a card change only when the card changed", () => {
+  assert(falseAgentClaim("I've logged your dinner.", { cardChanged: true }));
+  assert(falseAgentClaim("Saved it to your meals.", { cardChanged: true }) || falseAgentClaim("I have saved it.", { cardChanged: true }));
+  assert(falseAgentClaim("Logging 2 eggs for you now.", { cardChanged: true }));
+  assertFalse(falseAgentClaim("I've added 2 eggs to the card.", { cardChanged: true }));
+  assert(falseAgentClaim("I've added 2 eggs to the card.", { cardChanged: false }));
+  assertFalse(falseAgentClaim("Want me to add the eggs?", { cardChanged: false }));
+  assertFalse(falseAgentClaim("650 is fine for a cut dinner if the day stays under target.", { cardChanged: false }));
+});
+
+// ── The plan: checked before anything runs ─────────────────────────────────
+
+Deno.test("planCardChanges: two changes to one line are refused, nothing planned", () => {
+  const editAndRemove = planCardChanges(CARD, [
+    { name: "edit_line", input: { line_id: "L1", change: "3 roti" } },
+    { name: "remove_lines", input: { line_ids: ["L1"] } },
+  ]);
+  assertFalse(editAndRemove.ok);
+  if (!editAndRemove.ok) assert(editAndRemove.error.includes("L1 has two changes"));
+  const twoEdits = planCardChanges(CARD, [
+    { name: "edit_line", input: { line_id: "L2", change: "half" } },
+    { name: "edit_line", input: { line_id: "l2", change: "double" } },
+  ]);
+  assertFalse(twoEdits.ok);
+});
+
+Deno.test("planCardChanges: unknown ids, empty edits, and a restore in the same turn are refused", () => {
+  assertFalse(planCardChanges(CARD, [{ name: "edit_line", input: { line_id: "L9", change: "x" } }]).ok);
+  assertFalse(planCardChanges(CARD, [{ name: "edit_line", input: { line_id: "L1", change: " " } }]).ok);
+  assertFalse(planCardChanges(CARD, [{ name: "remove_lines", input: { line_ids: ["L4"] } }]).ok);
+  assertFalse(planCardChanges(CARD, [{ name: "add_lines", input: {} }]).ok);
+  assertFalse(planCardChanges(CARD, [{ name: "remove_lines", input: { line_ids: ["L3"] } }], true).ok);
+});
+
+Deno.test("planCardChanges: ids as the card shows them, removals once each, log_food is an addition", () => {
+  const p = planCardChanges(CARD, [
+    { name: "remove_lines", input: { line_ids: ["[L3]", "L3"] } },
+    { name: "edit_line", input: { line_id: "L1", change: "3 pieces" } },
+    { name: "log_food", input: { text: "2 boiled eggs" } },
+  ]);
+  assert(p.ok);
+  if (!p.ok) return;
+  assertEquals(p.edits, [{ index: 0, change: "3 pieces" }]);
+  assertEquals(p.removes, [2]);
+  assertEquals(p.adds.map((a) => a.text), ["2 boiled eggs"]);
+});
+
+// ── The card after: code copies every line it was not told to change ──────
+
+Deno.test("buildChangedCard: untouched lines verbatim, the edit in its own place, additions last", () => {
+  const out = buildChangedCard(CARD, new Set([2]), new Map([[0, item("Roti", 360, { meal_type: "lunch" })]]), [item("Boiled egg", 155)], "snack");
+  assertEquals(out.map((i) => i.food_name), ["Roti", "Dal", "Boiled egg"]);
+  assertEquals(out[0].kcal, 360);
+  // The edited line keeps the card line's section, not the parse's.
+  assertEquals(out[0].meal_type, "dinner");
+  // The untouched line is the card's own: same numbers and source.
+  assertEquals([out[1].kcal, out[1].protein_g, out[1].source, out[1].meal_type], [150, 7, "catalog", "dinner"]);
+});
+
+Deno.test("buildChangedCard: the correction guard, no line leaves except by removal", () => {
+  for (const removes of [new Set<number>(), new Set([0]), new Set([1, 2])]) {
+    const out = buildChangedCard(CARD, removes, new Map([[1, item("Dal", 300)]]), [], "dinner");
+    // Every line not removed is on the card, once.
+    assertEquals(out.length, CARD.length - removes.size);
+  }
+});
+
+Deno.test("pickEditedLine: one item, else the same food, never a second line", () => {
+  assertEquals(pickEditedLine(CARD[0], result([item("Roti", 360)]))?.kcal, 360);
+  assertEquals(pickEditedLine(CARD[0], result([item("Onion", 20), item("Roti, whole wheat", 360)]))?.food_name, "Roti, whole wheat");
+  assertEquals(pickEditedLine(CARD[0], result([])), null);
+  assertEquals(pickEditedLine(CARD[0], null), null);
+});
+
+// ── The loop ────────────────────────────────────────────────────────────────
+
+Deno.test("one turn, three changes: edit, removal and addition apply together, in order", async () => {
+  const log: string[] = [];
+  const out = await runFoodAgent(LATER, deps(scripted([[
+    // Called in the "wrong" order on purpose: code applies edits, removals, additions.
+    { name: "add_lines", input: { text: "2 boiled eggs" } },
+    { name: "remove_lines", input: { line_ids: ["L3"] } },
+    { name: "edit_line", input: { line_id: "L1", change: "3 pieces", summary: "Made it 3 roti, took off the onion salad, added the eggs." } },
+  ]]), log));
+  assertEquals(out.kind, "log");
+  if (out.kind !== "log" || !out.result.parsed) return;
+  const p = out.result.parsed;
+  assertEquals(p.items.map((i) => i.food_name), ["Roti (edited)", "Dal", "2 boiled eggs"]);
+  assertEquals(p.corrects_previous, true);
+  // Only line 1 went back through the parse; the dal was copied.
+  assertEquals(log.filter((l) => l.startsWith("edit:")), ["edit:0:3 pieces"]);
+  assertEquals(p.items[1].kcal, 150);
+  assertEquals(p.drona_line, "Made it 3 roti, took off the onion salad, added the eggs.");
+  assertEquals(out.turns.length, 1);
+});
+
+Deno.test("a conflict goes back to the agent with nothing applied; the next turn lands", async () => {
+  const log: string[] = [];
+  const bodies: Record<string, unknown>[] = [];
+  const out = await runFoodAgent(LATER, deps(scripted([
+    [
+      { name: "edit_line", input: { line_id: "L2", change: "half" } },
+      { name: "remove_lines", input: { line_ids: ["L2"] } },
+    ],
+    [{ name: "remove_lines", input: { line_ids: ["L2"] } }],
+  ], bodies), log));
+  // Turn 1 ran no edit at all.
+  assertEquals(log.filter((l) => l.startsWith("edit:")), []);
+  const turn2 = bodies[1].messages as { role: string; content: { content?: string }[] }[];
+  const results = turn2.at(-1)!.content;
+  assert(results.every((r) => String(r.content).includes("two changes")));
+  assertEquals(out.kind, "log");
+  if (out.kind === "log") assertEquals(out.result.parsed?.items.map((i) => i.food_name), ["Roti", "Onion salad"]);
+});
+
+Deno.test("a conflict on the last turn ends with the card as it was", async () => {
+  const conflict: Use[] = [
+    { name: "edit_line", input: { line_id: "L1", change: "a" } },
+    { name: "edit_line", input: { line_id: "L1", change: "b" } },
+  ];
+  const out = await runFoodAgent(LATER, deps(scripted([conflict])));
+  assertEquals(out.kind, "failed");
+  if (out.kind === "failed") assertEquals(out.reason, "card_changes_rejected");
+  assertEquals(out.turns.length, MAX_TURNS_LATER);
+});
+
+Deno.test("an edit that cannot be worked out leaves its line as it was, and says so", async () => {
+  const d = deps(scripted([[
+    { name: "edit_line", input: { line_id: "L2", change: "the special one", summary: "Updated the dal." } },
+    { name: "add_lines", input: { text: "a lassi" } },
+  ]]));
+  d.editLine = async () => ({ ...noParseResult() });
+  const out = await runFoodAgent(LATER, d);
+  assertEquals(out.kind, "log");
+  if (out.kind !== "log" || !out.result.parsed) return;
+  assertEquals(out.result.parsed.items.map((i) => i.food_name), ["Roti", "Dal", "Onion salad", "a lassi"]);
+  assertEquals(out.result.parsed.items[1].kcal, 150);
+  // Code writes the line: the agent's "Updated the dal" did not happen.
+  assert(out.result.parsed.drona_line.includes("could not change Dal"));
+  assertFalse(out.result.parsed.drona_line.includes("Updated the dal"));
+});
+
+Deno.test("a reply beside a change is the card's line, and the message counts as answered", async () => {
+  const out = await runFoodAgent(LATER, deps(scripted([[
+    { name: "reply", input: { text: "650 is fine for dinner on a cut if lunch was light." } },
+    { name: "add_lines", input: { text: "a bowl of curd" } },
+  ]])));
+  assertEquals(out.kind, "log");
+  if (out.kind !== "log") return;
+  assertEquals(out.answered, true);
+  assertEquals(out.result.parsed?.drona_line, "650 is fine for dinner on a cut if lunch was light.");
+  assertEquals(out.result.parsed?.items.length, 4);
+});
+
+Deno.test("no card: a reply sent before log_food never drops the food (log wins every tie)", async () => {
+  const out = await runFoodAgent({ text: "x", defaultMeal: "dinner", later: true }, deps(scripted([[
+    { name: "reply", input: { text: "That is a fair dinner for a cut." } },
+    { name: "log_food", input: { text: "dinner about 650 calories", summary: "Dinner, 650 cal." } },
+  ]])));
+  assertEquals(out.kind, "log");
+  if (out.kind !== "log") return;
+  assertEquals(out.result.parsed?.items.length, 1);
+  assertEquals(out.result.parsed?.drona_line, "That is a fair dinner for a cut.");
+  assertEquals(out.answered, true);
+});
+
+Deno.test("a claimed log in the agent's words is replaced by code", async () => {
+  const withCard = await runFoodAgent(LATER, deps(scripted([[{ name: "reply", input: { text: "I've logged your dinner." } }]])));
+  assertEquals(withCard.kind, "reply");
+  if (withCard.kind === "reply") assertFalse(withCard.text.includes("logged your dinner"));
+  const change = await runFoodAgent(LATER, deps(scripted([[{ name: "remove_lines", input: { line_ids: ["L3"], summary: "Logged it without the salad." } }]])));
+  if (change.kind === "log") assertEquals(change.result.parsed?.drona_line, "Took off Onion salad.");
+});
+
+Deno.test("a later message gets six turns; the off path keeps five", async () => {
+  assertEquals(MAX_TURNS_LATER, 6);
+  assertEquals(MAX_TURNS, 5);
+  const bodies: Record<string, unknown>[] = [];
+  await runFoodAgent(LATER, deps(scripted([[{ name: "coach_list_saved_meals", input: {} }]], bodies)));
+  assertEquals(bodies.length, 6);
+  const lastMsgs = bodies[5].messages as { role: string; content: string }[];
+  assert(lastMsgs.at(-1)!.content.includes("LAST turn"));
+});
+
+Deno.test("tools and words for a later message beside a card: line tools, ids, no edit_card", async () => {
+  const names = toolsForLater(CARD).map((t) => t.name);
+  for (const n of ["edit_line", "remove_lines", "add_lines", "save_card_as_meal", "reply"]) assert(names.includes(n), n);
+  for (const n of ["edit_card", "remove_card_lines", "log_food"]) assertFalse(names.includes(n), n);
+  assert(toolsForLater(null).some((t) => t.name === "log_food"));
+  const bodies: Record<string, unknown>[] = [];
+  await runFoodAgent(LATER, deps(scripted([[{ name: "reply", input: { text: "Sure." } }]], bodies)));
+  assert(String(bodies[0].system).startsWith(FOOD_AGENT_SYSTEM_LATER));
+  assert(String(bodies[0].system).includes(CARD_NOTE_LATER));
+  const first = (bodies[0].messages as { content: string }[])[0].content;
+  assert(first.includes("[L1] Roti"), first);
+  assert(first.includes("[L3] Onion salad"));
+});
+
+// ── The food box around it ─────────────────────────────────────────────────
+
+function configure(callAnthropic: (b: Record<string, unknown>) => Promise<{ ok: true; data: unknown }>): void {
+  configureFoodBar({
+    intentMode: "on",
+    anthropicApiKey: "test",
+    parseModel: "haiku",
+    agentModel: "sonnet",
+    jev: null,
+    callAnthropic: callAnthropic as never,
+  });
+}
+
+function agentArgs(over: Record<string, unknown> = {}) {
+  return {
+    intentP: Promise.resolve(null),
+    supportsCreate: true,
+    text: "ok cool",
+    mealHint: "dinner" as const,
+    localHour: 20,
+    localDate: "2026-11-06",
+    mode: "super" as const,
+    savedMealsP: Promise.resolve([]),
+    readDiary: async () => ({ meals: [] }),
+    contextPromise: Promise.resolve({ recentFoods: [], todayTotals: null, targets: null }),
+    parseDeps: () => ({}) as never,
+    logUsage: () => {},
+    userId: "u",
+    recentTurns: [{ role: "user" as const, text: "2 roti and dal" }],
+    pendingMeal: null,
+    card: { lines: CARD, previousText: "2 roti and dal", previousWords: null, previousItems: CARD.map((c) => ({ ...c, food_id: null })) },
+    ...over,
+  };
+}
+
+Deno.test("runLaterMessage: a bare ack beside a card starts nothing and changes nothing", async () => {
+  let calls = 0;
+  configure(async () => { calls++; return { ok: true, data: { content: [] } }; });
+  let parsed = false;
+  const r = await runLaterMessage({ agent: agentArgs(), cardOpen: true, fallbackParse: async () => { parsed = true; return noParseResult(); } });
+  assertEquals(r.outcome.action, "reply");
+  assertEquals(r.outcome.reply, BARE_ACK_REPLY);
+  assertEquals(calls, 0);
+  assertFalse(parsed);
+});
+
+Deno.test("runLaterMessage: a failed agent beside a card keeps the card, and no parse runs", async () => {
+  // Plain text, no tool call: the agent fails.
+  configure(async () => ({ ok: true, data: { content: [{ type: "text", text: "hmm" }], usage: {} } }));
+  let parsed = false;
+  const r = await runLaterMessage({
+    agent: agentArgs({ text: "make the dal a big bowl" }),
+    cardOpen: true,
+    fallbackParse: async () => { parsed = true; return noParseResult(); },
+  });
+  assertEquals(r.outcome.action, "reply");
+  assertEquals(r.outcome.reply, AGENT_FAILED_CARD_REPLY);
+  assertEquals(r.outcome.agent?.kind, "failed");
+  assertFalse(parsed);
+});
+
+Deno.test("runLaterMessage: a failed agent with no card falls back to the parse, so the food is logged", async () => {
+  configure(async () => ({ ok: true, data: { content: [{ type: "text", text: "hmm" }], usage: {} } }));
+  const r = await runLaterMessage({
+    agent: agentArgs({ text: "2 eggs", card: null }),
+    cardOpen: false,
+    fallbackParse: async () => result([item("Egg", 155)]),
+  });
+  assertEquals(r.outcome.action, "log");
+  assertEquals(r.result.parsed?.items[0].food_name, "Egg");
+  assert(r.firstParse);
+});

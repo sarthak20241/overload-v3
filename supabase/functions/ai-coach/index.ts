@@ -62,7 +62,9 @@ import {
   type FoodIntentDecision,
   type FoodIntentDeps,
   JEV_INTENT_FLOOR,
+  parseFoodAgentLaterMode,
   parseFoodIntentMode,
+  laterMessageGoesToAgent,
   routeFoodIntent,
   SAVED_MATCH_FLOOR,
   type SavedMealSummary,
@@ -98,7 +100,9 @@ import {
   type DiaryReader,
   type FoodBarOutcome,
   type FoodBarThread,
+  type FoodBarUsageRow,
   resolveFoodBarOutcome,
+  runLaterMessage,
   startFoodAgent,
   startFoodIntent,
   wouldDivertToCreate,
@@ -288,6 +292,12 @@ const FOOD_INTENT_MODE = parseFoodIntentMode(Deno.env.get("FOOD_INTENT_MODE"));
  *  the answer, nothing read. on: also read, for the agent's index line and
  *  restore_card. The tables must exist before this leaves off. */
 const FOOD_THREADS = parseFoodThreadsMode(Deno.env.get("FOOD_THREADS"));
+
+/** Precise food box, step 2 (.planning/precise-food-logger-plan.md): after the
+ *  first message of a thread, every message goes to the food agent and the
+ *  router stops deciding who answers (foodIntent.ts laterMessageGoesToAgent,
+ *  foodBar.ts runLaterMessage). off (default): exactly today's routing. */
+const FOOD_AGENT_LATER = parseFoodAgentLaterMode(Deno.env.get("FOOD_AGENT_LATER"));
 
 /** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
  *  of a race it is supposed to win (measured ~700ms against a parse of 1.2s and
@@ -3950,21 +3960,31 @@ async function handleParseMealRequest(args: {
     // Just log it on the JSON path: the parse AND the diary write stay alive
     // past the response, so a client that drops the connection mid-wait
     // still gets its meal logged. Same rule the stream applies.
-    const agentP = startFoodAgent({
+    const agentArgs = {
       intentP, supportsCreate, text, mealHint, localHour, localDate,
-      mode: wantsSuper ? "super" : wantsFast ? "fast" : null,
+      mode: (wantsSuper ? "super" : wantsFast ? "fast" : null) as "super" | "fast" | null,
       savedMealsP, readDiary, readDiaryLines, contextPromise, userId, recentTurns,
       pendingMeal: foodContext.pendingMeal,
       card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
-      parseDeps: (fb) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
-      logUsage: (row) => void logTokenUsage(admin, row),
+      parseDeps: (fb?: FoodBarTraceCollector) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
+      logUsage: (row: FoodBarUsageRow) => void logTokenUsage(admin, row),
       thread: threadP,
       fbTrace,
+    };
+    // Step 2 (FOOD_AGENT_LATER=on, Precise only): a later message of the
+    // thread goes to the agent whatever the router says. Only a first message
+    // with no card takes the router's path below.
+    const later = laterMessageGoesToAgent({
+      mode: FOOD_AGENT_LATER, precise: wantsSuper, supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
+      turns: recentTurns.length, cardLines: card.length, cardOpen, pending: !!foodContext.pendingMeal,
     });
-    const work = (async () => {
+    const agentP = later ? Promise.resolve(null) : startFoodAgent(agentArgs);
+    /** Today's parse of this message. A later message runs it only when the
+     *  agent could not answer and no card is open. */
+    const parseNow = async () => {
       const pendingMeal = foodContext.pendingMeal && continuesPendingMeal(await intentP)
         ? foodContext.pendingMeal : null;
-      const firstParse = await runParseMeal(
+      return await runParseMeal(
         makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace }),
         {
           text,
@@ -3990,6 +4010,16 @@ async function handleParseMealRequest(args: {
           variantChips: clientSupportsVariantSwap(body),
         },
       );
+    };
+    const work = (async () => {
+      if (later) {
+        const l = await runLaterMessage({ agent: agentArgs, cardOpen, fallbackParse: parseNow });
+        firstParseSeen = l.firstParse;
+        outcomeSeen = l.outcome;
+        const autoRes = l.outcome.action === "log" ? await finishAutoLog(l.result) : null;
+        return { result: l.result, autoRes, outcome: l.outcome, firstParse: l.firstParse };
+      }
+      const firstParse = await parseNow();
       // Decided before the diary write, for the same reason as the stream: a
       // create or a reply must not log the parsed meal behind the user's back.
       firstParseSeen = firstParse;

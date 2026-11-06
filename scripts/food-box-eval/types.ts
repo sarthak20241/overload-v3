@@ -53,6 +53,22 @@ export interface Outcome {
   reply: string | null;
   actions: Action[];
   savedMeal?: SavedMeal | null;
+  /** Live adapter only: what answering this message cost. */
+  metrics?: CaseMetrics;
+}
+
+/** One message's model calls, counted by the live adapter. */
+export interface CaseMetrics {
+  /** agent: a later message (FOOD_AGENT_LATER). router_agent: the router
+   *  sent it to the agent. parse: the parse answered. */
+  route: "agent" | "router_agent" | "parse";
+  /** Model turns the food agent used (0 when it did not run). */
+  agentTurns: number;
+  /** Every model call: router fallback, parses, the agent. Jev not counted. */
+  calls: number;
+  /** At the model_pricing rows. Through the CLI the token counts are the CLI's. */
+  costUsd: number;
+  byModel: Record<string, { calls: number; input: number; output: number }>;
 }
 
 export interface MemoryFood {

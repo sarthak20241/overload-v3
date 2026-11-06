@@ -30,9 +30,15 @@ import {
 import type { MealType, ParsedItem, ParseMealResult, ParseStep } from "./parseMeal.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { lineAsItem, type ThreadLine } from "./foodThreads.ts";
+import { falseAgentClaim } from "./foodIntent.ts";
 import type { ThreadCardLines } from "./foodBar.ts";
 
 export const MAX_TURNS = 5;
+
+/** Turns for an agent answering a later message (FOOD_AGENT_LATER=on, owner
+ *  decision 2026-11-06). The off path keeps MAX_TURNS, so the switch off
+ *  changes nothing. */
+export const MAX_TURNS_LATER = 6;
 
 type CallResult = { ok: true; data: any } | { ok: false; status: number; body: string };
 
@@ -47,6 +53,11 @@ export interface FoodAgentDeps {
    *  each line's own numbers, so the agent decides WHAT changes and the code
    *  decides the numbers. `text` is the change in plain words. */
   correctCard?(text: string): Promise<ParseMealResult>;
+  /** edit_line (FOOD_AGENT_LATER): the correction path run on ONE card line
+   *  (its index in `card`), with the change in plain words. The same lookup
+   *  and decide pipeline, scoped to that one item; every other line is copied
+   *  by code and never seen by the parse. */
+  editLine?(index: number, change: string): Promise<ParseMealResult>;
   /** An earlier card of this thread, as items, or null when there is none by
    *  that ref (foodThreads.ts). `version` null: the card's latest version.
    *  Present only when the thread store is on and the thread has cards. */
@@ -99,15 +110,36 @@ export interface FoodAgentInput {
   /** The thread's index line (foodThreads.ts threadIndexLine): the earlier
    *  cards that exist, by ref. With it the agent gets restore_card. */
   threadIndex?: string | null;
+  /** FOOD_AGENT_LATER=on: this agent answers a later message of the thread.
+   *  The card shows line ids, its tools change one line at a time
+   *  (edit_line, remove_lines, add_lines, applied in that order), a reply may
+   *  ride along with a change, and the run has MAX_TURNS_LATER turns. */
+  later?: boolean;
+}
+
+/** The card for the agent with stable line ids: "[L2] Roti: 2 piece, ...". An
+ *  id names the line as the message found it, so a removal never renumbers
+ *  what another call in the same turn points at. */
+export function cardLinesWithIds(card: CardLine[]): string[] {
+  return cardLines(card, { macros: true }).map((l) => l.replace(/^(\d+)\.\s/, "[L$1] "));
+}
+
+/** "L2", "[L2]", "l2" or 2 to a card index (0-based), or null. */
+export function lineIndexOf(raw: unknown, cardLength: number): number | null {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim().replace(/^\[?l/i, "").replace(/\]$/, "")) : NaN;
+  return Number.isInteger(n) && n >= 1 && n <= cardLength ? n - 1 : null;
 }
 
 /** The opening user message: the date, then (when this answers the agent's
  *  question) what was asked, then the user's words. */
-export function openingText(input: Pick<FoodAgentInput, "text" | "answering" | "card" | "savedHint" | "threadIndex">, days: string | null): string {
+export function openingText(input: Pick<FoodAgentInput, "text" | "answering" | "card" | "savedHint" | "threadIndex" | "later">, days: string | null): string {
   const parts: string[] = [];
   if (days) parts.push(`(${days})`);
   if (input.threadIndex) parts.push(`(${input.threadIndex})`);
-  if (input.card?.length) parts.push(`(card on screen:\n${cardLines(input.card, { macros: true }).join("\n")})`);
+  if (input.card?.length) {
+    const lines = input.later ? cardLinesWithIds(input.card) : cardLines(input.card, { macros: true });
+    parts.push(`(card on screen:\n${lines.join("\n")})`);
+  }
   if (input.savedHint) {
     const name = JSON.stringify(input.savedHint.name);
     parts.push(
@@ -151,10 +183,23 @@ export type AgentEvent =
     error: string | null;
   }
   | { tool: "restore_card"; ok: boolean; reason: "restored" | "not_found" | "card_open" | "no_thread" }
-  | { tool: "read_card"; found: boolean; on_screen?: boolean };
+  | { tool: "read_card"; found: boolean; on_screen?: boolean }
+  | {
+    tool: "card_changes";
+    /** Applied (ok) or sent back to the agent (a conflict, an unknown line). */
+    ok: boolean;
+    edits: number;
+    edits_failed: number;
+    removed: number;
+    added: number;
+    error: string | null;
+    /** A claim in the agent's line that did not happen, replaced by code. */
+    false_claim?: boolean;
+  };
 
 export type FoodAgentOutcome =
-  | { kind: "log"; result: ParseMealResult; turns: AgentTurn[] }
+  /** `answered`: a reply rode along with the change, and is the card's line. */
+  | { kind: "log"; result: ParseMealResult; turns: AgentTurn[]; answered?: boolean }
   | { kind: "create"; create: { tool: string; input: Record<string, unknown> }; turns: AgentTurn[] }
   | { kind: "reply"; text: string; turns: AgentTurn[] }
   | { kind: "failed"; reason: string; turns: AgentTurn[] };
@@ -356,6 +401,62 @@ const REPLY_TOOL: AnthropicTool = {
   },
 };
 
+// ── Later messages (FOOD_AGENT_LATER): the card changes one line at a time ──
+
+const EDIT_LINE_TOOL: AnthropicTool = {
+  name: "edit_line",
+  description:
+    "Change ONE line of the card on screen: its amount, size, preparation, which food it is, or a number the user gave " +
+    "for it. Name the line by its id ([L2] is \"L2\") and say the change in plain words (\"2 pieces\", \"it was navratri " +
+    "chana\", \"the user says it is 150 kcal\"). The app works out that one line again from its own figures; every other " +
+    "line stays exactly as it is, and you never do the arithmetic. One call per line.",
+  input_schema: {
+    type: "object",
+    properties: {
+      line_id: { type: "string", description: "The line's id from the card, e.g. L2." },
+      change: { type: "string", description: "The change to this one line, in plain words." },
+      summary: { type: "string", description: "One short line in a coach's voice saying what changed. No em dashes." },
+    },
+    required: ["line_id", "change"],
+  },
+};
+
+const REMOVE_LINES_TOOL: AnthropicTool = {
+  name: "remove_lines",
+  description:
+    "Take lines off the card on screen, by their ids. Only for a line that should not be there at all (use edit_line " +
+    "when a line should change). A line leaves the card only through this tool.",
+  input_schema: {
+    type: "object",
+    properties: {
+      line_ids: { type: "array", items: { type: "string" }, description: "Line ids from the card, e.g. [\"L3\"]." },
+      summary: { type: "string", description: "One short line saying what came off. No em dashes." },
+    },
+    required: ["line_ids"],
+  },
+};
+
+const ADD_LINES_TOOL: AnthropicTool = {
+  name: "add_lines",
+  description:
+    "Add food that is not on the card yet. Give `text` for food to be worked out (it runs parse_food, reusing a parse " +
+    "you already did for the same text), and/or `items` to copy lines from a saved meal with their numbers unchanged. " +
+    "Food from the diary or an earlier card goes through copy_lines instead.",
+  input_schema: {
+    type: "object",
+    properties: {
+      text: { type: "string", description: "Food to work out, in plain words." },
+      items: LOG_FOOD_TOOL.input_schema.properties.items,
+      meal_type: { type: "string", enum: ["breakfast", "lunch", "dinner", "snack"], description: "Omit for the card's own meal." },
+      summary: { type: "string", description: "One short line saying what was added. No em dashes." },
+    },
+  },
+};
+
+/** The card changes a later-message agent can make. All of one turn's changes
+ *  apply together, in a fixed order: edits, removals, additions. */
+const CARD_CHANGE_TOOLS = new Set([EDIT_LINE_TOOL.name, REMOVE_LINES_TOOL.name, ADD_LINES_TOOL.name]);
+
 const CARD_TOOLS: AnthropicTool[] = [EDIT_CARD_TOOL, REMOVE_CARD_LINES_TOOL, SAVE_CARD_AS_MEAL_TOOL];
 const READ_TOOLS = new Set([LIST_LOGGED_MEALS_TOOL.name, LIST_SAVED_MEALS_TOOL.name, PARSE_FOOD_TOOL.name, READ_CARD_TOOL.name]);
 const FINISH_TOOLS = new Set([
@@ -428,6 +529,99 @@ export const FOOD_AGENT_SYSTEM =
   "Never repeat your previous reply word for word. If the user says you did not answer, answer the specific thing they asked.\n" +
   "When the user says they already saved or logged something, that is done: never offer that same save or log again. " +
   "Do what they ask for next.";
+
+/** The tools for a later message (FOOD_AGENT_LATER). With a whole card on
+ *  screen: the one-line tools (edit_line, remove_lines, add_lines) in place
+ *  of edit_card, remove_card_lines and log_food, plus save_card_as_meal. With
+ *  no card: today's tools (log_food makes the card). A card cut at the cap
+ *  never reaches this agent (laterMessageGoesToAgent). */
+export function toolsForLater(
+  card: CardLine[] | null | undefined,
+  canRestore = false,
+  copy: { thread?: boolean; diary?: boolean } = {},
+): AnthropicTool[] {
+  const whole = !!card?.length && !cardMayBeCut(card);
+  const out = whole
+    ? [
+      ...FOOD_AGENT_TOOLS.filter((t) => t.name !== LOG_FOOD_TOOL.name),
+      EDIT_LINE_TOOL, REMOVE_LINES_TOOL, ADD_LINES_TOOL, SAVE_CARD_AS_MEAL_TOOL,
+    ]
+    : [...FOOD_AGENT_TOOLS];
+  if (copy.thread || copy.diary) out.push(COPY_LINES_TOOL);
+  if (copy.thread) out.push(READ_CARD_TOOL);
+  if (canRestore) out.push(RESTORE_CARD_TOOL);
+  return out;
+}
+
+/** The later-message agent's instructions. The lessons of today's routes
+ *  (plan section 9b) live here as rules, beside the code checks that back
+ *  them (claims, bare acks, the one-line card changes). */
+export const FOOD_AGENT_SYSTEM_LATER =
+  "You are Coach Drona inside the food logging box of a fitness app. You answer every message after the first one in " +
+  "this food conversation: you put food on the meal card, change the card, save meals, bring back earlier cards, and " +
+  "answer questions. Work in turns. In each turn call EVERY tool you need right now, all together in that one turn, " +
+  "because they run at the same time. After you see the results, either call more tools or finish.\n" +
+  "Finish with: a card change (edit_line, remove_lines, add_lines or copy_lines, with a card on screen), log_food (no " +
+  "card on screen: it makes the card), a save card (save_card_as_meal, create_custom_meal or create_custom_food, which " +
+  "the user taps), restore_card, or reply. reply can go in the SAME turn as a card change or log_food: then both " +
+  "happen, and your reply is the line the user reads under the card.\n" +
+  "Numbers: never invent them. Copy lines from the diary or a saved meal exactly, with estimated false (in the create " +
+  "tools each line's food_name goes in `name`). For food that is in neither, use parse_food, add_lines or log_food, " +
+  "and the app works the numbers out. Give those tools the user's own words for the food, adding only the choice they " +
+  "made: their words carry their numbers and amounts, and a rewrite can lose them.\n" +
+  "When they point at food they logged, read that day first. If they name a whole meal, copy EVERY food in it. If " +
+  "they name one dish inside a meal, copy only the foods that make up that dish: from tea, sugar, biscuits and poha, " +
+  "\"the chai\" is the tea and sugar, even when they also say which meal it was in. Apply any change they asked for " +
+  "to the copied lines. If you cannot tell which foods they mean, or nothing matches, reply with one short question.\n" +
+  "Rules from real use:\n" +
+  "- Food the user says they had always goes on the card, even when the same message asks a question or reads like " +
+  "chat. Answer the question too, with reply in the same turn. When you are unsure what they meant, put the food on " +
+  "the card and say in a few words what you assumed. Losing a meal they meant to record is the worst outcome.\n" +
+  "- A save needs an explicit ask to save, keep or remember something as a reusable meal or food for later. Food " +
+  "names, numbers, the present tense, a question about saving, thanks, or a complaint are not a save. Without that " +
+  "ask never call save_card_as_meal, create_custom_meal or create_custom_food.\n" +
+  "- When the user turns down their saved meal for a food (\"not my saved one\", \"estimate it fresh\"), never use a " +
+  "saved meal's lines for it: work it out again (edit_line on its line, or add_lines).\n" +
+  "- When the opening message says this answers your question, the answer finishes that waiting meal: put ALL of its " +
+  "food on the card, with the choice they made. When they leave the choice to you, take the first option you offered " +
+  "(else the most usual one) and say which you took.\n" +
+  "- Which date a weekday was is written at the top of the message: use those days_ago, never your own arithmetic.\n" +
+  "- The card reaches the diary only when the user taps its Add button, and a save card only when they tap it. Never " +
+  "say anything was logged or saved. A summary is a line about the card, never a promise.\n" +
+  "Act only through the tools. Every turn calls at least one; plain text with no tool call ends the work without an " +
+  "answer. No em dashes anywhere.\n" +
+  "Never repeat your previous reply word for word. If the user says you did not answer, answer the specific thing they asked.\n" +
+  "When the user says they already saved or logged something, that is done: never offer that same save or log again. " +
+  "Do what they ask for next.";
+
+/** Said to a later-message agent when a card is on screen. */
+export const CARD_NOTE_LATER =
+  "A meal card is on screen, not yet added to the diary. Each line has an id: [L1], [L2], ... Its numbers are the " +
+  "user's working copy: never re-guess them. Change it one line at a time:\n" +
+  "- edit_line: one line changes (amount, size, preparation, which food it is, a number the user gives for it). Only " +
+  "that line is worked out again.\n" +
+  "- remove_lines: a line that should not be there at all. When a dish already contains a food that is also listed " +
+  "on its own line, remove the separate line.\n" +
+  "- add_lines: food that is not on the card yet.\n" +
+  "Every line you do not name stays exactly as it is. Make all the changes a message needs in ONE turn, together: they " +
+  "apply in a fixed order (edits, then removals, then additions). Never give one line two changes in the same turn. " +
+  "A question or complaint about the card with nothing to change is reply, using the card's own numbers (how a figure " +
+  "was reached, why a line is there), never a canned breakdown. A bare ok or thanks accepts the card as it is. The card " +
+  "has its own Add button: when the user wants it logged, reply that Add puts it in. save_card_as_meal only on an " +
+  "explicit ask to keep the card as a reusable meal.";
+
+/** The last-turn note for a later-message agent, naming only what it has. */
+export function lastTurnNoteLater(cardOnScreen: boolean, restore: boolean, copy: boolean): string {
+  return [
+    "This is your LAST turn. You must finish now with",
+    cardOnScreen
+      ? "a card change (edit_line, remove_lines, add_lines), save_card_as_meal, create_custom_meal, create_custom_food, or reply."
+      : "log_food, create_custom_meal, create_custom_food, or reply.",
+    copy ? "You may also finish with copy_lines." : null,
+    restore ? "You may also finish with restore_card." : null,
+    "Do not call any read.",
+  ].filter(Boolean).join(" ");
+}
 
 /** Said to the agent when copy_lines is offered (after CARD_NOTE, which it
  *  refines: food from the diary or an earlier card is a copy, not log_food). */
@@ -603,8 +797,17 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     ? `${input.threadIndex} ${canCopyThread ? threadToolsNote(canRestore) : "restore_card brings one back as the card on screen."}`
     : null;
   const messages: unknown[] = historyMessages(input.recentTurns, openingText({ ...input, threadIndex: indexLine }, days));
-  const system = [FOOD_AGENT_SYSTEM, cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n");
-  const tools = toolsFor(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary });
+  // A later message (FOOD_AGENT_LATER): its own instructions, one-line card
+  // tools, and one more turn. Everything else in the loop is shared.
+  const later = !!input.later;
+  const lineTools = later && cardOnScreen && !cardMayBeCut(input.card);
+  const system = later
+    ? [FOOD_AGENT_SYSTEM_LATER, lineTools ? CARD_NOTE_LATER : cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n")
+    : [FOOD_AGENT_SYSTEM, cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n");
+  const tools = later
+    ? toolsForLater(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary })
+    : toolsFor(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary });
+  const maxTurns = later ? MAX_TURNS_LATER : MAX_TURNS;
   // Every food line a read returned, by name, with the calories it carried.
   // A line the agent says it COPIED is checked against this: the model is told
   // never to invent numbers, and this is how the code knows whether it did.
@@ -624,14 +827,15 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // plus every line already staged in this run.
   const onCard = onCardOf(input.card ?? []);
 
-  for (let turn = 1; turn <= MAX_TURNS; turn++) {
-    const last = turn === MAX_TURNS;
+  for (let turn = 1; turn <= maxTurns; turn++) {
+    const last = turn === maxTurns;
     const t0 = Date.now();
     // The last-turn note is appended as a system message, never added to the
     // system prompt: changing the system prompt mid-loop would edit history the
     // model already answered (and break the prompt cache).
     // A copy, so the note can never leak into a later turn's history.
-    const sent = last ? [...messages, { role: "system", content: lastTurnNote(canRestore, canCopy) }] : messages;
+    const note = later ? lastTurnNoteLater(lineTools, canRestore, canCopy) : lastTurnNote(canRestore, canCopy);
+    const sent = last ? [...messages, { role: "system", content: note }] : messages;
     const res = await deps.callModel({
       model: deps.model,
       // 2000 under Sonnet 4.6; ~30% up for Sonnet 5.5's tokenizer.
@@ -668,12 +872,41 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     const refused = new Set(uses.filter((u) => u.name === RESTORE_CARD_TOOL.name && cardOnScreen));
     for (const _ of refused) deps.onEvent?.({ tool: "restore_card", ok: false, reason: "card_open" });
 
+    // A later message (FOOD_AGENT_LATER): the turn's card changes are planned
+    // together and checked before anything runs. A conflict (one line, two
+    // changes) or an unknown line id sends every change back to the agent with
+    // the reason: nothing is half-applied. log_food beside a card is an
+    // addition here, so it lands in the same fixed order.
+    const changes = later && lineTools
+      ? uses.filter((u) => CARD_CHANGE_TOOLS.has(u.name) || u.name === LOG_FOOD_TOOL.name)
+      : [];
+    const replyUse = later ? uses.find((u) => u.name === REPLY_TOOL.name) : undefined;
+    let plan: CardPlan | null = null;
+    const rejected = new Map<ToolUse, string>();
+    if (changes.length) {
+      const p = planCardChanges(input.card ?? [], changes, uses.some((u) => u.name === RESTORE_CARD_TOOL.name));
+      if (p.ok) plan = p;
+      else {
+        for (const u of changes) rejected.set(u, p.error);
+        if (replyUse) rejected.set(replyUse, "Not sent: the card changes in this turn were refused, so nothing happened. Fix them first.");
+        deps.onEvent?.({ tool: "card_changes", ok: false, edits: 0, edits_failed: 0, removed: 0, added: 0, error: p.error });
+      }
+    }
     // A finish ends the agent even when reads came with it: the model has
     // decided, and running reads it will never see is cost with no reader.
-    const finish = uses.find((u) => FINISH_TOOLS.has(u.name) && !refused.has(u));
+    // Later messages pick in a fixed order (the card changes, then a log, a
+    // save or a restore, then a reply), so a reply sent beside a log never
+    // drops the food: log wins every tie, and the reply becomes its line.
+    const finish = !later
+      ? uses.find((u) => FINISH_TOOLS.has(u.name) && !refused.has(u))
+      : plan
+      ? changes[0]
+      : rejected.size
+      ? undefined
+      : uses.find((u) => LATER_FINISHES.has(u.name) && !refused.has(u)) ?? replyUse;
     const copies = uses.filter((u) => u.name === COPY_LINES_TOOL.name);
     if (!finish) {
-      const unknown = uses.find((u) => !READ_TOOLS.has(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u));
+      const unknown = uses.find((u) => !READ_TOOLS.has(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u));
       if (unknown) return { kind: "failed", reason: `unknown_tool_${unknown.name}`, turns };
     }
 
@@ -710,20 +943,24 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     if (finish) {
       const label = statusFor(finish.name, finish.input ?? {});
       if (label) deps.onStatus?.(label);
+      const replyText = replyUse && replyUse !== finish ? clean(typeof replyUse.input?.text === "string" ? replyUse.input.text : "") : "";
+      if (plan) return await applyCardChanges(plan, input, deps, parse, seen, turns, replyText);
       if (finish.name === RESTORE_CARD_TOOL.name && !canRestore) {
         deps.onEvent?.({ tool: "restore_card", ok: false, reason: "no_thread" });
         return { kind: "failed", reason: "restore_without_thread", turns };
       }
-      return await finishWith(finish, input, parse, turns, seen, deps);
+      const out = await finishWith(finish, input, parse, turns, seen, deps);
+      return later ? checkedLater(out, input, replyText) : out;
     }
     if (last) {
+      if (rejected.size) return { kind: "failed", reason: "card_changes_rejected", turns };
       if (refused.size) return { kind: "failed", reason: "restore_card_open", turns };
       if (copies.length) return { kind: "failed", reason: "copy_nothing_copied", turns };
       return { kind: "failed", reason: "read_on_last_turn", turns };
     }
 
     for (const u of uses) {
-      if (copyRuns.has(u) || refused.has(u)) continue;
+      if (copyRuns.has(u) || refused.has(u) || rejected.has(u)) continue;
       const label = statusFor(u.name, u.input ?? {});
       if (label) deps.onStatus?.(label);
     }
@@ -732,6 +969,8 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
       const run = copyRuns.get(u);
       const out = run
         ? copyResultForAgent(run, staged.items.length > 0 && run.items.every((i) => staged.items.includes(i)) && run.items.length > 0)
+        : rejected.has(u)
+        ? { error: rejected.get(u) }
         : refused.has(u)
         ? {
           error: "A card is on screen, and restore_card would replace it, so it is not available now. To put foods " +
@@ -739,7 +978,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
         }
         : await runRead(u, deps, parse);
       outs[i] = out;
-      if (!run && !refused.has(u)) remember(seen, out);
+      if (!run && !refused.has(u) && !rejected.has(u)) remember(seen, out);
       return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) };
     }));
     thisTurn.results = uses.map((u, i) => ({ name: u.name, summary: summarize(outs[i]) }));
@@ -1053,6 +1292,273 @@ async function finishWith(
       tier,
     },
     turns,
+  };
+}
+
+// ── Later messages: one-line card changes, applied in a fixed order ────────
+
+/** What ends a later-message run other than a card change (or a reply). */
+const LATER_FINISHES = new Set([
+  LOG_FOOD_TOOL.name, CREATE_CUSTOM_MEAL_TOOL.name, CREATE_CUSTOM_FOOD_TOOL.name, SAVE_CARD_AS_MEAL_TOOL.name, RESTORE_CARD_TOOL.name,
+]);
+
+/** One turn's card changes, checked and in the order they apply. */
+export interface CardPlan {
+  ok: true;
+  edits: { index: number; change: string }[];
+  /** Card indexes, each once, in card order. */
+  removes: number[];
+  adds: { text: string | null; items: unknown[]; meal: MealType | null }[];
+  /** The agent's own summaries, in call order. */
+  summaries: string[];
+}
+
+/**
+ * Check one turn's card changes before anything runs (plan section 7). Every
+ * line is named by its id on the card as the message found it. Refused, with
+ * the reason the agent reads: a line id the card does not have, an edit with no
+ * change, a line with two changes (two edits, or an edit and a removal), an
+ * addition with nothing in it, or a restore in the same turn (a restore
+ * replaces the whole card).
+ */
+export function planCardChanges(
+  card: CardLine[],
+  uses: { name: string; input: Record<string, unknown> }[],
+  restoreInTurn = false,
+): CardPlan | { ok: false; error: string } {
+  const tail = " Nothing was changed. Send the changes again, one change per line.";
+  const fail = (why: string) => ({ ok: false as const, error: `${why}${tail}` });
+  if (restoreInTurn) return fail("restore_card replaces the whole card, so it cannot share a turn with line changes. Choose one.");
+  if (!card.length) return fail("No card is on screen to change. Use log_food.");
+  const ids = `The card's lines are L1 to L${card.length}.`;
+  const edits: CardPlan["edits"] = [];
+  const removes = new Set<number>();
+  const adds: CardPlan["adds"] = [];
+  const summaries: string[] = [];
+  for (const u of uses) {
+    const a = u.input ?? {};
+    if (typeof a.summary === "string" && a.summary.trim()) summaries.push(a.summary.trim());
+    if (u.name === EDIT_LINE_TOOL.name) {
+      const i = lineIndexOf(a.line_id, card.length);
+      if (i === null) return fail(`edit_line names ${JSON.stringify(a.line_id ?? null)}, which is not on the card. ${ids}`);
+      const change = typeof a.change === "string" ? a.change.trim() : "";
+      if (!change) return fail(`edit_line on L${i + 1} says no change.`);
+      edits.push({ index: i, change: change.slice(0, 400) });
+    } else if (u.name === REMOVE_LINES_TOOL.name) {
+      const asked = Array.isArray(a.line_ids) ? a.line_ids : [];
+      if (!asked.length) return fail("remove_lines names no line.");
+      for (const raw of asked) {
+        const i = lineIndexOf(raw, card.length);
+        if (i === null) return fail(`remove_lines names ${JSON.stringify(raw)}, which is not on the card. ${ids}`);
+        removes.add(i);
+      }
+    } else {
+      // add_lines, or log_food beside a card: the same addition.
+      const text = typeof a.text === "string" && a.text.trim() ? a.text.trim() : null;
+      const items = Array.isArray(a.items) ? a.items : [];
+      if (!text && !items.length) return fail(`${u.name} has no text and no items.`);
+      adds.push({ text, items, meal: isMeal(a.meal_type) ? a.meal_type : null });
+    }
+  }
+  const count = new Map<number, number>();
+  for (const e of edits) count.set(e.index, (count.get(e.index) ?? 0) + 1);
+  for (const i of removes) count.set(i, (count.get(i) ?? 0) + 1);
+  const twice = [...count].filter(([, n]) => n > 1).map(([i]) => `L${i + 1}`).sort();
+  if (twice.length) return fail(`${twice.join(", ")} ${twice.length === 1 ? "has" : "have"} two changes in one turn.`);
+  return { ok: true, edits, removes: [...removes].sort((a, b) => a - b), adds, summaries };
+}
+
+/** The card after one turn's changes: every line the agent did not name is
+ *  the card line exactly as it was, an edited line takes its new numbers in
+ *  its own place and section, a removed line is gone, and additions go last.
+ *  This IS the correction guard: no line leaves except through `removes`. */
+export function buildChangedCard(
+  card: CardLine[],
+  removes: ReadonlySet<number>,
+  edited: ReadonlyMap<number, ParsedItem>,
+  added: ParsedItem[],
+  mealDefault: MealType,
+): ParsedItem[] {
+  const kept: ParsedItem[] = [];
+  card.forEach((l, i) => {
+    if (removes.has(i)) return;
+    const e = edited.get(i);
+    kept.push(e ? { ...e, meal_type: l.meal_type ?? e.meal_type ?? mealDefault } : cardLineAsItem(l, mealDefault));
+  });
+  return [...kept, ...added];
+}
+
+/** The one line an edit_line parse stands for. The parse ran on that line
+ *  alone, so it is nearly always one item; when it returns more, the one that
+ *  is the same food is taken (else the first), and nothing else joins the card:
+ *  new food goes through add_lines. */
+export function pickEditedLine(original: CardLine, r: ParseMealResult | null): ParsedItem | null {
+  const items = r?.parsed?.items ?? [];
+  if (items.length <= 1) return items[0] ?? null;
+  const key = sameFoodKey(original.said_name ?? original.food_name);
+  const own = sameFoodKey(original.food_name);
+  return items.find((i) => {
+    const k = sameFoodKey(i.food_name);
+    return k === key || k === own || k.includes(own) || own.includes(k);
+  }) ?? items[0];
+}
+
+const EMPTY_USAGE = (): ParseMealResult["usage"] => ({
+  input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0,
+});
+
+function addUsage(a: ParseMealResult["usage"], b: ParseMealResult["usage"] | undefined): void {
+  if (!b) return;
+  a.input_tokens += b.input_tokens ?? 0;
+  a.output_tokens += b.output_tokens ?? 0;
+  a.cache_creation_input_tokens += b.cache_creation_input_tokens ?? 0;
+  a.cache_read_input_tokens += b.cache_read_input_tokens ?? 0;
+  a.web_search_requests += b.web_search_requests ?? 0;
+  if (b.tavily_credits) a.tavily_credits = (a.tavily_credits ?? 0) + b.tavily_credits;
+}
+
+/** Apply a checked plan: edits (each line worked out again on its own, in
+ *  parallel), then removals, then additions. The line the user reads is the
+ *  agent's own words only when nothing failed and they claim nothing that did
+ *  not happen; otherwise code writes it from what really changed. */
+async function applyCardChanges(
+  plan: CardPlan,
+  input: FoodAgentInput,
+  deps: Pick<FoodAgentDeps, "editLine" | "onEvent">,
+  parse: (text: string) => Promise<ParseMealResult>,
+  seen: Seen,
+  turns: AgentTurn[],
+  replyText: string,
+): Promise<FoodAgentOutcome> {
+  const card = input.card ?? [];
+  const meal: MealType = card[0]?.meal_type ?? input.defaultMeal;
+  const [editsOut, addsOut] = await Promise.all([
+    Promise.all(plan.edits.map(async (e) => {
+      let r: ParseMealResult | null = null;
+      try {
+        r = deps.editLine ? await deps.editLine(e.index, e.change) : null;
+      } catch {
+        r = null;
+      }
+      return { e, r, item: pickEditedLine(card[e.index], r) };
+    })),
+    Promise.all(plan.adds.map(async (a) => {
+      const m = a.meal ?? meal;
+      const copied = a.items.flatMap((raw) => copiedLine(raw, m, seen));
+      let r: ParseMealResult | null = null;
+      if (a.text) {
+        try {
+          r = await parse(a.text);
+        } catch {
+          r = null;
+        }
+      }
+      const parsed = (r?.parsed?.items ?? []).map((i) => ({ ...i, meal_type: m }));
+      return { a, r, items: [...copied, ...parsed] };
+    })),
+  ]);
+  const edited = new Map<number, ParsedItem>();
+  for (const x of editsOut) if (x.item) edited.set(x.e.index, x.item);
+  const added = addsOut.flatMap((x) => x.items);
+  const removes = new Set(plan.removes);
+  const items = buildChangedCard(card, removes, edited, added, input.defaultMeal);
+
+  const failedEdits = editsOut.filter((x) => !x.item).map((x) => card[x.e.index].food_name);
+  const failedAdds = addsOut.filter((x) => x.a.text && x.items.length === 0).map((x) => x.a.text!);
+  const changed = edited.size + removes.size + added.length > 0;
+  const codeLine = [
+    edited.size ? `Updated ${names([...edited.values()].map((i) => i.food_name))}.` : null,
+    removes.size ? `Took off ${names(plan.removes.map((i) => card[i].food_name))}.` : null,
+    added.length ? `Added ${names(added.map((i) => i.food_name))}.` : null,
+    failedEdits.length ? `I could not change ${names(failedEdits)}, so ${failedEdits.length === 1 ? "it is" : "they are"} as before.` : null,
+    failedAdds.length ? `I could not work out ${names(failedAdds.map((t) => `"${t.slice(0, 60)}"`))}.` : null,
+  ].filter(Boolean).join(" ");
+  const agentText = replyText || clean(plan.summaries.join(" "));
+  const falseClaim = !!agentText && falseAgentClaim(agentText, { cardChanged: changed });
+  const line = agentText && !falseClaim && !failedEdits.length && !failedAdds.length ? agentText : codeLine;
+  deps.onEvent?.({
+    tool: "card_changes", ok: true, edits: edited.size, edits_failed: failedEdits.length, removed: removes.size,
+    added: added.length, error: null, ...(falseClaim ? { false_claim: true } : {}),
+  });
+
+  // Nothing could be done: the card stays as it was, and the user is told why.
+  if (!changed) return { kind: "reply", text: codeLine || "I could not change the card, so it is as it was.", turns };
+
+  const usage = EMPTY_USAGE();
+  const steps: ParseStep[] = [];
+  let tier: ParseMealResult["tier"];
+  for (const r of [...editsOut.map((x) => x.r), ...addsOut.map((x) => x.r)]) {
+    if (!r) continue;
+    addUsage(usage, r.usage);
+    steps.push(...(r.steps ?? []));
+    tier ??= r.tier;
+  }
+  const toolCalls = ["food_agent", ...new Set([
+    ...(plan.edits.length ? ["edit_line"] : []), ...(plan.removes.length ? ["remove_lines"] : []), ...(plan.adds.length ? ["add_lines"] : []),
+  ])];
+  if (items.length === 0) {
+    // Every line came off and nothing was added: the card is cleared, the way
+    // the X on its last line clears it (an empty meal is an error to the app).
+    return {
+      kind: "log",
+      result: {
+        parsed: null, declined: { message: line || "Taken off. Nothing left on this one.", cleared: true },
+        usage, tool_calls: toolCalls, steps, iterations: turns.length, tier,
+      },
+      turns,
+      ...(replyText ? { answered: true } : {}),
+    };
+  }
+  return {
+    kind: "log",
+    result: {
+      // The whole card, replacing the one on screen.
+      parsed: { meal_type: meal, items, drona_line: line || "Here is the card.", corrects_previous: true },
+      declined: null,
+      usage,
+      tool_calls: toolCalls,
+      steps,
+      iterations: turns.length,
+      tier,
+    },
+    turns,
+    ...(replyText && line === agentText ? { answered: true } : {}),
+  };
+}
+
+/** What the user is told when a later-message line claimed a log or a save
+ *  that did not happen. */
+function honestLine(cardOnScreen: boolean): string {
+  return cardOnScreen
+    ? "Nothing is in your diary yet: the card is on screen, and its Add button puts it in."
+    : "Nothing is in your diary yet. Tell me what you had and I will put it on a card.";
+}
+
+/**
+ * A later-message finish other than a card change, checked: a reply that rode
+ * along with a log becomes its line, and a line that claims a log or a save
+ * (or a change that did not happen) is replaced by one code writes.
+ */
+export function checkedLater(out: FoodAgentOutcome, input: Pick<FoodAgentInput, "card">, replyText: string): FoodAgentOutcome {
+  const cardOnScreen = !!input.card?.length;
+  if (out.kind === "reply") {
+    return falseAgentClaim(out.text, { cardChanged: false }) ? { ...out, text: honestLine(cardOnScreen) } : out;
+  }
+  if (out.kind === "create") {
+    const s = typeof out.create.input.summary === "string" ? out.create.input.summary : "";
+    if (!s || !falseAgentClaim(s, { cardChanged: false })) return out;
+    const name = typeof out.create.input.name === "string" ? out.create.input.name : "this";
+    return { ...out, create: { ...out.create, input: { ...out.create.input, summary: `${name}. Want it in My Meals?` } } };
+  }
+  if (out.kind !== "log") return out;
+  const p = out.result.parsed;
+  if (!p) return out;
+  const replyOk = !!replyText && !falseAgentClaim(replyText, { cardChanged: true });
+  const own = p.drona_line && !falseAgentClaim(p.drona_line, { cardChanged: true }) ? p.drona_line : `${names(p.items.map((i) => i.food_name))}, ready to add.`;
+  return {
+    ...out,
+    result: { ...out.result, parsed: { ...p, drona_line: replyOk ? replyText : own } },
+    ...(replyOk ? { answered: true } : {}),
   };
 }
 
