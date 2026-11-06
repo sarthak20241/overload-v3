@@ -333,16 +333,17 @@ export const FOOD_AGENT_SYSTEM =
   "When the user says they already saved or logged something, that is done: never offer that same save or log again. " +
   "Do what they ask for next.";
 
-export const LAST_TURN_NOTE =
+const LAST_TURN_BASE =
   "This is your LAST turn. You must finish now with create_custom_meal, create_custom_food, log_food, reply, or (with a " +
-  "card on screen) edit_card, remove_card_lines or save_card_as_meal. Do not call any other tool.";
+  "card on screen) edit_card, remove_card_lines or save_card_as_meal.";
+const LAST_TURN_END = "Do not call any other tool.";
+
+export const LAST_TURN_NOTE = `${LAST_TURN_BASE} ${LAST_TURN_END}`;
 
 /** The last-turn note when restore_card is offered: the same note, naming it.
- *  Only then, so a run without the tool is never told of it. */
-export const LAST_TURN_NOTE_RESTORE = LAST_TURN_NOTE.replace(
-  "Do not call any other tool.",
-  "With no card on screen you may also finish with restore_card. Do not call any other tool.",
-);
+ *  Only then, so a run without the tool is never told of it. Built from the
+ *  same parts, so the two can never silently become one. */
+export const LAST_TURN_NOTE_RESTORE = `${LAST_TURN_BASE} With no card on screen you may also finish with restore_card. ${LAST_TURN_END}`;
 
 // ── Status lines ────────────────────────────────────────────────────────────
 
