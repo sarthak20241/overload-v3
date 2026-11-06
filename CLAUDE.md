@@ -44,12 +44,13 @@ EVAL_VIA_CLI=1 npx tsx scripts/program-activity-eval/run.mts
 # answers? Same CLI rule.
 EVAL_VIA_CLI=1 npx tsx scripts/lean-context-eval/run.mts
 
-# Food box (Precise): 52 cases (43 recorded conversations, 9 with no recording) graded on the outcome
+# Food box (Precise): 57 cases (44 recorded conversations, 13 with no recording) graded on the outcome
 # (card kept, lines not lost, saves with macros, no false claims). ADAPTER=recorded grades
 # what the live box served; no model call. Plan: .planning/precise-food-logger-plan.md
 # `recorded` replays stored answers, so it says nothing about today's code and
 # always exits 0. ADAPTER=live (below) is the run that measures today's code.
 npx tsx scripts/food-box-eval/run.mts            # TAG=correction  ONLY=id  WRITE_BASELINE=1
+# Thread usage per user, last 7 days (copy_lines, restore_card, index size): scripts/food-box-eval/thread-usage.sql
 # Today's food box code on each case, with the case's saved meals, memory and
 # diary. Reads the live catalog, writes nothing. Same CLI rule as above.
 EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts   # EVAL_CONCURRENCY=6  DEBUG_STEPS=1

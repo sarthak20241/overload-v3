@@ -25,7 +25,9 @@
 //     is in play. With FOOD_THREADS=on the case's `thread.earlierCards` and its
 //     card on screen are loaded into an in-memory store (foodThreads.ts
 //     memoryThreadStore, the same rules as the tables), and the agent gets the
-//     index line and restore_card. Off: earlier cards are not sent, as today.
+//     index line, copy_lines and read_card (and restore_card with no card on
+//     screen). Off: earlier cards are not sent, as today. copy_lines from the
+//     diary works either way (it reads the case's diary fixture).
 //   - The secrets the live function reads are not visible here. Defaults:
 //     FOOD_INTENT_MODE=on, THOROUGH_MATCH_MODE / PRECISE_MATCH_MODE off.
 //     Each can be set in the environment to match a deploy.
@@ -256,6 +258,11 @@ function diaryRows(c: FoodBoxCase, localDate: string, offsetMin: number): MealRo
     logged_at: new Date(base - d.daysAgo * 86_400_000).toISOString(),
     meal_entries: d.lines.map((l) => ({
       food_name: l.name,
+      // meal_entries.source holds catalog | off | web | estimate, or null for
+      // a manual pick (0076). A fixture's "label" was a web label.
+      source: l.source === "label" ? "web" : ["catalog", "off", "web", "estimate"].includes(l.source ?? "") ? l.source : null,
+      food_id: null,
+      fiber_g: null,
       quantity: l.quantity ?? 1,
       serving_unit: l.unit ?? "serving",
       grams_logged: l.grams ?? null,
@@ -428,6 +435,11 @@ export async function runLive(c: FoodBoxCase): Promise<Outcome> {
     listLoggedMeals(input, { timeZone: zone, todayLocal: localDate }, {
       mealsBetween: async (s, e) => ({ rows: rows.filter((r) => String(r.logged_at) >= s && String(r.logged_at) <= e) }),
     });
+  // copy_lines' read: the same rows, with each line's id and source (full).
+  const readDiaryLines = async (input: Record<string, unknown>) =>
+    listLoggedMeals(input, { timeZone: zone, todayLocal: localDate }, {
+      mealsBetween: async (s, e) => ({ rows: rows.filter((r) => String(r.logged_at) >= s && String(r.logged_at) <= e) }),
+    }, true);
   const userTurns = c.thread.turns.filter((t) => t.role === "user").map((t) => t.text);
   const previousItems: PreviousItem[] = card.map((l) => ({ ...l, food_id: null }));
   const previousText = prevLines ? userTurns.at(-1) ?? null : null;
@@ -439,7 +451,7 @@ export async function runLive(c: FoodBoxCase): Promise<Outcome> {
   const intentP = startFoodIntent(savedMealsP, c.message, foodContext);
   const agentP = startFoodAgent({
     intentP, supportsCreate: true, text: c.message, mealHint, localHour, localDate, mode: "super",
-    savedMealsP, readDiary, contextPromise, userId: "eval", recentTurns, pendingMeal: null,
+    savedMealsP, readDiary, readDiaryLines, contextPromise, userId: "eval", recentTurns, pendingMeal: null,
     card: card.length ? { lines: card, previousText, previousWords, previousItems } : null,
     parseDeps: () => deps,
     logUsage: () => {},
@@ -471,7 +483,10 @@ export async function runLive(c: FoodBoxCase): Promise<Outcome> {
 
   if (env("DEBUG_STEPS") === "1") {
     console.log(`  [${c.id}] action=${outcome.action} planned=${outcome.planned} intent=${outcome.decision?.intent ?? null}@${outcome.decision?.confidence ?? null}`);
-    for (const t of outcome.agent?.turns ?? []) console.log(`    turn ${t.turn}: ${JSON.stringify(t.tools).slice(0, 600)}`);
+    for (const t of outcome.agent?.turns ?? []) {
+      console.log(`    turn ${t.turn}: ${JSON.stringify(t.tools).slice(0, 600)}`);
+      for (const r of t.results ?? []) console.log(`      ${r.name} -> ${String(r.summary).slice(0, 300)}`);
+    }
   }
   const lookedUp = (firstParse.steps ?? []).some((s) => /web|lookup_packaged|fatsecret|tavily/i.test(String(s.tool)));
   const withLookup = (a: Action[]): Action[] => (lookedUp && !a.includes("look_up") ? [...a, "look_up"] : a);
