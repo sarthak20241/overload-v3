@@ -96,6 +96,7 @@ import {
 } from "./foodThreads.ts";
 import {
   agentCouldUseThread,
+  answeredByLabel,
   configureFoodBar,
   type DiaryReader,
   type FoodBarOutcome,
@@ -3101,20 +3102,7 @@ async function handleParseMealRequest(args: {
           streamed: wouldStream(body), autoLog: body.auto_log === true, clientId: typeof body.client_id === "string" ? body.client_id : null,
           canCreate: clientSupportsFoodCreate(body),
         });
-        const answeredBy = !outcome
-          ? null
-          : outcome.action === "log"
-          ? (outcome.result ? "food_agent" : "parse")
-          : outcome.agent?.kind === "failed"
-          ? "canned_agent_failed"
-          : outcome.agent
-          ? "food_agent"
-          : outcome.action === "reply" && !outcome.followup
-          // A later message's bare ack beside a card: no call at all.
-          ? "bare_ack"
-          : outcome.action === "reply"
-          ? "reply_call"
-          : "create_call";
+        const answeredBy = answeredByLabel(outcome);
         const row = buildFoodBarTraceRow({
           requestId,
           userId,

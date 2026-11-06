@@ -548,3 +548,51 @@ Deno.test("a save in the same turn as card changes: the changes land, and the us
   assertEquals(out.kind, "log");
   if (out.kind === "log") assert(out.result.parsed?.drona_line.endsWith("Ask me to save it once the card looks right."));
 });
+
+// ── Before the switch goes on (review of b8428bf4) ─────────────────────────
+
+Deno.test("editLineInput: the edit works on the card line's own food, never a mismatched one", async () => {
+  const { editLineInput } = await import("./foodBar.ts");
+  const prev = CARD.map((c) => ({ ...c, food_id: null }));
+  assertEquals(editLineInput({ lines: CARD, previousItems: prev }, 1, "half")?.item.food_name, "Dal");
+  // previousItems out of order against the card: the edit fails, whatever comes back.
+  const swapped = [prev[1], prev[0], prev[2]];
+  assertEquals(editLineInput({ lines: CARD, previousItems: swapped }, 0, "3 pieces"), null);
+  assertEquals(editLineInput({ lines: CARD, previousItems: prev.slice(0, 1) }, 2, "skip"), null);
+});
+
+Deno.test("editLineInput: the line's own change goes to its parse, and nothing else", async () => {
+  const { editLineInput } = await import("./foodBar.ts");
+  const prev = CARD.map((c) => ({ ...c, food_id: null }));
+  // The agent carries the user's number in its change; the parse reads it there.
+  assertEquals(editLineInput({ lines: CARD, previousItems: prev }, 1, "the user says it is 161 kcal")?.text, "the user says it is 161 kcal");
+});
+
+Deno.test("save gate: negation and past tense are not an ask", () => {
+  for (const t of ["don't save it", "no need to save this", "I already saved it", "my meals today were light", "do not save, just log"]) {
+    assertFalse(userAskedToSave({ text: t }), t);
+  }
+  for (const t of ["save this as a meal", "can you save it", "add it to my meals"]) assert(userAskedToSave({ text: t }), t);
+});
+
+Deno.test("save beside card changes: the 'ask me to save' note only when the user asked to save", async () => {
+  const out = await runFoodAgent({ ...LATER, text: "make it 3 roti" }, deps(scripted([[
+    { name: "edit_line", input: { line_id: "L1", change: "3 pieces" } },
+    { name: "save_card_as_meal", input: { name: "Dinner", log_now: false, summary: "Save it?" } },
+  ]])));
+  if (out.kind === "log") assertFalse(out.result.parsed?.drona_line.includes("Ask me to save"));
+});
+
+Deno.test("a number the user states for a line: the agent is told to put it on, with no question", () => {
+  assert(FOOD_AGENT_SYSTEM_LATER.includes("number the user gives for a food"));
+});
+
+Deno.test("answeredByLabel: a bare ack is marked; a later run whose agent never ran is not called one", async () => {
+  const { answeredByLabel } = await import("./foodBar.ts");
+  configure(async () => ({ ok: true, data: { content: [] } }));
+  const ack = await runLaterMessage({ agent: agentArgs(), cardOpen: true, fallbackParse: async () => noParseResult() });
+  assertEquals(answeredByLabel(ack.outcome), "bare_ack");
+  // The agent did not run (no outcome): the card is kept, and the label says so.
+  assertEquals(answeredByLabel({ action: "reply", planned: "agent", decision: null, reply: AGENT_FAILED_CARD_REPLY }), "canned_agent_failed");
+  assertEquals(answeredByLabel(null), null);
+});

@@ -585,6 +585,8 @@ export const FOOD_AGENT_SYSTEM_LATER =
   "- When the opening message says this answers your question, the answer finishes that waiting meal: put ALL of its " +
   "food on the card, with the choice they made. When they leave the choice to you, take the first option you offered " +
   "(else the most usual one) and say which you took.\n" +
+  "- A number the user gives for a food (from a menu, a label, \"it was about 150 cal\") wins over every source. Put it " +
+  "on that food's line in the same turn (edit_line, or add_lines for a new food), never ask whether they meant it.\n" +
   "- Which date a weekday was is written at the top of the message: use those days_ago, never your own arithmetic.\n" +
   "- The card reaches the diary only when the user taps its Add button, and a save card only when they tap it. Never " +
   "say anything was logged or saved. A summary is a line about the card, never a promise.\n" +
@@ -992,7 +994,9 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
         // A save asked for in the same turn as card changes: the changes win,
         // and the user is told the save has not happened (a save card cannot
         // ride with a changed meal card).
-        if (!uses.some((u) => SAVE_TOOLS.has(u.name))) return out;
+        // Only when the user asked to save: a save the agent reached for on
+        // its own is simply not made, and not mentioned.
+        if (!uses.some((u) => SAVE_TOOLS.has(u.name)) || !userAskedToSave(input)) return out;
         const note = "Ask me to save it once the card looks right.";
         if (out.kind === "log" && out.result.parsed) {
           return { ...out, result: { ...out.result, parsed: { ...out.result.parsed, drona_line: `${out.result.parsed.drona_line} ${note}`.trim() } } };
@@ -1385,7 +1389,19 @@ async function logFindsNoFood(u: ToolUse, parse: (text: string) => Promise<Parse
 const SAVE_TOOLS = new Set([SAVE_CARD_AS_MEAL_TOOL.name, CREATE_CUSTOM_MEAL_TOOL.name, CREATE_CUSTOM_FOOD_TOOL.name]);
 
 /** A word that asks to save or keep something for later. */
-const SAVE_ASK = /\b(?:sav(?:e|ed|ing)|my meals|as a (?:saved )?meal|make (?:it|this|that) (?:a|my) meal|(?:keep|remember) (?:it|this|that) (?:as|for))\b/i;
+const SAVE_ASK = /\b(?:save|saving|(?:to|in|into) my meals|as a (?:saved )?meal|make (?:it|this|that) (?:a|my) meal|(?:keep|remember) (?:it|this|that) (?:as|for))\b/gi;
+
+/** A no in front of the ask ("don't save", "no need to save"): not an ask. */
+const NEGATED = /\b(?:don['’]?t|do not|no need to|not|never|didn['’]?t|won['’]?t|stop|without)\b[\w\s]{0,16}$/i;
+
+/** An ask to save in this text: a save word, not negated. Past tense
+ *  ("already saved") is not in the pattern, and neither is a bare "my meals". */
+function asksToSave(text: string): boolean {
+  for (const m of text.matchAll(SAVE_ASK)) {
+    if (!NEGATED.test(text.slice(Math.max(0, (m.index ?? 0) - 40), m.index ?? 0))) return true;
+  }
+  return false;
+}
 
 /** Did the user ask for a save? In this message, or in their message just
  *  before it when Drona then asked them something ("save it" -> "save it as
@@ -1393,11 +1409,11 @@ const SAVE_ASK = /\b(?:sav(?:e|ed|ing)|my meals|as a (?:saved )?meal|make (?:it|
  *  not leave the gate open for the rest of it. "keep" and "remember" count only
  *  as "keep it as / for": "keep the rice" is not a save. */
 export function userAskedToSave(input: Pick<FoodAgentInput, "text" | "recentTurns">): boolean {
-  if (SAVE_ASK.test(input.text)) return true;
+  if (asksToSave(input.text)) return true;
   const turns = input.recentTurns ?? [];
   const last = turns.at(-1);
   const before = turns.at(-2);
-  return last?.role === "drona" && /\?\s*$/.test(last.text.trim()) && before?.role === "user" && SAVE_ASK.test(before.text);
+  return last?.role === "drona" && /\?\s*$/.test(last.text.trim()) && before?.role === "user" && asksToSave(before.text);
 }
 
 /** Reads whose results a later-message agent acts on: a finish in the same
