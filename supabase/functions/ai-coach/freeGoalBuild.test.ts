@@ -10,6 +10,7 @@ const PGLITE = "https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.2.17/dist/in
 // @deno-types="https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.2.17/dist/index.d.ts"
 import type { PGlite } from "https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.2.17/dist/index.js";
 import { freeGoalTurnKind } from "./freePhaseBuild.ts";
+import { AI_LIMITS } from "../_shared/aiLimits.ts";
 import { onboardingProgramRequestBody } from "../../../lib/onboardingRequest.ts";
 
 // ── Which requests may ask ────────────────────────────────────────────────────
@@ -96,18 +97,19 @@ async function claim(pg: PGlite, kind: string | null) {
 
 const markGuestBuild = (pg: PGlite) => pg.query(`select mark_free_goal_build_used()`);
 
-Deno.test("a free account gets exactly one build, then it is spent", async () => {
+Deno.test("a free account gets AI_LIMITS.freeGoalBuilds (one) build, then it is spent", async () => {
   const pg = await db();
   await signIn(pg, "fresh");
+  assertEquals(AI_LIMITS.freeGoalBuilds, 1);
   assertEquals(await claim(pg, "build"), { allowed: true, reason: "build" });
   assertEquals(await claim(pg, "build"), { allowed: false, reason: "build_spent" });
   assertEquals(await claim(pg, "build"), { allowed: false, reason: "build_spent" });
 });
 
-Deno.test("8 edit turns, then they are spent; the build is a separate count", async () => {
+Deno.test("AI_LIMITS.freeGoalEditTurns edit turns, then they are spent; the build is a separate count", async () => {
   const pg = await db();
   await signIn(pg, "editor");
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < AI_LIMITS.freeGoalEditTurns; i++) {
     assertEquals(await claim(pg, "edit"), { allowed: true, reason: "edit" }, `turn ${i + 1}`);
   }
   assertEquals(await claim(pg, "edit"), { allowed: false, reason: "edits_spent" });
