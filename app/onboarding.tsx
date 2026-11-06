@@ -476,13 +476,16 @@ export default function OnboardingScreen() {
           phases,
           duration_ms: Date.now() - genStartedAt,
         });
-      } catch {
+      } catch (e) {
         /* fall back to the deterministic program; the reveal never knows */
         // Tracked because a high fallback rate is invisible in the UI by
         // design, and it is the single best predictor of a weak first plan.
+        // `error` tells a spent free goal build ("HTTP 402") from a real
+        // failure (a 5xx, a timeout, no token).
         track('onboarding_plan_failed', {
           authed: !!(isSignedIn && getToken),
           via,
+          error: (e instanceof Error ? e.message : String(e)).slice(0, 80),
           duration_ms: Date.now() - genStartedAt,
         });
       } finally {
