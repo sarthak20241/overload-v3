@@ -92,7 +92,6 @@ import {
   onboardingIdentity,
 } from '@/lib/onboarding';
 import { buildAnonIntake, requestAnonOnboardingProgram } from '@/lib/onboardingDrona';
-import { requestOnboardingProgramSignedIn, type OnboardingPlanVia } from '@/lib/onboardingPlanRoute';
 import { weekPatternFor, shortDayLabel, REST } from '@/lib/weekPattern';
 import { getDeviceId } from '@/lib/deviceId';
 import { setPendingOnboarding, saveOnboardingProgram } from '@/lib/pendingOnboarding';
@@ -408,10 +407,9 @@ export default function OnboardingScreen() {
     // the request is in flight, and the result must still land. Post-unmount
     // setState is a no-op in React 18, so this is safe.
     (async () => {
-      // Which path built (or tried to build) the program. Read `via`, not
-      // `authed`: a signed-in free user is authed but lands on the guest path.
-      // Outside the try so a failure reports it too.
-      let via: OnboardingPlanVia | 'guest' = 'guest';
+      // Which path built (or tried to build) the program. Outside the try so
+      // a failure reports it too.
+      let via: 'authed' | 'guest' = 'guest';
       try {
         const direction =
           answers.goalWeightKg && answers.weightKg && Math.abs(answers.goalWeightKg - answers.weightKg) >= 1
@@ -448,22 +446,20 @@ export default function OnboardingScreen() {
           return requestAnonOnboardingProgram({ deviceId, intake });
         };
         if (isSignedIn && getToken) {
-          // Signed-in (re-onboarding / signed in before the intake). The
-          // authenticated path is Pro-only (generate_program), so a free user
-          // gets 402 and is sent down the guest path instead of the
-          // deterministic fallback (lib/onboardingPlanRoute.ts).
+          // Signed-in (re-onboarding / signed in before the intake): the Pro
+          // path, with the user's own data and research. A free account may
+          // use it once: the server spends the account's one free goal plan
+          // (try_claim_free_goal_turn). If that is already spent it answers
+          // 402 and this falls back to the deterministic program below. The
+          // guest path is not tried: the free plan is once per account.
+          via = 'authed';
           const token = await getToken();
           if (!token) throw new Error('no token');
-          const res = await requestOnboardingProgramSignedIn(
-            () => requestDronaOnboardingProgram({
-              token,
-              freshToken: () => getToken({ skipCache: true }),
-              message: buildOnboardingProgramMessage(answers, programExtras),
-            }),
-            requestGuest,
-          );
-          via = res.via;
-          phases = applyProgram(res.program);
+          phases = applyProgram(await requestDronaOnboardingProgram({
+            token,
+            freshToken: () => getToken({ skipCache: true }),
+            message: buildOnboardingProgramMessage(answers, programExtras),
+          }));
         } else {
           // Guest-first funnel: no account yet. Anonymous, device-rate-limited
           // route. A 429 or any error just falls through to the deterministic
@@ -696,6 +692,7 @@ export default function OnboardingScreen() {
             answers,
             targets,
             program: finalProgram,
+            programByDrona: dronaProgram != null,
             createPlan: opts.createPlan,
             dest: opts.dest,
             weightUnit,
@@ -718,7 +715,7 @@ export default function OnboardingScreen() {
       }
       await completeOnboarding(opts);
     },
-    [finishing, isFreshVisitor, answers, targets, finalProgram, weightUnit, router, completeOnboarding],
+    [finishing, isFreshVisitor, answers, targets, finalProgram, dronaProgram, weightUnit, router, completeOnboarding],
   );
 
   // Onboarding is the front door now, so a fresh visitor (no identity yet)

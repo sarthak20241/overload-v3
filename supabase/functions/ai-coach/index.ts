@@ -106,7 +106,7 @@ import { preciseAliasStore } from "./preciseAlias.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
-import { freePhaseBuildCandidate, freePhaseRefineCandidate } from "./freePhaseBuild.ts";
+import { freeGoalTurnKind, freePhaseBuildCandidate, freePhaseRefineCandidate } from "./freePhaseBuild.ts";
 import { selectMatchRows } from "./ourSources.ts";
 import { MEMORY_DAYS, type MemoryEntry } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
@@ -4517,6 +4517,10 @@ Deno.serve(async (req) => {
   // A refine turn on that free build while it is still an unsaved draft (see
   // the claim below). Runs like the build: Pro prompt and toolkit, no chat slot.
   let freePhaseRefine = false;
+  // A turn of the free user's one free goal plan: the onboarding build, or a
+  // turn of the Goal screen's program chat (see the claim below). Runs like
+  // the phase build: Pro prompt and toolkit, no chat slot.
+  let freeGoalTurn = false;
   try {
     const { data: accessData, error: accessErr } = await userClient.rpc(
       "get_coach_access_status",
@@ -4593,7 +4597,29 @@ Deno.serve(async (req) => {
           trace.spans = { ...(trace.spans ?? {}), free_phase_refine: refine.reason ?? "refine" };
         }
       }
-      if (wantsProFlow && !freePhaseBuild && !freePhaseRefine) {
+      // One free goal plan per account, for life: the onboarding build plus a
+      // few turns of the Goal screen's program chat. freeGoalTurnKind says
+      // which requests may ask; the RPC counts them. An RPC error (or the
+      // migration not applied yet) falls through to the paywall.
+      const goalKind = freeGoalTurnKind(body);
+      if (wantsProFlow && !freePhaseBuild && !freePhaseRefine && goalKind !== null) {
+        const { data: goalData, error: goalErr } = await userClient.rpc(
+          "try_claim_free_goal_turn",
+          { p_kind: goalKind },
+        );
+        const goal = (Array.isArray(goalData) ? goalData[0] : goalData) as
+          | { allowed?: boolean; reason?: string }
+          | null;
+        if (goalErr) console.log("[ai-coach] free goal turn claim error:", goalErr.message);
+        if (!goalErr && goal?.allowed) {
+          freeGoalTurn = true;
+          freeTier = false;
+          trace.spans = { ...(trace.spans ?? {}), free_goal_turn: goal.reason ?? goalKind };
+        } else if (!goalErr && goal?.reason) {
+          trace.spans = { ...(trace.spans ?? {}), free_goal_turn: goal.reason };
+        }
+      }
+      if (wantsProFlow && !freePhaseBuild && !freePhaseRefine && !freeGoalTurn) {
         trace.status = "unauthorized";
         trace.error_message = `pro_required:${String(peekMode ?? peekForce)}`;
         return respond(
@@ -4623,7 +4649,8 @@ Deno.serve(async (req) => {
   // normal use (_shared/aiCooldown.ts), same lock, same table.
   // The free phase-1 build skips this: its own claim (max 3 tries, once per
   // account) is the limit, and it must not eat one of the 3 free messages.
-  // Its refine turns skip it the same way (their own cap is in the RPC).
+  // Its refine turns skip it the same way (their own cap is in the RPC), and
+  // so do the free goal plan's turns (try_claim_free_goal_turn is their cap).
   if (freeTier) {
     const { data: slotData, error: slotErr } = await userClient
       .rpc("try_reserve_ai_coach_slot", { p_cap: FREE_CHAT_LIMIT });
@@ -4648,7 +4675,7 @@ Deno.serve(async (req) => {
         402,
       );
     }
-  } else if (!freePhaseBuild && !freePhaseRefine) {
+  } else if (!freePhaseBuild && !freePhaseRefine && !freeGoalTurn) {
     const slot = await reserveProSlot((fn, args) => userClient.rpc(fn, args), "chat");
     if (slot.kind === "error") {
       trace.status = "internal_error";
