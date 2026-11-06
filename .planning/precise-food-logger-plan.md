@@ -85,7 +85,7 @@ Tables (names are a first idea):
 
 A thread closes when its card is added, or after 30 minutes with no message (owner decision).
 
-**Retention: 15 days** (owner decision, 2026-11-06). A daily job closes threads idle for more than 30 minutes, then deletes closed threads whose last message is older than 15 days, with their turns, cards and card lines. An open thread is never deleted mid-use. Account deletion removes a user's threads at once. No summaries and no cold storage: lasting facts go to food memory when a card is added (step 4), and debugging uses `food_bar_traces` (30 days).
+**Retention: 15 days** (owner decision, 2026-11-06). A daily job closes threads idle for more than 35 minutes (the app's 30 plus the server's 5-minute grace), then deletes closed threads whose last message is older than 15 days, with their turns, cards and card lines. An open thread is never deleted mid-use. Account deletion removes a user's threads at once. No summaries and no cold storage: lasting facts go to food memory when a card is added (step 4), and debugging uses `food_bar_traces` (30 days).
 
 A save card no longer replaces the meal card. It is a second card in the same thread. The meal card stays.
 
