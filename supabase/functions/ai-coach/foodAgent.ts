@@ -338,12 +338,12 @@ const LAST_TURN_BASE =
   "card on screen) edit_card, remove_card_lines or save_card_as_meal.";
 const LAST_TURN_END = "Do not call any other tool.";
 
-export const LAST_TURN_NOTE = `${LAST_TURN_BASE} ${LAST_TURN_END}`;
+export const LAST_TURN_NOTE: string = `${LAST_TURN_BASE} ${LAST_TURN_END}`;
 
 /** The last-turn note when restore_card is offered: the same note, naming it.
  *  Only then, so a run without the tool is never told of it. Built from the
  *  same parts, so the two can never silently become one. */
-export const LAST_TURN_NOTE_RESTORE = `${LAST_TURN_BASE} With no card on screen you may also finish with restore_card. ${LAST_TURN_END}`;
+export const LAST_TURN_NOTE_RESTORE: string = `${LAST_TURN_BASE} With no card on screen you may also finish with restore_card. ${LAST_TURN_END}`;
 
 // ── Status lines ────────────────────────────────────────────────────────────
 
