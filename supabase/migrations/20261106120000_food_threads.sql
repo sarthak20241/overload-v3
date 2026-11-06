@@ -254,6 +254,9 @@ create trigger trg_delete_food_threads_on_profile_delete
 --      turns, cards and card lines go with them (on delete cascade). An open
 --      thread is never deleted mid-use: it was active in the last 30 minutes.
 -- Account deletion still removes a user's threads at once (the trigger above).
+-- Both steps run in one call, so a thread already idle for more than 20 days
+-- is closed AND deleted the first night the job sees it. That is the policy:
+-- 20 days from the last message, however long it sat open.
 -- Unscheduled first so re-running this file does not add a second job.
 create or replace function public.food_threads_retention()
 returns void

@@ -563,6 +563,12 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
       // what the user sees, so it is written on top of the server's version,
       // once. Every older version is kept, so nothing is lost, and the copy
       // never silently stops moving. A retried send is not rewritten.
+      // Known cost: the server's count then runs ahead of the app's, so each
+      // later message takes this path too and the numbers stay apart. The
+      // model names cards by ref (C1) and asks for the latest version, so
+      // that does not change what restore brings back. Sending the server's
+      // version back to the app needs the read before the answer, which only
+      // FOOD_THREADS=on does; it goes with turning that on.
       if (!w.written && !w.retry && w.version > (req.base_version ?? 0)) {
         log(`[food_threads] card ${base.id} base ${req.base_version} behind the server (${w.version}); written on top`);
         w = await store.writeCard(base.id, w.version, lines, args.clientId, undefined, args.mealType);
