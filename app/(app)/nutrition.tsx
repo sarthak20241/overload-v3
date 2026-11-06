@@ -1342,8 +1342,13 @@ export default function NutritionScreen() {
       // A newer save card takes the place of one not tapped yet: the latest
       // ask is the one the user means. The meal card is not touched.
       setSaveCard({ create, result: null, busy: false });
-      // cardAfter's rule for a save card: the meal card stays as it was.
-      setFlow(prevReview ? { ...prevReview, notice: null, proposal: null } : { status: 'idle' });
+      // The shared rule (lib/foodBarCard.ts, the eval uses it too): a save card
+      // leaves the meal card's lines as they were. Its notice and proposal
+      // answered the message before this one, so they go.
+      const kept = cardAfter(prevReview?.meal.items ?? null, { kind: 'create' });
+      setFlow(prevReview && kept
+        ? { ...prevReview, meal: { ...prevReview.meal, items: kept }, notice: null, proposal: null }
+        : { status: 'idle' });
       return;
     }
     pushTurn('drona', res.meal.drona_line);

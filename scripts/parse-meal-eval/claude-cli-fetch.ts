@@ -345,8 +345,12 @@ async function freeChoiceCall(
         content = [{ type: "text", text: typeof o.text === "string" ? o.text : raw.trim() }];
       }
     } catch (e) {
-      // Words with no JSON around them are still an answer in words.
-      if (String(e).includes("unknown tool")) return new Response(`claude-cli shim: ${String(e).slice(0, 400)}`, { status: 502 });
+      // Words with no JSON at all are an answer in words. Anything that tried
+      // to be JSON and broke (or named a tool that does not exist) is a
+      // harness error, never scored as a reply.
+      if (String(e).includes("unknown tool") || /[{}]/.test(raw)) {
+        return new Response(`claude-cli shim: ${String(e).slice(0, 400)}`, { status: 502 });
+      }
       content = [{ type: "text", text: raw.trim() }];
     }
   }
