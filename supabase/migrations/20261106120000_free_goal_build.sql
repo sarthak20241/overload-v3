@@ -13,9 +13,11 @@
 -- The rules, all enforced here and not in the client:
 --   * once per account, ever: the row is keyed on user_id
 --   * 'build': the onboarding request (a plain forced generate_program).
---     At most BUILD_TRIES (2) claims: one build plus a spare, because a try is
---     counted when it is claimed, before generation runs, so a dropped request
---     spends one too.
+--     Exactly one claim. It is counted when it is claimed, before generation
+--     runs, so a dropped request spends it too. No spare: a spare would let a
+--     user whose first build worked get a second one. A user who lost the
+--     build to a dropped request still has the edit turns below, and
+--     discuss_program builds a Drona plan inside them.
 --   * 'edit': one turn of the Goal screen's program chat (discuss_program or
 --     refine_program). At most EDIT_TURNS (8) turns. A change is usually a
 --     message or two plus the "yes, do it" turn that re-emits the program, so
@@ -48,13 +50,13 @@ create table if not exists public.free_goal_builds (
 alter table public.free_goal_builds enable row level security;
 revoke all on table public.free_goal_builds from anon, authenticated;
 
--- How many build claims an account gets: one build plus a spare (see the
--- header). One place, read by both functions below.
+-- How many build claims an account gets: one (see the header). One place,
+-- read by both functions below.
 create or replace function free_goal_build_tries()
 returns integer
 language sql
 immutable
-as $$ select 2 $$;
+as $$ select 1 $$;
 
 create or replace function try_claim_free_goal_turn(p_kind text)
 returns table (allowed boolean, reason text)
@@ -98,8 +100,7 @@ begin
            build_source = coalesce(build_source, 'coach'),
            last_at = now()
      where user_id = v_uid;
-    allowed := true;
-    reason := case when v_row.build_attempts = 0 then 'build' else 'build_retry' end;
+    allowed := true; reason := 'build';
     return next; return;
   end if;
 

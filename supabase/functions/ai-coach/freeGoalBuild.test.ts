@@ -93,11 +93,11 @@ async function claim(pg: PGlite, kind: string | null) {
 
 const markGuestBuild = (pg: PGlite) => pg.query(`select mark_free_goal_build_used()`);
 
-Deno.test("a free account gets one build plus one spare try, then it is spent", async () => {
+Deno.test("a free account gets exactly one build, then it is spent", async () => {
   const pg = await db();
   await signIn(pg, "fresh");
   assertEquals(await claim(pg, "build"), { allowed: true, reason: "build" });
-  assertEquals(await claim(pg, "build"), { allowed: true, reason: "build_retry" });
+  assertEquals(await claim(pg, "build"), { allowed: false, reason: "build_spent" });
   assertEquals(await claim(pg, "build"), { allowed: false, reason: "build_spent" });
 });
 
@@ -133,7 +133,7 @@ Deno.test("the guest mark never gives a build back, and keeps who spent it", asy
   const row = await pg.query<{ build_source: string; build_attempts: number }>(
     `select build_source, build_attempts from free_goal_builds where user_id = 'built-then-marked'`,
   );
-  assertEquals(row.rows[0], { build_source: "coach", build_attempts: 2 });
+  assertEquals(row.rows[0], { build_source: "coach", build_attempts: 1 });
 });
 
 Deno.test("each account has its own allowance", async () => {
