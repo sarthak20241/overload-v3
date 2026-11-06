@@ -37,6 +37,7 @@ import {
   requestHealthAuthorization,
   markHealthConnected,
   getHealthConnectionStatus,
+  needsHealthAuthorization,
   type ReadableMetric,
   type HealthConnectionStatus,
 } from '@/lib/healthSync';
@@ -110,7 +111,7 @@ const stat = Colors.stat as Record<string, string>;
 type Status =
   | { kind: 'idle' }
   | { kind: 'working' }
-  | { kind: 'done'; written: number | null }
+  | { kind: 'done'; written: number | null; cardio: number | null }
   | { kind: 'logged' }
   | { kind: 'unavailable' }
   | { kind: 'error'; message: string };
@@ -161,6 +162,8 @@ export default function HealthScreen() {
   const [metrics, setMetrics] = useState<Set<ReadableMetric>>(new Set());
   const [deviceMetrics, setDeviceMetrics] = useState<Set<ReadableMetric>>(new Set());
   const [connStatus, setConnStatus] = useState<HealthConnectionStatus>('unknown');
+  // A type added after the user connected (workouts) that the hub has not asked about yet.
+  const [needsAsk, setNeedsAsk] = useState(false);
   const [recentSleep, setRecentSleep] = useState<{ today: SleepEntry | null; yesterday: SleepEntry | null }>({ today: null, yesterday: null });
   const [recentSleepReady, setRecentSleepReady] = useState(false);
   const [history, setHistory] = useState<{ date: string; value: number }[]>([]);
@@ -186,6 +189,7 @@ export default function HealthScreen() {
     // score no longer waits on the slowest of six round-trips (the old Promise.all
     // meant one slow query held the whole screen on a spinner).
     getHealthConnectionStatus(userId).then(setConnStatus).catch(() => {});
+    needsHealthAuthorization().then(setNeedsAsk).catch(() => {});
     // A failed connected-metrics read must NOT flip a connected user back to the
     // first-run "Connect health" state, so only apply a successful result.
     loadConnectedMetrics(supabase, userId)
@@ -294,9 +298,9 @@ export default function HealthScreen() {
         // Remember we connected, so status reads 'granted' even before data lands.
         await markHealthConnected(userId);
       }
-      const { synced } = await runHealthSyncAndReadiness(supabase, userId);
-      track('health_sync_run', { trigger: reauth ? 'connect' : 'manual', written: synced });
-      setStatus({ kind: 'done', written: synced });
+      const { synced, cardio } = await runHealthSyncAndReadiness(supabase, userId);
+      track('health_sync_run', { trigger: reauth ? 'connect' : 'manual', written: synced, cardio });
+      setStatus({ kind: 'done', written: synced, cardio });
       await load();
     } catch (e) {
       track('health_sync_failed', { reauth });
@@ -537,7 +541,7 @@ export default function HealthScreen() {
             {!connected ? (
               <>
                 <Text style={[styles.worksWith, { color: C.textMuted }]}>
-                  Want a sharper read? Connect {HUB_LABEL} and sleep, heart rate and steps sync on their own.
+                  Want a sharper read? Connect {HUB_LABEL} and sleep, heart rate, steps and cardio workouts sync on their own.
                 </Text>
                 <Pressable
                   onPress={() => runSync(true)}
@@ -556,6 +560,31 @@ export default function HealthScreen() {
                 <Text style={[styles.worksWith, { color: C.textMuted }]}>
                   Works with {sourcesForHub(HUB).map((s) => s.name).join(', ')}.
                 </Text>
+              </>
+            ) : needsAsk ? (
+              // Connected before workouts were read: one tap shows the hub's
+              // sheet with just the new switch. Never asked on its own.
+              <>
+                <Text style={[styles.worksWith, { color: C.textMuted }]}>
+                  Runs, rides and swims from {HUB_LABEL} can count toward your cardio. Allow workouts and they land in History on their own.
+                </Text>
+                <Pressable
+                  onPress={() => {
+                    track('health_workouts_asked', { platform: Platform.OS });
+                    runSync(true);
+                  }}
+                  disabled={working}
+                  style={({ pressed }) => [styles.ghost, { borderColor: C.border }, (pressed || working) && { opacity: 0.7 }]}
+                >
+                  {working ? (
+                    <OrbLoader color={C.foreground} />
+                  ) : (
+                    <>
+                      <Feather name="activity" size={IconSize.md} color={C.foreground} />
+                      <Text style={[styles.ghostText, { color: C.foreground }]}>Allow workouts</Text>
+                    </>
+                  )}
+                </Pressable>
               </>
             ) : (
               <Pressable
@@ -590,7 +619,9 @@ export default function HealthScreen() {
                   {status.kind === 'logged'
                     ? 'Logged. Drona folded it into your readiness.'
                     : status.kind === 'done'
-                      ? (status.written ?? 0) > 0
+                      ? (status.cardio ?? 0) > 0
+                        ? `Brought in ${status.cardio === 1 ? '1 cardio session' : `${status.cardio} cardio sessions`} from ${HUB_LABEL}. They count toward this week.`
+                        : (status.written ?? 0) > 0
                         ? `Synced ${status.written} readings. Drona folded them into your readiness.`
                         : Platform.OS === 'ios' && !hasData
                           ? 'If you just allowed access, give it a moment. If nothing shows, check Apple Health, then Sharing, then Overload.'

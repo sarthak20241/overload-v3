@@ -9,7 +9,7 @@ import { FontSize } from '@/constants/theme';
 export const MEDICAL_DISCLAIMER_SHORT =
   'Drona is a training coach, not a medical professional. For medical advice, diagnosis, or treatment, talk to a doctor or other healthcare professional.';
 
-/** One line for tight screens (onboarding). Still both statements. */
+/** One line for tight screens (onboarding, under the Drona chat box). Still both statements. */
 export const MEDICAL_DISCLAIMER_LINE =
   'Not a medical device. See a doctor for medical advice.';
 

@@ -35,6 +35,7 @@ import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { selectedGoals, toggleGoal } from '@/lib/fitnessGoals';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
 import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
@@ -1008,6 +1009,19 @@ export default function ProfileScreen() {
                   </>
                 )}
               </TouchableOpacity>
+              {/* Invite codes give a free month (lib/invite.ts). Not offered
+                  to a paying user, whom redeem_invite() would refuse. */}
+              {!planUnknown && !isPro && (
+                <TouchableOpacity
+                  onPress={() => router.push('/invite' as any)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Enter an invite code"
+                  style={styles.inviteLink}
+                >
+                  <Feather name="gift" size={12} color={C.textMuted} />
+                  <Text style={[styles.inviteLinkText, { color: C.textMuted }]}>Have an invite code?</Text>
+                </TouchableOpacity>
+              )}
             </View>
           )}
 
@@ -1683,7 +1697,7 @@ export default function ProfileScreen() {
                 })}
               </View>
 
-              <TextInput
+              <SheetTextInput
                 value={bugTitle}
                 onChangeText={setBugTitle}
                 placeholder="Brief summary..."
@@ -1696,7 +1710,7 @@ export default function ProfileScreen() {
                 }]}
               />
 
-              <TextInput
+              <SheetTextInput
                 value={bugDescription}
                 onChangeText={setBugDescription}
                 placeholder="What happened?"
@@ -1835,6 +1849,14 @@ const styles = StyleSheet.create({
   planBenefitText: { flex: 1, fontSize: FontSize.xs, fontWeight: FontWeight.medium },
   planCardAction: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   planCardActionText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
+  inviteLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: Spacing.md,
+  },
+  inviteLinkText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
   proBadge: {
     flexDirection: 'row',
     alignItems: 'center',

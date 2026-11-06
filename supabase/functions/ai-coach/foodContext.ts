@@ -123,13 +123,20 @@ export function readPreviousItems(raw: unknown, rawTotal: unknown): { items: Pre
   return { items, total };
 }
 
-/** The card for a model's eyes: short, numbered, one line per food. */
-export function cardLines(card: CardLine[] | null | undefined): string[] {
+/** The card for a model's eyes: short, numbered, one line per food.
+ *  `macros`: add protein, carbs and fat, for a model that may copy a line
+ *  into a save (the agent). The router judges intent and gets the short form. */
+export function cardLines(card: CardLine[] | null | undefined, opts: { macros?: boolean } = {}): string[] {
   // Whitespace collapsed: a newline in a client-supplied name would otherwise
   // forge an extra numbered line in the prompt.
   const flat = (x: string) => x.replace(/\s+/g, " ").trim();
+  // A macro the line has no figure for reads "?", never 0: a 0 the model sees
+  // is a 0 it may copy into a save (foodAgent.ts fillFromCard keeps the
+  // model's own figure when the card has none).
+  const r1 = (n: number | undefined) => (typeof n === "number" && Number.isFinite(n) ? String(Math.round(n * 10) / 10) : "?");
   return (card ?? []).slice(0, CARD_MAX_LINES).map((l, i) =>
-    `${i + 1}. ${flat(l.food_name)}: ${l.quantity} ${flat(l.serving_label)}, ${Math.round(l.grams)} g, ${Math.round(l.kcal)} kcal`
+    `${i + 1}. ${flat(l.food_name)}: ${l.quantity} ${flat(l.serving_label)}, ${Math.round(l.grams)} g, ${Math.round(l.kcal)} kcal` +
+    (opts.macros ? `, P ${r1(l.protein_g)} C ${r1(l.carb_g)} F ${r1(l.fat_g)}` : "")
   );
 }
 

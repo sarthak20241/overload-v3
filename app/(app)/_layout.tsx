@@ -322,6 +322,8 @@ export default function AppLayout() {
               params: {
                 build: 'phase',
                 auto: '1',
+                // The film tour plays on top while phase 1 builds.
+                tour: '1',
                 ...(Platform.OS === 'ios' || Platform.OS === 'android' ? { then: 'upgrade' } : {}),
               },
             } as any);

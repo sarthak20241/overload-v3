@@ -566,10 +566,10 @@ export async function runGeneratePlan(
           ``,
           intake,
           ``,
-          `Write ONLY the rationale: 3-4 sentences, plain prose in one paragraph, no lists, no headings, no preamble. Why this split at this frequency for their goal, and how to progress it.`,
+          `Write ONLY the rationale: 1-2 short sentences, 25 words at most, plain prose, no lists, no headings, no preamble, no em dashes. Why this split at this frequency fits their goal.`,
         ].join("\n"),
       }],
-      maxTokens: 700,
+      maxTokens: 200,
       model: deps.model,
       label: "rationale",
     });

@@ -90,6 +90,9 @@ export type AnalyticsEvent =
   | 'session_refreshed'
   | 'session_refresh_skipped'
   | 'session_refresh_failed'
+  // Fresh store install waiting on the splash for the newest update
+  // (FirstOpenUpdateGate): outcome reloading / up_to_date / timed_out / failed.
+  | 'first_open_update'
   | 'account_deleted'
   | 'guest_mode_entered'
   | 'guest_converted'
@@ -160,7 +163,14 @@ export type AnalyticsEvent =
   | 'health_connect_result'
   | 'health_sync_run'
   | 'health_sync_failed'
+  | 'health_cardio_imported'
+  | 'health_cardio_skipped'
+  | 'health_workouts_asked'
   | 'readiness_card_tapped'
+  // Dashboard cardio row: the sheet, a session started from it, one logged after the fact.
+  | 'cardio_sheet_opened'
+  | 'cardio_started'
+  | 'cardio_logged'
   // ── Nutrition ────────────────────────────────────────────────────────────
   | 'meal_logged'
   | 'meal_undone'
@@ -253,7 +263,11 @@ export type AnalyticsEvent =
   | 'start_guide_shown'
   | 'start_guide_step_tapped'
   | 'start_guide_dismissed'
-  // The dashboard's floating log-food button (lib/homeLogHint.ts).
+  // The film tour after sign-up (components/onboarding/SignupTour.tsx).
+  | 'signup_tour_shown'
+  | 'signup_tour_scene'
+  | 'signup_tour_done'
+  // The dashboard's floating log-food button (components/home/HomeLogButton.tsx).
   | 'home_log_food_tapped'
   | 'program_phase_advanced'
   | 'program_completed'
@@ -275,6 +289,9 @@ export type AnalyticsEvent =
   // ── Money ────────────────────────────────────────────────────────────────
   | 'limit_reached'
   | 'upgrade_prompt_tapped'
+  | 'invite_opened'
+  | 'invite_redeemed'
+  | 'invite_failed'
   | 'milestone_upsell_shown'
   | 'milestone_upsell_snoozed'
   | 'paywall_viewed'

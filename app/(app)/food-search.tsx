@@ -11,7 +11,9 @@
  * Signed in, anything typed also gets a "Log it with Drona" row pinned above
  * the results (the keyboard's send does the same): the sentence goes to the
  * Nutrition food box with this meal and day (lib/pendingParse), so a user who
- * came in by hand finds the AI log without leaving the place they looked.
+ * came in by hand finds the AI log without leaving the place they looked. The
+ * row carries its own Quick / Precise switch: it is the same sticky pick as
+ * the food box's mode chip (lib/parseSpeed), set from where the log is sent.
  *
  * Foods the user logged before (by hand or with Drona) match first, tagged, at
  * last time's portion (lib/yourFoods): most of a diary has no catalog row, so
@@ -39,10 +41,9 @@ import { defaultServing, resolveBaseAmount, searchFoods, type MealType } from '@
 import { matchYourFoods, mergeYourFoods, portionText, type YourFood } from '@/lib/yourFoods';
 import { haptics } from '@/lib/haptics';
 import { dronaLogText, setPendingParse } from '@/lib/pendingParse';
-import { getParseSpeed, effectiveParseSpeed, PARSE_SPEED_COPY, type ParseSpeed } from '@/lib/parseSpeed';
+import { getParseSpeed, setParseSpeed, peekParseSpeed, effectiveParseSpeed, PARSE_SPEED_COPY, type ParseSpeed } from '@/lib/parseSpeed';
 import { getAutoLog } from '@/lib/autoLog';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
-import { DronaMark } from '@/components/coach/DronaMark';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 
 type SearchTab = 'all' | 'meals';
@@ -61,6 +62,11 @@ const MEALS: { type: MealType; label: string; icon: keyof typeof Feather.glyphMa
   { type: 'lunch', label: 'Lunch', icon: 'sun' },
   { type: 'dinner', label: 'Dinner', icon: 'sunset' },
   { type: 'snack', label: 'Snacks', icon: 'coffee' },
+];
+/** The Drona row's mode switch. Same icons as the food box's chip. */
+const SPEEDS: { key: ParseSpeed; icon: 'zap' | 'award' }[] = [
+  { key: 'quick', icon: 'zap' },
+  { key: 'precise', icon: 'award' },
 ];
 const labelOf = (m: MealType) => MEALS.find((x) => x.type === m)?.label ?? 'Meal';
 const round = (n: number) => Math.round(n);
@@ -83,9 +89,8 @@ export default function FoodSearchScreen() {
   const [pickedSpeed, setPickedSpeed] = useState<ParseSpeed>('quick');
   const [autoLog, setAutoLogOn] = useState(false);
   const { access: coachAccess } = useCoachAccess();
-  const runningSpeed = effectiveParseSpeed(
-    pickedSpeed, coachAccess.state === 'paid' || coachAccess.state === 'trialing',
-  );
+  const canUsePrecise = coachAccess.state === 'paid' || coachAccess.state === 'trialing';
+  const runningSpeed = effectiveParseSpeed(pickedSpeed, canUsePrecise);
 
   // Re-sync the target meal from the store + clear the stale query each time this
   // retained Tabs screen is reopened (focus fires reliably even when router params
@@ -98,8 +103,12 @@ export default function FoodSearchScreen() {
       setTab('all'); // retained Tabs screen: reset to the catalog every reopen (deterministic)
       if (supabase) listSavedMeals(supabase).then(setSavedMeals).catch(() => {});
       refreshYourFoods();
-      // The tier may have changed on Nutrition since the last visit.
-      getParseSpeed().then(setPickedSpeed);
+      // The tier may have changed on Nutrition since the last visit. The
+      // in-memory pick first: a storage read resolving late could undo a tap
+      // made on this screen in the meantime.
+      const known = peekParseSpeed();
+      if (known) setPickedSpeed(known);
+      else getParseSpeed().then((v) => setPickedSpeed(peekParseSpeed() ?? v));
       getAutoLog().then(setAutoLogOn);
     }, [supabase]),
   );
@@ -216,6 +225,25 @@ export default function FoodSearchScreen() {
     });
     setPendingParse({ text, meal, day: getLogDate() });
     router.navigate('/nutrition');
+  }
+  // The row's switch writes the same sticky pick the food box's sheet does;
+  // Nutrition reads it back on focus, before it runs the hand-off. A locked
+  // Precise opens the upgrade screen and leaves the pick alone, as the sheet's.
+  function pickSpeed(v: ParseSpeed) {
+    if (v === 'precise' && !canUsePrecise) {
+      haptics.tick();
+      track('upgrade_prompt_tapped', { feature: 'parse_tier', tier: v, from: 'food_search' });
+      Keyboard.dismiss();
+      router.push({ pathname: '/upgrade', params: { context: 'pro_feature' } });
+      return;
+    }
+    // Against the stored pick, not the running one: a lapsed Precise pick
+    // runs as Quick, and tapping Quick must still replace what is stored.
+    if (v === pickedSpeed) return;
+    haptics.selection();
+    track('parse_tier_changed', { from: pickedSpeed, to: v, screen: 'food_search' });
+    setPickedSpeed(v);
+    void setParseSpeed(v);
   }
   async function quickAdd(food: PickerFood, key: string) {
     if (!supabase || busyKey) return;
@@ -477,31 +505,67 @@ export default function FoodSearchScreen() {
         // sentence to Drona, or one row from the list below. A list header, so
         // it stays put while the results under it repaint and scrolls with them.
         ListHeaderComponent={dronaOffer ? (
-          <View>
-            <Pressable
-              onPress={() => logWithDrona('row')}
-              style={({ pressed }) => [s.aiRow, pressed && { backgroundColor: C.surfaceHover }]}
-              android_ripple={{ color: C.surfaceHover }}
-              accessibilityRole="button"
-              accessibilityLabel={`Log ${dronaOffer} with Drona. ${PARSE_SPEED_COPY[runningSpeed].title} mode.`}
+          // A card, not a list row: it is the one place on this screen that
+          // hands the whole sentence to Drona, so it reads as his and sits
+          // apart from the catalog rows under it.
+          <Pressable
+            onPress={() => logWithDrona('row')}
+            style={({ pressed }) => [
+              s.aiCard,
+              { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle },
+              pressed && { opacity: 0.8 },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={`Log ${dronaOffer} with Drona. ${PARSE_SPEED_COPY[runningSpeed].title} mode.`}
+          >
+            <View style={s.aiBody}>
+              <Text style={s.aiEyebrow}>Log with Drona</Text>
+              <Text style={s.aiTitle} numberOfLines={2}>“{dronaOffer}”</Text>
+              {/* Quick / Precise, right under the words they apply to. A
+                  quiet track with the picked side lifted. */}
+              <View style={[s.modeTrack, { borderColor: C.border }]} accessibilityRole="radiogroup">
+                {SPEEDS.map((m) => {
+                  const locked = m.key === 'precise' && !canUsePrecise;
+                  const on = m.key === runningSpeed;
+                  const copy = PARSE_SPEED_COPY[m.key];
+                  return (
+                    <Pressable
+                      key={m.key}
+                      onPress={() => pickSpeed(m.key)}
+                      hitSlop={{ top: 8, bottom: 8 }}
+                      style={[s.modeSeg, on && { backgroundColor: C.muted }]}
+                      accessibilityRole={locked ? 'button' : 'radio'}
+                      accessibilityState={locked ? undefined : { selected: on }}
+                      accessibilityLabel={locked ? `${copy.title}. ${copy.sub} Overload Pro.` : `${copy.title}. ${copy.sub}`}
+                      accessibilityHint={locked ? 'Opens the upgrade screen' : undefined}
+                    >
+                      <Feather
+                        name={locked ? 'lock' : m.icon}
+                        size={11}
+                        color={on ? C.accentText : C.textMuted}
+                      />
+                      <Text style={[s.modeTxt, { color: on ? C.foreground : C.textMuted }]}>{copy.title}</Text>
+                      {locked && <Text style={[s.modePro, { color: C.accentText }]}>PRO</Text>}
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Text style={s.aiSub} numberOfLines={1}>
+                {autoLog ? 'Goes straight into your diary.' : PARSE_SPEED_COPY[runningSpeed].sub}
+              </Text>
+            </View>
+            {/* The send is Drona's orb, turning slowly: the same mark that
+                works on the meal once it is sent, in lime on the dark card (on a
+                lime fill its far dots wash out). The card says what a tap
+                does, so the orb is hidden from screen readers. */}
+            <View
+              style={[s.aiSend, { borderColor: C.primaryBorder, backgroundColor: C.background }]}
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
             >
-              <View style={[s.aiIcon, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}>
-                <DronaMark size={15} color={C.accentText} state="static" />
-              </View>
-              <View style={{ flex: 1, paddingRight: Spacing.md }}>
-                <Text style={s.aiTitle} numberOfLines={2}>Log “{dronaOffer}” with Drona</Text>
-                <Text style={s.aiSub} numberOfLines={1}>
-                  {PARSE_SPEED_COPY[runningSpeed].title}
-                  <Text style={s.rowDot}>  ·  </Text>
-                  {autoLog ? 'Goes straight into your diary.' : PARSE_SPEED_COPY[runningSpeed].sub}
-                </Text>
-              </View>
-              <View style={s.aiSend}>
-                <Feather name={autoLog ? 'check' : 'arrow-up'} size={16} color={Colors.primaryFg} />
-              </View>
-            </Pressable>
-            <View style={[s.aiSep, { backgroundColor: C.borderSubtle }]} />
-          </View>
+              <OrbLoader size={48} color={C.accentText} state="working" />
+            </View>
+          </Pressable>
         ) : null}
         ListEmptyComponent={
           searching ? (
@@ -590,12 +654,20 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
 
     // Same rhythm as a food row (34pt tile, title, meta line, 34pt control) so
     // it reads as the first choice in the list. Lime only on the send circle.
-    aiRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingHorizontal: Spacing.xl, paddingVertical: 14 },
-    aiIcon: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-    aiTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: C.foreground, lineHeight: 19 },
-    aiSub: { fontSize: FontSize.sm, color: C.textMuted, marginTop: 3 },
-    aiSend: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.primary },
-    aiSep: { height: 1, marginLeft: Spacing.xl },
+    aiCard: {
+      flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
+      marginHorizontal: Spacing.xl, marginTop: Spacing.md, marginBottom: Spacing.sm,
+      padding: Spacing.lg, borderWidth: 1, borderRadius: Radius.xl,
+    },
+    aiBody: { flex: 1 },
+    aiEyebrow: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase', color: C.accentText },
+    aiTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold, letterSpacing: LetterSpacing.snug, color: C.foreground, marginTop: 4, lineHeight: 22 },
+    aiSub: { fontSize: FontSize.sm, color: C.textMuted, marginTop: 8 },
+    modeTrack: { flexDirection: 'row', alignSelf: 'flex-start', marginTop: 10, padding: 2, borderWidth: 1, borderRadius: Radius.full },
+    modeSeg: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, height: 26, borderRadius: Radius.full },
+    modeTxt: { fontSize: 12, fontWeight: FontWeight.semibold },
+    modePro: { fontSize: 9, fontWeight: FontWeight.bold, letterSpacing: LetterSpacing.eyebrow },
+    aiSend: { width: 56, height: 56, borderRadius: 28, borderWidth: 1, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
 
     toast: { position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: Colors.primary, paddingHorizontal: Spacing.lg, paddingVertical: 10, borderRadius: Radius.full, ...Shadow.elevated },
     toastTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primaryFg },

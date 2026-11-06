@@ -17,6 +17,7 @@
 //
 // Deps are injected so the loop is testable without the network.
 
+import { summarize } from "./foodBarTrace.ts";
 import { type CardLine, cardLines, cardMayBeCut, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { sonnetSettings } from "../_shared/sonnet.ts";
 import {
@@ -86,7 +87,7 @@ export interface FoodAgentInput {
 export function openingText(input: Pick<FoodAgentInput, "text" | "answering" | "card" | "savedHint">, days: string | null): string {
   const parts: string[] = [];
   if (days) parts.push(`(${days})`);
-  if (input.card?.length) parts.push(`(card on screen:\n${cardLines(input.card).join("\n")})`);
+  if (input.card?.length) parts.push(`(card on screen:\n${cardLines(input.card, { macros: true }).join("\n")})`);
   if (input.savedHint) {
     const name = JSON.stringify(input.savedHint.name);
     parts.push(
@@ -111,6 +112,9 @@ export interface AgentTurn {
   tools: { name: string; input: unknown }[];
   input_tokens: number | null;
   output_tokens: number | null;
+  /** What each read returned, cut short, in the order of `tools`. Absent on
+   *  the finishing turn: what a finish did is the agent's outcome. */
+  results?: { name: string; summary: string | null }[];
 }
 
 export type FoodAgentOutcome =
@@ -217,7 +221,8 @@ const SAVE_CARD_AS_MEAL_TOOL: AnthropicTool = {
   name: "save_card_as_meal",
   description:
     "FINISH: offer to save the meal card on screen as a reusable saved meal, with every line copied exactly. " +
-    "Use it when the user asks to keep, save, or make a meal of what is on the card. The user taps the card to save.",
+    "Use it when the user asks to keep, save, or make a meal of what is on the card. The user taps the card to save. " +
+    "It saves the WHOLE card: when they name one dish on it, save that line with create_custom_food instead.",
   input_schema: {
     type: "object",
     properties: {
@@ -266,7 +271,10 @@ export const CARD_NOTE =
   "save_card_as_meal; a question or complaint about a line, with nothing to change, is reply, and the reply must speak to " +
   "what they asked using the card's numbers (how a figure was reached, why a line is there), never a canned breakdown. " +
   "When the user says a dish already contains something listed as a separate line, that is remove_card_lines for the " +
-  "separate line, and edit_card only if the dish's own line must change too.";
+  "separate line, and edit_card only if the dish's own line must change too. " +
+  "The card has its own Add button, and that tap is what puts it in the diary. When the user wants the card logged or " +
+  "back, it is right there: reply, saying it is on screen and Add puts it in. save_card_as_meal is only for an explicit " +
+  "ask to keep the card as a reusable meal.";
 
 export const FOOD_AGENT_TOOLS: AnthropicTool[] = [
   LIST_LOGGED_MEALS_TOOL,
@@ -298,7 +306,9 @@ export const FOOD_AGENT_SYSTEM =
   "A card's summary is an offer the user has not tapped: never say saved or logged. No em dashes anywhere.\n" +
   "Act only through the tools. Every turn calls at least one; to talk to the user, use reply. Plain text with no tool " +
   "call ends the work without an answer.\n" +
-  "Never repeat your previous reply word for word. If the user says you did not answer, answer the specific thing they asked.";
+  "Never repeat your previous reply word for word. If the user says you did not answer, answer the specific thing they asked.\n" +
+  "When the user says they already saved or logged something, that is done: never offer that same save or log again. " +
+  "Do what they ask for next.";
 
 export const LAST_TURN_NOTE =
   "This is your LAST turn. You must finish now with create_custom_meal, create_custom_food, log_food, reply, or (with a " +
@@ -450,13 +460,16 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
 
     const blocks = (res.data?.content ?? []) as Record<string, unknown>[];
     const uses = blocks.filter((b) => b?.type === "tool_use") as unknown as ToolUse[];
-    turns.push({
+    // One model call, one turn: index.ts stamps turn i at call i's end
+    // (startFoodAgent callEnds). A failed call returns above, before a turn.
+    const thisTurn: AgentTurn = {
       turn,
       ms: Date.now() - t0,
       tools: uses.map((u) => ({ name: u.name, input: u.input })),
       input_tokens: res.data?.usage?.input_tokens ?? null,
       output_tokens: res.data?.usage?.output_tokens ?? null,
-    });
+    };
+    turns.push(thisTurn);
     if (uses.length === 0) return { kind: "failed", reason: "no_tool_call", turns };
 
     // A finish ends the agent even when reads came with it: the model has
@@ -475,11 +488,14 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
       const label = statusFor(u.name, u.input ?? {});
       if (label) deps.onStatus?.(label);
     }
-    const results = await Promise.all(uses.map(async (u) => {
+    const outs: unknown[] = [];
+    const results = await Promise.all(uses.map(async (u, i) => {
       const out = await runRead(u, deps, parse);
+      outs[i] = out;
       remember(seen, out);
       return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) };
     }));
+    thisTurn.results = uses.map((u, i) => ({ name: u.name, summary: summarize(outs[i]) }));
     messages.push({ role: "assistant", content: blocks }, { role: "user", content: results });
   }
   // Unreachable: the last turn always returns. Kept so a future edit to the
@@ -684,7 +700,23 @@ async function finishWith(
     return { kind: "create", create: { tool: CREATE_CUSTOM_MEAL_TOOL.name, input: createInput }, turns };
   }
   if (u.name === CREATE_CUSTOM_MEAL_TOOL.name || u.name === CREATE_CUSTOM_FOOD_TOOL.name) {
-    return { kind: "create", create: { tool: u.name, input: checkedCreateInput(args, seen) }, turns };
+    // A save drafted from card lines takes those lines' macros, not only their
+    // calories: live 2026-11-05 the agent saved "this paneer sabji" from the
+    // card as 150 kcal and 0 g of everything else. The card lines are what the
+    // user is looking at, so they count as read for the estimate check too.
+    if (card.length) {
+      remember(seen, card.map((l) => ({ food_name: l.food_name, kcal: l.kcal })));
+      // A save line fillFromCard matches to a card line ("Paneer sabji" to
+      // "Paneer sabji (60 g paneer, oil)") is read under its own name too, so
+      // the estimate check below agrees with the copy.
+      for (const raw of Array.isArray(args.items) ? args.items : []) {
+        const o = (raw ?? {}) as Record<string, unknown>;
+        const nm = o.name ?? o.food_name;
+        const line = cardLineFor(nm, o.kcal, card);
+        if (line && typeof nm === "string") remember(seen, [{ food_name: nm, kcal: line.kcal }]);
+      }
+    }
+    return { kind: "create", create: { tool: u.name, input: checkedCreateInput(fillFromCard(u.name, args, card), seen) }, turns };
   }
   // log_food
   const meal: MealType = isMeal(args.meal_type) ? args.meal_type : input.defaultMeal;
@@ -718,6 +750,76 @@ async function finishWith(
     },
     turns,
   };
+}
+
+/** A name for matching a save line to a card line: lowercase, words only,
+ *  bracketed text dropped ("Paneer sabji (60 g paneer, oil)" is paneer sabji). */
+function lineKey(name: string): string {
+  const words = (x: string) => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return words(name.replace(/\([^)]*\)/g, " ")) || words(name);
+}
+
+/** The card line a save line is a copy of: the same calories (to the kcal)
+ *  and the same food by name, one name the start of the other. Null when no
+ *  line fits, or when two do. Loose on purpose ("Rice" fits "Rice (cooked)"):
+ *  the kcal match and the one-hit rule are what keep it on the right line,
+ *  and a miss only leaves the model's own figures. */
+export function cardLineFor(name: unknown, kcal: unknown, card: CardLine[]): CardLine | null {
+  const k = num(kcal);
+  if (typeof name !== "string" || k === null) return null;
+  const key = lineKey(name);
+  if (key.length < 3) return null;
+  const hits = card.filter((l) => {
+    if (Math.abs(Math.round(l.kcal) - Math.round(k)) > 1) return false;
+    const lk = lineKey(l.food_name);
+    return lk === key || lk.startsWith(`${key} `) || key.startsWith(`${lk} `);
+  });
+  return hits.length === 1 ? hits[0] : null;
+}
+
+const MACROS = ["protein_g", "carb_g", "fat_g"] as const;
+
+/**
+ * Copy the card's macros onto a save drafted from card lines. The model reads
+ * the card as names and calories, and the create tools leave macros optional,
+ * so a save from the card could carry the calories alone. Code copies them
+ * instead, the same way it copies them for save_card_as_meal. A line the card
+ * itself only estimated stays marked as estimated.
+ */
+export function fillFromCard(tool: string, input: Record<string, unknown>, card: CardLine[]): Record<string, unknown> {
+  if (!card.length) return input;
+  const guessed = (l: CardLine) => l.source === "estimate" || l.source === "web";
+  if (tool === CREATE_CUSTOM_FOOD_TOOL.name) {
+    const line = cardLineFor(input.name, input.kcal, card);
+    if (!line) return input;
+    const out: Record<string, unknown> = { ...input };
+    // Only the macros the card line HAS. A line with none for a field leaves
+    // the model's own figure (and its estimate mark) alone, never a 0 g.
+    const copied = MACROS.filter((m) => typeof line[m] === "number");
+    for (const m of copied) out[m] = line[m];
+    // The line matched on kcal too, so kcal is the card's figure, not a guess:
+    // the same rule the meal branch applies to a whole line.
+    const est = Array.isArray(input.estimated) ? input.estimated.filter((f) => f !== "kcal" && !(copied as readonly unknown[]).includes(f)) : [];
+    out.estimated = guessed(line) ? [...new Set([...est, "kcal", ...copied])] : est;
+    return out;
+  }
+  if (!Array.isArray(input.items)) return input;
+  const items = input.items.map((raw) => {
+    if (!raw || typeof raw !== "object") return raw;
+    const o = { ...(raw as Record<string, unknown>) };
+    const line = cardLineFor(o.name ?? o.food_name, o.kcal, card);
+    if (!line) return o;
+    const copied = MACROS.filter((m) => typeof line[m] === "number");
+    for (const m of copied) o[m] = line[m];
+    // The card line decides, the same rule as the food branch: a copy of a
+    // catalog line is not the model's guess. A meal line has ONE `estimated`
+    // flag (a food has a list of fields), so it is dropped only when the card
+    // gave every macro; a figure still from the model keeps the line marked.
+    if (guessed(line)) o.estimated = true;
+    else if (copied.length === MACROS.length) delete o.estimated;
+    return o;
+  });
+  return { ...input, items };
 }
 
 /** A card line back as a parsed item, exactly as it was: numbers, section,

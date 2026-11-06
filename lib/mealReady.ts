@@ -50,6 +50,19 @@ export function arrivalAction(w: Watching): Arrival {
 /** What the landed parse turned out to be. */
 export type ReadyKind = 'review' | 'logged' | 'reply' | 'error';
 
+/** Where a landed parse is shown, and when. `meal_ready_shown` fires at that
+ *  moment, not when the parse lands: a toast held for the app's return is
+ *  not seen until the app is back, and never if a newer one replaces it.
+ *   - result: the full-screen result opens now;
+ *   - box: a reply, failure or logged meal shows above the food box now;
+ *   - toast: the toast, now or on the return. */
+export interface ShowPlan { via: 'result' | 'box' | 'toast'; when: 'now' | 'on_return' }
+
+export function showPlan(kind: ReadyKind, how: Arrival): ShowPlan {
+  if (how === 'show') return { via: kind === 'review' ? 'result' : 'box', when: 'now' };
+  return { via: 'toast', when: how === 'tell_later' ? 'on_return' : 'now' };
+}
+
 const MEAL_WORD: Record<ReadyMealType, string> = {
   breakfast: 'breakfast', lunch: 'lunch', dinner: 'dinner', snack: 'snack',
 };
@@ -94,6 +107,20 @@ export interface ReadyShape {
   mealType: string;
 }
 
+const num = (n: unknown) => typeof n === 'number' && Number.isFinite(n);
+
+/** A line the result screen can draw: it adds up and rounds these numbers
+ *  on every render, so one bad line would crash it on every launch, the
+ *  restore being the first thing the screen does. */
+function isReadyItem(x: unknown): boolean {
+  if (!x || typeof x !== 'object') return false;
+  const it = x as Record<string, unknown>;
+  return typeof it.food_name === 'string' && typeof it.serving_label === 'string'
+    && num(it.quantity) && num(it.grams) && num(it.kcal)
+    && num(it.protein_g) && num(it.carb_g) && num(it.fat_g)
+    && (it.fiber_g == null || num(it.fiber_g));
+}
+
 function isReadyShape(x: unknown): x is ReadyShape {
   if (!x || typeof x !== 'object') return false;
   const f = x as Record<string, unknown>;
@@ -101,7 +128,8 @@ function isReadyShape(x: unknown): x is ReadyShape {
   return f.status === 'review'
     && typeof f.raw === 'string'
     && typeof f.mealType === 'string' && f.mealType in MEAL_WORD
-    && !!meal && Array.isArray(meal.items) && meal.items.length > 0;
+    && !!meal && Array.isArray(meal.items) && meal.items.length > 0
+    && meal.items.every(isReadyItem);
 }
 
 /** The waiting result, ready for storage. */
@@ -110,15 +138,30 @@ export function packReady<T extends ReadyShape>(flow: T, now: number = Date.now(
   return JSON.stringify(p);
 }
 
+/** The waiting result as Add starts writing it. Stored before the write, so
+ *  an app killed after the write lands, but before the store is cleared,
+ *  does not bring the meal back as if it had never been added. */
+export function packAdding<T extends ReadyShape>(flow: T, now: number = Date.now()): string {
+  return packReady({ ...flow, adding: true }, now);
+}
+
+/** The note on a meal that was being added when the app closed. Its lines
+ *  may be in the diary already, so Add is no longer a safe tap by itself. */
+export const MAYBE_ADDED_NOTICE =
+  'The app closed while this was going in, so it may already be in your diary. Check your meals before you add it again.';
+
 /** A stored result to show again, or null when there is none, it is too old,
- *  or it is not a shape this build can draw. Never throws. */
+ *  or it is not a shape this build can draw. Never throws. A meal stored
+ *  mid-Add comes back with MAYBE_ADDED_NOTICE in place of any other note. */
 export function unpackReady<T extends ReadyShape>(raw: string | null | undefined, now: number = Date.now()): T | null {
   if (!raw) return null;
   try {
     const p = JSON.parse(raw) as Packed<unknown>;
     if (!p || p.v !== VERSION || typeof p.at !== 'number') return null;
     if (now - p.at > READY_MAX_AGE_MS || p.at > now + 60_000) return null;
-    return isReadyShape(p.flow) ? (p.flow as T) : null;
+    if (!isReadyShape(p.flow)) return null;
+    const { adding, ...flow } = p.flow as ReadyShape & { adding?: unknown };
+    return (adding === true ? { ...flow, notice: MAYBE_ADDED_NOTICE, proposal: null } : flow) as unknown as T;
   } catch {
     return null;
   }
@@ -174,13 +217,16 @@ export function readyStoreStep(
 
 /** One - or + on a line's amount. A bare measurement ("150 g") moves in
  *  steps that suit its size; a named serving ("2 x 1 roti") moves by a half.
- *  Never below one step: zero of a food is a Remove, not an amount. */
+ *  Never below one step: zero of a food is a Remove, not an amount. An
+ *  amount already at or under one step stays put on -, since rising to the
+ *  step (3 g to 5 g) is a + the user never asked for. */
 export function stepAmount(quantity: number, isMeasurement: boolean, dir: 1 | -1): number {
   const q = quantity > 0 ? quantity : 1;
   const step = isMeasurement ? (q >= 500 ? 50 : q >= 100 ? 10 : 5) : 0.5;
   // Snap to the step grid first, so 1.3 servings goes to 1.5 or 1, not 1.8.
   const snapped = dir > 0 ? Math.floor(q / step + 1e-9) * step + step : Math.ceil(q / step - 1e-9) * step - step;
-  return Math.max(step, Math.round(snapped * 1000) / 1000);
+  const next = Math.max(step, Math.round(snapped * 1000) / 1000);
+  return dir < 0 && next >= q ? q : next;
 }
 
 /** The numbers a line carries that scale with how much was eaten. */

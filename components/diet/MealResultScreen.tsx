@@ -43,6 +43,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import { Colors, Spacing, Radius, FontWeight, LetterSpacing } from '@/constants/theme';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 import { PulsingStatus } from '@/components/coach/OrbStage';
 import { sectionsOfItems, type ParsedMeal, type ParsedMealItem } from '@/lib/dietData';
@@ -60,9 +61,8 @@ const MEAL_OPTIONS: { value: MealType; label: string }[] = [
 ];
 const mealLabel = (m: MealType) => MEAL_OPTIONS.find((o) => o.value === m)?.label ?? 'Snack';
 
-const TIER: Record<ParseSpeed, { icon: 'zap' | 'target' | 'award'; label: string }> = {
+const TIER: Record<ParseSpeed, { icon: 'zap' | 'award'; label: string }> = {
   quick: { icon: 'zap', label: 'Quick' },
-  thorough: { icon: 'target', label: 'Thorough' },
   precise: { icon: 'award', label: 'Precise' },
 };
 
@@ -121,6 +121,9 @@ export function MealResultScreen(props: Props) {
   } = props;
   const { C } = useTheme();
   const s = makeStyles(C);
+  // A meal stored as waiting before Thorough was retired can still carry
+  // 'thorough': no chip for it, rather than a lookup that finds nothing.
+  const tierFace = tier ? TIER[tier] : undefined;
   const insets = useSafeAreaInsets();
   const { kbHeight } = useKeyboardAwareScroll();
   const [fix, setFix] = useState('');
@@ -147,10 +150,13 @@ export function MealResultScreen(props: Props) {
   const sum = items.reduce(
     (a, it) => ({
       kcal: a.kcal + it.kcal, p: a.p + it.protein_g, c: a.c + it.carb_g, f: a.f + it.fat_g,
-      fib: it.fiber_g == null ? a.fib : (a.fib ?? 0) + it.fiber_g,
+      fib: a.fib + (it.fiber_g ?? 0),
     }),
-    { kcal: 0, p: 0, c: 0, f: 0, fib: null as number | null },
+    { kcal: 0, p: 0, c: 0, f: 0, fib: 0 },
   );
+  // Fiber is said only when every line knows its own. A line with no fiber
+  // number left out of the sum made "15g oats + 3g dates" read "0g fiber".
+  const fiberKnown = items.every((it) => it.fiber_g != null);
   const sections = sectionsOfItems(items, mealType);
   const multi = sections.length > 1;
   const destination = multi ? `${sections.length} meals` : mealLabel(mealType);
@@ -222,10 +228,10 @@ export function MealResultScreen(props: Props) {
               disabled={frozen}
               style={({ pressed }) => [s.amountTxtBox, !stepper && s.amountPlain, pressed && s.pressed]}
               accessibilityRole="button"
-              accessibilityLabel={`Amount ${formatServing(it.quantity, it.serving_label)}`}
+              accessibilityLabel={`Amount ${formatServing(it.quantity, it.serving_label, it.grams)}`}
               accessibilityHint="Opens the editor to change the amount or the unit"
             >
-              <Text style={s.amountTxt} numberOfLines={1}>{formatServing(it.quantity, it.serving_label)}</Text>
+              <Text style={s.amountTxt} numberOfLines={1}>{formatServing(it.quantity, it.serving_label, it.grams)}</Text>
             </Pressable>
             {stepper && (
               <Pressable
@@ -393,10 +399,10 @@ export function MealResultScreen(props: Props) {
               <Text style={s.words} numberOfLines={2}>{words}</Text>
               {!!onEditWords && !busy && <Feather name="corner-down-left" size={12} color={C.textMuted} />}
             </Pressable>
-            {tier && (
-              <View style={s.tier} accessibilityLabel={`Read with ${TIER[tier].label}`}>
-                <Feather name={TIER[tier].icon} size={11} color={tier === 'quick' ? C.textMuted : C.accentText} />
-                <Text style={[s.tierTxt, tier !== 'quick' && { color: C.accentText }]}>{TIER[tier].label}</Text>
+            {tierFace && (
+              <View style={s.tier} accessibilityLabel={`Read with ${tierFace.label}`}>
+                <Feather name={tierFace.icon} size={11} color={tier === 'quick' ? C.textMuted : C.accentText} />
+                <Text style={[s.tierTxt, tier !== 'quick' && { color: C.accentText }]}>{tierFace.label}</Text>
               </View>
             )}
           </View>
@@ -422,8 +428,8 @@ export function MealResultScreen(props: Props) {
                 </View>
               ))}
             </View>
-            {sum.fib != null && sum.fib > 0 && (
-              <Text style={s.fiber}>{r0(sum.fib)}g fiber</Text>
+            {fiberKnown && sum.fib >= 0.05 && (
+              <Text style={s.fiber}>{formatMacroGrams(sum.fib)}g fiber</Text>
             )}
           </View>
 
@@ -535,7 +541,7 @@ export function MealResultScreen(props: Props) {
           {/* Voice comes later: the mic will sit left of the send circle, so
               the field keeps that room now. */}
           <View style={s.fixBox}>
-            <TextInput
+            <SheetTextInput
               style={s.fixInput}
               value={fix}
               onChangeText={setFix}

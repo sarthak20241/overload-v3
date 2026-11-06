@@ -6,12 +6,15 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   type AmountLine,
   arrivalAction,
+  MAYBE_ADDED_NOTICE,
+  packAdding,
   packReady,
   READY_MAX_AGE_MS,
   readyAction,
   readyLine,
   readyStoreStep,
   settleRestoredKey,
+  showPlan,
   addLabel,
   scaleLine,
   stepAmount,
@@ -41,6 +44,15 @@ Deno.test("with the app in the background the toast waits for the return", () =>
   assertEquals(arrivalAction({ ...watching, appActive: false, screenFocused: false }), "tell_later");
 });
 
+Deno.test("a meal is counted as shown when it is seen, not when it lands", () => {
+  assertEquals(showPlan("review", "show"), { via: "result", when: "now" });
+  assertEquals(showPlan("error", "show"), { via: "box", when: "now" });
+  assertEquals(showPlan("review", "tell"), { via: "toast", when: "now" });
+  // In the background the toast, and the count, wait for the return.
+  assertEquals(showPlan("review", "tell_later"), { via: "toast", when: "on_return" });
+  assertEquals(showPlan("logged", "tell_later"), { via: "toast", when: "on_return" });
+});
+
 Deno.test("the toast names the meal, or says meals for a whole day", () => {
   assertEquals(readyLine("review", ["lunch"]), "Your lunch is ready to check.");
   assertEquals(readyLine("review", ["snack", "snack"]), "Your snack is ready to check.");
@@ -60,7 +72,14 @@ Deno.test("no toast line uses an em dash", () => {
 const review = {
   status: "review" as const,
   raw: "2 eggs and toast",
-  meal: { items: [{ food_name: "egg" }], meal_type: "breakfast", drona_line: "Solid start." },
+  meal: {
+    items: [{
+      food_name: "egg", quantity: 2, serving_label: "1 large", grams: 100, kcal: 143,
+      protein_g: 12.6, carb_g: 0.7, fat_g: 9.5, fiber_g: null,
+    }],
+    meal_type: "breakfast",
+    drona_line: "Solid start.",
+  },
   mealType: "breakfast",
   dayIso: "2026-10-31",
 };
@@ -83,6 +102,46 @@ Deno.test("anything that is not a whole result is dropped, never thrown", () => 
   assertEquals(unpackReady(packReady({ ...review, meal: { items: [] } }, T), T), null);
   assertEquals(unpackReady(packReady({ ...review, mealType: "brunch" }, T), T), null);
   assertEquals(unpackReady(JSON.stringify({ v: 99, at: T, flow: review }), T), null);
+});
+
+Deno.test("a stored meal with a line the screen cannot draw is dropped", () => {
+  // The restore runs on mount: one bad line would crash every launch.
+  const T = 1_000_000_000;
+  const egg = review.meal.items[0];
+  const bad = (item: Record<string, unknown>) =>
+    unpackReady(packReady({ ...review, meal: { ...review.meal, items: [egg, item] } }, T), T);
+  const { kcal: _k, ...noKcal } = egg;
+  assertEquals(bad(noKcal), null);
+  assertEquals(bad({ ...egg, protein_g: "12" }), null);
+  assertEquals(bad({ ...egg, grams: null }), null);
+  assertEquals(bad({ ...egg, fiber_g: "1" }), null);
+  assertEquals(bad(null as unknown as Record<string, unknown>), null);
+  assertEquals(bad({ ...egg, serving_label: undefined }), null);
+  assertEquals(bad({ ...egg, fiber_g: 1.2 })?.meal.items.length, 2);
+});
+
+Deno.test("a meal killed mid-Add comes back flagged, never as a fresh Add", () => {
+  const T = 1_000_000_000;
+  const back = unpackReady<typeof review & { notice?: string | null }>(
+    packAdding({ ...review, notice: "Solid start." }, T), T + 60_000,
+  );
+  assertEquals(back?.notice, MAYBE_ADDED_NOTICE);
+  assertEquals("adding" in (back ?? {}), false);
+  assertEquals(back?.meal, review.meal);
+  // A plain waiting meal keeps its own note.
+  assertEquals(unpackReady<typeof review & { notice?: string | null }>(packReady(review, T), T)?.notice, undefined);
+  assertEquals(MAYBE_ADDED_NOTICE.includes("—"), false);
+});
+
+Deno.test("- never raises a small amount", () => {
+  assertEquals(stepAmount(3, true, -1), 3);
+  assertEquals(stepAmount(0.25, false, -1), 0.25);
+  assertEquals(stepAmount(0.4, false, -1), 0.4);
+  assertEquals(stepAmount(7, true, -1), 5);
+  assertEquals(stepAmount(0.75, false, -1), 0.5);
+  // + still moves them up to the grid.
+  assertEquals(stepAmount(3, true, 1), 5);
+  assertEquals(stepAmount(0.25, false, 1), 0.5);
 });
 
 Deno.test("a named serving steps by a half and never reaches zero", () => {

@@ -23,13 +23,19 @@ export interface StartStep {
 export const START_STEPS: readonly StartStep[] = [
   { id: 'workout', title: "Start today's workout", tip: 'Your phase 1 session is on the Today card. Tap it and go.' },
   { id: 'ai_food', title: 'Log a meal with Drona', tip: 'Type what you ate in the food box, like "2 eggs and toast". I do the rest.' },
-  { id: 'modes', title: 'Pick how I log food', tip: 'Tap the mode chip in the food box. Quick, Thorough or Precise.' },
+  { id: 'modes', title: 'Pick how I log food', tip: 'Tap the mode chip in the food box. Quick or Precise.' },
   { id: 'phases', title: 'See your phases', tip: 'Every phase of your program, in order, ending at your goal.' },
   { id: 'weight', title: 'Log your weight', tip: 'One weigh-in a few times a week keeps your plan honest.' },
 ];
 
 /** The card shows for this long after sign-up, then gets out of the way. */
 export const START_GUIDE_DAYS = 21;
+
+/**
+ * Off until the owner has reworked the checklist (2026-11-02). The rules and
+ * the card stay as they are; flipping this back to true shows it again.
+ */
+export const START_GUIDE_ENABLED = false;
 
 export interface StartGuideFacts {
   /** False until the reads below have settled. */
