@@ -583,3 +583,15 @@ Deno.test("policy: earlier cards never cost a meal: food in the message still lo
 Deno.test("policy: earlier cards do not lower the agent's bar", () => {
   assertEquals(decideFoodAction({ ...on, cardOpen: false, earlierCards: true, parseFoundFood: false, decision: dec("other", 0.3) }), "reply");
 });
+
+Deno.test("agentCouldUseThread: no card, or a whole card with a verdict the agent takes; never a cut card", async () => {
+  const { agentCouldUseThread } = await import("./foodBar.ts");
+  // No card: an edit or other at the card floor goes to the agent with the thread.
+  assertEquals(agentCouldUseThread(dec("other", 0.5) as never, true, 0), true);
+  // A whole card: copy_lines needs the thread beside it.
+  assertEquals(agentCouldUseThread(dec("other", 0.5) as never, true, 2, true), true);
+  // A card on screen with no cardOpen (index.ts earlierCardsFor, or a cut card): no.
+  assertEquals(agentCouldUseThread(dec("other", 0.5) as never, true, 2), false);
+  // A plain log beside a card stays on the parse.
+  assertEquals(agentCouldUseThread(dec("log", 0.9) as never, true, 2, true), false);
+});

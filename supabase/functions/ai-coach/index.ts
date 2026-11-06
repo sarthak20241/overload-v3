@@ -370,12 +370,17 @@ function clientSupportsVariantSwap(body: Record<string, unknown>): boolean {
   return Array.isArray(body?.supports) && (body.supports as unknown[]).includes(CLIENT_CAP_VARIANT_SWAP);
 }
 
-function makeDiaryReader(userClient: SupabaseClient, extra: { todayLocal?: string | null; tzOffsetMin?: number | null }): DiaryReader {
+function makeDiaryReader(
+  userClient: SupabaseClient,
+  extra: { todayLocal?: string | null; tzOffsetMin?: number | null },
+  /** Each line's food_id, source and fiber too (copy_lines). */
+  full = false,
+): DiaryReader {
   let clockP: Promise<DayClock> | null = null;
   return async (input) => {
     clockP ??= coachDayClock(userClient, extra);
     try {
-      return await listLoggedMeals(input, await clockP, loggedMealsStore(userClient));
+      return await listLoggedMeals(input, await clockP, loggedMealsStore(userClient), full);
     } catch (e) {
       return { error: String(e) };
     }
@@ -988,7 +993,7 @@ function loggedMealsStore(userClient: SupabaseClient): LoggedMealsStore {
     async mealsBetween(startIso, endIso) {
       const { data, error } = await userClient
         .from("meals")
-        .select("meal_type, logged_at, meal_entries(food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, position)")
+        .select("meal_type, logged_at, meal_entries(food_id, source, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, position)")
         .gte("logged_at", startIso)
         .lte("logged_at", endIso)
         .order("logged_at", { ascending: true })
@@ -1929,6 +1934,9 @@ function makeTextCaller(): TextCaller {
     const u = res.data.usage ?? {};
     return {
       text: blocks.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n"),
+      // A reply with no text says why: hit the cap, and spent on which blocks.
+      stop_reason: res.data.stop_reason ?? undefined,
+      block_types: blocks.map((b) => b.type),
       usage: {
         input_tokens: u.input_tokens ?? 0,
         output_tokens: u.output_tokens ?? 0,
@@ -3377,7 +3385,12 @@ async function handleParseMealRequest(args: {
   let threadTimer: ReturnType<typeof setTimeout> | undefined;
   const threadP: Promise<FoodBarThread | null> = FOOD_THREADS === "on" && threadReq && threadStore
     ? Promise.race([
-      threadForAgent(threadStore, userId, threadReq).catch(() => null),
+      threadForAgent(threadStore, userId, threadReq).catch(() => null).then((th) => {
+        // The index line's size on every message that has one, so the cost of
+        // the hot context can be counted per user (PR body has the query).
+        if (th?.indexStats) fbTrace.step({ src: "router", tool: "food_threads_index", result: th.indexStats });
+        return th;
+      }),
       new Promise<null>((r) => {
         threadTimer = setTimeout(() => {
           console.log("[food_threads] thread read over 800 ms; served with no earlier cards");
@@ -3434,18 +3447,22 @@ async function handleParseMealRequest(args: {
   // The router's promise and the create flag are passed in: each request path
   // (stream, JSON) has its own, declared after this.
   // Off (or no thread sent): false at once, so "off changes nothing" holds.
+  // agentCouldUseThread with no cardOpen is false for any card on screen.
   const earlierCardsFor = async (intent: Promise<FoodIntentDecision | null>, canCreate: boolean) =>
-    FOOD_THREADS === "on" && !!threadReq &&
+    FOOD_THREADS === "on" && !!threadReq && card.length === 0 &&
     agentCouldUseThread(await intent.catch(() => null), canCreate, card.length) && !!(await threadP)?.index;
 
   // The diary, for "save yesterday's breakfast" and "what did I have for
   // lunch". The phone's own date anchors "today"; the offset only when the
   // client actually sent one (readAutoLogRequest defaults a missing one to 0,
   // which would be a guess dressed as a fact).
-  const readDiary = makeDiaryReader(userClient, {
+  const diaryClock = {
     todayLocal: localDate,
     tzOffsetMin: typeof body.tz_offset_min === "number" ? auto.tzOffsetMin : null,
-  });
+  };
+  const readDiary = makeDiaryReader(userClient, diaryClock);
+  // copy_lines' read: the same days, with each line's catalog id and source.
+  const readDiaryLines = makeDiaryReader(userClient, diaryClock, true);
 
   /** After a parse in auto mode: write the diary, or say why not. Never
    *  throws. Returns the fields the response carries (`logged` when the write
@@ -3664,7 +3681,7 @@ async function handleParseMealRequest(args: {
         let settledIntent: FoodIntentDecision | null = null;
         void intentP.then((d) => { settledIntent = d; });
         const agentP = startFoodAgent({
-          intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary,
+          intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary, readDiaryLines,
           contextPromise, userId, recentTurns, pendingMeal: foodContext.pendingMeal,
           card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
           parseDeps: (fb) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
@@ -3939,7 +3956,7 @@ async function handleParseMealRequest(args: {
     const agentP = startFoodAgent({
       intentP, supportsCreate, text, mealHint, localHour, localDate,
       mode: wantsSuper ? "super" : wantsFast ? "fast" : null,
-      savedMealsP, readDiary, contextPromise, userId, recentTurns,
+      savedMealsP, readDiary, readDiaryLines, contextPromise, userId, recentTurns,
       pendingMeal: foodContext.pendingMeal,
       card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
       parseDeps: (fb) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
