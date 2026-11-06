@@ -8,7 +8,7 @@
 
 import { FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { FOOD_AGENT_SYSTEM, type FoodAgentDeps, historyMessages, LAST_TURN_NOTE, MAX_TURNS, recentDays, runFoodAgent, statusFor } from "./foodAgent.ts";
+import { FOOD_AGENT_SYSTEM, type FoodAgentDeps, historyMessages, LAST_TURN_NOTE, MAX_TURNS, openingText, recentDays, runFoodAgent, statusFor } from "./foodAgent.ts";
 import type { ParseMealResult } from "./parseMeal.ts";
 import { SONNET_MODEL } from "../_shared/sonnet.ts";
 
@@ -478,4 +478,21 @@ Deno.test("two card lines that both fit a save line: nothing is copied (no guess
   );
   if (out.kind !== "create") throw new Error(out.kind);
   assertEquals(out.create.input.protein_g, undefined);
+});
+
+Deno.test("a meal line matched to a card line under a shorter name is a copy, not a guess", async () => {
+  const card = [{ food_name: "Paneer sabji (60 g paneer, onion, oil)", quantity: 1, serving_label: "serving", grams: 120, kcal: 150, protein_g: 11, carb_g: 4, fat_g: 10, source: "catalog" as const }];
+  const out = await runFoodAgent(
+    { text: "save the sabji and a banana as my bowl", defaultMeal: "lunch", card },
+    deps(scripted([[{ name: "create_custom_meal", input: { name: "Bowl", items: [{ name: "Paneer sabji", kcal: 150, estimated: true }, { name: "Banana", kcal: 105 }], log_now: false, summary: "Bowl?" } }]])),
+  );
+  if (out.kind !== "create") throw new Error(out.kind);
+  const [sabji, banana] = out.create.input.items as Record<string, unknown>[];
+  assertEquals([sabji.protein_g, sabji.estimated], [11, undefined]);
+  assertEquals(banana.estimated, true);
+});
+
+Deno.test("the agent's card view shows ? for a macro the line has no figure for, never 0", () => {
+  const view = openingText({ text: "save it", card: [{ food_name: "Dosa", quantity: 1, serving_label: "dosa", grams: 0, kcal: 350, protein_g: 7 }] }, null);
+  assert(view.includes("P 7 C ? F ?"), view);
 });

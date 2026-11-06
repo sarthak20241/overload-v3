@@ -701,7 +701,18 @@ async function finishWith(
     // calories: live 2026-11-05 the agent saved "this paneer sabji" from the
     // card as 150 kcal and 0 g of everything else. The card lines are what the
     // user is looking at, so they count as read for the estimate check too.
-    if (card.length) remember(seen, card.map((l) => ({ food_name: l.food_name, kcal: l.kcal })));
+    if (card.length) {
+      remember(seen, card.map((l) => ({ food_name: l.food_name, kcal: l.kcal })));
+      // A save line fillFromCard matches to a card line ("Paneer sabji" to
+      // "Paneer sabji (60 g paneer, oil)") is read under its own name too, so
+      // the estimate check below agrees with the copy.
+      for (const raw of Array.isArray(args.items) ? args.items : []) {
+        const o = (raw ?? {}) as Record<string, unknown>;
+        const nm = o.name ?? o.food_name;
+        const line = cardLineFor(nm, o.kcal, card);
+        if (line && typeof nm === "string") remember(seen, [{ food_name: nm, kcal: line.kcal }]);
+      }
+    }
     return { kind: "create", create: { tool: u.name, input: checkedCreateInput(fillFromCard(u.name, args, card), seen) }, turns };
   }
   // log_food
@@ -792,7 +803,10 @@ export function fillFromCard(tool: string, input: Record<string, unknown>, card:
     const line = cardLineFor(o.name ?? o.food_name, o.kcal, card);
     if (!line) return o;
     for (const m of MACROS) if (typeof line[m] === "number") o[m] = line[m];
+    // The card line decides, the same rule as the food branch: a copy of a
+    // catalog line is not the model's guess, whatever the model marked.
     if (guessed(line)) o.estimated = true;
+    else delete o.estimated;
     return o;
   });
   return { ...input, items };

@@ -72,7 +72,9 @@ export interface FoodBarUsageRow {
 
 let configured: FoodBarEnv | null = null;
 
-/** Set once at load: index.ts with its constants, the eval with its own. */
+/** Set once at load: index.ts with its constants, the eval with its own.
+ *  index.ts calls it just before Deno.serve, after its constants are set, so
+ *  nothing here may run at import time: env() throws until this has run. */
 export function configureFoodBar(e: FoodBarEnv): void {
   configured = e;
 }
