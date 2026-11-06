@@ -47,7 +47,9 @@ export type FoodThreadAnswer = 'meal' | 'cleared' | 'unchanged';
  *  or it went idle. The app's state moves here, before the server answers, so
  *  a send that never arrives can leave the two counts apart. The server heals
  *  that on the next send: a base behind or ahead of its own is written on the
- *  app's card (recordThreadMessage), and foodThreads.test.ts pins both. `hasCard`: a meal card is on screen and goes with the send
+ *  app's card (recordThreadMessage), and foodThreads.test.ts pins both.
+ *
+ *  `hasCard`: a meal card is on screen and goes with the send
  *  as previous_items. A card the thread has no id for yet (a suggestion opened
  *  as a card, a card back from a restart) gets one now, at version 1, and the
  *  server stores the app's copy under it. */

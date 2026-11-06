@@ -3364,10 +3364,6 @@ async function handleParseMealRequest(args: {
     return p;
   };
 
-  // The diary, for "save yesterday's breakfast" and "what did I have for
-  // lunch". The phone's own date anchors "today"; the offset only when the
-  // client actually sent one (readAutoLogRequest defaults a missing one to 0,
-  // which would be a guess dressed as a fact).
   // The food box thread (FOOD_THREADS). The app names it; the server keeps the
   // durable copy. Read up front only when on: it starts at once, beside the
   // router. The agent start (foodBar.ts) and, with no card on screen, the
@@ -3442,6 +3438,10 @@ async function handleParseMealRequest(args: {
     FOOD_THREADS === "on" && !!threadReq &&
     agentCouldUseThread(await intent.catch(() => null), canCreate, card.length) && !!(await threadP)?.index;
 
+  // The diary, for "save yesterday's breakfast" and "what did I have for
+  // lunch". The phone's own date anchors "today"; the offset only when the
+  // client actually sent one (readAutoLogRequest defaults a missing one to 0,
+  // which would be a guess dressed as a fact).
   const readDiary = makeDiaryReader(userClient, {
     todayLocal: localDate,
     tzOffsetMin: typeof body.tz_offset_min === "number" ? auto.tzOffsetMin : null,

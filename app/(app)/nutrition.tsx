@@ -1306,8 +1306,8 @@ export default function NutritionScreen() {
     // A send still settling reached the server, which writes its thread
     // after it finishes. A cap or an error never reaches the thread write, so
     // it does not count as activity: the two idle clocks stay the same.
-    if (res.kind === 'sent') settleThread('unchanged');
     if (res.kind === 'sent') {
+      settleThread('unchanged');
       setFlow({ status: 'sent', raw: t, message: res.message, clientId: auto?.clientId ?? '' });
       if (sentTimerRef.current) clearTimeout(sentTimerRef.current);
       sentTimerRef.current = setTimeout(() => { void reconcile(); }, 6000);
