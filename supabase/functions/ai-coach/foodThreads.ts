@@ -413,7 +413,14 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
       const { error } = await admin.rpc("food_card_create", {
         p_card_id: cardId, p_thread_id: threadId, p_kind: kind, p_lines: lines, p_client_id: clientId, p_meal_type: mealType, p_version: version,
       });
-      if (error) throw new Error(`food_card_create: ${error.message}`);
+      if (!error) return;
+      // A retried send making the same card again: it is already in THIS
+      // thread, so the work is done. Any other clash is a real failure.
+      if (error.code === "23505") {
+        const { data } = await admin.from("food_cards").select("thread_id").eq("id", cardId).maybeSingle();
+        if (data?.thread_id === threadId) return;
+      }
+      throw new Error(`food_card_create: ${error.message}`);
     },
     async writeCard(cardId, base, lines, clientId, status, mealType) {
       const { data, error } = await admin.rpc("food_card_write", {
@@ -558,7 +565,7 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
       if (!w.written && !w.retry) log(`[food_threads] card ${base.id} not written (server at ${w.version})`);
       // A restore onto a card still named on screen (emptied there): the
       // restored lines are now this card, so the source is marked too.
-      if (w.written && args.restoredFrom && args.restoredFrom !== base.id) {
+      if ((w.written || w.retry) && args.restoredFrom && args.restoredFrom !== base.id) {
         await store.setCardStatus(t.id, args.restoredFrom, "replaced")
           .catch((e) => log(`[food_threads] restored card not marked: ${String(e).slice(0, 120)}`));
       }
@@ -640,7 +647,10 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
       t.last_at = stamp();
     },
     async createCard(threadId, cardId, kind, lines, clientId, mealType, version = 1) {
-      if (cards.has(cardId)) throw new Error("duplicate card id");
+      if (cards.has(cardId)) {
+        if (cards.get(cardId)!.thread_id === threadId) return; // a retry: already made
+        throw new Error("duplicate card id");
+      }
       const start = Math.max(version, 1) - 1;
       cards.set(cardId, { thread_id: threadId, kind, version: start, status: "open", meal_type: mealType, created_at: stamp(), last_client_id: null, max_line_no: 0, versions: new Map() });
       write(cardId, start, lines, clientId);

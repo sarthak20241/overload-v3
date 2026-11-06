@@ -322,3 +322,15 @@ Deno.test("clearing a card on an older base is written on top, so it reads as cl
   assertEquals(r, { ok: true, card_version: 3 });
   assertEquals(s.dump().cards.get(MEAL)!.status, "discarded");
 });
+
+Deno.test("a retried send that makes the same new card again is done, not an error", async () => {
+  const s = memoryThreadStore();
+  const send = {
+    userId: "u1", req: { id: T, card_id: null, base_version: null, next_card_id: MEAL, closed: null }, clientId: "m1",
+    userText: "rice", dronaText: null, card: [], served: { kind: "meal" as const, items: [item("Rice", 200)], corrects: false }, mealType: "lunch" as const,
+  };
+  assertEquals((await recordThreadMessage(s, send)).ok, true);
+  assertEquals(await recordThreadMessage(s, send), { ok: true, card_version: 1 });
+  assertEquals(s.dump().cards.size, 1);
+  assertEquals(s.dump().threads.get(T)!.turns.length, 1);
+});

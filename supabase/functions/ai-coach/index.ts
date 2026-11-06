@@ -3432,7 +3432,9 @@ async function handleParseMealRequest(args: {
   // waits on the thread read.
   // The router's promise and the create flag are passed in: each request path
   // (stream, JSON) has its own, declared after this.
+  // Off (or no thread sent): false at once, so "off changes nothing" holds.
   const earlierCardsFor = async (intent: Promise<FoodIntentDecision | null>, canCreate: boolean) =>
+    FOOD_THREADS === "on" && !!threadReq &&
     agentCouldUseThread(await intent.catch(() => null), canCreate, card.length) && !!(await threadP)?.index;
 
   const readDiary = makeDiaryReader(userClient, {
