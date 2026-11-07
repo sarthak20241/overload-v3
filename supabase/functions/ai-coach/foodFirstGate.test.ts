@@ -20,6 +20,7 @@ import {
 } from "./foodIntent.ts";
 import { configureFoodBar, runFirstMessage, sameParseText } from "./foodBar.ts";
 import { FIRST_NOTE, FOOD_AGENT_SYSTEM_FIRST, FOOD_AGENT_SYSTEM_LATER } from "./foodAgent.ts";
+import { JEV_MODEL } from "./jev.ts";
 import type { FoodIntentDecision } from "./foodIntent.ts";
 import type { ParsedItem, ParseMealResult } from "./parseMeal.ts";
 
@@ -59,6 +60,14 @@ Deno.test("firstMessageGoesToGate: only a first message, in Precise, with the sw
   assertFalse(firstMessageGoesToGate({ ...GATE, turns: 1 }));
   assertFalse(firstMessageGoesToGate({ ...GATE, cardLines: 3 }));
   assertFalse(firstMessageGoesToGate({ ...GATE, pending: true }));
+});
+
+Deno.test("PLAIN_LOG_FLOOR is owed to one Jev model: a new model needs the gate probe again", () => {
+  // Changing JEV_MODEL? Run scripts/food-box-eval/gate-probe.mts (and with
+  // HELD_OUT=1), check zero false plains, update PLAIN_LOG_FLOOR and its
+  // comment, then update this line.
+  assertEquals(JEV_MODEL, "jev-1.13.0");
+  assertEquals(PLAIN_LOG_FLOOR, 0.6);
 });
 
 Deno.test("isPlainFirstLog: plain only at or over the floor; no answer is not plain", () => {

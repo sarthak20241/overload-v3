@@ -982,7 +982,6 @@ export async function runLaterMessage(args: {
   return { outcome: out({ action: "reply", planned: "agent", decision, reply: AGENT_FAILED_REPLY, agent }), result: firstParse, firstParse };
 }
 
-
 // ── The first message (FOOD_FIRST_GATE) ─────────────────────────────────────
 
 /** The same words for a parse: case, spacing and closing punctuation aside.
