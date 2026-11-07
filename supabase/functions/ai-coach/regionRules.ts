@@ -168,7 +168,7 @@ export function regionBlock(prompt: RegionPrompt, region: FoodRegion | null): st
  *  examples in. The block is NOT added here: the caller puts it late. */
 export function regionalizePrompt(prompt: RegionPrompt, base: string, region: FoodRegion | null): string {
   let out = base;
-  for (const r of Object.values(REGION_RULES).flat()) if (r.prompt === prompt) out = out.replace(r.text, "");
+  for (const r of Object.values(REGION_RULES).flat()) if (r.prompt === prompt) out = out.split(r.text).join("");
   if (region === "india") return out;
   const key = region ?? "none";
   for (const s of REGION_SWAPS) {
