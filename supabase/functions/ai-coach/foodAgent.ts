@@ -17,6 +17,7 @@
 //
 // Deps are injected so the loop is testable without the network.
 
+import { type FoodOrigin, ORIGIN_RANK, originOf, parseRecipe } from "../_shared/foodOrigin.ts";
 import { summarize } from "./foodBarTrace.ts";
 import { CARD_MAX_LINES, type CardLine, cardLines, cardMayBeCut, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { sonnetSettings } from "../_shared/sonnet.ts";
@@ -33,6 +34,7 @@ import type { SavedMealForParse } from "./savedMeals.ts";
 import { lineAsItem, type ThreadLine } from "./foodThreads.ts";
 import { falseAgentClaim } from "./foodIntent.ts";
 import type { ThreadCardLines } from "./foodBar.ts";
+import { BUILD_RECIPE_TOOL, buildRecipe, RECIPE_NOTE, type RecipeAsk, readRecipeAsk, recipeQuestion } from "./recipe.ts";
 
 export const MAX_TURNS = 5;
 
@@ -62,6 +64,9 @@ export interface FoodAgentDeps {
   /** find_label: one product's printed label off the web (parseMeal.ts
    *  findLabel). Absent: the agent has no find_label tool. */
   findLabel?(product: { name: string; brand: string | null }): Promise<LabelFound | null>;
+  /** FOOD_BUILD_RECIPE=on: a later-mode agent gets build_recipe (recipe.ts).
+   *  Each part is one parseFood call; code adds the parts up. */
+  buildRecipe?: boolean;
   /** An earlier card of this thread, as items, or null when there is none by
    *  that ref (foodThreads.ts). `version` null: the card's latest version.
    *  Present only when the thread store is on and the thread has cards. */
@@ -207,6 +212,8 @@ export type AgentEvent =
     error: string | null;
     /** A claim in the agent's line that did not happen, replaced by code. */
     false_claim?: boolean;
+    /** Dishes build_recipe put on the card (FOOD_BUILD_RECIPE). */
+    recipes?: number;
   };
 
 export type FoodAgentOutcome =
@@ -681,7 +688,7 @@ export const CARD_NOTE_LATER =
   "explicit ask to keep the card as a reusable meal.";
 
 /** The last-turn note for a later-message agent, naming only what it has. */
-export function lastTurnNoteLater(cardOnScreen: boolean, restore: boolean, copy: boolean): string {
+export function lastTurnNoteLater(cardOnScreen: boolean, restore: boolean, copy: boolean, recipe = false): string {
   return [
     "This is your LAST turn. You must finish now with",
     cardOnScreen
@@ -689,6 +696,7 @@ export function lastTurnNoteLater(cardOnScreen: boolean, restore: boolean, copy:
       : "log_food, create_custom_meal, create_custom_food, or reply.",
     copy ? "You may also finish with copy_lines." : null,
     restore ? "You may also finish with restore_card." : null,
+    recipe ? "You may also finish with build_recipe." : null,
     "Do not call any read.",
   ].filter(Boolean).join(" ");
 }
@@ -761,6 +769,7 @@ export function statusFor(name: string, input: Record<string, unknown>): string 
   if (name === COPY_LINES_TOOL.name) return "Copying that over";
   if (name === READ_CARD_TOOL.name) return "Checking that card";
   if (name === FIND_LABEL_TOOL.name) return "Looking up the label";
+  if (name === BUILD_RECIPE_TOOL.name) return "Adding up the dish";
   return null;
 }
 
@@ -878,16 +887,19 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // find_label: a later message beside a card the agent can edit line by line
   // (use_label lands through edit_line), when the deploy has a web lookup.
   const canLabel = later && lineTools && !!deps.findLabel;
+  // build_recipe (FOOD_BUILD_RECIPE): a later-mode run, beside a whole card
+  // or with none (a first message). A cut card never reaches later mode.
+  const canRecipe = later && !!deps.buildRecipe && (lineTools || !cardOnScreen);
   const system = first
-    ? [FOOD_AGENT_SYSTEM_FIRST, FIRST_NOTE, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n")
+    ? [FOOD_AGENT_SYSTEM_FIRST, FIRST_NOTE, canCopy ? COPY_NOTE : null, canRecipe ? RECIPE_NOTE : null].filter(Boolean).join("\n")
     : later
     ? [
       FOOD_AGENT_SYSTEM_LATER, lineTools ? CARD_NOTE_LATER : cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null,
-      canLabel ? LABEL_NOTE : null,
+      canLabel ? LABEL_NOTE : null, canRecipe ? RECIPE_NOTE : null,
     ].filter(Boolean).join("\n")
     : [FOOD_AGENT_SYSTEM, cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n");
   const tools = later
-    ? toolsForLater(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary }, canLabel, input.cardTotal)
+    ? [...toolsForLater(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary }, canLabel, input.cardTotal), ...(canRecipe ? [BUILD_RECIPE_TOOL] : [])]
     : toolsFor(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary }, input.cardTotal);
   const maxTurns = later ? MAX_TURNS_LATER : MAX_TURNS;
   // Every food line a read returned, by name, with the calories it carried.
@@ -923,7 +935,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     // system prompt: changing the system prompt mid-loop would edit history the
     // model already answered (and break the prompt cache).
     // A copy, so the note can never leak into a later turn's history.
-    const note = later ? lastTurnNoteLater(lineTools, canRestore, canCopy) : lastTurnNote(canRestore, canCopy);
+    const note = later ? lastTurnNoteLater(lineTools, canRestore, canCopy, canRecipe) : lastTurnNote(canRestore, canCopy);
     const sent = last ? [...messages, { role: "system", content: note }] : messages;
     const res = await deps.callModel({
       model: deps.model,
@@ -989,14 +1001,19 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     // line by line: an edit whose parse fails leaves its own line as it was,
     // the others land, and the card's line names the one that did not. log_food beside a card is an
     // addition here, so it lands in the same fixed order.
-    const changes = later && lineTools
-      ? uses.filter((u) => CARD_CHANGE_TOOLS.has(u.name) || u.name === LOG_FOOD_TOOL.name)
+    // build_recipe is a card change too: beside a card, and with no card
+    // when the turn builds a dish (the dish and any log_food in the turn make
+    // the card together, in the same fixed order).
+    const isRecipe = (u: ToolUse) => canRecipe && u.name === BUILD_RECIPE_TOOL.name;
+    const recipeNoCard = canRecipe && !cardOnScreen && uses.some(isRecipe);
+    const changes = later && (lineTools || recipeNoCard)
+      ? uses.filter((u) => CARD_CHANGE_TOOLS.has(u.name) || u.name === LOG_FOOD_TOOL.name || isRecipe(u))
       : [];
     const replyUse = later ? uses.find((u) => u.name === REPLY_TOOL.name) : undefined;
     let plan: CardPlan | null = null;
     const rejected = new Map<ToolUse, string>();
     if (changes.length) {
-      const p = planCardChanges(input.card ?? [], changes, uses.some((u) => u.name === RESTORE_CARD_TOOL.name));
+      const p = planCardChanges(input.card ?? [], changes, uses.some((u) => u.name === RESTORE_CARD_TOOL.name), recipeNoCard);
       if (p.ok) plan = p;
       else {
         for (const u of changes) rejected.set(u, p.error);
@@ -1225,6 +1242,12 @@ async function runRead(
 }
 
 type Seen = Map<string, Set<number>>;
+/** The origin of each line the reads returned, by name and calories. */
+const seenOrigins = new WeakMap<Seen, Map<string, FoodOrigin>>();
+
+function seenOrigin(seen: Seen, name: string, kcal: number): FoodOrigin {
+  return seenOrigins.get(seen)?.get(`${foodKey(name)}|${Math.round(kcal)}`) ?? "unknown";
+}
 
 /** Walk a read result and file every food line in it (anything with a name and
  *  a calorie count), whatever shape the result has. */
@@ -1240,6 +1263,17 @@ function remember(seen: Seen, v: unknown, depth = 0): void {
     const k = foodKey(name);
     if (!seen.has(k)) seen.set(k, new Set());
     seen.get(k)!.add(Math.round(o.kcal));
+    if ("origin" in o || "source" in o) {
+      // Keyed by name and calories: two diary lines that share both but not
+      // their origin collide. The lower origin wins then, so a copy is never
+      // trusted more than the least trusted line it may have come from.
+      if (!seenOrigins.has(seen)) seenOrigins.set(seen, new Map());
+      const byKey = seenOrigins.get(seen)!;
+      const key = `${k}|${Math.round(o.kcal)}`;
+      const next = originOf(o);
+      const had = byKey.get(key);
+      if (!had || ORIGIN_RANK[next] < ORIGIN_RANK[had]) byKey.set(key, next);
+    }
   }
   for (const x of Object.values(o)) remember(seen, x, depth + 1);
 }
@@ -1556,6 +1590,9 @@ export interface CardPlan {
   adds: { text: string | null; items: unknown[]; meal: MealType | null }[];
   /** The agent's own summaries, in call order. */
   summaries: string[];
+  /** build_recipe dishes (FOOD_BUILD_RECIPE): `index` the card line the dish
+   *  replaces, or null to add it. */
+  recipes?: { index: number | null; ask: RecipeAsk; meal: MealType | null }[];
 }
 
 /**
@@ -1570,20 +1607,36 @@ export function planCardChanges(
   card: CardLine[],
   uses: { name: string; input: Record<string, unknown> }[],
   restoreInTurn = false,
+  /** No card on screen, and the turn builds a dish: additions make the card. */
+  emptyCardOk = false,
 ): CardPlan | { ok: false; error: string } {
   const tail = " Nothing was changed. Send the changes again, one change per line.";
   const fail = (why: string) => ({ ok: false as const, error: `${why}${tail}` });
   if (restoreInTurn) return fail("restore_card replaces the whole card, so it cannot share a turn with line changes. Choose one.");
-  if (!card.length) return fail("No card is on screen to change. Use log_food.");
+  if (!card.length && !emptyCardOk) return fail("No card is on screen to change. Use log_food.");
+  if (!card.length && uses.some((u) => u.name === EDIT_LINE_TOOL.name || u.name === REMOVE_LINES_TOOL.name)) {
+    return fail("No card is on screen yet, so edit_line and remove_lines have no line to change. Use build_recipe and log_food.");
+  }
   const ids = `The card's lines are L1 to L${card.length}.`;
   const edits: CardPlan["edits"] = [];
   const removes = new Set<number>();
   const adds: CardPlan["adds"] = [];
   const summaries: string[] = [];
+  const recipes: NonNullable<CardPlan["recipes"]> = [];
   for (const u of uses) {
     const a = u.input ?? {};
     if (typeof a.summary === "string" && a.summary.trim()) summaries.push(a.summary.trim());
-    if (u.name === EDIT_LINE_TOOL.name) {
+    if (u.name === BUILD_RECIPE_TOOL.name) {
+      const ask = readRecipeAsk(a);
+      if ("error" in ask) return fail(ask.error);
+      let index: number | null = null;
+      if (a.line_id !== undefined && a.line_id !== null && a.line_id !== "") {
+        if (!card.length) return fail("No card is on screen yet, so build_recipe has no line to replace. Leave out line_id to add the dish.");
+        index = lineIndexOf(a.line_id, card.length);
+        if (index === null) return fail(`build_recipe names ${JSON.stringify(a.line_id)}, which is not on the card. ${ids}`);
+      }
+      recipes.push({ index, ask, meal: isMeal(a.meal_type) ? a.meal_type : null });
+    } else if (u.name === EDIT_LINE_TOOL.name) {
       const i = lineIndexOf(a.line_id, card.length);
       if (i === null) return fail(`edit_line names ${JSON.stringify(a.line_id ?? null)}, which is not on the card. ${ids}`);
       const change = typeof a.change === "string" ? a.change.trim() : "";
@@ -1607,15 +1660,22 @@ export function planCardChanges(
   }
   // Each edit and each addition is a whole parse (lookups, maybe the web), all
   // run at once: a turn may hold at most this many. Removals cost nothing.
-  if (edits.length + adds.length > MAX_CARD_WORK_PER_TURN) {
-    return fail(`${edits.length + adds.length} edits and additions in one turn; at most ${MAX_CARD_WORK_PER_TURN}.`);
+  // Each part of a dish is one parse, so it counts too.
+  const parts = recipes.reduce((n, r) => n + r.ask.parts.length, 0);
+  if (edits.length + adds.length + parts > MAX_CARD_WORK_PER_TURN) {
+    return fail(
+      parts
+        ? `${edits.length + adds.length} edits and additions and ${parts} dish parts in one turn; at most ${MAX_CARD_WORK_PER_TURN} in all.`
+        : `${edits.length + adds.length} edits and additions in one turn; at most ${MAX_CARD_WORK_PER_TURN}.`,
+    );
   }
   const count = new Map<number, number>();
   for (const e of edits) count.set(e.index, (count.get(e.index) ?? 0) + 1);
+  for (const r of recipes) if (r.index !== null) count.set(r.index, (count.get(r.index) ?? 0) + 1);
   for (const i of removes) count.set(i, (count.get(i) ?? 0) + 1);
   const twice = [...count].filter(([, n]) => n > 1).map(([i]) => `L${i + 1}`).sort();
   if (twice.length) return fail(`${twice.join(", ")} ${twice.length === 1 ? "has" : "have"} two changes in one turn.`);
-  return { ok: true, edits, removes: [...removes].sort((a, b) => a - b), adds, summaries };
+  return { ok: true, edits, removes: [...removes].sort((a, b) => a - b), adds, summaries, ...(recipes.length ? { recipes } : {}) };
 }
 
 /** The card after one turn's changes: every line the agent did not name is
@@ -1845,7 +1905,7 @@ async function applyCardChanges(
 ): Promise<FoodAgentOutcome> {
   const card = input.card ?? [];
   const meal: MealType = card[0]?.meal_type ?? input.defaultMeal;
-  const [editsOut, addsOut] = await Promise.all([
+  const [editsOut, addsOut, recipesOut] = await Promise.all([
     Promise.all(plan.edits.map(async (e) => {
       // The label find_label returned for this line: no parse, the line is
       // the one code worked out. No label for it: the edit fails, the line stays.
@@ -1876,9 +1936,18 @@ async function applyCardChanges(
       const parsed = (r?.parsed?.items ?? []).map((i) => ({ ...i, meal_type: m }));
       return { a, r, items: [...copied, ...parsed] };
     })),
+    // build_recipe: one parse per part through the same `parse`, summed in
+    // code (recipe.ts). A dish on a card line keeps that line's section.
+    Promise.all((plan.recipes ?? []).map(async (x) => {
+      const m = x.meal ?? (x.index !== null ? card[x.index].meal_type : null) ?? meal;
+      const b = await buildRecipe(x.ask, m, parse);
+      return { x, ...b };
+    })),
   ]);
   const edited = new Map<number, ParsedItem>();
   for (const x of editsOut) if (x.item) edited.set(x.e.index, x.item);
+  for (const x of recipesOut) if (x.item && x.x.index !== null) edited.set(x.x.index, x.item);
+  const recipeAdds = recipesOut.flatMap((x) => (x.item && x.x.index === null ? [x.item] : []));
   const removes = new Set(plan.removes);
   // An addition never puts a second copy of a food that stays on the card
   // (an edit changes the line; a second portion is a copy_lines add_again or
@@ -1891,7 +1960,7 @@ async function applyCardChanges(
     if (s.food_id) ids.add(s.food_id);
   }
   const dupAdds: string[] = [];
-  const added = addsOut.flatMap((x) => x.items).filter((i) => {
+  const added = [...recipeAdds, ...addsOut.flatMap((x) => x.items)].filter((i) => {
     const key = sameFoodKey(i.food_name);
     const dup = keys.has(key) || (!!i.food_id && ids.has(i.food_id));
     if (dup) dupAdds.push(i.food_name);
@@ -1913,13 +1982,25 @@ async function applyCardChanges(
 
   const failedEdits = editsOut.filter((x) => !x.item).map((x) => card[x.e.index].food_name);
   const failedAdds = addsOut.filter((x) => x.a.text && x.items.length === 0).map((x) => x.a.text!);
+  const failedRecipes = recipesOut.filter((x) => !x.item).map((x) => ({ name: x.x.ask.name, missing: x.missing, errored: x.errored, onLine: x.x.index !== null }));
+  const missingParts = recipesOut.filter((x) => x.item && x.missing.length).map((x) => `${names(x.missing)} in ${x.x.ask.name}`);
   const changed = edited.size + removes.size + added.length > 0;
+  // The ONE question about amounts the user did not give (recipe.ts): code
+  // writes it, only for dishes that landed, never twice in a thread.
+  const builtDishes = recipesOut.flatMap((x) => (x.item && (x.x.index !== null ? edited.get(x.x.index) === x.item : added.includes(x.item)) ? [x.item] : []));
+  const question = recipeQuestion(builtDishes, card, input.recentTurns) ?? "";
   const codeLine = [
     edited.size ? `Updated ${names([...edited.values()].map((i) => i.food_name))}.` : null,
     removes.size ? `Took off ${names(plan.removes.map((i) => card[i].food_name))}.` : null,
     added.length ? `Added ${names(added.map((i) => i.food_name))}.` : null,
     failedEdits.length ? `I could not change ${names(failedEdits)}, so ${failedEdits.length === 1 ? "it is" : "they are"} as before.` : null,
     failedAdds.length ? `I could not work out ${names(failedAdds.map((t) => `"${t.slice(0, 60)}"`))}.` : null,
+    ...failedRecipes.map((f) =>
+      // A rebuild of a card line that failed leaves that line as it was.
+      // A lookup that failed is not a food that does not exist: said apart.
+      `I could not ${recipeMissText(f.missing, f.errored)}, so ${f.name} ${f.onLine ? "is as before" : "is not on the card"}.`
+    ),
+    missingParts.length ? `I could not find ${missingParts.join("; ")}, so it is left out.` : null,
     dupAdds.length ? `${names(dupAdds)} ${dupAdds.length === 1 ? "is" : "are"} already on the card, so I did not add ${dupAdds.length === 1 ? "it" : "them"} again.` : null,
     overflow.length ? `The card holds ${CARD_MAX_LINES} foods, so I left off ${names(overflow)}. Add this card first, then send ${overflow.length === 1 ? "it" : "them"}.` : null,
   ].filter(Boolean).join(" ");
@@ -1936,16 +2017,18 @@ async function applyCardChanges(
   const leftKeys = [...dupAdds, ...overflow].map((n) => sameFoodKey(n)).filter(Boolean);
   const said = sameFoodKey(agentText);
   const namesLeftOff = leftKeys.some((k) => ` ${said} `.includes(` ${k} `));
-  const useAgent = !!agentText && !falseClaim && !failedEdits.length && !failedAdds.length && !namesLeftOff;
+  const useAgent = !!agentText && !falseClaim && !failedEdits.length && !failedAdds.length && !failedRecipes.length &&
+    !missingParts.length && !namesLeftOff;
   const notice = [
     dupAdds.length ? `${names(dupAdds)} ${dupAdds.length === 1 ? "is" : "are"} already on the card, so I did not add ${dupAdds.length === 1 ? "it" : "them"} again.` : null,
     overflow.length ? `The card holds ${CARD_MAX_LINES} foods, so I left off ${names(overflow)}. Add this card first, then send ${overflow.length === 1 ? "it" : "them"}.` : null,
   ].filter(Boolean).join(" ");
-  const line = useAgent ? [agentText, notice].filter(Boolean).join(" ") : codeLine;
+  const line = (useAgent ? [agentText, notice, question] : [codeLine, question]).filter(Boolean).join(" ");
   const answered = !!replyText && useAgent;
   deps.onEvent?.({
     tool: "card_changes", ok: true, edits: edited.size, edits_failed: failedEdits.length, removed: removes.size,
     added: added.length, error: null, ...(falseClaim ? { false_claim: true } : {}),
+    ...(recipesOut.length ? { recipes: builtDishes.length } : {}),
   });
 
   // Nothing could be done: the card stays as it was, and the user is told why.
@@ -1954,7 +2037,7 @@ async function applyCardChanges(
   const usage = EMPTY_USAGE();
   const steps: ParseStep[] = [];
   let tier: ParseMealResult["tier"];
-  for (const r of [...editsOut.map((x) => x.r), ...addsOut.map((x) => x.r)]) {
+  for (const r of [...editsOut.map((x) => x.r), ...addsOut.map((x) => x.r), ...recipesOut.flatMap((x) => x.results)]) {
     if (!r) continue;
     addUsage(usage, r.usage);
     steps.push(...(r.steps ?? []));
@@ -1962,6 +2045,7 @@ async function applyCardChanges(
   }
   const toolCalls = ["food_agent", ...new Set([
     ...(plan.edits.length ? ["edit_line"] : []), ...(plan.removes.length ? ["remove_lines"] : []), ...(plan.adds.length ? ["add_lines"] : []),
+    ...(plan.recipes?.length ? ["build_recipe"] : []),
   ])];
   if (items.length === 0) {
     // Every line came off and nothing was added: the card is cleared, the way
@@ -1980,7 +2064,9 @@ async function applyCardChanges(
     kind: "log",
     result: {
       // The whole card, replacing the one on screen.
-      parsed: { meal_type: meal, items, drona_line: line || "Here is the card.", corrects_previous: true },
+      // With no card on screen (a first message that built a dish) this is a
+      // new card, not a replacement.
+      parsed: { meal_type: meal, items, drona_line: line || "Here is the card.", corrects_previous: card.length > 0 },
       declined: null,
       usage,
       tool_calls: toolCalls,
@@ -1991,6 +2077,17 @@ async function applyCardChanges(
     turns,
     ...(answered ? { answered: true } : {}),
   };
+}
+
+/** The parts a dish could not use: those not found, and those whose lookup
+ *  failed (a timeout is not a food that does not exist). */
+function recipeMissText(missing: string[], errored: string[]): string {
+  const notFound = missing.filter((m) => !errored.includes(m));
+  const parts = [
+    notFound.length ? `find ${names(notFound)}` : null,
+    errored.length ? `look up ${names(errored)} just now` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(", and could not ") : "find its parts";
 }
 
 /** What the user is told when a later-message line claimed a log or a save
@@ -2125,6 +2222,10 @@ function diarySourceLine(r: Record<string, unknown>): SourceLine | null {
       fat_g: n(r.fat_g) ?? 0,
       fiber_g: n(r.fiber_g),
       source,
+      // A copy keeps the origin the diary line had; "manual" alone is not
+      // the user's own numbers.
+      origin: originOf({ origin: r.origin, source: unknownSource ? "estimate" : src, food_id }),
+      copied_from: "diary" as const,
       assumption: unknownSource ? `Copied from your diary, where its source reads "${String(src).slice(0, 40)}". Check this one.` : null,
       confidence: unknownSource ? "medium" : "high",
       meal_type: meal,
@@ -2472,6 +2573,7 @@ export function fillFromCard(tool: string, input: Record<string, unknown>, card:
 /** A card line back as a parsed item, exactly as it was: numbers, section,
  *  confidence and note all carried, nothing re-stamped. The user's working copy. */
 function cardLineAsItem(l: CardLine, mealDefault: MealType): ParsedItem {
+  const recipe = parseRecipe(l.recipe);
   return {
     food_id: l.food_id ?? null,
     food_name: l.food_name,
@@ -2489,6 +2591,9 @@ function cardLineAsItem(l: CardLine, mealDefault: MealType): ParsedItem {
     meal_type: l.meal_type ?? mealDefault,
     ...(l.said_name ? { said_name: l.said_name } : {}),
     ...(l.source_site ? { source_site: l.source_site } : {}),
+    origin: originOf(l),
+    ...(l.copied_from ? { copied_from: l.copied_from } : {}),
+    ...(recipe ? { recipe } : {}),
   };
 }
 
@@ -2519,10 +2624,16 @@ function copiedLine(raw: unknown, mealDefault: MealType, seen: Seen): ParsedItem
     fat_g: num(o.fat_g) ?? 0,
     fiber_g: null,
     ...(from === "copied"
-      ? { source: "manual" as const, assumption: null, confidence: "high" as const }
+      ? {
+        source: "manual" as const, assumption: null, confidence: "high" as const,
+        // The diary line's own origin, not the user's: a copy keeps it.
+        origin: seenOrigin(seen, name, kcal), copied_from: "diary" as const,
+      }
       : from === "changed"
       ? {
         source: "manual" as const,
+        // The agent's arithmetic on a logged line: a guess until checked.
+        origin: "guess" as const, copied_from: "diary" as const,
         // The same food can appear on two days with different numbers: cite
         // the one closest to the new value, the likeliest one it came from.
         assumption: `Adjusted from ${[...was!].sort((a, b) => Math.abs(a - kcal) - Math.abs(b - kcal))[0]} kcal in your log.`,

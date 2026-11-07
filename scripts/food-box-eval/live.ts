@@ -286,6 +286,8 @@ configureFoodBar({
   agentModel: SONNET_MODEL,
   jev: JEV_API_KEY ? { apiKey: JEV_API_KEY, timeoutMs: 5000 } : null,
   callAnthropic,
+  // FOOD_BUILD_RECIPE=on: the later-mode agent gets build_recipe (step 5).
+  buildRecipe: env("FOOD_BUILD_RECIPE").trim().toLowerCase() === "on",
 });
 
 // ── Fixtures as the pipeline's inputs ───────────────────────────────────────
@@ -347,7 +349,9 @@ function memoryOf(c: FoodBoxCase): MemoryEntry[] {
     serving_unit: "g",
     source: m.source,
     logged_via: "ai",
-    tier: "super",
+    tier: m.tier ?? "super",
+    origin: m.origin ?? null,
+    recipe: m.recipe ?? null,
     logged_at: `${m.lastLogged}T12:00:00Z`,
     persistent: true,
     confirmed_at: `${m.lastLogged}T12:00:00Z`,
@@ -378,7 +382,7 @@ function diaryRows(c: FoodBoxCase, localDate: string, offsetMin: number): MealRo
   }));
 }
 
-const SOURCES = new Set(["catalog", "off", "fatsecret", "web", "estimate", "manual"]);
+const SOURCES = new Set(["catalog", "off", "fatsecret", "web", "estimate", "manual", "recipe"]);
 function cardSource(s: string | undefined): CardLine["source"] {
   if (!s) return undefined;
   if (s === "label") return "web";
@@ -398,6 +402,7 @@ function cardOf(lines: Line[]): CardLine[] {
     fat_g: l.fat_g ?? 0,
     source: cardSource(l.source),
     ...(l.meal ? { meal_type: l.meal } : {}),
+    ...(l.note ? { assumption: l.note } : {}),
   }));
 }
 
@@ -460,6 +465,8 @@ function parseDeps(c: FoodBoxCase, zone: string): ParseMealDeps {
     userMemory: JEV_API_KEY
       ? {
         load: async () => ({ entries: memory, timeZone: zone }),
+        // Step 4: FOOD_ORIGIN_TRUST=on|shadow, as the edge function reads it.
+        ...(env("FOOD_ORIGIN_TRUST") ? { originTrust: env("FOOD_ORIGIN_TRUST") as "on" | "shadow" | "off" } : {}),
         lookupAliases: async (keys: string[]) =>
           memory.filter((m) => (m.confirmed_aliases ?? []).some((a) => keys.includes(a))).map((m) => ({ ...m, alias_lookup: true })),
       }

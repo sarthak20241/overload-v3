@@ -1,6 +1,9 @@
 import type { PreviousItem } from "./parseMeal.ts";
+import { readRecipeParts } from "./recipe.ts";
 
 /** Conversation data is evidence about the latest request, never instructions. */
+import type { CopiedFrom, FoodOrigin, RecipePart } from "../_shared/foodOrigin.ts";
+
 export interface FoodTurn {
   role: "user" | "drona";
   text: string;
@@ -31,6 +34,10 @@ export interface FoodConversationContext {
 /** One card line as the router and the agent see it. The macros and ids ride
  *  along so the agent can hand a line back exactly as it was. */
 export interface CardLine {
+  /** Where the numbers came from (_shared/foodOrigin.ts), when the app sent it. */
+  origin?: FoodOrigin;
+  copied_from?: CopiedFrom;
+  recipe?: RecipePart[];
   food_name: string;
   quantity: number;
   serving_label: string;
@@ -40,7 +47,7 @@ export interface CardLine {
   carb_g?: number;
   fat_g?: number;
   food_id?: string | null;
-  source?: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
+  source?: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual" | "recipe";
   fiber_g?: number | null;
   assumption?: string | null;
   confidence?: "high" | "medium" | "low";
@@ -89,6 +96,7 @@ export function readPreviousItems(raw: unknown, rawTotal: unknown): { items: Pre
       if (!name) return [];
       const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
       const src = r.source;
+      const recipe = readRecipeParts(r.recipe, src);
       return [{
         food_id: typeof r.food_id === "string" && r.food_id ? r.food_id : null,
         food_name: name,
@@ -104,7 +112,7 @@ export function readPreviousItems(raw: unknown, rawTotal: unknown): { items: Pre
         // Every source the app sends (its toParsedItem keeps the same list): a
         // missing one turns a sourced line into an estimate on a correction.
         source: src === "catalog" || src === "off" || src === "fatsecret" || src === "web" || src === "manual" ||
-            src === "estimate"
+            src === "estimate" || src === "recipe"
           ? src
           : "estimate",
         assumption: typeof r.assumption === "string" && r.assumption.trim() ? r.assumption.trim().slice(0, 160) : null,
@@ -127,6 +135,9 @@ export function readPreviousItems(raw: unknown, rawTotal: unknown): { items: Pre
         ...(typeof r.source_site === "string" && /^[a-z0-9.-]{3,60}$/i.test(r.source_site.trim())
           ? { source_site: r.source_site.trim().toLowerCase() }
           : {}),
+        // A dish built from its parts (recipe.ts): its parts, when the app
+        // sends them back. An app that does not keeps the parts in the note.
+        ...(recipe ? { recipe } : {}),
       }];
     })
     : [];
@@ -135,7 +146,7 @@ export function readPreviousItems(raw: unknown, rawTotal: unknown): { items: Pre
 
 /** Where a line's numbers came from, in a few words: "from web: fatsecret.co.in",
  *  "estimate: <its note>", "the user's numbers". */
-export function lineSourceTail(l: Pick<CardLine, "source" | "source_site" | "assumption">): string {
+export function lineSourceTail(l: Pick<CardLine, "source" | "source_site" | "assumption" | "recipe">): string {
   const flat = (x: string) => x.replace(/\s+/g, " ").trim();
   const site = l.source_site ? flat(l.source_site).slice(0, 40) : "";
   switch (l.source) {
@@ -143,6 +154,17 @@ export function lineSourceTail(l: Pick<CardLine, "source" | "source_site" | "ass
       return site ? `from web: ${site}` : "from web";
     case "manual":
       return "the user's numbers";
+    case "recipe": {
+      // The parts, so "why 210?" has an answer and a part can be changed. From
+      // the parts themselves when the app sent them (every part, so a rebuild
+      // can send them all again), else the line's note (cut at 160).
+      if (l.recipe?.length) {
+        const each = l.recipe.map((p) => `${Math.round(p.grams)} g ${flat(p.name).slice(0, 60)}${p.assumed ? " (assumed)" : ""}`);
+        return `recipe: ${each.join(", ")}`;
+      }
+      const note = l.assumption ? flat(l.assumption).slice(0, 160) : "";
+      return note ? `recipe: ${note}` : "recipe";
+    }
     case "estimate": {
       const note = l.assumption ? flat(l.assumption).slice(0, 40) : "";
       return note ? `estimate: ${note}` : "estimate";

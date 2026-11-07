@@ -246,6 +246,18 @@ Deno.test("a web line keeps the site its numbers came from; a malformed site is 
   assertEquals(read.items.map((i) => i.source_site), ["amazon.in", undefined]);
 });
 
+Deno.test("a recipe line keeps its source and its parts through the card reader", () => {
+  const base = { food_id: null, quantity: 1, serving_label: "bowl", grams: 300, kcal: 420 };
+  const parts = [{ name: "rice", grams: 200 }, { name: "dal", grams: 100 }];
+  const read = readPreviousItems([
+    { ...base, food_name: "Dal rice", source: "recipe", recipe: parts },
+    { ...base, food_name: "Not a dish", source: "catalog", recipe: parts },
+  ], 2);
+  assertEquals(read.items.map((i) => i.source), ["recipe", "catalog"]);
+  assertEquals(read.items[0].recipe?.map((p) => p.name), ["rice", "dal"]);
+  assertEquals(read.items[1].recipe, undefined);
+});
+
 Deno.test("a remembered portion is the user's one unit, never divided", async () => {
   // Memory holds "2 pieces" at 100 g as ONE unit of what they logged.
   // logged_at is relative: memory only reads the last MEMORY_DAYS (10).
