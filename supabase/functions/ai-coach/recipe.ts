@@ -98,13 +98,26 @@ export const RECIPE_ASSUMED: Record<string, { grams: number; label: string }> = 
  *  cooking fat or a sweetener ("peanut butter", "cocoa butter"). */
 const NOT_A_FAT = /\b(?:peanut|almond|cashew|nut|cocoa|apple|seed|sunflower seed)\s+butter\b|\bsugar[- ]free\b/i;
 
+/** Words that may come before "butter" or "sugar" and still name the cooking
+ *  kind (an allow-list: anything else is some other food). */
+const COOKING_KINDS: Record<string, Set<string>> = {
+  butter: new Set(["salted", "unsalted", "white", "desi", "amul", "cooking", "table", "homemade", "dairy"]),
+  sugar: new Set(["white", "brown", "cane", "caster", "castor", "powdered", "table", "raw", "granulated"]),
+};
+
 /** The table's amount for a part with no amount, or null. */
 export function assumedAmount(partName: string): { grams: number; label: string } | null {
   const name = partName.toLowerCase().replace(/[^a-z\s-]/g, " ").replace(/\s+/g, " ").trim();
   // "tuna in oil", "peaches in syrup": a food packed in something, not a fat.
   if (!name || NOT_A_FAT.test(name) || /\sin\s/.test(` ${name} `)) return null;
-  const last = name.split(" ").pop() ?? "";
-  return RECIPE_ASSUMED[last] ?? null;
+  const words = name.split(" ");
+  const last = words.pop() ?? "";
+  const hit = RECIPE_ASSUMED[last] ?? null;
+  // Butter and sugar name many foods that are not the cooking kind (a spread,
+  // a skin cream, date sugar): only the plain word, or one of these before it.
+  const kinds = COOKING_KINDS[last];
+  if (hit && kinds && !words.every((w) => kinds.has(w))) return null;
+  return hit;
 }
 
 // ── Checking the call ───────────────────────────────────────────────────────
@@ -236,8 +249,10 @@ export function per100FromParse(r: ParseMealResult | null): (PartFound["per100"]
   const grams = items.reduce((n, i) => n + i.grams, 0);
   if (!items.length || grams <= 0) return null;
   const sum = (k: "kcal" | "protein_g" | "carb_g" | "fat_g") => items.reduce((n, i) => n + (Number(i[k]) || 0), 0);
+  // Fiber only when every item has a figure: a missing one would count as 0
+  // while its grams stay in the divisor.
   const fibers = items.map((i) => i.fiber_g);
-  const fiber = fibers.every((f) => f === null || f === undefined) ? null : fibers.reduce<number>((n, f) => n + (f ?? 0), 0);
+  const fiber = fibers.some((f) => f === null || f === undefined) ? null : fibers.reduce<number>((n, f) => n + (f ?? 0), 0);
   const per = (v: number) => (v / grams) * 100;
   const one = items[0];
   return {

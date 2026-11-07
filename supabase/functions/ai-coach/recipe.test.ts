@@ -333,3 +333,21 @@ Deno.test("per100FromParse: an item with no weight does not add to the per-100 n
   const r = { parsed: { meal_type: "lunch", items: [withWeight, noWeight], drona_line: "", corrects_previous: false }, declined: null, usage: USAGE, tool_calls: [], steps: [], iterations: 1 } as ParseMealResult;
   assertEquals(per100FromParse(r)?.kcal, 120);
 });
+
+// ── Review fixes, round 5 (PR #359) ────────────────────────────────────────
+
+Deno.test("assumedAmount: butter and sugar only when they are the cooking kind", () => {
+  assertEquals(assumedAmount("biscoff butter"), null);
+  assertEquals(assumedAmount("shea butter"), null);
+  assertEquals(assumedAmount("butter"), { grams: 5, label: "1 tsp" });
+  assertEquals(assumedAmount("unsalted butter"), { grams: 5, label: "1 tsp" });
+  assertEquals(assumedAmount("brown sugar"), { grams: 4, label: "1 tsp" });
+  assertEquals(assumedAmount("date sugar"), null);
+});
+
+Deno.test("per100FromParse: fiber is per 100 only when every item has a figure", () => {
+  const a: ParsedItem = { food_id: null, food_name: "dal", quantity: 100, serving_label: "g", grams: 100, kcal: 120, protein_g: 7, carb_g: 18, fat_g: 2, fiber_g: 4, source: "catalog", assumption: null, confidence: "medium" };
+  const b: ParsedItem = { ...a, food_name: "rice", fiber_g: null };
+  const r = { parsed: { meal_type: "lunch", items: [a, b], drona_line: "", corrects_previous: false }, declined: null, usage: USAGE, tool_calls: [], steps: [], iterations: 1 } as ParseMealResult;
+  assertEquals(per100FromParse(r)?.fiber_g, null);
+});
