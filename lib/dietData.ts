@@ -1536,8 +1536,8 @@ async function logSection(
   let { data: inserted, error } = await supabase
     .from('meal_entries').insert(rows).select('id, position');
   if (error && missingColumn(error, ORIGIN_COLS)) {
-    // The app shipped before migration 20261107120000: the database stamps
-    // the origin itself from the parse trace.
+    // The database predates migration 20261107120000: save without the
+    // columns. Nothing records an origin until the migration lands.
     ({ data: inserted, error } = await supabase
       .from('meal_entries').insert(withoutColumns(rows, ORIGIN_COLS)).select('id, position'));
   }

@@ -39,8 +39,9 @@ export async function persistLoggedEntryEdit(
   };
   let { data, error } = await supabase.from('meal_entries').update(update).eq('id', entry.id).select('id').single();
   if (error && missingColumn(error, ['origin', 'copied_from'])) {
-    // A database before migration 20261107120000: its trigger reads the
-    // edit sheet's "manual" the same way.
+    // The database predates migration 20261107120000: save without the
+    // columns. Once it lands, its trigger reads this edit's "manual" as typed
+    // numbers by the same rule (numbersTyped).
     ({ data, error } = await supabase.from('meal_entries').update(withoutColumns([update], ['origin', 'copied_from'])[0])
       .eq('id', entry.id).select('id').single());
   }

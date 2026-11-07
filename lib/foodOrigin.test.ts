@@ -25,3 +25,16 @@ Deno.test('numbersTyped: an amount change keeps the numbers; new numbers per 100
   assertEquals(numbersTyped(entry, { grams: 100, kcal: 170, protein_g: 10, carb_g: 5, fat_g: 10 }), true);
   assertEquals(numbersTyped(entry, { grams: 100, kcal: 150, protein_g: 12, carb_g: 5, fat_g: 10 }), true);
 });
+
+Deno.test('numbersTyped and the database trigger use the same thresholds', () => {
+  // stamp_entry_origin (migration 20261107120000) holds the same rule in SQL:
+  // kcal per 100 g by more than max(0.5, 1%), a macro by more than 0.2 g.
+  const sql = Deno.readTextFileSync(new URL('../supabase/migrations/20261107120000_food_memory_sources.sql', import.meta.url));
+  const body = sql.slice(sql.indexOf('function food_memory_private.stamp_entry_origin'), sql.indexOf('drop trigger if exists trg_meal_entries_stamp_origin'));
+  assertEquals(body.includes('greatest(0.5, per_old * 0.01)'), true);
+  assertEquals((body.match(/> 0\.2/g) ?? []).length, 3);
+  const entry = { grams_logged: 100, kcal: 100, protein_g: 10, carb_g: 10, fat_g: 1 };
+  assertEquals(numbersTyped(entry, { grams: 100, kcal: 100.9, protein_g: 10, carb_g: 10, fat_g: 1 }), false);
+  assertEquals(numbersTyped(entry, { grams: 100, kcal: 101.1, protein_g: 10, carb_g: 10, fat_g: 1 }), true);
+  assertEquals(numbersTyped(entry, { grams: 100, kcal: 100, protein_g: 10.3, carb_g: 10, fat_g: 1 }), true);
+});
