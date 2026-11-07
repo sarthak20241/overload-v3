@@ -98,12 +98,16 @@ Deno.test("the failure this prevents: memory put boiled chana back after the use
   // Both drops are in the trace: memory and the catalog rows.
   const drops = r.steps.filter((s) => s.tool === "rejected_food").map((s) => (s.input as { from?: string }).from ?? "candidates");
   assertEquals(drops.sort(), ["candidates", "memory"]);
-  // Neither memory nor the catalog row named "boiled chana" reaches decide for that line.
-  assertEquals(log.decide.length, 1);
-  const payload = JSON.parse(log.decide[0].split("\n")[0]) as { items?: Array<{ name: string; candidates?: Array<{ name: string }> }> };
-  const chana = payload.items?.find((i) => /navratri/i.test(i.name));
-  assert(chana, log.decide[0].slice(0, 400));
-  assertEquals((chana!.candidates ?? []).map((c) => c.name).filter((n) => /boiled chana/i.test(n)), []);
+  // Neither memory nor the catalog row named "boiled chana" reaches decide for
+  // that line. This decide logs nothing, so the retry for the foods it left
+  // out is a second call, and it must not see the row either.
+  assertEquals(log.decide.length, 2);
+  for (const sent of log.decide) {
+    const payload = JSON.parse(sent.split("\n")[0]) as { items?: Array<{ name: string; candidates?: Array<{ name: string }> }> };
+    const chana = payload.items?.find((i) => /navratri/i.test(i.name));
+    assert(chana, sent.slice(0, 400));
+    assertEquals((chana!.candidates ?? []).map((c) => c.name).filter((n) => /boiled chana/i.test(n)), []);
+  }
   // The last step sees the message that first described the meal: a
   // correction's own words rarely say what the food is.
   assertEquals(JSON.parse(log.decide[0].split("\n")[0]).earlier_text,
