@@ -69,6 +69,9 @@ export interface CaseMetrics {
   /** At the model_pricing rows. Through the CLI the token counts are the CLI's. */
   costUsd: number;
   byModel: Record<string, { calls: number; input: number; output: number; cache_read: number; cache_write: number }>;
+  /** FOOD_FIRST_GATE=on, first messages: Jev's plain score, where the gate
+   *  sent it, and how often the agent took the running parse. */
+  gate?: { plain: number | null; to: "parse" | "agent"; parseReused: number };
 }
 
 export interface MemoryFood {
@@ -113,6 +116,10 @@ export interface FoodBoxCase {
   };
   message: string;
   expect: Expect;
+  /** First messages only: the FOOD_FIRST_GATE's right answer, true for a fully
+   *  plain food log that asks for nothing else. Read by the gate report, never
+   *  by the grader. */
+  plain?: boolean;
   /** What today's food box actually served (from parse_traces). Absent for
    *  synthetic cases and for messages with no recording. */
   recorded?: Outcome;

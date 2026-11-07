@@ -50,6 +50,7 @@ import {
   configureFoodBar,
   noParseResult,
   resolveFoodBarOutcome,
+  runFirstMessage,
   runLaterMessage,
   startFoodAgent,
   startFoodIntent,
@@ -58,9 +59,11 @@ import type { CardLine, FoodConversationContext } from "../../supabase/functions
 import { cardMayBeCut, readFoodContext } from "../../supabase/functions/ai-coach/foodContext";
 import {
   continuesPendingMeal,
+  firstMessageGoesToGate,
   isPreciseRequest,
   laterMessageGoesToAgent,
   parseFoodAgentLaterMode,
+  parseFoodFirstGateMode,
   parseFoodIntentMode,
 } from "../../supabase/functions/ai-coach/foodIntent";
 import type { PendingFoodMeal } from "../../supabase/functions/ai-coach/foodContext";
@@ -129,6 +132,7 @@ const WEB = env("EVAL_WEB") === "1" && !!env("TAVILY_API_KEY");
 const INTENT_MODE = parseFoodIntentMode(env("FOOD_INTENT_MODE") || "on");
 const THREADS = parseFoodThreadsMode(env("FOOD_THREADS"));
 const LATER = parseFoodAgentLaterMode(env("FOOD_AGENT_LATER"));
+const FIRST_GATE = parseFoodFirstGateMode(env("FOOD_FIRST_GATE"));
 const match = (k: string): "off" | "shadow" | "on" => (["shadow", "on"] as const).find((m) => m === env(k)) ?? "off";
 
 const SUPABASE_URL = env("EXPO_PUBLIC_SUPABASE_URL");
@@ -141,7 +145,7 @@ const SERVICE = env("SUPABASE_SERVICE_ROLE_KEY");
 /** The adapter's name, and its BASELINE.md section: the thread store changes
  *  what is measured, so a run with it on keeps its own section. */
 export function liveName(): string {
-  return LATER === "on" ? "live_later" : THREADS === "on" ? "live_threads" : "live";
+  return FIRST_GATE === "on" ? "live_first" : LATER === "on" ? "live_later" : THREADS === "on" ? "live_threads" : "live";
 }
 
 export function liveReady(): string | null {
@@ -150,6 +154,9 @@ export function liveReady(): string | null {
   // live_later is measured with the thread store on; a run without it would
   // write its numbers under the same name.
   if (LATER === "on" && THREADS !== "on") return "FOOD_AGENT_LATER=on is measured with FOOD_THREADS=on. Set both.";
+  // live_first is step 3 on top of step 2: the gate's numbers are only
+  // comparable with live_later.
+  if (FIRST_GATE === "on" && LATER !== "on") return "FOOD_FIRST_GATE=on is measured with FOOD_AGENT_LATER=on and FOOD_THREADS=on. Set all three.";
   return null;
 }
 
@@ -219,7 +226,7 @@ const fetchFn: typeof fetch = cliFetch ?? metered(fetch);
 
 const warnedModels = new Set<string>();
 
-function metricsOf(m: Meter, route: CaseMetrics["route"], agentTurns: number): CaseMetrics {
+function metricsOf(m: Meter, route: CaseMetrics["route"], agentTurns: number, gate?: CaseMetrics["gate"]): CaseMetrics {
   let cost = 0;
   for (const [model, v] of Object.entries(m.byModel)) {
     // A model with no price row here is costed at 0: say so once, so a model
@@ -232,7 +239,7 @@ function metricsOf(m: Meter, route: CaseMetrics["route"], agentTurns: number): C
     const [i, o, cr, cw] = PRICE[model] ?? [0, 0, 0, 0];
     cost += (v.input * i + v.output * o + v.cache_read * cr + v.cache_write * cw) / 1_000_000;
   }
-  return { route, agentTurns, calls: m.calls, costUsd: Math.round(cost * 100000) / 100000, byModel: m.byModel };
+  return { route, agentTurns, calls: m.calls, costUsd: Math.round(cost * 100000) / 100000, byModel: m.byModel, ...(gate ? { gate } : {}) };
 }
 
 async function callAnthropic(payload: Record<string, unknown>, timeoutMs = 80_000): Promise<AnthropicCallResult> {
@@ -543,12 +550,18 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
 
   const threadP = threadOf(c, card);
   const pendingIn = foodContext.pendingMeal;
-  const intentP = startFoodIntent(savedMealsP, c.message, foodContext);
   // What the app sends (nutrition.tsx): speed "super" on a first Precise
   // message only, tier "precise" on every message. The server reads both the
   // same way here as in index.ts, and the agent's parses run in the tier the
   // speed asks for (a correction stays on smart).
   const body: { speed?: string; tier: string } = { ...(prevLines ? {} : { speed: "super" }), tier: "precise" };
+  // index.ts's rule (FOOD_FIRST_GATE, Precise): a first message asks the gate
+  // question in the router's Jev call.
+  const firstGate = firstMessageGoesToGate({
+    mode: FIRST_GATE, laterMode: LATER, intentMode: INTENT_MODE, precise: isPreciseRequest(body, { superOn: true, freeTier: false }), supportsCreate: true, hasModelKey: true,
+    turns: recentTurns.length, cardLines: card.length, pending: !!pendingIn,
+  });
+  const intentP = startFoodIntent(savedMealsP, c.message, foodContext, undefined, undefined, undefined, undefined, firstGate);
   const agentArgs = {
     intentP, supportsCreate: true, text: c.message, mealHint, localHour, localDate,
     mode: (body.speed === "super" ? "super" : null) as "super" | null,
@@ -593,10 +606,23 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
   let outcome: Awaited<ReturnType<typeof resolveFoodBarOutcome>>;
   let firstParse: Awaited<ReturnType<typeof runParseMeal>>;
   let routerAgent: ReturnType<typeof startFoodAgent> | null = null;
+  let gate: CaseMetrics["gate"];
   if (later) {
     const l = await runLaterMessage({ agent: agentArgs, cardOpen, fallbackParse: parseNow });
     outcome = l.outcome;
     firstParse = l.firstParse ?? noParseResult();
+  } else if (firstGate) {
+    const parseP = parseNow();
+    const f = await runFirstMessage({ agent: agentArgs, parse: parseP });
+    outcome = f.outcome;
+    // The parse counts as this message's (its look-ups too) only when it was
+    // served: by the gate, or as the fallback for a failed agent. A reused
+    // parse is inside the agent's own result already.
+    firstParse = f.gate.to === "agent" && outcome.agent && outcome.agent.kind !== "failed" ? noParseResult() : f.firstParse ?? noParseResult();
+    gate = f.gate;
+    // The running parse still counts against this message when the agent did
+    // not use it: it was spent either way.
+    await parseP.catch(() => null);
   } else {
     const agentP = (routerAgent = startFoodAgent(agentArgs));
     firstParse = await parseNow();
@@ -608,10 +634,10 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
   // The router's agent can still be working after a log was served: its calls
   // count against this message too.
   if (routerAgent) await routerAgent;
-  const metrics = metricsOf(m, later ? "agent" : outcome.agent ? "router_agent" : "parse", outcome.agent?.turns.length ?? 0);
+  const metrics = metricsOf(m, later || gate?.to === "agent" ? "agent" : outcome.agent ? "router_agent" : "parse", outcome.agent?.turns.length ?? 0, gate);
 
   if (env("DEBUG_STEPS") === "1") {
-    console.log(`  [${c.id}] action=${outcome.action} planned=${outcome.planned} later=${later} intent=${outcome.decision?.intent ?? null}@${outcome.decision?.confidence ?? null} agent=${outcome.agent?.kind ?? null}${outcome.agent?.reason ? `(${outcome.agent.reason})` : ""}`);
+    console.log(`  [${c.id}] action=${outcome.action} planned=${outcome.planned} later=${later}${gate ? ` gate=${gate.plain?.toFixed(2) ?? "null"}->${gate.to} reused=${gate.parseReused}` : ""} intent=${outcome.decision?.intent ?? null}@${outcome.decision?.confidence ?? null} agent=${outcome.agent?.kind ?? null}${outcome.agent?.reason ? `(${outcome.agent.reason})` : ""}`);
     for (const t of outcome.agent?.turns ?? []) {
       console.log(`    turn ${t.turn}: ${JSON.stringify(t.tools).slice(0, 600)}`);
       for (const r of t.results ?? []) console.log(`      ${r.name} -> ${String(r.summary).slice(0, 300)}`);

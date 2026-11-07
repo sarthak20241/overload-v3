@@ -5,7 +5,7 @@
 // few facts about the recorded baseline that a broken check would hide.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { CASES } from "./cases.ts";
+import { CASES, isFirstMessage } from "./cases.ts";
 import { grade, inRange, nameKey } from "./grade.ts";
 import type { FoodBoxCase, Line, Outcome } from "./types.ts";
 
@@ -157,6 +157,15 @@ Deno.test("cases: unique ids, valid regexes, at least one expectation each", () 
     assert(grade(c, { card: [], reply: null, actions: [] }).checks.length > 0, `${c.id} has no checks`);
   }
   assert(CASES.length >= 45, `only ${CASES.length} cases`);
+});
+
+Deno.test("cases: every first message has the gate's right answer, and only first messages do", () => {
+  for (const c of CASES) {
+    if (isFirstMessage(c)) assert(typeof c.plain === "boolean", `${c.id} is a first message with no gate label`);
+    else assertEquals(c.plain, undefined, `${c.id} is not a first message but has a gate label`);
+  }
+  // Both answers present, so the gate report can count false plains.
+  assert(CASES.some((c) => c.plain === true) && CASES.some((c) => c.plain === false));
 });
 
 // A guard, not a privacy proof: it catches the Clerk ids this app uses
