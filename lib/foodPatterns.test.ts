@@ -158,11 +158,11 @@ Deno.test("copy skips what is already in today's meal", () => {
 // ── Re-log labels ────────────────────────────────────────────────────────────
 
 Deno.test("a copied line keeps its label: an AI estimate is never promoted to manual", () => {
-  assertEquals(relogLabels({ logged_via: "ai", tier: "fast" }), { logged_via: "ai", tier: "fast", source: null });
-  assertEquals(relogLabels({ logged_via: "ai_auto", tier: "thorough" }), { logged_via: "ai", tier: "thorough", source: null });
-  assertEquals(relogLabels({ logged_via: "manual", tier: null }), { logged_via: "manual", tier: null, source: null });
-  assertEquals(relogLabels({ logged_via: null }), { logged_via: null, tier: null, source: null });
-  assertEquals(relogLabels({ logged_via: "something new" }), { logged_via: null, tier: null, source: null });
+  assertEquals(relogLabels({ logged_via: "ai", tier: "fast" }), { logged_via: "ai", tier: "fast", source: null, origin: null });
+  assertEquals(relogLabels({ logged_via: "ai_auto", tier: "thorough" }), { logged_via: "ai", tier: "thorough", source: null, origin: null });
+  assertEquals(relogLabels({ logged_via: "manual", tier: null }), { logged_via: "manual", tier: null, source: null, origin: null });
+  assertEquals(relogLabels({ logged_via: null }), { logged_via: null, tier: null, source: null, origin: null });
+  assertEquals(relogLabels({ logged_via: "something new" }), { logged_via: null, tier: null, source: null, origin: null });
 });
 
 Deno.test("columns written: fresh parse, unedited copy, edited copy", () => {

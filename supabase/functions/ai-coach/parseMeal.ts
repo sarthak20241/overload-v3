@@ -78,6 +78,7 @@ import {
   memoryInputName,
   alsoSentence,
   memoryNote,
+  type OriginTrustMode,
 } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 
@@ -86,6 +87,16 @@ import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 export const SHADOW_GRACE_MS = 1500;
 import type { TavilyDeps } from "./tavily.ts";
 import { asNoul, askJev, type JevDeps } from "./jev.ts";
+import {
+  type CopiedFrom,
+  type FoodOrigin,
+  originOf,
+  parseRecipe,
+  recipePer100,
+  type RecipePart,
+  statedPartGrams,
+  withPartGrams,
+} from "../_shared/foodOrigin.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -203,6 +214,14 @@ export interface ParsedItem {
   /** The site the numbers came from, for a web-looked-up line
    *  ("fatsecret.co.in"). The food agent sees it on the card. */
   source_site?: string;
+  /** Where the numbers came from, said plainly (_shared/foodOrigin.ts). Trust
+   *  reads this, never `source`: "manual" on the wire only means "the numbers
+   *  are fixed". Stamped on every line before it leaves runParseMeal. */
+  origin?: FoodOrigin;
+  /** A copied line keeps its origin and says where it was copied from. */
+  copied_from?: CopiedFrom;
+  /** A home dish's parts (RecipePart), when the line is one. */
+  recipe?: RecipePart[];
 }
 
 /** One tap-to-swap option for a line: everything that changes when the user
@@ -368,6 +387,11 @@ export interface PreviousItem {
   said_name?: string;
   /** The site the line's numbers came from, when the app sent it back. */
   source_site?: string;
+  /** ParsedItem.origin / copied_from / recipe, when the app sent them back.
+   *  An app that predates them sends none: originOf reads the old fields. */
+  origin?: FoodOrigin;
+  copied_from?: CopiedFrom;
+  recipe?: RecipePart[];
   /** The line the user tapped "double check" on. When any line carries it,
    *  research looks up ONLY the marked lines and leaves the rest as they were. */
   research?: boolean;
@@ -393,7 +417,17 @@ function previousAsParsedItem(p: PreviousItem): ParsedItem {
     // Kept so the NEXT double check on this line still looks up the user's words.
     ...(p.said_name ? { said_name: p.said_name } : {}),
     ...(p.source_site ? { source_site: p.source_site } : {}),
+    ...keptOrigin(p),
   };
+}
+
+/** A previous line carried through a correction keeps its origin. */
+function keptOrigin(p: PreviousItem): Pick<ParsedItem, "origin" | "copied_from" | "recipe"> {
+  const recipe = parseRecipe(p.recipe);
+  const origin = originOf(p);
+  // The user's own numbers on this card are not a copy of anything.
+  const copied = p.copied_from ?? (origin === "user_typed" ? undefined : "correction");
+  return { origin, ...(copied ? { copied_from: copied } : {}), ...(recipe ? { recipe } : {}) };
 }
 
 /**
@@ -472,6 +506,7 @@ export function preserveManual(
       source: "manual",
       assumption: m.assumption ?? it.assumption,
       confidence: m.confidence ?? "high",
+      ...keptOrigin(m),
     };
   });
 }
@@ -1088,6 +1123,8 @@ export interface ParseMealDeps {
   userMemory?: {
     load: () => Promise<{ entries: MemoryEntry[]; timeZone: string | null }>;
     lookupAliases?: (keys: string[]) => Promise<MemoryEntry[]>;
+    /** FOOD_ORIGIN_TRUST (step 4). Absent = off. */
+    originTrust?: OriginTrustMode;
   };
   anthropicApiKey: string;
   model: string;
@@ -4886,6 +4923,10 @@ export interface MemoryStamp {
   source: ParsedItem["source"];
   canonical_name?: string;
   input_name?: string;
+  /** The remembered food's origin; a memory line is a copy of it. */
+  origin?: FoodOrigin;
+  copied_from?: CopiedFrom;
+  recipe?: RecipePart[];
   /** The variants to offer beside this food (MemoryFood.alsoFoods), priced
    *  once the line's final weight is known. */
   swap?: { foods: MemoryFood[]; timeZone?: string | null };
@@ -4907,6 +4948,9 @@ export function memoryStamp(food: MemoryFood, timeZone?: string | null, inputNam
     note: memoryNote(food, timeZone),
     level: food.level,
     source: MEMORY_SOURCES.has(src) ? src : "catalog",
+    origin: food.origin ?? originOf({ source: food.source, food_id: food.food_id }),
+    copied_from: "memory",
+    ...(food.recipe ? { recipe: food.recipe } : {}),
     ...(food.alsoFoods?.length ? { swap: { foods: food.alsoFoods, timeZone } } : {}),
   };
 }
@@ -5125,7 +5169,7 @@ export function statedFor(it: ExtractedItem): StatedPer100 | null {
 /** What a line answered by the user's own numbers carries onto the card. They
  *  are the user's, so the saved line is 'manual' and serves every tier. */
 export function statedStamp(s: StatedPer100, filled: "looked up" | "estimated"): MemoryStamp {
-  return { note: statedNote(s, filled), level: "precise", source: "manual" };
+  return { note: statedNote(s, filled), level: "precise", source: "manual", origin: "user_typed" };
 }
 
 /** A Thorough/Precise candidate carrying the user's numbers: all of them for a
@@ -5261,6 +5305,8 @@ export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, step
     out[i] = {
       ...honourLineTotals(out[i], t.totals),
       source: "manual",
+      origin: "user_typed",
+      copied_from: undefined,
       numbers_tier: "precise",
       assumption: totalNote(t.totals, "line"),
       confidence: "high",
@@ -5282,6 +5328,8 @@ export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, step
       out[0] = {
         ...honourLineTotals(out[0], meal),
         source: "manual",
+        origin: "user_typed",
+        copied_from: undefined,
         numbers_tier: "precise",
         assumption: totalNote(meal, "meal"),
         confidence: "high",
@@ -5370,7 +5418,17 @@ export function memoryQuickItem(
     assumption: stamp.note,
     confidence: "high",
     numbers_tier: stamp.level,
+    ...stampOrigin(stamp),
     ...(stamp.swap ? { alternatives: memoryAlternatives(stamp.swap.foods, grams, stamp.swap.timeZone) } : {}),
+  };
+}
+
+/** The origin fields a stamp puts on its line. */
+function stampOrigin(s: MemoryStamp): Pick<ParsedItem, "origin" | "copied_from" | "recipe"> {
+  return {
+    ...(s.origin ? { origin: s.origin } : {}),
+    ...(s.copied_from ? { copied_from: s.copied_from } : {}),
+    ...(s.recipe ? { recipe: s.recipe } : {}),
   };
 }
 
@@ -5394,7 +5452,7 @@ export function stripEphemeralIds(
     const base = mem
       ? {
         ...it, food_name: mem.canonical_name ?? it.food_name, memory_input_name: mem.input_name, assumption: mem.note,
-        numbers_tier: mem.level, source: mem.source, confidence: "high" as const,
+        numbers_tier: mem.level, source: mem.source, confidence: "high" as const, ...stampOrigin(mem),
         ...(mem.swap ? { alternatives: memoryAlternatives(mem.swap.foods, it.grams, mem.swap.timeZone) } : {}),
       }
       : it;
@@ -6234,6 +6292,7 @@ export async function tryFastCorrection(
         source: "manual",
         assumption: prev.assumption ?? null,
         confidence: prev.confidence ?? "high",
+        ...keptOrigin(prev),
         // The line stays in the section it is already in. Without this a
         // correction stamps the whole meal with one default.
         meal_type: prev.meal_type,
@@ -6289,7 +6348,52 @@ export async function runParseMeal(
   if (result.parsed) result.parsed.items = result.parsed.items.map(unitWeightMatchesGrams).map(amountMatchesGrams);
   if (result.proposal) result.proposal.items = result.proposal.items.map(unitWeightMatchesGrams).map(amountMatchesGrams);
   if (input.variantChips && result.parsed) result.parsed.items = result.parsed.items.map(forSwapChips);
+  if (result.parsed) result.parsed.items = finishOrigins(result.parsed.items, input.text);
+  if (result.proposal) result.proposal.items = finishOrigins(result.proposal.items, input.text);
   return result;
+}
+
+/**
+ * Every line leaves with an origin (originOf reads the old fields of a line
+ * that has none), and a remembered recipe follows the user's words for one
+ * part: "60 g paneer" this time changes the paneer, not the whole dish. The
+ * dish's numbers are then the parts' sum (code, never the model); with a part
+ * whose numbers are not known, the dish's own per-100 g is kept at the new
+ * weight.
+ */
+export function finishOrigins(items: ParsedItem[], text: string): ParsedItem[] {
+  return items.map((it, idx) => {
+    const line: ParsedItem = { ...it, origin: originOf(it) };
+    const recipe = parseRecipe(it.recipe);
+    if (!recipe) return line;
+    const hit = statedPartGrams(recipe, text);
+    if (!hit || Math.abs(recipe[hit.part].grams - hit.grams) < 0.5) return { ...line, recipe };
+    // The weight may belong to another line on the card ("sabji and 60 g
+    // paneer" logs paneer on its own): then it is not this dish's.
+    const partKey = recipe[hit.part].name.toLowerCase().split(/\s+/).pop() ?? "";
+    if (partKey.length > 2 && items.some((o, j) => j !== idx && o.food_name.toLowerCase().includes(partKey))) {
+      return { ...line, recipe };
+    }
+    const next = withPartGrams(recipe, hit.part, hit.grams);
+    const per = recipePer100(next.recipe) ??
+      (it.grams > 0 ? { kcal: it.kcal * 100 / it.grams, protein_g: it.protein_g * 100 / it.grams, carb_g: it.carb_g * 100 / it.grams, fat_g: it.fat_g * 100 / it.grams } : null);
+    if (!per || !(next.grams > 0)) return { ...line, recipe };
+    const f = next.grams / 100;
+    const note = `Took ${round1(hit.grams)} g ${recipe[hit.part].name} from your words; the rest of the recipe as before.`;
+    return {
+      ...line,
+      recipe: next.recipe,
+      grams: round1(next.grams),
+      quantity: round1(next.grams),
+      serving_label: "g",
+      kcal: round1(per.kcal * f),
+      protein_g: round1(per.protein_g * f),
+      carb_g: round1(per.carb_g * f),
+      fat_g: round1(per.fat_g * f),
+      fiber_g: null,
+      assumption: line.assumption ? `${line.assumption} ${note}` : note,
+    };
+  });
 }
 
 const GRAM_UNITS = new Set(["g", "gm", "gms", "gram", "grams"]);
@@ -7393,7 +7497,22 @@ async function runParseMealCore(
       const aliases = await deps.userMemory?.lookupAliases?.(toResolve.filter((_, idx) => memoryEligible[idx]).map((it) =>
         memoryKey(memoryInputName({ name: memoryLineName(it), brand: it.brand ?? null }))
       )).catch(() => [] as MemoryEntry[]) ?? [];
-      const foods = buildMemory([...aliases, ...loaded.entries], tier);
+      const trustMode = deps.userMemory?.originTrust ?? "off";
+      const foods = buildMemory([...aliases, ...loaded.entries], tier, undefined, undefined, trustMode === "on");
+      if (trustMode === "shadow") {
+        // Where trust by origin would serve other numbers for the same food.
+        const byOrigin = new Map(buildMemory([...aliases, ...loaded.entries], tier, undefined, undefined, true).map((f) => [f.key, f]));
+        const differs = foods.filter((f) => {
+          const o = byOrigin.get(f.key);
+          return o && (o.per100.kcal !== f.per100.kcal || o.origin !== f.origin);
+        });
+        steps.push({
+          iter: 1,
+          tool: "origin_trust_shadow",
+          input: { tier, foods: foods.length },
+          result: { differs: differs.length, foods: differs.slice(0, 10).map((f) => ({ name: f.name, now: f.per100.kcal, by_origin: byOrigin.get(f.key)?.per100.kcal, origin: byOrigin.get(f.key)?.origin })) },
+        });
+      }
       if (foods.length === 0) {
         steps.push({
           iter: 1,

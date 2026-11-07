@@ -93,6 +93,8 @@ deno test --allow-all lib/fitnessGoals.test.ts
 deno test --allow-all lib/coachTopic.test.ts   # chats opened from the app: Drona's hidden topic turn + what is sent
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/coachConversations.test.ts  # saved chats: topic title, hidden turn kept
 deno test --allow-all lib/missingColumn.test.ts # app-before-migration column fallbacks
+deno test --allow-all --no-check --unstable-sloppy-imports lib/foodOrigin.test.ts # food line origins in the app; edit-sheet rule pinned to the SQL trigger
+deno run --node-modules-dir=none --allow-read --allow-env --allow-net --allow-write --allow-sys supabase/tests/food_memory_local.ts # food memory triggers on PGlite (downloads it; not in CI)
 deno test --allow-all --unstable-sloppy-imports lib/planExercise.test.ts # Drona plan exercise -> exercises + routine rows
 deno test --allow-all --unstable-sloppy-imports lib/routineTargets.test.ts # "45s" / "5km" -> routine time + distance targets
 deno test --allow-all lib/maintenance.test.ts   # the Nutrition screen's maintenance row and sheet

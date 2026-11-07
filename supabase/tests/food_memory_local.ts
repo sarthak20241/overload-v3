@@ -19,12 +19,15 @@ const migrations = [
   "supabase/migrations/20261001115131_personal_food_cache_indexes.sql",
   "supabase/migrations/20261001142036_personal_food_alias_owner_cleanup.sql",
   "supabase/migrations/20261012160000_food_memory_survives_delete.sql",
+  "supabase/migrations/20261106120000_food_threads.sql",
+  "supabase/migrations/20261107120000_food_memory_sources.sql",
 ];
 const tests = [
   "supabase/tests/personal_food_aliases.sql",
   "supabase/tests/personal_food_alias_cleanup.sql",
   "supabase/tests/personal_food_memory_survives_delete.sql",
   "supabase/tests/personal_food_memory_repair.sql",
+  "supabase/tests/personal_food_memory_sources.sql",
 ];
 
 const db = new PGlite();
@@ -39,6 +42,7 @@ grant usage on schema public to anon, authenticated, service_role;
 create table public.user_profiles (clerk_user_id text primary key, timezone text);
 create table public.foods (id uuid primary key default gen_random_uuid());
 create table public.food_servings (id uuid primary key default gen_random_uuid());
+create table public.saved_meal_items (id uuid primary key default gen_random_uuid(), food_name text);
 create table public.meals (
   id uuid primary key default gen_random_uuid(),
   user_id text not null default (auth.jwt() ->> 'sub'),
