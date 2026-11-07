@@ -86,6 +86,7 @@ import {
   wantsFoodAgent,
   cardQuestionFellToParse,
 } from "./foodIntent.ts";
+import { parseFoodBuildRecipeMode, readRecipeParts } from "./recipe.ts";
 import { CARD_MAX_LINES, type CardLine, cardMayBeCut, readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
@@ -139,7 +140,7 @@ import { countryForTimezone } from "./searchCountry.ts";
 import { type FoodRegion, foodRegionForTimezone, parseFoodRegionRulesMode } from "./regionRules.ts";
 import { freeGoalTurnKind, freePhaseBuildCandidate, freePhaseRefineCandidate } from "./freePhaseBuild.ts";
 import { selectMatchRows } from "./ourSources.ts";
-import { MEMORY_DAYS, type MemoryEntry } from "./userFoodMemory.ts";
+import { MEMORY_DAYS, type MemoryEntry, type OriginTrustMode } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 import {
   type AnonIntake,
@@ -334,6 +335,12 @@ function readTimezone(userClient: SupabaseClient): Promise<string | null> {
   return p;
 }
 
+/** Precise food box, step 5: the food agent's build_recipe tool, a home dish
+ *  built from the parts the user names and added up in code (recipe.ts). It
+ *  rides on the later-mode agent (FOOD_AGENT_LATER, FOOD_FIRST_GATE). off
+ *  (default): the agent has no build_recipe, exactly as today. */
+const FOOD_BUILD_RECIPE = parseFoodBuildRecipeMode(Deno.env.get("FOOD_BUILD_RECIPE"));
+
 /** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
  *  of a race it is supposed to win (measured ~700ms against a parse of 1.2s and
  *  up); one that takes longer than this has already lost its reason to exist,
@@ -358,14 +365,14 @@ const JEV_TIMEOUT_MS = Math.min(Math.max(envInt("JEV_TIMEOUT_MS", 2500), 500), 1
  *  an empty list, which is exactly the behaviour before saved meals existed. */
 async function fetchSavedMealsForParse(userClient: SupabaseClient): Promise<SavedMealForParse[]> {
   try {
-    const { data, error } = await userClient
+    const itemCols = "food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, position";
+    const read = (cols: string) => userClient
       .from("saved_meals")
-      .select(
-        "id, name, kind, servings, serving_label, kcal, protein_g, carb_g, fat_g, " +
-          "saved_meal_items(food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, position)",
-      )
+      .select(`id, name, kind, servings, serving_label, kcal, protein_g, carb_g, fat_g, saved_meal_items(${cols})`)
       .order("created_at", { ascending: false })
       .limit(60);
+    let { data, error } = await read(`${itemCols}, origin`);
+    if (error && stepFourColumnMissing(error)) ({ data, error } = await read(itemCols));
     if (error || !data) return [];
     const n = (v: unknown) => (v === null || v === undefined || !Number.isFinite(Number(v)) ? 0 : Number(v));
     const nn = (v: unknown) => (v === null || v === undefined || !Number.isFinite(Number(v)) ? null : Number(v));
@@ -393,6 +400,7 @@ async function fetchSavedMealsForParse(userClient: SupabaseClient): Promise<Save
           carb_g: nn(i.carb_g),
           fat_g: nn(i.fat_g),
           fiber_g: nn(i.fiber_g),
+          origin: typeof i.origin === "string" ? i.origin : null,
         })),
     })).filter((m) => m.name.length > 0);
   } catch {
@@ -509,6 +517,15 @@ const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on
 // The user's own food memory (userFoodMemory.ts, migration 0149): on unless
 // set to "off", a kill switch that needs no deploy.
 const USER_FOOD_MEMORY = (Deno.env.get("USER_FOOD_MEMORY") ?? "on").trim().toLowerCase() !== "off";
+/** Step 4: which numbers memory trusts. off (default) = today's, where any
+ *  "manual" line ranks top; shadow = today's, and the parse trace records
+ *  where trust by origin would differ; on = user_typed > label > catalog >
+ *  recipe > guess = unknown. Turn on only after the clean-up has run, or old
+ *  "manual" rows all read as unknown. */
+const FOOD_ORIGIN_TRUST: OriginTrustMode = (() => {
+  const v = (Deno.env.get("FOOD_ORIGIN_TRUST") ?? "off").trim().toLowerCase();
+  return v === "on" || v === "shadow" ? v : "off";
+})();
 // Precise on Tavily: one model-written retry search when the fixed ones miss.
 const SEARCH_REWRITE = (Deno.env.get("SEARCH_REWRITE") ?? "on").trim().toLowerCase() !== "off";
 
@@ -1036,13 +1053,16 @@ async function recordTrace(
 function loggedMealsStore(userClient: SupabaseClient): LoggedMealsStore {
   return {
     async mealsBetween(startIso, endIso) {
-      const { data, error } = await userClient
+      const cols = "food_id, source, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, position";
+      const read = (entryCols: string) => userClient
         .from("meals")
-        .select("meal_type, logged_at, meal_entries(food_id, source, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, position)")
+        .select(`meal_type, logged_at, meal_entries(${entryCols})`)
         .gte("logged_at", startIso)
         .lte("logged_at", endIso)
         .order("logged_at", { ascending: true })
         .limit(40);
+      let { data, error } = await read(`${cols}, origin`);
+      if (error && stepFourColumnMissing(error)) ({ data, error } = await read(cols));
       if (error) return { error: error.message };
       return { rows: (data ?? []) as MealRowIn[] };
     },
@@ -2583,12 +2603,14 @@ interface MealRow {
   entries: Array<Record<string, unknown>>;
 }
 
-/**
- * This user's logged lines from the last MEMORY_DAYS days, for their food
- * memory, and their zone (the card note names the day they logged it). Through
- * the USER's client, never the service role: RLS is what makes the memory
- * theirs alone. Any failure is an empty memory, never a failed parse.
- */
+/** A database before migration 20261107120000 (no origin / recipe
+ *  columns): the read is retried with the older column list. */
+function stepFourColumnMissing(error: { code?: string; message?: string } | null | undefined): boolean {
+  // Same test as the app's lib/missingColumn: Postgres "undefined column"
+  // (42703), and the message names one of the step 4 columns.
+  return error?.code === "42703" && /\b(origin|recipe)\b/.test(error.message ?? "");
+}
+
 /** Persisted cache snapshots have already been confirmed by diary writes. */
 function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
   return {
@@ -2605,26 +2627,36 @@ function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
       ? (c.confirmed_at ? String(c.confirmed_at) : new Date().toISOString())
       : String(c.last_logged_at),
     persistent: true, confirmed_at: String(c.confirmed_at),
+    origin: typeof c.origin === "string" ? c.origin : null,
+    recipe: c.recipe ?? null,
     confirmed_aliases: Array.isArray(c.aliases) ? c.aliases.filter((a): a is string => typeof a === "string") : [],
   };
 }
 
+/**
+ * This user's logged lines from the last MEMORY_DAYS days, for their food
+ * memory, and their zone (the card note names the day they logged it). Through
+ * the USER's client, never the service role: RLS is what makes the memory
+ * theirs alone. Any failure is an empty memory, never a failed parse.
+ */
 async function fetchMemoryEntries(
   userClient: SupabaseClient,
 ): Promise<{ entries: MemoryEntry[]; timeZone: string | null }> {
   const sinceIso = new Date(Date.now() - MEMORY_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const entryCols = "food_name, food_id, kcal, protein_g, carb_g, fat_g, fiber_g, grams_logged, quantity, serving_unit, source, logged_via, tier";
+  const readMeals = (cols: string) => userClient
+    .from("meals")
+    .select(`logged_at, meal_entries(${cols})`)
+    .gte("logged_at", sinceIso)
+    // A meal logged ahead for a later day is planned, not eaten. It joins
+    // memory once its day arrives.
+    .lte("logged_at", new Date().toISOString())
+    .order("logged_at", { ascending: false })
+    .limit(300);
   const [mealsRes, profileRes, cacheRes] = await Promise.all([
-    userClient
-      .from("meals")
-      .select(
-        "logged_at, meal_entries(food_name, food_id, kcal, protein_g, carb_g, fat_g, fiber_g, grams_logged, quantity, serving_unit, source, logged_via, tier)",
-      )
-      .gte("logged_at", sinceIso)
-      // A meal logged ahead for a later day is planned, not eaten. It joins
-      // memory once its day arrives.
-      .lte("logged_at", new Date().toISOString())
-      .order("logged_at", { ascending: false })
-      .limit(300),
+    readMeals(`${entryCols}, origin, recipe`).then((r) =>
+      r.error && stepFourColumnMissing(r.error) ? readMeals(entryCols) : r
+    ),
     userClient.from("user_profiles").select("timezone").maybeSingle(),
     // An unavailable cache is additive: retain the existing history read.
     userClient.from("user_food_cache").select("*").order("confirmed_at", { ascending: false }).limit(300),
@@ -2655,6 +2687,8 @@ async function fetchMemoryEntries(
         source: typeof e.source === "string" ? e.source : null,
         logged_via: typeof e.logged_via === "string" ? e.logged_via : null,
         tier: typeof e.tier === "string" ? e.tier : null,
+        origin: typeof e.origin === "string" ? e.origin : null,
+        recipe: e.recipe ?? null,
         logged_at: at,
       });
     }
@@ -2926,6 +2960,7 @@ function makeParseDeps(
     userMemory: USER_FOOD_MEMORY && JEV_API_KEY
       ? {
         load: () => fetchMemoryEntries(userClient),
+        originTrust: FOOD_ORIGIN_TRUST,
         // Exact aliases are queried separately so a long-lived user's alias
         // cannot disappear behind the recent-cache or top-N memory limits.
         lookupAliases: async (keys: string[]) => {
@@ -3057,7 +3092,7 @@ function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
         // the createMeal collision above, and writeAutoLog answers it the same
         // way - replay theirs rather than append a second copy.
         if (error.code === "23505") return { conflict: true };
-        return { error: error.message };
+        return { error: error.message, code: error.code };
       }
       return { ids: rows(data).map((r) => String(r.id)) };
     },
@@ -3323,6 +3358,7 @@ async function handleParseMealRequest(args: {
       if (!name) return [];
       const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
       const src = r.source;
+      const recipe = readRecipeParts(r.recipe, src);
       return [{
         food_id: typeof r.food_id === "string" && r.food_id ? r.food_id : null,
         food_name: name,
@@ -3335,7 +3371,8 @@ async function handleParseMealRequest(args: {
         carb_g: n(r.carb_g),
         fat_g: n(r.fat_g),
         fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : n(r.fiber_g),
-        source: src === "catalog" || src === "off" || src === "web" || src === "manual" || src === "estimate"
+        source: src === "catalog" || src === "off" || src === "web" || src === "manual" || src === "estimate" ||
+            src === "recipe"
           ? src
           : "estimate",
         assumption: typeof r.assumption === "string" && r.assumption.trim() ? r.assumption.trim().slice(0, 160) : null,
@@ -3358,6 +3395,9 @@ async function handleParseMealRequest(args: {
         ...(typeof r.source_site === "string" && /^[a-z0-9.-]{3,60}$/i.test(r.source_site.trim())
           ? { source_site: r.source_site.trim().toLowerCase() }
           : {}),
+        // A dish built from its parts (recipe.ts): its parts, when the app
+        // sends them back. An app that does not keeps the parts in the note.
+        ...(recipe ? { recipe } : {}),
       }];
     })
     : [];
@@ -3373,6 +3413,7 @@ async function handleParseMealRequest(args: {
     fiber_g: p.fiber_g, assumption: p.assumption, confidence: p.confidence, meal_type: p.meal_type,
     ...(p.said_name ? { said_name: p.said_name } : {}),
     ...(p.source_site ? { source_site: p.source_site } : {}),
+    ...(p.recipe ? { recipe: p.recipe } : {}),
   }));
   const foodContext: FoodConversationContext = { ...baseFoodContext, card: card.length ? card : null };
   // THE switch for the agent-beside-a-card path. A card that may be cut at the
@@ -4422,6 +4463,7 @@ configureFoodBar({
   agentModel: MODEL,
   jev: JEV_API_KEY ? { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS } : null,
   callAnthropic: (payload, timeoutMs) => callAnthropic(payload, timeoutMs),
+  buildRecipe: FOOD_BUILD_RECIPE === "on",
 });
 
 Deno.serve(async (req) => {

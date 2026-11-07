@@ -32,6 +32,8 @@ export interface YourFoodEntry {
   logged_via: string | null;
   source: string | null;
   tier: string | null;
+  /** meal_entries.origin (step 4); absent before the migration. */
+  origin?: string | null;
   logged_at: string;
 }
 
@@ -92,7 +94,18 @@ export function yourFoodKey(name: string): string {
  * or edited (4); a food they picked from search, and Precise (3); Thorough (2);
  * Quick and anything unknown (1). A search log carries no logged_via at all.
  */
-export function entryTrust(e: Pick<YourFoodEntry, 'logged_via' | 'source' | 'tier'>): number {
+export function entryTrust(e: Pick<YourFoodEntry, 'logged_via' | 'source' | 'tier'> & { origin?: string | null }): number {
+  // A line with a proven origin (step 4) ranks by it: only the user's own
+  // numbers rank top. An 'unknown' line (an old "manual" with no proof) keeps
+  // today's ranking below, so search order moves with the server's
+  // FOOD_ORIGIN_TRUST switch, not ahead of it.
+  switch (e.origin) {
+    case 'user_typed': return 4;
+    case 'label':
+    case 'catalog': return 3;
+    case 'recipe': return 2;
+    case 'guess': return 1;
+  }
   if (e.source === 'manual' || e.logged_via === 'manual') return 4;
   if (e.logged_via == null) return 3;
   if (e.tier === 'precise') return 3;

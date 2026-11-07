@@ -26,6 +26,7 @@
 // Runtime-agnostic (no Deno globals), like ourSources.ts.
 
 import { askJev, type JevDeps, type JevQuestion } from "./jev.ts";
+import { dishName, type FoodOrigin, ORIGIN_RANK, originOf, parseRecipe, type RecipePart } from "../_shared/foodOrigin.ts";
 
 
 export type ParseTierName = "fast" | "thorough" | "precise";
@@ -66,6 +67,11 @@ export interface MemoryEntry {
   confirmed_at?: string;
   alias_lookup?: boolean;
   confirmed_aliases?: string[];
+  /** meal_entries / user_food_cache .origin (migration 20261107120000).
+   *  Absent on rows from before it: originOf reads the old fields. */
+  origin?: string | null;
+  /** user_food_cache.recipe / meal_entries.recipe: a home dish's parts. */
+  recipe?: unknown;
 }
 
 /** A remembered food: the newest eligible entry for a name, as per 100 g. */
@@ -86,6 +92,10 @@ export interface MemoryFood {
   times: number;
   last_logged_at: string;
   confirmed_aliases?: string[];
+  /** Where its numbers came from. */
+  origin?: FoodOrigin;
+  /** Its parts, when it is a home dish with a recipe. */
+  recipe?: RecipePart[];
   /** Set by the decision only: other remembered foods that are also what the
    *  user's words describe but a different variant ("vanilla whey" beside
    *  "chocolate whey"), named on the card so the user can say which it was. */
@@ -98,8 +108,8 @@ export interface MemoryFood {
 const RANK: Record<ParseTierName, number> = { fast: 1, thorough: 2, precise: 3 };
 
 /** How high a tier an entry's numbers may serve. */
-export function entryLevel(e: Pick<MemoryEntry, "tier" | "source" | "logged_via">): ParseTierName {
-  if (e.source === "manual" || e.logged_via === "manual") return "precise";
+export function entryLevel(e: Pick<MemoryEntry, "tier" | "source" | "logged_via"> & { origin?: string | null }): ParseTierName {
+  if (e.origin === "user_typed" || e.source === "manual" || e.logged_via === "manual") return "precise";
   if (e.tier === "precise" || e.tier === "thorough" || e.tier === "fast") return e.tier;
   return "fast";
 }
@@ -111,10 +121,31 @@ export function entryLevel(e: Pick<MemoryEntry, "tier" | "source" | "logged_via"
  * numbers. Newest-wins let a Quick guess of 6.3 kcal/100 g replace the user's own
  * 12.5 for cucumber (live, 2026-10-04).
  */
-export function entryTrust(e: Pick<MemoryEntry, "tier" | "source" | "logged_via">): number {
+export function entryTrust(
+  e: Pick<MemoryEntry, "tier" | "source" | "logged_via"> & { origin?: string | null; food_id?: string | null },
+  byOrigin = false,
+): number {
+  if (byOrigin) return entryOriginTrust(e);
   if (e.source === "manual" || e.logged_via === "manual") return 4;
   return RANK[entryLevel(e)];
 }
+
+/**
+ * Trust by origin (FOOD_ORIGIN_TRUST=on, step 4): user_typed > label >
+ * catalog > recipe > guess = unknown, then the tier as a tie-break. "manual"
+ * alone is no longer the top: it read as the user's own numbers for every
+ * copied line. Scaled by 10 so a tier never outranks an origin.
+ */
+export function entryOriginTrust(e: { origin?: string | null; source?: string | null; food_id?: string | null; tier?: string | null }): number {
+  const o = originOf({ origin: e.origin, source: e.source, food_id: e.food_id });
+  const tier = e.tier === "precise" || e.tier === "thorough" || e.tier === "fast" ? RANK[e.tier] : 1;
+  return ORIGIN_RANK[o] * 10 + tier;
+}
+
+/** FOOD_ORIGIN_TRUST: off = today's trust; shadow = today's trust, and the
+ *  parse records where trust by origin would pick other numbers; on = trust
+ *  by origin. */
+export type OriginTrustMode = "off" | "shadow" | "on";
 
 /** A remembered food's trust; hand-built foods without one rank by level. */
 const trustOf = (f: MemoryFood) => f.trust ?? RANK[f.level];
@@ -125,7 +156,9 @@ export function servesTier(level: ParseTierName, tier: ParseTierName): boolean {
 }
 
 export function memoryKey(name: string): string {
-  return name.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  // A recipe written into the name is not part of it (same as the database's
+  // name_key, migration 20261107120000).
+  return dishName(name).normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 const MASS_UNIT = /^(g|gm|gms|gram|grams|kg|ml|mls|l|litre|liter)$/i;
@@ -146,6 +179,7 @@ export function buildMemory(
   tier: ParseTierName,
   now: Date = new Date(),
   days = MEMORY_DAYS,
+  byOrigin = false,
 ): MemoryFood[] {
   const since = now.getTime() - days * 86_400_000;
   const byKey = new Map<string, { newest: MemoryEntry; times: number }>();
@@ -160,7 +194,7 @@ export function buildMemory(
     if (!got) byKey.set(key, { newest: e, times: 1 });
     else {
       got.times++;
-      const [t, kept] = [entryTrust(e), entryTrust(got.newest)];
+      const [t, kept] = [entryTrust(e, byOrigin), entryTrust(got.newest, byOrigin)];
       const newer = Date.parse(e.confirmed_at ?? e.logged_at) > Date.parse(got.newest.confirmed_at ?? got.newest.logged_at);
       if (t > kept || (t === kept && newer)) got.newest = e;
     }
@@ -171,7 +205,7 @@ export function buildMemory(
     const perUnit = e.quantity && e.quantity > 0 ? (e.grams as number) / e.quantity : null;
     return {
       key,
-      name: e.food_name.trim(),
+      name: dishName(e.food_name.trim()),
       food_id: e.food_id,
       per100: {
         kcal: r1(e.kcal * f),
@@ -185,7 +219,9 @@ export function buildMemory(
         : null,
       source: e.source,
       level: entryLevel(e),
-      trust: entryTrust(e),
+      trust: entryTrust(e, byOrigin),
+      origin: originOf({ origin: e.origin, source: e.source, food_id: e.food_id }),
+      ...(parseRecipe(e.recipe) ? { recipe: parseRecipe(e.recipe)! } : {}),
       times,
       last_logged_at: e.logged_at,
       confirmed_aliases: e.confirmed_aliases ?? [],

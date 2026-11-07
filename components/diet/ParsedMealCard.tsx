@@ -205,6 +205,9 @@ const r0 = (n: number) => Math.round(n);
  */
 export function uncertain(it: ParsedMealItem): boolean {
   if (it.source === 'manual') return false;
+  // A dish built from its parts always carries a note (its parts): only a
+  // part not found or guessed (low) makes it worth a second look.
+  if (it.source === 'recipe') return it.confidence === 'low';
   return it.source === 'estimate' || it.confidence === 'low' || !!it.assumption;
 }
 
@@ -215,6 +218,7 @@ export function provenance(source: ParsedMealItem['source']): string | null {
     case 'web': return 'from label';
     case 'estimate': return "Drona's estimate";
     case 'manual': return 'edited';
+    case 'recipe': return 'built from parts';
     default: return null; // catalog
   }
 }

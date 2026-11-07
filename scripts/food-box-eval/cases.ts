@@ -1932,6 +1932,89 @@ export const CASES: FoodBoxCase[] = [
     message: "what did I have for dinner yesterday?",
     expect: { does: ["answer"], mustNot: ["log", "save"], reply: { mustMention: ["paneer|naan"], noFalseClaim: true } },
   },
+  // ── Step 4: food memory sources, recipe, history ──
+  {
+    // The owner's sabji, remembered as ONE row with its recipe. "60 g paneer"
+    // this time changes the paneer part: 60 g paneer + 40 g onion + 5 g oil
+    // = about 168 kcal. Read as 60 g of the whole dish it was 57 kcal (Nov 5).
+    id: "step4-recipe-60g-paneer",
+    tags: ["recipe", "memory", "step4"],
+    origin: { date: "2026-11-07", who: "synthetic", note: "the Nov 5 sabji, as a recipe row" },
+    region: "india",
+    thread: { turns: [], card: null },
+    fixtures: {
+      memory: [{
+        name: "Milky Mist low fat paneer sabji",
+        per100: { kcal: 161.3, protein_g: 15.2, carb_g: 6.3, fat_g: 8.4 },
+        source: "manual", origin: "recipe", tier: "precise",
+        recipe: [
+          { name: "Milky Mist low fat paneer", grams: 65, per100: { kcal: 180, protein_g: 25, carb_g: 5, fat_g: 6.5 } },
+          { name: "onion", grams: 40, per100: { kcal: 40, protein_g: 1.1, carb_g: 9.3, fat_g: 0.1 } },
+          { name: "oil", grams: 5, per100: { kcal: 884, protein_g: 0, carb_g: 0, fat_g: 100 } },
+        ],
+        lastLogged: "2026-11-04", times: 4,
+      }],
+    },
+    message: "lunch was milky mist low fat paneer sabji made of 60g paneer, onion and oil",
+    plain: true,
+    expect: {
+      does: ["log"],
+      lines: [{ match: "paneer", kcal: [140, 200], protein_g: [12, null] }],
+      noDuplicates: true,
+      totalKcal: [140, 200],
+      reply: { noFalseClaim: true },
+    },
+  },
+  {
+    // The same dish saved under three wordings, each with its recipe in the
+    // name, as user_food_cache held it before step 4. One food, one line, and
+    // the recipe stays out of the name.
+    id: "step4-six-row-sabji",
+    tags: ["recipe", "memory", "step4"],
+    origin: { date: "2026-11-07", who: "synthetic", note: "live rows 2026-11-07, numbers rounded" },
+    region: "india",
+    thread: { turns: [], card: null },
+    fixtures: {
+      memory: [
+        { name: "Milky Mist low fat paneer sabji (20 g paneer, onion, oil)", per100: { kcal: 125, protein_g: 8.3, carb_g: 5, fat_g: 8.3 }, source: "estimate", tier: "precise", lastLogged: "2026-10-28" },
+        { name: "Milky Mist low fat paneer sabji (65 g paneer, onion, tomato, little oil)", per100: { kcal: 133.3, protein_g: 10, carb_g: 5.3, fat_g: 8 }, source: "manual", tier: "precise", lastLogged: "2026-10-30" },
+        { name: "Milky Mist low fat paneer sabji", per100: { kcal: 130, protein_g: 9.5, carb_g: 5, fat_g: 8 }, source: "estimate", tier: "precise", lastLogged: "2026-11-04" },
+      ],
+    },
+    message: "150g milky mist low fat paneer sabji for lunch",
+    plain: true,
+    expect: {
+      does: ["log"],
+      lines: [{ match: "paneer sabji", kcal: [150, 240] }],
+      lineCount: [1, 1],
+      removeLines: ["\\(\\d+ ?g paneer"],
+      reply: { noFalseClaim: true },
+    },
+  },
+  {
+    // A label row and a newer copy of a guess for the same drink. The copy
+    // was saved as "manual", which memory used to trust most. The label wins:
+    // 200 ml at 75 kcal / 100 ml = 150 kcal, not the guess's 240.
+    id: "step4-guess-vs-label",
+    tags: ["memory", "step4"],
+    origin: { date: "2026-11-07", who: "synthetic", note: "the epigamia milkshake label, Nov 2026" },
+    region: "india",
+    thread: { turns: [], card: null },
+    fixtures: {
+      memory: [
+        { name: "Epigamia turbo milkshake", per100: { kcal: 75, protein_g: 7.5, carb_g: 8, fat_g: 1.2 }, source: "web", origin: "label", tier: "precise", lastLogged: "2026-11-01", times: 2 },
+        { name: "Epigamia Turbo Milkshake", per100: { kcal: 120, protein_g: 4, carb_g: 18, fat_g: 3.5 }, source: "manual", tier: "precise", lastLogged: "2026-11-05" },
+      ],
+    },
+    message: "200 ml epigamia turbo milkshake",
+    plain: true,
+    expect: {
+      does: ["log"],
+      lines: [{ match: "epigamia|milkshake", kcal: [135, 165] }],
+      lineCount: [1, 1],
+      reply: { noFalseClaim: true },
+    },
+  },
   // ── Nov 7 breakfast thread (owner): Health Factory protein bread ──
   // food_bar_traces 2026-11-07 08:14..08:23 UTC. Label truth (owner): 2 slices
   // = 50 g = 121 kcal, 11 g protein. Each case holds the card the old path had
@@ -1939,6 +2022,91 @@ export const CASES: FoodBoxCase[] = [
   // the bread's macros before the fixes are not in the trace (served items
   // carry kcal only): protein 28 / carb 26 / fat 4.4 per 100 g is assumed.
   ...NOV7_BREAD_CASES,
+  // ── Home dishes built from their parts (step 5, FOOD_BUILD_RECIPE) ──
+  // Synthetic, worded fresh. A dish named with its parts, one part with no
+  // amount (oil, ghee, butter): the card carries a usual amount and asks once.
+  {
+    id: "recipe-sabji-paneer-oil-beside-card",
+    tags: ["recipe-build", "later"],
+    origin: { date: "2026-11-07", who: "synthetic", note: "a home sabji with a weighed part and oil with no amount, added beside a card" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "lunch: 1 katori rice" },
+        { role: "drona", text: "Rice, 195 cal. Ready to add." },
+      ],
+      card: [L("Rice", 195, { quantity: 1, unit: "katori", grams: 150, source: "catalog", meal: "lunch" })],
+    },
+    message: "with that a capsicum paneer sabji, i used 50 g paneer, one capsicum and some oil",
+    expect: {
+      does: ["edit"],
+      keepLines: ["rice"],
+      lines: [{ match: "rice", kcal: [195, 195] }, { match: "paneer|sabji", kcal: [170, 330] }],
+      noDuplicates: true,
+      reply: { mustMention: ["oil"], noFalseClaim: true },
+    },
+  },
+  {
+    id: "recipe-dal-with-ghee-beside-card",
+    tags: ["recipe-build", "later"],
+    origin: { date: "2026-11-07", who: "synthetic", note: "a dal with ghee on top, the ghee with no amount" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "dinner 2 rotis" },
+        { role: "drona", text: "Two rotis, 240 cal. Ready to add." },
+      ],
+      card: [L("Roti", 240, { quantity: 2, unit: "piece", grams: 80, source: "catalog", meal: "dinner" })],
+    },
+    message: "add the moong dal i made, a bowl of it, finished with ghee",
+    expect: {
+      does: ["edit"],
+      keepLines: ["roti"],
+      lines: [{ match: "roti", kcal: [240, 240] }, { match: "dal", kcal: [130, 360] }],
+      noDuplicates: true,
+      reply: { mustMention: ["ghee"], noFalseClaim: true },
+    },
+  },
+  {
+    id: "recipe-omelette-butter-first",
+    // A first message that asks something: the agent sees it only with
+    // FOOD_FIRST_GATE=on (the gate sends it to the later-mode agent).
+    tags: ["recipe-build", "first"],
+    origin: { date: "2026-11-07", who: "synthetic", note: "a first message that is a home dish with butter, and a question" },
+    region: "india",
+    thread: { turns: [], card: null },
+    message: "breakfast was an omelette from 3 eggs cooked in butter, how much protein did i get?",
+    expect: {
+      does: ["log", "answer"],
+      totalKcal: [210, 340],
+      reply: { mustMention: ["protein"], noFalseClaim: true },
+    },
+  },
+  {
+    id: "recipe-answer-changes-the-oil",
+    tags: ["recipe-build", "later", "correction"],
+    origin: { date: "2026-11-07", who: "synthetic", note: "the user answers the one question; the dish is rebuilt, not given an oil line" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "lunch was a capsicum paneer sabji, 50 g paneer, one capsicum and oil" },
+        { role: "drona", text: "Capsicum paneer sabji is on the card. I assumed 1 tsp oil. Change it?" },
+      ],
+      card: [L("Capsicum paneer sabji", 205, {
+        quantity: 1, unit: "serving", grams: 175, source: "recipe", meal: "lunch",
+        note: "Built from parts: 50 g paneer, 120 g capsicum, 5 g oil (assumed).",
+      })],
+    },
+    message: "nah more like 3 tsp oil",
+    expect: {
+      does: ["edit"],
+      // 2 more tsp of oil is about 90 kcal more, on the dish's own line.
+      lines: [{ match: "paneer|sabji", kcal: [260, 340] }],
+      lineCount: [1, 1],
+      noDuplicates: true,
+      reply: { noFalseClaim: true },
+    },
+  },
 ];
 
 /** The gate's right answer for every first message (types.ts `plain`): a fully
@@ -1967,6 +2135,7 @@ const FIRST_MESSAGE_PLAIN: Record<string, boolean> = {
   "region-india-chai": true,
   "region-us-tea": true,
   "first-plain-homemade": true,
+  "recipe-omelette-butter-first": false,
   "first-plain-branded": true,
   "first-plain-breakfast": true,
   "first-plain-stated": true,

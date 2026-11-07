@@ -14,6 +14,8 @@
 //
 // Kept free of imports so deno can test it on its own.
 
+import { type FoodOrigin, isFoodOrigin } from "../_shared/foodOrigin.ts";
+
 export type SavedMealKind = "meal" | "recipe";
 
 export interface SavedMealItemForParse {
@@ -27,6 +29,8 @@ export interface SavedMealItemForParse {
   carb_g: number | null;
   fat_g: number | null;
   fiber_g: number | null;
+  /** saved_meal_items.origin (migration 20261107120000); absent before it. */
+  origin?: string | null;
 }
 
 export interface SavedMealForParse {
@@ -61,6 +65,11 @@ export interface SavedLine {
   confidence: "high";
   /** The saved meal this line came from, so the card can say so. */
   saved_meal: string;
+  /** Where the line's numbers came from (_shared/foodOrigin.ts). A saved
+   *  meal's line keeps its own; one saved before origins existed is unknown.
+   *  Saving a meal is not typing its numbers. */
+  origin: FoodOrigin;
+  copied_from: "saved_meal";
   meal_type?: "breakfast" | "lunch" | "dinner" | "snack";
 }
 
@@ -166,7 +175,10 @@ export function savedCount(quantity: unknown, unit: unknown): number {
  *  batch. */
 export function savedMealLines(hit: SavedHit): SavedLine[] {
   const { meal, count } = hit;
-  const base = { source: "manual" as const, assumption: null, confidence: "high" as const, saved_meal: meal.name.trim() };
+  const base = {
+    source: "manual" as const, assumption: null, confidence: "high" as const, saved_meal: meal.name.trim(),
+    copied_from: "saved_meal" as const,
+  };
   const withMeal = hit.mealType ? { meal_type: hit.mealType } : {};
 
   if (meal.kind === "recipe" || meal.items.length === 0) {
@@ -183,6 +195,7 @@ export function savedMealLines(hit: SavedHit): SavedLine[] {
       fat_g: r1(meal.fat_g * f),
       fiber_g: null,
       ...base,
+      origin: "unknown",
       ...withMeal,
     }];
   }
@@ -199,6 +212,7 @@ export function savedMealLines(hit: SavedHit): SavedLine[] {
     fat_g: r1((it.fat_g ?? 0) * count),
     fiber_g: it.fiber_g == null ? null : r1(it.fiber_g * count),
     ...base,
+    origin: isFoodOrigin(it.origin) ? it.origin : "unknown",
     ...withMeal,
   }));
 }
