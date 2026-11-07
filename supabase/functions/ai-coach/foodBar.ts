@@ -21,6 +21,8 @@ import {
   type FoodIntentDeps,
   type FoodIntentMode,
   isBareAck,
+  isPlainFirstLog,
+  PLAIN_LOG_FLOOR,
   readDraftResult,
   readReplyResult,
   routeFoodIntent,
@@ -237,9 +239,12 @@ export function makeFoodIntentDeps(
   onUsage?: (u: JevUsage) => void,
   fbTrace?: FoodBarTraceCollector,
   onFailure?: JevDeps["onFailure"],
+  askPlain = false,
 ): FoodIntentDeps {
   const jev = env().jev;
   return {
+    // FOOD_FIRST_GATE: the gate question rides in the router's own Jev call.
+    ...(askPlain ? { askPlain: true } : {}),
     savedMeals,
     jev: jev
       ? { apiKey: jev.apiKey, timeoutMs: jev.timeoutMs, abortSignal, log: (m) => console.log(m), onUsage, onFailure }
@@ -273,15 +278,18 @@ export function startFoodIntent(
   onUsage?: (u: JevUsage) => void,
   fbTrace?: FoodBarTraceCollector,
   onFailure?: JevDeps["onFailure"],
+  /** FOOD_FIRST_GATE: a first message (firstMessageGoesToGate). Asks the gate
+   *  question too, and the router runs whatever FOOD_INTENT_MODE says. */
+  askPlain = false,
 ): Promise<FoodIntentDecision | null> {
-  if (!shouldRouteFoodIntent(env().intentMode)) {
+  if (!askPlain && !shouldRouteFoodIntent(env().intentMode)) {
     fbTrace?.step({ src: "router", tool: "food_intent", result: { ran: false, reason: `mode_${env().intentMode}` } });
     return Promise.resolve(null);
   }
   const r0 = Date.now();
   // The same saved-meal read the parser uses, so one query serves both.
   return savedMealsP
-    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal, onUsage, fbTrace, onFailure), context))
+    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal, onUsage, fbTrace, onFailure, askPlain), context))
     // routeFoodIntent is documented never to throw. This is the belt on top of
     // the braces: nothing about a shadow measurement may fail a meal log.
     .catch((e) => {
@@ -557,6 +565,11 @@ export function startFoodAgent(args: {
    *  the router says (the caller decided, laterMessageGoesToAgent), with the
    *  one-line card tools, and any waiting question is handed to it. */
   later?: boolean;
+  /** FOOD_FIRST_GATE: the first message, sent to the agent by the gate. Only
+   *  with `later`. `parse` is the parse of `text` that started beside the
+   *  router: a parse_food or log_food on the same words takes it instead of
+   *  starting a second one, and `reused` counts how often that happened. */
+  first?: { text: string; parse: Promise<ParseMealResult>; reused: number };
 }): Promise<FoodAgentOutcome | null> {
   const fb = args.fbTrace;
   // The agent's own parses: their steps and model calls land on the trace
@@ -604,6 +617,7 @@ export function startFoodAgent(args: {
         savedHint: d?.savedMatch ?? null,
         threadIndex: thread?.index ?? null,
         ...(later ? { later: true } : {}),
+        ...(later && args.first ? { first: true } : {}),
       },
       {
         model: env().agentModel,
@@ -627,8 +641,16 @@ export function startFoodAgent(args: {
         savedMeals: () => args.savedMealsP,
         // A fresh parse without onProgress: the agent's parses must not paint
         // rows on the card behind its back.
-        parseFood: (t) =>
-          tracedParse(runParseMeal(args.parseDeps(agentParse), {
+        parseFood: (t) => {
+          // The first message's own parse, already running: same words, same
+          // answer, no second wait. Its steps are on the trace already (the
+          // parse runs on the request's own collector).
+          if (args.first && sameParseText(t, args.first.text)) {
+            args.first.reused++;
+            fb?.step({ src: "agent", tool: "first_parse_reused", input: t });
+            return args.first.parse;
+          }
+          return tracedParse(runParseMeal(args.parseDeps(agentParse), {
             text: t,
             localHour: args.localHour,
             mealHint: args.mealHint,
@@ -638,7 +660,8 @@ export function startFoodAgent(args: {
             todayTotals: null,
             targets: null,
             contextPromise: args.contextPromise,
-          }), t),
+          }), t);
+        },
         // The correction path against the card: the agent says the change in
         // words, this reworks the numbers from each line's own figures.
         correctCard: args.card
@@ -957,4 +980,76 @@ export async function runLaterMessage(args: {
     return { outcome: out({ action: "log", planned: "agent", decision, agent }), result: firstParse, firstParse };
   }
   return { outcome: out({ action: "reply", planned: "agent", decision, reply: AGENT_FAILED_REPLY, agent }), result: firstParse, firstParse };
+}
+
+
+// ── The first message (FOOD_FIRST_GATE) ─────────────────────────────────────
+
+/** The same words for a parse: case, spacing and closing punctuation aside.
+ *  The agent is told to pass the message word for word (foodAgent.ts
+ *  FIRST_NOTE); anything more than that is a different parse. */
+export function sameParseText(a: string, b: string): boolean {
+  const norm = (x: string) => x.trim().toLowerCase().replace(/\s+/g, " ").replace(/[\s.!?,;:]+$/, "");
+  return norm(a) !== "" && norm(a) === norm(b);
+}
+
+/** What the gate did with a first message, for the trace and the eval. */
+export interface FirstGateResult {
+  /** Jev's "fully plain log" score; null when Jev did not answer. */
+  plain: number | null;
+  to: "parse" | "agent";
+  /** The agent took the running parse instead of starting its own (times). */
+  parseReused: number;
+}
+
+/**
+ * The first message of a thread (firstMessageGoesToGate said yes). The parse
+ * of the message started beside the router (`parse`, plan section 8). The
+ * gate (the router's Jev call, PLAIN_LOG_QUESTION) then picks:
+ *
+ *  - plain (at or over PLAIN_LOG_FLOOR): the parse's card, exactly as today
+ *    would serve a log. No agent.
+ *  - anything else, or no answer: the food agent, in later mode with no card,
+ *    told it is the first message. Its parse_food or log_food on the same
+ *    words takes the running parse (no second wait). If it fails, the running
+ *    parse is served when it found food (log wins every tie), else a line that
+ *    says it could not finish (runLaterMessage, cardOpen false).
+ *
+ * The router's other jobs are unchanged: the saved-meal pointer (the agent's
+ * hint and the parse's savedHint) and has_food for the waiting-meal carry.
+ */
+export async function runFirstMessage(args: {
+  agent: Omit<Parameters<typeof startFoodAgent>[0], "later" | "first">;
+  /** The parse of the message, started beside the router. */
+  parse: Promise<ParseMealResult>;
+}): Promise<{ outcome: FoodBarOutcome; result: ParseMealResult; firstParse: ParseMealResult | null; gate: FirstGateResult }> {
+  const fb = args.agent.fbTrace;
+  // Read later without waiting: an agent that answered on its own must not
+  // wait for a parse it never used.
+  let parsed: ParseMealResult | null = null;
+  void args.parse.then((r) => { parsed = r; }, () => {});
+  const decision = await args.agent.intentP.catch(() => null);
+  const plain = typeof decision?.plainLog === "number" ? decision.plainLog : null;
+  if (isPlainFirstLog(decision)) {
+    fb?.step({ src: "router", tool: "first_gate", result: { plain, floor: PLAIN_LOG_FLOOR, to: "parse" } });
+    const r = await args.parse;
+    return {
+      outcome: { action: "log", planned: "log", decision, cardOpen: false },
+      result: r,
+      firstParse: r,
+      gate: { plain, to: "parse", parseReused: 0 },
+    };
+  }
+  fb?.step({ src: "router", tool: "first_gate", result: { plain, floor: PLAIN_LOG_FLOOR, to: "agent" } });
+  const first = { text: args.agent.text, parse: args.parse, reused: 0 };
+  const l = await runLaterMessage({
+    agent: { ...args.agent, first },
+    cardOpen: false,
+    fallbackParse: () => args.parse,
+  });
+  fb?.step({ src: "agent", tool: "first_parse", result: { reused: first.reused } });
+  // The running parse is this message's first parse when it has finished by
+  // now (the trace keeps it); never waited for.
+  const firstParse = l.firstParse ?? parsed;
+  return { ...l, firstParse, gate: { plain, to: "agent", parseReused: first.reused } };
 }

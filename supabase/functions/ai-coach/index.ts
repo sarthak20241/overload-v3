@@ -65,6 +65,8 @@ import {
   isPreciseRequest,
   tierSelectedOf,
   parseFoodAgentLaterMode,
+  parseFoodFirstGateMode,
+  firstMessageGoesToGate,
   parseFoodIntentMode,
   laterMessageGoesToAgent,
   routeFoodIntent,
@@ -105,6 +107,7 @@ import {
   type FoodBarThread,
   type FoodBarUsageRow,
   resolveFoodBarOutcome,
+  runFirstMessage,
   runLaterMessage,
   startFoodAgent,
   startFoodIntent,
@@ -301,6 +304,13 @@ const FOOD_THREADS = parseFoodThreadsMode(Deno.env.get("FOOD_THREADS"));
  *  router stops deciding who answers (foodIntent.ts laterMessageGoesToAgent,
  *  foodBar.ts runLaterMessage). off (default): exactly today's routing. */
 const FOOD_AGENT_LATER = parseFoodAgentLaterMode(Deno.env.get("FOOD_AGENT_LATER"));
+
+/** Precise food box, step 3: the FIRST message of a thread gets one Jev
+ *  question, "a fully plain food log that asks for nothing else?" Plain goes
+ *  to the parse; anything else, or unsure, to the food agent, which can use
+ *  the parse already running (foodIntent.ts firstMessageGoesToGate, foodBar.ts
+ *  runFirstMessage). off (default): exactly today's routing. */
+const FOOD_FIRST_GATE = parseFoodFirstGateMode(Deno.env.get("FOOD_FIRST_GATE"));
 
 /** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
  *  of a race it is supposed to win (measured ~700ms against a parse of 1.2s and
@@ -3361,7 +3371,7 @@ async function handleParseMealRequest(args: {
   let savedMealsShared: Promise<SavedMealForParse[]> | null = null;
   const savedMealsPFor = () => (savedMealsShared ??= fetchSavedMealsForParse(userClient));
   /** The router, started with the trace's hooks, and timed for the trace. */
-  const startTracedIntent = (signal?: AbortSignal) => {
+  const startTracedIntent = (signal?: AbortSignal, askPlain = false) => {
     const i0 = Date.now();
     let ms: number | null = null;
     const p = startFoodIntent(
@@ -3369,6 +3379,7 @@ async function handleParseMealRequest(args: {
       jevUsageLogger(admin, "parse_meal", "food_intent", userId, fbTrace, { turns: recentTurns.length > 0, card: card.length > 0 }),
       fbTrace,
       jevFailureLogger(fbTrace, "food_intent", { turns: recentTurns.length > 0, card: card.length > 0 }),
+      askPlain,
     );
     void p.then(() => { ms = Date.now() - i0; }, () => {});
     fbIntent = { p, ms: () => ms };
@@ -3951,8 +3962,14 @@ async function handleParseMealRequest(args: {
   // a parse that blew up is exactly when knowing what the user was asking for is
   // most useful.
   const savedMealsP = savedMealsPFor();
-  const intentP = startTracedIntent();
   const supportsCreate = clientSupportsFoodCreate(body);
+  // Step 3 (FOOD_FIRST_GATE=on, Precise only): the first message of a thread
+  // asks the gate question in the router's own Jev call.
+  const firstGate = firstMessageGoesToGate({
+    mode: FOOD_FIRST_GATE, precise: isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier }), supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
+    turns: recentTurns.length, cardLines: card.length, pending: !!foodContext.pendingMeal,
+  });
+  const intentP = startTracedIntent(undefined, firstGate);
   // Read by the catch: a parse that threw still traces what it got through.
   let firstParseSeen: ParseMealResult | null = null;
   let outcomeSeen: FoodBarOutcome | null = null;
@@ -3984,7 +4001,9 @@ async function handleParseMealRequest(args: {
       supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
       turns: recentTurns.length, cardLines: card.length, cardOpen, pending: !!foodContext.pendingMeal,
     });
-    const agentP = later ? Promise.resolve(null) : startFoodAgent(agentArgs);
+    // The router's own agent start is today's path only: a later message and a
+    // gated first message start theirs in runLaterMessage / runFirstMessage.
+    const agentP = later || firstGate ? Promise.resolve(null) : startFoodAgent(agentArgs);
     /** Today's parse of this message. A later message runs it only when the
      *  agent could not answer and no card is open. */
     const parseNow = async () => {
@@ -4024,6 +4043,15 @@ async function handleParseMealRequest(args: {
         outcomeSeen = l.outcome;
         const autoRes = l.outcome.action === "log" ? await finishAutoLog(l.result) : null;
         return { result: l.result, autoRes, outcome: l.outcome, firstParse: l.firstParse };
+      }
+      if (firstGate) {
+        // The parse starts now, beside the router (plan section 8): plain
+        // serves it, and the agent can take it for the same words.
+        const f = await runFirstMessage({ agent: agentArgs, parse: parseNow() });
+        firstParseSeen = f.firstParse;
+        outcomeSeen = f.outcome;
+        const autoRes = f.outcome.action === "log" ? await finishAutoLog(f.result) : null;
+        return { result: f.result, autoRes, outcome: f.outcome, firstParse: f.firstParse };
       }
       const firstParse = await parseNow();
       // Decided before the diary write, for the same reason as the stream: a

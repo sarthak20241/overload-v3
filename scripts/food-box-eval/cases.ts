@@ -1720,7 +1720,177 @@ export const CASES: FoodBoxCase[] = [
     message: "a cup of tea",
     expect: { does: ["log"], totalKcal: [0, 40] },
   },
+
+  // ── First messages (step 3, FOOD_FIRST_GATE; synthetic) ──
+  // The gate asks one thing of a first message: is it a fully plain food log
+  // that asks for nothing else? Plain ones go to the parse; the rest go to the
+  // agent. Each case's right gate answer is in FIRST_MESSAGE_PLAIN below.
+  {
+    id: "first-plain-homemade",
+    tags: ["plain", "first"],
+    origin: { date: "2026-11-07", who: "synthetic" },
+    region: "india",
+    thread: { turns: [], card: null },
+    message: "2 rotis, a bowl of rajma and some cucumber salad",
+    // 2 roti ~240, a bowl of rajma ~200-300, salad ~20.
+    expect: { does: ["log"], mustNot: ["save"], lineCount: [3, 3], totalKcal: [330, 800], reply: { noFalseClaim: true } },
+  },
+  {
+    id: "first-plain-branded",
+    tags: ["plain", "first"],
+    origin: { date: "2026-11-07", who: "synthetic" },
+    region: "us",
+    thread: { turns: [], card: null },
+    message: "a Snickers bar and a can of Coke",
+    // A regular bar ~250, a 12 oz can ~140.
+    expect: { does: ["log"], mustNot: ["save"], lineCount: [2, 2], totalKcal: [300, 480], reply: { noFalseClaim: true } },
+  },
+  {
+    id: "first-plain-breakfast",
+    tags: ["plain", "first"],
+    origin: { date: "2026-11-07", who: "synthetic" },
+    region: "india",
+    thread: { turns: [], card: null },
+    message: "breakfast was a 3 egg omelette with onions, 2 slices of brown bread and a black coffee",
+    expect: { does: ["log"], mustNot: ["save"], totalKcal: [280, 600], reply: { noFalseClaim: true } },
+  },
+  {
+    id: "first-plain-stated",
+    tags: ["plain", "stated", "first"],
+    origin: { date: "2026-11-07", who: "synthetic" },
+    region: "india",
+    thread: { turns: [], card: null },
+    message: "protein bar after the gym, 210 kcal and 20 g protein",
+    // The user's own numbers beat every source.
+    expect: { does: ["log"], mustNot: ["save"], totalKcal: [205, 215], reply: { noFalseClaim: true } },
+  },
+  {
+    id: "first-greeting-and-food",
+    tags: ["plain", "first"],
+    origin: { date: "2026-11-07", who: "synthetic" },
+    region: "india",
+    thread: { turns: [], card: null },
+    // A greeting asks for nothing: the food is still logged.
+    message: "good morning! just had poha and a cup of chai",
+    expect: { does: ["log"], mustNot: ["save"], lineCount: [2, 3], totalKcal: [200, 550], reply: { noFalseClaim: true } },
+  },
+  {
+    id: "first-food-and-question",
+    tags: ["question", "first"],
+    origin: { date: "2026-11-07", who: "synthetic" },
+    region: "india",
+    thread: { turns: [], card: null },
+    message: "had 2 samosas at 5, how much protein did that give me?",
+    // Log AND answer: the food is never lost to the question.
+    expect: { does: ["log", "answer"], mustNot: ["save"], totalKcal: [250, 700], reply: { mustMention: ["protein|\\d+\\s*g"], noFalseClaim: true } },
+  },
+  {
+    id: "first-save-and-log",
+    tags: ["save", "first"],
+    origin: { date: "2026-11-07", who: "synthetic" },
+    region: "india",
+    thread: { turns: [], card: null },
+    message: "save my post workout shake as a meal: 1 scoop whey, 300 ml toned milk and a banana. log it for today too",
+    // Whey ~120, 300 ml toned milk ~175, a banana ~105.
+    expect: { does: ["save"], savedMeal: { kcal: [300, 520] }, reply: { noFalseClaim: true } },
+  },
+  {
+    id: "first-same-breakfast",
+    tags: ["copy-day", "diary", "first"],
+    origin: { date: "2026-11-07", who: "synthetic" },
+    region: "india",
+    thread: { turns: [], card: null },
+    fixtures: {
+      diary: [{
+        daysAgo: 1,
+        meal: "breakfast",
+        lines: [
+          L("Poha", 250, { quantity: 1, unit: "plate", grams: 180, protein_g: 5, carb_g: 45, fat_g: 6, source: "catalog" }),
+          L("Masala chai", 90, { quantity: 1, unit: "cup", grams: 150, protein_g: 3, carb_g: 12, fat_g: 3.4, source: "catalog" }),
+        ],
+      }],
+    },
+    message: "same breakfast as yesterday",
+    expect: {
+      does: ["log"],
+      lines: [{ match: "poha", kcal: [248, 252] }, { match: "chai", kcal: [88, 92] }],
+      lineCount: [2, 2],
+      noDuplicates: true,
+      reply: { noFalseClaim: true },
+    },
+  },
+  {
+    id: "first-question-no-food",
+    tags: ["question", "first"],
+    origin: { date: "2026-11-07", who: "synthetic" },
+    region: "india",
+    thread: { turns: [], card: null },
+    message: "how much protein should I aim for each day?",
+    expect: { does: ["answer"], mustNot: ["log", "save"], reply: { noFalseClaim: true } },
+  },
+  {
+    id: "first-diary-question",
+    tags: ["question", "diary", "first"],
+    origin: { date: "2026-11-07", who: "synthetic" },
+    region: "india",
+    thread: { turns: [], card: null },
+    fixtures: {
+      diary: [{
+        daysAgo: 1,
+        meal: "dinner",
+        lines: [
+          L("Paneer butter masala", 380, { quantity: 1, unit: "bowl", grams: 200, protein_g: 14, carb_g: 14, fat_g: 30, source: "catalog" }),
+          L("Butter naan", 300, { quantity: 1, unit: "piece", grams: 90, protein_g: 8, carb_g: 45, fat_g: 9, source: "catalog" }),
+        ],
+      }],
+    },
+    message: "what did I have for dinner yesterday?",
+    expect: { does: ["answer"], mustNot: ["log", "save"], reply: { mustMention: ["paneer|naan"], noFalseClaim: true } },
+  },
 ];
+
+/** The gate's right answer for every first message (types.ts `plain`): a fully
+ *  plain food log that asks for nothing else. Read by the gate probe and the
+ *  live run's gate report, never by the grader. A test checks every first
+ *  message has one. */
+const FIRST_MESSAGE_PLAIN: Record<string, boolean> = {
+  "nov5-first-log-60g-paneer": true,
+  "nov5-latte-and-local-coffee": true,
+  // "I want you to correctly estimate ..." asks for a careful log, nothing else.
+  "oct22-home-dish-oil-unknown": true,
+  "oct20-was-it-added": false,
+  "oct18-same-oatmeal-as-yesterday": false,
+  "copy-lunch-from-yesterday": false,
+  "copy-lunch-to-dinner": false,
+  "copy-by-weekday": false,
+  "stated-full-label": true,
+  "stated-kcal-and-protein": true,
+  "quick-add-kcal": true,
+  "quick-add-macro-mix": true,
+  "epigamia-milkshake-bottle": true,
+  "epigamia-turbo-bottle": true,
+  "greeting": false,
+  "food-with-a-question-still-logs": false,
+  "copy-plus-new-food": false,
+  "region-india-chai": true,
+  "region-us-tea": true,
+  "first-plain-homemade": true,
+  "first-plain-branded": true,
+  "first-plain-breakfast": true,
+  "first-plain-stated": true,
+  "first-greeting-and-food": true,
+  "first-food-and-question": false,
+  "first-save-and-log": false,
+  "first-same-breakfast": false,
+  "first-question-no-food": false,
+  "first-diary-question": false,
+};
+for (const c of CASES) if (c.id in FIRST_MESSAGE_PLAIN) c.plain = FIRST_MESSAGE_PLAIN[c.id];
+
+/** A first message of a thread: no earlier turn, no card, no question waiting. */
+export function isFirstMessage(c: FoodBoxCase): boolean {
+  return c.thread.turns.length === 0 && !c.thread.card?.length && !c.thread.openQuestion;
+}
 
 // A spoken reply beside an open card keeps the card on screen (the app shows
 // the reply as a notice on it). These recordings were replies with a card open,

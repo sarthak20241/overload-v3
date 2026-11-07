@@ -115,6 +115,10 @@ export interface FoodAgentInput {
    *  (edit_line, remove_lines, add_lines, applied in that order), a reply may
    *  ride along with a change, and the run has MAX_TURNS_LATER turns. */
   later?: boolean;
+  /** FOOD_FIRST_GATE=on: this later-mode agent answers the FIRST message of
+   *  the thread (the gate said it is not a plain log). No card yet; the parse
+   *  of the whole message is already running (FIRST_NOTE). Only with `later`. */
+  first?: boolean;
 }
 
 /** The card for the agent with stable line ids: "[L2] Roti: 2 piece, ...". An
@@ -595,6 +599,22 @@ export const FOOD_AGENT_SYSTEM_LATER =
   "When the user says they already saved or logged something, that is done: never offer that same save or log again. " +
   "Do what they ask for next.";
 
+/** The later-message instructions for the FIRST message of a thread
+ *  (FOOD_FIRST_GATE): the same rules, with the opening sentence saying which
+ *  message this is. FOOD_AGENT_SYSTEM_LATER itself is unchanged. */
+export const FOOD_AGENT_SYSTEM_FIRST = FOOD_AGENT_SYSTEM_LATER.replace(
+  "You answer every message after the first one in this food conversation:",
+  "You answer the first message of this food conversation, one that needs more than a plain log:",
+);
+
+/** Said to a first-message agent (FOOD_FIRST_GATE): the parse of the whole
+ *  message started with it, so logging the message's food costs no wait. */
+export const FIRST_NOTE =
+  "No card is on screen yet. The app already started working out the food in the user's message as they wrote it: " +
+  "log_food or parse_food with `text` set to the user's whole message, word for word, gets that result at once. When " +
+  "you log the food the message names, pass the whole message that way. Write other text only for food that is not " +
+  "in the message as written, or when only part of its food should be logged.";
+
 /** Said to a later-message agent when a card is on screen. */
 export const CARD_NOTE_LATER =
   "A meal card is on screen, not yet added to the diary. Each line has an id: [L1], [L2], ... Its numbers are the " +
@@ -805,7 +825,12 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // tools, and one more turn. Everything else in the loop is shared.
   const later = !!input.later;
   const lineTools = later && cardOnScreen && !cardMayBeCut(input.card);
-  const system = later
+  // A first message (FOOD_FIRST_GATE) is a later-mode run with no card: its
+  // own opening sentence and the note about the parse already running.
+  const first = later && !!input.first && !cardOnScreen;
+  const system = first
+    ? [FOOD_AGENT_SYSTEM_FIRST, FIRST_NOTE, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n")
+    : later
     ? [FOOD_AGENT_SYSTEM_LATER, lineTools ? CARD_NOTE_LATER : cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n")
     : [FOOD_AGENT_SYSTEM, cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n");
   const tools = later

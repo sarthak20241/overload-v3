@@ -57,6 +57,11 @@ EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts   # EVAL_CONCU
 # FOOD_THREADS=on: the case's earlier cards go in an in-memory thread store, the
 # agent gets restore_card. Its own BASELINE.md section (live_threads).
 FOOD_THREADS=on EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts
+# FOOD_FIRST_GATE=on (step 3): the first message asks Jev "fully plain log?"; plain -> parse,
+# else the agent. Measured with FOOD_THREADS=on FOOD_AGENT_LATER=on (section live_first).
+FOOD_THREADS=on FOOD_AGENT_LATER=on FOOD_FIRST_GATE=on EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts
+# The gate's floor (PLAIN_LOG_FLOOR) alone, Jev only: every first-message case, then HELD_OUT=1.
+npx tsx scripts/food-box-eval/gate-probe.mts
 # FOOD_AGENT_LATER=on (step 2): every later message of a thread goes to the food
 # agent, with one-line card edits. Its own BASELINE.md section (live_later), and
 # the run prints cost and agent turns per message (CLI token counts).
@@ -100,6 +105,7 @@ deno test --allow-all lib/calorieBars.test.ts  # Analytics calorie bars: each da
 deno test --allow-all lib/pendingEntries.test.ts # an added suggestion or copy shows at once, swapped for the saved row
 deno test --allow-all lib/pendingParse.test.ts  # food search "Log it with Drona": handed to Nutrition once, with its meal and day
 deno test --allow-all lib/foodBarCard.test.ts   # food box: a save card sits beside the meal card, never replaces it
+deno test --allow-all supabase/functions/ai-coach/foodFirstGate.test.ts # first message: plain -> parse, else the agent with the running parse
 deno test --allow-all lib/foodThread.test.ts    # food box thread ids + card versions, counted the way the server counts
 deno test --allow-all supabase/functions/ai-coach/foodThreads.test.ts # thread store: stable line ids, one conditional write, restore
 deno test --allow-all supabase/functions/ai-coach/foodAgentLater.test.ts # step 2: later messages to the agent, one-line edits in a fixed order, no line lost
