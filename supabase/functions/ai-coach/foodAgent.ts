@@ -613,7 +613,8 @@ export const FIRST_NOTE =
   "No card is on screen yet. The app already started working out the food in the user's message as they wrote it: " +
   "log_food or parse_food with `text` set to the user's whole message, word for word, gets that result at once. When " +
   "you log the food the message names, pass the whole message that way. Write other text only for food that is not " +
-  "in the message as written, or when only part of its food should be logged.";
+  "in the message as written, or when only part of its food should be logged. When the user also asks about that " +
+  "food's numbers, call parse_food first, then log_food and reply together, the reply using the numbers it returned.";
 
 /** Said to a later-message agent when a card is on screen. */
 export const CARD_NOTE_LATER =
