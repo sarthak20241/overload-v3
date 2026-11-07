@@ -912,6 +912,7 @@ const isMealType = (v: unknown): v is MealType =>
 function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
   // 15 x "100 g" behind 15 g reads, and logs, as 15 "g" (lib/servingSize).
   const amount = fixWeightLabel(num(i.quantity) || 1, String(i.serving_label ?? 'serving'), num(i.grams));
+  const recipe = parseRecipe(i.recipe);
   return {
     // NULL is how a caller says "this line has no section of its own": a
     // proposal line belongs wherever the line it replaces is, and
@@ -946,7 +947,7 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
     ...(typeof i.source_site === 'string' && i.source_site.trim() ? { source_site: i.source_site.trim().slice(0, 60) } : {}),
     ...(isFoodOrigin(i.origin) ? { origin: i.origin } : {}),
     ...((COPIED_FROM as readonly unknown[]).includes(i.copied_from) ? { copied_from: i.copied_from as CopiedFrom } : {}),
-    ...(parseRecipe(i.recipe) ? { recipe: parseRecipe(i.recipe)! } : {}),
+    ...(recipe ? { recipe } : {}),
   };
 }
 
@@ -1537,8 +1538,8 @@ async function logSection(
   let { data: inserted, error } = await supabase
     .from('meal_entries').insert(rows).select('id, position');
   if (error && missingColumn(error, ORIGIN_COLS)) {
-    // The app shipped before migration 20261107120000: the database stamps
-    // the origin itself from the parse trace.
+    // The database predates migration 20261107120000: save without the
+    // columns. Nothing records an origin until the migration lands.
     ({ data: inserted, error } = await supabase
       .from('meal_entries').insert(withoutColumns(sourceBeforeOrigin(rows), ORIGIN_COLS)).select('id, position'));
   }

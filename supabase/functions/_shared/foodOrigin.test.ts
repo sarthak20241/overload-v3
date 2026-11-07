@@ -8,6 +8,7 @@ import {
   recipePer100,
   statedPartGrams,
   withPartGrams,
+  ORIGIN_RANK,
 } from "./foodOrigin.ts";
 
 Deno.test("originOf: a line's own origin wins", () => {
@@ -96,4 +97,15 @@ Deno.test("dishName strips a recipe from the name, keeps other brackets", () => 
 Deno.test("step 5's recipe lines: source 'recipe' reads as recipe; an assumed part stays assumed", () => {
   assertEquals(originOf({ source: "recipe" }), "recipe");
   assertEquals(parseRecipe([{ name: "oil", grams: 5, assumed: true }])?.[0].assumed, true);
+});
+
+Deno.test("the SQL mirrors keep the same ranks (migration 20261107120000 origin_rank)", () => {
+  const sql = Deno.readTextFileSync(new URL("../../migrations/20261107120000_food_memory_sources.sql", import.meta.url));
+  const body = sql.slice(sql.indexOf("function food_memory_private.origin_rank"), sql.indexOf("function food_memory_private.legacy_origin"));
+  for (const o of ["user_typed", "label", "catalog", "recipe"] as const) {
+    assertEquals(body.includes(`'${o}' then ${ORIGIN_RANK[o]}`), true, o);
+  }
+  assertEquals(body.includes("else 1"), true);
+  assertEquals(ORIGIN_RANK.guess, 1);
+  assertEquals(ORIGIN_RANK.unknown, 1);
 });

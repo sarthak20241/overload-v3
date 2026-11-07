@@ -17,7 +17,7 @@
 //
 // Deps are injected so the loop is testable without the network.
 
-import { type FoodOrigin, originOf, parseRecipe } from "../_shared/foodOrigin.ts";
+import { type FoodOrigin, ORIGIN_RANK, originOf, parseRecipe } from "../_shared/foodOrigin.ts";
 import { summarize } from "./foodBarTrace.ts";
 import { CARD_MAX_LINES, type CardLine, cardLines, cardMayBeCut, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { sonnetSettings } from "../_shared/sonnet.ts";
@@ -1257,8 +1257,15 @@ function remember(seen: Seen, v: unknown, depth = 0): void {
     if (!seen.has(k)) seen.set(k, new Set());
     seen.get(k)!.add(Math.round(o.kcal));
     if ("origin" in o || "source" in o) {
+      // Keyed by name and calories: two diary lines that share both but not
+      // their origin collide. The lower origin wins then, so a copy is never
+      // trusted more than the least trusted line it may have come from.
       if (!seenOrigins.has(seen)) seenOrigins.set(seen, new Map());
-      seenOrigins.get(seen)!.set(`${k}|${Math.round(o.kcal)}`, originOf(o));
+      const byKey = seenOrigins.get(seen)!;
+      const key = `${k}|${Math.round(o.kcal)}`;
+      const next = originOf(o);
+      const had = byKey.get(key);
+      if (!had || ORIGIN_RANK[next] < ORIGIN_RANK[had]) byKey.set(key, next);
     }
   }
   for (const x of Object.values(o)) remember(seen, x, depth + 1);
@@ -2546,6 +2553,7 @@ export function fillFromCard(tool: string, input: Record<string, unknown>, card:
 /** A card line back as a parsed item, exactly as it was: numbers, section,
  *  confidence and note all carried, nothing re-stamped. The user's working copy. */
 function cardLineAsItem(l: CardLine, mealDefault: MealType): ParsedItem {
+  const recipe = parseRecipe(l.recipe);
   return {
     food_id: l.food_id ?? null,
     food_name: l.food_name,
@@ -2565,7 +2573,7 @@ function cardLineAsItem(l: CardLine, mealDefault: MealType): ParsedItem {
     ...(l.source_site ? { source_site: l.source_site } : {}),
     origin: originOf(l),
     ...(l.copied_from ? { copied_from: l.copied_from } : {}),
-    ...(parseRecipe(l.recipe) ? { recipe: parseRecipe(l.recipe)! } : {}),
+    ...(recipe ? { recipe } : {}),
   };
 }
 
