@@ -21,6 +21,9 @@ import {
   THREAD_IDLE_GRACE_MS,
   THREAD_IDLE_MS,
   withLineIds,
+  itemsAsLines,
+  lineAsItem,
+  rowAsLine,
 } from "./foodThreads.ts";
 import type { CardLine } from "./foodContext.ts";
 import { THREAD_IDLE_MS as APP_THREAD_IDLE_MS } from "../../../lib/foodThread.ts";
@@ -459,4 +462,37 @@ Deno.test("copied lines join the open card as new lines with new ids; the card's
     ["L1", "Jeera Rice"], ["L2", "Paneer sabji"], ["L3", "Soya curry"], ["L4", "Methi aloo"], ["L5", "Paneer sabji"],
   ]);
   assertEquals(v2[4].source, "estimate");
+});
+
+// ── A dish built from its parts keeps its parts (step 5 follow-up) ──────────
+
+const SABJI_PARTS = [
+  { name: "low fat paneer", grams: 60, per100: { kcal: 254, protein_g: 25, carb_g: 4, fat_g: 15 }, source: "catalog" as const },
+  { name: "oil", grams: 5, per100: { kcal: 884, protein_g: 0, carb_g: 0, fat_g: 100 }, source: "catalog" as const, assumed: true },
+];
+
+Deno.test("recipe: a dish line keeps its parts and source through the store", () => {
+  const dish: ParsedItem = {
+    food_id: null, food_name: "Paneer sabji", quantity: 1, serving_label: "serving", grams: 65, kcal: 196.6,
+    protein_g: 15, carb_g: 2.4, fat_g: 14, fiber_g: null, source: "recipe", assumption: "Assumed 1 tsp oil. Parts: 60 g low fat paneer, 5 g oil.",
+    confidence: "medium", meal_type: "lunch", recipe: SABJI_PARTS,
+  };
+  const [line] = itemsAsLines([dish], null);
+  assertEquals(line.recipe, SABJI_PARTS);
+  const back = lineAsItem(line, "lunch");
+  assertEquals(back.source, "recipe");
+  assertEquals(back.recipe, SABJI_PARTS);
+  // The card the app sent, stored for a thread that had no copy yet.
+  const [fromCard] = cardAsLines([{ food_name: "Paneer sabji", quantity: 1, serving_label: "serving", grams: 65, kcal: 196.6, source: "recipe", recipe: SABJI_PARTS }]);
+  assertEquals(fromCard.recipe, SABJI_PARTS);
+});
+
+Deno.test("recipe: a stored row's recipe is read back, checked; an old row has none", () => {
+  const row = { line_id: "L1", name: "Paneer sabji", kcal: 197, source: "recipe", recipe: SABJI_PARTS };
+  assertEquals(rowAsLine(row).recipe, SABJI_PARTS);
+  assertEquals(rowAsLine({ line_id: "L1", name: "Rice", kcal: 195, source: "catalog" }).recipe ?? null, null);
+  // Junk in the column is dropped, not passed on.
+  assertEquals(rowAsLine({ ...row, recipe: [{ name: "", grams: -1 }] }).recipe ?? null, null);
+  // Parts on a line that is no longer a recipe are not handed back.
+  assertEquals(lineAsItem({ ...rowAsLine(row), source: "catalog" }, "lunch").recipe, undefined);
 });
