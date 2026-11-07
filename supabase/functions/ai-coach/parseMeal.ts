@@ -48,7 +48,7 @@ import {
   type SourceReading,
   VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
-import { foodLabel, parseSuggestion, runTavilyLookup, suggestSearchPayload, withPrep } from "./tavilyLookup.ts";
+import { foodLabel, hostOf, parseSuggestion, runTavilyLookup, suggestSearchPayload, withPrep } from "./tavilyLookup.ts";
 import { otherBrandRows } from "./brandCheck.ts";
 import { matchOurSources } from "./ourSources.ts";
 import { applyJudgement, judgeThorough, type ThoroughMatchMode, wantsBrandWeb } from "./thoroughMatch.ts";
@@ -132,6 +132,9 @@ export interface CandidateFood {
   // not replicating the DB), so those candidates carry food_id null and their
   // per-100 numbers travel with them. See fatsecret.ts.
   source: "catalog" | "off" | "fatsecret";
+  /** The site a web-looked-up candidate's numbers came from (Precise lookup
+   *  and its cache rows), e.g. "fatsecret.co.in". Absent elsewhere. */
+  source_site?: string;
   // ── Evidence, on the candidate that was actually researched ───────────────
   // Super and precise-cache hits only. superLookupOne already computed both to
   // write the cache row, and both used to die there: the verdict never left the
@@ -197,6 +200,9 @@ export interface ParsedItem {
    *  the food up by THESE: looking up the card's name only re-checks the row
    *  that may be the mistake. */
   said_name?: string;
+  /** The site the numbers came from, for a web-looked-up line
+   *  ("fatsecret.co.in"). The food agent sees it on the card. */
+  source_site?: string;
 }
 
 /** One tap-to-swap option for a line: everything that changes when the user
@@ -360,6 +366,8 @@ export interface PreviousItem {
   meal_type?: MealType;
   /** ParsedItem.said_name, sent back by the client. */
   said_name?: string;
+  /** The site the line's numbers came from, when the app sent it back. */
+  source_site?: string;
   /** The line the user tapped "double check" on. When any line carries it,
    *  research looks up ONLY the marked lines and leaves the rest as they were. */
   research?: boolean;
@@ -384,6 +392,7 @@ function previousAsParsedItem(p: PreviousItem): ParsedItem {
     confidence: p.confidence ?? "medium",
     // Kept so the NEXT double check on this line still looks up the user's words.
     ...(p.said_name ? { said_name: p.said_name } : {}),
+    ...(p.source_site ? { source_site: p.source_site } : {}),
   };
 }
 
@@ -779,6 +788,27 @@ function per100ForItems(resolved: ResolvedItem[]): Map<string, Per100> {
  *  behind it. Candidates that were never researched contribute no entry at all,
  *  which is what keeps `verified: false` off a catalog line nobody ever checked
  *  (absent means "not asked", false means "asked and failed"). */
+/** The site behind every web-looked-up candidate, keyed like verifiedForItems,
+ *  so a line can say where its numbers came from after its id is erased. */
+export function sitesForItems(resolved: ResolvedItem[]): Map<string, string> {
+  const byFood = new Map<string, string>();
+  for (const r of resolved) {
+    for (const c of r.candidates) {
+      if (c.food_id && c.source_site && !byFood.has(c.food_id)) byFood.set(c.food_id, c.source_site);
+    }
+  }
+  return byFood;
+}
+
+/** The first reading's site, for a candidate's source_site. */
+export function siteOfReadings(readings: { ref?: string | null }[] | null | undefined): string | undefined {
+  for (const r of readings ?? []) {
+    const h = hostOf(r?.ref ?? null);
+    if (h) return h.slice(0, 60);
+  }
+  return undefined;
+}
+
 export function verifiedForItems(resolved: ResolvedItem[]): Map<string, boolean> {
   const byFood = new Map<string, boolean>();
   for (const r of resolved) {
@@ -1982,6 +2012,9 @@ export interface SuperFinding {
   readings: SourceReading[];
   serving_label: string | null;
   serving_grams: number | null;
+  /** The reader's count and piece word for that serving (Tavily path). */
+  serving_count?: number | null;
+  serving_unit?: string | null;
   source_note: string | null;
   /** Brand the pages printed, when the line's words name it (Tavily path). */
   brand?: string | null;
@@ -3042,6 +3075,30 @@ export function servingCount(
   return null;
 }
 
+/**
+ * A web finding's serving as candidate servings. The reader copies the printed
+ * count and piece word ("2", "slice") beside the serving's grams; the code
+ * divides: one slice = 50 / 2 = 25 g. With no count from the reader the
+ * printed serving is kept as is, and perOneServing's text reading
+ * (servingCount) is the fallback, as it is for sources with no reader step
+ * (FatSecret's API, the catalog).
+ */
+export function servingsFromFinding(
+  f: Pick<SuperFinding, "serving_label" | "serving_grams" | "serving_count" | "serving_unit">,
+): ServingOption[] {
+  const g = f.serving_grams;
+  if (!(typeof g === "number" && g > 0) || !f.serving_label) return [];
+  const n = f.serving_count;
+  const unit = (f.serving_unit ?? "").trim().toLowerCase();
+  const word = unit.split(/\s+/).pop() ?? "";
+  const piece = !!word && !MASS_UNITS.has(word) && !MEASURE_WORDS.has(word) && !GENERIC_PORTION_WORDS.has(word) &&
+    !SIZE_WORDS.has(word) && !PACK_WORDS.has(word);
+  if (typeof n === "number" && n >= 2 && piece && g / n >= 0.3) {
+    return [{ label: `1 ${unit.split(/\s+/).map((w, i, a) => (i === a.length - 1 ? singularNoun(w) : w)).join(" ")}`, grams: round1(g / n) }];
+  }
+  return [{ label: f.serving_label, grams: g }];
+}
+
 /** perOneServing for a label whose count is not its first word: "1 serving
  *  (2 slices, 50 g)" and "50 g (2 slices)" are two slices, 25 g each. */
 function countInsideLabel(sv: ServingOption): ServingOption {
@@ -3632,9 +3689,7 @@ export async function superLookupOne(
   // contested number and the client has to badge an uncontested one, and
   // neither can do that from a row it never sees.
   const spread = kcalSpread(finding.readings);
-  const servings = finding.serving_label && finding.serving_grams
-    ? [{ label: finding.serving_label, grams: finding.serving_grams }]
-    : [];
+  const servings = servingsFromFinding(finding);
   // foodLabel, not a bare "brand name": extract reports brand "Parle" AND name
   // "Parle Hide and Seek biscuits", which put "Parle Parle ..." on the card
   // and into precise_cache.display_name (live, ai-coach v186, 2026-09-26).
@@ -3692,6 +3747,7 @@ export async function superLookupOne(
     source: "catalog",
     verified,
     ...(spread === null ? {} : { kcal_spread: spread }),
+    ...(siteOfReadings(finding.readings) ? { source_site: siteOfReadings(finding.readings) } : {}),
   };
 }
 
@@ -3711,6 +3767,7 @@ export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
     fiber_g: row.fiber_g,
     servings: (row.servings ?? []).filter((sv) => sv && sv.grams > 0),
     source: "catalog",
+    ...(siteOfReadings(row.evidence) ? { source_site: siteOfReadings(row.evidence) } : {}),
     // A hit is the SAME verdict superLookupOne reached, read back instead of
     // re-bought. Dropping it here would have made the badge and decide's
     // hedging flicker on cache state - a food shown as contested on the lookup
@@ -5320,8 +5377,12 @@ export function stripEphemeralIds(
   /** food_id -> the user's remembered food behind that candidate. Stamped here
    *  for the same reason as `verified`: the id is about to be erased. */
   memoryByFood?: Map<string, MemoryStamp>,
+  /** food_id -> the site a web candidate's numbers came from (sitesForItems). */
+  siteByFood?: Map<string, string>,
 ): ParsedItem[] {
   return items.map((it) => {
+    const site = it.food_id ? siteByFood?.get(it.food_id) : undefined;
+    if (site && !(it.food_id && memoryByFood?.has(it.food_id))) it = { ...it, source_site: site };
     const verdict = it.food_id ? verifiedByFood?.get(it.food_id) : undefined;
     const mem = it.food_id ? memoryByFood?.get(it.food_id) : undefined;
     const base = mem
@@ -5894,6 +5955,8 @@ export interface LabelFound {
   piece: ServingOption | null;
   /** Two or more sources agreed (meetsVerificationBar). */
   verified: boolean;
+  /** The site the label was read from, when known. */
+  site?: string;
 }
 
 /**
@@ -5943,6 +6006,7 @@ export async function findLabel(
     serving,
     piece: one && one !== serving ? one : serving && namesAPiece(serving) && servingCount(serving.label, serving.grams)?.count === 1 ? serving : null,
     verified: c.verified === true,
+    ...(c.source_site ? { site: c.source_site } : {}),
   });
 }
 
@@ -7754,6 +7818,7 @@ async function runParseMealCore(
         ),
         verifiedForItems(resolved),
         memoryByFood,
+        sitesForItems(resolved),
       ),
       extItems,
       { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
@@ -7983,7 +8048,7 @@ async function runParseMealCore(
   // See stripEphemeralIds: every path that returns items to the client must
   // strip them, not just this one. The verification map goes in with them,
   // because the id it keys on is what this call is about to erase.
-  items = stripEphemeralIds(items, verifiedForItems(resolved), memoryByFood);
+  items = stripEphemeralIds(items, verifiedForItems(resolved), memoryByFood, sitesForItems(resolved));
   if (items.length === 0) {
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",

@@ -64,6 +64,10 @@ export interface WebFinding {
   readings: SourceReading[];
   serving_label: string | null;
   serving_grams: number | null;
+  /** Pieces in that serving and their word ("2", "slice"), as the reader
+   *  copied them off the page. Null when the page printed no count. */
+  serving_count?: number | null;
+  serving_unit?: string | null;
   source_note: string | null;
   /** The brand the pages sell this product under, when the user's own words
    *  name it too (brandFromPages). Null otherwise. */
@@ -409,6 +413,10 @@ export interface PageReport {
   basis: "per_100g" | "per_100ml" | "per_serving" | "none";
   serving_grams: number | null;
   serving_label: string | null;
+  /** Pieces in the printed serving (2 for "2 slices (50 g)"), when printed. */
+  serving_count: number | null;
+  /** The piece word ("slice"), when printed. */
+  serving_unit: string | null;
   kcal: number | null;
   /** Energy in kJ as printed, for labels that print no kcal. */
   energy_kj: number | null;
@@ -525,6 +533,12 @@ function parsePageReports(input: unknown): PageReport[] {
       serving_label: typeof o.serving_label === "string" && o.serving_label.trim()
         ? o.serving_label.trim().slice(0, 60)
         : null,
+      serving_count: Number.isInteger(o.serving_count) && (o.serving_count as number) >= 1 && (o.serving_count as number) <= 50
+        ? o.serving_count as number
+        : null,
+      serving_unit: typeof o.serving_unit === "string" && /^[a-z][a-z \-]{0,24}$/i.test(o.serving_unit.trim())
+        ? o.serving_unit.trim().toLowerCase()
+        : null,
       kcal: num(o.kcal),
       energy_kj: num(o.energy_kj),
       protein_g: num(o.protein_g),
@@ -569,6 +583,15 @@ const READ_TOOL = {
             serving_label: {
               type: ["string", "null"],
               description: 'The printed serving, with its count of pieces when printed, e.g. "1 cup (200 g)", "2 slices (50 g)".',
+            },
+            serving_count: {
+              type: ["integer", "null"],
+              description: 'How many pieces the printed serving holds, as printed: 2 for "2 slices (50 g)". null when the ' +
+                "page prints no count. Copy it; never divide.",
+            },
+            serving_unit: {
+              type: ["string", "null"],
+              description: 'The piece word of that count, as printed: "slice" for "2 slices (50 g)". null when no count is printed.',
             },
             kcal: { type: ["number", "null"] },
             energy_kj: { type: ["number", "null"], description: "Energy in kJ, only when printed." },
@@ -1037,10 +1060,10 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
     const used = preferBrandSite(kept);
     const readings: SourceReading[] = used.map((k) => k.reading);
     const pageBrands: string[] = used.flatMap((k) => (k.rep.brand ? [k.rep.brand] : []));
-    let serving: { label: string; grams: number } | null = null;
+    let serving: { label: string; grams: number; count: number | null; unit: string | null } | null = null;
     for (const { rep } of used) {
       if (!serving && rep.serving_label && rep.serving_grams && rep.serving_grams > 0 && rep.serving_grams <= 5000) {
-        serving = { label: rep.serving_label, grams: rep.serving_grams };
+        serving = { label: rep.serving_label, grams: rep.serving_grams, count: rep.serving_count, unit: rep.serving_unit };
       }
     }
     steps.push({
@@ -1063,6 +1086,8 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
       readings,
       serving_label: serving?.label ?? null,
       serving_grams: serving?.grams ?? null,
+      serving_count: serving?.count ?? null,
+      serving_unit: serving?.unit ?? null,
       source_note: sites.length ? `from ${sites.slice(0, 2).join(" and ")}`.slice(0, 80) : null,
       // The USER's words decide which page brand may be stored, never the
       // rewrite's: brandFromPages only keeps a brand the user typed.

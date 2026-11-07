@@ -80,3 +80,26 @@ Deno.test("unitWeightMatchesGrams: lines that already agree, and labels it does 
     assertEquals(unitWeightMatchesGrams(it), it, it.serving_label);
   }
 });
+
+// ── The reader's count (2026-11-07 follow-up) ───────────────────────────────
+// The page reader copies the printed count and piece word beside the serving's
+// grams; code divides. The text reading above is the fallback.
+
+import { servingsFromFinding } from "./parseMeal.ts";
+
+Deno.test("servingsFromFinding: the reader's count makes one piece, the code divides", () => {
+  assertEquals(
+    servingsFromFinding({ serving_label: "1 serving (50 g)", serving_grams: 50, serving_count: 2, serving_unit: "slices" }),
+    [{ label: "1 slice", grams: 25 }],
+  );
+  assertEquals(
+    servingsFromFinding({ serving_label: "30 g", serving_grams: 30, serving_count: 3, serving_unit: "biscuit" }),
+    [{ label: "1 biscuit", grams: 10 }],
+  );
+});
+
+Deno.test("servingsFromFinding: no count, a measure, or no grams keeps the printed serving", () => {
+  assertEquals(servingsFromFinding({ serving_label: "2 slices (50 g)", serving_grams: 50 }), [{ label: "2 slices (50 g)", grams: 50 }]);
+  assertEquals(servingsFromFinding({ serving_label: "2 cups (300 g)", serving_grams: 300, serving_count: 2, serving_unit: "cups" }), [{ label: "2 cups (300 g)", grams: 300 }]);
+  assertEquals(servingsFromFinding({ serving_label: "1 bar", serving_grams: null, serving_count: 1, serving_unit: "bar" }), []);
+});

@@ -129,7 +129,7 @@ export interface FoodAgentInput {
  *  id names the line as the message found it, so a removal never renumbers
  *  what another call in the same turn points at. */
 export function cardLinesWithIds(card: CardLine[]): string[] {
-  return cardLines(card, { macros: true }).map((l) => l.replace(/^(\d+)\.\s/, "[L$1] "));
+  return cardLines(card, { macros: true, sources: true }).map((l) => l.replace(/^(\d+)\.\s/, "[L$1] "));
 }
 
 /** "L2", "[L2]", "l2" or 2 to a card index (0-based), or null. */
@@ -589,7 +589,8 @@ export const LABEL_NOTE =
   "You can look up a packaged food's printed label online with find_label. When the user asks you to look up or check " +
   "a label, or doubts a packaged food's numbers, call it. On a card line, put the label on the line with edit_line, " +
   "use_label true: the app works out the line from the label for the amount on the card, keeping the user's name for " +
-  "the food. When find_label finds no label, say so and keep the line as it is.";
+  "the food. When find_label finds no label, say so and keep the line as it is. Each card line ends with where its " +
+  "numbers came from: a line \"from web\" was already looked up on that site, and find_label looks again.";
 
 /** The later-message agent's instructions. The lessons of today's routes
  *  (plan section 9b) live here as rules, beside the code checks that back
@@ -1729,6 +1730,7 @@ export function lineFromLabel(line: CardLine, label: LabelFound, mealDefault: Me
     fiber_g: label.per_100.fiber_g === null ? null : r1(label.per_100.fiber_g),
     source: "web",
     assumption: "From the label online",
+    ...(label.site ? { source_site: label.site } : {}),
     confidence: label.verified ? "high" : "medium",
     meal_type: line.meal_type ?? mealDefault,
   };
@@ -2455,6 +2457,7 @@ function cardLineAsItem(l: CardLine, mealDefault: MealType): ParsedItem {
     confidence: l.confidence ?? "medium",
     meal_type: l.meal_type ?? mealDefault,
     ...(l.said_name ? { said_name: l.said_name } : {}),
+    ...(l.source_site ? { source_site: l.source_site } : {}),
   };
 }
 

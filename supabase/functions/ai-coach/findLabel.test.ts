@@ -207,3 +207,37 @@ Deno.test("keepLineIdentity: a change that names another food takes it", () => {
 // A ParseMealResult type check, so the import is used and a shape change shows here.
 const _r: ParseMealResult | null = null;
 void _r;
+
+// ── Where each line came from (2026-11-07 follow-up) ────────────────────────
+
+import { cardLinesWithIds } from "./foodAgent.ts";
+import { cardLines, lineSourceTail } from "./foodContext.ts";
+import { stripEphemeralIds } from "./parseMeal.ts";
+
+Deno.test("the agent's card says where each line's numbers came from", () => {
+  const lines = cardLinesWithIds([
+    { ...BREAD, source_site: "fatsecret.co.in" },
+    GHEE,
+    { ...GHEE, food_name: "chutney", source: "estimate", assumption: "Homemade\nmint chutney, typical" },
+    { ...GHEE, food_name: "paneer", source: "manual" },
+  ]);
+  assert(lines[0].endsWith("| from web: fatsecret.co.in"), lines[0]);
+  assert(lines[1].endsWith("| from catalog"), lines[1]);
+  assert(lines[2].endsWith("| estimate: Homemade mint chutney, typical"), lines[2]);
+  assert(lines[3].endsWith("| the user's numbers"), lines[3]);
+  assert(lines[0].startsWith("[L1] "));
+  // An older app sends no site: still "from web", never a guess.
+  assertEquals(lineSourceTail({ source: "web" }), "from web");
+  // The plain card (router, parse) is unchanged.
+  assertFalse(cardLines([BREAD])[0].includes("|"));
+  assert(LABEL_NOTE.includes("from web"));
+});
+
+Deno.test("a web candidate's site is stamped on its line before the id is erased", () => {
+  const it: ParsedItem = {
+    food_id: "eph_web_x", food_name: "Health Factory protein bread", quantity: 2, serving_label: "slice (25 g)", grams: 50,
+    kcal: 121, protein_g: 7.6, carb_g: 20.8, fat_g: 0.9, fiber_g: null, source: "catalog", assumption: null, confidence: "high",
+  };
+  const [out] = stripEphemeralIds([it], undefined, undefined, new Map([["eph_web_x", "fatsecret.co.in"]]));
+  assertEquals(out.source_site, "fatsecret.co.in");
+});

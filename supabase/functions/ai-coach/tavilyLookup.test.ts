@@ -58,7 +58,7 @@ Deno.test("foodLabel does not repeat a brand already in the name", () => {
 });
 
 const report = (over: Partial<PageReport>): PageReport => ({
-  page_id: "p1", same_food: true, basis: "per_100g", serving_grams: null, serving_label: null,
+  page_id: "p1", same_food: true, basis: "per_100g", serving_grams: null, serving_label: null, serving_count: null, serving_unit: null,
   kcal: 72, energy_kj: null, protein_g: 3.1, carb_g: 4.6, fat_g: 4.5, fiber_g: null, brand: null, ...over,
 });
 
@@ -814,4 +814,26 @@ Deno.test("onBrandSite: with no brand, the name's first words can be the brand (
   assertEquals(onBrandSite(MAKER, { name: "protein bread", brand: null }), false);
   // The rest of the name must still be named by the page.
   assertEquals(onBrandSite(MAKER, { name: "Health Factory multigrain bun", brand: null }), false);
+});
+
+Deno.test("the reader's serving count and piece word reach the finding", async () => {
+  const calls = newCalls();
+  const net = fakeNet({ searches: [{ results: [RIGHT] }] }, calls);
+  const deps = lookupDeps(net, calls);
+  deps.callModel = async (payload) => {
+    const msg = JSON.parse((payload.messages as Array<{ content: string }>)[0].content);
+    return {
+      content: [{
+        type: "tool_use", name: "report_page_panels",
+        input: {
+          pages: msg.pages.map((p: { page_id: string }) => ({
+            page_id: p.page_id, same_food: true, basis: "per_100g", serving_label: "1 serving (50 g)", serving_grams: 50,
+            serving_count: 2, serving_unit: "Slices", kcal: 72, protein_g: 3, carb_g: 5, fat_g: 4,
+          })),
+        },
+      }],
+    };
+  };
+  const out = await runTavilyLookup(deps, DAHI);
+  assertEquals([out.finding?.serving_count, out.finding?.serving_unit], [2, "slices"]);
 });
