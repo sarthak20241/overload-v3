@@ -137,7 +137,7 @@ import { preciseAliasStore } from "./preciseAlias.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
-import { type FoodRegion, foodRegionForTimezone, parseFoodRegionRulesMode } from "./regionRules.ts";
+import { type FoodRegion, foodRegionForTimezone, parseFoodRegionRulesMode, startEarlyRegionRead } from "./regionRules.ts";
 import { freeGoalTurnKind, freePhaseBuildCandidate, freePhaseRefineCandidate } from "./freePhaseBuild.ts";
 import { selectMatchRows } from "./ourSources.ts";
 import { MEMORY_DAYS, type MemoryEntry, type OriginTrustMode } from "./userFoodMemory.ts";
@@ -3724,6 +3724,12 @@ async function handleParseMealRequest(args: {
   // because this block cannot be reached any other way.
   const wantsStream = wouldStream(body);
 
+  // Region rules: start the time zone read now, on every path (the stream
+  // and the food box), so the parse finds it done well inside its 400 ms cap.
+  startEarlyRegionRead(
+    { on: FOOD_REGION_RULES === "on", precise: isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier }) },
+    () => readTimezone(userClient),
+  );
   if (wantsStream) {
     const enc = new TextEncoder();
     // Client cancellation -> model cancellation. Without this the reader
