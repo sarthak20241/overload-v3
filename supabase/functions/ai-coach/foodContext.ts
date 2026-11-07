@@ -68,9 +68,6 @@ export function cardMayBeCut(card: CardLine[] | null | undefined): boolean {
   return (card?.length ?? 0) >= CARD_MAX_LINES;
 }
 
-/** The card for a model's eyes: short, numbered, one line per food.
- *  `macros`: add protein, carbs and fat, for a model that may copy a line
- *  into a save (the agent). The router judges intent and gets the short form. */
 /** Where a line's numbers came from, in a few words: "from web: fatsecret.co.in",
  *  "estimate: <its note>", "the user's numbers". */
 export function lineSourceTail(l: Pick<CardLine, "source" | "source_site" | "assumption">): string {
@@ -94,6 +91,9 @@ export function lineSourceTail(l: Pick<CardLine, "source" | "source_site" | "ass
   }
 }
 
+/** The card for a model's eyes: short, numbered, one line per food.
+ *  `macros`: add protein, carbs and fat, for a model that may copy a line
+ *  into a save (the agent). The router judges intent and gets the short form. */
 export function cardLines(card: CardLine[] | null | undefined, opts: { macros?: boolean; sources?: boolean } = {}): string[] {
   // Whitespace collapsed: a newline in a client-supplied name would otherwise
   // forge an extra numbered line in the prompt.

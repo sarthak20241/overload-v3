@@ -584,6 +584,9 @@ export function toolsForLater(
   return out;
 }
 
+/** find_label calls one message may make: each is a web lookup. */
+export const MAX_FIND_LABEL_PER_RUN = 2;
+
 /** Said to a later-message agent that has find_label (deps.findLabel). */
 export const LABEL_NOTE =
   "You can look up a packaged food's printed label online with find_label. When the user asks you to look up or check " +
@@ -898,6 +901,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // Each card line find_label worked out from a label, by card index: what
   // edit_line with use_label puts on the card.
   const labelLines = new Map<number, ParsedItem>();
+  const labelCalls = { n: 0 };
   // The foods on the card for copy_lines' duplicate check: the card as sent,
   // plus every line already staged in this run.
   const onCard = onCardOf(input.card ?? []);
@@ -1137,7 +1141,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
           error: "A card is on screen, and restore_card would replace it, so it is not available now. To put foods " +
             "from that earlier card on this one, use copy_lines.",
         }
-        : await runRead(u, deps, parse, { card: input.card ?? [], labelLines });
+        : await runRead(u, deps, parse, { card: input.card ?? [], labelLines, calls: labelCalls });
       outs[i] = out;
       if (!run && !refused.has(u) && !rejected.has(u)) remember(seen, out);
       return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) };
@@ -1154,7 +1158,7 @@ async function runRead(
   u: ToolUse,
   deps: FoodAgentDeps,
   parse: (text: string) => Promise<ParseMealResult>,
-  ctx: { card: CardLine[]; labelLines: Map<number, ParsedItem> } = { card: [], labelLines: new Map() },
+  ctx: { card: CardLine[]; labelLines: Map<number, ParsedItem>; calls: { n: number } } = { card: [], labelLines: new Map(), calls: { n: 0 } },
 ): Promise<unknown> {
   try {
     if (u.name === FIND_LABEL_TOOL.name) return await runFindLabel(u.input ?? {}, deps, ctx);
@@ -1665,6 +1669,9 @@ export function keepLineIdentity(original: CardLine, edited: ParsedItem, change:
   // Numbers the user stated (source manual) are theirs, whatever the name: a
   // stated number wins over every source.
   if (edited.source === "manual") return edited;
+  // Amount edits only: the weight changed. "Those numbers are wrong, check
+  // again" at the same weight is a re-lookup, and its new row stands.
+  if (!(original.grams > 0) || Math.abs(edited.grams - original.grams) <= Math.max(1, original.grams * 0.05)) return edited;
   const has = (set: Set<string>, w: string) => set.has(w) || set.has(`${w}s`) || set.has(w.replace(/s$/, ""));
   const before = new Set([...nameWords(original.food_name), ...nameWords(original.said_name ?? "")]);
   const said = new Set(nameWords(change));
@@ -1745,9 +1752,14 @@ export function lineFromLabel(line: CardLine, label: LabelFound, mealDefault: Me
 async function runFindLabel(
   input: Record<string, unknown>,
   deps: FoodAgentDeps,
-  ctx: { card: CardLine[]; labelLines: Map<number, ParsedItem> },
+  ctx: { card: CardLine[]; labelLines: Map<number, ParsedItem>; calls: { n: number } },
 ): Promise<unknown> {
   if (!deps.findLabel) return { error: "find_label is not available here." };
+  // Each call is a web lookup: a few per run at most.
+  if (ctx.calls.n >= MAX_FIND_LABEL_PER_RUN) {
+    return { error: `find_label already ran ${MAX_FIND_LABEL_PER_RUN} times this message. Use what it returned, or reply.` };
+  }
+  ctx.calls.n++;
   const index = input.line_id === undefined ? null : lineIndexOf(input.line_id, ctx.card.length);
   if (input.line_id !== undefined && index === null) {
     return { error: `find_label names ${JSON.stringify(input.line_id)}, which is not on the card. The card's lines are L1 to L${ctx.card.length}.` };

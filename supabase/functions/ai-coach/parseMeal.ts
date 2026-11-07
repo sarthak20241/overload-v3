@@ -788,6 +788,18 @@ function per100ForItems(resolved: ResolvedItem[]): Map<string, Per100> {
  *  behind it. Candidates that were never researched contribute no entry at all,
  *  which is what keeps `verified: false` off a catalog line nobody ever checked
  *  (absent means "not asked", false means "asked and failed"). */
+export function verifiedForItems(resolved: ResolvedItem[]): Map<string, boolean> {
+  const byFood = new Map<string, boolean>();
+  for (const r of resolved) {
+    for (const c of r.candidates) {
+      if (c.food_id && c.verified !== undefined && !byFood.has(c.food_id)) {
+        byFood.set(c.food_id, c.verified);
+      }
+    }
+  }
+  return byFood;
+}
+
 /** The site behind every web-looked-up candidate, keyed like verifiedForItems,
  *  so a line can say where its numbers came from after its id is erased. */
 export function sitesForItems(resolved: ResolvedItem[]): Map<string, string> {
@@ -807,18 +819,6 @@ export function siteOfReadings(readings: { ref?: string | null }[] | null | unde
     if (h) return h.slice(0, 60);
   }
   return undefined;
-}
-
-export function verifiedForItems(resolved: ResolvedItem[]): Map<string, boolean> {
-  const byFood = new Map<string, boolean>();
-  for (const r of resolved) {
-    for (const c of r.candidates) {
-      if (c.food_id && c.verified !== undefined && !byFood.has(c.food_id)) {
-        byFood.set(c.food_id, c.verified);
-      }
-    }
-  }
-  return byFood;
 }
 
 /** Serving options for every candidate we offered, so the display quantity can
@@ -3690,6 +3690,7 @@ export async function superLookupOne(
   // neither can do that from a row it never sees.
   const spread = kcalSpread(finding.readings);
   const servings = servingsFromFinding(finding);
+  const site = siteOfReadings(finding.readings);
   // foodLabel, not a bare "brand name": extract reports brand "Parle" AND name
   // "Parle Hide and Seek biscuits", which put "Parle Parle ..." on the card
   // and into precise_cache.display_name (live, ai-coach v186, 2026-09-26).
@@ -3747,11 +3748,12 @@ export async function superLookupOne(
     source: "catalog",
     verified,
     ...(spread === null ? {} : { kcal_spread: spread }),
-    ...(siteOfReadings(finding.readings) ? { source_site: siteOfReadings(finding.readings) } : {}),
+    ...(site ? { source_site: site } : {}),
   };
 }
 
 export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
+  const site = siteOfReadings(row.evidence);
   return {
     // Ephemeral, not the row's real uuid: precise_cache is not `foods`, so the
     // id must never reach meal_entries' FK. Addressable for decide, stripped
@@ -3767,7 +3769,7 @@ export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
     fiber_g: row.fiber_g,
     servings: (row.servings ?? []).filter((sv) => sv && sv.grams > 0),
     source: "catalog",
-    ...(siteOfReadings(row.evidence) ? { source_site: siteOfReadings(row.evidence) } : {}),
+    ...(site ? { source_site: site } : {}),
     // A hit is the SAME verdict superLookupOne reached, read back instead of
     // re-bought. Dropping it here would have made the badge and decide's
     // hedging flicker on cache state - a food shown as contested on the lookup
@@ -5931,16 +5933,6 @@ async function answerAboutPrevious(
   return scrubDashes(parts.join(" ")).slice(0, 400);
 }
 
-/**
- * The user accepted an offer to go and check: look the label up on the web and
- * rebuild their lines from it.
- *
- * This is the one place we spend real time on purpose. Normally a web search is
- * a last resort because it costs seconds, but here the user has explicitly told
- * us the cheap answer was wrong — so the expensive answer is the right one.
- * Keeps their grams (they know what they ate) and replaces only the per-100
- * basis, which is the part that was in doubt.
- */
 /** One product's printed label, as find_label hands it to the food agent. */
 export interface LabelFound {
   /** The product as the label sells it. */
@@ -6010,6 +6002,16 @@ export async function findLabel(
   });
 }
 
+/**
+ * The user accepted an offer to go and check: look the label up on the web and
+ * rebuild their lines from it.
+ *
+ * This is the one place we spend real time on purpose. Normally a web search is
+ * a last resort because it costs seconds, but here the user has explicitly told
+ * us the cheap answer was wrong — so the expensive answer is the right one.
+ * Keeps their grams (they know what they ate) and replaces only the per-100
+ * basis, which is the part that was in doubt.
+ */
 /** Foods per double-check lookup call. See researchPrevious. */
 const RESEARCH_BATCH = 3;
 

@@ -247,3 +247,24 @@ Deno.test("a web candidate's site is stamped on its line before the id is erased
   const [out] = stripEphemeralIds([it], undefined, undefined, new Map([["eph_web_x", "fatsecret.co.in"]]));
   assertEquals(out.source_site, "fatsecret.co.in");
 });
+
+Deno.test("keepLineIdentity: a re-lookup at the same weight stands (not an amount edit)", () => {
+  const again = edited({ food_name: "Protein Bread", grams: 100, kcal: 250, protein_g: 20 });
+  assertEquals(keepLineIdentity(BREAD, again, "those numbers are wrong, check again"), again);
+});
+
+Deno.test("find_label runs at most twice a message: each call is a web lookup", async () => {
+  const log: string[] = [];
+  await runFoodAgent(
+    { text: "check every label", defaultMeal: "breakfast", card: CARD, later: true },
+    deps(scripted([
+      [
+        { name: "find_label", input: { line_id: "L1" } },
+        { name: "find_label", input: { line_id: "L2" } },
+        { name: "find_label", input: { product: "Milky Mist Greek yoghurt" } },
+      ],
+      [{ name: "reply", input: { text: "Checked." } }],
+    ]), log),
+  );
+  assertEquals(log.filter((l) => l.startsWith("label:")).length, 2);
+});
