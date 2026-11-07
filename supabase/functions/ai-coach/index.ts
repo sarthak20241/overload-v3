@@ -86,6 +86,7 @@ import {
   wantsFoodAgent,
   cardQuestionFellToParse,
 } from "./foodIntent.ts";
+import { parseFoodBuildRecipeMode, readRecipeParts } from "./recipe.ts";
 import { CARD_MAX_LINES, type CardLine, cardMayBeCut, readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
@@ -311,6 +312,12 @@ const FOOD_AGENT_LATER = parseFoodAgentLaterMode(Deno.env.get("FOOD_AGENT_LATER"
  *  the parse already running (foodIntent.ts firstMessageGoesToGate, foodBar.ts
  *  runFirstMessage). off (default): exactly today's routing. */
 const FOOD_FIRST_GATE = parseFoodFirstGateMode(Deno.env.get("FOOD_FIRST_GATE"));
+
+/** Precise food box, step 5: the food agent's build_recipe tool, a home dish
+ *  built from the parts the user names and added up in code (recipe.ts). It
+ *  rides on the later-mode agent (FOOD_AGENT_LATER, FOOD_FIRST_GATE). off
+ *  (default): the agent has no build_recipe, exactly as today. */
+const FOOD_BUILD_RECIPE = parseFoodBuildRecipeMode(Deno.env.get("FOOD_BUILD_RECIPE"));
 
 /** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
  *  of a race it is supposed to win (measured ~700ms against a parse of 1.2s and
@@ -3064,7 +3071,7 @@ function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
         // the createMeal collision above, and writeAutoLog answers it the same
         // way - replay theirs rather than append a second copy.
         if (error.code === "23505") return { conflict: true };
-        return { error: error.message };
+        return { error: error.message, code: error.code };
       }
       return { ids: rows(data).map((r) => String(r.id)) };
     },
@@ -3330,6 +3337,7 @@ async function handleParseMealRequest(args: {
       if (!name) return [];
       const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
       const src = r.source;
+      const recipe = readRecipeParts(r.recipe, src);
       return [{
         food_id: typeof r.food_id === "string" && r.food_id ? r.food_id : null,
         food_name: name,
@@ -3342,7 +3350,8 @@ async function handleParseMealRequest(args: {
         carb_g: n(r.carb_g),
         fat_g: n(r.fat_g),
         fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : n(r.fiber_g),
-        source: src === "catalog" || src === "off" || src === "web" || src === "manual" || src === "estimate"
+        source: src === "catalog" || src === "off" || src === "web" || src === "manual" || src === "estimate" ||
+            src === "recipe"
           ? src
           : "estimate",
         assumption: typeof r.assumption === "string" && r.assumption.trim() ? r.assumption.trim().slice(0, 160) : null,
@@ -3365,6 +3374,9 @@ async function handleParseMealRequest(args: {
         ...(typeof r.source_site === "string" && /^[a-z0-9.-]{3,60}$/i.test(r.source_site.trim())
           ? { source_site: r.source_site.trim().toLowerCase() }
           : {}),
+        // A dish built from its parts (recipe.ts): its parts, when the app
+        // sends them back. An app that does not keeps the parts in the note.
+        ...(recipe ? { recipe } : {}),
       }];
     })
     : [];
@@ -3380,6 +3392,7 @@ async function handleParseMealRequest(args: {
     fiber_g: p.fiber_g, assumption: p.assumption, confidence: p.confidence, meal_type: p.meal_type,
     ...(p.said_name ? { said_name: p.said_name } : {}),
     ...(p.source_site ? { source_site: p.source_site } : {}),
+    ...(p.recipe ? { recipe: p.recipe } : {}),
   }));
   const foodContext: FoodConversationContext = { ...baseFoodContext, card: card.length ? card : null };
   // THE switch for the agent-beside-a-card path. A card that may be cut at the
@@ -4425,6 +4438,7 @@ configureFoodBar({
   agentModel: MODEL,
   jev: JEV_API_KEY ? { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS } : null,
   callAnthropic: (payload, timeoutMs) => callAnthropic(payload, timeoutMs),
+  buildRecipe: FOOD_BUILD_RECIPE === "on",
 });
 
 Deno.serve(async (req) => {

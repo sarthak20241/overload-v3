@@ -16,6 +16,7 @@ import type { FoodThreadSend } from './foodThread';
 import { persistLoggedEntryEdit } from './loggedEntryEdit';
 import { COPIED_FROM, isFoodOrigin, ORIGIN_COLS, originColumns, parseRecipe, type CopiedFrom, type FoodOrigin, type RecipePart } from './foodOrigin';
 import { missingColumn, withoutColumns } from './missingColumn';
+import { sourceBeforeOrigin } from './recipeLine';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { FunctionRegion } from '@supabase/supabase-js';
@@ -751,7 +752,8 @@ export interface ParsedMealItem {
   fiber_g: number | null;
   // 'manual' = the user corrected this line in the review card before adding
   // it, so the numbers are theirs and nothing should recompute over them.
-  source: 'catalog' | 'off' | 'fatsecret' | 'web' | 'estimate' | 'manual';
+  // 'recipe': a dish the server added up from its parts (ai-coach/recipe.ts).
+  source: 'catalog' | 'off' | 'fatsecret' | 'web' | 'estimate' | 'manual' | 'recipe';
   assumption: string | null;
   confidence: 'high' | 'medium' | 'low';
   /** Precise tier only: two INDEPENDENT sources landed within tolerance of this
@@ -933,7 +935,7 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
     // shape as the server's sanitizeItems bug; a new source has to be added in
     // BOTH whitelists or it silently degrades.
     source: i.source === 'catalog' || i.source === 'off' || i.source === 'fatsecret' ||
-        i.source === 'web' || i.source === 'manual'
+        i.source === 'web' || i.source === 'manual' || i.source === 'recipe'
       ? i.source
       : 'estimate',
     assumption: typeof i.assumption === 'string' && i.assumption.trim() ? i.assumption.trim() : null,
@@ -1542,7 +1544,7 @@ async function logSection(
     // The database predates migration 20261107120000: save without the
     // columns. Nothing records an origin until the migration lands.
     ({ data: inserted, error } = await supabase
-      .from('meal_entries').insert(withoutColumns(rows, ORIGIN_COLS)).select('id, position'));
+      .from('meal_entries').insert(withoutColumns(sourceBeforeOrigin(rows), ORIGIN_COLS)).select('id, position'));
   }
   if (error) {
     // If we created an empty meal and the entries failed, don't leave the

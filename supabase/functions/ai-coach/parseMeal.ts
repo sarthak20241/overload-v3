@@ -176,7 +176,9 @@ export interface ParsedItem {
   fiber_g: number | null;
   // 'manual' never originates here: it comes back from the client when the user
   // corrected a line in the review card, and must round-trip intact.
-  source: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
+  // 'recipe': a dish code added up from its parts (recipe.ts, step 5). Its
+  // parts ride in `recipe`, its origin is "recipe".
+  source: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual" | "recipe";
   assumption: string | null;
   confidence: "high" | "medium" | "low";
   /** The candidate behind this line cleared the verification bar: two
