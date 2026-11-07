@@ -2574,10 +2574,10 @@ interface MealRow {
   entries: Array<Record<string, unknown>>;
 }
 
-/** A database before migration 20261107120000 (no origin / copied_from /
- *  recipe columns): the read is retried with the older column list. */
+/** A database before migration 20261107120000 (no origin / recipe
+ *  columns): the read is retried with the older column list. */
 function stepFourColumnMissing(error: { message?: string } | null | undefined): boolean {
-  return /column .*\b(origin|copied_from|recipe)\b.* does not exist|could not find the '(origin|copied_from|recipe)' column/i
+  return /column .*\b(origin|recipe)\b.* does not exist|could not find the '(origin|recipe)' column/i
     .test(error?.message ?? "");
 }
 
