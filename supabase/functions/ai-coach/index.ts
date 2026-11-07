@@ -62,7 +62,13 @@ import {
   type FoodIntentDecision,
   type FoodIntentDeps,
   JEV_INTENT_FLOOR,
+  isPreciseRequest,
+  tierSelectedOf,
+  parseFoodAgentLaterMode,
+  parseFoodFirstGateMode,
+  firstMessageGoesToGate,
   parseFoodIntentMode,
+  laterMessageGoesToAgent,
   routeFoodIntent,
   SAVED_MATCH_FLOOR,
   type SavedMealSummary,
@@ -94,11 +100,15 @@ import {
 } from "./foodThreads.ts";
 import {
   agentCouldUseThread,
+  answeredByLabel,
   configureFoodBar,
   type DiaryReader,
   type FoodBarOutcome,
   type FoodBarThread,
+  type FoodBarUsageRow,
   resolveFoodBarOutcome,
+  runFirstMessage,
+  runLaterMessage,
   startFoodAgent,
   startFoodIntent,
   wouldDivertToCreate,
@@ -129,7 +139,7 @@ import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
 import { freeGoalTurnKind, freePhaseBuildCandidate, freePhaseRefineCandidate } from "./freePhaseBuild.ts";
 import { selectMatchRows } from "./ourSources.ts";
-import { MEMORY_DAYS, type MemoryEntry } from "./userFoodMemory.ts";
+import { MEMORY_DAYS, type MemoryEntry, type OriginTrustMode } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 import {
   type AnonIntake,
@@ -290,6 +300,19 @@ const FOOD_INTENT_MODE = parseFoodIntentMode(Deno.env.get("FOOD_INTENT_MODE"));
  *  restore_card. The tables must exist before this leaves off. */
 const FOOD_THREADS = parseFoodThreadsMode(Deno.env.get("FOOD_THREADS"));
 
+/** Precise food box, step 2 (.planning/precise-food-logger-plan.md): after the
+ *  first message of a thread, every message goes to the food agent and the
+ *  router stops deciding who answers (foodIntent.ts laterMessageGoesToAgent,
+ *  foodBar.ts runLaterMessage). off (default): exactly today's routing. */
+const FOOD_AGENT_LATER = parseFoodAgentLaterMode(Deno.env.get("FOOD_AGENT_LATER"));
+
+/** Precise food box, step 3: the FIRST message of a thread gets one Jev
+ *  question, "a fully plain food log that asks for nothing else?" Plain goes
+ *  to the parse; anything else, or unsure, to the food agent, which can use
+ *  the parse already running (foodIntent.ts firstMessageGoesToGate, foodBar.ts
+ *  runFirstMessage). off (default): exactly today's routing. */
+const FOOD_FIRST_GATE = parseFoodFirstGateMode(Deno.env.get("FOOD_FIRST_GATE"));
+
 /** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
  *  of a race it is supposed to win (measured ~700ms against a parse of 1.2s and
  *  up); one that takes longer than this has already lost its reason to exist,
@@ -318,7 +341,9 @@ async function fetchSavedMealsForParse(userClient: SupabaseClient): Promise<Save
       .from("saved_meals")
       .select(
         "id, name, kind, servings, serving_label, kcal, protein_g, carb_g, fat_g, " +
-          "saved_meal_items(food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, position)",
+          // `*`: origin arrives with migration 20261107120000, and naming a
+          // column the database does not have yet would fail the whole read.
+          "saved_meal_items(*)",
       )
       .order("created_at", { ascending: false })
       .limit(60);
@@ -349,6 +374,7 @@ async function fetchSavedMealsForParse(userClient: SupabaseClient): Promise<Save
           carb_g: nn(i.carb_g),
           fat_g: nn(i.fat_g),
           fiber_g: nn(i.fiber_g),
+          origin: typeof i.origin === "string" ? i.origin : null,
         })),
     })).filter((m) => m.name.length > 0);
   } catch {
@@ -371,12 +397,17 @@ function clientSupportsVariantSwap(body: Record<string, unknown>): boolean {
   return Array.isArray(body?.supports) && (body.supports as unknown[]).includes(CLIENT_CAP_VARIANT_SWAP);
 }
 
-function makeDiaryReader(userClient: SupabaseClient, extra: { todayLocal?: string | null; tzOffsetMin?: number | null }): DiaryReader {
+function makeDiaryReader(
+  userClient: SupabaseClient,
+  extra: { todayLocal?: string | null; tzOffsetMin?: number | null },
+  /** Each line's food_id, source and fiber too (copy_lines). */
+  full = false,
+): DiaryReader {
   let clockP: Promise<DayClock> | null = null;
   return async (input) => {
     clockP ??= coachDayClock(userClient, extra);
     try {
-      return await listLoggedMeals(input, await clockP, loggedMealsStore(userClient));
+      return await listLoggedMeals(input, await clockP, loggedMealsStore(userClient), full);
     } catch (e) {
       return { error: String(e) };
     }
@@ -460,6 +491,15 @@ const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on
 // The user's own food memory (userFoodMemory.ts, migration 0149): on unless
 // set to "off", a kill switch that needs no deploy.
 const USER_FOOD_MEMORY = (Deno.env.get("USER_FOOD_MEMORY") ?? "on").trim().toLowerCase() !== "off";
+/** Step 4: which numbers memory trusts. off (default) = today's, where any
+ *  "manual" line ranks top; shadow = today's, and the parse trace records
+ *  where trust by origin would differ; on = user_typed > label > catalog >
+ *  recipe > guess = unknown. Turn on only after the clean-up has run, or old
+ *  "manual" rows all read as unknown. */
+const FOOD_ORIGIN_TRUST: OriginTrustMode = (() => {
+  const v = (Deno.env.get("FOOD_ORIGIN_TRUST") ?? "off").trim().toLowerCase();
+  return v === "on" || v === "shadow" ? v : "off";
+})();
 // Precise on Tavily: one model-written retry search when the fixed ones miss.
 const SEARCH_REWRITE = (Deno.env.get("SEARCH_REWRITE") ?? "on").trim().toLowerCase() !== "off";
 
@@ -989,7 +1029,9 @@ function loggedMealsStore(userClient: SupabaseClient): LoggedMealsStore {
     async mealsBetween(startIso, endIso) {
       const { data, error } = await userClient
         .from("meals")
-        .select("meal_type, logged_at, meal_entries(food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, position)")
+        // `*`: origin arrives with migration 20261107120000; a named column the
+        // database lacks would fail the read.
+        .select("meal_type, logged_at, meal_entries(*)")
         .gte("logged_at", startIso)
         .lte("logged_at", endIso)
         .order("logged_at", { ascending: true })
@@ -1930,6 +1972,9 @@ function makeTextCaller(): TextCaller {
     const u = res.data.usage ?? {};
     return {
       text: blocks.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n"),
+      // A reply with no text says why: hit the cap, and spent on which blocks.
+      stop_reason: res.data.stop_reason ?? undefined,
+      block_types: blocks.map((b) => b.type),
       usage: {
         input_tokens: u.input_tokens ?? 0,
         output_tokens: u.output_tokens ?? 0,
@@ -2555,6 +2600,8 @@ function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
     persistent: true, confirmed_at: String(c.confirmed_at),
     // Absent before migration 20261031125900 (select "*"), so absent is null.
     brand: typeof c.brand === "string" && c.brand.trim() ? c.brand.trim().slice(0, 80) : null,
+    origin: typeof c.origin === "string" ? c.origin : null,
+    recipe: c.recipe ?? null,
     confirmed_aliases: Array.isArray(c.aliases) ? c.aliases.filter((a): a is string => typeof a === "string") : [],
   };
 }
@@ -2567,7 +2614,9 @@ async function fetchMemoryEntries(
     userClient
       .from("meals")
       .select(
-        "logged_at, meal_entries(food_name, food_id, kcal, protein_g, carb_g, fat_g, fiber_g, grams_logged, quantity, serving_unit, source, logged_via, tier)",
+        // `*`: origin and recipe arrive with migration 20261107120000, and
+        // naming a column the database does not have yet fails the read.
+        "logged_at, meal_entries(*)",
       )
       .gte("logged_at", sinceIso)
       // A meal logged ahead for a later day is planned, not eaten. It joins
@@ -2605,6 +2654,8 @@ async function fetchMemoryEntries(
         source: typeof e.source === "string" ? e.source : null,
         logged_via: typeof e.logged_via === "string" ? e.logged_via : null,
         tier: typeof e.tier === "string" ? e.tier : null,
+        origin: typeof e.origin === "string" ? e.origin : null,
+        recipe: e.recipe ?? null,
         logged_at: at,
       });
     }
@@ -2874,6 +2925,7 @@ function makeParseDeps(
     userMemory: USER_FOOD_MEMORY && JEV_API_KEY
       ? {
         load: () => fetchMemoryEntries(userClient),
+        originTrust: FOOD_ORIGIN_TRUST,
         // Exact aliases are queried separately so a long-lived user's alias
         // cannot disappear behind the recent-cache or top-N memory limits.
         lookupAliases: async (keys: string[]) => {
@@ -3107,17 +3159,7 @@ async function handleParseMealRequest(args: {
           streamed: wouldStream(body), autoLog: body.auto_log === true, clientId: typeof body.client_id === "string" ? body.client_id : null,
           canCreate: clientSupportsFoodCreate(body),
         });
-        const answeredBy = !outcome
-          ? null
-          : outcome.action === "log"
-          ? (outcome.result ? "food_agent" : "parse")
-          : outcome.agent?.kind === "failed"
-          ? "canned_agent_failed"
-          : outcome.agent
-          ? "food_agent"
-          : outcome.action === "reply"
-          ? "reply_call"
-          : "create_call";
+        const answeredBy = answeredByLabel(outcome);
         const row = buildFoodBarTraceRow({
           requestId,
           userId,
@@ -3332,6 +3374,11 @@ async function handleParseMealRequest(args: {
           ? { said_name: r.said_name.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 100) }
           : {}),
         ...(r.research === true ? { research: true } : {}),
+        // Where a web line's numbers came from. An older app does not send it:
+        // the line then reads "from web" with no site.
+        ...(typeof r.source_site === "string" && /^[a-z0-9.-]{3,60}$/i.test(r.source_site.trim())
+          ? { source_site: r.source_site.trim().toLowerCase() }
+          : {}),
       }];
     })
     : [];
@@ -3346,6 +3393,7 @@ async function handleParseMealRequest(args: {
     food_id: p.food_id, source: p.source,
     fiber_g: p.fiber_g, assumption: p.assumption, confidence: p.confidence, meal_type: p.meal_type,
     ...(p.said_name ? { said_name: p.said_name } : {}),
+    ...(p.source_site ? { source_site: p.source_site } : {}),
   }));
   const foodContext: FoodConversationContext = { ...baseFoodContext, card: card.length ? card : null };
   // THE switch for the agent-beside-a-card path. A card that may be cut at the
@@ -3371,7 +3419,7 @@ async function handleParseMealRequest(args: {
   let savedMealsShared: Promise<SavedMealForParse[]> | null = null;
   const savedMealsPFor = () => (savedMealsShared ??= fetchSavedMealsForParse(userClient));
   /** The router, started with the trace's hooks, and timed for the trace. */
-  const startTracedIntent = (signal?: AbortSignal) => {
+  const startTracedIntent = (signal?: AbortSignal, askPlain = false) => {
     const i0 = Date.now();
     let ms: number | null = null;
     const p = startFoodIntent(
@@ -3379,6 +3427,7 @@ async function handleParseMealRequest(args: {
       jevUsageLogger(admin, "parse_meal", "food_intent", userId, fbTrace, { turns: recentTurns.length > 0, card: card.length > 0 }),
       fbTrace,
       jevFailureLogger(fbTrace, "food_intent", { turns: recentTurns.length > 0, card: card.length > 0 }),
+      askPlain,
     );
     void p.then(() => { ms = Date.now() - i0; }, () => {});
     fbIntent = { p, ms: () => ms };
@@ -3398,7 +3447,12 @@ async function handleParseMealRequest(args: {
   let threadTimer: ReturnType<typeof setTimeout> | undefined;
   const threadP: Promise<FoodBarThread | null> = FOOD_THREADS === "on" && threadReq && threadStore
     ? Promise.race([
-      threadForAgent(threadStore, userId, threadReq).catch(() => null),
+      threadForAgent(threadStore, userId, threadReq).catch(() => null).then((th) => {
+        // The index line's size on every message that has one, so the cost of
+        // the hot context can be counted per user (PR body has the query).
+        if (th?.indexStats) fbTrace.step({ src: "router", tool: "food_threads_index", result: th.indexStats });
+        return th;
+      }),
       new Promise<null>((r) => {
         threadTimer = setTimeout(() => {
           console.log("[food_threads] thread read over 800 ms; served with no earlier cards");
@@ -3455,18 +3509,22 @@ async function handleParseMealRequest(args: {
   // The router's promise and the create flag are passed in: each request path
   // (stream, JSON) has its own, declared after this.
   // Off (or no thread sent): false at once, so "off changes nothing" holds.
+  // agentCouldUseThread with no cardOpen is false for any card on screen.
   const earlierCardsFor = async (intent: Promise<FoodIntentDecision | null>, canCreate: boolean) =>
-    FOOD_THREADS === "on" && !!threadReq &&
+    FOOD_THREADS === "on" && !!threadReq && card.length === 0 &&
     agentCouldUseThread(await intent.catch(() => null), canCreate, card.length) && !!(await threadP)?.index;
 
   // The diary, for "save yesterday's breakfast" and "what did I have for
   // lunch". The phone's own date anchors "today"; the offset only when the
   // client actually sent one (readAutoLogRequest defaults a missing one to 0,
   // which would be a guess dressed as a fact).
-  const readDiary = makeDiaryReader(userClient, {
+  const diaryClock = {
     todayLocal: localDate,
     tzOffsetMin: typeof body.tz_offset_min === "number" ? auto.tzOffsetMin : null,
-  });
+  };
+  const readDiary = makeDiaryReader(userClient, diaryClock);
+  // copy_lines' read: the same days, with each line's catalog id and source.
+  const readDiaryLines = makeDiaryReader(userClient, diaryClock, true);
 
   /** After a parse in auto mode: write the diary, or say why not. Never
    *  throws. Returns the fields the response carries (`logged` when the write
@@ -3635,7 +3693,9 @@ async function handleParseMealRequest(args: {
   // that answered (result.tier) because the two differ: a correction runs
   // Thorough, and a kill switch above turns Fast or Precise off. An old build
   // that sends no speed reads as Thorough, which is what it gets.
-  const tierSelected: ParseTier = body.speed === "fast" ? "fast" : body.speed === "super" ? "precise" : "thorough";
+  // tier "precise" on a correction counts too (tierSelectedOf); the pipeline
+  // that ran is tier_used.
+  const tierSelected: ParseTier = tierSelectedOf(body);
   // Streaming is Fast's alone, deliberately: the stream exists to paint rows
   // while the numbers settle, and Super's answer arrives whole after a web
   // lookup, so there is nothing to trickle. `&& wantsFast` is therefore not a
@@ -3684,8 +3744,11 @@ async function handleParseMealRequest(args: {
         // synchronously. Awaiting inside onProgress would stall the stream.
         let settledIntent: FoodIntentDecision | null = null;
         void intentP.then((d) => { settledIntent = d; });
+        // FOOD_AGENT_LATER is not wired here on purpose: only Quick streams
+        // (wouldStream needs speed "fast"), and step 2 is Precise only, which
+        // always takes the JSON path below.
         const agentP = startFoodAgent({
-          intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary,
+          intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary, readDiaryLines,
           contextPromise, userId, recentTurns, pendingMeal: foodContext.pendingMeal,
           card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
           parseDeps: (fb) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
@@ -3947,8 +4010,14 @@ async function handleParseMealRequest(args: {
   // a parse that blew up is exactly when knowing what the user was asking for is
   // most useful.
   const savedMealsP = savedMealsPFor();
-  const intentP = startTracedIntent();
   const supportsCreate = clientSupportsFoodCreate(body);
+  // Step 3 (FOOD_FIRST_GATE=on, Precise only): the first message of a thread
+  // asks the gate question in the router's own Jev call.
+  const firstGate = firstMessageGoesToGate({
+    mode: FOOD_FIRST_GATE, laterMode: FOOD_AGENT_LATER, intentMode: FOOD_INTENT_MODE, precise: isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier }), supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
+    turns: recentTurns.length, cardLines: card.length, pending: !!foodContext.pendingMeal,
+  });
+  const intentP = startTracedIntent(undefined, firstGate);
   // Read by the catch: a parse that threw still traces what it got through.
   let firstParseSeen: ParseMealResult | null = null;
   let outcomeSeen: FoodBarOutcome | null = null;
@@ -3957,21 +4026,38 @@ async function handleParseMealRequest(args: {
     // Just log it on the JSON path: the parse AND the diary write stay alive
     // past the response, so a client that drops the connection mid-wait
     // still gets its meal logged. Same rule the stream applies.
-    const agentP = startFoodAgent({
+    const agentArgs = {
       intentP, supportsCreate, text, mealHint, localHour, localDate,
-      mode: wantsSuper ? "super" : wantsFast ? "fast" : null,
-      savedMealsP, readDiary, contextPromise, userId, recentTurns,
+      mode: (wantsSuper ? "super" : wantsFast ? "fast" : null) as "super" | "fast" | null,
+      savedMealsP, readDiary, readDiaryLines, contextPromise, userId, recentTurns,
       pendingMeal: foodContext.pendingMeal,
       card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
-      parseDeps: (fb) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
-      logUsage: (row) => void logTokenUsage(admin, row),
+      parseDeps: (fb?: FoodBarTraceCollector) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
+      logUsage: (row: FoodBarUsageRow) => void logTokenUsage(admin, row),
       thread: threadP,
       fbTrace,
+    };
+    // Step 2 (FOOD_AGENT_LATER=on, Precise only): a later message of the
+    // thread goes to the agent whatever the router says. Only a first message
+    // with no card takes the router's path below.
+    const later = laterMessageGoesToAgent({
+      // speed "super" (a first message) or tier "precise" (any message from an
+      // app that sends it): a Precise correction carries no speed.
+      // Behind the same server gate speed "super" passes (Precise on, not the
+      // free tier): the client's tier never unlocks the agent path alone.
+      mode: FOOD_AGENT_LATER, precise: isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier }),
+      supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
+      turns: recentTurns.length, cardLines: card.length, cardOpen, pending: !!foodContext.pendingMeal,
     });
-    const work = (async () => {
+    // The router's own agent start is today's path only: a later message and a
+    // gated first message start theirs in runLaterMessage / runFirstMessage.
+    const agentP = later || firstGate ? Promise.resolve(null) : startFoodAgent(agentArgs);
+    /** Today's parse of this message. A later message runs it only when the
+     *  agent could not answer and no card is open. */
+    const parseNow = async () => {
       const pendingMeal = foodContext.pendingMeal && continuesPendingMeal(await intentP)
         ? foodContext.pendingMeal : null;
-      const firstParse = await runParseMeal(
+      return await runParseMeal(
         makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace }),
         {
           text,
@@ -3997,6 +4083,25 @@ async function handleParseMealRequest(args: {
           variantChips: clientSupportsVariantSwap(body),
         },
       );
+    };
+    const work = (async () => {
+      if (later) {
+        const l = await runLaterMessage({ agent: agentArgs, cardOpen, fallbackParse: parseNow });
+        firstParseSeen = l.firstParse;
+        outcomeSeen = l.outcome;
+        const autoRes = l.outcome.action === "log" ? await finishAutoLog(l.result) : null;
+        return { result: l.result, autoRes, outcome: l.outcome, firstParse: l.firstParse };
+      }
+      if (firstGate) {
+        // The parse starts now, beside the router (plan section 8): plain
+        // serves it, and the agent can take it for the same words.
+        const f = await runFirstMessage({ agent: agentArgs, parse: parseNow() });
+        firstParseSeen = f.firstParse;
+        outcomeSeen = f.outcome;
+        const autoRes = f.outcome.action === "log" ? await finishAutoLog(f.result) : null;
+        return { result: f.result, autoRes, outcome: f.outcome, firstParse: f.firstParse };
+      }
+      const firstParse = await parseNow();
       // Decided before the diary write, for the same reason as the stream: a
       // create or a reply must not log the parsed meal behind the user's back.
       firstParseSeen = firstParse;

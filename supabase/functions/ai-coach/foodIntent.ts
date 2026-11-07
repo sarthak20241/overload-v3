@@ -80,6 +80,10 @@ export interface FoodIntentDecision {
    *  an unusable answer, or a score under the floor. Set only on the model and
    *  default rungs; for the trace, never read by the policy. */
   jevMiss?: string | null;
+  /** FOOD_FIRST_GATE: Jev's chance (0-1) that this first message is a fully
+   *  plain food log that asks for nothing else (PLAIN_LOG_QUESTION). Present
+   *  only when the gate asked; null when Jev did not answer. */
+  plainLog?: number | null;
 }
 
 /**
@@ -430,6 +434,9 @@ export interface FoodIntentDeps {
    */
   classify?(text: string): Promise<FoodIntent | null>;
   log?: (msg: string) => void;
+  /** FOOD_FIRST_GATE: also ask PLAIN_LOG_QUESTION, in the same Jev call. Set
+   *  only for the first message of a thread (firstMessageGoesToGate). */
+  askPlain?: boolean;
 }
 
 /** Build the saved-meal Choice, plus the map from option key back to row id.
@@ -493,6 +500,19 @@ export async function routeFoodIntent(
   deps: FoodIntentDeps = {},
   context?: FoodConversationContext,
 ): Promise<FoodIntentDecision> {
+  // The gate's answer rides on whatever the router decides. Only when asked,
+  // so with FOOD_FIRST_GATE off the decision is exactly what it was.
+  const gate = { plain: null as number | null };
+  const d = await routeIntent(text, deps, context, gate);
+  return deps.askPlain ? { ...d, plainLog: gate.plain } : d;
+}
+
+async function routeIntent(
+  text: string,
+  deps: FoodIntentDeps,
+  context: FoodConversationContext | undefined,
+  gate: { plain: number | null },
+): Promise<FoodIntentDecision> {
   const trimmed = text.trim();
   // Nothing to judge. Not worth a call in either direction, and 'log' is where
   // an empty string already went.
@@ -518,6 +538,7 @@ export async function routeFoodIntent(
     if (savedQ) questions.saved = savedQ.question;
     questions.has_food = HAS_FOOD_QUESTION;
     if (context?.pendingMeal) questions.pending = PENDING_QUESTION;
+    if (deps.askPlain) questions.plain = PLAIN_LOG_QUESTION;
 
     let res: JevResult;
     try {
@@ -547,6 +568,7 @@ export async function routeFoodIntent(
       }
 
       hasFood = asNoul(res.response.answers.has_food);
+      if (deps.askPlain) gate.plain = asNoul(res.response.answers.plain);
       const choice = asChoice(res.response.answers.intent);
       const pc = context?.pendingMeal ? asChoice(res.response.answers.pending) : null;
       if (pc) {
@@ -791,6 +813,186 @@ export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreat
   // The plain reply cannot (live 2026-11-05, three asks in a row).
   if (!cardOpen && earlierCards && (d.intent === "edit" || d.intent === "other")) return d.confidence >= CARD_AGENT_FLOOR;
   return false;
+}
+
+// ── Step 2: every later message goes to the agent (FOOD_AGENT_LATER) ─────────
+//
+// .planning/precise-food-logger-plan.md section 2: after the first message of a
+// food box thread, the router stops deciding who answers. The agent replies,
+// edits, saves and logs. Only a first message with no card takes the router's
+// path. Precise only; the switch ships off.
+
+export type FoodAgentLaterMode = "off" | "on";
+
+/** FOOD_AGENT_LATER: anything but "on" is off. */
+export function parseFoodAgentLaterMode(raw: string | undefined): FoodAgentLaterMode {
+  return raw?.trim().toLowerCase() === "on" ? "on" : "off";
+}
+
+/** Is this food box message from a Precise thread? A first message says so in
+ *  `speed` ("super"). A correction sends no speed (it stays on the smart
+ *  pipeline), so the app sends the picked mode in `tier` on every message. An
+ *  app without `tier` keeps today's reading: Precise only with speed "super". */
+export function isPreciseRequest(
+  body: { speed?: unknown; tier?: unknown },
+  /** The server's own gate, the same one speed "super" passes today: Precise
+   *  switched on (PARSE_SUPER_MODE) and an account that may use it (not the
+   *  free tier). `tier` is the client's word and never unlocks it alone. */
+  gate: { superOn: boolean; freeTier: boolean },
+): boolean {
+  if (!gate.superOn || gate.freeTier) return false;
+  return body.speed === "super" || body.tier === "precise";
+}
+
+/** The tier the user picked, for the usage logs. A Precise correction sends
+ *  no speed (it stays on the smart pipeline) but says tier "precise", and is
+ *  recorded as precise. An old build with neither reads as thorough. */
+export function tierSelectedOf(body: { speed?: unknown; tier?: unknown }): "fast" | "precise" | "thorough" {
+  if (body.speed === "fast") return "fast";
+  if (body.speed === "super" || body.tier === "precise") return "precise";
+  return "thorough";
+}
+
+export interface LaterMessageInputs {
+  mode: FoodAgentLaterMode;
+  /** The user picked Precise for this message (speed "super"). */
+  precise: boolean;
+  /** The client can draw a save card (the agent can end in one). */
+  supportsCreate: boolean;
+  /** A model key is configured. Without it the agent cannot run. */
+  hasModelKey: boolean;
+  /** Earlier turns of this thread the app sent. */
+  turns: number;
+  /** Lines on the card on screen, whole or not. */
+  cardLines: number;
+  /** The card is on screen AND whole (not cut at the cap). */
+  cardOpen: boolean;
+  /** A question Drona asked is waiting for its answer. */
+  pending: boolean;
+}
+
+/**
+ * Does this message go to the food agent, whatever the router says?
+ *
+ * Yes when the thread has any earlier turn, OR a card is open, OR a question is
+ * waiting. A card cut at the cap is the one exception: the agent cannot see all
+ * of it, so its card tools are withheld, and the message keeps the parse path
+ * (whose correction guard puts every line back).
+ */
+export function laterMessageGoesToAgent(i: LaterMessageInputs): boolean {
+  if (i.mode !== "on" || !i.precise || !i.supportsCreate || !i.hasModelKey) return false;
+  if (i.cardLines > 0 && !i.cardOpen) return false;
+  return i.turns > 0 || i.cardOpen || i.pending;
+}
+
+// ── Step 3: the first message (FOOD_FIRST_GATE) ─────────────────────────────
+//
+// .planning/precise-food-logger-plan.md sections 2, 8 and 9: the first message
+// of a thread gets ONE yes/no question. A fully plain food log goes to the
+// parse, as today. Anything else, or unsure, goes to the food agent, which can
+// use the parse already running for the same text. Precise only; ships off.
+
+export type FoodFirstGateMode = "off" | "on";
+
+/** FOOD_FIRST_GATE: anything but "on" is off. */
+export function parseFoodFirstGateMode(raw: string | undefined): FoodFirstGateMode {
+  return raw?.trim().toLowerCase() === "on" ? "on" : "off";
+}
+
+/**
+ * The gate. Narrow on purpose: Jev judges one thing, "is there anything in
+ * this message besides food to log". It does not pick a route, and a no only
+ * means the agent reads the message. The examples are generic shapes, never an
+ * eval message (owner rule): the eval measures this wording, it does not
+ * teach it.
+ */
+export const PLAIN_LOG_QUESTION: JevQuestion = {
+  type: "noul",
+  instructions:
+    "Is the latest message a fully plain food log: it describes food or drink the user had, and asks for nothing else? " +
+    "Judge what the message asks for, not the food. Amounts, brands, how a dish was made, the meal, and numbers the user " +
+    "gives (calories, macros, a label) are all part of a plain log, and so is a greeting or thanks beside the food.",
+  criteria: {
+    true:
+      "Every food in it is described in the message itself, and the one thing to do is log it. Nothing in it needs an " +
+      "answer, a check, or any other action.",
+    false:
+      "Anything else is in it: a question of any kind (about the food, the numbers, their goals, or the app), a request " +
+      "to save, keep or remember a food or meal, any food taken from an earlier day or meal instead of described (even " +
+      "one item, even beside new food), a request to change, remove or check something, or no food at all (a greeting, " +
+      "thanks, chatter). When in doubt, false.",
+  },
+};
+
+/**
+ * At or above this the first message is plain and goes to the parse.
+ *
+ * MEASURED: scripts/food-box-eval/gate-probe.mts, jev-1.13.0, 2026-11-07, 3
+ * runs each, on the 29 first-message eval cases (cases.ts FIRST_MESSAGE_PLAIN)
+ * and 13 held-out messages written after the wording was fixed:
+ *
+ *                       non-plain max   plain logs under 0.6
+ *   eval cases (29)     0.23            2 of 16 (0.12, 0.17)
+ *   held out (13)       0.14            0 of 6
+ *
+ * The rule is ZERO false plains: a message that asks for anything must never
+ * take the parse path, where nobody answers it. A plain log under the floor
+ * only costs the agent's time and money: the agent still logs it. 0.6 sits
+ * well above every non-plain score and under every plain one but the two
+ * (a "please estimate it correctly" log and a calorie-only quick add, both
+ * read by Jev as asking for more). The wording was changed once, before the
+ * held-out set was written: the first version let a copy-plus-new-food message
+ * score 0.74. Re-run the probe before moving JEV_MODEL.
+ */
+export const PLAIN_LOG_FLOOR = 0.6;
+
+/** Does this first message go through the gate? Only the first message of a
+ *  thread: no earlier turn, no card on screen (whole or cut), no question
+ *  waiting. The same Precise, client and key rules as a later message, and
+ *  only with FOOD_AGENT_LATER on too: the gate's agent runs in later mode, and
+ *  every message after it must reach the same agent. The gate was measured
+ *  only with both on, so the gate on and step 2 off is today's routing. And
+ *  only with FOOD_INTENT_MODE on: the gate is a question in the router's Jev
+ *  call, and that mode is the router's kill switch. Router off or shadow:
+ *  today's routing, the gate never asked. */
+export function firstMessageGoesToGate(
+  i: Omit<LaterMessageInputs, "mode" | "cardOpen"> & { mode: FoodFirstGateMode; laterMode: FoodAgentLaterMode; intentMode: FoodIntentMode },
+): boolean {
+  if (i.mode !== "on" || i.laterMode !== "on" || i.intentMode !== "on") return false;
+  if (!i.precise || !i.supportsCreate || !i.hasModelKey) return false;
+  return i.turns === 0 && i.cardLines === 0 && !i.pending;
+}
+
+/** The gate's verdict: plain only when Jev answered and cleared the floor.
+ *  No answer, or under it, is the agent. */
+export function isPlainFirstLog(d: Pick<FoodIntentDecision, "plainLog"> | null): boolean {
+  return typeof d?.plainLog === "number" && d.plainLog >= PLAIN_LOG_FLOOR;
+}
+
+/** A word in a claim that says the food reached the diary or a saved meal.
+ *  Neither can happen in the food box without the user's tap. */
+const LOG_OR_SAVE_WORD = /\b(?:log(?:ged|ging)?|sav(?:ed|ing|e)|record(?:ed|ing)?)\b/i;
+
+/** A log or a save said as done without "I": a sentence that opens with it,
+ *  or a passive ("has been logged", "is saved"). */
+const PASSIVE_LOG_CLAIM = /^\s*(?:logged|saved|recorded)\b|\b(?:been|is|are|was|were)\s+(?:now\s+|already\s+)?(?:logged|saved|recorded)\b/i;
+
+/**
+ * A false claim in an agent line: the same per-sentence test as claimsAction,
+ * judged against what really happened. Nothing the food box does logs or saves
+ * on its own (the card waits for Add, the save card for a tap), so a claim of a
+ * log or a save is always false. A claim of a card change ("added the eggs",
+ * "updated the rice") is true only when the card changed.
+ */
+export function falseAgentClaim(text: string, did: { cardChanged: boolean }): boolean {
+  return text.split(/(?<=[.!?])\s+/).some((sentence) => {
+    if (sentence.trim().endsWith("?")) return false;
+    // "Logged it without the salad.", "it has been saved": shapes claimsAction
+    // was not measured on, and always false from the agent.
+    if (PASSIVE_LOG_CLAIM.test(sentence)) return true;
+    if (!DONE_CLAIM.test(sentence) && !PROMISE_CLAIM.test(sentence)) return false;
+    return LOG_OR_SAVE_WORD.test(sentence) || !did.cardChanged;
+  });
 }
 
 export function decideFoodAction(i: FoodActionInputs): FoodAction {

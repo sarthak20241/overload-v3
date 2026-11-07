@@ -20,6 +20,9 @@ import {
   type FoodIntentDecision,
   type FoodIntentDeps,
   type FoodIntentMode,
+  isBareAck,
+  isPlainFirstLog,
+  PLAIN_LOG_FLOOR,
   readDraftResult,
   readReplyResult,
   routeFoodIntent,
@@ -39,26 +42,51 @@ import {
   type ParsedItem,
   type ParseMealResult,
   type PreviousItem,
+  findLabel,
   runParseMeal,
 } from "./parseMeal.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
+import type { ThreadLine } from "./foodThreads.ts";
 import { CREATE_CUSTOM_FOOD_TOOL, CREATE_CUSTOM_MEAL_TOOL, LIST_LOGGED_MEALS_TOOL } from "./prompt.ts";
 
-/** Whether this message could use the thread's earlier cards: no card on
- *  screen (restore is offered only then), and a verdict the agent would take
- *  if the thread had them. The ONE test for both the agent start and the
- *  outcome (index.ts earlierCardsFor), so the two can never disagree. */
-export function agentCouldUseThread(d: FoodIntentDecision | null, supportsCreate: boolean, cardLines: number): boolean {
-  return cardLines === 0 && wantsFoodAgent(d, supportsCreate, false, true);
+/** Whether this message could use the thread's earlier cards. With no card
+ *  on screen: a verdict the agent would take if the thread had them (it can
+ *  restore or copy one). With a whole card on screen (`cardOpen`): a verdict
+ *  that already sends the message to the agent, which can copy lines from an
+ *  earlier card onto it. A card cut at the cap gets no thread.
+ *  The ONE test for both the agent start and the outcome (index.ts
+ *  earlierCardsFor, which passes no cardOpen: its "earlier cards" input is
+ *  about NO card on screen only), so the two can never disagree. */
+export function agentCouldUseThread(d: FoodIntentDecision | null, supportsCreate: boolean, cardLines: number, cardOpen = false): boolean {
+  if (cardLines === 0) return wantsFoodAgent(d, supportsCreate, false, true);
+  return cardOpen && wantsFoodAgent(d, supportsCreate, true);
+}
+
+/** One earlier card's lines, as stored (foodThreads.ts threadForAgent). */
+export interface ThreadCardLines {
+  id: string;
+  ref: string;
+  version: number;
+  /** The newest version that has lines. */
+  latest_version: number;
+  meal_type: MealType | null;
+  lines: ThreadLine[];
 }
 
 /** The thread store as the agent sees it (foodThreads.ts). */
 export interface FoodBarThread {
-  /** threadIndexLine: the earlier cards, by ref. Null: nothing to bring back. */
+  /** threadIndex: the earlier cards, by ref, with their foods. Null: nothing to bring back. */
   index: string | null;
+  /** The index line's size, for the trace. */
+  indexStats?: { chars: number; names: number; cards_listed: number; cards_total: number };
   /** The card restore() last brought back, so the thread write can mark it. */
   restoredFrom?: string | null;
+  /** The ref the card on screen has in this thread, when it has one. */
+  onScreenRef?: string | null;
   restore(ref: string, version: number | null): Promise<{ items: ParsedItem[]; meal_type: MealType | null } | null>;
+  /** An earlier card's lines (latest version when null), or null when there
+   *  is no such card or version. Never the card on screen. */
+  lines?(ref: string, version: number | null): Promise<ThreadCardLines | null>;
 }
 
 export type AnthropicCallResult = { ok: true; data: any } | { ok: false; status: number; body: string };
@@ -212,9 +240,12 @@ export function makeFoodIntentDeps(
   onUsage?: (u: JevUsage) => void,
   fbTrace?: FoodBarTraceCollector,
   onFailure?: JevDeps["onFailure"],
+  askPlain = false,
 ): FoodIntentDeps {
   const jev = env().jev;
   return {
+    // FOOD_FIRST_GATE: the gate question rides in the router's own Jev call.
+    ...(askPlain ? { askPlain: true } : {}),
     savedMeals,
     jev: jev
       ? { apiKey: jev.apiKey, timeoutMs: jev.timeoutMs, abortSignal, log: (m) => console.log(m), onUsage, onFailure }
@@ -248,6 +279,10 @@ export function startFoodIntent(
   onUsage?: (u: JevUsage) => void,
   fbTrace?: FoodBarTraceCollector,
   onFailure?: JevDeps["onFailure"],
+  /** FOOD_FIRST_GATE: a first message (firstMessageGoesToGate, which needs
+   *  FOOD_INTENT_MODE on, so the mode check below never turns the gate off
+   *  behind its back). Asks the gate question in the same Jev call. */
+  askPlain = false,
 ): Promise<FoodIntentDecision | null> {
   if (!shouldRouteFoodIntent(env().intentMode)) {
     fbTrace?.step({ src: "router", tool: "food_intent", result: { ran: false, reason: `mode_${env().intentMode}` } });
@@ -256,7 +291,7 @@ export function startFoodIntent(
   const r0 = Date.now();
   // The same saved-meal read the parser uses, so one query serves both.
   return savedMealsP
-    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal, onUsage, fbTrace, onFailure), context))
+    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal, onUsage, fbTrace, onFailure, askPlain), context))
     // routeFoodIntent is documented never to throw. This is the belt on top of
     // the braces: nothing about a shadow measurement may fail a meal log.
     .catch((e) => {
@@ -471,6 +506,11 @@ export interface FoodBarOutcome {
   result?: ParseMealResult;
   /** What the agent did, for the trace. */
   agent?: { kind: FoodAgentOutcome["kind"]; reason: string | null; turns: FoodAgentOutcome["turns"] };
+  /** A later-message agent answered a question AND changed the card: its
+   *  reply is the card's line (foodAgent.ts, FOOD_AGENT_LATER). */
+  answered?: boolean;
+  /** A bare ok or thanks beside a card: answered in code, nothing ran. */
+  bareAck?: boolean;
 }
 
 /** What the box says when the agent could not finish. True, and it tells the
@@ -504,6 +544,9 @@ export function startFoodAgent(args: {
   mode: "fast" | "super" | null;
   savedMealsP: Promise<SavedMealForParse[]>;
   readDiary: DiaryReader;
+  /** The diary with each line's catalog id and source, for copy_lines
+   *  (index.ts makeDiaryReader full). Absent: copy_lines from the diary is off. */
+  readDiaryLines?: DiaryReader;
   contextPromise: ParseMealInput["contextPromise"];
   /** The parser's deps for one of the agent's own parses (index.ts makeParseDeps). */
   parseDeps: (fbTrace?: FoodBarTraceCollector) => ParseMealDeps;
@@ -520,6 +563,15 @@ export function startFoodAgent(args: {
   /** FOOD_THREADS=on: the thread's earlier cards, as an index line and a way
    *  to bring one back. Resolves null when there is none. */
   thread?: Promise<FoodBarThread | null>;
+  /** FOOD_AGENT_LATER: a later message of the thread. The agent runs whatever
+   *  the router says (the caller decided, laterMessageGoesToAgent), with the
+   *  one-line card tools, and any waiting question is handed to it. */
+  later?: boolean;
+  /** FOOD_FIRST_GATE: the first message, sent to the agent by the gate. Only
+   *  with `later`. `parse` is the parse of `text` that started beside the
+   *  router: a parse_food or log_food on the same words takes it instead of
+   *  starting a second one, and `reused` counts how often that happened. */
+  first?: { text: string; parse: Promise<ParseMealResult>; reused: number };
 }): Promise<FoodAgentOutcome | null> {
   const fb = args.fbTrace;
   // The agent's own parses: their steps and model calls land on the trace
@@ -536,16 +588,19 @@ export function startFoodAgent(args: {
   return args.intentP.then(async (d) => {
     // Open AND whole, the same rule index.ts applies (see `cardOpen` there).
     const cardOpen = !!args.card?.lines.length && !cardMayBeCut(args.card.lines);
-    // A card cut at the cap gets no thread: restore_card replaces the whole
-    // card, and the lines past the cap would be lost. The earlier-cards route
-    // is for NO card on screen, not for a card the agent cannot hold whole.
+    // A card cut at the cap gets no thread: copy_lines checks the new lines
+    // against the whole card, and the agent cannot see past the cap. The
+    // earlier-cards ROUTE is for NO card on screen; beside a whole card the
+    // thread only rides along with a verdict that already goes to the agent.
     const noCard = !args.card?.lines.length;
-    if (env().intentMode !== "on") return null;
+    const later = !!args.later;
+    if (!later && env().intentMode !== "on") return null;
     // The thread is waited for only when it can matter (agentCouldUseThread,
-    // the same test index.ts uses for the outcome).
-    const couldUseThread = !!args.thread && agentCouldUseThread(d, args.supportsCreate, args.card?.lines.length ?? 0);
+    // the same test index.ts uses for the outcome). A later message always
+    // goes to the agent, so its thread always can.
+    const couldUseThread = !!args.thread && (later || agentCouldUseThread(d, args.supportsCreate, args.card?.lines.length ?? 0, cardOpen));
     const thread = couldUseThread ? await args.thread!.catch(() => null) : null;
-    if (!wantsFoodAgent(d, args.supportsCreate, cardOpen, !!thread?.index && noCard)) return null;
+    if (!later && !wantsFoodAgent(d, args.supportsCreate, cardOpen, !!thread?.index && noCard)) return null;
     if (!env().anthropicApiKey) return null;
     const t0 = Date.now();
     const callEnds: number[] = [];
@@ -555,12 +610,16 @@ export function startFoodAgent(args: {
         defaultMeal: args.mealHint ?? mealForHour(args.localHour),
         today: todayLabel(args.localDate),
         recentTurns: args.recentTurns,
-        answering: d?.resumeAgent && args.pendingMeal
+        // A later message hands the agent any waiting question, whoever asked
+        // it: the agent is the one that answers now.
+        answering: (later || d?.resumeAgent) && args.pendingMeal
           ? { text: args.pendingMeal.text, question: args.pendingMeal.question }
           : null,
         card: args.card?.lines ?? null,
         savedHint: d?.savedMatch ?? null,
         threadIndex: thread?.index ?? null,
+        ...(later ? { later: true } : {}),
+        ...(later && args.first ? { first: true } : {}),
       },
       {
         model: env().agentModel,
@@ -580,11 +639,20 @@ export function startFoodAgent(args: {
           return res;
         },
         readDiary: args.readDiary,
+        ...(args.readDiaryLines ? { readDiaryLines: args.readDiaryLines } : {}),
         savedMeals: () => args.savedMealsP,
         // A fresh parse without onProgress: the agent's parses must not paint
         // rows on the card behind its back.
-        parseFood: (t) =>
-          tracedParse(runParseMeal(args.parseDeps(agentParse), {
+        parseFood: (t) => {
+          // The first message's own parse, already running: same words, same
+          // answer, no second wait. Its steps are on the trace already (the
+          // parse runs on the request's own collector).
+          if (args.first && sameParseText(t, args.first.text)) {
+            args.first.reused++;
+            fb?.step({ src: "agent", tool: "first_parse_reused", input: t });
+            return args.first.parse;
+          }
+          return tracedParse(runParseMeal(args.parseDeps(agentParse), {
             text: t,
             localHour: args.localHour,
             mealHint: args.mealHint,
@@ -594,7 +662,8 @@ export function startFoodAgent(args: {
             todayTotals: null,
             targets: null,
             contextPromise: args.contextPromise,
-          }), t),
+          }), t);
+        },
         // The correction path against the card: the agent says the change in
         // words, this reworks the numbers from each line's own figures.
         correctCard: args.card
@@ -616,8 +685,68 @@ export function startFoodAgent(args: {
               recentTurns: args.recentTurns,
             }), `correct_card: ${change}`)
           : undefined,
+        // edit_line: the same correction path on ONE line. The parse is shown
+        // that line alone (as the card on screen, named as the user sees it),
+        // so it cannot drop, re-guess or duplicate any other line: code copies
+        // those untouched (foodAgent.ts buildChangedCard).
+        editLine: later && args.card
+          ? (index, change) => {
+            const target = editLineInput(args.card!, index, change);
+            if (!target) return Promise.resolve({ ...noParseResult(), tool_calls: ["edit_line"] });
+            const p = target.item;
+            return tracedParse(runParseMeal(args.parseDeps(agentParse), {
+              text: target.text,
+              localHour: args.localHour,
+              mealHint: p.meal_type ?? args.mealHint,
+              mode: args.mode,
+              recentFoods: [],
+              savedMeals: args.savedMealsP,
+              todayTotals: null,
+              targets: null,
+              contextPromise: args.contextPromise,
+              previousText: p.said_name ?? p.food_name,
+              previousWords: null,
+              previousItems: [p],
+              recentTurns: [],
+            }), `edit_line ${index + 1}: ${change}`);
+          }
+          : undefined,
+        // find_label: the Precise web lookup for one product. Its model tokens
+        // and Tavily credits get their own rows here: a label read may end in
+        // a reply, where no parse result carries them.
+        findLabel: later && args.card
+          ? async (product) => {
+            const c0 = Date.now();
+            const r = await findLabel(args.parseDeps(agentParse), product).catch(() => null);
+            if (agentParse && r) for (const st of fromParseSteps("parse", r.steps)) agentParse.step(st);
+            if (r && (r.usage.input_tokens || r.usage.output_tokens)) {
+              args.logUsage({
+                pipeline: "food_agent_find_label",
+                provider: "anthropic",
+                model: env().parseModel,
+                input_tokens: r.usage.input_tokens,
+                output_tokens: r.usage.output_tokens,
+                latency_ms: Date.now() - c0,
+                metadata: { user_id: args.userId, found: !!r.label, ...(fb ? { request_id: fb.requestId } : {}) },
+              });
+            }
+            if (r?.usage.tavily_credits) {
+              args.logUsage({
+                pipeline: "parse_meal",
+                provider: "tavily",
+                model: "tavily-search",
+                metadata: { user_id: args.userId, tavily_credits: r.usage.tavily_credits, via: "find_label", ...(fb ? { request_id: fb.requestId } : {}) },
+              });
+            }
+            return r?.label ?? null;
+          }
+          : undefined,
         onStatus: args.onStatus,
         ...(thread?.index ? { restoreCard: thread.restore } : {}),
+        ...(thread?.index && thread.lines ? { threadCard: thread.lines, threadOnScreenRef: thread.onScreenRef ?? null } : {}),
+        // copy_lines, read_card and restore_card calls (and refusals), one
+        // step each on the food box trace: the per-user usage report reads them.
+        onEvent: fb ? (e) => fb.step({ src: "agent", tool: e.tool, result: e }) : undefined,
         log: (m) => console.log(m),
       },
     );
@@ -758,3 +887,200 @@ export function wouldDivertToCreate(d: FoodIntentDecision | null, supportsCreate
     d.source === "jev" && d.confidence !== null && d.confidence >= CREATE_ACTION_FLOOR;
 }
 
+
+// ── Later messages (FOOD_AGENT_LATER) ───────────────────────────────────────
+
+const nameKey = (x: string) => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+/**
+ * What edit_line parses for card line `index`: that line's own item, and the
+ * change. Null (the edit fails, the line stays) when the item the client sent
+ * at that index is not the card line's food: an edit is never worked out
+ * against another food.
+ *
+ * A number the user stated ("161 cals as per their menu") reaches the parse in
+ * the agent's change, which the agent is told to carry (FOOD_AGENT_SYSTEM_LATER),
+ * and the correction path reads it the way it reads any stated number
+ * (statedNumbers.ts). The user's whole message is NOT added: live, it brought
+ * the other foods it names into this one line's parse, and the line-match check
+ * then refused the edit ("hot coffee is milk coffee" stayed at 2 kcal).
+ */
+export function editLineInput(
+  card: { lines: CardLine[]; previousItems: PreviousItem[] },
+  index: number,
+  change: string,
+): { text: string; item: PreviousItem } | null {
+  const item = card.previousItems[index];
+  const line = card.lines[index];
+  if (!item || !line || nameKey(item.food_name) !== nameKey(line.food_name)) return null;
+  return { text: change, item };
+}
+
+/** The food box trace's "answered by" for an outcome. A bare ack is marked
+ *  explicitly (FoodBarOutcome.bareAck), so a later run whose agent never ran
+ *  is not counted as one. */
+export function answeredByLabel(outcome: FoodBarOutcome | null): string | null {
+  if (!outcome) return null;
+  if (outcome.action === "log") return outcome.result ? "food_agent" : "parse";
+  if (outcome.bareAck) return "bare_ack";
+  if (outcome.agent?.kind === "failed") return "canned_agent_failed";
+  if (outcome.agent) return "food_agent";
+  if (outcome.planned === "agent") return "canned_agent_failed";
+  return outcome.action === "reply" ? "reply_call" : "create_call";
+}
+
+/** A result for a message no parse ran on: nothing found, nothing spent. The
+ *  agent's own tokens go on its own usage row (startFoodAgent logUsage). */
+export function noParseResult(): ParseMealResult {
+  return {
+    parsed: null,
+    declined: null,
+    usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0 },
+    tool_calls: [],
+    steps: [],
+    iterations: 0,
+  };
+}
+
+/** What a bare ok or thanks beside a card hears back. It changes nothing: the
+ *  card is accepted as shown, and Add is how it is logged. */
+export const BARE_ACK_REPLY = "Looks good. Tap Add when you want it in your diary.";
+
+/** What the box says when the agent could not finish beside a card. The card
+ *  stays on screen exactly as it was. */
+export const AGENT_FAILED_CARD_REPLY = "I could not finish that change, so the card is as it was. Try telling me the change again.";
+
+/**
+ * A later message of the thread (laterMessageGoesToAgent said yes): the agent
+ * answers it, whatever the router says. The router still runs beside it for the
+ * saved-meal pointer and the waiting-meal bookkeeping, but decides nothing.
+ *
+ * No parse runs up front: the agent decides what to look up. The checks that
+ * stay in code:
+ *  - a bare ok or thanks beside a card (no question waiting) changes nothing
+ *    and starts nothing (isBareAck);
+ *  - the agent failed beside a card: the card stays as it was, with a line that
+ *    says so (never a canned line that loses it);
+ *  - the agent failed with no card: the parse runs as today would have run it,
+ *    so food the user named is still logged (log wins every tie).
+ */
+export async function runLaterMessage(args: {
+  agent: Omit<Parameters<typeof startFoodAgent>[0], "later">;
+  cardOpen: boolean;
+  /** Today's parse of this message, run only if the agent cannot answer and
+   *  no card is open. */
+  fallbackParse: () => Promise<ParseMealResult>;
+}): Promise<{ outcome: FoodBarOutcome; result: ParseMealResult; firstParse: ParseMealResult | null }> {
+  const fb = args.agent.fbTrace;
+  const out = (o: Omit<FoodBarOutcome, "cardOpen">): FoodBarOutcome => ({ ...o, cardOpen: args.cardOpen });
+  const pending = !!args.agent.pendingMeal;
+  // "yes" after Drona asked something (a second portion, or skip?) answers
+  // that question, even when the app kept no waiting meal for it.
+  const lastDrona = [...args.agent.recentTurns].reverse().find((t) => t.role === "drona");
+  const askedLast = !!lastDrona && /\?\s*$/.test(lastDrona.text.trim());
+  if (args.cardOpen && !pending && !askedLast && isBareAck(args.agent.text)) {
+    fb?.step({ src: "router", tool: "later_message", result: { to: "bare_ack", card_open: true } });
+    const decision = await args.agent.intentP.catch(() => null);
+    return { outcome: out({ action: "reply", planned: "reply", decision, reply: BARE_ACK_REPLY, bareAck: true }), result: noParseResult(), firstParse: null };
+  }
+  fb?.step({ src: "router", tool: "later_message", result: { to: "agent", card_open: args.cardOpen, pending, turns: args.agent.recentTurns.length } });
+  const agentP = startFoodAgent({ ...args.agent, later: true });
+  const [o, decision] = await Promise.all([agentP, args.agent.intentP.catch(() => null)]);
+  if (o && o.kind !== "failed") {
+    const agent = { kind: o.kind, reason: null, turns: o.turns };
+    if (o.kind === "log") {
+      return {
+        outcome: out({ action: "log", planned: "agent", decision, result: o.result, agent, ...(o.answered ? { answered: true } : {}) }),
+        result: o.result,
+        firstParse: null,
+      };
+    }
+    if (o.kind === "create") return { outcome: out({ action: "create", planned: "agent", decision, create: o.create, agent }), result: noParseResult(), firstParse: null };
+    return { outcome: out({ action: "reply", planned: "agent", decision, reply: o.text, agent }), result: noParseResult(), firstParse: null };
+  }
+  const agent = o ? { kind: o.kind, reason: o.reason, turns: o.turns } : undefined;
+  if (args.cardOpen) {
+    console.log(`[food_agent] later message failed beside a card (${o?.reason ?? "did_not_run"}); card kept`);
+    return {
+      outcome: out({ action: "reply", planned: "agent", decision, reply: AGENT_FAILED_CARD_REPLY, agent }),
+      result: noParseResult(),
+      firstParse: null,
+    };
+  }
+  const firstParse = await args.fallbackParse();
+  if (firstParse.parsed?.items.length) {
+    return { outcome: out({ action: "log", planned: "agent", decision, agent }), result: firstParse, firstParse };
+  }
+  return { outcome: out({ action: "reply", planned: "agent", decision, reply: AGENT_FAILED_REPLY, agent }), result: firstParse, firstParse };
+}
+
+// ── The first message (FOOD_FIRST_GATE) ─────────────────────────────────────
+
+/** The same words for a parse: case, spacing and closing punctuation aside.
+ *  The agent is told to pass the message word for word (foodAgent.ts
+ *  FIRST_NOTE); anything more than that is a different parse. */
+export function sameParseText(a: string, b: string): boolean {
+  const norm = (x: string) => x.trim().toLowerCase().replace(/\s+/g, " ").replace(/[\s.!?,;:]+$/, "");
+  return norm(a) !== "" && norm(a) === norm(b);
+}
+
+/** What the gate did with a first message, for the trace and the eval. */
+export interface FirstGateResult {
+  /** Jev's "fully plain log" score; null when Jev did not answer. */
+  plain: number | null;
+  to: "parse" | "agent";
+  /** The agent took the running parse instead of starting its own (times). */
+  parseReused: number;
+}
+
+/**
+ * The first message of a thread (firstMessageGoesToGate said yes). The parse
+ * of the message started beside the router (`parse`, plan section 8). The
+ * gate (the router's Jev call, PLAIN_LOG_QUESTION) then picks:
+ *
+ *  - plain (at or over PLAIN_LOG_FLOOR): the parse's card, exactly as today
+ *    would serve a log. No agent.
+ *  - anything else, or no answer: the food agent, in later mode with no card,
+ *    told it is the first message. Its parse_food or log_food on the same
+ *    words takes the running parse (no second wait). If it fails, the running
+ *    parse is served when it found food (log wins every tie), else a line that
+ *    says it could not finish (runLaterMessage, cardOpen false).
+ *
+ * The router's other jobs are unchanged: the saved-meal pointer (the agent's
+ * hint and the parse's savedHint) and has_food for the waiting-meal carry.
+ */
+export async function runFirstMessage(args: {
+  agent: Omit<Parameters<typeof startFoodAgent>[0], "later" | "first">;
+  /** The parse of the message, started beside the router. */
+  parse: Promise<ParseMealResult>;
+}): Promise<{ outcome: FoodBarOutcome; result: ParseMealResult; firstParse: ParseMealResult | null; gate: FirstGateResult }> {
+  const fb = args.agent.fbTrace;
+  // Read later without waiting: an agent that answered on its own must not
+  // wait for a parse it never used.
+  let parsed: ParseMealResult | null = null;
+  void args.parse.then((r) => { parsed = r; }, () => {});
+  const decision = await args.agent.intentP.catch(() => null);
+  const plain = typeof decision?.plainLog === "number" ? decision.plainLog : null;
+  if (isPlainFirstLog(decision)) {
+    fb?.step({ src: "router", tool: "first_gate", result: { plain, floor: PLAIN_LOG_FLOOR, to: "parse" } });
+    const r = await args.parse;
+    return {
+      outcome: { action: "log", planned: "log", decision, cardOpen: false },
+      result: r,
+      firstParse: r,
+      gate: { plain, to: "parse", parseReused: 0 },
+    };
+  }
+  fb?.step({ src: "router", tool: "first_gate", result: { plain, floor: PLAIN_LOG_FLOOR, to: "agent" } });
+  const first = { text: args.agent.text, parse: args.parse, reused: 0 };
+  const l = await runLaterMessage({
+    agent: { ...args.agent, first },
+    cardOpen: false,
+    fallbackParse: () => args.parse,
+  });
+  fb?.step({ src: "agent", tool: "first_parse", result: { reused: first.reused } });
+  // The running parse is this message's first parse when it has finished by
+  // now (the trace keeps it); never waited for.
+  const firstParse = l.firstParse ?? parsed;
+  return { ...l, firstParse, gate: { plain, to: "agent", parseReused: first.reused } };
+}

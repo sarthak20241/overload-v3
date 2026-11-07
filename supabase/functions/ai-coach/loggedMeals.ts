@@ -166,6 +166,13 @@ export interface LoggedItem {
   protein_g: number;
   carb_g: number;
   fat_g: number;
+  /** Only in the full read (copy_lines): the catalog row and where the
+   *  numbers came from (meal_entries.source; null for a manual pick). */
+  food_id?: string | null;
+  source?: string | null;
+  fiber_g?: number | null;
+  /** meal_entries.origin (step 4), when the database has it. */
+  origin?: string | null;
 }
 
 export interface LoggedMeal {
@@ -229,6 +236,9 @@ export function shapeLoggedMeals(
   rows: MealRowIn[],
   day: ResolvedDay,
   mealType: LoggedMealType | null,
+  /** Keep each line's food_id, source and fiber (copy_lines copies them). The
+   *  model's own diary read leaves them out: they are bulk to it. */
+  full = false,
 ): LoggedMealsResult {
   const all: (LoggedMeal & { at: number })[] = [];
   let budget = MAX_ITEMS;
@@ -251,6 +261,12 @@ export function shapeLoggedMeals(
           fat_g: r1(num(e.fat_g)),
         };
         if (grams > 0) item.grams = r1(grams);
+        if (full) {
+          item.food_id = typeof e.food_id === "string" ? e.food_id : null;
+          item.source = typeof e.source === "string" ? e.source : null;
+          if (typeof e.origin === "string") item.origin = e.origin;
+          item.fiber_g = e.fiber_g === null || e.fiber_g === undefined || !Number.isFinite(Number(e.fiber_g)) ? null : r1(Number(e.fiber_g));
+        }
         return item;
       })
       .filter((i) => i.name.length > 0);
@@ -300,6 +316,7 @@ export async function listLoggedMeals(
   input: Record<string, unknown>,
   clock: DayClock,
   store: LoggedMealsStore,
+  full = false,
 ): Promise<LoggedMealsResult | { error: string }> {
   const day = resolveDay(input, clock);
   if ("error" in day) return day;
@@ -310,5 +327,5 @@ export async function listLoggedMeals(
   }
   const res = await store.mealsBetween(day.startIso, day.endIso);
   if ("error" in res) return res;
-  return shapeLoggedMeals(res.rows, day, mealType);
+  return shapeLoggedMeals(res.rows, day, mealType, full);
 }

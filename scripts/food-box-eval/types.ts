@@ -53,6 +53,25 @@ export interface Outcome {
   reply: string | null;
   actions: Action[];
   savedMeal?: SavedMeal | null;
+  /** Live adapter only: what answering this message cost. */
+  metrics?: CaseMetrics;
+}
+
+/** One message's model calls, counted by the live adapter. */
+export interface CaseMetrics {
+  /** agent: a later message (FOOD_AGENT_LATER). router_agent: the router
+   *  sent it to the agent. parse: the parse answered. */
+  route: "agent" | "router_agent" | "parse";
+  /** Model turns the food agent used (0 when it did not run). */
+  agentTurns: number;
+  /** Every model call: router fallback, parses, the agent. Jev not counted. */
+  calls: number;
+  /** At the model_pricing rows. Through the CLI the token counts are the CLI's. */
+  costUsd: number;
+  byModel: Record<string, { calls: number; input: number; output: number; cache_read: number; cache_write: number }>;
+  /** FOOD_FIRST_GATE=on, first messages: Jev's plain score, where the gate
+   *  sent it, and how often the agent took the running parse. */
+  gate?: { plain: number | null; to: "parse" | "agent"; parseReused: number };
 }
 
 export interface MemoryFood {
@@ -63,6 +82,13 @@ export interface MemoryFood {
   source: string;
   lastLogged: string;
   times?: number;
+  /** Step 4: where the numbers came from (user_food_cache.origin). Absent on
+   *  an old row: it reads from `source`, where "manual" is unknown. */
+  origin?: string;
+  /** Step 4: a home dish's parts (RecipePart). */
+  recipe?: { name: string; grams: number; per100?: { kcal: number; protein_g: number; carb_g: number; fat_g: number } }[];
+  /** The tier the row was logged in. Default "super" (the harness's own). */
+  tier?: string;
 }
 
 export interface DiaryMeal {
@@ -97,6 +123,10 @@ export interface FoodBoxCase {
   };
   message: string;
   expect: Expect;
+  /** First messages only: the FOOD_FIRST_GATE's right answer, true for a fully
+   *  plain food log that asks for nothing else. Read by the gate report, never
+   *  by the grader. */
+  plain?: boolean;
   /** What today's food box actually served (from parse_traces). Absent for
    *  synthetic cases and for messages with no recording. */
   recorded?: Outcome;

@@ -13,13 +13,16 @@
 //   off     nothing is read or written (default)
 //   shadow  each message is written after the answer is sent. Nothing is read
 //           and nothing a user sees changes.
-//   on      also read: the agent sees the thread's index line and gets
-//           restore_card, and a message beside no card goes to the agent when
-//           the thread has earlier cards.
+//   on      also read: the agent sees the thread's index line (each earlier
+//           card's foods by line id) and gets copy_lines (add lines from an
+//           earlier card to the card on screen) and read_card; with NO card
+//           on screen also restore_card. A message beside no card goes to
+//           the agent when the thread has earlier cards.
 //
 // A thread ends when its card is added (owner decision), so "bring back that
 // card" reaches only cards of the thread still open: after Add, the added
-// card is in the diary, and a new thread has no earlier cards.
+// card is in the diary (copy_lines reads the diary too), and a new thread
+// has no earlier cards.
 
 import type { FoodBarThread } from "./foodBar.ts";
 import type { CardLine } from "./foodContext.ts";
@@ -72,6 +75,13 @@ export interface StoredCard {
   lines: ThreadLine[];
   /** The highest line number any version used (food_cards.max_line_no). */
   max_line_no?: number;
+  /** The newest version that HAS lines in food_card_lines, and those lines.
+   *  The same as version/lines unless the current version is empty (the
+   *  card was cleared on screen): then the version before it. Null: no
+   *  version of this card has lines. The index names only these versions,
+   *  so it never points at a version with nothing in it. */
+  last_version?: number | null;
+  last_lines?: ThreadLine[];
 }
 
 export interface StoredThread {
@@ -234,10 +244,19 @@ export function lineAsItem(l: ThreadLine, mealDefault: MealType): ParsedItem {
   };
 }
 
+/** The version of a card the index and the tools show: the current one, or,
+ *  for a card cleared on screen, the newest version that still has lines.
+ *  Null when no version has lines. */
+export function shownOf(c: StoredCard): { version: number; lines: ThreadLine[] } | null {
+  if (c.lines.length) return { version: c.version, lines: c.lines };
+  if (c.last_version != null && c.last_lines?.length) return { version: c.last_version, lines: c.last_lines };
+  return null;
+}
+
 /** Short refs for the model: C1, C2, ... in the order the cards were made.
- *  Only meal cards with lines: a save card is not a meal to bring back, a
- *  cleared card's latest version is empty, and a card that was brought back
- *  lives on as its copy ('replaced'). */
+ *  Only meal cards with a version that has lines: a save card is not a meal
+ *  to bring back, and a card that was brought back lives on as its copy
+ *  ('replaced'). */
 export function cardRefs(t: StoredThread): Map<string, StoredCard> {
   // Numbered over EVERY meal card in the order made, then filtered: a card
   // that is replaced or emptied keeps its number, so C2 means the same card
@@ -246,30 +265,74 @@ export function cardRefs(t: StoredThread): Map<string, StoredCard> {
   // is the same on every load.
   const meals = t.cards.filter((c) => c.kind === "meal")
     .sort((a, b) => (Date.parse(a.created_at) - Date.parse(b.created_at)) || a.id.localeCompare(b.id));
-  // A card emptied on screen (every line taken off) stays listed while it has
-  // an earlier version with lines: "bring back the lunch I just cleared"
-  // brings back its last lines (threadForAgent restore).
+  // A card emptied on screen (every line taken off) stays listed while an
+  // earlier version has lines: "bring back the lunch I just cleared" brings
+  // back its last lines (threadForAgent restore).
   return new Map(
-    meals.map((c, i) => [`C${i + 1}`, c] as const).filter(([, c]) => c.status !== "replaced" && (c.lines.length > 0 || c.version > 1)),
+    meals.map((c, i) => [`C${i + 1}`, c] as const).filter(([, c]) => c.status !== "replaced" && shownOf(c) !== null),
   );
 }
 
+/** The index line's budget (owner, 2026-11-06). The newest earlier card lists
+ *  every food; the others at most INDEX_NAMES_PER_CARD each; at most
+ *  INDEX_MAX_CARDS cards, and INDEX_MAX_NAMES names in all. */
+export const INDEX_MAX_CARDS = 3;
+export const INDEX_NAMES_PER_CARD = 8;
+export const INDEX_MAX_NAMES = 40;
+
+/** A line's name for the index: the name with its bracketed detail dropped
+ *  ("Paneer sabji (60 g paneer, oil)" is "Paneer sabji"), so the index holds
+ *  names only, never a number. */
+function indexName(name: string): string {
+  return name.replace(/\([^)]*\)/g, " ").replace(/\s+/g, " ").replace(/[\s,;]+$/, "").trim() || name.trim();
+}
+
+export interface ThreadIndex {
+  /** The line for the hot context. */
+  text: string;
+  /** For the trace: the line's size, and how much of the thread it shows. */
+  chars: number;
+  names: number;
+  cards_listed: number;
+  cards_total: number;
+}
+
 /**
- * The thread's index line for the hot context: what exists, not what is in
- * it (plan section 4). Null when there is nothing beyond the card on screen.
+ * The thread's index for the hot context (plan section 4): the earlier cards
+ * by ref, each with its foods as line ids and names, newest first, within the
+ * budget above. Names only: the numbers stay in the store, and the tools
+ * (copy_lines, restore_card, read_card) fetch them. An older version of a card
+ * is reached through those tools, never listed here. Null when there is
+ * nothing beyond the card on screen.
  */
-export function threadIndexLine(t: StoredThread | null, onScreenCardId: string | null): string | null {
+export function threadIndex(t: StoredThread | null, onScreenCardId: string | null): ThreadIndex | null {
   if (!t) return null;
   const others = [...cardRefs(t)].filter(([, c]) => c.id !== onScreenCardId);
   if (others.length === 0) return null;
-  const desc = others.map(([ref, c]) => {
-    const what = `${c.meal_type ?? "meal"} card`;
-    if (c.lines.length === 0) return `[${ref} v${c.version}] ${what}, cleared (restore brings back its last lines)`;
-    const kcal = Math.round(c.lines.reduce((a, l) => a + (Number(l.kcal) || 0), 0));
-    return `[${ref} v${c.version}] ${what}, ${c.lines.length} ${c.lines.length === 1 ? "line" : "lines"}, ${kcal} kcal, ${c.status}`;
+  const listed = others.slice(-INDEX_MAX_CARDS).reverse();
+  let budget = INDEX_MAX_NAMES;
+  let names = 0;
+  const desc = listed.map(([ref, c], i) => {
+    const shown = shownOf(c)!;
+    const what = `${c.meal_type ?? "meal"} card${c.lines.length === 0 ? " (cleared on screen)" : ""}`;
+    // The newest card: all its foods, up to the overall cap. The rest: a few.
+    const take = Math.max(0, Math.min(i === 0 ? budget : INDEX_NAMES_PER_CARD, budget, shown.lines.length));
+    budget -= take;
+    names += take;
+    const foods = shown.lines.slice(0, take).map((l) => `${l.line_id} ${indexName(l.name)}`);
+    const more = shown.lines.length - take;
+    if (more > 0) foods.push(`+${more} more`);
+    return `[${ref} v${shown.version}] ${what}: ${foods.join(", ")}`;
   });
-  return `index: ${others.length} earlier ${others.length === 1 ? "card" : "cards"} in this thread: ${desc.join("; ")}. ` +
-    "restore_card brings one back as the card on screen.";
+  const hidden = others.length - listed.length;
+  const text = `index: earlier cards in this thread, newest first: ${desc.join("; ")}.` +
+    (hidden > 0 ? ` ${hidden} older ${hidden === 1 ? "card" : "cards"} not listed (read_card C1, C2, ...).` : "");
+  return { text, chars: text.length, names, cards_listed: listed.length, cards_total: others.length };
+}
+
+/** The index line alone (threadIndex's text), or null. */
+export function threadIndexLine(t: StoredThread | null, onScreenCardId: string | null): string | null {
+  return threadIndex(t, onScreenCardId)?.text ?? null;
 }
 
 // ── The store ────────────────────────────────────────────────────────────────
@@ -285,7 +348,12 @@ export interface FoodThreadStore {
    *  card; the app's own version when adopting a card the server never saw). */
   createCard(threadId: string, cardId: string, kind: "meal" | "save", lines: ThreadLine[], clientId: string | null, mealType: MealType | null, version?: number): Promise<void>;
   /** The one conditional write: version base + 1, only if the card is at base
-   *  or behind it (food_card_write). An older base writes nothing. */
+   *  or behind it (food_card_write). An older base writes nothing.
+   *  Idempotency rides on clientId alone: food_card_write skips a write whose
+   *  p_client_id equals the card's last_client_id. A NULL p_client_id has no
+   *  such guard (NULL never equals NULL), so a retried write with no id lands
+   *  a second version. Every caller here passes the send's id; index.ts skips
+   *  the whole thread write when a send has none. */
   writeCard(cardId: string, base: number, lines: ThreadLine[], clientId: string | null, status?: StoredCard["status"], mealType?: MealType | null): Promise<{ version: number; written: boolean; retry?: boolean }>;
   cardAt(cardId: string, version: number): Promise<ThreadLine[] | null>;
   /** Close one of THIS user's threads. Another user's id changes nothing. */
@@ -353,22 +421,43 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
         if (res.error) throw new Error(`food_card_lines: ${res.error.message}`);
         lines = (res.data ?? []) as Record<string, unknown>[];
       }
+      const current = (c: Record<string, unknown>) =>
+        lines.filter((l) => l.card_id === c.id && Number(l.version) === Number(c.version)).map(rowAsLine);
+      // A card whose current version has no lines (cleared on screen): its
+      // newest version that does, so the index names a version that exists.
+      // One small read per such card; cleared cards are rare.
+      const last = new Map<string, { version: number; lines: ThreadLine[] }>();
+      await Promise.all(list.filter((c) => c.kind === "meal" && Number(c.version) > 1 && current(c).length === 0).map(async (c) => {
+        const res = await admin.from("food_card_lines").select("*").eq("card_id", c.id).lt("version", Number(c.version))
+          .order("version", { ascending: false }).order("line_no").limit(200);
+        if (res.error) throw new Error(`food_card_lines: ${res.error.message}`);
+        const rows = (res.data ?? []) as Record<string, unknown>[];
+        if (!rows.length) return;
+        const v = Number(rows[0].version);
+        last.set(String(c.id), { version: v, lines: rows.filter((r) => Number(r.version) === v).map(rowAsLine) });
+      }));
       return {
         id: String(t.id),
         user_id: String(t.user_id),
         status: t.status === "closed" ? "closed" : "open",
         last_at: String(t.last_at),
         last_seq: Number((seq ?? [])[0]?.seq ?? 0),
-        cards: list.map((c) => ({
-          id: String(c.id),
-          kind: c.kind === "save" ? "save" as const : "meal" as const,
-          version: Number(c.version),
-          status: (["open", "added", "discarded", "replaced"].includes(String(c.status)) ? c.status : "open") as StoredCard["status"],
-          meal_type: (typeof c.meal_type === "string" ? c.meal_type : null) as MealType | null,
-          created_at: String(c.created_at),
-          max_line_no: Number(c.max_line_no ?? 0),
-          lines: lines.filter((l) => l.card_id === c.id && Number(l.version) === Number(c.version)).map(rowAsLine),
-        })),
+        cards: list.map((c) => {
+          const now = current(c);
+          const prev = last.get(String(c.id));
+          return {
+            id: String(c.id),
+            kind: c.kind === "save" ? "save" as const : "meal" as const,
+            version: Number(c.version),
+            status: (["open", "added", "discarded", "replaced"].includes(String(c.status)) ? c.status : "open") as StoredCard["status"],
+            meal_type: (typeof c.meal_type === "string" ? c.meal_type : null) as MealType | null,
+            created_at: String(c.created_at),
+            max_line_no: Number(c.max_line_no ?? 0),
+            lines: now,
+            last_version: now.length ? Number(c.version) : prev?.version ?? null,
+            last_lines: now.length ? now : prev?.lines ?? [],
+          };
+        }),
       };
     },
     async ensure(userId, threadId) {
@@ -633,10 +722,16 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
         status: t.status === "closed" ? "closed" : "open",
         last_at: t.last_at,
         last_seq: t.turns.at(-1)?.seq ?? 0,
-        cards: [...cards].filter(([, c]) => c.thread_id === threadId).map(([id, c]) => ({
-          id, kind: c.kind, version: c.version, status: c.status, meal_type: c.meal_type, created_at: c.created_at, max_line_no: c.max_line_no,
-          lines: (c.versions.get(c.version) ?? []).map((l) => ({ ...l })),
-        })),
+        cards: [...cards].filter(([, c]) => c.thread_id === threadId).map(([id, c]) => {
+          // The newest version with lines, the same as the database read.
+          const withLines = [...c.versions].filter(([, ls]) => ls.length > 0).sort((a, b) => b[0] - a[0])[0];
+          return {
+            id, kind: c.kind, version: c.version, status: c.status, meal_type: c.meal_type, created_at: c.created_at, max_line_no: c.max_line_no,
+            lines: (c.versions.get(c.version) ?? []).map((l) => ({ ...l })),
+            last_version: withLines?.[0] ?? null,
+            last_lines: (withLines?.[1] ?? []).map((l) => ({ ...l })),
+          };
+        }),
       };
     },
     async ensure(userId, threadId) {
@@ -691,8 +786,9 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
 
 // ── What the agent gets (FOOD_THREADS=on) ───────────────────────────────────
 
-/** The thread as the agent sees it: the index line and restore_card's answer.
- *  Null when there is no open thread or nothing beyond the card on screen. */
+/** The thread as the agent sees it: the index line, and the earlier cards'
+ *  lines for copy_lines, read_card and restore_card. Null when there is no
+ *  open thread or nothing beyond the card on screen. */
 export async function threadForAgent(
   store: FoodThreadStore,
   userId: string,
@@ -700,25 +796,37 @@ export async function threadForAgent(
   nowMs = Date.now(),
 ): Promise<FoodBarThread | null> {
   const t = await store.load(userId, req.id).catch(() => null);
+  // A thread the nightly job closed, or one idle past the line: no earlier
+  // cards. The message is still written to it (recordThreadMessage).
   if (!t || !threadIsOpen(t, nowMs)) return null;
-  const index = threadIndexLine(t, req.card_id);
-  if (!index) return null;
+  const idx = threadIndex(t, req.card_id);
+  if (!idx) return null;
   const refs = cardRefs(t);
+  // The card on screen is not an earlier card: copying it onto itself, or
+  // restoring it over itself, is never what was meant.
+  const lines = async (ref: string, version: number | null) => {
+    const c = refs.get(ref.trim().toUpperCase());
+    if (!c || c.id === req.card_id) return null;
+    const shown = shownOf(c);
+    if (!shown) return null;
+    const v = version ?? shown.version;
+    const got = v === shown.version ? shown.lines : v === c.version ? c.lines : await store.cardAt(c.id, v);
+    if (!got?.length) return null;
+    return { id: c.id, ref: ref.trim().toUpperCase(), version: v, latest_version: shown.version, meal_type: c.meal_type, lines: got.map((l) => ({ ...l })) };
+  };
   const out: FoodBarThread = {
-    index,
+    index: idx.text,
+    indexStats: { chars: idx.chars, names: idx.names, cards_listed: idx.cards_listed, cards_total: idx.cards_total },
     restoredFrom: null,
+    onScreenRef: [...refs].find(([, c]) => c.id === req.card_id)?.[0] ?? null,
+    lines,
     restore: async (ref, version) => {
-      const c = refs.get(ref);
-      if (!c) return null;
-      // A cleared card's latest version is empty: its last lines are the
-      // version before.
-      const v = version ?? (c.lines.length ? c.version : c.version - 1);
-      const lines = v !== c.version ? await store.cardAt(c.id, v) : c.lines;
-      if (!lines?.length) return null;
+      const got = await lines(ref, version);
+      if (!got) return null;
       // Only a restore that brings lines back marks its source.
-      out.restoredFrom = c.id;
-      const meal = c.meal_type ?? lines[0]?.meal_type ?? "snack";
-      return { items: lines.map((l) => lineAsItem(l, meal)), meal_type: c.meal_type };
+      out.restoredFrom = got.id;
+      const meal = got.meal_type ?? got.lines[0]?.meal_type ?? "snack";
+      return { items: got.lines.map((l) => lineAsItem(l, meal)), meal_type: got.meal_type };
     },
   };
   return out;

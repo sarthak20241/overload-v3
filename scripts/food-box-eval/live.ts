@@ -25,26 +25,48 @@
 //     is in play. With FOOD_THREADS=on the case's `thread.earlierCards` and its
 //     card on screen are loaded into an in-memory store (foodThreads.ts
 //     memoryThreadStore, the same rules as the tables), and the agent gets the
-//     index line and restore_card. Off: earlier cards are not sent, as today.
+//     index line, copy_lines and read_card (and restore_card with no card on
+//     screen). Off: earlier cards are not sent, as today. copy_lines from the
+//     diary works either way (it reads the case's diary fixture).
+//   - FOOD_AGENT_LATER (off by default, as live): on sends every later
+//     message of a thread (earlier turns, a card open, or a question waiting)
+//     to the food agent, as index.ts does in Precise (foodBar.ts
+//     runLaterMessage). A case's openQuestion is the app's pending_meal.
+//   - Cost and turns per message: every model call a case makes is counted
+//     (AsyncLocalStorage, so concurrent cases do not mix) and priced at the
+//     model_pricing rows. Through the CLI the token counts are the CLI's.
 //   - The secrets the live function reads are not visible here. Defaults:
 //     FOOD_INTENT_MODE=on, THOROUGH_MATCH_MODE / PRECISE_MATCH_MODE off.
 //     Each can be set in the environment to match a deploy.
 
 import "../parse-meal-eval/denoShim";
 import { execFileSync } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import { makeClaudeCliFetch } from "../parse-meal-eval/claude-cli-fetch";
 import {
   type AnthropicCallResult,
   configureFoodBar,
+  noParseResult,
   resolveFoodBarOutcome,
+  runFirstMessage,
+  runLaterMessage,
   startFoodAgent,
   startFoodIntent,
 } from "../../supabase/functions/ai-coach/foodBar";
 import type { CardLine, FoodConversationContext } from "../../supabase/functions/ai-coach/foodContext";
 import { cardMayBeCut, readFoodContext } from "../../supabase/functions/ai-coach/foodContext";
-import { parseFoodIntentMode } from "../../supabase/functions/ai-coach/foodIntent";
+import {
+  continuesPendingMeal,
+  firstMessageGoesToGate,
+  isPreciseRequest,
+  laterMessageGoesToAgent,
+  parseFoodAgentLaterMode,
+  parseFoodFirstGateMode,
+  parseFoodIntentMode,
+} from "../../supabase/functions/ai-coach/foodIntent";
+import type { PendingFoodMeal } from "../../supabase/functions/ai-coach/foodContext";
 import {
   type CandidateFood,
   type ParsedItem,
@@ -65,7 +87,7 @@ import {
 import type { FoodBarThread } from "../../supabase/functions/ai-coach/foodBar";
 import { randomUUID } from "node:crypto";
 import { cardAfter } from "../../lib/foodBarCard";
-import type { Action, FoodBoxCase, Line, Outcome, SavedMeal } from "./types";
+import type { Action, CaseMetrics, FoodBoxCase, Line, Outcome, SavedMeal } from "./types";
 
 // ── Env ─────────────────────────────────────────────────────────────────────
 
@@ -107,8 +129,27 @@ const VIA_CLI = env("EVAL_VIA_CLI") === "1";
 const API_KEY = env("ANTHROPIC_API_KEY");
 const JEV_API_KEY = env("JEV_API_KEY");
 const WEB = env("EVAL_WEB") === "1" && !!env("TAVILY_API_KEY");
+/** Tavily credits this run spent, counted the way tavily.ts bills them: a
+ *  search that answered is 1 (basic), an extract is 1 per 5 pages returned.
+ *  Printed once at exit, so a run's web spend is on its own output. */
+let tavilyCredits = 0;
+const tavilyCounted: typeof fetch = async (input, init) => {
+  const res = await fetch(input, init);
+  const url = String(input instanceof Request ? input.url : input);
+  if (res.ok && url.includes("api.tavily.com")) {
+    if (url.includes("/search")) tavilyCredits += 1;
+    else if (url.includes("/extract")) {
+      const pages = ((await res.clone().json().catch(() => null))?.results ?? []).length;
+      tavilyCredits += pages > 0 ? Math.ceil(pages / 5) : 0;
+    }
+  }
+  return res;
+};
+if (WEB) process.on("exit", () => console.log(`Tavily credits spent this run: ${tavilyCredits}`));
 const INTENT_MODE = parseFoodIntentMode(env("FOOD_INTENT_MODE") || "on");
 const THREADS = parseFoodThreadsMode(env("FOOD_THREADS"));
+const LATER = parseFoodAgentLaterMode(env("FOOD_AGENT_LATER"));
+const FIRST_GATE = parseFoodFirstGateMode(env("FOOD_FIRST_GATE"));
 const match = (k: string): "off" | "shadow" | "on" => (["shadow", "on"] as const).find((m) => m === env(k)) ?? "off";
 
 const SUPABASE_URL = env("EXPO_PUBLIC_SUPABASE_URL");
@@ -121,12 +162,18 @@ const SERVICE = env("SUPABASE_SERVICE_ROLE_KEY");
 /** The adapter's name, and its BASELINE.md section: the thread store changes
  *  what is measured, so a run with it on keeps its own section. */
 export function liveName(): string {
-  return THREADS === "on" ? "live_threads" : "live";
+  return FIRST_GATE === "on" ? "live_first" : LATER === "on" ? "live_later" : THREADS === "on" ? "live_threads" : "live";
 }
 
 export function liveReady(): string | null {
   if (!SUPABASE_URL || !ANON) return "Missing EXPO_PUBLIC_SUPABASE_URL / _ANON_KEY (env or .env.local).";
   if (!VIA_CLI && !API_KEY) return "Set EVAL_VIA_CLI=1 (owner rule), or ANTHROPIC_API_KEY for a latency run.";
+  // live_later is measured with the thread store on; a run without it would
+  // write its numbers under the same name.
+  if (LATER === "on" && THREADS !== "on") return "FOOD_AGENT_LATER=on is measured with FOOD_THREADS=on. Set both.";
+  // live_first is step 3 on top of step 2: the gate's numbers are only
+  // comparable with live_later.
+  if (FIRST_GATE === "on" && LATER !== "on") return "FOOD_FIRST_GATE=on is measured with FOOD_AGENT_LATER=on and FOOD_THREADS=on. Set all three.";
   return null;
 }
 
@@ -145,13 +192,72 @@ const preciseCacheRead: ((key: string) => Promise<unknown>) | null = SERVICE
 // A CLI process that died is the harness, not the pipeline: one retry, so a
 // flaky spawn does not score as a failed case. Never on the API path.
 const rawCliFetch = VIA_CLI ? makeClaudeCliFetch(PARSE_MODEL, { modelFromBody: true, freeChoice: true }) : null;
+
+// ── Cost and turns per case ─────────────────────────────────────────────────
+
+/** $ per million tokens: input, output, cache read, cache write. A copy of
+ *  the model_pricing rows (20261011120000, 20261011150000): update both. */
+const PRICE: Record<string, [number, number, number, number]> = {
+  "claude-haiku-5-5": [0.10, 0.50, 0.01, 0.125],
+  "claude-sonnet-5-5": [2.00, 10.00, 0.20, 2.50],
+};
+interface Meter {
+  calls: number;
+  byModel: Record<string, { calls: number; input: number; output: number; cache_read: number; cache_write: number }>;
+}
+const meter = new AsyncLocalStorage<Meter>();
+
+/** Count one model call against the case that made it. */
+function metered(f: typeof fetch): typeof fetch {
+  return (async (url, init) => {
+    const r = await f(url as never, init);
+    const m = meter.getStore();
+    if (!m || !r.ok) return r;
+    try {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
+      const data = await r.clone().json() as {
+        usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+      };
+      // A body with no model runs on the parse model (the CLI shim's default).
+      const model = body.model ?? PARSE_MODEL;
+      const row = (m.byModel[model] ??= { calls: 0, input: 0, output: 0, cache_read: 0, cache_write: 0 });
+      row.calls++;
+      row.input += data.usage?.input_tokens ?? 0;
+      row.output += data.usage?.output_tokens ?? 0;
+      // API runs only: the CLI does not exercise prompt caching.
+      row.cache_read += data.usage?.cache_read_input_tokens ?? 0;
+      row.cache_write += data.usage?.cache_creation_input_tokens ?? 0;
+      m.calls++;
+    } catch { /* metering never fails a case */ }
+    return r;
+  }) as typeof fetch;
+}
+
 const cliFetch: typeof fetch | null = rawCliFetch
-  ? (async (url, init) => {
+  ? metered((async (url, init) => {
     const r = await rawCliFetch(url as never, init);
     return r.status === 502 ? rawCliFetch(url as never, init) : r;
-  }) as typeof fetch
+  }) as typeof fetch)
   : null;
-const fetchFn: typeof fetch = cliFetch ?? fetch;
+const fetchFn: typeof fetch = cliFetch ?? metered(fetch);
+
+const warnedModels = new Set<string>();
+
+function metricsOf(m: Meter, route: CaseMetrics["route"], agentTurns: number, gate?: CaseMetrics["gate"]): CaseMetrics {
+  let cost = 0;
+  for (const [model, v] of Object.entries(m.byModel)) {
+    // A model with no price row here is costed at 0: say so once, so a model
+    // change cannot make the cost look lower without anyone seeing it. The
+    // rates copy model_pricing; update both together.
+    if (!PRICE[model] && !warnedModels.has(model)) {
+      warnedModels.add(model);
+      console.warn(`[eval] no price for model "${model}": its calls count as $0 (add it to PRICE in live.ts)`);
+    }
+    const [i, o, cr, cw] = PRICE[model] ?? [0, 0, 0, 0];
+    cost += (v.input * i + v.output * o + v.cache_read * cr + v.cache_write * cw) / 1_000_000;
+  }
+  return { route, agentTurns, calls: m.calls, costUsd: Math.round(cost * 100000) / 100000, byModel: m.byModel, ...(gate ? { gate } : {}) };
+}
 
 async function callAnthropic(payload: Record<string, unknown>, timeoutMs = 80_000): Promise<AnthropicCallResult> {
   const ac = new AbortController();
@@ -241,7 +347,9 @@ function memoryOf(c: FoodBoxCase): MemoryEntry[] {
     serving_unit: "g",
     source: m.source,
     logged_via: "ai",
-    tier: "super",
+    tier: m.tier ?? "super",
+    origin: m.origin ?? null,
+    recipe: m.recipe ?? null,
     logged_at: `${m.lastLogged}T12:00:00Z`,
     persistent: true,
     confirmed_at: `${m.lastLogged}T12:00:00Z`,
@@ -256,6 +364,11 @@ function diaryRows(c: FoodBoxCase, localDate: string, offsetMin: number): MealRo
     logged_at: new Date(base - d.daysAgo * 86_400_000).toISOString(),
     meal_entries: d.lines.map((l) => ({
       food_name: l.name,
+      // meal_entries.source holds catalog | off | web | estimate, or null for
+      // a manual pick (0076). A fixture's "label" was a web label.
+      source: l.source === "label" ? "web" : ["catalog", "off", "web", "estimate"].includes(l.source ?? "") ? l.source : null,
+      food_id: null,
+      fiber_g: null,
       quantity: l.quantity ?? 1,
       serving_unit: l.unit ?? "serving",
       grams_logged: l.grams ?? null,
@@ -332,7 +445,7 @@ function parseDeps(c: FoodBoxCase, zone: string): ParseMealDeps {
   return {
     anthropicApiKey: API_KEY || "cli",
     model: PARSE_MODEL,
-    ...(cliFetch ? { fetchFn: cliFetch } : {}),
+    fetchFn,
     maxTokens: 6500, // PARSE_MEAL_MAX_TOKENS
     timeoutMs: 80_000,
     webSearchEnabled: false,
@@ -341,7 +454,7 @@ function parseDeps(c: FoodBoxCase, zone: string): ParseMealDeps {
     backfillOffFood: async () => null,
     // Read only: no preciseCachePut, no preciseAliasPut.
     preciseCacheGet: preciseCacheRead ? async (key: string) => (await preciseCacheRead(key)) as never : undefined,
-    ...(WEB ? { webLookup: "tavily" as const, tavily: { apiKey: env("TAVILY_API_KEY"), timeoutMs: 20_000 } } : {}),
+    ...(WEB ? { webLookup: "tavily" as const, tavily: { apiKey: env("TAVILY_API_KEY"), timeoutMs: 20_000, fetchFn: tavilyCounted } } : {}),
     searchRewrite: true,
     jev: JEV_API_KEY ? { apiKey: JEV_API_KEY, timeoutMs: 5000 } : undefined,
     searchCountry: c.region ?? "india",
@@ -349,6 +462,8 @@ function parseDeps(c: FoodBoxCase, zone: string): ParseMealDeps {
     userMemory: JEV_API_KEY
       ? {
         load: async () => ({ entries: memory, timeZone: zone }),
+        // Step 4: FOOD_ORIGIN_TRUST=on|shadow, as the edge function reads it.
+        ...(env("FOOD_ORIGIN_TRUST") ? { originTrust: env("FOOD_ORIGIN_TRUST") as "on" | "shadow" | "off" } : {}),
         lookupAliases: async (keys: string[]) =>
           memory.filter((m) => (m.confirmed_aliases ?? []).some((a) => keys.includes(a))).map((m) => ({ ...m, alias_lookup: true })),
       }
@@ -413,12 +528,26 @@ async function threadOf(c: FoodBoxCase, card: CardLine[]): Promise<FoodBarThread
   return threadForAgent(store, "eval", { id, card_id: onScreen, base_version: onScreen ? 1 : null, next_card_id: randomUUID(), closed: null });
 }
 
-export async function runLive(c: FoodBoxCase): Promise<Outcome> {
+export function runLive(c: FoodBoxCase): Promise<Outcome> {
+  const m: Meter = { calls: 0, byModel: {} };
+  return meter.run(m, () => runLiveCase(c, m));
+}
+
+/** The app's pending_meal for a case with a question still open: the user's
+ *  last message before it, and the question. */
+function pendingOf(c: FoodBoxCase): PendingFoodMeal | null {
+  const q = c.thread.openQuestion;
+  if (!q) return null;
+  const text = c.thread.turns.filter((t) => t.role === "user").at(-1)?.text ?? "";
+  return text.trim() ? { status: "awaiting_clarification", text, question: q.question } : null;
+}
+
+async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
   const { zone, localDate, localHour } = clockOf(c);
   const prevLines = c.thread.card?.length ? c.thread.card : null;
   const card = cardOf(prevLines ?? []);
   const cardOpen = card.length > 0 && !cardMayBeCut(card);
-  const base = readFoodContext(c.thread.turns, null);
+  const base = readFoodContext(c.thread.turns, pendingOf(c));
   const foodContext: FoodConversationContext = { ...base, card: card.length ? card : null };
   const recentTurns = base.recentTurns;
   const savedMealsP = Promise.resolve(savedMealsOf(c));
@@ -428,6 +557,11 @@ export async function runLive(c: FoodBoxCase): Promise<Outcome> {
     listLoggedMeals(input, { timeZone: zone, todayLocal: localDate }, {
       mealsBetween: async (s, e) => ({ rows: rows.filter((r) => String(r.logged_at) >= s && String(r.logged_at) <= e) }),
     });
+  // copy_lines' read: the same rows, with each line's id and source (full).
+  const readDiaryLines = async (input: Record<string, unknown>) =>
+    listLoggedMeals(input, { timeZone: zone, todayLocal: localDate }, {
+      mealsBetween: async (s, e) => ({ rows: rows.filter((r) => String(r.logged_at) >= s && String(r.logged_at) <= e) }),
+    }, true);
   const userTurns = c.thread.turns.filter((t) => t.role === "user").map((t) => t.text);
   const previousItems: PreviousItem[] = card.map((l) => ({ ...l, food_id: null }));
   const previousText = prevLines ? userTurns.at(-1) ?? null : null;
@@ -436,44 +570,110 @@ export async function runLive(c: FoodBoxCase): Promise<Outcome> {
   const contextPromise = Promise.resolve({ recentFoods: [], todayTotals: null, targets: null });
 
   const threadP = threadOf(c, card);
-  const intentP = startFoodIntent(savedMealsP, c.message, foodContext);
-  const agentP = startFoodAgent({
-    intentP, supportsCreate: true, text: c.message, mealHint, localHour, localDate, mode: "super",
-    savedMealsP, readDiary, contextPromise, userId: "eval", recentTurns, pendingMeal: null,
+  const pendingIn = foodContext.pendingMeal;
+  // What the app sends (nutrition.tsx): speed "super" on a first Precise
+  // message only, tier "precise" on every message. The server reads both the
+  // same way here as in index.ts, and the agent's parses run in the tier the
+  // speed asks for (a correction stays on smart).
+  const body: { speed?: string; tier: string } = { ...(prevLines ? {} : { speed: "super" }), tier: "precise" };
+  // index.ts's rule (FOOD_FIRST_GATE, Precise): a first message asks the gate
+  // question in the router's Jev call.
+  const firstGate = firstMessageGoesToGate({
+    mode: FIRST_GATE, laterMode: LATER, intentMode: INTENT_MODE, precise: isPreciseRequest(body, { superOn: true, freeTier: false }), supportsCreate: true, hasModelKey: true,
+    turns: recentTurns.length, cardLines: card.length, pending: !!pendingIn,
+  });
+  const intentP = startFoodIntent(savedMealsP, c.message, foodContext, undefined, undefined, undefined, undefined, firstGate);
+  const agentArgs = {
+    intentP, supportsCreate: true, text: c.message, mealHint, localHour, localDate,
+    mode: (body.speed === "super" ? "super" : null) as "super" | null,
+    savedMealsP, readDiary, readDiaryLines, contextPromise, userId: "eval", recentTurns, pendingMeal: pendingIn,
     card: card.length ? { lines: card, previousText, previousWords, previousItems } : null,
     parseDeps: () => deps,
     logUsage: () => {},
     thread: threadP,
+  };
+  /** Today's parse of the message, as index.ts runs it. */
+  const parseNow = async () => {
+    const pendingMeal = pendingIn && continuesPendingMeal(await intentP) ? pendingIn : null;
+    return runParseMeal(deps, {
+      text: c.message,
+      localHour,
+      mealHint,
+      // Precise: the app sends speed 'super' on a first message and keeps a
+      // correction on the default tier (nutrition.tsx runParse).
+      mode: prevLines ? null : "super",
+      recentFoods: [],
+      savedMeals: savedMealsP,
+      savedHint: intentP.then((d) => d?.savedMatch ?? null, () => null),
+      todayTotals: null,
+      targets: null,
+      contextPromise,
+      previousText,
+      previousWords,
+      previousItems: prevLines ? previousItems : undefined,
+      pendingMeal,
+      recentTurns,
+    });
+  };
+  // index.ts's rule (FOOD_AGENT_LATER, Precise): a later message goes to the
+  // agent whatever the router says.
+  // hasModelKey true: this eval measures the agent's answers, so the no-key
+  // fallback (today's path) is never exercised here; foodAgentLater.test.ts pins it.
+  const later = laterMessageGoesToAgent({
+    // The eval account is a Pro account with Precise on.
+    mode: LATER, precise: isPreciseRequest(body, { superOn: true, freeTier: false }), supportsCreate: true, hasModelKey: true,
+    turns: recentTurns.length, cardLines: card.length, cardOpen, pending: !!pendingIn,
   });
-  const firstParse = await runParseMeal(deps, {
-    text: c.message,
-    localHour,
-    mealHint,
-    // Precise: the app sends speed 'super' on a first message and keeps a
-    // correction on the default tier (nutrition.tsx runParse).
-    mode: prevLines ? null : "super",
-    recentFoods: [],
-    savedMeals: savedMealsP,
-    savedHint: intentP.then((d) => d?.savedMatch ?? null, () => null),
-    todayTotals: null,
-    targets: null,
-    contextPromise,
-    previousText,
-    previousWords,
-    previousItems: prevLines ? previousItems : undefined,
-    pendingMeal: null,
-    recentTurns,
-  });
-  const outcome = await resolveFoodBarOutcome({
-    result: firstParse, intentP, supportsCreate: true, text: c.message, mealHint, readDiary, agentP, recentTurns, cardOpen,
-    earlierCards: card.length === 0 && !!(await threadP)?.index,
-  });
+  let outcome: Awaited<ReturnType<typeof resolveFoodBarOutcome>>;
+  let firstParse: Awaited<ReturnType<typeof runParseMeal>>;
+  let routerAgent: ReturnType<typeof startFoodAgent> | null = null;
+  let gate: CaseMetrics["gate"];
+  if (later) {
+    const l = await runLaterMessage({ agent: agentArgs, cardOpen, fallbackParse: parseNow });
+    outcome = l.outcome;
+    firstParse = l.firstParse ?? noParseResult();
+  } else if (firstGate) {
+    const parseP = parseNow();
+    const f = await runFirstMessage({ agent: agentArgs, parse: parseP });
+    outcome = f.outcome;
+    // The parse counts as this message's (its look-ups too) only when it was
+    // served: by the gate, or as the fallback for a failed agent. A reused
+    // parse is inside the agent's own result already.
+    firstParse = f.gate.to === "agent" && outcome.agent && outcome.agent.kind !== "failed" ? noParseResult() : f.firstParse ?? noParseResult();
+    gate = f.gate;
+    // The running parse still counts against this message when the agent did
+    // not use it: it was spent either way.
+    await parseP.catch(() => null);
+  } else {
+    const agentP = (routerAgent = startFoodAgent(agentArgs));
+    firstParse = await parseNow();
+    outcome = await resolveFoodBarOutcome({
+      result: firstParse, intentP, supportsCreate: true, text: c.message, mealHint, readDiary, agentP, recentTurns, cardOpen,
+      earlierCards: card.length === 0 && !!(await threadP)?.index,
+    });
+  }
+  // The router's agent can still be working after a log was served: its calls
+  // count against this message too.
+  if (routerAgent) await routerAgent;
+  const metrics = metricsOf(m, later || gate?.to === "agent" ? "agent" : outcome.agent ? "router_agent" : "parse", outcome.agent?.turns.length ?? 0, gate);
 
   if (env("DEBUG_STEPS") === "1") {
-    console.log(`  [${c.id}] action=${outcome.action} planned=${outcome.planned} intent=${outcome.decision?.intent ?? null}@${outcome.decision?.confidence ?? null}`);
-    for (const t of outcome.agent?.turns ?? []) console.log(`    turn ${t.turn}: ${JSON.stringify(t.tools).slice(0, 600)}`);
+    console.log(`  [${c.id}] action=${outcome.action} planned=${outcome.planned} later=${later}${gate ? ` gate=${gate.plain?.toFixed(2) ?? "null"}->${gate.to} reused=${gate.parseReused}` : ""} intent=${outcome.decision?.intent ?? null}@${outcome.decision?.confidence ?? null} agent=${outcome.agent?.kind ?? null}${outcome.agent?.reason ? `(${outcome.agent.reason})` : ""}`);
+    for (const t of outcome.agent?.turns ?? []) {
+      console.log(`    turn ${t.turn}: ${JSON.stringify(t.tools).slice(0, 600)}`);
+      for (const r of t.results ?? []) console.log(`      ${r.name} -> ${String(r.summary).slice(0, 300)}`);
+    }
+    // The parse's own steps and lines (a first message, or the agent's parses).
+    for (const s of [...(firstParse.steps ?? []), ...(outcome.result?.steps ?? [])]) {
+      console.log(`    step ${s.tool}: ${JSON.stringify({ i: s.input, r: s.result }).slice(0, 700)}`);
+    }
+    for (const it of (outcome.result ?? firstParse).parsed?.items ?? []) {
+      console.log(`    line ${it.quantity} x "${it.serving_label}" ${it.food_name} = ${it.grams} g ${it.kcal} kcal p${it.protein_g} (${it.source})`);
+    }
   }
-  const lookedUp = (firstParse.steps ?? []).some((s) => /web|lookup_packaged|fatsecret|tavily/i.test(String(s.tool)));
+  // The agent's own parses (a later message) carry their steps in its result.
+  const lookedUp = [...(firstParse.steps ?? []), ...(outcome.result?.steps ?? [])]
+    .some((s) => /web|lookup_packaged|fatsecret|tavily/i.test(String(s.tool)));
   const withLookup = (a: Action[]): Action[] => (lookedUp && !a.includes("look_up") ? [...a, "look_up"] : a);
 
   if (outcome.action === "create" && outcome.create) {
@@ -483,12 +683,13 @@ export async function runLive(c: FoodBoxCase): Promise<Outcome> {
       reply: typeof input.summary === "string" ? input.summary : null,
       actions: ["save"],
       savedMeal: savedMealOf(outcome.create.tool, input),
+      metrics,
     };
   }
   if (outcome.action === "reply") {
     const reply = outcome.reply ?? null;
     // A reply is a spoken answer; one that ends in a question also asks back.
-    return { card: cardAfter(prevLines, { kind: "declined" }), reply, actions: reply && /\?\s*$/.test(reply) ? ["answer", "ask"] : ["answer"] };
+    return { card: cardAfter(prevLines, { kind: "declined" }), reply, actions: reply && /\?\s*$/.test(reply) ? ["answer", "ask"] : ["answer"], metrics };
   }
   const result = outcome.result ?? firstParse;
   if (!result.parsed || result.parsed.items.length === 0) {
@@ -498,12 +699,19 @@ export async function runLive(c: FoodBoxCase): Promise<Outcome> {
       card: cardAfter(prevLines, { kind: "declined", cleared }),
       reply: msg,
       actions: cleared ? ["edit"] : withLookup(msg && /\?\s*$/.test(msg) ? ["answer", "ask"] : ["answer"]),
+      metrics,
     };
   }
   const items = result.parsed.items.map(asLine);
+  const did: Action[] = result.tool_calls.includes("restore_card") ? ["restore"] : withLookup([prevLines ? "edit" : "log"]);
+  // A reply that rode along with the change (the agent answered AND acted).
+  const line = result.parsed.drona_line || null;
+  if (outcome.answered && !did.includes("answer")) did.push("answer");
+  if (outcome.answered && line && /\?\s*$/.test(line) && !did.includes("ask")) did.push("ask");
   return {
     card: cardAfter(prevLines, { kind: "meal", items, correctsPrevious: !!result.parsed.corrects_previous }),
-    reply: result.parsed.drona_line || null,
-    actions: result.tool_calls.includes("restore_card") ? ["restore"] : withLookup([prevLines ? "edit" : "log"]),
+    reply: line,
+    actions: did,
+    metrics,
   };
 }

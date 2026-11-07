@@ -298,7 +298,7 @@ Each step ships behind an on/off switch, shadow first where possible.
 |---|---|---|
 | 0 | Eval set + replay harness | Lets us measure everything |
 | 1 | Thread store + card versions + `restore_card`; save card stops replacing the meal card | Lost cards, lost context |
-| 2 | Agent for every later message, with `edit_line` / `remove_lines` / `save_meal` | Dead-end replies, dropped lines, false claims |
+| 2 | Agent for every later message, with `edit_line` / `remove_lines` / `save_meal` (built behind `FOOD_AGENT_LATER`, off; see the PR) | Dead-end replies, dropped lines, false claims |
 | 3 | First-message Jev gate + agent for non-plain first messages | One path for everything that is not plain |
 | 4 | Food memory: clear sources, `recipe` column, history, row clean-up | The 6-row problem, guesses with top trust |
 | 5 | `build_recipe` + oil and other assumptions with one question | Home dishes |

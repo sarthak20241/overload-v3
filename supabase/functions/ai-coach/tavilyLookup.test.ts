@@ -9,7 +9,11 @@ import {
   brandFromPages,
   findPanelText,
   foodLabel,
+  isBrandSite,
+  namesProduct,
+  onBrandSite,
   type PageReport,
+  preferBrandSite,
   readingFromReport,
   readReport,
   runTavilyLookup,
@@ -54,7 +58,7 @@ Deno.test("foodLabel does not repeat a brand already in the name", () => {
 });
 
 const report = (over: Partial<PageReport>): PageReport => ({
-  page_id: "p1", same_food: true, basis: "per_100g", serving_grams: null, serving_label: null,
+  page_id: "p1", same_food: true, basis: "per_100g", serving_grams: null, serving_label: null, serving_count: null, serving_unit: null,
   kcal: 72, energy_kj: null, protein_g: 3.1, carb_g: 4.6, fat_g: 4.5, fiber_g: null, brand: null, ...over,
 });
 
@@ -420,7 +424,10 @@ Deno.test("the second look can say no, and the page is never read", async () => 
 
 Deno.test("a page Jev rejects outright is not extracted", async () => {
   const calls = newCalls();
-  const net = fakeNet({ searches: [{ results: [AMUL_SITE] }, { results: [] }], jevYes: () => 0.2 }, calls);
+  // A shop page: the brand's own page for this product is always judged again
+  // (the brand-site tests below), so this one is not on amul.com.
+  const shop = { ...AMUL_SITE, url: "https://www.jiomart.com/p/amul-masti-dahi" };
+  const net = fakeNet({ searches: [{ results: [shop] }, { results: [] }], jevYes: () => 0.2 }, calls);
   await runTavilyLookup(lookupDeps(net, calls), DAHI);
   assertEquals(calls.extract, 0);
 });
@@ -713,4 +720,120 @@ Deno.test("a miss on another product is still an answer: no second provider is p
   );
   assert(!tools.some((t) => t.includes("web_search")), JSON.stringify(tools));
   assert(!steps.includes("web_fallback"));
+});
+
+// ── The brand's own site (2026-11-07) ───────────────────────────────────────
+// A protein bread: Tavily returned the maker's own pages, Jev scored them 0.08
+// to 0.52 and they were dropped, and only a database page was read (15.2 g
+// protein per 100 g, the label about 22 g). The brand's site must never rank
+// below a third-party site for that brand's product.
+
+Deno.test("isBrandSite: the brand's words run together are the host's name", () => {
+  assertEquals(isBrandSite("https://www.thehealthfactory.in/products/protein-bread", "Health Factory"), true);
+  assertEquals(isBrandSite("https://milkymist.com/yogurt", "Milky Mist"), true);
+  assertEquals(isBrandSite("https://shop.amul.com/products/x", "Amul"), true);
+  assertEquals(isBrandSite("https://www.myprotein.co.in/p/1", "MyProtein"), true);
+  // Shops and databases are never a brand's site, whatever they list.
+  assertEquals(isBrandSite("https://www.fatsecret.co.in/calories-nutrition/the-health-factory/protein-bread", "Health Factory"), false);
+  assertEquals(isBrandSite("https://www.bigbasket.com/pd/1/the-health-factory-protein-bread", "Health Factory"), false);
+  // No brand, a short brand, another brand.
+  assertEquals(isBrandSite("https://www.thehealthfactory.in/x", null), false);
+  assertEquals(isBrandSite("https://www.abc.in/x", "ABC"), false);
+  assertEquals(isBrandSite("https://www.milkymist.com/x", "Health Factory"), false);
+});
+
+Deno.test("preferBrandSite: the brand's own reading wins when there is one", () => {
+  const db = { brandSite: false, kcal: 242 };
+  const own = { brandSite: true, kcal: 242 };
+  assertEquals(preferBrandSite([db, own]), [own]);
+  assertEquals(preferBrandSite([db]), [db]);
+});
+
+Deno.test("namesProduct: a brand's page counts only when it names this product", () => {
+  assertEquals(namesProduct(MAKER, BREAD), true);
+  assertEquals(namesProduct({ title: "Zero Maida Bread Whole Wheat 350g", url: "https://www.thehealthfactory.in/products/zero-maida-bread" }, BREAD), false);
+  // The link can name it when the title does not.
+  assertEquals(namesProduct({ title: "Shop", url: "https://www.thehealthfactory.in/products/protein-breads" }, BREAD), true);
+});
+
+Deno.test("the brand's page Jev reads as another product on its own words is not read", async () => {
+  const calls = newCalls();
+  const net = fakeNet({
+    searches: [{ results: [DATABASE, MAKER] }],
+    // First look low for the maker's page; second look, on its own text, sure it is not this food.
+    jevYes: (r) => (r.title.startsWith("Calories") ? 0.87 : r.pieces ? 0.05 : 0.14),
+  }, calls);
+  await runTavilyLookup(lookupDeps(net, calls), BREAD);
+  assertEquals(calls.readPages, [["fatsecret.co.in"]]);
+});
+
+const BREAD = { name: "protein bread", brand: "Health Factory" };
+const BREAD_PANEL = "Nutrition information per 100 g: Energy 242 kcal, Protein 22 g, Carbohydrate 30 g, Fat 3.4 g.";
+const MAKER = {
+  title: "Protein Bread - (Multi Protein)",
+  url: "https://www.thehealthfactory.in/products/protein-bread-multi-protein",
+  content: "Protein Bread offers up to 10g of protein in two slices.",
+  score: 0.5,
+  raw_content: "Protein Bread - (Multi Protein). " + BREAD_PANEL,
+};
+const DATABASE = {
+  title: "Calories in The Health Factory Protein Bread",
+  url: "https://www.fatsecret.co.in/calories-nutrition/the-health-factory/protein-bread/1-serving",
+  content: "Cals 242, Prot 15.24g",
+  score: 0.9,
+  raw_content: "The Health Factory Protein Bread. Energy 242 kcal, Protein 15.2 g, Carbohydrate 41.5 g, Fat 1.7 g per 100 g",
+};
+
+Deno.test("the maker's page Jev scored low is read, and its label is the answer", async () => {
+  const calls = newCalls();
+  const net = fakeNet({
+    searches: [{ results: [DATABASE, MAKER] }],
+    // Jev's scores as seen live: the database page high, the maker's low
+    // (0.14 on the title, 0.4 once it saw the page's own words).
+    jevYes: (r) => (r.title.startsWith("Calories") ? 0.87 : r.pieces ? 0.4 : 0.14),
+  }, calls);
+  const out = await runTavilyLookup(lookupDeps(net, calls), BREAD);
+  // Read, and first: never below the third-party page.
+  assertEquals(calls.readPages[0][0], "thehealthfactory.in");
+  assertEquals(out.finding?.readings.map((r) => !!r.ref?.includes("thehealthfactory.in")), [true]);
+});
+
+Deno.test("no brand on the food: no site is lifted", async () => {
+  const calls = newCalls();
+  const net = fakeNet({
+    searches: [{ results: [DATABASE, MAKER] }],
+    jevYes: (r) => (r.title.startsWith("Calories") ? 0.87 : 0.14),
+  }, calls);
+  await runTavilyLookup(lookupDeps(net, calls), { name: "protein bread", brand: null });
+  assertEquals(calls.readPages, [["fatsecret.co.in"]]);
+});
+
+Deno.test("onBrandSite: with no brand, the name's first words can be the brand (find_label's card name)", () => {
+  assertEquals(onBrandSite(MAKER, { name: "Health Factory protein bread", brand: null }), true);
+  // A plain food: no first words are a host, nothing is lifted.
+  assertEquals(onBrandSite(MAKER, { name: "protein bread", brand: null }), false);
+  // The rest of the name must still be named by the page.
+  assertEquals(onBrandSite(MAKER, { name: "Health Factory multigrain bun", brand: null }), false);
+});
+
+Deno.test("the reader's serving count and piece word reach the finding", async () => {
+  const calls = newCalls();
+  const net = fakeNet({ searches: [{ results: [RIGHT] }] }, calls);
+  const deps = lookupDeps(net, calls);
+  deps.callModel = async (payload) => {
+    const msg = JSON.parse((payload.messages as Array<{ content: string }>)[0].content);
+    return {
+      content: [{
+        type: "tool_use", name: "report_page_panels",
+        input: {
+          pages: msg.pages.map((p: { page_id: string }) => ({
+            page_id: p.page_id, same_food: true, basis: "per_100g", serving_label: "1 serving (50 g)", serving_grams: 50,
+            serving_count: 2, serving_unit: "Slices", kcal: 72, protein_g: 3, carb_g: 5, fat_g: 4,
+          })),
+        },
+      }],
+    };
+  };
+  const out = await runTavilyLookup(deps, DAHI);
+  assertEquals([out.finding?.serving_count, out.finding?.serving_unit], [2, "slices"]);
 });
