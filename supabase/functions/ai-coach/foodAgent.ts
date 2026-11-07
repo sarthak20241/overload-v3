@@ -1648,6 +1648,9 @@ export function pickEditedLine(original: CardLine, r: ParseMealResult | null): P
   }) ?? null;
 }
 
+/** A change asking for the food's numbers to be checked or looked up again. */
+const RELOOKUP_RE = /\b(check(ed|ing)? (it )?again|re-?check|look (it |them )?up|search again|(numbers?|values?|macros?|nutrition) (are |is |look |looks |seem |seems )?(wrong|off|incorrect))\b/i;
+
 /** Words too small or too common to name a food. */
 const FILLER_WORDS = new Set(["the", "and", "with", "of", "a", "an", "in", "for", "per", "from", "to", "or", "made"]);
 const nameWords = (x: string) =>
@@ -1672,6 +1675,9 @@ export function keepLineIdentity(original: CardLine, edited: ParsedItem, change:
   // Amount edits only: the weight changed. "Those numbers are wrong, check
   // again" at the same weight is a re-lookup, and its new row stands.
   if (!(original.grams > 0) || Math.abs(edited.grams - original.grams) <= Math.max(1, original.grams * 0.05)) return edited;
+  // A change that asks for the numbers to be looked up again, or says they are
+  // wrong, wants a new row, whatever the weight.
+  if (RELOOKUP_RE.test(change)) return edited;
   const has = (set: Set<string>, w: string) => set.has(w) || set.has(`${w}s`) || set.has(w.replace(/s$/, ""));
   const before = new Set([...nameWords(original.food_name), ...nameWords(original.said_name ?? "")]);
   const said = new Set(nameWords(change));

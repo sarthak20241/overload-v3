@@ -268,3 +268,24 @@ Deno.test("find_label runs at most twice a message: each call is a web lookup", 
   );
   assertEquals(log.filter((l) => l.startsWith("label:")).length, 2);
 });
+
+Deno.test("keepLineIdentity: asking to check the numbers again keeps the new row, even with a new weight", () => {
+  const again = edited({ food_name: "Protein Bread", grams: 50, kcal: 132, protein_g: 10.4 });
+  assertEquals(keepLineIdentity(BREAD, again, "2 slices, and the numbers look wrong, check again"), again);
+});
+
+Deno.test("find_label's third call says the cap was hit", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  await runFoodAgent(
+    { text: "check every label", defaultMeal: "breakfast", card: CARD, later: true },
+    deps(scripted([
+      [
+        { name: "find_label", input: { line_id: "L1" } },
+        { name: "find_label", input: { line_id: "L2" } },
+        { name: "find_label", input: { product: "Milky Mist Greek yoghurt" } },
+      ],
+      [{ name: "reply", input: { text: "Checked." } }],
+    ], bodies), []),
+  );
+  assert(JSON.stringify(bodies[1].messages).includes("find_label already ran 2 times this message"));
+});

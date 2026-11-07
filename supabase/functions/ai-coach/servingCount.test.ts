@@ -52,16 +52,24 @@ Deno.test("unitWeightMatchesGrams: 2 x slice (25 g) weighs 50 g, macros scaled w
   assertEquals([out.quantity, out.serving_label, out.grams, out.kcal, out.protein_g, out.carb_g, out.fat_g], [2, "slice (25 g)", 50, 121, 14, 13, 2.2]);
 });
 
-Deno.test("unitWeightMatchesGrams: a group serving counted once per piece is the group", () => {
-  // "2 slices" over the label's "2 slices (50 g)", worked out as 2 x 50 g.
-  const out = unitWeightMatchesGrams(line({ serving_label: "2 slices (50 g)", grams: 100 }));
-  assertEquals([out.quantity, out.serving_label, out.grams, out.kcal], [2, "slice (25 g)", 50, 121]);
-  // 3 servings of the group: 6 slices, the weight unchanged.
-  const three = unitWeightMatchesGrams(line({ quantity: 3, serving_label: "2 slices (50 g)", grams: 150, kcal: 363 }));
-  assertEquals([three.quantity, three.serving_label, three.grams, three.kcal], [6, "slice (25 g)", 150, 363]);
-  // 1 x the group, 50 g: right already, restated per slice.
-  const one = unitWeightMatchesGrams(line({ quantity: 1, serving_label: "2 slices (50 g)", grams: 50, kcal: 121 }));
-  assertEquals([one.quantity, one.serving_label, one.grams, one.kcal], [2, "slice (25 g)", 50, 121]);
+Deno.test("unitWeightMatchesGrams: a group label is never guessed at", () => {
+  // 2 x "2 slices (50 g)" at 100 g: 2 servings, or 2 slices counted twice?
+  // The line cannot say, so it stays.
+  const two = line({ serving_label: "2 slices (50 g)", grams: 100 });
+  assertEquals(unitWeightMatchesGrams(two), two);
+  // 1 x the group at 50 g is right already, and stays as written.
+  const one = line({ quantity: 1, serving_label: "2 slices (50 g)", grams: 50, kcal: 121 });
+  assertEquals(unitWeightMatchesGrams(one), one);
+  // 2 slices at 50 g against the group label: restated per slice, numbers unchanged.
+  const per = unitWeightMatchesGrams(line({ serving_label: "2 slices (50 g)", grams: 50, kcal: 121 }));
+  assertEquals([per.quantity, per.serving_label, per.grams, per.kcal], [2, "slice (25 g)", 50, 121]);
+});
+
+Deno.test("unitWeightMatchesGrams: a serving or a measure proves no piece weight", () => {
+  const sv = line({ quantity: 2, serving_label: "serving (15 g)", grams: 60, kcal: 66 });
+  assertEquals(unitWeightMatchesGrams(sv), sv);
+  const tbsp = line({ quantity: 2, serving_label: "tbsp (17 g)", grams: 68, kcal: 75 });
+  assertEquals(unitWeightMatchesGrams(tbsp), tbsp);
 });
 
 Deno.test("unitWeightMatchesGrams: lines that already agree, and labels it does not read, stay", () => {

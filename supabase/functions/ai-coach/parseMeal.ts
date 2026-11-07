@@ -3121,12 +3121,12 @@ function countInsideLabel(sv: ServingOption): ServingOption {
  * the model's arithmetic. So the unit wins, and the grams and every macro are
  * scaled to it (they were worked out from the grams, so they move together).
  *
- * A serving for a group ("2 slices (50 g)") is per piece first: grams per slice
- * = 50 / 2. When the line weighs quantity x the group and the quantity is the
- * group's own count, the group was counted once per piece: the line is the
- * group. Any other quantity counts groups, and the line is restated in pieces
- * with its weight unchanged. Otherwise only a whole multiple (the count applied
- * twice) is fixed: any other gap may be a weight the user gave. A "total"
+ * Narrow on purpose. Only a unit that names one piece and its weight
+ * ("slice (25 g)") proves a piece weight, and only a whole multiple (the count
+ * applied twice) is fixed: any other gap may be a weight the user gave. A group
+ * label ("2 slices (50 g)") whose line already weighs quantity x one piece is
+ * restated per piece, numbers unchanged; any other group line stays, since the
+ * quantity may count servings. A serving or measure unit proves no piece. A "total"
  * label, a bare weight label ("g", "100 g", amountMatchesGrams's job), a line
  * with no unit weight, and a line of numbers the user stated are left alone.
  */
@@ -3164,10 +3164,14 @@ export function unitWeightMatchesGrams(it: ParsedItem): ParsedItem {
     };
   };
   if (near(it.grams, it.quantity * perUnit)) return n > 1 ? scaled(it.quantity, it.grams) : it;
-  if (n > 1 && near(it.grams, it.quantity * groupG)) {
-    // "2 slices" over "2 slices (50 g)" is the group, once. 3 x the group is 6 slices.
-    return it.quantity === n ? scaled(it.quantity, groupG) : scaled(it.quantity * n, it.grams);
-  }
+  // A group label ("2 slices (50 g)") the quantity may count as groups or as
+  // pieces: the line cannot say which (2 servings, or 2 slices counted twice?),
+  // so it stays. Group servings are restated per piece before decide sees them
+  // (perOneServings, servingsFromFinding), so decide seldom writes one.
+  if (n > 1) return it;
+  // A unit that names a piece only: "serving (15 g)" or "tbsp (17 g)" proves
+  // no piece weight.
+  if (words.some((w) => GENERIC_PORTION_WORDS.has(w) || MEASURE_WORDS.has(w))) return it;
   // Only the count applied twice: the line weighs a whole multiple (2x, 3x)
   // of quantity x the unit. Any other gap may be a weight the user gave
   // ("150 g dal" against a "bowl (250 g)" unit), and stays.
