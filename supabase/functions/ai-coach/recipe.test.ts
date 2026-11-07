@@ -264,3 +264,13 @@ Deno.test("readRecipeParts: parts are kept only on a line whose source is recipe
   assertEquals(readRecipeParts(raw, "estimate"), undefined);
   assertEquals(readRecipeParts(raw, undefined), undefined);
 });
+
+Deno.test("agent: with no card, a dish whose parts are all not found makes no card, only a line saying so", async () => {
+  const none = { name: "build_recipe", input: { name: "Stew", parts: [{ name: "zzz root" }, { name: "qqq leaf" }] } };
+  const out = await runFoodAgent(
+    { text: "x", defaultMeal: "lunch", later: true, first: true },
+    { model: "m", callModel: scripted([[none]]), readDiary: async () => ({}), savedMeals: async () => [], parseFood: fakeParse(), buildRecipe: true },
+  );
+  assertEquals(out.kind, "reply");
+  if (out.kind === "reply") assert(/Stew is not on the card/.test(out.text), out.text);
+});

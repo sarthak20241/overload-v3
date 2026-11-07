@@ -3330,6 +3330,7 @@ async function handleParseMealRequest(args: {
       if (!name) return [];
       const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
       const src = r.source;
+      const recipe = readRecipeParts(r.recipe, src);
       return [{
         food_id: typeof r.food_id === "string" && r.food_id ? r.food_id : null,
         food_name: name,
@@ -3368,7 +3369,7 @@ async function handleParseMealRequest(args: {
           : {}),
         // A dish built from its parts (recipe.ts): its parts, when the app
         // sends them back. An app that does not keeps the parts in the note.
-        ...(readRecipeParts(r.recipe, src) ? { recipe: readRecipeParts(r.recipe, src) } : {}),
+        ...(recipe ? { recipe } : {}),
       }];
     })
     : [];

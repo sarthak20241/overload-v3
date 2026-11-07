@@ -187,8 +187,9 @@ export interface AutoLogEntryRow {
   sodium_mg: null;
   position: number;
   logged_via: "ai_auto";
-  /** The diary's source check (0114) has no "recipe": a dish built from its
-   *  parts is written as an estimate, as the app's own Add does. */
+  /** The diary's source check has "recipe" only from migration
+   *  20261107120000 (step 4). Auto-log writes a dish built from its parts as
+   *  an estimate, so it works with or without that migration. */
   source: Exclude<ParsedItem["source"], "recipe">;
   client_id: string;
   /** The tier whose numbers the line carries (migration 0149). The trigger

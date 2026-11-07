@@ -44,7 +44,8 @@ export const BUILD_RECIPE_TOOL: AnthropicTool = {
     "user's own amount words (\"60 g\", \"2\", \"1 tbsp\"); leave `amount` out when the user gave none. The app looks up " +
     "each part and adds the parts up, so you never do the arithmetic. With `line_id`, the dish replaces that card line " +
     "(use this to change a part of a dish already built: send all its parts again, the changed one with its new " +
-    "amount). Without `line_id`, the dish is added to the card.",
+    "amount). Without `line_id`, the dish is added to the card. Each part is one lookup, and a turn holds at most 8 " +
+    "lookups in all (edits, additions and dish parts), so a dish of 8 parts uses a whole turn.",
   input_schema: {
     type: "object",
     properties: {
@@ -255,6 +256,9 @@ export function partLookupText(p: { name: string; amount: string | null }): { te
   if (p.amount) return { text: `${p.amount} ${p.name}`, grams: null, assumed: null };
   const t = assumedAmount(p.name);
   if (t) return { text: `${t.grams} g ${p.name}`, grams: t.grams, assumed: t.label };
+  // Not in the table: no grams of ours. The parse takes one usual serving,
+  // and buildRecipe says that serving's weight ("40 g") as the assumption.
+  // "" means "assumed, amount from the parse"; null means "the user's amount".
   return { text: p.name, grams: null, assumed: "" };
 }
 
