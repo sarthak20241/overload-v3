@@ -12,6 +12,7 @@ import {
   autoLogBlocker,
   dayWindow,
   groupIntoSections,
+  idsInRowOrder,
   parseAbortFor,
   readAutoLogRequest,
   sectionClientId,
@@ -130,6 +131,8 @@ class FakeStore implements AutoLogStore {
   entries: (AutoLogEntryRow & { id: string })[] = [];
   calls: string[] = [];
   failInsert = false;
+  brands: { entry_id: string; brand: string }[] = [];
+  failBrands = false;
   private seq = 0;
   private nextId(prefix: string) { return `${prefix}-${++this.seq}`; }
 
@@ -163,7 +166,7 @@ class FakeStore implements AutoLogStore {
   // unique index firing) cannot assign its replacement.
   insertEntries(
     rows: AutoLogEntryRow[],
-  ): Promise<{ ids: string[] } | { conflict: true } | { error: string }> {
+  ): Promise<{ ids: string[]; unordered?: true } | { conflict: true } | { error: string }> {
     this.calls.push(`insertEntries:${rows.length}`);
     if (this.failInsert) return Promise.resolve({ error: "boom" });
     const ids = rows.map((r) => {
@@ -176,6 +179,12 @@ class FakeStore implements AutoLogStore {
   deleteEntries(ids: string[]) {
     this.calls.push(`deleteEntries:${ids.length}`);
     this.entries = this.entries.filter((e) => !ids.includes(e.id));
+    return Promise.resolve();
+  }
+  brandSavedFoods(pairs: { entry_id: string; brand: string }[]) {
+    this.calls.push(`brandSavedFoods:${pairs.length}`);
+    if (this.failBrands) return Promise.reject(new Error("no brand write"));
+    this.brands.push(...pairs);
     return Promise.resolve();
   }
   deleteMealIfEmpty(mealId: string) {
@@ -210,6 +219,75 @@ Deno.test("write: a two-section message creates two meals and stamps every entry
   assert(store.entries.every((e) => e.client_id === CID && e.logged_via === "ai_auto"));
   assertEquals(store.entries.map((e) => e.position), [0, 0, 1]);
   assertEquals(store.entries[2].source, "catalog");
+});
+
+Deno.test("write: a branded line hands its brand to the saved food it just made", async () => {
+  // The saved-food trigger reads the brand off the parse trace, and in this
+  // mode the trace lands after the diary write, so the write passes it on.
+  const store = new FakeStore();
+  const res = await writeAutoLog(store, writeArgs([
+    line("Kesar pista oats", { meal_type: "breakfast", brand: " Yogabar " }),
+    line("milk", { meal_type: "breakfast" }),
+    line("dal", { meal_type: "lunch", brand: "" }),
+  ]));
+  assert("logged" in res);
+  const oats = store.entries.find((e) => e.food_name === "Kesar pista oats")!;
+  assertEquals(store.brands, [{ entry_id: oats.id, brand: "Yogabar" }]);
+
+  // A retry writes nothing, so it stamps nothing.
+  store.calls = [];
+  await writeAutoLog(store, writeArgs([line("Kesar pista oats", { meal_type: "breakfast", brand: "Yogabar" })]));
+  assert(!store.calls.some((c) => c.startsWith("brandSavedFoods")));
+});
+
+Deno.test("write: ids that do not line up with the lines stamp no brand", async () => {
+  // The insert is trusted to return ids in row order. If it returns a
+  // different count, no id can be tied to a line, so no brand is written.
+  const store = new FakeStore();
+  const insert = store.insertEntries.bind(store);
+  store.insertEntries = async (rows) => {
+    const res = await insert(rows);
+    return "ids" in res ? { ids: res.ids.slice(1) } : res;
+  };
+  const res = await writeAutoLog(store, writeArgs([
+    line("Kesar pista oats", { brand: "Yogabar" }),
+    line("milk"),
+  ]));
+  assert("logged" in res);
+  // Without the check, Yogabar would land on the milk's saved food.
+  assertEquals(store.brands, []);
+});
+
+Deno.test("insert ids are put back in row order by position", () => {
+  // insert ... returning has no order contract, and the brand stamp pairs ids
+  // with lines by index. position is base + index, so it gives the order back.
+  assertEquals(
+    idsInRowOrder([{ id: "b", position: 4 }, { id: "a", position: 3 }, { id: "c", position: 5 }]),
+    ["a", "b", "c"],
+  );
+  // A missing or repeated position cannot give the order back: no pairing.
+  assertEquals(idsInRowOrder([{ id: "a", position: 0 }, { id: "b", position: NaN }]), null);
+  assertEquals(idsInRowOrder([{ id: "a", position: 1 }, { id: "b", position: 1 }]), null);
+});
+
+Deno.test("write: ids in an unknown order stamp no brand", async () => {
+  const store = new FakeStore();
+  const insert = store.insertEntries.bind(store);
+  store.insertEntries = async (rows) => {
+    const res = await insert(rows);
+    return "ids" in res ? { ...res, unordered: true as const } : res;
+  };
+  const res = await writeAutoLog(store, writeArgs([line("Kesar pista oats", { brand: "Yogabar" }), line("milk")]));
+  assert("logged" in res);
+  assertEquals(store.brands, []);
+});
+
+Deno.test("write: a failed brand stamp still logs the food", async () => {
+  const store = new FakeStore();
+  store.failBrands = true;
+  const res = await writeAutoLog(store, writeArgs([line("Too Yumm oats", { brand: "Too Yumm" })]));
+  assert("logged" in res);
+  assertEquals(store.entries.length, 1);
 });
 
 Deno.test("write: an existing section meal is reused, not duplicated", async () => {

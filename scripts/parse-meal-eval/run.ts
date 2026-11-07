@@ -27,6 +27,7 @@ import { searchFatSecret } from "../../supabase/functions/ai-coach/fatsecret";
 import { voyageRerank } from "../../supabase/functions/ai-coach/rerank";
 import { CASES, type EvalCase } from "./cases";
 import { THOROUGH_MATCH_CASES } from "./thoroughMatchCases";
+import { BRANDED_OATS_CASES } from "./brandedOatsCases";
 import { makeClaudeCliFetch } from "./claude-cli-fetch";
 
 // ── Env ─────────────────────────────────────────────────────────────────────
@@ -57,8 +58,11 @@ const WEB_SEARCH = env("EVAL_WEB_SEARCH") === "1";
 // API. Correctness only - see claude-cli-fetch.ts for what it does not model.
 const VIA_CLI = env("EVAL_VIA_CLI") === "1";
 // Which corpus. "thorough-match" is the wrong-catalog-row set
-// (thoroughMatchCases.ts); anything else is the main corpus.
+// (thoroughMatchCases.ts), "branded-oats" the brand-not-in-catalog set
+// (brandedOatsCases.ts); anything else is the main corpus.
 const CASE_SET = env("CASE_SET") || "main";
+// NO_SAVED_BRAND=1: memory cases run with no saved brands, as before 2026-10-31.
+const NO_SAVED_BRAND = env("NO_SAVED_BRAND") === "1";
 const ONLY = env("ONLY") ? new Set(env("ONLY").split(",").map((s: string) => s.trim())) : null;
 // How many cases run at once. Default 1 keeps the historical serial behaviour
 // (and the historical latency numbers, which are only comparable when nothing
@@ -384,7 +388,9 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const corpus = CASE_SET === "thorough-match" ? THOROUGH_MATCH_CASES : CASES;
+  const corpus = CASE_SET === "thorough-match" ? THOROUGH_MATCH_CASES
+    : CASE_SET === "branded-oats" ? BRANDED_OATS_CASES
+    : CASES;
   const cases = corpus.filter((c) => !ONLY || ONLY.has(c.id))
     .filter((c) => !c.expect.needsWebSearch || WEB_SEARCH);
   console.log(
@@ -419,7 +425,27 @@ async function main() {
         todayTotals: null,
         targets: { daily_calorie_target: 2400, protein_target_g: 140 },
       };
-      let result = await runParseMeal(deps, { ...baseInput, text: c.text });
+      // A case with saved foods runs with her memory, which also needs Jev.
+      const caseDeps: ParseMealDeps = c.memory && JEV_API_KEY
+        ? {
+          ...deps,
+          jev: deps.jev ?? { apiKey: JEV_API_KEY, timeoutMs: 5000 },
+          userMemory: {
+            load: async () => ({
+              timeZone: "Asia/Kolkata",
+              // A brand, when given, is the saved row's (user_food_cache.brand).
+              entries: c.memory!.map(([food_name, grams, kcal, protein_g, carb_g, fat_g, brand]) => ({
+                food_name, food_id: null, kcal, protein_g, carb_g, fat_g, fiber_g: null,
+                ...(brand && !NO_SAVED_BRAND ? { brand, persistent: true } : {}),
+                grams, quantity: grams, serving_unit: "g", source: "manual", logged_via: "ai", tier: "precise",
+                logged_at: new Date(Date.now() - 86_400_000).toISOString(),
+              })),
+            }),
+          },
+        }
+        : deps;
+      if (c.memory && !JEV_API_KEY) throw new Error("memory case needs JEV_API_KEY");
+      let result = await runParseMeal(caseDeps, { ...baseInput, text: c.text });
       lastSteps = result.steps;
       // Follow-up cases: replay the first parse as the meal on screen, then
       // score the follow-up — exactly what the client sends.
@@ -457,7 +483,7 @@ async function main() {
           confidence: i.confidence,
           meal_type: i.meal_type,
         }));
-        result = await runParseMeal(deps, {
+        result = await runParseMeal(caseDeps, {
           ...baseInput,
           text: c.followUp,
           previousText: c.text,
@@ -518,6 +544,8 @@ async function main() {
             "fast_correction",
             "thorough_match",
             "thorough_brand_web",
+            "user_memory",
+            "saved_food_check",
             "tavily_search",
             "tavily_extract",
             "web_relevance",
