@@ -1682,7 +1682,12 @@ async function applyCardChanges(
   // may describe a change that did not happen. A food left off as a copy or
   // for room is only a notice: it goes after the agent's own words, so a
   // reply that answers a question is kept.
-  const useAgent = !!agentText && !falseClaim && !failedEdits.length && !failedAdds.length;
+  // Words that name a food the code left off (a duplicate, or no room) would
+  // tell the user it was added: then code writes the line too.
+  const leftKeys = [...dupAdds, ...overflow].map((n) => sameFoodKey(n)).filter(Boolean);
+  const said = sameFoodKey(agentText);
+  const namesLeftOff = leftKeys.some((k) => ` ${said} `.includes(` ${k} `));
+  const useAgent = !!agentText && !falseClaim && !failedEdits.length && !failedAdds.length && !namesLeftOff;
   const notice = [
     dupAdds.length ? `${names(dupAdds)} ${dupAdds.length === 1 ? "is" : "are"} already on the card, so I did not add ${dupAdds.length === 1 ? "it" : "them"} again.` : null,
     overflow.length ? `The card holds ${CARD_MAX_LINES} foods, so I left off ${names(overflow)}. Add this card first, then send ${overflow.length === 1 ? "it" : "them"}.` : null,
@@ -2096,22 +2101,27 @@ export function withStaged(out: FoodAgentOutcome, staged: Staged, input: FoodAge
   const asCard = (extra: (string | null)[], corrects: boolean, tools: string[]): FoodAgentOutcome => {
     // The copies alone replace the card, or sit beside the card on screen.
     const f = fit(corrects ? 0 : input.card?.length ?? 0);
+    // None fit (the card on screen is full): the card stays as it is, and the
+    // user is told plainly. Never a meal card with no lines.
+    if (!f.items.length) {
+      return { kind: "reply", text: [f.note, ...extra].filter((x) => x && x.trim()).join(" "), turns };
+    }
     return {
-    kind: "log",
-    result: {
-      parsed: {
-        meal_type: staged.items[0]?.meal_type ?? input.card?.[0]?.meal_type ?? input.defaultMeal,
-        items: f.items,
-        drona_line: [stagedLine({ ...staged, items: f.items }, input, false), f.note, ...extra].filter((x) => x && x.trim()).join(" "),
-        corrects_previous: corrects,
+      kind: "log",
+      result: {
+        parsed: {
+          meal_type: staged.items[0]?.meal_type ?? input.card?.[0]?.meal_type ?? input.defaultMeal,
+          items: f.items,
+          drona_line: [stagedLine({ ...staged, items: f.items }, input, false), f.note, ...extra].filter((x) => x && x.trim()).join(" "),
+          corrects_previous: corrects,
+        },
+        declined: null,
+        usage: NO_USAGE,
+        tool_calls: ["food_agent", ...tools, "copy_lines"],
+        steps: [],
+        iterations: turns.length,
       },
-      declined: null,
-      usage: NO_USAGE,
-      tool_calls: ["food_agent", ...tools, "copy_lines"],
-      steps: [],
-      iterations: turns.length,
-    },
-    turns,
+      turns,
     };
   };
   if (out.kind === "log" && out.result.parsed) {

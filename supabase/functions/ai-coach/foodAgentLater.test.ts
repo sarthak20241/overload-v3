@@ -762,3 +762,36 @@ Deno.test("additions that do not fit keep the agent's reply, with the notice aft
   assert(out.result.parsed.drona_line.includes("left off Pear"), out.result.parsed.drona_line);
   assertEquals(out.answered, true);
 });
+
+// ── Review of #356 ──────────────────────────────────────────────────────────
+
+Deno.test("an agent line that names a food left off as a duplicate is replaced by the code line", async () => {
+  const d = deps(scripted([[
+    { name: "reply", input: { text: "Added dal and oil." } },
+    { name: "add_lines", input: { text: "dal and oil" } },
+  ]]));
+  d.parseFood = async () => result([item("Dal", 300), item("Oil", 40)]);
+  const out = await runFoodAgent(LATER, d);
+  if (out.kind !== "log" || !out.result.parsed) throw new Error(out.kind);
+  assertFalse(out.result.parsed.drona_line.includes("Added dal and oil"), out.result.parsed.drona_line);
+  assert(out.result.parsed.drona_line.includes("Dal is already on the card"), out.result.parsed.drona_line);
+  // A reply that names no dropped food is still kept.
+  const d2 = deps(scripted([[
+    { name: "reply", input: { text: "Good call on the oil." } },
+    { name: "add_lines", input: { text: "dal and oil" } },
+  ]]));
+  d2.parseFood = async () => result([item("Dal", 300), item("Oil", 40)]);
+  const kept = await runFoodAgent(LATER, d2);
+  if (kept.kind === "log") assert(kept.result.parsed?.drona_line.startsWith("Good call on the oil."));
+});
+
+Deno.test("copies that do not fit a full card: the card stays as it is, with a plain notice, never an empty card", async () => {
+  const card: CardLine[] = Array.from({ length: 12 }, (_, i) => ({ ...CARD[1], food_name: `Food ${i}` }));
+  const d = withDiaryPaneer(deps(scripted([[
+    { name: "copy_lines", input: { source: { days_ago: 1, meal_type: "lunch" } } },
+    { name: "reply", input: { text: "Here you go." } },
+  ]])));
+  const out = await runFoodAgent({ ...LATER, card }, d);
+  assertEquals(out.kind, "reply");
+  if (out.kind === "reply") assert(out.text.includes("left off Paneer"), out.text);
+});
