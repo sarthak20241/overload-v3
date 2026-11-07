@@ -1006,7 +1006,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
       if (label) deps.onStatus?.(label);
       const replyText = replyUse && replyUse !== finish ? clean(typeof replyUse.input?.text === "string" ? replyUse.input.text : "") : "";
       if (plan) {
-        const out = await applyCardChanges(plan, input, deps, parse, seen, turns, replyText);
+        const out = await applyCardChanges(plan, input, deps, parse, seen, turns, replyText, staged.items);
         // A save asked for in the same turn as card changes: the changes win,
         // and the user is told the save has not happened (a save card cannot
         // ride with a changed meal card).
@@ -1405,9 +1405,11 @@ async function logFindsNoFood(u: ToolUse, parse: (text: string) => Promise<Parse
 const SAVE_TOOLS = new Set([SAVE_CARD_AS_MEAL_TOOL.name, CREATE_CUSTOM_MEAL_TOOL.name, CREATE_CUSTOM_FOOD_TOOL.name]);
 
 /** A word that asks to save or keep something for later. */
-// "save" needs something to save, or nothing after it ("save it", "please
-// save"); "saving calories" and "it saves time" are not asks.
-const SAVE_ASK = /\b(?:save(?=\s+(?:it|this|that|these|them|the|my|as|to|for|please|everything|all)\b|\s*[.!?]*\s*$)|saving (?:it|this|that|these|them)\b|(?:to|in|into) my meals|as a (?:saved )?meal|make (?:it|this|that) (?:a|my) meal|(?:keep|remember) (?:it|this|that) (?:as|for))\b/gi;
+// "save" is an ask with any object ("save it", "save breakfast") or none
+// ("please save"), except the everyday phrases that save something else
+// ("save the day", "save time", "save calories"). "saving" counts only with a
+// pronoun ("saving it"): "saving calories" is not an ask, nor is "it saves".
+const SAVE_ASK = /\b(?:save\b(?!\s+(?:the day|time|money|calories|cals|kcal|energy|room|space|up|on|me|us)\b)|saving (?:it|this|that|these|them)\b|(?:to|in|into) my meals|as a (?:saved )?meal|make (?:it|this|that) (?:a|my) meal|(?:keep|remember) (?:it|this|that) (?:as|for))\b/gi;
 
 /** A no in front of the ask ("don't save", "no need to save"): not an ask. */
 const NEGATED = /\b(?:don['’]?t|do not|no need to|not|never|didn['’]?t|won['’]?t|stop|without|nope)\b[\w\s'’]*$/i;
@@ -1595,6 +1597,9 @@ async function applyCardChanges(
   seen: Seen,
   turns: AgentTurn[],
   replyText: string,
+  /** Lines copy_lines took earlier in the run. withStaged appends them to
+   *  this result, so they count as on the card and against its size. */
+  stagedItems: ParsedItem[] = [],
 ): Promise<FoodAgentOutcome> {
   const card = input.card ?? [];
   const meal: MealType = card[0]?.meal_type ?? input.defaultMeal;
@@ -1632,6 +1637,10 @@ async function applyCardChanges(
   const staying = card.flatMap((l, i) => removes.has(i) ? [] : [edited.get(i) ?? { food_name: l.food_name, food_id: l.food_id ?? null }]);
   const keys = new Set(staying.map((l) => sameFoodKey(l.food_name)));
   const ids = new Set(staying.map((l) => l.food_id).filter((x): x is string => !!x));
+  for (const s of stagedItems) {
+    keys.add(sameFoodKey(s.food_name));
+    if (s.food_id) ids.add(s.food_id);
+  }
   const dupAdds: string[] = [];
   const added = addsOut.flatMap((x) => x.items).filter((i) => {
     const key = sameFoodKey(i.food_name);
@@ -1647,7 +1656,7 @@ async function applyCardChanges(
   // The card holds CARD_MAX_LINES lines: the app sends back no more, so a line
   // past them would be lost on the next correction. Additions that do not fit
   // are left off and named; every line already on the card stays.
-  const room = Math.max(0, CARD_MAX_LINES - (card.length - removes.size));
+  const room = Math.max(0, CARD_MAX_LINES - (card.length - removes.size) - stagedItems.length);
   const overflow = added.splice(room).map((i) => i.food_name);
   // The same meal the result says, so a line with no section of its own
   // lands where the card is.
@@ -1669,7 +1678,22 @@ async function applyCardChanges(
   // joined read as a run-on, so then code writes the line from what changed.
   const agentText = replyText || (plan.summaries.length === 1 ? clean(plan.summaries[0]) : "");
   const falseClaim = !!agentText && falseAgentClaim(agentText, { cardChanged: changed });
-  const line = agentText && !falseClaim && !failedEdits.length && !failedAdds.length && !dupAdds.length && !overflow.length ? agentText : codeLine;
+  // A failed edit or addition: code writes the line, since the agent's words
+  // may describe a change that did not happen. A food left off as a copy or
+  // for room is only a notice: it goes after the agent's own words, so a
+  // reply that answers a question is kept.
+  // Words that name a food the code left off (a duplicate, or no room) would
+  // tell the user it was added: then code writes the line too.
+  const leftKeys = [...dupAdds, ...overflow].map((n) => sameFoodKey(n)).filter(Boolean);
+  const said = sameFoodKey(agentText);
+  const namesLeftOff = leftKeys.some((k) => ` ${said} `.includes(` ${k} `));
+  const useAgent = !!agentText && !falseClaim && !failedEdits.length && !failedAdds.length && !namesLeftOff;
+  const notice = [
+    dupAdds.length ? `${names(dupAdds)} ${dupAdds.length === 1 ? "is" : "are"} already on the card, so I did not add ${dupAdds.length === 1 ? "it" : "them"} again.` : null,
+    overflow.length ? `The card holds ${CARD_MAX_LINES} foods, so I left off ${names(overflow)}. Add this card first, then send ${overflow.length === 1 ? "it" : "them"}.` : null,
+  ].filter(Boolean).join(" ");
+  const line = useAgent ? [agentText, notice].filter(Boolean).join(" ") : codeLine;
+  const answered = !!replyText && useAgent;
   deps.onEvent?.({
     tool: "card_changes", ok: true, edits: edited.size, edits_failed: failedEdits.length, removed: removes.size,
     added: added.length, error: null, ...(falseClaim ? { false_claim: true } : {}),
@@ -1700,7 +1724,7 @@ async function applyCardChanges(
         usage, tool_calls: toolCalls, steps, iterations: turns.length, tier,
       },
       turns,
-      ...(replyText && line === agentText ? { answered: true } : {}),
+      ...(answered ? { answered: true } : {}),
     };
   }
   return {
@@ -1716,7 +1740,7 @@ async function applyCardChanges(
       tier,
     },
     turns,
-    ...(replyText && line === agentText ? { answered: true } : {}),
+    ...(answered ? { answered: true } : {}),
   };
 }
 
@@ -2062,33 +2086,57 @@ const NO_USAGE = { input_tokens: 0, output_tokens: 0, cache_creation_input_token
 export function withStaged(out: FoodAgentOutcome, staged: Staged, input: FoodAgentInput): FoodAgentOutcome {
   if (!staged.items.length && !staged.dup.length && !staged.miss.length) return out;
   const turns = out.turns;
-  const asCard = (extra: (string | null)[], corrects: boolean, tools: string[]): FoodAgentOutcome => ({
-    kind: "log",
-    result: {
-      parsed: {
-        meal_type: staged.items[0]?.meal_type ?? input.card?.[0]?.meal_type ?? input.defaultMeal,
-        items: staged.items,
-        drona_line: [stagedLine(staged, input, false), ...extra].filter((x) => x && x.trim()).join(" "),
-        corrects_previous: corrects,
+  // The card holds CARD_MAX_LINES lines (the app sends back no more, so a line
+  // past them is lost on the next correction). `base` is what the card holds
+  // before the copies: copies that do not fit are left off and named.
+  const fit = (base: number): { items: ParsedItem[]; note: string | null } => {
+    const room = Math.max(0, CARD_MAX_LINES - base);
+    if (staged.items.length <= room) return { items: staged.items, note: null };
+    const left = staged.items.slice(room).map((i) => i.food_name);
+    return {
+      items: staged.items.slice(0, room),
+      note: `The card holds ${CARD_MAX_LINES} foods, so I left off ${names(left)}. Add this card first, then send ${left.length === 1 ? "it" : "them"}.`,
+    };
+  };
+  const asCard = (extra: (string | null)[], corrects: boolean, tools: string[]): FoodAgentOutcome => {
+    // The copies alone replace the card, or sit beside the card on screen.
+    const f = fit(corrects ? 0 : input.card?.length ?? 0);
+    // None fit (the card on screen is full): the card stays as it is, and the
+    // user is told plainly. Never a meal card with no lines.
+    if (!f.items.length) {
+      return { kind: "reply", text: [f.note, ...extra].filter((x) => x && x.trim()).join(" "), turns };
+    }
+    return {
+      kind: "log",
+      result: {
+        parsed: {
+          meal_type: staged.items[0]?.meal_type ?? input.card?.[0]?.meal_type ?? input.defaultMeal,
+          items: f.items,
+          drona_line: [stagedLine({ ...staged, items: f.items }, input, false), f.note, ...extra].filter((x) => x && x.trim()).join(" "),
+          corrects_previous: corrects,
+        },
+        declined: null,
+        usage: NO_USAGE,
+        tool_calls: ["food_agent", ...tools, "copy_lines"],
+        steps: [],
+        iterations: turns.length,
       },
-      declined: null,
-      usage: NO_USAGE,
-      tool_calls: ["food_agent", ...tools, "copy_lines"],
-      steps: [],
-      iterations: turns.length,
-    },
-    turns,
-  });
+      turns,
+    };
+  };
   if (out.kind === "log" && out.result.parsed) {
     const p = out.result.parsed;
+    // A result that replaces the card is the whole card; one that is added
+    // beside it sits on top of the card on screen.
+    const f = fit(p.corrects_previous ? p.items.length : (input.card?.length ?? 0) + p.items.length);
     return {
       ...out,
       result: {
         ...out.result,
         parsed: {
           ...p,
-          items: [...p.items, ...staged.items],
-          drona_line: [p.drona_line, stagedLine(staged, input, p.items.length > 0)].filter((x) => x && x.trim()).join(" "),
+          items: [...p.items, ...f.items],
+          drona_line: [p.drona_line, stagedLine({ ...staged, items: f.items }, input, p.items.length > 0), f.note].filter((x) => x && x.trim()).join(" "),
         },
         tool_calls: out.result.tool_calls.includes("copy_lines") ? out.result.tool_calls : [...out.result.tool_calls, "copy_lines"],
       },
