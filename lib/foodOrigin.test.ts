@@ -3,6 +3,7 @@
 import { assertEquals } from 'jsr:@std/assert@1';
 import { originColumns } from './foodOrigin';
 import { numbersTyped } from './loggedEntryEdit';
+import { entryTrust } from './yourFoods';
 
 Deno.test('originColumns: the server origin wins; a copy keeps its own; old manual is unknown', () => {
   assertEquals(originColumns({ origin: 'label', source: 'web' }).origin, 'label');
@@ -37,4 +38,19 @@ Deno.test('numbersTyped and the database trigger use the same thresholds', () =>
   assertEquals(numbersTyped(entry, { grams: 100, kcal: 100.9, protein_g: 10, carb_g: 10, fat_g: 1 }), false);
   assertEquals(numbersTyped(entry, { grams: 100, kcal: 101.1, protein_g: 10, carb_g: 10, fat_g: 1 }), true);
   assertEquals(numbersTyped(entry, { grams: 100, kcal: 100, protein_g: 10.3, carb_g: 10, fat_g: 1 }), true);
+});
+
+Deno.test('numbersTyped with no weight: any change of the numbers is typed', () => {
+  const entry = { grams_logged: null, kcal: 300, protein_g: 10, carb_g: 40, fat_g: 10 };
+  assertEquals(numbersTyped(entry, { grams: 0, kcal: 300, protein_g: 10, carb_g: 40, fat_g: 10 }), false);
+  assertEquals(numbersTyped(entry, { grams: 0, kcal: 320, protein_g: 10, carb_g: 40, fat_g: 10 }), true);
+});
+
+Deno.test("Your foods: a proven origin ranks by it; 'unknown' keeps today's rank", () => {
+  const base = { logged_via: 'ai', source: 'manual', tier: 'precise' };
+  assertEquals(entryTrust({ ...base, origin: 'guess' }), 1);
+  assertEquals(entryTrust({ ...base, origin: 'user_typed' }), 4);
+  // Unproven old "manual": unchanged until the server switch moves.
+  assertEquals(entryTrust({ ...base, origin: 'unknown' }), 4);
+  assertEquals(entryTrust({ ...base, origin: null }), 4);
 });
