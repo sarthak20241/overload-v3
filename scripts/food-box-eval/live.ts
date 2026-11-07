@@ -129,6 +129,23 @@ const VIA_CLI = env("EVAL_VIA_CLI") === "1";
 const API_KEY = env("ANTHROPIC_API_KEY");
 const JEV_API_KEY = env("JEV_API_KEY");
 const WEB = env("EVAL_WEB") === "1" && !!env("TAVILY_API_KEY");
+/** Tavily credits this run spent, counted the way tavily.ts bills them: a
+ *  search that answered is 1 (basic), an extract is 1 per 5 pages returned.
+ *  Printed once at exit, so a run's web spend is on its own output. */
+let tavilyCredits = 0;
+const tavilyCounted: typeof fetch = async (input, init) => {
+  const res = await fetch(input, init);
+  const url = String(input instanceof Request ? input.url : input);
+  if (res.ok && url.includes("api.tavily.com")) {
+    if (url.includes("/search")) tavilyCredits += 1;
+    else if (url.includes("/extract")) {
+      const pages = ((await res.clone().json().catch(() => null))?.results ?? []).length;
+      tavilyCredits += pages > 0 ? Math.ceil(pages / 5) : 0;
+    }
+  }
+  return res;
+};
+if (WEB) process.on("exit", () => console.log(`Tavily credits spent this run: ${tavilyCredits}`));
 const INTENT_MODE = parseFoodIntentMode(env("FOOD_INTENT_MODE") || "on");
 const THREADS = parseFoodThreadsMode(env("FOOD_THREADS"));
 const LATER = parseFoodAgentLaterMode(env("FOOD_AGENT_LATER"));
@@ -435,7 +452,7 @@ function parseDeps(c: FoodBoxCase, zone: string): ParseMealDeps {
     backfillOffFood: async () => null,
     // Read only: no preciseCachePut, no preciseAliasPut.
     preciseCacheGet: preciseCacheRead ? async (key: string) => (await preciseCacheRead(key)) as never : undefined,
-    ...(WEB ? { webLookup: "tavily" as const, tavily: { apiKey: env("TAVILY_API_KEY"), timeoutMs: 20_000 } } : {}),
+    ...(WEB ? { webLookup: "tavily" as const, tavily: { apiKey: env("TAVILY_API_KEY"), timeoutMs: 20_000, fetchFn: tavilyCounted } } : {}),
     searchRewrite: true,
     jev: JEV_API_KEY ? { apiKey: JEV_API_KEY, timeoutMs: 5000 } : undefined,
     searchCountry: c.region ?? "india",
@@ -641,6 +658,13 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
     for (const t of outcome.agent?.turns ?? []) {
       console.log(`    turn ${t.turn}: ${JSON.stringify(t.tools).slice(0, 600)}`);
       for (const r of t.results ?? []) console.log(`      ${r.name} -> ${String(r.summary).slice(0, 300)}`);
+    }
+    // The parse's own steps and lines (a first message, or the agent's parses).
+    for (const s of [...(firstParse.steps ?? []), ...(outcome.result?.steps ?? [])]) {
+      console.log(`    step ${s.tool}: ${JSON.stringify({ i: s.input, r: s.result }).slice(0, 700)}`);
+    }
+    for (const it of (outcome.result ?? firstParse).parsed?.items ?? []) {
+      console.log(`    line ${it.quantity} x "${it.serving_label}" ${it.food_name} = ${it.grams} g ${it.kcal} kcal p${it.protein_g} (${it.source})`);
     }
   }
   // The agent's own parses (a later message) carry their steps in its result.

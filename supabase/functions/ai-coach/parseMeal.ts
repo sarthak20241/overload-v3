@@ -2964,22 +2964,19 @@ export function perOneServing(sv: ServingOption): ServingOption {
   // The words after the count, up to the first non-word ("each" in "2 each -
   // 4 4/5\" diameter", "large eggs" in "2 large eggs").
   const m = sv.label.match(/^\s*(\d+)\s+([a-z]+(?:\s+[a-z]+)*)(.*)$/i);
-  if (!m || !(sv.grams > 0)) return sv;
+  if (!(sv.grams > 0)) return sv;
+  if (!m) return countInsideLabel(sv);
   const n = Number(m[1]);
   const words = m[2].toLowerCase().split(/\s+/);
   // Pieces only: "2 cups" or "12 fl oz" are amounts, and their labels stay as
   // the catalog wrote them. A size is not a count: "10 inch" is one pizza.
   // A pack is one thing bought, not a count of pieces: "12 count box" stays.
-  if (!(n > 1) || MASS_UNITS.has(words[0]) || words.some((w) => SIZE_WORDS.has(w) || PACK_WORDS.has(w)) || !namesAPiece(sv)) return sv;
+  if (!(n > 1) || MASS_UNITS.has(words[0]) || words.some((w) => SIZE_WORDS.has(w) || PACK_WORDS.has(w)) || !namesAPiece(sv)) {
+    return countInsideLabel(sv);
+  }
   // The noun is the last word ("2 large eggs" -> "1 large egg"). "1 each" is a
-  // label-database word; the card reads "3 × 1 piece". A plain trailing "s"
-  // goes ("pooris", "slices"), but not where the singular is a guess
-  // ("cookies", "potatoes", "boxes"): a guessed "cooky" would no longer
-  // contain the user's unit, and the plural still does.
-  const last = words[words.length - 1];
-  words[words.length - 1] = last === "each" || last === "pieces" ? "piece"
-    : last.endsWith("s") && !/(ss|ies|oes|xes|shes|ches|zes|ves)$/.test(last) ? last.slice(0, -1)
-    : last;
+  // label-database word; the card reads "3 × 1 piece".
+  words[words.length - 1] = singularNoun(words[words.length - 1]);
   // The group's weight goes from the text, in brackets or not: left in, it
   // would contradict the divided grams ("1 biscuit 30g" at 10 g).
   const rest = m[3]
@@ -2987,6 +2984,130 @@ export function perOneServing(sv: ServingOption): ServingOption {
     .replace(/\b[\d.]+\s*(g|gm|grams?|ml)\b/gi, "")
     .replace(/\s+/g, " ").trimEnd();
   return { ...sv, label: `1 ${words.join(" ")}${rest}`, grams: round1(sv.grams / n) };
+}
+
+/** One piece's word from the label's plural. "1 each" is a label-database
+ *  word; the card reads "3 × 1 piece". A plain trailing "s" goes ("pooris",
+ *  "slices"), but not where the singular is a guess ("cookies", "potatoes",
+ *  "boxes"): a guessed "cooky" would no longer contain the user's unit, and the
+ *  plural still does. */
+function singularNoun(w: string): string {
+  return w === "each" || w === "pieces" ? "piece"
+    : w.endsWith("s") && !/(ss|ies|oes|xes|shes|ches|zes|ves)$/.test(w) ? w.slice(0, -1)
+    : w;
+}
+
+/** Words a "<number> <word>" can hold that are not a piece of the food. */
+const NOT_PIECE_WORDS = new Set([
+  "x", "kcal", "cal", "cals", "calorie", "calories", "kj", "mg", "mcg", "percent", "pct", "min", "mins", "minutes",
+  "and", "or", "to", "with", "for", "in",
+]);
+/** Size words that come before the piece noun ("2 large eggs"). */
+const PIECE_SIZE_WORDS = new Set(["large", "medium", "small", "big", "thin", "thick", "whole", "mini", "regular"]);
+
+/**
+ * A count of pieces and their weight, read out of a serving text wherever the
+ * count sits: "2 slices (50 g)", "50 g (2 slices)", "1 serving (2 slices, 50 g)",
+ * "Serving size: 2 slices = 50g", "per 3 biscuits (30 g)".
+ *
+ * Labels print the serving as a group. The group's weight is NOT one piece: a
+ * label serving of "2 slices (50 g)" stored as one slice = 50 g turned 2 slices
+ * into 100 g (live, 2026-11-07, 4 of 4 runs). So the code divides: grams per
+ * piece = grams / count. `grams` is the printed weight, else the one given.
+ * Null when the text names no count of pieces, or no weight at all.
+ */
+export function servingCount(
+  label: string,
+  grams?: number | null,
+): { count: number; noun: string; grams: number; perUnit: number } | null {
+  const text = label.toLowerCase();
+  const printed = text.match(/(\d+(?:\.\d+)?)\s*(?:g|gm|gms|grams?|ml)\b/);
+  const g = printed ? Number(printed[1]) : grams ?? null;
+  if (!(typeof g === "number" && g > 0)) return null;
+  // A measure anywhere makes the text an amount ("1 cup (2 slices)" is not read).
+  if (text.split(/[^a-z]+/).some((w) => MEASURE_WORDS.has(w))) return null;
+  // A whole number not inside a decimal or a fraction, then up to two words.
+  for (const m of text.matchAll(/(?:^|[^\d.\/])(\d+)\s+(?:about\s+|approx\.?\s+)?([a-z]+)(?:\s+([a-z]+))?/g)) {
+    const n = Number(m[1]);
+    if (!(n >= 1 && n <= 50)) continue;
+    const noun = PIECE_SIZE_WORDS.has(m[2]) && m[3] ? m[3] : m[2];
+    if (
+      MASS_UNITS.has(noun) || MEASURE_WORDS.has(noun) || SIZE_WORDS.has(noun) || PACK_WORDS.has(noun) ||
+      GENERIC_PORTION_WORDS.has(noun) || NOT_PIECE_WORDS.has(noun)
+    ) continue;
+    const perUnit = round1(g / n);
+    if (!(perUnit >= 0.3)) return null;
+    return { count: n, noun, grams: g, perUnit };
+  }
+  return null;
+}
+
+/** perOneServing for a label whose count is not its first word: "1 serving
+ *  (2 slices, 50 g)" and "50 g (2 slices)" are two slices, 25 g each. */
+function countInsideLabel(sv: ServingOption): ServingOption {
+  const c = servingCount(sv.label, sv.grams);
+  if (!c || c.count < 2) return sv;
+  // The weight in the text is the group's, and must be the serving's own: a
+  // text that prints another weight is not this serving.
+  if (Math.abs(c.grams - sv.grams) > Math.max(1, sv.grams * 0.05)) return sv;
+  return { ...sv, label: `1 ${singularNoun(c.noun)}`, grams: c.perUnit };
+}
+
+/**
+ * A line whose serving names one unit's weight must weigh quantity x that
+ * weight: 2 x "slice (25 g)" is 50 g.
+ *
+ * decide returns quantity, serving_label and grams as three free numbers, and
+ * only grams drives the macros. Live, 2026-11-07: a card read 2 x "slice
+ * (25 g)" over 100 g and 242 kcal, the label's two-slice serving counted once
+ * per slice. The unit weight came from a serving the code read; the total is
+ * the model's arithmetic. So the unit wins, and the grams and every macro are
+ * scaled to it (they were worked out from the grams, so they move together).
+ *
+ * A serving for a group ("2 slices (50 g)") is per piece first: grams per slice
+ * = 50 / 2. When the line weighs quantity x the group and the quantity is the
+ * group's own count, the group was counted once per piece: the line is the
+ * group. Any other quantity counts groups, and the line is restated in pieces
+ * with its weight unchanged. A "total" label, a bare weight label ("g", "100 g",
+ * amountMatchesGrams's job), and a line with no unit weight are left alone.
+ */
+export function unitWeightMatchesGrams(it: ParsedItem): ParsedItem {
+  if (!(it.grams > 0) || !(it.quantity > 0)) return it;
+  const label = it.serving_label.trim();
+  if (/\btotal\b/i.test(label)) return it;
+  const m = label.match(/^(?:(\d+)\s+)?([a-z][a-z\s-]*?)\s*\(\s*(\d+(?:\.\d+)?)\s*(g|gm|gms|grams?|ml)\s*(?:each)?\s*\)$/i);
+  if (!m) return it;
+  const n = m[1] ? Number(m[1]) : 1;
+  const noun = m[2].trim().toLowerCase();
+  const words = noun.split(/\s+/);
+  if (!(n >= 1) || words.some((w) => MASS_UNITS.has(w))) return it;
+  const groupG = Number(m[3]);
+  if (!(groupG > 0)) return it;
+  const unit = m[4].toLowerCase() === "ml" ? "ml" : "g";
+  const perUnit = groupG / n;
+  const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(1, b * 0.15);
+  const pieceWord = n > 1 ? words.map((w, i) => (i === words.length - 1 ? singularNoun(w) : w)).join(" ") : noun;
+  const perOneLabel = `${pieceWord} (${round1(perUnit)} ${unit})`;
+  const scaled = (quantity: number, grams: number): ParsedItem => {
+    const f = grams / it.grams;
+    return {
+      ...it,
+      quantity: round1(quantity),
+      serving_label: perOneLabel,
+      grams: round1(grams),
+      kcal: round1(it.kcal * f),
+      protein_g: round1(it.protein_g * f),
+      carb_g: round1(it.carb_g * f),
+      fat_g: round1(it.fat_g * f),
+      fiber_g: typeof it.fiber_g === "number" ? round1(it.fiber_g * f) : it.fiber_g,
+    };
+  };
+  if (near(it.grams, it.quantity * perUnit)) return n > 1 ? scaled(it.quantity, it.grams) : it;
+  if (n > 1 && near(it.grams, it.quantity * groupG)) {
+    // "2 slices" over "2 slices (50 g)" is the group, once. 3 x the group is 6 slices.
+    return it.quantity === n ? scaled(it.quantity, groupG) : scaled(it.quantity * n, it.grams);
+  }
+  return scaled(it.quantity, it.quantity * perUnit);
 }
 
 /** Every serving of a candidate restated per one piece (perOneServing). */
@@ -5749,6 +5870,72 @@ async function answerAboutPrevious(
  * Keeps their grams (they know what they ate) and replaces only the per-100
  * basis, which is the part that was in doubt.
  */
+/** One product's printed label, as find_label hands it to the food agent. */
+export interface LabelFound {
+  /** The product as the label sells it. */
+  name: string;
+  brand: string | null;
+  base_unit: "g" | "ml";
+  per_100: { kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number | null };
+  /** The serving as printed ("2 slices (50 g)"), when the label prints one. */
+  serving: ServingOption | null;
+  /** One piece of it ("1 slice", 25 g), when the serving names a count of
+   *  pieces (perOneServing). The code divides; the label only prints. */
+  piece: ServingOption | null;
+  /** Two or more sources agreed (meetsVerificationBar). */
+  verified: boolean;
+}
+
+/**
+ * find_label: one product's label off the web, by the same lookup Precise runs
+ * (Tavily with Jev's relevance, the brand's own site first, the reader that
+ * copies the panel; or the server web search where that is the deploy's
+ * lookup). Returns the label per 100 and its serving. The numbers on a line are
+ * worked out from it by code (foodAgent.ts lineFromLabel), never by a model.
+ * Null when no lookup is configured or nothing was found.
+ */
+export async function findLabel(
+  deps: ParseMealDeps,
+  product: { name: string; brand: string | null; quantity?: number; unit?: string },
+): Promise<{ label: LabelFound | null; usage: ParseMealResult["usage"]; steps: ParseStep[] }> {
+  const usage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0, tavily_credits: 0 };
+  const steps: ParseStep[] = [];
+  const out = (label: LabelFound | null) => ({ label, usage, steps });
+  if (!deps.webSearchEnabled && !(deps.webLookup === "tavily" && deps.tavily)) return out(null);
+  const name = product.name.trim();
+  if (!name) return out(null);
+  const onUsage = (data: any) => {
+    const u = data?.usage ?? {};
+    usage.input_tokens += u.input_tokens ?? 0;
+    usage.output_tokens += u.output_tokens ?? 0;
+    usage.cache_creation_input_tokens += u.cache_creation_input_tokens ?? 0;
+    usage.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
+    usage.web_search_requests += u.server_tool_use?.web_search_requests ?? 0;
+    usage.tavily_credits += typeof data?.tavily_credits === "number" ? data.tavily_credits : 0;
+  };
+  const item: ExtractedItem = {
+    name,
+    brand: product.brand?.trim() || null,
+    quantity: product.quantity && product.quantity > 0 ? product.quantity : 1,
+    unit: product.unit?.trim() || "serving",
+    prep: null,
+  };
+  const c = await superLookupOne(deps, item, onUsage, () => {}, (st) => steps.push(st)).catch(() => null);
+  steps.push({ iter: 1, tool: "find_label", input: { name: item.name, brand: item.brand }, result: c ? { kcal: c.kcal, servings: c.servings } : null });
+  if (!c) return out(null);
+  const serving = c.servings.find((sv) => sv.grams > 0 && !isBasisServing(sv)) ?? null;
+  const one = serving ? perOneServing(serving) : null;
+  return out({
+    name: c.name,
+    brand: c.brand,
+    base_unit: c.base_unit,
+    per_100: { kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g },
+    serving,
+    piece: one && one !== serving ? one : serving && namesAPiece(serving) && servingCount(serving.label, serving.grams)?.count === 1 ? serving : null,
+    verified: c.verified === true,
+  });
+}
+
 /** Foods per double-check lookup call. See researchPrevious. */
 const RESEARCH_BATCH = 3;
 
@@ -6019,8 +6206,8 @@ export async function runParseMeal(
   input: ParseMealInput,
 ): Promise<ParseMealResult> {
   const result = await runParseMealOnce(deps, input);
-  if (result.parsed) result.parsed.items = result.parsed.items.map(amountMatchesGrams);
-  if (result.proposal) result.proposal.items = result.proposal.items.map(amountMatchesGrams);
+  if (result.parsed) result.parsed.items = result.parsed.items.map(unitWeightMatchesGrams).map(amountMatchesGrams);
+  if (result.proposal) result.proposal.items = result.proposal.items.map(unitWeightMatchesGrams).map(amountMatchesGrams);
   if (input.variantChips && result.parsed) result.parsed.items = result.parsed.items.map(forSwapChips);
   return result;
 }

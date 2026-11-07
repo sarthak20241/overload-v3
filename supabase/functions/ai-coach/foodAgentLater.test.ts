@@ -91,7 +91,9 @@ function deps(callModel: FoodAgentDeps["callModel"], log: string[] = []): FoodAg
     },
     editLine: async (i, change) => {
       log.push(`edit:${i}:${change}`);
-      return result([item(`${CARD[i].food_name} (edited)`, 360)]);
+      // The same food at a new amount: 360 kcal marks the edited line. (A new
+      // name the change never asked for is not taken: keepLineIdentity.)
+      return result([item(CARD[i].food_name, 360)]);
     },
   };
 }
@@ -214,7 +216,8 @@ Deno.test("one turn, three changes: edit, removal and addition apply together, i
   assertEquals(out.kind, "log");
   if (out.kind !== "log" || !out.result.parsed) return;
   const p = out.result.parsed;
-  assertEquals(p.items.map((i) => i.food_name), ["Roti (edited)", "Dal", "2 boiled eggs"]);
+  assertEquals(p.items.map((i) => i.food_name), ["Roti", "Dal", "2 boiled eggs"]);
+  assertEquals(p.items[0].kcal, 360);
   assertEquals(p.corrects_previous, true);
   // Only line 1 went back through the parse; the dal was copied.
   assertEquals(log.filter((l) => l.startsWith("edit:")), ["edit:0:3 pieces"]);
@@ -463,7 +466,7 @@ Deno.test("several summaries and no reply: code writes the line, never a run-on"
     { name: "edit_line", input: { line_id: "L1", change: "3 pieces", summary: "Made it 3 roti." } },
     { name: "remove_lines", input: { line_ids: ["L3"], summary: "Took off the onion salad." } },
   ]])));
-  if (out.kind === "log") assertEquals(out.result.parsed?.drona_line, "Updated Roti (edited). Took off Onion salad.");
+  if (out.kind === "log") assertEquals(out.result.parsed?.drona_line, "Updated Roti. Took off Onion salad.");
 });
 
 Deno.test("cardLinesWithIds: every card line gets its id, pinned to cardLines' own format", () => {
