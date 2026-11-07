@@ -2574,12 +2574,6 @@ interface MealRow {
   entries: Array<Record<string, unknown>>;
 }
 
-/**
- * This user's logged lines from the last MEMORY_DAYS days, for their food
- * memory, and their zone (the card note names the day they logged it). Through
- * the USER's client, never the service role: RLS is what makes the memory
- * theirs alone. Any failure is an empty memory, never a failed parse.
- */
 /** A database before migration 20261107120000 (no origin / copied_from /
  *  recipe columns): the read is retried with the older column list. */
 function stepFourColumnMissing(error: { message?: string } | null | undefined): boolean {
@@ -2609,6 +2603,12 @@ function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
   };
 }
 
+/**
+ * This user's logged lines from the last MEMORY_DAYS days, for their food
+ * memory, and their zone (the card note names the day they logged it). Through
+ * the USER's client, never the service role: RLS is what makes the memory
+ * theirs alone. Any failure is an empty memory, never a failed parse.
+ */
 async function fetchMemoryEntries(
   userClient: SupabaseClient,
 ): Promise<{ entries: MemoryEntry[]; timeZone: string | null }> {
