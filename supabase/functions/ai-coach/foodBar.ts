@@ -499,6 +499,8 @@ export interface FoodBarOutcome {
   /** A later-message agent answered a question AND changed the card: its
    *  reply is the card's line (foodAgent.ts, FOOD_AGENT_LATER). */
   answered?: boolean;
+  /** A bare ok or thanks beside a card: answered in code, nothing ran. */
+  bareAck?: boolean;
 }
 
 /** What the box says when the agent could not finish. True, and it tells the
@@ -664,10 +666,11 @@ export function startFoodAgent(args: {
         // those untouched (foodAgent.ts buildChangedCard).
         editLine: later && args.card
           ? (index, change) => {
-            const p = args.card!.previousItems[index];
-            if (!p) return Promise.resolve({ ...noParseResult(), tool_calls: ["edit_line"] });
+            const target = editLineInput(args.card!, index, change);
+            if (!target) return Promise.resolve({ ...noParseResult(), tool_calls: ["edit_line"] });
+            const p = target.item;
             return tracedParse(runParseMeal(args.parseDeps(agentParse), {
-              text: change,
+              text: target.text,
               localHour: args.localHour,
               mealHint: p.meal_type ?? args.mealHint,
               mode: args.mode,
@@ -832,6 +835,45 @@ export function wouldDivertToCreate(d: FoodIntentDecision | null, supportsCreate
 
 // ── Later messages (FOOD_AGENT_LATER) ───────────────────────────────────────
 
+const nameKey = (x: string) => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+/**
+ * What edit_line parses for card line `index`: that line's own item, and the
+ * change. Null (the edit fails, the line stays) when the item the client sent
+ * at that index is not the card line's food: an edit is never worked out
+ * against another food.
+ *
+ * A number the user stated ("161 cals as per their menu") reaches the parse in
+ * the agent's change, which the agent is told to carry (FOOD_AGENT_SYSTEM_LATER),
+ * and the correction path reads it the way it reads any stated number
+ * (statedNumbers.ts). The user's whole message is NOT added: live, it brought
+ * the other foods it names into this one line's parse, and the line-match check
+ * then refused the edit ("hot coffee is milk coffee" stayed at 2 kcal).
+ */
+export function editLineInput(
+  card: { lines: CardLine[]; previousItems: PreviousItem[] },
+  index: number,
+  change: string,
+): { text: string; item: PreviousItem } | null {
+  const item = card.previousItems[index];
+  const line = card.lines[index];
+  if (!item || !line || nameKey(item.food_name) !== nameKey(line.food_name)) return null;
+  return { text: change, item };
+}
+
+/** The food box trace's "answered by" for an outcome. A bare ack is marked
+ *  explicitly (FoodBarOutcome.bareAck), so a later run whose agent never ran
+ *  is not counted as one. */
+export function answeredByLabel(outcome: FoodBarOutcome | null): string | null {
+  if (!outcome) return null;
+  if (outcome.action === "log") return outcome.result ? "food_agent" : "parse";
+  if (outcome.bareAck) return "bare_ack";
+  if (outcome.agent?.kind === "failed") return "canned_agent_failed";
+  if (outcome.agent) return "food_agent";
+  if (outcome.planned === "agent") return "canned_agent_failed";
+  return outcome.action === "reply" ? "reply_call" : "create_call";
+}
+
 /** A result for a message no parse ran on: nothing found, nothing spent. The
  *  agent's own tokens go on its own usage row (startFoodAgent logUsage). */
 export function noParseResult(): ParseMealResult {
@@ -884,7 +926,7 @@ export async function runLaterMessage(args: {
   if (args.cardOpen && !pending && !askedLast && isBareAck(args.agent.text)) {
     fb?.step({ src: "router", tool: "later_message", result: { to: "bare_ack", card_open: true } });
     const decision = await args.agent.intentP.catch(() => null);
-    return { outcome: out({ action: "reply", planned: "reply", decision, reply: BARE_ACK_REPLY }), result: noParseResult(), firstParse: null };
+    return { outcome: out({ action: "reply", planned: "reply", decision, reply: BARE_ACK_REPLY, bareAck: true }), result: noParseResult(), firstParse: null };
   }
   fb?.step({ src: "router", tool: "later_message", result: { to: "agent", card_open: args.cardOpen, pending, turns: args.agent.recentTurns.length } });
   const agentP = startFoodAgent({ ...args.agent, later: true });

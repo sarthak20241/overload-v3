@@ -807,6 +807,30 @@ export function parseFoodAgentLaterMode(raw: string | undefined): FoodAgentLater
   return raw?.trim().toLowerCase() === "on" ? "on" : "off";
 }
 
+/** Is this food box message from a Precise thread? A first message says so in
+ *  `speed` ("super"). A correction sends no speed (it stays on the smart
+ *  pipeline), so the app sends the picked mode in `tier` on every message. An
+ *  app without `tier` keeps today's reading: Precise only with speed "super". */
+export function isPreciseRequest(
+  body: { speed?: unknown; tier?: unknown },
+  /** The server's own gate, the same one speed "super" passes today: Precise
+   *  switched on (PARSE_SUPER_MODE) and an account that may use it (not the
+   *  free tier). `tier` is the client's word and never unlocks it alone. */
+  gate: { superOn: boolean; freeTier: boolean },
+): boolean {
+  if (!gate.superOn || gate.freeTier) return false;
+  return body.speed === "super" || body.tier === "precise";
+}
+
+/** The tier the user picked, for the usage logs. A Precise correction sends
+ *  no speed (it stays on the smart pipeline) but says tier "precise", and is
+ *  recorded as precise. An old build with neither reads as thorough. */
+export function tierSelectedOf(body: { speed?: unknown; tier?: unknown }): "fast" | "precise" | "thorough" {
+  if (body.speed === "fast") return "fast";
+  if (body.speed === "super" || body.tier === "precise") return "precise";
+  return "thorough";
+}
+
 export interface LaterMessageInputs {
   mode: FoodAgentLaterMode;
   /** The user picked Precise for this message (speed "super"). */

@@ -62,6 +62,8 @@ import {
   type FoodIntentDecision,
   type FoodIntentDeps,
   JEV_INTENT_FLOOR,
+  isPreciseRequest,
+  tierSelectedOf,
   parseFoodAgentLaterMode,
   parseFoodIntentMode,
   laterMessageGoesToAgent,
@@ -96,6 +98,7 @@ import {
 } from "./foodThreads.ts";
 import {
   agentCouldUseThread,
+  answeredByLabel,
   configureFoodBar,
   type DiaryReader,
   type FoodBarOutcome,
@@ -1944,6 +1947,9 @@ function makeTextCaller(): TextCaller {
     const u = res.data.usage ?? {};
     return {
       text: blocks.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n"),
+      // A reply with no text says why: hit the cap, and spent on which blocks.
+      stop_reason: res.data.stop_reason ?? undefined,
+      block_types: blocks.map((b) => b.type),
       usage: {
         input_tokens: u.input_tokens ?? 0,
         output_tokens: u.output_tokens ?? 0,
@@ -3101,20 +3107,7 @@ async function handleParseMealRequest(args: {
           streamed: wouldStream(body), autoLog: body.auto_log === true, clientId: typeof body.client_id === "string" ? body.client_id : null,
           canCreate: clientSupportsFoodCreate(body),
         });
-        const answeredBy = !outcome
-          ? null
-          : outcome.action === "log"
-          ? (outcome.result ? "food_agent" : "parse")
-          : outcome.agent?.kind === "failed"
-          ? "canned_agent_failed"
-          : outcome.agent
-          ? "food_agent"
-          : outcome.action === "reply" && !outcome.followup
-          // A later message's bare ack beside a card: no call at all.
-          ? "bare_ack"
-          : outcome.action === "reply"
-          ? "reply_call"
-          : "create_call";
+        const answeredBy = answeredByLabel(outcome);
         const row = buildFoodBarTraceRow({
           requestId,
           userId,
@@ -3641,7 +3634,9 @@ async function handleParseMealRequest(args: {
   // that answered (result.tier) because the two differ: a correction runs
   // Thorough, and a kill switch above turns Fast or Precise off. An old build
   // that sends no speed reads as Thorough, which is what it gets.
-  const tierSelected: ParseTier = body.speed === "fast" ? "fast" : body.speed === "super" ? "precise" : "thorough";
+  // tier "precise" on a correction counts too (tierSelectedOf); the pipeline
+  // that ran is tier_used.
+  const tierSelected: ParseTier = tierSelectedOf(body);
   // Streaming is Fast's alone, deliberately: the stream exists to paint rows
   // while the numbers settle, and Super's answer arrives whole after a web
   // lookup, so there is nothing to trickle. `&& wantsFast` is therefore not a
@@ -3690,6 +3685,9 @@ async function handleParseMealRequest(args: {
         // synchronously. Awaiting inside onProgress would stall the stream.
         let settledIntent: FoodIntentDecision | null = null;
         void intentP.then((d) => { settledIntent = d; });
+        // FOOD_AGENT_LATER is not wired here on purpose: only Quick streams
+        // (wouldStream needs speed "fast"), and step 2 is Precise only, which
+        // always takes the JSON path below.
         const agentP = startFoodAgent({
           intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary, readDiaryLines,
           contextPromise, userId, recentTurns, pendingMeal: foodContext.pendingMeal,
@@ -3978,7 +3976,12 @@ async function handleParseMealRequest(args: {
     // thread goes to the agent whatever the router says. Only a first message
     // with no card takes the router's path below.
     const later = laterMessageGoesToAgent({
-      mode: FOOD_AGENT_LATER, precise: wantsSuper, supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
+      // speed "super" (a first message) or tier "precise" (any message from an
+      // app that sends it): a Precise correction carries no speed.
+      // Behind the same server gate speed "super" passes (Precise on, not the
+      // free tier): the client's tier never unlocks the agent path alone.
+      mode: FOOD_AGENT_LATER, precise: isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier }),
+      supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
       turns: recentTurns.length, cardLines: card.length, cardOpen, pending: !!foodContext.pendingMeal,
     });
     const agentP = later ? Promise.resolve(null) : startFoodAgent(agentArgs);
