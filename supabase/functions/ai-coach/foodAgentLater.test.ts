@@ -711,3 +711,54 @@ Deno.test("save gate: a save word needs something to save ('saving calories' is 
   assertFalse(userAskedToSave({ text: "it saves me time" }));
   for (const t of ["save it", "please save", "can you save this as a meal", "save the card", "save"]) assert(userAskedToSave({ text: t }), t);
 });
+
+// ── Review of #354 ──────────────────────────────────────────────────────────
+
+/** deps whose diary copy (copy_lines) holds one Paneer line. */
+function withDiaryPaneer(d: FoodAgentDeps): FoodAgentDeps {
+  d.readDiaryLines = async () => ({ date: "2026-11-06", meals: [{ items: [{ name: "Paneer", kcal: 200, source: "catalog", quantity: 1 }] }] });
+  return d;
+}
+
+Deno.test("a food copied earlier in the run counts as on the card: an addition of it is left off", async () => {
+  const d = withDiaryPaneer(deps(scripted([
+    [{ name: "copy_lines", input: { source: { days_ago: 1, meal_type: "lunch" } } }, { name: "coach_list_saved_meals", input: {} }],
+    [{ name: "add_lines", input: { text: "paneer" } }],
+  ])));
+  d.parseFood = async () => result([item("Paneer", 250)]);
+  const out = await runFoodAgent(LATER, d);
+  if (out.kind !== "log" || !out.result.parsed) throw new Error(out.kind);
+  assertEquals(out.result.parsed.items.filter((i) => i.food_name === "Paneer").length, 1);
+});
+
+Deno.test("staged copies count toward the 12-line card: what does not fit is left off and named", async () => {
+  const card: CardLine[] = Array.from({ length: 10 }, (_, i) => ({ ...CARD[1], food_name: `Food ${i}` }));
+  const d = withDiaryPaneer(deps(scripted([
+    [{ name: "copy_lines", input: { source: { days_ago: 1, meal_type: "lunch" } } }, { name: "coach_list_saved_meals", input: {} }],
+    [{ name: "add_lines", input: { text: "two things" } }],
+  ])));
+  d.parseFood = async () => result([item("Apple", 95), item("Pear", 100)]);
+  const out = await runFoodAgent({ ...LATER, card }, d);
+  if (out.kind !== "log" || !out.result.parsed) throw new Error(out.kind);
+  assertEquals(out.result.parsed.items.length, 12);
+  assert(/left off/.test(out.result.parsed.drona_line), out.result.parsed.drona_line);
+});
+
+Deno.test("save gate: 'save' with a food after it is an ask; 'save the day' is not", () => {
+  for (const t of ["save breakfast", "save chicken as my lunch", "can you save paneer sabji"]) assert(userAskedToSave({ text: t }), t);
+  for (const t of ["that shake will save the day", "I'm saving calories", "save time later"]) assertFalse(userAskedToSave({ text: t }), t);
+});
+
+Deno.test("additions that do not fit keep the agent's reply, with the notice after it", async () => {
+  const card: CardLine[] = Array.from({ length: 11 }, (_, i) => ({ ...CARD[1], food_name: `Food ${i}` }));
+  const d = deps(scripted([[
+    { name: "reply", input: { text: "That dinner fits your cut." } },
+    { name: "add_lines", input: { text: "two things" } },
+  ]]));
+  d.parseFood = async () => result([item("Apple", 95), item("Pear", 100)]);
+  const out = await runFoodAgent({ ...LATER, card }, d);
+  if (out.kind !== "log" || !out.result.parsed) throw new Error(out.kind);
+  assert(out.result.parsed.drona_line.startsWith("That dinner fits your cut."), out.result.parsed.drona_line);
+  assert(out.result.parsed.drona_line.includes("left off Pear"), out.result.parsed.drona_line);
+  assertEquals(out.answered, true);
+});
