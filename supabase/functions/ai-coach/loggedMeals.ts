@@ -158,6 +158,11 @@ export interface MealRowIn {
   meal_entries?: unknown;
 }
 
+/** The step-4 columns the diary read asks for when the database has them
+ *  (migration 20261107120000): a line's origin, and a dish's parts for
+ *  copy_lines. index.ts retries without them on a database that lacks them. */
+export const LOGGED_STEP4_COLS = "origin, recipe";
+
 export interface LoggedItem {
   name: string;
   quantity: number;

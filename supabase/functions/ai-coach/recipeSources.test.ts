@@ -6,7 +6,7 @@
 
 import { assert, assertEquals, assertFalse } from "jsr:@std/assert@1";
 import { diarySourceLine } from "./foodAgent.ts";
-import { type MealRowIn, resolveDay, shapeLoggedMeals } from "./loggedMeals.ts";
+import { LOGGED_STEP4_COLS, type MealRowIn, resolveDay, shapeLoggedMeals } from "./loggedMeals.ts";
 import { memoryStamp } from "./parseMeal.ts";
 import type { MemoryFood } from "./userFoodMemory.ts";
 
@@ -54,4 +54,12 @@ Deno.test("memory: a remembered dish is served as a recipe, not as a catalog row
   const stamp = memoryStamp(food, "Asia/Kolkata");
   assertEquals(stamp.source, "recipe");
   assertEquals(stamp.recipe, PARTS);
+});
+
+Deno.test("diary: the read behind copy_lines asks the database for the parts", () => {
+  // The step-4 columns the diary read adds when the database has them
+  // (index.ts loggedMealsStore). Without recipe, the full read above never
+  // sees a dish's parts in production.
+  assert(LOGGED_STEP4_COLS.split(",").map((c) => c.trim()).includes("recipe"), LOGGED_STEP4_COLS);
+  assert(LOGGED_STEP4_COLS.split(",").map((c) => c.trim()).includes("origin"), LOGGED_STEP4_COLS);
 });
