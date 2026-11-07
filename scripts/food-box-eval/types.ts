@@ -82,6 +82,13 @@ export interface MemoryFood {
   source: string;
   lastLogged: string;
   times?: number;
+  /** Step 4: where the numbers came from (user_food_cache.origin). Absent on
+   *  an old row: it reads from `source`, where "manual" is unknown. */
+  origin?: string;
+  /** Step 4: a home dish's parts (RecipePart). */
+  recipe?: { name: string; grams: number; per100?: { kcal: number; protein_g: number; carb_g: number; fat_g: number } }[];
+  /** The tier the row was logged in. Default "super" (the harness's own). */
+  tier?: string;
 }
 
 export interface DiaryMeal {
