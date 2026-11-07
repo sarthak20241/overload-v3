@@ -648,12 +648,15 @@ export async function recentFoods(supabase: Supa | null, limit = 20): Promise<Pi
  *  meals in 90 days on prod, 2026-10-31). */
 export async function loadYourFoods(supabase: Supa | null): Promise<YourFood[]> {
   if (!supabase) return [];
-  const { data, error } = await supabase
+  const cols = 'food_id, food_name, serving_unit, grams_logged, quantity, kcal, protein_g, carb_g, fat_g, fiber_g, sugar_g, sat_fat_g, sodium_mg, logged_via, source, tier';
+  const read = (entryCols: string) => supabase
     .from('meals')
-    // `*`: origin arrives with migration 20261107120000.
-    .select('logged_at, meal_entries(*)')
+    .select(`logged_at, meal_entries(${entryCols})`)
     .order('logged_at', { ascending: false })
     .limit(600);
+  let { data, error } = await read(`${cols}, origin`);
+  // A database before migration 20261107120000 has no origin column.
+  if (error && missingColumn(error, ['origin'])) ({ data, error } = await read(cols));
   if (error || !data) return [];
   const nul = (v: unknown) => (v == null ? null : Number(v));
   const entries: YourFoodEntry[] = [];
@@ -2053,11 +2056,11 @@ export async function listSavedMeals(supabase: Supa): Promise<SavedMeal[]> {
     .order('created_at', { ascending: false });
   if (error || !heads || heads.length === 0) return [];
   const ids = (heads as any[]).map((h) => h.id);
-  const { data: items } = await supabase
-    .from('saved_meal_items')
-    .select('*') // origin arrives with migration 20261107120000
-    .in('saved_meal_id', ids)
-    .order('position');
+  const cols = 'saved_meal_id, food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g';
+  const read = (c: string) => supabase.from('saved_meal_items').select(c).in('saved_meal_id', ids).order('position');
+  let { data: items, error: itemsErr } = await read(`${cols}, origin`);
+  // A database before migration 20261107120000 has no origin column.
+  if (itemsErr && missingColumn(itemsErr, ['origin'])) ({ data: items } = await read(cols));
   const byMeal = new Map<string, SavedMealItem[]>();
   for (const it of (items ?? []) as any[]) {
     const arr = byMeal.get(it.saved_meal_id) ?? [];

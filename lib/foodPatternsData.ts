@@ -17,6 +17,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { latestLogDay } from '@/lib/logDay';
 import { logParsedMeal, ymd, type LoggedParseRef, type ParsedMeal, type ParsedMealItem } from '@/lib/dietData';
+import { missingColumn } from '@/lib/missingColumn';
 import { PATTERN_WINDOW_DAYS, relogLabels, type HistoryEntry } from '@/lib/foodPatterns';
 import type { MealType } from '@/lib/foods';
 
@@ -42,16 +43,18 @@ async function fetchHistory(supabase: Supa, anchorIso: string): Promise<HistoryE
   const first = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() - BACK_DAYS, 0, 0, 0, 0);
   const last = past ? anchor : latestLogDay(now);
   const end = new Date(last.getFullYear(), last.getMonth(), last.getDate(), 23, 59, 59, 999);
-  const { data, error } = await supabase
+  const cols = 'food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, source, logged_via, tier, position';
+  const read = (entryCols: string) => supabase
     .from('meals')
-    // `*`: origin arrives with migration 20261107120000; naming a column the
-    // database lacks would fail the read.
-    .select('meal_type, logged_at, meal_entries(*)')
+    .select(`meal_type, logged_at, meal_entries(${entryCols})`)
     .gte('logged_at', first.toISOString())
     .lte('logged_at', end.toISOString())
     // Newest first, so if the row cap ever cuts this short, the oldest days
     // are what is lost, not an arbitrary set.
     .order('logged_at', { ascending: false });
+  let { data, error } = await read(`${cols}, origin`);
+  // A database before migration 20261107120000 has no origin column.
+  if (error && missingColumn(error, ['origin'])) ({ data, error } = await read(cols));
   if (error || !data) return null;
   const out: (HistoryEntry & { position: number })[] = [];
   for (const m of data as any[]) {

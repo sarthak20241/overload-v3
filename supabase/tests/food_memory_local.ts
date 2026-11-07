@@ -21,6 +21,7 @@ const migrations = [
   "supabase/migrations/20261012160000_food_memory_survives_delete.sql",
   "supabase/migrations/20261106120000_food_threads.sql",
   "supabase/migrations/20261107120000_food_memory_sources.sql",
+  "supabase/migrations/20261108090000_nutrition_stats_search_path.sql",
 ];
 const tests = [
   "supabase/tests/personal_food_aliases.sql",
@@ -93,6 +94,98 @@ end;
 $function$;
 create trigger trg_meal_entries_stamp_tier before insert on public.meal_entries
   for each row execute function public.meal_entries_stamp_tier();
+-- Copied from live (pg_get_functiondef, 2026-11-08): the day-total triggers,
+-- as they were before 20261108090000, with no search_path of their own. Their
+-- unqualified call is what broke apply_food_memory_cleanup (search_path '').
+create table public.timezone_names (name text primary key);
+create table public.user_nutrition_stats (user_id text, day date, kcal numeric(12,2), protein_g numeric(12,2),
+  carb_g numeric(12,2), fat_g numeric(12,2), entry_count integer, updated_at timestamptz, primary key (user_id, day));
+CREATE OR REPLACE FUNCTION public.recompute_user_nutrition_stat(p_user_id text, p_day date)
+ RETURNS void LANGUAGE plpgsql
+AS $function$
+declare
+  v_tz text := coalesce((select tz.name from public.user_profiles p
+                           join public.timezone_names tz on tz.name = p.timezone
+                          where p.clerk_user_id = p_user_id), 'UTC');
+  v_kcal numeric(12, 2); v_protein numeric(12, 2); v_carb numeric(12, 2); v_fat numeric(12, 2); v_count integer;
+begin
+  select coalesce(sum(me.kcal), 0), coalesce(sum(me.protein_g), 0), coalesce(sum(me.carb_g), 0),
+         coalesce(sum(me.fat_g), 0), count(*)::integer
+  into v_kcal, v_protein, v_carb, v_fat, v_count
+  from public.meal_entries me join public.meals m on m.id = me.meal_id
+  where m.user_id = p_user_id and (m.logged_at at time zone v_tz)::date = p_day;
+  if v_count = 0 then
+    delete from public.user_nutrition_stats where user_id = p_user_id and day = p_day;
+    return;
+  end if;
+  insert into public.user_nutrition_stats (user_id, day, kcal, protein_g, carb_g, fat_g, entry_count, updated_at)
+  values (p_user_id, p_day, v_kcal, v_protein, v_carb, v_fat, v_count, now())
+  on conflict (user_id, day) do update set kcal = excluded.kcal, protein_g = excluded.protein_g,
+    carb_g = excluded.carb_g, fat_g = excluded.fat_g, entry_count = excluded.entry_count, updated_at = now();
+end;
+$function$;
+CREATE OR REPLACE FUNCTION public.update_user_nutrition_on_entry_change()
+ RETURNS trigger LANGUAGE plpgsql
+AS $function$
+declare v_user_id text; v_at timestamptz; v_old_user text; v_old_at timestamptz; v_tz text;
+begin
+  if tg_op in ('INSERT', 'UPDATE') then
+    select m.user_id, m.logged_at into v_user_id, v_at from public.meals m where m.id = new.meal_id;
+    if v_user_id is not null then
+      v_tz := coalesce((select tz.name from public.user_profiles p join public.timezone_names tz on tz.name = p.timezone
+                         where p.clerk_user_id = v_user_id), 'UTC');
+      perform recompute_user_nutrition_stat(v_user_id, (v_at at time zone v_tz)::date);
+    end if;
+  end if;
+  if tg_op = 'UPDATE' and old.meal_id is distinct from new.meal_id then
+    select m.user_id, m.logged_at into v_old_user, v_old_at from public.meals m where m.id = old.meal_id;
+    if v_old_user is not null then
+      v_tz := coalesce((select tz.name from public.user_profiles p join public.timezone_names tz on tz.name = p.timezone
+                         where p.clerk_user_id = v_old_user), 'UTC');
+      perform recompute_user_nutrition_stat(v_old_user, (v_old_at at time zone v_tz)::date);
+    end if;
+  end if;
+  if tg_op = 'DELETE' then
+    select m.user_id, m.logged_at into v_user_id, v_at from public.meals m where m.id = old.meal_id;
+    if v_user_id is not null then
+      v_tz := coalesce((select tz.name from public.user_profiles p join public.timezone_names tz on tz.name = p.timezone
+                         where p.clerk_user_id = v_user_id), 'UTC');
+      perform recompute_user_nutrition_stat(v_user_id, (v_at at time zone v_tz)::date);
+    end if;
+  end if;
+  return coalesce(new, old);
+end;
+$function$;
+CREATE OR REPLACE FUNCTION public.update_user_nutrition_on_meal_change()
+ RETURNS trigger LANGUAGE plpgsql
+AS $function$
+declare v_old_tz text; v_new_tz text; v_old_day date; v_new_day date;
+begin
+  if old.user_id is not null then
+    v_old_tz := coalesce((select tz.name from public.user_profiles p join public.timezone_names tz on tz.name = p.timezone
+                           where p.clerk_user_id = old.user_id), 'UTC');
+    v_old_day := (old.logged_at at time zone v_old_tz)::date;
+  end if;
+  if tg_op = 'DELETE' then
+    if old.user_id is not null then perform recompute_user_nutrition_stat(old.user_id, v_old_day); end if;
+    return old;
+  end if;
+  if new.user_id is not null then
+    v_new_tz := coalesce((select tz.name from public.user_profiles p join public.timezone_names tz on tz.name = p.timezone
+                           where p.clerk_user_id = new.user_id), 'UTC');
+    v_new_day := (new.logged_at at time zone v_new_tz)::date;
+    perform recompute_user_nutrition_stat(new.user_id, v_new_day);
+  end if;
+  if old.user_id is not null and (old.user_id is distinct from new.user_id or v_old_day is distinct from v_new_day) then
+    perform recompute_user_nutrition_stat(old.user_id, v_old_day);
+  end if;
+  return new;
+end;
+$function$;
+create trigger trg_user_nutrition_on_entry_change after insert or update or delete on public.meal_entries
+  for each row execute function public.update_user_nutrition_on_entry_change();
+create trigger trg_user_nutrition_on_meal_change after update or delete on public.meals
+  for each row execute function public.update_user_nutrition_on_meal_change();
 `);
 
 for (const f of migrations) {
