@@ -419,3 +419,15 @@ Deno.test("agent: parts not found and parts whose lookup failed are said apart i
     assert(/could not look up onion just now/.test(out.text), out.text);
   }
 });
+
+Deno.test("agent: a dish added with the name of a line already on the card is not added twice", async () => {
+  const card: CardLine[] = [{ food_name: "Paneer sabji", quantity: 1, serving_label: "serving", grams: 105, kcal: 212.6, source: "recipe", meal_type: "lunch" }];
+  const again = { name: "build_recipe", input: { name: "Paneer sabji", parts: [{ name: "low fat paneer", amount: "60 g" }, { name: "oil" }] } };
+  const out = await runFoodAgent(
+    { text: "x", defaultMeal: "lunch", later: true, card },
+    { model: "m", callModel: scripted([[again]]), readDiary: async () => ({}), savedMeals: async () => [], parseFood: fakeParse(), buildRecipe: true },
+  );
+  // Nothing new lands: the card stays as it was, and the line says why.
+  assertEquals(out.kind, "reply");
+  if (out.kind === "reply") assert(/already on the card/.test(out.text), out.text);
+});
