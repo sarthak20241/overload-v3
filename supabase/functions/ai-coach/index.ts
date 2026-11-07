@@ -63,6 +63,7 @@ import {
   type FoodIntentDeps,
   JEV_INTENT_FLOOR,
   isPreciseRequest,
+  tierSelectedOf,
   parseFoodAgentLaterMode,
   parseFoodIntentMode,
   laterMessageGoesToAgent,
@@ -3630,7 +3631,9 @@ async function handleParseMealRequest(args: {
   // that answered (result.tier) because the two differ: a correction runs
   // Thorough, and a kill switch above turns Fast or Precise off. An old build
   // that sends no speed reads as Thorough, which is what it gets.
-  const tierSelected: ParseTier = body.speed === "fast" ? "fast" : body.speed === "super" ? "precise" : "thorough";
+  // tier "precise" on a correction counts too (tierSelectedOf); the pipeline
+  // that ran is tier_used.
+  const tierSelected: ParseTier = tierSelectedOf(body);
   // Streaming is Fast's alone, deliberately: the stream exists to paint rows
   // while the numbers settle, and Super's answer arrives whole after a web
   // lookup, so there is nothing to trickle. `&& wantsFast` is therefore not a

@@ -649,3 +649,29 @@ Deno.test("save gate: 'do not forget to save it' is an ask", () => {
   assert(userAskedToSave({ text: "don't forget to save this as a meal" }));
   assertFalse(userAskedToSave({ text: "don't save it" }));
 });
+
+Deno.test("save gate: a no counts only in the same part of the sentence as the save", () => {
+  for (const t of ["not sure but save it", "nope, save it anyway", "don't forget to please go ahead and save", "no, save it"]) {
+    assert(userAskedToSave({ text: t }), t);
+  }
+  for (const t of ["do not under any circumstances and for any condition save it", "don't save it", "nope don't save that"]) {
+    assertFalse(userAskedToSave({ text: t }), t);
+  }
+});
+
+Deno.test("applyCardChanges: a first line with no section takes the default; a line's own section stays", async () => {
+  const card: CardLine[] = [{ ...CARD[0], meal_type: undefined }, { ...CARD[1], meal_type: "lunch" }];
+  const out = await runFoodAgent({ ...LATER, card, defaultMeal: "dinner" }, deps(scripted([[
+    { name: "edit_line", input: { line_id: "L2", change: "half" } },
+  ]])));
+  if (out.kind !== "log" || !out.result.parsed) throw new Error(out.kind);
+  assertEquals(out.result.parsed.items.map((i) => i.meal_type), ["dinner", "lunch"]);
+});
+
+Deno.test("tierSelectedOf: a Precise correction (tier precise, no speed) is recorded as precise", async () => {
+  const { tierSelectedOf } = await import("./foodIntent.ts");
+  assertEquals(tierSelectedOf({ tier: "precise" }), "precise");
+  assertEquals(tierSelectedOf({ speed: "super" }), "precise");
+  assertEquals(tierSelectedOf({ speed: "fast", tier: "quick" }), "fast");
+  assertEquals(tierSelectedOf({}), "thorough");
+});

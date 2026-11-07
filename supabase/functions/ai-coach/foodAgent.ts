@@ -1394,18 +1394,28 @@ const SAVE_TOOLS = new Set([SAVE_CARD_AS_MEAL_TOOL.name, CREATE_CUSTOM_MEAL_TOOL
 const SAVE_ASK = /\b(?:save|saving|(?:to|in|into) my meals|as a (?:saved )?meal|make (?:it|this|that) (?:a|my) meal|(?:keep|remember) (?:it|this|that) (?:as|for))\b/gi;
 
 /** A no in front of the ask ("don't save", "no need to save"): not an ask. */
-const NEGATED = /\b(?:don['’]?t|do not|no need to|not|never|didn['’]?t|won['’]?t|stop|without)\b[\w\s'’]{0,40}$/i;
+const NEGATED = /\b(?:don['’]?t|do not|no need to|not|never|didn['’]?t|won['’]?t|stop|without|nope)\b[\w\s'’]*$/i;
+
+/** Where one part of a sentence ends: a no before it says nothing about a
+ *  save after it ("not sure, but save it", "nope, save it anyway"). */
+const CLAUSE_END = /[,.;:!?]|\bbut\b|\bthough\b|\banyway\b|\bplease\b|\bgo ahead\b/gi;
 
 /** "don't forget to", "never forget to": a no that asks. */
-const DONT_FORGET = /\b(?:don['’]?t|do not|never)\s+forget\b[\w\s'’]{0,20}$/i;
+const DONT_FORGET = /\b(?:don['’]?t|do not|never)\s+forget\b[\w\s'’]{0,40}$/i;
 
 /** An ask to save in this text: a save word, not negated. Past tense
  *  ("already saved") is not in the pattern, and neither is a bare "my meals". */
 function asksToSave(text: string): boolean {
   for (const m of text.matchAll(SAVE_ASK)) {
-    const before = text.slice(Math.max(0, (m.index ?? 0) - 40), m.index ?? 0);
-    // "do not forget to save it" asks; "don't save it" does not.
-    if (DONT_FORGET.test(before) || !NEGATED.test(before)) return true;
+    const at = m.index ?? 0;
+    // "do not forget to (please go ahead and) save it" asks; "don't save it"
+    // does not.
+    if (DONT_FORGET.test(text.slice(Math.max(0, at - 60), at))) return true;
+    // A no counts only in the save's own part of the sentence, however long
+    // that part is ("do not under any circumstances ... save it").
+    const ends = [...text.slice(0, at).matchAll(CLAUSE_END)];
+    const from = ends.length ? (ends.at(-1)!.index ?? 0) + ends.at(-1)![0].length : 0;
+    if (!NEGATED.test(text.slice(from, at))) return true;
   }
   return false;
 }
