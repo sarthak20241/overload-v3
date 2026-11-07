@@ -351,3 +351,17 @@ Deno.test("per100FromParse: fiber is per 100 only when every item has a figure",
   const r = { parsed: { meal_type: "lunch", items: [a, b], drona_line: "", corrects_previous: false }, declined: null, usage: USAGE, tool_calls: [], steps: [], iterations: 1 } as ParseMealResult;
   assertEquals(per100FromParse(r)?.fiber_g, null);
 });
+
+// ── Review fixes, round 6 (PR #359) ────────────────────────────────────────
+
+Deno.test("sumRecipe: the dish's fiber is blank when any part has no fiber figure", () => {
+  const withFiber = { ...part("onion", 40), per100: { ...part("onion", 40).per100, fiber_g: 1.7 } };
+  assertEquals(sumRecipe("Dal", [withFiber, part("oil", 5)], "lunch").fiber_g, null);
+  assertEquals(sumRecipe("Dal", [withFiber], "lunch").fiber_g, 0.7);
+});
+
+Deno.test("assumedAmount: a supplement or other non-cooking oil is not a cooking fat", () => {
+  assertEquals(assumedAmount("cod liver oil"), null);
+  assertEquals(assumedAmount("fish oil"), null);
+  assertEquals(assumedAmount("mustard oil"), { grams: 5, label: "1 tsp" });
+});

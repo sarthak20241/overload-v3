@@ -96,7 +96,7 @@ export const RECIPE_ASSUMED: Record<string, { grams: number; label: string }> = 
 
 /** Spreads and other foods whose last word is in the table but are not a
  *  cooking fat or a sweetener ("peanut butter", "cocoa butter"). */
-const NOT_A_FAT = /\b(?:peanut|almond|cashew|nut|cocoa|apple|seed|sunflower seed)\s+butter\b|\bsugar[- ]free\b/i;
+const NOT_A_FAT = /\b(?:fish|cod|liver|krill|castor|essential|massage|hair|baby|mineral|beard)\s+oil\b|\b(?:peanut|almond|cashew|nut|cocoa|apple|seed|sunflower seed)\s+butter\b|\bsugar[- ]free\b/i;
 
 /** Words that may come before "butter" or "sugar" and still name the cooking
  *  kind (an allow-list: anything else is some other food). */
@@ -200,6 +200,9 @@ export const RECIPE_MAX_MISSING = 1;
 export function sumRecipe(name: string, parts: PartFound[], meal: MealType, missing: string[] = []): ParsedItem {
   const t = { kcal: 0, protein_g: 0, carb_g: 0, fat_g: 0 };
   let fiber: number | null = null;
+  // One part with no fiber figure makes the dish's fiber unknown: a partial
+  // sum would read as the whole dish's and under-report it.
+  let fiberUnknown = false;
   for (const p of parts) {
     const x = partTotals(p);
     t.kcal += x.kcal;
@@ -207,6 +210,7 @@ export function sumRecipe(name: string, parts: PartFound[], meal: MealType, miss
     t.carb_g += x.carb_g;
     t.fat_g += x.fat_g;
     if (x.fiber_g !== null) fiber = (fiber ?? 0) + x.fiber_g;
+    else fiberUnknown = true;
   }
   const grams = parts.reduce((n, p) => n + p.grams, 0);
   const recipe: RecipePart[] = parts.map((p) => ({
@@ -227,7 +231,7 @@ export function sumRecipe(name: string, parts: PartFound[], meal: MealType, miss
     protein_g: r1(t.protein_g),
     carb_g: r1(t.carb_g),
     fat_g: r1(t.fat_g),
-    fiber_g: fiber === null ? null : r1(fiber),
+    fiber_g: fiber === null || fiberUnknown ? null : r1(fiber),
     source: "recipe",
     origin: "recipe",
     assumption: recipeNote(parts, missing),
