@@ -99,7 +99,10 @@ export function readPreviousItems(raw: unknown, rawTotal: unknown): { items: Pre
         carb_g: n(r.carb_g),
         fat_g: n(r.fat_g),
         fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : n(r.fiber_g),
-        source: src === "catalog" || src === "off" || src === "web" || src === "manual" || src === "estimate"
+        // Every source the app sends (its toParsedItem keeps the same list): a
+        // missing one turns a sourced line into an estimate on a correction.
+        source: src === "catalog" || src === "off" || src === "fatsecret" || src === "web" || src === "manual" ||
+            src === "estimate"
           ? src
           : "estimate",
         assumption: typeof r.assumption === "string" && r.assumption.trim() ? r.assumption.trim().slice(0, 160) : null,

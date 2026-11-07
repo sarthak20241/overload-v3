@@ -224,6 +224,19 @@ Deno.test("the failure this prevents: a correction on a 15-line card dropped lin
   assertEquals(r.parsed!.items.find((i) => i.food_name === "momos")!.grams, 180);
 });
 
+Deno.test("the failure this prevents: a FatSecret line came back from the card as an estimate", () => {
+  // The server's reader must list every source the app sends (the app's
+  // toParsedItem keeps the same list), or a sourced line is relabelled as
+  // Drona's own guess on the next correction.
+  const base = { food_id: null, quantity: 1, serving_label: "serving", grams: 30, kcal: 120 };
+  const read = readPreviousItems([
+    { ...base, food_name: "Protein bar", source: "fatsecret" },
+    { ...base, food_name: "Oats", source: "catalog" },
+    { ...base, food_name: "Mystery", source: "nonsense" },
+  ], 3);
+  assertEquals(read.items.map((i) => i.source), ["fatsecret", "catalog", "estimate"]);
+});
+
 Deno.test("a remembered portion is the user's one unit, never divided", async () => {
   // Memory holds "2 pieces" at 100 g as ONE unit of what they logged.
   // logged_at is relative: memory only reads the last MEMORY_DAYS (10).
