@@ -180,15 +180,27 @@ export function statedPartGrams(
   text: string,
 ): { part: number; grams: number } | null {
   const found: { part: number; grams: number }[] = [];
-  const re = /(\d+(?:[.,]\d+)?)\s*(?:g|gm|gms|grams?)\b(?:\s+of)?\s+([a-z][a-z ]{1,40}?)(?=[,.;)]|\s+(?:and|with|\+)\b|$)|\b([a-z]+)\s+(\d+(?:[.,]\d+)?)\s*(?:g|gm|gms|grams?)\b/gi;
-  for (const m of text.matchAll(re)) {
-    const grams = Number((m[1] ?? m[4]).replace(",", "."));
-    const said = words(m[2] ?? m[3] ?? "");
-    if (!(grams > 0) || said.length === 0) continue;
+  const used = new Set<number>();
+  const fit = (grams: number, name: string) => {
+    const said = words(name);
+    if (!(grams > 0) || said.length === 0) return false;
     const fits = recipe
       .map((p, i) => ({ i, w: words(p.name) }))
       .filter(({ w }) => said.every((s) => w.includes(s)) || w.every((s) => said.includes(s)));
-    if (fits.length === 1) found.push({ part: fits[0].i, grams });
+    if (fits.length !== 1) return false;
+    found.push({ part: fits[0].i, grams });
+    return true;
+  };
+  // "60 g paneer" first; its number is then taken. Two passes, so "made of
+  // 60g paneer" is not eaten by the trailing form reading "of 60g".
+  const ahead = /(\d+(?:[.,]\d+)?)\s*(?:g|gm|gms|grams?)\b(?:\s+of)?\s+([a-z][a-z ]{1,40}?)(?=[,.;)]|\s+(?:and|with|\+)\b|$)/gi;
+  for (const m of text.matchAll(ahead)) {
+    if (fit(Number(m[1].replace(",", ".")), m[2])) used.add(m.index!);
+  }
+  const behind = /\b([a-z]+)\s+((\d+(?:[.,]\d+)?)\s*(?:g|gm|gms|grams?))\b/gi;
+  for (const m of text.matchAll(behind)) {
+    const at = m.index! + m[0].indexOf(m[2]);
+    if (!used.has(at)) fit(Number(m[3].replace(",", ".")), m[1]);
   }
   const parts = new Set(found.map((f) => f.part));
   if (found.length === 0 || parts.size !== found.length) return null;
