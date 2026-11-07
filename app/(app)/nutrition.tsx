@@ -67,7 +67,7 @@ import {
   type PendingFoodMeal, parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext, sectionsOf,
   loadNutritionRange, dateFromYmd, listSavedMeals, savedMealAsItems, usePrefetchWeek,
   deleteMealEntry, type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
-  FOOD_TURNS_KEPT,
+  FOOD_TURNS_KEPT, CARD_MAX_LINES,
 } from '@/lib/dietData';
 import {
   applyCoachFoodCreate,
@@ -1563,10 +1563,10 @@ export default function NutritionScreen() {
     const token = ++checkTokenRef.current;
     setChecking({ token, index: i });
     try {
-      // The server reads at most 12 previous lines. A tapped line past that is
-      // sent on its own, so the check still reaches it; only this line is ever
-      // applied from the answer, so the others need not ride along.
-      const far = i >= 12;
+      // The app sends at most CARD_MAX_LINES previous lines. A tapped line past
+      // that is sent on its own, so the check still reaches it; only this line
+      // is ever applied from the answer, so the others need not ride along.
+      const far = i >= CARD_MAX_LINES;
       const res = await parseMeal(supabase, {
         // Phrased as ACCEPTING a lookup, not as asking a question. Tapping the
         // button IS the request, so the turn must land on requests_research
@@ -1654,7 +1654,7 @@ export default function NutritionScreen() {
           // looked-up line may come back under the user's own words (said_name)
           // rather than the card's name, so position is the last fallback.
           const sentAt = far ? 0 : i;
-          const sentCount = far ? 1 : Math.min(cur.meal.items.length, 12);
+          const sentCount = far ? 1 : Math.min(cur.meal.items.length, CARD_MAX_LINES);
           const found = res.meal.items.find((r) => key(r) === originalKey)
             ?? res.meal.items.find(
               (r) => r.food_name.toLowerCase() === item.food_name.toLowerCase(),

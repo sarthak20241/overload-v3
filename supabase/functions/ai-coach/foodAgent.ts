@@ -103,6 +103,9 @@ export interface FoodAgentInput {
    *  agent can edit it, add to it, remove from it, save it as a meal, or talk
    *  about it. Its numbers are the user's working copy, never to be re-guessed. */
   card?: CardLine[] | null;
+  /** How many lines the app says the card has (previous_items_total). Null or
+   *  absent for an app that sends no count; see cardMayBeCut. */
+  cardTotal?: number | null;
   /** The router's read of the message: which saved meal it names, and how
    *  sure (0-1). One line in the opening message, so the agent can fetch that
    *  one meal with list_saved_meals instead of reading them all. A pointer,
@@ -498,13 +501,15 @@ const FINISH_TOOLS = new Set([
  *  gets no card tools either: editing, removing from, or saving a card the
  *  agent cannot see all of would drop the lines past the cap (cardMayBeCut).
  *  copy_lines when it has a source (the diary, or the thread's earlier cards),
- *  read_card with earlier cards, restore_card only with no card on screen. */
+ *  read_card with earlier cards, restore_card only with no card on screen.
+ *  `total` is the app's count of card lines (see cardMayBeCut). */
 export function toolsFor(
   card: CardLine[] | null | undefined,
   canRestore = false,
   copy: { thread?: boolean; diary?: boolean } = {},
+  total?: number | null,
 ): AnthropicTool[] {
-  const out = card?.length && !cardMayBeCut(card) ? [...FOOD_AGENT_TOOLS, ...CARD_TOOLS] : [...FOOD_AGENT_TOOLS];
+  const out = card?.length && !cardMayBeCut(card, total) ? [...FOOD_AGENT_TOOLS, ...CARD_TOOLS] : [...FOOD_AGENT_TOOLS];
   if (copy.thread || copy.diary) out.push(COPY_LINES_TOOL);
   if (copy.thread) out.push(READ_CARD_TOOL);
   if (canRestore) out.push(RESTORE_CARD_TOOL);
@@ -563,14 +568,16 @@ export const FOOD_AGENT_SYSTEM =
  *  screen: the one-line tools (edit_line, remove_lines, add_lines) in place
  *  of edit_card, remove_card_lines and log_food, plus save_card_as_meal. With
  *  no card: today's tools (log_food makes the card). A card cut at the cap
- *  never reaches this agent (laterMessageGoesToAgent). */
+ *  never reaches this agent (laterMessageGoesToAgent). `total` is the app's
+ *  count of card lines (see cardMayBeCut). */
 export function toolsForLater(
   card: CardLine[] | null | undefined,
   canRestore = false,
   copy: { thread?: boolean; diary?: boolean } = {},
   label = false,
+  total?: number | null,
 ): AnthropicTool[] {
-  const whole = !!card?.length && !cardMayBeCut(card);
+  const whole = !!card?.length && !cardMayBeCut(card, total);
   const out = whole
     ? [
       ...FOOD_AGENT_TOOLS.filter((t) => t.name !== LOG_FOOD_TOOL.name),
@@ -864,7 +871,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // A later message (FOOD_AGENT_LATER): its own instructions, one-line card
   // tools, and one more turn. Everything else in the loop is shared.
   const later = !!input.later;
-  const lineTools = later && cardOnScreen && !cardMayBeCut(input.card);
+  const lineTools = later && cardOnScreen && !cardMayBeCut(input.card, input.cardTotal);
   // A first message (FOOD_FIRST_GATE) is a later-mode run with no card: its
   // own opening sentence and the note about the parse already running.
   const first = later && !!input.first && !cardOnScreen;
@@ -880,8 +887,8 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     ].filter(Boolean).join("\n")
     : [FOOD_AGENT_SYSTEM, cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n");
   const tools = later
-    ? toolsForLater(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary }, canLabel)
-    : toolsFor(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary });
+    ? toolsForLater(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary }, canLabel, input.cardTotal)
+    : toolsFor(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary }, input.cardTotal);
   const maxTurns = later ? MAX_TURNS_LATER : MAX_TURNS;
   // Every food line a read returned, by name, with the calories it carried.
   // A line the agent says it COPIED is checked against this: the model is told
@@ -1318,7 +1325,7 @@ async function finishWith(
   // The card tools act on the card, so a card that may be cut at the cap
   // refuses them HERE too, not only in toolsFor: a model can name a tool it
   // was not offered, and the refusal has to sit where the tool would act.
-  if (cardMayBeCut(card) && (u.name === EDIT_CARD_TOOL.name || u.name === REMOVE_CARD_LINES_TOOL.name || u.name === SAVE_CARD_AS_MEAL_TOOL.name)) {
+  if (cardMayBeCut(card, input.cardTotal) && (u.name === EDIT_CARD_TOOL.name || u.name === REMOVE_CARD_LINES_TOOL.name || u.name === SAVE_CARD_AS_MEAL_TOOL.name)) {
     return { kind: "failed", reason: "card_may_be_cut", turns };
   }
   if (u.name === EDIT_CARD_TOOL.name) {
