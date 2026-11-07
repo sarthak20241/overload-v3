@@ -18,7 +18,7 @@ import {
   REGION_SWAPS,
   type RegionPrompt,
 } from "./regionRules.ts";
-import { buildDecideSystemPrompt, preciseExtractSystem, type ParseMealInput } from "./parseMeal.ts";
+import { buildDecideSystemPrompt, preciseExtractSystem, type ParseMealInput, waitForRegion } from "./parseMeal.ts";
 import { FOOD_AGENT_SYSTEM, FOOD_AGENT_SYSTEM_LATER, CARD_NOTE_LATER, type FoodAgentDeps, runFoodAgent } from "./foodAgent.ts";
 import { kindQuestion } from "./preciseMatch.ts";
 
@@ -184,4 +184,10 @@ Deno.test("the food agent: examples by region only when region rules are on", as
     // No region: mixed, today's chai example kept as the one from elsewhere.
     assert((await run({ region: null })).includes("the chai"));
   }
+});
+
+Deno.test("a slow region read is no region, and says it timed out", async () => {
+  assertEquals(await waitForRegion(async () => "us", 50), { region: "us", timedOut: false });
+  assertEquals(await waitForRegion(() => new Promise((r) => setTimeout(() => r("us"), 200)), 20), { region: null, timedOut: true });
+  assertEquals(await waitForRegion(() => Promise.reject(new Error("down")), 50), { region: null, timedOut: false });
 });

@@ -2698,15 +2698,31 @@ Output: {"declined": true, "decline_message": "That's training, not a meal. Tell
 
 const EXTRACT_SYSTEM_SMART = EXTRACT_SYSTEM_HEAD + EXTRACT_NO_NUTRITION + EXTRACT_SHARED_RULES;
 
+/** How long a Precise parse waits for the user's region (FOOD_REGION_RULES).
+ *  The read starts at request time, so it is normally done by then. */
+export const REGION_WAIT_MS = 400;
+
+/** The user's region, or null when the read fails or takes longer than
+ *  `ms`. The timer is cleared either way. `timedOut` says which, for the trace. */
+export async function waitForRegion(
+  read: () => Promise<FoodRegion | null>,
+  ms = REGION_WAIT_MS,
+): Promise<{ region: FoodRegion | null; timedOut: boolean }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((r) => { timer = setTimeout(() => r("late"), ms); });
+  try {
+    const got = await Promise.race([read().catch(() => null), late]);
+    return got === "late" ? { region: null, timedOut: true } : { region: got, timedOut: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** The extract prompt outside Quick, with the correction rules when a card is
  *  on screen. With region rules (FOOD_REGION_RULES, Precise only) the India
  *  rules leave the shared text, this region's examples go in, and the
  *  region's rules go after the shared text (only the pending-meal notes come
  *  later), so the shared part stays one stable text. */
-/** How long a Precise parse waits for the user's region (FOOD_REGION_RULES).
- *  The read starts at request time, so it is normally done by then. */
-export const REGION_WAIT_MS = 400;
-
 export function preciseExtractSystem(hasPrevious: boolean, regionRules?: { region: FoodRegion | null }): string {
   const base = hasPrevious ? EXTRACT_SYSTEM_SMART + EXTRACT_CORRECTION_RULES : EXTRACT_SYSTEM_SMART;
   if (!regionRules) return base;
@@ -6654,17 +6670,14 @@ async function runParseMealCore(
   // when the deps were made, so this rarely waits. A failed read is no region.
   // A read slower than REGION_WAIT_MS is no region for this parse: a region
   // must never hold up the log.
-  const regionRules = superMode && deps.foodRegion
-    ? {
-      region: await Promise.race([
-        deps.foodRegion().catch(() => null),
-        new Promise<null>((r) => setTimeout(() => r(null), REGION_WAIT_MS)),
-      ]),
-    }
-    : undefined;
+  const regionRead = superMode && deps.foodRegion ? await waitForRegion(deps.foodRegion) : null;
+  const regionRules = regionRead ? { region: regionRead.region } : undefined;
   if (regionRules) {
     deps = { ...deps, regionRules };
-    steps.push({ iter: 0, tool: "region_rules", input: { tier }, result: { region: regionRules.region } });
+    steps.push({
+      iter: 0, tool: "region_rules", input: { tier },
+      result: { region: regionRules.region, ...(regionRead!.timedOut ? { timed_out: true } : {}) },
+    });
   }
   // First-shot reads overlap extraction. Follow-ups wait until extraction has
   // identified food additions/replacements, so questions and research requests

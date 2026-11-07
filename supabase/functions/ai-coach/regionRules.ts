@@ -24,8 +24,9 @@ export function parseFoodRegionRulesMode(v: string | null | undefined): "off" | 
   return v === "on" ? "on" : "off";
 }
 
-/** Europe, by searchCountry.ts's country names (exact lowercase strings). Any other
- *  zone is no region, the safe default. */
+/** Europe, by searchCountry.ts's country names (exact lowercase strings). Any
+ *  other zone (Czechia, Hungary, Romania, Europe/Belfast...) is no region, the
+ *  safe default. */
 const EU = new Set([
   "ireland", "france", "germany", "spain", "italy", "netherlands", "belgium", "austria", "sweden",
   "denmark", "finland", "poland", "portugal", "greece", "switzerland", "norway",
