@@ -309,6 +309,10 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
         : Math.round(item.fiber_g * (grams / item.grams) * 10) / 10,
       // A corrected line carries the user's numbers, not the parser's.
       source: changed ? 'manual' : item.source,
+      // Typed numbers are the user's own (step 4). A change of amount alone
+      // scales the same numbers and keeps where they came from.
+      origin: macrosTouched ? 'user_typed' : item.origin,
+      copied_from: macrosTouched ? undefined : item.copied_from,
       confidence: changed ? 'high' : item.confidence,
       assumption: changed ? null : item.assumption,
       // And it stops being ours to vouch for. `verified` is a claim that two

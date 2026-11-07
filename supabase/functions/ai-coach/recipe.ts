@@ -22,7 +22,10 @@
 
 import type { AnthropicTool } from "./prompt.ts";
 import type { CardLine } from "./foodContext.ts";
-import type { MealType, ParsedItem, ParseMealResult, RecipePart } from "./parseMeal.ts";
+import type { MealType, ParsedItem, ParseMealResult } from "./parseMeal.ts";
+// The recipe shape is step 4's (food memory): one type for the card line,
+// meal_entries.recipe and user_food_cache.recipe.
+import { originOf, parseRecipe, type RecipePart } from "../_shared/foodOrigin.ts";
 
 export type FoodBuildRecipeMode = "off" | "on";
 
@@ -195,7 +198,8 @@ export function sumRecipe(name: string, parts: PartFound[], meal: MealType, miss
     name: p.name,
     grams: r1(p.grams),
     per100: { kcal: r1(p.per100.kcal), protein_g: r1(p.per100.protein_g), carb_g: r1(p.per100.carb_g), fat_g: r1(p.per100.fat_g) },
-    source: p.source,
+    // The part's own origin: label, catalog, guess, ... (step 4's words).
+    source: originOf({ source: p.source }),
     ...(p.assumed ? { assumed: true } : {}),
   }));
   return {
@@ -210,6 +214,7 @@ export function sumRecipe(name: string, parts: PartFound[], meal: MealType, miss
     fat_g: r1(t.fat_g),
     fiber_g: fiber === null ? null : r1(fiber),
     source: "recipe",
+    origin: "recipe",
     assumption: recipeNote(parts, missing),
     // A recipe sum sits below the catalog in the source order; a part that is
     // itself a guess, or an amount we assumed, makes it lower still.
@@ -347,28 +352,11 @@ export function recipeQuestion(
 
 // ── From the app ────────────────────────────────────────────────────────────
 
-/** A recipe line's parts as the app sent them back, checked: names trimmed,
- *  numbers finite and not negative, at most RECIPE_MAX_PARTS. Anything else is
- *  dropped. Undefined when nothing usable came. */
+/** A recipe line's parts as the app sent them back, checked by step 4's
+ *  parseRecipe (every part needs a name and a weight, else none are kept).
+ *  Only a line whose source is "recipe" keeps parts: a line changed since (an
+ *  edit, a new source) would carry old parts that no longer add up to it. */
 export function readRecipeParts(raw: unknown, source: unknown): RecipePart[] | undefined {
-  // Only a recipe line has parts: a line changed since (an edit, a new source)
-  // would carry old parts that no longer add up to it.
-  if (source !== "recipe" || !Array.isArray(raw)) return undefined;
-  const n = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : null);
-  const out = raw.slice(0, RECIPE_MAX_PARTS).flatMap((p): RecipePart[] => {
-    const o = (p && typeof p === "object" ? p : {}) as Record<string, unknown>;
-    const per = (o.per100 && typeof o.per100 === "object" ? o.per100 : {}) as Record<string, unknown>;
-    const name = typeof o.name === "string" ? o.name.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 100) : "";
-    const grams = n(o.grams);
-    const kcal = n(per.kcal), protein = n(per.protein_g), carb = n(per.carb_g), fat = n(per.fat_g);
-    if (!name || grams === null || kcal === null || protein === null || carb === null || fat === null) return [];
-    return [{
-      name,
-      grams,
-      per100: { kcal, protein_g: protein, carb_g: carb, fat_g: fat },
-      source: typeof o.source === "string" ? o.source.slice(0, 20) : "estimate",
-      ...(o.assumed === true ? { assumed: true } : {}),
-    }];
-  });
-  return out.length ? out : undefined;
+  if (source !== "recipe") return undefined;
+  return parseRecipe(raw) ?? undefined;
 }

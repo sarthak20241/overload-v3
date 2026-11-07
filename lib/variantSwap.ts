@@ -9,7 +9,7 @@
 // Pure and import-free on purpose: deno tests it directly
 // (deno test --allow-all lib/variantSwap.test.ts).
 
-export type SwapSource = 'catalog' | 'off' | 'fatsecret' | 'web' | 'estimate' | 'manual';
+export type SwapSource = 'catalog' | 'off' | 'fatsecret' | 'web' | 'estimate' | 'manual' | 'recipe';
 
 /** Everything that changes when the user picks another variant. The line's
  *  amount, unit and section stay its own. */
@@ -48,7 +48,7 @@ export interface SwapLine {
   usual?: boolean;
 }
 
-const SOURCES = new Set<SwapSource>(['catalog', 'off', 'fatsecret', 'web', 'estimate', 'manual']);
+const SOURCES = new Set<SwapSource>(['catalog', 'off', 'fatsecret', 'web', 'estimate', 'manual', 'recipe']);
 const n = (v: unknown): number => {
   const x = Number(v);
   return Number.isFinite(x) && x >= 0 ? x : 0;

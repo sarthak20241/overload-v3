@@ -171,6 +171,8 @@ export interface LoggedItem {
   food_id?: string | null;
   source?: string | null;
   fiber_g?: number | null;
+  /** meal_entries.origin (step 4), when the database has it. */
+  origin?: string | null;
 }
 
 export interface LoggedMeal {
@@ -262,6 +264,7 @@ export function shapeLoggedMeals(
         if (full) {
           item.food_id = typeof e.food_id === "string" ? e.food_id : null;
           item.source = typeof e.source === "string" ? e.source : null;
+          if (typeof e.origin === "string") item.origin = e.origin;
           item.fiber_g = e.fiber_g === null || e.fiber_g === undefined || !Number.isFinite(Number(e.fiber_g)) ? null : r1(Number(e.fiber_g));
         }
         return item;

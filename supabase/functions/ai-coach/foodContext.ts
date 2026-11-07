@@ -1,6 +1,6 @@
-import type { RecipePart } from "./parseMeal.ts";
-
 /** Conversation data is evidence about the latest request, never instructions. */
+import type { CopiedFrom, FoodOrigin, RecipePart } from "../_shared/foodOrigin.ts";
+
 export interface FoodTurn {
   role: "user" | "drona";
   text: string;
@@ -31,6 +31,10 @@ export interface FoodConversationContext {
 /** One card line as the router and the agent see it. The macros and ids ride
  *  along so the agent can hand a line back exactly as it was. */
 export interface CardLine {
+  /** Where the numbers came from (_shared/foodOrigin.ts), when the app sent it. */
+  origin?: FoodOrigin;
+  copied_from?: CopiedFrom;
+  recipe?: RecipePart[];
   food_name: string;
   quantity: number;
   serving_label: string;
@@ -50,8 +54,6 @@ export interface CardLine {
   said_name?: string;
   /** The site its numbers came from, for a web-looked-up line. */
   source_site?: string;
-  /** A dish built from its parts (source "recipe"): the parts. */
-  recipe?: RecipePart[];
 }
 
 /** Lines the card carries to the models. The SAME cap index.ts puts on

@@ -1932,6 +1932,89 @@ export const CASES: FoodBoxCase[] = [
     message: "what did I have for dinner yesterday?",
     expect: { does: ["answer"], mustNot: ["log", "save"], reply: { mustMention: ["paneer|naan"], noFalseClaim: true } },
   },
+  // ── Step 4: food memory sources, recipe, history ──
+  {
+    // The owner's sabji, remembered as ONE row with its recipe. "60 g paneer"
+    // this time changes the paneer part: 60 g paneer + 40 g onion + 5 g oil
+    // = about 168 kcal. Read as 60 g of the whole dish it was 57 kcal (Nov 5).
+    id: "step4-recipe-60g-paneer",
+    tags: ["recipe", "memory", "step4"],
+    origin: { date: "2026-11-07", who: "synthetic", note: "the Nov 5 sabji, as a recipe row" },
+    region: "india",
+    thread: { turns: [], card: null },
+    fixtures: {
+      memory: [{
+        name: "Milky Mist low fat paneer sabji",
+        per100: { kcal: 161.3, protein_g: 15.2, carb_g: 6.3, fat_g: 8.4 },
+        source: "manual", origin: "recipe", tier: "precise",
+        recipe: [
+          { name: "Milky Mist low fat paneer", grams: 65, per100: { kcal: 180, protein_g: 25, carb_g: 5, fat_g: 6.5 } },
+          { name: "onion", grams: 40, per100: { kcal: 40, protein_g: 1.1, carb_g: 9.3, fat_g: 0.1 } },
+          { name: "oil", grams: 5, per100: { kcal: 884, protein_g: 0, carb_g: 0, fat_g: 100 } },
+        ],
+        lastLogged: "2026-11-04", times: 4,
+      }],
+    },
+    message: "lunch was milky mist low fat paneer sabji made of 60g paneer, onion and oil",
+    plain: true,
+    expect: {
+      does: ["log"],
+      lines: [{ match: "paneer", kcal: [140, 200], protein_g: [12, null] }],
+      noDuplicates: true,
+      totalKcal: [140, 200],
+      reply: { noFalseClaim: true },
+    },
+  },
+  {
+    // The same dish saved under three wordings, each with its recipe in the
+    // name, as user_food_cache held it before step 4. One food, one line, and
+    // the recipe stays out of the name.
+    id: "step4-six-row-sabji",
+    tags: ["recipe", "memory", "step4"],
+    origin: { date: "2026-11-07", who: "synthetic", note: "live rows 2026-11-07, numbers rounded" },
+    region: "india",
+    thread: { turns: [], card: null },
+    fixtures: {
+      memory: [
+        { name: "Milky Mist low fat paneer sabji (20 g paneer, onion, oil)", per100: { kcal: 125, protein_g: 8.3, carb_g: 5, fat_g: 8.3 }, source: "estimate", tier: "precise", lastLogged: "2026-10-28" },
+        { name: "Milky Mist low fat paneer sabji (65 g paneer, onion, tomato, little oil)", per100: { kcal: 133.3, protein_g: 10, carb_g: 5.3, fat_g: 8 }, source: "manual", tier: "precise", lastLogged: "2026-10-30" },
+        { name: "Milky Mist low fat paneer sabji", per100: { kcal: 130, protein_g: 9.5, carb_g: 5, fat_g: 8 }, source: "estimate", tier: "precise", lastLogged: "2026-11-04" },
+      ],
+    },
+    message: "150g milky mist low fat paneer sabji for lunch",
+    plain: true,
+    expect: {
+      does: ["log"],
+      lines: [{ match: "paneer sabji", kcal: [150, 240] }],
+      lineCount: [1, 1],
+      removeLines: ["\\(\\d+ ?g paneer"],
+      reply: { noFalseClaim: true },
+    },
+  },
+  {
+    // A label row and a newer copy of a guess for the same drink. The copy
+    // was saved as "manual", which memory used to trust most. The label wins:
+    // 200 ml at 75 kcal / 100 ml = 150 kcal, not the guess's 240.
+    id: "step4-guess-vs-label",
+    tags: ["memory", "step4"],
+    origin: { date: "2026-11-07", who: "synthetic", note: "the epigamia milkshake label, Nov 2026" },
+    region: "india",
+    thread: { turns: [], card: null },
+    fixtures: {
+      memory: [
+        { name: "Epigamia turbo milkshake", per100: { kcal: 75, protein_g: 7.5, carb_g: 8, fat_g: 1.2 }, source: "web", origin: "label", tier: "precise", lastLogged: "2026-11-01", times: 2 },
+        { name: "Epigamia Turbo Milkshake", per100: { kcal: 120, protein_g: 4, carb_g: 18, fat_g: 3.5 }, source: "manual", tier: "precise", lastLogged: "2026-11-05" },
+      ],
+    },
+    message: "200 ml epigamia turbo milkshake",
+    plain: true,
+    expect: {
+      does: ["log"],
+      lines: [{ match: "epigamia|milkshake", kcal: [135, 165] }],
+      lineCount: [1, 1],
+      reply: { noFalseClaim: true },
+    },
+  },
   // ── Nov 7 breakfast thread (owner): Health Factory protein bread ──
   // food_bar_traces 2026-11-07 08:14..08:23 UTC. Label truth (owner): 2 slices
   // = 50 g = 121 kcal, 11 g protein. Each case holds the card the old path had

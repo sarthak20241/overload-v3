@@ -44,7 +44,9 @@ async function fetchHistory(supabase: Supa, anchorIso: string): Promise<HistoryE
   const end = new Date(last.getFullYear(), last.getMonth(), last.getDate(), 23, 59, 59, 999);
   const { data, error } = await supabase
     .from('meals')
-    .select('meal_type, logged_at, meal_entries(food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, source, logged_via, tier, position)')
+    // `*`: origin arrives with migration 20261107120000; naming a column the
+    // database lacks would fail the read.
+    .select('meal_type, logged_at, meal_entries(*)')
     .gte('logged_at', first.toISOString())
     .lte('logged_at', end.toISOString())
     // Newest first, so if the row cap ever cuts this short, the oldest days
@@ -65,6 +67,7 @@ async function fetchHistory(supabase: Supa, anchorIso: string): Promise<HistoryE
         source: e.source ?? null,
         logged_via: e.logged_via ?? null,
         tier: e.tier ?? null,
+        origin: typeof e.origin === 'string' ? e.origin : null,
         position: num(e.position),
       });
     }

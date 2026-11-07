@@ -17,6 +17,7 @@
 //
 // Deps are injected so the loop is testable without the network.
 
+import { type FoodOrigin, originOf, parseRecipe } from "../_shared/foodOrigin.ts";
 import { summarize } from "./foodBarTrace.ts";
 import { CARD_MAX_LINES, type CardLine, cardLines, cardMayBeCut, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { sonnetSettings } from "../_shared/sonnet.ts";
@@ -1234,6 +1235,12 @@ async function runRead(
 }
 
 type Seen = Map<string, Set<number>>;
+/** The origin of each line the reads returned, by name and calories. */
+const seenOrigins = new WeakMap<Seen, Map<string, FoodOrigin>>();
+
+function seenOrigin(seen: Seen, name: string, kcal: number): FoodOrigin {
+  return seenOrigins.get(seen)?.get(`${foodKey(name)}|${Math.round(kcal)}`) ?? "unknown";
+}
 
 /** Walk a read result and file every food line in it (anything with a name and
  *  a calorie count), whatever shape the result has. */
@@ -1249,6 +1256,10 @@ function remember(seen: Seen, v: unknown, depth = 0): void {
     const k = foodKey(name);
     if (!seen.has(k)) seen.set(k, new Set());
     seen.get(k)!.add(Math.round(o.kcal));
+    if ("origin" in o || "source" in o) {
+      if (!seenOrigins.has(seen)) seenOrigins.set(seen, new Map());
+      seenOrigins.get(seen)!.set(`${k}|${Math.round(o.kcal)}`, originOf(o));
+    }
   }
   for (const x of Object.values(o)) remember(seen, x, depth + 1);
 }
@@ -2180,6 +2191,10 @@ function diarySourceLine(r: Record<string, unknown>): SourceLine | null {
       fat_g: n(r.fat_g) ?? 0,
       fiber_g: n(r.fiber_g),
       source,
+      // A copy keeps the origin the diary line had; "manual" alone is not
+      // the user's own numbers.
+      origin: originOf({ origin: r.origin, source: unknownSource ? "estimate" : src, food_id }),
+      copied_from: "diary" as const,
       assumption: unknownSource ? `Copied from your diary, where its source reads "${String(src).slice(0, 40)}". Check this one.` : null,
       confidence: unknownSource ? "medium" : "high",
       meal_type: meal,
@@ -2544,7 +2559,9 @@ function cardLineAsItem(l: CardLine, mealDefault: MealType): ParsedItem {
     meal_type: l.meal_type ?? mealDefault,
     ...(l.said_name ? { said_name: l.said_name } : {}),
     ...(l.source_site ? { source_site: l.source_site } : {}),
-    ...(l.recipe ? { recipe: l.recipe } : {}),
+    origin: originOf(l),
+    ...(l.copied_from ? { copied_from: l.copied_from } : {}),
+    ...(parseRecipe(l.recipe) ? { recipe: parseRecipe(l.recipe)! } : {}),
   };
 }
 
@@ -2575,10 +2592,16 @@ function copiedLine(raw: unknown, mealDefault: MealType, seen: Seen): ParsedItem
     fat_g: num(o.fat_g) ?? 0,
     fiber_g: null,
     ...(from === "copied"
-      ? { source: "manual" as const, assumption: null, confidence: "high" as const }
+      ? {
+        source: "manual" as const, assumption: null, confidence: "high" as const,
+        // The diary line's own origin, not the user's: a copy keeps it.
+        origin: seenOrigin(seen, name, kcal), copied_from: "diary" as const,
+      }
       : from === "changed"
       ? {
         source: "manual" as const,
+        // The agent's arithmetic on a logged line: a guess until checked.
+        origin: "guess" as const, copied_from: "diary" as const,
         // The same food can appear on two days with different numbers: cite
         // the one closest to the new value, the likeliest one it came from.
         assumption: `Adjusted from ${[...was!].sort((a, b) => Math.abs(a - kcal) - Math.abs(b - kcal))[0]} kcal in your log.`,

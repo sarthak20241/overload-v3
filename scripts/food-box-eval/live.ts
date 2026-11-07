@@ -349,7 +349,9 @@ function memoryOf(c: FoodBoxCase): MemoryEntry[] {
     serving_unit: "g",
     source: m.source,
     logged_via: "ai",
-    tier: "super",
+    tier: m.tier ?? "super",
+    origin: m.origin ?? null,
+    recipe: m.recipe ?? null,
     logged_at: `${m.lastLogged}T12:00:00Z`,
     persistent: true,
     confirmed_at: `${m.lastLogged}T12:00:00Z`,
@@ -463,6 +465,8 @@ function parseDeps(c: FoodBoxCase, zone: string): ParseMealDeps {
     userMemory: JEV_API_KEY
       ? {
         load: async () => ({ entries: memory, timeZone: zone }),
+        // Step 4: FOOD_ORIGIN_TRUST=on|shadow, as the edge function reads it.
+        ...(env("FOOD_ORIGIN_TRUST") ? { originTrust: env("FOOD_ORIGIN_TRUST") as "on" | "shadow" | "off" } : {}),
         lookupAliases: async (keys: string[]) =>
           memory.filter((m) => (m.confirmed_aliases ?? []).some((a) => keys.includes(a))).map((m) => ({ ...m, alias_lookup: true })),
       }

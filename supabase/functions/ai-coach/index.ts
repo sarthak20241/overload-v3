@@ -139,7 +139,7 @@ import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
 import { freeGoalTurnKind, freePhaseBuildCandidate, freePhaseRefineCandidate } from "./freePhaseBuild.ts";
 import { selectMatchRows } from "./ourSources.ts";
-import { MEMORY_DAYS, type MemoryEntry } from "./userFoodMemory.ts";
+import { MEMORY_DAYS, type MemoryEntry, type OriginTrustMode } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 import {
   type AnonIntake,
@@ -347,7 +347,9 @@ async function fetchSavedMealsForParse(userClient: SupabaseClient): Promise<Save
       .from("saved_meals")
       .select(
         "id, name, kind, servings, serving_label, kcal, protein_g, carb_g, fat_g, " +
-          "saved_meal_items(food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, position)",
+          // `*`: origin arrives with migration 20261107120000, and naming a
+          // column the database does not have yet would fail the whole read.
+          "saved_meal_items(*)",
       )
       .order("created_at", { ascending: false })
       .limit(60);
@@ -378,6 +380,7 @@ async function fetchSavedMealsForParse(userClient: SupabaseClient): Promise<Save
           carb_g: nn(i.carb_g),
           fat_g: nn(i.fat_g),
           fiber_g: nn(i.fiber_g),
+          origin: typeof i.origin === "string" ? i.origin : null,
         })),
     })).filter((m) => m.name.length > 0);
   } catch {
@@ -494,6 +497,15 @@ const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on
 // The user's own food memory (userFoodMemory.ts, migration 0149): on unless
 // set to "off", a kill switch that needs no deploy.
 const USER_FOOD_MEMORY = (Deno.env.get("USER_FOOD_MEMORY") ?? "on").trim().toLowerCase() !== "off";
+/** Step 4: which numbers memory trusts. off (default) = today's, where any
+ *  "manual" line ranks top; shadow = today's, and the parse trace records
+ *  where trust by origin would differ; on = user_typed > label > catalog >
+ *  recipe > guess = unknown. Turn on only after the clean-up has run, or old
+ *  "manual" rows all read as unknown. */
+const FOOD_ORIGIN_TRUST: OriginTrustMode = (() => {
+  const v = (Deno.env.get("FOOD_ORIGIN_TRUST") ?? "off").trim().toLowerCase();
+  return v === "on" || v === "shadow" ? v : "off";
+})();
 // Precise on Tavily: one model-written retry search when the fixed ones miss.
 const SEARCH_REWRITE = (Deno.env.get("SEARCH_REWRITE") ?? "on").trim().toLowerCase() !== "off";
 
@@ -1023,7 +1035,9 @@ function loggedMealsStore(userClient: SupabaseClient): LoggedMealsStore {
     async mealsBetween(startIso, endIso) {
       const { data, error } = await userClient
         .from("meals")
-        .select("meal_type, logged_at, meal_entries(food_id, source, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, position)")
+        // `*`: origin arrives with migration 20261107120000; a named column the
+        // database lacks would fail the read.
+        .select("meal_type, logged_at, meal_entries(*)")
         .gte("logged_at", startIso)
         .lte("logged_at", endIso)
         .order("logged_at", { ascending: true })
@@ -2590,6 +2604,8 @@ function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
       ? (c.confirmed_at ? String(c.confirmed_at) : new Date().toISOString())
       : String(c.last_logged_at),
     persistent: true, confirmed_at: String(c.confirmed_at),
+    origin: typeof c.origin === "string" ? c.origin : null,
+    recipe: c.recipe ?? null,
     confirmed_aliases: Array.isArray(c.aliases) ? c.aliases.filter((a): a is string => typeof a === "string") : [],
   };
 }
@@ -2602,7 +2618,9 @@ async function fetchMemoryEntries(
     userClient
       .from("meals")
       .select(
-        "logged_at, meal_entries(food_name, food_id, kcal, protein_g, carb_g, fat_g, fiber_g, grams_logged, quantity, serving_unit, source, logged_via, tier)",
+        // `*`: origin and recipe arrive with migration 20261107120000, and
+        // naming a column the database does not have yet fails the read.
+        "logged_at, meal_entries(*)",
       )
       .gte("logged_at", sinceIso)
       // A meal logged ahead for a later day is planned, not eaten. It joins
@@ -2640,6 +2658,8 @@ async function fetchMemoryEntries(
         source: typeof e.source === "string" ? e.source : null,
         logged_via: typeof e.logged_via === "string" ? e.logged_via : null,
         tier: typeof e.tier === "string" ? e.tier : null,
+        origin: typeof e.origin === "string" ? e.origin : null,
+        recipe: e.recipe ?? null,
         logged_at: at,
       });
     }
@@ -2909,6 +2929,7 @@ function makeParseDeps(
     userMemory: USER_FOOD_MEMORY && JEV_API_KEY
       ? {
         load: () => fetchMemoryEntries(userClient),
+        originTrust: FOOD_ORIGIN_TRUST,
         // Exact aliases are queried separately so a long-lived user's alias
         // cannot disappear behind the recent-cache or top-N memory limits.
         lookupAliases: async (keys: string[]) => {

@@ -32,6 +32,8 @@ export interface YourFoodEntry {
   logged_via: string | null;
   source: string | null;
   tier: string | null;
+  /** meal_entries.origin (step 4); absent before the migration. */
+  origin?: string | null;
   logged_at: string;
 }
 
@@ -92,7 +94,14 @@ export function yourFoodKey(name: string): string {
  * or edited (4); a food they picked from search, and Precise (3); Thorough (2);
  * Quick and anything unknown (1). A search log carries no logged_via at all.
  */
-export function entryTrust(e: Pick<YourFoodEntry, 'logged_via' | 'source' | 'tier'>): number {
+export function entryTrust(e: Pick<YourFoodEntry, 'logged_via' | 'source' | 'tier'> & { origin?: string | null }): number {
+  // A line that says where it came from (step 4): only the user's own numbers
+  // rank top. "manual" alone was every kind of copy.
+  if (e.origin === 'user_typed') return 4;
+  if (e.origin && e.origin !== 'user_typed') {
+    if (e.origin === 'label' || e.origin === 'catalog') return 3;
+    return e.origin === 'recipe' ? 2 : 1;
+  }
   if (e.source === 'manual' || e.logged_via === 'manual') return 4;
   if (e.logged_via == null) return 3;
   if (e.tier === 'precise') return 3;

@@ -353,7 +353,8 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
         failures.push(`"${ie.nameIncludes}" resolved to "${match.food_name}" which must not contain "${bad}"`);
       }
     }
-    if (ie.tiers && !ie.tiers.includes(match.source)) {
+    // A dish summed from its parts (step 5) is not a tier this eval grades.
+    if (ie.tiers && (match.source === "recipe" || !ie.tiers.includes(match.source))) {
       failures.push(`"${ie.nameIncludes}" tier ${match.source} not in [${ie.tiers.join(",")}]`);
     }
     if (ie.gramsBetween) {

@@ -70,8 +70,9 @@ Deno.test("sumRecipe: the dish is each part's per 100 x grams / 100, added up in
   assertEquals(line.carb_g, 6.1); // 2.4 + 0 + 3.72
   assertEquals(line.grams, 105);
   assertEquals(line.source, "recipe");
+  assertEquals(line.origin, "recipe");
   // The parts stay on the line, in the shape food memory keeps.
-  assertEquals(line.recipe?.map((p) => [p.name, p.grams, p.per100.kcal, p.source, !!p.assumed]), [
+  assertEquals(line.recipe?.map((p) => [p.name, p.grams, p.per100?.kcal, p.source, !!p.assumed]), [
     ["low fat paneer", 60, 254, "catalog", false],
     ["oil", 5, 884, "catalog", true],
     ["onion", 40, 40, "catalog", false],
@@ -207,13 +208,13 @@ Deno.test("planCardChanges: dish parts count toward the 8 parses per turn", () =
   assert(planCardChanges([], [{ name: "build_recipe", input: { name: "Dal", parts: parts(2) } }], false, true).ok);
 });
 
-Deno.test("readRecipeParts: parts sent back by the app are checked", () => {
+Deno.test("readRecipeParts: parts sent back by the app are checked (step 4's parseRecipe)", () => {
   assertEquals(readRecipeParts("x", "recipe"), undefined);
-  assertEquals(readRecipeParts([{ name: "oil", grams: 5, per100: { kcal: 884, protein_g: 0, carb_g: 0, fat_g: 100 }, source: "catalog", assumed: true }, { name: "", grams: 5 }, { name: "bad", grams: -1, per100: {} }], "recipe"), [
-    { name: "oil", grams: 5, per100: { kcal: 884, protein_g: 0, carb_g: 0, fat_g: 100 }, source: "catalog", assumed: true },
-  ]);
+  const oil = { name: "oil", grams: 5, per100: { kcal: 884, protein_g: 0, carb_g: 0, fat_g: 100 }, source: "catalog" as const, assumed: true };
+  assertEquals(readRecipeParts([oil], "recipe"), [oil]);
+  // One part with no name or no weight: the parts are not kept at all.
+  assertEquals(readRecipeParts([oil, { name: "", grams: 5 }], "recipe"), undefined);
 });
-
 // ── Review fixes (PR #359) ─────────────────────────────────────────────────
 
 Deno.test("recipeQuestion: the second part of a two-part question is not asked again", () => {
