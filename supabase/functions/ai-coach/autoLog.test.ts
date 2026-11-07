@@ -163,7 +163,7 @@ class FakeStore implements AutoLogStore {
   // unique index firing) cannot assign its replacement.
   insertEntries(
     rows: AutoLogEntryRow[],
-  ): Promise<{ ids: string[] } | { conflict: true } | { error: string }> {
+  ): Promise<{ ids: string[] } | { conflict: true } | { error: string; code?: string }> {
     this.calls.push(`insertEntries:${rows.length}`);
     if (this.failInsert) return Promise.resolve({ error: "boom" });
     const ids = rows.map((r) => {
@@ -391,4 +391,14 @@ Deno.test("write: only the diary's source check refusal is retried as an estimat
   const res = await writeAutoLog(store, writeArgs([line("paneer sabji", { meal_type: "lunch", source: "recipe" })]));
   assert("error" in res);
   assertEquals(tries, 1);
+});
+
+Deno.test("write: the source check refusal is known by its code too, whatever the message says", async () => {
+  const store = new FakeStore();
+  const insert = store.insertEntries.bind(store);
+  store.insertEntries = (rows) =>
+    rows.some((r) => r.source === "recipe") ? Promise.resolve({ error: "check violation", code: "23514" }) : insert(rows);
+  const res = await writeAutoLog(store, writeArgs([line("paneer sabji", { meal_type: "lunch", source: "recipe" })]));
+  assert("logged" in res);
+  assertEquals(store.entries[0].source, "estimate");
 });

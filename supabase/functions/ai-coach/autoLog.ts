@@ -215,7 +215,7 @@ export interface AutoLogStore {
    *  from 0115 - another attempt of this same send inserted these rows first. */
   insertEntries(
     rows: AutoLogEntryRow[],
-  ): Promise<{ ids: string[] } | { conflict: true } | { error: string }>;
+  ): Promise<{ ids: string[] } | { conflict: true } | { error: string; code?: string }>;
   deleteEntries(ids: string[]): Promise<void>;
   deleteMealIfEmpty(mealId: string): Promise<void>;
 }
@@ -358,7 +358,11 @@ export async function writeAutoLog(
     let inserted = await store.insertEntries(rows);
     // A diary without migration 20261107120000 refuses source "recipe" (its
     // check, 0114, predates it). One more try, the dish as an estimate.
-    if ("error" in inserted && /meal_entries_source_check/.test(inserted.error) && rows.some((r) => r.source === "recipe")) {
+    // Known by the Postgres code (23514, a check violation) or by the
+    // constraint's name in the message, whichever the driver passes on.
+    const sourceRefused = "error" in inserted &&
+      (inserted.code === "23514" || /meal_entries_source_check/.test(inserted.error));
+    if (sourceRefused && rows.some((r) => r.source === "recipe")) {
       inserted = await store.insertEntries(rows.map((r) => (r.source === "recipe" ? { ...r, source: "estimate" } : r)));
     }
     if ("conflict" in inserted) {
