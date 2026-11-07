@@ -22,12 +22,12 @@ import { buildDecideSystemPrompt, preciseExtractSystem, type ParseMealInput } fr
 import { FOOD_AGENT_SYSTEM, FOOD_AGENT_SYSTEM_LATER, CARD_NOTE_LATER, type FoodAgentDeps, runFoodAgent } from "./foodAgent.ts";
 import { kindQuestion } from "./preciseMatch.ts";
 
-const REGIONS: (FoodRegion | null)[] = ["india", "us", "uk", "eu", null];
+const REGIONS: (FoodRegion | null)[] = ["india", "us", "uk", "europe", null];
 const INTROS: Record<FoodRegion, string> = {
   india: "This user is in India.",
   us: "This user is in the United States.",
   uk: "This user is in the United Kingdom.",
-  eu: "This user is in Europe.",
+  europe: "This user is in Europe.",
 };
 const NO_REGION = "We do not know where this user lives.";
 
@@ -61,8 +61,8 @@ Deno.test("the region comes from the time zone, with no fallback", () => {
   assertEquals(foodRegionForTimezone("America/New_York"), "us");
   assertEquals(foodRegionForTimezone("America/Indiana/Indianapolis"), "us");
   assertEquals(foodRegionForTimezone("Europe/London"), "uk");
-  assertEquals(foodRegionForTimezone("Europe/Berlin"), "eu");
-  assertEquals(foodRegionForTimezone("Europe/Zurich"), "eu");
+  assertEquals(foodRegionForTimezone("Europe/Berlin"), "europe");
+  assertEquals(foodRegionForTimezone("Europe/Zurich"), "europe");
   assertEquals(foodRegionForTimezone("Europe/Moscow"), null);
   assertEquals(foodRegionForTimezone("Asia/Tokyo"), null);
   assertEquals(foodRegionForTimezone(null), null);
@@ -114,7 +114,7 @@ Deno.test("the block comes late: after the shared rules, before the user's own c
 });
 
 Deno.test("examples: other regions read their own, with at most 2 borrowed from India", () => {
-  for (const region of ["us", "uk", "eu"] as const) {
+  for (const region of ["us", "uk", "europe"] as const) {
     for (const prompt of ["extract", "decide"] as const) {
       const p = promptsFor(region)[prompt];
       const left = REGION_SWAPS.filter((s) => s.prompt === prompt && p.includes(s.from));
@@ -177,7 +177,7 @@ Deno.test("the food agent: examples by region only when region rules are on", as
     const off = await run();
     assert(off.includes("the chai"));
     assertEquals(await run({ region: "india" }), off);
-    for (const region of ["us", "uk", "eu"] as const) {
+    for (const region of ["us", "uk", "europe"] as const) {
       const p = await run({ region });
       for (const w of ["chai", "naan", "roti", "poha"]) assert(!p.includes(w), `${region} later=${later}: ${w}`);
     }

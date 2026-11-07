@@ -17,16 +17,15 @@
 
 import { countryForTimezone } from "./searchCountry.ts";
 
-export type FoodRegion = "india" | "us" | "uk" | "eu";
+export type FoodRegion = "india" | "us" | "uk" | "europe";
 export type RegionPrompt = "extract" | "decide" | "agent" | "jev";
 
 export function parseFoodRegionRulesMode(v: string | null | undefined): "off" | "on" {
   return v === "on" ? "on" : "off";
 }
 
-/** Europe, by searchCountry.ts's country names (exact lowercase strings). The
- *  label is "eu" but it means these European countries; any other zone is no
- *  region, the safe default. */
+/** Europe, by searchCountry.ts's country names (exact lowercase strings). Any other
+ *  zone is no region, the safe default. */
 const EU = new Set([
   "ireland", "france", "germany", "spain", "italy", "netherlands", "belgium", "austria", "sweden",
   "denmark", "finland", "poland", "portugal", "greece", "switzerland", "norway",
@@ -37,7 +36,7 @@ export function foodRegionForCountry(country: string | null | undefined): FoodRe
   if (country === "india") return "india";
   if (country === "united states") return "us";
   if (country === "united kingdom") return "uk";
-  if (EU.has(country)) return "eu";
+  if (EU.has(country)) return "europe";
   return null;
 }
 
@@ -70,7 +69,7 @@ export const REGION_RULES: Record<FoodRegion, RegionRule[]> = {
   ],
   us: [],
   uk: [],
-  eu: [],
+  europe: [],
 };
 
 /** An example in today's prompt (India's text), and what each other region
@@ -84,60 +83,60 @@ export interface RegionSwap {
 
 export const REGION_SWAPS: RegionSwap[] = [
   // extract
-  { prompt: "extract", from: `"panner" is "paneer"`, to: { us: `"brocoli" is "broccoli"`, uk: `"brocoli" is "broccoli"`, eu: `"brocoli" is "broccoli"` } },
-  { prompt: "extract", from: `("rajma chawal")`, to: { us: `("chili con carne")`, uk: `("shepherd's pie")`, eu: `("paella")` } },
-  { prompt: "extract", from: `("paneer and 2 roti" is two)`, to: { us: `("chicken and 2 tortillas" is two)`, uk: `("bacon and 2 slices of toast" is two)`, eu: `("cheese and 2 slices of bread" is two)`, none: `("chicken and 2 slices of toast" is two)` } },
-  { prompt: "extract", from: `"actually paneer not tofu"`, to: { us: `"actually chicken not tofu"`, uk: `"actually chicken not tofu"`, eu: `"actually chicken not tofu"`, none: `"actually chicken not tofu"` } },
-  { prompt: "extract", from: `"and a dosa", "also 2 roti"`, to: { us: `"and a bagel", "also 2 tortillas"`, uk: `"and a crumpet", "also 2 slices of toast"`, eu: `"and a croissant", "also 2 slices of bread"`, none: `"and a dosa", "also 2 slices of toast"` } },
-  { prompt: "extract", from: `"scratch the dosa"`, to: { us: `"scratch the bagel"`, uk: `"scratch the crumpet"`, eu: `"scratch the croissant"` } },
+  { prompt: "extract", from: `"panner" is "paneer"`, to: { us: `"brocoli" is "broccoli"`, uk: `"brocoli" is "broccoli"`, europe: `"brocoli" is "broccoli"` } },
+  { prompt: "extract", from: `("rajma chawal")`, to: { us: `("chili con carne")`, uk: `("shepherd's pie")`, europe: `("paella")` } },
+  { prompt: "extract", from: `("paneer and 2 roti" is two)`, to: { us: `("chicken and 2 tortillas" is two)`, uk: `("bacon and 2 slices of toast" is two)`, europe: `("cheese and 2 slices of bread" is two)`, none: `("chicken and 2 slices of toast" is two)` } },
+  { prompt: "extract", from: `"actually paneer not tofu"`, to: { us: `"actually chicken not tofu"`, uk: `"actually chicken not tofu"`, europe: `"actually chicken not tofu"`, none: `"actually chicken not tofu"` } },
+  { prompt: "extract", from: `"and a dosa", "also 2 roti"`, to: { us: `"and a bagel", "also 2 tortillas"`, uk: `"and a crumpet", "also 2 slices of toast"`, europe: `"and a croissant", "also 2 slices of bread"`, none: `"and a dosa", "also 2 slices of toast"` } },
+  { prompt: "extract", from: `"scratch the dosa"`, to: { us: `"scratch the bagel"`, uk: `"scratch the crumpet"`, europe: `"scratch the croissant"` } },
   // decide
   { prompt: "decide", from: "(toned milk is 3% fat by regulation, so Amul = Mother Dairy; likewise curd, plain paneer, ghee, oil, atta, rice, dal, eggs)", to: {
     us: "(plain whole milk is made to a set standard, so one store's whole milk = another's; likewise eggs, butter, oil, flour, plain rice, oats)",
     uk: "(semi-skimmed milk is made to a set standard, so one supermarket's = another's; likewise eggs, butter, oil, flour, plain rice, oats)",
-    eu: "(whole milk is made to a set standard, so one dairy's whole milk = another's; likewise eggs, butter, oil, flour, plain rice, oats)",
+    europe: "(whole milk is made to a set standard, so one dairy's whole milk = another's; likewise eggs, butter, oil, flour, plain rice, oats)",
     none: "(plain milk of one fat grade is made to a set standard, so one brand's = another's; likewise eggs, butter, oil, flour, plain rice, oats)",
   } },
   { prompt: "decide", from: "regional synonyms (doodh = milk, dahi = curd, chawal = rice)", to: {
     us: "regional synonyms (garbanzo beans = chickpeas, scallions = green onions)",
     uk: "regional synonyms (courgette = zucchini, crisps = potato chips)",
-    eu: "regional synonyms (Joghurt = yogurt, riz = rice)",
+    europe: "regional synonyms (Joghurt = yogurt, riz = rice)",
     none: "regional synonyms (curd = plain yogurt, garbanzo beans = chickpeas)",
   } },
   { prompt: "decide", from: "a DISH reduced to an ingredient (paneer butter masala is not Paneer)", to: {
     us: "a DISH reduced to an ingredient (chicken pot pie is not Chicken)",
     uk: "a DISH reduced to an ingredient (chicken tikka masala is not Chicken)",
-    eu: "a DISH reduced to an ingredient (chicken paella is not Chicken)",
+    europe: "a DISH reduced to an ingredient (chicken paella is not Chicken)",
   } },
   { prompt: "decide", from: `paneer bhurji at 9pm is dinner, not breakfast`, to: {
     us: "a stack of pancakes at 9pm is dinner, not breakfast", uk: "a full English at 9pm is dinner, not breakfast",
-    eu: "a croissant at 9pm is dinner, not breakfast", none: "oatmeal at 9pm is dinner, not breakfast",
+    europe: "a croissant at 9pm is dinner, not breakfast", none: "oatmeal at 9pm is dinner, not breakfast",
   } },
   { prompt: "decide", from: "(Haldiram's bhujia, Epigamia yogurt, etc.)", to: {
     us: "(Doritos, Chobani yogurt, etc.)", uk: "(Walkers crisps, Müller yogurt, etc.)",
-    eu: "(Haribo gummies, Danone yogurt, etc.)", none: "(Doritos, Haldiram's bhujia, etc.)",
+    europe: "(Haribo gummies, Danone yogurt, etc.)", none: "(Doritos, Haldiram's bhujia, etc.)",
   } },
   // agent
   { prompt: "agent", from: `from tea, sugar, biscuits and poha, "the chai" is the tea and sugar`, to: {
     us: `from coffee, creamer, toast and eggs, "the coffee" is the coffee and creamer`,
     uk: `from tea, milk, toast and beans, "the tea" is the tea and milk`,
-    eu: `from coffee, milk, bread and jam, "the coffee" is the coffee and milk`,
+    europe: `from coffee, milk, bread and jam, "the coffee" is the coffee and milk`,
   } },
   { prompt: "agent", from: `"the chai I had at breakfast" is still only the tea and sugar`, to: {
     us: `"the coffee I had at breakfast" is still only the coffee and creamer`,
     uk: `"the tea I had at breakfast" is still only the tea and milk`,
-    eu: `"the coffee I had at breakfast" is still only the coffee and milk`,
+    europe: `"the coffee I had at breakfast" is still only the coffee and milk`,
   } },
   { prompt: "agent", from: "(half the rice, without the naan)", to: {
     us: "(half the rice, without the fries)", uk: "(half the rice, without the chips)",
-    eu: "(half the rice, without the bread)", none: "(half the rice, without the fries)",
+    europe: "(half the rice, without the bread)", none: "(half the rice, without the fries)",
   } },
   { prompt: "agent", from: "(another roti, a second egg)", to: {
-    us: "(another tortilla, a second egg)", uk: "(another slice of toast, a second egg)", eu: "(another slice of bread, a second egg)",
+    us: "(another tortilla, a second egg)", uk: "(another slice of toast, a second egg)", europe: "(another slice of bread, a second egg)",
   } },
   // jev (preciseMatch.ts kind question)
   { prompt: "jev", from: "Examples: dal tadka, poha, aloo paratha, pav bhaji.", to: {
     us: "Examples: mac and cheese, chili, pancakes, dal tadka.", uk: "Examples: shepherd's pie, porridge, beans on toast, dal tadka.",
-    eu: "Examples: paella, risotto, goulash, dal tadka.", none: "Examples: dal tadka, poha, chili, risotto.",
+    europe: "Examples: paella, risotto, goulash, dal tadka.", none: "Examples: dal tadka, poha, chili, risotto.",
   } },
 ];
 
@@ -145,7 +144,7 @@ const BLOCK_INTRO: Record<FoodRegion, string> = {
   india: "This user is in India.",
   us: "This user is in the United States. Amounts may come in US units (cup, oz, lb, fl oz).",
   uk: "This user is in the United Kingdom. Amounts may come in UK words (a pint, a mug, a rasher, a slice).",
-  eu: "This user is in Europe. Amounts are usually metric.",
+  europe: "This user is in Europe. Amounts are usually metric.",
 };
 
 const NO_REGION =

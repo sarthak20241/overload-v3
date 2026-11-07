@@ -2703,6 +2703,10 @@ const EXTRACT_SYSTEM_SMART = EXTRACT_SYSTEM_HEAD + EXTRACT_NO_NUTRITION + EXTRAC
  *  rules leave the shared text, this region's examples go in, and the
  *  region's rules go after the shared text (only the pending-meal notes come
  *  later), so the shared part stays one stable text. */
+/** How long a Precise parse waits for the user's region (FOOD_REGION_RULES).
+ *  The read starts at request time, so it is normally done by then. */
+export const REGION_WAIT_MS = 400;
+
 export function preciseExtractSystem(hasPrevious: boolean, regionRules?: { region: FoodRegion | null }): string {
   const base = hasPrevious ? EXTRACT_SYSTEM_SMART + EXTRACT_CORRECTION_RULES : EXTRACT_SYSTEM_SMART;
   if (!regionRules) return base;
@@ -6648,8 +6652,15 @@ async function runParseMealCore(
   const superMode = tier === "precise";
   // Region rules (FOOD_REGION_RULES): Precise only. The region read started
   // when the deps were made, so this rarely waits. A failed read is no region.
+  // A read slower than REGION_WAIT_MS is no region for this parse: a region
+  // must never hold up the log.
   const regionRules = superMode && deps.foodRegion
-    ? { region: await deps.foodRegion().catch(() => null) }
+    ? {
+      region: await Promise.race([
+        deps.foodRegion().catch(() => null),
+        new Promise<null>((r) => setTimeout(() => r(null), REGION_WAIT_MS)),
+      ]),
+    }
     : undefined;
   if (regionRules) {
     deps = { ...deps, regionRules };
