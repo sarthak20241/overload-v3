@@ -102,6 +102,8 @@ export interface FoodBarEnv {
   agentModel: string;
   jev: { apiKey: string; timeoutMs: number } | null;
   callAnthropic(payload: Record<string, unknown>, timeoutMs?: number): Promise<AnthropicCallResult>;
+  /** FOOD_BUILD_RECIPE=on: the later-mode agent gets build_recipe (recipe.ts). */
+  buildRecipe?: boolean;
 }
 
 /** The agent's own token_usage_log row. */
@@ -741,6 +743,9 @@ export function startFoodAgent(args: {
             return r?.label ?? null;
           }
           : undefined,
+        // build_recipe (FOOD_BUILD_RECIPE): each part is one agentParse
+        // parse, the same lookup ladder; code adds the parts up.
+        ...(later && env().buildRecipe ? { buildRecipe: true } : {}),
         onStatus: args.onStatus,
         ...(thread?.index ? { restoreCard: thread.restore } : {}),
         ...(thread?.index && thread.lines ? { threadCard: thread.lines, threadOnScreenRef: thread.onScreenRef ?? null } : {}),

@@ -165,7 +165,9 @@ export interface ParsedItem {
   fiber_g: number | null;
   // 'manual' never originates here: it comes back from the client when the user
   // corrected a line in the review card, and must round-trip intact.
-  source: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
+  // 'recipe' (FOOD_BUILD_RECIPE): a dish code added up from its parts
+  // (recipe.ts). Its parts ride in `recipe`.
+  source: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual" | "recipe";
   assumption: string | null;
   confidence: "high" | "medium" | "low";
   /** The candidate behind this line cleared the verification bar: two
@@ -203,6 +205,20 @@ export interface ParsedItem {
   /** The site the numbers came from, for a web-looked-up line
    *  ("fatsecret.co.in"). The food agent sees it on the card. */
   source_site?: string;
+  /** A dish built from its parts (source "recipe", recipe.ts): each part with
+   *  its grams and its row's numbers per 100 g. The shape food memory keeps
+   *  (user_food_cache.recipe, plan step 4). */
+  recipe?: RecipePart[];
+}
+
+/** One part of a dish built from its parts. `assumed`: the amount was not the
+ *  user's (a usual amount the card shows and asks about once). */
+export interface RecipePart {
+  name: string;
+  grams: number;
+  per100: { kcal: number; protein_g: number; carb_g: number; fat_g: number };
+  source: string;
+  assumed?: boolean;
 }
 
 /** One tap-to-swap option for a line: everything that changes when the user
@@ -366,6 +382,8 @@ export interface PreviousItem {
   meal_type?: MealType;
   /** ParsedItem.said_name, sent back by the client. */
   said_name?: string;
+  /** ParsedItem.recipe, when the app sent it back (recipe.ts readRecipeParts). */
+  recipe?: RecipePart[];
   /** The site the line's numbers came from, when the app sent it back. */
   source_site?: string;
   /** The line the user tapped "double check" on. When any line carries it,
