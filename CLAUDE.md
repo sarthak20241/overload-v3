@@ -138,8 +138,6 @@ deno test --allow-all lib/firstOpenUpdate.test.ts # fresh store install: newest 
 deno test --allow-all lib/signupTour.test.ts    # the film tour after sign-up: its words, the tap rules, no promise the plan is done
 deno test --allow-all lib/weightWheel.test.ts    # onboarding weight wheels: whole + one decimal, the top of the scale, kg <-> lbs
 deno test --allow-all supabase/functions/ai-coach/freeGoalBuild.test.ts # one free goal plan per account: 1 build, 8 edit turns, a guest build spends it
-# Saved-food triggers (aliases, delete, repair, brand) on an in-memory Postgres:
-deno run --node-modules-dir=none --allow-read --allow-env --allow-net --allow-write --allow-sys supabase/tests/food_memory_local.ts
 ```
 
 There are no configured lint or build scripts.
