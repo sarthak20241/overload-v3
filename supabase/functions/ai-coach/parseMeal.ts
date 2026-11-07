@@ -4987,7 +4987,9 @@ export interface MemoryStamp {
   swap?: { foods: MemoryFood[]; timeZone?: string | null };
 }
 
-const MEMORY_SOURCES = new Set<ParsedItem["source"]>(["catalog", "off", "fatsecret", "web", "estimate", "manual"]);
+// "recipe": a remembered dish built from its parts is served as one, with its
+// parts (memoryStamp), never relabelled as a catalog row.
+const MEMORY_SOURCES = new Set<ParsedItem["source"]>(["catalog", "off", "fatsecret", "web", "estimate", "manual", "recipe"]);
 
 /** The ephemeral candidate id for a remembered food: unique per food, so the
  *  final line maps back to it exactly, and stripped before the client sees it. */
