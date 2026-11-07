@@ -2576,9 +2576,10 @@ interface MealRow {
 
 /** A database before migration 20261107120000 (no origin / recipe
  *  columns): the read is retried with the older column list. */
-function stepFourColumnMissing(error: { message?: string } | null | undefined): boolean {
-  return /column .*\b(origin|recipe)\b.* does not exist|could not find the '(origin|recipe)' column/i
-    .test(error?.message ?? "");
+function stepFourColumnMissing(error: { code?: string; message?: string } | null | undefined): boolean {
+  // Same test as the app's lib/missingColumn: Postgres "undefined column"
+  // (42703), and the message names one of the step 4 columns.
+  return error?.code === "42703" && /\b(origin|recipe)\b/.test(error.message ?? "");
 }
 
 /** Persisted cache snapshots have already been confirmed by diary writes. */
