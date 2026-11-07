@@ -66,6 +66,8 @@ npx tsx scripts/food-box-eval/gate-probe.mts
 # agent, with one-line card edits. Its own BASELINE.md section (live_later), and
 # the run prints cost and agent turns per message (CLI token counts).
 FOOD_THREADS=on FOOD_AGENT_LATER=on EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts
+# FOOD_BUILD_RECIPE=on (step 5): the agent gets build_recipe. Home-dish cases: TAG=recipe-build.
+FOOD_BUILD_RECIPE=on FOOD_THREADS=on FOOD_AGENT_LATER=on FOOD_FIRST_GATE=on EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts
 deno test --allow-all scripts/food-box-eval/grade.test.ts
 
 # Edge function unit tests (the one real test suite).
@@ -109,6 +111,7 @@ deno test --allow-all supabase/functions/ai-coach/foodFirstGate.test.ts # first 
 deno test --allow-all lib/foodThread.test.ts    # food box thread ids + card versions, counted the way the server counts
 deno test --allow-all supabase/functions/ai-coach/foodThreads.test.ts # thread store: stable line ids, one conditional write, restore
 deno test --allow-all supabase/functions/ai-coach/foodAgentLater.test.ts # step 2: later messages to the agent, one-line edits in a fixed order, no line lost
+deno test --allow-all supabase/functions/ai-coach/recipe.test.ts # step 5: build_recipe, parts summed in code, an assumed oil asked about once (FOOD_BUILD_RECIPE)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_threads.check.ts # the food_threads migration on PGlite (real Postgres, downloads it; not in CI)
 deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
