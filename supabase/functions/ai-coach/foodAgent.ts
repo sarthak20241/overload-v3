@@ -1974,7 +1974,7 @@ async function applyCardChanges(
 
   const failedEdits = editsOut.filter((x) => !x.item).map((x) => card[x.e.index].food_name);
   const failedAdds = addsOut.filter((x) => x.a.text && x.items.length === 0).map((x) => x.a.text!);
-  const failedRecipes = recipesOut.filter((x) => !x.item).map((x) => ({ name: x.x.ask.name, missing: x.missing, onLine: x.x.index !== null }));
+  const failedRecipes = recipesOut.filter((x) => !x.item).map((x) => ({ name: x.x.ask.name, missing: x.missing, errored: x.errored, onLine: x.x.index !== null }));
   const missingParts = recipesOut.filter((x) => x.item && x.missing.length).map((x) => `${names(x.missing)} in ${x.x.ask.name}`);
   const changed = edited.size + removes.size + added.length > 0;
   // The ONE question about amounts the user did not give (recipe.ts): code
@@ -1989,7 +1989,10 @@ async function applyCardChanges(
     failedAdds.length ? `I could not work out ${names(failedAdds.map((t) => `"${t.slice(0, 60)}"`))}.` : null,
     ...failedRecipes.map((f) =>
       // A rebuild of a card line that failed leaves that line as it was.
-      `I could not find ${f.missing.length ? names(f.missing) : "its parts"}, so ${f.name} ${f.onLine ? "is as before" : "is not on the card"}.`
+      // A lookup that failed is not a food that does not exist: said apart.
+      `I could not ${f.errored.length && f.errored.length === f.missing.length ? "look up" : "find"} ${f.missing.length ? names(f.missing) : "its parts"}${
+        f.errored.length && f.errored.length === f.missing.length ? " just now" : ""
+      }, so ${f.name} ${f.onLine ? "is as before" : "is not on the card"}.`
     ),
     missingParts.length ? `I could not find ${missingParts.join("; ")}, so it is left out.` : null,
     dupAdds.length ? `${names(dupAdds)} ${dupAdds.length === 1 ? "is" : "are"} already on the card, so I did not add ${dupAdds.length === 1 ? "it" : "them"} again.` : null,

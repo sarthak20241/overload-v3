@@ -365,3 +365,29 @@ Deno.test("assumedAmount: a supplement or other non-cooking oil is not a cooking
   assertEquals(assumedAmount("fish oil"), null);
   assertEquals(assumedAmount("mustard oil"), { grams: 5, label: "1 tsp" });
 });
+
+// ── Review fixes, round 7 (PR #359) ────────────────────────────────────────
+
+Deno.test("buildRecipe: a lookup that errors is named apart from a food not found", async () => {
+  const parse = async (t: string) => {
+    if (t.includes("onion")) throw new Error("timeout");
+    return fakeParse()(t);
+  };
+  const r = await buildRecipe({ name: "Sabji", parts: [{ name: "low fat paneer", amount: "60 g" }, { name: "onion", amount: "40 g" }] }, "lunch", parse);
+  assertEquals(r.missing, ["onion"]);
+  assertEquals(r.errored, ["onion"]);
+});
+
+Deno.test("buildRecipe: a part given in ml is not treated as grams for the main-part rule", async () => {
+  // 100 ml of a missing syrup beside 60 g paneer: no weight in grams is
+  // known for it, so the dish still lands, low and named.
+  const r = await buildRecipe({ name: "Bowl", parts: [{ name: "low fat paneer", amount: "60 g" }, { name: "zzz syrup", amount: "100 ml" }] }, "lunch", fakeParse());
+  assert(r.item);
+  assertEquals(r.item!.confidence, "low");
+});
+
+Deno.test("per100FromParse: a part split into items takes the weakest source", () => {
+  const a: ParsedItem = { food_id: null, food_name: "x", quantity: 50, serving_label: "g", grams: 50, kcal: 50, protein_g: 1, carb_g: 1, fat_g: 1, fiber_g: null, source: "web", assumption: null, confidence: "medium" };
+  const r = { parsed: { meal_type: "lunch", items: [a, { ...a, source: "catalog" as const }], drona_line: "", corrects_previous: false }, declined: null, usage: USAGE, tool_calls: [], steps: [], iterations: 1 } as ParseMealResult;
+  assertEquals(per100FromParse(r)?.source, "catalog");
+});

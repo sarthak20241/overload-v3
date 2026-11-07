@@ -25,7 +25,7 @@ import type { CardLine } from "./foodContext.ts";
 import type { MealType, ParsedItem, ParseMealResult } from "./parseMeal.ts";
 // The recipe shape is step 4's (food memory): one type for the card line,
 // meal_entries.recipe and user_food_cache.recipe.
-import { originOf, parseRecipe, type RecipePart } from "../_shared/foodOrigin.ts";
+import { ORIGIN_RANK, originOf, parseRecipe, type RecipePart } from "../_shared/foodOrigin.ts";
 
 export type FoodBuildRecipeMode = "off" | "on";
 
@@ -266,8 +266,9 @@ export function per100FromParse(r: ParseMealResult | null): (PartFound["per100"]
     fat_g: per(sum("fat_g")),
     fiber_g: fiber === null ? null : per(fiber),
     grams,
-    // A part made of a few items with different sources reads as the weakest.
-    source: items.some((i) => i.source === "estimate") ? "estimate" : one.source,
+    // A part made of a few items with different sources reads as the weakest
+    // (step 4's origin order: label above catalog above guess).
+    source: items.reduce((w, i) => (ORIGIN_RANK[originOf({ source: i.source })] < ORIGIN_RANK[originOf({ source: w })] ? i.source : w), one.source),
     label: items.length === 1 ? `${one.quantity} ${one.serving_label}`.trim() : `${Math.round(grams)} g`,
   };
 }
@@ -291,9 +292,10 @@ export function partLookupText(p: { name: string; amount: string | null }): {
   return { text: p.name, grams: null, assumed: true, label: null };
 }
 
-/** A part's amount in grams when the user said it in grams ("50 g"), else null. */
+/** A part's amount in grams when the user said it in grams ("50 g"), else
+ *  null. Not ml: a millilitre weighs as much as a gram only for water. */
 function statedGrams(amount: string | null): number | null {
-  const m = amount?.trim().match(/^(\d+(?:\.\d+)?)\s*(?:g|gm|gms|gram|grams|ml)$/i);
+  const m = amount?.trim().match(/^(\d+(?:\.\d+)?)\s*(?:g|gm|gms|gram|grams)$/i);
   return m ? Number(m[1]) : null;
 }
 
@@ -306,16 +308,25 @@ export async function buildRecipe(
   ask: RecipeAsk,
   meal: MealType,
   parse: (text: string) => Promise<ParseMealResult>,
-): Promise<{ item: ParsedItem | null; missing: string[]; results: (ParseMealResult | null)[] }> {
+): Promise<{
+  item: ParsedItem | null;
+  missing: string[];
+  /** Missing because the lookup itself failed (a timeout), not because no
+   *  food matched: said apart, so the user is not told the food does not exist. */
+  errored: string[];
+  results: (ParseMealResult | null)[];
+}> {
   const looked = await Promise.all(ask.parts.map(async (p) => {
     const q = partLookupText(p);
     let r: ParseMealResult | null = null;
+    let failed = false;
     try {
       r = await parse(q.text);
     } catch {
       r = null;
+      failed = true;
     }
-    return { p, q, r, row: per100FromParse(r) };
+    return { p, q, r, failed, row: per100FromParse(r) };
   }));
   const found: PartFound[] = [];
   const missing: string[] = [];
@@ -342,7 +353,8 @@ export async function buildRecipe(
   const heaviest = Math.max(0, ...found.map((p) => p.grams));
   const mainMissing = looked.some(({ p, row }) => !row && (statedGrams(p.amount) ?? 0) >= heaviest && heaviest > 0);
   const ok = found.length > 0 && missing.length <= RECIPE_MAX_MISSING && !mainMissing;
-  return { item: ok ? sumRecipe(ask.name, found, meal, missing) : null, missing, results: looked.map((x) => x.r) };
+  const errored = looked.filter((x) => x.failed).map((x) => x.p.name);
+  return { item: ok ? sumRecipe(ask.name, found, meal, missing) : null, missing, errored, results: looked.map((x) => x.r) };
 }
 
 // ── The one question ────────────────────────────────────────────────────────
