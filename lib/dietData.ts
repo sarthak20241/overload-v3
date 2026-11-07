@@ -1292,6 +1292,11 @@ export async function parseMeal(
      *  itself still runs the full pipeline, but a fresh re-parse it triggers
      *  ("not from saved meals") must come back in the user's tier. */
     speed?: 'super' | 'fast';
+    /** The mode the user picked in the food box, sent on EVERY message, first
+     *  or correction. `speed` cannot carry it: a Precise correction sends no
+     *  speed on purpose (it stays on the smart pipeline). The server routes a
+     *  Precise thread's later messages on this (FOOD_AGENT_LATER, step 2). */
+    tier?: 'precise' | 'quick';
     /** The food box thread this message belongs to (lib/foodThread.ts). The
      *  server keeps a durable copy under it when FOOD_THREADS is on or shadow,
      *  and ignores it otherwise. */
@@ -1323,6 +1328,8 @@ export async function parseMeal(
         // tier off it is the gate that could never open (see index.ts). Absent
         // = smart, which is every caller that does not ask.
         ...(args.speed ? { speed: args.speed } : {}),
+        // The picked mode, apart from the pipeline tier (see `tier` above).
+        ...(args.tier ? { tier: args.tier } : {}),
         ...(args.mealHint ? { meal_hint: args.mealHint } : {}),
         ...(args.turns && args.turns.length > 0
           ? { recent_turns: args.turns.slice(-FOOD_TURNS_KEPT).map((t) => ({ role: t.role, text: t.text.slice(0, FOOD_TURN_CHARS) })) }

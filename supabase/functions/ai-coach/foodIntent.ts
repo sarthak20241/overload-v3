@@ -793,6 +793,102 @@ export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreat
   return false;
 }
 
+// ── Step 2: every later message goes to the agent (FOOD_AGENT_LATER) ─────────
+//
+// .planning/precise-food-logger-plan.md section 2: after the first message of a
+// food box thread, the router stops deciding who answers. The agent replies,
+// edits, saves and logs. Only a first message with no card takes the router's
+// path. Precise only; the switch ships off.
+
+export type FoodAgentLaterMode = "off" | "on";
+
+/** FOOD_AGENT_LATER: anything but "on" is off. */
+export function parseFoodAgentLaterMode(raw: string | undefined): FoodAgentLaterMode {
+  return raw?.trim().toLowerCase() === "on" ? "on" : "off";
+}
+
+/** Is this food box message from a Precise thread? A first message says so in
+ *  `speed` ("super"). A correction sends no speed (it stays on the smart
+ *  pipeline), so the app sends the picked mode in `tier` on every message. An
+ *  app without `tier` keeps today's reading: Precise only with speed "super". */
+export function isPreciseRequest(
+  body: { speed?: unknown; tier?: unknown },
+  /** The server's own gate, the same one speed "super" passes today: Precise
+   *  switched on (PARSE_SUPER_MODE) and an account that may use it (not the
+   *  free tier). `tier` is the client's word and never unlocks it alone. */
+  gate: { superOn: boolean; freeTier: boolean },
+): boolean {
+  if (!gate.superOn || gate.freeTier) return false;
+  return body.speed === "super" || body.tier === "precise";
+}
+
+/** The tier the user picked, for the usage logs. A Precise correction sends
+ *  no speed (it stays on the smart pipeline) but says tier "precise", and is
+ *  recorded as precise. An old build with neither reads as thorough. */
+export function tierSelectedOf(body: { speed?: unknown; tier?: unknown }): "fast" | "precise" | "thorough" {
+  if (body.speed === "fast") return "fast";
+  if (body.speed === "super" || body.tier === "precise") return "precise";
+  return "thorough";
+}
+
+export interface LaterMessageInputs {
+  mode: FoodAgentLaterMode;
+  /** The user picked Precise for this message (speed "super"). */
+  precise: boolean;
+  /** The client can draw a save card (the agent can end in one). */
+  supportsCreate: boolean;
+  /** A model key is configured. Without it the agent cannot run. */
+  hasModelKey: boolean;
+  /** Earlier turns of this thread the app sent. */
+  turns: number;
+  /** Lines on the card on screen, whole or not. */
+  cardLines: number;
+  /** The card is on screen AND whole (not cut at the cap). */
+  cardOpen: boolean;
+  /** A question Drona asked is waiting for its answer. */
+  pending: boolean;
+}
+
+/**
+ * Does this message go to the food agent, whatever the router says?
+ *
+ * Yes when the thread has any earlier turn, OR a card is open, OR a question is
+ * waiting. A card cut at the cap is the one exception: the agent cannot see all
+ * of it, so its card tools are withheld, and the message keeps the parse path
+ * (whose correction guard puts every line back).
+ */
+export function laterMessageGoesToAgent(i: LaterMessageInputs): boolean {
+  if (i.mode !== "on" || !i.precise || !i.supportsCreate || !i.hasModelKey) return false;
+  if (i.cardLines > 0 && !i.cardOpen) return false;
+  return i.turns > 0 || i.cardOpen || i.pending;
+}
+
+/** A word in a claim that says the food reached the diary or a saved meal.
+ *  Neither can happen in the food box without the user's tap. */
+const LOG_OR_SAVE_WORD = /\b(?:log(?:ged|ging)?|sav(?:ed|ing|e)|record(?:ed|ing)?)\b/i;
+
+/** A log or a save said as done without "I": a sentence that opens with it,
+ *  or a passive ("has been logged", "is saved"). */
+const PASSIVE_LOG_CLAIM = /^\s*(?:logged|saved|recorded)\b|\b(?:been|is|are|was|were)\s+(?:now\s+|already\s+)?(?:logged|saved|recorded)\b/i;
+
+/**
+ * A false claim in an agent line: the same per-sentence test as claimsAction,
+ * judged against what really happened. Nothing the food box does logs or saves
+ * on its own (the card waits for Add, the save card for a tap), so a claim of a
+ * log or a save is always false. A claim of a card change ("added the eggs",
+ * "updated the rice") is true only when the card changed.
+ */
+export function falseAgentClaim(text: string, did: { cardChanged: boolean }): boolean {
+  return text.split(/(?<=[.!?])\s+/).some((sentence) => {
+    if (sentence.trim().endsWith("?")) return false;
+    // "Logged it without the salad.", "it has been saved": shapes claimsAction
+    // was not measured on, and always false from the agent.
+    if (PASSIVE_LOG_CLAIM.test(sentence)) return true;
+    if (!DONE_CLAIM.test(sentence) && !PROMISE_CLAIM.test(sentence)) return false;
+    return LOG_OR_SAVE_WORD.test(sentence) || !did.cardChanged;
+  });
+}
+
 export function decideFoodAction(i: FoodActionInputs): FoodAction {
   // Not live, or nothing to go on: exactly today's behaviour.
   if (i.mode !== "on" || !i.decision) return "log";

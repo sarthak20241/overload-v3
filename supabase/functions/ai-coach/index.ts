@@ -62,7 +62,11 @@ import {
   type FoodIntentDecision,
   type FoodIntentDeps,
   JEV_INTENT_FLOOR,
+  isPreciseRequest,
+  tierSelectedOf,
+  parseFoodAgentLaterMode,
   parseFoodIntentMode,
+  laterMessageGoesToAgent,
   routeFoodIntent,
   SAVED_MATCH_FLOOR,
   type SavedMealSummary,
@@ -94,11 +98,14 @@ import {
 } from "./foodThreads.ts";
 import {
   agentCouldUseThread,
+  answeredByLabel,
   configureFoodBar,
   type DiaryReader,
   type FoodBarOutcome,
   type FoodBarThread,
+  type FoodBarUsageRow,
   resolveFoodBarOutcome,
+  runLaterMessage,
   startFoodAgent,
   startFoodIntent,
   wouldDivertToCreate,
@@ -288,6 +295,12 @@ const FOOD_INTENT_MODE = parseFoodIntentMode(Deno.env.get("FOOD_INTENT_MODE"));
  *  the answer, nothing read. on: also read, for the agent's index line and
  *  restore_card. The tables must exist before this leaves off. */
 const FOOD_THREADS = parseFoodThreadsMode(Deno.env.get("FOOD_THREADS"));
+
+/** Precise food box, step 2 (.planning/precise-food-logger-plan.md): after the
+ *  first message of a thread, every message goes to the food agent and the
+ *  router stops deciding who answers (foodIntent.ts laterMessageGoesToAgent,
+ *  foodBar.ts runLaterMessage). off (default): exactly today's routing. */
+const FOOD_AGENT_LATER = parseFoodAgentLaterMode(Deno.env.get("FOOD_AGENT_LATER"));
 
 /** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
  *  of a race it is supposed to win (measured ~700ms against a parse of 1.2s and
@@ -3094,17 +3107,7 @@ async function handleParseMealRequest(args: {
           streamed: wouldStream(body), autoLog: body.auto_log === true, clientId: typeof body.client_id === "string" ? body.client_id : null,
           canCreate: clientSupportsFoodCreate(body),
         });
-        const answeredBy = !outcome
-          ? null
-          : outcome.action === "log"
-          ? (outcome.result ? "food_agent" : "parse")
-          : outcome.agent?.kind === "failed"
-          ? "canned_agent_failed"
-          : outcome.agent
-          ? "food_agent"
-          : outcome.action === "reply"
-          ? "reply_call"
-          : "create_call";
+        const answeredBy = answeredByLabel(outcome);
         const row = buildFoodBarTraceRow({
           requestId,
           userId,
@@ -3594,7 +3597,9 @@ async function handleParseMealRequest(args: {
   // that answered (result.tier) because the two differ: a correction runs
   // Thorough, and a kill switch above turns Fast or Precise off. An old build
   // that sends no speed reads as Thorough, which is what it gets.
-  const tierSelected: ParseTier = body.speed === "fast" ? "fast" : body.speed === "super" ? "precise" : "thorough";
+  // tier "precise" on a correction counts too (tierSelectedOf); the pipeline
+  // that ran is tier_used.
+  const tierSelected: ParseTier = tierSelectedOf(body);
   // Streaming is Fast's alone, deliberately: the stream exists to paint rows
   // while the numbers settle, and Super's answer arrives whole after a web
   // lookup, so there is nothing to trickle. `&& wantsFast` is therefore not a
@@ -3643,6 +3648,9 @@ async function handleParseMealRequest(args: {
         // synchronously. Awaiting inside onProgress would stall the stream.
         let settledIntent: FoodIntentDecision | null = null;
         void intentP.then((d) => { settledIntent = d; });
+        // FOOD_AGENT_LATER is not wired here on purpose: only Quick streams
+        // (wouldStream needs speed "fast"), and step 2 is Precise only, which
+        // always takes the JSON path below.
         const agentP = startFoodAgent({
           intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary, readDiaryLines,
           contextPromise, userId, recentTurns, pendingMeal: foodContext.pendingMeal,
@@ -3916,21 +3924,36 @@ async function handleParseMealRequest(args: {
     // Just log it on the JSON path: the parse AND the diary write stay alive
     // past the response, so a client that drops the connection mid-wait
     // still gets its meal logged. Same rule the stream applies.
-    const agentP = startFoodAgent({
+    const agentArgs = {
       intentP, supportsCreate, text, mealHint, localHour, localDate,
-      mode: wantsSuper ? "super" : wantsFast ? "fast" : null,
+      mode: (wantsSuper ? "super" : wantsFast ? "fast" : null) as "super" | "fast" | null,
       savedMealsP, readDiary, readDiaryLines, contextPromise, userId, recentTurns,
       pendingMeal: foodContext.pendingMeal,
       card: card.length ? { lines: card, total: fromApp.total, previousText: previousText ?? null, previousWords, previousItems } : null,
-      parseDeps: (fb) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
-      logUsage: (row) => void logTokenUsage(admin, row),
+      parseDeps: (fb?: FoodBarTraceCollector) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
+      logUsage: (row: FoodBarUsageRow) => void logTokenUsage(admin, row),
       thread: threadP,
       fbTrace,
+    };
+    // Step 2 (FOOD_AGENT_LATER=on, Precise only): a later message of the
+    // thread goes to the agent whatever the router says. Only a first message
+    // with no card takes the router's path below.
+    const later = laterMessageGoesToAgent({
+      // speed "super" (a first message) or tier "precise" (any message from an
+      // app that sends it): a Precise correction carries no speed.
+      // Behind the same server gate speed "super" passes (Precise on, not the
+      // free tier): the client's tier never unlocks the agent path alone.
+      mode: FOOD_AGENT_LATER, precise: isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier }),
+      supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
+      turns: recentTurns.length, cardLines: card.length, cardOpen, pending: !!foodContext.pendingMeal,
     });
-    const work = (async () => {
+    const agentP = later ? Promise.resolve(null) : startFoodAgent(agentArgs);
+    /** Today's parse of this message. A later message runs it only when the
+     *  agent could not answer and no card is open. */
+    const parseNow = async () => {
       const pendingMeal = foodContext.pendingMeal && continuesPendingMeal(await intentP)
         ? foodContext.pendingMeal : null;
-      const firstParse = await runParseMeal(
+      return await runParseMeal(
         makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace }),
         {
           text,
@@ -3956,6 +3979,16 @@ async function handleParseMealRequest(args: {
           variantChips: clientSupportsVariantSwap(body),
         },
       );
+    };
+    const work = (async () => {
+      if (later) {
+        const l = await runLaterMessage({ agent: agentArgs, cardOpen, fallbackParse: parseNow });
+        firstParseSeen = l.firstParse;
+        outcomeSeen = l.outcome;
+        const autoRes = l.outcome.action === "log" ? await finishAutoLog(l.result) : null;
+        return { result: l.result, autoRes, outcome: l.outcome, firstParse: l.firstParse };
+      }
+      const firstParse = await parseNow();
       // Decided before the diary write, for the same reason as the stream: a
       // create or a reply must not log the parsed meal behind the user's back.
       firstParseSeen = firstParse;
