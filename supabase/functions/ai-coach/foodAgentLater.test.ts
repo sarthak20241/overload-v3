@@ -675,3 +675,123 @@ Deno.test("tierSelectedOf: a Precise correction (tier precise, no speed) is reco
   assertEquals(tierSelectedOf({ speed: "fast", tier: "quick" }), "fast");
   assertEquals(tierSelectedOf({}), "thorough");
 });
+
+// ── Review of 6c7f0f10 ──────────────────────────────────────────────────────
+
+Deno.test("words with no tool on an early turn: the agent is asked once to use its tools, so food is not lost", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  let n = 0;
+  const call: FoodAgentDeps["callModel"] = async (body) => {
+    bodies.push(JSON.parse(JSON.stringify(body)));
+    n++;
+    return n === 1
+      ? { ok: true, data: { usage: {}, content: [{ type: "text", text: "Sounds like a good dinner." }] } }
+      : { ok: true, data: { usage: {}, content: [{ type: "tool_use", id: "t", name: "log_food", input: { text: "2 eggs", summary: "2 eggs." } }] } };
+  };
+  const out = await runFoodAgent({ text: "had 2 eggs for dinner", defaultMeal: "dinner", later: true }, deps(call));
+  assertEquals(out.kind, "log");
+  assertEquals(bodies.length, 2);
+  const msgs = bodies[1].messages as { role: string; content: unknown }[];
+  assert(JSON.stringify(msgs.at(-1)).includes("use your tools"));
+});
+
+Deno.test("additions never take a card past 12 lines: what does not fit is left off and named", async () => {
+  const card: CardLine[] = Array.from({ length: 10 }, (_, i) => ({ ...CARD[1], food_name: `Food ${i}` }));
+  const d = deps(scripted([[{ name: "add_lines", input: { text: "four things" } }]]));
+  d.parseFood = async () => result([item("Apple", 95), item("Pear", 100), item("Plum", 30), item("Fig", 40)]);
+  const out = await runFoodAgent({ ...LATER, card }, d);
+  if (out.kind !== "log" || !out.result.parsed) throw new Error(out.kind);
+  assertEquals(out.result.parsed.items.length, 12);
+  assertEquals(out.result.parsed.items.slice(0, 10).map((i) => i.food_name), card.map((c) => c.food_name));
+  assert(out.result.parsed.drona_line.includes("Plum and Fig"), out.result.parsed.drona_line);
+});
+
+Deno.test("save gate: a save word needs something to save ('saving calories' is not an ask)", () => {
+  assertFalse(userAskedToSave({ text: "I'm saving calories for dinner" }));
+  assertFalse(userAskedToSave({ text: "it saves me time" }));
+  for (const t of ["save it", "please save", "can you save this as a meal", "save the card", "save"]) assert(userAskedToSave({ text: t }), t);
+});
+
+// ── Review of #354 ──────────────────────────────────────────────────────────
+
+/** deps whose diary copy (copy_lines) holds one Paneer line. */
+function withDiaryPaneer(d: FoodAgentDeps): FoodAgentDeps {
+  d.readDiaryLines = async () => ({ date: "2026-11-06", meals: [{ items: [{ name: "Paneer", kcal: 200, source: "catalog", quantity: 1 }] }] });
+  return d;
+}
+
+Deno.test("a food copied earlier in the run counts as on the card: an addition of it is left off", async () => {
+  const d = withDiaryPaneer(deps(scripted([
+    [{ name: "copy_lines", input: { source: { days_ago: 1, meal_type: "lunch" } } }, { name: "coach_list_saved_meals", input: {} }],
+    [{ name: "add_lines", input: { text: "paneer" } }],
+  ])));
+  d.parseFood = async () => result([item("Paneer", 250)]);
+  const out = await runFoodAgent(LATER, d);
+  if (out.kind !== "log" || !out.result.parsed) throw new Error(out.kind);
+  assertEquals(out.result.parsed.items.filter((i) => i.food_name === "Paneer").length, 1);
+});
+
+Deno.test("staged copies count toward the 12-line card: what does not fit is left off and named", async () => {
+  const card: CardLine[] = Array.from({ length: 10 }, (_, i) => ({ ...CARD[1], food_name: `Food ${i}` }));
+  const d = withDiaryPaneer(deps(scripted([
+    [{ name: "copy_lines", input: { source: { days_ago: 1, meal_type: "lunch" } } }, { name: "coach_list_saved_meals", input: {} }],
+    [{ name: "add_lines", input: { text: "two things" } }],
+  ])));
+  d.parseFood = async () => result([item("Apple", 95), item("Pear", 100)]);
+  const out = await runFoodAgent({ ...LATER, card }, d);
+  if (out.kind !== "log" || !out.result.parsed) throw new Error(out.kind);
+  assertEquals(out.result.parsed.items.length, 12);
+  assert(/left off/.test(out.result.parsed.drona_line), out.result.parsed.drona_line);
+});
+
+Deno.test("save gate: 'save' with a food after it is an ask; 'save the day' is not", () => {
+  for (const t of ["save breakfast", "save chicken as my lunch", "can you save paneer sabji"]) assert(userAskedToSave({ text: t }), t);
+  for (const t of ["that shake will save the day", "I'm saving calories", "save time later"]) assertFalse(userAskedToSave({ text: t }), t);
+});
+
+Deno.test("additions that do not fit keep the agent's reply, with the notice after it", async () => {
+  const card: CardLine[] = Array.from({ length: 11 }, (_, i) => ({ ...CARD[1], food_name: `Food ${i}` }));
+  const d = deps(scripted([[
+    { name: "reply", input: { text: "That dinner fits your cut." } },
+    { name: "add_lines", input: { text: "two things" } },
+  ]]));
+  d.parseFood = async () => result([item("Apple", 95), item("Pear", 100)]);
+  const out = await runFoodAgent({ ...LATER, card }, d);
+  if (out.kind !== "log" || !out.result.parsed) throw new Error(out.kind);
+  assert(out.result.parsed.drona_line.startsWith("That dinner fits your cut."), out.result.parsed.drona_line);
+  assert(out.result.parsed.drona_line.includes("left off Pear"), out.result.parsed.drona_line);
+  assertEquals(out.answered, true);
+});
+
+// ── Review of #356 ──────────────────────────────────────────────────────────
+
+Deno.test("an agent line that names a food left off as a duplicate is replaced by the code line", async () => {
+  const d = deps(scripted([[
+    { name: "reply", input: { text: "Added dal and oil." } },
+    { name: "add_lines", input: { text: "dal and oil" } },
+  ]]));
+  d.parseFood = async () => result([item("Dal", 300), item("Oil", 40)]);
+  const out = await runFoodAgent(LATER, d);
+  if (out.kind !== "log" || !out.result.parsed) throw new Error(out.kind);
+  assertFalse(out.result.parsed.drona_line.includes("Added dal and oil"), out.result.parsed.drona_line);
+  assert(out.result.parsed.drona_line.includes("Dal is already on the card"), out.result.parsed.drona_line);
+  // A reply that names no dropped food is still kept.
+  const d2 = deps(scripted([[
+    { name: "reply", input: { text: "Good call on the oil." } },
+    { name: "add_lines", input: { text: "dal and oil" } },
+  ]]));
+  d2.parseFood = async () => result([item("Dal", 300), item("Oil", 40)]);
+  const kept = await runFoodAgent(LATER, d2);
+  if (kept.kind === "log") assert(kept.result.parsed?.drona_line.startsWith("Good call on the oil."));
+});
+
+Deno.test("copies that do not fit a full card: the card stays as it is, with a plain notice, never an empty card", async () => {
+  const card: CardLine[] = Array.from({ length: 12 }, (_, i) => ({ ...CARD[1], food_name: `Food ${i}` }));
+  const d = withDiaryPaneer(deps(scripted([[
+    { name: "copy_lines", input: { source: { days_ago: 1, meal_type: "lunch" } } },
+    { name: "reply", input: { text: "Here you go." } },
+  ]])));
+  const out = await runFoodAgent({ ...LATER, card }, d);
+  assertEquals(out.kind, "reply");
+  if (out.kind === "reply") assert(out.text.includes("left off Paneer"), out.text);
+});
