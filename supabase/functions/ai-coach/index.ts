@@ -336,16 +336,14 @@ const JEV_TIMEOUT_MS = Math.min(Math.max(envInt("JEV_TIMEOUT_MS", 2500), 500), 1
  *  an empty list, which is exactly the behaviour before saved meals existed. */
 async function fetchSavedMealsForParse(userClient: SupabaseClient): Promise<SavedMealForParse[]> {
   try {
-    const { data, error } = await userClient
+    const itemCols = "food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, position";
+    const read = (cols: string) => userClient
       .from("saved_meals")
-      .select(
-        "id, name, kind, servings, serving_label, kcal, protein_g, carb_g, fat_g, " +
-          // `*`: origin arrives with migration 20261107120000, and naming a
-          // column the database does not have yet would fail the whole read.
-          "saved_meal_items(*)",
-      )
+      .select(`id, name, kind, servings, serving_label, kcal, protein_g, carb_g, fat_g, saved_meal_items(${cols})`)
       .order("created_at", { ascending: false })
       .limit(60);
+    let { data, error } = await read(`${itemCols}, origin`);
+    if (error && stepFourColumnMissing(error)) ({ data, error } = await read(itemCols));
     if (error || !data) return [];
     const n = (v: unknown) => (v === null || v === undefined || !Number.isFinite(Number(v)) ? 0 : Number(v));
     const nn = (v: unknown) => (v === null || v === undefined || !Number.isFinite(Number(v)) ? null : Number(v));
@@ -1026,15 +1024,16 @@ async function recordTrace(
 function loggedMealsStore(userClient: SupabaseClient): LoggedMealsStore {
   return {
     async mealsBetween(startIso, endIso) {
-      const { data, error } = await userClient
+      const cols = "food_id, source, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, position";
+      const read = (entryCols: string) => userClient
         .from("meals")
-        // `*`: origin arrives with migration 20261107120000; a named column the
-        // database lacks would fail the read.
-        .select("meal_type, logged_at, meal_entries(*)")
+        .select(`meal_type, logged_at, meal_entries(${entryCols})`)
         .gte("logged_at", startIso)
         .lte("logged_at", endIso)
         .order("logged_at", { ascending: true })
         .limit(40);
+      let { data, error } = await read(`${cols}, origin`);
+      if (error && stepFourColumnMissing(error)) ({ data, error } = await read(cols));
       if (error) return { error: error.message };
       return { rows: (data ?? []) as MealRowIn[] };
     },
@@ -2575,12 +2574,14 @@ interface MealRow {
   entries: Array<Record<string, unknown>>;
 }
 
-/**
- * This user's logged lines from the last MEMORY_DAYS days, for their food
- * memory, and their zone (the card note names the day they logged it). Through
- * the USER's client, never the service role: RLS is what makes the memory
- * theirs alone. Any failure is an empty memory, never a failed parse.
- */
+/** A database before migration 20261107120000 (no origin / recipe
+ *  columns): the read is retried with the older column list. */
+function stepFourColumnMissing(error: { code?: string; message?: string } | null | undefined): boolean {
+  // Same test as the app's lib/missingColumn: Postgres "undefined column"
+  // (42703), and the message names one of the step 4 columns.
+  return error?.code === "42703" && /\b(origin|recipe)\b/.test(error.message ?? "");
+}
+
 /** Persisted cache snapshots have already been confirmed by diary writes. */
 function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
   return {
@@ -2603,24 +2604,30 @@ function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
   };
 }
 
+/**
+ * This user's logged lines from the last MEMORY_DAYS days, for their food
+ * memory, and their zone (the card note names the day they logged it). Through
+ * the USER's client, never the service role: RLS is what makes the memory
+ * theirs alone. Any failure is an empty memory, never a failed parse.
+ */
 async function fetchMemoryEntries(
   userClient: SupabaseClient,
 ): Promise<{ entries: MemoryEntry[]; timeZone: string | null }> {
   const sinceIso = new Date(Date.now() - MEMORY_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const entryCols = "food_name, food_id, kcal, protein_g, carb_g, fat_g, fiber_g, grams_logged, quantity, serving_unit, source, logged_via, tier";
+  const readMeals = (cols: string) => userClient
+    .from("meals")
+    .select(`logged_at, meal_entries(${cols})`)
+    .gte("logged_at", sinceIso)
+    // A meal logged ahead for a later day is planned, not eaten. It joins
+    // memory once its day arrives.
+    .lte("logged_at", new Date().toISOString())
+    .order("logged_at", { ascending: false })
+    .limit(300);
   const [mealsRes, profileRes, cacheRes] = await Promise.all([
-    userClient
-      .from("meals")
-      .select(
-        // `*`: origin and recipe arrive with migration 20261107120000, and
-        // naming a column the database does not have yet fails the read.
-        "logged_at, meal_entries(*)",
-      )
-      .gte("logged_at", sinceIso)
-      // A meal logged ahead for a later day is planned, not eaten. It joins
-      // memory once its day arrives.
-      .lte("logged_at", new Date().toISOString())
-      .order("logged_at", { ascending: false })
-      .limit(300),
+    readMeals(`${entryCols}, origin, recipe`).then((r) =>
+      r.error && stepFourColumnMissing(r.error) ? readMeals(entryCols) : r
+    ),
     userClient.from("user_profiles").select("timezone").maybeSingle(),
     // An unavailable cache is additive: retain the existing history read.
     userClient.from("user_food_cache").select("*").order("confirmed_at", { ascending: false }).limit(300),
