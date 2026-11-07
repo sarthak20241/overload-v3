@@ -300,6 +300,22 @@ export function namesProduct(r: { title: string; url: string }, item: WebFoodIte
   return want.every((w) => have.has(w) || have.has(`${w}s`) || (w.endsWith("s") && have.has(w.slice(0, -1))));
 }
 
+/**
+ * isBrandSite and namesProduct together, for a result and the food. With no
+ * brand on the food (find_label passes the card's name, "Health Factory protein
+ * bread"), the name's first one to three words are tried as the brand, and the
+ * rest must be named by the page. Only words the user typed can match a host.
+ */
+export function onBrandSite(r: { title: string; url: string }, item: WebFoodItem): boolean {
+  if (item.brand?.trim()) return isBrandSite(r.url, item.brand) && namesProduct(r, item);
+  const words = item.name.trim().split(/\s+/);
+  for (let k = 1; k <= Math.min(3, words.length - 1); k++) {
+    const brand = words.slice(0, k).join(" ");
+    if (isBrandSite(r.url, brand) && namesProduct(r, { name: words.slice(k).join(" "), brand })) return true;
+  }
+  return false;
+}
+
 /** The readings to use: the brand's own site's alone when the reader kept
  *  one, else every reading. */
 export function preferBrandSite<T extends { brandSite: boolean }>(kept: T[]): T[] {
@@ -801,7 +817,7 @@ async function selectPages(
       // The page text first; the search snippet when the page text had none.
       pieces: pagePieces(r.raw_content).length ? pagePieces(r.raw_content) : pagePieces(r.content),
       p: null,
-      brandSite: isBrandSite(r.url, item.brand) && namesProduct(r, item),
+      brandSite: onBrandSite(r, item),
     }));
   const seenOf = () => cands.map((c) => ({ title: c.r.title.slice(0, 120), site: hostOf(c.r.url), p: round2(c.p) }));
 

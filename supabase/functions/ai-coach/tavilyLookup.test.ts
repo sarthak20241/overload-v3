@@ -11,6 +11,7 @@ import {
   foodLabel,
   isBrandSite,
   namesProduct,
+  onBrandSite,
   type PageReport,
   preferBrandSite,
   readingFromReport,
@@ -805,4 +806,12 @@ Deno.test("no brand on the food: no site is lifted", async () => {
   }, calls);
   await runTavilyLookup(lookupDeps(net, calls), { name: "protein bread", brand: null });
   assertEquals(calls.readPages, [["fatsecret.co.in"]]);
+});
+
+Deno.test("onBrandSite: with no brand, the name's first words can be the brand (find_label's card name)", () => {
+  assertEquals(onBrandSite(MAKER, { name: "Health Factory protein bread", brand: null }), true);
+  // A plain food: no first words are a host, nothing is lifted.
+  assertEquals(onBrandSite(MAKER, { name: "protein bread", brand: null }), false);
+  // The rest of the name must still be named by the page.
+  assertEquals(onBrandSite(MAKER, { name: "Health Factory multigrain bun", brand: null }), false);
 });

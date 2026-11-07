@@ -179,6 +179,23 @@ Deno.test("keepLineIdentity: numbers the user stated are kept, whatever the name
   assertEquals(keepLineIdentity(BREAD, stated, "the user says protein is 11 g for the 2 slices"), stated);
 });
 
+Deno.test("keepLineIdentity: a new name that keeps the user's words stands", () => {
+  const roti: CardLine = { food_name: "Roti", quantity: 2, serving_label: "piece", grams: 80, kcal: 240, protein_g: 7, carb_g: 36, fat_g: 7.4, source: "catalog" };
+  const ww = edited({ food_name: "Whole Wheat Roti", grams: 80, kcal: 220 });
+  assertEquals(keepLineIdentity(roti, ww, "the protein looks wrong"), ww);
+});
+
+Deno.test("use_label: a label found by product only is not put on a line", async () => {
+  const out = await runFoodAgent(
+    { text: "look up the label", defaultMeal: "breakfast", card: CARD, later: true },
+    deps(scripted([
+      [{ name: "find_label", input: { product: "Health Factory protein bread" } }],
+      [{ name: "edit_line", input: { line_id: "L1", change: "use the label", use_label: true } }],
+    ]), []),
+  );
+  assertEquals(out.kind, "reply");
+});
+
 Deno.test("keepLineIdentity: a change that names another food takes it", () => {
   const out = keepLineIdentity(BREAD, edited({}), "it was the zero maida protein bread");
   assertEquals(out.food_name, "Zero Maida Protein Bread");

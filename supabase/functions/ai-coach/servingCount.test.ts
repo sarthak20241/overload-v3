@@ -72,6 +72,10 @@ Deno.test("unitWeightMatchesGrams: lines that already agree, and labels it does 
     line({ quantity: 2, serving_label: "slices (25 g total)", grams: 25 }),
     line({ quantity: 30, serving_label: "g", grams: 30 }),
     line({ quantity: 1, serving_label: "serving", grams: 80 }),
+    // A weight the user gave against a unit's weight: not a whole multiple.
+    line({ quantity: 1, serving_label: "bowl (250 g)", grams: 150 }),
+    // Numbers the user stated.
+    line({ source: "manual" }),
   ]) {
     assertEquals(unitWeightMatchesGrams(it), it, it.serving_label);
   }

@@ -3068,8 +3068,10 @@ function countInsideLabel(sv: ServingOption): ServingOption {
  * = 50 / 2. When the line weighs quantity x the group and the quantity is the
  * group's own count, the group was counted once per piece: the line is the
  * group. Any other quantity counts groups, and the line is restated in pieces
- * with its weight unchanged. A "total" label, a bare weight label ("g", "100 g",
- * amountMatchesGrams's job), and a line with no unit weight are left alone.
+ * with its weight unchanged. Otherwise only a whole multiple (the count applied
+ * twice) is fixed: any other gap may be a weight the user gave. A "total"
+ * label, a bare weight label ("g", "100 g", amountMatchesGrams's job), a line
+ * with no unit weight, and a line of numbers the user stated are left alone.
  */
 export function unitWeightMatchesGrams(it: ParsedItem): ParsedItem {
   if (!(it.grams > 0) || !(it.quantity > 0)) return it;
@@ -3081,6 +3083,8 @@ export function unitWeightMatchesGrams(it: ParsedItem): ParsedItem {
   const noun = m[2].trim().toLowerCase();
   const words = noun.split(/\s+/);
   if (!(n >= 1) || words.some((w) => MASS_UNITS.has(w))) return it;
+  // Numbers the user stated are theirs.
+  if (it.source === "manual") return it;
   const groupG = Number(m[3]);
   if (!(groupG > 0)) return it;
   const unit = m[4].toLowerCase() === "ml" ? "ml" : "g";
@@ -3107,7 +3111,13 @@ export function unitWeightMatchesGrams(it: ParsedItem): ParsedItem {
     // "2 slices" over "2 slices (50 g)" is the group, once. 3 x the group is 6 slices.
     return it.quantity === n ? scaled(it.quantity, groupG) : scaled(it.quantity * n, it.grams);
   }
-  return scaled(it.quantity, it.quantity * perUnit);
+  // Only the count applied twice: the line weighs a whole multiple (2x, 3x)
+  // of quantity x the unit. Any other gap may be a weight the user gave
+  // ("150 g dal" against a "bowl (250 g)" unit), and stays.
+  const k = it.grams / (it.quantity * perUnit);
+  const whole = Math.round(k);
+  if (whole >= 2 && Math.abs(k - whole) <= 0.05 * whole) return scaled(it.quantity, it.quantity * perUnit);
+  return it;
 }
 
 /** Every serving of a candidate restated per one piece (perOneServing). */

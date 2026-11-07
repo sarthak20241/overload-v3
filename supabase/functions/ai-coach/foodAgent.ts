@@ -1654,9 +1654,9 @@ const nameWords = (x: string) =>
  * Live, 2026-11-07: "2 slices of Health Factory protein bread, 242 kcal is too
  * high" went to the correction path, which swapped in a catalog "Zero Maida
  * Protein Bread": the brand was gone and the protein fell. The change asked for
- * an amount, not another product. So when the edited line's name carries words
- * that are in neither the line's own name nor the change, the swap was the
- * search's, not the user's: the line keeps its name, and its own numbers per
+ * an amount, not another product. So when the edited line's name has lost words
+ * of the user's name for it AND carries words that are in neither that name nor
+ * the change, the swap was the search's, not the user's: the line keeps its name, and its own numbers per
  * gram, scaled to the new weight. Without its own numbers (no grams or no kcal
  * on the line) the edit stands, and so does a line of numbers the user stated.
  */
@@ -1664,9 +1664,14 @@ export function keepLineIdentity(original: CardLine, edited: ParsedItem, change:
   // Numbers the user stated (source manual) are theirs, whatever the name: a
   // stated number wins over every source.
   if (edited.source === "manual") return edited;
+  const has = (set: Set<string>, w: string) => set.has(w) || set.has(`${w}s`) || set.has(w.replace(/s$/, ""));
   const known = new Set([...nameWords(original.food_name), ...nameWords(original.said_name ?? ""), ...nameWords(change)]);
-  const fresh = nameWords(edited.food_name).filter((w) => !known.has(w) && !known.has(`${w}s`) && !known.has(w.replace(/s$/, "")));
-  if (!fresh.length) return edited;
+  const fresh = nameWords(edited.food_name).filter((w) => !has(known, w));
+  // A swap only when the user's own words for the food are gone too: "Roti"
+  // to "Whole Wheat Roti" keeps them and stands.
+  const now = new Set(nameWords(edited.food_name));
+  const lost = nameWords(original.said_name ?? original.food_name).filter((w) => !has(now, w));
+  if (!fresh.length || !lost.length) return edited;
   if (!(original.grams > 0) || typeof original.kcal !== "number" || !(edited.grams > 0)) return edited;
   const f = edited.grams / original.grams;
   const scale = (v: number | undefined) => Math.round((v ?? 0) * f * 10) / 10;
@@ -1759,6 +1764,7 @@ async function runFindLabel(
     serving_printed: label.serving ? `${label.serving.label}, ${r1(label.serving.grams)} ${label.base_unit}` : null,
     one_piece: label.piece ? `${label.piece.label}, ${r1(label.piece.grams)} ${label.base_unit}` : null,
     agreed_by_two_sources: label.verified,
+    ...(line ? {} : { note: "To put a label on a card line, call find_label with that line_id." }),
   };
   if (line && index !== null) {
     const item = lineFromLabel(line, label, line.meal_type ?? "snack");
@@ -1810,7 +1816,10 @@ async function applyCardChanges(
     Promise.all(plan.edits.map(async (e) => {
       // The label find_label returned for this line: no parse, the line is
       // the one code worked out. No label for it: the edit fails, the line stays.
-      if (e.useLabel) return { e, r: null, item: labelLines.get(e.index) ?? null };
+      if (e.useLabel) {
+        const l = labelLines.get(e.index);
+        return { e, r: null, item: l && l.food_name === card[e.index].food_name ? l : null };
+      }
       let r: ParseMealResult | null = null;
       try {
         r = deps.editLine ? await deps.editLine(e.index, e.change) : null;
