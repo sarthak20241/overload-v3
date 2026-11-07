@@ -187,3 +187,20 @@ Deno.test("a total for egg skips the lookup for the egg line only, never egg whi
   assert(h.searched.some((x) => /egg whites/.test(x)), h.searched.join(" | "));
   assertEquals(named(r.parsed!.items, /^egg$/i)[0].kcal, 90);
 });
+
+// Review: a correction may leave a food out on purpose ("remove the oats").
+// A removed food is not an extracted food, so the retry never asks for it.
+Deno.test("the retry never brings back a food the user removed", async () => {
+  const oats = { food_id: null, food_name: "oats", quantity: 40, serving_label: "g", grams: 40, kcal: 150, protein_g: 5, carb_g: 27, fat_g: 3, fiber_g: null, source: "manual" as const, meal_type: "breakfast" as const };
+  const milk = { ...oats, food_name: "milk", quantity: 200, serving_label: "ml", grams: 200, kcal: 120, protein_g: 6, carb_g: 10, fat_g: 6 };
+  // Decide logs nothing, so the new food goes to the retry; the oats must not.
+  const h = harness([POHA_PLAIN], [[]], { corrects_previous: true, removed_food_names: ["oats"] });
+  const r = await runParseMeal(h.deps, { ...BASE, text: "remove the oats, I had a bowl of poha instead", previousText: "40g oats and 200 ml milk", previousItems: [oats, milk] });
+  const retry = r.steps.find((s) => s.tool === "decide_retry");
+  assert(retry, r.steps.map((s) => s.tool).join(","));
+  assertEquals((retry!.input as { missed: string[] }).missed, ["poha"]);
+  for (const sent of h.decidePayloads) assertEquals(sent.items.map((i: { name: string }) => i.name), ["poha"]);
+  const names = r.parsed!.items.map((i) => i.food_name);
+  assertEquals(names.filter((n) => /oats/i.test(n)), [], names.join(" | "));
+  assert(names.includes("milk"), names.join(" | "));
+});
