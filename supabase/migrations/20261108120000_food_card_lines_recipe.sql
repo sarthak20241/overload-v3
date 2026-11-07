@@ -11,6 +11,10 @@
 alter table public.food_card_lines
   add column if not exists recipe jsonb;
 
+-- 1 to 20 parts: the same bound as parseRecipe's MAX_PARTS
+-- (supabase/functions/_shared/foodOrigin.ts) and meal_entries.recipe. Raise
+-- them together. Each part is checked on read (parseRecipe), not here.
+
 do $$
 begin
   if not exists (select 1 from pg_constraint where conname = 'food_card_lines_recipe_check') then
