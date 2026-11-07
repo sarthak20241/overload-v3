@@ -1,7 +1,8 @@
 // Region rules for the Precise food prompts (plan step 6, section 10).
 //
-// WIP: not wired in yet. See the hand-over note in the shared notes folder
-// (step6_region_rules.md) for the remaining work.
+// Behind FOOD_REGION_RULES (off by default), Precise only. Read by
+// parseMeal.ts (extract and decide), foodAgent.ts, ourSources.ts and
+// preciseMatch.ts (Jev's kind question); index.ts reads the time zone.
 //
 // The region comes from the user's time zone through countryForTimezone, the
 // same function the web search uses. An unknown zone is no region: no
@@ -149,7 +150,9 @@ const NO_REGION =
   "country (tea or coffee with or without milk, the size of a cup or bowl), take the food as written and name " +
   "what you assumed in assumption, never confidence high.";
 
-/** The late block for one prompt. Only extract and decide carry one. */
+/** The late block for one prompt. Only extract and decide carry one. With no
+ *  region, extract gets nothing on purpose: it keeps "tea" and "coffee" as
+ *  written, and decide's no-region block makes it say what it assumed. */
 export function regionBlock(prompt: RegionPrompt, region: FoodRegion | null): string {
   if (prompt !== "extract" && prompt !== "decide") return "";
   if (!region) return prompt === "decide" ? `\n<region_rules>\n${NO_REGION}\n</region_rules>\n` : "";

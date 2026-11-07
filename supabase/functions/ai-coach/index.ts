@@ -319,11 +319,19 @@ const FOOD_FIRST_GATE = parseFoodFirstGateMode(Deno.env.get("FOOD_FIRST_GATE"));
  *  gets no regional default. off (default): every prompt is today's. */
 const FOOD_REGION_RULES = parseFoodRegionRulesMode(Deno.env.get("FOOD_REGION_RULES"));
 
-/** The user's stored time zone, or null. Never rejects. */
+/** The user's stored time zone, or null. Never rejects. One read per user
+ *  client (one per request): every parse deps of the request and the food
+ *  agent share it. */
+const zoneReads = new WeakMap<SupabaseClient, Promise<string | null>>();
 function readTimezone(userClient: SupabaseClient): Promise<string | null> {
-  return Promise.resolve(userClient.from("user_profiles").select("timezone").maybeSingle())
-    .then(({ data }: { data: { timezone?: unknown } | null }) => typeof data?.timezone === "string" ? data.timezone : null)
-    .catch(() => null);
+  let p = zoneReads.get(userClient);
+  if (!p) {
+    p = Promise.resolve(userClient.from("user_profiles").select("timezone").maybeSingle())
+      .then(({ data }: { data: { timezone?: unknown } | null }) => typeof data?.timezone === "string" ? data.timezone : null)
+      .catch(() => null);
+    zoneReads.set(userClient, p);
+  }
+  return p;
 }
 
 /** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
@@ -2806,8 +2814,7 @@ function makeParseDeps(
    *  same reason Precise is Pro-only; absent means no web. */
   opts: { brandWeb?: boolean; fbTrace?: FoodBarTraceCollector } = {},
 ): ParseMealDeps {
-  let zoneP: Promise<string | null> | undefined;
-  const zone = () => (zoneP ??= readTimezone(userClient));
+  const zone = () => readTimezone(userClient);
   // Region rules need the zone before extract: start the read now.
   if (FOOD_REGION_RULES === "on") void zone();
   const fb = opts.fbTrace;
