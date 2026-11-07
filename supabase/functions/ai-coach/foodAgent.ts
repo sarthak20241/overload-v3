@@ -1697,6 +1697,9 @@ export function keepLineIdentity(original: CardLine, edited: ParsedItem, change:
     food_id: original.food_id ?? null,
     food_name: original.food_name,
     ...(original.said_name ? { said_name: original.said_name } : {}),
+    // The original line's site, never the swapped row's: its numbers are the
+    // original's, so a catalog line must not read "from web: <site>".
+    source_site: original.source_site,
     kcal: scale(original.kcal),
     protein_g: scale(original.protein_g),
     carb_g: scale(original.carb_g),

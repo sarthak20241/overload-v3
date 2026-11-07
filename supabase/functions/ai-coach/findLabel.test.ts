@@ -289,3 +289,18 @@ Deno.test("find_label's third call says the cap was hit", async () => {
   );
   assert(JSON.stringify(bodies[1].messages).includes("find_label already ran 2 times this message"));
 });
+
+Deno.test("keepLineIdentity: the restored line keeps its own site, never the swapped row's", () => {
+  const catalogBread: CardLine = { ...BREAD, source: "catalog" };
+  const out = keepLineIdentity(catalogBread, edited({ food_name: "Protein Bread", source: "web", source_site: "fatsecret.co.in" }), "2 slices at 25 g each");
+  assertEquals([out.food_name, out.source, out.source_site], ["Health Factory protein bread", "catalog", undefined]);
+  const webBread: CardLine = { ...BREAD, source_site: "thehealthfactory.in" };
+  const out2 = keepLineIdentity(webBread, edited({ food_name: "Protein Bread", source_site: "fatsecret.co.in" }), "2 slices at 25 g each");
+  assertEquals(out2.source_site, "thehealthfactory.in");
+});
+
+Deno.test("lineFromLabel: a bowl unit the label has no piece for keeps the card's grams", () => {
+  const bowl: CardLine = { ...BREAD, food_name: "Health Factory protein muesli", quantity: 1, serving_label: "bowl", grams: 60 };
+  const out = lineFromLabel(bowl, LABEL, "breakfast");
+  assertEquals([out.quantity, out.serving_label, out.grams, out.kcal], [1, "bowl", 60, 145.2]);
+});
