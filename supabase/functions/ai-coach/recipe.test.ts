@@ -13,8 +13,10 @@ import { assert, assertEquals, assertFalse } from "jsr:@std/assert@1";
 import { type FoodAgentDeps, planCardChanges, runFoodAgent } from "./foodAgent.ts";
 import type { CardLine } from "./foodContext.ts";
 import type { ParsedItem, ParseMealResult } from "./parseMeal.ts";
+import { lineSourceTail } from "./foodContext.ts";
 import {
   assumedAmount,
+  buildRecipe,
   type PartFound,
   partLookupText,
   readRecipeParts,
@@ -89,13 +91,6 @@ Deno.test("assumedAmount: fats and sweeteners with no amount take 1 tsp; spreads
   assertEquals(assumedAmount("sugar"), { grams: 4, label: "1 tsp" });
   assertEquals(assumedAmount("peanut butter"), null);
   assertEquals(assumedAmount("onion"), null);
-});
-
-Deno.test("partLookupText: the user's amount wins; no amount takes the table's grams, marked assumed", () => {
-  assertEquals(partLookupText({ name: "oil", amount: "2 tsp" }), { text: "2 tsp oil", grams: null, assumed: null });
-  assertEquals(partLookupText({ name: "oil", amount: null }), { text: "5 g oil", grams: 5, assumed: "1 tsp" });
-  // Not in the table: the parse picks one usual serving, still an assumption.
-  assertEquals(partLookupText({ name: "onion", amount: null }), { text: "onion", grams: null, assumed: "" });
 });
 
 // ── The one question ───────────────────────────────────────────────────────
@@ -273,4 +268,52 @@ Deno.test("agent: with no card, a dish whose parts are all not found makes no ca
   );
   assertEquals(out.kind, "reply");
   if (out.kind === "reply") assert(/Stew is not on the card/.test(out.text), out.text);
+});
+
+// ── Review fixes, round 3 (PR #359) ────────────────────────────────────────
+
+Deno.test("buildRecipe: a dish whose biggest stated part is not found stays off the card", async () => {
+  const ask = { name: "Sabji", parts: [{ name: "zzz paneer", amount: "50 g" }, { name: "onion", amount: "40 g" }, { name: "oil", amount: null }] };
+  const r = await buildRecipe(ask, "lunch", fakeParse());
+  assertEquals(r.item, null);
+  assertEquals(r.missing, ["zzz paneer"]);
+  // A small part missing still lands.
+  const small = { name: "Sabji", parts: [{ name: "low fat paneer", amount: "60 g" }, { name: "zzz herb", amount: "2 g" }, { name: "oil", amount: null }] };
+  assert((await buildRecipe(small, "lunch", fakeParse())).item);
+});
+
+Deno.test("partLookupText: an assumed amount is a flag, with the label apart", () => {
+  assertEquals(partLookupText({ name: "oil", amount: null }), { text: "5 g oil", grams: 5, assumed: true, label: "1 tsp" });
+  assertEquals(partLookupText({ name: "onion", amount: null }), { text: "onion", grams: null, assumed: true, label: null });
+  assertEquals(partLookupText({ name: "oil", amount: "2 tsp" }), { text: "2 tsp oil", grams: null, assumed: false, label: null });
+});
+
+Deno.test("lineSourceTail: a recipe line with its parts lists every part, not a cut note", () => {
+  const parts = Array.from({ length: 8 }, (_, i) => part("onion", 40 + i));
+  const dish = sumRecipe("Big curry", parts.map((p, i) => ({ ...p, name: `long vegetable name number ${i}` })), "dinner");
+  const tail = lineSourceTail({ source: "recipe", assumption: dish.assumption, recipe: dish.recipe });
+  for (let i = 0; i < 8; i++) assert(tail.includes(`long vegetable name number ${i}`), tail);
+});
+
+Deno.test("planCardChanges: with no card, a line tool is refused with a plain reason", () => {
+  const r = planCardChanges([], [{ name: "build_recipe", input: { name: "Dal", parts: [{ name: "dal" }] } }, { name: "edit_line", input: { line_id: "L1", change: "x" } }], false, true);
+  assertFalse(r.ok);
+  if (!r.ok) {
+    assertFalse(r.error.includes("L1 to L0"), r.error);
+    assert(/no card/i.test(r.error), r.error);
+  }
+});
+
+Deno.test("agent: a rebuild that fails on a card line says the line is as before", async () => {
+  const card: CardLine[] = [{ food_name: "Sabji", quantity: 1, serving_label: "serving", grams: 105, kcal: 212.6, source: "recipe", meal_type: "lunch" }];
+  const rebuild = { name: "build_recipe", input: { name: "Sabji", line_id: "L1", parts: [{ name: "zzz a" }, { name: "zzz b" }] } };
+  const out = await runFoodAgent(
+    { text: "x", defaultMeal: "lunch", later: true, card },
+    { model: "m", callModel: scripted([[rebuild]]), readDiary: async () => ({}), savedMeals: async () => [], parseFood: fakeParse(), buildRecipe: true },
+  );
+  assertEquals(out.kind, "reply");
+  if (out.kind === "reply") {
+    assert(/as before/.test(out.text), out.text);
+    assertFalse(/not on the card/.test(out.text), out.text);
+  }
 });

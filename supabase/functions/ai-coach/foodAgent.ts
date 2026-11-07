@@ -1600,6 +1600,9 @@ export function planCardChanges(
   const fail = (why: string) => ({ ok: false as const, error: `${why}${tail}` });
   if (restoreInTurn) return fail("restore_card replaces the whole card, so it cannot share a turn with line changes. Choose one.");
   if (!card.length && !emptyCardOk) return fail("No card is on screen to change. Use log_food.");
+  if (!card.length && uses.some((u) => u.name === EDIT_LINE_TOOL.name || u.name === REMOVE_LINES_TOOL.name)) {
+    return fail("No card is on screen yet, so edit_line and remove_lines have no line to change. Use build_recipe and log_food.");
+  }
   const ids = `The card's lines are L1 to L${card.length}.`;
   const edits: CardPlan["edits"] = [];
   const removes = new Set<number>();
@@ -1964,7 +1967,7 @@ async function applyCardChanges(
 
   const failedEdits = editsOut.filter((x) => !x.item).map((x) => card[x.e.index].food_name);
   const failedAdds = addsOut.filter((x) => x.a.text && x.items.length === 0).map((x) => x.a.text!);
-  const failedRecipes = recipesOut.filter((x) => !x.item).map((x) => ({ name: x.x.ask.name, missing: x.missing }));
+  const failedRecipes = recipesOut.filter((x) => !x.item).map((x) => ({ name: x.x.ask.name, missing: x.missing, onLine: x.x.index !== null }));
   const missingParts = recipesOut.filter((x) => x.item && x.missing.length).map((x) => `${names(x.missing)} in ${x.x.ask.name}`);
   const changed = edited.size + removes.size + added.length > 0;
   // The ONE question about amounts the user did not give (recipe.ts): code
@@ -1978,7 +1981,8 @@ async function applyCardChanges(
     failedEdits.length ? `I could not change ${names(failedEdits)}, so ${failedEdits.length === 1 ? "it is" : "they are"} as before.` : null,
     failedAdds.length ? `I could not work out ${names(failedAdds.map((t) => `"${t.slice(0, 60)}"`))}.` : null,
     ...failedRecipes.map((f) =>
-      `I could not find ${f.missing.length ? names(f.missing) : "its parts"}, so ${f.name} is not on the card.`
+      // A rebuild of a card line that failed leaves that line as it was.
+      `I could not find ${f.missing.length ? names(f.missing) : "its parts"}, so ${f.name} ${f.onLine ? "is as before" : "is not on the card"}.`
     ),
     missingParts.length ? `I could not find ${missingParts.join("; ")}, so it is left out.` : null,
     dupAdds.length ? `${names(dupAdds)} ${dupAdds.length === 1 ? "is" : "are"} already on the card, so I did not add ${dupAdds.length === 1 ? "it" : "them"} again.` : null,

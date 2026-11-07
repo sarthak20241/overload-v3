@@ -363,9 +363,18 @@ Deno.test("write: each line records the tier whose numbers it carries (0149)", a
   assertEquals(store.entries.map((e) => e.tier), ["fast", "precise"]);
 });
 
-Deno.test("write: a dish built from its parts is written as an estimate (the diary's source check has no recipe)", async () => {
-  const store = new FakeStore();
-  const res = await writeAutoLog(store, writeArgs([line("paneer sabji", { meal_type: "lunch", source: "recipe" })]));
+Deno.test("write: a dish built from its parts keeps source recipe where the diary allows it, else retries as an estimate", async () => {
+  const ok = new FakeStore();
+  const res = await writeAutoLog(ok, writeArgs([line("paneer sabji", { meal_type: "lunch", source: "recipe" })]));
   assert("logged" in res);
-  assertEquals(store.entries[0].source, "estimate");
+  assertEquals(ok.entries[0].source, "recipe");
+  // A diary without migration 20261107120000: its source check refuses
+  // "recipe", and the write is tried once more with "estimate".
+  const old = new FakeStore();
+  const insert = old.insertEntries.bind(old);
+  old.insertEntries = (rows) =>
+    rows.some((r) => r.source === "recipe") ? Promise.resolve({ error: "meal_entries_source_check" }) : insert(rows);
+  const res2 = await writeAutoLog(old, writeArgs([line("paneer sabji", { meal_type: "lunch", source: "recipe" }), line("rice", { meal_type: "lunch" })]));
+  assert("logged" in res2);
+  assertEquals(old.entries[0].source, "estimate");
 });

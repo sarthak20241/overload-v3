@@ -76,7 +76,7 @@ export function cardMayBeCut(card: CardLine[] | null | undefined): boolean {
 
 /** Where a line's numbers came from, in a few words: "from web: fatsecret.co.in",
  *  "estimate: <its note>", "the user's numbers". */
-export function lineSourceTail(l: Pick<CardLine, "source" | "source_site" | "assumption">): string {
+export function lineSourceTail(l: Pick<CardLine, "source" | "source_site" | "assumption" | "recipe">): string {
   const flat = (x: string) => x.replace(/\s+/g, " ").trim();
   const site = l.source_site ? flat(l.source_site).slice(0, 40) : "";
   switch (l.source) {
@@ -85,7 +85,13 @@ export function lineSourceTail(l: Pick<CardLine, "source" | "source_site" | "ass
     case "manual":
       return "the user's numbers";
     case "recipe": {
-      // The parts, so "why 210?" has an answer and a part can be changed.
+      // The parts, so "why 210?" has an answer and a part can be changed. From
+      // the parts themselves when the app sent them (every part, so a rebuild
+      // can send them all again), else the line's note (cut at 160).
+      if (l.recipe?.length) {
+        const each = l.recipe.map((p) => `${Math.round(p.grams)} g ${flat(p.name).slice(0, 60)}${p.assumed ? " (assumed)" : ""}`);
+        return `recipe: ${each.join(", ")}`;
+      }
       const note = l.assumption ? flat(l.assumption).slice(0, 160) : "";
       return note ? `recipe: ${note}` : "recipe";
     }

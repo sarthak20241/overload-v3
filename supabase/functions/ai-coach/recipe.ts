@@ -174,9 +174,9 @@ export function recipeNote(parts: PartFound[], missing: string[] = []): string {
   return note.length <= 160 ? note : `${note.slice(0, 157)}...`;
 }
 
-/** Parts the parse could not find, from which a dish is not put on the card:
+/** Parts the parse could not find, past which a dish is not put on the card:
  *  its total would be too far under. One missing part lands, named, at low
- *  confidence. */
+ *  confidence, unless it is the dish's main part (buildRecipe). */
 export const RECIPE_MAX_MISSING = 1;
 
 /**
@@ -217,8 +217,9 @@ export function sumRecipe(name: string, parts: PartFound[], meal: MealType, miss
     source: "recipe",
     origin: "recipe",
     assumption: recipeNote(parts, missing),
-    // A recipe sum sits below the catalog in the source order; a part that is
-    // itself a guess, or an amount we assumed, makes it lower still.
+    // A recipe sum sits below the catalog in the source order. A part that is
+    // itself a guess, or a part not found, makes it low. An assumed amount
+    // does not: the card says it and the user is asked once (recipeQuestion).
     confidence: parts.some((p) => p.source === "estimate") || missing.length ? "low" : "medium",
     meal_type: meal,
     recipe,
@@ -252,14 +253,27 @@ export function per100FromParse(r: ParseMealResult | null): (PartFound["per100"]
 
 /** What each part is looked up as: the user's amount, else the table's grams,
  *  else the name alone (the parse then takes one usual serving). */
-export function partLookupText(p: { name: string; amount: string | null }): { text: string; grams: number | null; assumed: string | null } {
-  if (p.amount) return { text: `${p.amount} ${p.name}`, grams: null, assumed: null };
+export function partLookupText(p: { name: string; amount: string | null }): {
+  text: string;
+  /** Our grams (the table's), or null when the parse decides them. */
+  grams: number | null;
+  /** The amount is not the user's. */
+  assumed: boolean;
+  /** How the table says the assumed amount ("1 tsp"); null otherwise. */
+  label: string | null;
+} {
+  if (p.amount) return { text: `${p.amount} ${p.name}`, grams: null, assumed: false, label: null };
   const t = assumedAmount(p.name);
-  if (t) return { text: `${t.grams} g ${p.name}`, grams: t.grams, assumed: t.label };
-  // Not in the table: no grams of ours. The parse takes one usual serving,
-  // and buildRecipe says that serving's weight ("40 g") as the assumption.
-  // "" means "assumed, amount from the parse"; null means "the user's amount".
-  return { text: p.name, grams: null, assumed: "" };
+  if (t) return { text: `${t.grams} g ${p.name}`, grams: t.grams, assumed: true, label: t.label };
+  // Not in the table: the parse takes one usual serving, and buildRecipe says
+  // that serving's weight ("40 g") as the assumption.
+  return { text: p.name, grams: null, assumed: true, label: null };
+}
+
+/** A part's amount in grams when the user said it in grams ("50 g"), else null. */
+function statedGrams(amount: string | null): number | null {
+  const m = amount?.trim().match(/^(\d+(?:\.\d+)?)\s*(?:g|gm|gms|gram|grams|ml)$/i);
+  return m ? Number(m[1]) : null;
 }
 
 /**
@@ -296,10 +310,14 @@ export async function buildRecipe(
       grams,
       per100: { kcal: row.kcal, protein_g: row.protein_g, carb_g: row.carb_g, fat_g: row.fat_g, fiber_g: row.fiber_g },
       source: row.source,
-      assumed: q.assumed === null ? null : q.assumed || `${Math.round(grams)} g`,
+      assumed: q.assumed ? q.label ?? `${Math.round(grams)} g` : null,
     });
   }
-  const ok = found.length > 0 && missing.length <= RECIPE_MAX_MISSING;
+  // A missing part the user weighed at least as heavy as every part found is
+  // the dish's main part: without it the total is far under, so no dish.
+  const heaviest = Math.max(0, ...found.map((p) => p.grams));
+  const mainMissing = looked.some(({ p, row }) => !row && (statedGrams(p.amount) ?? 0) >= heaviest && heaviest > 0);
+  const ok = found.length > 0 && missing.length <= RECIPE_MAX_MISSING && !mainMissing;
   return { item: ok ? sumRecipe(ask.name, found, meal, missing) : null, missing, results: looked.map((x) => x.r) };
 }
 

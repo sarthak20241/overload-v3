@@ -187,10 +187,9 @@ export interface AutoLogEntryRow {
   sodium_mg: null;
   position: number;
   logged_via: "ai_auto";
-  /** The diary's source check has "recipe" only from migration
-   *  20261107120000 (step 4). Auto-log writes a dish built from its parts as
-   *  an estimate, so it works with or without that migration. */
-  source: Exclude<ParsedItem["source"], "recipe">;
+  /** "recipe" needs migration 20261107120000 (step 4) in the diary's source
+   *  check: writeAutoLog retries a refused write once with "estimate". */
+  source: ParsedItem["source"];
   client_id: string;
   /** The tier whose numbers the line carries (migration 0149). The trigger
    *  that stamps client-written lines cannot see these: they are written
@@ -352,11 +351,16 @@ export async function writeAutoLog(
       sodium_mg: null,
       position: base + idx,
       logged_via: "ai_auto",
-      source: it.source === "recipe" ? "estimate" : it.source,
+      source: it.source,
       client_id: clientId,
       tier: it.numbers_tier ?? args.tier ?? null,
     }));
-    const inserted = await store.insertEntries(rows);
+    let inserted = await store.insertEntries(rows);
+    // A diary without migration 20261107120000 refuses source "recipe" (its
+    // check, 0114, predates it). One more try, the dish as an estimate.
+    if ("error" in inserted && rows.some((r) => r.source === "recipe")) {
+      inserted = await store.insertEntries(rows.map((r) => (r.source === "recipe" ? { ...r, source: "estimate" } : r)));
+    }
     if ("conflict" in inserted) {
       // A concurrent attempt of this same send wrote these lines first. The
       // entriesByClientId pre-check above could not see it - it had not landed
