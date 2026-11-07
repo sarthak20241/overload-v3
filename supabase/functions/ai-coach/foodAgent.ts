@@ -27,7 +27,8 @@ import {
   LIST_LOGGED_MEALS_TOOL,
   LIST_SAVED_MEALS_TOOL,
 } from "./prompt.ts";
-import type { MealType, ParsedItem, ParseMealResult, ParseStep } from "./parseMeal.ts";
+import type { LabelFound, MealType, ParsedItem, ParseMealResult, ParseStep } from "./parseMeal.ts";
+import { unitWeightMatchesGrams } from "./parseMeal.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { lineAsItem, type ThreadLine } from "./foodThreads.ts";
 import { falseAgentClaim } from "./foodIntent.ts";
@@ -58,6 +59,9 @@ export interface FoodAgentDeps {
    *  and decide pipeline, scoped to that one item; every other line is copied
    *  by code and never seen by the parse. */
   editLine?(index: number, change: string): Promise<ParseMealResult>;
+  /** find_label: one product's printed label off the web (parseMeal.ts
+   *  findLabel). Absent: the agent has no find_label tool. */
+  findLabel?(product: { name: string; brand: string | null }): Promise<LabelFound | null>;
   /** An earlier card of this thread, as items, or null when there is none by
    *  that ref (foodThreads.ts). `version` null: the card's latest version.
    *  Present only when the thread store is on and the thread has cards. */
@@ -125,7 +129,7 @@ export interface FoodAgentInput {
  *  id names the line as the message found it, so a removal never renumbers
  *  what another call in the same turn points at. */
 export function cardLinesWithIds(card: CardLine[]): string[] {
-  return cardLines(card, { macros: true }).map((l) => l.replace(/^(\d+)\.\s/, "[L$1] "));
+  return cardLines(card, { macros: true, sources: true }).map((l) => l.replace(/^(\d+)\.\s/, "[L$1] "));
 }
 
 /** "L2", "[L2]", "l2" or 2 to a card index (0-based), or null. */
@@ -188,6 +192,7 @@ export type AgentEvent =
   }
   | { tool: "restore_card"; ok: boolean; reason: "restored" | "not_found" | "card_open" | "no_thread" }
   | { tool: "read_card"; found: boolean; on_screen?: boolean }
+  | { tool: "find_label"; found: boolean }
   | {
     tool: "card_changes";
     /** Applied (ok) or sent back to the agent (a conflict, an unknown line). */
@@ -419,9 +424,29 @@ const EDIT_LINE_TOOL: AnthropicTool = {
     properties: {
       line_id: { type: "string", description: "The line's id from the card, e.g. L2." },
       change: { type: "string", description: "The change to this one line, in plain words." },
+      use_label: {
+        type: "boolean",
+        description: "true to set this line from the label find_label returned for it, for the amount the line already has.",
+      },
       summary: { type: "string", description: "One short line in a coach's voice saying what changed. No em dashes." },
     },
     required: ["line_id", "change"],
+  },
+};
+
+const FIND_LABEL_TOOL: AnthropicTool = {
+  name: "find_label",
+  description:
+    "Look up a packaged food's printed nutrition label online (the brand's own site first). Name a card line by its id, " +
+    "or give the product (brand and name) for food not on the card. Returns the label per 100 g and its printed serving, " +
+    "and for a card line, that line worked out from the label by the app. Nothing on the card changes until you call " +
+    "edit_line on the line with use_label true. Quote only numbers this tool returns.",
+  input_schema: {
+    type: "object",
+    properties: {
+      line_id: { type: "string", description: "The card line to check, e.g. L1." },
+      product: { type: "string", description: "Brand and product name, for food not on the card." },
+    },
   },
 };
 
@@ -462,7 +487,7 @@ const ADD_LINES_TOOL: AnthropicTool = {
 const CARD_CHANGE_TOOLS = new Set([EDIT_LINE_TOOL.name, REMOVE_LINES_TOOL.name, ADD_LINES_TOOL.name]);
 
 const CARD_TOOLS: AnthropicTool[] = [EDIT_CARD_TOOL, REMOVE_CARD_LINES_TOOL, SAVE_CARD_AS_MEAL_TOOL];
-const READ_TOOLS = new Set([LIST_LOGGED_MEALS_TOOL.name, LIST_SAVED_MEALS_TOOL.name, PARSE_FOOD_TOOL.name, READ_CARD_TOOL.name]);
+const READ_TOOLS = new Set([LIST_LOGGED_MEALS_TOOL.name, LIST_SAVED_MEALS_TOOL.name, PARSE_FOOD_TOOL.name, READ_CARD_TOOL.name, FIND_LABEL_TOOL.name]);
 const FINISH_TOOLS = new Set([
   CREATE_CUSTOM_FOOD_TOOL.name, CREATE_CUSTOM_MEAL_TOOL.name, LOG_FOOD_TOOL.name, REPLY_TOOL.name,
   EDIT_CARD_TOOL.name, REMOVE_CARD_LINES_TOOL.name, SAVE_CARD_AS_MEAL_TOOL.name, RESTORE_CARD_TOOL.name,
@@ -543,6 +568,7 @@ export function toolsForLater(
   card: CardLine[] | null | undefined,
   canRestore = false,
   copy: { thread?: boolean; diary?: boolean } = {},
+  label = false,
 ): AnthropicTool[] {
   const whole = !!card?.length && !cardMayBeCut(card);
   const out = whole
@@ -554,8 +580,20 @@ export function toolsForLater(
   if (copy.thread || copy.diary) out.push(COPY_LINES_TOOL);
   if (copy.thread) out.push(READ_CARD_TOOL);
   if (canRestore) out.push(RESTORE_CARD_TOOL);
+  if (label) out.push(FIND_LABEL_TOOL);
   return out;
 }
+
+/** find_label calls one message may make: each is a web lookup. */
+export const MAX_FIND_LABEL_PER_RUN = 2;
+
+/** Said to a later-message agent that has find_label (deps.findLabel). */
+export const LABEL_NOTE =
+  "You can look up a packaged food's printed label online with find_label. When the user asks you to look up or check " +
+  "a label, or doubts a packaged food's numbers, call it. On a card line, put the label on the line with edit_line, " +
+  "use_label true: the app works out the line from the label for the amount on the card, keeping the user's name for " +
+  "the food. When find_label finds no label, say so and keep the line as it is. Each card line ends with where its " +
+  "numbers came from: a line \"from web\" was already looked up on that site, and find_label looks again.";
 
 /** The later-message agent's instructions. The lessons of today's routes
  *  (plan section 9b) live here as rules, beside the code checks that back
@@ -715,6 +753,7 @@ export function statusFor(name: string, input: Record<string, unknown>): string 
   if (name === RESTORE_CARD_TOOL.name) return "Bringing that card back";
   if (name === COPY_LINES_TOOL.name) return "Copying that over";
   if (name === READ_CARD_TOOL.name) return "Checking that card";
+  if (name === FIND_LABEL_TOOL.name) return "Looking up the label";
   return null;
 }
 
@@ -829,13 +868,19 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // A first message (FOOD_FIRST_GATE) is a later-mode run with no card: its
   // own opening sentence and the note about the parse already running.
   const first = later && !!input.first && !cardOnScreen;
+  // find_label: a later message beside a card the agent can edit line by line
+  // (use_label lands through edit_line), when the deploy has a web lookup.
+  const canLabel = later && lineTools && !!deps.findLabel;
   const system = first
     ? [FOOD_AGENT_SYSTEM_FIRST, FIRST_NOTE, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n")
     : later
-    ? [FOOD_AGENT_SYSTEM_LATER, lineTools ? CARD_NOTE_LATER : cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n")
+    ? [
+      FOOD_AGENT_SYSTEM_LATER, lineTools ? CARD_NOTE_LATER : cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null,
+      canLabel ? LABEL_NOTE : null,
+    ].filter(Boolean).join("\n")
     : [FOOD_AGENT_SYSTEM, cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n");
   const tools = later
-    ? toolsForLater(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary })
+    ? toolsForLater(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary }, canLabel)
     : toolsFor(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary });
   const maxTurns = later ? MAX_TURNS_LATER : MAX_TURNS;
   // Every food line a read returned, by name, with the calories it carried.
@@ -853,6 +898,10 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     remember(seen, r.parsed?.items ?? []);
     return r;
   };
+  // Each card line find_label worked out from a label, by card index: what
+  // edit_line with use_label puts on the card.
+  const labelLines = new Map<number, ParsedItem>();
+  const labelCalls = { n: 0 };
   // The foods on the card for copy_lines' duplicate check: the card as sent,
   // plus every line already staged in this run.
   const onCard = onCardOf(input.card ?? []);
@@ -1032,7 +1081,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
       if (label) deps.onStatus?.(label);
       const replyText = replyUse && replyUse !== finish ? clean(typeof replyUse.input?.text === "string" ? replyUse.input.text : "") : "";
       if (plan) {
-        const out = await applyCardChanges(plan, input, deps, parse, seen, turns, replyText, staged.items);
+        const out = await applyCardChanges(plan, input, deps, parse, seen, turns, replyText, staged.items, labelLines);
         // A save asked for in the same turn as card changes: the changes win,
         // and the user is told the save has not happened (a save card cannot
         // ride with a changed meal card).
@@ -1092,7 +1141,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
           error: "A card is on screen, and restore_card would replace it, so it is not available now. To put foods " +
             "from that earlier card on this one, use copy_lines.",
         }
-        : await runRead(u, deps, parse);
+        : await runRead(u, deps, parse, { card: input.card ?? [], labelLines, calls: labelCalls });
       outs[i] = out;
       if (!run && !refused.has(u) && !rejected.has(u)) remember(seen, out);
       return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) };
@@ -1109,8 +1158,10 @@ async function runRead(
   u: ToolUse,
   deps: FoodAgentDeps,
   parse: (text: string) => Promise<ParseMealResult>,
+  ctx: { card: CardLine[]; labelLines: Map<number, ParsedItem>; calls: { n: number } } = { card: [], labelLines: new Map(), calls: { n: 0 } },
 ): Promise<unknown> {
   try {
+    if (u.name === FIND_LABEL_TOOL.name) return await runFindLabel(u.input ?? {}, deps, ctx);
     if (u.name === LIST_LOGGED_MEALS_TOOL.name) return await deps.readDiary(u.input ?? {});
     if (u.name === READ_CARD_TOOL.name) {
       const ref = typeof u.input?.card === "string" ? u.input.card.trim().toUpperCase() : "";
@@ -1479,7 +1530,7 @@ export function userAskedToSave(input: Pick<FoodAgentInput, "text" | "recentTurn
 
 /** Reads whose results a later-message agent acts on: a finish in the same
  *  turn waits for them. parse_food is not one (its result is reused). */
-const HOLD_READS = new Set([LIST_LOGGED_MEALS_TOOL.name, LIST_SAVED_MEALS_TOOL.name, READ_CARD_TOOL.name]);
+const HOLD_READS = new Set([LIST_LOGGED_MEALS_TOOL.name, LIST_SAVED_MEALS_TOOL.name, READ_CARD_TOOL.name, FIND_LABEL_TOOL.name]);
 
 /** What ends a later-message run other than a card change (or a reply). */
 const LATER_FINISHES = new Set([
@@ -1492,7 +1543,7 @@ export const MAX_CARD_WORK_PER_TURN = 8;
 /** One turn's card changes, checked and in the order they apply. */
 export interface CardPlan {
   ok: true;
-  edits: { index: number; change: string }[];
+  edits: { index: number; change: string; useLabel?: boolean }[];
   /** Card indexes, each once, in card order. */
   removes: number[];
   adds: { text: string | null; items: unknown[]; meal: MealType | null }[];
@@ -1530,7 +1581,7 @@ export function planCardChanges(
       if (i === null) return fail(`edit_line names ${JSON.stringify(a.line_id ?? null)}, which is not on the card. ${ids}`);
       const change = typeof a.change === "string" ? a.change.trim() : "";
       if (!change) return fail(`edit_line on L${i + 1} says no change.`);
-      edits.push({ index: i, change: change.slice(0, 400) });
+      edits.push({ index: i, change: change.slice(0, 400), ...(a.use_label === true ? { useLabel: true } : {}) });
     } else if (u.name === REMOVE_LINES_TOOL.name) {
       const asked = Array.isArray(a.line_ids) ? a.line_ids : [];
       if (!asked.length) return fail("remove_lines names no line.");
@@ -1597,6 +1648,162 @@ export function pickEditedLine(original: CardLine, r: ParseMealResult | null): P
   }) ?? null;
 }
 
+/** A change asking for the food's numbers to be checked or looked up again. */
+const RELOOKUP_RE = /\b(check(ed|ing)? (it )?again|re-?check|look (it |them )?up|search again|(numbers?|values?|macros?|nutrition) (are |is |look |looks |seem |seems )?(wrong|off|incorrect))\b/i;
+
+/** Words too small or too common to name a food. */
+const FILLER_WORDS = new Set(["the", "and", "with", "of", "a", "an", "in", "for", "per", "from", "to", "or", "made"]);
+const nameWords = (x: string) =>
+  x.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !FILLER_WORDS.has(w));
+
+/**
+ * An edit keeps the food the user named unless the change names another.
+ *
+ * Live, 2026-11-07: "2 slices of Health Factory protein bread, 242 kcal is too
+ * high" went to the correction path, which swapped in a catalog "Zero Maida
+ * Protein Bread": the brand was gone and the protein fell. The change asked for
+ * an amount, not another product. So when the edited line's name has lost words
+ * of the user's name for it, and the change names no new food, the swap was the
+ * search's, not the user's: the line keeps its name, and its own numbers per
+ * gram, scaled to the new weight. Without its own numbers (no grams or no kcal
+ * on the line) the edit stands, and so does a line of numbers the user stated.
+ */
+export function keepLineIdentity(original: CardLine, edited: ParsedItem, change: string): ParsedItem {
+  // Numbers the user stated (source manual) are theirs, whatever the name: a
+  // stated number wins over every source.
+  if (edited.source === "manual") return edited;
+  // Amount edits only: the weight changed. "Those numbers are wrong, check
+  // again" at the same weight is a re-lookup, and its new row stands.
+  if (!(original.grams > 0) || Math.abs(edited.grams - original.grams) <= Math.max(1, original.grams * 0.05)) return edited;
+  // A change that asks for the numbers to be looked up again, or says they are
+  // wrong, wants a new row, whatever the weight.
+  if (RELOOKUP_RE.test(change)) return edited;
+  const has = (set: Set<string>, w: string) => set.has(w) || set.has(`${w}s`) || set.has(w.replace(/s$/, ""));
+  const before = new Set([...nameWords(original.food_name), ...nameWords(original.said_name ?? "")]);
+  const said = new Set(nameWords(change));
+  // The change names the new food ("it was the zero maida one"): it stands.
+  if (nameWords(edited.food_name).some((w) => !has(before, w) && has(said, w))) return edited;
+  // The user's own words for the food are gone ("Health Factory protein bread"
+  // to a plain "Protein Bread"): the search swapped it. "Roti" to "Whole Wheat
+  // Roti" keeps them and stands.
+  const now = new Set(nameWords(edited.food_name));
+  const lost = nameWords(original.said_name ?? original.food_name).filter((w) => !has(now, w));
+  if (!lost.length) return edited;
+  if (!(original.grams > 0) || typeof original.kcal !== "number" || !(edited.grams > 0)) return edited;
+  const f = edited.grams / original.grams;
+  const scale = (v: number | undefined) => Math.round((v ?? 0) * f * 10) / 10;
+  return {
+    ...edited,
+    food_id: original.food_id ?? null,
+    food_name: original.food_name,
+    ...(original.said_name ? { said_name: original.said_name } : {}),
+    // The original line's site, never the swapped row's: its numbers are the
+    // original's, so a catalog line must not read "from web: <site>".
+    source_site: original.source_site,
+    kcal: scale(original.kcal),
+    protein_g: scale(original.protein_g),
+    carb_g: scale(original.carb_g),
+    fat_g: scale(original.fat_g),
+    fiber_g: typeof original.fiber_g === "number" ? scale(original.fiber_g) : null,
+    source: original.source ?? edited.source,
+    assumption: original.assumption ?? null,
+  };
+}
+
+const MASS_LABELS = new Set(["g", "gm", "gms", "gram", "grams", "ml"]);
+const singular = (w: string) => (w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w);
+
+/**
+ * A card line worked out from a label find_label returned. The model does no
+ * arithmetic: the line keeps its name (the user's brand and product), its
+ * quantity and its unit, and takes its weight from the label when the unit is
+ * the label's piece ("2 x slice" with a label piece of "1 slice", 25 g: 50 g);
+ * a weight line keeps its grams; any other line keeps its weight. Every macro
+ * is the label's per-100 at that weight.
+ */
+export function lineFromLabel(line: CardLine, label: LabelFound, mealDefault: MealType): ParsedItem {
+  const unit = line.serving_label.trim().toLowerCase();
+  const unitNoun = singular(unit.replace(/\(.*\)/, "").trim().split(/\s+/).pop() ?? "");
+  const pieceNoun = label.piece ? singular(label.piece.label.toLowerCase().replace(/\(.*\)/, "").trim().split(/\s+/).pop() ?? "") : "";
+  let grams = line.grams;
+  let servingLabel = line.serving_label;
+  if (MASS_LABELS.has(unit) && line.quantity > 0) {
+    grams = line.quantity;
+  } else if (label.piece && pieceNoun && unitNoun === pieceNoun && line.quantity > 0) {
+    grams = line.quantity * label.piece.grams;
+    servingLabel = `${pieceNoun} (${Math.round(label.piece.grams * 10) / 10} ${label.base_unit})`;
+  }
+  const f = grams / 100;
+  const r1 = (v: number) => Math.round(v * f * 10) / 10;
+  const item: ParsedItem = {
+    food_id: null,
+    food_name: line.food_name,
+    ...(line.said_name ? { said_name: line.said_name } : {}),
+    quantity: line.quantity,
+    serving_label: servingLabel,
+    grams: Math.round(grams * 10) / 10,
+    kcal: r1(label.per_100.kcal),
+    protein_g: r1(label.per_100.protein_g),
+    carb_g: r1(label.per_100.carb_g),
+    fat_g: r1(label.per_100.fat_g),
+    fiber_g: label.per_100.fiber_g === null ? null : r1(label.per_100.fiber_g),
+    source: "web",
+    assumption: "From the label online",
+    ...(label.site ? { source_site: label.site } : {}),
+    confidence: label.verified ? "high" : "medium",
+    meal_type: line.meal_type ?? mealDefault,
+  };
+  // A unit that prints its own weight ("slice (25 g)") weighs quantity x it.
+  return unitWeightMatchesGrams(item);
+}
+
+/** find_label for the agent: the label, and for a card line, the line from it. */
+async function runFindLabel(
+  input: Record<string, unknown>,
+  deps: FoodAgentDeps,
+  ctx: { card: CardLine[]; labelLines: Map<number, ParsedItem>; calls: { n: number } },
+): Promise<unknown> {
+  if (!deps.findLabel) return { error: "find_label is not available here." };
+  // Each call is a web lookup: a few per run at most.
+  if (ctx.calls.n >= MAX_FIND_LABEL_PER_RUN) {
+    return { error: `find_label already ran ${MAX_FIND_LABEL_PER_RUN} times this message. Use what it returned, or reply.` };
+  }
+  ctx.calls.n++;
+  const index = input.line_id === undefined ? null : lineIndexOf(input.line_id, ctx.card.length);
+  if (input.line_id !== undefined && index === null) {
+    return { error: `find_label names ${JSON.stringify(input.line_id)}, which is not on the card. The card's lines are L1 to L${ctx.card.length}.` };
+  }
+  const line = index === null ? null : ctx.card[index];
+  const product = line ? line.said_name?.trim() || line.food_name : typeof input.product === "string" ? input.product.trim() : "";
+  if (!product) return { error: "Name a card line (line_id) or a product." };
+  const label = await deps.findLabel({ name: product, brand: null });
+  deps.onEvent?.({ tool: "find_label", found: !!label });
+  if (!label) return { found: false, product, note: `No label found online for ${product}.` };
+  const r1 = (v: number | null) => (v === null ? null : Math.round(v * 10) / 10);
+  const out: Record<string, unknown> = {
+    found: true,
+    product: label.name,
+    per_100: {
+      unit: label.base_unit, kcal: r1(label.per_100.kcal), protein_g: r1(label.per_100.protein_g),
+      carb_g: r1(label.per_100.carb_g), fat_g: r1(label.per_100.fat_g),
+    },
+    serving_printed: label.serving ? `${label.serving.label}, ${r1(label.serving.grams)} ${label.base_unit}` : null,
+    one_piece: label.piece ? `${label.piece.label}, ${r1(label.piece.grams)} ${label.base_unit}` : null,
+    agreed_by_two_sources: label.verified,
+    ...(line ? {} : { note: "To put a label on a card line, call find_label with that line_id." }),
+  };
+  if (line && index !== null) {
+    const item = lineFromLabel(line, label, line.meal_type ?? "snack");
+    ctx.labelLines.set(index, item);
+    out.line_from_label = {
+      line_id: `L${index + 1}`, food_name: item.food_name, quantity: item.quantity, serving_label: item.serving_label,
+      grams: item.grams, kcal: item.kcal, protein_g: item.protein_g, carb_g: item.carb_g, fat_g: item.fat_g,
+      to_apply: `edit_line on L${index + 1} with use_label true`,
+    };
+  }
+  return out;
+}
+
 const EMPTY_USAGE = (): ParseMealResult["usage"] => ({
   input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0,
 });
@@ -1626,18 +1833,27 @@ async function applyCardChanges(
   /** Lines copy_lines took earlier in the run. withStaged appends them to
    *  this result, so they count as on the card and against its size. */
   stagedItems: ParsedItem[] = [],
+  /** Card lines find_label worked out from a label (use_label). */
+  labelLines: ReadonlyMap<number, ParsedItem> = new Map(),
 ): Promise<FoodAgentOutcome> {
   const card = input.card ?? [];
   const meal: MealType = card[0]?.meal_type ?? input.defaultMeal;
   const [editsOut, addsOut] = await Promise.all([
     Promise.all(plan.edits.map(async (e) => {
+      // The label find_label returned for this line: no parse, the line is
+      // the one code worked out. No label for it: the edit fails, the line stays.
+      if (e.useLabel) {
+        const l = labelLines.get(e.index);
+        return { e, r: null, item: l && l.food_name === card[e.index].food_name ? l : null };
+      }
       let r: ParseMealResult | null = null;
       try {
         r = deps.editLine ? await deps.editLine(e.index, e.change) : null;
       } catch {
         r = null;
       }
-      return { e, r, item: pickEditedLine(card[e.index], r) };
+      const picked = pickEditedLine(card[e.index], r);
+      return { e, r, item: picked ? keepLineIdentity(card[e.index], picked, e.change) : null };
     })),
     Promise.all(plan.adds.map(async (a) => {
       const m = a.meal ?? meal;
@@ -2265,6 +2481,7 @@ function cardLineAsItem(l: CardLine, mealDefault: MealType): ParsedItem {
     confidence: l.confidence ?? "medium",
     meal_type: l.meal_type ?? mealDefault,
     ...(l.said_name ? { said_name: l.said_name } : {}),
+    ...(l.source_site ? { source_site: l.source_site } : {}),
   };
 }
 

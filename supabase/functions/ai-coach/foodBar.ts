@@ -42,6 +42,7 @@ import {
   type ParsedItem,
   type ParseMealResult,
   type PreviousItem,
+  findLabel,
   runParseMeal,
 } from "./parseMeal.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
@@ -708,6 +709,36 @@ export function startFoodAgent(args: {
               previousItems: [p],
               recentTurns: [],
             }), `edit_line ${index + 1}: ${change}`);
+          }
+          : undefined,
+        // find_label: the Precise web lookup for one product. Its model tokens
+        // and Tavily credits get their own rows here: a label read may end in
+        // a reply, where no parse result carries them.
+        findLabel: later && args.card
+          ? async (product) => {
+            const c0 = Date.now();
+            const r = await findLabel(args.parseDeps(agentParse), product).catch(() => null);
+            if (agentParse && r) for (const st of fromParseSteps("parse", r.steps)) agentParse.step(st);
+            if (r && (r.usage.input_tokens || r.usage.output_tokens)) {
+              args.logUsage({
+                pipeline: "food_agent_find_label",
+                provider: "anthropic",
+                model: env().parseModel,
+                input_tokens: r.usage.input_tokens,
+                output_tokens: r.usage.output_tokens,
+                latency_ms: Date.now() - c0,
+                metadata: { user_id: args.userId, found: !!r.label, ...(fb ? { request_id: fb.requestId } : {}) },
+              });
+            }
+            if (r?.usage.tavily_credits) {
+              args.logUsage({
+                pipeline: "parse_meal",
+                provider: "tavily",
+                model: "tavily-search",
+                metadata: { user_id: args.userId, tavily_credits: r.usage.tavily_credits, via: "find_label", ...(fb ? { request_id: fb.requestId } : {}) },
+              });
+            }
+            return r?.label ?? null;
           }
           : undefined,
         onStatus: args.onStatus,

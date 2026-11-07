@@ -3332,6 +3332,11 @@ async function handleParseMealRequest(args: {
           ? { said_name: r.said_name.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 100) }
           : {}),
         ...(r.research === true ? { research: true } : {}),
+        // Where a web line's numbers came from. An older app does not send it:
+        // the line then reads "from web" with no site.
+        ...(typeof r.source_site === "string" && /^[a-z0-9.-]{3,60}$/i.test(r.source_site.trim())
+          ? { source_site: r.source_site.trim().toLowerCase() }
+          : {}),
       }];
     })
     : [];
@@ -3346,6 +3351,7 @@ async function handleParseMealRequest(args: {
     food_id: p.food_id, source: p.source,
     fiber_g: p.fiber_g, assumption: p.assumption, confidence: p.confidence, meal_type: p.meal_type,
     ...(p.said_name ? { said_name: p.said_name } : {}),
+    ...(p.source_site ? { source_site: p.source_site } : {}),
   }));
   const foodContext: FoodConversationContext = { ...baseFoodContext, card: card.length ? card : null };
   // THE switch for the agent-beside-a-card path. A card that may be cut at the

@@ -46,6 +46,8 @@ export interface CardLine {
   meal_type?: "breakfast" | "lunch" | "dinner" | "snack";
   /** What the user called this line, when the card shows another name. */
   said_name?: string;
+  /** The site its numbers came from, for a web-looked-up line. */
+  source_site?: string;
 }
 
 /** Lines the card carries to the models. The SAME cap index.ts puts on
@@ -66,10 +68,33 @@ export function cardMayBeCut(card: CardLine[] | null | undefined): boolean {
   return (card?.length ?? 0) >= CARD_MAX_LINES;
 }
 
+/** Where a line's numbers came from, in a few words: "from web: fatsecret.co.in",
+ *  "estimate: <its note>", "the user's numbers". */
+export function lineSourceTail(l: Pick<CardLine, "source" | "source_site" | "assumption">): string {
+  const flat = (x: string) => x.replace(/\s+/g, " ").trim();
+  const site = l.source_site ? flat(l.source_site).slice(0, 40) : "";
+  switch (l.source) {
+    case "web":
+      return site ? `from web: ${site}` : "from web";
+    case "manual":
+      return "the user's numbers";
+    case "estimate": {
+      const note = l.assumption ? flat(l.assumption).slice(0, 40) : "";
+      return note ? `estimate: ${note}` : "estimate";
+    }
+    case "catalog":
+    case "off":
+    case "fatsecret":
+      return site ? `from web: ${site}` : `from ${l.source === "off" ? "Open Food Facts" : l.source}`;
+    default:
+      return "estimate";
+  }
+}
+
 /** The card for a model's eyes: short, numbered, one line per food.
  *  `macros`: add protein, carbs and fat, for a model that may copy a line
  *  into a save (the agent). The router judges intent and gets the short form. */
-export function cardLines(card: CardLine[] | null | undefined, opts: { macros?: boolean } = {}): string[] {
+export function cardLines(card: CardLine[] | null | undefined, opts: { macros?: boolean; sources?: boolean } = {}): string[] {
   // Whitespace collapsed: a newline in a client-supplied name would otherwise
   // forge an extra numbered line in the prompt.
   const flat = (x: string) => x.replace(/\s+/g, " ").trim();
@@ -79,7 +104,8 @@ export function cardLines(card: CardLine[] | null | undefined, opts: { macros?: 
   const r1 = (n: number | undefined) => (typeof n === "number" && Number.isFinite(n) ? String(Math.round(n * 10) / 10) : "?");
   return (card ?? []).slice(0, CARD_MAX_LINES).map((l, i) =>
     `${i + 1}. ${flat(l.food_name)}: ${l.quantity} ${flat(l.serving_label)}, ${Math.round(l.grams)} g, ${Math.round(l.kcal)} kcal` +
-    (opts.macros ? `, P ${r1(l.protein_g)} C ${r1(l.carb_g)} F ${r1(l.fat_g)}` : "")
+    (opts.macros ? `, P ${r1(l.protein_g)} C ${r1(l.carb_g)} F ${r1(l.fat_g)}` : "") +
+    (opts.sources ? ` | ${lineSourceTail(l)}` : "")
   );
 }
 
