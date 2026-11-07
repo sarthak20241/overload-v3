@@ -46,7 +46,7 @@ function claimedActions(text: string): Set<"save" | "log"> {
   return out;
 }
 
-function linesOf(o: Outcome): Line[] {
+export function linesOf(o: Outcome): Line[] {
   return o.card ?? [];
 }
 

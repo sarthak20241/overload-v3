@@ -136,6 +136,7 @@ import { preciseAliasStore } from "./preciseAlias.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
+import { type FoodRegion, foodRegionForTimezone, parseFoodRegionRulesMode } from "./regionRules.ts";
 import { freeGoalTurnKind, freePhaseBuildCandidate, freePhaseRefineCandidate } from "./freePhaseBuild.ts";
 import { selectMatchRows } from "./ourSources.ts";
 import { MEMORY_DAYS, type MemoryEntry } from "./userFoodMemory.ts";
@@ -311,6 +312,19 @@ const FOOD_AGENT_LATER = parseFoodAgentLaterMode(Deno.env.get("FOOD_AGENT_LATER"
  *  the parse already running (foodIntent.ts firstMessageGoesToGate, foodBar.ts
  *  runFirstMessage). off (default): exactly today's routing. */
 const FOOD_FIRST_GATE = parseFoodFirstGateMode(Deno.env.get("FOOD_FIRST_GATE"));
+
+/** Plan step 6: region rules in the Precise food prompts. on: the user's
+ *  region comes from their time zone (regionRules.ts), the India rules go in
+ *  the prompt only for India, examples follow the region, and an unknown zone
+ *  gets no regional default. off (default): every prompt is today's. */
+const FOOD_REGION_RULES = parseFoodRegionRulesMode(Deno.env.get("FOOD_REGION_RULES"));
+
+/** The user's stored time zone, or null. Never rejects. */
+function readTimezone(userClient: SupabaseClient): Promise<string | null> {
+  return Promise.resolve(userClient.from("user_profiles").select("timezone").maybeSingle())
+    .then(({ data }: { data: { timezone?: unknown } | null }) => typeof data?.timezone === "string" ? data.timezone : null)
+    .catch(() => null);
+}
 
 /** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
  *  of a race it is supposed to win (measured ~700ms against a parse of 1.2s and
@@ -2792,7 +2806,10 @@ function makeParseDeps(
    *  same reason Precise is Pro-only; absent means no web. */
   opts: { brandWeb?: boolean; fbTrace?: FoodBarTraceCollector } = {},
 ): ParseMealDeps {
-  let searchCountryP: Promise<string | null> | undefined;
+  let zoneP: Promise<string | null> | undefined;
+  const zone = () => (zoneP ??= readTimezone(userClient));
+  // Region rules need the zone before extract: start the read now.
+  if (FOOD_REGION_RULES === "on") void zone();
   const fb = opts.fbTrace;
   const aliases = preciseAliasStore(admin, userId);
   return {
@@ -2930,12 +2947,9 @@ function makeParseDeps(
       }
       : undefined,
     // One profile read per request, only when a web search actually needs it.
-    resolveSearchCountry: () =>
-      (searchCountryP ??= Promise.resolve(userClient.from("user_profiles").select("timezone").maybeSingle())
-        .then(({ data }: { data: { timezone?: unknown } | null }) =>
-          countryForTimezone(typeof data?.timezone === "string" ? data.timezone : null, PRECISE_SEARCH_COUNTRY)
-        )
-        .catch(() => PRECISE_SEARCH_COUNTRY)),
+    resolveSearchCountry: () => zone().then((tz) => countryForTimezone(tz, PRECISE_SEARCH_COUNTRY)),
+    // Precise reads it (parseMeal.ts); no fallback, so no zone is no region.
+    ...(FOOD_REGION_RULES === "on" ? { foodRegion: () => zone().then(foodRegionForTimezone) } : {}),
     skipDecideMode: PARSE_SKIP_DECIDE,
     rerankCandidates: PARSE_RERANK_ENABLED && VOYAGE_API_KEY
       ? (q: string, docs: string[]) =>
@@ -3991,6 +4005,10 @@ async function handleParseMealRequest(args: {
       pendingMeal: foodContext.pendingMeal,
       card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
       parseDeps: (fb?: FoodBarTraceCollector) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
+      // The agent's own instructions take the region's examples (Precise only).
+      region: FOOD_REGION_RULES === "on" && isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier })
+        ? readTimezone(userClient).then(foodRegionForTimezone) as Promise<FoodRegion | null>
+        : null,
       logUsage: (row: FoodBarUsageRow) => void logTokenUsage(admin, row),
       thread: threadP,
       fbTrace,

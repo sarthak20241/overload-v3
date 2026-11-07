@@ -57,6 +57,7 @@ import {
 } from "../../supabase/functions/ai-coach/foodBar";
 import type { CardLine, FoodConversationContext } from "../../supabase/functions/ai-coach/foodContext";
 import { cardMayBeCut, readFoodContext } from "../../supabase/functions/ai-coach/foodContext";
+import { foodRegionForTimezone } from "../../supabase/functions/ai-coach/regionRules";
 import {
   continuesPendingMeal,
   firstMessageGoesToGate,
@@ -296,6 +297,12 @@ const TZ: Record<string, { zone: string; offsetMin: number }> = {
   uk: { zone: "Europe/London", offsetMin: 0 },
 };
 
+/** FOOD_REGION_RULES=on: Precise prompts by region (plan step 6). EVAL_REGION
+ *  (india | us | uk) sets the region's time zone for every case, so one run
+ *  measures one region; the case's own clock and diary are unchanged. */
+const REGION_RULES_ON = env("FOOD_REGION_RULES") === "on";
+const regionZone = (c: FoodBoxCase): string => (TZ[env("EVAL_REGION") || c.region || "india"] ?? TZ.india).zone;
+
 function clockOf(c: FoodBoxCase): { zone: string; localDate: string; localHour: number } {
   const tz = TZ[c.region ?? "india"] ?? TZ.india;
   const at = Date.parse(c.origin.date.length <= 10 ? `${c.origin.date}T12:00:00Z` : c.origin.date);
@@ -457,6 +464,7 @@ function parseDeps(c: FoodBoxCase, zone: string): ParseMealDeps {
     jev: JEV_API_KEY ? { apiKey: JEV_API_KEY, timeoutMs: 5000 } : undefined,
     searchCountry: c.region ?? "india",
     resolveSearchCountry: async () => c.region ?? "india",
+    ...(REGION_RULES_ON ? { foodRegion: async () => foodRegionForTimezone(regionZone(c)) } : {}),
     userMemory: JEV_API_KEY
       ? {
         load: async () => ({ entries: memory, timeZone: zone }),
@@ -585,6 +593,7 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
     savedMealsP, readDiary, readDiaryLines, contextPromise, userId: "eval", recentTurns, pendingMeal: pendingIn,
     card: card.length ? { lines: card, previousText, previousWords, previousItems } : null,
     parseDeps: () => deps,
+    region: REGION_RULES_ON ? Promise.resolve(foodRegionForTimezone(regionZone(c))) : null,
     logUsage: () => {},
     thread: threadP,
   };

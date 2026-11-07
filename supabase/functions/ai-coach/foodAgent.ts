@@ -33,6 +33,7 @@ import type { SavedMealForParse } from "./savedMeals.ts";
 import { lineAsItem, type ThreadLine } from "./foodThreads.ts";
 import { falseAgentClaim } from "./foodIntent.ts";
 import type { ThreadCardLines } from "./foodBar.ts";
+import { type FoodRegion, regionalizePrompt } from "./regionRules.ts";
 
 export const MAX_TURNS = 5;
 
@@ -123,6 +124,9 @@ export interface FoodAgentInput {
    *  the thread (the gate said it is not a plain log). No card yet; the parse
    *  of the whole message is already running (FIRST_NOTE). Only with `later`. */
   first?: boolean;
+  /** FOOD_REGION_RULES=on and a Precise message: the instructions take this
+   *  region's examples (regionRules.ts). Absent: today's instructions. */
+  regionRules?: { region: FoodRegion | null };
 }
 
 /** The card for the agent with stable line ids: "[L2] Roti: 2 piece, ...". An
@@ -871,7 +875,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // find_label: a later message beside a card the agent can edit line by line
   // (use_label lands through edit_line), when the deploy has a web lookup.
   const canLabel = later && lineTools && !!deps.findLabel;
-  const system = first
+  const systemToday = first
     ? [FOOD_AGENT_SYSTEM_FIRST, FIRST_NOTE, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n")
     : later
     ? [
@@ -879,6 +883,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
       canLabel ? LABEL_NOTE : null,
     ].filter(Boolean).join("\n")
     : [FOOD_AGENT_SYSTEM, cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n");
+  const system = input.regionRules ? regionalizePrompt("agent", systemToday, input.regionRules.region) : systemToday;
   const tools = later
     ? toolsForLater(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary }, canLabel)
     : toolsFor(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary });

@@ -51,6 +51,7 @@ import {
 import { foodLabel, hostOf, parseSuggestion, runTavilyLookup, suggestSearchPayload, withPrep } from "./tavilyLookup.ts";
 import { otherBrandRows } from "./brandCheck.ts";
 import { matchOurSources } from "./ourSources.ts";
+import { type FoodRegion, regionalizePrompt, regionBlock } from "./regionRules.ts";
 import { applyJudgement, judgeThorough, type ThoroughMatchMode, wantsBrandWeb } from "./thoroughMatch.ts";
 import {
   fillStated,
@@ -1144,6 +1145,14 @@ export interface ParseMealDeps {
    *  searchCountry.ts). When present its answer wins, null included: null
    *  means "no boost", which is right for a zone we cannot place. */
   resolveSearchCountry?(): Promise<string | null>;
+  /** FOOD_REGION_RULES=on: the user's food region from their time zone
+   *  (regionRules.ts foodRegionForTimezone; null when it cannot be placed).
+   *  Precise only: its prompts carry only that region's rules and examples.
+   *  Absent: the switch is off and every prompt is today's. */
+  foodRegion?(): Promise<FoodRegion | null>;
+  /** Set by runParseMeal once foodRegion has answered, for the steps that
+   *  read it (Jev's kind question in our sources). Never set by a caller. */
+  regionRules?: { region: FoodRegion | null };
   /** Thorough: Jev checks that the catalog row IS the food named, the same
    *  check Precise runs before the web (thoroughMatch.ts). "shadow" asks and
    *  only records; "on" serves Jev's row, or no row so decide estimates.
@@ -2689,7 +2698,30 @@ Output: {"declined": true, "decline_message": "That's training, not a meal. Tell
 
 const EXTRACT_SYSTEM_SMART = EXTRACT_SYSTEM_HEAD + EXTRACT_NO_NUTRITION + EXTRACT_SHARED_RULES;
 
-export function buildDecideSystemPrompt(input: ParseMealInput): string {
+/** The extract prompt outside Quick, with the correction rules when a card is
+ *  on screen. With region rules (FOOD_REGION_RULES, Precise only) the India
+ *  rules leave the shared text, this region's examples go in, and the
+ *  region's rules go at the END, so the shared part stays one stable text. */
+export function preciseExtractSystem(hasPrevious: boolean, regionRules?: { region: FoodRegion | null }): string {
+  const base = hasPrevious ? EXTRACT_SYSTEM_SMART + EXTRACT_CORRECTION_RULES : EXTRACT_SYSTEM_SMART;
+  if (!regionRules) return base;
+  return regionalizePrompt("extract", base, regionRules.region) + regionBlock("extract", regionRules.region);
+}
+
+/** buildDecideSystemPrompt with region rules (FOOD_REGION_RULES, Precise
+ *  only): the shared rules lose the India rules and take this region's
+ *  examples, and the region block sits late, just before the user's own
+ *  context. Without regionRules: today's prompt, unchanged. */
+export function buildDecideSystemPrompt(input: ParseMealInput, regionRules?: { region: FoodRegion | null }): string {
+  const today = decideSystemToday(input);
+  if (!regionRules) return today;
+  const at = today.indexOf("\n<user_context>");
+  const shared = at >= 0 ? today.slice(0, at) : today;
+  const rest = at >= 0 ? today.slice(at) : "";
+  return regionalizePrompt("decide", shared, regionRules.region) + regionBlock("decide", regionRules.region).replace(/\n$/, "") + rest;
+}
+
+function decideSystemToday(input: ParseMealInput): string {
   const hint = input.mealHint ?? mealForHour(input.localHour);
 
   // I13: frequency first, with the count and the USUAL amount. "last: 1 serving"
@@ -3860,7 +3892,7 @@ async function resolveOneItem(
     const pm = deps.preciseMatch;
     const ours = pm && pm.mode !== "off" && deps.jev
       ? matchOurSources(
-        { jev: deps.jev, findCandidates: pm.findCandidates, log: deps.log },
+        { jev: deps.jev, findCandidates: pm.findCandidates, log: deps.log, regionRules: deps.regionRules },
         { name: item.name, brand: item.brand ?? null },
       )
       : null;
@@ -6613,6 +6645,15 @@ async function runParseMealCore(
   const tier = resolveParseTier(input.mode, hasPrevious);
   const fastMode = tier === "fast";
   const superMode = tier === "precise";
+  // Region rules (FOOD_REGION_RULES): Precise only. The region read started
+  // when the deps were made, so this rarely waits. A failed read is no region.
+  const regionRules = superMode && deps.foodRegion
+    ? { region: await deps.foodRegion().catch(() => null) }
+    : undefined;
+  if (regionRules) {
+    deps = { ...deps, regionRules };
+    steps.push({ iter: 0, tool: "region_rules", input: { tier }, result: { region: regionRules.region } });
+  }
   // First-shot reads overlap extraction. Follow-ups wait until extraction has
   // identified food additions/replacements, so questions and research requests
   // do not read memory only to discard it.
@@ -6670,9 +6711,7 @@ async function runParseMealCore(
     system: cacheableSystem(
       (fastMode
         ? FAST_EXTRACT_SYSTEM
-        : hasPrevious
-        ? EXTRACT_SYSTEM_SMART + EXTRACT_CORRECTION_RULES
-        : EXTRACT_SYSTEM_SMART) + (input.pendingMeal
+        : preciseExtractSystem(hasPrevious, regionRules)) + (input.pendingMeal
           ? "\nThe message contains an unlogged pending_meal and the user's clarification. Re-extract ALL foods from pending_meal.text, applying the clarification to the questioned item. Preserve amounts and meal sections for every other food. This is one meal request, not an additional log. The question is context, not a food to extract: a food named only in the question is an example Drona gave, never something the user ate. " +
             PENDING_MUST_LOG
           : input.mustLog
@@ -7844,7 +7883,7 @@ async function runParseMealCore(
       iterations: anthropicCalls,
     };
   }
-  const decideSystem = buildDecideSystemPrompt(input);
+  const decideSystem = buildDecideSystemPrompt(input, regionRules);
   const decidePayload = {
     // The same clamped text extract saw. Decide reads this to place quantities
     // and sections against the user's own words, so feeding it a shorter cut

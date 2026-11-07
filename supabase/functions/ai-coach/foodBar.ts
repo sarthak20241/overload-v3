@@ -32,6 +32,7 @@ import {
   wantsFoodAgent,
 } from "./foodIntent.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
+import type { FoodRegion } from "./regionRules.ts";
 import { type FoodBarTraceCollector, fromParseSteps, routerView, summarize } from "./foodBarTrace.ts";
 import type { JevDeps, JevUsage } from "./jev.ts";
 import {
@@ -572,6 +573,10 @@ export function startFoodAgent(args: {
    *  router: a parse_food or log_food on the same words takes it instead of
    *  starting a second one, and `reused` counts how often that happened. */
   first?: { text: string; parse: Promise<ParseMealResult>; reused: number };
+  /** FOOD_REGION_RULES=on and a Precise request: the user's region (null when
+   *  it cannot be placed). The agent's instructions take its examples. Absent
+   *  or null: today's instructions. */
+  region?: Promise<FoodRegion | null> | null;
 }): Promise<FoodAgentOutcome | null> {
   const fb = args.fbTrace;
   // The agent's own parses: their steps and model calls land on the trace
@@ -602,6 +607,7 @@ export function startFoodAgent(args: {
     const thread = couldUseThread ? await args.thread!.catch(() => null) : null;
     if (!later && !wantsFoodAgent(d, args.supportsCreate, cardOpen, !!thread?.index && noCard)) return null;
     if (!env().anthropicApiKey) return null;
+    const regionRules = args.region ? { region: await args.region.catch(() => null) } : null;
     const t0 = Date.now();
     const callEnds: number[] = [];
     const out = await runFoodAgent(
@@ -620,6 +626,7 @@ export function startFoodAgent(args: {
         threadIndex: thread?.index ?? null,
         ...(later ? { later: true } : {}),
         ...(later && args.first ? { first: true } : {}),
+        ...(regionRules ? { regionRules } : {}),
       },
       {
         model: env().agentModel,
