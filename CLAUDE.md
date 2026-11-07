@@ -44,6 +44,9 @@ EVAL_VIA_CLI=1 npx tsx scripts/program-activity-eval/run.mts
 # answers? Same CLI rule.
 EVAL_VIA_CLI=1 npx tsx scripts/lean-context-eval/run.mts
 
+# Region rules (FOOD_REGION_RULES=on, Precise): EVAL_REGION=india|us|uk sets the
+# time zone for both evals; EVAL_PRECISE=1 runs parse-meal-eval in Precise.
+# Both print a kcal error line (against each kcal range's middle).
 # Food box (Precise): 58 cases (44 recorded conversations, 14 with no recording) graded on the outcome
 # (card kept, lines not lost, saves with macros, no false claims). ADAPTER=recorded grades
 # what the live box served; no model call. Plan: .planning/precise-food-logger-plan.md
@@ -131,6 +134,7 @@ deno test --allow-all lib/firstOpenUpdate.test.ts # fresh store install: newest 
 deno test --allow-all lib/signupTour.test.ts    # the film tour after sign-up: its words, the tap rules, no promise the plan is done
 deno test --allow-all lib/weightWheel.test.ts    # onboarding weight wheels: whole + one decimal, the top of the scale, kg <-> lbs
 deno test --allow-all supabase/functions/ai-coach/freeGoalBuild.test.ts # one free goal plan per account: 1 build, 8 edit turns, a guest build spends it
+deno test --allow-all supabase/functions/ai-coach/regionRules.test.ts # FOOD_REGION_RULES: each region gets only its block, no rule lost, off = today
 ```
 
 There are no configured lint or build scripts.
