@@ -19,6 +19,7 @@ import {
   buildRecipe,
   type PartFound,
   partLookupText,
+  per100FromParse,
   readRecipeParts,
   recipeQuestion,
   sumRecipe,
@@ -316,4 +317,19 @@ Deno.test("agent: a rebuild that fails on a card line says the line is as before
     assert(/as before/.test(out.text), out.text);
     assertFalse(/not on the card/.test(out.text), out.text);
   }
+});
+
+// ── Review fixes, round 4 (PR #359) ────────────────────────────────────────
+
+Deno.test("assumedAmount: a food packed in oil or syrup is not a cooking fat", () => {
+  assertEquals(assumedAmount("tuna in oil"), null);
+  assertEquals(assumedAmount("peaches in syrup with sugar"), null);
+  assertEquals(assumedAmount("olive oil"), { grams: 5, label: "1 tsp" });
+});
+
+Deno.test("per100FromParse: an item with no weight does not add to the per-100 numbers", () => {
+  const withWeight: ParsedItem = { food_id: null, food_name: "dal", quantity: 100, serving_label: "g", grams: 100, kcal: 120, protein_g: 7, carb_g: 18, fat_g: 2, fiber_g: null, source: "catalog", assumption: null, confidence: "medium" };
+  const noWeight: ParsedItem = { ...withWeight, food_name: "tadka", grams: 0, kcal: 90, fat_g: 10 };
+  const r = { parsed: { meal_type: "lunch", items: [withWeight, noWeight], drona_line: "", corrects_previous: false }, declined: null, usage: USAGE, tool_calls: [], steps: [], iterations: 1 } as ParseMealResult;
+  assertEquals(per100FromParse(r)?.kcal, 120);
 });

@@ -2069,7 +2069,9 @@ export const CASES: FoodBoxCase[] = [
   },
   {
     id: "recipe-omelette-butter-first",
-    tags: ["recipe-build"],
+    // A first message that asks something: the agent sees it only with
+    // FOOD_FIRST_GATE=on (the gate sends it to the later-mode agent).
+    tags: ["recipe-build", "first"],
     origin: { date: "2026-11-07", who: "synthetic", note: "a first message that is a home dish with butter, and a question" },
     region: "india",
     thread: { turns: [], card: null },

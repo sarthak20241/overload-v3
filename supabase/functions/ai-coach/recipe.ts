@@ -101,7 +101,8 @@ const NOT_A_FAT = /\b(?:peanut|almond|cashew|nut|cocoa|apple|seed|sunflower seed
 /** The table's amount for a part with no amount, or null. */
 export function assumedAmount(partName: string): { grams: number; label: string } | null {
   const name = partName.toLowerCase().replace(/[^a-z\s-]/g, " ").replace(/\s+/g, " ").trim();
-  if (!name || NOT_A_FAT.test(name)) return null;
+  // "tuna in oil", "peaches in syrup": a food packed in something, not a fat.
+  if (!name || NOT_A_FAT.test(name) || /\sin\s/.test(` ${name} `)) return null;
   const last = name.split(" ").pop() ?? "";
   return RECIPE_ASSUMED[last] ?? null;
 }
@@ -230,8 +231,9 @@ export function sumRecipe(name: string, parts: PartFound[], meal: MealType, miss
  *  part (a parse that split it) are taken together. Null when the parse found
  *  no food, or no weight to divide by. */
 export function per100FromParse(r: ParseMealResult | null): (PartFound["per100"] & { grams: number; source: string; label: string }) | null {
-  const items = r?.parsed?.items ?? [];
-  const grams = items.reduce((n, i) => n + (i.grams > 0 ? i.grams : 0), 0);
+  // Only items with a weight: one with none would add calories and no grams.
+  const items = (r?.parsed?.items ?? []).filter((i) => i.grams > 0);
+  const grams = items.reduce((n, i) => n + i.grams, 0);
   if (!items.length || grams <= 0) return null;
   const sum = (k: "kcal" | "protein_g" | "carb_g" | "fat_g") => items.reduce((n, i) => n + (Number(i[k]) || 0), 0);
   const fibers = items.map((i) => i.fiber_g);
@@ -314,7 +316,10 @@ export async function buildRecipe(
     });
   }
   // A missing part the user weighed at least as heavy as every part found is
-  // the dish's main part: without it the total is far under, so no dish.
+  // the dish's main part: without it the total is far under, so no dish. Only
+  // a weight in grams counts here ("2 eggs" has no grams before a lookup): a
+  // main part given in pieces or cups and not found still lands, at low
+  // confidence and named on the card.
   const heaviest = Math.max(0, ...found.map((p) => p.grams));
   const mainMissing = looked.some(({ p, row }) => !row && (statedGrams(p.amount) ?? 0) >= heaviest && heaviest > 0);
   const ok = found.length > 0 && missing.length <= RECIPE_MAX_MISSING && !mainMissing;

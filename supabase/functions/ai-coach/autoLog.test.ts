@@ -373,8 +373,22 @@ Deno.test("write: a dish built from its parts keeps source recipe where the diar
   const old = new FakeStore();
   const insert = old.insertEntries.bind(old);
   old.insertEntries = (rows) =>
-    rows.some((r) => r.source === "recipe") ? Promise.resolve({ error: "meal_entries_source_check" }) : insert(rows);
+    rows.some((r) => r.source === "recipe")
+      ? Promise.resolve({ error: 'new row for relation "meal_entries" violates check constraint "meal_entries_source_check"' })
+      : insert(rows);
   const res2 = await writeAutoLog(old, writeArgs([line("paneer sabji", { meal_type: "lunch", source: "recipe" }), line("rice", { meal_type: "lunch" })]));
   assert("logged" in res2);
   assertEquals(old.entries[0].source, "estimate");
+});
+
+Deno.test("write: only the diary's source check refusal is retried as an estimate", async () => {
+  const store = new FakeStore();
+  let tries = 0;
+  store.insertEntries = () => {
+    tries++;
+    return Promise.resolve({ error: "network down" });
+  };
+  const res = await writeAutoLog(store, writeArgs([line("paneer sabji", { meal_type: "lunch", source: "recipe" })]));
+  assert("error" in res);
+  assertEquals(tries, 1);
 });

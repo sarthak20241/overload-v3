@@ -358,7 +358,7 @@ export async function writeAutoLog(
     let inserted = await store.insertEntries(rows);
     // A diary without migration 20261107120000 refuses source "recipe" (its
     // check, 0114, predates it). One more try, the dish as an estimate.
-    if ("error" in inserted && rows.some((r) => r.source === "recipe")) {
+    if ("error" in inserted && /meal_entries_source_check/.test(inserted.error) && rows.some((r) => r.source === "recipe")) {
       inserted = await store.insertEntries(rows.map((r) => (r.source === "recipe" ? { ...r, source: "estimate" } : r)));
     }
     if ("conflict" in inserted) {
