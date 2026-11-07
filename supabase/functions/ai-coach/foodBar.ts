@@ -533,12 +533,6 @@ export function todayLabel(localDate: string | null): string | null {
   return `${day} ${localDate}`;
 }
 
-/**
- * Start the food agent AS SOON AS the router answers, not after the parse: the
- * parse is wasted work for a multi-step message, and waiting on it would add
- * its whole time to the agent's. Resolves null when the message is not one
- * for the agent (the common case, which costs nothing). Never rejects.
- */
 /** The agent's region (FOOD_REGION_RULES), waited for at most `ms`: a slow
  *  or hung time zone read is no region, never a stalled agent. null when the
  *  switch is off or the request is not Precise. */
@@ -550,6 +544,12 @@ export async function agentRegionRules(
   return { region: (await waitForRegion(() => region, ms)).region };
 }
 
+/**
+ * Start the food agent AS SOON AS the router answers, not after the parse: the
+ * parse is wasted work for a multi-step message, and waiting on it would add
+ * its whole time to the agent's. Resolves null when the message is not one
+ * for the agent (the common case, which costs nothing). Never rejects.
+ */
 export function startFoodAgent(args: {
   intentP: Promise<FoodIntentDecision | null>;
   supportsCreate: boolean;
