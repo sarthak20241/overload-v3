@@ -1656,8 +1656,8 @@ const nameWords = (x: string) =>
  * high" went to the correction path, which swapped in a catalog "Zero Maida
  * Protein Bread": the brand was gone and the protein fell. The change asked for
  * an amount, not another product. So when the edited line's name has lost words
- * of the user's name for it AND carries words that are in neither that name nor
- * the change, the swap was the search's, not the user's: the line keeps its name, and its own numbers per
+ * of the user's name for it, and the change names no new food, the swap was the
+ * search's, not the user's: the line keeps its name, and its own numbers per
  * gram, scaled to the new weight. Without its own numbers (no grams or no kcal
  * on the line) the edit stands, and so does a line of numbers the user stated.
  */
@@ -1666,13 +1666,16 @@ export function keepLineIdentity(original: CardLine, edited: ParsedItem, change:
   // stated number wins over every source.
   if (edited.source === "manual") return edited;
   const has = (set: Set<string>, w: string) => set.has(w) || set.has(`${w}s`) || set.has(w.replace(/s$/, ""));
-  const known = new Set([...nameWords(original.food_name), ...nameWords(original.said_name ?? ""), ...nameWords(change)]);
-  const fresh = nameWords(edited.food_name).filter((w) => !has(known, w));
-  // A swap only when the user's own words for the food are gone too: "Roti"
-  // to "Whole Wheat Roti" keeps them and stands.
+  const before = new Set([...nameWords(original.food_name), ...nameWords(original.said_name ?? "")]);
+  const said = new Set(nameWords(change));
+  // The change names the new food ("it was the zero maida one"): it stands.
+  if (nameWords(edited.food_name).some((w) => !has(before, w) && has(said, w))) return edited;
+  // The user's own words for the food are gone ("Health Factory protein bread"
+  // to a plain "Protein Bread"): the search swapped it. "Roti" to "Whole Wheat
+  // Roti" keeps them and stands.
   const now = new Set(nameWords(edited.food_name));
   const lost = nameWords(original.said_name ?? original.food_name).filter((w) => !has(now, w));
-  if (!fresh.length || !lost.length) return edited;
+  if (!lost.length) return edited;
   if (!(original.grams > 0) || typeof original.kcal !== "number" || !(edited.grams > 0)) return edited;
   const f = edited.grams / original.grams;
   const scale = (v: number | undefined) => Math.round((v ?? 0) * f * 10) / 10;

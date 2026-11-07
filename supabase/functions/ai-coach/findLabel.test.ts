@@ -179,6 +179,12 @@ Deno.test("keepLineIdentity: numbers the user stated are kept, whatever the name
   assertEquals(keepLineIdentity(BREAD, stated, "the user says protein is 11 g for the 2 slices"), stated);
 });
 
+Deno.test("keepLineIdentity: a plain catalog row that drops the user's brand is not taken", () => {
+  // Eval, 2026-11-07: "2 slices at 25 g each" came back as a plain "Protein Bread".
+  const out = keepLineIdentity(BREAD, edited({ food_name: "Protein Bread", kcal: 132.3, protein_g: 10.4 }), "2 slices at 25 g each, so 50 g total");
+  assertEquals([out.food_name, out.grams, out.kcal], ["Health Factory protein bread", 50, 121]);
+});
+
 Deno.test("keepLineIdentity: a new name that keeps the user's words stands", () => {
   const roti: CardLine = { food_name: "Roti", quantity: 2, serving_label: "piece", grams: 80, kcal: 240, protein_g: 7, carb_g: 36, fat_g: 7.4, source: "catalog" };
   const ww = edited({ food_name: "Whole Wheat Roti", grams: 80, kcal: 220 });
