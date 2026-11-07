@@ -558,7 +558,7 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
   // index.ts's rule (FOOD_FIRST_GATE, Precise): a first message asks the gate
   // question in the router's Jev call.
   const firstGate = firstMessageGoesToGate({
-    mode: FIRST_GATE, precise: isPreciseRequest(body, { superOn: true, freeTier: false }), supportsCreate: true, hasModelKey: true,
+    mode: FIRST_GATE, laterMode: LATER, precise: isPreciseRequest(body, { superOn: true, freeTier: false }), supportsCreate: true, hasModelKey: true,
     turns: recentTurns.length, cardLines: card.length, pending: !!pendingIn,
   });
   const intentP = startFoodIntent(savedMealsP, c.message, foodContext, undefined, undefined, undefined, undefined, firstGate);

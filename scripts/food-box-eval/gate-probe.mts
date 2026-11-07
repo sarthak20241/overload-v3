@@ -90,9 +90,18 @@ for (const { c, scores, intent } of rows.sort((a, b) => Number(a.c.plain) - Numb
   const ok = scores.filter((s): s is number => s !== null);
   console.log(`${c.plain ? "plain" : "other"}  ${fmt(ok.length ? Math.min(...ok) : null)}  ${fmt(ok.length ? Math.max(...ok) : null)}  ${intent.padEnd(14)}  ${c.id}`);
 }
-const otherMax = Math.max(...rows.filter((r) => !r.c.plain).flatMap((r) => r.scores.filter((s): s is number => s !== null)));
-const plainMins = rows.filter((r) => r.c.plain).map((r) => Math.min(...r.scores.map((s) => s ?? 0)));
-console.log(`\nHighest non-plain score: ${otherMax.toFixed(3)}. Any floor above it gives zero false plains.`);
+// A null is a Jev call that did not answer: counted on its own, never as a
+// score of 0, so an outage cannot hide inside "plain logs sent to the agent".
+const nulls = rows.reduce((n, r) => n + r.scores.filter((s) => s === null).length, 0);
+if (nulls) console.warn(`\nWARNING: ${nulls} Jev call(s) gave no answer. Those runs are left out of the numbers below.`);
+const otherScores = rows.filter((r) => !r.c.plain).flatMap((r) => r.scores.filter((s): s is number => s !== null));
+const plainRows = rows.filter((r) => r.c.plain).map((r) => r.scores.filter((s): s is number => s !== null)).filter((xs) => xs.length > 0);
+const plainMins = plainRows.map((xs) => Math.min(...xs));
+console.log(
+  otherScores.length
+    ? `\nHighest non-plain score: ${Math.max(...otherScores).toFixed(3)}. Any floor above it gives zero false plains.`
+    : "\nNo non-plain message has a score, so false plains cannot be measured.",
+);
 for (const f of [0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95]) {
   const falsePlain = rows.filter((r) => !r.c.plain && r.scores.some((s) => s !== null && s >= f)).length;
   const toAgent = plainMins.filter((m) => m < f).length;

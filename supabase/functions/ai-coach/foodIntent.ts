@@ -948,9 +948,14 @@ export const PLAIN_LOG_FLOOR = 0.6;
 
 /** Does this first message go through the gate? Only the first message of a
  *  thread: no earlier turn, no card on screen (whole or cut), no question
- *  waiting. The same Precise, client and key rules as a later message. */
-export function firstMessageGoesToGate(i: Omit<LaterMessageInputs, "mode" | "cardOpen"> & { mode: FoodFirstGateMode }): boolean {
-  if (i.mode !== "on" || !i.precise || !i.supportsCreate || !i.hasModelKey) return false;
+ *  waiting. The same Precise, client and key rules as a later message, and
+ *  only with FOOD_AGENT_LATER on too: the gate's agent runs in later mode, and
+ *  every message after it must reach the same agent. The gate was measured
+ *  only with both on, so the gate on and step 2 off is today's routing. */
+export function firstMessageGoesToGate(
+  i: Omit<LaterMessageInputs, "mode" | "cardOpen"> & { mode: FoodFirstGateMode; laterMode: FoodAgentLaterMode },
+): boolean {
+  if (i.mode !== "on" || i.laterMode !== "on" || !i.precise || !i.supportsCreate || !i.hasModelKey) return false;
   return i.turns === 0 && i.cardLines === 0 && !i.pending;
 }
 

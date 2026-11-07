@@ -39,7 +39,7 @@ function result(items: ParsedItem[]): ParseMealResult {
   } as ParseMealResult;
 }
 
-const GATE = { mode: "on" as const, precise: true, supportsCreate: true, hasModelKey: true, turns: 0, cardLines: 0, pending: false };
+const GATE = { mode: "on" as const, laterMode: "on" as const, precise: true, supportsCreate: true, hasModelKey: true, turns: 0, cardLines: 0, pending: false };
 
 Deno.test("FOOD_FIRST_GATE: anything but 'on' is off", () => {
   assertEquals(parseFoodFirstGateMode("on"), "on");
@@ -50,6 +50,8 @@ Deno.test("FOOD_FIRST_GATE: anything but 'on' is off", () => {
 Deno.test("firstMessageGoesToGate: only a first message, in Precise, with the switch on", () => {
   assert(firstMessageGoesToGate(GATE));
   assertFalse(firstMessageGoesToGate({ ...GATE, mode: "off" }));
+  // Step 2 off: the gate's agent and the agent for the next message would differ.
+  assertFalse(firstMessageGoesToGate({ ...GATE, laterMode: "off" }));
   assertFalse(firstMessageGoesToGate({ ...GATE, precise: false }));
   assertFalse(firstMessageGoesToGate({ ...GATE, supportsCreate: false }));
   assertFalse(firstMessageGoesToGate({ ...GATE, hasModelKey: false }));

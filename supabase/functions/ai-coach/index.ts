@@ -3966,7 +3966,7 @@ async function handleParseMealRequest(args: {
   // Step 3 (FOOD_FIRST_GATE=on, Precise only): the first message of a thread
   // asks the gate question in the router's own Jev call.
   const firstGate = firstMessageGoesToGate({
-    mode: FOOD_FIRST_GATE, precise: isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier }), supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
+    mode: FOOD_FIRST_GATE, laterMode: FOOD_AGENT_LATER, precise: isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier }), supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
     turns: recentTurns.length, cardLines: card.length, pending: !!foodContext.pendingMeal,
   });
   const intentP = startTracedIntent(undefined, firstGate);
