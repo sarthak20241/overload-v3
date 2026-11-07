@@ -78,6 +78,8 @@ export function originOf(line: {
       return "label";
     case "estimate":
       return "guess";
+    case "recipe":
+      return "recipe";
     case "manual":
       return USER_NUMBERS_NOTE.test(note.trim()) ? "user_typed" : "unknown";
     case null:
@@ -122,6 +124,7 @@ export function mayReplace(current: FoodOrigin, next: FoodOrigin): boolean {
  * - grams: how much of it is in the WHOLE dish the line describes (> 0)
  * - per100: the part's numbers per 100 g, or null when not known yet
  * - source: the part's own origin (a FoodOrigin), optional
+ * - assumed: true when the amount was assumed, not said (step 5: "1 tsp oil")
  *
  * The dish's weight is the sum of its parts' grams. The food line's own
  * kcal/protein/carb/fat stay the numbers of record; the recipe says how they
@@ -132,6 +135,7 @@ export interface RecipePart {
   grams: number;
   per100?: { kcal: number; protein_g: number; carb_g: number; fat_g: number } | null;
   source?: FoodOrigin;
+  assumed?: boolean;
 }
 
 const MAX_PARTS = 20;
@@ -157,6 +161,7 @@ export function parseRecipe(raw: unknown): RecipePart[] | null {
       else part.per100 = null;
     }
     if (isFoodOrigin(r.source)) part.source = r.source;
+    if (r.assumed === true) part.assumed = true;
     out.push(part);
   }
   return out;

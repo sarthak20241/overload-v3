@@ -92,3 +92,8 @@ Deno.test("dishName strips a recipe from the name, keeps other brackets", () => 
   assertEquals(dishName("Peri peri fries (10 pieces, estimated)"), "Peri peri fries (10 pieces, estimated)");
   assertEquals(dishName("Fats and carbs (unspecified, 200 kcal)"), "Fats and carbs (unspecified, 200 kcal)");
 });
+
+Deno.test("step 5's recipe lines: source 'recipe' reads as recipe; an assumed part stays assumed", () => {
+  assertEquals(originOf({ source: "recipe" }), "recipe");
+  assertEquals(parseRecipe([{ name: "oil", grams: 5, assumed: true }])?.[0].assumed, true);
+});

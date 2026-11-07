@@ -52,6 +52,12 @@ alter table public.user_food_cache
     check (recipe is null or jsonb_typeof(recipe) = 'array'),
   add column if not exists valid_from timestamptz;
 
+-- Step 5 (build_recipe) writes source 'recipe' for a dish summed from its
+-- parts. Allowing it here costs nothing: older apps never send it.
+alter table public.meal_entries drop constraint if exists meal_entries_source_check;
+alter table public.meal_entries add constraint meal_entries_source_check
+  check (source is null or source in ('catalog', 'off', 'fatsecret', 'web', 'estimate', 'manual', 'recipe'));
+
 -- A saved meal's lines keep where their numbers came from, so logging the
 -- meal again does not make them the user's own.
 alter table public.saved_meal_items
@@ -79,6 +85,7 @@ returns text language sql immutable set search_path = '' as $$
     when p_source = 'catalog' then 'catalog'
     when p_source in ('off', 'fatsecret', 'web') then 'label'
     when p_source = 'estimate' then 'guess'
+    when p_source = 'recipe' then 'recipe'
     when p_source is null and coalesce(p_has_food, false) then 'catalog'
     else 'unknown' end $$;
 
