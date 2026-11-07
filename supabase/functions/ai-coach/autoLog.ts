@@ -187,7 +187,9 @@ export interface AutoLogEntryRow {
   sodium_mg: null;
   position: number;
   logged_via: "ai_auto";
-  source: ParsedItem["source"];
+  /** The diary's source check (0114) has no "recipe": a dish built from its
+   *  parts is written as an estimate, as the app's own Add does. */
+  source: Exclude<ParsedItem["source"], "recipe">;
   client_id: string;
   /** The tier whose numbers the line carries (migration 0149). The trigger
    *  that stamps client-written lines cannot see these: they are written
@@ -349,7 +351,7 @@ export async function writeAutoLog(
       sodium_mg: null,
       position: base + idx,
       logged_via: "ai_auto",
-      source: it.source,
+      source: it.source === "recipe" ? "estimate" : it.source,
       client_id: clientId,
       tier: it.numbers_tier ?? args.tier ?? null,
     }));

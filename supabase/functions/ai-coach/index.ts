@@ -3347,7 +3347,7 @@ async function handleParseMealRequest(args: {
           : {}),
         // A dish built from its parts (recipe.ts): its parts, when the app
         // sends them back. An app that does not keeps the parts in the note.
-        ...(readRecipeParts(r.recipe) ? { recipe: readRecipeParts(r.recipe) } : {}),
+        ...(readRecipeParts(r.recipe, src) ? { recipe: readRecipeParts(r.recipe, src) } : {}),
       }];
     })
     : [];

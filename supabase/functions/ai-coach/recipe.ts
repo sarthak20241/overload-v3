@@ -158,10 +158,22 @@ export function partTotals(p: PartFound): { kcal: number; protein_g: number; car
  *  line's `assumption`, which the app already sends back (160 characters), so
  *  the agent sees the parts even from an app that drops `recipe`. */
 export function recipeNote(parts: PartFound[], missing: string[] = []): string {
-  const each = parts.map((p) => `${Math.round(p.grams)} g ${p.name}${p.assumed ? " (assumed)" : ""}`);
-  const note = `Built from parts: ${each.join(", ")}.${missing.length ? ` Not found: ${missing.join(", ")}.` : ""}`;
+  // The assumed amounts go first: the note is cut at 160 characters, and the
+  // ask-once check reads them (recipeQuestion), so they must never be the cut.
+  const assumed = parts.filter((p) => p.assumed).map((p) => `${p.assumed} ${p.name}`);
+  const each = parts.map((p) => `${Math.round(p.grams)} g ${p.name}`);
+  const note = [
+    assumed.length ? `Assumed ${assumed.join(", ")}.` : null,
+    missing.length ? `Not found: ${missing.join(", ")}.` : null,
+    `Parts: ${each.join(", ")}.`,
+  ].filter(Boolean).join(" ");
   return note.length <= 160 ? note : `${note.slice(0, 157)}...`;
 }
+
+/** Parts the parse could not find, from which a dish is not put on the card:
+ *  its total would be too far under. One missing part lands, named, at low
+ *  confidence. */
+export const RECIPE_MAX_MISSING = 1;
 
 /**
  * The dish as one card line. Code adds the parts up: every number on the line
@@ -278,12 +290,18 @@ export async function buildRecipe(
       assumed: q.assumed === null ? null : q.assumed || `${Math.round(grams)} g`,
     });
   }
-  return { item: found.length ? sumRecipe(ask.name, found, meal, missing) : null, missing, results: looked.map((x) => x.r) };
+  const ok = found.length > 0 && missing.length <= RECIPE_MAX_MISSING;
+  return { item: ok ? sumRecipe(ask.name, found, meal, missing) : null, missing, results: looked.map((x) => x.r) };
 }
 
 // ── The one question ────────────────────────────────────────────────────────
 
 const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/** How an assumed part's amount is said: the table's ("1 tsp"), else grams. */
+function labelOf(part: RecipePart): string {
+  return assumedAmount(part.name)?.label ?? `${Math.round(part.grams)} g`;
+}
 
 /** The words code asks with. Fixed, so an earlier turn can be checked for it. */
 export function assumedPhrase(label: string, part: string): string {
@@ -302,23 +320,24 @@ export function recipeQuestion(
   card: CardLine[],
   turns: { role: "user" | "drona"; text: string }[] | undefined,
 ): string | null {
-  const said = (turns ?? []).filter((t) => t.role === "drona").map((t) => key(t.text));
+  const said = (turns ?? []).filter((t) => t.role === "drona").map((t) => ` ${key(t.text)} `);
   const asked = (dish: string, part: RecipePart): boolean => {
-    const label = part.grams > 0 && assumedAmount(part.name) ? assumedAmount(part.name)!.label : `${Math.round(part.grams)} g`;
-    const phrase = key(assumedPhrase(label, part.name));
-    if (said.some((t) => t.includes(phrase))) return true;
+    // "1 tsp ghee", not "I assumed 1 tsp ghee": a second part follows "and".
+    const phrase = ` ${key(`${labelOf(part)} ${part.name}`)} `;
+    if (said.some((t) => t.includes(phrase) && t.includes(" i assumed "))) return true;
     return card.some((l) => {
       if (key(l.food_name) !== key(dish)) return false;
       if (l.recipe?.some((q) => q.assumed && key(q.name) === key(part.name))) return true;
-      return !!l.assumption && key(l.assumption).includes(`${key(part.name)} assumed`);
+      // An app that drops `recipe` keeps the note: its "Assumed ..." part.
+      const head = l.assumption ? ` ${key(l.assumption).split(" parts ")[0]} ` : "";
+      return head.startsWith(" assumed ") && head.includes(phrase);
     });
   };
   const open: string[] = [];
   for (const item of built) {
     for (const part of item.recipe ?? []) {
       if (!part.assumed || asked(item.food_name, part)) continue;
-      const t = assumedAmount(part.name);
-      open.push(assumedPhrase(t ? t.label : `${Math.round(part.grams)} g`, part.name).replace(/^I assumed /, ""));
+      open.push(`${labelOf(part)} ${part.name}`);
     }
   }
   const named = [...new Set(open)].slice(0, 2);
@@ -328,11 +347,13 @@ export function recipeQuestion(
 
 // ── From the app ────────────────────────────────────────────────────────────
 
-/** A card line's parts as the app sent them back, checked: names trimmed,
+/** A recipe line's parts as the app sent them back, checked: names trimmed,
  *  numbers finite and not negative, at most RECIPE_MAX_PARTS. Anything else is
  *  dropped. Undefined when nothing usable came. */
-export function readRecipeParts(raw: unknown): RecipePart[] | undefined {
-  if (!Array.isArray(raw)) return undefined;
+export function readRecipeParts(raw: unknown, source: unknown): RecipePart[] | undefined {
+  // Only a recipe line has parts: a line changed since (an edit, a new source)
+  // would carry old parts that no longer add up to it.
+  if (source !== "recipe" || !Array.isArray(raw)) return undefined;
   const n = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : null);
   const out = raw.slice(0, RECIPE_MAX_PARTS).flatMap((p): RecipePart[] => {
     const o = (p && typeof p === "object" ? p : {}) as Record<string, unknown>;

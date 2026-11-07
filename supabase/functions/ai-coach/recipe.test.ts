@@ -172,7 +172,7 @@ Deno.test("agent: rebuilding a dish on its line replaces it; the answered oil is
   const card: CardLine[] = [
     { food_name: "Rice", quantity: 1, serving_label: "katori", grams: 150, kcal: 195, source: "catalog", meal_type: "lunch" },
     { food_name: "Paneer sabji", quantity: 1, serving_label: "serving", grams: 105, kcal: 212.6, source: "recipe", meal_type: "lunch",
-      assumption: "Built from parts: 60 g low fat paneer, 5 g oil (assumed), 40 g onion." },
+      assumption: "Assumed 1 tsp oil. Parts: 60 g low fat paneer, 5 g oil, 40 g onion." },
   ];
   const rebuilt = { name: "build_recipe", input: { ...SABJI.input, line_id: "L2", parts: [{ name: "low fat paneer", amount: "60 g" }, { name: "oil", amount: "10 g" }, { name: "onion", amount: "40 g" }] } };
   const out = await runFoodAgent(
@@ -208,8 +208,58 @@ Deno.test("planCardChanges: dish parts count toward the 8 parses per turn", () =
 });
 
 Deno.test("readRecipeParts: parts sent back by the app are checked", () => {
-  assertEquals(readRecipeParts("x"), undefined);
-  assertEquals(readRecipeParts([{ name: "oil", grams: 5, per100: { kcal: 884, protein_g: 0, carb_g: 0, fat_g: 100 }, source: "catalog", assumed: true }, { name: "", grams: 5 }, { name: "bad", grams: -1, per100: {} }]), [
+  assertEquals(readRecipeParts("x", "recipe"), undefined);
+  assertEquals(readRecipeParts([{ name: "oil", grams: 5, per100: { kcal: 884, protein_g: 0, carb_g: 0, fat_g: 100 }, source: "catalog", assumed: true }, { name: "", grams: 5 }, { name: "bad", grams: -1, per100: {} }], "recipe"), [
     { name: "oil", grams: 5, per100: { kcal: 884, protein_g: 0, carb_g: 0, fat_g: 100 }, source: "catalog", assumed: true },
   ]);
+});
+
+// ── Review fixes (PR #359) ─────────────────────────────────────────────────
+
+Deno.test("recipeQuestion: the second part of a two-part question is not asked again", () => {
+  const dish = sumRecipe("Dal", [part("onion", 40), part("oil", 5, "1 tsp")], "lunch");
+  const ghee: PartFound = { ...part("oil", 5, "1 tsp"), name: "ghee" };
+  const both = sumRecipe("Dal", [part("onion", 40), part("oil", 5, "1 tsp"), ghee], "lunch");
+  const asked = recipeQuestion([both], [], []);
+  assertEquals(asked, "I assumed 1 tsp oil and 1 tsp ghee. Change them?");
+  // Next message, the dish rebuilt with only ghee still assumed: already asked.
+  const gheeOnly = sumRecipe("Dal", [part("onion", 40), part("oil", 10), ghee], "lunch");
+  assertEquals(recipeQuestion([gheeOnly], [], [{ role: "drona", text: asked! }]), null);
+  assert(dish.recipe);
+});
+
+Deno.test("recipeNote: a long dish keeps its assumed parts in the note, so the note-only check still holds", () => {
+  const long = (i: number): PartFound => ({ ...part("onion", 40), name: `chopped fresh garden vegetable number ${i}` });
+  const parts = [...Array.from({ length: 7 }, (_, i) => long(i)), part("oil", 5, "1 tsp")];
+  const dish = sumRecipe("Mixed vegetable curry", parts, "dinner");
+  assert(dish.assumption!.length <= 160, dish.assumption!);
+  assert(/1 tsp oil/.test(dish.assumption!), dish.assumption!);
+  const noteOnly: CardLine = { food_name: "Mixed vegetable curry", quantity: 1, serving_label: "serving", grams: 285, kcal: 156, source: "recipe", assumption: dish.assumption };
+  assertEquals(recipeQuestion([dish], [noteOnly], []), null);
+});
+
+Deno.test("agent: a dish with two parts not found is not put on the card", async () => {
+  const twoMissing = { name: "build_recipe", input: { name: "Stew", parts: [{ name: "low fat paneer", amount: "60 g" }, { name: "zzz root" }, { name: "qqq leaf" }] } };
+  const out = await runFoodAgent(
+    { text: "x", defaultMeal: "lunch", later: true, card: [{ food_name: "Rice", quantity: 1, serving_label: "katori", grams: 150, kcal: 195, meal_type: "lunch" }] },
+    { model: "m", callModel: scripted([[twoMissing]]), readDiary: async () => ({}), savedMeals: async () => [], parseFood: fakeParse(), buildRecipe: true },
+  );
+  // Nothing changed: the card stays, and the line says which dish failed.
+  assertEquals(out.kind, "reply");
+  if (out.kind === "reply") assert(/Stew/.test(out.text), out.text);
+  // One part missing still lands, at low confidence, with the part named.
+  const oneMissing = { name: "build_recipe", input: { name: "Stew", parts: [{ name: "low fat paneer", amount: "60 g" }, { name: "oil" }, { name: "zzz root" }] } };
+  const out2 = await runFoodAgent(
+    { text: "x", defaultMeal: "lunch", later: true, first: true },
+    { model: "m", callModel: scripted([[oneMissing]]), readDiary: async () => ({}), savedMeals: async () => [], parseFood: fakeParse(), buildRecipe: true },
+  );
+  assertEquals(out2.kind, "log");
+  if (out2.kind === "log") assertEquals(out2.result.parsed!.items[0].confidence, "low");
+});
+
+Deno.test("readRecipeParts: parts are kept only on a line whose source is recipe", () => {
+  const raw = [{ name: "oil", grams: 5, per100: { kcal: 884, protein_g: 0, carb_g: 0, fat_g: 100 }, source: "catalog" }];
+  assertEquals(readRecipeParts(raw, "recipe")?.length, 1);
+  assertEquals(readRecipeParts(raw, "estimate"), undefined);
+  assertEquals(readRecipeParts(raw, undefined), undefined);
 });

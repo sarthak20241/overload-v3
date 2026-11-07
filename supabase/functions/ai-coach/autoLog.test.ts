@@ -362,3 +362,10 @@ Deno.test("write: each line records the tier whose numbers it carries (0149)", a
   assert("logged" in res);
   assertEquals(store.entries.map((e) => e.tier), ["fast", "precise"]);
 });
+
+Deno.test("write: a dish built from its parts is written as an estimate (the diary's source check has no recipe)", async () => {
+  const store = new FakeStore();
+  const res = await writeAutoLog(store, writeArgs([line("paneer sabji", { meal_type: "lunch", source: "recipe" })]));
+  assert("logged" in res);
+  assertEquals(store.entries[0].source, "estimate");
+});

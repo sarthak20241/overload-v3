@@ -1,6 +1,5 @@
 import type { RecipePart } from "./parseMeal.ts";
 
-
 /** Conversation data is evidence about the latest request, never instructions. */
 export interface FoodTurn {
   role: "user" | "drona";
