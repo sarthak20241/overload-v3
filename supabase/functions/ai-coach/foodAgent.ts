@@ -18,7 +18,7 @@
 // Deps are injected so the loop is testable without the network.
 
 import { summarize } from "./foodBarTrace.ts";
-import { type CardLine, cardLines, cardMayBeCut, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
+import { CARD_MAX_LINES, type CardLine, cardLines, cardMayBeCut, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { sonnetSettings } from "../_shared/sonnet.ts";
 import {
   type AnthropicTool,
@@ -831,6 +831,9 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // plus every line already staged in this run.
   const onCard = onCardOf(input.card ?? []);
 
+  // A later message's words with no tool are sent back once with a nudge, so
+  // food the user named is not lost to a plain-words answer (see below).
+  let nudged = false;
   for (let turn = 1; turn <= maxTurns; turn++) {
     const last = turn === maxTurns;
     const t0 = Date.now();
@@ -875,6 +878,17 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
       const words = later
         ? clean(blocks.filter((b) => b?.type === "text").map((b) => String(b.text ?? "")).join(" "))
         : "";
+      // The first time, with turns left: asked to use its tools, so a food
+      // request ends in a card (log_food) and a question in reply. After that,
+      // or on the last turn, the words are the answer.
+      if (words && !last && !nudged) {
+        nudged = true;
+        messages.push(
+          { role: "assistant", content: blocks },
+          { role: "user", content: "Please use your tools: plain words do not reach the user. Food the user had goes on the card (log_food, or add_lines beside a card); to talk, use reply." },
+        );
+        continue;
+      }
       if (words) return checkedLater({ kind: "reply", text: words, turns }, input, "");
       return { kind: "failed", reason: "no_tool_call", turns };
     }
@@ -1391,7 +1405,9 @@ async function logFindsNoFood(u: ToolUse, parse: (text: string) => Promise<Parse
 const SAVE_TOOLS = new Set([SAVE_CARD_AS_MEAL_TOOL.name, CREATE_CUSTOM_MEAL_TOOL.name, CREATE_CUSTOM_FOOD_TOOL.name]);
 
 /** A word that asks to save or keep something for later. */
-const SAVE_ASK = /\b(?:save|saving|(?:to|in|into) my meals|as a (?:saved )?meal|make (?:it|this|that) (?:a|my) meal|(?:keep|remember) (?:it|this|that) (?:as|for))\b/gi;
+// "save" needs something to save, or nothing after it ("save it", "please
+// save"); "saving calories" and "it saves time" are not asks.
+const SAVE_ASK = /\b(?:save(?=\s+(?:it|this|that|these|them|the|my|as|to|for|please|everything|all)\b|\s*[.!?]*\s*$)|saving (?:it|this|that|these|them)\b|(?:to|in|into) my meals|as a (?:saved )?meal|make (?:it|this|that) (?:a|my) meal|(?:keep|remember) (?:it|this|that) (?:as|for))\b/gi;
 
 /** A no in front of the ask ("don't save", "no need to save"): not an ask. */
 const NEGATED = /\b(?:don['’]?t|do not|no need to|not|never|didn['’]?t|won['’]?t|stop|without|nope)\b[\w\s'’]*$/i;
@@ -1628,6 +1644,11 @@ async function applyCardChanges(
     }
     return !dup;
   });
+  // The card holds CARD_MAX_LINES lines: the app sends back no more, so a line
+  // past them would be lost on the next correction. Additions that do not fit
+  // are left off and named; every line already on the card stays.
+  const room = Math.max(0, CARD_MAX_LINES - (card.length - removes.size));
+  const overflow = added.splice(room).map((i) => i.food_name);
   // The same meal the result says, so a line with no section of its own
   // lands where the card is.
   const items = buildChangedCard(card, removes, edited, added, meal);
@@ -1642,12 +1663,13 @@ async function applyCardChanges(
     failedEdits.length ? `I could not change ${names(failedEdits)}, so ${failedEdits.length === 1 ? "it is" : "they are"} as before.` : null,
     failedAdds.length ? `I could not work out ${names(failedAdds.map((t) => `"${t.slice(0, 60)}"`))}.` : null,
     dupAdds.length ? `${names(dupAdds)} ${dupAdds.length === 1 ? "is" : "are"} already on the card, so I did not add ${dupAdds.length === 1 ? "it" : "them"} again.` : null,
+    overflow.length ? `The card holds ${CARD_MAX_LINES} foods, so I left off ${names(overflow)}. Add this card first, then send ${overflow.length === 1 ? "it" : "them"}.` : null,
   ].filter(Boolean).join(" ");
   // The agent's words: its reply, else its one summary. Several summaries
   // joined read as a run-on, so then code writes the line from what changed.
   const agentText = replyText || (plan.summaries.length === 1 ? clean(plan.summaries[0]) : "");
   const falseClaim = !!agentText && falseAgentClaim(agentText, { cardChanged: changed });
-  const line = agentText && !falseClaim && !failedEdits.length && !failedAdds.length && !dupAdds.length ? agentText : codeLine;
+  const line = agentText && !falseClaim && !failedEdits.length && !failedAdds.length && !dupAdds.length && !overflow.length ? agentText : codeLine;
   deps.onEvent?.({
     tool: "card_changes", ok: true, edits: edited.size, edits_failed: failedEdits.length, removed: removes.size,
     added: added.length, error: null, ...(falseClaim ? { false_claim: true } : {}),

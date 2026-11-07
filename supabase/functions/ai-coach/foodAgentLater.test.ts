@@ -675,3 +675,39 @@ Deno.test("tierSelectedOf: a Precise correction (tier precise, no speed) is reco
   assertEquals(tierSelectedOf({ speed: "fast", tier: "quick" }), "fast");
   assertEquals(tierSelectedOf({}), "thorough");
 });
+
+// ── Review of 6c7f0f10 ──────────────────────────────────────────────────────
+
+Deno.test("words with no tool on an early turn: the agent is asked once to use its tools, so food is not lost", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  let n = 0;
+  const call: FoodAgentDeps["callModel"] = async (body) => {
+    bodies.push(JSON.parse(JSON.stringify(body)));
+    n++;
+    return n === 1
+      ? { ok: true, data: { usage: {}, content: [{ type: "text", text: "Sounds like a good dinner." }] } }
+      : { ok: true, data: { usage: {}, content: [{ type: "tool_use", id: "t", name: "log_food", input: { text: "2 eggs", summary: "2 eggs." } }] } };
+  };
+  const out = await runFoodAgent({ text: "had 2 eggs for dinner", defaultMeal: "dinner", later: true }, deps(call));
+  assertEquals(out.kind, "log");
+  assertEquals(bodies.length, 2);
+  const msgs = bodies[1].messages as { role: string; content: unknown }[];
+  assert(JSON.stringify(msgs.at(-1)).includes("use your tools"));
+});
+
+Deno.test("additions never take a card past 12 lines: what does not fit is left off and named", async () => {
+  const card: CardLine[] = Array.from({ length: 10 }, (_, i) => ({ ...CARD[1], food_name: `Food ${i}` }));
+  const d = deps(scripted([[{ name: "add_lines", input: { text: "four things" } }]]));
+  d.parseFood = async () => result([item("Apple", 95), item("Pear", 100), item("Plum", 30), item("Fig", 40)]);
+  const out = await runFoodAgent({ ...LATER, card }, d);
+  if (out.kind !== "log" || !out.result.parsed) throw new Error(out.kind);
+  assertEquals(out.result.parsed.items.length, 12);
+  assertEquals(out.result.parsed.items.slice(0, 10).map((i) => i.food_name), card.map((c) => c.food_name));
+  assert(out.result.parsed.drona_line.includes("Plum and Fig"), out.result.parsed.drona_line);
+});
+
+Deno.test("save gate: a save word needs something to save ('saving calories' is not an ask)", () => {
+  assertFalse(userAskedToSave({ text: "I'm saving calories for dinner" }));
+  assertFalse(userAskedToSave({ text: "it saves me time" }));
+  for (const t of ["save it", "please save", "can you save this as a meal", "save the card", "save"]) assert(userAskedToSave({ text: t }), t);
+});
