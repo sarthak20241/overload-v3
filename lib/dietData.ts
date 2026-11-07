@@ -14,6 +14,8 @@
  */
 import type { FoodThreadSend } from './foodThread';
 import { persistLoggedEntryEdit } from './loggedEntryEdit';
+import { COPIED_FROM, isFoodOrigin, ORIGIN_COLS, originColumns, parseRecipe, type CopiedFrom, type FoodOrigin, type RecipePart } from './foodOrigin';
+import { missingColumn, withoutColumns } from './missingColumn';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { FunctionRegion } from '@supabase/supabase-js';
@@ -648,7 +650,8 @@ export async function loadYourFoods(supabase: Supa | null): Promise<YourFood[]> 
   if (!supabase) return [];
   const { data, error } = await supabase
     .from('meals')
-    .select('logged_at, meal_entries(food_id, food_name, serving_unit, grams_logged, quantity, kcal, protein_g, carb_g, fat_g, fiber_g, sugar_g, sat_fat_g, sodium_mg, logged_via, source, tier)')
+    // `*`: origin arrives with migration 20261107120000.
+    .select('logged_at, meal_entries(*)')
     .order('logged_at', { ascending: false })
     .limit(600);
   if (error || !data) return [];
@@ -662,6 +665,7 @@ export async function loadYourFoods(supabase: Supa | null): Promise<YourFood[]> 
         kcal: num(e.kcal), protein_g: num(e.protein_g), carb_g: num(e.carb_g), fat_g: num(e.fat_g),
         fiber_g: nul(e.fiber_g), sugar_g: nul(e.sugar_g), sat_fat_g: nul(e.sat_fat_g), sodium_mg: nul(e.sodium_mg),
         logged_via: e.logged_via ?? null, source: e.source ?? null, tier: e.tier ?? null,
+        origin: typeof e.origin === 'string' ? e.origin : null,
         logged_at: m.logged_at,
       });
     }
@@ -757,6 +761,16 @@ export interface ParsedMealItem {
    *  logged a saved meal's own rows. The card labels these "saved meal"
    *  instead of "edited": the numbers are the user's, from My Meals. */
   saved_meal?: string | null;
+
+  /** Where the numbers came from (lib/foodOrigin): user_typed, label,
+   *  catalog, recipe, guess, unknown. Written to meal_entries.origin; the food
+   *  memory trusts this, never `source` ("manual" there only means the numbers
+   *  are fixed). Absent from an older server: originOf reads the old fields. */
+  origin?: FoodOrigin;
+  /** A copied line keeps its origin and says where it was copied from. */
+  copied_from?: CopiedFrom;
+  /** A home dish's parts (RecipePart), when the server sent them. */
+  recipe?: RecipePart[];
 
   /** Set on a line copied from one the user logged before (a usual food, or
    *  the day before's meal). Its original logged_via and tier are written
@@ -928,6 +942,9 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
     alternatives: readSwapOptions(i.alternatives),
     ...(typeof i.said_name === 'string' && i.said_name.trim() ? { said_name: i.said_name.trim() } : {}),
     ...(typeof i.source_site === 'string' && i.source_site.trim() ? { source_site: i.source_site.trim().slice(0, 60) } : {}),
+    ...(isFoodOrigin(i.origin) ? { origin: i.origin } : {}),
+    ...((COPIED_FROM as readonly unknown[]).includes(i.copied_from) ? { copied_from: i.copied_from as CopiedFrom } : {}),
+    ...(parseRecipe(i.recipe) ? { recipe: parseRecipe(i.recipe)! } : {}),
   };
 }
 
@@ -938,7 +955,11 @@ export interface SavedSuggestion { food_name: string; saved_id: string; saved_na
 /** A saved meal as card lines, one serving, the same numbers logSavedMeal
  *  writes. Marked as the user's own (manual) and named after the saved meal. */
 export function savedMealAsItems(saved: SavedMeal, mealType: MealType): ParsedMealItem[] {
-  const base = { source: 'manual' as const, assumption: null, confidence: 'high' as const, meal_type: mealType, saved_meal: saved.name };
+  // A saved meal's line keeps its own origin; saving a meal is not typing it.
+  const base = {
+    source: 'manual' as const, assumption: null, confidence: 'high' as const, meal_type: mealType, saved_meal: saved.name,
+    copied_from: 'saved_meal' as const, origin: 'unknown' as FoodOrigin,
+  };
   if (saved.kind === 'recipe' || saved.items.length === 0) {
     const f = saved.kind === 'recipe' && saved.servings > 0 ? 1 / saved.servings : 1;
     return [{
@@ -951,6 +972,7 @@ export function savedMealAsItems(saved: SavedMeal, mealType: MealType): ParsedMe
     food_id: it.food_id, food_name: it.food_name, quantity: num(it.quantity) || 1, serving_label: it.serving_unit,
     grams: num(it.grams_logged), kcal: num(it.kcal), protein_g: num(it.protein_g), carb_g: num(it.carb_g), fat_g: num(it.fat_g),
     fiber_g: it.fiber_g == null ? null : num(it.fiber_g), ...base,
+    origin: isFoodOrigin((it as { origin?: unknown }).origin) ? (it as { origin: FoodOrigin }).origin : 'unknown',
   }));
 }
 
@@ -1367,6 +1389,11 @@ export async function parseMeal(
               // they named rather than the row that may be the mistake.
               ...(it.said_name ? { said_name: it.said_name } : {}),
               ...(it.source_site ? { source_site: it.source_site } : {}),
+              // Where the numbers came from, so a line kept through a
+              // correction keeps its origin (an older server ignores these).
+              ...(it.origin ? { origin: it.origin } : {}),
+              ...(it.copied_from ? { copied_from: it.copied_from } : {}),
+              ...(it.recipe ? { recipe: it.recipe } : {}),
               ...(idx === args.researchLine ? { research: true } : {}),
             })),
           }
@@ -1502,10 +1529,17 @@ async function logSection(
     // Where the macros came from (catalog / off / web / estimate) so the diary can
     // later tell a real label/web hit from a pure estimate (migration 0076).
     source: it.source,
+    ...originColumns(it),
   }));
 
-  const { data: inserted, error } = await supabase
+  let { data: inserted, error } = await supabase
     .from('meal_entries').insert(rows).select('id, position');
+  if (error && missingColumn(error, ORIGIN_COLS)) {
+    // The app shipped before migration 20261107120000: the database stamps
+    // the origin itself from the parse trace.
+    ({ data: inserted, error } = await supabase
+      .from('meal_entries').insert(withoutColumns(rows, ORIGIN_COLS)).select('id, position'));
+  }
   if (error) {
     // If we created an empty meal and the entries failed, don't leave the
     // orphan meal behind.
@@ -1940,6 +1974,8 @@ export interface SavedMealItem {
   grams_logged: number | null;
   kcal: number; protein_g: number; carb_g: number; fat_g: number;
   fiber_g: number | null;
+  /** saved_meal_items.origin (step 4); null on a line saved before it. */
+  origin?: FoodOrigin | null;
 }
 export interface SavedMeal {
   id: string;
@@ -1987,13 +2023,25 @@ export async function createSavedMeal(
     kcal: r0(num(it.kcal)), protein_g: r1(num(it.protein_g)), carb_g: r1(num(it.carb_g)), fat_g: r1(num(it.fat_g)),
     fiber_g: it.fiber_g == null ? null : r1(num(it.fiber_g)),
     position: i,
+    // Where the line's numbers came from, so logging the meal later does not
+    // make them the user's own.
+    origin: originColumns(it).origin,
   }));
-  const { error: itemsErr } = await supabase.from('saved_meal_items').insert(rows);
+  const { error: itemsErr } = await insertSavedItems(supabase, rows);
   if (itemsErr) {
     await supabase.from('saved_meals').delete().eq('id', savedId); // no orphan header
     return { error: itemsErr.message };
   }
   return { id: savedId };
+}
+
+/** Insert saved meal lines; on a database without saved_meal_items.origin
+ *  (migration 20261107120000 not applied yet) insert them without it. */
+async function insertSavedItems(supabase: Supa, rows: Record<string, unknown>[]): Promise<{ error: { message: string } | null }> {
+  const first = await supabase.from('saved_meal_items').insert(rows);
+  if (!first.error || !missingColumn(first.error, ['origin'])) return { error: first.error };
+  const retry = await supabase.from('saved_meal_items').insert(withoutColumns(rows, ['origin']));
+  return { error: retry.error };
 }
 
 /** All of the user's saved meals + recipes, newest first, with their items. */
@@ -2006,7 +2054,7 @@ export async function listSavedMeals(supabase: Supa): Promise<SavedMeal[]> {
   const ids = (heads as any[]).map((h) => h.id);
   const { data: items } = await supabase
     .from('saved_meal_items')
-    .select('saved_meal_id, food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g')
+    .select('*') // origin arrives with migration 20261107120000
     .in('saved_meal_id', ids)
     .order('position');
   const byMeal = new Map<string, SavedMealItem[]>();
@@ -2017,6 +2065,7 @@ export async function listSavedMeals(supabase: Supa): Promise<SavedMeal[]> {
       serving_unit: it.serving_unit, grams_logged: it.grams_logged == null ? null : num(it.grams_logged),
       kcal: num(it.kcal), protein_g: num(it.protein_g), carb_g: num(it.carb_g), fat_g: num(it.fat_g),
       fiber_g: it.fiber_g == null ? null : num(it.fiber_g),
+      origin: isFoodOrigin(it.origin) ? it.origin : null,
     });
     byMeal.set(it.saved_meal_id, arr);
   }
@@ -2060,6 +2109,9 @@ export async function logSavedMeal(
       kcal: r0(saved.kcal * f), protein_g: r1(saved.protein_g * f), carb_g: r1(saved.carb_g * f), fat_g: r1(saved.fat_g * f),
       fiber_g: null, sugar_g: null, sat_fat_g: null, sodium_mg: null,
       position: base, logged_via: 'manual',
+      // A saved recipe's total: saved on purpose, not typed. No proof of
+      // where its numbers came from.
+      origin: 'unknown', copied_from: 'saved_meal',
     }];
   } else {
     rows = saved.items.map((it, i) => ({
@@ -2069,9 +2121,13 @@ export async function logSavedMeal(
       kcal: r0(it.kcal * servings), protein_g: r1(it.protein_g * servings), carb_g: r1(it.carb_g * servings), fat_g: r1(it.fat_g * servings),
       fiber_g: it.fiber_g == null ? null : r1(it.fiber_g * servings), sugar_g: null, sat_fat_g: null, sodium_mg: null,
       position: base + i, logged_via: 'manual',
+      origin: it.origin ?? 'unknown', copied_from: 'saved_meal',
     }));
   }
-  const { error } = await supabase.from('meal_entries').insert(rows);
+  let { error } = await supabase.from('meal_entries').insert(rows);
+  if (error && missingColumn(error, ORIGIN_COLS)) {
+    ({ error } = await supabase.from('meal_entries').insert(withoutColumns(rows, ORIGIN_COLS)));
+  }
   if (!error) {
     track('meal_logged', {
       method: 'saved',
@@ -2124,8 +2180,9 @@ export async function updateSavedMeal(
     kcal: r0(num(it.kcal)), protein_g: r1(num(it.protein_g)), carb_g: r1(num(it.carb_g)), fat_g: r1(num(it.fat_g)),
     fiber_g: it.fiber_g == null ? null : r1(num(it.fiber_g)),
     position: i,
+    origin: originColumns(it).origin,
   }));
-  const { error: insErr } = await supabase.from('saved_meal_items').insert(rows);
+  const { error: insErr } = await insertSavedItems(supabase, rows);
   if (insErr) return { error: insErr.message };
   return {};
 }
@@ -2320,6 +2377,7 @@ export function quickAddToItem(draft: QuickAddDraft, mealType: MealType): Parsed
     protein_g: num(draft.protein_g), carb_g: num(draft.carb_g), fat_g: num(draft.fat_g),
     fiber_g: null,
     source: 'manual', assumption: null, confidence: 'high',
+    origin: 'user_typed',
     meal_type: mealType,
   };
 }
@@ -2349,7 +2407,7 @@ export async function logQuickAdd(
   // left blank is written as 0. The null in the draft is the UI's business —
   // it drives the "macros add up to" hint — and stops at this boundary.
   const macro = (v: number | null) => r1(Math.max(num(v), 0));
-  const { error } = await supabase.from('meal_entries').insert({
+  const row = {
     meal_id: mealId,
     food_id: null,
     food_name: quickAddName(draft),
@@ -2361,7 +2419,12 @@ export async function logQuickAdd(
     fiber_g: null, sugar_g: null, sat_fat_g: null, sodium_mg: null,
     position: count ?? 0,
     logged_via: 'manual',
-  });
+    origin: 'user_typed', // the numbers were typed in the quick-add boxes
+  };
+  let { error } = await supabase.from('meal_entries').insert(row);
+  if (error && missingColumn(error, ['origin'])) {
+    ({ error } = await supabase.from('meal_entries').insert(withoutColumns([row], ['origin'])[0]));
+  }
   if (error) {
     if (createdMeal) await deleteMealIfEmpty(supabase, mealId);
     return { error: error.message };

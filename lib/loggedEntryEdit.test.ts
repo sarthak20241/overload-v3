@@ -47,6 +47,8 @@ Deno.test('saves decimal macros and a meal move together on the selected past da
     meal_id: 'new-meal', quantity: 1, serving_unit: 'glass', grams_logged: 240,
     kcal: 300, protein_g: 6.7, carb_g: 28, fat_g: 8,
     source: 'manual', fiber_g: null, sugar_g: null, sat_fat_g: null, sodium_mg: null,
+    // New numbers per 100 g: the user's own (step 4).
+    origin: 'user_typed', copied_from: null,
   });
   assertEquals(f.calls.filter(c => c[0] === 'update').length, 1);
   assert(f.calls.some(c => c[0] === 'delete' && c[1] === 'meals'));
