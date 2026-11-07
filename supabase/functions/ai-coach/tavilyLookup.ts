@@ -64,6 +64,10 @@ export interface WebFinding {
   readings: SourceReading[];
   serving_label: string | null;
   serving_grams: number | null;
+  /** Pieces in that serving and their word ("2", "slice"), as the reader
+   *  copied them off the page. Null when the page printed no count. */
+  serving_count?: number | null;
+  serving_unit?: string | null;
   source_note: string | null;
   /** The brand the pages sell this product under, when the user's own words
    *  name it too (brandFromPages). Null otherwise. */
@@ -250,6 +254,79 @@ export function hostOf(url: string | null | undefined): string {
   }
 }
 
+/** Hosts that sell or list many brands: never a brand's own site, whatever
+ *  their name holds. */
+const NOT_BRAND_SITES = [...LABEL_SITES_INDIA, ...NUTRITION_DATABASES, "fatsecret.com", "myfooddata.com", "eatthismuch.com"];
+
+/**
+ * Is this page on the brand's own site? The brand's words run together are the
+ * host's name, or sit inside it: "Health Factory" is thehealthfactory.in,
+ * "Milky Mist" is milkymist.com. A brand's site prints its own label, so for
+ * that brand's product it is the source every other site copies (or gets
+ * wrong: live, 2026-11-07, a database page had a protein bread at 15.2 g
+ * protein per 100 g, the maker's label about 22 g, and Jev's relevance for the
+ * maker's pages was 0.08 to 0.52, so they were dropped).
+ *
+ * General on purpose: no brand or domain is listed. A brand shorter than four
+ * letters matches nothing (too many hosts hold three letters by chance), and
+ * shops and nutrition databases are never a brand's site.
+ */
+export function isBrandSite(url: string | null | undefined, brand: string | null | undefined): boolean {
+  const b = (brand ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (b.length < 4) return false;
+  const host = hostOf(url);
+  if (!host) return false;
+  if (NOT_BRAND_SITES.some((d) => host === d || host.endsWith(`.${d}`))) return false;
+  // Every part of the host but the last (the top-level domain), and a short
+  // second-level part like the "co" of .co.in.
+  const parts = host.split(".");
+  const names = parts.slice(0, -1).filter((x, i, all) => !(i === all.length - 1 && x.length <= 3 && all.length > 1));
+  return names.some((x) => x.replace(/[^a-z0-9]+/g, "").includes(b));
+}
+
+/**
+ * Does a result's title or link name this product? Every word of the food's
+ * name that is not the brand's (three letters or more) is in the title or the
+ * link: "Protein Bread - (Multi Protein)" names "protein bread", "Zero Maida
+ * Bread Whole Wheat" does not. A brand's site sells many products, and only a
+ * page that names this one is lifted (isBrandSite).
+ */
+export function namesProduct(r: { title: string; url: string }, item: WebFoodItem): boolean {
+  const words = (x: string) => x.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^a-z0-9]+/).filter(Boolean);
+  const brand = new Set(words(item.brand ?? ""));
+  const want = words(item.name).filter((w) => w.length >= 3 && !brand.has(w));
+  let path = r.url;
+  try {
+    path = new URL(r.url).pathname;
+  } catch { /* the raw text */ }
+  const have = new Set([...words(r.title), ...words(path)]);
+  // "breads" in a link names "bread".
+  return want.every((w) => have.has(w) || have.has(`${w}s`) || (w.endsWith("s") && have.has(w.slice(0, -1))));
+}
+
+/**
+ * isBrandSite and namesProduct together, for a result and the food. With no
+ * brand on the food (find_label passes the card's name, "Health Factory protein
+ * bread"), the name's first one to three words are tried as the brand, and the
+ * rest must be named by the page. Only words the user typed can match a host.
+ */
+export function onBrandSite(r: { title: string; url: string }, item: WebFoodItem): boolean {
+  if (item.brand?.trim()) return isBrandSite(r.url, item.brand) && namesProduct(r, item);
+  const words = item.name.trim().split(/\s+/);
+  for (let k = 1; k <= Math.min(3, words.length - 1); k++) {
+    const brand = words.slice(0, k).join(" ");
+    if (isBrandSite(r.url, brand) && namesProduct(r, { name: words.slice(k).join(" "), brand })) return true;
+  }
+  return false;
+}
+
+/** The readings to use: the brand's own site's alone when the reader kept
+ *  one, else every reading. */
+export function preferBrandSite<T extends { brandSite: boolean }>(kept: T[]): T[] {
+  const own = kept.filter((k) => k.brandSite);
+  return own.length ? own : kept;
+}
+
 /** Same classification parseMeal's providerFromRef makes, restated here. A
  *  FatSecret page a search found is a public page and counts by its host
  *  (owner decision 2026-09-05); every Open Food Facts page is one source. */
@@ -336,6 +413,10 @@ export interface PageReport {
   basis: "per_100g" | "per_100ml" | "per_serving" | "none";
   serving_grams: number | null;
   serving_label: string | null;
+  /** Pieces in the printed serving (2 for "2 slices (50 g)"), when printed. */
+  serving_count: number | null;
+  /** The piece word ("slice"), when printed. */
+  serving_unit: string | null;
   kcal: number | null;
   /** Energy in kJ as printed, for labels that print no kcal. */
   energy_kj: number | null;
@@ -452,6 +533,12 @@ function parsePageReports(input: unknown): PageReport[] {
       serving_label: typeof o.serving_label === "string" && o.serving_label.trim()
         ? o.serving_label.trim().slice(0, 60)
         : null,
+      serving_count: Number.isInteger(o.serving_count) && (o.serving_count as number) >= 1 && (o.serving_count as number) <= 50
+        ? o.serving_count as number
+        : null,
+      serving_unit: typeof o.serving_unit === "string" && /^[a-z][a-z \-]{0,24}$/i.test(o.serving_unit.trim())
+        ? o.serving_unit.trim().toLowerCase()
+        : null,
       kcal: num(o.kcal),
       energy_kj: num(o.energy_kj),
       protein_g: num(o.protein_g),
@@ -493,7 +580,19 @@ const READ_TOOL = {
               type: ["number", "null"],
               description: "Grams (or ml) in one serving, as printed. Required when basis is per_serving.",
             },
-            serving_label: { type: ["string", "null"], description: 'The printed serving, e.g. "1 cup (200 g)".' },
+            serving_label: {
+              type: ["string", "null"],
+              description: 'The printed serving, with its count of pieces when printed, e.g. "1 cup (200 g)", "2 slices (50 g)".',
+            },
+            serving_count: {
+              type: ["integer", "null"],
+              description: 'How many pieces the printed serving holds, as printed: 2 for "2 slices (50 g)". null when the ' +
+                "page prints no count. Copy it; never divide.",
+            },
+            serving_unit: {
+              type: ["string", "null"],
+              description: 'The piece word of that count, as printed: "slice" for "2 slices (50 g)". null when no count is printed.',
+            },
             kcal: { type: ["number", "null"] },
             energy_kj: { type: ["number", "null"], description: "Energy in kJ, only when printed." },
             protein_g: { type: ["number", "null"] },
@@ -541,6 +640,8 @@ interface ReadPage {
   panel: string;
   full: boolean;
   heading: string | null;
+  /** On the brand's own site: its reading wins (runTavilyLookup). */
+  brandSite: boolean;
 }
 
 /** A search result plus what we can see of the page, for Jev to judge. */
@@ -556,6 +657,8 @@ interface Candidate {
   pieces: string[];
   /** Jev's first-look relevance, from title and snippet. */
   p: number | null;
+  /** On the brand's own site (isBrandSite). */
+  brandSite: boolean;
 }
 
 function pageHeading(text: string | null | undefined): string | null {
@@ -737,6 +840,7 @@ async function selectPages(
       // The page text first; the search snippet when the page text had none.
       pieces: pagePieces(r.raw_content).length ? pagePieces(r.raw_content) : pagePieces(r.content),
       p: null,
+      brandSite: onBrandSite(r, item),
     }));
   const seenOf = () => cands.map((c) => ({ title: c.r.title.slice(0, 120), site: hostOf(c.r.url), p: round2(c.p) }));
 
@@ -769,7 +873,7 @@ async function selectPages(
     steps.push({ tool: "web_relevance", input: { mode: "fallback", why }, result: { kept: top.length } });
     await fillBlind(top);
     const pages = top
-      .map((c) => ({ r: c.r, panel: findPanelText(c.pieces.join(" ")), full: c.full, heading: c.heading }))
+      .map((c) => ({ r: c.r, panel: findPanelText(c.pieces.join(" ")), full: c.full, heading: c.heading, brandSite: c.brandSite }))
       .filter((x): x is ReadPage => !!x.panel);
     return { pages, credits, seen: seenOf() };
   };
@@ -779,15 +883,30 @@ async function selectPages(
   const first = await askFirstLook(jev, item, cands);
   if (!first) return fallback("jev_failed", cands);
   cands.forEach((c, i) => { c.p = first.p[i]; });
+  // The brand's own page for this product never ranks below another site.
+  // First look: it is always kept for the second. Second look, where Jev reads
+  // the page's own words: lifted unless Jev is sure it is another product
+  // (below UNSURE_FLOOR), and the reader's same_food check still decides.
+  const lift = (ps: (number | null)[], brand: boolean[], floor: number, minimum = 0) => {
+    const best = Math.max(0, ...ps.filter((_, i) => !brand[i]).map((p) => p ?? 0));
+    return ps.map((p, i) => (brand[i] && (p ?? 0) >= minimum ? Math.max(p ?? 0, best, floor) : p));
+  };
+  const lifted = lift(cands.map((c) => c.p), cands.map((c) => c.brandSite), UNSURE_FLOOR);
+  const firstRaw = cands.map((c) => c.p);
+  cands.forEach((c, i) => { c.p = lifted[i]; });
   steps.push({
     tool: "web_relevance",
     input: { mode: "jev", look: 1, model: first.model, keep_from: UNSURE_FLOOR },
-    result: cands.map((c) => ({ site: hostOf(c.r.url), p: round2(c.p) })),
+    result: cands.map((c, i) => ({
+      site: hostOf(c.r.url),
+      p: round2(c.p),
+      ...(c.brandSite ? { brand_site: true, jev_p: round2(firstRaw[i]) } : {}),
+    })),
   });
 
   const kept = cands
     .filter((c) => (c.p ?? 0) >= UNSURE_FLOOR)
-    .sort((a, b) => (b.p ?? 0) - (a.p ?? 0))
+    .sort((a, b) => (b.p ?? 0) - (a.p ?? 0) || Number(b.brandSite) - Number(a.brandSite))
     .slice(0, MAX_PAGES_READ);
   if (kept.length === 0) return { pages: [], credits, seen: seenOf() };
   await fillBlind(kept);
@@ -799,8 +918,8 @@ async function selectPages(
     // Jev answered once and then failed: trust its first look for relevance,
     // and let the best-scoring window stand in for the piece choice.
     const pages = withPieces
-      .filter((c) => (c.p ?? 0) >= RELEVANCE_FLOOR)
-      .map((c) => ({ r: c.r, panel: findPanelText(c.pieces.join(" ")), full: c.full, heading: c.heading }))
+      .filter((c) => (c.p ?? 0) >= RELEVANCE_FLOOR || c.brandSite)
+      .map((c) => ({ r: c.r, panel: findPanelText(c.pieces.join(" ")), full: c.full, heading: c.heading, brandSite: c.brandSite }))
       .filter((x): x is ReadPage => !!x.panel);
     steps.push({ tool: "web_relevance", input: { mode: "jev", look: 2 }, result: { failure: "jev_failed", kept: pages.length } });
     return { pages, credits, seen: seenOf() };
@@ -808,13 +927,16 @@ async function selectPages(
 
   const pages: Array<ReadPage & { p: number }> = [];
   const trace: unknown[] = [];
+  const secondP = lift(second.map((a) => a.p), withPieces.map((c) => c.brandSite), RELEVANCE_FLOOR, UNSURE_FLOOR);
   withPieces.forEach((c, i) => {
     const a = second[i];
-    const text = (a.p ?? 0) >= RELEVANCE_FLOOR ? textForReader(c.pieces, a) : null;
-    if (text) pages.push({ r: c.r, panel: text, full: c.full, heading: c.heading, p: a.p ?? 0 });
+    const p = secondP[i] ?? 0;
+    const text = p >= RELEVANCE_FLOOR ? textForReader(c.pieces, a) : null;
+    if (text) pages.push({ r: c.r, panel: text, full: c.full, heading: c.heading, p, brandSite: c.brandSite });
     trace.push({
       site: hostOf(c.r.url),
-      p: round2(a.p),
+      p: round2(p),
+      ...(c.brandSite ? { brand_site: true, jev_p: round2(a.p) } : {}),
       piece: a.piece,
       piece_conf: round2(a.pieceConf),
       pieces: c.pieces.length,
@@ -826,8 +948,8 @@ async function selectPages(
     input: { mode: "jev", look: 2, floor: RELEVANCE_FLOOR, piece_floor: PIECE_FLOOR },
     result: trace,
   });
-  pages.sort((a, b) => b.p - a.p);
-  return { pages: pages.map(({ r, panel, full, heading }) => ({ r, panel, full, heading })), credits, seen: seenOf() };
+  pages.sort((a, b) => b.p - a.p || Number(b.brandSite) - Number(a.brandSite));
+  return { pages: pages.map(({ r, panel, full, heading, brandSite }) => ({ r, panel, full, heading, brandSite })), credits, seen: seenOf() };
 }
 
 /**
@@ -919,10 +1041,8 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
     const block = (data?.content ?? []).find((b: any) => b?.type === "tool_use" && b?.name === READ_TOOL.name);
     const reports = parsePageReports(block?.input);
 
-    const readings: SourceReading[] = [];
-    const pageBrands: string[] = [];
     const dropped: Array<{ site: string; why: DropReason; from: "page" | "snippet" }> = [];
-    let serving: { label: string; grams: number } | null = null;
+    const kept: Array<{ reading: SourceReading; rep: PageReport; brandSite: boolean }> = [];
     for (const rep of reports) {
       const page = byId.get(rep.page_id);
       if (!page) continue;
@@ -933,11 +1053,17 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
         if (UNREAD_LABEL.has(read.dropped)) unread.add(hostOf(url));
         continue;
       }
-      const reading = read.reading;
-      readings.push(reading);
-      if (rep.brand) pageBrands.push(rep.brand);
+      kept.push({ reading: read.reading, rep, brandSite: page.brandSite });
+    }
+    // The brand's own label, when the reader took one, is the answer: other
+    // sites copy it, or get it wrong.
+    const used = preferBrandSite(kept);
+    const readings: SourceReading[] = used.map((k) => k.reading);
+    const pageBrands: string[] = used.flatMap((k) => (k.rep.brand ? [k.rep.brand] : []));
+    let serving: { label: string; grams: number; count: number | null; unit: string | null } | null = null;
+    for (const { rep } of used) {
       if (!serving && rep.serving_label && rep.serving_grams && rep.serving_grams > 0 && rep.serving_grams <= 5000) {
-        serving = { label: rep.serving_label, grams: rep.serving_grams };
+        serving = { label: rep.serving_label, grams: rep.serving_grams, count: rep.serving_count, unit: rep.serving_unit };
       }
     }
     steps.push({
@@ -946,6 +1072,7 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
       result: {
         reported: reports.length,
         kept: readings.map((r) => ({ site: hostOf(r.ref), kcal: r.per_100.kcal })),
+        ...(used.length < kept.length ? { brand_site_won: true, set_aside: kept.length - used.length } : {}),
         // Why each other page said no, and whether we read the page or only a
         // search snippet. Without this a miss could only be explained by
         // replaying the reader by hand.
@@ -959,6 +1086,8 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
       readings,
       serving_label: serving?.label ?? null,
       serving_grams: serving?.grams ?? null,
+      serving_count: serving?.count ?? null,
+      serving_unit: serving?.unit ?? null,
       source_note: sites.length ? `from ${sites.slice(0, 2).join(" and ")}`.slice(0, 80) : null,
       // The USER's words decide which page brand may be stored, never the
       // rewrite's: brandFromPages only keeps a brand the user typed.

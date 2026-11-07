@@ -3,6 +3,7 @@ import {
   MAX_NEW_NAME,
   MAX_NEW_PER_DAY,
   MAX_NEW_PER_PLAN,
+  SKELETON_RETRY_BUDGET_MS,
   assemblePlan,
   groundSkeleton,
   parseSkeleton,
@@ -183,4 +184,110 @@ Deno.test("a plan keeps at most MAX_NEW_PER_PLAN distinct invented exercises", (
   assertEquals(s.days[5].slots.includes("Drill 1"), true);
   assertEquals(names.has(`Drill ${MAX_NEW_PER_PLAN + 1}`), false);
   assertEquals(Object.keys(s.new_exercises ?? {}).length, MAX_NEW_PER_PLAN);
+});
+
+// Production, 2026-11: two skeleton replies hit the 2000-token cap with no
+// usable text (one empty, one only the PLAN line). A tap on Generate again
+// worked, so the build now does that second try itself.
+function flakySkeletonCaller(skeletons: string[]) {
+  const usage = { input_tokens: 10, output_tokens: 2000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+  const labels: string[] = [];
+  let n = 0;
+  const call: TextCaller = ({ label }) => {
+    labels.push(label);
+    if (label.startsWith("skeleton")) {
+      const text = skeletons[n++] ?? "";
+      return Promise.resolve({ text, usage, stop_reason: "max_tokens", block_types: text ? ["thinking", "text"] : ["thinking"] });
+    }
+    if (label === "rationale") return Promise.resolve({ text: "Because.", usage });
+    return Promise.resolve({ text: "EX | Bench Press | 3 | 5 | 120", usage });
+  };
+  return { call, labels };
+}
+
+Deno.test("an empty skeleton reply is tried once more and the plan still builds", async () => {
+  const { call, labels } = flakySkeletonCaller(["", SKELETON]);
+  const r = await runGeneratePlan("Build me a plan.", { call, catalog: CATALOG, system: [] });
+  assertEquals(r.error, undefined);
+  assertEquals(r.plan?.workouts.length, 2);
+  assertEquals(labels.filter((l) => l.startsWith("skeleton")), ["skeleton", "skeleton_retry"]);
+  // Both skeleton calls are counted: 2 skeletons + 2 fills + 1 rationale.
+  assertEquals(r.calls, 5);
+  assertEquals(r.usage.input_tokens, 50);
+  assertEquals(r.stages.filter((s) => s.label.startsWith("skeleton")).map((s) => s.label), ["skeleton", "skeleton_retry"]);
+});
+
+Deno.test("a skeleton cut off after the PLAN line is tried once more", async () => {
+  const { call } = flakySkeletonCaller(["PLAN | Phase 1 Volume Base Full Body | Full", SKELETON]);
+  const r = await runGeneratePlan("Build me a plan.", { call, catalog: CATALOG, system: [] });
+  assertEquals(r.plan?.name, "Upper Plus Mobility");
+});
+
+Deno.test("two empty skeleton replies still fail, and the error says why", async () => {
+  const { call, labels } = flakySkeletonCaller(["", ""]);
+  const r = await runGeneratePlan("Build me a plan.", { call, catalog: CATALOG, system: [] });
+  assertEquals(r.plan, null);
+  assertEquals(r.error?.startsWith("skeleton parse failed twice"), true);
+  assertEquals(r.error?.includes("stop=max_tokens blocks=thinking"), true);
+  assertEquals(r.error?.endsWith('"<empty>"'), true);
+  // No third try, and no fills were started.
+  assertEquals(labels, ["skeleton", "skeleton_retry"]);
+  assertEquals(r.calls, 2);
+});
+
+Deno.test("a good skeleton is not called twice", async () => {
+  const { call, labels } = flakySkeletonCaller([SKELETON]);
+  const r = await runGeneratePlan("Build me a plan.", { call, catalog: CATALOG, system: [] });
+  assertEquals(r.plan !== null, true);
+  assertEquals(labels.filter((l) => l.startsWith("skeleton")), ["skeleton"]);
+});
+
+Deno.test("every plan call has at least 2x the most it has needed in production", async () => {
+  // Max output tokens seen in coach_traces (successful builds, 60 days to
+  // 2026-11-05; rationale since the 25-word prompt in #327). A guard on the
+  // constants, not on behaviour: bump these by hand when a re-query of
+  // spans.stages[].output_tokens finds a new max.
+  const MAX_SEEN: Record<string, number> = { skeleton: 853, fill: 614, rationale: 78 };
+  const caps: Record<string, number> = {};
+  const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+  const call: TextCaller = ({ label, maxTokens }) => {
+    caps[label.startsWith("fill:") ? "fill" : label] = maxTokens;
+    if (label === "skeleton") return Promise.resolve({ text: SKELETON, usage });
+    if (label === "rationale") return Promise.resolve({ text: "Because.", usage });
+    return Promise.resolve({ text: "EX | Bench Press | 3 | 5 | 120", usage });
+  };
+  await runGeneratePlan("Build me a plan.", { call, catalog: CATALOG, system: [] });
+  for (const [label, seen] of Object.entries(MAX_SEEN)) {
+    assertEquals(caps[label] >= 2 * seen, true, `${label} cap ${caps[label]} < 2 x ${seen}`);
+  }
+});
+
+Deno.test("a slow empty skeleton is not retried, so the client is not left waiting past its abort", async () => {
+  const { call: inner, labels } = flakySkeletonCaller(["", SKELETON]);
+  let clock = 0;
+  // The first skeleton takes 1s longer than the retry budget.
+  const call: TextCaller = (args) => {
+    if (args.label === "skeleton") clock += SKELETON_RETRY_BUDGET_MS + 1000;
+    return inner(args);
+  };
+  const r = await runGeneratePlan("Build me a plan.", { call, catalog: CATALOG, system: [], now: () => clock });
+  assertEquals(r.plan, null);
+  assertEquals(labels, ["skeleton"]);
+  assertEquals(r.error?.includes("stop=max_tokens blocks=thinking"), true);
+  assertEquals(r.error?.includes(`no retry after ${(SKELETON_RETRY_BUDGET_MS + 1000) / 1000}s`), true);
+  // Worst case that still retries: budget + a 4000-token runaway (~30s) +
+  // fills (~10s) + setup (~3s) must land before the client's 75s abort.
+  assertEquals(SKELETON_RETRY_BUDGET_MS + 30_000 + 10_000 + 3_000 < 75_000, true);
+});
+
+Deno.test("an empty skeleton inside the budget is still retried", async () => {
+  const { call: inner, labels } = flakySkeletonCaller(["", SKELETON]);
+  let clock = 0;
+  const call: TextCaller = (args) => {
+    if (args.label === "skeleton") clock += SKELETON_RETRY_BUDGET_MS - 1000;
+    return inner(args);
+  };
+  const r = await runGeneratePlan("Build me a plan.", { call, catalog: CATALOG, system: [], now: () => clock });
+  assertEquals(r.plan !== null, true);
+  assertEquals(labels.filter((l) => l.startsWith("skeleton")), ["skeleton", "skeleton_retry"]);
 });

@@ -23,6 +23,7 @@ import {
   type ParseMealResult,
   runParseMeal,
 } from "../../supabase/functions/ai-coach/parseMeal";
+import { foodRegionForTimezone } from "../../supabase/functions/ai-coach/regionRules";
 import { searchFatSecret } from "../../supabase/functions/ai-coach/fatsecret";
 import { voyageRerank } from "../../supabase/functions/ai-coach/rerank";
 import { CASES, type EvalCase } from "./cases";
@@ -200,7 +201,14 @@ async function searchCatalogWithServings(query: string): Promise<CandidateFood[]
 }
 
 let offLookups = 0;
+// Plan step 6. EVAL_PRECISE=1 runs every first parse in Precise (the only mode
+// region rules touch); FOOD_REGION_RULES=on turns them on, and EVAL_REGION
+// (india | us | uk) is the time zone they read.
+const EVAL_ZONES: Record<string, string> = { india: "Asia/Kolkata", us: "America/New_York", uk: "Europe/London" };
+const EVAL_ZONE = EVAL_ZONES[env("EVAL_REGION") || "india"] ?? EVAL_ZONES.india;
+const kcalErrors: number[] = [];
 const deps: ParseMealDeps = {
+  ...(env("FOOD_REGION_RULES") === "on" ? { foodRegion: async () => foodRegionForTimezone(EVAL_ZONE) } : {}),
   anthropicApiKey: ANTHROPIC_API_KEY,
   model: MODEL,
   ...(VIA_CLI ? { fetchFn: makeClaudeCliFetch(MODEL) } : {}),
@@ -353,7 +361,8 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
         failures.push(`"${ie.nameIncludes}" resolved to "${match.food_name}" which must not contain "${bad}"`);
       }
     }
-    if (ie.tiers && !ie.tiers.includes(match.source)) {
+    // A dish summed from its parts (step 5) is not a tier this eval grades.
+    if (ie.tiers && (match.source === "recipe" || !ie.tiers.includes(match.source))) {
       failures.push(`"${ie.nameIncludes}" tier ${match.source} not in [${ie.tiers.join(",")}]`);
     }
     if (ie.gramsBetween) {
@@ -414,7 +423,7 @@ async function main() {
         // FAST_MODE=on runs every case through the no-decide fast path, so the
         // whole corpus doubles as fast's accuracy eval. Follow-ups carry
         // previousItems, so runParseMeal ignores the mode there by design.
-        mode: (env("FAST_MODE") === "on" ? "fast" : null) as "fast" | null,
+        mode: (env("FAST_MODE") === "on" ? "fast" : env("EVAL_PRECISE") === "1" ? "super" : null) as "fast" | "super" | null,
         recentFoods: [],
         todayTotals: null,
         targets: { daily_calorie_target: 2400, protein_target_g: 140 },
@@ -466,6 +475,14 @@ async function main() {
         lastSteps = result.steps;
       }
       const failures = scoreCase(c, result);
+      // kcal error: every item with a kcal range, against the range's middle.
+      for (const exp of c.expect.items ?? []) {
+        if (!exp.kcalBetween) continue;
+        const mid = (exp.kcalBetween[0] + exp.kcalBetween[1]) / 2;
+        const names = [exp.nameIncludes, ...(exp.nameIncludesAny ?? [])].map((n) => n.toLowerCase());
+        const it = (result.parsed?.items ?? []).find((i) => names.some((n) => i.food_name.toLowerCase().includes(n)));
+        if (it && mid > 0) kcalErrors.push(Math.abs(it.kcal - mid) / mid);
+      }
       const tokens = result.usage.input_tokens + result.usage.output_tokens;
       totalTokens += tokens;
       inTokens += result.usage.input_tokens + (result.usage.cache_creation_input_tokens ?? 0) +
@@ -570,6 +587,10 @@ async function main() {
   console.log("\n──────── summary ────────");
   console.log(`passed:        ${passed}/${outcomes.length}  (${declineCases} decline cases)`);
   console.log(`tier mix:      ${JSON.stringify(tierCounts)}`);
+  if (kcalErrors.length) {
+    const e = [...kcalErrors].sort((a, b) => a - b);
+    console.log(`kcal error:    median ${Math.round(e[Math.floor(e.length / 2)] * 100)}%, mean ${Math.round(e.reduce((a, b) => a + b, 0) / e.length * 100)}% over ${e.length} items (vs range middle)`);
+  }
   console.log(`avg latency:   ${avgMs}ms`);
   console.log(`total tokens:  ${totalTokens} (in ${inTokens}, out ${outTokens})`);
   if (!VIA_CLI) {

@@ -93,3 +93,19 @@ Deno.test("usage is priced under the pinned model, with the served id kept apart
   });
   assertEquals([seen[0].model, seen[0].served_model], [JEV_MODEL, "jev-1.13.0-20261101"]);
 });
+
+Deno.test("a failed call is reported to onFailure; an answered one is not", async () => {
+  const { askJev } = await import("./jev.ts");
+  const failures: { failure: string; questions: number }[] = [];
+  const deps = {
+    apiKey: "k", timeoutMs: 1000,
+    fetchFn: (async () => new Response("nope", { status: 401 })) as typeof fetch,
+    onFailure: (f: { failure: string; questions: number }) => { failures.push({ failure: f.failure, questions: f.questions }); },
+  };
+  const r = await askJev("hi", { q: { type: "noul", instructions: "x" } as never }, deps);
+  assertEquals(r.ok, false);
+  assertEquals(failures, [{ failure: "auth", questions: 1 }]);
+  // No key: nothing was sent, so there is no failed CALL to report.
+  await askJev("hi", { q: { type: "noul", instructions: "x" } as never }, { ...deps, apiKey: "" });
+  assertEquals(failures.length, 1);
+});
