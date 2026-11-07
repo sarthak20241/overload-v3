@@ -2022,6 +2022,91 @@ export const CASES: FoodBoxCase[] = [
   // the bread's macros before the fixes are not in the trace (served items
   // carry kcal only): protein 28 / carb 26 / fat 4.4 per 100 g is assumed.
   ...NOV7_BREAD_CASES,
+  // ── Home dishes built from their parts (step 5, FOOD_BUILD_RECIPE) ──
+  // Synthetic, worded fresh. A dish named with its parts, one part with no
+  // amount (oil, ghee, butter): the card carries a usual amount and asks once.
+  {
+    id: "recipe-sabji-paneer-oil-beside-card",
+    tags: ["recipe-build", "later"],
+    origin: { date: "2026-11-07", who: "synthetic", note: "a home sabji with a weighed part and oil with no amount, added beside a card" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "lunch: 1 katori rice" },
+        { role: "drona", text: "Rice, 195 cal. Ready to add." },
+      ],
+      card: [L("Rice", 195, { quantity: 1, unit: "katori", grams: 150, source: "catalog", meal: "lunch" })],
+    },
+    message: "with that a capsicum paneer sabji, i used 50 g paneer, one capsicum and some oil",
+    expect: {
+      does: ["edit"],
+      keepLines: ["rice"],
+      lines: [{ match: "rice", kcal: [195, 195] }, { match: "paneer|sabji", kcal: [170, 330] }],
+      noDuplicates: true,
+      reply: { mustMention: ["oil"], noFalseClaim: true },
+    },
+  },
+  {
+    id: "recipe-dal-with-ghee-beside-card",
+    tags: ["recipe-build", "later"],
+    origin: { date: "2026-11-07", who: "synthetic", note: "a dal with ghee on top, the ghee with no amount" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "dinner 2 rotis" },
+        { role: "drona", text: "Two rotis, 240 cal. Ready to add." },
+      ],
+      card: [L("Roti", 240, { quantity: 2, unit: "piece", grams: 80, source: "catalog", meal: "dinner" })],
+    },
+    message: "add the moong dal i made, a bowl of it, finished with ghee",
+    expect: {
+      does: ["edit"],
+      keepLines: ["roti"],
+      lines: [{ match: "roti", kcal: [240, 240] }, { match: "dal", kcal: [130, 360] }],
+      noDuplicates: true,
+      reply: { mustMention: ["ghee"], noFalseClaim: true },
+    },
+  },
+  {
+    id: "recipe-omelette-butter-first",
+    // A first message that asks something: the agent sees it only with
+    // FOOD_FIRST_GATE=on (the gate sends it to the later-mode agent).
+    tags: ["recipe-build", "first"],
+    origin: { date: "2026-11-07", who: "synthetic", note: "a first message that is a home dish with butter, and a question" },
+    region: "india",
+    thread: { turns: [], card: null },
+    message: "breakfast was an omelette from 3 eggs cooked in butter, how much protein did i get?",
+    expect: {
+      does: ["log", "answer"],
+      totalKcal: [210, 340],
+      reply: { mustMention: ["protein"], noFalseClaim: true },
+    },
+  },
+  {
+    id: "recipe-answer-changes-the-oil",
+    tags: ["recipe-build", "later", "correction"],
+    origin: { date: "2026-11-07", who: "synthetic", note: "the user answers the one question; the dish is rebuilt, not given an oil line" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "lunch was a capsicum paneer sabji, 50 g paneer, one capsicum and oil" },
+        { role: "drona", text: "Capsicum paneer sabji is on the card. I assumed 1 tsp oil. Change it?" },
+      ],
+      card: [L("Capsicum paneer sabji", 205, {
+        quantity: 1, unit: "serving", grams: 175, source: "recipe", meal: "lunch",
+        note: "Built from parts: 50 g paneer, 120 g capsicum, 5 g oil (assumed).",
+      })],
+    },
+    message: "nah more like 3 tsp oil",
+    expect: {
+      does: ["edit"],
+      // 2 more tsp of oil is about 90 kcal more, on the dish's own line.
+      lines: [{ match: "paneer|sabji", kcal: [260, 340] }],
+      lineCount: [1, 1],
+      noDuplicates: true,
+      reply: { noFalseClaim: true },
+    },
+  },
 ];
 
 /** The gate's right answer for every first message (types.ts `plain`): a fully
@@ -2050,6 +2135,7 @@ const FIRST_MESSAGE_PLAIN: Record<string, boolean> = {
   "region-india-chai": true,
   "region-us-tea": true,
   "first-plain-homemade": true,
+  "recipe-omelette-butter-first": false,
   "first-plain-branded": true,
   "first-plain-breakfast": true,
   "first-plain-stated": true,

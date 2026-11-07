@@ -16,6 +16,7 @@ import type { FoodThreadSend } from './foodThread';
 import { persistLoggedEntryEdit } from './loggedEntryEdit';
 import { COPIED_FROM, isFoodOrigin, ORIGIN_COLS, originColumns, parseRecipe, type CopiedFrom, type FoodOrigin, type RecipePart } from './foodOrigin';
 import { missingColumn, withoutColumns } from './missingColumn';
+import { sourceBeforeOrigin } from './recipeLine';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { FunctionRegion } from '@supabase/supabase-js';
@@ -648,12 +649,15 @@ export async function recentFoods(supabase: Supa | null, limit = 20): Promise<Pi
  *  meals in 90 days on prod, 2026-10-31). */
 export async function loadYourFoods(supabase: Supa | null): Promise<YourFood[]> {
   if (!supabase) return [];
-  const { data, error } = await supabase
+  const cols = 'food_id, food_name, serving_unit, grams_logged, quantity, kcal, protein_g, carb_g, fat_g, fiber_g, sugar_g, sat_fat_g, sodium_mg, logged_via, source, tier';
+  const read = (entryCols: string) => supabase
     .from('meals')
-    // `*`: origin arrives with migration 20261107120000.
-    .select('logged_at, meal_entries(*)')
+    .select(`logged_at, meal_entries(${entryCols})`)
     .order('logged_at', { ascending: false })
     .limit(600);
+  let { data, error } = await read(`${cols}, origin`);
+  // A database before migration 20261107120000 has no origin column.
+  if (error && missingColumn(error, ['origin'])) ({ data, error } = await read(cols));
   if (error || !data) return [];
   const nul = (v: unknown) => (v == null ? null : Number(v));
   const entries: YourFoodEntry[] = [];
@@ -748,7 +752,8 @@ export interface ParsedMealItem {
   fiber_g: number | null;
   // 'manual' = the user corrected this line in the review card before adding
   // it, so the numbers are theirs and nothing should recompute over them.
-  source: 'catalog' | 'off' | 'fatsecret' | 'web' | 'estimate' | 'manual';
+  // 'recipe': a dish the server added up from its parts (ai-coach/recipe.ts).
+  source: 'catalog' | 'off' | 'fatsecret' | 'web' | 'estimate' | 'manual' | 'recipe';
   assumption: string | null;
   confidence: 'high' | 'medium' | 'low';
   /** Precise tier only: two INDEPENDENT sources landed within tolerance of this
@@ -930,7 +935,7 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
     // shape as the server's sanitizeItems bug; a new source has to be added in
     // BOTH whitelists or it silently degrades.
     source: i.source === 'catalog' || i.source === 'off' || i.source === 'fatsecret' ||
-        i.source === 'web' || i.source === 'manual'
+        i.source === 'web' || i.source === 'manual' || i.source === 'recipe'
       ? i.source
       : 'estimate',
     assumption: typeof i.assumption === 'string' && i.assumption.trim() ? i.assumption.trim() : null,
@@ -1539,7 +1544,7 @@ async function logSection(
     // The database predates migration 20261107120000: save without the
     // columns. Nothing records an origin until the migration lands.
     ({ data: inserted, error } = await supabase
-      .from('meal_entries').insert(withoutColumns(rows, ORIGIN_COLS)).select('id, position'));
+      .from('meal_entries').insert(withoutColumns(sourceBeforeOrigin(rows), ORIGIN_COLS)).select('id, position'));
   }
   if (error) {
     // If we created an empty meal and the entries failed, don't leave the
@@ -2053,11 +2058,11 @@ export async function listSavedMeals(supabase: Supa): Promise<SavedMeal[]> {
     .order('created_at', { ascending: false });
   if (error || !heads || heads.length === 0) return [];
   const ids = (heads as any[]).map((h) => h.id);
-  const { data: items } = await supabase
-    .from('saved_meal_items')
-    .select('*') // origin arrives with migration 20261107120000
-    .in('saved_meal_id', ids)
-    .order('position');
+  const cols = 'saved_meal_id, food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g';
+  const read = (c: string) => supabase.from('saved_meal_items').select(c).in('saved_meal_id', ids).order('position');
+  let { data: items, error: itemsErr } = await read(`${cols}, origin`);
+  // A database before migration 20261107120000 has no origin column.
+  if (itemsErr && missingColumn(itemsErr, ['origin'])) ({ data: items } = await read(cols));
   const byMeal = new Map<string, SavedMealItem[]>();
   for (const it of (items ?? []) as any[]) {
     const arr = byMeal.get(it.saved_meal_id) ?? [];
