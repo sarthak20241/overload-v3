@@ -2701,7 +2701,8 @@ const EXTRACT_SYSTEM_SMART = EXTRACT_SYSTEM_HEAD + EXTRACT_NO_NUTRITION + EXTRAC
 /** The extract prompt outside Quick, with the correction rules when a card is
  *  on screen. With region rules (FOOD_REGION_RULES, Precise only) the India
  *  rules leave the shared text, this region's examples go in, and the
- *  region's rules go at the END, so the shared part stays one stable text. */
+ *  region's rules go after the shared text (only the pending-meal notes come
+ *  later), so the shared part stays one stable text. */
 export function preciseExtractSystem(hasPrevious: boolean, regionRules?: { region: FoodRegion | null }): string {
   const base = hasPrevious ? EXTRACT_SYSTEM_SMART + EXTRACT_CORRECTION_RULES : EXTRACT_SYSTEM_SMART;
   if (!regionRules) return base;

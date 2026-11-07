@@ -2814,9 +2814,9 @@ function makeParseDeps(
    *  same reason Precise is Pro-only; absent means no web. */
   opts: { brandWeb?: boolean; fbTrace?: FoodBarTraceCollector } = {},
 ): ParseMealDeps {
+  // One read per request (readTimezone). A Precise request with region rules
+  // on starts it early, through the food agent's `region`; Quick never reads it.
   const zone = () => readTimezone(userClient);
-  // Region rules need the zone before extract: start the read now.
-  if (FOOD_REGION_RULES === "on") void zone();
   const fb = opts.fbTrace;
   const aliases = preciseAliasStore(admin, userId);
   return {

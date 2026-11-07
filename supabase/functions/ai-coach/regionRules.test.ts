@@ -62,6 +62,8 @@ Deno.test("the region comes from the time zone, with no fallback", () => {
   assertEquals(foodRegionForTimezone("America/Indiana/Indianapolis"), "us");
   assertEquals(foodRegionForTimezone("Europe/London"), "uk");
   assertEquals(foodRegionForTimezone("Europe/Berlin"), "eu");
+  assertEquals(foodRegionForTimezone("Europe/Zurich"), "eu");
+  assertEquals(foodRegionForTimezone("Europe/Moscow"), null);
   assertEquals(foodRegionForTimezone("Asia/Tokyo"), null);
   assertEquals(foodRegionForTimezone(null), null);
   assertEquals(foodRegionForTimezone(""), null);

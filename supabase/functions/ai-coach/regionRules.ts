@@ -24,9 +24,12 @@ export function parseFoodRegionRulesMode(v: string | null | undefined): "off" | 
   return v === "on" ? "on" : "off";
 }
 
+/** Europe, by searchCountry.ts's country names (exact lowercase strings). The
+ *  label is "eu" but it means these European countries; any other zone is no
+ *  region, the safe default. */
 const EU = new Set([
   "ireland", "france", "germany", "spain", "italy", "netherlands", "belgium", "austria", "sweden",
-  "denmark", "finland", "poland", "portugal", "greece",
+  "denmark", "finland", "poland", "portugal", "greece", "switzerland", "norway",
 ]);
 
 export function foodRegionForCountry(country: string | null | undefined): FoodRegion | null {
