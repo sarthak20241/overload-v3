@@ -40,7 +40,7 @@ function result(items: ParsedItem[]): ParseMealResult {
   } as ParseMealResult;
 }
 
-const GATE = { mode: "on" as const, laterMode: "on" as const, precise: true, supportsCreate: true, hasModelKey: true, turns: 0, cardLines: 0, pending: false };
+const GATE = { mode: "on" as const, laterMode: "on" as const, intentMode: "on" as const, precise: true, supportsCreate: true, hasModelKey: true, turns: 0, cardLines: 0, pending: false };
 
 Deno.test("FOOD_FIRST_GATE: anything but 'on' is off", () => {
   assertEquals(parseFoodFirstGateMode("on"), "on");
@@ -53,6 +53,9 @@ Deno.test("firstMessageGoesToGate: only a first message, in Precise, with the sw
   assertFalse(firstMessageGoesToGate({ ...GATE, mode: "off" }));
   // Step 2 off: the gate's agent and the agent for the next message would differ.
   assertFalse(firstMessageGoesToGate({ ...GATE, laterMode: "off" }));
+  // The router's kill switch also turns the gate off (it is the router's call).
+  assertFalse(firstMessageGoesToGate({ ...GATE, intentMode: "off" }));
+  assertFalse(firstMessageGoesToGate({ ...GATE, intentMode: "shadow" }));
   assertFalse(firstMessageGoesToGate({ ...GATE, precise: false }));
   assertFalse(firstMessageGoesToGate({ ...GATE, supportsCreate: false }));
   assertFalse(firstMessageGoesToGate({ ...GATE, hasModelKey: false }));

@@ -951,11 +951,15 @@ export const PLAIN_LOG_FLOOR = 0.6;
  *  waiting. The same Precise, client and key rules as a later message, and
  *  only with FOOD_AGENT_LATER on too: the gate's agent runs in later mode, and
  *  every message after it must reach the same agent. The gate was measured
- *  only with both on, so the gate on and step 2 off is today's routing. */
+ *  only with both on, so the gate on and step 2 off is today's routing. And
+ *  only with FOOD_INTENT_MODE on: the gate is a question in the router's Jev
+ *  call, and that mode is the router's kill switch. Router off or shadow:
+ *  today's routing, the gate never asked. */
 export function firstMessageGoesToGate(
-  i: Omit<LaterMessageInputs, "mode" | "cardOpen"> & { mode: FoodFirstGateMode; laterMode: FoodAgentLaterMode },
+  i: Omit<LaterMessageInputs, "mode" | "cardOpen"> & { mode: FoodFirstGateMode; laterMode: FoodAgentLaterMode; intentMode: FoodIntentMode },
 ): boolean {
-  if (i.mode !== "on" || i.laterMode !== "on" || !i.precise || !i.supportsCreate || !i.hasModelKey) return false;
+  if (i.mode !== "on" || i.laterMode !== "on" || i.intentMode !== "on") return false;
+  if (!i.precise || !i.supportsCreate || !i.hasModelKey) return false;
   return i.turns === 0 && i.cardLines === 0 && !i.pending;
 }
 

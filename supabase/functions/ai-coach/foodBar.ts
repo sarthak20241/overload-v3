@@ -278,15 +278,12 @@ export function startFoodIntent(
   onUsage?: (u: JevUsage) => void,
   fbTrace?: FoodBarTraceCollector,
   onFailure?: JevDeps["onFailure"],
-  /** FOOD_FIRST_GATE: a first message (firstMessageGoesToGate). Asks the gate
-   *  question too, and the router runs whatever FOOD_INTENT_MODE says. So with
-   *  the mode off or shadow, a gated first message still gets the router's
-   *  savedMatch (the parse's hint, the agent's pointer) and hasFood. Accepted:
-   *  the gate needs the Jev call, and it is on only with FOOD_AGENT_LATER,
-   *  which is run with the router on. */
+  /** FOOD_FIRST_GATE: a first message (firstMessageGoesToGate, which needs
+   *  FOOD_INTENT_MODE on, so the mode check below never turns the gate off
+   *  behind its back). Asks the gate question in the same Jev call. */
   askPlain = false,
 ): Promise<FoodIntentDecision | null> {
-  if (!askPlain && !shouldRouteFoodIntent(env().intentMode)) {
+  if (!shouldRouteFoodIntent(env().intentMode)) {
     fbTrace?.step({ src: "router", tool: "food_intent", result: { ran: false, reason: `mode_${env().intentMode}` } });
     return Promise.resolve(null);
   }
