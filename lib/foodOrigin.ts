@@ -30,9 +30,12 @@ export function originColumns(it: {
   const relogOrigin = it.relog
     ? originOf({ origin: it.relog.origin, source: it.relog.source, food_id: it.food_id })
     : null;
+  const origin = it.origin ?? relogOrigin ?? originOf(it);
   return {
-    origin: it.origin ?? relogOrigin ?? originOf(it),
-    copied_from: it.copied_from ?? (it.relog ? 'diary' : null),
+    origin,
+    // Numbers the user typed (the card editor) are not a copy, even on a
+    // re-logged line.
+    copied_from: it.copied_from ?? (it.relog && origin !== 'user_typed' ? 'diary' : null),
     recipe: parseRecipe(it.recipe) ?? null,
   };
 }

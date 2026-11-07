@@ -14,6 +14,9 @@ Deno.test('originColumns: the server origin wins; a copy keeps its own; old manu
   assertEquals(originColumns({ source: 'estimate', relog: { source: 'estimate' } }).origin, 'guess');
   // Typed in the card editor.
   assertEquals(originColumns({ origin: 'user_typed', source: 'manual' }).origin, 'user_typed');
+  // Typed over a re-logged line: the user's own, not a diary copy.
+  const typedRelog = originColumns({ origin: 'user_typed', source: 'manual', relog: { origin: 'guess', source: 'estimate' } });
+  assertEquals([typedRelog.origin, typedRelog.copied_from], ['user_typed', null]);
 });
 
 Deno.test('numbersTyped: an amount change keeps the numbers; new numbers per 100 g are typed', () => {

@@ -424,7 +424,10 @@ function previousAsParsedItem(p: PreviousItem): ParsedItem {
 /** A previous line carried through a correction keeps its origin. */
 function keptOrigin(p: PreviousItem): Pick<ParsedItem, "origin" | "copied_from" | "recipe"> {
   const recipe = parseRecipe(p.recipe);
-  return { origin: originOf(p), copied_from: p.copied_from ?? "correction", ...(recipe ? { recipe } : {}) };
+  const origin = originOf(p);
+  // The user's own numbers on this card are not a copy of anything.
+  const copied = p.copied_from ?? (origin === "user_typed" ? undefined : "correction");
+  return { origin, ...(copied ? { copied_from: copied } : {}), ...(recipe ? { recipe } : {}) };
 }
 
 /**
