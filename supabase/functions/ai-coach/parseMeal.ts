@@ -48,7 +48,7 @@ import {
   type SourceReading,
   VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
-import { foodLabel, parseSuggestion, runTavilyLookup, suggestSearchPayload, withPrep } from "./tavilyLookup.ts";
+import { foodLabel, hostOf, parseSuggestion, runTavilyLookup, suggestSearchPayload, withPrep } from "./tavilyLookup.ts";
 import { otherBrandRows } from "./brandCheck.ts";
 import { matchOurSources } from "./ourSources.ts";
 import { applyJudgement, judgeThorough, type ThoroughMatchMode, wantsBrandWeb } from "./thoroughMatch.ts";
@@ -132,6 +132,9 @@ export interface CandidateFood {
   // not replicating the DB), so those candidates carry food_id null and their
   // per-100 numbers travel with them. See fatsecret.ts.
   source: "catalog" | "off" | "fatsecret";
+  /** The site a web-looked-up candidate's numbers came from (Precise lookup
+   *  and its cache rows), e.g. "fatsecret.co.in". Absent elsewhere. */
+  source_site?: string;
   // ── Evidence, on the candidate that was actually researched ───────────────
   // Super and precise-cache hits only. superLookupOne already computed both to
   // write the cache row, and both used to die there: the verdict never left the
@@ -197,6 +200,9 @@ export interface ParsedItem {
    *  the food up by THESE: looking up the card's name only re-checks the row
    *  that may be the mistake. */
   said_name?: string;
+  /** The site the numbers came from, for a web-looked-up line
+   *  ("fatsecret.co.in"). The food agent sees it on the card. */
+  source_site?: string;
 }
 
 /** One tap-to-swap option for a line: everything that changes when the user
@@ -360,6 +366,8 @@ export interface PreviousItem {
   meal_type?: MealType;
   /** ParsedItem.said_name, sent back by the client. */
   said_name?: string;
+  /** The site the line's numbers came from, when the app sent it back. */
+  source_site?: string;
   /** The line the user tapped "double check" on. When any line carries it,
    *  research looks up ONLY the marked lines and leaves the rest as they were. */
   research?: boolean;
@@ -384,6 +392,7 @@ function previousAsParsedItem(p: PreviousItem): ParsedItem {
     confidence: p.confidence ?? "medium",
     // Kept so the NEXT double check on this line still looks up the user's words.
     ...(p.said_name ? { said_name: p.said_name } : {}),
+    ...(p.source_site ? { source_site: p.source_site } : {}),
   };
 }
 
@@ -789,6 +798,27 @@ export function verifiedForItems(resolved: ResolvedItem[]): Map<string, boolean>
     }
   }
   return byFood;
+}
+
+/** The site behind every web-looked-up candidate, keyed like verifiedForItems,
+ *  so a line can say where its numbers came from after its id is erased. */
+export function sitesForItems(resolved: ResolvedItem[]): Map<string, string> {
+  const byFood = new Map<string, string>();
+  for (const r of resolved) {
+    for (const c of r.candidates) {
+      if (c.food_id && c.source_site && !byFood.has(c.food_id)) byFood.set(c.food_id, c.source_site);
+    }
+  }
+  return byFood;
+}
+
+/** The first reading's site, for a candidate's source_site. */
+export function siteOfReadings(readings: { ref?: string | null }[] | null | undefined): string | undefined {
+  for (const r of readings ?? []) {
+    const h = hostOf(r?.ref ?? null);
+    if (h) return h.slice(0, 60);
+  }
+  return undefined;
 }
 
 /** Serving options for every candidate we offered, so the display quantity can
@@ -1982,6 +2012,9 @@ export interface SuperFinding {
   readings: SourceReading[];
   serving_label: string | null;
   serving_grams: number | null;
+  /** The reader's count and piece word for that serving (Tavily path). */
+  serving_count?: number | null;
+  serving_unit?: string | null;
   source_note: string | null;
   /** Brand the pages printed, when the line's words name it (Tavily path). */
   brand?: string | null;
@@ -2964,22 +2997,19 @@ export function perOneServing(sv: ServingOption): ServingOption {
   // The words after the count, up to the first non-word ("each" in "2 each -
   // 4 4/5\" diameter", "large eggs" in "2 large eggs").
   const m = sv.label.match(/^\s*(\d+)\s+([a-z]+(?:\s+[a-z]+)*)(.*)$/i);
-  if (!m || !(sv.grams > 0)) return sv;
+  if (!(sv.grams > 0)) return sv;
+  if (!m) return countInsideLabel(sv);
   const n = Number(m[1]);
   const words = m[2].toLowerCase().split(/\s+/);
   // Pieces only: "2 cups" or "12 fl oz" are amounts, and their labels stay as
   // the catalog wrote them. A size is not a count: "10 inch" is one pizza.
   // A pack is one thing bought, not a count of pieces: "12 count box" stays.
-  if (!(n > 1) || MASS_UNITS.has(words[0]) || words.some((w) => SIZE_WORDS.has(w) || PACK_WORDS.has(w)) || !namesAPiece(sv)) return sv;
+  if (!(n > 1) || MASS_UNITS.has(words[0]) || words.some((w) => SIZE_WORDS.has(w) || PACK_WORDS.has(w)) || !namesAPiece(sv)) {
+    return countInsideLabel(sv);
+  }
   // The noun is the last word ("2 large eggs" -> "1 large egg"). "1 each" is a
-  // label-database word; the card reads "3 × 1 piece". A plain trailing "s"
-  // goes ("pooris", "slices"), but not where the singular is a guess
-  // ("cookies", "potatoes", "boxes"): a guessed "cooky" would no longer
-  // contain the user's unit, and the plural still does.
-  const last = words[words.length - 1];
-  words[words.length - 1] = last === "each" || last === "pieces" ? "piece"
-    : last.endsWith("s") && !/(ss|ies|oes|xes|shes|ches|zes|ves)$/.test(last) ? last.slice(0, -1)
-    : last;
+  // label-database word; the card reads "3 × 1 piece".
+  words[words.length - 1] = singularNoun(words[words.length - 1]);
   // The group's weight goes from the text, in brackets or not: left in, it
   // would contradict the divided grams ("1 biscuit 30g" at 10 g).
   const rest = m[3]
@@ -2987,6 +3017,168 @@ export function perOneServing(sv: ServingOption): ServingOption {
     .replace(/\b[\d.]+\s*(g|gm|grams?|ml)\b/gi, "")
     .replace(/\s+/g, " ").trimEnd();
   return { ...sv, label: `1 ${words.join(" ")}${rest}`, grams: round1(sv.grams / n) };
+}
+
+/** One piece's word from the label's plural. "1 each" is a label-database
+ *  word; the card reads "3 × 1 piece". A plain trailing "s" goes ("pooris",
+ *  "slices"), but not where the singular is a guess ("cookies", "potatoes",
+ *  "boxes"): a guessed "cooky" would no longer contain the user's unit, and the
+ *  plural still does. */
+function singularNoun(w: string): string {
+  return w === "each" || w === "pieces" ? "piece"
+    : w.endsWith("s") && !/(ss|ies|oes|xes|shes|ches|zes|ves)$/.test(w) ? w.slice(0, -1)
+    : w;
+}
+
+/** Words a "<number> <word>" can hold that are not a piece of the food. */
+const NOT_PIECE_WORDS = new Set([
+  "x", "kcal", "cal", "cals", "calorie", "calories", "kj", "mg", "mcg", "percent", "pct", "min", "mins", "minutes",
+  "and", "or", "to", "with", "for", "in",
+]);
+/** Size words that come before the piece noun ("2 large eggs"). */
+const PIECE_SIZE_WORDS = new Set(["large", "medium", "small", "big", "thin", "thick", "whole", "mini", "regular"]);
+
+/**
+ * A count of pieces and their weight, read out of a serving text wherever the
+ * count sits: "2 slices (50 g)", "50 g (2 slices)", "1 serving (2 slices, 50 g)",
+ * "Serving size: 2 slices = 50g", "per 3 biscuits (30 g)".
+ *
+ * Labels print the serving as a group. The group's weight is NOT one piece: a
+ * label serving of "2 slices (50 g)" stored as one slice = 50 g turned 2 slices
+ * into 100 g (live, 2026-11-07, 4 of 4 runs). So the code divides: grams per
+ * piece = grams / count. `grams` is the printed weight, else the one given.
+ * Null when the text names no count of pieces, or no weight at all.
+ */
+export function servingCount(
+  label: string,
+  grams?: number | null,
+): { count: number; noun: string; grams: number; perUnit: number } | null {
+  const text = label.toLowerCase();
+  const printed = text.match(/(\d+(?:\.\d+)?)\s*(?:g|gm|gms|grams?|ml)\b/);
+  const g = printed ? Number(printed[1]) : grams ?? null;
+  if (!(typeof g === "number" && g > 0)) return null;
+  // A measure anywhere makes the text an amount ("1 cup (2 slices)" is not read).
+  if (text.split(/[^a-z]+/).some((w) => MEASURE_WORDS.has(w))) return null;
+  // A whole number not inside a decimal or a fraction, then up to two words.
+  for (const m of text.matchAll(/(?:^|[^\d.\/])(\d+)\s+(?:about\s+|approx\.?\s+)?([a-z]+)(?:\s+([a-z]+))?/g)) {
+    const n = Number(m[1]);
+    if (!(n >= 1 && n <= 50)) continue;
+    const noun = PIECE_SIZE_WORDS.has(m[2]) && m[3] ? m[3] : m[2];
+    if (
+      MASS_UNITS.has(noun) || MEASURE_WORDS.has(noun) || SIZE_WORDS.has(noun) || PACK_WORDS.has(noun) ||
+      GENERIC_PORTION_WORDS.has(noun) || NOT_PIECE_WORDS.has(noun)
+    ) continue;
+    const perUnit = round1(g / n);
+    if (!(perUnit >= 0.3)) return null;
+    return { count: n, noun, grams: g, perUnit };
+  }
+  return null;
+}
+
+/**
+ * A web finding's serving as candidate servings. The reader copies the printed
+ * count and piece word ("2", "slice") beside the serving's grams; the code
+ * divides: one slice = 50 / 2 = 25 g. With no count from the reader the
+ * printed serving is kept as is, and perOneServing's text reading
+ * (servingCount) is the fallback, as it is for sources with no reader step
+ * (FatSecret's API, the catalog).
+ */
+export function servingsFromFinding(
+  f: Pick<SuperFinding, "serving_label" | "serving_grams" | "serving_count" | "serving_unit">,
+): ServingOption[] {
+  const g = f.serving_grams;
+  if (!(typeof g === "number" && g > 0) || !f.serving_label) return [];
+  const n = f.serving_count;
+  const unit = (f.serving_unit ?? "").trim().toLowerCase();
+  const word = unit.split(/\s+/).pop() ?? "";
+  const piece = !!word && !MASS_UNITS.has(word) && !MEASURE_WORDS.has(word) && !GENERIC_PORTION_WORDS.has(word) &&
+    !SIZE_WORDS.has(word) && !PACK_WORDS.has(word);
+  if (typeof n === "number" && n >= 2 && piece && g / n >= 0.3) {
+    return [{ label: `1 ${unit.split(/\s+/).map((w, i, a) => (i === a.length - 1 ? singularNoun(w) : w)).join(" ")}`, grams: round1(g / n) }];
+  }
+  return [{ label: f.serving_label, grams: g }];
+}
+
+/** perOneServing for a label whose count is not its first word: "1 serving
+ *  (2 slices, 50 g)" and "50 g (2 slices)" are two slices, 25 g each. */
+function countInsideLabel(sv: ServingOption): ServingOption {
+  const c = servingCount(sv.label, sv.grams);
+  if (!c || c.count < 2) return sv;
+  // The weight in the text is the group's, and must be the serving's own: a
+  // text that prints another weight is not this serving.
+  if (Math.abs(c.grams - sv.grams) > Math.max(1, sv.grams * 0.05)) return sv;
+  return { ...sv, label: `1 ${singularNoun(c.noun)}`, grams: c.perUnit };
+}
+
+/**
+ * A line whose serving names one unit's weight must weigh quantity x that
+ * weight: 2 x "slice (25 g)" is 50 g.
+ *
+ * decide returns quantity, serving_label and grams as three free numbers, and
+ * only grams drives the macros. Live, 2026-11-07: a card read 2 x "slice
+ * (25 g)" over 100 g and 242 kcal, the label's two-slice serving counted once
+ * per slice. The unit weight came from a serving the code read; the total is
+ * the model's arithmetic. So the unit wins, and the grams and every macro are
+ * scaled to it (they were worked out from the grams, so they move together).
+ *
+ * Narrow on purpose. Only a unit that names one piece and its weight
+ * ("slice (25 g)") proves a piece weight, and only a whole multiple (the count
+ * applied twice) is fixed: any other gap may be a weight the user gave. A group
+ * label ("2 slices (50 g)") whose line already weighs quantity x one piece is
+ * restated per piece, numbers unchanged; any other group line stays, since the
+ * quantity may count servings. A serving or measure unit proves no piece. A "total"
+ * label, a bare weight label ("g", "100 g", amountMatchesGrams's job), a line
+ * with no unit weight, and a line of numbers the user stated are left alone.
+ */
+export function unitWeightMatchesGrams(it: ParsedItem): ParsedItem {
+  if (!(it.grams > 0) || !(it.quantity > 0)) return it;
+  const label = it.serving_label.trim();
+  if (/\btotal\b/i.test(label)) return it;
+  const m = label.match(/^(?:(\d+)\s+)?([a-z][a-z\s-]*?)\s*\(\s*(\d+(?:\.\d+)?)\s*(g|gm|gms|grams?|ml)\s*(?:each)?\s*\)$/i);
+  if (!m) return it;
+  const n = m[1] ? Number(m[1]) : 1;
+  const noun = m[2].trim().toLowerCase();
+  const words = noun.split(/\s+/);
+  if (!(n >= 1) || words.some((w) => MASS_UNITS.has(w))) return it;
+  // Numbers the user stated are theirs.
+  if (it.source === "manual") return it;
+  const groupG = Number(m[3]);
+  if (!(groupG > 0)) return it;
+  const unit = m[4].toLowerCase() === "ml" ? "ml" : "g";
+  const perUnit = groupG / n;
+  const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(1, b * 0.15);
+  const pieceWord = n > 1 ? words.map((w, i) => (i === words.length - 1 ? singularNoun(w) : w)).join(" ") : noun;
+  const perOneLabel = `${pieceWord} (${round1(perUnit)} ${unit})`;
+  const scaled = (quantity: number, grams: number): ParsedItem => {
+    const f = grams / it.grams;
+    return {
+      ...it,
+      quantity: round1(quantity),
+      serving_label: perOneLabel,
+      grams: round1(grams),
+      kcal: round1(it.kcal * f),
+      protein_g: round1(it.protein_g * f),
+      carb_g: round1(it.carb_g * f),
+      fat_g: round1(it.fat_g * f),
+      fiber_g: typeof it.fiber_g === "number" ? round1(it.fiber_g * f) : it.fiber_g,
+    };
+  };
+  if (near(it.grams, it.quantity * perUnit)) return n > 1 ? scaled(it.quantity, it.grams) : it;
+  // A group label ("2 slices (50 g)") the quantity may count as groups or as
+  // pieces: the line cannot say which (2 servings, or 2 slices counted twice?),
+  // so it stays. Group servings are restated per piece before decide sees them
+  // (perOneServings, servingsFromFinding), so decide seldom writes one.
+  if (n > 1) return it;
+  // A unit that names a piece only: "serving (15 g)" or "tbsp (17 g)" proves
+  // no piece weight.
+  if (words.some((w) => GENERIC_PORTION_WORDS.has(w) || MEASURE_WORDS.has(w))) return it;
+  // Only the count applied twice: the line weighs a whole multiple (2x, 3x)
+  // of quantity x the unit. Any other gap may be a weight the user gave
+  // ("150 g dal" against a "bowl (250 g)" unit), and stays.
+  const k = it.grams / (it.quantity * perUnit);
+  const whole = Math.round(k);
+  if (whole >= 2 && Math.abs(k - whole) <= 0.05 * whole) return scaled(it.quantity, it.quantity * perUnit);
+  return it;
 }
 
 /** Every serving of a candidate restated per one piece (perOneServing). */
@@ -3501,9 +3693,8 @@ export async function superLookupOne(
   // contested number and the client has to badge an uncontested one, and
   // neither can do that from a row it never sees.
   const spread = kcalSpread(finding.readings);
-  const servings = finding.serving_label && finding.serving_grams
-    ? [{ label: finding.serving_label, grams: finding.serving_grams }]
-    : [];
+  const servings = servingsFromFinding(finding);
+  const site = siteOfReadings(finding.readings);
   // foodLabel, not a bare "brand name": extract reports brand "Parle" AND name
   // "Parle Hide and Seek biscuits", which put "Parle Parle ..." on the card
   // and into precise_cache.display_name (live, ai-coach v186, 2026-09-26).
@@ -3561,10 +3752,12 @@ export async function superLookupOne(
     source: "catalog",
     verified,
     ...(spread === null ? {} : { kcal_spread: spread }),
+    ...(site ? { source_site: site } : {}),
   };
 }
 
 export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
+  const site = siteOfReadings(row.evidence);
   return {
     // Ephemeral, not the row's real uuid: precise_cache is not `foods`, so the
     // id must never reach meal_entries' FK. Addressable for decide, stripped
@@ -3580,6 +3773,7 @@ export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
     fiber_g: row.fiber_g,
     servings: (row.servings ?? []).filter((sv) => sv && sv.grams > 0),
     source: "catalog",
+    ...(site ? { source_site: site } : {}),
     // A hit is the SAME verdict superLookupOne reached, read back instead of
     // re-bought. Dropping it here would have made the badge and decide's
     // hedging flicker on cache state - a food shown as contested on the lookup
@@ -5189,8 +5383,12 @@ export function stripEphemeralIds(
   /** food_id -> the user's remembered food behind that candidate. Stamped here
    *  for the same reason as `verified`: the id is about to be erased. */
   memoryByFood?: Map<string, MemoryStamp>,
+  /** food_id -> the site a web candidate's numbers came from (sitesForItems). */
+  siteByFood?: Map<string, string>,
 ): ParsedItem[] {
   return items.map((it) => {
+    const site = it.food_id ? siteByFood?.get(it.food_id) : undefined;
+    if (site && !(it.food_id && memoryByFood?.has(it.food_id))) it = { ...it, source_site: site };
     const verdict = it.food_id ? verifiedByFood?.get(it.food_id) : undefined;
     const mem = it.food_id ? memoryByFood?.get(it.food_id) : undefined;
     const base = mem
@@ -5739,6 +5937,75 @@ async function answerAboutPrevious(
   return scrubDashes(parts.join(" ")).slice(0, 400);
 }
 
+/** One product's printed label, as find_label hands it to the food agent. */
+export interface LabelFound {
+  /** The product as the label sells it. */
+  name: string;
+  brand: string | null;
+  base_unit: "g" | "ml";
+  per_100: { kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number | null };
+  /** The serving as printed ("2 slices (50 g)"), when the label prints one. */
+  serving: ServingOption | null;
+  /** One piece of it ("1 slice", 25 g), when the serving names a count of
+   *  pieces (perOneServing). The code divides; the label only prints. */
+  piece: ServingOption | null;
+  /** Two or more sources agreed (meetsVerificationBar). */
+  verified: boolean;
+  /** The site the label was read from, when known. */
+  site?: string;
+}
+
+/**
+ * find_label: one product's label off the web, by the same lookup Precise runs
+ * (Tavily with Jev's relevance, the brand's own site first, the reader that
+ * copies the panel; or the server web search where that is the deploy's
+ * lookup). Returns the label per 100 and its serving. The numbers on a line are
+ * worked out from it by code (foodAgent.ts lineFromLabel), never by a model.
+ * Null when no lookup is configured or nothing was found.
+ */
+export async function findLabel(
+  deps: ParseMealDeps,
+  product: { name: string; brand: string | null; quantity?: number; unit?: string },
+): Promise<{ label: LabelFound | null; usage: ParseMealResult["usage"]; steps: ParseStep[] }> {
+  const usage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0, tavily_credits: 0 };
+  const steps: ParseStep[] = [];
+  const out = (label: LabelFound | null) => ({ label, usage, steps });
+  if (!deps.webSearchEnabled && !(deps.webLookup === "tavily" && deps.tavily)) return out(null);
+  const name = product.name.trim();
+  if (!name) return out(null);
+  const onUsage = (data: any) => {
+    const u = data?.usage ?? {};
+    usage.input_tokens += u.input_tokens ?? 0;
+    usage.output_tokens += u.output_tokens ?? 0;
+    usage.cache_creation_input_tokens += u.cache_creation_input_tokens ?? 0;
+    usage.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
+    usage.web_search_requests += u.server_tool_use?.web_search_requests ?? 0;
+    usage.tavily_credits += typeof data?.tavily_credits === "number" ? data.tavily_credits : 0;
+  };
+  const item: ExtractedItem = {
+    name,
+    brand: product.brand?.trim() || null,
+    quantity: product.quantity && product.quantity > 0 ? product.quantity : 1,
+    unit: product.unit?.trim() || "serving",
+    prep: null,
+  };
+  const c = await superLookupOne(deps, item, onUsage, () => {}, (st) => steps.push(st)).catch(() => null);
+  steps.push({ iter: 1, tool: "find_label", input: { name: item.name, brand: item.brand }, result: c ? { kcal: c.kcal, servings: c.servings } : null });
+  if (!c) return out(null);
+  const serving = c.servings.find((sv) => sv.grams > 0 && !isBasisServing(sv)) ?? null;
+  const one = serving ? perOneServing(serving) : null;
+  return out({
+    name: c.name,
+    brand: c.brand,
+    base_unit: c.base_unit,
+    per_100: { kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g },
+    serving,
+    piece: one && one !== serving ? one : serving && namesAPiece(serving) && servingCount(serving.label, serving.grams)?.count === 1 ? serving : null,
+    verified: c.verified === true,
+    ...(c.source_site ? { site: c.source_site } : {}),
+  });
+}
+
 /**
  * The user accepted an offer to go and check: look the label up on the web and
  * rebuild their lines from it.
@@ -6019,8 +6286,8 @@ export async function runParseMeal(
   input: ParseMealInput,
 ): Promise<ParseMealResult> {
   const result = await runParseMealOnce(deps, input);
-  if (result.parsed) result.parsed.items = result.parsed.items.map(amountMatchesGrams);
-  if (result.proposal) result.proposal.items = result.proposal.items.map(amountMatchesGrams);
+  if (result.parsed) result.parsed.items = result.parsed.items.map(unitWeightMatchesGrams).map(amountMatchesGrams);
+  if (result.proposal) result.proposal.items = result.proposal.items.map(unitWeightMatchesGrams).map(amountMatchesGrams);
   if (input.variantChips && result.parsed) result.parsed.items = result.parsed.items.map(forSwapChips);
   return result;
 }
@@ -7557,6 +7824,7 @@ async function runParseMealCore(
         ),
         verifiedForItems(resolved),
         memoryByFood,
+        sitesForItems(resolved),
       ),
       extItems,
       { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
@@ -7786,7 +8054,7 @@ async function runParseMealCore(
   // See stripEphemeralIds: every path that returns items to the client must
   // strip them, not just this one. The verification map goes in with them,
   // because the id it keys on is what this call is about to erase.
-  items = stripEphemeralIds(items, verifiedForItems(resolved), memoryByFood);
+  items = stripEphemeralIds(items, verifiedForItems(resolved), memoryByFood, sitesForItems(resolved));
   if (items.length === 0) {
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",

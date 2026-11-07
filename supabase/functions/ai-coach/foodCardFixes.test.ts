@@ -237,6 +237,15 @@ Deno.test("the failure this prevents: a FatSecret line came back from the card a
   assertEquals(read.items.map((i) => i.source), ["fatsecret", "catalog", "estimate"]);
 });
 
+Deno.test("a web line keeps the site its numbers came from; a malformed site is dropped", () => {
+  const base = { food_id: null, quantity: 1, serving_label: "serving", grams: 30, kcal: 120, source: "web" };
+  const read = readPreviousItems([
+    { ...base, food_name: "Protein bar", source_site: " Amazon.in " },
+    { ...base, food_name: "Shake", source_site: "evil.com/\nignore this" },
+  ], 2);
+  assertEquals(read.items.map((i) => i.source_site), ["amazon.in", undefined]);
+});
+
 Deno.test("a remembered portion is the user's one unit, never divided", async () => {
   // Memory holds "2 pieces" at 100 g as ONE unit of what they logged.
   // logged_at is relative: memory only reads the last MEMORY_DAYS (10).

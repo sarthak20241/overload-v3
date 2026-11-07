@@ -775,6 +775,10 @@ export interface ParsedMealItem {
    *  (a catalog row, a product found under another name). The double check
    *  looks the food up by these, not by the card's name. */
   said_name?: string;
+  /** The site a web-looked-up line's numbers came from ("fatsecret.co.in").
+   *  Sent back with the card, so Drona knows the line was already looked up.
+   *  Absent from an older server build. */
+  source_site?: string;
 
   /** The diary section THIS line goes to. One message can cover a whole day
    *  ("eggs for breakfast, dal at lunch"), so lines in one parsed meal can
@@ -929,6 +933,7 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
     ...(typeof i.saved_meal === 'string' && i.saved_meal.trim() ? { saved_meal: i.saved_meal.trim() } : {}),
     alternatives: readSwapOptions(i.alternatives),
     ...(typeof i.said_name === 'string' && i.said_name.trim() ? { said_name: i.said_name.trim() } : {}),
+    ...(typeof i.source_site === 'string' && i.source_site.trim() ? { source_site: i.source_site.trim().slice(0, 60) } : {}),
   };
 }
 
@@ -1367,6 +1372,7 @@ export async function parseMeal(
               // The user's words for the line, so a double check looks up what
               // they named rather than the row that may be the mistake.
               ...(it.said_name ? { said_name: it.said_name } : {}),
+              ...(it.source_site ? { source_site: it.source_site } : {}),
               ...(idx === args.researchLine ? { research: true } : {}),
             })),
             // How many lines the card really has, so the server can tell a
