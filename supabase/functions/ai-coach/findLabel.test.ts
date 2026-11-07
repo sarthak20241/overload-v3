@@ -174,6 +174,11 @@ Deno.test("keepLineIdentity: an amount edit keeps the user's product, at its own
   assertEquals([out.food_name, out.grams, out.kcal, out.protein_g, out.source], ["Health Factory protein bread", 50, 121, 14, "web"]);
 });
 
+Deno.test("keepLineIdentity: numbers the user stated are kept, whatever the name", () => {
+  const stated = edited({ food_name: "Multigrain protein loaf", protein_g: 11, kcal: 121, source: "manual" });
+  assertEquals(keepLineIdentity(BREAD, stated, "the user says protein is 11 g for the 2 slices"), stated);
+});
+
 Deno.test("keepLineIdentity: a change that names another food takes it", () => {
   const out = keepLineIdentity(BREAD, edited({}), "it was the zero maida protein bread");
   assertEquals(out.food_name, "Zero Maida Protein Bread");

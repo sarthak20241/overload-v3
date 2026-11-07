@@ -1658,9 +1658,12 @@ const nameWords = (x: string) =>
  * that are in neither the line's own name nor the change, the swap was the
  * search's, not the user's: the line keeps its name, and its own numbers per
  * gram, scaled to the new weight. Without its own numbers (no grams or no kcal
- * on the line) the edit stands.
+ * on the line) the edit stands, and so does a line of numbers the user stated.
  */
 export function keepLineIdentity(original: CardLine, edited: ParsedItem, change: string): ParsedItem {
+  // Numbers the user stated (source manual) are theirs, whatever the name: a
+  // stated number wins over every source.
+  if (edited.source === "manual") return edited;
   const known = new Set([...nameWords(original.food_name), ...nameWords(original.said_name ?? ""), ...nameWords(change)]);
   const fresh = nameWords(edited.food_name).filter((w) => !known.has(w) && !known.has(`${w}s`) && !known.has(w.replace(/s$/, "")));
   if (!fresh.length) return edited;
