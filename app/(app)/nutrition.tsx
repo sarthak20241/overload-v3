@@ -1279,7 +1279,9 @@ export default function NutritionScreen() {
     // saved meals") has to come back in the tier the user picked.
     const followUpSpeed = precise ? { speed: 'super' as const } : pending && tier === 'quick' ? { speed: 'fast' as const } : {};
     const res = pending || tier !== 'quick'
-      ? await parseMeal(supabase, { ...args, ...followUpSpeed })
+      // `tier` on every message, corrections too: the server routes a Precise
+      // thread's later messages on it, while `speed` keeps a correction smart.
+      ? await parseMeal(supabase, { ...args, ...followUpSpeed, tier: tier === 'precise' ? 'precise' : 'quick' })
       : await parseMealStreaming(supabase, args, (rows) => {
         // A stream that resolves after the user has moved on must not repaint
         // the card they are now looking at.

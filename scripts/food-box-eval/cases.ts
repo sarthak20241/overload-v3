@@ -1496,6 +1496,210 @@ export const CASES: FoodBoxCase[] = [
     },
   },
 
+  // ── Later messages: the lessons of today's routes (plan section 9b) ──
+  // Step 2 sends every later message to the agent (FOOD_AGENT_LATER). Each of
+  // these is a lesson a route held, in a thread past its first message, so the
+  // agent has to keep it. Synthetic, written for the lesson; none of these
+  // words are in any prompt.
+  {
+    id: "later-bare-ack-thanks",
+    tags: ["bare-ack", "card", "later"],
+    origin: { date: "2026-11-06", who: "synthetic", note: "isBareAck beside a card: accepts the card, never a save or an edit" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "poha and a cup of chai for breakfast" },
+        { role: "drona", text: "Poha and chai, 310 cal. Ready to add." },
+      ],
+      card: [
+        L("Poha", 250, { quantity: 1, unit: "plate", grams: 180, source: "catalog", meal: "breakfast" }),
+        L("Masala chai", 60, { quantity: 1, unit: "cup", grams: 150, source: "catalog", meal: "breakfast" }),
+      ],
+    },
+    message: "perfect thanks",
+    expect: { mustNot: ["save", "edit", "log"], cardUnchanged: true, reply: { noFalseClaim: true } },
+  },
+  {
+    id: "later-food-is-not-a-save",
+    tags: ["save", "card", "later"],
+    origin: { date: "2026-11-06", who: "synthetic", note: "INTENT_CRITERIA.create: a named usual food beside a card is an addition, not a save" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "2 egg omelette and toast" },
+        { role: "drona", text: "Omelette and toast, 290 cal. Ready to add." },
+      ],
+      card: [
+        L("Omelette", 190, { quantity: 2, unit: "egg", grams: 110, source: "catalog", meal: "breakfast" }),
+        L("Toast", 100, { quantity: 1, unit: "slice", grams: 35, source: "catalog", meal: "breakfast" }),
+      ],
+    },
+    message: "plus my regular banana peanut butter smoothie",
+    expect: {
+      does: ["edit"],
+      mustNot: ["save"],
+      keepLines: ["omelette", "toast"],
+      lines: [{ match: "omelette", kcal: [190, 190] }, { match: "toast", kcal: [100, 100] }],
+      noDuplicates: true,
+      reply: { noFalseClaim: true },
+    },
+  },
+  {
+    id: "later-food-with-a-question",
+    tags: ["question", "plain", "later"],
+    origin: { date: "2026-11-06", who: "synthetic", note: "the parse veto, in a later message: the food is logged and the question answered" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "how much protein should i eat on a cut" },
+        { role: "drona", text: "Around 1.6 to 2.2 g per kg of body weight keeps muscle while you cut." },
+      ],
+      card: null,
+    },
+    message: "ok so dinner tonight came to roughly 650 calories, is that a lot for cutting?",
+    expect: { does: ["log", "answer"], totalKcal: [640, 660], reply: { noFalseClaim: true } },
+  },
+  {
+    id: "later-choose-either-from-options",
+    tags: ["choose", "context", "later"],
+    origin: { date: "2026-11-06", who: "synthetic", note: "continue: the answer picks from the options Drona offered" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "lunch: 2 roti, 100g paneer bhurji and a bowl of cucumber raita" },
+        { role: "drona", text: "Which paneer was it: Amul malai paneer or Milky Mist low fat paneer?" },
+      ],
+      card: null,
+      openQuestion: { question: "Which paneer was it: Amul malai paneer or Milky Mist low fat paneer?", options: ["Amul malai paneer", "Milky Mist low fat paneer"] },
+    },
+    message: "either is fine honestly",
+    expect: {
+      does: ["log"],
+      lines: [{ match: "roti" }, { match: "paneer" }, { match: "raita" }],
+      lineCount: [3, 3],
+      reply: { noFalseClaim: true },
+    },
+  },
+  {
+    id: "later-copy-plus-new-beside-card",
+    tags: ["copy", "diary", "lost-lines", "later"],
+    origin: { date: "2026-11-06", who: "synthetic", note: "copy X and add Y, with a card open: neither the copy, the new food nor the card is lost" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "dinner is 2 roti and chicken curry" },
+        { role: "drona", text: "2 roti and chicken curry, 490 cal. Ready to add." },
+      ],
+      card: DINNER_CARD,
+    },
+    fixtures: {
+      diary: [{
+        daysAgo: 1,
+        meal: "lunch",
+        lines: [
+          L("Dal tadka", 162, { quantity: 1, unit: "katori", grams: 150, protein_g: 8.1, carb_g: 21, fat_g: 5.2, source: "catalog" }),
+          L("Jeera Rice", 195, { quantity: 1, unit: "bowl", grams: 150, protein_g: 3.9, carb_g: 40, fat_g: 2.4, source: "catalog" }),
+        ],
+      }],
+    },
+    message: "copy over the dal from yesterday's lunch, and also put 2 boiled eggs",
+    expect: {
+      keepLines: ["roti", "chicken"],
+      removeLines: ["rice"],
+      lines: [
+        { match: "roti", kcal: [240, 240] },
+        { match: "chicken", kcal: [250, 250] },
+        { match: "dal", kcal: [160, 164], source: ["catalog"] },
+        { match: "egg", kcal: [120, 180] },
+      ],
+      lineCount: [4, 4],
+      noDuplicates: true,
+      reply: { noFalseClaim: true },
+    },
+  },
+  {
+    id: "later-two-changes-one-message",
+    tags: ["correction", "lost-lines", "later"],
+    origin: { date: "2026-11-06", who: "synthetic", note: "one edit and one removal in one message: the third line stays exactly as it was" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "2 roti, dal and onion salad" },
+        { role: "drona", text: "2 roti, dal and onion salad, 425 cal. Ready to add." },
+      ],
+      card: [
+        L("Roti", 240, { quantity: 2, unit: "piece", grams: 80, protein_g: 7, carb_g: 36, fat_g: 7.4, source: "catalog", meal: "lunch" }),
+        L("Dal", 150, { quantity: 1, unit: "katori", grams: 150, protein_g: 7, carb_g: 20, fat_g: 4, source: "catalog", meal: "lunch" }),
+        L("Onion salad", 35, { quantity: 1, unit: "bowl", grams: 80, source: "catalog", meal: "lunch" }),
+      ],
+    },
+    message: "it was 3 rotis actually, and skip the onion salad i didnt eat it",
+    expect: {
+      does: ["edit"],
+      removeLines: ["onion"],
+      lines: [{ match: "roti", kcal: [330, 380] }, { match: "dal", kcal: [150, 150] }],
+      lineCount: [2, 2],
+      noDuplicates: true,
+      reply: { noFalseClaim: true },
+    },
+  },
+  {
+    id: "later-saved-meal-turned-down",
+    tags: ["saved-meal", "correction", "later"],
+    origin: { date: "2026-11-06", who: "synthetic", note: "rejects_saved: the words alone say the saved meal is wrong for this line" },
+    region: "india",
+    thread: {
+      turns: [
+        { role: "user", text: "jeera rice 100g and paneer sabji" },
+        { role: "drona", text: "Jeera rice and your saved paneer sabji, 321 cal. Ready to add." },
+      ],
+      card: [
+        L("Jeera Rice", 171, { quantity: 100, unit: "g", grams: 100, source: "catalog", meal: "lunch" }),
+        L("Milky Mist Low Fat Paneer Sabji", 150, { quantity: 1, unit: "serving", source: "manual", meal: "lunch" }),
+      ],
+    },
+    fixtures: {
+      savedMeals: [{ name: "Milky Mist Low Fat Paneer Sabji", kcal: 150, protein_g: 11, carb_g: 4, fat_g: 10 }],
+    },
+    message: "that sabji today was a different one, full fat paneer with butter, so the one i saved is wrong here",
+    expect: {
+      does: ["edit"],
+      lines: [{ match: "rice", kcal: [171, 171] }, { match: "paneer", kcal: [180, 600] }],
+      lineCount: [2, 2],
+      noDuplicates: true,
+      reply: { noFalseClaim: true },
+    },
+  },
+  {
+    id: "later-weekday-copy-beside-card",
+    tags: ["copy-day", "dates", "diary", "later"],
+    origin: { date: "2026-11-06", who: "synthetic", note: "dates are code's job: Wednesday is days_ago 2, from recentDays" },
+    region: "india",
+    today: "Friday 2026-11-06",
+    thread: {
+      turns: [
+        { role: "user", text: "oats with milk" },
+        { role: "drona", text: "Oats with milk, 260 cal. Ready to add." },
+      ],
+      card: [L("Oats with milk", 260, { quantity: 1, unit: "bowl", grams: 250, source: "catalog", meal: "breakfast" })],
+    },
+    fixtures: {
+      diary: [
+        { daysAgo: 1, meal: "breakfast", lines: [L("Banana", 105, { quantity: 1, unit: "medium", grams: 118, source: "catalog" })] },
+        { daysAgo: 2, meal: "breakfast", lines: [L("Apple", 95, { quantity: 1, unit: "medium", grams: 182, source: "catalog" })] },
+      ],
+    },
+    message: "and the fruit i had with breakfast on wednesday",
+    expect: {
+      keepLines: ["oats"],
+      removeLines: ["banana"],
+      lines: [{ match: "apple", kcal: [93, 97] }],
+      lineCount: [2, 2],
+      noDuplicates: true,
+      reply: { noFalseClaim: true },
+    },
+  },
+
   // ── Region defaults (synthetic) ──
   {
     id: "region-india-chai",
