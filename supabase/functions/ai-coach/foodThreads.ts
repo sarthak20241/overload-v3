@@ -27,6 +27,7 @@
 import type { FoodBarThread } from "./foodBar.ts";
 import type { CardLine } from "./foodContext.ts";
 import type { MealType, ParsedItem } from "./parseMeal.ts";
+import { parseRecipe, type RecipePart } from "../_shared/foodOrigin.ts";
 
 export type FoodThreadsMode = "off" | "shadow" | "on";
 
@@ -62,6 +63,9 @@ export interface ThreadLine {
   confidence?: string | null;
   note?: string | null;
   meal_type?: MealType | null;
+  /** A dish built from its parts (source "recipe"): its parts, so a restored
+   *  or copied line still has them (food_card_lines.recipe). */
+  recipe?: RecipePart[] | null;
 }
 
 export interface StoredCard {
@@ -194,6 +198,7 @@ export function itemsAsLines(items: ParsedItem[], prev: ThreadLine[] | null, use
     confidence: i.confidence ?? null,
     note: i.assumption ?? null,
     meal_type: i.meal_type ?? null,
+    recipe: i.source === "recipe" ? parseRecipe(i.recipe) : null,
   })), usedUpTo);
 }
 
@@ -216,6 +221,7 @@ export function cardAsLines(card: CardLine[], prev: ThreadLine[] | null = null, 
     confidence: l.confidence ?? null,
     note: l.assumption ?? null,
     meal_type: l.meal_type ?? null,
+    recipe: l.source === "recipe" ? parseRecipe(l.recipe) : null,
   })), usedUpTo);
 }
 
@@ -236,11 +242,16 @@ export function lineAsItem(l: ThreadLine, mealDefault: MealType): ParsedItem {
     carb_g: l.carb_g ?? 0,
     fat_g: l.fat_g ?? 0,
     fiber_g: l.fiber_g ?? null,
-    source: src === "catalog" || src === "off" || src === "fatsecret" || src === "web" || src === "estimate" ? src : "manual",
+    source: src === "catalog" || src === "off" || src === "fatsecret" || src === "web" || src === "estimate" || src === "recipe"
+      ? src
+      : "manual",
     assumption: l.note ?? null,
     confidence: l.confidence === "high" || l.confidence === "low" ? l.confidence : "medium",
     meal_type: l.meal_type ?? mealDefault,
     ...(l.said_name ? { said_name: l.said_name } : {}),
+    // Parts only on a recipe line: a line that is something else now would
+    // carry parts that no longer add up to it.
+    ...(src === "recipe" && l.recipe?.length ? { recipe: l.recipe } : {}),
   };
 }
 
@@ -372,7 +383,7 @@ type Db = {
 
 const num = (v: unknown) => (v === null || v === undefined || !Number.isFinite(Number(v)) ? null : Number(v));
 
-function rowAsLine(r: Record<string, unknown>): ThreadLine {
+export function rowAsLine(r: Record<string, unknown>): ThreadLine {
   return {
     line_id: String(r.line_id),
     name: String(r.name ?? ""),
@@ -390,6 +401,8 @@ function rowAsLine(r: Record<string, unknown>): ThreadLine {
     confidence: typeof r.confidence === "string" ? r.confidence : null,
     note: typeof r.note === "string" ? r.note : null,
     meal_type: typeof r.meal_type === "string" ? r.meal_type as MealType : null,
+    // Absent on a row written before 20261108120000, or not a recipe: null.
+    recipe: parseRecipe(r.recipe),
   };
 }
 
