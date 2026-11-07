@@ -211,7 +211,7 @@ Deno.test("readRecipeParts: parts sent back by the app are checked (step 4's par
   // One part with no name or no weight: the parts are not kept at all.
   assertEquals(readRecipeParts([oil, { name: "", grams: 5 }], "recipe"), undefined);
 });
-// ── Review fixes (PR #359) ─────────────────────────────────────────────────
+// ── Asking once, long dishes, missing parts, parts from the app ────────────
 
 Deno.test("recipeQuestion: the second part of a two-part question is not asked again", () => {
   const dish = sumRecipe("Dal", [part("onion", 40), part("oil", 5, "1 tsp")], "lunch");
@@ -271,7 +271,7 @@ Deno.test("agent: with no card, a dish whose parts are all not found makes no ca
   if (out.kind === "reply") assert(/Stew is not on the card/.test(out.text), out.text);
 });
 
-// ── Review fixes, round 3 (PR #359) ────────────────────────────────────────
+// ── The main part, assumed amounts, the agent's view, failed rebuilds ──────
 
 Deno.test("buildRecipe: a dish whose biggest stated part is not found stays off the card", async () => {
   const ask = { name: "Sabji", parts: [{ name: "zzz paneer", amount: "50 g" }, { name: "onion", amount: "40 g" }, { name: "oil", amount: null }] };
@@ -319,7 +319,7 @@ Deno.test("agent: a rebuild that fails on a card line says the line is as before
   }
 });
 
-// ── Review fixes, round 4 (PR #359) ────────────────────────────────────────
+// ── Foods packed in oil, items with no weight ──────────────────────────────
 
 Deno.test("assumedAmount: a food packed in oil or syrup is not a cooking fat", () => {
   assertEquals(assumedAmount("tuna in oil"), null);
@@ -334,7 +334,7 @@ Deno.test("per100FromParse: an item with no weight does not add to the per-100 n
   assertEquals(per100FromParse(r)?.kcal, 120);
 });
 
-// ── Review fixes, round 5 (PR #359) ────────────────────────────────────────
+// ── Cooking butter and sugar, fiber per 100 ────────────────────────────────
 
 Deno.test("assumedAmount: butter and sugar only when they are the cooking kind", () => {
   assertEquals(assumedAmount("biscoff butter"), null);
@@ -352,7 +352,7 @@ Deno.test("per100FromParse: fiber is per 100 only when every item has a figure",
   assertEquals(per100FromParse(r)?.fiber_g, null);
 });
 
-// ── Review fixes, round 6 (PR #359) ────────────────────────────────────────
+// ── Dish fiber, non-cooking oils ───────────────────────────────────────────
 
 Deno.test("sumRecipe: the dish's fiber is blank when any part has no fiber figure", () => {
   const withFiber = { ...part("onion", 40), per100: { ...part("onion", 40).per100, fiber_g: 1.7 } };
@@ -366,7 +366,7 @@ Deno.test("assumedAmount: a supplement or other non-cooking oil is not a cooking
   assertEquals(assumedAmount("mustard oil"), { grams: 5, label: "1 tsp" });
 });
 
-// ── Review fixes, round 7 (PR #359) ────────────────────────────────────────
+// ── Failed lookups, ml, a split part's source ──────────────────────────────
 
 Deno.test("buildRecipe: a lookup that errors is named apart from a food not found", async () => {
   const parse = async (t: string) => {
@@ -390,4 +390,32 @@ Deno.test("per100FromParse: a part split into items takes the weakest source", (
   const a: ParsedItem = { food_id: null, food_name: "x", quantity: 50, serving_label: "g", grams: 50, kcal: 50, protein_g: 1, carb_g: 1, fat_g: 1, fiber_g: null, source: "web", assumption: null, confidence: "medium" };
   const r = { parsed: { meal_type: "lunch", items: [a, { ...a, source: "catalog" as const }], drona_line: "", corrects_previous: false }, declined: null, usage: USAGE, tool_calls: [], steps: [], iterations: 1 } as ParseMealResult;
   assertEquals(per100FromParse(r)?.source, "catalog");
+});
+
+// ── Messages for dishes that cannot be built ───────────────────────────────
+
+Deno.test("planCardChanges: with no card, a dish aimed at a card line is refused with a plain reason", () => {
+  const r = planCardChanges([], [{ name: "build_recipe", input: { name: "Dal", parts: [{ name: "dal" }], line_id: "L2" } }], false, true);
+  assertFalse(r.ok);
+  if (!r.ok) {
+    assertFalse(r.error.includes("L1 to L0"), r.error);
+    assert(/no card/i.test(r.error), r.error);
+  }
+});
+
+Deno.test("agent: parts not found and parts whose lookup failed are said apart in one line", async () => {
+  const parse = async (t: string) => {
+    if (t.includes("onion")) throw new Error("timeout");
+    return fakeParse()(t);
+  };
+  const ask = { name: "build_recipe", input: { name: "Stew", parts: [{ name: "low fat paneer", amount: "60 g" }, { name: "zzz root" }, { name: "onion", amount: "40 g" }] } };
+  const out = await runFoodAgent(
+    { text: "x", defaultMeal: "lunch", later: true, first: true },
+    { model: "m", callModel: scripted([[ask]]), readDiary: async () => ({}), savedMeals: async () => [], parseFood: parse, buildRecipe: true },
+  );
+  assertEquals(out.kind, "reply");
+  if (out.kind === "reply") {
+    assert(/could not find zzz root/.test(out.text), out.text);
+    assert(/could not look up onion just now/.test(out.text), out.text);
+  }
 });

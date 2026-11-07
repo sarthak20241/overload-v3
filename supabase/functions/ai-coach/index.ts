@@ -3064,7 +3064,7 @@ function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
         // the createMeal collision above, and writeAutoLog answers it the same
         // way - replay theirs rather than append a second copy.
         if (error.code === "23505") return { conflict: true };
-        return { error: error.message };
+        return { error: error.message, code: error.code };
       }
       return { ids: rows(data).map((r) => String(r.id)) };
     },

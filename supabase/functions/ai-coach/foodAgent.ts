@@ -1624,6 +1624,7 @@ export function planCardChanges(
       if ("error" in ask) return fail(ask.error);
       let index: number | null = null;
       if (a.line_id !== undefined && a.line_id !== null && a.line_id !== "") {
+        if (!card.length) return fail("No card is on screen yet, so build_recipe has no line to replace. Leave out line_id to add the dish.");
         index = lineIndexOf(a.line_id, card.length);
         if (index === null) return fail(`build_recipe names ${JSON.stringify(a.line_id)}, which is not on the card. ${ids}`);
       }
@@ -1990,9 +1991,7 @@ async function applyCardChanges(
     ...failedRecipes.map((f) =>
       // A rebuild of a card line that failed leaves that line as it was.
       // A lookup that failed is not a food that does not exist: said apart.
-      `I could not ${f.errored.length && f.errored.length === f.missing.length ? "look up" : "find"} ${f.missing.length ? names(f.missing) : "its parts"}${
-        f.errored.length && f.errored.length === f.missing.length ? " just now" : ""
-      }, so ${f.name} ${f.onLine ? "is as before" : "is not on the card"}.`
+      `I could not ${recipeMissText(f.missing, f.errored)}, so ${f.name} ${f.onLine ? "is as before" : "is not on the card"}.`
     ),
     missingParts.length ? `I could not find ${missingParts.join("; ")}, so it is left out.` : null,
     dupAdds.length ? `${names(dupAdds)} ${dupAdds.length === 1 ? "is" : "are"} already on the card, so I did not add ${dupAdds.length === 1 ? "it" : "them"} again.` : null,
@@ -2071,6 +2070,17 @@ async function applyCardChanges(
     turns,
     ...(answered ? { answered: true } : {}),
   };
+}
+
+/** The parts a dish could not use: those not found, and those whose lookup
+ *  failed (a timeout is not a food that does not exist). */
+function recipeMissText(missing: string[], errored: string[]): string {
+  const notFound = missing.filter((m) => !errored.includes(m));
+  const parts = [
+    notFound.length ? `find ${names(notFound)}` : null,
+    errored.length ? `look up ${names(errored)} just now` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(", and could not ") : "find its parts";
 }
 
 /** What the user is told when a later-message line claimed a log or a save

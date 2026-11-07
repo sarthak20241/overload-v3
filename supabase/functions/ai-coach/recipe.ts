@@ -414,6 +414,9 @@ export function recipeQuestion(
  *  parseRecipe (every part needs a name and a weight, else none are kept).
  *  Only a line whose source is "recipe" keeps parts: a line changed since (an
  *  edit, a new source) would carry old parts that no longer add up to it. */
+// The parts' per-100 numbers come from the app: the user's own card, checked
+// by parseRecipe (sane, non-negative). They explain a line; they never price
+// anything new.
 export function readRecipeParts(raw: unknown, source: unknown): RecipePart[] | undefined {
   if (source !== "recipe") return undefined;
   return parseRecipe(raw) ?? undefined;
