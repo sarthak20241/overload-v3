@@ -1,3 +1,6 @@
+import type { RecipePart } from "./parseMeal.ts";
+
+
 /** Conversation data is evidence about the latest request, never instructions. */
 export interface FoodTurn {
   role: "user" | "drona";
@@ -38,7 +41,7 @@ export interface CardLine {
   carb_g?: number;
   fat_g?: number;
   food_id?: string | null;
-  source?: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
+  source?: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual" | "recipe";
   fiber_g?: number | null;
   assumption?: string | null;
   confidence?: "high" | "medium" | "low";
@@ -48,6 +51,8 @@ export interface CardLine {
   said_name?: string;
   /** The site its numbers came from, for a web-looked-up line. */
   source_site?: string;
+  /** A dish built from its parts (source "recipe"): the parts. */
+  recipe?: RecipePart[];
 }
 
 /** Lines the card carries to the models. The SAME cap index.ts puts on
@@ -78,6 +83,11 @@ export function lineSourceTail(l: Pick<CardLine, "source" | "source_site" | "ass
       return site ? `from web: ${site}` : "from web";
     case "manual":
       return "the user's numbers";
+    case "recipe": {
+      // The parts, so "why 210?" has an answer and a part can be changed.
+      const note = l.assumption ? flat(l.assumption).slice(0, 160) : "";
+      return note ? `recipe: ${note}` : "recipe";
+    }
     case "estimate": {
       const note = l.assumption ? flat(l.assumption).slice(0, 40) : "";
       return note ? `estimate: ${note}` : "estimate";

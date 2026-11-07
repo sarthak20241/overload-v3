@@ -286,6 +286,8 @@ configureFoodBar({
   agentModel: SONNET_MODEL,
   jev: JEV_API_KEY ? { apiKey: JEV_API_KEY, timeoutMs: 5000 } : null,
   callAnthropic,
+  // FOOD_BUILD_RECIPE=on: the later-mode agent gets build_recipe (step 5).
+  buildRecipe: env("FOOD_BUILD_RECIPE").trim().toLowerCase() === "on",
 });
 
 // ── Fixtures as the pipeline's inputs ───────────────────────────────────────
@@ -378,7 +380,7 @@ function diaryRows(c: FoodBoxCase, localDate: string, offsetMin: number): MealRo
   }));
 }
 
-const SOURCES = new Set(["catalog", "off", "fatsecret", "web", "estimate", "manual"]);
+const SOURCES = new Set(["catalog", "off", "fatsecret", "web", "estimate", "manual", "recipe"]);
 function cardSource(s: string | undefined): CardLine["source"] {
   if (!s) return undefined;
   if (s === "label") return "web";
@@ -398,6 +400,7 @@ function cardOf(lines: Line[]): CardLine[] {
     fat_g: l.fat_g ?? 0,
     source: cardSource(l.source),
     ...(l.meal ? { meal_type: l.meal } : {}),
+    ...(l.note ? { assumption: l.note } : {}),
   }));
 }
 

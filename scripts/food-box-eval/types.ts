@@ -21,6 +21,8 @@ export interface Line {
   /** user | label | web | catalog | memory | recipe | estimate | manual (today's catch-all) */
   source?: string;
   meal?: "breakfast" | "lunch" | "dinner" | "snack";
+  /** The line's note (ParsedItem.assumption): a recipe line lists its parts. */
+  note?: string;
 }
 
 /** What the food box did with a message.
