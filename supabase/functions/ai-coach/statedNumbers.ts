@@ -378,6 +378,9 @@ export function statedPortionRatio(line: LineMacros, t: StatedTotal): number | n
   return ratio !== null && Number.isFinite(ratio) && ratio > 0 ? ratio : null;
 }
 
+/** How far the user's numbers may move a line's portion, either way. */
+const MAX_PORTION_RATIO = 10;
+
 /** A line that can be weighed: its amount as shown and its grams. */
 export interface PortionLine extends LineMacros {
   quantity: number;
@@ -410,7 +413,12 @@ export function fitPortionToStated<T extends PortionLine>(line: T, t: StatedTota
   // both stay, and the line simply takes their numbers.
   if (amountTyped && isWeightLabel(line.serving_label)) return honourLineTotals(line, t);
   const ratio = statedPortionRatio(line, t);
-  if (ratio === null || !(line.grams > 0) || Math.abs(ratio - 1) < 0.01) return honourLineTotals(line, t);
+  // Far past what any portion moves by, the line's own numbers are the
+  // problem (a trace-kcal default, a misread), not a density to trust: the
+  // line takes the user's numbers and keeps its portion.
+  if (ratio === null || !(line.grams > 0) || Math.abs(ratio - 1) < 0.01 || ratio > MAX_PORTION_RATIO || ratio < 1 / MAX_PORTION_RATIO) {
+    return honourLineTotals(line, t);
+  }
   const m = (v: number) => v * ratio;
   const scaled: T = {
     ...line,
@@ -470,8 +478,10 @@ export function energyAmountAsStated(
     unit: "serving",
     // The model's own copy of the user's numbers wins; the energy amount fills
     // in its kcal when that copy has none.
+    // Filled that way it is a line total: the energy amount was never a
+    // per-100 or per-serving figure.
     stated: stated
-      ? { ...stated, kcal: stated.kcal ?? kcal }
+      ? (stated.kcal !== null ? stated : { ...stated, basis: "total", serving_g: null, kcal })
       : { basis: "total", serving_g: null, kcal, protein_g: null, carb_g: null, fat_g: null, fiber_g: null },
   };
 }

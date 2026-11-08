@@ -15,6 +15,9 @@ import {
   totalNote,
   userNumbersOnLine,
 } from "./statedNumbers.ts";
+import { honourStatedTotals, type ParsedItem } from "./parseMeal.ts";
+import { lineFromLabel } from "./foodAgent.ts";
+import { cardLines } from "./foodContext.ts";
 
 const kcalOnly = (kcal: number): StatedTotal => ({ kcal, protein_g: null, carb_g: null, fat_g: null, fiber_g: null });
 // Atta bread at a label's 252 kcal, 12.5 P, 42.8 C, 3.5 F per 100 g.
@@ -81,8 +84,6 @@ Deno.test("the user's numbers are read back off a card line", () => {
 
 // ── Where the numbers land: the parse's totals and the agent's label edit ───
 
-import { honourStatedTotals, type ParsedItem } from "./parseMeal.ts";
-import { lineFromLabel } from "./foodAgent.ts";
 
 const item = (over: Partial<ParsedItem>): ParsedItem => ({
   food_id: null, food_name: "atta bread", quantity: 1, serving_label: "1 medium piece (40 g)", grams: 40,
@@ -126,7 +127,6 @@ Deno.test("a label put on a line keeps the user's kcal and finds the weight (age
   assertEquals([plain.grams, plain.kcal], [60, 151.2]);
 });
 
-import { cardLines } from "./foodContext.ts";
 
 Deno.test("the agent sees which numbers on a line are the user's", () => {
   const [typed, broken] = cardLines([
@@ -137,7 +137,7 @@ Deno.test("the agent sees which numbers on a line are the user's", () => {
   assert(broken.endsWith("; the user said 150 kcal"), broken);
 });
 
-// ── Review follow-ups (PR #366) ─────────────────────────────────────────────
+// ── Typed weights, refits, the note as the record ───────────────────────────
 
 Deno.test("a weight the user typed stays with their kcal; nothing moves it", () => {
   const l = fitPortionToStated(bread(100, 100, "g"), kcalOnly(150), true);
@@ -177,4 +177,16 @@ Deno.test("every macro mix totalNote writes reads back the same (the note is the
 Deno.test("an energy amount fills the kcal the model's copy of the user's numbers left out", () => {
   const out = energyAmountAsStated(150, "kcal", { basis: "total", serving_g: null, kcal: null, protein_g: 5, carb_g: null, fat_g: null, fiber_g: null });
   assertEquals(out.stated, { basis: "total", serving_g: null, kcal: 150, protein_g: 5, carb_g: null, fat_g: null, fiber_g: null });
+});
+
+Deno.test("an energy amount filling a per-100 copy makes it a line total, never a density", () => {
+  const out = energyAmountAsStated(150, "kcal", { basis: "per_100g", serving_g: null, kcal: null, protein_g: 8, carb_g: null, fat_g: null, fiber_g: null });
+  assertEquals(out.stated?.basis, "total");
+  assertEquals(out.stated?.kcal, 150);
+});
+
+Deno.test("a portion that would move past 10x keeps the line's portion and takes the numbers", () => {
+  const trace = { quantity: 1, serving_label: "serving", grams: 100, kcal: 1, protein_g: 0, carb_g: 0.2, fat_g: 0, fiber_g: null };
+  const l = fitPortionToStated(trace, kcalOnly(150), false);
+  assertEquals([l.kcal, l.grams, l.serving_label], [150, 100, "serving"]);
 });

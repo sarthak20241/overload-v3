@@ -5324,7 +5324,9 @@ export function captureStatedTotals(extMealTotal: unknown, extItems: ExtractedIt
 }
 
 /** Did the user name an amount? The extraction writes 1 "serving" when the
- *  text states none (EXTRACT_NO_NUTRITION). */
+ *  text states none (EXTRACT_NO_NUTRITION). A heuristic: a user who typed
+ *  "1 serving" in so many words reads the same, so that line is shown by the
+ *  weight their kcal works out to, which is still their serving. */
 function amountTyped(it: Pick<ExtractedItem, "quantity" | "unit">): boolean {
   return !(it.quantity === 1 && it.unit.trim().toLowerCase() === "serving");
 }

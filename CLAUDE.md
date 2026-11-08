@@ -75,7 +75,6 @@ deno test --allow-all scripts/food-box-eval/grade.test.ts
 
 # Edge function unit tests (the one real test suite).
 deno test --allow-all supabase/functions/ai-coach/
-deno test --allow-all supabase/functions/ai-coach/statedPortion.test.ts # the user's kcal or macros set the portion; energy is never an amount
 deno test --allow-all supabase/functions/revenuecat-webhook/
 deno test --allow-all supabase/functions/session-refresh/   # who may get a sign-in ticket
 deno test --allow-all lib/sessionRefresh.test.ts             # silent re-sign-in: ticket, then sign-out, then sign-in
