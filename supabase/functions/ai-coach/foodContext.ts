@@ -1,4 +1,4 @@
-import type { CopiedFrom, FoodOrigin, RecipePart } from "../_shared/foodOrigin.ts";
+import { COPIED_FROM, type CopiedFrom, type FoodOrigin, isFoodOrigin, type RecipePart } from "../_shared/foodOrigin.ts";
 import type { PreviousItem } from "./parseMeal.ts";
 import { readRecipeParts } from "./recipe.ts";
 import { totalParts, userNumbersOnLine } from "./statedNumbers.ts";
@@ -57,6 +57,24 @@ export interface CardLine {
   said_name?: string;
   /** The site its numbers came from, for a web-looked-up line. */
   source_site?: string;
+}
+
+/** Each card line's origin and copied_from as the app sent them back
+ *  (previous_items), in card order. The same filter and cap readPreviousItems
+ *  uses (a line needs a name; CARD_MAX_LINES), so entry i is card line i. An origin the code does not know is left out, and originOf
+ *  then reads the old fields. The agent needs it to tell a number the user
+ *  typed (user_typed) from any other line. */
+export function cardOriginsOf(raw: unknown): { origin?: FoodOrigin; copied_from?: CopiedFrom }[] {
+  if (!Array.isArray(raw)) return [];
+  return (raw as unknown[]).slice(0, CARD_MAX_LINES).flatMap((r) => {
+    const o = (r && typeof r === "object" ? r : {}) as Record<string, unknown>;
+    const name = typeof o.food_name === "string" ? o.food_name.trim() : "";
+    if (!name) return [];
+    return [{
+      ...(isFoodOrigin(o.origin) ? { origin: o.origin } : {}),
+      ...((COPIED_FROM as readonly unknown[]).includes(o.copied_from) ? { copied_from: o.copied_from as CopiedFrom } : {}),
+    }];
+  });
 }
 
 /** Lines the card carries to the models: the parse cap (MAX_ITEMS_PER_PARSE

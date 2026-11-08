@@ -46,6 +46,25 @@ function claimedActions(text: string): Set<"save" | "log"> {
   return out;
 }
 
+/** Why the live adapter skips this case, or null to run it: a case behind a
+ *  switch runs only with the switch at its value. */
+export function caseSkipReason(c: FoodBoxCase, env: (k: string) => string): string | null {
+  const r = c.requiresEnv;
+  if (!r) return null;
+  return env(r.name).trim().toLowerCase() === r.value.toLowerCase() ? null : `needs ${r.name}=${r.value}: ${r.why}`;
+}
+
+/** EVAL_REGION as a case region: india, us or uk, or IN, US, UK. Null for
+ *  empty; undefined for a value it does not know. */
+export function regionKey(raw: string): "india" | "us" | "uk" | null | undefined {
+  const v = raw.trim().toLowerCase();
+  if (!v) return null;
+  if (v === "india" || v === "in") return "india";
+  if (v === "us" || v === "usa") return "us";
+  if (v === "uk" || v === "gb") return "uk";
+  return undefined;
+}
+
 export function linesOf(o: Outcome): Line[] {
   return o.card ?? [];
 }
@@ -146,6 +165,7 @@ export function grade(c: FoodBoxCase, o: Outcome): Grade {
       if (e.savedMeal.kcal && !inRange(s.kcal, e.savedMeal.kcal)) bad.push(`kcal ${s.kcal} not in ${showRange(e.savedMeal.kcal)}`);
       if (e.savedMeal.proteinMin !== undefined && !(s.protein_g >= e.savedMeal.proteinMin)) bad.push(`protein ${s.protein_g} < ${e.savedMeal.proteinMin}`);
       if (e.savedMeal.nameMatch && !re(e.savedMeal.nameMatch).test(s.name)) bad.push(`name "${s.name}"`);
+      if (e.savedMeal.logTo && s.logTo !== e.savedMeal.logTo) bad.push(`logs to ${s.logTo ?? "nothing"}, not ${e.savedMeal.logTo}`);
       add("savedMeal", bad.length === 0, bad.join("; ") || undefined);
     }
   }

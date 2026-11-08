@@ -89,6 +89,7 @@ import type { FoodBarThread } from "../../supabase/functions/ai-coach/foodBar";
 import { randomUUID } from "node:crypto";
 import { cardAfter } from "../../lib/foodBarCard";
 import type { Action, CaseMetrics, FoodBoxCase, Line, Outcome, SavedMeal } from "./types";
+import { caseSkipReason, regionKey } from "./grade";
 
 // ── Env ─────────────────────────────────────────────────────────────────────
 
@@ -175,6 +176,7 @@ export function liveReady(): string | null {
   // live_first is step 3 on top of step 2: the gate's numbers are only
   // comparable with live_later.
   if (FIRST_GATE === "on" && LATER !== "on") return "FOOD_FIRST_GATE=on is measured with FOOD_AGENT_LATER=on and FOOD_THREADS=on. Set all three.";
+  if (regionKey(env("EVAL_REGION")) === undefined) return `EVAL_REGION must be india, us or uk (or IN, US, UK), got "${env("EVAL_REGION")}".`;
   return null;
 }
 
@@ -306,7 +308,9 @@ const TZ: Record<string, { zone: string; offsetMin: number }> = {
  *  (india | us | uk) sets the region's time zone for every case, so one run
  *  measures one region; the case's own clock and diary are unchanged. */
 const REGION_RULES_ON = env("FOOD_REGION_RULES") === "on";
-const regionZone = (c: FoodBoxCase): string => (TZ[env("EVAL_REGION") || c.region || "india"] ?? TZ.india).zone;
+// EVAL_REGION takes india | us | uk or IN | US | UK (regionKey); an unknown
+// value is refused by liveReady, never silently read as India.
+const regionZone = (c: FoodBoxCase): string => (TZ[regionKey(env("EVAL_REGION")) || c.region || "india"] ?? TZ.india).zone;
 
 function clockOf(c: FoodBoxCase): { zone: string; localDate: string; localHour: number } {
   const tz = TZ[c.region ?? "india"] ?? TZ.india;
@@ -411,6 +415,8 @@ function cardOf(lines: Line[]): CardLine[] {
     carb_g: l.carb_g ?? 0,
     fat_g: l.fat_g ?? 0,
     source: cardSource(l.source),
+    // A number the user typed: the app sends origin user_typed with it.
+    ...(l.source === "user" ? { origin: "user_typed" as const } : {}),
     ...(l.meal ? { meal_type: l.meal } : {}),
     ...(l.note ? { assumption: l.note } : {}),
   }));
@@ -519,12 +525,15 @@ const MEAL_OF_HOUR = (h: number): "breakfast" | "lunch" | "snack" | "dinner" => 
 function savedMealOf(tool: string, input: Record<string, unknown>): SavedMeal {
   const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
   const name = typeof input.name === "string" ? input.name : "Saved meal";
+  // The meal the same tap logs it to (the app: createActionLabel).
+  const meal = input.meal_type;
+  const logTo = input.log_now === true && (meal === "breakfast" || meal === "lunch" || meal === "dinner" || meal === "snack") ? meal : null;
   if (tool === "create_custom_meal" && Array.isArray(input.items)) {
     const its = input.items as Record<string, unknown>[];
     const sum = (k: string) => Math.round(its.reduce((a, i) => a + n(i[k]), 0) * 10) / 10;
-    return { name, kcal: sum("kcal"), protein_g: sum("protein_g"), carb_g: sum("carb_g"), fat_g: sum("fat_g") };
+    return { name, kcal: sum("kcal"), protein_g: sum("protein_g"), carb_g: sum("carb_g"), fat_g: sum("fat_g"), logTo };
   }
-  return { name, kcal: n(input.kcal), protein_g: n(input.protein_g), carb_g: n(input.carb_g), fat_g: n(input.fat_g) };
+  return { name, kcal: n(input.kcal), protein_g: n(input.protein_g), carb_g: n(input.carb_g), fat_g: n(input.fat_g), logTo };
 }
 
 /** FOOD_THREADS=on: the case's thread as the store would hold it. */
@@ -542,7 +551,13 @@ async function threadOf(c: FoodBoxCase, card: CardLine[]): Promise<FoodBarThread
   return threadForAgent(store, "eval", { id, card_id: onScreen, base_version: onScreen ? 1 : null, next_card_id: randomUUID(), closed: null });
 }
 
-export function runLive(c: FoodBoxCase): Promise<Outcome> {
+export function runLive(c: FoodBoxCase): Promise<Outcome | null> {
+  // A case behind a switch that is off: skipped (not failed), with the reason.
+  const skip = caseSkipReason(c, env);
+  if (skip) {
+    console.log(`  [${c.id}] skipped: ${skip}`);
+    return Promise.resolve(null);
+  }
   const m: Meter = { calls: 0, byModel: {} };
   return meter.run(m, () => runLiveCase(c, m));
 }
@@ -696,8 +711,10 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
     }
   }
   // The agent's own parses (a later message) carry their steps in its result.
+  // The agent's own find_label is a label check too, whatever the run ended in.
   const lookedUp = [...(firstParse.steps ?? []), ...(outcome.result?.steps ?? [])]
-    .some((s) => /web|lookup_packaged|fatsecret|tavily/i.test(String(s.tool)));
+    .some((s) => /web|lookup_packaged|fatsecret|tavily/i.test(String(s.tool))) ||
+    (outcome.agent?.turns ?? []).some((t) => t.tools.some((x) => x.name === "find_label"));
   const withLookup = (a: Action[]): Action[] => (lookedUp && !a.includes("look_up") ? [...a, "look_up"] : a);
 
   if (outcome.action === "create" && outcome.create) {
@@ -705,7 +722,7 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
     return {
       card: cardAfter(prevLines, { kind: "create" }),
       reply: typeof input.summary === "string" ? input.summary : null,
-      actions: ["save"],
+      actions: withLookup(["save"]),
       savedMeal: savedMealOf(outcome.create.tool, input),
       metrics,
     };
@@ -713,7 +730,7 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
   if (outcome.action === "reply") {
     const reply = outcome.reply ?? null;
     // A reply is a spoken answer; one that ends in a question also asks back.
-    return { card: cardAfter(prevLines, { kind: "declined" }), reply, actions: reply && /\?\s*$/.test(reply) ? ["answer", "ask"] : ["answer"], metrics };
+    return { card: cardAfter(prevLines, { kind: "declined" }), reply, actions: withLookup(reply && /\?\s*$/.test(reply) ? ["answer", "ask"] : ["answer"]), metrics };
   }
   const result = outcome.result ?? firstParse;
   if (!result.parsed || result.parsed.items.length === 0) {
