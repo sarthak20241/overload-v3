@@ -502,7 +502,7 @@ export function readSummary(res: { ok: boolean; data?: unknown }): string | null
   const blocks = ((res.data as { content?: unknown })?.content ?? []) as { type?: string; text?: string }[];
   const text = blocks.filter((b) => b?.type === "text").map((b) => String(b.text ?? "")).join("\n").trim();
   if (!text || /^none\.?$/i.test(text)) return null;
-  const out = text.split(/\n+/).map((l) => l.replace(/\s*[—–]\s*/g, ", ").replace(/\s+/g, " ").trim()).filter(Boolean)
+  const out = text.split(/\n+/).map((l) => l.replace(/\s*[\u2014\u2013]\s*/g, ", ").replace(/\s+/g, " ").trim()).filter(Boolean)
     .slice(0, 2).join("\n");
   return out ? out.slice(0, SUMMARY_MAX_CHARS) : null;
 }

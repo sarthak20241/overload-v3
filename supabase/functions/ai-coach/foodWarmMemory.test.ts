@@ -396,7 +396,7 @@ Deno.test("writeThreadSummary: one call over the older turns only, the summary s
   const bodies: Record<string, unknown>[] = [];
   const out = await writeThreadSummary(s, "u1", "t1", "haiku", async (b) => {
     bodies.push(b);
-    return { ok: true, data: { content: [{ type: "text", text: "User said the sabji had 60 g paneer — low fat.\nUser uses Amul ghee.\nThird line." }], usage: { input_tokens: 90, output_tokens: 20 } } };
+    return { ok: true, data: { content: [{ type: "text", text: "User said the sabji had 60 g paneer \u2014 low fat.\nUser uses Amul ghee.\nThird line." }], usage: { input_tokens: 90, output_tokens: 20 } } };
   });
   assertEquals(bodies.length, 1);
   const content = String((bodies[0].messages as { content: string }[])[0].content);
