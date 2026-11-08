@@ -101,7 +101,7 @@ export interface FoodBarWarm {
   memory?: () => Promise<{ entries: MemoryEntry[] }>;
   /** FOOD_ORIGIN_TRUST=on: the warm reads rank numbers by origin too. */
   byOrigin?: boolean;
-  /** This thread's first message, summary and turn count, read beside the
+  /** This thread's first message and turn count, read beside the
    *  router. Resolves null when there is none or the read was slow. */
   thread?: Promise<WarmThread | null>;
   readThread?: (fromSeq: number, limit: number) => Promise<ThreadTurn[] | null>;

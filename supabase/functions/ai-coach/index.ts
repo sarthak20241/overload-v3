@@ -98,9 +98,10 @@ import {
   servedForThread,
   supabaseThreadStore,
   threadForAgent,
+  threadIsOpen,
   type WarmThread,
 } from "./foodThreads.ts";
-import { parseFoodWarmMemoryMode, THREAD_KEPT_DAYS, writeThreadSummary } from "./foodWarmMemory.ts";
+import { parseFoodWarmMemoryMode, THREAD_KEPT_DAYS, threadTurnsMemory, warmThreadFrom } from "./foodWarmMemory.ts";
 import {
   agentCouldUseThread,
   answeredByLabel,
@@ -347,11 +348,10 @@ const FOOD_BUILD_RECIPE = parseFoodBuildRecipeMode(Deno.env.get("FOOD_BUILD_RECI
 
 /** Precise food box, warm memory (foodWarmMemory.ts, plan sections 4 and 6):
  *  the later-mode agent (FOOD_AGENT_LATER, FOOD_FIRST_GATE) gets recall_food
- *  (the user's own food memory), a matches block of name matches from it,
- *  remembered recipe parts in build_recipe, and, with FOOD_THREADS=on, the
- *  thread's first message and summary, read_thread and search_threads, and a
- *  summary written after a long thread's message. off (default): none of it,
- *  exactly as today. */
+ *  (the user's own food memory), the memory matches Jev already decided in
+ *  this message's parse, remembered recipe parts in build_recipe, and, with
+ *  FOOD_THREADS=on, the thread's first message, read_thread and
+ *  search_threads. off (default): none of it, exactly as today. */
 const FOOD_WARM_MEMORY = parseFoodWarmMemoryMode(Deno.env.get("FOOD_WARM_MEMORY"));
 
 /** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
@@ -3480,9 +3480,13 @@ async function handleParseMealRequest(args: {
   // At most 800 ms: a slow read must never hold up the answer. Past it the
   // message is served as if the thread had no earlier cards.
   let threadTimer: ReturnType<typeof setTimeout> | undefined;
+  // FOOD_WARM_MEMORY=on: the thread is loaded ONCE for the request, and the
+  // agent's index (threadForAgent) and the warm reads share that load.
+  const warmThreadsOn = FOOD_WARM_MEMORY === "on" && FOOD_THREADS === "on" && !!threadReq && !!threadStore;
+  const sharedThreadLoad = warmThreadsOn ? threadStore!.load(userId, threadReq!.id).catch(() => null) : undefined;
   const threadP: Promise<FoodBarThread | null> = FOOD_THREADS === "on" && threadReq && threadStore
     ? Promise.race([
-      threadForAgent(threadStore, userId, threadReq).catch(() => null).then((th) => {
+      threadForAgent(threadStore, userId, threadReq, Date.now(), sharedThreadLoad).catch(() => null).then((th) => {
         // The index line's size on every message that has one, so the cost of
         // the hot context can be counted per user (PR body has the query).
         if (th?.indexStats) fbTrace.step({ src: "router", tool: "food_threads_index", result: th.indexStats });
@@ -3498,13 +3502,21 @@ async function handleParseMealRequest(args: {
       }),
     ]).finally(() => clearTimeout(threadTimer))
     : Promise.resolve(null);
-  // FOOD_WARM_MEMORY=on: the thread's first message, summary and turn count,
-  // read beside the router like threadP and capped the same way (800 ms).
-  const warmThreadsOn = FOOD_WARM_MEMORY === "on" && FOOD_THREADS === "on" && !!threadReq && !!threadStore;
+  // FOOD_WARM_MEMORY=on: this thread's turns, from memory first (foodWarmMemory
+  // threadTurnsMemory): the app's recent turns and the turn count from the
+  // shared load. The first message and read_thread read the database only for
+  // turns not in memory, one turnsFrom call per missing span.
+  const turnsMem = warmThreadsOn && sharedThreadLoad && threadStore?.turnsFrom
+    ? threadTurnsMemory({
+      lastSeq: sharedThreadLoad.then((t) => (t && threadIsOpen(t, Date.now()) ? t.last_seq : null)),
+      recent: recentTurns,
+      fetch: (from, limit) => threadStore.turnsFrom!(userId, threadReq!.id, from, limit),
+    })
+    : null;
   let warmTimer: ReturnType<typeof setTimeout> | undefined;
-  const warmThreadP: Promise<WarmThread | null> = warmThreadsOn && threadStore?.warm
+  const warmThreadP: Promise<WarmThread | null> = turnsMem
     ? Promise.race([
-      threadStore.warm(userId, threadReq!.id).catch(() => null),
+      warmThreadFrom(turnsMem).catch(() => null),
       new Promise<null>((r) => {
         warmTimer = setTimeout(() => r(null), 800);
       }),
@@ -3519,7 +3531,7 @@ async function handleParseMealRequest(args: {
       ...(warmThreadsOn
         ? {
           thread: warmThreadP,
-          ...(threadStore?.turnsFrom ? { readThread: (from: number, limit: number) => threadStore.turnsFrom!(userId, threadReq!.id, from, limit) } : {}),
+          ...(turnsMem ? { readThread: (from: number, limit: number) => turnsMem.read(from, limit) } : {}),
           ...(threadStore?.searchThreads
             ? {
               searchThreads: (words: string[], limit: number) =>
@@ -3571,27 +3583,6 @@ async function handleParseMealRequest(args: {
       restoredFrom: restored,
       log: (m) => console.log(m),
     });
-    // FOOD_WARM_MEMORY: a thread longer than the turns the app sends gets its
-    // summary rewritten from the older turns, ONE Haiku call. This runs inside
-    // writeThread, which is kept alive after the answer is sent, so the reply
-    // never waits on it. A failure is logged and changes nothing.
-    if (warmThreadsOn && ANTHROPIC_API_KEY) {
-      const s0 = Date.now();
-      const sum = await writeThreadSummary(threadStore, userId, threadReq.id, PARSE_MEAL_MODEL, (b) => callAnthropic(b, 10_000));
-      if (!sum.written && sum.reason !== "short_thread") console.log(`[food_threads] summary not written: ${sum.reason}`);
-      if (sum.usage && (sum.usage.input_tokens || sum.usage.output_tokens)) {
-        void logTokenUsage(admin, {
-          pipeline: "food_thread_summary",
-          provider: "anthropic",
-          model: PARSE_MEAL_MODEL,
-          input_tokens: sum.usage.input_tokens,
-          output_tokens: sum.usage.output_tokens,
-          latency_ms: Date.now() - s0,
-          status: sum.written || sum.reason === "nothing_stated" ? "success" : "error",
-          metadata: { user_id: userId, written: sum.written },
-        });
-      }
-    }
   };
   // NO card on screen, not merely "not open": a card cut at the cap is on
   // screen, and a restore would replace it whole (foodBar.ts startFoodAgent).

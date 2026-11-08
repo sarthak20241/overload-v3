@@ -372,25 +372,19 @@ export interface FoodThreadStore {
   /** Mark a card of this thread (a restored card's source becomes 'replaced'). */
   setCardStatus(threadId: string, cardId: string, status: StoredCard["status"]): Promise<void>;
   touch(threadId: string): Promise<void>;
-  // FOOD_WARM_MEMORY (foodWarmMemory.ts): the warm reads and the summary
-  // write. Optional, so a store without them simply offers none of them.
-  /** This thread's first user message, its summary, and how many turns it
-   *  has. Null when the thread is missing or not this user's. */
-  warm?(userId: string, threadId: string): Promise<WarmThread | null>;
+  // FOOD_WARM_MEMORY (foodWarmMemory.ts): the warm reads. Optional, so a
+  // store without them simply offers none of them.
   /** Up to `limit` turns of THIS user's thread from `fromSeq`, oldest first.
    *  Null when the thread is missing or not this user's. */
   turnsFrom?(userId: string, threadId: string, fromSeq: number, limit: number): Promise<ThreadTurn[] | null>;
   /** This user's other threads still kept (last_at since `sinceIso`) whose
    *  turns or current card lines hold any of `words`, best first. */
   searchThreads?(userId: string, words: string[], opts: { excludeThreadId: string | null; sinceIso: string; limit: number }): Promise<ThreadHit[]>;
-  /** food_threads.summary for one of THIS user's threads. */
-  setSummary?(userId: string, threadId: string, summary: string | null): Promise<void>;
 }
 
 /** What the hot context takes from the thread (FOOD_WARM_MEMORY). */
 export interface WarmThread {
   first: string | null;
-  summary: string | null;
   /** Turns stored so far (the newest seq). */
   turns: number;
 }
@@ -604,22 +598,6 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
     async setCardStatus(threadId, cardId, status) {
       await admin.from("food_cards").update({ status, updated_at: new Date().toISOString() }).eq("id", cardId).eq("thread_id", threadId);
     },
-    async warm(userId, threadId) {
-      const { data: t, error } = await admin.from("food_threads").select("user_id, summary").eq("id", threadId).maybeSingle();
-      if (error) throw new Error(`food_threads: ${error.message}`);
-      if (!t || t.user_id !== userId) return null;
-      const [first, last] = await Promise.all([
-        admin.from("food_thread_turns").select("text").eq("thread_id", threadId).eq("role", "user").order("seq").limit(1),
-        admin.from("food_thread_turns").select("seq").eq("thread_id", threadId).order("seq", { ascending: false }).limit(1),
-      ]);
-      if (first.error) throw new Error(`food_thread_turns: ${first.error.message}`);
-      if (last.error) throw new Error(`food_thread_turns: ${last.error.message}`);
-      return {
-        first: typeof first.data?.[0]?.text === "string" ? first.data[0].text : null,
-        summary: typeof t.summary === "string" && t.summary.trim() ? t.summary : null,
-        turns: Number(last.data?.[0]?.seq ?? 0),
-      };
-    },
     async turnsFrom(userId, threadId, fromSeq, limit) {
       const { data: t, error } = await admin.from("food_threads").select("user_id").eq("id", threadId).maybeSingle();
       if (error) throw new Error(`food_threads: ${error.message}`);
@@ -684,10 +662,6 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
           score: wordScore([...(turnsBy.get(id) ?? []), ...lines.map((x) => x.split(",")[0])], words),
         };
       }).filter((h) => h.score > 0).sort((a, b) => b.score - a.score).slice(0, opts.limit);
-    },
-    async setSummary(userId, threadId, summary) {
-      const { error } = await admin.from("food_threads").update({ summary }).eq("id", threadId).eq("user_id", userId);
-      if (error) throw new Error(`food_threads: ${error.message}`);
     },
   };
 }
@@ -846,8 +820,8 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
 
 /** A FoodThreadStore in memory, with the database's one conditional write
  *  rule (food_card_write). Used by foodThreads.test.ts and the food box eval. */
-export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<string, { user_id: string; status: string; last_at: string; started_at?: string; summary?: string | null; turns: { seq: number; role: string; text: string; client_id?: string | null }[] }>; cards: Map<string, { thread_id: string; kind: "meal" | "save"; version: number; status: StoredCard["status"]; meal_type: MealType | null; created_at: string; last_client_id: string | null; max_line_no: number; versions: Map<number, ThreadLine[]> }> } } {
-  const threads = new Map<string, { user_id: string; status: string; last_at: string; started_at?: string; summary?: string | null; turns: { seq: number; role: string; text: string; client_id?: string | null }[] }>();
+export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<string, { user_id: string; status: string; last_at: string; started_at?: string; turns: { seq: number; role: string; text: string; client_id?: string | null }[] }>; cards: Map<string, { thread_id: string; kind: "meal" | "save"; version: number; status: StoredCard["status"]; meal_type: MealType | null; created_at: string; last_client_id: string | null; max_line_no: number; versions: Map<number, ThreadLine[]> }> } } {
+  const threads = new Map<string, { user_id: string; status: string; last_at: string; started_at?: string; turns: { seq: number; role: string; text: string; client_id?: string | null }[] }>();
   const cards = new Map<string, { thread_id: string; kind: "meal" | "save"; version: number; status: StoredCard["status"]; meal_type: MealType | null; created_at: string; last_client_id: string | null; max_line_no: number; versions: Map<number, ThreadLine[]> }>();
   let tick = 0;
   const stamp = () => new Date(Date.now() + tick++).toISOString();
@@ -891,7 +865,7 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
       const t = threads.get(threadId);
       if (t) return t.user_id === userId;
       const at = stamp();
-      threads.set(threadId, { user_id: userId, status: "open", last_at: at, started_at: at, summary: null, turns: [] });
+      threads.set(threadId, { user_id: userId, status: "open", last_at: at, started_at: at, turns: [] });
       return true;
     },
     async addTurns(threadId, fromSeq, turns, clientId) {
@@ -935,16 +909,6 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
       const c = cards.get(cardId);
       if (c && c.thread_id === threadId) c.status = status;
     },
-    async warm(userId, threadId) {
-      const t = threads.get(threadId);
-      if (!t || t.user_id !== userId) return null;
-      const sorted = [...t.turns].sort((a, b) => a.seq - b.seq);
-      return {
-        first: sorted.find((x) => x.role === "user")?.text ?? null,
-        summary: t.summary?.trim() ? t.summary : null,
-        turns: sorted.at(-1)?.seq ?? 0,
-      };
-    },
     async turnsFrom(userId, threadId, fromSeq, limit) {
       const t = threads.get(threadId);
       if (!t || t.user_id !== userId) return null;
@@ -968,10 +932,6 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
         };
       }).filter((h) => h.score > 0).sort((a, b) => b.score - a.score).slice(0, opts.limit);
     },
-    async setSummary(userId, threadId, summary) {
-      const t = threads.get(threadId);
-      if (t && t.user_id === userId) t.summary = summary;
-    },
   };
 }
 
@@ -985,8 +945,11 @@ export async function threadForAgent(
   userId: string,
   req: ThreadRequest,
   nowMs = Date.now(),
+  /** The thread already being read for this request (FOOD_WARM_MEMORY shares
+   *  one load with the warm reads). Absent: read here, as before. */
+  loaded?: Promise<StoredThread | null>,
 ): Promise<FoodBarThread | null> {
-  const t = await store.load(userId, req.id).catch(() => null);
+  const t = await (loaded ?? store.load(userId, req.id)).catch(() => null);
   // A thread the nightly job closed, or one idle past the line: no earlier
   // cards. The message is still written to it (recordThreadMessage).
   if (!t || !threadIsOpen(t, nowMs)) return null;

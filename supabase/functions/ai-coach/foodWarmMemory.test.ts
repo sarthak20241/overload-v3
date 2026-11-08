@@ -10,9 +10,9 @@
 //     (from its steps), tied to its line; in parse_food results, and in a
 //     first-message opening only when that parse had already finished
 //   - the thread: its first message once it left the recent turns, its
-//     summary, read_thread and search_threads (caps, refusals, one user only)
-//   - the summary: one background call past the turns the app sends, facts
-//     only, failures change nothing
+//     read_thread and search_threads (caps, refusals, one user only)
+//   - the thread's turns come from memory first: the app's recent turns and
+//     the request's own load; the database only for what is missing
 //   - build_recipe takes a remembered dish's amounts for parts sent with none
 
 import { assert, assertEquals, assertFalse, assertStringIncludes } from "jsr:@std/assert@1";
@@ -29,7 +29,7 @@ import type { CardLine } from "./foodContext.ts";
 import type { ParsedItem, ParseMealResult, ParseStep } from "./parseMeal.ts";
 import { BUILD_RECIPE_TOOL, RECIPE_NOTE } from "./recipe.ts";
 import { matchMemory, type MemoryEntry } from "./userFoodMemory.ts";
-import { memoryThreadStore, type ThreadHit, type ThreadTurn } from "./foodThreads.ts";
+import { memoryThreadStore, threadForAgent, type ThreadHit, type ThreadTurn } from "./foodThreads.ts";
 import {
   type FoodAgentWarm,
   MAX_RECALL_PER_RUN,
@@ -37,14 +37,13 @@ import {
   memoryMatchesOf,
   memoryFacts,
   parseFoodWarmMemoryMode,
-  readSummary,
   recallAnswer,
   type RecallFood,
   recallFoods,
   RECIPE_MEMORY_NOTE,
-  SUMMARY_TURNS_FROM,
+  threadTurnsMemory,
   warmThreadText,
-  writeThreadSummary,
+  warmThreadFrom,
 } from "./foodWarmMemory.ts";
 
 const USAGE = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0 };
@@ -118,7 +117,7 @@ Deno.test("parseFoodWarmMemoryMode: anything but on is off", () => {
 Deno.test("off: the opening message, instructions and tools are today's, byte for byte", async () => {
   const bodies: Record<string, unknown>[] = [];
   const input = { text: "make the rice 150 g", defaultMeal: "lunch" as const, later: true, card: CARD, today: "Sunday 2026-11-08",
-    warmThread: { first: "lunch was jeera rice and dal", summary: "User said the dal had ghee.", turns: 14 } };
+    warmThread: { first: "lunch was jeera rice and dal", turns: 14 } };
   await runFoodAgent(input, base(bodies, [[{ name: "reply", input: { text: "ok" } }]], { buildRecipe: true }));
   const b = bodies[0];
   // The opening message is the two-argument openingText, which is today's.
@@ -375,23 +374,23 @@ Deno.test("there is no name-only matches block any more", async () => {
 
 // ── The thread ─────────────────────────────────────────────────────────────
 
-Deno.test("warmThreadText: the first message once it left the recent turns, the summary, and older turns", () => {
-  const w = { first: "lunch was 100g jeera rice and paneer sabji of 60 g paneer", summary: "User said the sabji had 60 g paneer.", turns: 14 };
+Deno.test("warmThreadText: the first message once it left the recent turns, and older turns", () => {
+  const w = { first: "lunch was 100g jeera rice and paneer sabji of 60 g paneer", turns: 14 };
   const recent = Array.from({ length: 10 }, (_, i) => ({ role: (i % 2 ? "drona" : "user") as "user" | "drona", text: `turn ${i + 5}` }));
   const t = warmThreadText(w, recent, true)!;
   assertStringIncludes(t, `First message of this thread: "lunch was 100g jeera rice and paneer sabji of 60 g paneer"`);
-  assertStringIncludes(t, "Summary of the earlier turns, facts the user stated: User said the sabji had 60 g paneer.");
+  assertFalse(t.includes("Summary"));
   assertStringIncludes(t, "This thread has 14 earlier turns; the messages above carry the last 10.");
   // Still in the recent turns (cut by the app): not repeated.
   const withFirst = [{ role: "user" as const, text: "lunch was 100g jeera rice" }];
-  assertFalse((warmThreadText({ ...w, summary: null }, withFirst, false) ?? "").includes("First message"));
+  assertFalse((warmThreadText(w, withFirst, false) ?? "").includes("First message"));
   // Cut to 400 characters.
-  const long = warmThreadText({ first: "a".repeat(900), summary: null, turns: 1 }, [], false)!;
+  const long = warmThreadText({ first: "a".repeat(900), turns: 1 }, [], false)!;
   assert(long.length < 460, String(long.length));
   assertEquals(warmThreadText(null, [], true), null);
 });
 
-Deno.test("memoryThreadStore: warm, turnsFrom and searchThreads read one user's threads only", async () => {
+Deno.test("memoryThreadStore: turnsFrom and searchThreads read one user's threads only", async () => {
   const s = memoryThreadStore();
   await s.ensure("u1", "t1");
   await s.addTurns("t1", 1, [{ role: "user", text: "lunch was paneer sabji" }, { role: "drona", text: "On the card." }], "c1");
@@ -401,8 +400,6 @@ Deno.test("memoryThreadStore: warm, turnsFrom and searchThreads read one user's 
   await s.addTurns("t2", 1, [{ role: "user", text: "two eggs" }], "c3");
   await s.ensure("u2", "t3");
   await s.addTurns("t3", 1, [{ role: "user", text: "paneer tikka" }], "c4");
-  assertEquals(await s.warm!("u1", "t1"), { first: "lunch was paneer sabji", summary: null, turns: 3 });
-  assertEquals(await s.warm!("u2", "t1"), null);
   assertEquals((await s.turnsFrom!("u1", "t1", 2, 10))!.map((t) => t.seq), [2, 3]);
   assertEquals(await s.turnsFrom!("u2", "t1", 1, 10), null);
   const hits = await s.searchThreads!("u1", ["paneer"], { excludeThreadId: "t2", sinceIso: "2000-01-01", limit: 5 });
@@ -430,7 +427,7 @@ Deno.test("agent: read_thread is offered only with older turns, reads them, refu
   const rt = (from: unknown) => ({ name: "read_thread", input: { from_seq: from } });
   const bodies: Record<string, unknown>[] = [];
   const out = await runFoodAgent(
-    { text: "what did I say first", defaultMeal: "lunch", later: true, card: CARD, recentTurns: recent, warmThread: { first: "turn 1", summary: null, turns: 14 } },
+    { text: "what did I say first", defaultMeal: "lunch", later: true, card: CARD, recentTurns: recent, warmThread: { first: "turn 1", turns: 14 } },
     base(bodies, [[rt(1), rt(0)], [rt(5), rt(9)], [{ name: "reply", input: { text: "You started with turn 1." } }]], { warm: w }),
   );
   assertEquals(out.kind, "reply");
@@ -442,7 +439,7 @@ Deno.test("agent: read_thread is offered only with older turns, reads them, refu
   // No older turns: no read_thread at all.
   const none: Record<string, unknown>[] = [];
   await runFoodAgent(
-    { text: "x", defaultMeal: "lunch", later: true, card: CARD, recentTurns: recent, warmThread: { first: "turn 5", summary: null, turns: 10 } },
+    { text: "x", defaultMeal: "lunch", later: true, card: CARD, recentTurns: recent, warmThread: { first: "turn 5", turns: 10 } },
     base(none, [[{ name: "reply", input: { text: "ok" } }]], { warm: threadWarm(turns) }),
   );
   assertFalse(toolNames(none[0]).includes("read_thread"));
@@ -465,50 +462,93 @@ Deno.test("agent: search_threads finds earlier chats, refuses no words, is cappe
   assertStringIncludes(JSON.stringify(bodies[2].messages), "search_threads was already called 2 times for this message");
 });
 
-// ── The summary ────────────────────────────────────────────────────────────
+// ── The thread's turns: memory first, the database only for what is missing ──
 
-async function longThread(n: number) {
-  const s = memoryThreadStore();
-  await s.ensure("u1", "t1");
-  await s.addTurns("t1", 1, Array.from({ length: n }, (_, i) => ({ role: (i % 2 ? "drona" : "user") as "user" | "drona", text: `turn ${i + 1}` })), "c1");
-  return s;
+/** A turnsFrom that counts its calls and the spans asked for. */
+function countingFetch(total: number) {
+  const calls: [number, number][] = [];
+  const all: ThreadTurn[] = Array.from({ length: total }, (_, i) => ({ seq: i + 1, role: (i % 2 ? "drona" : "user") as "user" | "drona", text: `stored ${i + 1}` }));
+  return {
+    calls,
+    fetch: async (from: number, limit: number) => {
+      calls.push([from, limit]);
+      return all.filter((t) => t.seq >= from).slice(0, limit);
+    },
+  };
 }
 
-Deno.test("writeThreadSummary: no call while the app still sends every turn", async () => {
-  const s = await longThread(SUMMARY_TURNS_FROM);
-  let calls = 0;
-  const out = await writeThreadSummary(s, "u1", "t1", "haiku", async () => { calls++; return { ok: true, data: {} }; });
-  assertEquals(out, { written: false, reason: "short_thread" });
-  assertEquals(calls, 0);
+const appTurns = (seqs: number[]) => seqs.map((n) => ({ role: (n % 2 ? "user" : "drona") as "user" | "drona", text: `app ${n}` }));
+
+Deno.test("threadTurnsMemory: the whole thread in the app's turns: first message and read_thread make 0 DB calls", async () => {
+  const db = countingFetch(6);
+  const mem = threadTurnsMemory({ lastSeq: Promise.resolve(6), recent: appTurns([1, 2, 3, 4, 5, 6]), fetch: db.fetch });
+  assertEquals(await warmThreadFrom(mem), { first: "app 1", turns: 6 });
+  assertEquals((await mem.read(2, 10))!.map((t) => t.text), ["app 2", "app 3", "app 4", "app 5", "app 6"]);
+  assertEquals(db.calls, []);
 });
 
-Deno.test("writeThreadSummary: one call over the older turns only, the summary saved and shown next time", async () => {
-  const s = await longThread(14);
+Deno.test("threadTurnsMemory: a long thread reads only the missing span, once, then serves it from memory", async () => {
+  // 14 stored turns; the app sent the last 10 (seqs 5 to 14).
+  const db = countingFetch(14);
+  const mem = threadTurnsMemory({ lastSeq: Promise.resolve(14), recent: appTurns([5, 6, 7, 8, 9, 10, 11, 12, 13, 14]), fetch: db.fetch });
+  // The first message: turn 1 only.
+  assertEquals((await warmThreadFrom(mem))?.first, "stored 1");
+  assertEquals(db.calls, [[1, 1]]);
+  // read_thread(1): 1 is held, 5..10 are the app's; only 2..4 are read.
+  const got = await mem.read(1, 10);
+  assertEquals(db.calls, [[1, 1], [2, 3]]);
+  assertEquals(got!.map((t) => t.seq), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  assertEquals(got!.map((t) => t.text).slice(3, 5), ["stored 4", "app 5"]);
+  // Asked again: everything is in memory now, no call.
+  await mem.read(1, 10);
+  await mem.read(3, 2);
+  assertEquals(db.calls.length, 2);
+});
+
+Deno.test("threadTurnsMemory: no open thread means no read at all", async () => {
+  const db = countingFetch(4);
+  const mem = threadTurnsMemory({ lastSeq: Promise.resolve(null), recent: appTurns([1, 2]), fetch: db.fetch });
+  assertEquals(await warmThreadFrom(mem), null);
+  assertEquals(await mem.read(1, 10), null);
+  assertEquals(db.calls, []);
+});
+
+Deno.test("agent: read_thread through the turns memory: 0 store calls for turns the app sent, 1 for the missing span", async () => {
+  const store = memoryThreadStore();
+  await store.ensure("u1", "t1");
+  await store.addTurns("t1", 1, Array.from({ length: 14 }, (_, i) => ({ role: (i % 2 ? "drona" : "user") as "user" | "drona", text: `turn ${i + 1}` })), "c1");
+  let storeCalls = 0;
+  const fetch = (from: number, limit: number) => { storeCalls++; return store.turnsFrom!("u1", "t1", from, limit); };
+  const recent = Array.from({ length: 10 }, (_, i) => ({ role: (i % 2 ? "drona" : "user") as "user" | "drona", text: `turn ${i + 5}` }));
+  const mem = threadTurnsMemory({ lastSeq: Promise.resolve(14), recent, fetch });
   const bodies: Record<string, unknown>[] = [];
-  const out = await writeThreadSummary(s, "u1", "t1", "haiku", async (b) => {
-    bodies.push(b);
-    return { ok: true, data: { content: [{ type: "text", text: "User said the sabji had 60 g paneer \u2014 low fat.\nUser uses Amul ghee.\nThird line." }], usage: { input_tokens: 90, output_tokens: 20 } } };
-  });
-  assertEquals(bodies.length, 1);
-  const content = String((bodies[0].messages as { content: string }[])[0].content);
-  // Turns 1..4 are the ones the app no longer sends.
-  assertStringIncludes(content, "4. Drona: turn 4");
-  assertFalse(content.includes("turn 5"));
-  assert(out.written);
-  const w = await s.warm!("u1", "t1");
-  assertEquals(w?.summary, "User said the sabji had 60 g paneer, low fat.\nUser uses Amul ghee.");
+  await runFoodAgent(
+    { text: "what did I say before", defaultMeal: "lunch", later: true, card: CARD, recentTurns: recent, warmThread: { first: null, turns: 14 } },
+    base(bodies, [
+      [{ name: "read_thread", input: { from_seq: 8 } }],
+      [{ name: "read_thread", input: { from_seq: 2 } }],
+      [{ name: "reply", input: { text: "ok" } }],
+    ], { warm: { readThread: (f, l) => mem.read(f, l) } }),
+  );
+  // from 8: 8..14 all in the app's turns, no call. From 2: only 2..4.
+  assertEquals(storeCalls, 1);
+  assertStringIncludes(JSON.stringify(bodies[2].messages), "turn 2");
 });
 
-Deno.test("writeThreadSummary: a failed call or NONE writes nothing", async () => {
-  const s = await longThread(14);
-  assertEquals((await writeThreadSummary(s, "u1", "t1", "haiku", async () => ({ ok: false }))).written, false);
-  assertEquals(
-    (await writeThreadSummary(s, "u1", "t1", "haiku", async () => ({ ok: true, data: { content: [{ type: "text", text: "NONE" }] } }))).written,
-    false,
-  );
-  assertEquals((await s.warm!("u1", "t1"))?.summary, null);
-  assertEquals(await writeThreadSummary(s, "u1", "t1", "haiku", async () => { throw new Error("boom"); }), { written: false, reason: "threw" });
-  assertEquals(readSummary({ ok: true, data: { content: [{ type: "text", text: "" }] } }), null);
+Deno.test("threadForAgent: given the request's load, it does not load the thread again", async () => {
+  const store = memoryThreadStore();
+  await store.ensure("u1", "t1");
+  await store.createCard("t1", "11111111-1111-4111-8111-111111111111", "meal", [{ line_id: "L1", name: "Rice", grams: 100, quantity: 1, unit: "katori", kcal: 130, protein_g: 3, carb_g: 28, fat_g: 0 }], "c1", "lunch");
+  let loads = 0;
+  const counted = { ...store, load: (u: string, t: string) => { loads++; return store.load(u, t); } };
+  const req = { id: "t1", card_id: null, base_version: null, next_card_id: null, closed: null };
+  const shared = counted.load("u1", "t1");
+  const th = await threadForAgent(counted, "u1", req, Date.now(), shared);
+  assert(th?.index);
+  assertEquals(loads, 1);
+  // Without it (the switch off), the read is its own, as before.
+  await threadForAgent(counted, "u1", req);
+  assertEquals(loads, 2);
 });
 
 // ── build_recipe takes the remembered amounts ──────────────────────────────

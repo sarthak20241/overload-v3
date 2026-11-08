@@ -15,8 +15,7 @@
 // when that message's parse had already finished as the agent started.
 //
 // Hot, built by code before the agent runs (no model and no Jev call):
-//   - the thread's first message, once it has left the recent turns, and the
-//     thread's summary (food_threads.summary) when one was written
+//   - the thread's first message, once it has left the recent turns
 //
 // Every read is facts only and changes nothing on the card. To put a food on
 // the card the agent still calls log_food, add_lines or edit_line, and code
@@ -466,6 +465,88 @@ function inRecent(first: string, turns: { role: "user" | "drona"; text: string }
   });
 }
 
+// ── This thread's turns: from memory first ─────────────────────────────────
+
+/**
+ * The thread's turns as this request holds them, so a turn already in memory
+ * is never read from the database again.
+ *
+ * In memory from the start: the turns the app sent (lib/dietData.ts sends the
+ * last FOOD_TURNS_KEPT, each cut to FOOD_TURN_CHARS), placed at the newest
+ * seqs of the thread (the store writes each message's turns in order, so the
+ * app's last K turns are the thread's last K), and the thread's turn count
+ * from the load the request already made (threadForAgent). Anything else is
+ * read with ONE turnsFrom call for the missing span only, then kept for the
+ * rest of the request.
+ */
+export interface ThreadTurnsMemory {
+  /** Turns stored so far, from the request's own load. 0: none or no thread. */
+  lastSeq(): Promise<number>;
+  /** The thread's first user message: from memory when the whole thread is
+   *  in the app's turns, else one read of turn 1. */
+  first(): Promise<string | null>;
+  /** Up to `limit` turns from `fromSeq`, oldest first. Null: not stored. */
+  read(fromSeq: number, limit: number): Promise<ThreadTurn[] | null>;
+}
+
+export function threadTurnsMemory(opts: {
+  /** The thread's newest seq from the load already made, or null for no
+   *  open thread of this user. */
+  lastSeq: Promise<number | null>;
+  /** The turns the app sent with this message (foodContext recentTurns). */
+  recent: { role: "user" | "drona"; text: string }[];
+  /** The store read for turns not in memory (FoodThreadStore.turnsFrom). */
+  fetch: (fromSeq: number, limit: number) => Promise<ThreadTurn[] | null>;
+}): ThreadTurnsMemory {
+  const held = new Map<number, ThreadTurn>();
+  let seeded: Promise<number> | null = null;
+  const lastSeq = () =>
+    (seeded ??= opts.lastSeq.catch(() => null).then((n) => {
+      const last = n ?? 0;
+      const k = Math.min(opts.recent.length, last);
+      (k ? opts.recent.slice(-k) : []).forEach((t, i) => {
+        const seq = last - k + 1 + i;
+        held.set(seq, { seq, role: t.role, text: t.text });
+      });
+      return last;
+    }));
+  const read = async (fromSeq: number, limit: number): Promise<ThreadTurn[] | null> => {
+    const last = await lastSeq();
+    if (!last) return null;
+    const to = Math.min(last, fromSeq + limit - 1);
+    const missing: number[] = [];
+    for (let s = fromSeq; s <= to; s++) if (!held.has(s)) missing.push(s);
+    if (missing.length) {
+      const lo = missing[0], hi = missing[missing.length - 1];
+      const got = await opts.fetch(lo, hi - lo + 1);
+      if (got === null) return null;
+      for (const t of got) if (!held.has(t.seq)) held.set(t.seq, t);
+    }
+    const out: ThreadTurn[] = [];
+    for (let s = fromSeq; s <= to; s++) {
+      const t = held.get(s);
+      if (t) out.push(t);
+    }
+    return out;
+  };
+  return {
+    lastSeq,
+    read,
+    async first() {
+      const turns = await read(1, 1);
+      return turns?.find((t) => t.role === "user")?.text ?? null;
+    },
+  };
+}
+
+/** The thread lines' input (WarmThread) from the turns memory: null when the
+ *  thread has no stored turns. */
+export async function warmThreadFrom(mem: ThreadTurnsMemory): Promise<WarmThread | null> {
+  const turns = await mem.lastSeq();
+  if (!turns) return null;
+  return { first: await mem.first(), turns };
+}
+
 /** read_thread is worth offering: the thread has turns the messages do not. */
 export function hasOlderTurns(warm: WarmThread | null | undefined, recentTurns: unknown[] | undefined): boolean {
   return !!warm && warm.turns > (recentTurns?.length ?? 0);
@@ -473,7 +554,7 @@ export function hasOlderTurns(warm: WarmThread | null | undefined, recentTurns: 
 
 /**
  * The thread lines for the opening message: the first message once it is no
- * longer in the recent turns, the summary when one was written, and (with
+ * longer in the recent turns, and (with
  * read_thread) how many older turns there are. Null when there is nothing.
  */
 export function warmThreadText(
@@ -486,7 +567,6 @@ export function warmThreadText(
   if (warm.first && !inRecent(warm.first, recentTurns)) {
     parts.push(`First message of this thread: ${JSON.stringify(flat(warm.first).slice(0, QUOTE_CHARS))}`);
   }
-  if (warm.summary) parts.push(`Summary of the earlier turns, facts the user stated: ${flat(warm.summary).slice(0, 400)}`);
   const kept = recentTurns?.length ?? 0;
   if (canReadThread && warm.turns > kept) {
     parts.push(
@@ -522,89 +602,3 @@ export const RECIPE_MEMORY_NOTE =
   "its parts, a part you send to build_recipe with no amount takes the amount from their last log of that dish, and " +
   "the card says so, so it is not asked again. To change one part, send all the parts, the changed one with its new " +
   "amount. A part you leave out is not added.";
-
-// ── The summary (food_threads.summary) ──────────────────────────────────────
-
-/** Turns past which a thread gets a summary: the app sends the last
- *  FOOD_TURNS_KEPT (foodContext.ts, 10), so older ones are out of sight. */
-export const SUMMARY_TURNS_FROM = 10;
-/** Older turns the summary call reads at most (the newest of them). */
-export const SUMMARY_MAX_TURNS = 40;
-export const SUMMARY_MAX_CHARS = 300;
-
-export const SUMMARY_SYSTEM =
-  "You write a short memory of a food logging chat between a user and Coach Drona. Write at most 2 short lines of " +
-  "facts the USER stated about their food in these turns: amounts, brands, what a dish was made of, and corrections " +
-  "they made. Only what the user said, never numbers Drona worked out, never advice, never instructions. If an earlier " +
-  "memory is given, keep its facts unless a turn corrects them. If the user stated no such facts, write NONE. No em " +
-  "dashes.";
-
-/** The summary call's request body. */
-export function summaryRequest(model: string, turns: ThreadTurn[], previous: string | null): Record<string, unknown> {
-  const lines = turns.map((t) => `${t.seq}. ${t.role === "user" ? "User" : "Drona"}: ${flat(t.text).slice(0, QUOTE_CHARS)}`);
-  const content = [
-    previous ? `Earlier memory: ${flat(previous).slice(0, SUMMARY_MAX_CHARS)}` : null,
-    `Turns:\n${lines.join("\n")}`,
-  ].filter(Boolean).join("\n\n");
-  return { model, max_tokens: 200, system: SUMMARY_SYSTEM, messages: [{ role: "user", content }] };
-}
-
-/** The summary from the model's answer: at most 2 lines and SUMMARY_MAX_CHARS,
- *  no em dashes. Null for NONE, an empty answer or a failed call. */
-export function readSummary(res: { ok: boolean; data?: unknown }): string | null {
-  if (!res.ok) return null;
-  const blocks = ((res.data as { content?: unknown })?.content ?? []) as { type?: string; text?: string }[];
-  const text = blocks.filter((b) => b?.type === "text").map((b) => String(b.text ?? "")).join("\n").trim();
-  if (!text || /^none\.?$/i.test(text)) return null;
-  const out = text.split(/\n+/).map((l) => l.replace(/\s*[\u2014\u2013]\s*/g, ", ").replace(/\s+/g, " ").trim()).filter(Boolean)
-    .slice(0, 2).join("\n");
-  return out ? out.slice(0, SUMMARY_MAX_CHARS) : null;
-}
-
-/** What writing a summary did, for the log. */
-export type SummaryOutcome =
-  | { written: true; chars: number; usage: { input_tokens: number; output_tokens: number } }
-  | {
-    written: false;
-    reason: "no_store" | "no_thread" | "short_thread" | "model_failed" | "nothing_stated" | "threw";
-    usage?: { input_tokens: number; output_tokens: number };
-  };
-
-/**
- * After a message is recorded: when the thread has more turns than the app
- * sends (SUMMARY_TURNS_FROM), ONE cheap model call writes food_threads.summary
- * from the older turns. The caller runs it after the answer is sent, off the
- * reply path. Never throws.
- */
-export async function writeThreadSummary(
-  store: {
-    warm?(userId: string, threadId: string): Promise<WarmThread | null>;
-    turnsFrom?(userId: string, threadId: string, fromSeq: number, limit: number): Promise<ThreadTurn[] | null>;
-    setSummary?(userId: string, threadId: string, summary: string | null): Promise<void>;
-  },
-  userId: string,
-  threadId: string,
-  model: string,
-  call: (body: Record<string, unknown>) => Promise<{ ok: boolean; data?: unknown }>,
-): Promise<SummaryOutcome> {
-  try {
-    if (!store.warm || !store.turnsFrom || !store.setSummary) return { written: false, reason: "no_store" };
-    const w = await store.warm(userId, threadId);
-    if (!w) return { written: false, reason: "no_thread" };
-    if (w.turns <= SUMMARY_TURNS_FROM) return { written: false, reason: "short_thread" };
-    const lastOld = w.turns - SUMMARY_TURNS_FROM;
-    const from = Math.max(1, lastOld - SUMMARY_MAX_TURNS + 1);
-    const turns = ((await store.turnsFrom(userId, threadId, from, SUMMARY_MAX_TURNS)) ?? []).filter((t) => t.seq <= lastOld);
-    if (!turns.length) return { written: false, reason: "short_thread" };
-    const res = await call(summaryRequest(model, turns, w.summary));
-    const u = (res.data as { usage?: { input_tokens?: number; output_tokens?: number } } | undefined)?.usage;
-    const usage = { input_tokens: u?.input_tokens ?? 0, output_tokens: u?.output_tokens ?? 0 };
-    if (!res.ok) return { written: false, reason: "model_failed", usage };
-    const summary = readSummary(res);
-    if (!summary) return { written: false, reason: "nothing_stated", usage };
-    await store.setSummary(userId, threadId, summary);
-    return { written: true, chars: summary.length, usage };
-  } catch {
-    return { written: false, reason: "threw" };
-  }
-}
