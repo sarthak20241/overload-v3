@@ -280,6 +280,9 @@ async function callAnthropic(payload: Record<string, unknown>, timeoutMs = 80_00
   }
 }
 
+/** FOOD_WARM_MEMORY=on: the later-mode agent's warm reads (foodWarmMemory.ts). */
+const WARM_MEMORY_ON = env("FOOD_WARM_MEMORY").trim().toLowerCase() === "on";
+
 configureFoodBar({
   intentMode: INTENT_MODE,
   anthropicApiKey: API_KEY || (VIA_CLI ? "cli" : undefined),
@@ -603,6 +606,12 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
     region: REGION_RULES_ON ? Promise.resolve(foodRegionForTimezone(regionZone(c))) : null,
     logUsage: () => {},
     thread: threadP,
+    // FOOD_WARM_MEMORY=on: recall_food, the matches block and remembered
+    // recipe parts read the case's memory fixture, as index.ts reads the
+    // user's (the thread parts need stored turns, which a case does not have).
+    // Memory matches exist only where the parse asks Jev about memory (as
+    // index.ts: USER_FOOD_MEMORY and a Jev key).
+    ...(WARM_MEMORY_ON ? { warm: { memory: async () => ({ entries: memoryOf(c) }), matches: !!JEV_API_KEY } } : {}),
   };
   /** Today's parse of the message, as index.ts runs it. */
   const parseNow = async () => {
