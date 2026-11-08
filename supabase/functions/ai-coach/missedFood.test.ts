@@ -204,3 +204,16 @@ Deno.test("the retry never brings back a food the user removed", async () => {
   assertEquals(names.filter((n) => /oats/i.test(n)), [], names.join(" | "));
   assert(names.includes("milk"), names.join(" | "));
 });
+
+// Review: names in `foods` that match no extracted food must not drop the
+// total. It falls back to the whole meal, as before `foods` existed.
+Deno.test("a total whose foods match nothing is still the whole meal's", async () => {
+  const h = harness(
+    [EGG, POHA_PLAIN],
+    [[eggLine, pohaLine]],
+    { stated_meal_total: { kcal: 300, protein_g: null, carb_g: null, fat_g: null, fiber_g: null, foods: ["upma"] } },
+  );
+  const r = await runParseMeal(h.deps, { ...BASE, text: "1 whole egg and a bowl of poha, 300 cals" });
+  assertEquals(Math.round(r.parsed!.items.reduce((a, i) => a + i.kcal, 0)), 300);
+  assert(!r.steps.some((s) => (s.result as { reason?: string } | null)?.reason === "no line for the foods it names"));
+});

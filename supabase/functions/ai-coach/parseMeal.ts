@@ -5365,7 +5365,10 @@ export function captureStatedTotals(extMealTotal: unknown, extItems: ExtractedIt
     ? named.filter((f): f is string => typeof f === "string" && !!f.trim()).map((f) => f.trim().slice(0, 120))
     : [];
   // Every food named means the whole message: the old meaning, kept exactly.
-  const some = foods.length > 0 && pickByFoods(extItems.map((it) => [foodLabel(it)]), foods).length < extItems.length;
+  // So does naming none of them: names that match no food say nothing about
+  // which foods, and the user's number must not be dropped for it.
+  const picked = foods.length ? pickByFoods(extItems.map((it) => [foodLabel(it)]), foods).length : 0;
+  const some = picked > 0 && picked < extItems.length;
   return {
     meal, lines, ignored,
     soleAmountTyped: extItems.length === 1 ? amountTyped(extItems[0]) : null,
