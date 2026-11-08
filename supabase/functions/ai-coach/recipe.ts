@@ -146,6 +146,52 @@ export function readRecipeAsk(input: Record<string, unknown>): RecipeAsk | { err
   return { name, parts };
 }
 
+// ── Parts come from the user ────────────────────────────────────────────────
+
+/** Words that describe a part rather than name it ("low fat", "cooked"). */
+const DESCRIBING = new Set([
+  "low", "fat", "free", "lite", "light", "full", "toned", "skimmed", "double", "cooked", "boiled", "fried", "roasted",
+  "grilled", "steamed", "raw", "fresh", "homemade", "home", "made", "plain", "whole", "chopped", "sliced", "diced",
+  "grated", "small", "medium", "large", "big", "little", "some", "bit", "cooking", "of", "and", "with", "the", "a", "an",
+  "in", "for", "my", "own", "g", "gm", "gms", "gram", "grams", "ml", "tsp", "tbsp", "cup", "cups",
+]);
+
+/** A word for matching: lowercase letters and digits, plural folded. */
+function stem(w: string): string {
+  if (w.length <= 3) return w;
+  if (w.endsWith("ies")) return `${w.slice(0, -3)}y`;
+  if (w.endsWith("oes") || w.endsWith("ches") || w.endsWith("shes")) return w.slice(0, -2);
+  if (w.endsWith("s") && !w.endsWith("ss")) return w.slice(0, -1);
+  return w;
+}
+
+function wordsOf(text: string): string[] {
+  return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^a-z0-9]+/).filter((w) => w && !/^\d/.test(w));
+}
+
+/** A cooking fat with no amount: the one part the agent may add on its own
+ *  (owner decision: assume it, show it, ask once). */
+export function assumableFat(p: { name: string; amount: string | null }): boolean {
+  if (p.amount) return false;
+  const last = wordsOf(p.name).pop() ?? "";
+  return (last === "oil" || last === "ghee" || last === "butter") && assumedAmount(p.name) !== null;
+}
+
+/**
+ * The parts of a dish the user never named. A part is the user's when every
+ * word that names it (not "low fat", "cooked", ...) is in the user's own words
+ * in this conversation, plural or singular. A cooking oil or fat with no
+ * amount may be assumed (assumableFat).
+ */
+export function partsNotFromUser(ask: RecipeAsk, userWords: string): string[] {
+  const said = new Set(wordsOf(userWords).map(stem));
+  return ask.parts.filter((p) => {
+    if (assumableFat(p)) return false;
+    const naming = wordsOf(p.name).filter((w) => !DESCRIBING.has(w)).map(stem);
+    return naming.length > 0 && !naming.every((w) => said.has(w));
+  }).map((p) => p.name);
+}
+
 // ── The sum ─────────────────────────────────────────────────────────────────
 
 /** One part after its lookup: the row's numbers per 100 g, and its weight. */

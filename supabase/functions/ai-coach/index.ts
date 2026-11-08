@@ -87,7 +87,7 @@ import {
   cardQuestionFellToParse,
 } from "./foodIntent.ts";
 import { parseFoodBuildRecipeMode, readRecipeParts } from "./recipe.ts";
-import { CARD_MAX_LINES, type CardLine, cardMayBeCut, readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
+import { CARD_MAX_LINES, type CardLine, cardMayBeCut, cardOriginsOf, readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
 import { startHeartbeat } from "./streamHeartbeat.ts";
@@ -3437,7 +3437,12 @@ async function handleParseMealRequest(args: {
   // save, or new food, and the agent can hand lines back exactly as they were.
   // Same 12-line cap as previous_items above (CARD_MAX_LINES): the agent's
   // remove_card_lines names lines by these numbers.
-  const card: CardLine[] = previousItems.map((p) => ({
+  // Each line's origin as the app sent it, so the agent can tell a number the
+  // user typed from a catalog row or a guess (foodAgent.ts cardLinesWithIds).
+  // On the card only: previous_items (the parse's input) is unchanged.
+  const cardOrigins = cardOriginsOf(body.previous_items);
+  const card: CardLine[] = previousItems.map((p, i) => ({
+    ...(cardOrigins[i] ?? {}),
     food_name: p.food_name, quantity: p.quantity, serving_label: p.serving_label, grams: p.grams,
     kcal: p.kcal ?? 0, protein_g: p.protein_g, carb_g: p.carb_g, fat_g: p.fat_g,
     food_id: p.food_id, source: p.source,

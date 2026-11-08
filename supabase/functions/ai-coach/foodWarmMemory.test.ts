@@ -717,7 +717,7 @@ Deno.test("agent: without the switch a remembered dish changes nothing (no warm 
   const log: string[] = [];
   const bodies: Record<string, unknown>[] = [];
   const out = await runFoodAgent(
-    { text: "paneer sabji again", defaultMeal: "lunch", later: true, first: true },
+    { text: "paneer sabji again, low fat paneer with oil and onion", defaultMeal: "lunch", later: true, first: true },
     base(bodies, [[SABJI]], { parseFood: fakeParse(log), buildRecipe: true }),
   );
   assertEquals(out.kind, "log");
@@ -759,7 +759,7 @@ Deno.test({ name: "agent: build_recipe never waits on a slow memory load (3 s he
   const slow = () => new Promise<RecallFood[]>((r) => setTimeout(() => r(SABJI_MEMORY), 3000));
   const events: unknown[] = [];
   const out = await runFoodAgent(
-    { text: "paneer sabji again", defaultMeal: "lunch", later: true, first: true },
+    { text: "paneer sabji again, low fat paneer with oil and onion", defaultMeal: "lunch", later: true, first: true },
     base([], [[SABJI]], { parseFood: fakeParse(log), buildRecipe: true, warm: { memory: slow }, onEvent: (e) => events.push(e) }),
   );
   // The trace says the wait ran out.
