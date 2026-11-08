@@ -16,11 +16,20 @@ import {
   CARD_NOTE_LATER,
   cardLinesWithIds,
   type FoodAgentDeps,
+  FOOD_AGENT_SYSTEM_LATER,
   givesNumber,
   planCardChanges,
+  MAX_TURNS_LATER,
   runFoodAgent,
+  SAVE_CARD_TAIL,
+  saveCardLine,
+  savedMealAlready,
+  toolsForLater,
+  unmetSaveAsk,
   USER_TYPED_MARK,
+  userAskedToSave,
 } from "./foodAgent.ts";
+import type { SavedMealForParse } from "./savedMeals.ts";
 import { type CardLine, cardOriginsOf } from "./foodContext.ts";
 import type { ParseMealResult, ParsedItem } from "./parseMeal.ts";
 
@@ -156,4 +165,125 @@ Deno.test("runFoodAgent: an edit of the user's own number is sent back, and the 
   assertEquals(out.kind, "reply");
   assertEquals(log.filter((l) => l.startsWith("edit:")), []);
   assert(resultsBefore(bodies, 2)[0].includes(USER_TYPED_MARK));
+});
+
+// ── 2. The save check ──────────────────────────────────────────────────────
+
+const ASK = { role: "user" as const, text: "save it as a meal and put it in dinner, I had 50 g of it" };
+
+Deno.test("unmetSaveAsk: an earlier save ask counts until a save card answers it", () => {
+  // Drona answered with words, no save card: the ask still stands.
+  assertEquals(unmetSaveAsk([ASK, { role: "drona", text: "Paneer keeps the protein up." }]), ASK.text);
+  // A reply that says nothing was saved is no save card either.
+  assertEquals(unmetSaveAsk([ASK, { role: "drona", text: "Nothing has been saved yet, and My Meals has no paneer dish." }]), ASK.text);
+  // A save card's line (the app records its summary as Drona's turn) answers it.
+  assertEquals(unmetSaveAsk([ASK, { role: "drona", text: "Paneer, 50 g, 95 cal. Want it in My Meals?" }]), null);
+  assertEquals(unmetSaveAsk([ASK, { role: "drona", text: "Tap the card to save it." }]), null);
+  // The user says it is saved.
+  assertEquals(unmetSaveAsk([ASK, { role: "drona", text: "Here it is." }, { role: "user", text: "ok I saved it" }]), null);
+  // No ask, or a negated one.
+  assertEquals(unmetSaveAsk([{ role: "user", text: "don't save it" }, { role: "drona", text: "Fine." }]), null);
+  assertEquals(unmetSaveAsk(undefined), null);
+  assert(userAskedToSave({ text: "did you do it?", recentTurns: [ASK, { role: "drona", text: "Paneer keeps the protein up." }] }));
+  assertFalse(userAskedToSave({ text: "did you do it?", recentTurns: [ASK, { role: "drona", text: "Paneer, 95 cal. Want it in My Meals?" }] }));
+});
+
+const PANEER: CardLine[] = [
+  { food_name: "Milky Mist low fat paneer", quantity: 1, serving_label: "serving", grams: 50, kcal: 95, protein_g: 12.5, carb_g: 2, fat_g: 4, source: "estimate" },
+];
+
+Deno.test("an unmet earlier ask: the save goes ahead now, with its section, and the reply leads the save card", async () => {
+  const out = await runFoodAgent({
+    text: "was that done?", defaultMeal: "snack", card: PANEER, later: true,
+    recentTurns: [ASK, { role: "drona", text: "Paneer keeps the protein up." }],
+  }, deps(scripted([[
+    { name: "save_card_as_meal", input: { name: "Paneer", log_now: true, meal_type: "dinner", summary: "Paneer, 50 g. Want it in My Meals and dinner?" } },
+    { name: "reply", input: { text: "No, it was not saved before. Here is the save card, set for dinner." } },
+  ]])));
+  assertEquals(out.kind, "create");
+  if (out.kind !== "create") return;
+  assertEquals(out.create.input.meal_type, "dinner");
+  assertEquals(out.create.input.log_now, true);
+  assertEquals(out.reply, "No, it was not saved before. Here is the save card, set for dinner.");
+  assert(String(out.create.input.summary).startsWith("No, it was not saved before."), String(out.create.input.summary));
+  assert(String(out.create.input.summary).includes("Want it in My Meals"));
+  // The later save tool offers the section; the plain one stays as it was.
+  const later = toolsForLater(PANEER).find((t) => t.name === "save_card_as_meal")!;
+  assert("meal_type" in (later.input_schema.properties as Record<string, unknown>));
+});
+
+Deno.test("a reply beside a save card that claims the save is dropped; the card's own line stays", async () => {
+  const out = await runFoodAgent({ text: "save this as a meal", defaultMeal: "snack", card: PANEER, later: true }, deps(scripted([[
+    { name: "save_card_as_meal", input: { name: "Paneer", log_now: false, summary: "Paneer, 95 cal. Want it in My Meals?" } },
+    { name: "reply", input: { text: "I've saved it for you." } },
+  ]])));
+  assertEquals(out.kind, "create");
+  if (out.kind !== "create") return;
+  assertEquals(out.create.input.summary, "Paneer, 95 cal. Want it in My Meals?");
+  assertEquals(out.reply, undefined);
+});
+
+Deno.test("saveCardLine: the reply first, within the app's 300 characters, still saying what the tap does", () => {
+  assertEquals(saveCardLine("Not saved yet.", "Paneer. Want it in My Meals?"), "Not saved yet. Paneer. Want it in My Meals?");
+  const long = saveCardLine("x".repeat(290), "Paneer. Want it in My Meals?");
+  assert(long.length <= 300 && long.endsWith(SAVE_CARD_TAIL), long);
+});
+
+Deno.test("an earlier ask a save card already answered: no second save card, and the agent hears why", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const out = await runFoodAgent({
+    text: "nice, the roti was 3", defaultMeal: "dinner", card: CARD, later: true,
+    recentTurns: [{ role: "user", text: "save this as a meal" }, { role: "drona", text: "Dinner, 3 items, 600 cal. Want it in My Meals?" }],
+  }, deps(scripted([
+    [{ name: "save_card_as_meal", input: { name: "Dinner", log_now: false, summary: "Save it?" } }],
+    [{ name: "reply", input: { text: "The save card is above: a tap saves it." } }],
+  ], bodies)));
+  assertEquals(out.kind, "reply");
+  assert(resultsBefore(bodies, 2)[0].includes("already offered"));
+});
+
+const SAVED: SavedMealForParse[] = [{
+  id: "s1", name: "Milky Mist Low Fat Paneer Sabji", kind: "meal", servings: 1, serving_label: null,
+  kcal: 150, protein_g: 11, carb_g: 4, fat_g: 10,
+  items: [{ food_id: null, food_name: "Milky Mist Low Fat Paneer Sabji", quantity: 1, serving_unit: "serving", grams: null, kcal: 150, protein_g: 11, carb_g: 4, fat_g: 10, fiber_g: null }],
+}];
+
+Deno.test("savedMealAlready: the same name (recipe words in it do not count) and the same lines", () => {
+  const food = (name: string, kcal: number) => ({ name: "create_custom_food", input: { name, kcal } });
+  assertEquals(savedMealAlready(food("Milky Mist low fat paneer sabji (60 g paneer, onion, oil)", 150), [], SAVED)?.id, "s1");
+  assertEquals(savedMealAlready(food("Milky Mist Low Fat Paneer Sabji", 151), [], SAVED)?.id, "s1");
+  // Other numbers, or another name: a new save.
+  assertEquals(savedMealAlready(food("Milky Mist Low Fat Paneer Sabji", 200), [], SAVED), null);
+  assertEquals(savedMealAlready(food("Paneer bhurji", 150), [], SAVED), null);
+  // A meal: every line must match.
+  const card: CardLine[] = [{ ...PANEER[0], food_name: "Milky Mist Low Fat Paneer Sabji", kcal: 150 }];
+  assertEquals(savedMealAlready({ name: "save_card_as_meal", input: { name: "milky mist low-fat paneer sabji" } }, card, SAVED)?.id, "s1");
+  assertEquals(savedMealAlready({ name: "save_card_as_meal", input: { name: "Milky Mist Low Fat Paneer Sabji" } }, [...card, CARD[0]], SAVED), null);
+});
+
+Deno.test("a save the user already has is refused: the agent is told, and says it is in My Meals", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const d = deps(scripted([
+    [{ name: "create_custom_food", input: { name: "Milky Mist Low Fat Paneer Sabji", kcal: 150, protein_g: 11, carb_g: 4, fat_g: 10, summary: "Want it in My Meals?" } }],
+    [{ name: "reply", input: { text: "Your paneer sabji is in My Meals already." } }],
+  ], bodies));
+  d.savedMeals = async () => SAVED;
+  const out = await runFoodAgent({ text: "save the paneer sabji as a meal", defaultMeal: "lunch", card: CARD, later: true }, d);
+  assertEquals(out.kind, "reply");
+  assert(resultsBefore(bodies, 2)[0].includes("already has"), resultsBefore(bodies, 2)[0]);
+  // On the last turn the user still gets the true answer, from code.
+  const last = deps(scripted([[{ name: "create_custom_food", input: { name: "Milky Mist Low Fat Paneer Sabji", kcal: 150 } }]]));
+  last.savedMeals = async () => SAVED;
+  const script: Use[][] = Array.from({ length: MAX_TURNS_LATER }, () => [{ name: "create_custom_food", input: { name: "Milky Mist Low Fat Paneer Sabji", kcal: 150 } }]);
+  last.callModel = scripted(script);
+  const end = await runFoodAgent({ text: "save the paneer sabji as a meal", defaultMeal: "lunch", card: CARD, later: true }, last);
+  assertEquals(end.kind, "reply");
+  if (end.kind === "reply") assertEquals(end.text, "Milky Mist Low Fat Paneer Sabji is in My Meals already, with these same foods.");
+});
+
+Deno.test("FOOD_AGENT_SYSTEM_LATER: an earlier ask never carried out is said plainly and done now", () => {
+  assert(FOOD_AGENT_SYSTEM_LATER.includes("never carried out"));
+  assert(FOOD_AGENT_SYSTEM_LATER.includes("say plainly that it was not done, and do it now in the same turn"));
+  assert(FOOD_AGENT_SYSTEM_LATER.includes("that no save card answered"));
+  assertFalse(FOOD_AGENT_SYSTEM_LATER.includes("—"));
 });

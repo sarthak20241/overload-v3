@@ -18,7 +18,7 @@
 // Deps are injected so the loop is testable without the network.
 
 import { energyUnitKcal, fitPortionToStated, isWeightLabel, lineAmountNamed, totalNote, userNumbersOnLine } from "./statedNumbers.ts";
-import { type FoodOrigin, ORIGIN_RANK, originOf, parseRecipe } from "../_shared/foodOrigin.ts";
+import { dishName, type FoodOrigin, ORIGIN_RANK, originOf, parseRecipe } from "../_shared/foodOrigin.ts";
 import { summarize } from "./foodBarTrace.ts";
 import { CARD_MAX_LINES, type CardLine, cardLines, cardMayBeCut, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { sonnetSettings } from "../_shared/sonnet.ts";
@@ -264,7 +264,9 @@ export type AgentEvent =
 export type FoodAgentOutcome =
   /** `answered`: a reply rode along with the change, and is the card's line. */
   | { kind: "log"; result: ParseMealResult; turns: AgentTurn[]; answered?: boolean }
-  | { kind: "create"; create: { tool: string; input: Record<string, unknown> }; turns: AgentTurn[] }
+  /** `reply`: the agent's reply sent beside the save card. The app shows one
+   *  line for a save card (its summary), so the reply leads that line. */
+  | { kind: "create"; create: { tool: string; input: Record<string, unknown> }; turns: AgentTurn[]; reply?: string }
   | { kind: "reply"; text: string; turns: AgentTurn[] }
   | { kind: "failed"; reason: string; turns: AgentTurn[] };
 
@@ -377,6 +379,23 @@ const SAVE_CARD_AS_MEAL_TOOL: AnthropicTool = {
       summary: { type: "string", description: "One short line written as an OFFER, never as done. No em dashes." },
     },
     required: ["name", "log_now", "summary"],
+  },
+};
+
+/** save_card_as_meal for a later message: the same tool, with the section
+ *  the card logs to when log_now is true ("save it and put it in dinner"). */
+const SAVE_CARD_AS_MEAL_TOOL_LATER: AnthropicTool = {
+  ...SAVE_CARD_AS_MEAL_TOOL,
+  input_schema: {
+    ...SAVE_CARD_AS_MEAL_TOOL.input_schema,
+    properties: {
+      ...SAVE_CARD_AS_MEAL_TOOL.input_schema.properties,
+      meal_type: {
+        type: "string",
+        enum: ["breakfast", "lunch", "dinner", "snack"],
+        description: "With log_now true: the section it is logged to. Omit for the card's own meal.",
+      },
+    },
   },
 };
 
@@ -629,7 +648,7 @@ export function toolsForLater(
   const out = whole
     ? [
       ...FOOD_AGENT_TOOLS.filter((t) => t.name !== LOG_FOOD_TOOL.name),
-      EDIT_LINE_TOOL, REMOVE_LINES_TOOL, ADD_LINES_TOOL, SAVE_CARD_AS_MEAL_TOOL,
+      EDIT_LINE_TOOL, REMOVE_LINES_TOOL, ADD_LINES_TOOL, SAVE_CARD_AS_MEAL_TOOL_LATER,
     ]
     : [...FOOD_AGENT_TOOLS];
   if (copy.thread || copy.diary) out.push(COPY_LINES_TOOL);
@@ -676,9 +695,14 @@ export const FOOD_AGENT_SYSTEM_LATER =
   "- Food the user says they had always goes on the card, even when the same message asks a question or reads like " +
   "chat. Answer the question too, with reply in the same turn. When you are unsure what they meant, put the food on " +
   "the card and say in a few words what you assumed. Losing a meal they meant to record is the worst outcome.\n" +
-  "- A save needs an explicit ask to save, keep or remember something as a reusable meal or food for later. Food " +
-  "names, numbers, the present tense, a question about saving, thanks, or a complaint are not a save. Without that " +
-  "ask never call save_card_as_meal, create_custom_meal or create_custom_food.\n" +
+  "- A save needs an explicit ask to save, keep or remember something as a reusable meal or food for later, in this " +
+  "message or in an earlier one of this conversation that no save card answered. Food names, numbers, the present " +
+  "tense, a question about saving, thanks, or a complaint are not a save. Without that ask never call " +
+  "save_card_as_meal, create_custom_meal or create_custom_food. A meal the user already has in My Meals with the same " +
+  "foods is not saved again.\n" +
+  "- An ask from an earlier message of this conversation that was never carried out (no card change or save card " +
+  "came after it) still stands. When the user asks whether it was done, or says it was not, say plainly that it was " +
+  "not done, and do it now in the same turn: the save, and every other change that same earlier message asked for.\n" +
   "- When the user turns down their saved meal for a food (\"not my saved one\", \"estimate it fresh\"), never use a " +
   "saved meal's lines for it: work it out again (edit_line on its line, or add_lines).\n" +
   "- When the opening message says this answers your question, the answer finishes that waiting meal: put ALL of its " +
@@ -1140,12 +1164,27 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     // in their words (plan 9b, "create needs an explicit ask"). The agent is
     // told and does what was asked instead; on the last turn the run ends and
     // the card stays as it was.
-    if (later && finish && SAVE_TOOLS.has(finish.name) && !userAskedToSave(input)) {
-      if (last) return { kind: "failed", reason: "save_not_asked", turns };
+    // A save asked for earlier counts while it was never carried out
+    // (unmetSaveAsk); one already offered as a save card is not offered twice.
+    // A save the user already has (same name, same lines) is not made again.
+    const saveRefusal = later && finish && SAVE_TOOLS.has(finish.name)
+      ? !userAskedToSave(input)
+        ? earlierSaveOffered(input.recentTurns)
+          ? "Not done: a save card for the user's earlier ask was already offered in this conversation, and a tap on it " +
+            "saves. No second one. Do what they asked now: change the card, add the food, or reply."
+          : "Not done: the user did not ask to save anything, so no save card. Do what they asked: change the card, add " +
+            "the food, or reply."
+        : await duplicateSaveRefusal(finish, input.card ?? [], deps)
+      : null;
+    if (saveRefusal && finish) {
+      if (last) {
+        // A duplicate on the last turn: the user still gets the true answer.
+        const dup = saveRefusal.startsWith(DUPLICATE_SAVE_LEAD) ? duplicateSaveLine(finish) : null;
+        return dup ? { kind: "reply", text: dup, turns } : { kind: "failed", reason: "save_not_asked", turns };
+      }
       for (const u of uses) {
         if (!isRead(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u)) {
-          rejected.set(u, "Not done: the user did not ask to save anything, so no save card. Do what they asked: change the " +
-            "card, add the food, or reply.");
+          rejected.set(u, saveRefusal);
         }
       }
       plan = null;
@@ -1538,6 +1577,8 @@ async function finishWith(
         estimated: l.source === "estimate" || l.source === "web",
       })),
       log_now: args.log_now === true,
+      // Only the later tool has it (SAVE_CARD_AS_MEAL_TOOL_LATER).
+      ...(args.log_now === true && isMeal(args.meal_type) ? { meal_type: args.meal_type } : {}),
       summary: summary || `${name}, ${card.length} items. Want it in My Meals?`,
     }, seen);
     return { kind: "create", create: { tool: CREATE_CUSTOM_MEAL_TOOL.name, input: createInput }, turns };
@@ -1648,17 +1689,139 @@ function asksToSave(text: string): boolean {
   return false;
 }
 
-/** Did the user ask for a save? In this message, or in their message just
- *  before it when Drona then asked them something ("save it" -> "save it as
- *  Dinner?" -> "yes"). Not any earlier turn: one "save" early in a thread does
- *  not leave the gate open for the rest of it. "keep" and "remember" count only
- *  as "keep it as / for": "keep the rice" is not a save. */
+/** A Drona turn that is a save card's line: the app records a save card's
+ *  summary as Drona's turn, and every summary code writes names My Meals
+ *  ("... Want it in My Meals?", SAVE_CARD_TAIL). */
+const SAVE_OFFER = /\bmy meals\b|\bsaved? card\b|\btap (?:the |this |it )?(?:save )?(?:card )?to (?:save|keep)\b/i;
+
+/** A Drona turn that says nothing was saved is not an offer of one. */
+const NOT_SAVED = /\b(?:not|n['’]t|never|nothing)\b[^.?!]{0,40}\bsav(?:e|ed|ing)\b/i;
+
+/** The user saying a save is done ("I saved it", "already saved"). */
+const SAVE_DONE = /\b(?:i|i['’]ve|i have|already|just)\s+(?:just\s+|already\s+)?saved\b/i;
+
+/** The user's newest earlier message that asked for a save, when no save card
+ *  came after it (no Drona turn offered one, and the user did not say they
+ *  saved it). Null when every ask was carried out, or there was none. */
+export function unmetSaveAsk(turns: { role: "user" | "drona"; text: string }[] | undefined): string | null {
+  const ts = turns ?? [];
+  for (let i = ts.length - 1; i >= 0; i--) {
+    const t = ts[i];
+    if (t.role !== "user" || !asksToSave(t.text)) continue;
+    const after = ts.slice(i + 1);
+    const met = after.some((x) =>
+      x.role === "drona" ? SAVE_OFFER.test(x.text) && !NOT_SAVED.test(x.text) : SAVE_DONE.test(x.text)
+    );
+    return met ? null : t.text;
+  }
+  return null;
+}
+
+/** An earlier save ask that a save card already answered. */
+function earlierSaveOffered(turns: { role: "user" | "drona"; text: string }[] | undefined): boolean {
+  return (turns ?? []).some((t) => t.role === "user" && asksToSave(t.text)) && unmetSaveAsk(turns) === null;
+}
+
+/** Did the user ask for a save? In this message, or earlier in the thread
+ *  when that ask was never carried out (unmetSaveAsk): "save it" -> "save it
+ *  as Dinner?" -> "yes", or "save it" -> a reply that saved nothing -> "did
+ *  you save it?". An ask a save card answered does not keep the gate open.
+ *  "keep" and "remember" count only as "keep it as / for": "keep the rice" is
+ *  not a save. */
 export function userAskedToSave(input: Pick<FoodAgentInput, "text" | "recentTurns">): boolean {
-  if (asksToSave(input.text)) return true;
-  const turns = input.recentTurns ?? [];
-  const last = turns.at(-1);
-  const before = turns.at(-2);
-  return last?.role === "drona" && /\?\s*$/.test(last.text.trim()) && before?.role === "user" && asksToSave(before.text);
+  return asksToSave(input.text) || unmetSaveAsk(input.recentTurns) !== null;
+}
+
+/** Ends a save card's line that has none of SAVE_OFFER's words. */
+export const SAVE_CARD_TAIL = "Tap the card to keep it in My Meals.";
+
+/** The save card's one line with the agent's reply in front: the reply, then
+ *  the card's own summary when both fit the app's 300 characters, else the
+ *  reply and a short tail saying what the tap does. */
+export function saveCardLine(reply: string, summary: string): string {
+  const both = [reply, summary].filter(Boolean).join(" ");
+  if (both.length <= 300) return both;
+  if (SAVE_OFFER.test(reply)) return reply.slice(0, 300);
+  return `${reply.slice(0, 300 - SAVE_CARD_TAIL.length - 1).trim()} ${SAVE_CARD_TAIL}`;
+}
+
+/** A name for "the same saved meal": the dish name without a recipe written
+ *  into it, words only (userFoodMemory.ts memoryKey's normalisation). */
+export function savedNameKey(name: string): string {
+  return dishName(name).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** The lines a save would hold, as name and calories. */
+function saveLinesOf(u: ToolUse, card: CardLine[]): { name: string; lines: { name: string; kcal: number }[] } | null {
+  const a = u.input ?? {};
+  const name = typeof a.name === "string" ? a.name : "";
+  if (!name.trim()) return null;
+  if (u.name === SAVE_CARD_AS_MEAL_TOOL.name) return { name, lines: card.map((l) => ({ name: l.food_name, kcal: l.kcal })) };
+  if (u.name === CREATE_CUSTOM_FOOD_TOOL.name) {
+    const k = num(a.kcal);
+    return k === null ? null : { name, lines: [{ name, kcal: k }] };
+  }
+  const items = Array.isArray(a.items) ? a.items : [];
+  const lines = items.flatMap((raw) => {
+    const o = (raw ?? {}) as Record<string, unknown>;
+    const n = typeof o.name === "string" ? o.name : typeof o.food_name === "string" ? o.food_name : "";
+    const k = num(o.kcal);
+    return n && k !== null ? [{ name: n, kcal: k }] : [];
+  });
+  return lines.length ? { name, lines } : null;
+}
+
+/** Same lines: the same foods (by name, brackets dropped), each within 2 kcal
+ *  or 2%, in any order. */
+function sameLines(a: { name: string; kcal: number }[], b: { name: string; kcal: number }[]): boolean {
+  if (a.length !== b.length || a.length === 0) return false;
+  const key = (l: { name: string; kcal: number }) => savedNameKey(lineKey(l.name));
+  const left = [...b];
+  return a.every((l) => {
+    const i = left.findIndex((r) => key(r) === key(l) && Math.abs(r.kcal - l.kcal) <= Math.max(2, l.kcal * 0.02));
+    if (i < 0) return false;
+    left.splice(i, 1);
+    return true;
+  });
+}
+
+/** The user's saved meal this save would repeat: the same name and the same
+ *  lines. Null when there is none. */
+export function savedMealAlready(
+  u: ToolUse | { name: string; input: Record<string, unknown> },
+  card: CardLine[],
+  saved: SavedMealForParse[],
+): SavedMealForParse | null {
+  const s = saveLinesOf(u as ToolUse, card);
+  if (!s) return null;
+  const k = savedNameKey(s.name);
+  return saved.find((m) => {
+    if (savedNameKey(m.name) !== k) return false;
+    const theirs = m.items.length ? m.items.map((i) => ({ name: i.food_name, kcal: i.kcal })) : [{ name: m.name, kcal: m.kcal }];
+    return sameLines(s.lines, theirs);
+  }) ?? null;
+}
+
+const DUPLICATE_SAVE_LEAD = "Not done: the user already has";
+
+/** The refusal the agent reads for a save the user already has, or null. */
+async function duplicateSaveRefusal(u: ToolUse, card: CardLine[], deps: Pick<FoodAgentDeps, "savedMeals">): Promise<string | null> {
+  let saved: SavedMealForParse[] = [];
+  try {
+    saved = await deps.savedMeals();
+  } catch {
+    return null;
+  }
+  const hit = savedMealAlready(u, card, saved);
+  if (!hit) return null;
+  return `${DUPLICATE_SAVE_LEAD} ${JSON.stringify(hit.name)} in My Meals with these same foods, so no second save card. ` +
+    "Reply that it is in My Meals already, and do whatever else they asked.";
+}
+
+/** What the user reads when the last turn tried to save a meal they have. */
+function duplicateSaveLine(u: ToolUse): string {
+  const name = typeof u.input?.name === "string" && u.input.name.trim() ? u.input.name.trim().slice(0, 80) : "That meal";
+  return `${name} is in My Meals already, with these same foods.`;
 }
 
 /** Reads whose results a later-message agent acts on: a finish in the same
@@ -2252,10 +2415,16 @@ export function checkedLater(out: FoodAgentOutcome, input: Pick<FoodAgentInput, 
     return falseAgentClaim(out.text, { cardChanged: false }) ? { ...out, text: honestLine(cardOnScreen) } : out;
   }
   if (out.kind === "create") {
-    const s = typeof out.create.input.summary === "string" ? out.create.input.summary : "";
-    if (!s || !falseAgentClaim(s, { cardChanged: false })) return out;
+    const raw = typeof out.create.input.summary === "string" ? out.create.input.summary : "";
     const name = typeof out.create.input.name === "string" ? out.create.input.name : "this";
-    return { ...out, create: { ...out.create, input: { ...out.create.input, summary: `${name}. Want it in My Meals?` } } };
+    const s = raw && falseAgentClaim(raw, { cardChanged: false }) ? `${name}. Want it in My Meals?` : raw;
+    // The reply sent beside the save card ("No, it was not saved before. Here
+    // it is."): the app shows one line for a save card, its summary, so the
+    // reply leads it. A reply that claims a save or a log is dropped.
+    const reply = replyText && !falseAgentClaim(replyText, { cardChanged: false }) ? replyText : "";
+    const summary = reply ? saveCardLine(reply, s) : s;
+    if (summary === raw && !reply) return out;
+    return { ...out, create: { ...out.create, input: { ...out.create.input, summary } }, ...(reply ? { reply } : {}) };
   }
   if (out.kind !== "log") return out;
   const p = out.result.parsed;
