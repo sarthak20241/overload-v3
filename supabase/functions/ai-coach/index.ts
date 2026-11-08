@@ -119,6 +119,7 @@ import {
   type DayClock,
   listLoggedMeals,
   type LoggedMealsStore,
+  LOGGED_STEP4_COLS,
   type MealRowIn,
   todayFor,
   weekdayOf,
@@ -1061,7 +1062,7 @@ function loggedMealsStore(userClient: SupabaseClient): LoggedMealsStore {
         .lte("logged_at", endIso)
         .order("logged_at", { ascending: true })
         .limit(40);
-      let { data, error } = await read(`${cols}, origin`);
+      let { data, error } = await read(`${cols}, ${LOGGED_STEP4_COLS}`);
       if (error && stepFourColumnMissing(error)) ({ data, error } = await read(cols));
       if (error) return { error: error.message };
       return { rows: (data ?? []) as MealRowIn[] };

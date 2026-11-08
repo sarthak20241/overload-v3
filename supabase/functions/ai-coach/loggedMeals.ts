@@ -14,6 +14,7 @@
  */
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { dayWindow } from "./autoLog.ts";
+import { parseRecipe, type RecipePart } from "../_shared/foodOrigin.ts";
 
 export const LOGGED_MEAL_TYPES = ["breakfast", "lunch", "dinner", "snack"] as const;
 export type LoggedMealType = typeof LOGGED_MEAL_TYPES[number];
@@ -157,6 +158,11 @@ export interface MealRowIn {
   meal_entries?: unknown;
 }
 
+/** The step-4 columns the diary read asks for when the database has them
+ *  (migration 20261107120000): a line's origin, and a dish's parts for
+ *  copy_lines. index.ts retries without them on a database that lacks them. */
+export const LOGGED_STEP4_COLS = "origin, recipe";
+
 export interface LoggedItem {
   name: string;
   quantity: number;
@@ -173,6 +179,8 @@ export interface LoggedItem {
   fiber_g?: number | null;
   /** meal_entries.origin (step 4), when the database has it. */
   origin?: string | null;
+  /** meal_entries.recipe: a dish's parts, on a recipe line only (full read). */
+  recipe?: RecipePart[];
 }
 
 export interface LoggedMeal {
@@ -265,6 +273,10 @@ export function shapeLoggedMeals(
           item.food_id = typeof e.food_id === "string" ? e.food_id : null;
           item.source = typeof e.source === "string" ? e.source : null;
           if (typeof e.origin === "string") item.origin = e.origin;
+          // Parts only on a recipe line: on any other line they would no
+          // longer add up to it.
+          const recipe = item.source === "recipe" ? parseRecipe(e.recipe) : null;
+          if (recipe) item.recipe = recipe;
           item.fiber_g = e.fiber_g === null || e.fiber_g === undefined || !Number.isFinite(Number(e.fiber_g)) ? null : r1(Number(e.fiber_g));
         }
         return item;

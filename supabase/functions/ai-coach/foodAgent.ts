@@ -2194,13 +2194,17 @@ function threadSourceLine(l: ThreadLine): SourceLine {
  *  would fail, and the app reads any other value as "estimate" anyway
  *  (lib/dietData.ts). A line with no grams stays at 0 = no weight known: the
  *  app and the auto-log both write that as grams_logged null (0069). */
-function diarySourceLine(r: Record<string, unknown>): SourceLine | null {
+export function diarySourceLine(r: Record<string, unknown>): SourceLine | null {
   const name = typeof r.name === "string" ? r.name.trim() : "";
   const kcal = typeof r.kcal === "number" && Number.isFinite(r.kcal) ? r.kcal : null;
   if (!name || kcal === null) return null;
   const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
   const src = r.source;
-  const known = src === "catalog" || src === "off" || src === "fatsecret" || src === "web" || src === "estimate" || src === "manual";
+  // "recipe": a dish built from its parts (recipe.ts). It keeps that source
+  // and its parts, so a copied dish is still explained and can be rebuilt.
+  const known = src === "catalog" || src === "off" || src === "fatsecret" || src === "web" || src === "estimate" || src === "manual" ||
+    src === "recipe";
+  const recipe = src === "recipe" ? parseRecipe(r.recipe) : null;
   const unknownSource = src !== null && src !== undefined && !known;
   const source: ParsedItem["source"] = known ? src : unknownSource ? "estimate" : "manual";
   const food_id = typeof r.food_id === "string" ? r.food_id : null;
@@ -2227,6 +2231,7 @@ function diarySourceLine(r: Record<string, unknown>): SourceLine | null {
       assumption: unknownSource ? `Copied from your diary, where its source reads "${String(src).slice(0, 40)}". Check this one.` : null,
       confidence: unknownSource ? "medium" : "high",
       meal_type: meal,
+      ...(recipe ? { recipe } : {}),
     }),
   };
 }
