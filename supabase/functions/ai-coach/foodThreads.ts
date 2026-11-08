@@ -100,6 +100,9 @@ export interface StoredThread {
    *  newest stored turn, and turn 1's text. */
   last_turn?: ThreadTurn | null;
   first_text?: string | null;
+  /** The turn-1 read failed (so first_text null means "not read", not "no
+   *  first message"). */
+  first_text_error?: string | null;
 }
 
 /** What the app says about its thread with a message (body.thread). */
@@ -411,6 +414,10 @@ export interface ThreadHit {
   score: number;
 }
 
+/** search_threads: turn hits read per round, and the most one thread counts. */
+export const SEARCH_TURN_ROWS = 300;
+export const SEARCH_TURNS_PER_THREAD = 20;
+
 /** A search word: lower case letters and digits only, so it is safe inside a
  *  PostgREST filter. */
 export function searchWords(query: string): string[] {
@@ -519,6 +526,7 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
               ? { seq: Number(seq[0].seq), role: seq[0].role === "drona" ? "drona" as const : "user" as const, text: String(seq[0].text ?? "") }
               : null,
             first_text: !firstRes || firstRes.error || typeof firstRes.data?.[0]?.text !== "string" ? null : firstRes.data[0].text,
+            first_text_error: firstRes?.error ? String(firstRes.error.message ?? "error").slice(0, 160) : null,
           }
           : {}),
         cards: list.map((c) => {
@@ -644,13 +652,25 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
       // Threads are scored on their turns' text first; cards and first
       // messages are read for the top `limit` threads only, so the card read
       // stays small however many cards the user's threads hold.
-      const turns = await admin.from("food_thread_turns").select("thread_id, text").in("thread_id", ids)
-        .or(words.map((w) => `text.ilike.%${w}%`).join(",")).limit(300);
-      if (turns.error) throw new Error(`food_thread_turns: ${turns.error.message}`);
+      // At most SEARCH_TURNS_PER_THREAD hits per thread count: a round that
+      // fills the row limit is read again without the threads already at the
+      // cap, so one chatty thread cannot hide the others (at most 3 rounds).
       const turnsBy = new Map<string, string[]>();
-      for (const r of (turns.data ?? []) as Record<string, unknown>[]) {
-        const th = String(r.thread_id);
-        turnsBy.set(th, [...(turnsBy.get(th) ?? []), String(r.text ?? "")]);
+      const capped = new Set<string>();
+      for (let round = 0; round < 3; round++) {
+        const open = ids.filter((id) => !capped.has(id));
+        if (!open.length) break;
+        const turns = await admin.from("food_thread_turns").select("thread_id, text").in("thread_id", open)
+          .or(words.map((w) => `text.ilike.%${w}%`).join(",")).limit(SEARCH_TURN_ROWS);
+        if (turns.error) throw new Error(`food_thread_turns: ${turns.error.message}`);
+        const rows = (turns.data ?? []) as Record<string, unknown>[];
+        for (const r of rows) {
+          const th = String(r.thread_id);
+          const got = turnsBy.get(th) ?? [];
+          if (got.length < SEARCH_TURNS_PER_THREAD) turnsBy.set(th, [...got, String(r.text ?? "")]);
+          if ((turnsBy.get(th)?.length ?? 0) >= SEARCH_TURNS_PER_THREAD) capped.add(th);
+        }
+        if (rows.length < SEARCH_TURN_ROWS) break;
       }
       // Stable sort: equal scores keep list order, newest first.
       const top = list.map((t) => ({ t, score: wordScore(turnsBy.get(String(t.id)) ?? [], words) }))
@@ -957,7 +977,9 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
         .sort((a, b) => b[1].last_at.localeCompare(a[1].last_at));
       // The same order as the database store: turns' text first, then the
       // top threads' cards.
-      const top = mine.map(([id, t]) => ({ id, t, score: wordScore(t.turns.map((x) => x.text), words) }))
+      const hitsOf = (t: { turns: { text: string }[] }) =>
+        t.turns.map((x) => x.text).filter((x) => words.some((w) => x.toLowerCase().includes(w))).slice(0, SEARCH_TURNS_PER_THREAD);
+      const top = mine.map(([id, t]) => ({ id, t, score: wordScore(hitsOf(t), words) }))
         .filter((x) => x.score > 0).sort((a, b) => b.score - a.score).slice(0, opts.limit);
       return top.map(({ id, t, score }) => {
         const lines = [...cards].filter(([, c]) => c.thread_id === id && c.kind === "meal")

@@ -303,8 +303,10 @@ const partWords = (s: string) => key(s).split(" ").filter(Boolean).map((w) => (w
 
 /**
  * The remembered part a part with no amount stands for (FOOD_WARM_MEMORY):
- * the same name, else the one part whose words hold all of the other's
- * ("paneer" and "low fat paneer"). Two that fit, or none: null, so the part
+ * the same name, else the one part with the same set of words (plurals
+ * folded, any order: "onions" and "onion", "red chilli" and "chilli red").
+ * Never a part that only shares some words: "butter" is not "peanut butter",
+ * and "oil" is not "mustard oil". Two that fit, or none: null, so the part
  * takes the table's amount as before. Only a part with a weight counts.
  */
 export function rememberedPart(recipe: RecipePart[] | null | undefined, name: string): RecipePart | null {
@@ -313,11 +315,11 @@ export function rememberedPart(recipe: RecipePart[] | null | undefined, name: st
   const same = parts.filter((p) => key(p.name) === k);
   if (same.length === 1) return same[0];
   if (same.length > 1) return null;
-  const said = partWords(name);
-  if (!said.length) return null;
+  const said = new Set(partWords(name));
+  if (!said.size) return null;
   const fits = parts.filter((p) => {
-    const w = partWords(p.name);
-    return said.every((x) => w.includes(x)) || w.every((x) => said.includes(x));
+    const w = new Set(partWords(p.name));
+    return w.size === said.size && [...said].every((x) => w.has(x));
   });
   return fits.length === 1 ? fits[0] : null;
 }

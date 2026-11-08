@@ -624,8 +624,27 @@ export async function warmThreadFrom(mem: ThreadTurnsMemory, showFirst = true): 
 }
 
 /** read_thread is worth offering: the thread has turns the messages do not. */
-export function hasOlderTurns(warm: WarmThread | null | undefined, recentTurns: unknown[] | undefined): boolean {
-  return !!warm && warm.turns > (recentTurns?.length ?? 0);
+export function hasOlderTurns(
+  warm: WarmThread | null | undefined,
+  recentTurns: { role: "user" | "drona"; text: string }[] | undefined,
+  text?: string,
+): boolean {
+  return !!warm && warm.turns > storedRecentCount(recentTurns, text);
+}
+
+/**
+ * How many of the app's recent turns are stored turns. The app copies its
+ * turns BEFORE it adds the message being sent (app/(app)/nutrition.tsx
+ * `const turns = turnsRef.current.slice(); pushTurn('user', t)`), so the
+ * message in flight is not among them and every recent turn is a stored one.
+ * A client that did send it as its last turn would make the count one too
+ * high, so a last user turn that IS this message is not counted.
+ */
+export function storedRecentCount(recentTurns: { role: "user" | "drona"; text: string }[] | undefined, text?: string): number {
+  const turns = recentTurns ?? [];
+  const last = turns.at(-1);
+  const inFlight = !!text && last?.role === "user" && flat(last.text) === flat(text);
+  return turns.length - (inFlight ? 1 : 0);
 }
 
 /**
@@ -637,13 +656,15 @@ export function warmThreadText(
   warm: WarmThread | null | undefined,
   recentTurns: { role: "user" | "drona"; text: string }[] | undefined,
   canReadThread: boolean,
+  /** The message being answered (storedRecentCount). */
+  text?: string,
 ): string | null {
   if (!warm) return null;
   const parts: string[] = [];
   if (warm.first && !inRecent(warm.first, recentTurns)) {
     parts.push(`First message of this thread: ${JSON.stringify(flat(warm.first).slice(0, QUOTE_CHARS))}`);
   }
-  const kept = recentTurns?.length ?? 0;
+  const kept = storedRecentCount(recentTurns, text);
   if (canReadThread && warm.turns > kept) {
     parts.push(
       `This thread has ${warm.turns} earlier turns; the messages above carry the last ${kept}. read_thread reads the ` +

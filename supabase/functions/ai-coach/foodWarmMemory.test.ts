@@ -27,7 +27,7 @@ import {
 } from "./foodAgent.ts";
 import type { CardLine } from "./foodContext.ts";
 import type { ParsedItem, ParseMealResult, ParseStep } from "./parseMeal.ts";
-import { BUILD_RECIPE_TOOL, RECIPE_NOTE } from "./recipe.ts";
+import { BUILD_RECIPE_TOOL, RECIPE_NOTE, rememberedPart } from "./recipe.ts";
 import { matchMemory, type MemoryEntry } from "./userFoodMemory.ts";
 import { memoryThreadStore, supabaseThreadStore, threadForAgent, type ThreadHit, type ThreadTurn } from "./foodThreads.ts";
 import {
@@ -42,6 +42,7 @@ import {
   recallFoods,
   RECIPE_MEMORY_NOTE,
   firstMessageSafe,
+  hasOlderTurns,
   threadTurnsMemory,
   warmThreadText,
   warmThreadFrom,
@@ -232,15 +233,45 @@ Deno.test("agent: recall_food with no name is refused, and the run goes on", asy
   assertStringIncludes(JSON.stringify(bodies[1].messages), "recall_food needs a food name.");
 });
 
-Deno.test("agent: recall_food in the same turn as a card change holds the change until the agent has read it", async () => {
+const EDITED_RICE: ParseMealResult = {
+  parsed: { meal_type: "lunch", items: [line("Jeera rice", 85.5, { grams: 50, quantity: 50, serving_label: "g" })], drona_line: "", corrects_previous: true },
+  declined: null, usage: USAGE, tool_calls: [], steps: [], iterations: 1, tier: "precise",
+};
+
+for (const read of [
+  { name: "recall_food", input: { name: "jeera rice" } },
+  { name: "read_thread", input: { from_seq: 1 } },
+  { name: "search_threads", input: { query: "jeera rice" } },
+]) {
+  Deno.test(`agent: ${read.name} in the same turn as edit_line never holds it: the edit lands in that turn`, async () => {
+    const bodies: Record<string, unknown>[] = [];
+    let edits = 0;
+    const out = await runFoodAgent(
+      { text: "the rice was 50 g", defaultMeal: "lunch", later: true, card: CARD, recentTurns: appCopy(5, 14), warmThread: { first: null, turns: 14 } },
+      base(bodies, [
+        [read, { name: "edit_line", input: { line_id: "L1", change: "50 g" } }],
+        [{ name: "reply", input: { text: "should not be reached" } }],
+      ], {
+        warm: { memory: async () => foods(), readThread: async () => [], searchThreads: async () => [] },
+        editLine: async () => { edits++; return EDITED_RICE; },
+      }),
+    );
+    assertEquals(edits, 1);
+    assertEquals(bodies.length, 1); // one model call: no held turn
+    assertEquals(out.kind, "log");
+    if (out.kind === "log") assertEquals(out.result.parsed!.items.map((i) => [i.food_name, i.grams]), [["Jeera rice", 50], ["Dal", 150]]);
+  });
+}
+
+Deno.test("agent: a read that does hold today (find_label) still holds a same-turn edit beside a warm read", async () => {
   const bodies: Record<string, unknown>[] = [];
   let edits = 0;
   await runFoodAgent(
-    { text: "rice as usual", defaultMeal: "lunch", later: true, card: CARD },
+    { text: "check the rice label, it was 50 g", defaultMeal: "lunch", later: true, card: CARD },
     base(bodies, [
-      [{ name: "recall_food", input: { name: "jeera rice" } }, { name: "edit_line", input: { line_id: "L1", change: "150 g" } }],
+      [{ name: "find_label", input: { line_id: "L1" } }, { name: "recall_food", input: { name: "jeera rice" } }, { name: "edit_line", input: { line_id: "L1", change: "50 g" } }],
       [{ name: "reply", input: { text: "ok" } }],
-    ], { warm: { memory: async () => foods() }, editLine: async () => { edits++; return { parsed: null, declined: null, usage: USAGE, tool_calls: [], steps: [], iterations: 1 } as unknown as ParseMealResult; } }),
+    ], { warm: { memory: async () => foods() }, findLabel: async () => null, editLine: async () => { edits++; return EDITED_RICE; } }),
   );
   assertEquals(edits, 0);
   assertStringIncludes(JSON.stringify(bodies[1].messages), "Not applied yet: this turn also reads data.");
@@ -726,10 +757,13 @@ Deno.test({ name: "agent: build_recipe never waits on a slow memory load (3 s he
   const log: string[] = [];
   const t0 = Date.now();
   const slow = () => new Promise<RecallFood[]>((r) => setTimeout(() => r(SABJI_MEMORY), 3000));
+  const events: unknown[] = [];
   const out = await runFoodAgent(
     { text: "paneer sabji again", defaultMeal: "lunch", later: true, first: true },
-    base([], [[SABJI]], { parseFood: fakeParse(log), buildRecipe: true, warm: { memory: slow } }),
+    base([], [[SABJI]], { parseFood: fakeParse(log), buildRecipe: true, warm: { memory: slow }, onEvent: (e) => events.push(e) }),
   );
+  // The trace says the wait ran out.
+  assertEquals(events.filter((e) => (e as { tool: string }).tool === "recipe_memory"), [{ tool: "recipe_memory", timed_out: true, waited_ms: 500 }]);
   assert(Date.now() - t0 < 2000, String(Date.now() - t0));
   assertEquals(out.kind, "log");
   // Built as with the switch off: the table's oil, the parse's onion serving.
@@ -780,17 +814,23 @@ Deno.test("prompt truth: search_threads names copy_lines only when it is offered
 });
 
 /** A PostgREST-like fake over in-memory tables, recording every filter. */
-function fakeAdmin(tables: Record<string, Record<string, unknown>[]>) {
+function fakeAdmin(
+  tables: Record<string, Record<string, unknown>[]>,
+  /** A query to fail, judged by its table and its ops. */
+  failWhen: (table: string, ops: { op: string; args: unknown[] }[]) => boolean = () => false,
+) {
   const log: { table: string; op: string; args: unknown[] }[] = [];
   const db = {
     from(table: string) {
       let rows = [...(tables[table] ?? [])];
       let lim = Infinity;
+      const mine: { op: string; args: unknown[] }[] = [];
       const q: Record<string, unknown> = {};
-      const chain = (op: string, f: (...a: any[]) => void) => (...args: unknown[]) => { log.push({ table, op, args }); f(...args); return q; };
+      const chain = (op: string, f: (...a: any[]) => void) => (...args: unknown[]) => { log.push({ table, op, args }); mine.push({ op, args }); f(...args); return q; };
       Object.assign(q, {
         select: chain("select", () => {}),
         eq: chain("eq", (c: string, v: unknown) => { rows = rows.filter((r) => r[c] === v); }),
+        not: chain("not", () => {}),
         neq: chain("neq", (c: string, v: unknown) => { rows = rows.filter((r) => r[c] !== v); }),
         gte: chain("gte", (c: string, v: string) => { rows = rows.filter((r) => String(r[c]) >= v); }),
         in: chain("in", (c: string, v: unknown[]) => { rows = rows.filter((r) => v.includes(r[c])); }),
@@ -804,7 +844,8 @@ function fakeAdmin(tables: Record<string, Record<string, unknown>[]>) {
           );
         }),
         maybeSingle: () => { log.push({ table, op: "maybeSingle", args: [] }); return Promise.resolve({ data: rows[0] ?? null, error: null }); },
-        then: (res: (v: unknown) => unknown) => Promise.resolve({ data: rows.slice(0, lim), error: null }).then(res),
+        then: (res: (v: unknown) => unknown) =>
+          Promise.resolve(failWhen(table, mine) ? { data: null, error: { message: "boom" } } : { data: rows.slice(0, lim), error: null }).then(res),
       });
       return q;
     },
@@ -832,4 +873,61 @@ Deno.test("supabaseThreadStore.searchThreads: turns scored first; card lines rea
   assertFalse(log.some((l) => l.table === "food_card_lines" && l.op === "limit"));
   assertEquals(hits[0].lines.length, 4);
   assert(hits[0].first?.startsWith("lunch was paneer sabji"));
+});
+
+Deno.test("rememberedPart: the same word set only, never a food that shares one word", () => {
+  const parts = [{ name: "peanut butter", grams: 16 }, { name: "mustard oil", grams: 10 }, { name: "onion", grams: 40 }, { name: "red chilli", grams: 2 }];
+  assertEquals(rememberedPart(parts, "butter"), null);
+  assertEquals(rememberedPart(parts, "oil"), null);
+  assertEquals(rememberedPart(parts, "groundnut oil"), null);
+  assertEquals(rememberedPart(parts, "onions")?.grams, 40);
+  assertEquals(rememberedPart(parts, "chilli red")?.grams, 2);
+  assertEquals(rememberedPart(parts, "Mustard Oil")?.grams, 10);
+});
+
+Deno.test("the app sends its turns without the message in flight: nothing older means no read_thread and no count line", async () => {
+  // As the app sends them (nutrition.tsx copies turnsRef before pushTurn):
+  // 10 stored turns, the same 10 in recent_turns.
+  const recent = appCopy(1, 10);
+  assertFalse(hasOlderTurns({ first: null, turns: 10 }, recent, "make it 2 rotis"));
+  assertEquals(warmThreadText({ first: null, turns: 10 }, recent, true, "make it 2 rotis"), null);
+  // A client that also sent the message in flight as its last turn: that turn
+  // is not a stored one, so the one stored turn it pushed out is older.
+  const withInFlight = [...appCopy(2, 10), { role: "user" as const, text: "make it 2 rotis" }];
+  assert(hasOlderTurns({ first: null, turns: 10 }, withInFlight, "make it 2 rotis"));
+  assertStringIncludes(warmThreadText({ first: null, turns: 10 }, withInFlight, true, "make it 2 rotis")!, "the messages above carry the last 9");
+  const bodies: Record<string, unknown>[] = [];
+  await runFoodAgent(
+    { text: "make it 2 rotis", defaultMeal: "lunch", later: true, card: CARD, recentTurns: recent, warmThread: { first: null, turns: 10 } },
+    base(bodies, [[{ name: "reply", input: { text: "ok" } }]], { warm: { readThread: async () => [] } }),
+  );
+  assertFalse(toolNames(bodies[0]).includes("read_thread"));
+  assertFalse(firstUser(bodies[0]).includes("earlier turns"));
+});
+
+Deno.test("supabaseThreadStore.load: a failed turn-1 read is said apart from no first message", async () => {
+  const tables = {
+    food_threads: [{ id: "t1", user_id: "u1", status: "open", last_at: "2026-11-08T10:00:00Z" }],
+    food_cards: [],
+    food_thread_turns: [{ thread_id: "t1", seq: 1, role: "user", text: "lunch" }, { thread_id: "t1", seq: 2, role: "drona", text: "ok" }],
+  };
+  const turnOne = (t: string, ops: { op: string; args: unknown[] }[]) => t === "food_thread_turns" && ops.some((o) => o.op === "eq" && o.args[0] === "seq" && o.args[1] === 1);
+  const bad = await supabaseThreadStore(fakeAdmin(tables, turnOne).db).load("u1", "t1", { turns: true });
+  assertEquals([bad?.first_text, bad?.first_text_error], [null, "boom"]);
+  const good = await supabaseThreadStore(fakeAdmin(tables).db).load("u1", "t1", { turns: true });
+  assertEquals([good?.first_text, good?.first_text_error], ["lunch", null]);
+});
+
+Deno.test("supabaseThreadStore.searchThreads: one chatty thread cannot hide the others (20 hits per thread)", async () => {
+  const threads = Array.from({ length: 6 }, (_, i) => ({ id: `t${i}`, user_id: "u1", started_at: "2026-11-05T08:00:00Z", last_at: `2026-11-07T0${i}:00:00Z` }));
+  // t0 holds 400 turns naming paneer, read first; t1..t5 one each.
+  const turns = [
+    ...Array.from({ length: 400 }, (_, k) => ({ thread_id: "t0", seq: k + 1, role: "user", text: `paneer ${k}` })),
+    ...threads.slice(1).map((t) => ({ thread_id: t.id, seq: 1, role: "user", text: "paneer sabji" })),
+  ];
+  const { db } = fakeAdmin({ food_threads: threads, food_thread_turns: turns, food_cards: [], food_card_lines: [] });
+  const hits = await supabaseThreadStore(db).searchThreads!("u1", ["paneer"], { excludeThreadId: null, sinceIso: "2026-10-20", limit: 5 });
+  assertEquals(hits.length, 5);
+  assert(hits.some((h) => h.thread_id === "t0"));
+  assert(hits.filter((h) => h.thread_id !== "t0").length >= 4, JSON.stringify(hits.map((h) => h.thread_id)));
 });

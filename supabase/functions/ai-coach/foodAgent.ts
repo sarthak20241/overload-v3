@@ -237,6 +237,8 @@ export type AgentEvent =
   | { tool: "restore_card"; ok: boolean; reason: "restored" | "not_found" | "card_open" | "no_thread" }
   | { tool: "read_card"; found: boolean; on_screen?: boolean }
   | { tool: "find_label"; found: boolean }
+  /** FOOD_WARM_MEMORY: build_recipe's wait for remembered parts ran out. */
+  | { tool: "recipe_memory"; timed_out: true; waited_ms: number }
   | {
     tool: "card_changes";
     /** Applied (ok) or sent back to the agent (a conflict, an unknown line). */
@@ -919,7 +921,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   const warm = later ? deps.warm : undefined;
   const canRecall = !!warm?.memory;
   // read_thread only when the thread has turns the messages above do not.
-  const canReadThread = !!warm?.readThread && hasOlderTurns(input.warmThread, input.recentTurns);
+  const canReadThread = !!warm?.readThread && hasOlderTurns(input.warmThread, input.recentTurns, input.text);
   const canSearch = !!warm?.searchThreads;
   const warmTools = [
     ...(canRecall ? [RECALL_FOOD_TOOL] : []),
@@ -936,7 +938,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   const canMatch = !!warm?.matches;
   const settled = canMatch && later && !!input.first && !cardOnScreen ? warm?.settledFirstParse?.() ?? null : null;
   const warmText = warm
-    ? { thread: warmThreadText(input.warmThread, input.recentTurns, canReadThread), matches: memoryMatchesBlock(settled) }
+    ? { thread: warmThreadText(input.warmThread, input.recentTurns, canReadThread, input.text), matches: memoryMatchesBlock(settled) }
     : {};
   const messages: unknown[] = historyMessages(input.recentTurns, openingText({ ...input, threadIndex: indexLine }, days, warmText));
   const lineTools = later && cardOnScreen && !cardMayBeCut(input.card);
@@ -1099,7 +1101,10 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     // turn goes back unapplied, so a copy the agent meant to make from what it
     // reads is not lost to an addition that ended the run first. Not on the
     // last turn: there the reads never run, and the finish stands.
-    if (later && !last && uses.some((u) => HOLD_READS.has(u.name) || warmNames.has(u.name))) {
+    // The warm reads (recall_food, read_thread, search_threads) never hold:
+    // they are read only, and nothing they return can change a card change
+    // the turn already asked for, so the turn applies as if they were absent.
+    if (later && !last && uses.some((u) => HOLD_READS.has(u.name))) {
       const held = uses.filter((u) => !isRead(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u));
       for (const u of held) {
         rejected.set(u, "Not applied yet: this turn also reads data. Look at what the reads return, then send every change, " +
@@ -2040,8 +2045,14 @@ async function applyCardChanges(
       const m = x.meal ?? (x.index !== null ? card[x.index].meal_type : null) ?? meal;
       // FOOD_WARM_MEMORY: the same dish in the user's memory lends its
       // remembered amounts to parts sent with none (recipe.ts buildRecipe).
-      // Waited for briefly: a slow load builds the dish as the switch off would.
-      const foods: RecallFood[] | null = deps.warm?.memory ? await briefly(deps.warm.memory(), RECIPE_MEMORY_WAIT_MS) : null;
+      // Waited for briefly: a slow load builds the dish as the switch off would,
+      // and the trace says the wait ran out.
+      let foods: RecallFood[] | null = null;
+      if (deps.warm?.memory) {
+        let landed = false;
+        foods = await briefly(deps.warm.memory().finally(() => { landed = true; }), RECIPE_MEMORY_WAIT_MS);
+        if (!landed) deps.onEvent?.({ tool: "recipe_memory", timed_out: true, waited_ms: RECIPE_MEMORY_WAIT_MS });
+      }
       const b = await buildRecipe(x.ask, m, parse, rememberedRecipe(foods, x.ask.name, memoryKey));
       return { x, ...b };
     })),

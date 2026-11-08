@@ -3509,7 +3509,13 @@ async function handleParseMealRequest(args: {
   const memoryEntriesOnce = () => sharedMemoryEntries(userClient);
   // With the newest turn and turn 1's text (load `turns`), so the warm reads
   // need no read of their own for them.
-  const sharedThreadLoad = warmThreadsOn ? threadStore!.load(userId, threadReq!.id, { turns: true }).catch(() => null) : undefined;
+  const sharedThreadLoad = warmThreadsOn
+    ? threadStore!.load(userId, threadReq!.id, { turns: true }).catch(() => null).then((t) => {
+      // A failed turn-1 read, said apart from a thread with no first message.
+      if (t?.first_text_error) fbTrace.step({ src: "router", tool: "food_threads_first", result: { ran: false, error: t.first_text_error } });
+      return t;
+    })
+    : undefined;
   const threadP: Promise<FoodBarThread | null> = FOOD_THREADS === "on" && threadReq && threadStore
     ? Promise.race([
       threadForAgent(threadStore, userId, threadReq, Date.now(), sharedThreadLoad).catch(() => null).then((th) => {
