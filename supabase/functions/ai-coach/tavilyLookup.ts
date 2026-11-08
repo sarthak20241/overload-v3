@@ -54,7 +54,7 @@ function foodState(item: WebFoodItem): Record<string, unknown> {
  *  none. "brand": null read to the reader as "a food with no brand", and it
  *  turned down every branded label for it (atta bread, 2026-11-08). Jev keeps
  *  foodState as it was trained on. */
-function readerFoodState(item: WebFoodItem): Record<string, unknown> {
+export function readerFoodState(item: WebFoodItem): Record<string, unknown> {
   const { brand, ...rest } = foodState(item);
   return brand ? { ...rest, brand } : rest;
 }
