@@ -1121,8 +1121,22 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     let plan: CardPlan | null = null;
     const rejected = new Map<ToolUse, string>();
     if (changes.length) {
+      // build_recipe parts must come from the user's words (partsNotFromUser).
+      // With FOOD_WARM_MEMORY, the parts of the user's own remembered dish of
+      // that name count as theirs too ("the same sabji, 80 g paneer this
+      // time" sends the remembered onion). Waited for briefly, as for the build.
+      let userWords = userWordsOf(input);
+      const recipeUses = changes.filter(isRecipe);
+      if (recipeUses.length && warm?.memory && userWords !== undefined) {
+        const foods = await briefly(warm.memory(), RECIPE_MEMORY_WAIT_MS);
+        const remembered = recipeUses.flatMap((u) => {
+          const name = typeof u.input?.name === "string" ? u.input.name : "";
+          return (rememberedRecipe(foods, name, memoryKey) ?? []).map((p) => p.name);
+        });
+        if (remembered.length) userWords = `${userWords} ${remembered.join(" ")}`;
+      }
       const p = planCardChanges(
-        input.card ?? [], changes, uses.some((u) => u.name === RESTORE_CARD_TOOL.name), recipeNoCard, input.text, userWordsOf(input),
+        input.card ?? [], changes, uses.some((u) => u.name === RESTORE_CARD_TOOL.name), recipeNoCard, input.text, userWords,
       );
       if (p.ok) plan = p;
       else {
