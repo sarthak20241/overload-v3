@@ -165,8 +165,15 @@ export interface FoodAgentInput {
  *  id names the line as the message found it, so a removal never renumbers
  *  what another call in the same turn points at. */
 export function cardLinesWithIds(card: CardLine[]): string[] {
-  return cardLines(card, { macros: true, sources: true }).map((l) => l.replace(/^(\d+)\.\s/, "[L$1] "));
+  // A line holding a number the user typed says so (CARD_NOTE_LATER): its
+  // number is explained and asked about, never re-guessed (planCardChanges).
+  return cardLines(card, { macros: true, sources: true }).map((l, i) =>
+    l.replace(/^(\d+)\.\s/, "[L$1] ") + (originOf(card[i]) === "user_typed" ? ` | ${USER_TYPED_MARK}` : "")
+  );
 }
+
+/** What a card line the user typed the numbers for ends with, for the agent. */
+export const USER_TYPED_MARK = "origin user_typed";
 
 /** "L2", "[L2]", "l2" or 2 to a card index (0-based), or null. */
 export function lineIndexOf(raw: unknown, cardLength: number): number | null {
@@ -706,8 +713,8 @@ export const FIRST_NOTE =
 
 /** Said to a later-message agent when a card is on screen. */
 export const CARD_NOTE_LATER =
-  "A meal card is on screen, not yet added to the diary. Each line has an id: [L1], [L2], ... Its numbers are the " +
-  "user's working copy: never re-guess them. Change it one line at a time:\n" +
+  "A meal card is on screen, not yet added to the diary. Each line has an id: [L1], [L2], ... and ends with where " +
+  "its numbers came from. A line the user does not mention never changes. Change it one line at a time:\n" +
   "- edit_line: one line changes (amount, size, preparation, which food it is, a number the user gives for it). Only " +
   "that line is worked out again.\n" +
   "- remove_lines: a line the user says they did not have, or that should not be there at all. When a dish already " +
@@ -718,8 +725,13 @@ export const CARD_NOTE_LATER =
   "already on the card (another roti, a second egg) is edit_line on its line with the new total, never add_lines.\n" +
   "Every line you do not name stays exactly as it is. Make all the changes a message needs in ONE turn, together: they " +
   "apply in a fixed order (edits, then removals, then additions). Never give one line two changes in the same turn. " +
-  "A question or complaint about the card with nothing to change is reply, using the card's own numbers (how a figure " +
-  "was reached, why a line is there), never a canned breakdown. A bare ok or thanks accepts the card as it is. The card " +
+  "When the user doubts or complains about a line's number: if it does not fit what the user said or what that food " +
+  "is, fix it in the SAME turn with edit_line on that line, giving their doubt as the change (the app works out the " +
+  "numbers), and reply saying what changed. If it fits, reply explaining it with that line's numbers and where they " +
+  "came from (how the figure was reached, why the line is there), never a canned breakdown, and change nothing. Never " +
+  "wait for another message to make a fix you already see. A line ending \"" + USER_TYPED_MARK + "\" holds the " +
+  "user's own number: explain where it came from and ask once whether to change it, and change it only when their " +
+  "message gives a new number. A bare ok or thanks accepts the card as it is. The card " +
   "has its own Add button: when the user wants it logged, reply that Add puts it in. save_card_as_meal only on an " +
   "explicit ask to keep the card as a reusable meal.";
 
@@ -1085,7 +1097,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     let plan: CardPlan | null = null;
     const rejected = new Map<ToolUse, string>();
     if (changes.length) {
-      const p = planCardChanges(input.card ?? [], changes, uses.some((u) => u.name === RESTORE_CARD_TOOL.name), recipeNoCard);
+      const p = planCardChanges(input.card ?? [], changes, uses.some((u) => u.name === RESTORE_CARD_TOOL.name), recipeNoCard, input.text);
       if (p.ok) plan = p;
       else {
         for (const u of changes) rejected.set(u, p.error);
@@ -1689,6 +1701,9 @@ export function planCardChanges(
   restoreInTurn = false,
   /** No card on screen, and the turn builds a dish: additions make the card. */
   emptyCardOk = false,
+  /** The user's message. A line holding the user's own number (origin
+   *  user_typed) changes only when it gives a new number. Absent: no check. */
+  userText?: string,
 ): CardPlan | { ok: false; error: string } {
   const tail = " Nothing was changed. Send the changes again, one change per line.";
   const fail = (why: string) => ({ ok: false as const, error: `${why}${tail}` });
@@ -1721,6 +1736,15 @@ export function planCardChanges(
       if (i === null) return fail(`edit_line names ${JSON.stringify(a.line_id ?? null)}, which is not on the card. ${ids}`);
       const change = typeof a.change === "string" ? a.change.trim() : "";
       if (!change) return fail(`edit_line on L${i + 1} says no change.`);
+      // The user's own number is theirs (CARD_NOTE_LATER): a doubt with no new
+      // number is answered, never re-guessed. use_label keeps their number
+      // (lineFromLabel), so it may still fill in the rest.
+      if (userText !== undefined && a.use_label !== true && originOf(card[i]) === "user_typed" && !givesNumber(userText)) {
+        return fail(
+          `L${i + 1} holds the user's own number (${USER_TYPED_MARK}) and their message gives no new number, so edit_line ` +
+            "may not change it. Leave it out, and in your reply say where that number came from and ask once whether to change it.",
+        );
+      }
       edits.push({ index: i, change: change.slice(0, 400), ...(a.use_label === true ? { useLabel: true } : {}) });
     } else if (u.name === REMOVE_LINES_TOOL.name) {
       const asked = Array.isArray(a.line_ids) ? a.line_ids : [];
@@ -1756,6 +1780,12 @@ export function planCardChanges(
   const twice = [...count].filter(([, n]) => n > 1).map(([i]) => `L${i + 1}`).sort();
   if (twice.length) return fail(`${twice.join(", ")} ${twice.length === 1 ? "has" : "have"} two changes in one turn.`);
   return { ok: true, edits, removes: [...removes].sort((a, b) => a - b), adds, summaries, ...(recipes.length ? { recipes } : {}) };
+}
+
+/** The message gives a number: digits, or a number word ("two", "half"). */
+export function givesNumber(text: string): boolean {
+  return /\d/.test(text) ||
+    /\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|half|quarter|double|twice|dozen)\b/i.test(text);
 }
 
 /** The card after one turn's changes: every line the agent did not name is
