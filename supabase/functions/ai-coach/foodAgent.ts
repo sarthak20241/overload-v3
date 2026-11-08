@@ -1231,7 +1231,22 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
       if (label) deps.onStatus?.(label);
       const replyText = replyUse && replyUse !== finish ? clean(typeof replyUse.input?.text === "string" ? replyUse.input.text : "") : "";
       if (plan) {
-        const out = await applyCardChanges(plan, input, { ...deps, warm }, parse, seen, turns, replyText, staged.items, labelLines);
+        const out = await applyCardChanges(plan, input, { ...deps, warm }, parse, seen, turns, replyText, staged.items, labelLines, !last);
+        // A change left a food at 0 kcal: nothing lands, and the agent fixes
+        // the amount next turn (zeroKcalLine).
+        if (out.kind === "bounce") {
+          const why = (u: ToolUse) =>
+            changes.includes(u) ? { error: out.error }
+            : copyRuns.has(u) ? copyResultForAgent(copyRuns.get(u)!, copyRuns.get(u)!.items.length > 0)
+            : { error: "Not done: the card changes in this turn were refused, so nothing happened. Fix them first." };
+          thisTurn.results = uses.map((u) => ({ name: u.name, summary: summarize(why(u)) }));
+          messages.push({ role: "assistant", content: blocks }, {
+            role: "user",
+            content: uses.map((u) => ({ type: "tool_result", tool_use_id: u.id, content: JSON.stringify(why(u)) })),
+          });
+          deps.onEvent?.({ tool: "card_changes", ok: false, edits: 0, edits_failed: 0, removed: 0, added: 0, error: out.error });
+          continue;
+        }
         // A save asked for in the same turn as card changes: the changes win,
         // and the user is told the save has not happened (a save card cannot
         // ride with a changed meal card).
@@ -2052,14 +2067,17 @@ export function keepLineIdentity(original: CardLine, edited: ParsedItem, change:
 
 const MASS_LABELS = new Set(["g", "gm", "gms", "gram", "grams", "ml"]);
 const singular = (w: string) => (w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w);
+/** Units that count pieces whatever the food ("3 piece", "2 pcs", "4 nos"). */
+const PIECE_UNITS = new Set(["piece", "pc", "pcs", "nos", "no", "each"]);
 
 /**
  * A card line worked out from a label find_label returned. The model does no
  * arithmetic: the line keeps its name (the user's brand and product), its
  * quantity and its unit, and takes its weight from the label when the unit is
- * the label's piece ("2 x slice" with a label piece of "1 slice", 25 g: 50 g);
- * a weight line keeps its grams; any other line keeps its weight. Every macro
- * is the label's per-100 at that weight.
+ * the label's piece ("2 x slice" with a label piece of "1 slice", 25 g: 50 g)
+ * or a plain piece unit ("3 x piece" with a label piece of "1 poori", 36 g:
+ * 108 g); a weight line keeps its grams; any other line keeps its weight.
+ * Every macro is the label's per-100 at that weight.
  */
 export function lineFromLabel(line: CardLine, label: LabelFound, mealDefault: MealType): ParsedItem {
   const unit = line.serving_label.trim().toLowerCase();
@@ -2069,9 +2087,10 @@ export function lineFromLabel(line: CardLine, label: LabelFound, mealDefault: Me
   let servingLabel = line.serving_label;
   if (MASS_LABELS.has(unit) && line.quantity > 0) {
     grams = line.quantity;
-  } else if (label.piece && pieceNoun && unitNoun === pieceNoun && line.quantity > 0) {
+  } else if (label.piece && line.quantity > 0 && ((pieceNoun && unitNoun === pieceNoun) || PIECE_UNITS.has(unit) || PIECE_UNITS.has(unitNoun))) {
     grams = line.quantity * label.piece.grams;
-    servingLabel = `${pieceNoun} (${Math.round(label.piece.grams * 10) / 10} ${label.base_unit})`;
+    // The line's own word for a piece stays ("piece (36 g)"); the label's when they agree.
+    servingLabel = `${pieceNoun && unitNoun === pieceNoun ? pieceNoun : unitNoun || pieceNoun} (${Math.round(label.piece.grams * 10) / 10} ${label.base_unit})`;
   }
   const f = grams / 100;
   const r1 = (v: number) => Math.round(v * f * 10) / 10;
@@ -2167,6 +2186,34 @@ async function runFindLabel(
   return out;
 }
 
+/** Calories per 100 g at or under which a food has next to none (water, black
+ *  tea or coffee, diet soda, plain spices). Decided by the numbers, never by
+ *  the food's name. */
+export const NEAR_ZERO_KCAL_PER_100 = 5;
+
+/**
+ * A line that came out at 0 kcal for a food that has calories: an amount that
+ * was lost (no weight, a piece the label could not weigh), not a real 0. A
+ * food is near zero only when its row's own numbers say so: `per100` (the
+ * label's kcal per 100) when known, else the line's own calories and macros
+ * per gram. A line with no weight and no calories has no numbers to say so.
+ */
+export function zeroKcalLine(i: Pick<ParsedItem, "kcal" | "grams" | "protein_g" | "carb_g" | "fat_g">, per100: number | null = null): boolean {
+  if (!(Math.round(Number(i.kcal) || 0) === 0)) return false;
+  if (per100 !== null) return per100 > NEAR_ZERO_KCAL_PER_100;
+  if (!(i.grams > 0)) return true;
+  const fromMacros = (4 * (i.protein_g || 0) + 4 * (i.carb_g || 0) + 9 * (i.fat_g || 0)) / i.grams * 100;
+  return fromMacros > NEAR_ZERO_KCAL_PER_100;
+}
+
+/** What the agent reads when a change left a food at 0 kcal. */
+export function zeroKcalError(lines: Pick<ParsedItem, "food_name" | "grams">[]): string {
+  const what = names(lines.map((l) => `${l.food_name} (${Math.round(l.grams || 0)} g)`));
+  return `Not applied: ${what} came out at 0 kcal, and that food has calories, so its amount was lost. Nothing was ` +
+    "changed. Send the changes again with the amount the user gave for it (grams, ml or pieces), or a usual amount for " +
+    "that food.";
+}
+
 const EMPTY_USAGE = (): ParseMealResult["usage"] => ({
   input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0,
 });
@@ -2198,7 +2245,10 @@ async function applyCardChanges(
   stagedItems: ParsedItem[] = [],
   /** Card lines find_label worked out from a label (use_label). */
   labelLines: ReadonlyMap<number, ParsedItem> = new Map(),
-): Promise<FoodAgentOutcome> {
+  /** Turns are left: a change that leaves a food at 0 kcal goes back to the
+   *  agent (bounce) instead of landing. On the last turn it is left off. */
+  canRetry = false,
+): Promise<FoodAgentOutcome | { kind: "bounce"; error: string }> {
   const card = input.card ?? [];
   const meal: MealType = card[0]?.meal_type ?? input.defaultMeal;
   const [editsOut, addsOut, recipesOut] = await Promise.all([
@@ -2250,10 +2300,24 @@ async function applyCardChanges(
       return { x, ...b };
     })),
   ]);
+  // No change may leave a food at 0 kcal (an amount lost on the way). With
+  // turns left the agent fixes the amount; on the last turn an edit stays as
+  // it was and an addition is left off, both named.
+  const zeroEdits = editsOut.filter((x) => x.item && zeroKcalLine(x.item));
+  const zeroRecipes = recipesOut.filter((x) => x.item && zeroKcalLine(x.item));
+  // A copy (a saved meal's or the diary's line) keeps its stored numbers,
+  // a stored 0 included: it is not worked out here.
+  const zeroAddLines = addsOut.flatMap((x) => x.items.filter((i) => !i.copied_from && zeroKcalLine(i)));
+  const zeroLines = [...zeroEdits.map((x) => x.item!), ...zeroRecipes.map((x) => x.item!), ...zeroAddLines];
+  if (zeroLines.length && canRetry) return { kind: "bounce", error: zeroKcalError(zeroLines) };
+  const zeroNames = zeroLines.map((i) => i.food_name);
+  const editsKept = editsOut.map((x) => (zeroEdits.includes(x) ? { ...x, item: null } : x));
+  const recipesKept = recipesOut.filter((x) => !zeroRecipes.includes(x));
+  const addsKept = addsOut.map((x) => ({ ...x, items: x.items.filter((i) => !zeroAddLines.includes(i)) }));
   const edited = new Map<number, ParsedItem>();
-  for (const x of editsOut) if (x.item) edited.set(x.e.index, x.item);
-  for (const x of recipesOut) if (x.item && x.x.index !== null) edited.set(x.x.index, x.item);
-  const recipeAdds = recipesOut.flatMap((x) => (x.item && x.x.index === null ? [x.item] : []));
+  for (const x of editsKept) if (x.item) edited.set(x.e.index, x.item);
+  for (const x of recipesKept) if (x.item && x.x.index !== null) edited.set(x.x.index, x.item);
+  const recipeAdds = recipesKept.flatMap((x) => (x.item && x.x.index === null ? [x.item] : []));
   const removes = new Set(plan.removes);
   // An addition never puts a second copy of a food that stays on the card
   // (an edit changes the line; a second portion is a copy_lines add_again or
@@ -2266,7 +2330,7 @@ async function applyCardChanges(
     if (s.food_id) ids.add(s.food_id);
   }
   const dupAdds: string[] = [];
-  const added = [...recipeAdds, ...addsOut.flatMap((x) => x.items)].filter((i) => {
+  const added = [...recipeAdds, ...addsKept.flatMap((x) => x.items)].filter((i) => {
     const key = sameFoodKey(i.food_name);
     const dup = keys.has(key) || (!!i.food_id && ids.has(i.food_id));
     if (dup) dupAdds.push(i.food_name);
@@ -2286,6 +2350,7 @@ async function applyCardChanges(
   // lands where the card is.
   const items = buildChangedCard(card, removes, edited, added, meal);
 
+  // A 0 kcal line is named apart (zeroNames), not as a failed edit or addition.
   const failedEdits = editsOut.filter((x) => !x.item).map((x) => card[x.e.index].food_name);
   const failedAdds = addsOut.filter((x) => x.a.text && x.items.length === 0).map((x) => x.a.text!);
   const failedRecipes = recipesOut.filter((x) => !x.item).map((x) => ({ name: x.x.ask.name, missing: x.missing, errored: x.errored, onLine: x.x.index !== null }));
@@ -2307,6 +2372,7 @@ async function applyCardChanges(
       `I could not ${recipeMissText(f.missing, f.errored)}, so ${f.name} ${f.onLine ? "is as before" : "is not on the card"}.`
     ),
     missingParts.length ? `I could not find ${missingParts.join("; ")}, so it is left out.` : null,
+    zeroNames.length ? `I could not work out an amount for ${names(zeroNames)}, so ${zeroNames.length === 1 ? "it is" : "they are"} as before or not added.` : null,
     dupAdds.length ? `${names(dupAdds)} ${dupAdds.length === 1 ? "is" : "are"} already on the card, so I did not add ${dupAdds.length === 1 ? "it" : "them"} again.` : null,
     overflow.length ? `The card holds ${CARD_MAX_LINES} foods, so I left off ${names(overflow)}. Add this card first, then send ${overflow.length === 1 ? "it" : "them"}.` : null,
   ].filter(Boolean).join(" ");
@@ -2324,7 +2390,7 @@ async function applyCardChanges(
   const said = sameFoodKey(agentText);
   const namesLeftOff = leftKeys.some((k) => ` ${said} `.includes(` ${k} `));
   const useAgent = !!agentText && !falseClaim && !failedEdits.length && !failedAdds.length && !failedRecipes.length &&
-    !missingParts.length && !namesLeftOff;
+    !missingParts.length && !namesLeftOff && !zeroNames.length;
   const notice = [
     dupAdds.length ? `${names(dupAdds)} ${dupAdds.length === 1 ? "is" : "are"} already on the card, so I did not add ${dupAdds.length === 1 ? "it" : "them"} again.` : null,
     overflow.length ? `The card holds ${CARD_MAX_LINES} foods, so I left off ${names(overflow)}. Add this card first, then send ${overflow.length === 1 ? "it" : "them"}.` : null,

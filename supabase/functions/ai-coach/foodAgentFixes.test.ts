@@ -18,6 +18,7 @@ import {
   type FoodAgentDeps,
   FOOD_AGENT_SYSTEM_LATER,
   givesNumber,
+  lineFromLabel,
   planCardChanges,
   MAX_TURNS_LATER,
   runFoodAgent,
@@ -28,10 +29,11 @@ import {
   unmetSaveAsk,
   USER_TYPED_MARK,
   userAskedToSave,
+  zeroKcalLine,
 } from "./foodAgent.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { type CardLine, cardOriginsOf } from "./foodContext.ts";
-import type { ParseMealResult, ParsedItem } from "./parseMeal.ts";
+import type { LabelFound, ParseMealResult, ParsedItem } from "./parseMeal.ts";
 
 type Use = { name: string; input: Record<string, unknown> };
 
@@ -286,4 +288,63 @@ Deno.test("FOOD_AGENT_SYSTEM_LATER: an earlier ask never carried out is said pla
   assert(FOOD_AGENT_SYSTEM_LATER.includes("say plainly that it was not done, and do it now in the same turn"));
   assert(FOOD_AGENT_SYSTEM_LATER.includes("that no save card answered"));
   assertFalse(FOOD_AGENT_SYSTEM_LATER.includes("—"));
+});
+
+// ── 3. 0 g / 0 kcal lines ──────────────────────────────────────────────────
+
+const POORI_LABEL: LabelFound = {
+  name: "poori", brand: null, base_unit: "g",
+  per_100: { kcal: 296.6, protein_g: 7.5, carb_g: 46.7, fat_g: 9.4, fiber_g: null },
+  serving: { label: "1 Poori (36g, ~12cm diameter)", grams: 36 },
+  piece: { label: "1 Poori (36g, ~12cm diameter)", grams: 36 },
+  verified: true,
+};
+
+Deno.test("lineFromLabel: a line counted in pieces weighs pieces x the label's piece", () => {
+  const poori: CardLine = { food_name: "poori", quantity: 3, serving_label: "piece", grams: 0, kcal: 639, source: "catalog" };
+  const out = lineFromLabel(poori, POORI_LABEL, "snack");
+  assertEquals(out.grams, 108);
+  assertEquals(Math.round(out.kcal), 320);
+  assertEquals(out.serving_label, "piece (36 g)");
+  for (const unit of ["pcs", "nos", "each", "pc"]) {
+    assertEquals(lineFromLabel({ ...poori, serving_label: unit }, POORI_LABEL, "snack").grams, 108, unit);
+  }
+  // The label's own piece word still works, and a weight line keeps its grams.
+  assertEquals(lineFromLabel({ ...poori, serving_label: "pooris" }, POORI_LABEL, "snack").grams, 108);
+  assertEquals(lineFromLabel({ ...poori, quantity: 50, serving_label: "g", grams: 50 }, POORI_LABEL, "snack").grams, 50);
+});
+
+Deno.test("zeroKcalLine: 0 kcal is refused unless the food's own numbers are near zero", () => {
+  const l = (kcal: number, grams: number, p = 0, c = 0, f = 0) => ({ kcal, grams, protein_g: p, carb_g: c, fat_g: f });
+  assert(zeroKcalLine(l(0, 0)));               // no weight, no calories: the amount was lost
+  assert(zeroKcalLine(l(0, 50, 6, 20, 2)));    // bread at 0 kcal: its macros say otherwise
+  assertFalse(zeroKcalLine(l(0, 240)));        // black coffee, water: the numbers are near zero
+  assertFalse(zeroKcalLine(l(2, 240)));
+  assertFalse(zeroKcalLine(l(150, 0)));        // no weight known, calories known: a real state
+  assert(zeroKcalLine(l(0, 0), 296.6));        // the label says the food has calories
+  assertFalse(zeroKcalLine(l(0, 0), 0.8));
+});
+
+Deno.test("a change that leaves a food at 0 kcal goes back to the agent; the fixed amount lands", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const d = deps(scripted([
+    [{ name: "edit_line", input: { line_id: "L1", change: "3 small" } }],
+    [{ name: "edit_line", input: { line_id: "L1", change: "3 small roti, 30 g each" } }],
+  ], bodies));
+  d.editLine = async (_i, change) =>
+    result([change.includes("30 g") ? item("Roti", 270, { grams: 90 }) : item("Roti", 0, { grams: 0, protein_g: 0, carb_g: 0, fat_g: 0 })]);
+  const out = await runFoodAgent({ ...LATER, text: "the roti were small, 3 of them" }, d);
+  assert(resultsBefore(bodies, 2)[0].includes("came out at 0 kcal"), resultsBefore(bodies, 2)[0]);
+  assertEquals(out.kind, "log");
+  if (out.kind === "log") assertEquals(out.result.parsed?.items[0].kcal, 270);
+});
+
+Deno.test("on the last turn a 0 kcal edit leaves its line as it was, and the user is told", async () => {
+  const script: Use[][] = Array.from({ length: MAX_TURNS_LATER }, () => [{ name: "edit_line", input: { line_id: "L1", change: "3 small" } }]);
+  const d = deps(scripted(script));
+  d.editLine = async () => result([item("Roti", 0, { grams: 0, protein_g: 0, carb_g: 0, fat_g: 0 })]);
+  const out = await runFoodAgent({ ...LATER, text: "the roti were small" }, d);
+  // Nothing changed: the card is as it was, with the reason.
+  assertEquals(out.kind, "reply");
+  if (out.kind === "reply") assert(out.text.includes("could not work out an amount for Roti"), out.text);
 });
