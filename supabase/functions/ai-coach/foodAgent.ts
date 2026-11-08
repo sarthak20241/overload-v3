@@ -17,7 +17,7 @@
 //
 // Deps are injected so the loop is testable without the network.
 
-import { energyUnitKcal, fitPortionToStated, lineAmountNamed, totalNote, userNumbersOnLine } from "./statedNumbers.ts";
+import { energyUnitKcal, fitPortionToStated, isWeightLabel, lineAmountNamed, totalNote, userNumbersOnLine } from "./statedNumbers.ts";
 import { type FoodOrigin, ORIGIN_RANK, originOf, parseRecipe } from "../_shared/foodOrigin.ts";
 import { summarize } from "./foodBarTrace.ts";
 import { CARD_MAX_LINES, type CardLine, cardLines, cardMayBeCut, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
@@ -1830,7 +1830,10 @@ export function lineFromLabel(line: CardLine, label: LabelFound, mealDefault: Me
     const priced = energyUnitKcal(line.quantity, line.serving_label) !== null
       ? { ...item, quantity: 1, serving_label: "serving" }
       : item;
-    const fitted = fitPortionToStated(priced, mine, lineAmountNamed(line));
+    // A weight on a line carrying the user's numbers is the one an earlier fit
+    // worked out from them (a typed weight gives per-100 numbers, which read
+    // back as none here), so the new label's density may move it.
+    const fitted = fitPortionToStated(priced, mine, lineAmountNamed(line) && !isWeightLabel(line.serving_label));
     const r = (v: number) => Math.round(v * 10) / 10;
     return {
       ...fitted,

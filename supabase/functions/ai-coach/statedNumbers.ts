@@ -387,6 +387,13 @@ export interface PortionLine extends LineMacros {
 
 const WEIGHT_IN_LABEL = /\s*\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|grams?|ml)\s*\)/gi;
 const LIQUID_LABELS = new Set(["ml", "millilitre", "milliliter", "millilitres", "milliliters"]);
+const WEIGHT_LABELS = new Set(["g", "gm", "gms", "gram", "grams", ...LIQUID_LABELS]);
+
+/** A unit that is itself a weight or volume ("g", "ml"): its quantity IS the
+ *  grams, so it is never a count to keep while the grams move. */
+export function isWeightLabel(label: string): boolean {
+  return WEIGHT_LABELS.has(label.trim().toLowerCase());
+}
 
 /**
  * The line carrying the user's numbers at a portion that fits them. Every
@@ -399,6 +406,9 @@ const LIQUID_LABELS = new Set(["ml", "millilitre", "milliliter", "millilitres", 
  * portion and simply takes the numbers.
  */
 export function fitPortionToStated<T extends PortionLine>(line: T, t: StatedTotal, amountTyped: boolean): T {
+  // A weight the user typed ("100 g, 150 kcal") is theirs as much as the kcal:
+  // both stay, and the line simply takes their numbers.
+  if (amountTyped && isWeightLabel(line.serving_label)) return honourLineTotals(line, t);
   const ratio = statedPortionRatio(line, t);
   if (ratio === null || !(line.grams > 0) || Math.abs(ratio - 1) < 0.01) return honourLineTotals(line, t);
   const m = (v: number) => v * ratio;
@@ -458,7 +468,11 @@ export function energyAmountAsStated(
   return {
     quantity: 1,
     unit: "serving",
-    stated: stated ?? { basis: "total", serving_g: null, kcal, protein_g: null, carb_g: null, fat_g: null, fiber_g: null },
+    // The model's own copy of the user's numbers wins; the energy amount fills
+    // in its kcal when that copy has none.
+    stated: stated
+      ? { ...stated, kcal: stated.kcal ?? kcal }
+      : { basis: "total", serving_g: null, kcal, protein_g: null, carb_g: null, fat_g: null, fiber_g: null },
   };
 }
 

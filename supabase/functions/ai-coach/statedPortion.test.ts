@@ -136,3 +136,45 @@ Deno.test("the agent sees which numbers on a line are the user's", () => {
   assert(typed.endsWith("| the user's numbers: 150 kcal"), typed);
   assert(broken.endsWith("; the user said 150 kcal"), broken);
 });
+
+// ── Review follow-ups (PR #366) ─────────────────────────────────────────────
+
+Deno.test("a weight the user typed stays with their kcal; nothing moves it", () => {
+  const l = fitPortionToStated(bread(100, 100, "g"), kcalOnly(150), true);
+  assertEquals([l.quantity, l.serving_label, l.grams, l.kcal], [100, "g", 100, 150]);
+});
+
+Deno.test("a label on a line an earlier fit weighed moves the weight with the new density", () => {
+  const label = {
+    name: "atta bread", brand: null, base_unit: "g" as const,
+    per_100: { kcal: 227, protein_g: 8.9, carb_g: 42.5, fat_g: 2.5, fiber_g: null },
+    serving: null, piece: null, verified: false,
+  };
+  const l = lineFromLabel({
+    food_name: "atta bread", quantity: 59.5, serving_label: "g", grams: 59.5, kcal: 150, source: "manual",
+    assumption: "Your numbers: 150 kcal for this line, the rest estimated (the rest from the label online)",
+  }, label, "lunch");
+  assertEquals(l.kcal, 150);
+  near(l.grams, 66.1, 0.1, "grams");
+  assertEquals(l.quantity, l.grams);
+});
+
+Deno.test("every macro mix totalNote writes reads back the same (the note is the record)", () => {
+  const mixes: StatedTotal[] = [
+    kcalOnly(80),
+    { kcal: 500, protein_g: 12, carb_g: null, fat_g: null, fiber_g: null },
+    { kcal: null, protein_g: 30, carb_g: null, fat_g: null, fiber_g: null },
+    { kcal: 220.5, protein_g: 10, carb_g: 25.5, fat_g: 8, fiber_g: null },
+    { kcal: null, protein_g: null, carb_g: 40, fat_g: 3, fiber_g: null },
+  ];
+  for (const t of mixes) {
+    for (const scope of ["line", "meal"] as const) {
+      assertEquals(userNumbersOnLine({ quantity: 1, serving_label: "serving", assumption: totalNote(t, scope) }), t);
+    }
+  }
+});
+
+Deno.test("an energy amount fills the kcal the model's copy of the user's numbers left out", () => {
+  const out = energyAmountAsStated(150, "kcal", { basis: "total", serving_g: null, kcal: null, protein_g: 5, carb_g: null, fat_g: null, fiber_g: null });
+  assertEquals(out.stated, { basis: "total", serving_g: null, kcal: 150, protein_g: 5, carb_g: null, fat_g: null, fiber_g: null });
+});
