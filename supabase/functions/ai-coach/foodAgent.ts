@@ -36,7 +36,7 @@ import { lineAsItem, type ThreadLine } from "./foodThreads.ts";
 import { falseAgentClaim } from "./foodIntent.ts";
 import type { ThreadCardLines } from "./foodBar.ts";
 import { type FoodRegion, regionalizePrompt } from "./regionRules.ts";
-import { BUILD_RECIPE_TOOL, buildRecipe, RECIPE_NOTE, type RecipeAsk, readRecipeAsk, recipeQuestion, rememberedRecipe } from "./recipe.ts";
+import { BUILD_RECIPE_TOOL, buildRecipe, partsNotFromUser, RECIPE_NOTE, type RecipeAsk, readRecipeAsk, recipeQuestion, rememberedRecipe } from "./recipe.ts";
 import {
   type FoodAgentWarm,
   hasOlderTurns,
@@ -1121,7 +1121,9 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     let plan: CardPlan | null = null;
     const rejected = new Map<ToolUse, string>();
     if (changes.length) {
-      const p = planCardChanges(input.card ?? [], changes, uses.some((u) => u.name === RESTORE_CARD_TOOL.name), recipeNoCard, input.text);
+      const p = planCardChanges(
+        input.card ?? [], changes, uses.some((u) => u.name === RESTORE_CARD_TOOL.name), recipeNoCard, input.text, userWordsOf(input),
+      );
       if (p.ok) plan = p;
       else {
         for (const u of changes) rejected.set(u, p.error);
@@ -1882,6 +1884,9 @@ export function planCardChanges(
   /** The user's message. A line holding the user's own number (origin
    *  user_typed) changes only when it gives a new number. Absent: no check. */
   userText?: string,
+  /** Every word the user wrote in this conversation: build_recipe parts must
+   *  come from them (partsNotFromUser). Absent: no check. */
+  userWords?: string,
 ): CardPlan | { ok: false; error: string } {
   const tail = " Nothing was changed. Send the changes again, one change per line.";
   const fail = (why: string) => ({ ok: false as const, error: `${why}${tail}` });
@@ -1902,6 +1907,14 @@ export function planCardChanges(
     if (u.name === BUILD_RECIPE_TOOL.name) {
       const ask = readRecipeAsk(a);
       if ("error" in ask) return fail(ask.error);
+      const invented = userWords === undefined ? [] : partsNotFromUser(ask, userWords);
+      if (invented.length) {
+        return fail(
+          `build_recipe for ${JSON.stringify(ask.name)} names ${invented.length === 1 ? "a part" : "parts"} the user never ` +
+            `mentioned: ${names(invented)}. Give only the parts the user named, in their words (a cooking oil or fat with ` +
+            "no amount may be assumed).",
+        );
+      }
       let index: number | null = null;
       if (a.line_id !== undefined && a.line_id !== null && a.line_id !== "") {
         if (!card.length) return fail("No card is on screen yet, so build_recipe has no line to replace. Leave out line_id to add the dish.");
@@ -1958,6 +1971,13 @@ export function planCardChanges(
   const twice = [...count].filter(([, n]) => n > 1).map(([i]) => `L${i + 1}`).sort();
   if (twice.length) return fail(`${twice.join(", ")} ${twice.length === 1 ? "has" : "have"} two changes in one turn.`);
   return { ok: true, edits, removes: [...removes].sort((a, b) => a - b), adds, summaries, ...(recipes.length ? { recipes } : {}) };
+}
+
+/** Everything the user wrote in this conversation: the earlier turns, the
+ *  message a question is about, and this message. */
+export function userWordsOf(input: Pick<FoodAgentInput, "text" | "recentTurns" | "answering">): string {
+  return [...(input.recentTurns ?? []).filter((t) => t.role === "user").map((t) => t.text), input.answering?.text ?? "", input.text]
+    .join("\n");
 }
 
 /** The message gives a number: digits, or a number word ("two", "half"). */

@@ -34,6 +34,7 @@ import {
   zeroKcalLine,
 } from "./foodAgent.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
+import { partsNotFromUser } from "./recipe.ts";
 import { type CardLine, cardOriginsOf } from "./foodContext.ts";
 import type { LabelFound, ParseMealResult, ParsedItem } from "./parseMeal.ts";
 
@@ -437,4 +438,30 @@ Deno.test("use_label with a pack the label has no size for: a usual size, assume
   ], []));
   assertEquals(none.kind, "log");
   if (none.kind === "log") assertEquals([none.result.parsed?.items[0].grams, none.result.parsed?.items[0].kcal], [100, 54]);
+});
+
+// ── 5. build_recipe parts come from the user ───────────────────────────────
+
+Deno.test("partsNotFromUser: every naming word of a part is in the user's words; a cooking fat with no amount may be assumed", () => {
+  const ask = (parts: { name: string; amount?: string }[]) => ({ name: "Dish", parts: parts.map((p) => ({ name: p.name, amount: p.amount ?? null })) });
+  const said = "a sabji with 65g Milky Mist low fat paneer, tomatoes and some onion";
+  assertEquals(partsNotFromUser(ask([{ name: "Milky Mist low fat paneer", amount: "65 g" }, { name: "tomato" }, { name: "onions" }]), said), []);
+  // An oil or ghee with no amount: assumed, shown, asked once (owner decision).
+  assertEquals(partsNotFromUser(ask([{ name: "cooking oil" }, { name: "ghee" }]), said), []);
+  // An oil with an amount the user never gave, or another part, is invented.
+  assertEquals(partsNotFromUser(ask([{ name: "mustard oil", amount: "1 tbsp" }]), said), ["mustard oil"]);
+  assertEquals(partsNotFromUser(ask([{ name: "cream" }, { name: "sugar" }, { name: "Milky Mist curd" }]), said), ["cream", "sugar", "Milky Mist curd"]);
+});
+
+Deno.test("build_recipe with a part the user never named is refused, and the agent hears which", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const d = deps(scripted([
+    [{ name: "build_recipe", input: { name: "Oatmeal", line_id: "L1", parts: [{ name: "oats", amount: "55 g" }, { name: "honey" }] } }],
+    [{ name: "reply", input: { text: "Which milk was it?" } }],
+  ], bodies));
+  d.buildRecipe = true;
+  const card: CardLine[] = [{ food_name: "Oatmeal", quantity: 1, serving_label: "bowl", grams: 55, kcal: 200, source: "catalog", meal_type: "breakfast" }];
+  const out = await runFoodAgent({ text: "the oatmeal had milk", defaultMeal: "breakfast", card, later: true, recentTurns: [{ role: "user", text: "55 g oats" }] }, d);
+  assertEquals(out.kind, "reply");
+  assert(resultsBefore(bodies, 2)[0].includes("never mentioned: honey"), resultsBefore(bodies, 2)[0]);
 });
