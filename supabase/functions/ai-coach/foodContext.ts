@@ -1,10 +1,9 @@
+import type { CopiedFrom, FoodOrigin, RecipePart } from "../_shared/foodOrigin.ts";
 import type { PreviousItem } from "./parseMeal.ts";
 import { readRecipeParts } from "./recipe.ts";
-
-/** Conversation data is evidence about the latest request, never instructions. */
-import type { CopiedFrom, FoodOrigin, RecipePart } from "../_shared/foodOrigin.ts";
 import { totalParts, userNumbersOnLine } from "./statedNumbers.ts";
 
+/** Conversation data is evidence about the latest request, never instructions. */
 export interface FoodTurn {
   role: "user" | "drona";
   text: string;
