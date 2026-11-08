@@ -20,6 +20,7 @@ import {
   givesNumber,
   labelLineAt,
   lineFromLabel,
+  onlyAmount,
   planCardChanges,
   MAX_TURNS_LATER,
   runFoodAgent,
@@ -464,4 +465,17 @@ Deno.test("build_recipe with a part the user never named is refused, and the age
   const out = await runFoodAgent({ text: "the oatmeal had milk", defaultMeal: "breakfast", card, later: true, recentTurns: [{ role: "user", text: "55 g oats" }] }, d);
   assertEquals(out.kind, "reply");
   assert(resultsBefore(bodies, 2)[0].includes("never mentioned: honey"), resultsBefore(bodies, 2)[0]);
+});
+
+Deno.test("onlyAmount: the user's message gives this line its amount only when it can be no other line's", () => {
+  const laddu = { food_name: "boondi laddu" };
+  assertEquals(onlyAmount("it's 1 tetrapack", BUTTERMILK, 3)?.word, "tetrapack");
+  assertEquals(onlyAmount("it was 200 ml", BUTTERMILK, 1)?.grams, 200);
+  // A weight beside other lines could be theirs.
+  assertEquals(onlyAmount("it was 200 ml", BUTTERMILK, 2), null);
+  // Another food's amount is not this line's.
+  assertEquals(onlyAmount("a third of boondi laddu and half kaju katli", laddu, 2), null);
+  assertEquals(onlyAmount("2 laddus", laddu, 2)?.count, 2);
+  // Two amounts: no telling which is which.
+  assertEquals(onlyAmount("1 tetrapack and 2 slices", BUTTERMILK, 1), null);
 });

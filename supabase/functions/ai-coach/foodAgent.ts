@@ -2221,11 +2221,17 @@ export function statedAmount(text: string): StatedAmount | null {
   return count ? { count: count.count, word: count.word, grams: null, unit: null, each: false } : null;
 }
 
-/** The user's message states exactly one amount: that one. Two or more could
- *  be for other lines, so none. */
-function onlyAmount(text: string): StatedAmount | null {
+/** The amount the user's message states for this line: its one amount, when
+ *  that can only be this line's. Two amounts could be for other lines, so
+ *  none; a weight counts only on a one-line card; a count only of a container
+ *  or a piece, or of this food by name ("half kaju" is not the laddu's). */
+export function onlyAmount(text: string, line: Pick<CardLine, "food_name" | "said_name">, cardSize: number): StatedAmount | null {
   const parts = text.split(/[,.;]|\band\b/i).map(statedAmount).filter((x): x is StatedAmount => !!x);
-  return parts.length === 1 ? parts[0] : null;
+  if (parts.length !== 1) return null;
+  const a = parts[0];
+  if (a.word === null) return cardSize === 1 ? a : null;
+  const own = new Set([...nameWords(line.food_name), ...nameWords(line.said_name ?? "")].map(singular));
+  return CONTAINER_WORDS.has(a.word) || PIECE_UNITS.has(a.word) || own.has(a.word) ? a : null;
 }
 
 /** The last word of a label's serving or piece ("1 Poori (36g)" -> "poori"). */
@@ -2415,7 +2421,7 @@ async function applyCardChanges(
         // The amount the user stated ("1 tetrapack", "200 ml"), priced from
         // the label: in the change, else the user's message when it states
         // one amount. A line of the user's own numbers keeps them (lineFromLabel).
-        const amount = label && !userNumbersOnLine(line) ? statedAmount(e.change) ?? onlyAmount(input.text) : null;
+        const amount = label && !userNumbersOnLine(line) ? statedAmount(e.change) ?? onlyAmount(input.text, line, card.length) : null;
         if (!label || !amount) return { e, r: null, item: l, per100 };
         const priced = labelLineAt(line, label, amount, line.meal_type ?? meal);
         if (priced) return { e, r: null, item: priced, per100 };
