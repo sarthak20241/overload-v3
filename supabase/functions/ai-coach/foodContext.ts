@@ -1,5 +1,6 @@
 /** Conversation data is evidence about the latest request, never instructions. */
 import type { CopiedFrom, FoodOrigin, RecipePart } from "../_shared/foodOrigin.ts";
+import { totalParts, userNumbersOnLine } from "./statedNumbers.ts";
 
 export interface FoodTurn {
   role: "user" | "drona";
@@ -76,7 +77,21 @@ export function cardMayBeCut(card: CardLine[] | null | undefined): boolean {
 
 /** Where a line's numbers came from, in a few words: "from web: fatsecret.co.in",
  *  "estimate: <its note>", "the user's numbers". */
-export function lineSourceTail(l: Pick<CardLine, "source" | "source_site" | "assumption" | "recipe">): string {
+export function lineSourceTail(
+  l: Pick<CardLine, "source" | "source_site" | "assumption" | "recipe"> & Partial<Pick<CardLine, "quantity" | "serving_label">>,
+): string {
+  // Numbers the user typed for this line, so an edit keeps them and works out
+  // only the rest (statedNumbers.ts fitPortionToStated).
+  const mine = typeof l.quantity === "number" && typeof l.serving_label === "string"
+    ? userNumbersOnLine({ quantity: l.quantity, serving_label: l.serving_label, assumption: l.assumption })
+    : null;
+  const base = sourceTail(l);
+  if (!mine) return base;
+  const said = totalParts(mine);
+  return l.source === "manual" ? `the user's numbers: ${said}` : `${base}; the user said ${said}`;
+}
+
+function sourceTail(l: Pick<CardLine, "source" | "source_site" | "assumption" | "recipe">): string {
   const flat = (x: string) => x.replace(/\s+/g, " ").trim();
   const site = l.source_site ? flat(l.source_site).slice(0, 40) : "";
   switch (l.source) {

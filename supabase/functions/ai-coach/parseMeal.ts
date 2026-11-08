@@ -54,8 +54,9 @@ import { matchOurSources } from "./ourSources.ts";
 import { type FoodRegion, regionalizePrompt, regionBlock } from "./regionRules.ts";
 import { applyJudgement, judgeThorough, type ThoroughMatchMode, wantsBrandWeb } from "./thoroughMatch.ts";
 import {
+  energyAmountAsStated,
   fillStated,
-  honourLineTotals,
+  fitPortionToStated,
   readStated,
   readStatedTotal,
   remainingTotal,
@@ -5295,7 +5296,10 @@ export interface StatedCapture {
   /** For the whole meal (extract's stated_meal_total). */
   meal: StatedTotal | null;
   /** For one line each: totals statedFor could not put on a per-100 basis. */
-  lines: { name: string; correctsFoodName: string | null; totals: StatedTotal }[];
+  lines: { name: string; correctsFoodName: string | null; totals: StatedTotal; amountTyped: boolean }[];
+  /** A message of one food: whether the user named its amount. A meal total
+   *  on that one line sets its portion the way a line total does. */
+  soleAmountTyped?: boolean | null;
   /** Numbers the user wrote that could not be used, with why. Traced, so "my
    *  number was ignored" can be answered from the trace. */
   ignored?: string[];
@@ -5310,13 +5314,19 @@ export function captureStatedTotals(extMealTotal: unknown, extItems: ExtractedIt
     // partial panel is filled from a row that is the right food.
     if (!it.stated || statedFor(it)) continue;
     const totals = statedLineTotal(it.stated, it.quantity, MASS_UNITS.has(it.unit.trim().toLowerCase()));
-    if (totals) lines.push({ name: foodLabel(it), correctsFoodName: it.correctsFoodName ?? null, totals });
+    if (totals) lines.push({ name: foodLabel(it), correctsFoodName: it.correctsFoodName ?? null, totals, amountTyped: amountTyped(it) });
     else ignored.push(`${foodLabel(it).slice(0, 60)}: ${it.stated.basis} numbers could not be used (past what any food carries, or a serving with no weight)`);
   }
   const meal = readStatedTotal(extMealTotal);
   const rawMeal = extMealTotal && typeof extMealTotal === "object" ? Object.values(extMealTotal as Record<string, unknown>) : [];
   if (!meal && rawMeal.some((v) => typeof v === "number")) ignored.push("meal total past what any meal carries");
-  return { meal, lines, ignored };
+  return { meal, lines, ignored, soleAmountTyped: extItems.length === 1 ? amountTyped(extItems[0]) : null };
+}
+
+/** Did the user name an amount? The extraction writes 1 "serving" when the
+ *  text states none (EXTRACT_NO_NUTRITION). */
+function amountTyped(it: Pick<ExtractedItem, "quantity" | "unit">): boolean {
+  return !(it.quantity === 1 && it.unit.trim().toLowerCase() === "serving");
 }
 
 /** The one line a named total belongs to, or -1 when it is not exactly one. */
@@ -5359,8 +5369,10 @@ export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, step
       steps.push({ iter: 8, tool: "user_stated_total", input: { line: t.name }, result: { applied: false, reason: "no single line by that name" } });
       continue;
     }
+    // The user's numbers at a portion that fits them: the food keeps its
+    // density, the weight follows (fitPortionToStated).
     out[i] = {
-      ...honourLineTotals(out[i], t.totals),
+      ...fitPortionToStated(out[i], t.totals, t.amountTyped),
       source: "manual",
       origin: "user_typed",
       copied_from: undefined,
@@ -5383,7 +5395,7 @@ export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, step
     const target = left ?? meal;
     if (pool.length === 1 && out.length === 1) {
       out[0] = {
-        ...honourLineTotals(out[0], meal),
+        ...fitPortionToStated(out[0], meal, cap.soleAmountTyped ?? true),
         source: "manual",
         origin: "user_typed",
         copied_from: undefined,
@@ -6977,8 +6989,15 @@ async function runParseMealCore(
       // NOT capped at 100: for a mass/volume unit the quantity IS the amount,
       // so "500 ml milk" or "250 g chicken" would be silently truncated. The
       // bound only exists to stop absurd input reaching the model.
-      const quantity = coerceQuantity(o.quantity);
-      const unit = typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving";
+      // An amount in energy ("150 cals of atta bread" as 150 x "kcal") is the
+      // user's kcal for the line, never a count of portions.
+      const read = energyAmountAsStated(
+        coerceQuantity(o.quantity),
+        typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving",
+        readStated(o.stated),
+      );
+      const quantity = read.quantity;
+      const unit = read.unit;
       // All five or nothing: a partial estimate is not an estimate, and a
       // missing field silently read as 0 is how zero-kcal lines shipped once
       // before.
@@ -7026,7 +7045,7 @@ async function runParseMealCore(
           ? o.meal
           : null,
         est: chained ? chained.est : rawEst,
-        stated: readStated(o.stated),
+        stated: read.stated,
         savedMeal: typeof o.saved_meal === "string" && o.saved_meal.trim() ? o.saved_meal.trim().slice(0, 120) : null,
       }];
     });
