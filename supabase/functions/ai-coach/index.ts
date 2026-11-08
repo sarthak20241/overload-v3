@@ -98,7 +98,10 @@ import {
   servedForThread,
   supabaseThreadStore,
   threadForAgent,
+  threadIsOpen,
+  type WarmThread,
 } from "./foodThreads.ts";
+import { firstMessageSafe, parseFoodWarmMemoryMode, THREAD_KEPT_DAYS, threadTurnsMemory, warmThreadFrom } from "./foodWarmMemory.ts";
 import {
   agentCouldUseThread,
   answeredByLabel,
@@ -107,6 +110,7 @@ import {
   type FoodBarOutcome,
   type FoodBarThread,
   type FoodBarUsageRow,
+  type FoodBarWarm,
   resolveFoodBarOutcome,
   runFirstMessage,
   runLaterMessage,
@@ -119,6 +123,7 @@ import {
   type DayClock,
   listLoggedMeals,
   type LoggedMealsStore,
+  LOGGED_STEP4_COLS,
   type MealRowIn,
   todayFor,
   weekdayOf,
@@ -137,6 +142,7 @@ import { preciseAliasStore } from "./preciseAlias.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
+import { type FoodRegion, foodRegionForTimezone, parseFoodRegionRulesMode } from "./regionRules.ts";
 import { freeGoalTurnKind, freePhaseBuildCandidate, freePhaseRefineCandidate } from "./freePhaseBuild.ts";
 import { selectMatchRows } from "./ourSources.ts";
 import { MEMORY_DAYS, type MemoryEntry, type OriginTrustMode } from "./userFoodMemory.ts";
@@ -313,11 +319,40 @@ const FOOD_AGENT_LATER = parseFoodAgentLaterMode(Deno.env.get("FOOD_AGENT_LATER"
  *  runFirstMessage). off (default): exactly today's routing. */
 const FOOD_FIRST_GATE = parseFoodFirstGateMode(Deno.env.get("FOOD_FIRST_GATE"));
 
+/** Plan step 6: region rules in the Precise food prompts. on: the user's
+ *  region comes from their time zone (regionRules.ts), the India rules go in
+ *  the prompt only for India, examples follow the region, and an unknown zone
+ *  gets no regional default. off (default): every prompt is today's. */
+const FOOD_REGION_RULES = parseFoodRegionRulesMode(Deno.env.get("FOOD_REGION_RULES"));
+
+/** The user's stored time zone, or null. Never rejects. One read per user
+ *  client (one per request): every parse deps of the request and the food
+ *  agent share it. */
+const zoneReads = new WeakMap<SupabaseClient, Promise<string | null>>();
+function readTimezone(userClient: SupabaseClient): Promise<string | null> {
+  let p = zoneReads.get(userClient);
+  if (!p) {
+    p = Promise.resolve(userClient.from("user_profiles").select("timezone").maybeSingle())
+      .then(({ data }: { data: { timezone?: unknown } | null }) => typeof data?.timezone === "string" ? data.timezone : null)
+      .catch(() => null);
+    zoneReads.set(userClient, p);
+  }
+  return p;
+}
+
 /** Precise food box, step 5: the food agent's build_recipe tool, a home dish
  *  built from the parts the user names and added up in code (recipe.ts). It
  *  rides on the later-mode agent (FOOD_AGENT_LATER, FOOD_FIRST_GATE). off
  *  (default): the agent has no build_recipe, exactly as today. */
 const FOOD_BUILD_RECIPE = parseFoodBuildRecipeMode(Deno.env.get("FOOD_BUILD_RECIPE"));
+
+/** Precise food box, warm memory (foodWarmMemory.ts, plan sections 4 and 6):
+ *  the later-mode agent (FOOD_AGENT_LATER, FOOD_FIRST_GATE) gets recall_food
+ *  (the user's own food memory), the memory matches Jev already decided in
+ *  this message's parse, remembered recipe parts in build_recipe, and, with
+ *  FOOD_THREADS=on, the thread's first message, read_thread and
+ *  search_threads. off (default): none of it, exactly as today. */
+const FOOD_WARM_MEMORY = parseFoodWarmMemoryMode(Deno.env.get("FOOD_WARM_MEMORY"));
 
 /** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
  *  of a race it is supposed to win (measured ~700ms against a parse of 1.2s and
@@ -1039,7 +1074,7 @@ function loggedMealsStore(userClient: SupabaseClient): LoggedMealsStore {
         .lte("logged_at", endIso)
         .order("logged_at", { ascending: true })
         .limit(40);
-      let { data, error } = await read(`${cols}, origin`);
+      let { data, error } = await read(`${cols}, ${LOGGED_STEP4_COLS}`);
       if (error && stepFourColumnMissing(error)) ({ data, error } = await read(cols));
       if (error) return { error: error.message };
       return { rows: (data ?? []) as MealRowIn[] };
@@ -2607,6 +2642,8 @@ function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
     persistent: true, confirmed_at: String(c.confirmed_at),
     origin: typeof c.origin === "string" ? c.origin : null,
     recipe: c.recipe ?? null,
+    // Read by the warm reads only (foodWarmMemory.ts); buildMemory ignores it.
+    brand: typeof c.brand === "string" ? c.brand : null,
     confirmed_aliases: Array.isArray(c.aliases) ? c.aliases.filter((a): a is string => typeof a === "string") : [],
   };
 }
@@ -2817,6 +2854,20 @@ function keepAlive(p: Promise<unknown>): void {
   if (er?.waitUntil) er.waitUntil(p); else void p;
 }
 
+/** FOOD_WARM_MEMORY: requests (by their user client) whose parses and warm
+ *  reads share ONE food memory load. Only requests that can reach the
+ *  later-mode agent are added; every other request reads as before. */
+const sharedMemoryClients = new WeakSet<SupabaseClient>();
+const memoryReads = new WeakMap<SupabaseClient, Promise<{ entries: MemoryEntry[]; timeZone: string | null }>>();
+function sharedMemoryEntries(userClient: SupabaseClient): Promise<{ entries: MemoryEntry[]; timeZone: string | null }> {
+  let p = memoryReads.get(userClient);
+  if (!p) {
+    p = fetchMemoryEntries(userClient);
+    memoryReads.set(userClient, p);
+  }
+  return p;
+}
+
 /** The dependency bundle parseMeal.ts runs against. */
 function makeParseDeps(
   userClient: SupabaseClient,
@@ -2826,7 +2877,9 @@ function makeParseDeps(
    *  same reason Precise is Pro-only; absent means no web. */
   opts: { brandWeb?: boolean; fbTrace?: FoodBarTraceCollector } = {},
 ): ParseMealDeps {
-  let searchCountryP: Promise<string | null> | undefined;
+  // One read per request (readTimezone). A Precise request with region rules
+  // on starts it early, through the food agent's `region`; Quick never reads it.
+  const zone = () => readTimezone(userClient);
   const fb = opts.fbTrace;
   const aliases = preciseAliasStore(admin, userId);
   return {
@@ -2935,7 +2988,9 @@ function makeParseDeps(
     // theirs. Started now so it is ready by the time extract finishes.
     userMemory: USER_FOOD_MEMORY && JEV_API_KEY
       ? {
-        load: () => fetchMemoryEntries(userClient),
+        // FOOD_WARM_MEMORY: one load per request, shared with the agent's warm
+        // reads. Otherwise a read per parse, as before.
+        load: () => (sharedMemoryClients.has(userClient) ? sharedMemoryEntries(userClient) : fetchMemoryEntries(userClient)),
         originTrust: FOOD_ORIGIN_TRUST,
         // Exact aliases are queried separately so a long-lived user's alias
         // cannot disappear behind the recent-cache or top-N memory limits.
@@ -2965,12 +3020,9 @@ function makeParseDeps(
       }
       : undefined,
     // One profile read per request, only when a web search actually needs it.
-    resolveSearchCountry: () =>
-      (searchCountryP ??= Promise.resolve(userClient.from("user_profiles").select("timezone").maybeSingle())
-        .then(({ data }: { data: { timezone?: unknown } | null }) =>
-          countryForTimezone(typeof data?.timezone === "string" ? data.timezone : null, PRECISE_SEARCH_COUNTRY)
-        )
-        .catch(() => PRECISE_SEARCH_COUNTRY)),
+    resolveSearchCountry: () => zone().then((tz) => countryForTimezone(tz, PRECISE_SEARCH_COUNTRY)),
+    // Precise reads it (parseMeal.ts); no fallback, so no zone is no region.
+    ...(FOOD_REGION_RULES === "on" ? { foodRegion: () => zone().then(foodRegionForTimezone) } : {}),
     skipDecideMode: PARSE_SKIP_DECIDE,
     rerankCandidates: PARSE_RERANK_ENABLED && VOYAGE_API_KEY
       ? (q: string, docs: string[]) =>
@@ -3397,9 +3449,29 @@ async function handleParseMealRequest(args: {
   // At most 800 ms: a slow read must never hold up the answer. Past it the
   // message is served as if the thread had no earlier cards.
   let threadTimer: ReturnType<typeof setTimeout> | undefined;
+  // FOOD_WARM_MEMORY=on: the thread is loaded ONCE for the request, and the
+  // agent's index (threadForAgent) and the warm reads share that load.
+  // Only a request that can reach the later-mode agent (Precise, not a Quick
+  // stream, a model key, FOOD_AGENT_LATER or FOOD_FIRST_GATE on) does any warm
+  // work; every other request reads the thread exactly as before.
+  const mayReachLaterAgent = FOOD_WARM_MEMORY === "on" && !!ANTHROPIC_API_KEY && !wouldStream(body) &&
+    (FOOD_AGENT_LATER !== "off" || FOOD_FIRST_GATE !== "off") &&
+    isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier });
+  const warmThreadsOn = mayReachLaterAgent && FOOD_THREADS === "on" && !!threadReq && !!threadStore;
+  if (mayReachLaterAgent && USER_FOOD_MEMORY) sharedMemoryClients.add(userClient);
+  const memoryEntriesOnce = () => sharedMemoryEntries(userClient);
+  // With the newest turn and turn 1's text (load `turns`), so the warm reads
+  // need no read of their own for them.
+  const sharedThreadLoad = warmThreadsOn
+    ? threadStore!.load(userId, threadReq!.id, { turns: true }).catch(() => null).then((t) => {
+      // A failed turn-1 read, said apart from a thread with no first message.
+      if (t?.first_text_error) fbTrace.step({ src: "router", tool: "food_threads_first", result: { ran: false, error: t.first_text_error } });
+      return t;
+    })
+    : undefined;
   const threadP: Promise<FoodBarThread | null> = FOOD_THREADS === "on" && threadReq && threadStore
     ? Promise.race([
-      threadForAgent(threadStore, userId, threadReq).catch(() => null).then((th) => {
+      threadForAgent(threadStore, userId, threadReq, Date.now(), sharedThreadLoad).catch(() => null).then((th) => {
         // The index line's size on every message that has one, so the cost of
         // the hot context can be counted per user (PR body has the query).
         if (th?.indexStats) fbTrace.step({ src: "router", tool: "food_threads_index", result: th.indexStats });
@@ -3415,6 +3487,61 @@ async function handleParseMealRequest(args: {
       }),
     ]).finally(() => clearTimeout(threadTimer))
     : Promise.resolve(null);
+  // FOOD_WARM_MEMORY=on: this thread's turns, from memory first (foodWarmMemory
+  // threadTurnsMemory): the app's recent turns and the turn count from the
+  // shared load. The first message and read_thread read the database only for
+  // turns not in memory, one turnsFrom call per missing span.
+  const turnsMem = warmThreadsOn && sharedThreadLoad && threadStore?.turnsFrom
+    ? threadTurnsMemory({
+      stored: sharedThreadLoad.then((t) =>
+        t && threadIsOpen(t, Date.now())
+          ? { lastSeq: t.last_seq, lastTurn: t.last_turn ?? null, firstText: t.first_text ?? null }
+          : null
+      ),
+      recent: recentTurns,
+      // The shared load already proved the thread is this user's.
+      fetch: (from, limit) => threadStore.turnsFrom!(userId, threadReq!.id, from, limit, { owned: true }),
+    })
+    : null;
+  let warmTimer: ReturnType<typeof setTimeout> | undefined;
+  const warmThreadP: Promise<WarmThread | null> = turnsMem && sharedThreadLoad
+    ? Promise.race([
+      // The first message only while its card is the one on screen and
+      // nothing of the thread was added (firstMessageSafe).
+      sharedThreadLoad.then((t) => warmThreadFrom(turnsMem, firstMessageSafe(t, threadReq!.card_id))).catch(() => null),
+      new Promise<null>((r) => {
+        warmTimer = setTimeout(() => r(null), 800);
+      }),
+    ]).finally(() => clearTimeout(warmTimer))
+    : Promise.resolve(null);
+  // The user's food memory for the warm reads: the same read the parse's
+  // memory makes, through THEIR client (RLS keeps it theirs). Loaded once,
+  // by the agent run (foodBar.ts startFoodAgent).
+  const foodWarm: FoodBarWarm | undefined = mayReachLaterAgent
+    ? {
+      // One load for the request, shared with the parse's own memory read
+      // (makeParseDeps sharedMemory), so build_recipe never waits on a second.
+      ...(USER_FOOD_MEMORY ? { memory: memoryEntriesOnce, byOrigin: FOOD_ORIGIN_TRUST === "on" } : {}),
+      // Memory matches exist only where the parse asks Jev about memory.
+      matches: USER_FOOD_MEMORY && !!JEV_API_KEY,
+      ...(warmThreadsOn
+        ? {
+          thread: warmThreadP,
+          ...(turnsMem ? { readThread: (from: number, limit: number) => turnsMem.read(from, limit) } : {}),
+          ...(threadStore?.searchThreads
+            ? {
+              searchThreads: (words: string[], limit: number) =>
+                threadStore.searchThreads!(userId, words, {
+                  excludeThreadId: threadReq!.id,
+                  sinceIso: new Date(Date.now() - THREAD_KEPT_DAYS * 86_400_000).toISOString(),
+                  limit,
+                }),
+            }
+            : {}),
+        }
+        : {}),
+    }
+    : undefined;
   /** After the answer is sent: this message's turns and card change, as one
    *  conditional write on the app's base version. Never on the hot path. */
   // The agent (startFoodAgent) and this write read the SAME threadP, so they
@@ -3985,9 +4112,15 @@ async function handleParseMealRequest(args: {
       pendingMeal: foodContext.pendingMeal,
       card: card.length ? { lines: card, total: fromApp.total, previousText: previousText ?? null, previousWords, previousItems } : null,
       parseDeps: (fb?: FoodBarTraceCollector) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
+      // The agent's own instructions take the region's examples (Precise only).
+      region: FOOD_REGION_RULES === "on" && isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier })
+        ? readTimezone(userClient).then(foodRegionForTimezone) as Promise<FoodRegion | null>
+        : null,
       logUsage: (row: FoodBarUsageRow) => void logTokenUsage(admin, row),
       thread: threadP,
       fbTrace,
+      // FOOD_WARM_MEMORY=on: used by later-mode runs only (startFoodAgent).
+      ...(foodWarm ? { warm: foodWarm } : {}),
     };
     // Step 2 (FOOD_AGENT_LATER=on, Precise only): a later message of the
     // thread goes to the agent whatever the router says. Only a first message

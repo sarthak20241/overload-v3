@@ -51,10 +51,12 @@ import {
 import { foodLabel, hostOf, parseSuggestion, runTavilyLookup, suggestSearchPayload, withPrep } from "./tavilyLookup.ts";
 import { otherBrandRows } from "./brandCheck.ts";
 import { matchOurSources } from "./ourSources.ts";
+import { type FoodRegion, regionalizePrompt, regionBlock } from "./regionRules.ts";
 import { applyJudgement, judgeThorough, type ThoroughMatchMode, wantsBrandWeb } from "./thoroughMatch.ts";
 import {
+  energyAmountAsStated,
   fillStated,
-  honourLineTotals,
+  fitPortionToStated,
   readStated,
   readStatedTotal,
   remainingTotal,
@@ -1183,6 +1185,14 @@ export interface ParseMealDeps {
    *  searchCountry.ts). When present its answer wins, null included: null
    *  means "no boost", which is right for a zone we cannot place. */
   resolveSearchCountry?(): Promise<string | null>;
+  /** FOOD_REGION_RULES=on: the user's food region from their time zone
+   *  (regionRules.ts foodRegionForTimezone; null when it cannot be placed).
+   *  Precise only: its prompts carry only that region's rules and examples.
+   *  Absent: the switch is off and every prompt is today's. */
+  foodRegion?(): Promise<FoodRegion | null>;
+  /** Set by runParseMeal once foodRegion has answered, for the steps that
+   *  read it (Jev's kind question in our sources). Never set by a caller. */
+  regionRules?: { region: FoodRegion | null };
   /** Thorough: Jev checks that the catalog row IS the food named, the same
    *  check Precise runs before the web (thoroughMatch.ts). "shadow" asks and
    *  only records; "on" serves Jev's row, or no row so decide estimates.
@@ -2728,7 +2738,51 @@ Output: {"declined": true, "decline_message": "That's training, not a meal. Tell
 
 const EXTRACT_SYSTEM_SMART = EXTRACT_SYSTEM_HEAD + EXTRACT_NO_NUTRITION + EXTRACT_SHARED_RULES;
 
-export function buildDecideSystemPrompt(input: ParseMealInput): string {
+/** How long a Precise parse waits for the user's region (FOOD_REGION_RULES).
+ *  The read starts at request time, so it is normally done by then. */
+export const REGION_WAIT_MS = 400;
+
+/** The user's region, or null when the read fails or takes longer than
+ *  `ms`. The timer is cleared either way. `timedOut` says which, for the trace. */
+export async function waitForRegion(
+  read: () => Promise<FoodRegion | null>,
+  ms = REGION_WAIT_MS,
+): Promise<{ region: FoodRegion | null; timedOut: boolean }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((r) => { timer = setTimeout(() => r("late"), ms); });
+  try {
+    const got = await Promise.race([read().catch(() => null), late]);
+    return got === "late" ? { region: null, timedOut: true } : { region: got, timedOut: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The extract prompt outside Quick, with the correction rules when a card is
+ *  on screen. With region rules (FOOD_REGION_RULES, Precise only) the India
+ *  rules leave the shared text, this region's examples go in, and the
+ *  region's rules go after the shared text (only the pending-meal notes come
+ *  later), so the shared part stays one stable text. */
+export function preciseExtractSystem(hasPrevious: boolean, regionRules?: { region: FoodRegion | null }): string {
+  const base = hasPrevious ? EXTRACT_SYSTEM_SMART + EXTRACT_CORRECTION_RULES : EXTRACT_SYSTEM_SMART;
+  if (!regionRules) return base;
+  return regionalizePrompt("extract", base, regionRules.region) + regionBlock("extract", regionRules.region);
+}
+
+/** buildDecideSystemPrompt with region rules (FOOD_REGION_RULES, Precise
+ *  only): the shared rules lose the India rules and take this region's
+ *  examples, and the region block sits late, just before the user's own
+ *  context. Without regionRules: today's prompt, unchanged. */
+export function buildDecideSystemPrompt(input: ParseMealInput, regionRules?: { region: FoodRegion | null }): string {
+  const today = decideSystemToday(input);
+  if (!regionRules) return today;
+  const at = today.indexOf("\n<user_context>");
+  const shared = at >= 0 ? today.slice(0, at) : today;
+  const rest = at >= 0 ? today.slice(at) : "";
+  return regionalizePrompt("decide", shared, regionRules.region) + regionBlock("decide", regionRules.region).replace(/\n$/, "") + rest;
+}
+
+function decideSystemToday(input: ParseMealInput): string {
   const hint = input.mealHint ?? mealForHour(input.localHour);
 
   // I13: frequency first, with the count and the USUAL amount. "last: 1 serving"
@@ -3899,7 +3953,7 @@ async function resolveOneItem(
     const pm = deps.preciseMatch;
     const ours = pm && pm.mode !== "off" && deps.jev
       ? matchOurSources(
-        { jev: deps.jev, findCandidates: pm.findCandidates, log: deps.log },
+        { jev: deps.jev, findCandidates: pm.findCandidates, log: deps.log, regionRules: deps.regionRules },
         { name: item.name, brand: item.brand ?? null },
       )
       : null;
@@ -4934,7 +4988,9 @@ export interface MemoryStamp {
   swap?: { foods: MemoryFood[]; timeZone?: string | null };
 }
 
-const MEMORY_SOURCES = new Set<ParsedItem["source"]>(["catalog", "off", "fatsecret", "web", "estimate", "manual"]);
+// "recipe": a remembered dish built from its parts is served as one, with its
+// parts (memoryStamp), never relabelled as a catalog row.
+const MEMORY_SOURCES = new Set<ParsedItem["source"]>(["catalog", "off", "fatsecret", "web", "estimate", "manual", "recipe"]);
 
 /** The ephemeral candidate id for a remembered food: unique per food, so the
  *  final line maps back to it exactly, and stripped before the client sees it. */
@@ -5240,7 +5296,10 @@ export interface StatedCapture {
   /** For the whole meal (extract's stated_meal_total). */
   meal: StatedTotal | null;
   /** For one line each: totals statedFor could not put on a per-100 basis. */
-  lines: { name: string; correctsFoodName: string | null; totals: StatedTotal }[];
+  lines: { name: string; correctsFoodName: string | null; totals: StatedTotal; amountTyped: boolean }[];
+  /** A message of one food: whether the user named its amount. A meal total
+   *  on that one line sets its portion the way a line total does. */
+  soleAmountTyped?: boolean | null;
   /** Numbers the user wrote that could not be used, with why. Traced, so "my
    *  number was ignored" can be answered from the trace. */
   ignored?: string[];
@@ -5255,13 +5314,21 @@ export function captureStatedTotals(extMealTotal: unknown, extItems: ExtractedIt
     // partial panel is filled from a row that is the right food.
     if (!it.stated || statedFor(it)) continue;
     const totals = statedLineTotal(it.stated, it.quantity, MASS_UNITS.has(it.unit.trim().toLowerCase()));
-    if (totals) lines.push({ name: foodLabel(it), correctsFoodName: it.correctsFoodName ?? null, totals });
+    if (totals) lines.push({ name: foodLabel(it), correctsFoodName: it.correctsFoodName ?? null, totals, amountTyped: amountTyped(it) });
     else ignored.push(`${foodLabel(it).slice(0, 60)}: ${it.stated.basis} numbers could not be used (past what any food carries, or a serving with no weight)`);
   }
   const meal = readStatedTotal(extMealTotal);
   const rawMeal = extMealTotal && typeof extMealTotal === "object" ? Object.values(extMealTotal as Record<string, unknown>) : [];
   if (!meal && rawMeal.some((v) => typeof v === "number")) ignored.push("meal total past what any meal carries");
-  return { meal, lines, ignored };
+  return { meal, lines, ignored, soleAmountTyped: extItems.length === 1 ? amountTyped(extItems[0]) : null };
+}
+
+/** Did the user name an amount? The extraction writes 1 "serving" when the
+ *  text states none (EXTRACT_NO_NUTRITION). A heuristic: a user who typed
+ *  "1 serving" in so many words reads the same, so that line is shown by the
+ *  weight their kcal works out to, which is still their serving. */
+function amountTyped(it: Pick<ExtractedItem, "quantity" | "unit">): boolean {
+  return !(it.quantity === 1 && it.unit.trim().toLowerCase() === "serving");
 }
 
 /** The one line a named total belongs to, or -1 when it is not exactly one. */
@@ -5304,8 +5371,10 @@ export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, step
       steps.push({ iter: 8, tool: "user_stated_total", input: { line: t.name }, result: { applied: false, reason: "no single line by that name" } });
       continue;
     }
+    // The user's numbers at a portion that fits them: the food keeps its
+    // density, the weight follows (fitPortionToStated).
     out[i] = {
-      ...honourLineTotals(out[i], t.totals),
+      ...fitPortionToStated(out[i], t.totals, t.amountTyped),
       source: "manual",
       origin: "user_typed",
       copied_from: undefined,
@@ -5328,7 +5397,7 @@ export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, step
     const target = left ?? meal;
     if (pool.length === 1 && out.length === 1) {
       out[0] = {
-        ...honourLineTotals(out[0], meal),
+        ...fitPortionToStated(out[0], meal, cap.soleAmountTyped ?? true),
         source: "manual",
         origin: "user_typed",
         copied_from: undefined,
@@ -6719,6 +6788,19 @@ async function runParseMealCore(
   const tier = resolveParseTier(input.mode, hasPrevious);
   const fastMode = tier === "fast";
   const superMode = tier === "precise";
+  // Region rules (FOOD_REGION_RULES): Precise only. The region read started
+  // when the deps were made, so this rarely waits. A failed read is no region.
+  // A read slower than REGION_WAIT_MS is no region for this parse: a region
+  // must never hold up the log.
+  const regionRead = superMode && deps.foodRegion ? await waitForRegion(deps.foodRegion) : null;
+  const regionRules = regionRead ? { region: regionRead.region } : undefined;
+  if (regionRules) {
+    deps = { ...deps, regionRules };
+    steps.push({
+      iter: 0, tool: "region_rules", input: { tier },
+      result: { region: regionRules.region, ...(regionRead!.timedOut ? { timed_out: true } : {}) },
+    });
+  }
   // First-shot reads overlap extraction. Follow-ups wait until extraction has
   // identified food additions/replacements, so questions and research requests
   // do not read memory only to discard it.
@@ -6776,9 +6858,7 @@ async function runParseMealCore(
     system: cacheableSystem(
       (fastMode
         ? FAST_EXTRACT_SYSTEM
-        : hasPrevious
-        ? EXTRACT_SYSTEM_SMART + EXTRACT_CORRECTION_RULES
-        : EXTRACT_SYSTEM_SMART) + (input.pendingMeal
+        : preciseExtractSystem(hasPrevious, regionRules)) + (input.pendingMeal
           ? "\nThe message contains an unlogged pending_meal and the user's clarification. Re-extract ALL foods from pending_meal.text, applying the clarification to the questioned item. Preserve amounts and meal sections for every other food. This is one meal request, not an additional log. The question is context, not a food to extract: a food named only in the question is an example Drona gave, never something the user ate. " +
             PENDING_MUST_LOG
           : input.mustLog
@@ -6911,8 +6991,15 @@ async function runParseMealCore(
       // NOT capped at 100: for a mass/volume unit the quantity IS the amount,
       // so "500 ml milk" or "250 g chicken" would be silently truncated. The
       // bound only exists to stop absurd input reaching the model.
-      const quantity = coerceQuantity(o.quantity);
-      const unit = typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving";
+      // An amount in energy ("150 cals of atta bread" as 150 x "kcal") is the
+      // user's kcal for the line, never a count of portions.
+      const read = energyAmountAsStated(
+        coerceQuantity(o.quantity),
+        typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving",
+        readStated(o.stated),
+      );
+      const quantity = read.quantity;
+      const unit = read.unit;
       // All five or nothing: a partial estimate is not an estimate, and a
       // missing field silently read as 0 is how zero-kcal lines shipped once
       // before.
@@ -6960,7 +7047,7 @@ async function runParseMealCore(
           ? o.meal
           : null,
         est: chained ? chained.est : rawEst,
-        stated: readStated(o.stated),
+        stated: read.stated,
         savedMeal: typeof o.saved_meal === "string" && o.saved_meal.trim() ? o.saved_meal.trim().slice(0, 120) : null,
       }];
     });
@@ -7965,7 +8052,7 @@ async function runParseMealCore(
       iterations: anthropicCalls,
     };
   }
-  const decideSystem = buildDecideSystemPrompt(input);
+  const decideSystem = buildDecideSystemPrompt(input, regionRules);
   const decidePayload = {
     // The same clamped text extract saw. Decide reads this to place quantities
     // and sections against the user's own words, so feeding it a shorter cut

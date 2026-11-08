@@ -22,7 +22,7 @@
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { CASES } from "./cases.ts";
-import { grade } from "./grade.ts";
+import { grade, linesOf } from "./grade.ts";
 import type { FoodBoxCase, Grade, Outcome } from "./types.ts";
 
 export interface Adapter {
@@ -113,6 +113,29 @@ await Promise.all(Array.from({ length: Math.min(CONCURRENCY, picked.length) }, w
 const ran = results.filter((r) => r.g);
 const passed = ran.filter((r) => r.g!.pass);
 console.log(`\nFood box eval, adapter=${adapter.name}: ${passed.length}/${ran.length} passed, ${results.length - ran.length} skipped (no ${adapter.name} outcome)\n`);
+
+// kcal error: each card line a case gives a closed kcal range for, against
+// the middle of that range. A line with no match counts as no number, not 0.
+{
+  const errs: number[] = [];
+  for (const r of ran) {
+    if (!r.out) continue;
+    const card = linesOf(r.out);
+    for (const spec of r.c.expect.lines ?? []) {
+      const [lo, hi] = spec.kcal ?? [null, null];
+      if (lo == null || hi == null) continue;
+      const mid = (lo + hi) / 2;
+      for (const l of card.filter((x) => new RegExp(spec.match, "i").test(x.name))) {
+        if (mid > 0) errs.push(Math.abs(l.kcal - mid) / mid);
+      }
+    }
+  }
+  errs.sort((a, b) => a - b);
+  const pct = (x: number) => `${Math.round(x * 100)}%`;
+  if (errs.length) {
+    console.log(`kcal error vs range middle: median ${pct(errs[Math.floor(errs.length / 2)])}, mean ${pct(errs.reduce((a, b) => a + b, 0) / errs.length)} over ${errs.length} lines\n`);
+  }
+}
 
 for (const { c, g } of results) {
   if (!g) {

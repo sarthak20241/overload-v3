@@ -27,6 +27,7 @@
 import type { FoodBarThread } from "./foodBar.ts";
 import type { CardLine } from "./foodContext.ts";
 import type { MealType, ParsedItem } from "./parseMeal.ts";
+import { parseRecipe, type RecipePart } from "../_shared/foodOrigin.ts";
 
 export type FoodThreadsMode = "off" | "shadow" | "on";
 
@@ -62,6 +63,9 @@ export interface ThreadLine {
   confidence?: string | null;
   note?: string | null;
   meal_type?: MealType | null;
+  /** A dish built from its parts (source "recipe"): its parts, so a restored
+   *  or copied line still has them (food_card_lines.recipe). */
+  recipe?: RecipePart[] | null;
 }
 
 export interface StoredCard {
@@ -92,6 +96,13 @@ export interface StoredThread {
   /** Highest turn seq written so far (0 for none). */
   last_seq: number;
   cards: StoredCard[];
+  /** Read only when load was asked for `turns` (FOOD_WARM_MEMORY): the
+   *  newest stored turn, and turn 1's text. */
+  last_turn?: ThreadTurn | null;
+  first_text?: string | null;
+  /** The turn-1 read failed (so first_text null means "not read", not "no
+   *  first message"). */
+  first_text_error?: string | null;
 }
 
 /** What the app says about its thread with a message (body.thread). */
@@ -194,6 +205,7 @@ export function itemsAsLines(items: ParsedItem[], prev: ThreadLine[] | null, use
     confidence: i.confidence ?? null,
     note: i.assumption ?? null,
     meal_type: i.meal_type ?? null,
+    recipe: i.source === "recipe" ? parseRecipe(i.recipe) : null,
   })), usedUpTo);
 }
 
@@ -216,6 +228,7 @@ export function cardAsLines(card: CardLine[], prev: ThreadLine[] | null = null, 
     confidence: l.confidence ?? null,
     note: l.assumption ?? null,
     meal_type: l.meal_type ?? null,
+    recipe: l.source === "recipe" ? parseRecipe(l.recipe) : null,
   })), usedUpTo);
 }
 
@@ -236,11 +249,16 @@ export function lineAsItem(l: ThreadLine, mealDefault: MealType): ParsedItem {
     carb_g: l.carb_g ?? 0,
     fat_g: l.fat_g ?? 0,
     fiber_g: l.fiber_g ?? null,
-    source: src === "catalog" || src === "off" || src === "fatsecret" || src === "web" || src === "estimate" ? src : "manual",
+    source: src === "catalog" || src === "off" || src === "fatsecret" || src === "web" || src === "estimate" || src === "recipe"
+      ? src
+      : "manual",
     assumption: l.note ?? null,
     confidence: l.confidence === "high" || l.confidence === "low" ? l.confidence : "medium",
     meal_type: l.meal_type ?? mealDefault,
     ...(l.said_name ? { said_name: l.said_name } : {}),
+    // Parts only on a recipe line: a line that is something else now would
+    // carry parts that no longer add up to it.
+    ...(src === "recipe" && l.recipe?.length ? { recipe: l.recipe } : {}),
   };
 }
 
@@ -339,7 +357,7 @@ export function threadIndexLine(t: StoredThread | null, onScreenCardId: string |
 
 export interface FoodThreadStore {
   /** The thread with each card's current lines, or null (missing, or not this user's). */
-  load(userId: string, threadId: string): Promise<StoredThread | null>;
+  load(userId: string, threadId: string, opts?: { turns?: boolean }): Promise<StoredThread | null>;
   /** Create the thread with the app's id when it does not exist yet. False
    *  when the id is taken by another user's thread. */
   ensure(userId: string, threadId: string): Promise<boolean>;
@@ -361,7 +379,60 @@ export interface FoodThreadStore {
   /** Mark a card of this thread (a restored card's source becomes 'replaced'). */
   setCardStatus(threadId: string, cardId: string, status: StoredCard["status"]): Promise<void>;
   touch(threadId: string): Promise<void>;
+  // FOOD_WARM_MEMORY (foodWarmMemory.ts): the warm reads. Optional, so a
+  // store without them simply offers none of them.
+  /** Up to `limit` turns of THIS user's thread from `fromSeq`, oldest first.
+   *  Null when the thread is missing or not this user's. */
+  turnsFrom?(userId: string, threadId: string, fromSeq: number, limit: number, opts?: { owned?: boolean }): Promise<ThreadTurn[] | null>;
+  /** This user's other threads still kept (last_at since `sinceIso`) whose
+   *  turns hold any of `words`, best first; card lines read for those only. */
+  searchThreads?(userId: string, words: string[], opts: { excludeThreadId: string | null; sinceIso: string; limit: number }): Promise<ThreadHit[]>;
 }
+
+/** What the hot context takes from the thread (FOOD_WARM_MEMORY). */
+export interface WarmThread {
+  first: string | null;
+  /** Turns stored so far (the newest seq). */
+  turns: number;
+}
+
+export interface ThreadTurn {
+  seq: number;
+  role: "user" | "drona";
+  text: string;
+}
+
+/** One earlier thread search_threads found. */
+export interface ThreadHit {
+  thread_id: string;
+  /** When it started, YYYY-MM-DD (UTC). */
+  date: string;
+  first: string | null;
+  /** Its meal cards' current lines, "Name, 171 kcal". */
+  lines: string[];
+  /** How many of the words its turns hold. */
+  score: number;
+}
+
+/** search_threads: turn hits read per round, and the most one thread counts. */
+export const SEARCH_TURN_ROWS = 300;
+export const SEARCH_TURNS_PER_THREAD = 20;
+
+/** A search word: lower case letters and digits only, so it is safe inside a
+ *  PostgREST filter. */
+export function searchWords(query: string): string[] {
+  const words = query.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 3);
+  return [...new Set(words)].slice(0, 4);
+}
+
+/** How many of `words` a thread's turns and line names hold. */
+function wordScore(texts: string[], words: string[]): number {
+  const all = texts.join(" ").toLowerCase();
+  return words.filter((w) => all.includes(w)).length;
+}
+
+const lineText = (name: string, kcal: unknown) => `${name.replace(/\s+/g, " ").trim()}, ${Math.round(Number(kcal) || 0)} kcal`;
 
 type Db = {
   // deno-lint-ignore no-explicit-any
@@ -372,7 +443,7 @@ type Db = {
 
 const num = (v: unknown) => (v === null || v === undefined || !Number.isFinite(Number(v)) ? null : Number(v));
 
-function rowAsLine(r: Record<string, unknown>): ThreadLine {
+export function rowAsLine(r: Record<string, unknown>): ThreadLine {
   return {
     line_id: String(r.line_id),
     name: String(r.name ?? ""),
@@ -390,18 +461,25 @@ function rowAsLine(r: Record<string, unknown>): ThreadLine {
     confidence: typeof r.confidence === "string" ? r.confidence : null,
     note: typeof r.note === "string" ? r.note : null,
     meal_type: typeof r.meal_type === "string" ? r.meal_type as MealType : null,
+    // Absent on a row written before 20261108120000, or not a recipe: null.
+    recipe: parseRecipe(r.recipe),
   };
 }
 
 /** The tables, through the service-role client (no client can reach them). */
 export function supabaseThreadStore(admin: Db): FoodThreadStore {
   return {
-    async load(userId, threadId) {
+    async load(userId, threadId, opts) {
       const { data: t, error } = await admin.from("food_threads").select("id, user_id, status, last_at").eq("id", threadId).maybeSingle();
       if (error || !t || t.user_id !== userId) return null;
-      const [{ data: cards, error: cardsErr }, { data: seq, error: seqErr }] = await Promise.all([
+      // opts.turns (FOOD_WARM_MEMORY): the newest turn's role and text ride on
+      // the same seq read, and turn 1's text comes beside it. Without it, the
+      // reads are exactly as before.
+      const turns = !!opts?.turns;
+      const [{ data: cards, error: cardsErr }, { data: seq, error: seqErr }, firstRes] = await Promise.all([
         admin.from("food_cards").select("id, kind, version, status, meal_type, created_at, max_line_no").eq("thread_id", threadId).order("created_at"),
-        admin.from("food_thread_turns").select("seq").eq("thread_id", threadId).order("seq", { ascending: false }).limit(1),
+        admin.from("food_thread_turns").select(turns ? "seq, role, text" : "seq").eq("thread_id", threadId).order("seq", { ascending: false }).limit(1),
+        turns ? admin.from("food_thread_turns").select("text").eq("thread_id", threadId).eq("seq", 1).limit(1) : Promise.resolve(null),
       ]);
       // Thrown, never read as "no cards" or "no turns": either would lose a
       // card write or a restore (the same rule as the lines read below).
@@ -442,6 +520,15 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
         status: t.status === "closed" ? "closed" : "open",
         last_at: String(t.last_at),
         last_seq: Number((seq ?? [])[0]?.seq ?? 0),
+        ...(turns
+          ? {
+            last_turn: (seq ?? [])[0]
+              ? { seq: Number(seq[0].seq), role: seq[0].role === "drona" ? "drona" as const : "user" as const, text: String(seq[0].text ?? "") }
+              : null,
+            first_text: !firstRes || firstRes.error || typeof firstRes.data?.[0]?.text !== "string" ? null : firstRes.data[0].text,
+            first_text_error: firstRes?.error ? String(firstRes.error.message ?? "error").slice(0, 160) : null,
+          }
+          : {}),
         cards: list.map((c) => {
           const now = current(c);
           const prev = last.get(String(c.id));
@@ -535,6 +622,94 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
     },
     async setCardStatus(threadId, cardId, status) {
       await admin.from("food_cards").update({ status, updated_at: new Date().toISOString() }).eq("id", cardId).eq("thread_id", threadId);
+    },
+    async turnsFrom(userId, threadId, fromSeq, limit, opts) {
+      // opts.owned: the caller's own load of this thread already proved it is
+      // this user's (load returns null otherwise), so no second check.
+      if (!opts?.owned) {
+        const { data: t, error } = await admin.from("food_threads").select("user_id").eq("id", threadId).maybeSingle();
+        if (error) throw new Error(`food_threads: ${error.message}`);
+        if (!t || t.user_id !== userId) return null;
+      }
+      const res = await admin.from("food_thread_turns").select("seq, role, text").eq("thread_id", threadId)
+        .gte("seq", fromSeq).order("seq").limit(limit);
+      if (res.error) throw new Error(`food_thread_turns: ${res.error.message}`);
+      return ((res.data ?? []) as Record<string, unknown>[]).map((r) => ({
+        seq: Number(r.seq), role: r.role === "drona" ? "drona" as const : "user" as const, text: String(r.text ?? ""),
+      }));
+    },
+    async searchThreads(userId, words, opts) {
+      if (!words.length) return [];
+      // This user's threads only (service role: the filter IS the access rule).
+      let q = admin.from("food_threads").select("id, started_at, last_at").eq("user_id", userId).gte("last_at", opts.sinceIso);
+      if (opts.excludeThreadId) q = q.neq("id", opts.excludeThreadId);
+      const { data: threads, error } = await q.order("last_at", { ascending: false }).limit(50);
+      if (error) throw new Error(`food_threads: ${error.message}`);
+      const list = (threads ?? []) as Record<string, unknown>[];
+      if (!list.length) return [];
+      const ids = list.map((t) => String(t.id));
+      // Words are [a-z0-9] only (searchWords), so they are safe in the filter.
+      // Threads are scored on their turns' text first; cards and first
+      // messages are read for the top `limit` threads only, so the card read
+      // stays small however many cards the user's threads hold.
+      // At most SEARCH_TURNS_PER_THREAD hits per thread count: a round that
+      // fills the row limit is read again without the threads already at the
+      // cap, so one chatty thread cannot hide the others (at most 3 rounds).
+      const turnsBy = new Map<string, string[]>();
+      const capped = new Set<string>();
+      for (let round = 0; round < 3; round++) {
+        const open = ids.filter((id) => !capped.has(id));
+        if (!open.length) break;
+        const turns = await admin.from("food_thread_turns").select("thread_id, text").in("thread_id", open)
+          .or(words.map((w) => `text.ilike.%${w}%`).join(",")).limit(SEARCH_TURN_ROWS);
+        if (turns.error) throw new Error(`food_thread_turns: ${turns.error.message}`);
+        const rows = (turns.data ?? []) as Record<string, unknown>[];
+        for (const r of rows) {
+          const th = String(r.thread_id);
+          const got = turnsBy.get(th) ?? [];
+          if (got.length < SEARCH_TURNS_PER_THREAD) turnsBy.set(th, [...got, String(r.text ?? "")]);
+          if ((turnsBy.get(th)?.length ?? 0) >= SEARCH_TURNS_PER_THREAD) capped.add(th);
+        }
+        if (rows.length < SEARCH_TURN_ROWS) break;
+      }
+      // Stable sort: equal scores keep list order, newest first.
+      const top = list.map((t) => ({ t, score: wordScore(turnsBy.get(String(t.id)) ?? [], words) }))
+        .filter((x) => x.score > 0).sort((a, b) => b.score - a.score).slice(0, opts.limit);
+      if (!top.length) return [];
+      const topIds = top.map((x) => String(x.t.id));
+      const [cards, firsts] = await Promise.all([
+        admin.from("food_cards").select("id, thread_id, version").in("thread_id", topIds).eq("kind", "meal"),
+        admin.from("food_thread_turns").select("thread_id, text").in("thread_id", topIds).eq("seq", 1),
+      ]);
+      if (cards.error) throw new Error(`food_cards: ${cards.error.message}`);
+      const cardRows = (cards.data ?? []) as Record<string, unknown>[];
+      let lineRows: Record<string, unknown>[] = [];
+      if (cardRows.length) {
+        // Each card's CURRENT version only, as load() reads them.
+        const res = await admin.from("food_card_lines").select("card_id, version, name, kcal")
+          .or(cardRows.map((c) => `and(card_id.eq.${c.id},version.eq.${Number(c.version)})`).join(","))
+          .order("line_no");
+        if (res.error) throw new Error(`food_card_lines: ${res.error.message}`);
+        lineRows = (res.data ?? []) as Record<string, unknown>[];
+      }
+      const threadOf = new Map(cardRows.map((c) => [String(c.id), String(c.thread_id)]));
+      const linesBy = new Map<string, string[]>();
+      for (const l of lineRows) {
+        const th = threadOf.get(String(l.card_id));
+        if (!th) continue;
+        linesBy.set(th, [...(linesBy.get(th) ?? []), lineText(String(l.name ?? ""), l.kcal)]);
+      }
+      const firstBy = new Map(((firsts.data ?? []) as Record<string, unknown>[]).map((r) => [String(r.thread_id), String(r.text ?? "")]));
+      return top.map(({ t, score }) => {
+        const id = String(t.id);
+        return {
+          thread_id: id,
+          date: String(t.started_at ?? t.last_at ?? "").slice(0, 10),
+          first: firstBy.get(id) ?? null,
+          lines: linesBy.get(id) ?? [],
+          score,
+        };
+      });
     },
   };
 }
@@ -693,8 +868,8 @@ export async function recordThreadMessage(store: FoodThreadStore, args: {
 
 /** A FoodThreadStore in memory, with the database's one conditional write
  *  rule (food_card_write). Used by foodThreads.test.ts and the food box eval. */
-export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<string, { user_id: string; status: string; last_at: string; turns: { seq: number; role: string; text: string; client_id?: string | null }[] }>; cards: Map<string, { thread_id: string; kind: "meal" | "save"; version: number; status: StoredCard["status"]; meal_type: MealType | null; created_at: string; last_client_id: string | null; max_line_no: number; versions: Map<number, ThreadLine[]> }> } } {
-  const threads = new Map<string, { user_id: string; status: string; last_at: string; turns: { seq: number; role: string; text: string; client_id?: string | null }[] }>();
+export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<string, { user_id: string; status: string; last_at: string; started_at?: string; turns: { seq: number; role: string; text: string; client_id?: string | null }[] }>; cards: Map<string, { thread_id: string; kind: "meal" | "save"; version: number; status: StoredCard["status"]; meal_type: MealType | null; created_at: string; last_client_id: string | null; max_line_no: number; versions: Map<number, ThreadLine[]> }> } } {
+  const threads = new Map<string, { user_id: string; status: string; last_at: string; started_at?: string; turns: { seq: number; role: string; text: string; client_id?: string | null }[] }>();
   const cards = new Map<string, { thread_id: string; kind: "meal" | "save"; version: number; status: StoredCard["status"]; meal_type: MealType | null; created_at: string; last_client_id: string | null; max_line_no: number; versions: Map<number, ThreadLine[]> }>();
   let tick = 0;
   const stamp = () => new Date(Date.now() + tick++).toISOString();
@@ -713,15 +888,23 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
   };
   return {
     dump: () => ({ threads, cards }),
-    async load(userId, threadId) {
+    async load(userId, threadId, opts) {
       const t = threads.get(threadId);
       if (!t || t.user_id !== userId) return null;
+      const sorted = [...t.turns].sort((a, b) => a.seq - b.seq);
+      const newest = sorted.at(-1);
       return {
         id: threadId,
         user_id: t.user_id,
         status: t.status === "closed" ? "closed" : "open",
         last_at: t.last_at,
         last_seq: t.turns.at(-1)?.seq ?? 0,
+        ...(opts?.turns
+          ? {
+            last_turn: newest ? { seq: newest.seq, role: newest.role === "drona" ? "drona" as const : "user" as const, text: newest.text } : null,
+            first_text: sorted.find((x) => x.seq === 1)?.text ?? null,
+          }
+          : {}),
         cards: [...cards].filter(([, c]) => c.thread_id === threadId).map(([id, c]) => {
           // The newest version with lines, the same as the database read.
           const withLines = [...c.versions].filter(([, ls]) => ls.length > 0).sort((a, b) => b[0] - a[0])[0];
@@ -737,7 +920,8 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
     async ensure(userId, threadId) {
       const t = threads.get(threadId);
       if (t) return t.user_id === userId;
-      threads.set(threadId, { user_id: userId, status: "open", last_at: stamp(), turns: [] });
+      const at = stamp();
+      threads.set(threadId, { user_id: userId, status: "open", last_at: at, started_at: at, turns: [] });
       return true;
     },
     async addTurns(threadId, fromSeq, turns, clientId) {
@@ -781,6 +965,35 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
       const c = cards.get(cardId);
       if (c && c.thread_id === threadId) c.status = status;
     },
+    async turnsFrom(userId, threadId, fromSeq, limit, _opts) {
+      const t = threads.get(threadId);
+      if (!t || t.user_id !== userId) return null;
+      return [...t.turns].sort((a, b) => a.seq - b.seq).filter((x) => x.seq >= fromSeq).slice(0, limit)
+        .map((x) => ({ seq: x.seq, role: x.role === "drona" ? "drona" as const : "user" as const, text: x.text }));
+    },
+    async searchThreads(userId, words, opts) {
+      if (!words.length) return [];
+      const mine = [...threads].filter(([id, t]) => t.user_id === userId && id !== opts.excludeThreadId && t.last_at >= opts.sinceIso)
+        .sort((a, b) => b[1].last_at.localeCompare(a[1].last_at));
+      // The same order as the database store: turns' text first, then the
+      // top threads' cards.
+      const hitsOf = (t: { turns: { text: string }[] }) =>
+        t.turns.map((x) => x.text).filter((x) => words.some((w) => x.toLowerCase().includes(w))).slice(0, SEARCH_TURNS_PER_THREAD);
+      const top = mine.map(([id, t]) => ({ id, t, score: wordScore(hitsOf(t), words) }))
+        .filter((x) => x.score > 0).sort((a, b) => b.score - a.score).slice(0, opts.limit);
+      return top.map(({ id, t, score }) => {
+        const lines = [...cards].filter(([, c]) => c.thread_id === id && c.kind === "meal")
+          .flatMap(([, c]) => (c.versions.get(c.version) ?? []).map((l) => lineText(l.name, l.kcal)));
+        const sorted = [...t.turns].sort((a, b) => a.seq - b.seq);
+        return {
+          thread_id: id,
+          date: (t.started_at ?? t.last_at).slice(0, 10),
+          first: sorted.find((x) => x.seq === 1)?.text ?? null,
+          lines,
+          score,
+        };
+      });
+    },
   };
 }
 
@@ -794,8 +1007,11 @@ export async function threadForAgent(
   userId: string,
   req: ThreadRequest,
   nowMs = Date.now(),
+  /** The thread already being read for this request (FOOD_WARM_MEMORY shares
+   *  one load with the warm reads). Absent: read here, as before. */
+  loaded?: Promise<StoredThread | null>,
 ): Promise<FoodBarThread | null> {
-  const t = await store.load(userId, req.id).catch(() => null);
+  const t = await (loaded ?? store.load(userId, req.id)).catch(() => null);
   // A thread the nightly job closed, or one idle past the line: no earlier
   // cards. The message is still written to it (recordThreadMessage).
   if (!t || !threadIsOpen(t, nowMs)) return null;

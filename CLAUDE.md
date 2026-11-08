@@ -44,6 +44,9 @@ EVAL_VIA_CLI=1 npx tsx scripts/program-activity-eval/run.mts
 # answers? Same CLI rule.
 EVAL_VIA_CLI=1 npx tsx scripts/lean-context-eval/run.mts
 
+# Region rules (FOOD_REGION_RULES=on, Precise): EVAL_REGION=india|us|uk sets the
+# time zone for both evals; EVAL_PRECISE=1 runs parse-meal-eval in Precise.
+# Both print a kcal error line (against each kcal range's middle).
 # Food box (Precise): 58 cases (44 recorded conversations, 14 with no recording) graded on the outcome
 # (card kept, lines not lost, saves with macros, no false claims). ADAPTER=recorded grades
 # what the live box served; no model call. Plan: .planning/precise-food-logger-plan.md
@@ -115,6 +118,7 @@ deno test --allow-all supabase/functions/ai-coach/foodThreads.test.ts # thread s
 deno test --allow-all supabase/functions/ai-coach/foodAgentLater.test.ts # step 2: later messages to the agent, one-line edits in a fixed order, no line lost
 deno test --allow-all supabase/functions/ai-coach/recipe.test.ts # step 5: build_recipe, parts summed in code, an assumed oil asked about once (FOOD_BUILD_RECIPE)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_threads.check.ts # the food_threads migration on PGlite (real Postgres, downloads it; not in CI)
+deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_card_lines_recipe.check.ts # food_card_lines.recipe: a dish keeps its parts in the thread store (PGlite; not in CI)
 deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
 deno test --allow-all lib/questionPin.test.ts  # Drona chat: a reply types in under its question at the top
@@ -130,6 +134,7 @@ deno test --allow-all lib/firstOpenUpdate.test.ts # fresh store install: newest 
 deno test --allow-all lib/signupTour.test.ts    # the film tour after sign-up: its words, the tap rules, no promise the plan is done
 deno test --allow-all lib/weightWheel.test.ts    # onboarding weight wheels: whole + one decimal, the top of the scale, kg <-> lbs
 deno test --allow-all supabase/functions/ai-coach/freeGoalBuild.test.ts # one free goal plan per account: 1 build, 8 edit turns, a guest build spends it
+deno test --allow-all supabase/functions/ai-coach/regionRules.test.ts # FOOD_REGION_RULES: each region gets only its block, no rule lost, off = today
 ```
 
 There are no configured lint or build scripts.
