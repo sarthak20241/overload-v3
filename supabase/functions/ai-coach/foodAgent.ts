@@ -40,7 +40,8 @@ import { BUILD_RECIPE_TOOL, buildRecipe, RECIPE_NOTE, type RecipeAsk, readRecipe
 import {
   type FoodAgentWarm,
   hasOlderTurns,
-  matchesBlock,
+  memoryMatchesBlock,
+  memoryMatchesOf,
   READ_THREAD_TOOL,
   RECALL_FOOD_TOOL,
   type RecallFood,
@@ -925,11 +926,13 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   ];
   const warmNames = new Set(warmTools.map((t) => t.name));
   const isRead = (name: string) => READ_TOOLS.has(name) || warmNames.has(name);
-  // The memory for the matches block, waited for briefly: past the wait the
-  // block is left out (recall_food still reads it when it lands).
-  const memoryFoods = canRecall ? await briefly(warm!.memory!(), WARM_MEMORY_WAIT_MS) : null;
+  // Memory matches Jev already decided (owner: Jev matches only). In the
+  // opening message only for a first-message run whose parse has ALREADY
+  // finished: it is peeked at, never awaited, so the agent starts no later
+  // than before. Every parse_food result carries them too (runRead).
+  const settled = later && !!input.first && !cardOnScreen ? warm?.settledFirstParse?.() ?? null : null;
   const warmText = warm
-    ? { thread: warmThreadText(input.warmThread, input.recentTurns, canReadThread), matches: matchesBlock(memoryFoods, input.text, input.card) }
+    ? { thread: warmThreadText(input.warmThread, input.recentTurns, canReadThread), matches: memoryMatchesBlock(settled) }
     : {};
   const messages: unknown[] = historyMessages(input.recentTurns, openingText({ ...input, threadIndex: indexLine }, days, warmText));
   const lineTools = later && cardOnScreen && !cardMayBeCut(input.card);
@@ -943,7 +946,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // or with none (a first message). A cut card never reaches later mode.
   const canRecipe = later && !!deps.buildRecipe && (lineTools || !cardOnScreen);
   // Said only for the warm tools this run has; null with the switch off.
-  const warmSaid = warmTools.length ? warmNote({ recall: canRecall, readThread: canReadThread, searchThreads: canSearch }) : null;
+  const warmSaid = warm ? warmNote({ recall: canRecall, readThread: canReadThread, searchThreads: canSearch, matches: true }) : null;
   const recipeMemory = canRecipe && canRecall ? RECIPE_MEMORY_NOTE : null;
   const systemToday = first
     ? [FOOD_AGENT_SYSTEM_FIRST, FIRST_NOTE, canCopy ? COPY_NOTE : null, canRecipe ? RECIPE_NOTE : null, recipeMemory, warmSaid]
@@ -1230,7 +1233,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
         }
         : warmNames.has(u.name)
         ? await runWarmRead(u.name, u.input ?? {}, warm!, warmCalls)
-        : await runRead(u, deps, parse, { card: input.card ?? [], labelLines, calls: labelCalls });
+        : await runRead(u, deps, parse, { card: input.card ?? [], labelLines, calls: labelCalls, memoryMatches: !!warm });
       outs[i] = out;
       if (!run && !refused.has(u) && !rejected.has(u)) remember(seen, out);
       return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) };
@@ -1243,26 +1246,11 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   return { kind: "failed", reason: "turns_exhausted", turns };
 }
 
-/** How long the matches block waits for the user's food memory before the
- *  run starts without it. The load starts with the message (foodBar.ts), so
- *  it is usually done. */
-export const WARM_MEMORY_WAIT_MS = 800;
-
-/** `p`, or null when it takes longer than `ms` or fails. */
-async function briefly<T>(p: Promise<T>, ms: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([p.catch(() => null), new Promise<null>((r) => { timer = setTimeout(() => r(null), ms); })]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function runRead(
   u: ToolUse,
   deps: FoodAgentDeps,
   parse: (text: string) => Promise<ParseMealResult>,
-  ctx: { card: CardLine[]; labelLines: Map<number, ParsedItem>; calls: { n: number } } = { card: [], labelLines: new Map(), calls: { n: 0 } },
+  ctx: { card: CardLine[]; labelLines: Map<number, ParsedItem>; calls: { n: number }; memoryMatches?: boolean } = { card: [], labelLines: new Map(), calls: { n: 0 } },
 ): Promise<unknown> {
   try {
     if (u.name === FIND_LABEL_TOOL.name) return await runFindLabel(u.input ?? {}, deps, ctx);
@@ -1307,12 +1295,15 @@ async function runRead(
       if (!text.trim()) return { error: "text is required" };
       const r = await parse(text);
       if (!r.parsed) return { nothing_to_log: r.declined?.message ?? "no food found" };
+      // FOOD_WARM_MEMORY: the memory decisions this parse already made.
+      const matches = ctx.memoryMatches ? memoryMatchesOf(r) : [];
       return {
         meal_type: r.parsed.meal_type,
         items: r.parsed.items.map((i) => ({
           food_name: i.food_name, quantity: i.quantity, serving_label: i.serving_label, grams: i.grams,
           kcal: i.kcal, protein_g: i.protein_g, carb_g: i.carb_g, fat_g: i.fat_g,
         })),
+        ...(matches.length ? { memory_matches: matches } : {}),
       };
     }
   } catch (e) {

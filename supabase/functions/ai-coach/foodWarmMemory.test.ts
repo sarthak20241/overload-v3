@@ -6,8 +6,9 @@
 //     tools are exactly today's when the agent has no warm deps
 //   - recall_food: the user's own foods by name, facts only, read only, memory
 //     loaded once per message, at most 3 calls, a refusal for no name
-//   - the matches block: code's name matches, labelled as not checked, with
-//     code's calories, the card line it fits, and left out when empty
+//   - memory matches: only what Jev already decided in this message's parse
+//     (from its steps), tied to its line; in parse_food results, and in a
+//     first-message opening only when that parse had already finished
 //   - the thread: its first message once it left the recent turns, its
 //     summary, read_thread and search_threads (caps, refusals, one user only)
 //   - the summary: one background call past the turns the app sends, facts
@@ -25,14 +26,16 @@ import {
   toolsForLater,
 } from "./foodAgent.ts";
 import type { CardLine } from "./foodContext.ts";
-import type { ParsedItem, ParseMealResult } from "./parseMeal.ts";
+import type { ParsedItem, ParseMealResult, ParseStep } from "./parseMeal.ts";
 import { BUILD_RECIPE_TOOL, RECIPE_NOTE } from "./recipe.ts";
-import type { MemoryEntry } from "./userFoodMemory.ts";
+import { matchMemory, type MemoryEntry } from "./userFoodMemory.ts";
 import { memoryThreadStore, type ThreadHit, type ThreadTurn } from "./foodThreads.ts";
 import {
   type FoodAgentWarm,
-  matchesBlock,
   MAX_RECALL_PER_RUN,
+  memoryMatchesBlock,
+  memoryMatchesOf,
+  memoryFacts,
   parseFoodWarmMemoryMode,
   readSummary,
   recallAnswer,
@@ -243,43 +246,131 @@ Deno.test("agent: recall_food in the same turn as a card change holds the change
   assertStringIncludes(JSON.stringify(bodies[1].messages), "Not applied yet: this turn also reads data.");
 });
 
-// ── The matches block ──────────────────────────────────────────────────────
+// ── Memory matches Jev already decided ────────────────────────────────────
 
-Deno.test("matchesBlock: name matches for this message, code's calories, the card line, marked not checked", () => {
-  const b = matchesBlock(foods(), "lunch was 100g jeera rice and dal", CARD)!;
-  assertStringIncludes(b, "a name match only, not checked");
-  assertStringIncludes(b, `- "Jeera rice": usually 100 g, 171 kcal at that amount; logged 3 times in the last 10 days; same name as card line L1.`);
-  // Dal is on the card but not in memory: not listed. Oats are in memory but
-  // not in the message: not listed.
-  assertFalse(b.includes("oats"));
-  assertFalse(b.includes("Dal"));
+/** A parse's user_memory step as matchMemory's Jev path writes it. */
+function jevStep(item: string, rows: [string, number][], match: string | null, conf: number): ParseStep {
+  return {
+    iter: 1, tool: "user_memory", input: { tier: "precise" },
+    result: {
+      item, lookup_name: item, remembered: rows.length, policy: "identity-v2", path: "jev", shortlist: rows.length,
+      rows: rows.map(([name, score]) => ({ name, kcal: 100, level: "precise", score, different: 0, unclear: 0, same: score })),
+      decision: match ? { match, kcal: 100, level: "precise", logged: "2026-11-07", conf } : { match: null, reason: "below_floor", conf },
+    },
+  };
+}
+
+function parsed(items: ParsedItem[], steps: ParseStep[]): ParseMealResult {
+  return { parsed: { meal_type: "lunch", items, drona_line: "", corrects_previous: false }, declined: null, usage: USAGE, tool_calls: [], steps, iterations: 1, tier: "precise" };
+}
+
+function line(food_name: string, kcal: number, more: Partial<ParsedItem> = {}): ParsedItem {
+  return { food_id: null, food_name, quantity: 1, serving_label: "serving", grams: 100, kcal, protein_g: 5, carb_g: 10, fat_g: 2, fiber_g: null, source: "catalog", assumption: null, confidence: "medium", ...more };
+}
+
+Deno.test("memoryFacts: the chosen food and the near ones (VARIANT_FLOOR up to MEMORY_FLOOR), from the parse's own steps", () => {
+  const f = memoryFacts([
+    jevStep("jeera rice", [["Jeera Rice", 0.92], ["Jeera rice (homemade)", 0.64], ["Rice", 0.3]], "Jeera Rice", 0.92),
+    jevStep("paneer sabji", [["Milky Mist low fat paneer sabji", 0.7], ["Paneer tikka", 0.2]], null, 0.7),
+    jevStep("chai", [["Masala chai", 0.4]], null, 0.4),
+    { iter: 1, tool: "user_memory", input: { tier: "precise" }, result: { skipped: "existing_card" } },
+  ]);
+  assertEquals(f, [
+    { words: "jeera rice", path: "jev", chosen: { name: "Jeera Rice", score: 0.92 }, near: [{ name: "Jeera rice (homemade)", score: 0.64 }] },
+    { words: "paneer sabji", path: "jev", chosen: null, near: [{ name: "Milky Mist low fat paneer sabji", score: 0.7 }] },
+  ]);
 });
 
-Deno.test("matchesBlock: a single shared word is not a match; nothing passes means no block", () => {
-  // "rice" alone is well under the cutoff for "jeera rice".
-  assertEquals(matchesBlock(foods(), "plain rice please", null), null);
-  assertEquals(matchesBlock(foods(), "make it two", CARD), null);
-  assertEquals(matchesBlock([], "jeera rice", CARD), null);
+Deno.test("memoryFacts: a confirmed alias, as matchMemory's real trace has it (no Jev call)", async () => {
+  const food = { key: "jeera rice", name: "Jeera Rice", food_id: null, per100: { kcal: 171, protein_g: 4, carb_g: 30, fat_g: 3, fiber_g: null },
+    serving: null, source: "catalog", level: "precise" as const, times: 3, last_logged_at: daysAgo(1), confirmed_aliases: ["jeera rice"] };
+  let calls = 0;
+  const m = await matchMemory({ apiKey: "k", timeoutMs: 100, fetchFn: (async () => { calls++; return new Response("x", { status: 500 }); }) as typeof fetch }, [food], { name: "jeera rice", brand: null });
+  assertEquals(calls, 0);
+  const f = memoryFacts([{ iter: 1, tool: "user_memory", input: { tier: "precise" }, result: m.trace }]);
+  assertEquals(f, [{ words: "jeera rice", path: "confirmed_alias", chosen: { name: "Jeera Rice", score: 1 }, near: [] }]);
 });
 
-Deno.test("matchesBlock: a saved food with no amount in the window says per 100 g and when it was last logged", () => {
-  const b = matchesBlock(foods(), "milky mist low fat paneer 60 g", null)!;
-  assertStringIncludes(b, `"Milky Mist low fat paneer": 254 kcal per 100 g; last logged ${daysAgo(4).slice(0, 10)}.`);
+Deno.test("memoryMatchesOf: each decision tied to the line it was for, no kcal beside a name", () => {
+  const r = parsed([line("Jeera Rice", 171), line("Paneer sabji", 200, { said_name: "paneer sabji" })], [
+    jevStep("jeera rice", [["Jeera Rice", 0.92]], "Jeera Rice", 0.92),
+    jevStep("paneer sabji", [["Milky Mist low fat paneer sabji", 0.7]], null, 0.7),
+  ]);
+  const m = memoryMatchesOf(r);
+  assertEquals(m, [
+    { for_words: "jeera rice", line: "Jeera Rice", chosen: { name: "Jeera Rice", jev_score: 0.92 }, near: [] },
+    { for_words: "paneer sabji", line: "Paneer sabji", chosen: null, near: [{ name: "Milky Mist low fat paneer sabji", jev_score: 0.7, chosen: false }] },
+  ]);
+  assertFalse(JSON.stringify(m).includes("kcal"));
+  assertEquals(memoryMatchesOf(parsed([line("Egg", 70)], [])), []);
 });
 
-Deno.test("agent: the matches block goes in the opening message, under the card, and is small", async () => {
+Deno.test("memoryMatchesBlock: one line per decision, facts only; none made means no block", () => {
+  const r = parsed([line("Jeera Rice", 171)], [jevStep("jeera rice", [["Jeera Rice", 0.92], ["Jeera rice (homemade)", 0.64]], "Jeera Rice", 0.92)]);
+  assertEquals(
+    memoryMatchesBlock(r),
+    `(Memory matches the app's check (Jev) already made for the food in this message:\n` +
+      `- "jeera rice" (parse line "Jeera Rice"): chosen "Jeera Rice", Jev 0.92; near "Jeera rice (homemade)", Jev 0.64, not used.)`,
+  );
+  assertEquals(memoryMatchesBlock(parsed([line("Egg", 70)], [])), null);
+  assertEquals(memoryMatchesBlock(null), null);
+});
+
+const RICE_PARSE = parsed([line("Jeera Rice", 171)], [jevStep("jeera rice", [["Jeera Rice", 0.92]], "Jeera Rice", 0.92)]);
+
+Deno.test("agent: a parse_food result carries the memory decisions that parse made", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  let parses = 0;
+  await runFoodAgent(
+    { text: "how many calories in my jeera rice", defaultMeal: "lunch", later: true, card: CARD },
+    base(bodies, [[{ name: "parse_food", input: { text: "jeera rice" } }], [{ name: "reply", input: { text: "171 kcal." } }]], {
+      parseFood: async () => { parses++; return RICE_PARSE; }, warm: {},
+    }),
+  );
+  assertEquals(parses, 1); // no second parse, and no Jev call of its own
+  const msgs = bodies[1].messages as { content: unknown }[];
+  const result = JSON.parse((msgs.at(-1)!.content as { content: string }[])[0].content);
+  assertEquals(result.memory_matches, [{ for_words: "jeera rice", line: "Jeera Rice", chosen: { name: "Jeera Rice", jev_score: 0.92 }, near: [] }]);
+  assertStringIncludes(String(bodies[0].system), "Memory matches, in a parse_food result or the opening message");
+});
+
+Deno.test("agent: a first-message run shows the decisions in its opening message once the parse has finished", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  await runFoodAgent(
+    { text: "jeera rice and what should I eat next", defaultMeal: "lunch", later: true, first: true },
+    base(bodies, [[{ name: "reply", input: { text: "ok" } }]], { warm: { settledFirstParse: () => RICE_PARSE } }),
+  );
+  assertStringIncludes(firstUser(bodies[0]), `- "jeera rice" (parse line "Jeera Rice"): chosen "Jeera Rice", Jev 0.92.`);
+});
+
+Deno.test("agent: a parse still running is never waited for, and no block is shown", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  let peeks = 0;
+  const out = await runFoodAgent(
+    { text: "jeera rice", defaultMeal: "lunch", later: true, first: true },
+    base(bodies, [[{ name: "reply", input: { text: "ok" } }]], { warm: { settledFirstParse: () => { peeks++; return null; } } }),
+  );
+  assertEquals(out.kind, "reply");
+  assertEquals(peeks, 1);
+  assertFalse(firstUser(bodies[0]).includes("Memory matches"));
+  // A later message beside a card: its card came from an earlier message, so
+  // no block (the parse of THIS message has not run).
+  const later: Record<string, unknown>[] = [];
+  await runFoodAgent(
+    { text: "jeera rice", defaultMeal: "lunch", later: true, card: CARD },
+    base(later, [[{ name: "reply", input: { text: "ok" } }]], { warm: { settledFirstParse: () => RICE_PARSE } }),
+  );
+  assertFalse(firstUser(later[0]).includes("Memory matches"));
+});
+
+Deno.test("there is no name-only matches block any more", async () => {
   const bodies: Record<string, unknown>[] = [];
   await runFoodAgent(
     { text: "the jeera rice was 150 g", defaultMeal: "lunch", later: true, card: CARD },
     base(bodies, [[{ name: "reply", input: { text: "ok" } }]], { warm: { memory: async () => foods() } }),
   );
-  const open = firstUser(bodies[0]);
-  const card = open.indexOf("(card on screen:");
-  const block = open.indexOf("(Foods in the user's memory");
-  assert(card >= 0 && block > card, open);
-  // Well under 150 tokens (about 4 characters a token).
-  const text = open.slice(block, open.indexOf(")", block) + 1);
-  assert(text.length < 600, String(text.length));
+  assertFalse(firstUser(bodies[0]).includes("name match"));
+  assertFalse(firstUser(bodies[0]).includes("Memory matches"));
 });
 
 // ── The thread ─────────────────────────────────────────────────────────────

@@ -601,18 +601,22 @@ export function startFoodAgent(args: {
   warm?: FoodBarWarm;
 }): Promise<FoodAgentOutcome | null> {
   const fb = args.fbTrace;
-  // FOOD_WARM_MEMORY: the user's foods, loaded once for the whole message and
-  // started now, beside the router, so the matches block rarely waits.
+  // FOOD_WARM_MEMORY: the user's foods, loaded once for the whole message, on
+  // the first recall_food or build_recipe that needs them.
   const w = args.later ? args.warm : undefined;
   let memP: Promise<RecallFood[]> | null = null;
   const tier = resolveParseTier(args.mode, false);
   const memory = w?.memory
     ? () => (memP ??= w.memory!().then((r) => recallFoods(r.entries, tier, !!w.byOrigin)))
     : undefined;
-  if (memory) void memory().catch(() => {});
+  // A first-message run: the parse of the message, kept once it lands, so
+  // the agent can show its memory decisions without waiting for it.
+  let firstSettled: ParseMealResult | null = null;
+  if (w && args.first) void args.first.parse.then((r) => { firstSettled = r; }, () => {});
   const agentWarm: FoodAgentWarm | undefined = w
     ? {
       ...(memory ? { memory } : {}),
+      ...(args.first ? { settledFirstParse: () => firstSettled } : {}),
       ...(w.readThread ? { readThread: w.readThread } : {}),
       ...(w.searchThreads ? { searchThreads: w.searchThreads } : {}),
     }

@@ -8,9 +8,13 @@
 //   read_thread(from_seq)    older turns of THIS thread
 //   search_threads(query)    the user's other threads still kept (20 days)
 //
+// Memory matches (owner decision: Jev matches only): the memory decisions
+// the parse of THIS message already made (matchMemory / decideMemory, read
+// from the parse's own steps), never a new Jev call and never a name match.
+// In every parse_food result, and in a first-message run's opening message
+// when that message's parse had already finished as the agent started.
+//
 // Hot, built by code before the agent runs (no model and no Jev call):
-//   - matches: memory foods whose NAME is close to words of this message,
-//     labelled as a name match that nothing checked
 //   - the thread's first message, once it has left the recent turns, and the
 //     thread's summary (food_threads.summary) when one was written
 //
@@ -25,9 +29,17 @@
 // Runtime-agnostic (no Deno globals), so the tests and the eval run it as is.
 
 import type { AnthropicTool } from "./prompt.ts";
-import type { CardLine } from "./foodContext.ts";
+import type { ParsedItem, ParseMealResult, ParseStep } from "./parseMeal.ts";
 import type { FoodOrigin, RecipePart } from "../_shared/foodOrigin.ts";
-import { buildMemory, MEMORY_DAYS, type MemoryEntry, memoryKey, type ParseTierName } from "./userFoodMemory.ts";
+import {
+  buildMemory,
+  MEMORY_DAYS,
+  MEMORY_FLOOR,
+  type MemoryEntry,
+  memoryKey,
+  type ParseTierName,
+  VARIANT_FLOOR,
+} from "./userFoodMemory.ts";
 import { searchWords, type ThreadHit, type ThreadTurn, type WarmThread } from "./foodThreads.ts";
 
 export type FoodWarmMemoryMode = "off" | "on";
@@ -149,80 +161,115 @@ function nameScore(f: RecallFood, target: Set<string>): number {
   return Math.max(jaccard(grams3(f.name), target), ...f.aliases.map((a) => jaccard(grams3(a), target)));
 }
 
-/**
- * The cutoff for the matches block. Trigram similarity (the memory
- * shortlist's own measure, userFoodMemory nameSimilarity) of 0.6 or more
- * between a remembered name and a run of the message's words: most of the
- * name's letters, in order. "jeera rice" in "100g jeera rice" passes; "rice"
- * against "jeera rice" (0.33) does not. It is a NAME match only, below what
- * Jev checks for identity (MEMORY_FLOOR), which is why the block says so; a
- * looser match is one recall_food call away.
- */
-export const MATCH_CUTOFF = 0.6;
-/** At most this many matches in the block. */
-export const MATCHES_MAX = 3;
-/** Longest run of message words compared with a name. */
-const MATCH_WINDOW = 6;
-/** Words of the message looked at (a long message's first ones). */
-const MATCH_WORDS = 60;
-
-/** The message's runs of 1..MATCH_WINDOW words, as trigram sets. */
-function windows(text: string): Set<string>[] {
-  const words = memoryKey(text).split(" ").filter(Boolean).slice(0, MATCH_WORDS);
-  const out: Set<string>[] = [];
-  for (let i = 0; i < words.length; i++) {
-    for (let n = 1; n <= MATCH_WINDOW && i + n <= words.length; n++) out.push(grams3(words.slice(i, i + n).join(" ")));
-  }
-  return out;
-}
-
 const flat = (s: string) => s.replace(/\s+/g, " ").trim();
-
-/** A remembered amount said plainly, with its calories worked out by code. */
-function amountText(f: RecallFood): string {
-  if (f.usual) {
-    const kcal = Math.round((f.per100.kcal * f.usual.grams) / 100);
-    const unit = f.usual.unit && f.usual.quantity && !/^(g|gm|gms|gram|grams|ml)$/i.test(f.usual.unit)
-      ? ` (${r1(f.usual.quantity)} ${flat(f.usual.unit)})`
-      : "";
-    return `usually ${f.usual.grams} g${unit}, ${kcal} kcal at that amount`;
-  }
-  if (f.unit) return `1 ${flat(f.unit.label)} is ${r1(f.unit.grams)} g, ${Math.round((f.per100.kcal * f.unit.grams) / 100)} kcal`;
-  return `${Math.round(f.per100.kcal)} kcal per 100 g`;
-}
 
 function dayText(iso: string): string | null {
   const d = new Date(iso);
   return Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : null;
 }
 
+// ── Memory matches Jev already decided ──────────────────────────────────────
+
 /**
- * The matches block for the opening message: the user's remembered foods
- * whose names are close to words of THIS message (MATCH_CUTOFF), best first,
- * at most MATCHES_MAX, each on one line. Facts only: what matched, the usual
- * amount and its calories (code's sum), how often, and which card line has
- * the same name. Null when nothing passes, so the block is left out.
+ * One line's memory decision from a parse that already ran: what the line was
+ * looked up as, the remembered food the parse chose (decideMemory, at or over
+ * MEMORY_FLOOR, or a confirmed alias), and the near ones Jev scored from
+ * VARIANT_FLOOR up to MEMORY_FLOOR that were not chosen. Read from the
+ * parse's own `user_memory` steps (userFoodMemory.ts matchMemory's trace,
+ * pushed in parseMeal.ts), so no second Jev call is made anywhere.
  */
-export function matchesBlock(foods: RecallFood[] | null, text: string, card: CardLine[] | null | undefined): string | null {
-  if (!foods?.length || !text.trim()) return null;
-  const runs = windows(text);
-  if (!runs.length) return null;
-  const scored = foods
-    .map((f) => ({ f, s: Math.max(...runs.map((w) => nameScore(f, w))) }))
-    .filter((x) => x.s >= MATCH_CUTOFF)
-    .sort((a, b) => b.s - a.s || b.f.times - a.f.times)
-    .slice(0, MATCHES_MAX);
-  if (!scored.length) return null;
-  const lines = scored.map(({ f }) => {
-    const target = grams3(f.name);
-    const on = (card ?? []).findIndex((l) => jaccard(grams3(l.food_name), target) >= MATCH_CUTOFF);
-    const day = dayText(f.last_logged_at);
-    const how = f.times > 0
-      ? `logged ${f.times} ${f.times === 1 ? "time" : "times"} in the last ${MEMORY_DAYS} days`
-      : day ? `last logged ${day}` : null;
-    return `- ${JSON.stringify(flat(f.name))}: ${[amountText(f), how, on >= 0 ? `same name as card line L${on + 1}` : null].filter(Boolean).join("; ")}.`;
+export interface MemoryFact {
+  words: string;
+  path: "jev" | "confirmed_alias";
+  chosen: { name: string; score: number } | null;
+  near: { name: string; score: number }[];
+}
+
+const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+/** The memory decisions in a parse's steps, one per line Jev was asked about
+ *  (or a confirmed alias answered). Lines with no chosen and no near food are
+ *  left out. */
+export function memoryFacts(steps: ParseStep[] | null | undefined): MemoryFact[] {
+  const out: MemoryFact[] = [];
+  for (const st of steps ?? []) {
+    if (st?.tool !== "user_memory") continue;
+    const t = (st.result ?? {}) as Record<string, unknown>;
+    const words = typeof t.lookup_name === "string" ? t.lookup_name : typeof t.item === "string" ? t.item : "";
+    if (!words) continue;
+    const d = (t.decision ?? {}) as Record<string, unknown>;
+    const chosenName = typeof d.match === "string" && d.match ? d.match : null;
+    const chosenScore = num(d.conf);
+    const chosen = chosenName ? { name: chosenName, score: chosenScore ?? 1 } : null;
+    const rows = Array.isArray(t.rows) ? t.rows as Record<string, unknown>[] : [];
+    const near = rows.flatMap((r) => {
+      const name = typeof r.name === "string" ? r.name : "";
+      const score = num(r.score);
+      if (!name || score === null || score < VARIANT_FLOOR || score >= MEMORY_FLOOR) return [];
+      if (chosen && memoryKey(name) === memoryKey(chosen.name)) return [];
+      return [{ name, score }];
+    }).sort((a, b) => b.score - a.score).slice(0, 2);
+    if (!chosen && !near.length) continue;
+    out.push({ words, path: t.path === "confirmed_alias" ? "confirmed_alias" : "jev", chosen, near });
+  }
+  return out;
+}
+
+/** The parse line a decision was for: the line carrying the chosen food's
+ *  name, else the line whose name or the user's words for it are the words
+ *  looked up. Null when no line can be told. */
+function lineFor(f: MemoryFact, items: ParsedItem[]): number | null {
+  const k = (s: string | null | undefined) => (s ? memoryKey(s) : "");
+  if (f.chosen) {
+    const i = items.findIndex((it) => k(it.food_name) === k(f.chosen!.name));
+    if (i >= 0) return i;
+  }
+  const w = k(f.words);
+  const exact = items.findIndex((it) => k(it.said_name) === w || k(it.food_name) === w);
+  if (exact >= 0) return exact;
+  const loose = items.flatMap((it, i) => {
+    const a = k(it.said_name), b = k(it.food_name);
+    return (a && (a.includes(w) || w.includes(a))) || (b && (b.includes(w) || w.includes(b))) ? [i] : [];
   });
-  return `(Foods in the user's memory whose names match words of this message, a name match only, not checked:\n${lines.join("\n")})`;
+  return loose.length === 1 ? loose[0] : null;
+}
+
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+/** A parse's memory decisions for a tool result (parse_food). Field names
+ *  never pair a name with `kcal`, so none of it reads as a line to copy. */
+export function memoryMatchesOf(r: ParseMealResult | null | undefined): Record<string, unknown>[] {
+  const items = r?.parsed?.items ?? [];
+  return memoryFacts(r?.steps).map((f) => {
+    const i = lineFor(f, items);
+    return {
+      for_words: f.words,
+      line: i === null ? null : items[i].food_name,
+      chosen: f.chosen ? { name: f.chosen.name, jev_score: r2(f.chosen.score), ...(f.path === "confirmed_alias" ? { confirmed_alias: true } : {}) } : null,
+      near: f.near.map((n) => ({ name: n.name, jev_score: r2(n.score), chosen: false })),
+    };
+  });
+}
+
+/**
+ * The memory matches block for the opening message of a first-message run,
+ * from the parse of that message once it has finished (never waited for).
+ * One line per decision, facts only. Null when the parse made none.
+ */
+export function memoryMatchesBlock(r: ParseMealResult | null | undefined): string | null {
+  const items = r?.parsed?.items ?? [];
+  const facts = memoryFacts(r?.steps);
+  if (!facts.length) return null;
+  const lines = facts.map((f) => {
+    const i = lineFor(f, items);
+    const on = i === null ? "" : ` (parse line ${JSON.stringify(flat(items[i].food_name))})`;
+    const chosen = f.chosen
+      ? `chosen ${JSON.stringify(flat(f.chosen.name))}, ${f.path === "confirmed_alias" ? "a name the user confirmed before" : `Jev ${r2(f.chosen.score)}`}`
+      : "none chosen";
+    const near = f.near.map((n) => `near ${JSON.stringify(flat(n.name))}, Jev ${r2(n.score)}, not used`);
+    return `- ${JSON.stringify(flat(f.words))}${on}: ${[chosen, ...near].join("; ")}.`;
+  });
+  return `(Memory matches the app's check (Jev) already made for the food in this message:\n${lines.join("\n")})`;
 }
 
 // ── recall_food ─────────────────────────────────────────────────────────────
@@ -324,9 +371,12 @@ export const QUOTE_CHARS = 400;
 
 /** What the agent's warm tools need from the request (foodBar.ts builds it). */
 export interface FoodAgentWarm {
-  /** The user's foods, loaded at most once per message (memoized by the
-   *  caller). Absent: no recall_food and no matches block. */
+  /** The user's foods, loaded at most once per message, on first use
+   *  (memoized by the caller). Absent: no recall_food. */
   memory?(): Promise<RecallFood[]>;
+  /** A first-message run: the parse of the message if it has ALREADY
+   *  finished, else null. Never awaited, so the agent never waits on it. */
+  settledFirstParse?(): ParseMealResult | null;
   /** Up to `limit` turns of this thread from `fromSeq`. Null: not stored. */
   readThread?(fromSeq: number, limit: number): Promise<ThreadTurn[] | null>;
   /** The user's other kept threads holding these words. */
@@ -448,13 +498,17 @@ export function warmThreadText(
 }
 
 /** Said to the agent, naming only the warm tools this run has. */
-export function warmNote(tools: { recall: boolean; readThread: boolean; searchThreads: boolean }): string | null {
+export function warmNote(tools: { recall: boolean; readThread: boolean; searchThreads: boolean; matches: boolean }): string | null {
   const s = [
     tools.recall
       ? "recall_food shows what the user's own food memory holds for a food: their numbers per 100 g, the amount they " +
         "usually log, how often and when, where the numbers came from, and a dish's parts. It changes nothing on the " +
-        "card. Foods listed in the opening message as name matches were matched by name only: use one only when the " +
-        "user's words say it is that food."
+        "card."
+      : null,
+    tools.matches
+      ? "Memory matches, in a parse_food result or the opening message, are what the app's check (Jev) already decided " +
+        "for that food against the user's own foods: a chosen one is the remembered food the parse used for that line; " +
+        "a near one scored below what the parse needs, and was not used."
       : null,
     tools.readThread ? "read_thread reads older turns of this conversation that are not in the messages above." : null,
     tools.searchThreads ? `search_threads finds the user's other food conversations from the last ${THREAD_KEPT_DAYS} days by food words.` : null,
