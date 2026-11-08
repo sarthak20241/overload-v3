@@ -648,7 +648,14 @@ export const CASES: FoodBoxCase[] = [
       card: [L("Milky Mist low fat paneer", 95, { grams: 50, source: "estimate" })],
     },
     message: "did you save that as a meal as well?",
-    expect: { does: ["answer"], reply: { noFalseClaim: true } },
+    // Owner's reading (2026-11-08): the earlier ask was never carried out, so
+    // the right answer does it now: the save card, logging the 50 g to dinner,
+    // with a reply that says honestly it was not done before.
+    expect: {
+      does: ["save"],
+      savedMeal: { nameMatch: "paneer", kcal: [80, 110], logTo: "dinner" },
+      reply: { noFalseClaim: true },
+    },
     recorded: {
       card: null,
       reply: "No, I haven't saved anything, and I haven't logged the sabji to dinner either. My earlier replies also skipped the actual estimate.",
@@ -1136,7 +1143,9 @@ export const CASES: FoodBoxCase[] = [
         meal: "lunch",
         lines: [
           L("Milky Mist high protein low fat paneer", 127, { grams: 67, source: "catalog" }),
-          L("mustard oil", 15, { source: "user" }),
+          // Typed by hand: meal_entries.source is null for that, which a copy
+          // reads as "manual" (foodAgent.ts diarySourceLine). "user" cannot be stored.
+          L("mustard oil", 15, { source: "manual" }),
           L("Roti / Chapati", 120, { quantity: 1, unit: "roti", source: "catalog" }),
           L("Raita, homemade", 29, { grams: 50, source: "catalog" }),
         ],
@@ -1149,7 +1158,7 @@ export const CASES: FoodBoxCase[] = [
       lines: [
         { match: "paneer", kcal: [125, 129], source: ["catalog"] },
         { match: "roti", kcal: [118, 122], source: ["catalog"] },
-        { match: "oil", kcal: [14, 16], source: ["user"] },
+        { match: "oil", kcal: [14, 16], source: ["manual"] },
       ],
       lineCount: [4, 4],
       noDuplicates: true,
@@ -1801,7 +1810,8 @@ export const CASES: FoodBoxCase[] = [
     origin: { date: "2026-11-06", who: "synthetic" },
     region: "us",
     thread: { turns: [], card: null },
-    // Plain tea in the US is not milk tea.
+    // Plain tea in the US is not milk tea. Region rules are behind their switch.
+    requiresEnv: { name: "FOOD_REGION_RULES", value: "on", why: "the US reading of tea comes from the region rules" },
     message: "a cup of tea",
     expect: { does: ["log"], totalKcal: [0, 40] },
   },

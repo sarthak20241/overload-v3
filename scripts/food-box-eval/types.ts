@@ -45,6 +45,8 @@ export interface SavedMeal {
   protein_g: number;
   carb_g: number;
   fat_g: number;
+  /** The save card also logs it, to this meal, with the same tap (log_now). */
+  logTo?: "breakfast" | "lunch" | "dinner" | "snack" | null;
 }
 
 /** What an adapter returns for one case. */
@@ -132,6 +134,9 @@ export interface FoodBoxCase {
   /** What today's food box actually served (from parse_traces). Absent for
    *  synthetic cases and for messages with no recording. */
   recorded?: Outcome;
+  /** The live adapter runs this case only with this env var at this value
+   *  (a feature behind a switch); otherwise it is skipped, with `why`. */
+  requiresEnv?: { name: string; value: string; why: string };
 }
 
 /** A closed range. Either end may be null for "no bound". */
@@ -172,7 +177,8 @@ export interface Expect {
     /** No "I logged / saved / I'm logging" unless a log, edit or save happened. */
     noFalseClaim?: boolean;
   };
-  savedMeal?: { kcal?: Range; proteinMin?: number; nameMatch?: string };
+  /** `logTo`: the save card also logs it to this meal (log_now with meal_type). */
+  savedMeal?: { kcal?: Range; proteinMin?: number; nameMatch?: string; logTo?: Line["meal"] };
 }
 
 export interface CheckResult {
