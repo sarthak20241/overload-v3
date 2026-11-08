@@ -50,6 +50,15 @@ function foodState(item: WebFoodItem): Record<string, unknown> {
   };
 }
 
+/** The food as the reader sees it: the brand left out when the user named
+ *  none. "brand": null read to the reader as "a food with no brand", and it
+ *  turned down every branded label for it (atta bread, 2026-11-08). Jev keeps
+ *  foodState as it was trained on. */
+function readerFoodState(item: WebFoodItem): Record<string, unknown> {
+  const { brand, ...rest } = foodState(item);
+  return brand ? { ...rest, brand } : rest;
+}
+
 /** Said once, to Jev and to the reader: a page must match the food in the
  *  state it was eaten, judged by its numbers as well as its words. */
 const AS_EATEN_RULE =
@@ -409,6 +418,10 @@ export function relevanceQuestions(item: WebFoodItem, ids: string[]): Record<str
 /** What the reader reports for one page. */
 export interface PageReport {
   page_id: string;
+  /** The reader's one-line reason for same_food, written before it. Written
+   *  first, it lifted correct calls on branded labels for a food with no brand
+   *  from 0 to 7-9 in 10 (probe, 2026-11-08); traced on a drop. */
+  why?: string | null;
   same_food: boolean;
   basis: "per_100g" | "per_100ml" | "per_serving" | "none";
   serving_grams: number | null;
@@ -527,6 +540,7 @@ function parsePageReports(input: unknown): PageReport[] {
     if (typeof o?.page_id !== "string") continue;
     out.push({
       page_id: o.page_id,
+      why: typeof o.why === "string" && o.why.trim() ? o.why.trim().slice(0, 160) : null,
       same_food: o.same_food === true,
       basis: bases.has(o.basis as string) ? (o.basis as PageReport["basis"]) : "none",
       serving_grams: num(o.serving_grams),
@@ -565,6 +579,10 @@ const READ_TOOL = {
           type: "object",
           properties: {
             page_id: { type: "string", description: "The page_id exactly as given." },
+            why: {
+              type: "string",
+              description: "First, one short sentence: which food this page is about, and whether that is the food asked for.",
+            },
             same_food: {
               type: "boolean",
               description: "True only if this page is about exactly the food asked for: same brand and " +
@@ -605,7 +623,7 @@ const READ_TOOL = {
                 "null for an unbranded food, or when the page names no brand.",
             },
           },
-          required: ["page_id", "same_food", "basis"],
+          required: ["page_id", "why", "same_food", "basis"],
         },
       },
     },
@@ -622,7 +640,12 @@ const READ_SYSTEM =
   "kcal goes in kcal and energy in kJ goes in energy_kj, each only if printed. Read only the column " +
   "for THIS food: ignore columns that compare it to other foods or a category average, and % daily " +
   "value or %RDA columns. A text may hold two parts separated by ---; use the part for this food. " +
-  "Set same_food false for a page about a different brand, variant or food. " +
+  "Set same_food false for a page about a different food or variant. When the food names a brand or a product, in " +
+  "food.brand or in its name, a page for another brand or a generic version is a different food. When it names " +
+  "neither, the user did not say which brand they ate, which is not the same as a food with no brand: a page for " +
+  "any brand of this same food, a packaged product's label included, is the same food. same_food is only about " +
+  "WHICH food the page is about: a page that prints only some of the numbers is still the same food, so report " +
+  "what it prints and null for the rest. " +
   "A page may also carry top, its opening words (product name, pack size, price). Copy numbers only from " +
   "text. Use top only for serving_grams and serving_label, and only when the numbers in text are for one " +
   "pack of this same product and top prints that pack's size. " +
@@ -1025,7 +1048,7 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
       messages: [{
         role: "user",
         content: JSON.stringify({
-          food: foodState(as),
+          food: readerFoodState(as),
           pages: withPanel.map((p, i) => ({
             page_id: `p${i + 1}`,
             site: hostOf(p.r.url),
@@ -1041,7 +1064,7 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
     const block = (data?.content ?? []).find((b: any) => b?.type === "tool_use" && b?.name === READ_TOOL.name);
     const reports = parsePageReports(block?.input);
 
-    const dropped: Array<{ site: string; why: DropReason; from: "page" | "snippet" }> = [];
+    const dropped: Array<{ site: string; why: DropReason; from: "page" | "snippet"; reader?: string }> = [];
     const kept: Array<{ reading: SourceReading; rep: PageReport; brandSite: boolean }> = [];
     for (const rep of reports) {
       const page = byId.get(rep.page_id);
@@ -1049,7 +1072,12 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
       const url = page.r.url;
       const read = readReport(rep, url);
       if ("dropped" in read) {
-        dropped.push({ site: hostOf(url), why: read.dropped, from: page.full ? "page" : "snippet" });
+        dropped.push({
+          site: hostOf(url), why: read.dropped, from: page.full ? "page" : "snippet",
+          // The reader's own words for a wrong-food call: the answer to "why
+          // was this label turned down" in the trace.
+          ...(read.dropped === "not_same_food" && rep.why ? { reader: rep.why.slice(0, 120) } : {}),
+        });
         if (UNREAD_LABEL.has(read.dropped)) unread.add(hostOf(url));
         continue;
       }
