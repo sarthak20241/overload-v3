@@ -2139,6 +2139,136 @@ export function lineFromLabel(line: CardLine, label: LabelFound, mealDefault: Me
   return unitWeightMatchesGrams(item);
 }
 
+/** The label each find_label line was worked out from, for use_label with an
+ *  amount (labelLineAt). */
+const labelOfLine = new WeakMap<ParsedItem, LabelFound>();
+
+/** An amount said in words: a weight or volume ("200 ml", "65 g"), or a count
+ *  of something ("1 tetrapack", "2 slices", "3 small pooris"), with a weight
+ *  each when given ("36 g each"). */
+export interface StatedAmount {
+  count: number;
+  /** The counted thing, singular ("tetrapack", "slice"), or null for a weight. */
+  word: string | null;
+  /** The weight in the label's base unit (g or ml): the whole amount, or one
+   *  piece when `each`. */
+  grams: number | null;
+  unit: "g" | "ml" | null;
+  each: boolean;
+}
+
+// Not a macro ("9 g protein"): that is a number for the food, not its amount.
+const MASS_AMOUNT = /(\d+(?:[.,]\d+)?)\s*(kg|kgs|g|gm|gms|grams?|ml|mls|l|ltr|litres?|liters?)\b(?!\s*(?:of\s+)?(?:protein|carbs?|fats?|fib(?:er|re)|sugars?)\b)(\s*(?:each|apiece|per piece|a piece))?/i;
+const COUNT_WORD = /\b(\d+(?:[.,]\d+)?|one|two|three|four|five|six|half|an?)\s+(?:(?:small|medium|large|big|full|whole|regular)\s+)?([a-z]+)\b/gi;
+const NUMBER_WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, half: 0.5, a: 1, an: 1 };
+/** A count with "a" or "an" names one of these, so "a usual amount" is no amount. */
+const CONTAINER_WORDS = new Set([
+  "pack", "packet", "tetrapack", "tetra", "bottle", "can", "tin", "carton", "pouch", "cup", "glass", "bowl", "katori",
+  "box", "tub", "sachet", "scoop", "bar", "jar", "mug", "serving", "piece", "slice", "plate",
+]);
+/** Words after a number that are not a thing counted. */
+const NOT_COUNTED = new Set([
+  "kcal", "cal", "cals", "calorie", "calory", "kj", "x", "times", "percent", "per", "of", "more", "less", "extra", "the",
+  "g", "gm", "gms", "gram", "ml", "kg", "l", "ltr", "litre", "liter", "minute", "min", "hour", "day", "week",
+  "protein", "carb", "carbs", "fat", "fats", "fiber", "fibre", "sugar",
+]);
+
+/** The amount a change states, or null. A weight wins, except "36 g each"
+ *  with a count, which is the count at that weight each. */
+export function statedAmount(text: string): StatedAmount | null {
+  const t = text.toLowerCase();
+  const m = t.match(MASS_AMOUNT);
+  let count: { count: number; word: string } | null = null;
+  for (const c of t.matchAll(COUNT_WORD)) {
+    const word = singular(c[2]);
+    if (NOT_COUNTED.has(word) || NOT_COUNTED.has(c[2])) continue;
+    const raw = c[1];
+    if ((raw === "a" || raw === "an") && !CONTAINER_WORDS.has(word)) continue;
+    const n = NUMBER_WORDS[raw] ?? Number(raw.replace(",", "."));
+    if (!(n > 0)) continue;
+    count = { count: n, word };
+    break;
+  }
+  if (m) {
+    const v = Number(m[1].replace(",", "."));
+    const u = m[2];
+    const unit: "g" | "ml" = /^(ml|mls|l|ltr|litres?|liters?)$/.test(u) ? "ml" : "g";
+    const grams = /^(kg|kgs|l|ltr|litres?|liters?)$/.test(u) ? v * 1000 : v;
+    if (!(grams > 0)) return null;
+    if (m[3] && count) return { count: count.count, word: count.word, grams, unit, each: true };
+    return { count: 1, word: null, grams, unit, each: false };
+  }
+  return count ? { count: count.count, word: count.word, grams: null, unit: null, each: false } : null;
+}
+
+/** The user's message states exactly one amount: that one. Two or more could
+ *  be for other lines, so none. */
+function onlyAmount(text: string): StatedAmount | null {
+  const parts = text.split(/[,.;]|\band\b/i).map(statedAmount).filter((x): x is StatedAmount => !!x);
+  return parts.length === 1 ? parts[0] : null;
+}
+
+/** The last word of a label's serving or piece ("1 Poori (36g)" -> "poori"). */
+function nounOf(label: string): string {
+  return singular(label.toLowerCase().replace(/\(.*\)/, "").trim().split(/\s+/).pop() ?? "");
+}
+
+/**
+ * A card line priced from a label at the amount the user stated, or null when
+ * the label gives no size for a counted amount (and `each` is not given). Code
+ * does the arithmetic: a weight is the weight; a count is count x the label's
+ * piece (a piece word) or its printed serving (any other container); `each` is
+ * a weight for one, chosen by the parse when the label has none, and then the
+ * line says it was assumed and is never "high".
+ */
+export function labelLineAt(line: CardLine, label: LabelFound, a: StatedAmount, mealDefault: MealType, each: number | null = null): ParsedItem | null {
+  const r1 = (v: number) => Math.round(v * 10) / 10;
+  const base = label.base_unit;
+  let grams: number;
+  let quantity: number;
+  let servingLabel: string;
+  let assumed: string | null = null;
+  if (a.word === null && a.grams !== null) {
+    grams = a.grams;
+    quantity = r1(a.grams);
+    servingLabel = a.unit ?? base;
+  } else {
+    const word = a.word ?? "serving";
+    const piece = label.piece && (nounOf(label.piece.label) === word || PIECE_UNITS.has(word)) ? label.piece : null;
+    const serving = !piece && label.serving ? label.serving : null;
+    const one = a.each && a.grams !== null ? a.grams : piece?.grams ?? serving?.grams ?? each;
+    if (!(one && one > 0)) return null;
+    grams = a.count * one;
+    quantity = a.count;
+    const printed = a.each && a.grams !== null || piece || serving;
+    servingLabel = `${word} (${printed ? "" : "about "}${r1(one)} ${base})`;
+    if (!printed) {
+      const amount = `${a.count === 1 ? (/^[aeiou]/.test(word) ? "an" : "a") : a.count} ${word}${a.count === 1 ? "" : "s"}`;
+      assumed = `Took ${amount} as about ${Math.round(a.count * one)} ${base}, a usual size; the label gives none. Numbers from the label online.`;
+    }
+  }
+  const f = grams / 100;
+  return {
+    food_id: null,
+    food_name: line.food_name,
+    ...(line.said_name ? { said_name: line.said_name } : {}),
+    quantity,
+    serving_label: servingLabel,
+    grams: r1(grams),
+    kcal: r1(label.per_100.kcal * f),
+    protein_g: r1(label.per_100.protein_g * f),
+    carb_g: r1(label.per_100.carb_g * f),
+    fat_g: r1(label.per_100.fat_g * f),
+    fiber_g: label.per_100.fiber_g === null ? null : r1(label.per_100.fiber_g * f),
+    source: "web",
+    assumption: assumed ?? "From the label online",
+    ...(label.site ? { source_site: label.site } : {}),
+    // An assumed size is never "high".
+    confidence: label.verified && !assumed ? "high" : "medium",
+    meal_type: line.meal_type ?? mealDefault,
+  };
+}
+
 /** find_label for the agent: the label, and for a card line, the line from it. */
 async function runFindLabel(
   input: Record<string, unknown>,
@@ -2177,6 +2307,7 @@ async function runFindLabel(
   if (line && index !== null) {
     const item = lineFromLabel(line, label, line.meal_type ?? "snack");
     ctx.labelLines.set(index, item);
+    labelOfLine.set(item, label);
     out.line_from_label = {
       line_id: `L${index + 1}`, food_name: item.food_name, quantity: item.quantity, serving_label: item.serving_label,
       grams: item.grams, kcal: item.kcal, protein_g: item.protein_g, carb_g: item.carb_g, fat_g: item.fat_g,
@@ -2257,7 +2388,29 @@ async function applyCardChanges(
       // the one code worked out. No label for it: the edit fails, the line stays.
       if (e.useLabel) {
         const l = labelLines.get(e.index);
-        return { e, r: null, item: l && l.food_name === card[e.index].food_name ? l : null };
+        const line = card[e.index];
+        const label = l ? labelOfLine.get(l) ?? null : null;
+        const per100 = label?.per_100.kcal ?? null;
+        if (!l || l.food_name !== line.food_name) return { e, r: null, item: null, per100 };
+        // The amount the user stated ("1 tetrapack", "200 ml"), priced from
+        // the label: in the change, else the user's message when it states
+        // one amount. A line of the user's own numbers keeps them (lineFromLabel).
+        const amount = label && !userNumbersOnLine(line) ? statedAmount(e.change) ?? onlyAmount(input.text) : null;
+        if (!label || !amount) return { e, r: null, item: l, per100 };
+        const priced = labelLineAt(line, label, amount, line.meal_type ?? meal);
+        if (priced) return { e, r: null, item: priced, per100 };
+        // No size for that container or piece on the label: the usual one,
+        // from the same parse an edit runs (the model chooses an amount, never
+        // a number for the food), marked as assumed.
+        let r: ParseMealResult | null = null;
+        try {
+          r = deps.editLine ? await deps.editLine(e.index, e.change) : null;
+        } catch {
+          r = null;
+        }
+        const picked = pickEditedLine(line, r);
+        const each = picked && picked.grams > 0 && amount.count > 0 ? picked.grams / amount.count : null;
+        return { e, r, item: each ? labelLineAt(line, label, amount, line.meal_type ?? meal, each) : null, per100 };
       }
       let r: ParseMealResult | null = null;
       try {
@@ -2266,7 +2419,7 @@ async function applyCardChanges(
         r = null;
       }
       const picked = pickEditedLine(card[e.index], r);
-      return { e, r, item: picked ? keepLineIdentity(card[e.index], picked, e.change) : null };
+      return { e, r, item: picked ? keepLineIdentity(card[e.index], picked, e.change) : null, per100: null as number | null };
     })),
     Promise.all(plan.adds.map(async (a) => {
       const m = a.meal ?? meal;
@@ -2303,7 +2456,7 @@ async function applyCardChanges(
   // No change may leave a food at 0 kcal (an amount lost on the way). With
   // turns left the agent fixes the amount; on the last turn an edit stays as
   // it was and an addition is left off, both named.
-  const zeroEdits = editsOut.filter((x) => x.item && zeroKcalLine(x.item));
+  const zeroEdits = editsOut.filter((x) => x.item && zeroKcalLine(x.item, x.per100));
   const zeroRecipes = recipesOut.filter((x) => x.item && zeroKcalLine(x.item));
   // A copy (a saved meal's or the diary's line) keeps its stored numbers,
   // a stored 0 included: it is not worked out here.

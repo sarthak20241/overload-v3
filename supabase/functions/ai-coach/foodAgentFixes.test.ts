@@ -18,6 +18,7 @@ import {
   type FoodAgentDeps,
   FOOD_AGENT_SYSTEM_LATER,
   givesNumber,
+  labelLineAt,
   lineFromLabel,
   planCardChanges,
   MAX_TURNS_LATER,
@@ -25,6 +26,7 @@ import {
   SAVE_CARD_TAIL,
   saveCardLine,
   savedMealAlready,
+  statedAmount,
   toolsForLater,
   unmetSaveAsk,
   USER_TYPED_MARK,
@@ -347,4 +349,92 @@ Deno.test("on the last turn a 0 kcal edit leaves its line as it was, and the use
   // Nothing changed: the card is as it was, with the reason.
   assertEquals(out.kind, "reply");
   if (out.kind === "reply") assert(out.text.includes("could not work out an amount for Roti"), out.text);
+});
+
+// ── 4. use_label prices the amount the user stated ─────────────────────────
+
+const BUTTERMILK_LABEL: LabelFound = {
+  name: "Amul protein buttermilk", brand: "Amul", base_unit: "ml",
+  per_100: { kcal: 54, protein_g: 7.5, carb_g: 4, fat_g: 0.5, fiber_g: null },
+  serving: null, piece: null, verified: true,
+};
+const BUTTERMILK: CardLine = { food_name: "Amul protein buttermilk", quantity: 1, serving_label: "100 g", grams: 100, kcal: 54, source: "catalog", meal_type: "snack" };
+
+Deno.test("statedAmount: a weight, a volume, or a count of something; never a macro or an energy", () => {
+  assertEquals(statedAmount("1 tetrapack (Amul protein buttermilk), numbers from the label"), { count: 1, word: "tetrapack", grams: null, unit: null, each: false });
+  assertEquals(statedAmount("it was 200 ml"), { count: 1, word: null, grams: 200, unit: "ml", each: false });
+  assertEquals(statedAmount("1.5 l"), { count: 1, word: null, grams: 1500, unit: "ml", each: false });
+  assertEquals(statedAmount("use the label numbers, keep 65 g")?.grams, 65);
+  assertEquals(statedAmount("3 small pooris, use the label figures (36 g each)"), { count: 3, word: "poori", grams: 36, unit: "g", each: true });
+  assertEquals(statedAmount("2 slices")?.word, "slice");
+  assertEquals(statedAmount("a bottle")?.word, "bottle");
+  for (const t of ["set from the looked-up label for the amount on the card", "about 135 kcal with 9 g protein", "take a usual amount", "the user says it is 150 kcal"]) {
+    assertEquals(statedAmount(t), null, t);
+  }
+});
+
+Deno.test("labelLineAt: the label's sizes price a count; with none, a size from the parse is marked as assumed", () => {
+  const ml = labelLineAt(BUTTERMILK, BUTTERMILK_LABEL, statedAmount("200 ml")!, "snack")!;
+  assertEquals([ml.grams, ml.kcal, ml.serving_label, ml.confidence], [200, 108, "ml", "high"]);
+  // A pack with no size on the label: no guess from code.
+  assertEquals(labelLineAt(BUTTERMILK, BUTTERMILK_LABEL, statedAmount("1 tetrapack")!, "snack"), null);
+  const usual = labelLineAt(BUTTERMILK, BUTTERMILK_LABEL, statedAmount("1 tetrapack")!, "snack", 200)!;
+  assertEquals([usual.grams, usual.kcal, usual.confidence], [200, 108, "medium"]);
+  assert(usual.assumption?.startsWith("Took a tetrapack as about 200 ml, a usual size"), usual.assumption ?? "");
+  assertEquals(usual.serving_label, "tetrapack (about 200 ml)");
+  // The label's printed serving prices a container; its piece prices pieces.
+  const served = labelLineAt(BUTTERMILK, { ...BUTTERMILK_LABEL, serving: { label: "1 pack (200 ml)", grams: 200 } }, statedAmount("2 tetrapacks")!, "snack")!;
+  assertEquals([served.grams, served.kcal, served.serving_label], [400, 216, "tetrapack (200 ml)"]);
+  const poori: CardLine = { food_name: "poori", quantity: 3, serving_label: "piece", grams: 0, kcal: 639, source: "catalog" };
+  assertEquals(labelLineAt(poori, POORI_LABEL, statedAmount("4 pooris")!, "snack")!.grams, 144);
+});
+
+function labelDeps(script: Use[][], log: string[]): FoodAgentDeps {
+  const d = deps(scripted(script), log);
+  d.findLabel = async () => BUTTERMILK_LABEL;
+  // The parse picks a usual size for the pack (an amount, never the food's numbers).
+  d.editLine = async (_i, change) => {
+    log.push(`edit:${change}`);
+    return result([item("Amul protein buttermilk", 70, { quantity: 1, serving_label: "tetrapack", grams: 200, source: "estimate" })]);
+  };
+  return d;
+}
+
+Deno.test("use_label with a stated amount: a volume is priced from the label at once", async () => {
+  const log: string[] = [];
+  const out = await runFoodAgent({ text: "it was 200 ml", defaultMeal: "snack", card: [BUTTERMILK], later: true }, labelDeps([
+    [{ name: "find_label", input: { line_id: "L1" } }],
+    [{ name: "edit_line", input: { line_id: "L1", change: "200 ml, from the label", use_label: true } }],
+  ], log));
+  assertEquals(out.kind, "log");
+  if (out.kind === "log") assertEquals([out.result.parsed?.items[0].grams, out.result.parsed?.items[0].kcal], [200, 108]);
+  assertEquals(log.filter((l) => l.startsWith("edit:")), []);
+});
+
+Deno.test("use_label with a pack the label has no size for: a usual size, assumed and said, priced from the label", async () => {
+  const log: string[] = [];
+  const out = await runFoodAgent({ text: "it's 1 tetrapack", defaultMeal: "snack", card: [BUTTERMILK], later: true }, labelDeps([
+    [{ name: "find_label", input: { line_id: "L1" } }],
+    [{ name: "edit_line", input: { line_id: "L1", change: "1 tetrapack, numbers from the label", use_label: true } }],
+  ], log));
+  assertEquals(out.kind, "log");
+  if (out.kind !== "log") return;
+  const line = out.result.parsed!.items[0];
+  // The label's 54 per 100 at 200 ml, not the parse's own 70.
+  assertEquals([line.grams, line.kcal, line.confidence, line.source], [200, 108, "medium", "web"]);
+  assert(line.assumption?.includes("a usual size"), line.assumption ?? "");
+  // The amount can come from the user's message when the change gives none.
+  const fromMessage = await runFoodAgent({ text: "it's 1 tetrapack", defaultMeal: "snack", card: [BUTTERMILK], later: true }, labelDeps([
+    [{ name: "find_label", input: { line_id: "L1" } }],
+    [{ name: "edit_line", input: { line_id: "L1", change: "use the label", use_label: true } }],
+  ], []));
+  assertEquals(fromMessage.kind, "log");
+  if (fromMessage.kind === "log") assertEquals(fromMessage.result.parsed?.items[0].kcal, 108);
+  // No amount anywhere: the line keeps its amount, as before.
+  const none = await runFoodAgent({ text: "check the label", defaultMeal: "snack", card: [BUTTERMILK], later: true }, labelDeps([
+    [{ name: "find_label", input: { line_id: "L1" } }],
+    [{ name: "edit_line", input: { line_id: "L1", change: "use the label", use_label: true } }],
+  ], []));
+  assertEquals(none.kind, "log");
+  if (none.kind === "log") assertEquals([none.result.parsed?.items[0].grams, none.result.parsed?.items[0].kcal], [100, 54]);
 });
