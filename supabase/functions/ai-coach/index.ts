@@ -142,7 +142,7 @@ import { preciseAliasStore } from "./preciseAlias.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
-import { type FoodRegion, foodRegionForTimezone, parseFoodRegionRulesMode } from "./regionRules.ts";
+import { type FoodRegion, foodRegionForTimezone, parseFoodRegionRulesMode, startEarlyRegionRead } from "./regionRules.ts";
 import { freeGoalTurnKind, freePhaseBuildCandidate, freePhaseRefineCandidate } from "./freePhaseBuild.ts";
 import { selectMatchRows } from "./ourSources.ts";
 import { MEMORY_DAYS, type MemoryEntry, type OriginTrustMode } from "./userFoodMemory.ts";
@@ -3835,6 +3835,14 @@ async function handleParseMealRequest(args: {
   // because this block cannot be reached any other way.
   const wantsStream = wouldStream(body);
 
+  // The request is Precise (Pro, Precise on): one answer for every check below.
+  const preciseReq = isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier });
+  // Region rules: start the time zone read now, on every path (the stream
+  // and the food box), so the parse finds it done well inside its 400 ms cap.
+  startEarlyRegionRead(
+    { on: FOOD_REGION_RULES === "on", precise: preciseReq },
+    () => readTimezone(userClient),
+  );
   if (wantsStream) {
     const enc = new TextEncoder();
     // Client cancellation -> model cancellation. Without this the reader
@@ -4145,7 +4153,7 @@ async function handleParseMealRequest(args: {
   // Step 3 (FOOD_FIRST_GATE=on, Precise only): the first message of a thread
   // asks the gate question in the router's own Jev call.
   const firstGate = firstMessageGoesToGate({
-    mode: FOOD_FIRST_GATE, laterMode: FOOD_AGENT_LATER, intentMode: FOOD_INTENT_MODE, precise: isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier }), supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
+    mode: FOOD_FIRST_GATE, laterMode: FOOD_AGENT_LATER, intentMode: FOOD_INTENT_MODE, precise: preciseReq, supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
     turns: recentTurns.length, cardLines: card.length, pending: !!foodContext.pendingMeal,
   });
   const intentP = startTracedIntent(undefined, firstGate);
@@ -4165,7 +4173,7 @@ async function handleParseMealRequest(args: {
       card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
       parseDeps: (fb?: FoodBarTraceCollector) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
       // The agent's own instructions take the region's examples (Precise only).
-      region: FOOD_REGION_RULES === "on" && isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier })
+      region: FOOD_REGION_RULES === "on" && preciseReq
         ? readTimezone(userClient).then(foodRegionForTimezone) as Promise<FoodRegion | null>
         : null,
       logUsage: (row: FoodBarUsageRow) => void logTokenUsage(admin, row),
@@ -4182,7 +4190,7 @@ async function handleParseMealRequest(args: {
       // app that sends it): a Precise correction carries no speed.
       // Behind the same server gate speed "super" passes (Precise on, not the
       // free tier): the client's tier never unlocks the agent path alone.
-      mode: FOOD_AGENT_LATER, precise: isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier }),
+      mode: FOOD_AGENT_LATER, precise: preciseReq,
       supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
       turns: recentTurns.length, cardLines: card.length, cardOpen, pending: !!foodContext.pendingMeal,
     });

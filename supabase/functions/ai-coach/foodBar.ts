@@ -46,6 +46,8 @@ import {
   findLabel,
   resolveParseTier,
   runParseMeal,
+  REGION_WAIT_MS,
+  waitForRegion,
 } from "./parseMeal.ts";
 import { type FoodAgentWarm, type RecallFood, recallFoods } from "./foodWarmMemory.ts";
 import type { MemoryEntry } from "./userFoodMemory.ts";
@@ -552,6 +554,17 @@ export function todayLabel(localDate: string | null): string | null {
   return `${day} ${localDate}`;
 }
 
+/** The agent's region (FOOD_REGION_RULES), waited for at most `ms`: a slow
+ *  or hung time zone read is no region, never a stalled agent. null when the
+ *  switch is off or the request is not Precise. */
+export async function agentRegionRules(
+  region: Promise<FoodRegion | null> | null | undefined,
+  ms = REGION_WAIT_MS,
+): Promise<{ region: FoodRegion | null } | null> {
+  if (!region) return null;
+  return { region: (await waitForRegion(() => region, ms)).region };
+}
+
 /**
  * Start the food agent AS SOON AS the router answers, not after the parse: the
  * parse is wasted work for a multi-step message, and waiting on it would add
@@ -653,7 +666,7 @@ export function startFoodAgent(args: {
     const thread = couldUseThread ? await args.thread!.catch(() => null) : null;
     if (!later && !wantsFoodAgent(d, args.supportsCreate, cardOpen, !!thread?.index && noCard)) return null;
     if (!env().anthropicApiKey) return null;
-    const regionRules = args.region ? { region: await args.region.catch(() => null) } : null;
+    const regionRules = await agentRegionRules(args.region);
     const t0 = Date.now();
     const callEnds: number[] = [];
     const out = await runFoodAgent(
