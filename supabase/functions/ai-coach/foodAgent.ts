@@ -17,6 +17,7 @@
 //
 // Deps are injected so the loop is testable without the network.
 
+import { energyUnitKcal, fitPortionToStated, isWeightLabel, lineAmountNamed, totalNote, userNumbersOnLine } from "./statedNumbers.ts";
 import { type FoodOrigin, ORIGIN_RANK, originOf, parseRecipe } from "../_shared/foodOrigin.ts";
 import { summarize } from "./foodBarTrace.ts";
 import { CARD_MAX_LINES, type CardLine, cardLines, cardMayBeCut, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
@@ -603,7 +604,9 @@ export const LABEL_NOTE =
   "You can look up a packaged food's printed label online with find_label. When the user asks you to look up or check " +
   "a label, or doubts a packaged food's numbers, call it. On a card line, put the label on the line with edit_line, " +
   "use_label true: the app works out the line from the label for the amount on the card, keeping the user's name for " +
-  "the food. When find_label finds no label, say so and keep the line as it is. Each card line ends with where its " +
+  "the food. A line whose source names the user's numbers (\"the user's numbers\" or \"the user said\") keeps those " +
+  "numbers: the label gives the rest and the weight. " +
+  "When find_label finds no label, say so and keep the line as it is. Each card line ends with where its " +
   "numbers came from: a line \"from web\" was already looked up on that site, and find_label looks again.";
 
 /** The later-message agent's instructions. The lessons of today's routes
@@ -1818,6 +1821,29 @@ export function lineFromLabel(line: CardLine, label: LabelFound, mealDefault: Me
     confidence: label.verified ? "high" : "medium",
     meal_type: line.meal_type ?? mealDefault,
   };
+  // The user's own numbers on the line (an earlier "150 cals of atta bread")
+  // stay theirs: the label gives the food's density and the macros they did
+  // not give, and the weight follows (fitPortionToStated). A line whose amount
+  // was read as energy ("150 x kcal") was never an amount.
+  const mine = userNumbersOnLine(line);
+  if (mine) {
+    const priced = energyUnitKcal(line.quantity, line.serving_label) !== null
+      ? { ...item, quantity: 1, serving_label: "serving" }
+      : item;
+    // A weight on a line carrying the user's numbers is the one an earlier fit
+    // worked out from them (a typed weight gives per-100 numbers, which read
+    // back as none here), so the new label's density may move it.
+    const fitted = fitPortionToStated(priced, mine, lineAmountNamed(line) && !isWeightLabel(line.serving_label));
+    const r = (v: number) => Math.round(v * 10) / 10;
+    return {
+      ...fitted,
+      kcal: r(fitted.kcal), protein_g: r(fitted.protein_g), carb_g: r(fitted.carb_g), fat_g: r(fitted.fat_g),
+      fiber_g: fitted.fiber_g === null ? null : r(fitted.fiber_g),
+      source: "manual",
+      origin: "user_typed",
+      assumption: `${totalNote(mine, "line")} (the rest from the label online)`,
+    };
+  }
   // A unit that prints its own weight ("slice (25 g)") weighs quantity x it.
   return unitWeightMatchesGrams(item);
 }
