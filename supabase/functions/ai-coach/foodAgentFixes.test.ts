@@ -479,3 +479,31 @@ Deno.test("onlyAmount: the user's message gives this line its amount only when i
   // Two amounts: no telling which is which.
   assertEquals(onlyAmount("1 tetrapack and 2 slices", BUTTERMILK, 1), null);
 });
+
+Deno.test("review: a decimal amount is not split at its point", () => {
+  const line = { food_name: "Buttermilk", said_name: "buttermilk" } as never;
+  const a = onlyAmount("0.5 litre of buttermilk", line, 1);
+  assert(a !== null);
+  assertFalse(JSON.stringify(a).includes("5000"), JSON.stringify(a));
+});
+
+Deno.test("review: a number already on the user's line, or the word one, is not a new number", () => {
+  const line = { kcal: 120, grams: 50, quantity: 1, protein_g: 6, carb_g: 10, fat_g: 4 } as never;
+  assertFalse(givesNumber("why is the 120 kcal so high?", line));
+  assertFalse(givesNumber("which one is wrong?", line));
+  assert(givesNumber("it is 90 kcal", line));
+  assert(givesNumber("make it two", line));
+});
+
+Deno.test("review: an older save ask does not stand once the user moved on", () => {
+  assertEquals(unmetSaveAsk([
+    { role: "user", text: "save it as a meal" },
+    { role: "drona", text: "Which name should it have?" },
+    { role: "user", text: "add a banana too" },
+    { role: "drona", text: "Added a banana." },
+  ]), null);
+  assert(unmetSaveAsk([
+    { role: "user", text: "save it as a meal" },
+    { role: "drona", text: "Paneer keeps the protein up." },
+  ]) !== null);
+});

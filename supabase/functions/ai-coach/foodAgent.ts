@@ -1738,7 +1738,10 @@ export function unmetSaveAsk(turns: { role: "user" | "drona"; text: string }[] |
   const ts = turns ?? [];
   for (let i = ts.length - 1; i >= 0; i--) {
     const t = ts[i];
-    if (t.role !== "user" || !asksToSave(t.text)) continue;
+    // Only the user's latest earlier message: once they moved on to something
+    // else, an older save ask no longer stands.
+    if (t.role !== "user") continue;
+    if (!asksToSave(t.text)) return null;
     const after = ts.slice(i + 1);
     const met = after.some((x) =>
       x.role === "drona" ? SAVE_OFFER.test(x.text) && !NOT_SAVED.test(x.text) : SAVE_DONE.test(x.text)
@@ -1926,7 +1929,7 @@ export function planCardChanges(
         return fail(
           `build_recipe for ${JSON.stringify(ask.name)} names ${invented.length === 1 ? "a part" : "parts"} the user never ` +
             `mentioned: ${names(invented)}. Give only the parts the user named, in their words (a cooking oil or fat with ` +
-            "no amount may be assumed).",
+            "no amount may be assumed), or ask the user whether the dish has that part.",
         );
       }
       let index: number | null = null;
@@ -1944,7 +1947,7 @@ export function planCardChanges(
       // The user's own number is theirs (CARD_NOTE_LATER): a doubt with no new
       // number is answered, never re-guessed. use_label keeps their number
       // (lineFromLabel), so it may still fill in the rest.
-      if (userText !== undefined && a.use_label !== true && originOf(card[i]) === "user_typed" && !givesNumber(userText)) {
+      if (userText !== undefined && a.use_label !== true && originOf(card[i]) === "user_typed" && !givesNumber(userText, card[i])) {
         return fail(
           `L${i + 1} holds the user's own number (${USER_TYPED_MARK}) and their message gives no new number, so edit_line ` +
             "may not change it. Leave it out, and in your reply say where that number came from and ask once whether to change it.",
@@ -1995,9 +1998,17 @@ export function userWordsOf(input: Pick<FoodAgentInput, "text" | "recentTurns" |
 }
 
 /** The message gives a number: digits, or a number word ("two", "half"). */
-export function givesNumber(text: string): boolean {
-  return /\d/.test(text) ||
-    /\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|half|quarter|double|twice|dozen)\b/i.test(text);
+export function givesNumber(text: string, line?: Pick<CardLine, "kcal" | "grams" | "quantity" | "protein_g" | "carb_g" | "fat_g">): boolean {
+  // "one" is left out: "which one is wrong?" gives no number.
+  if (/\b(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|half|quarter|double|twice|dozen)\b/i.test(text)) return true;
+  const nums = [...text.matchAll(/\d+(?:\.\d+)?/g)].map((m) => Number(m[0]));
+  if (!nums.length) return false;
+  if (!line) return true;
+  // A number already on the line is the user asking about it ("why is the 120
+  // kcal so high?"), not a new one.
+  const onLine = [line.kcal, line.grams, line.quantity, line.protein_g, line.carb_g, line.fat_g]
+    .map((v) => Number(v)).filter((v) => Number.isFinite(v));
+  return nums.some((n) => !onLine.some((v) => Math.round(v) === Math.round(n)));
 }
 
 /** The card after one turn's changes: every line the agent did not name is
@@ -2240,7 +2251,7 @@ export function statedAmount(text: string): StatedAmount | null {
  *  none; a weight counts only on a one-line card; a count only of a container
  *  or a piece, or of this food by name ("half kaju" is not the laddu's). */
 export function onlyAmount(text: string, line: Pick<CardLine, "food_name" | "said_name">, cardSize: number): StatedAmount | null {
-  const parts = text.split(/[,.;]|\band\b/i).map(statedAmount).filter((x): x is StatedAmount => !!x);
+  const parts = text.split(/[,;]|\.(?=\s|$)|\band\b/i).map(statedAmount).filter((x): x is StatedAmount => !!x);
   if (parts.length !== 1) return null;
   const a = parts[0];
   if (a.word === null) return cardSize === 1 ? a : null;
