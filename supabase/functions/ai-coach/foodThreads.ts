@@ -96,6 +96,10 @@ export interface StoredThread {
   /** Highest turn seq written so far (0 for none). */
   last_seq: number;
   cards: StoredCard[];
+  /** Read only when load was asked for `turns` (FOOD_WARM_MEMORY): the
+   *  newest stored turn, and turn 1's text. */
+  last_turn?: ThreadTurn | null;
+  first_text?: string | null;
 }
 
 /** What the app says about its thread with a message (body.thread). */
@@ -350,7 +354,7 @@ export function threadIndexLine(t: StoredThread | null, onScreenCardId: string |
 
 export interface FoodThreadStore {
   /** The thread with each card's current lines, or null (missing, or not this user's). */
-  load(userId: string, threadId: string): Promise<StoredThread | null>;
+  load(userId: string, threadId: string, opts?: { turns?: boolean }): Promise<StoredThread | null>;
   /** Create the thread with the app's id when it does not exist yet. False
    *  when the id is taken by another user's thread. */
   ensure(userId: string, threadId: string): Promise<boolean>;
@@ -376,9 +380,9 @@ export interface FoodThreadStore {
   // store without them simply offers none of them.
   /** Up to `limit` turns of THIS user's thread from `fromSeq`, oldest first.
    *  Null when the thread is missing or not this user's. */
-  turnsFrom?(userId: string, threadId: string, fromSeq: number, limit: number): Promise<ThreadTurn[] | null>;
+  turnsFrom?(userId: string, threadId: string, fromSeq: number, limit: number, opts?: { owned?: boolean }): Promise<ThreadTurn[] | null>;
   /** This user's other threads still kept (last_at since `sinceIso`) whose
-   *  turns or current card lines hold any of `words`, best first. */
+   *  turns hold any of `words`, best first; card lines read for those only. */
   searchThreads?(userId: string, words: string[], opts: { excludeThreadId: string | null; sinceIso: string; limit: number }): Promise<ThreadHit[]>;
 }
 
@@ -403,7 +407,7 @@ export interface ThreadHit {
   first: string | null;
   /** Its meal cards' current lines, "Name, 171 kcal". */
   lines: string[];
-  /** How many of the words it holds. */
+  /** How many of the words its turns hold. */
   score: number;
 }
 
@@ -458,12 +462,17 @@ export function rowAsLine(r: Record<string, unknown>): ThreadLine {
 /** The tables, through the service-role client (no client can reach them). */
 export function supabaseThreadStore(admin: Db): FoodThreadStore {
   return {
-    async load(userId, threadId) {
+    async load(userId, threadId, opts) {
       const { data: t, error } = await admin.from("food_threads").select("id, user_id, status, last_at").eq("id", threadId).maybeSingle();
       if (error || !t || t.user_id !== userId) return null;
-      const [{ data: cards, error: cardsErr }, { data: seq, error: seqErr }] = await Promise.all([
+      // opts.turns (FOOD_WARM_MEMORY): the newest turn's role and text ride on
+      // the same seq read, and turn 1's text comes beside it. Without it, the
+      // reads are exactly as before.
+      const turns = !!opts?.turns;
+      const [{ data: cards, error: cardsErr }, { data: seq, error: seqErr }, firstRes] = await Promise.all([
         admin.from("food_cards").select("id, kind, version, status, meal_type, created_at, max_line_no").eq("thread_id", threadId).order("created_at"),
-        admin.from("food_thread_turns").select("seq").eq("thread_id", threadId).order("seq", { ascending: false }).limit(1),
+        admin.from("food_thread_turns").select(turns ? "seq, role, text" : "seq").eq("thread_id", threadId).order("seq", { ascending: false }).limit(1),
+        turns ? admin.from("food_thread_turns").select("text").eq("thread_id", threadId).eq("seq", 1).limit(1) : Promise.resolve(null),
       ]);
       // Thrown, never read as "no cards" or "no turns": either would lose a
       // card write or a restore (the same rule as the lines read below).
@@ -504,6 +513,14 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
         status: t.status === "closed" ? "closed" : "open",
         last_at: String(t.last_at),
         last_seq: Number((seq ?? [])[0]?.seq ?? 0),
+        ...(turns
+          ? {
+            last_turn: (seq ?? [])[0]
+              ? { seq: Number(seq[0].seq), role: seq[0].role === "drona" ? "drona" as const : "user" as const, text: String(seq[0].text ?? "") }
+              : null,
+            first_text: !firstRes || firstRes.error || typeof firstRes.data?.[0]?.text !== "string" ? null : firstRes.data[0].text,
+          }
+          : {}),
         cards: list.map((c) => {
           const now = current(c);
           const prev = last.get(String(c.id));
@@ -598,10 +615,14 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
     async setCardStatus(threadId, cardId, status) {
       await admin.from("food_cards").update({ status, updated_at: new Date().toISOString() }).eq("id", cardId).eq("thread_id", threadId);
     },
-    async turnsFrom(userId, threadId, fromSeq, limit) {
-      const { data: t, error } = await admin.from("food_threads").select("user_id").eq("id", threadId).maybeSingle();
-      if (error) throw new Error(`food_threads: ${error.message}`);
-      if (!t || t.user_id !== userId) return null;
+    async turnsFrom(userId, threadId, fromSeq, limit, opts) {
+      // opts.owned: the caller's own load of this thread already proved it is
+      // this user's (load returns null otherwise), so no second check.
+      if (!opts?.owned) {
+        const { data: t, error } = await admin.from("food_threads").select("user_id").eq("id", threadId).maybeSingle();
+        if (error) throw new Error(`food_threads: ${error.message}`);
+        if (!t || t.user_id !== userId) return null;
+      }
       const res = await admin.from("food_thread_turns").select("seq, role, text").eq("thread_id", threadId)
         .gte("seq", fromSeq).order("seq").limit(limit);
       if (res.error) throw new Error(`food_thread_turns: ${res.error.message}`);
@@ -620,13 +641,26 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
       if (!list.length) return [];
       const ids = list.map((t) => String(t.id));
       // Words are [a-z0-9] only (searchWords), so they are safe in the filter.
-      const [turns, cards, firsts] = await Promise.all([
-        admin.from("food_thread_turns").select("thread_id, text").in("thread_id", ids)
-          .or(words.map((w) => `text.ilike.%${w}%`).join(",")).limit(300),
-        admin.from("food_cards").select("id, thread_id, version").in("thread_id", ids).eq("kind", "meal"),
-        admin.from("food_thread_turns").select("thread_id, text").in("thread_id", ids).eq("seq", 1),
-      ]);
+      // Threads are scored on their turns' text first; cards and first
+      // messages are read for the top `limit` threads only, so the card read
+      // stays small however many cards the user's threads hold.
+      const turns = await admin.from("food_thread_turns").select("thread_id, text").in("thread_id", ids)
+        .or(words.map((w) => `text.ilike.%${w}%`).join(",")).limit(300);
       if (turns.error) throw new Error(`food_thread_turns: ${turns.error.message}`);
+      const turnsBy = new Map<string, string[]>();
+      for (const r of (turns.data ?? []) as Record<string, unknown>[]) {
+        const th = String(r.thread_id);
+        turnsBy.set(th, [...(turnsBy.get(th) ?? []), String(r.text ?? "")]);
+      }
+      // Stable sort: equal scores keep list order, newest first.
+      const top = list.map((t) => ({ t, score: wordScore(turnsBy.get(String(t.id)) ?? [], words) }))
+        .filter((x) => x.score > 0).sort((a, b) => b.score - a.score).slice(0, opts.limit);
+      if (!top.length) return [];
+      const topIds = top.map((x) => String(x.t.id));
+      const [cards, firsts] = await Promise.all([
+        admin.from("food_cards").select("id, thread_id, version").in("thread_id", topIds).eq("kind", "meal"),
+        admin.from("food_thread_turns").select("thread_id, text").in("thread_id", topIds).eq("seq", 1),
+      ]);
       if (cards.error) throw new Error(`food_cards: ${cards.error.message}`);
       const cardRows = (cards.data ?? []) as Record<string, unknown>[];
       let lineRows: Record<string, unknown>[] = [];
@@ -634,7 +668,7 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
         // Each card's CURRENT version only, as load() reads them.
         const res = await admin.from("food_card_lines").select("card_id, version, name, kcal")
           .or(cardRows.map((c) => `and(card_id.eq.${c.id},version.eq.${Number(c.version)})`).join(","))
-          .order("line_no").limit(1000);
+          .order("line_no");
         if (res.error) throw new Error(`food_card_lines: ${res.error.message}`);
         lineRows = (res.data ?? []) as Record<string, unknown>[];
       }
@@ -645,23 +679,17 @@ export function supabaseThreadStore(admin: Db): FoodThreadStore {
         if (!th) continue;
         linesBy.set(th, [...(linesBy.get(th) ?? []), lineText(String(l.name ?? ""), l.kcal)]);
       }
-      const turnsBy = new Map<string, string[]>();
-      for (const r of (turns.data ?? []) as Record<string, unknown>[]) {
-        const th = String(r.thread_id);
-        turnsBy.set(th, [...(turnsBy.get(th) ?? []), String(r.text ?? "")]);
-      }
       const firstBy = new Map(((firsts.data ?? []) as Record<string, unknown>[]).map((r) => [String(r.thread_id), String(r.text ?? "")]));
-      return list.map((t) => {
+      return top.map(({ t, score }) => {
         const id = String(t.id);
-        const lines = linesBy.get(id) ?? [];
         return {
           thread_id: id,
           date: String(t.started_at ?? t.last_at ?? "").slice(0, 10),
           first: firstBy.get(id) ?? null,
-          lines,
-          score: wordScore([...(turnsBy.get(id) ?? []), ...lines.map((x) => x.split(",")[0])], words),
+          lines: linesBy.get(id) ?? [],
+          score,
         };
-      }).filter((h) => h.score > 0).sort((a, b) => b.score - a.score).slice(0, opts.limit);
+      });
     },
   };
 }
@@ -840,15 +868,23 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
   };
   return {
     dump: () => ({ threads, cards }),
-    async load(userId, threadId) {
+    async load(userId, threadId, opts) {
       const t = threads.get(threadId);
       if (!t || t.user_id !== userId) return null;
+      const sorted = [...t.turns].sort((a, b) => a.seq - b.seq);
+      const newest = sorted.at(-1);
       return {
         id: threadId,
         user_id: t.user_id,
         status: t.status === "closed" ? "closed" : "open",
         last_at: t.last_at,
         last_seq: t.turns.at(-1)?.seq ?? 0,
+        ...(opts?.turns
+          ? {
+            last_turn: newest ? { seq: newest.seq, role: newest.role === "drona" ? "drona" as const : "user" as const, text: newest.text } : null,
+            first_text: sorted.find((x) => x.seq === 1)?.text ?? null,
+          }
+          : {}),
         cards: [...cards].filter(([, c]) => c.thread_id === threadId).map(([id, c]) => {
           // The newest version with lines, the same as the database read.
           const withLines = [...c.versions].filter(([, ls]) => ls.length > 0).sort((a, b) => b[0] - a[0])[0];
@@ -909,7 +945,7 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
       const c = cards.get(cardId);
       if (c && c.thread_id === threadId) c.status = status;
     },
-    async turnsFrom(userId, threadId, fromSeq, limit) {
+    async turnsFrom(userId, threadId, fromSeq, limit, _opts) {
       const t = threads.get(threadId);
       if (!t || t.user_id !== userId) return null;
       return [...t.turns].sort((a, b) => a.seq - b.seq).filter((x) => x.seq >= fromSeq).slice(0, limit)
@@ -919,7 +955,11 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
       if (!words.length) return [];
       const mine = [...threads].filter(([id, t]) => t.user_id === userId && id !== opts.excludeThreadId && t.last_at >= opts.sinceIso)
         .sort((a, b) => b[1].last_at.localeCompare(a[1].last_at));
-      return mine.map(([id, t]) => {
+      // The same order as the database store: turns' text first, then the
+      // top threads' cards.
+      const top = mine.map(([id, t]) => ({ id, t, score: wordScore(t.turns.map((x) => x.text), words) }))
+        .filter((x) => x.score > 0).sort((a, b) => b.score - a.score).slice(0, opts.limit);
+      return top.map(({ id, t, score }) => {
         const lines = [...cards].filter(([, c]) => c.thread_id === id && c.kind === "meal")
           .flatMap(([, c]) => (c.versions.get(c.version) ?? []).map((l) => lineText(l.name, l.kcal)));
         const sorted = [...t.turns].sort((a, b) => a.seq - b.seq);
@@ -928,9 +968,9 @@ export function memoryThreadStore(): FoodThreadStore & { dump(): { threads: Map<
           date: (t.started_at ?? t.last_at).slice(0, 10),
           first: sorted.find((x) => x.seq === 1)?.text ?? null,
           lines,
-          score: wordScore([...t.turns.map((x) => x.text), ...lines.map((x) => x.split(",")[0])], words),
+          score,
         };
-      }).filter((h) => h.score > 0).sort((a, b) => b.score - a.score).slice(0, opts.limit);
+      });
     },
   };
 }

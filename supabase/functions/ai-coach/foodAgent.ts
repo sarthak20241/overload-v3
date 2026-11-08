@@ -47,7 +47,9 @@ import {
   type RecallFood,
   RECIPE_MEMORY_NOTE,
   runWarmRead,
-  SEARCH_THREADS_TOOL,
+  briefly,
+  RECIPE_MEMORY_WAIT_MS,
+  searchThreadsTool,
   warmNote,
   warmStatus,
   warmThreadText,
@@ -922,7 +924,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   const warmTools = [
     ...(canRecall ? [RECALL_FOOD_TOOL] : []),
     ...(canReadThread ? [READ_THREAD_TOOL] : []),
-    ...(canSearch ? [SEARCH_THREADS_TOOL] : []),
+    ...(canSearch ? [searchThreadsTool(canCopy)] : []),
   ];
   const warmNames = new Set(warmTools.map((t) => t.name));
   const isRead = (name: string) => READ_TOOLS.has(name) || warmNames.has(name);
@@ -930,7 +932,9 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // opening message only for a first-message run whose parse has ALREADY
   // finished: it is peeked at, never awaited, so the agent starts no later
   // than before. Every parse_food result carries them too (runRead).
-  const settled = later && !!input.first && !cardOnScreen ? warm?.settledFirstParse?.() ?? null : null;
+  // Only where matches can appear at all (USER_FOOD_MEMORY and Jev on).
+  const canMatch = !!warm?.matches;
+  const settled = canMatch && later && !!input.first && !cardOnScreen ? warm?.settledFirstParse?.() ?? null : null;
   const warmText = warm
     ? { thread: warmThreadText(input.warmThread, input.recentTurns, canReadThread), matches: memoryMatchesBlock(settled) }
     : {};
@@ -946,7 +950,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // or with none (a first message). A cut card never reaches later mode.
   const canRecipe = later && !!deps.buildRecipe && (lineTools || !cardOnScreen);
   // Said only for the warm tools this run has; null with the switch off.
-  const warmSaid = warm ? warmNote({ recall: canRecall, readThread: canReadThread, searchThreads: canSearch, matches: true }) : null;
+  const warmSaid = warm ? warmNote({ recall: canRecall, readThread: canReadThread, searchThreads: canSearch, matches: canMatch }) : null;
   const recipeMemory = canRecipe && canRecall ? RECIPE_MEMORY_NOTE : null;
   const systemToday = first
     ? [FOOD_AGENT_SYSTEM_FIRST, FIRST_NOTE, canCopy ? COPY_NOTE : null, canRecipe ? RECIPE_NOTE : null, recipeMemory, warmSaid]
@@ -1233,7 +1237,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
         }
         : warmNames.has(u.name)
         ? await runWarmRead(u.name, u.input ?? {}, warm!, warmCalls)
-        : await runRead(u, deps, parse, { card: input.card ?? [], labelLines, calls: labelCalls, memoryMatches: !!warm });
+        : await runRead(u, deps, parse, { card: input.card ?? [], labelLines, calls: labelCalls, memoryMatches: canMatch });
       outs[i] = out;
       if (!run && !refused.has(u) && !rejected.has(u)) remember(seen, out);
       return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) };
@@ -2036,7 +2040,8 @@ async function applyCardChanges(
       const m = x.meal ?? (x.index !== null ? card[x.index].meal_type : null) ?? meal;
       // FOOD_WARM_MEMORY: the same dish in the user's memory lends its
       // remembered amounts to parts sent with none (recipe.ts buildRecipe).
-      const foods: RecallFood[] | null = deps.warm?.memory ? await deps.warm.memory().catch(() => null) : null;
+      // Waited for briefly: a slow load builds the dish as the switch off would.
+      const foods: RecallFood[] | null = deps.warm?.memory ? await briefly(deps.warm.memory(), RECIPE_MEMORY_WAIT_MS) : null;
       const b = await buildRecipe(x.ask, m, parse, rememberedRecipe(foods, x.ask.name, memoryKey));
       return { x, ...b };
     })),

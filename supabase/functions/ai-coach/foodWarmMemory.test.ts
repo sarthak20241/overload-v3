@@ -29,7 +29,7 @@ import type { CardLine } from "./foodContext.ts";
 import type { ParsedItem, ParseMealResult, ParseStep } from "./parseMeal.ts";
 import { BUILD_RECIPE_TOOL, RECIPE_NOTE } from "./recipe.ts";
 import { matchMemory, type MemoryEntry } from "./userFoodMemory.ts";
-import { memoryThreadStore, threadForAgent, type ThreadHit, type ThreadTurn } from "./foodThreads.ts";
+import { memoryThreadStore, supabaseThreadStore, threadForAgent, type ThreadHit, type ThreadTurn } from "./foodThreads.ts";
 import {
   type FoodAgentWarm,
   MAX_RECALL_PER_RUN,
@@ -41,6 +41,7 @@ import {
   type RecallFood,
   recallFoods,
   RECIPE_MEMORY_NOTE,
+  firstMessageSafe,
   threadTurnsMemory,
   warmThreadText,
   warmThreadFrom,
@@ -323,7 +324,7 @@ Deno.test("agent: a parse_food result carries the memory decisions that parse ma
   await runFoodAgent(
     { text: "how many calories in my jeera rice", defaultMeal: "lunch", later: true, card: CARD },
     base(bodies, [[{ name: "parse_food", input: { text: "jeera rice" } }], [{ name: "reply", input: { text: "171 kcal." } }]], {
-      parseFood: async () => { parses++; return RICE_PARSE; }, warm: {},
+      parseFood: async () => { parses++; return RICE_PARSE; }, warm: { matches: true },
     }),
   );
   assertEquals(parses, 1); // no second parse, and no Jev call of its own
@@ -337,7 +338,7 @@ Deno.test("agent: a first-message run shows the decisions in its opening message
   const bodies: Record<string, unknown>[] = [];
   await runFoodAgent(
     { text: "jeera rice and what should I eat next", defaultMeal: "lunch", later: true, first: true },
-    base(bodies, [[{ name: "reply", input: { text: "ok" } }]], { warm: { settledFirstParse: () => RICE_PARSE } }),
+    base(bodies, [[{ name: "reply", input: { text: "ok" } }]], { warm: { matches: true, settledFirstParse: () => RICE_PARSE } }),
   );
   assertStringIncludes(firstUser(bodies[0]), `- "jeera rice" (parse line "Jeera Rice"): chosen "Jeera Rice", Jev 0.92.`);
 });
@@ -347,7 +348,7 @@ Deno.test("agent: a parse still running is never waited for, and no block is sho
   let peeks = 0;
   const out = await runFoodAgent(
     { text: "jeera rice", defaultMeal: "lunch", later: true, first: true },
-    base(bodies, [[{ name: "reply", input: { text: "ok" } }]], { warm: { settledFirstParse: () => { peeks++; return null; } } }),
+    base(bodies, [[{ name: "reply", input: { text: "ok" } }]], { warm: { matches: true, settledFirstParse: () => { peeks++; return null; } } }),
   );
   assertEquals(out.kind, "reply");
   assertEquals(peeks, 1);
@@ -357,7 +358,7 @@ Deno.test("agent: a parse still running is never waited for, and no block is sho
   const later: Record<string, unknown>[] = [];
   await runFoodAgent(
     { text: "jeera rice", defaultMeal: "lunch", later: true, card: CARD },
-    base(later, [[{ name: "reply", input: { text: "ok" } }]], { warm: { settledFirstParse: () => RICE_PARSE } }),
+    base(later, [[{ name: "reply", input: { text: "ok" } }]], { warm: { matches: true, settledFirstParse: () => RICE_PARSE } }),
   );
   assertFalse(firstUser(later[0]).includes("Memory matches"));
 });
@@ -464,63 +465,95 @@ Deno.test("agent: search_threads finds earlier chats, refuses no words, is cappe
 
 // ── The thread's turns: memory first, the database only for what is missing ──
 
-/** A turnsFrom that counts its calls and the spans asked for. */
-function countingFetch(total: number) {
+/** A memory store holding one thread of `n` turns ("turn 1".."turn n", user
+ *  first), and a turnsFrom on it that counts its calls. */
+async function storedThread(n: number, text = (i: number) => `turn ${i}`) {
+  const store = memoryThreadStore();
+  await store.ensure("u1", "t1");
+  if (n) await store.addTurns("t1", 1, Array.from({ length: n }, (_, i) => ({ role: (i % 2 ? "drona" : "user") as "user" | "drona", text: text(i + 1) })), "c1");
   const calls: [number, number][] = [];
-  const all: ThreadTurn[] = Array.from({ length: total }, (_, i) => ({ seq: i + 1, role: (i % 2 ? "drona" : "user") as "user" | "drona", text: `stored ${i + 1}` }));
-  return {
-    calls,
-    fetch: async (from: number, limit: number) => {
-      calls.push([from, limit]);
-      return all.filter((t) => t.seq >= from).slice(0, limit);
-    },
-  };
+  const fetch = (from: number, limit: number) => { calls.push([from, limit]); return store.turnsFrom!("u1", "t1", from, limit, { owned: true }); };
+  const stored = store.load("u1", "t1", { turns: true }).then((t) =>
+    t ? { lastSeq: t.last_seq, lastTurn: t.last_turn ?? null, firstText: t.first_text ?? null } : null
+  );
+  return { store, calls, fetch, stored };
 }
 
-const appTurns = (seqs: number[]) => seqs.map((n) => ({ role: (n % 2 ? "user" : "drona") as "user" | "drona", text: `app ${n}` }));
+/** The app's copy of turns from..to, as it sends them (role by seq). */
+const appCopy = (from: number, to: number, text = (i: number) => `turn ${i}`) =>
+  Array.from({ length: to - from + 1 }, (_, i) => ({ role: ((from + i) % 2 ? "user" : "drona") as "user" | "drona", text: text(from + i) }));
 
 Deno.test("threadTurnsMemory: the whole thread in the app's turns: first message and read_thread make 0 DB calls", async () => {
-  const db = countingFetch(6);
-  const mem = threadTurnsMemory({ lastSeq: Promise.resolve(6), recent: appTurns([1, 2, 3, 4, 5, 6]), fetch: db.fetch });
-  assertEquals(await warmThreadFrom(mem), { first: "app 1", turns: 6 });
-  assertEquals((await mem.read(2, 10))!.map((t) => t.text), ["app 2", "app 3", "app 4", "app 5", "app 6"]);
-  assertEquals(db.calls, []);
+  const t = await storedThread(6);
+  const mem = threadTurnsMemory({ stored: t.stored, recent: appCopy(1, 6), fetch: t.fetch });
+  assertEquals(await warmThreadFrom(mem), { first: "turn 1", turns: 6 });
+  assertEquals((await mem.read(2, 10))!.map((x) => x.text), ["turn 2", "turn 3", "turn 4", "turn 5", "turn 6"]);
+  assertEquals(t.calls, []);
 });
 
-Deno.test("threadTurnsMemory: a long thread reads only the missing span, once, then serves it from memory", async () => {
-  // 14 stored turns; the app sent the last 10 (seqs 5 to 14).
-  const db = countingFetch(14);
-  const mem = threadTurnsMemory({ lastSeq: Promise.resolve(14), recent: appTurns([5, 6, 7, 8, 9, 10, 11, 12, 13, 14]), fetch: db.fetch });
-  // The first message: turn 1 only.
-  assertEquals((await warmThreadFrom(mem))?.first, "stored 1");
-  assertEquals(db.calls, [[1, 1]]);
-  // read_thread(1): 1 is held, 5..10 are the app's; only 2..4 are read.
+Deno.test("threadTurnsMemory: a long thread: turn 1 comes with the load, read_thread reads only the missing span, once", async () => {
+  const t = await storedThread(14);
+  const mem = threadTurnsMemory({ stored: t.stored, recent: appCopy(5, 14), fetch: t.fetch });
+  assertEquals((await warmThreadFrom(mem))?.first, "turn 1");
+  assertEquals(t.calls, []); // turn 1's text rode on the load
   const got = await mem.read(1, 10);
-  assertEquals(db.calls, [[1, 1], [2, 3]]);
-  assertEquals(got!.map((t) => t.seq), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-  assertEquals(got!.map((t) => t.text).slice(3, 5), ["stored 4", "app 5"]);
-  // Asked again: everything is in memory now, no call.
+  assertEquals(t.calls, [[2, 3]]); // 1 from the load, 5..10 the app's: only 2..4
+  assertEquals(got!.map((x) => [x.seq, x.text]), Array.from({ length: 10 }, (_, i) => [i + 1, `turn ${i + 1}`]));
   await mem.read(1, 10);
   await mem.read(3, 2);
-  assertEquals(db.calls.length, 2);
+  assertEquals(t.calls.length, 1);
+});
+
+Deno.test("threadTurnsMemory: the last write has not landed: nothing is placed, stored text under stored numbers", async () => {
+  // Stored 12; the app already holds 14 (its last message's turns not written yet).
+  const t = await storedThread(12);
+  const mem = threadTurnsMemory({ stored: t.stored, recent: appCopy(5, 14), fetch: t.fetch });
+  const got = await mem.read(3, 10);
+  assertEquals(got!.map((x) => [x.seq, x.text]), Array.from({ length: 10 }, (_, i) => [i + 3, `turn ${i + 3}`]));
+  // Turn 12 was held from the load; 3..11 were read in one call.
+  assertEquals(t.calls, [[3, 9]]);
+});
+
+Deno.test("threadTurnsMemory: a Drona turn the store never got: the app's turns are not placed", async () => {
+  // The store has 11 turns ending with the user's turn 11; the app also has
+  // Drona's answer to it, so its turns sit one later than the store's.
+  const t = await storedThread(11);
+  const recent = [...appCopy(3, 11), { role: "drona" as const, text: "answer never stored" }];
+  const mem = threadTurnsMemory({ stored: t.stored, recent, fetch: t.fetch });
+  const got = await mem.read(1, 11);
+  assertEquals(got!.map((x) => x.text), Array.from({ length: 11 }, (_, i) => `turn ${i + 1}`));
+  assertFalse(JSON.stringify(got).includes("never stored"));
+  assertEquals(t.calls.length, 1);
+});
+
+Deno.test("threadTurnsMemory: a store short of turns (different text at the newest seq) is read, never trusted", async () => {
+  const t = await storedThread(14, (i) => `stored ${i}`);
+  const mem = threadTurnsMemory({ stored: t.stored, recent: appCopy(5, 14), fetch: t.fetch });
+  const got = await mem.read(5, 10);
+  assertEquals(got!.map((x) => x.text), Array.from({ length: 10 }, (_, i) => `stored ${i + 5}`));
+});
+
+Deno.test("threadTurnsMemory: the app's 400-character cut still matches the stored turn", async () => {
+  const long = (i: number) => (i === 14 ? `turn 14 ${"x".repeat(600)}` : `turn ${i}`);
+  const t = await storedThread(14, long);
+  const recent = appCopy(5, 14, long).map((x) => ({ ...x, text: x.text.slice(0, 400) }));
+  const mem = threadTurnsMemory({ stored: t.stored, recent, fetch: t.fetch });
+  await mem.read(5, 10);
+  assertEquals(t.calls, []);
 });
 
 Deno.test("threadTurnsMemory: no open thread means no read at all", async () => {
-  const db = countingFetch(4);
-  const mem = threadTurnsMemory({ lastSeq: Promise.resolve(null), recent: appTurns([1, 2]), fetch: db.fetch });
+  const calls: unknown[] = [];
+  const mem = threadTurnsMemory({ stored: Promise.resolve(null), recent: appCopy(1, 2), fetch: async () => { calls.push(1); return []; } });
   assertEquals(await warmThreadFrom(mem), null);
   assertEquals(await mem.read(1, 10), null);
-  assertEquals(db.calls, []);
+  assertEquals(calls, []);
 });
 
 Deno.test("agent: read_thread through the turns memory: 0 store calls for turns the app sent, 1 for the missing span", async () => {
-  const store = memoryThreadStore();
-  await store.ensure("u1", "t1");
-  await store.addTurns("t1", 1, Array.from({ length: 14 }, (_, i) => ({ role: (i % 2 ? "drona" : "user") as "user" | "drona", text: `turn ${i + 1}` })), "c1");
-  let storeCalls = 0;
-  const fetch = (from: number, limit: number) => { storeCalls++; return store.turnsFrom!("u1", "t1", from, limit); };
-  const recent = Array.from({ length: 10 }, (_, i) => ({ role: (i % 2 ? "drona" : "user") as "user" | "drona", text: `turn ${i + 5}` }));
-  const mem = threadTurnsMemory({ lastSeq: Promise.resolve(14), recent, fetch });
+  const t = await storedThread(14);
+  const recent = appCopy(5, 14);
+  const mem = threadTurnsMemory({ stored: t.stored, recent, fetch: t.fetch });
   const bodies: Record<string, unknown>[] = [];
   await runFoodAgent(
     { text: "what did I say before", defaultMeal: "lunch", later: true, card: CARD, recentTurns: recent, warmThread: { first: null, turns: 14 } },
@@ -530,9 +563,30 @@ Deno.test("agent: read_thread through the turns memory: 0 store calls for turns 
       [{ name: "reply", input: { text: "ok" } }],
     ], { warm: { readThread: (f, l) => mem.read(f, l) } }),
   );
-  // from 8: 8..14 all in the app's turns, no call. From 2: only 2..4.
-  assertEquals(storeCalls, 1);
+  assertEquals(t.calls, [[2, 3]]);
   assertStringIncludes(JSON.stringify(bodies[2].messages), "turn 2");
+});
+
+Deno.test("firstMessageSafe: only while the thread's first card is on screen and nothing of it was added", () => {
+  const c = (id: string, status: string, at: string, kind: "meal" | "save" = "meal") => ({ id, kind, status, created_at: at });
+  const open = (cards: ReturnType<typeof c>[]) => ({ status: "open" as const, cards });
+  assert(firstMessageSafe(open([c("a", "open", "2026-11-08T10:00:00Z")]), "a"));
+  // The first card was added: its food is in the diary already.
+  assertFalse(firstMessageSafe(open([c("a", "added", "2026-11-08T10:00:00Z"), c("b", "open", "2026-11-08T10:05:00Z")]), "b"));
+  // A later card on screen: the first message was about another card.
+  assertFalse(firstMessageSafe(open([c("a", "discarded", "2026-11-08T10:00:00Z"), c("b", "open", "2026-11-08T10:05:00Z")]), "b"));
+  // A save card does not count as the meal's card.
+  assert(firstMessageSafe(open([c("s", "open", "2026-11-08T09:00:00Z", "save"), c("a", "open", "2026-11-08T10:00:00Z")]), "a"));
+  assertFalse(firstMessageSafe({ status: "closed", cards: [c("a", "open", "2026-11-08T10:00:00Z")] }, "a"));
+  assertFalse(firstMessageSafe(open([c("a", "open", "2026-11-08T10:00:00Z")]), null));
+  assertFalse(firstMessageSafe(null, "a"));
+});
+
+Deno.test("warmThreadFrom: with the first message not safe, it is left out and nothing is read for it", async () => {
+  const t = await storedThread(14);
+  const mem = threadTurnsMemory({ stored: t.stored, recent: appCopy(5, 14), fetch: t.fetch });
+  assertEquals(await warmThreadFrom(mem, false), { first: null, turns: 14 });
+  assertEquals(t.calls, []);
 });
 
 Deno.test("threadForAgent: given the request's load, it does not load the thread again", async () => {
@@ -639,4 +693,143 @@ Deno.test("agent: without the switch a remembered dish changes nothing (no warm 
   // Oil takes the table's 1 tsp; onion the parse's one usual serving.
   assertEquals(log.sort(), ["5 g oil", "80 g low fat paneer", "onion"]);
   assertFalse(String(bodies[0].system).includes(RECIPE_MEMORY_NOTE));
+});
+
+// ── Review fixes ───────────────────────────────────────────────────────────
+
+Deno.test("agent: a remembered part whose amount was itself assumed stays assumed, and the question still asks", async () => {
+  const assumedOil: RecallFood[] = recallFoods([
+    entry("Paneer sabji", 105, 230, daysAgo(1), {
+      recipe: [{ name: "low fat paneer", grams: 60 }, { name: "oil", grams: 5, assumed: true }, { name: "onion", grams: 40 }],
+    }),
+  ], "precise", false, NOW);
+  const log: string[] = [];
+  const out = await runFoodAgent(
+    { text: "paneer sabji again", defaultMeal: "lunch", later: true, first: true },
+    base([], [[{ name: "build_recipe", input: { name: "Paneer sabji", parts: [{ name: "low fat paneer", amount: "60 g" }, { name: "oil" }, { name: "onion" }] } }]], {
+      parseFood: fakeParse(log), buildRecipe: true, warm: { memory: async () => assumedOil },
+    }),
+  );
+  assertEquals(out.kind, "log");
+  if (out.kind !== "log") return;
+  const dish = out.result.parsed!.items[0];
+  // Onion was the user's last amount; oil was never the user's answer.
+  assertEquals(dish.recipe?.map((p) => [p.name, p.grams, !!p.assumed]), [["low fat paneer", 60, false], ["oil", 5, true], ["onion", 40, false]]);
+  assertStringIncludes(dish.assumption!, "Assumed 1 tsp oil.");
+  assertStringIncludes(dish.assumption!, "From your last log: 40 g onion.");
+  assertFalse(dish.assumption!.includes("From your last log: 5 g oil"));
+  assert(out.result.parsed!.drona_line.endsWith("I assumed 1 tsp oil. Change it?"), out.result.parsed!.drona_line);
+});
+
+// The slow load's timer outlives the run on purpose: ops are not sanitized.
+Deno.test({ name: "agent: build_recipe never waits on a slow memory load (3 s here)", sanitizeOps: false, sanitizeResources: false, fn: async () => {
+  const log: string[] = [];
+  const t0 = Date.now();
+  const slow = () => new Promise<RecallFood[]>((r) => setTimeout(() => r(SABJI_MEMORY), 3000));
+  const out = await runFoodAgent(
+    { text: "paneer sabji again", defaultMeal: "lunch", later: true, first: true },
+    base([], [[SABJI]], { parseFood: fakeParse(log), buildRecipe: true, warm: { memory: slow } }),
+  );
+  assert(Date.now() - t0 < 2000, String(Date.now() - t0));
+  assertEquals(out.kind, "log");
+  // Built as with the switch off: the table's oil, the parse's onion serving.
+  assertEquals(log.sort(), ["5 g oil", "80 g low fat paneer", "onion"]);
+} });
+
+Deno.test("supabaseThreadStore.turnsFrom: owned skips the second ownership read; without it, it checks", async () => {
+  const { db, log } = fakeAdmin({
+    food_threads: [{ id: "t1", user_id: "u1" }],
+    food_thread_turns: [{ thread_id: "t1", seq: 1, role: "user", text: "hi" }],
+  });
+  const store = supabaseThreadStore(db);
+  assertEquals((await store.turnsFrom!("u1", "t1", 1, 10, { owned: true }))!.length, 1);
+  assertFalse(log.some((l) => l.table === "food_threads"));
+  assertEquals(await store.turnsFrom!("u2", "t1", 1, 10), null);
+  assert(log.some((l) => l.table === "food_threads"));
+});
+
+Deno.test("prompt truth: no matches sentence or memory_matches where the parse makes no memory decisions", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  await runFoodAgent(
+    { text: "calories in my jeera rice", defaultMeal: "lunch", later: true, card: CARD },
+    base(bodies, [[{ name: "parse_food", input: { text: "jeera rice" } }], [{ name: "reply", input: { text: "ok" } }]], {
+      parseFood: async () => RICE_PARSE, warm: { memory: async () => foods() },
+    }),
+  );
+  assertFalse(String(bodies[0].system).includes("Memory matches"));
+  assertFalse(JSON.stringify(bodies[1].messages).includes("memory_matches"));
+});
+
+Deno.test("prompt truth: search_threads names copy_lines only when it is offered; read_thread says turns may be cut", async () => {
+  const run = async (more: Partial<FoodAgentDeps>) => {
+    const bodies: Record<string, unknown>[] = [];
+    await runFoodAgent(
+      { text: "x", defaultMeal: "lunch", later: true, card: CARD, recentTurns: appCopy(5, 14), warmThread: { first: null, turns: 14 } },
+      base(bodies, [[{ name: "reply", input: { text: "ok" } }]], { warm: { searchThreads: async () => [], readThread: async () => [] }, ...more }),
+    );
+    return bodies[0].tools as { name: string; description: string }[];
+  };
+  const without = await run({});
+  assertFalse(without.find((t) => t.name === "search_threads")!.description.includes("copy_lines"));
+  const read = without.find((t) => t.name === "read_thread")!.description;
+  assertStringIncludes(read, "a turn may be cut short");
+  assertFalse(read.includes("word for word"));
+  const withCopy = await run({ readDiaryLines: async () => ({}) });
+  assert(withCopy.some((t) => t.name === "copy_lines"));
+  assertStringIncludes(withCopy.find((t) => t.name === "search_threads")!.description, "copy_lines");
+});
+
+/** A PostgREST-like fake over in-memory tables, recording every filter. */
+function fakeAdmin(tables: Record<string, Record<string, unknown>[]>) {
+  const log: { table: string; op: string; args: unknown[] }[] = [];
+  const db = {
+    from(table: string) {
+      let rows = [...(tables[table] ?? [])];
+      let lim = Infinity;
+      const q: Record<string, unknown> = {};
+      const chain = (op: string, f: (...a: any[]) => void) => (...args: unknown[]) => { log.push({ table, op, args }); f(...args); return q; };
+      Object.assign(q, {
+        select: chain("select", () => {}),
+        eq: chain("eq", (c: string, v: unknown) => { rows = rows.filter((r) => r[c] === v); }),
+        neq: chain("neq", (c: string, v: unknown) => { rows = rows.filter((r) => r[c] !== v); }),
+        gte: chain("gte", (c: string, v: string) => { rows = rows.filter((r) => String(r[c]) >= v); }),
+        in: chain("in", (c: string, v: unknown[]) => { rows = rows.filter((r) => v.includes(r[c])); }),
+        order: chain("order", () => {}),
+        limit: chain("limit", (n: number) => { lim = n; }),
+        or: chain("or", (expr: string) => {
+          const ands = [...expr.matchAll(/and\(card_id\.eq\.([^,]+),version\.eq\.(\d+)\)/g)].map((m) => [m[1], Number(m[2])] as const);
+          const likes = [...expr.matchAll(/text\.ilike\.%([a-z0-9]+)%/g)].map((m) => m[1]);
+          rows = rows.filter((r) =>
+            ands.length ? ands.some(([c, v]) => r.card_id === c && r.version === v) : likes.some((w) => String(r.text).toLowerCase().includes(w))
+          );
+        }),
+        maybeSingle: () => { log.push({ table, op: "maybeSingle", args: [] }); return Promise.resolve({ data: rows[0] ?? null, error: null }); },
+        then: (res: (v: unknown) => unknown) => Promise.resolve({ data: rows.slice(0, lim), error: null }).then(res),
+      });
+      return q;
+    },
+    rpc: () => Promise.resolve({ data: null, error: null }),
+  };
+  return { db, log };
+}
+
+Deno.test("supabaseThreadStore.searchThreads: turns scored first; card lines read for the top 5 threads only (150+ cards)", async () => {
+  const threads = Array.from({ length: 40 }, (_, i) => ({ id: `t${i}`, user_id: "u1", started_at: `2026-11-${String(1 + (i % 7)).padStart(2, "0")}T08:00:00Z`, last_at: `2026-11-07T${String(i % 24).padStart(2, "0")}:00:00Z` }));
+  // Paneer is in 8 threads' turns; every thread has 4 meal cards (160 cards).
+  const turns = threads.flatMap((t, i) => [{ thread_id: t.id, seq: 1, role: "user", text: i < 8 ? `lunch was paneer sabji ${i}` : `two eggs ${i}` }]);
+  const cards = threads.flatMap((t) => Array.from({ length: 4 }, (_, k) => ({ id: `${t.id}c${k}`, thread_id: t.id, version: 1, kind: "meal" })));
+  const lines = cards.map((c) => ({ card_id: c.id, version: 1, name: "Paneer sabji", kcal: 210, line_no: 1 }));
+  const { db, log } = fakeAdmin({ food_threads: threads, food_thread_turns: turns, food_cards: cards, food_card_lines: lines });
+  const store = supabaseThreadStore(db);
+  const hits = await store.searchThreads!("u1", ["paneer"], { excludeThreadId: null, sinceIso: "2026-10-20", limit: 5 });
+  assertEquals(hits.length, 5);
+  assert(hits.every((h) => Number(h.thread_id.slice(1)) < 8));
+  // Cards read for the top 5 threads only, and their lines for those cards only.
+  const cardIn = log.find((l) => l.table === "food_cards" && l.op === "in")!;
+  assertEquals((cardIn.args[1] as string[]).length, 5);
+  const lineOr = log.find((l) => l.table === "food_card_lines" && l.op === "or")!;
+  assertEquals((String(lineOr.args[0]).match(/and\(/g) ?? []).length, 20);
+  assertFalse(log.some((l) => l.table === "food_card_lines" && l.op === "limit"));
+  assertEquals(hits[0].lines.length, 4);
+  assert(hits[0].first?.startsWith("lunch was paneer sabji"));
 });

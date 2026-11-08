@@ -29,6 +29,7 @@
 
 import type { AnthropicTool } from "./prompt.ts";
 import type { ParsedItem, ParseMealResult, ParseStep } from "./parseMeal.ts";
+import { FOOD_TURN_CHARS } from "./foodContext.ts";
 import type { FoodOrigin, RecipePart } from "../_shared/foodOrigin.ts";
 import {
   buildMemory,
@@ -287,6 +288,24 @@ export const RECALL_FOOD_TOOL: AnthropicTool = {
   },
 };
 
+/** `p`, or null when it takes longer than `ms` or fails. A slow database
+ *  never holds the agent past this. */
+export async function briefly<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([p.catch(() => null), new Promise<null>((r) => { timer = setTimeout(() => r(null), ms); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** How long recall_food waits for the user's memory before it says it is not
+ *  available. */
+export const RECALL_WAIT_MS = 1500;
+/** How long build_recipe waits for remembered parts before it builds the
+ *  dish without them (as with the switch off). */
+export const RECIPE_MEMORY_WAIT_MS = 500;
+
 /** recall_food calls one message may make. */
 export const MAX_RECALL_PER_RUN = 3;
 /** A remembered food is returned when its name is at least this close (the
@@ -337,7 +356,7 @@ export const READ_THREAD_TOOL: AnthropicTool = {
   name: "read_thread",
   description:
     "Read older turns of THIS food conversation that are not in the messages above, by turn number (1 is the first). " +
-    "Returns up to 10 turns from `from_seq`, word for word. Read only.",
+    "Returns up to 10 turns from `from_seq`; a turn may be cut short. Read only.",
   input_schema: {
     type: "object",
     properties: { from_seq: { type: "integer", description: "The first turn to read, 1 or more." } },
@@ -345,18 +364,23 @@ export const READ_THREAD_TOOL: AnthropicTool = {
   },
 };
 
-export const SEARCH_THREADS_TOOL: AnthropicTool = {
-  name: "search_threads",
-  description:
-    "Search the user's other food conversations from the last 20 days for food words (\"paneer sabji\"). Returns up to " +
-    "5, each with its date, its first message and its card's foods with calories. Read only: to put food from one on the " +
-    "card, use the diary (copy_lines) or the user's words.",
-  input_schema: {
-    type: "object",
-    properties: { query: { type: "string", description: "Food words to look for." } },
-    required: ["query"],
-  },
-};
+/** search_threads, naming copy_lines only when the run offers it. */
+export function searchThreadsTool(copyLines: boolean): AnthropicTool {
+  return {
+    name: "search_threads",
+    description:
+      "Search the user's other food conversations from the last 20 days for food words (\"paneer sabji\"). Returns up to " +
+      "5, each with its date, its first message and its card's foods with calories. Read only: to put food from one on " +
+      `the card, use ${copyLines ? "the diary (copy_lines) or " : ""}the user's words.`,
+    input_schema: {
+      type: "object",
+      properties: { query: { type: "string", description: "Food words to look for." } },
+      required: ["query"],
+    },
+  };
+}
+
+export const SEARCH_THREADS_TOOL: AnthropicTool = searchThreadsTool(true);
 
 export const MAX_READ_THREAD_PER_RUN = 3;
 export const MAX_SEARCH_THREADS_PER_RUN = 2;
@@ -376,6 +400,9 @@ export interface FoodAgentWarm {
   /** A first-message run: the parse of the message if it has ALREADY
    *  finished, else null. Never awaited, so the agent never waits on it. */
   settledFirstParse?(): ParseMealResult | null;
+  /** Memory matches can appear in this request (USER_FOOD_MEMORY and Jev
+   *  on): only then are they shown and the agent told about them. */
+  matches?: boolean;
   /** Up to `limit` turns of this thread from `fromSeq`. Null: not stored. */
   readThread?(fromSeq: number, limit: number): Promise<ThreadTurn[] | null>;
   /** The user's other kept threads holding these words. */
@@ -425,8 +452,9 @@ export async function runWarmRead(
     if (name === RECALL_FOOD_TOOL.name) {
       const asked = typeof input.name === "string" ? input.name.trim() : "";
       if (!asked) return { error: "recall_food needs a food name." };
-      if (!warm.memory) return { error: "The user's food memory is not available for this message." };
-      return recallAnswer(await warm.memory(), asked);
+      const foods = warm.memory ? await briefly(warm.memory(), RECALL_WAIT_MS) : null;
+      if (!foods) return { error: "The user's food memory is not available for this message." };
+      return recallAnswer(foods, asked);
     }
     if (name === READ_THREAD_TOOL.name) {
       const from = typeof input.from_seq === "number" ? input.from_seq : Number(input.from_seq);
@@ -467,32 +495,53 @@ function inRecent(first: string, turns: { role: "user" | "drona"; text: string }
 
 // ── This thread's turns: from memory first ─────────────────────────────────
 
+/** What the request's own load of the thread knows about its turns
+ *  (foodThreads.ts load with `turns`). */
+export interface StoredTurns {
+  lastSeq: number;
+  /** The newest stored turn. */
+  lastTurn: ThreadTurn | null;
+  /** Turn 1's text. */
+  firstText: string | null;
+}
+
 /**
  * The thread's turns as this request holds them, so a turn already in memory
  * is never read from the database again.
  *
- * In memory from the start: the turns the app sent (lib/dietData.ts sends the
- * last FOOD_TURNS_KEPT, each cut to FOOD_TURN_CHARS), placed at the newest
- * seqs of the thread (the store writes each message's turns in order, so the
- * app's last K turns are the thread's last K), and the thread's turn count
- * from the load the request already made (threadForAgent). Anything else is
- * read with ONE turnsFrom call for the missing span only, then kept for the
- * rest of the request.
+ * The app sends the last FOOD_TURNS_KEPT turns, each cut to FOOD_TURN_CHARS
+ * (lib/dietData.ts). They are placed at the thread's newest seqs ONLY when the
+ * newest stored turn is the app's last turn (same role, same text up to the
+ * cut): a write that has not landed yet, a turn the store never got (a Drona
+ * line not stored), or a store short of turns would otherwise put text under
+ * the wrong turn number. Unchecked, nothing is placed and the turns are read.
+ * Turn 1's text comes with the load. Anything else is read with ONE turnsFrom
+ * call for the missing span only, then kept for the rest of the request.
  */
 export interface ThreadTurnsMemory {
   /** Turns stored so far, from the request's own load. 0: none or no thread. */
   lastSeq(): Promise<number>;
-  /** The thread's first user message: from memory when the whole thread is
-   *  in the app's turns, else one read of turn 1. */
+  /** The thread's first user message: from the load, else one read. */
   first(): Promise<string | null>;
   /** Up to `limit` turns from `fromSeq`, oldest first. Null: not stored. */
   read(fromSeq: number, limit: number): Promise<ThreadTurn[] | null>;
 }
 
+/** The app's copy of a turn is the stored one: same role, and the same text
+ *  with whitespace collapsed, up to the app's cut. */
+export function sameTurn(stored: ThreadTurn, app: { role: "user" | "drona"; text: string }): boolean {
+  if (stored.role !== app.role) return false;
+  const st = flat(stored.text), a = flat(app.text);
+  if (!a) return false;
+  if (st === a) return true;
+  // The app cut it (FOOD_TURN_CHARS): the stored text starts with the copy.
+  return app.text.trim().length >= FOOD_TURN_CHARS && st.startsWith(a);
+}
+
 export function threadTurnsMemory(opts: {
-  /** The thread's newest seq from the load already made, or null for no
-   *  open thread of this user. */
-  lastSeq: Promise<number | null>;
+  /** The request's load of this thread: its turn facts, or null for no open
+   *  thread of this user. */
+  stored: Promise<StoredTurns | null>;
   /** The turns the app sent with this message (foodContext recentTurns). */
   recent: { role: "user" | "drona"; text: string }[];
   /** The store read for turns not in memory (FoodThreadStore.turnsFrom). */
@@ -501,13 +550,20 @@ export function threadTurnsMemory(opts: {
   const held = new Map<number, ThreadTurn>();
   let seeded: Promise<number> | null = null;
   const lastSeq = () =>
-    (seeded ??= opts.lastSeq.catch(() => null).then((n) => {
-      const last = n ?? 0;
-      const k = Math.min(opts.recent.length, last);
-      (k ? opts.recent.slice(-k) : []).forEach((t, i) => {
-        const seq = last - k + 1 + i;
-        held.set(seq, { seq, role: t.role, text: t.text });
-      });
+    (seeded ??= opts.stored.catch(() => null).then((st) => {
+      const last = st?.lastSeq ?? 0;
+      if (!st || !last) return 0;
+      if (st.lastTurn) held.set(st.lastTurn.seq, st.lastTurn);
+      if (st.firstText !== null) held.set(1, { seq: 1, role: "user", text: st.firstText });
+      const app = opts.recent.at(-1);
+      // Checked against the newest stored turn before anything is placed.
+      if (app && st.lastTurn && st.lastTurn.seq === last && sameTurn(st.lastTurn, app)) {
+        const k = Math.min(opts.recent.length, last);
+        opts.recent.slice(-k).forEach((t, i) => {
+          const seq = last - k + 1 + i;
+          if (!held.has(seq)) held.set(seq, { seq, role: t.role, text: t.text });
+        });
+      }
       return last;
     }));
   const read = async (fromSeq: number, limit: number): Promise<ThreadTurn[] | null> => {
@@ -539,12 +595,32 @@ export function threadTurnsMemory(opts: {
   };
 }
 
+/**
+ * Whether the first-message line is safe to show. The first message names the
+ * meal its card holds; once that card was added (it is in the diary), or when
+ * the card on screen is not that first card, the line would point the agent
+ * at food already logged or no longer on screen. Shown only when the thread
+ * is open, no meal card of it was added, and the card on screen is the
+ * thread's first meal card.
+ */
+export function firstMessageSafe(
+  t: { status: "open" | "closed"; cards: { id: string; kind: "meal" | "save"; status: string; created_at: string }[] } | null,
+  onScreenCardId: string | null,
+): boolean {
+  if (!t || t.status !== "open" || !onScreenCardId) return false;
+  const meals = t.cards.filter((c) => c.kind === "meal")
+    .sort((a, b) => (Date.parse(a.created_at) - Date.parse(b.created_at)) || a.id.localeCompare(b.id));
+  if (meals.some((c) => c.status === "added")) return false;
+  return meals[0]?.id === onScreenCardId;
+}
+
 /** The thread lines' input (WarmThread) from the turns memory: null when the
- *  thread has no stored turns. */
-export async function warmThreadFrom(mem: ThreadTurnsMemory): Promise<WarmThread | null> {
+ *  thread has no stored turns. `showFirst` false leaves the first message out
+ *  (firstMessageSafe) and reads nothing for it. */
+export async function warmThreadFrom(mem: ThreadTurnsMemory, showFirst = true): Promise<WarmThread | null> {
   const turns = await mem.lastSeq();
   if (!turns) return null;
-  return { first: await mem.first(), turns };
+  return { first: showFirst ? await mem.first() : null, turns };
 }
 
 /** read_thread is worth offering: the thread has turns the messages do not. */

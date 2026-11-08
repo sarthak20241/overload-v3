@@ -101,6 +101,9 @@ export interface FoodBarWarm {
   memory?: () => Promise<{ entries: MemoryEntry[] }>;
   /** FOOD_ORIGIN_TRUST=on: the warm reads rank numbers by origin too. */
   byOrigin?: boolean;
+  /** USER_FOOD_MEMORY and Jev on: the parse makes memory decisions, so the
+   *  agent is shown them and told what they are. */
+  matches?: boolean;
   /** This thread's first message and turn count, read beside the
    *  router. Resolves null when there is none or the read was slow. */
   thread?: Promise<WarmThread | null>;
@@ -612,11 +615,12 @@ export function startFoodAgent(args: {
   // A first-message run: the parse of the message, kept once it lands, so
   // the agent can show its memory decisions without waiting for it.
   let firstSettled: ParseMealResult | null = null;
-  if (w && args.first) void args.first.parse.then((r) => { firstSettled = r; }, () => {});
+  if (w?.matches && args.first) void args.first.parse.then((r) => { firstSettled = r; }, () => {});
   const agentWarm: FoodAgentWarm | undefined = w
     ? {
       ...(memory ? { memory } : {}),
-      ...(args.first ? { settledFirstParse: () => firstSettled } : {}),
+      ...(w.matches ? { matches: true } : {}),
+      ...(w.matches && args.first ? { settledFirstParse: () => firstSettled } : {}),
       ...(w.readThread ? { readThread: w.readThread } : {}),
       ...(w.searchThreads ? { searchThreads: w.searchThreads } : {}),
     }

@@ -101,7 +101,7 @@ import {
   threadIsOpen,
   type WarmThread,
 } from "./foodThreads.ts";
-import { parseFoodWarmMemoryMode, THREAD_KEPT_DAYS, threadTurnsMemory, warmThreadFrom } from "./foodWarmMemory.ts";
+import { firstMessageSafe, parseFoodWarmMemoryMode, THREAD_KEPT_DAYS, threadTurnsMemory, warmThreadFrom } from "./foodWarmMemory.ts";
 import {
   agentCouldUseThread,
   answeredByLabel,
@@ -2854,6 +2854,20 @@ function keepAlive(p: Promise<unknown>): void {
   if (er?.waitUntil) er.waitUntil(p); else void p;
 }
 
+/** FOOD_WARM_MEMORY: requests (by their user client) whose parses and warm
+ *  reads share ONE food memory load. Only requests that can reach the
+ *  later-mode agent are added; every other request reads as before. */
+const sharedMemoryClients = new WeakSet<SupabaseClient>();
+const memoryReads = new WeakMap<SupabaseClient, Promise<{ entries: MemoryEntry[]; timeZone: string | null }>>();
+function sharedMemoryEntries(userClient: SupabaseClient): Promise<{ entries: MemoryEntry[]; timeZone: string | null }> {
+  let p = memoryReads.get(userClient);
+  if (!p) {
+    p = fetchMemoryEntries(userClient);
+    memoryReads.set(userClient, p);
+  }
+  return p;
+}
+
 /** The dependency bundle parseMeal.ts runs against. */
 function makeParseDeps(
   userClient: SupabaseClient,
@@ -2974,7 +2988,9 @@ function makeParseDeps(
     // theirs. Started now so it is ready by the time extract finishes.
     userMemory: USER_FOOD_MEMORY && JEV_API_KEY
       ? {
-        load: () => fetchMemoryEntries(userClient),
+        // FOOD_WARM_MEMORY: one load per request, shared with the agent's warm
+        // reads. Otherwise a read per parse, as before.
+        load: () => (sharedMemoryClients.has(userClient) ? sharedMemoryEntries(userClient) : fetchMemoryEntries(userClient)),
         originTrust: FOOD_ORIGIN_TRUST,
         // Exact aliases are queried separately so a long-lived user's alias
         // cannot disappear behind the recent-cache or top-N memory limits.
@@ -3482,8 +3498,18 @@ async function handleParseMealRequest(args: {
   let threadTimer: ReturnType<typeof setTimeout> | undefined;
   // FOOD_WARM_MEMORY=on: the thread is loaded ONCE for the request, and the
   // agent's index (threadForAgent) and the warm reads share that load.
-  const warmThreadsOn = FOOD_WARM_MEMORY === "on" && FOOD_THREADS === "on" && !!threadReq && !!threadStore;
-  const sharedThreadLoad = warmThreadsOn ? threadStore!.load(userId, threadReq!.id).catch(() => null) : undefined;
+  // Only a request that can reach the later-mode agent (Precise, not a Quick
+  // stream, a model key, FOOD_AGENT_LATER or FOOD_FIRST_GATE on) does any warm
+  // work; every other request reads the thread exactly as before.
+  const mayReachLaterAgent = FOOD_WARM_MEMORY === "on" && !!ANTHROPIC_API_KEY && !wouldStream(body) &&
+    (FOOD_AGENT_LATER !== "off" || FOOD_FIRST_GATE !== "off") &&
+    isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier });
+  const warmThreadsOn = mayReachLaterAgent && FOOD_THREADS === "on" && !!threadReq && !!threadStore;
+  if (mayReachLaterAgent && USER_FOOD_MEMORY) sharedMemoryClients.add(userClient);
+  const memoryEntriesOnce = () => sharedMemoryEntries(userClient);
+  // With the newest turn and turn 1's text (load `turns`), so the warm reads
+  // need no read of their own for them.
+  const sharedThreadLoad = warmThreadsOn ? threadStore!.load(userId, threadReq!.id, { turns: true }).catch(() => null) : undefined;
   const threadP: Promise<FoodBarThread | null> = FOOD_THREADS === "on" && threadReq && threadStore
     ? Promise.race([
       threadForAgent(threadStore, userId, threadReq, Date.now(), sharedThreadLoad).catch(() => null).then((th) => {
@@ -3508,15 +3534,22 @@ async function handleParseMealRequest(args: {
   // turns not in memory, one turnsFrom call per missing span.
   const turnsMem = warmThreadsOn && sharedThreadLoad && threadStore?.turnsFrom
     ? threadTurnsMemory({
-      lastSeq: sharedThreadLoad.then((t) => (t && threadIsOpen(t, Date.now()) ? t.last_seq : null)),
+      stored: sharedThreadLoad.then((t) =>
+        t && threadIsOpen(t, Date.now())
+          ? { lastSeq: t.last_seq, lastTurn: t.last_turn ?? null, firstText: t.first_text ?? null }
+          : null
+      ),
       recent: recentTurns,
-      fetch: (from, limit) => threadStore.turnsFrom!(userId, threadReq!.id, from, limit),
+      // The shared load already proved the thread is this user's.
+      fetch: (from, limit) => threadStore.turnsFrom!(userId, threadReq!.id, from, limit, { owned: true }),
     })
     : null;
   let warmTimer: ReturnType<typeof setTimeout> | undefined;
-  const warmThreadP: Promise<WarmThread | null> = turnsMem
+  const warmThreadP: Promise<WarmThread | null> = turnsMem && sharedThreadLoad
     ? Promise.race([
-      warmThreadFrom(turnsMem).catch(() => null),
+      // The first message only while its card is the one on screen and
+      // nothing of the thread was added (firstMessageSafe).
+      sharedThreadLoad.then((t) => warmThreadFrom(turnsMem, firstMessageSafe(t, threadReq!.card_id))).catch(() => null),
       new Promise<null>((r) => {
         warmTimer = setTimeout(() => r(null), 800);
       }),
@@ -3525,9 +3558,13 @@ async function handleParseMealRequest(args: {
   // The user's food memory for the warm reads: the same read the parse's
   // memory makes, through THEIR client (RLS keeps it theirs). Loaded once,
   // by the agent run (foodBar.ts startFoodAgent).
-  const foodWarm: FoodBarWarm | undefined = FOOD_WARM_MEMORY === "on"
+  const foodWarm: FoodBarWarm | undefined = mayReachLaterAgent
     ? {
-      ...(USER_FOOD_MEMORY ? { memory: () => fetchMemoryEntries(userClient), byOrigin: FOOD_ORIGIN_TRUST === "on" } : {}),
+      // One load for the request, shared with the parse's own memory read
+      // (makeParseDeps sharedMemory), so build_recipe never waits on a second.
+      ...(USER_FOOD_MEMORY ? { memory: memoryEntriesOnce, byOrigin: FOOD_ORIGIN_TRUST === "on" } : {}),
+      // Memory matches exist only where the parse asks Jev about memory.
+      matches: USER_FOOD_MEMORY && !!JEV_API_KEY,
       ...(warmThreadsOn
         ? {
           thread: warmThreadP,

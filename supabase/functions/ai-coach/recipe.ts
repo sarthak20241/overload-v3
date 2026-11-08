@@ -352,7 +352,11 @@ export async function buildRecipe(
   results: (ParseMealResult | null)[];
 }> {
   const looked = await Promise.all(ask.parts.map(async (p) => {
-    const mem = !p.amount && remembered ? rememberedPart(remembered, p.name) : null;
+    // A remembered part whose amount was itself assumed stays an assumption:
+    // it takes the usual amount, the card says "Assumed", and the one
+    // question still asks about it (it is never stored as the user's answer).
+    const found = !p.amount && remembered ? rememberedPart(remembered, p.name) : null;
+    const mem = found && !found.assumed ? found : null;
     const q: ReturnType<typeof partLookupText> & { remembered?: boolean } = mem
       ? { text: `${r1(mem.grams)} g ${p.name}`, grams: mem.grams, assumed: false, label: null, remembered: true }
       : partLookupText(p);
