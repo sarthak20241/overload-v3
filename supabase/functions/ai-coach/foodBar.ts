@@ -44,10 +44,13 @@ import {
   type ParseMealResult,
   type PreviousItem,
   findLabel,
+  resolveParseTier,
   runParseMeal,
 } from "./parseMeal.ts";
+import { type FoodAgentWarm, type RecallFood, recallFoods } from "./foodWarmMemory.ts";
+import type { MemoryEntry } from "./userFoodMemory.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
-import type { ThreadLine } from "./foodThreads.ts";
+import type { ThreadHit, ThreadLine, ThreadTurn, WarmThread } from "./foodThreads.ts";
 import { CREATE_CUSTOM_FOOD_TOOL, CREATE_CUSTOM_MEAL_TOOL, LIST_LOGGED_MEALS_TOOL } from "./prompt.ts";
 
 /** Whether this message could use the thread's earlier cards. With no card
@@ -88,6 +91,21 @@ export interface FoodBarThread {
   /** An earlier card's lines (latest version when null), or null when there
    *  is no such card or version. Never the card on screen. */
   lines?(ref: string, version: number | null): Promise<ThreadCardLines | null>;
+}
+
+/** FOOD_WARM_MEMORY=on: what the later-mode agent's warm reads need from the
+ *  request (index.ts). Each part absent: that read is not offered. */
+export interface FoodBarWarm {
+  /** The user's food memory entries, the same read the parse's memory makes
+   *  (index.ts fetchMemoryEntries). Called once per message, here. */
+  memory?: () => Promise<{ entries: MemoryEntry[] }>;
+  /** FOOD_ORIGIN_TRUST=on: the warm reads rank numbers by origin too. */
+  byOrigin?: boolean;
+  /** This thread's first message, summary and turn count, read beside the
+   *  router. Resolves null when there is none or the read was slow. */
+  thread?: Promise<WarmThread | null>;
+  readThread?: (fromSeq: number, limit: number) => Promise<ThreadTurn[] | null>;
+  searchThreads?: (words: string[], limit: number) => Promise<ThreadHit[]>;
 }
 
 export type AnthropicCallResult = { ok: true; data: any } | { ok: false; status: number; body: string };
@@ -579,8 +597,26 @@ export function startFoodAgent(args: {
    *  it cannot be placed). The agent's instructions take its examples. Absent
    *  or null: today's instructions. */
   region?: Promise<FoodRegion | null> | null;
+  /** FOOD_WARM_MEMORY=on: the warm reads. Used by a later-mode run only. */
+  warm?: FoodBarWarm;
 }): Promise<FoodAgentOutcome | null> {
   const fb = args.fbTrace;
+  // FOOD_WARM_MEMORY: the user's foods, loaded once for the whole message and
+  // started now, beside the router, so the matches block rarely waits.
+  const w = args.later ? args.warm : undefined;
+  let memP: Promise<RecallFood[]> | null = null;
+  const tier = resolveParseTier(args.mode, false);
+  const memory = w?.memory
+    ? () => (memP ??= w.memory!().then((r) => recallFoods(r.entries, tier, !!w.byOrigin)))
+    : undefined;
+  if (memory) void memory().catch(() => {});
+  const agentWarm: FoodAgentWarm | undefined = w
+    ? {
+      ...(memory ? { memory } : {}),
+      ...(w.readThread ? { readThread: w.readThread } : {}),
+      ...(w.searchThreads ? { searchThreads: w.searchThreads } : {}),
+    }
+    : undefined;
   // The agent's own parses: their steps and model calls land on the trace
   // under agent_parse, so a review sees what each parse_food call looked up.
   const agentParse = fb?.scoped("agent_parse");
@@ -629,6 +665,7 @@ export function startFoodAgent(args: {
         ...(later ? { later: true } : {}),
         ...(later && args.first ? { first: true } : {}),
         ...(regionRules ? { regionRules } : {}),
+        ...(w?.thread ? { warmThread: await w.thread.catch(() => null) } : {}),
       },
       {
         model: env().agentModel,
@@ -760,6 +797,7 @@ export function startFoodAgent(args: {
         // step each on the food box trace: the per-user usage report reads them.
         onEvent: fb ? (e) => fb.step({ src: "agent", tool: e.tool, result: e }) : undefined,
         log: (m) => console.log(m),
+        ...(agentWarm ? { warm: agentWarm } : {}),
       },
     );
     // Sonnet's own tokens. The parses it ran are costed in the parse result.

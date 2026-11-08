@@ -72,6 +72,9 @@ export interface MemoryEntry {
   origin?: string | null;
   /** user_food_cache.recipe / meal_entries.recipe: a home dish's parts. */
   recipe?: unknown;
+  /** user_food_cache.brand. Read by the warm reads (foodWarmMemory.ts) only;
+   *  buildMemory ignores it. */
+  brand?: string | null;
 }
 
 /** A remembered food: the newest eligible entry for a name, as per 100 g. */

@@ -36,7 +36,23 @@ import { lineAsItem, type ThreadLine } from "./foodThreads.ts";
 import { falseAgentClaim } from "./foodIntent.ts";
 import type { ThreadCardLines } from "./foodBar.ts";
 import { type FoodRegion, regionalizePrompt } from "./regionRules.ts";
-import { BUILD_RECIPE_TOOL, buildRecipe, RECIPE_NOTE, type RecipeAsk, readRecipeAsk, recipeQuestion } from "./recipe.ts";
+import { BUILD_RECIPE_TOOL, buildRecipe, RECIPE_NOTE, type RecipeAsk, readRecipeAsk, recipeQuestion, rememberedRecipe } from "./recipe.ts";
+import {
+  type FoodAgentWarm,
+  hasOlderTurns,
+  matchesBlock,
+  READ_THREAD_TOOL,
+  RECALL_FOOD_TOOL,
+  type RecallFood,
+  RECIPE_MEMORY_NOTE,
+  runWarmRead,
+  SEARCH_THREADS_TOOL,
+  warmNote,
+  warmStatus,
+  warmThreadText,
+} from "./foodWarmMemory.ts";
+import type { WarmThread } from "./foodThreads.ts";
+import { memoryKey } from "./userFoodMemory.ts";
 
 export const MAX_TURNS = 5;
 
@@ -89,6 +105,10 @@ export interface FoodAgentDeps {
   /** A line for the user while the agent works. Never awaited. */
   onStatus?(label: string): void;
   log?(msg: string): void;
+  /** FOOD_WARM_MEMORY=on, later-mode runs only (foodWarmMemory.ts): the warm
+   *  reads recall_food, read_thread and search_threads, the matches block,
+   *  and remembered recipe parts in build_recipe. Absent: none of them. */
+  warm?: FoodAgentWarm;
 }
 
 export interface FoodAgentInput {
@@ -133,6 +153,9 @@ export interface FoodAgentInput {
   /** FOOD_REGION_RULES=on and a Precise message: the instructions take this
    *  region's examples (regionRules.ts). Absent: today's instructions. */
   regionRules?: { region: FoodRegion | null };
+  /** FOOD_WARM_MEMORY=on with the thread store on: this thread's first
+   *  message, summary and turn count (foodThreads.ts warm). Later mode only. */
+  warmThread?: WarmThread | null;
 }
 
 /** The card for the agent with stable line ids: "[L2] Roti: 2 piece, ...". An
@@ -150,14 +173,22 @@ export function lineIndexOf(raw: unknown, cardLength: number): number | null {
 
 /** The opening user message: the date, then (when this answers the agent's
  *  question) what was asked, then the user's words. */
-export function openingText(input: Pick<FoodAgentInput, "text" | "answering" | "card" | "savedHint" | "threadIndex" | "later">, days: string | null): string {
+export function openingText(
+  input: Pick<FoodAgentInput, "text" | "answering" | "card" | "savedHint" | "threadIndex" | "later">,
+  days: string | null,
+  /** FOOD_WARM_MEMORY: the thread lines and the matches block, each already
+   *  in brackets (foodWarmMemory.ts). Absent or null: left out. */
+  warm: { thread?: string | null; matches?: string | null } = {},
+): string {
   const parts: string[] = [];
   if (days) parts.push(`(${days})`);
   if (input.threadIndex) parts.push(`(${input.threadIndex})`);
+  if (warm.thread) parts.push(warm.thread);
   if (input.card?.length) {
     const lines = input.later ? cardLinesWithIds(input.card) : cardLines(input.card, { macros: true });
     parts.push(`(card on screen:\n${lines.join("\n")})`);
   }
+  if (warm.matches) parts.push(warm.matches);
   if (input.savedHint) {
     const name = JSON.stringify(input.savedHint.name);
     parts.push(
@@ -770,7 +801,7 @@ export function statusFor(name: string, input: Record<string, unknown>): string 
   if (name === READ_CARD_TOOL.name) return "Checking that card";
   if (name === FIND_LABEL_TOOL.name) return "Looking up the label";
   if (name === BUILD_RECIPE_TOOL.name) return "Adding up the dish";
-  return null;
+  return warmStatus(name);
 }
 
 // ── History ─────────────────────────────────────────────────────────────────
@@ -876,10 +907,31 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   const indexLine = canRestore || canCopyThread
     ? `${input.threadIndex} ${canCopyThread ? threadToolsNote(canRestore) : "restore_card brings one back as the card on screen."}`
     : null;
-  const messages: unknown[] = historyMessages(input.recentTurns, openingText({ ...input, threadIndex: indexLine }, days));
   // A later message (FOOD_AGENT_LATER): its own instructions, one-line card
   // tools, and one more turn. Everything else in the loop is shared.
   const later = !!input.later;
+  // FOOD_WARM_MEMORY (foodWarmMemory.ts), later mode only: the warm reads and
+  // the hot lines code builds for them. Without deps.warm every one of these
+  // is false or null, so the prompt, the tools and the loop are as before.
+  const warm = later ? deps.warm : undefined;
+  const canRecall = !!warm?.memory;
+  // read_thread only when the thread has turns the messages above do not.
+  const canReadThread = !!warm?.readThread && hasOlderTurns(input.warmThread, input.recentTurns);
+  const canSearch = !!warm?.searchThreads;
+  const warmTools = [
+    ...(canRecall ? [RECALL_FOOD_TOOL] : []),
+    ...(canReadThread ? [READ_THREAD_TOOL] : []),
+    ...(canSearch ? [SEARCH_THREADS_TOOL] : []),
+  ];
+  const warmNames = new Set(warmTools.map((t) => t.name));
+  const isRead = (name: string) => READ_TOOLS.has(name) || warmNames.has(name);
+  // The memory for the matches block, waited for briefly: past the wait the
+  // block is left out (recall_food still reads it when it lands).
+  const memoryFoods = canRecall ? await briefly(warm!.memory!(), WARM_MEMORY_WAIT_MS) : null;
+  const warmText = warm
+    ? { thread: warmThreadText(input.warmThread, input.recentTurns, canReadThread), matches: matchesBlock(memoryFoods, input.text, input.card) }
+    : {};
+  const messages: unknown[] = historyMessages(input.recentTurns, openingText({ ...input, threadIndex: indexLine }, days, warmText));
   const lineTools = later && cardOnScreen && !cardMayBeCut(input.card);
   // A first message (FOOD_FIRST_GATE) is a later-mode run with no card: its
   // own opening sentence and the note about the parse already running.
@@ -890,17 +942,25 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // build_recipe (FOOD_BUILD_RECIPE): a later-mode run, beside a whole card
   // or with none (a first message). A cut card never reaches later mode.
   const canRecipe = later && !!deps.buildRecipe && (lineTools || !cardOnScreen);
+  // Said only for the warm tools this run has; null with the switch off.
+  const warmSaid = warmTools.length ? warmNote({ recall: canRecall, readThread: canReadThread, searchThreads: canSearch }) : null;
+  const recipeMemory = canRecipe && canRecall ? RECIPE_MEMORY_NOTE : null;
   const systemToday = first
-    ? [FOOD_AGENT_SYSTEM_FIRST, FIRST_NOTE, canCopy ? COPY_NOTE : null, canRecipe ? RECIPE_NOTE : null].filter(Boolean).join("\n")
+    ? [FOOD_AGENT_SYSTEM_FIRST, FIRST_NOTE, canCopy ? COPY_NOTE : null, canRecipe ? RECIPE_NOTE : null, recipeMemory, warmSaid]
+      .filter(Boolean).join("\n")
     : later
     ? [
       FOOD_AGENT_SYSTEM_LATER, lineTools ? CARD_NOTE_LATER : cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null,
-      canLabel ? LABEL_NOTE : null, canRecipe ? RECIPE_NOTE : null,
+      canLabel ? LABEL_NOTE : null, canRecipe ? RECIPE_NOTE : null, recipeMemory, warmSaid,
     ].filter(Boolean).join("\n")
     : [FOOD_AGENT_SYSTEM, cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n");
   const system = input.regionRules ? regionalizePrompt("agent", systemToday, input.regionRules.region) : systemToday;
   const tools = later
-    ? [...toolsForLater(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary }, canLabel), ...(canRecipe ? [BUILD_RECIPE_TOOL] : [])]
+    ? [
+      ...toolsForLater(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary }, canLabel),
+      ...(canRecipe ? [BUILD_RECIPE_TOOL] : []),
+      ...warmTools,
+    ]
     : toolsFor(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary });
   const maxTurns = later ? MAX_TURNS_LATER : MAX_TURNS;
   // Every food line a read returned, by name, with the calories it carried.
@@ -922,6 +982,8 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // edit_line with use_label puts on the card.
   const labelLines = new Map<number, ParsedItem>();
   const labelCalls = { n: 0 };
+  // Warm read calls this run, per tool (foodWarmMemory WARM_CAPS).
+  const warmCalls = new Map<string, number>();
   // The foods on the card for copy_lines' duplicate check: the card as sent,
   // plus every line already staged in this run.
   const onCard = onCardOf(input.card ?? []);
@@ -1030,8 +1092,8 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     // turn goes back unapplied, so a copy the agent meant to make from what it
     // reads is not lost to an addition that ended the run first. Not on the
     // last turn: there the reads never run, and the finish stands.
-    if (later && !last && uses.some((u) => HOLD_READS.has(u.name))) {
-      const held = uses.filter((u) => !READ_TOOLS.has(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u));
+    if (later && !last && uses.some((u) => HOLD_READS.has(u.name) || warmNames.has(u.name))) {
+      const held = uses.filter((u) => !isRead(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u));
       for (const u of held) {
         rejected.set(u, "Not applied yet: this turn also reads data. Look at what the reads return, then send every change, " +
           "log, save or reply together in your next turn.");
@@ -1057,7 +1119,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     if (later && finish && SAVE_TOOLS.has(finish.name) && !userAskedToSave(input)) {
       if (last) return { kind: "failed", reason: "save_not_asked", turns };
       for (const u of uses) {
-        if (!READ_TOOLS.has(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u)) {
+        if (!isRead(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u)) {
           rejected.set(u, "Not done: the user did not ask to save anything, so no save card. Do what they asked: change the " +
             "card, add the food, or reply.");
         }
@@ -1067,7 +1129,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     }
     const copies = uses.filter((u) => u.name === COPY_LINES_TOOL.name);
     if (!finish) {
-      const unknown = uses.find((u) => !READ_TOOLS.has(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u));
+      const unknown = uses.find((u) => !isRead(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u));
       if (unknown) return { kind: "failed", reason: `unknown_tool_${unknown.name}`, turns };
     }
 
@@ -1106,7 +1168,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
       if (label) deps.onStatus?.(label);
       const replyText = replyUse && replyUse !== finish ? clean(typeof replyUse.input?.text === "string" ? replyUse.input.text : "") : "";
       if (plan) {
-        const out = await applyCardChanges(plan, input, deps, parse, seen, turns, replyText, staged.items, labelLines);
+        const out = await applyCardChanges(plan, input, { ...deps, warm }, parse, seen, turns, replyText, staged.items, labelLines);
         // A save asked for in the same turn as card changes: the changes win,
         // and the user is told the save has not happened (a save card cannot
         // ride with a changed meal card).
@@ -1166,6 +1228,8 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
           error: "A card is on screen, and restore_card would replace it, so it is not available now. To put foods " +
             "from that earlier card on this one, use copy_lines.",
         }
+        : warmNames.has(u.name)
+        ? await runWarmRead(u.name, u.input ?? {}, warm!, warmCalls)
         : await runRead(u, deps, parse, { card: input.card ?? [], labelLines, calls: labelCalls });
       outs[i] = out;
       if (!run && !refused.has(u) && !rejected.has(u)) remember(seen, out);
@@ -1177,6 +1241,21 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // Unreachable: the last turn always returns. Kept so a future edit to the
   // loop cannot fall off the end silently.
   return { kind: "failed", reason: "turns_exhausted", turns };
+}
+
+/** How long the matches block waits for the user's food memory before the
+ *  run starts without it. The load starts with the message (foodBar.ts), so
+ *  it is usually done. */
+export const WARM_MEMORY_WAIT_MS = 800;
+
+/** `p`, or null when it takes longer than `ms` or fails. */
+async function briefly<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([p.catch(() => null), new Promise<null>((r) => { timer = setTimeout(() => r(null), ms); })]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function runRead(
@@ -1916,7 +1995,7 @@ function addUsage(a: ParseMealResult["usage"], b: ParseMealResult["usage"] | und
 async function applyCardChanges(
   plan: CardPlan,
   input: FoodAgentInput,
-  deps: Pick<FoodAgentDeps, "editLine" | "onEvent">,
+  deps: Pick<FoodAgentDeps, "editLine" | "onEvent" | "warm">,
   parse: (text: string) => Promise<ParseMealResult>,
   seen: Seen,
   turns: AgentTurn[],
@@ -1964,7 +2043,10 @@ async function applyCardChanges(
     // code (recipe.ts). A dish on a card line keeps that line's section.
     Promise.all((plan.recipes ?? []).map(async (x) => {
       const m = x.meal ?? (x.index !== null ? card[x.index].meal_type : null) ?? meal;
-      const b = await buildRecipe(x.ask, m, parse);
+      // FOOD_WARM_MEMORY: the same dish in the user's memory lends its
+      // remembered amounts to parts sent with none (recipe.ts buildRecipe).
+      const foods: RecallFood[] | null = deps.warm?.memory ? await deps.warm.memory().catch(() => null) : null;
+      const b = await buildRecipe(x.ask, m, parse, rememberedRecipe(foods, x.ask.name, memoryKey));
       return { x, ...b };
     })),
   ]);
