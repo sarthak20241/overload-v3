@@ -377,7 +377,15 @@ export default function OnboardingScreen() {
 
   // Which road row is open, if any. One at a time: the reveal is already a long
   // scroll and every open row pushes the save button further away.
+  // Phase 1 starts open (owner, 2026-11-09): it is the part that starts now.
   const [openPhase, setOpenPhase] = useState<string | null>(null);
+  // The draft plan is replaced by the built one (new row keys), so keep phase 1
+  // open across that swap until the person opens or closes a row themselves.
+  const phaseTouched = useRef(false);
+  useEffect(() => {
+    if (phaseTouched.current || roadRows.length === 0) return;
+    if (!roadRows.some((r) => r.key === openPhase)) setOpenPhase(roadRows[0].key);
+  }, [roadRows, openPhase]);
 
   const paceDate = useMemo(() => {
     if (!paceCtx || weeklyRate == null) return null;
@@ -1340,7 +1348,7 @@ export default function OnboardingScreen() {
                       return (
                         <View key={row.key}>
                           <Pressable
-                            onPress={() => setOpenPhase(open ? null : row.key)}
+                            onPress={() => { phaseTouched.current = true; setOpenPhase(open ? null : row.key); }}
                             style={s.roadRow}
                             hitSlop={6}
                           >

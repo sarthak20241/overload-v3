@@ -107,6 +107,9 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
       sleep: phase.metrics.find((m) => m.kind === 'sleep_hours') ?? null,
     }, live, readinessToday);
   };
+  // Say which phase these rows are for (seq is 0-based): "the plan" alone
+  // read as the whole goal's plan.
+  const planTitle = `Your plan for phase ${phase.seq + 1}`;
   const open = (pillar: Pillar) => {
     track('program_pillar_opened', { pillar, seq: phase.seq, from });
     router.push({ pathname: '/goal-plan-pillar', params: { pillar, seq: String(phase.seq) } } as any);
@@ -115,10 +118,10 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
     <View>
       {heading && (
         <Stagger index={staggerFrom}>
-          <Text style={[T.heading, { color: C.foreground, marginBottom: headingGap }]}>Your plan</Text>
+          <Text style={[T.heading, { color: C.foreground, marginBottom: headingGap }]}>{planTitle}</Text>
         </Stagger>
       )}
-      {!heading && <SectionLabel style={{ marginBottom: S.md }}>Your plan</SectionLabel>}
+      {!heading && <SectionLabel style={{ marginBottom: S.md }}>{planTitle}</SectionLabel>}
       {rows.map(({ pillar, Icon, title }, i) => {
         // The Goal screen uses the reference's plan-first line; the phase
         // screen keeps the metric line with its coloured status.
