@@ -61,6 +61,11 @@ export default function InviteScreen() {
   useEffect(() => {
     track('invite_opened', { from_link: !!params.code });
     if (params.code) {
+      // A new link while this screen is open replaces the code on screen.
+      setCode(normalizeCode(params.code));
+      setError(null);
+      setMaybeStoreCode(null);
+      setSuccess(null);
       savePendingInvite(params.code);
     } else {
       readPendingInvite().then((saved) => {
