@@ -289,14 +289,19 @@ export default function UpgradeScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const [offerings, foundingResp] = await Promise.all([
+        // Loaded apart: a failed founding count must not throw away the
+        // store's plans (that would read as "store down" and open the gate).
+        const [offeringsRes, foundingRes] = await Promise.allSettled([
           getCoachOfferings(),
           supabase.rpc('get_founding_status'),
         ]);
         if (cancelled) return;
-        setPackages(offerings?.byPlan ?? {});
-        const rows = (foundingResp.data as FoundingStatus[] | null) ?? [];
-        setFounding(rows.find((r) => r.tier === 'founding_lifetime') ?? null);
+        if (offeringsRes.status === 'fulfilled') setPackages(offeringsRes.value?.byPlan ?? {});
+        else console.warn('[upgrade] offerings failed:', offeringsRes.reason);
+        if (foundingRes.status === 'fulfilled') {
+          const rows = (foundingRes.value.data as FoundingStatus[] | null) ?? [];
+          setFounding(rows.find((r) => r.tier === 'founding_lifetime') ?? null);
+        }
       } catch (e) {
         if (!cancelled) console.warn('[upgrade] load failed:', e);
       } finally {
