@@ -150,9 +150,9 @@ const GOAL_OPTIONS: { value: CoachGoal; icon: keyof typeof Feather.glyphMap; tit
 ];
 
 const EXPERIENCE_OPTIONS: { value: ExperienceLevel; icon: keyof typeof Feather.glyphMap; title: string; sub: string }[] = [
-  { value: 'beginner', icon: 'sunrise', title: 'Just starting out', sub: 'Under a year of training' },
-  { value: 'intermediate', icon: 'trending-up', title: 'Some experience', sub: 'One to three years' },
-  { value: 'advanced', icon: 'award', title: 'Very experienced', sub: 'More than three years' },
+  { value: 'beginner', icon: 'sunrise', title: 'Beginner', sub: 'Less than 1 year' },
+  { value: 'intermediate', icon: 'trending-up', title: 'Intermediate', sub: '1 to 3 years' },
+  { value: 'advanced', icon: 'award', title: 'Advanced', sub: 'More than 3 years' },
 ];
 
 const GOAL_PHRASES: Record<CoachGoal, string> = {
