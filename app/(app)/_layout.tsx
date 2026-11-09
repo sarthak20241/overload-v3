@@ -283,7 +283,7 @@ export default function AppLayout() {
   // goes to the paywall, which has no way out. Set when this mount drained a
   // fresh sign-up: that path routes to the phase 1 build and then the paywall
   // itself, so the gate must not jump ahead of it.
-  const { access: coachAccess, refresh: refreshCoachAccess } = useCoachAccess();
+  const { access: coachAccess, refreshFresh: refreshCoachAccess } = useCoachAccess();
   const [drainedSignup, setDrainedSignup] = useState(false);
   // The gate only decides on a fresh server answer. The hook paints the last
   // saved access first, and right after a purchase, restore or code that saved
@@ -294,7 +294,9 @@ export default function AppLayout() {
   useEffect(() => {
     if (!gateApplies) return;
     let cancelled = false;
-    refreshCoachAccess().finally(() => { if (!cancelled) setGateFresh(true); });
+    // Fresh only when the server answered. A failed read leaves the saved
+    // access on screen, so the gate waits out the 8 s and then lets them in.
+    refreshCoachAccess().then((ok) => { if (!cancelled && ok) setGateFresh(true); }, () => {});
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount and account
   }, [gateApplies, user?.id]);
