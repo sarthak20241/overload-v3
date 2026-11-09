@@ -31,6 +31,9 @@ import { useForegroundProgramSync } from '@/lib/useProgramSync';
 import { resolveNeedsOnboarding } from '@/lib/onboarding';
 import { drainPendingOnboarding } from '@/lib/pendingOnboarding';
 import { useSync } from '@/components/SyncProvider';
+import { useCoachAccess } from '@/hooks/useCoachAccess';
+import { isPurchasesAvailable } from '@/lib/revenuecat';
+import { isHardPaywallAccount, mustPay } from '@/lib/hardPaywall';
 import type { Routine } from '@/lib/types';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 
@@ -276,6 +279,12 @@ export default function AppLayout() {
   // no local flag). Errors resolve to false inside resolveNeedsOnboarding so
   // a network blip can never lock an existing user out of the app.
   const [needsOnboarding, setNeedsOnboarding] = useState<boolean | null>(null);
+  // Hard paywall (lib/hardPaywall.ts): a new account with no Pro and no trial
+  // goes to the paywall, which has no way out. Set when this mount drained a
+  // fresh sign-up: that path routes to the phase 1 build and then the paywall
+  // itself, so the gate must not jump ahead of it.
+  const { access: coachAccess, loading: coachAccessLoading } = useCoachAccess();
+  const [drainedSignup, setDrainedSignup] = useState(false);
   // The per-request-auth client (stable identity): it fails loudly when no
   // Clerk token is available, so the check can't mistake an anon empty-rows
   // response for a brand-new account.
@@ -309,6 +318,7 @@ export default function AppLayout() {
       .then((drained) => {
         if (drained) {
           const { dest, firstPhaseId } = drained;
+          if (!cancelled) setDrainedSignup(true);
           void flushNow();
           settle(false);
           // Sign-up's next step is phase 1's workouts, not the dashboard:
@@ -415,6 +425,22 @@ export default function AppLayout() {
   }
   if (needsOnboarding) {
     return <Redirect href="/onboarding" />;
+  }
+
+  // Hard paywall. A new account waits for its access read (a spinner, not a
+  // flash of the dashboard); once read, not paying = the paywall. A failed
+  // read stays 'unknown' and never locks.
+  if (isSignedIn && !drainedSignup && isPurchasesAvailable() && isHardPaywallAccount(user?.createdAt)) {
+    if (coachAccess.state === 'unknown' && coachAccessLoading) {
+      return (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.background }}>
+          <OrbLoader size="small" color={C.textMuted} />
+        </View>
+      );
+    }
+    if (mustPay({ createdAt: user?.createdAt, accessState: coachAccess.state, purchasesAvailable: true })) {
+      return <Redirect href={{ pathname: '/upgrade', params: { flow: 'locked' } } as any} />;
+    }
   }
 
   return (

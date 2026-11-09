@@ -151,8 +151,8 @@ const GOAL_OPTIONS: { value: CoachGoal; icon: keyof typeof Feather.glyphMap; tit
 
 const EXPERIENCE_OPTIONS: { value: ExperienceLevel; icon: keyof typeof Feather.glyphMap; title: string; sub: string }[] = [
   { value: 'beginner', icon: 'sunrise', title: 'Just starting out', sub: 'Under a year of training' },
-  { value: 'intermediate', icon: 'trending-up', title: 'Finding my groove', sub: 'One to three years in' },
-  { value: 'advanced', icon: 'award', title: 'Been at this a while', sub: 'Three plus years under the bar' },
+  { value: 'intermediate', icon: 'trending-up', title: 'Some experience', sub: 'One to three years' },
+  { value: 'advanced', icon: 'award', title: 'Very experienced', sub: 'More than three years' },
 ];
 
 const GOAL_PHRASES: Record<CoachGoal, string> = {
@@ -160,7 +160,7 @@ const GOAL_PHRASES: Record<CoachGoal, string> = {
   strength: 'Getting stronger',
   fat_loss: 'Cutting fat while keeping muscle',
   endurance: 'Building endurance',
-  general: 'Training for life',
+  general: 'Staying fit and healthy',
 };
 
 export default function OnboardingScreen() {
@@ -841,7 +841,7 @@ export default function OnboardingScreen() {
                   accessibilityLabel={isFreshVisitor ? 'I already have an account' : 'Skip setup'}
                 >
                   <Text style={[s.ghostLinkText, { color: WELCOME_LINK }]}>
-                    {isFreshVisitor ? 'I already have an account' : 'I know my way around'}
+                    {isFreshVisitor ? 'I already have an account' : 'Skip setup'}
                   </Text>
                 </TouchableOpacity>
               </Animated.View>
@@ -856,7 +856,7 @@ export default function OnboardingScreen() {
               // One short line, only when it changes something: the goal step
               // must fit one screen with no scroll.
               caption={selectedGoals(answers).includes('fat_loss')
-                ? 'Fat loss starts your nutrition in a deficit.'
+                ? 'To lose fat, you will eat a little less than your body burns.'
                 : undefined}
               compact
               keyboardTaps
@@ -915,8 +915,8 @@ export default function OnboardingScreen() {
           {step === 'experience' && (
             <QuestionStep
               stepKey="experience"
-              question="How long have you been lifting?"
-              sub="Sets your starting volume. It grows as you do."
+              question="How long have you been working out?"
+              sub="So we start you at the right level and build up from there."
             >
               <View style={s.options}>
                 {EXPERIENCE_OPTIONS.map((opt, idx) => (
@@ -938,7 +938,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="frequency"
               question="How many days a week?"
-              sub="Be honest. A plan you keep beats a plan you admire."
+              sub="Pick what you can really keep up. You can change it later."
               footer={<PrimaryCta label="Continue" onPress={() => goTo('health')} />}
             >
                 <Animated.View entering={FadeInDown.delay(120).duration(400)} style={{ marginTop: Spacing.lg }}>
@@ -954,7 +954,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="health"
               question="Anything I should train around?"
-              sub="Injuries, joint pain, past surgeries, anything that changes how you should move. I will plan around it."
+              sub="Injuries, joint pain, past surgeries. Anything that changes how you should move. We will plan around it."
               caption="Optional. Leave it blank if there is nothing."
               keyboardTaps
               footer={
@@ -978,8 +978,8 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="prefs"
               question="How do you like to train?"
-              sub="Lifts you love or hate, equipment you have, home or gym, time per session. I will shape the plan to fit."
-              caption="Optional. Leave it blank and I will use what works best."
+              sub="Exercises you like or dislike, home or gym, how much time you have. We will make the plan fit."
+              caption="Optional. Leave it blank and we will pick what works best."
               keyboardTaps
               footer={
                 <PrimaryCta
@@ -1000,8 +1000,8 @@ export default function OnboardingScreen() {
           {step === 'gender' && (
             <QuestionStep
               stepKey="gender"
-              question="How should the math read you?"
-              sub="Gender changes the calorie equation, nothing else."
+              question="What is your sex?"
+              sub="We use it only to work out how much you should eat."
             >
                 <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.genderCol}>
                   {(
@@ -1046,7 +1046,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="age"
               question="How old are you?"
-              sub="Age tunes your calorie baseline."
+              sub="We use it to work out how much you should eat."
               footer={<PrimaryCta label="Continue" onPress={commitAgeStep} />}
             >
                 <View style={s.heroCenter}>
@@ -1065,7 +1065,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="height"
               question="How tall are you?"
-              sub="Height anchors your calorie baseline."
+              sub="We use it to work out how much you should eat."
               footer={<PrimaryCta label="Continue" onPress={commitHeightStep} />}
             >
                 <View style={s.heroCenter}>
@@ -1114,7 +1114,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="weight"
               question="What do you weigh today?"
-              sub="Just a starting point. The trend is what we train."
+              sub="Just today's number. What matters is how it changes over the weeks."
               footer={<PrimaryCta label="Continue" onPress={commitWeightStep} />}
             >
                 <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
@@ -1150,8 +1150,8 @@ export default function OnboardingScreen() {
           {step === 'target' && (
             <QuestionStep
               stepKey="target"
-              question="Where are we heading?"
-              sub="A goal weight points your calories the right way. You can change it anytime."
+              question="What weight do you want to reach?"
+              sub="This tells us if you should eat more or less. You can change it anytime."
               footer={<PrimaryCta label="Continue" onPress={commitTargetStep} />}
             >
                 <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.heroCenter}>
@@ -1187,8 +1187,8 @@ export default function OnboardingScreen() {
           {step === 'pace' && (
             <QuestionStep
               stepKey="pace"
-              question="How fast do we go?"
-              sub="Pick a pace you can hold. The date follows the math."
+              question="How fast do you want to get there?"
+              sub="Pick a speed you can keep up. We will show you the date."
               footer={<PrimaryCta label="Continue" onPress={() => goTo('interlude')} />}
             >
                 {paceCtx && weeklyRate != null && (
@@ -1207,15 +1207,15 @@ export default function OnboardingScreen() {
                       </Text>
                       {pacedPreview && (
                         <Text style={[s.paceCardSub, { color: C.textMuted }]}>
-                          Daily fuel: {pacedPreview.kcal.toLocaleString()} kcal · {pacedPreview.protein}g protein
+                          Eat about {pacedPreview.kcal.toLocaleString()} calories and {pacedPreview.protein}g protein a day
                         </Text>
                       )}
                       <Text style={[s.paceCardLine, { color: C.textDim }]}>
                         {weeklyRate < paceCtx.bounds.recommended - 0.05
-                          ? 'A gentler pace. Easier to hold on hard weeks.'
+                          ? 'Slower, but easier to keep up on busy weeks.'
                           : weeklyRate > paceCtx.bounds.recommended + 0.05
-                            ? 'Aggressive. Protein and sleep stop being optional.'
-                            : 'The balanced pace most people can keep.'}
+                            ? 'Fast. You will need enough protein and good sleep.'
+                            : 'A steady speed most people can keep up.'}
                       </Text>
                     </View>
                   </Animated.View>
@@ -1226,9 +1226,9 @@ export default function OnboardingScreen() {
           {step === 'interlude' && (
             <QuestionStep
               stepKey="interlude"
-              question="I set the route. You walk it."
+              question="I'm Drona, your coach. I make the plan, you follow it."
               sub={`${answers.frequency ?? 3} days a week${paceDate ? `, on track for ${paceDate}` : ''}${targets ? `, ${targets.kcal.toLocaleString()} kcal a day` : ''}.`}
-              footer={<PrimaryCta label="Lock it in" onPress={() => goTo('commit')} />}
+              footer={<PrimaryCta label="Sounds good" onPress={() => goTo('commit')} />}
             >
                 <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
                   {/* The same orb as the paywall's trust screen, so Drona reads
@@ -1236,9 +1236,9 @@ export default function OnboardingScreen() {
                   <DronaHeroOrb />
                   <View style={s.claimList}>
                     {[
-                      'I watch your training, food and recovery',
-                      'When things go off track, I adjust your plan',
-                      'So you get there on time',
+                      'I look at your workouts, meals and sleep',
+                      'If you miss days or stop making progress, I change the plan',
+                      'So you still reach your goal on time',
                     ].map((line, idx) => (
                       <Animated.View
                         key={line}
@@ -1257,7 +1257,7 @@ export default function OnboardingScreen() {
           {step === 'commit' && (
             <QuestionStep
               stepKey="commit"
-              question="Commit to it."
+              question="Make a promise to yourself."
               sub="A plan only works if you show up."
             >
                 <CommitmentHold
@@ -1273,10 +1273,10 @@ export default function OnboardingScreen() {
               <BuildMoment
                 lines={[
                   'Reading your answers',
-                  'Mapping the road to your goal',
+                  'Planning the weeks to your goal',
                   'Picking exercises for you',
-                  'Setting fuel targets',
-                  'Locking your first week',
+                  'Working out your daily calories',
+                  'Setting up your first week',
                 ]}
                 ready={buildReady}
                 onDone={() => goTo('plan')}
@@ -1288,7 +1288,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="plan"
               question={revealTitle}
-              sub={`${finalProgram.phases.length} ${finalProgram.phases.length === 1 ? 'phase' : 'phases'}, ${answers.frequency ?? 3} ${(answers.frequency ?? 3) === 1 ? 'day' : 'days'} a week${targets ? ', daily fuel set' : ''}.`}
+              sub={`${finalProgram.phases.length} ${finalProgram.phases.length === 1 ? 'phase' : 'phases'}, ${answers.frequency ?? 3} ${(answers.frequency ?? 3) === 1 ? 'day' : 'days'} a week${targets ? ', daily calories set' : ''}.`}
               footer={
                 <>
                   <PrimaryCta
@@ -1325,7 +1325,7 @@ export default function OnboardingScreen() {
                   entering={FadeInDown.delay(90).duration(400)}
                   style={[s.roadCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
                 >
-                  <Text style={[s.fuelEyebrow, { color: C.textMuted }]}>THE ROAD</Text>
+                  <Text style={[s.fuelEyebrow, { color: C.textMuted }]}>YOUR PLAN</Text>
                   <Text style={[s.roadTitle, { color: C.foreground }]}>{finalProgram.title}</Text>
                   {finalProgram.objective ? (
                     <ClampedText
@@ -1454,10 +1454,10 @@ export default function OnboardingScreen() {
                     entering={FadeInDown.delay(320).duration(400)}
                     style={[s.fuelCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
                   >
-                    <Text style={[s.fuelEyebrow, { color: C.textMuted }]}>DAILY FUEL</Text>
+                    <Text style={[s.fuelEyebrow, { color: C.textMuted }]}>EAT EACH DAY</Text>
                     <View style={s.fuelKcalRow}>
                       <Text style={[s.fuelKcal, { color: C.foreground }]}>{targets.kcal.toLocaleString()}</Text>
-                      <Text style={[s.fuelKcalUnit, { color: C.textMuted }]}>kcal a day</Text>
+                      <Text style={[s.fuelKcalUnit, { color: C.textMuted }]}>calories a day</Text>
                     </View>
                     <View style={s.macroRow}>
                       {(

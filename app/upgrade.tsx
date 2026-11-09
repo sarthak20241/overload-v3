@@ -44,6 +44,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BackHandler,
   Linking,
   ScrollView,
   StyleSheet,
@@ -111,6 +112,7 @@ import {
   type RevenueCatCustomerInfo,
 } from '@/lib/revenuecat';
 import { OrbLoader } from '@/components/ui/OrbLoader';
+import { isHardPaywallAccount } from '@/lib/hardPaywall';
 
 type FunnelStep = 'warmup' | 'reminder' | 'paywall' | 'success';
 
@@ -134,10 +136,14 @@ interface PurchaseOutcome {
 // someone to their goal, so the paywall draws that walk: three steps joined by
 // a line, ending at the goal. Every step is something only Pro can run today
 // (the server gates program/plan/workout building and refining as Pro).
+//
+// 2026-11-08: plain words. A first-time reader (the owner's father) did not
+// know what "Drona", "program" or "coached" meant here, so each line says
+// what happens, in words anyone uses.
 const PRO_PATH = [
-  'A program built for your goal',
-  'Drona checks in. Your plan adapts to your routine.',
-  'Training and food, coached daily',
+  'A workout plan made for your goal',
+  'Your coach checks in and changes the plan when life gets busy',
+  'Help with your workouts and your meals, every day',
 ];
 
 interface FoundingStatus {
@@ -181,10 +187,18 @@ export default function UpgradeScreen() {
   const router = useRouter();
   const { C } = useTheme();
   const toast = useToast();
-  const { user } = useClerkUser();
+  const { user, signOut } = useClerkUser();
   const supabase = useSupabaseClient();
   const params = useLocalSearchParams<{ flow?: string; context?: string; dest?: string }>();
   const isFunnel = params.flow === 'onboarding';
+  // Hard paywall (lib/hardPaywall.ts). 'locked' is the app gate sending a new
+  // account with no Pro here; the sign-up funnel is locked for the same
+  // accounts. Locked = no close button, no Android back, and a sign-out link
+  // so someone on the wrong account is never stuck.
+  const isLocked =
+    isPurchasesAvailable() &&
+    (params.flow === 'locked' || (isFunnel && isHardPaywallAccount(user?.createdAt)));
+  const source = params.flow === 'locked' ? 'locked' : isFunnel ? 'onboarding_funnel' : 'direct';
   const context = typeof params.context === 'string' ? params.context : null;
 
   const [step, setStep] = useState<FunnelStep>(isFunnel ? 'warmup' : 'paywall');
@@ -218,11 +232,11 @@ export default function UpgradeScreen() {
   const paywallOpenedAt = useRef(Date.now());
   const paywallResolved = useRef(false);
   useEffect(() => {
-    track('paywall_viewed', { source: isFunnel ? 'onboarding_funnel' : 'direct', context, purchases_available: purchasesUsable });
+    track('paywall_viewed', { source, context, purchases_available: purchasesUsable });
     return () => {
       if (paywallResolved.current) return;
       track('paywall_dismissed', {
-        source: isFunnel ? 'onboarding_funnel' : 'direct',
+        source,
         context,
         seconds_on_screen: Math.round((Date.now() - paywallOpenedAt.current) / 1000),
       });
@@ -283,14 +297,30 @@ export default function UpgradeScreen() {
   // Where "done" goes. The funnel replaces into the app; a direct open pops
   // back to whatever surfaced the paywall.
   const finish = useCallback(() => {
-    if (isFunnel) {
+    if (params.flow === 'locked') {
+      router.replace('/(app)');
+    } else if (isFunnel) {
       router.replace(params.dest === 'routines' ? '/(app)/routines' : '/(app)');
     } else if (router.canGoBack()) {
       router.back();
     } else {
       router.replace('/(app)');
     }
-  }, [isFunnel, params.dest, router]);
+  }, [isFunnel, params.flow, params.dest, router]);
+
+  // Android back must not slip past a locked paywall.
+  useEffect(() => {
+    if (!isLocked) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => sub.remove();
+  }, [isLocked]);
+
+  const handleSignOut = useCallback(async () => {
+    track('paywall_signed_out', { source, context });
+    paywallResolved.current = true;
+    await signOut();
+    router.replace('/(auth)');
+  }, [signOut, router, source, context]);
 
   // Longer `timeoutMs` for a pending payment: the store is waiting on a bank
   // mandate, which routinely lands well after the 30s a webhook flip needs.
@@ -316,7 +346,7 @@ export default function UpgradeScreen() {
     }
     if (purchasing || verifying || pendingOrder) return;
     setPurchasing(true);
-    track('purchase_started', { plan: selectedPlan, context, source: isFunnel ? 'onboarding_funnel' : 'direct' });
+    track('purchase_started', { plan: selectedPlan, context, source });
     try {
       if (user?.id) await ensureIdentity(user.id);
       const customerInfo = await purchaseCoachPackage(pkg);
@@ -348,7 +378,7 @@ export default function UpgradeScreen() {
           plan: selectedPlan,
           on_trial: onTrial,
           context,
-          source: isFunnel ? 'onboarding_funnel' : 'direct',
+          source,
           seconds_to_purchase: Math.round((Date.now() - paywallOpenedAt.current) / 1000),
         });
         setOutcome({ plan: selectedPlan, onTrial });
@@ -418,7 +448,7 @@ export default function UpgradeScreen() {
           plan: selectedPlan,
           reason: 'error',
           context,
-          source: isFunnel ? 'onboarding_funnel' : 'direct',
+          source,
           error_code: err.code,
           error_readable: err.readable,
           error_underlying: err.underlying,
@@ -543,7 +573,7 @@ export default function UpgradeScreen() {
         ? 'That one is Overload Pro.'
         : context === 'cap_chat' || context === 'cap_parse'
           ? 'A coach who never runs out.'
-          : 'Always by your side. All the way to your goal.';
+          : 'A coach by your side until you reach your goal.';
   return (
     <SafeAreaView style={[u.safeArea, { backgroundColor: C.background }]}>
       {step === 'warmup' && (
@@ -556,7 +586,7 @@ export default function UpgradeScreen() {
               entering={FadeInDown.duration(400)}
               style={[u.displayTitle, { color: C.foreground, textAlign: 'center' }]}
             >
-              Your goal isn't yours alone anymore.
+              You don't have to do this alone.
             </Animated.Text>
             <Animated.View entering={FadeInDown.delay(150).duration(400)} style={u.quoteWrap}>
               {/* Drona's orb, the same one as the coach chat, speaking the
@@ -564,8 +594,8 @@ export default function UpgradeScreen() {
               <DronaHeroOrb style={u.trustOrb} />
               <View style={[u.quoteBubble, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
                 <Text style={[u.quoteText, { color: C.foreground }]}>
-                  From today, getting you there is my job too. I'll build the
-                  plan, check in, and adjust it whenever life gets in the way.
+                  I'm Drona, your coach. I'll make your plan, check on you,
+                  and change the plan when life gets busy.
                 </Text>
               </View>
             </Animated.View>
@@ -576,10 +606,10 @@ export default function UpgradeScreen() {
               onPress={() => { track('paywall_step_advanced', { from: 'warmup', to: 'reminder', context }); setStep('reminder'); }}
               style={[u.cta, Shadow.playBtn]}
               accessibilityRole="button"
-              accessibilityLabel="I'm in"
+              accessibilityLabel="Sounds good"
             >
               {/* The buyer's answer to Drona's promise, not a sales verb. */}
-              <Text style={u.ctaText}>I'm in</Text>
+              <Text style={u.ctaText}>Sounds good</Text>
             </PressableScale>
             <Text style={[u.ctaNote, { color: C.textMuted }]}>
               Billing starts only after your 7-day trial, unless you cancel.
@@ -612,8 +642,8 @@ export default function UpgradeScreen() {
               entering={FadeInDown.delay(120).duration(400)}
               style={[u.subText, { color: C.textSecondary, textAlign: 'center' }]}
             >
-              A notification on day 5, two days before your trial ends. Keep
-              notifications on and you'll never be surprised.
+              You'll get a message on day 5, two days before you pay anything.
+              Turn on notifications so you don't miss it.
             </Animated.Text>
             <Animated.View entering={FadeInDown.delay(240).duration(400)} style={u.bellWrap}>
               <View style={[u.bellCircle, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
@@ -630,9 +660,9 @@ export default function UpgradeScreen() {
               onPress={advanceFromReminder}
               style={[u.cta, Shadow.playBtn]}
               accessibilityRole="button"
-              accessibilityLabel="Continue for free"
+              accessibilityLabel="Continue"
             >
-              <Text style={u.ctaText}>Continue for free</Text>
+              <Text style={u.ctaText}>Continue</Text>
             </PressableScale>
           </Animated.View>
         </Animated.View>
@@ -660,6 +690,7 @@ export default function UpgradeScreen() {
               which cluttered the footer). It always leaves for the free plan,
               funnel included, so it is the skip. Restore lives under the CTA. */}
           <View style={[u.topBar, { justifyContent: 'flex-end' }]}>
+            {isLocked ? <View style={u.closeBtn} /> : (
             <TouchableOpacity
               onPress={() => {
                 track('paywall_skipped', { via: 'close', context, seconds_on_screen: Math.round((Date.now() - paywallOpenedAt.current) / 1000) });
@@ -674,6 +705,7 @@ export default function UpgradeScreen() {
             >
               <Feather name="x" size={IconSize.md} color={C.textMuted} />
             </TouchableOpacity>
+            )}
           </View>
 
           {/* Sized to fit one viewport on modern phones (verified iPhone 17);
@@ -690,7 +722,7 @@ export default function UpgradeScreen() {
             <Text style={[u.eyebrow, { color: C.accentText }]}>OVERLOAD PRO</Text>
             <Text style={[u.hero, { color: C.foreground }]}>{paywallTitle}</Text>
             <Text style={[u.heroSub, { color: C.textSecondary }]}>
-              Free is a taste of Drona. Pro is the coaching.
+              Drona is your personal coach for workouts and food.
             </Text>
 
             {/* What Pro gives, as a path: three steps, then the goal. Free
@@ -713,7 +745,7 @@ export default function UpgradeScreen() {
               </View>
             </View>
             <Text style={[u.pathPlus, { color: C.textMuted }]}>
-              Plus unlimited coach chat and AI food logs.
+              Plus: ask your coach anything, and log meals by typing what you ate.
             </Text>
 
             {/* Spare height sits HERE, between the story and the plans, so the
@@ -856,6 +888,16 @@ export default function UpgradeScreen() {
               >
                 <Text style={[u.footLink, { color: C.textMuted }]}>Privacy</Text>
               </TouchableOpacity>
+              {isLocked && (
+                <TouchableOpacity
+                  onPress={handleSignOut}
+                  disabled={purchasing || verifying || restoring}
+                  accessibilityRole="button"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={[u.footLink, { color: C.textMuted }]}>Sign out</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
         </Animated.View>
@@ -890,7 +932,7 @@ export default function UpgradeScreen() {
               {[
                 'Unlimited coach chat',
                 'Unlimited AI food logs',
-                'A plan built for you, rewritten every week',
+                'A plan made for you, updated every week',
               ].map((line, i) => (
                 <View
                   key={line}
