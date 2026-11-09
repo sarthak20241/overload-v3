@@ -215,6 +215,9 @@ export default function UpgradeScreen() {
   // button stays off: a second tap could double-charge (Ask to Buy) or hit
   // Play's already-owned error while the first order is still pending.
   const [pendingOrder, setPendingOrder] = useState(false);
+  // Locked buyer whose payment went through but the server has not confirmed
+  // yet: the buy button stays off so they Restore instead of paying twice.
+  const [activationPending, setActivationPending] = useState(false);
   const [outcome, setOutcome] = useState<PurchaseOutcome | null>(null);
   // The pending wait outlives a tap by up to 2 minutes; nothing may update a
   // screen the buyer already left.
@@ -251,7 +254,7 @@ export default function UpgradeScreen() {
   // when the OS reduce-motion setting is on.
   const reduceMotion = useReducedMotion();
   const ctaPulse = useSharedValue(1);
-  const pulseActive = step === 'paywall' && !purchasing && !verifying && !loading;
+  const pulseActive = step === 'paywall' && !purchasing && !verifying && !loading && !activationPending;
   useEffect(() => {
     if (!pulseActive || reduceMotion) {
       cancelAnimation(ctaPulse);
@@ -318,6 +321,7 @@ export default function UpgradeScreen() {
   const handleSignOut = useCallback(async () => {
     track('paywall_signed_out', { source, context });
     paywallResolved.current = true;
+    invalidateCoachAccess();
     await signOut();
     router.replace('/(auth)');
   }, [signOut, router, source, context]);
@@ -344,7 +348,7 @@ export default function UpgradeScreen() {
       toast.error('Plan unavailable. Try again.');
       return;
     }
-    if (purchasing || verifying || pendingOrder) return;
+    if (purchasing || verifying || pendingOrder || activationPending) return;
     setPurchasing(true);
     track('purchase_started', { plan: selectedPlan, context, source });
     try {
@@ -389,11 +393,12 @@ export default function UpgradeScreen() {
       } else if (isLocked) {
         // Paid, but the server has not caught up. Stay here: Restore leaves
         // once it has.
+        setActivationPending(true);
         track('purchase_completed', { plan: selectedPlan, on_trial: false, context, source, tier_flip: 'pending' });
         toast.info("Payment received. It's taking a moment. Tap Restore in a minute.", { durationMs: 10000 });
       } else {
         paywallResolved.current = true;
-        track('purchase_completed', { plan: selectedPlan, on_trial: false, context, tier_flip: 'pending' });
+        track('purchase_completed', { plan: selectedPlan, on_trial: false, context, source, tier_flip: 'pending' });
         toast.info(
           "Purchase received. We're finalizing. Pull to refresh or relaunch in a minute.",
           { durationMs: 8000 },
@@ -408,7 +413,6 @@ export default function UpgradeScreen() {
         // Nothing failed: the store is waiting on the buyer's bank (an Indian
         // card or UPI mandate, Ask to Buy, SEPA). Keep "Activating Pro…" up
         // and poll well past the normal window instead of saying "failed".
-        const source = isFunnel ? 'onboarding_funnel' : 'direct';
         track('purchase_pending', { plan: selectedPlan, context, source });
         setPurchasing(false);
         setVerifying(true);
@@ -468,7 +472,7 @@ export default function UpgradeScreen() {
       setPurchasing(false);
       setVerifying(false);
     }
-  }, [packages, selectedPlan, purchasing, verifying, pendingOrder, user?.id, waitForTierFlip, toast, finish, supabase, context, isFunnel, isLocked, source]);
+  }, [packages, selectedPlan, purchasing, verifying, pendingOrder, activationPending, user?.id, waitForTierFlip, toast, finish, supabase, context, isFunnel, isLocked, source]);
 
   const handleRestore = useCallback(async () => {
     if (restoring) return;
@@ -486,9 +490,10 @@ export default function UpgradeScreen() {
         // Only a found entitlement ends the pending lock; an empty restore
         // may just mean the bank has not approved yet.
         setPendingOrder(false);
-        const flipped = await waitForTierFlip();
+        const flipped = (await waitForTierFlip()) || (isLocked && (await waitForTierFlip(90_000)));
         invalidateCoachAccess();
         if (flipped) {
+          setActivationPending(false);
           paywallResolved.current = true;
           // The exact tier is not known here (a restore carries no plan), but
           // 'free' is now wrong. The bridge's next profile read sets the name.
@@ -519,7 +524,7 @@ export default function UpgradeScreen() {
     } finally {
       setRestoring(false);
     }
-  }, [restoring, waitForTierFlip, toast, finish]);
+  }, [restoring, waitForTierFlip, toast, finish, isLocked]);
 
   // Success screen. Opened from a cap-hit sheet the user was mid-task
   // (chatting, logging food), so the only sensible next step is back to it.
@@ -835,8 +840,8 @@ export default function UpgradeScreen() {
             <Animated.View style={ctaPulseStyle}>
               <PressableScale
                 onPress={handlePurchase}
-                disabled={purchasing || verifying || loading || pendingOrder}
-                style={[u.cta, Shadow.playBtn, (loading || pendingOrder) && { opacity: 0.7 }]}
+                disabled={purchasing || verifying || loading || pendingOrder || activationPending}
+                style={[u.cta, Shadow.playBtn, (loading || pendingOrder || activationPending) && { opacity: 0.7 }]}
                 accessibilityRole="button"
                 accessibilityLabel={ctaLabel}
               >
@@ -857,6 +862,8 @@ export default function UpgradeScreen() {
                   </>
                 ) : pendingOrder ? (
                   <Text style={u.ctaText}>Waiting for your bank</Text>
+                ) : activationPending ? (
+                  <Text style={u.ctaText}>Payment received</Text>
                 ) : (
                   <Text style={u.ctaText}>{ctaLabel}</Text>
                 )}
@@ -906,6 +913,17 @@ export default function UpgradeScreen() {
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
                   <Text style={[u.footLink, { color: C.textMuted }]}>Sign out</Text>
+                </TouchableOpacity>
+              )}
+              {/* Paid but still locked (a store webhook that never landed)
+                  and Restore can't fix it: a person to write to. */}
+              {isLocked && (
+                <TouchableOpacity
+                  onPress={() => Linking.openURL('mailto:support@tryoverload.app?subject=Overload%20Pro%20help')}
+                  accessibilityRole="link"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={[u.footLink, { color: C.textMuted }]}>Help</Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -1321,10 +1339,14 @@ const u = StyleSheet.create({
     textAlign: 'center',
     marginTop: Spacing.md,
   },
+  // Up to five links when locked: a smaller gap, and they wrap on narrow
+  // phones.
   footLinks: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'center',
-    gap: Spacing.xxl,
+    columnGap: Spacing.lg,
+    rowGap: Spacing.sm,
     marginTop: Spacing.lg,
   },
   footLink: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },

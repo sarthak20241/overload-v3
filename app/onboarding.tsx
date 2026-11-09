@@ -915,7 +915,7 @@ export default function OnboardingScreen() {
           {step === 'experience' && (
             <QuestionStep
               stepKey="experience"
-              question="How long have you been working out?"
+              question="How long have you been lifting weights?"
               sub="So we start you at the right level and build up from there."
             >
               <View style={s.options}>
@@ -1001,7 +1001,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="gender"
               question="What is your sex?"
-              sub="We use it only to work out how much you should eat."
+              sub="We use it to work out how much you should eat and to shape your plan."
             >
                 <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.genderCol}>
                   {(

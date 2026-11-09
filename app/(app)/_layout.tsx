@@ -283,16 +283,29 @@ export default function AppLayout() {
   // goes to the paywall, which has no way out. Set when this mount drained a
   // fresh sign-up: that path routes to the phase 1 build and then the paywall
   // itself, so the gate must not jump ahead of it.
-  const { access: coachAccess, loading: coachAccessLoading } = useCoachAccess();
+  const { access: coachAccess, refresh: refreshCoachAccess } = useCoachAccess();
   const [drainedSignup, setDrainedSignup] = useState(false);
-  // A hung access read must not leave a new account on a spinner: after 8 s
-  // the gate gives up and lets them in (fail open, like a failed read).
+  // The gate only decides on a fresh server answer. The hook paints the last
+  // saved access first, and right after a purchase, restore or code that saved
+  // value still says 'free': deciding on it would send a new Pro straight
+  // back to the paywall. So a new account waits for one fresh read per mount.
+  const gateApplies = !!isSignedIn && isPurchasesAvailable() && isHardPaywallAccount(user?.createdAt);
+  const [gateFresh, setGateFresh] = useState(false);
+  useEffect(() => {
+    if (!gateApplies) return;
+    let cancelled = false;
+    refreshCoachAccess().finally(() => { if (!cancelled) setGateFresh(true); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount and account
+  }, [gateApplies, user?.id]);
+  // A hung read must not leave a new account on a spinner: after 8 s the gate
+  // decides on what it has (an unknown state lets them in, fail open).
   const [accessWaitOver, setAccessWaitOver] = useState(false);
   useEffect(() => {
-    if (!coachAccessLoading) return;
+    if (!gateApplies || gateFresh) return;
     const t = setTimeout(() => setAccessWaitOver(true), 8000);
     return () => clearTimeout(t);
-  }, [coachAccessLoading]);
+  }, [gateApplies, gateFresh]);
   // The per-request-auth client (stable identity): it fails loudly when no
   // Clerk token is available, so the check can't mistake an anon empty-rows
   // response for a brand-new account.
@@ -438,8 +451,8 @@ export default function AppLayout() {
   // Hard paywall. A new account waits for its access read (a spinner, not a
   // flash of the dashboard); once read, not paying = the paywall. A failed
   // read stays 'unknown' and never locks.
-  if (isSignedIn && !drainedSignup && isPurchasesAvailable() && isHardPaywallAccount(user?.createdAt)) {
-    if (coachAccess.state === 'unknown' && coachAccessLoading && !accessWaitOver) {
+  if (gateApplies && !drainedSignup) {
+    if (!gateFresh && !accessWaitOver) {
       return (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.background }}>
           <OrbLoader size="small" color={C.textMuted} />
