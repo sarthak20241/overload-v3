@@ -290,6 +290,10 @@ export default function AppLayout() {
   // value still says 'free': deciding on it would send a new Pro straight
   // back to the paywall. So a new account waits for one fresh read per mount.
   const gateApplies = !!isSignedIn && isPurchasesAvailable() && isHardPaywallAccount(user?.createdAt);
+  // Once per mount is enough only because /upgrade lives OUTSIDE (app):
+  // leaving the paywall replaces into (app), which mounts this layout fresh
+  // and re-reads. Keep app/upgrade.tsx out of this group, or a new payer
+  // would be judged on the read made before they paid.
   const [gateFresh, setGateFresh] = useState(false);
   useEffect(() => {
     if (!gateApplies) return;
