@@ -187,7 +187,7 @@ export default function UpgradeScreen() {
   const router = useRouter();
   const { C } = useTheme();
   const toast = useToast();
-  const { user, signOut } = useClerkUser();
+  const { user, signOut, isLoaded: userLoaded } = useClerkUser();
   const supabase = useSupabaseClient();
   const params = useLocalSearchParams<{ flow?: string; context?: string; dest?: string }>();
   const isFunnel = params.flow === 'onboarding';
@@ -195,9 +195,13 @@ export default function UpgradeScreen() {
   // account with no Pro here; the sign-up funnel is locked for the same
   // accounts. Locked = no close button, no Android back, and a sign-out link
   // so someone on the wrong account is never stuck.
+  // In the funnel, until Clerk's user has loaded we can't read the account's
+  // date: count it as locked, so the close button never flashes for a new
+  // account. An older account sees the close once the user loads.
   const isLocked =
     isPurchasesAvailable() &&
-    (params.flow === 'locked' || (isFunnel && isHardPaywallAccount(user?.createdAt)));
+    (params.flow === 'locked' ||
+      (isFunnel && (!userLoaded || !user || isHardPaywallAccount(user.createdAt))));
   const source = params.flow === 'locked' ? 'locked' : isFunnel ? 'onboarding_funnel' : 'direct';
   const context = typeof params.context === 'string' ? params.context : null;
 
