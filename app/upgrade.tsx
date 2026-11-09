@@ -113,6 +113,7 @@ import {
 } from '@/lib/revenuecat';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 import { isHardPaywallAccount, markStoreDown } from '@/lib/hardPaywall';
+import { signOutAndCleanUp } from '@/lib/signOutCleanup';
 
 type FunnelStep = 'warmup' | 'reminder' | 'paywall' | 'success';
 
@@ -345,7 +346,7 @@ export default function UpgradeScreen() {
 
   const handleSignOut = useCallback(async () => {
     try {
-      await signOut();
+      await signOutAndCleanUp({ userId: user?.id, supabase, clerkSignOut: signOut });
     } catch (e) {
       console.warn('[upgrade] sign out failed:', e);
       toast.error("Couldn't sign out. Check your connection and try again.");
@@ -353,9 +354,8 @@ export default function UpgradeScreen() {
     }
     track('paywall_signed_out', { source, context });
     paywallResolved.current = true;
-    invalidateCoachAccess();
     router.replace('/(auth)');
-  }, [signOut, router, source, context, toast]);
+  }, [signOut, router, source, context, toast, user?.id, supabase]);
 
   // Longer `timeoutMs` for a pending payment: the store is waiting on a bank
   // mandate, which routinely lands well after the 30s a webhook flip needs.
