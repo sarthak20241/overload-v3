@@ -147,6 +147,8 @@ begin
     return jsonb_build_object('ok', false, 'reason', 'own_code');
   end if;
 
+  -- already_redeemed / already_pro are not failed tries: they are only reached
+  -- once the code was found, so they tell a guesser nothing new.
   if exists (select 1 from invite_redemptions where clerk_user_id = v_user_id) then
     return jsonb_build_object('ok', false, 'reason', 'already_redeemed');
   end if;
@@ -240,7 +242,9 @@ begin
     if v_try > 20 then
       return jsonb_build_object('ok', false, 'reason', 'no_code');
     end if;
-    -- gen_random_uuid() is a secure random source; random() is not.
+    -- gen_random_uuid() is a secure random source; random() is not. The
+    -- % 31 leans slightly to the first 8 letters (256 = 8 * 31 + 8); with
+    -- 31^6 codes that bias is harmless.
     v_bytes := uuid_send(gen_random_uuid());
     v_code := '';
     for i in 0..5 loop
