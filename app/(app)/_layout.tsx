@@ -296,6 +296,9 @@ export default function AppLayout() {
   // would be judged on the read made before they paid.
   const [gateFresh, setGateFresh] = useState(false);
   useEffect(() => {
+    // A new account (sign-out, sign-in as someone else) starts unread.
+    setGateFresh(false);
+    setAccessWaitOver(false);
     if (!gateApplies) return;
     let cancelled = false;
     // Fresh only when the server answered. A failed read leaves the saved

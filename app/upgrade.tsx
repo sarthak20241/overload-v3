@@ -198,10 +198,11 @@ export default function UpgradeScreen() {
   // In the funnel, until Clerk's user has loaded we can't read the account's
   // date: count it as locked, so the close button never flashes for a new
   // account. An older account sees the close once the user loads.
+  // The URL alone never locks an older account: 'locked' also needs a new
+  // account once the user has loaded.
+  const newOrLoading = !userLoaded || !user || isHardPaywallAccount(user.createdAt);
   const isLocked =
-    isPurchasesAvailable() &&
-    (params.flow === 'locked' ||
-      (isFunnel && (!userLoaded || !user || isHardPaywallAccount(user.createdAt))));
+    isPurchasesAvailable() && (params.flow === 'locked' || isFunnel) && newOrLoading;
   const source = params.flow === 'locked' ? 'locked' : isFunnel ? 'onboarding_funnel' : 'direct';
   const context = typeof params.context === 'string' ? params.context : null;
 
