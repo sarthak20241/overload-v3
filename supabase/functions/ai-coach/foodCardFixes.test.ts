@@ -95,6 +95,58 @@ Deno.test("the parse marks a copied card as a correction, so the app replaces th
   assertEquals(r.parsed!.items.filter((i) => i.food_name === "poori").length, 1);
 });
 
+// Live 2026-11-09, Quick: "2 boiled eggs" made a one-line card, then "And a
+// banana" came back as the egg line copied plus a banana, flagged an addition.
+// The app appended both, and the eggs were on the card twice. One copied line
+// is a copy when THIS message does not name its food.
+const EGG_CARD: PreviousItem[] = [prev("boiled egg", 2, "piece", 100, 156, "estimate")];
+
+Deno.test("one copied line the message never named is a copy, not more of it", () => {
+  assert(copiesCardLines([line("boiled egg", 2, "piece"), line("banana", 1, "piece")], EGG_CARD, "And a banana"));
+  // Plurals fold: "eggs" names "boiled egg".
+  assertEquals(copiesCardLines([line("boiled egg", 2, "piece"), line("banana", 1, "piece")], EGG_CARD, "2 more eggs and a banana"), false);
+  // The poori case still holds: the message names the poori, so it may be more of it.
+  assertEquals(copiesCardLines([line("poori", 3, "piece"), line("dosa", 1, "piece")], CARD, "3 more pooris and a dosa"), false);
+  // "one more" / "same again": the copy is the whole answer, so it is more of it.
+  assertEquals(copiesCardLines([line("boiled egg", 2, "piece")], EGG_CARD, "same again"), false);
+  assertEquals(copiesCardLines([line("banana", 1, "piece")], [prev("banana", 1, "piece", 118, 105)], "one more"), false);
+  // A message with no Latin letters is not checked by words.
+  assertEquals(copiesCardLines([line("boiled egg", 2, "piece"), line("banana", 1, "piece")], EGG_CARD, "दो अंडे और केला"), false);
+  // Two different names in another script are not the same food: केला (banana)
+  // is not a copy of अंडा (egg). Comparing ASCII only made both "".
+  assertEquals(copiesCardLines([line("केला", 2, "piece"), line("banana", 1, "piece")], [prev("अंडा", 2, "piece", 100, 156)], "and a banana"), false);
+  // Known lean: a shared modifier counts as named. "boiled potato" on a
+  // "boiled egg" card keeps the addition path (the old behaviour).
+  assertEquals(copiesCardLines([line("boiled egg", 2, "piece"), line("boiled potato", 1, "piece")], EGG_CARD, "and a boiled potato"), false);
+  // No text given: the old two-line rule only.
+  assertEquals(copiesCardLines([line("poori", 3, "piece"), line("dosa", 1, "piece")], CARD), false);
+});
+
+Deno.test("the parse marks a one-line copy as a correction, so the eggs are not doubled", async () => {
+  const deps: ParseMealDeps = {
+    anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: false,
+    searchFoods: async () => [], backfillOffFood: async () => null, getFoodPer100: async () => null,
+    fetchFn: (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init!.body));
+      const tool = body.tool_choice?.name;
+      const input = tool === "extract_meal"
+        ? { declined: false, corrects_previous: false, meal_type_from_text: null, items: [
+          { name: "boiled egg", brand: null, quantity: 2, unit: "piece", prep: null },
+          { name: "banana", brand: null, quantity: 1, unit: "piece", prep: null },
+        ] }
+        : { meal_type: "dinner", drona_line: "ok", items: [] };
+      return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name: tool, input }] });
+    }) as typeof fetch,
+  };
+  const r = await runParseMeal(deps, {
+    text: "And a banana", previousText: "2 boiled eggs", previousItems: EGG_CARD,
+    localHour: 16, mealHint: "dinner", recentFoods: [], todayTotals: null, targets: null,
+  });
+  assert(r.steps.some((s) => s.tool === "correction_inferred"));
+  assertEquals(r.parsed?.corrects_previous, true);
+  assertEquals(r.parsed!.items.filter((i) => /egg/i.test(i.food_name)).length, 1);
+});
+
 // ── 2. "2 each = 72 g" is two pieces ────────────────────────────────────────
 
 const POORI_ROW: PreciseCacheRow = {
