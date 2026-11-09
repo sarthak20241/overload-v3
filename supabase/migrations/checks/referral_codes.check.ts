@@ -147,4 +147,5 @@ Deno.test("grants: clients call the two RPCs, nothing else", async () => {
   assertEquals(await can("create_campaign_code(text,int,int,timestamptz,text)"), false);
   assertEquals(await can("invite_code_stats()"), false);
   assertEquals(await can("invite_is_paying(text)"), false);
+  assertEquals(await can("invite_extend_trial(text,int)"), false);
 });

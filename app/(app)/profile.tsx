@@ -1018,7 +1018,10 @@ export default function ProfileScreen() {
                 style={styles.inviteLink}
               >
                 <Feather name="users" size={12} color={C.accentText} />
-                <Text style={[styles.inviteLinkText, { color: C.accentText }]}>Invite friends, get a free month each</Text>
+                {/* A store payer earns no months (refer.tsx), so no promise. */}
+                <Text style={[styles.inviteLinkText, { color: C.accentText }]}>
+                  {isPro ? 'Invite friends' : 'Invite friends, get a free month each'}
+                </Text>
               </TouchableOpacity>
               {/* Invite codes give a free month (lib/invite.ts). Not offered
                   to a paying user, whom redeem_invite() would refuse. */}

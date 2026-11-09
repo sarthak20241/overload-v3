@@ -27,7 +27,6 @@ import { OrbLoader } from '@/components/ui/OrbLoader';
 import { track } from '@/lib/analytics';
 import {
   readMyReferral,
-  referralLink,
   referralShareMessage,
   referralTally,
   type MyReferral,
@@ -59,7 +58,8 @@ export default function ReferScreen() {
   const share = async () => {
     if (!mine?.ok) return;
     try {
-      const r = await Share.share({ message: referralShareMessage(mine.code), url: referralLink(mine.code) });
+      // The link is inside the message. Passing `url` too shows it twice on iOS.
+      const r = await Share.share({ message: referralShareMessage(mine.code) });
       track('referral_shared', { action: r.action, friends: mine.friends });
     } catch {
       /* the sheet closed or failed; nothing to do */
