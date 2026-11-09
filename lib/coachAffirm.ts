@@ -77,8 +77,9 @@ export function isPureAffirmative(text: string): boolean {
 }
 
 /**
- * True when the last question in Drona's message asks about building. A
- * clarifying question ("How many days can you train?") is not one.
+ * True when the last question in Drona's message asks whether to build the
+ * plan. A clarifying question ("How many days can you train?", "Do you want
+ * to build up your legs first?") is not one.
  */
 export function asksToBuild(text: string | null | undefined): boolean {
   const t = (text ?? '').trim();
@@ -87,5 +88,7 @@ export function asksToBuild(text: string | null | undefined): boolean {
   // The sentence that question mark closes: back to the previous . ! ? or line break.
   const before = t.slice(0, q);
   const start = Math.max(before.lastIndexOf('.'), before.lastIndexOf('!'), before.lastIndexOf('?'), before.lastIndexOf('\n')) + 1;
-  return /\bbuild\b/i.test(t.slice(start, q));
+  // "build it", "build this", "build that", "build the program/plan": about
+  // building THE plan. A bare "build" ("build up your legs first?") is not.
+  return /\bbuild (it|this|that|the (program|plan|phases?))\b/i.test(t.slice(start, q));
 }

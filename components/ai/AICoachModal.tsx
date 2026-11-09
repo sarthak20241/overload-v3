@@ -3291,6 +3291,8 @@ function GenerateProgramScreen({
     () => (existing || initialDraft ? 'skipped' : 'asking'),
   );
   // The last answers, so Back from the chat or the program reopens them on review.
+  // Intended: Back leaves the chat, and "Ask Drona to plan it" then starts a
+  // fresh one on the (maybe changed) answers. The old talk is not carried over.
   const [lastAnswers, setLastAnswers] = useState<GoalIntakeAnswers | undefined>(undefined);
   const intakeSend = useMemo(
     () => (typeof intake === 'object' ? { text: goalIntakeMessage(intake), shown: goalIntakeSummary(intake) } : undefined),
