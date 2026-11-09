@@ -205,6 +205,10 @@ export function appliedSummary(
  */
 export const APPLE_FRIEND_OFFER_CODE = 'FRIENDMONTH';
 
+// The split relies on the app: the server can't know the platform, so
+// redeem_invite stays callable by any signed-in client. FRIENDMONTH's limits
+// and end date are set in App Store Connect; if it runs out, iPhone friends
+// see Apple's "code not valid" page.
 export function friendMonthFromStore(os: string): boolean {
   return os === 'ios';
 }
