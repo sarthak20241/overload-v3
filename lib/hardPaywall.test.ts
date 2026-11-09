@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert';
-import { HARD_PAYWALL_FROM, isHardPaywallAccount, mustPay } from './hardPaywall.ts';
+import { HARD_PAYWALL_FROM, isHardPaywallAccount, markStoreDown, mustPay, resetStoreDown, storeRecentlyDown } from './hardPaywall.ts';
 
 const NEW = new Date(HARD_PAYWALL_FROM + 60_000);
 const OLD = new Date(HARD_PAYWALL_FROM - 60_000);
@@ -40,4 +40,13 @@ Deno.test('created date: exact cutoff counts, missing or bad date does not', () 
   assertEquals(isHardPaywallAccount(null), false);
   assertEquals(isHardPaywallAccount(undefined), false);
   assertEquals(isHardPaywallAccount('not a date'), false);
+});
+
+Deno.test('store down: the gate opens for 10 minutes, then asks again', () => {
+  resetStoreDown();
+  assertEquals(storeRecentlyDown(1_000), false);
+  markStoreDown(1_000);
+  assertEquals(storeRecentlyDown(1_000 + 9 * 60_000), true);
+  assertEquals(storeRecentlyDown(1_000 + 11 * 60_000), false);
+  resetStoreDown();
 });
