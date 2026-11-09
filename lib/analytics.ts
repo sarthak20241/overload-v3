@@ -232,6 +232,7 @@ export type AnalyticsEvent =
   | 'ready_notice_opened'
   | 'coach_message_copied'
   | 'food_text_reused'
+  | 'food_followup_cancelled'
   | 'coach_message_select_opened'
   | 'coach_history_opened'
   | 'coach_conversation_opened'
