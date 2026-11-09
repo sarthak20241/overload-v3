@@ -96,7 +96,7 @@ import {
   onboardingIdentity,
 } from '@/lib/onboarding';
 import { buildAnonIntake, requestAnonOnboardingProgram } from '@/lib/onboardingDrona';
-import { weekPatternFor, shortDayLabel, REST } from '@/lib/weekPattern';
+import { ClampedText, ProgramRoad } from '@/components/program/ProgramRoad';
 import { getDeviceId } from '@/lib/deviceId';
 import { setPendingOnboarding, saveOnboardingProgram } from '@/lib/pendingOnboarding';
 import {
@@ -331,53 +331,6 @@ export default function OnboardingScreen() {
   // Reveal rows for the road. Each row opens: the one-line summary is what the
   // reveal is for, but a program the user has not read is a program they have
   // not agreed to, so the detail is one tap away rather than on another screen.
-  const roadRows = useMemo(() => {
-    let offset = 0;
-    return finalProgram.phases.map((ph, idx) => {
-      const start = offset + 1;
-      const end = offset + ph.duration_weeks;
-      offset = end;
-      const weeks = start === end ? `Wk ${start}` : `Wk ${start}-${end}`;
-      // A closed row says only how you eat and train; the why is inside.
-      const meta = [
-        ph.diet.calories != null ? `${ph.diet.calories.toLocaleString()} kcal` : null,
-        // A phase without a named split still says how often you train.
-        ph.training_block?.split_type ??
-          (ph.training_block?.days_per_week
-            ? `${ph.training_block.days_per_week} ${ph.training_block.days_per_week === 1 ? 'day' : 'days'} a week`
-            : null),
-      ]
-        .filter(Boolean)
-        .join(' · ');
-      const macros = [
-        ph.diet.protein_g != null ? { label: 'PROTEIN', value: `${ph.diet.protein_g}g` } : null,
-        ph.diet.carb_g != null ? { label: 'CARBS', value: `${ph.diet.carb_g}g` } : null,
-        ph.diet.fat_g != null ? { label: 'FAT', value: `${ph.diet.fat_g}g` } : null,
-      ].filter(Boolean) as Array<{ label: string; value: string }>;
-      // Same three icons the Goal screen uses, so a phase reads the same here
-      // as it will there once it is saved.
-      const directives = [
-        { icon: 'zap' as const, label: 'DIET', text: ph.diet_directive ?? null },
-        { icon: 'activity' as const, label: 'TRAINING', text: ph.training_directive ?? null },
-        { icon: 'moon' as const, label: 'RECOVERY', text: ph.readiness_directive ?? null },
-      ].filter((d) => !!d.text) as Array<{ icon: 'zap' | 'activity' | 'moon'; label: string; text: string }>;
-      return {
-        key: `${idx}-${ph.name}`,
-        weeks,
-        name: ph.name,
-        meta,
-        kcal: ph.diet.calories ?? null,
-        macros,
-        week: weekPatternFor(ph.training_block),
-        split: ph.training_block?.split_type ?? null,
-        directives,
-      };
-    });
-  }, [finalProgram]);
-
-  // Which road row is open, if any. One at a time: the reveal is already a long
-  // scroll and every open row pushes the save button further away.
-  const [openPhase, setOpenPhase] = useState<string | null>(null);
 
   const paceDate = useMemo(() => {
     if (!paceCtx || weeklyRate == null) return null;
@@ -1321,132 +1274,7 @@ export default function OnboardingScreen() {
 
                 {/* The road: the program's phases, so the reveal shows the whole
                     route to the goal and not just week one. */}
-                <Animated.View
-                  entering={FadeInDown.delay(90).duration(400)}
-                  style={[s.roadCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
-                >
-                  <Text style={[s.fuelEyebrow, { color: C.textMuted }]}>THE ROAD</Text>
-                  <Text style={[s.roadTitle, { color: C.foreground }]}>{finalProgram.title}</Text>
-                  {finalProgram.objective ? (
-                    <ClampedText
-                      text={finalProgram.objective}
-                      lines={2}
-                      style={[s.roadObjective, { color: C.textSecondary }]}
-                    />
-                  ) : null}
-                  <View style={s.roadList}>
-                    {roadRows.map((row) => {
-                      const open = openPhase === row.key;
-                      return (
-                        <View key={row.key}>
-                          <Pressable
-                            onPress={() => setOpenPhase(open ? null : row.key)}
-                            style={s.roadRow}
-                            hitSlop={6}
-                          >
-                            <Text style={[s.roadWeeks, { color: C.accentText }]}>{row.weeks}</Text>
-                            <View style={{ flex: 1, minWidth: 0 }}>
-                              <Text style={[s.roadName, { color: C.foreground }]} numberOfLines={open ? undefined : 1}>
-                                {row.name}
-                              </Text>
-                              {row.meta && !open ? (
-                                <Text style={[s.roadMeta, { color: C.textMuted }]} numberOfLines={1}>{row.meta}</Text>
-                              ) : null}
-                            </View>
-                            <Feather
-                              name={open ? 'chevron-up' : 'chevron-down'}
-                              size={14}
-                              color={C.textMuted}
-                              style={{ marginTop: 2 }}
-                            />
-                          </Pressable>
-
-                          {open && (
-                            <Animated.View entering={FadeIn.duration(180)} style={s.roadDetail}>
-                              {(row.kcal != null || row.macros.length > 0) && (
-                                <View style={s.roadChipRow}>
-                                  {row.kcal != null && (
-                                    <View
-                                      style={[
-                                        s.roadChip,
-                                        { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder },
-                                      ]}
-                                    >
-                                      <Text style={[s.roadChipValue, { color: C.accentText }]}>
-                                        {row.kcal.toLocaleString()}
-                                      </Text>
-                                      <Text style={[s.roadChipLabel, { color: C.accentText }]}>KCAL / DAY</Text>
-                                    </View>
-                                  )}
-                                  {row.macros.map((m) => (
-                                    <View
-                                      key={m.label}
-                                      style={[s.roadChip, { backgroundColor: C.muted, borderColor: 'transparent' }]}
-                                    >
-                                      <Text style={[s.roadChipValue, { color: C.foreground }]}>{m.value}</Text>
-                                      <Text style={[s.roadChipLabel, { color: C.textMuted }]}>{m.label}</Text>
-                                    </View>
-                                  ))}
-                                </View>
-                              )}
-
-                              {row.week && (
-                                <View style={{ marginTop: Spacing.md }}>
-                                  <Text style={[s.roadDetailLabel, { color: C.textMuted }]}>
-                                    {row.split ? `YOUR WEEK · ${row.split}` : 'YOUR WEEK'}
-                                  </Text>
-                                  <View style={s.roadWeekStrip}>
-                                    <View style={[s.roadWeekRule, { backgroundColor: C.borderSubtle }]} />
-                                    {row.week.map((label, i) => {
-                                      const rest = label === REST;
-                                      return (
-                                        <View key={i} style={s.roadWeekCell}>
-                                          <View
-                                            style={[
-                                              s.roadWeekDot,
-                                              rest
-                                                ? { backgroundColor: C.background, borderColor: C.borderSubtle }
-                                                : { backgroundColor: C.accentText, borderColor: C.accentText },
-                                            ]}
-                                          />
-                                          <Text style={[s.roadWeekDay, { color: C.textMuted }]}>D{i + 1}</Text>
-                                          <Text
-                                            numberOfLines={1}
-                                            style={[
-                                              s.roadWeekLabel,
-                                              {
-                                                color: rest ? C.textMuted : C.foreground,
-                                                fontWeight: rest ? FontWeight.medium : FontWeight.semibold,
-                                              },
-                                            ]}
-                                          >
-                                            {shortDayLabel(label)}
-                                          </Text>
-                                        </View>
-                                      );
-                                    })}
-                                  </View>
-                                </View>
-                              )}
-
-                              {row.directives.map((d) => (
-                                <View key={d.label} style={s.roadDirectiveRow}>
-                                  <View style={[s.roadDirectiveIcon, { backgroundColor: C.primaryMuted }]}>
-                                    <Feather name={d.icon} size={12} color={C.accentText} />
-                                  </View>
-                                  <View style={{ flex: 1, minWidth: 0 }}>
-                                    <Text style={[s.roadDetailLabel, { color: C.textMuted }]}>{d.label}</Text>
-                                    <Text style={[s.roadDetailText, { color: C.textSecondary }]}>{d.text}</Text>
-                                  </View>
-                                </View>
-                              ))}
-                            </Animated.View>
-                          )}
-                        </View>
-                      );
-                    })}
-                  </View>
-                </Animated.View>
+                <ProgramRoad program={finalProgram} />
 
                 {/* Daily fuel targets: the diet half of the intake payoff */}
                 {targets ? (
@@ -1523,25 +1351,6 @@ const WELCOME_STAGE = '#0a0a0a';
 const WELCOME_LINK = 'rgba(255,255,255,0.72)';
 
 /** A long line held to a few lines; a tap opens the rest. */
-function ClampedText({ text, lines, style }: { text: string; lines: number; style: StyleProp<TextStyle> }) {
-  const [open, setOpen] = useState(false);
-  // New text starts closed again.
-  useEffect(() => setOpen(false), [text]);
-  return (
-    <Text
-      style={style}
-      numberOfLines={open ? undefined : lines}
-      onPress={() => setOpen((o) => !o)}
-      suppressHighlighting
-      accessibilityRole="button"
-      accessibilityState={{ expanded: open }}
-      accessibilityHint={open ? undefined : 'Shows the rest'}
-    >
-      {text}
-    </Text>
-  );
-}
-
 const s = StyleSheet.create({
   safeArea: { flex: 1 },
   stepFill: { flex: 1 },
@@ -1595,47 +1404,6 @@ const s = StyleSheet.create({
     padding: Spacing.lg,
     marginTop: Spacing.md,
   },
-  roadCard: {
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    padding: Spacing.lg,
-    marginTop: Spacing.md,
-  },
-  roadTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold, marginTop: Spacing.xs },
-  roadObjective: { fontSize: FontSize.sm, lineHeight: 19, marginTop: 4 },
-  roadList: { marginTop: Spacing.md, gap: Spacing.sm },
-  roadRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md },
-  roadWeeks: {
-    width: 64,
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-    letterSpacing: LetterSpacing.eyebrow,
-    paddingTop: 2,
-  },
-  roadName: { fontSize: FontSize.md, fontWeight: FontWeight.semibold },
-  roadMeta: { fontSize: FontSize.xs, lineHeight: 16, marginTop: 1 },
-  roadDetail: { marginTop: Spacing.sm },
-  roadDirectiveRow: { flexDirection: 'row', gap: 10, marginTop: Spacing.md, alignItems: 'flex-start' },
-  roadDirectiveIcon: { width: 24, height: 24, borderRadius: 7, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
-  roadChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  roadChip: {
-    borderRadius: Radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    alignItems: 'flex-start',
-    gap: 1,
-  },
-  roadChipValue: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
-  roadChipLabel: { fontSize: 8, fontWeight: FontWeight.semibold, letterSpacing: 0.7 },
-  roadDetailLabel: { fontSize: 9, fontWeight: FontWeight.semibold, letterSpacing: 0.8, marginBottom: 3 },
-  roadDetailText: { fontSize: FontSize.sm, lineHeight: 19 },
-  roadWeekStrip: { flexDirection: 'row', marginTop: 4 },
-  roadWeekRule: { position: 'absolute', left: 12, right: 12, top: 4, height: StyleSheet.hairlineWidth },
-  roadWeekCell: { flex: 1, alignItems: 'center', gap: 3 },
-  roadWeekDot: { width: 9, height: 9, borderRadius: 5, borderWidth: 1 },
-  roadWeekDay: { fontSize: 8, fontWeight: FontWeight.semibold, letterSpacing: 0.4 },
-  roadWeekLabel: { fontSize: 9, textAlign: 'center' },
   fuelEyebrow: {
     fontSize: FontSize.xs,
     fontWeight: FontWeight.bold,

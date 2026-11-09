@@ -225,6 +225,12 @@ export type AnalyticsEvent =
   | 'coach_failed'
   | 'coach_new_chat_started'
   | 'coach_generation_stopped'
+  // Goal intake (components/program/GoalIntake): the question screens before
+  // Drona plans a new program. step_viewed per screen, then sent or skipped.
+  | 'goal_intake_step_viewed'
+  | 'goal_intake_sent'
+  | 'goal_intake_skipped'
+  | 'goal_intake_build_tapped'
   // A sheet closed while Drona worked, kept to finish out of sight.
   | 'coach_kept_working'
   // Drona finished out of sight: a notification sent (or not), and opened.
