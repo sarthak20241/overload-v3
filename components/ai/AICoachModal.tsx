@@ -22,6 +22,7 @@ import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
 import { GoalIntake } from '@/components/program/GoalIntake';
 import { goalIntakeMessage, goalIntakeSummary, type GoalIntakeAnswers } from '@/lib/goalIntake';
+import { BUILD_IT, asksToBuild, isPureAffirmative } from '@/lib/coachAffirm';
 import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
 import { pinOffset, pinRoom, tailAfterReply } from '@/lib/questionPin';
 import { fuelDaysText } from '@/lib/fuelDays';
@@ -3883,73 +3884,8 @@ function GenerateWorkoutScreen({
   );
 }
 
-// ─── Pure-affirmative detector (refine safety net) ───────────────────────────
-// True when the user's message is essentially "yes — go". Used by
-// RefineChatScreen to set forceTool on the next stream, which guarantees
-// the model emits the refined workout/plan via tool_use instead of writing
-// it as text in the chat (which would be unsaveable). Conservative on
-// purpose: we DON'T want to match "yes but bump volume" or "yes, change
-// the bench to incline" — those are still substantive turns and the model
-// should be free to chat or refine without being forced. So we require
-// the cleaned text to be a short stand-alone affirmation.
-function isPureAffirmative(text: string): boolean {
-  // Strip trailing punctuation and lowercase. Keep length budget tight —
-  // anything past ~30 chars is almost certainly carrying additional intent
-  // beyond the affirmation.
-  const clean = text.trim().toLowerCase().replace(/[.!?,]+$/, '');
-  if (clean.length === 0 || clean.length > 30) return false;
-  const patterns: RegExp[] = [
-    /^yes$/,
-    /^yeah$/,
-    /^yep$/,
-    /^yup$/,
-    /^sure$/,
-    /^ok$/,
-    /^okay$/,
-    /^go$/,
-    /^go ahead$/,
-    /^do it$/,
-    /^let'?s do it$/,
-    /^let'?s go$/,
-    /^sounds good$/,
-    /^looks good$/,
-    /^perfect$/,
-    /^great$/,
-    /^alright$/,
-    /^please$/,
-    /^yes please$/,
-    /^yes go ahead$/,
-    /^go for it$/,
-    /^proceed$/,
-    /^definitely$/,
-    /^absolutely$/,
-    /^confirm$/,
-    // "build" / "build it" family — common in discuss flows where the user
-    // is approving the proposed structure and asking for the build. Mirror
-    // each variant for yes/yeah/yep/yup + build to catch typical phrasings
-    // like "yep build", "yes build it", "yeah build it now".
-    /^build$/,
-    /^build it$/,
-    /^build it now$/,
-    /^build the (plan|workout)$/,
-    /^build it please$/,
-    /^(yes|yeah|yep|yup|ok|okay|sure) build$/,
-    /^(yes|yeah|yep|yup|ok|okay|sure) build it$/,
-    /^(yes|yeah|yep|yup|ok|okay|sure) build it now$/,
-    /^(yes|yeah|yep|yup|ok|okay|sure)[, ]+(go|do it|build it)$/,
-    /^make it$/,
-    /^create it$/,
-    /^let'?s build$/,
-    /^let'?s build it$/,
-    /^confirmed$/,
-    /^finalize$/,
-    /^finalise$/,
-    /^generate$/,
-    /^generate it$/,
-    /^generate the (plan|workout)$/,
-  ];
-  return patterns.some(p => p.test(clean));
-}
+// isPureAffirmative (the refine safety net that forces the terminal tool)
+// lives in lib/coachAffirm.ts, with its tests.
 
 // ─── Refine Chat Screen ──────────────────────────────────────────────────────
 // Conversational refinement of a just-generated workout or plan. Opens from
@@ -4324,18 +4260,21 @@ function RefineChatScreen({
   // The goal intake's answers go out once, on open.
   const autoSentRef = useRef(false);
   useEffect(() => {
-    if (!autoSend || autoSentRef.current) return;
+    // Marked sent only when the send can start: a turn still running would
+    // make handleSend return without sending, and the answers would be lost.
+    if (!autoSend || autoSentRef.current || loading) return;
     autoSentRef.current = true;
     handleSend(autoSend);
-  }, [autoSend, handleSend]);
+  }, [autoSend, handleSend, loading]);
 
-  // Drona has proposed and asked to confirm: one tap builds, one tap opens
-  // the box to change something. "Build it" is a pure affirmative, so the
-  // turn forces generate_program (isPureAffirmative above).
+  // Drona has proposed and asked whether to build: one tap builds, one tap
+  // opens the box to change something. Only after a question about building
+  // (lib/coachAffirm asksToBuild), never a clarifying one, since "Build it" is
+  // a pure affirmative and forces generate_program.
   const lastShown = messages[messages.length - 1];
   const showConfirm = !!autoSend && kind === 'discuss' && mode === 'refine_program'
     && !loading && !turnFailed && messages.length > 2
-    && lastShown?.role === 'assistant' && !!lastShown.content && lastShown.content.includes('?');
+    && lastShown?.role === 'assistant' && asksToBuild(lastShown.content);
 
   // Stop generating (see ChatScreen.handleStop). One difference: if the
   // terminal tool had already fired, the plan/workout exists server-side and
@@ -4558,7 +4497,7 @@ function RefineChatScreen({
       {showConfirm && (
         <Animated.View entering={FadeInDown.duration(250)} style={s.confirmRow}>
           <TouchableOpacity
-            onPress={() => { haptics.tap(); track('goal_intake_build_tapped'); handleSend({ text: 'Build it' }); }}
+            onPress={() => { haptics.tap(); track('goal_intake_build_tapped'); handleSend({ text: BUILD_IT }); }}
             style={[s.confirmBtn, { backgroundColor: Colors.primary }]}
             accessibilityRole="button"
             accessibilityLabel="Build this program"
