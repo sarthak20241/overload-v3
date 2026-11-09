@@ -915,7 +915,7 @@ export default function OnboardingScreen() {
           {step === 'experience' && (
             <QuestionStep
               stepKey="experience"
-              question="How long have you lifted weights?"
+              question="How long have you been working out?"
               sub="So we start you at the right level."
             >
               <View style={s.options}>
