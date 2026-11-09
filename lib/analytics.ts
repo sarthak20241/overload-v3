@@ -301,6 +301,7 @@ export type AnalyticsEvent =
   | 'paywall_plans_expanded'
   | 'paywall_skipped'
   | 'paywall_signed_out'
+  | 'paywall_store_retry'
   | 'paywall_success_cta'
   | 'purchase_started'
   | 'purchase_pending'

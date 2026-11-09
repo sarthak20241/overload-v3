@@ -49,3 +49,23 @@ export function mustPay(opts: {
     NOT_PAYING.has(opts.accessState)
   );
 }
+
+// The store's plans did not load on the paywall: nobody can buy, so the gate
+// lets a new account in for a while instead of trapping it on a paywall with
+// nothing to buy (the same fail-open as a failed access read). In memory only:
+// a restart asks the store again.
+const STORE_DOWN_GRACE_MS = 10 * 60 * 1000;
+let storeDownAt: number | null = null;
+
+export function markStoreDown(now = Date.now()): void {
+  storeDownAt = now;
+}
+
+export function storeRecentlyDown(now = Date.now()): boolean {
+  return storeDownAt !== null && now - storeDownAt < STORE_DOWN_GRACE_MS;
+}
+
+/** Test seam. */
+export function resetStoreDown(): void {
+  storeDownAt = null;
+}

@@ -112,7 +112,7 @@ import {
   type RevenueCatCustomerInfo,
 } from '@/lib/revenuecat';
 import { OrbLoader } from '@/components/ui/OrbLoader';
-import { isHardPaywallAccount } from '@/lib/hardPaywall';
+import { isHardPaywallAccount, markStoreDown } from '@/lib/hardPaywall';
 
 type FunnelStep = 'warmup' | 'reminder' | 'paywall' | 'success';
 
@@ -137,7 +137,7 @@ interface PurchaseOutcome {
 // a line, ending at the goal. Every step is something only Pro can run today
 // (the server gates program/plan/workout building and refining as Pro).
 //
-// 2026-11-08: plain words. A first-time reader (the owner's father) did not
+// 2026-11-08: plain words. A first-time reader did not
 // know what "Drona", "program" or "coached" meant here, so each line says
 // what happens, in words anyone uses.
 const PRO_PATH = [
@@ -213,6 +213,8 @@ export default function UpgradeScreen() {
   const [packages, setPackages] = useState<Partial<Record<PlanKey, RevenueCatPackage>>>({});
   const [founding, setFounding] = useState<FoundingStatus | null>(null);
   const [selectedPlan, setSelectedPlan] = useState<PlanKey>('annual');
+  // Bumped by "Try again" when the store's plans did not load.
+  const [storeTry, setStoreTry] = useState(0);
   const [purchasing, setPurchasing] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [restoring, setRestoring] = useState(false);
@@ -300,7 +302,16 @@ export default function UpgradeScreen() {
     return () => {
       cancelled = true;
     };
-  }, [supabase]);
+  }, [supabase, storeTry]);
+
+  // The store's plans did not load (store down, no network): nothing can be
+  // bought, so a locked paywall must not trap anyone. It offers a retry and
+  // opens like every other failure in the gate (fail open).
+  const storeDown = !loading && !packages.annual && !packages.monthly;
+  const lockedNow = isLocked && !storeDown;
+  useEffect(() => {
+    if (storeDown && isLocked) markStoreDown();
+  }, [storeDown, isLocked]);
 
   // Where "done" goes. The funnel replaces into the app; a direct open pops
   // back to whatever surfaced the paywall.
@@ -318,10 +329,10 @@ export default function UpgradeScreen() {
 
   // Android back must not slip past a locked paywall.
   useEffect(() => {
-    if (!isLocked) return;
+    if (!lockedNow) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
     return () => sub.remove();
-  }, [isLocked]);
+  }, [lockedNow]);
 
   const handleSignOut = useCallback(async () => {
     try {
@@ -604,7 +615,7 @@ export default function UpgradeScreen() {
   return (
     <SafeAreaView style={[u.safeArea, { backgroundColor: C.background }]}>
       {/* No iOS swipe-back past a locked paywall. */}
-      <Stack.Screen options={{ gestureEnabled: !isLocked }} />
+      <Stack.Screen options={{ gestureEnabled: !lockedNow }} />
       {step === 'warmup' && (
         <Animated.View key="warmup" entering={FadeIn.duration(250)} style={u.stepFill}>
           <View style={u.centerFill}>
@@ -719,7 +730,7 @@ export default function UpgradeScreen() {
               which cluttered the footer). It always leaves for the free plan,
               funnel included, so it is the skip. Restore lives under the CTA. */}
           <View style={[u.topBar, { justifyContent: 'flex-end' }]}>
-            {isLocked ? <View style={u.closeBtn} /> : (
+            {lockedNow ? <View style={u.closeBtn} /> : (
             <TouchableOpacity
               onPress={() => {
                 track('paywall_skipped', { via: 'close', context, seconds_on_screen: Math.round((Date.now() - paywallOpenedAt.current) / 1000) });
@@ -841,6 +852,17 @@ export default function UpgradeScreen() {
                     </Text>
                   </TouchableOpacity>
                 )}
+                {storeDown && purchasesUsable && (
+                  <TouchableOpacity
+                    onPress={() => { track('paywall_store_retry', { source, context }); setLoading(true); setStoreTry((n) => n + 1); }}
+                    accessibilityRole="button"
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={[u.expoGoText, { color: C.textMuted }]}>
+                      {`Couldn't reach ${STORE_NAME}. Tap to try again.`}
+                    </Text>
+                  </TouchableOpacity>
+                )}
                 {!purchasesUsable && (
                   <Text style={[u.expoGoText, { color: C.mutedFg }]}>
                     In-app purchases need the {STORE_NAME} version of Overload.
@@ -907,23 +929,23 @@ export default function UpgradeScreen() {
               </TouchableOpacity>
               {/* One item, two links: Apple wants both pages on a paywall,
                   and one item leaves room for "Have a code?". */}
-              <Text style={[u.footLink, { color: C.textMuted }]}>
-                <Text
+              <View style={u.legalPair}>
+                <TouchableOpacity
                   onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}
                   accessibilityRole="link"
-                  suppressHighlighting
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 4 }}
                 >
-                  Terms
-                </Text>
-                {' & '}
-                <Text
+                  <Text style={[u.footLink, { color: C.textMuted }]}>Terms</Text>
+                </TouchableOpacity>
+                <Text style={[u.footLink, { color: C.textMuted }]}>{' & '}</Text>
+                <TouchableOpacity
                   onPress={() => Linking.openURL('https://tryoverload.app/privacy.html')}
                   accessibilityRole="link"
-                  suppressHighlighting
+                  hitSlop={{ top: 10, bottom: 10, left: 4, right: 10 }}
                 >
-                  Privacy
-                </Text>
-              </Text>
+                  <Text style={[u.footLink, { color: C.textMuted }]}>Privacy</Text>
+                </TouchableOpacity>
+              </View>
               {isLocked && (
                 <TouchableOpacity
                   onPress={handleSignOut}
@@ -1374,6 +1396,7 @@ const u = StyleSheet.create({
     marginTop: Spacing.lg,
   },
   footLink: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  legalPair: { flexDirection: 'row', alignItems: 'center' },
 
   expoGoNote: {
     flexDirection: 'row',

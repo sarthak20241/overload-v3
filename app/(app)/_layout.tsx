@@ -33,7 +33,7 @@ import { drainPendingOnboarding } from '@/lib/pendingOnboarding';
 import { useSync } from '@/components/SyncProvider';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { isPurchasesAvailable } from '@/lib/revenuecat';
-import { isHardPaywallAccount, mustPay } from '@/lib/hardPaywall';
+import { isHardPaywallAccount, mustPay, storeRecentlyDown } from '@/lib/hardPaywall';
 import type { Routine } from '@/lib/types';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 
@@ -464,7 +464,7 @@ export default function AppLayout() {
   // Hard paywall. A new account waits for its access read (a spinner, not a
   // flash of the dashboard); once read, not paying = the paywall. A failed
   // read stays 'unknown' and never locks.
-  if (gateApplies && !drainedSignup) {
+  if (gateApplies && !drainedSignup && !storeRecentlyDown()) {
     if (!gateFresh && !accessWaitOver) {
       return (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.background }}>
