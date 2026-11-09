@@ -319,12 +319,18 @@ export default function UpgradeScreen() {
   }, [isLocked]);
 
   const handleSignOut = useCallback(async () => {
+    try {
+      await signOut();
+    } catch (e) {
+      console.warn('[upgrade] sign out failed:', e);
+      toast.error("Couldn't sign out. Check your connection and try again.");
+      return;
+    }
     track('paywall_signed_out', { source, context });
     paywallResolved.current = true;
     invalidateCoachAccess();
-    await signOut();
     router.replace('/(auth)');
-  }, [signOut, router, source, context]);
+  }, [signOut, router, source, context, toast]);
 
   // Longer `timeoutMs` for a pending payment: the store is waiting on a bank
   // mandate, which routinely lands well after the 30s a webhook flip needs.
@@ -919,7 +925,12 @@ export default function UpgradeScreen() {
                   and Restore can't fix it: a person to write to. */}
               {isLocked && (
                 <TouchableOpacity
-                  onPress={() => Linking.openURL('mailto:support@tryoverload.app?subject=Overload%20Pro%20help')}
+                  onPress={() => {
+                    // No mail app: say where to write instead.
+                    Linking.openURL('mailto:support@tryoverload.app?subject=Overload%20Pro%20help').catch(() => {
+                      toast.info('Email us at support@tryoverload.app', { durationMs: 8000 });
+                    });
+                  }}
                   accessibilityRole="link"
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
