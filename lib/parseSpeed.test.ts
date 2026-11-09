@@ -2,8 +2,21 @@
 import { assertEquals } from 'https://deno.land/std@0.224.0/assert/mod.ts';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-  effectiveParseSpeed, getParseSpeed, parseSpeedWire, peekParseSpeed, setParseSpeed,
+  doubleCheckRoute, effectiveParseSpeed, getParseSpeed, parseSpeedWire, peekParseSpeed, setParseSpeed,
 } from './parseSpeed.ts';
+
+Deno.test('Double-check on a Precise card says Precise and that it takes agent answers', () => {
+  // Both are what the server needs to send the check to the food agent
+  // (laterMessageGoesToAgent: precise + supportsCreate), which has find_label.
+  assertEquals(doubleCheckRoute('precise', 'quick'), { tier: 'precise', canCreate: true });
+  // No tier on the card (an older card): the current pick decides.
+  assertEquals(doubleCheckRoute(undefined, 'precise'), { tier: 'precise', canCreate: true });
+});
+
+Deno.test('Double-check on a Quick card adds nothing, so it runs as before', () => {
+  assertEquals(doubleCheckRoute('quick', 'precise'), {});
+  assertEquals(doubleCheckRoute(undefined, 'quick'), {});
+});
 
 const KEY = 'overload.parseSpeed';
 

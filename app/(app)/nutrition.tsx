@@ -34,6 +34,7 @@ import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMealCard';
 import { MealWaitSheet } from '@/components/diet/MealWaitSheet';
+import { withBack, stepBack, boxAfterBack, cancelPlan, arrivalAfter, type CardBack } from '@/lib/foodCardBack';
 import { MealResultScreen } from '@/components/diet/MealResultScreen';
 import {
   arrivalAction, showPlan, readyLine, readyAction, packReady, packAdding, unpackReady, readyStoreStep, settleRestoredKey, stepAmount, scaleLine, type ReadyKind,
@@ -59,7 +60,7 @@ import Svg, { Circle } from 'react-native-svg';
 import Animated, { FadeInDown, LinearTransition } from 'react-native-reanimated';
 import { ParseSpeedSheet } from '@/components/diet/ParseSpeedSheet';
 import {
-  getParseSpeed, setParseSpeed, peekParseSpeed, effectiveParseSpeed, type ParseSpeed,
+  getParseSpeed, setParseSpeed, peekParseSpeed, effectiveParseSpeed, doubleCheckRoute, type ParseSpeed,
 } from '@/lib/parseSpeed';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import {
@@ -129,9 +130,13 @@ type ParseFlow =
       // flag their pick silently reverts on the next message.
       mealTypePicked?: boolean;
       // Everything the user wrote for this meal, follow-ups joined ("1 apple;
-      // make it a small one"). `raw` keeps only a correction's own words, so
-      // the card's return arrow sends this instead. Absent: same as `raw`.
+      // make it a small one"). `raw` keeps only a correction's own words.
+      // The server reads this as the card's history. Absent: same as `raw`.
       words?: string;
+      // The card as it was before the last message, with that message and
+      // the chat turns before it. The return arrow goes back to it: the card
+      // stays, only the last message comes back to the box. Never stored.
+      before?: ReviewBack;
       notice?: string | null;
       // Researched numbers that disagree with what is shown, offered as a
       // choice. Applying is local, so picking costs no round trip.
@@ -165,6 +170,10 @@ type ParseFlow =
       dayIso?: string;
       tier?: ParseSpeed;
     };
+
+/** One step back on a reviewed card: see ParseFlow 'review' `before` and
+ *  lib/foodCardBack. An interface, so the review state can name itself. */
+interface ReviewBack extends CardBack<ParseFlow & { status: 'review' }> {}
 
 /** The user asked to SAVE a food or meal, and Drona drafted it. Nothing is
  *  written until the card is tapped; `result` is what came back from that tap.
@@ -454,6 +463,11 @@ export default function NutritionScreen() {
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).
   const flowRef = useRef<ParseFlow>(flow);
+  /** The card a running follow-up started from: a cancel goes back to it. */
+  const inFlightBackRef = useRef<ReviewBack | null>(null);
+  /** Set by a cancelled follow-up: the card coming back is not a landed
+   *  parse, so the arrival effect must not open or toast it. */
+  const cancelledRef = useRef(false);
   useEffect(() => { flowRef.current = flow; }, [flow]);
   // Time to finish a parse if the user leaves the app mid-way (lib/backgroundTime).
   const parseWorking = flow.status === 'analysing' || flow.status === 'streaming';
@@ -617,6 +631,11 @@ export default function NutritionScreen() {
     prevStatusRef.current = flow.status;
     const running = (st: ParseFlow['status']) => st === 'analysing' || st === 'streaming';
     if (!running(was) || running(flow.status)) return;
+    // The parse is over: nothing is in flight for a cancel to go back from.
+    inFlightBackRef.current = null;
+    const arrived = arrivalAfter(cancelledRef.current);
+    cancelledRef.current = arrived.cancelled;
+    if (!arrived.show) return;
     const how = arrivalAction({
       sheetOpen: waitOpenRef.current,
       resultOpen: resultOpenRef.current,
@@ -699,7 +718,9 @@ export default function NutritionScreen() {
     // failed Add stores it as waiting again, only a finished card clears it.
     const step = readyStoreStep(flow, { key: readyKey, restoredKey, adding });
     if (!readyKey) return;
-    if (step.kind === 'save') AsyncStorage.setItem(readyKey, packReady(step.flow)).catch(() => {});
+    // The back chain stays in memory: a card back from a restart starts its
+    // undo from there.
+    if (step.kind === 'save') AsyncStorage.setItem(readyKey, packReady({ ...step.flow, before: undefined })).catch(() => {});
     else if (step.kind === 'clear') AsyncStorage.removeItem(readyKey).catch(() => {});
   }, [flow, readyKey, restoredKey, adding]);
 
@@ -1227,14 +1248,22 @@ export default function NutritionScreen() {
       // here, not at send time: a send that never arrives keeps it for the next.
       if (thread?.send.closed && threadEndedRef.current?.id === thread.send.closed.id) threadEndedRef.current = null;
     };
+    // The card before this message, so the return arrow (and a cancel while
+    // it is read) can go back one step instead of throwing the card away.
+    const back: ReviewBack | null = prevReview ? { review: prevReview, turns: turnsRef.current.slice(), last: t } : null;
+    inFlightBackRef.current = back;
+    // A new send owns the arrival: a cancel flag left from before must not
+    // swallow this answer.
+    cancelledRef.current = false;
+    /** A card this message left on screen remembers the card before it. */
+    const stamp = (f: ParseFlow & { status: 'review' }): ParseFlow & { status: 'review' } => (back ? withBack(f, back) : f);
     setFlow({ status: 'analysing', raw: t, auto: !!auto });
-    // A correction typed on the result screen is read there. Anything else
-    // gets the calm wait.
-    if (!resultOpenRef.current) {
-      // The sheet lives in the app window, so the keyboard would sit over it.
-      Keyboard.dismiss();
-      setWaitOpen(true);
-    }
+    // Every send gets the calm wait, a follow-up typed on the result screen
+    // too: the sheet paints over the result (declared after it), and the
+    // answer opens the result again (arrivalAction 'show').
+    // The sheet lives in the app window, so the keyboard would sit over it.
+    Keyboard.dismiss();
+    setWaitOpen(true);
     const turns = retry ? [] : turnsRef.current.slice();
     pushTurn('user', t);
     // The card on screen is a better hint than the wall clock. "and a dosa"
@@ -1331,7 +1360,7 @@ export default function NutritionScreen() {
         return;
       }
       if (prevReview && kept) {
-        setFlow({ ...prevReview, meal: { ...prevReview.meal, items: kept }, notice: res.message, proposal: res.proposal ?? null });
+        setFlow(stamp({ ...prevReview, meal: { ...prevReview.meal, items: kept }, notice: res.message, proposal: res.proposal ?? null }));
         return;
       }
       setFlow({ status: 'declined', raw: t, message: res.message, pendingMeal: res.pendingMeal });
@@ -1345,7 +1374,7 @@ export default function NutritionScreen() {
       track('limit_reached', { feature: 'meal_parse', kind: res.scope, used: res.used ?? null, limit: res.limit ?? null });
       const capLine = capNotice(res);
       pushTurn('drona', capLine);
-      if (prevReview) setFlow({ ...prevReview, notice: capLine, proposal: null });
+      if (prevReview) setFlow(stamp({ ...prevReview, notice: capLine, proposal: null }));
       else setFlow({ status: 'declined', raw: t, message: capLine });
       router.push({ pathname: '/upgrade', params: { context: capUpgradeContext(res) } });
       return;
@@ -1355,7 +1384,7 @@ export default function NutritionScreen() {
       // Clear any standing proposal: it answered the previous message, and
       // leaving it up would attach "use these numbers" to an error the user
       // just got for something else entirely.
-      if (prevReview) { setFlow({ ...prevReview, notice: res.message, proposal: null }); return; }
+      if (prevReview) { setFlow(stamp({ ...prevReview, notice: res.message, proposal: null })); return; }
       setFlow({
         status: 'error', raw: t, message: res.message,
         ...(auto ? { clientId: auto.clientId, logDate: auto.logDate } : {}),
@@ -1370,7 +1399,7 @@ export default function NutritionScreen() {
       const create = parseCoachFoodCreate(res.tool, res.input);
       if (!create) {
         const line = 'I could not put that one together. Give me the name and the calories and I will save it.';
-        if (prevReview) setFlow({ ...prevReview, notice: line, proposal: null });
+        if (prevReview) setFlow(stamp({ ...prevReview, notice: line, proposal: null }));
         else setFlow({ status: 'declined', raw: t, message: line });
         return;
       }
@@ -1397,7 +1426,7 @@ export default function NutritionScreen() {
       // answered the message before this one, so they go.
       const kept = cardAfter(prevReview?.meal.items ?? null, { kind: 'create' });
       setFlow(prevReview && kept
-        ? { ...prevReview, meal: { ...prevReview.meal, items: kept }, notice: null, proposal: null }
+        ? stamp({ ...prevReview, meal: { ...prevReview.meal, items: kept }, notice: null, proposal: null })
         : { status: 'idle' });
       return;
     }
@@ -1469,7 +1498,7 @@ export default function NutritionScreen() {
     // A follow-up either CORRECTS the pending meal (replace its lines) or ADDS
     // to it (append) — appending is what keeps "and a dosa" from silently
     // dropping the samosa the user already reviewed.
-    const reviewFlow: ParseFlow = (pending && !res.meal.corrects_previous)
+    const reviewFlow = stamp((pending && !res.meal.corrects_previous)
       ? (() => {
           // The shared rule: new lines join the card on screen.
           const items = cardAfter(pending.items, { kind: 'meal', items: res.meal.items, correctsPrevious: false });
@@ -1497,7 +1526,7 @@ export default function NutritionScreen() {
             dayIso: prevReview?.dayIso ?? ymd(logDay),
             tier: prevReview?.tier ?? tier,
           };
-        })();
+        })());
     // A food that is only PART of a saved meal was searched as asked ("oats",
     // saved "Oats with milk"). Offer the saved meal as a choice, never a swap:
     // the numbers on the card do not change unless the user taps. Loaded
@@ -1591,6 +1620,10 @@ export default function NutritionScreen() {
         // Only this line is looked up; the rest of the card stays as it is.
         researchLine: far ? 0 : i,
         turns: turnsRef.current.slice(),
+        // A Precise card's check goes to the food agent, which has the label
+        // lookup. Without this it ran as the retired middle tier and could
+        // land on a reply with no web tool (lib/parseSpeed doubleCheckRoute).
+        ...doubleCheckRoute(f.tier, effectiveParseSpeed(parseSpeedRef.current, canUsePreciseRef.current)),
       });
       // The daily allowance covers this lookup too, so a cap here has to say so
       // and open the paywall. Handled BEFORE setFlow: routing is a side effect
@@ -1669,6 +1702,12 @@ export default function NutritionScreen() {
           // Fire-and-forget still owes the user a word. Without this the
           // spinner just vanishes and the tap looks like it did nothing.
           return { ...cur, notice: 'Could not reach the web just now. Your numbers are unchanged.' };
+        }
+        if (res.kind === 'create') {
+          // A Precise check now says it can take agent answers, so a save card
+          // is possible in theory. A check has nowhere to draw one; say the
+          // line is unchanged rather than let the tap look like it did nothing.
+          return { ...cur, notice: 'I could not improve that one.' };
         }
         return cur;
       });
@@ -1986,6 +2025,20 @@ export default function NutritionScreen() {
   }, []);
 
   const onDismiss = useCallback(() => {
+    // Cancelling a follow-up while it is read stops that message only. The
+    // card it was about stays, as it was before the message.
+    const plan = cancelPlan(flow.status === 'analysing' || flow.status === 'streaming', inFlightBackRef.current);
+    if (plan.kind === 'back') {
+      track('food_followup_cancelled', { flow_status: flow.status });
+      parseTokenRef.current += 1;
+      parseAbortRef.current?.abort();
+      inFlightBackRef.current = null;
+      cancelledRef.current = true;
+      turnsRef.current = plan.turns;
+      setWaitOpen(false);
+      setFlow(plan.review);
+      return;
+    }
     track('parse_proposal_rejected', {
       flow_status: flow.status,
       item_count: flow.status === 'review' ? flow.meal.items.length : null,
@@ -2164,7 +2217,29 @@ export default function NutritionScreen() {
   const editWordsBlocked = parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && (!!flow.clientId || !!flow.meal));
   const editWords = () => {
     if (flow.status === 'idle') return;
-    // The whole conversation, not just a correction's own words.
+    // A card a follow-up moved on: one step back. The card goes back to how
+    // it was before that message, and only that message returns to the box.
+    // Local edits made since that message go with it (lib/foodCardBack).
+    // The server takes the app's card as the base on the next send
+    // (foodThreads recordThreadMessage: the app's lines win, and a base
+    // behind the server's is written on top), so the older version is safe.
+    // A cancelled follow-up the server still finished is healed the same way.
+    const back = flow.status === 'review' ? stepBack(flow) : null;
+    if (flow.status === 'review' && back) {
+      track('food_text_reused', { from: 'card', flow_status: flow.status, chars: back.last.length, step_back: true });
+      parseTokenRef.current += 1;
+      setChecking(null);
+      turnsRef.current = back.turns;
+      setFlow(back.review);
+      setText((cur) => boxAfterBack(back.last, cur));
+      // The box sits under the result screen: close it so the words are seen.
+      setResultOpen(false);
+      inputRef.current?.focus();
+      return;
+    }
+    // The first message: nothing earlier to go back to, so the meal starts
+    // over. (`words` is the whole chat only on a card back from a restart,
+    // which keeps no steps.)
     const raw = flow.status === 'review' && flow.words ? flow.words : flow.raw;
     track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
     clearCard();
@@ -2783,18 +2858,9 @@ export default function NutritionScreen() {
         onSaved={(saved) => { setFuelOpen(false); applyFuelDays(saved); }}
       />
 
-      {/* The calm wait, then the meal full screen. Declared BEFORE the line
+      {/* The meal full screen, then the calm wait. Declared BEFORE the line
           editor, save and day sheets: portal order is paint order, so those
           open on top of the result. */}
-      <MealWaitSheet
-        open={waitOpen && parseInFlight}
-        words={parseInFlight ? flow.raw : ''}
-        statusLabel={flow.status === 'analysing' ? flow.statusLabel ?? null : null}
-        rows={flow.status === 'streaming' ? flow.rows : null}
-        autoLogging={parseInFlight && !!flow.auto}
-        onClose={closeWait}
-        onCancel={onDismiss}
-      />
       <MealResultScreen
         open={resultOpen && !!shownReview}
         meal={shownReview?.meal ?? null}
@@ -2826,6 +2892,17 @@ export default function NutritionScreen() {
         onSave={() => { if (flow.status === 'review') setSaveItems(flow.meal.items); }}
         onCorrect={(t) => { void runParse(t); }}
         onEditWords={editWordsBlocked ? undefined : editWords}
+      />
+      {/* After the result: portal order is paint order, so a follow-up
+          typed on the result shows its wait card on top. */}
+      <MealWaitSheet
+        open={waitOpen && parseInFlight}
+        words={parseInFlight ? flow.raw : ''}
+        statusLabel={flow.status === 'analysing' ? flow.statusLabel ?? null : null}
+        rows={flow.status === 'streaming' ? flow.rows : null}
+        autoLogging={parseInFlight && !!flow.auto}
+        onClose={closeWait}
+        onCancel={onDismiss}
       />
 
       {/* Correct a parsed line (serving / quantity / macros) before adding it. */}
