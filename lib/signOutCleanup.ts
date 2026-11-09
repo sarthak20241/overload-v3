@@ -15,6 +15,9 @@ export async function signOutAndCleanUp(opts: {
   userId: string | null | undefined;
   supabase: ReturnType<typeof useSupabaseClient>;
   clerkSignOut: () => Promise<void>;
+  /** The locked paywall wants to know a sign-out failed (it stays and says
+   *  so). Profile, as before, carries on with the cleanup and leaves. */
+  throwIfSignOutFails?: boolean;
 }): Promise<void> {
   const prevUserId = opts.userId ?? null;
   // Best-effort: push any queued workouts before the JWT drops. The queue is
@@ -37,8 +40,11 @@ export async function signOutAndCleanUp(opts: {
       ]);
     } catch {}
   }
-  // Callers that must know the sign-out failed (the locked paywall) catch this.
-  await opts.clerkSignOut();
+  try {
+    await opts.clerkSignOut();
+  } catch (e) {
+    if (opts.throwIfSignOutFails) throw e;
+  }
   // Sign-out always lands on /(auth), however the user got into /(app).
   await setGuestMode(false);
   invalidateCustomExercisesCache();

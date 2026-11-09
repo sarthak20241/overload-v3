@@ -346,7 +346,7 @@ export default function UpgradeScreen() {
 
   const handleSignOut = useCallback(async () => {
     try {
-      await signOutAndCleanUp({ userId: user?.id, supabase, clerkSignOut: signOut });
+      await signOutAndCleanUp({ userId: user?.id, supabase, clerkSignOut: signOut, throwIfSignOutFails: true });
     } catch (e) {
       console.warn('[upgrade] sign out failed:', e);
       toast.error("Couldn't sign out. Check your connection and try again.");
