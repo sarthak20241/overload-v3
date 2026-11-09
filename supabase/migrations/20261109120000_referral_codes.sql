@@ -132,7 +132,10 @@ begin
     return jsonb_build_object('ok', false, 'reason', 'expired');
   end if;
 
-  select * into v_profile from user_profiles where clerk_user_id = v_user_id;
+  -- Lock the account too: two redemptions by one account at the same moment
+  -- (two codes) would both pass the one-per-account check and the second
+  -- insert would fail. Locked, the second waits and gets already_redeemed.
+  select * into v_profile from user_profiles where clerk_user_id = v_user_id for update;
   if not found then
     return jsonb_build_object('ok', false, 'reason', 'no_profile');
   end if;
