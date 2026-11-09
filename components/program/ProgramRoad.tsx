@@ -22,8 +22,11 @@ type Directive = { icon: 'zap' | 'activity' | 'moon' | 'trending-up'; label: str
 export function ProgramRoad({
   program,
   delay = 90,
+  openFirst = false,
 }: {
   program: GeneratedProgram;
+  /** Start with phase 1 open (the program draft); onboarding starts closed. */
+  openFirst?: boolean;
   /** Entrance delay, so it can follow other cards in a stagger. */
   delay?: number;
 }) {
@@ -76,7 +79,9 @@ export function ProgramRoad({
   }, [program]);
 
   // Which row is open, if any. One at a time: every open row is a long scroll.
-  const [openPhase, setOpenPhase] = useState<string | null>(null);
+  const [openPhase, setOpenPhase] = useState<string | null>(
+    openFirst && program.phases[0] ? `0-${program.phases[0].name}` : null,
+  );
 
   // The whole route to the goal, not just week one.
   return (

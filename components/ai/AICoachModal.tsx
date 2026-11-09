@@ -3391,7 +3391,7 @@ function GenerateProgramScreen({
           </Animated.View>
         )}
 
-        <ProgramRoad program={result} delay={140} />
+        <ProgramRoad program={result} delay={140} openFirst />
 
         {result.rationale ? (
           <Animated.View
