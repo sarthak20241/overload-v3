@@ -117,7 +117,7 @@ Deno.test("campaign codes: own days, cap, end date, no owner reward", async () =
   assertEquals((await redeem("GYMBUDDY")).days, 90);
   assertEquals(await trialDays("c1"), 90);
   await as("c2");
-  assertEquals((await redeem("gymbuddy")).ok, true);
+  assertEquals((await redeem(" gym-buddy ")).ok, true); // cleaned like the app does
   await as("c3");
   assertEquals((await redeem("GYMBUDDY")).reason, "code_full");
   assertEquals((await redeem("OLDDEAL1")).reason, "expired");

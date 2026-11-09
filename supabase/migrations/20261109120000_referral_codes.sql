@@ -118,7 +118,8 @@ begin
 
   -- Lock the code so two redemptions can't both pass the limit check.
   select * into v_code from invite_codes
-   where code = upper(btrim(p_code))
+   -- Same cleaning as the app's normalizeCode: letters and digits only.
+   where code = upper(regexp_replace(coalesce(p_code, ''), '[^a-zA-Z0-9]', '', 'g'))
      for update;
   if not found then
     perform invite_note_failed_try(v_user_id);
