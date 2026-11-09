@@ -285,6 +285,14 @@ export default function AppLayout() {
   // itself, so the gate must not jump ahead of it.
   const { access: coachAccess, loading: coachAccessLoading } = useCoachAccess();
   const [drainedSignup, setDrainedSignup] = useState(false);
+  // A hung access read must not leave a new account on a spinner: after 8 s
+  // the gate gives up and lets them in (fail open, like a failed read).
+  const [accessWaitOver, setAccessWaitOver] = useState(false);
+  useEffect(() => {
+    if (!coachAccessLoading) return;
+    const t = setTimeout(() => setAccessWaitOver(true), 8000);
+    return () => clearTimeout(t);
+  }, [coachAccessLoading]);
   // The per-request-auth client (stable identity): it fails loudly when no
   // Clerk token is available, so the check can't mistake an anon empty-rows
   // response for a brand-new account.
@@ -431,7 +439,7 @@ export default function AppLayout() {
   // flash of the dashboard); once read, not paying = the paywall. A failed
   // read stays 'unknown' and never locks.
   if (isSignedIn && !drainedSignup && isPurchasesAvailable() && isHardPaywallAccount(user?.createdAt)) {
-    if (coachAccess.state === 'unknown' && coachAccessLoading) {
+    if (coachAccess.state === 'unknown' && coachAccessLoading && !accessWaitOver) {
       return (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.background }}>
           <OrbLoader size="small" color={C.textMuted} />

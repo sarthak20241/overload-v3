@@ -52,7 +52,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
@@ -352,7 +352,10 @@ export default function UpgradeScreen() {
       const customerInfo = await purchaseCoachPackage(pkg);
       setPurchasing(false);
       setVerifying(true);
-      const flipped = await waitForTierFlip();
+      // Locked: leaving before the tier flips would bounce a paying buyer
+      // straight back here (the app gate still reads 'free'), so a locked
+      // buyer waits longer before giving up.
+      const flipped = (await waitForTierFlip()) || (isLocked && (await waitForTierFlip(90_000)));
       invalidateCoachAccess();
       if (flipped) {
         // Honor the reminder screen's promise ONLY when the purchase
@@ -383,6 +386,11 @@ export default function UpgradeScreen() {
         });
         setOutcome({ plan: selectedPlan, onTrial });
         setStep('success');
+      } else if (isLocked) {
+        // Paid, but the server has not caught up. Stay here: Restore leaves
+        // once it has.
+        track('purchase_completed', { plan: selectedPlan, on_trial: false, context, source, tier_flip: 'pending' });
+        toast.info("Payment received. It's taking a moment. Tap Restore in a minute.", { durationMs: 10000 });
       } else {
         paywallResolved.current = true;
         track('purchase_completed', { plan: selectedPlan, on_trial: false, context, tier_flip: 'pending' });
@@ -460,7 +468,7 @@ export default function UpgradeScreen() {
       setPurchasing(false);
       setVerifying(false);
     }
-  }, [packages, selectedPlan, purchasing, verifying, pendingOrder, user?.id, waitForTierFlip, toast, finish, supabase, context, isFunnel]);
+  }, [packages, selectedPlan, purchasing, verifying, pendingOrder, user?.id, waitForTierFlip, toast, finish, supabase, context, isFunnel, isLocked, source]);
 
   const handleRestore = useCallback(async () => {
     if (restoring) return;
@@ -576,6 +584,8 @@ export default function UpgradeScreen() {
           : 'A coach by your side until you reach your goal.';
   return (
     <SafeAreaView style={[u.safeArea, { backgroundColor: C.background }]}>
+      {/* No iOS swipe-back past a locked paywall. */}
+      <Stack.Screen options={{ gestureEnabled: !isLocked }} />
       {step === 'warmup' && (
         <Animated.View key="warmup" entering={FadeIn.duration(250)} style={u.stepFill}>
           <View style={u.centerFill}>
