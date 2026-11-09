@@ -21,7 +21,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
 import { GoalIntake } from '@/components/program/GoalIntake';
-import { goalIntakeMessage, goalIntakeSummary, type GoalIntakeAnswers } from '@/lib/goalIntake';
+import { ClampedText, ProgramRoad } from '@/components/program/ProgramRoad';
+import { ProjectedCurve } from '@/components/onboarding/ProjectedCurve';
+import { formatWeight as formatIntakeWeight, goalIntakeMessage, goalIntakeSummary, type GoalIntakeAnswers } from '@/lib/goalIntake';
 import { BUILD_IT, asksToBuild, isPureAffirmative } from '@/lib/coachAffirm';
 import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
 import { pinOffset, pinRoom, tailAfterReply } from '@/lib/questionPin';
@@ -3340,14 +3342,23 @@ function GenerateProgramScreen({
     );
   }
 
-  // Cumulative week ranges for the phase timeline (relative to program start).
-  let acc = 0;
-  const ranges = result.phases.map((p) => {
-    const start = acc + 1;
-    acc += p.duration_weeks;
-    return { start, end: acc };
-  });
-  const totalWeeks = acc;
+  // The draft reads like onboarding's plan reveal: the name and its numbers,
+  // the weight curve when there is a weight to move, the road of phases
+  // (components/program/ProgramRoad, shared with onboarding), and Drona's why.
+  const totalWeeks = result.phases.reduce((n, p) => n + p.duration_weeks, 0);
+  const unit = lastAnswers?.unit ?? 'kg';
+  const nowKg = lastAnswers?.currentKg ?? null;
+  const goalKg = result.target_weight_kg ?? null;
+  const endDate = result.target_date
+    ? new Date(`${result.target_date}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    : null;
+  const showCurve = nowKg != null && goalKg != null && endDate != null && Math.abs(goalKg - nowKg) >= 1;
+  const draftSub = [
+    totalWeeks > 0 ? `${totalWeeks} weeks` : null,
+    `${result.phases.length} ${result.phases.length === 1 ? 'phase' : 'phases'}`,
+    goalKg != null ? `${nowKg != null ? `${formatIntakeWeight(nowKg, unit)} to ` : 'target '}${formatIntakeWeight(goalKg, unit)}` : null,
+    endDate ? `by ${endDate}` : null,
+  ].filter(Boolean).join(' · ');
 
   return (
     <View style={{ flex: 1 }}>
@@ -3364,94 +3375,38 @@ function GenerateProgramScreen({
         <SparkleIcon size={16} color={C.accentText} />
         <Text style={[s.screenTitle, { color: C.foreground }]}>Your Program</Text>
       </View>
-      <ScrollView contentContainerStyle={{ padding: Spacing.xl, paddingBottom: 24, gap: 16 }}>
-        <Animated.View
-          entering={FadeInDown.duration(300)}
-          style={[s.resultCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
-        >
-          <Text style={[s.resultCardTitle, { color: C.foreground }]}>{result.title}</Text>
-          <View style={s.planMetaRow}>
-            {totalWeeks > 0 && (
-              <Text style={[s.planMetaText, { color: C.accentText }]}>{totalWeeks} weeks</Text>
-            )}
-            {result.target_weight_kg != null && (
-              <Text style={[s.planMetaText, { color: C.mutedFg }]}>· target {result.target_weight_kg} kg</Text>
-            )}
-            {result.target_date && (
-              <Text style={[s.planMetaText, { color: C.mutedFg }]}>· by {result.target_date}</Text>
-            )}
-          </View>
-          {result.objective && (
-            <Text style={[s.rationaleText, { color: C.foreground, marginTop: 8 }]}>{result.objective}</Text>
-          )}
-          {result.rationale && (
-            <View style={[s.rationaleCallout, { backgroundColor: C.primarySubtle, borderColor: C.borderSubtle }]}>
-              <View style={s.rationaleHeader}>
-                <SparkleIcon size={11} color={C.accentText} />
-                <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS PROGRAM</Text>
-              </View>
-              <Text style={[s.rationaleText, { color: C.foreground }]}>{result.rationale}</Text>
-            </View>
-          )}
+      <ScrollView contentContainerStyle={{ padding: Spacing.xl, paddingBottom: 24 }}>
+        <Animated.View entering={FadeInDown.duration(300)}>
+          <Text style={[s.draftTitle, { color: C.foreground }]}>{result.title}</Text>
+          {draftSub !== '' && <Text style={[s.draftSub, { color: C.textMuted }]}>{draftSub}</Text>}
         </Animated.View>
 
-        {result.phases.map((ph, i) => {
-          const r = ranges[i];
-          const weekLabel = r.start === r.end ? `Week ${r.start}` : `Weeks ${r.start}-${r.end}`;
-          const d = ph.diet;
-          const dietLine = [
-            d.calories != null ? `${d.calories} kcal` : null,
-            d.protein_g != null ? `${d.protein_g}g protein` : null,
-          ].filter(Boolean).join(' · ');
-          const blockLine = ph.training_block
-            ? [ph.training_block.split_type,
-               ph.training_block.days_per_week ? `${ph.training_block.days_per_week} days/week` : null,
-               ph.training_block.emphasis].filter(Boolean).join(' · ')
-            : '';
-          return (
-            <Animated.View
-              key={i}
-              entering={FadeInDown.duration(300).delay((i + 1) * 70)}
-              style={[s.resultCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
-            >
-              <Text style={[s.resultCardTitle, { color: C.foreground, fontSize: FontSize.base }]}>{ph.name}</Text>
-              <Text style={[s.planMetaText, { color: C.accentText, marginTop: 2 }]}>
-                {weekLabel} · {ph.duration_weeks} week{ph.duration_weeks === 1 ? '' : 's'}
-              </Text>
-              {dietLine !== '' && (
-                <Text style={{ color: C.foreground, fontSize: FontSize.sm, marginTop: 8 }}>{dietLine}</Text>
-              )}
-              {ph.fuel_days && ph.fuel_days.length > 0 && (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 }}>
-                  <Feather name="zap" size={11} color={C.accentText} />
-                  <Text style={{ color: C.accentText, fontSize: FontSize.sm, flexShrink: 1 }}>
-                    {fuelDaysText(ph.fuel_days)}
-                  </Text>
-                </View>
-              )}
-              {ph.activity && (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 }}>
-                  <Feather name="activity" size={11} color={C.accentText} />
-                  <Text style={{ color: C.accentText, fontSize: FontSize.sm, flexShrink: 1 }}>
-                    {activityText(ph.activity)}
-                  </Text>
-                </View>
-              )}
-              {ph.diet_directive && (
-                <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, marginTop: 4 }}>Diet: {ph.diet_directive}</Text>
-              )}
-              {blockLine !== '' && (
-                <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, marginTop: 4 }}>Training: {blockLine}</Text>
-              )}
-              {ph.training_directive && (
-                <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, marginTop: 4 }}>{ph.training_directive}</Text>
-              )}
-              {ph.readiness_directive && (
-                <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, marginTop: 4 }}>Recovery: {ph.readiness_directive}</Text>
-              )}
-            </Animated.View>
-          );
-        })}
+        {showCurve && (
+          <Animated.View entering={FadeInDown.delay(80).duration(400)} style={{ marginTop: Spacing.lg }}>
+            <ProjectedCurve
+              direction={goalKg! < nowKg! ? 'loss' : 'gain'}
+              startLabel={`Now · ${formatIntakeWeight(nowKg!, unit)}`}
+              endLabel={`${endDate} · ${formatIntakeWeight(goalKg!, unit)}`}
+            />
+          </Animated.View>
+        )}
+
+        <ProgramRoad program={result} delay={140} />
+
+        {result.rationale ? (
+          <Animated.View
+            entering={FadeInDown.delay(260).duration(400)}
+            style={[s.draftCoach, { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder }]}
+          >
+            <View style={[s.draftCoachIcon, { backgroundColor: C.muted }]}>
+              <SparkleIcon size={12} color={C.accentText} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <ClampedText lines={4} style={[s.draftCoachText, { color: C.foreground }]} text={result.rationale} />
+              <Text style={[s.draftCoachSig, { color: C.accentText }]}>WHY THIS PROGRAM</Text>
+            </View>
+          </Animated.View>
+        ) : null}
       </ScrollView>
 
       <View style={[s.refineWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
@@ -5604,6 +5559,13 @@ const s = StyleSheet.create({
   screenTitle: {
     fontSize: FontSize.lg, fontWeight: FontWeight.bold,
   },
+  // Program draft, laid out like onboarding's plan reveal.
+  draftTitle: { fontSize: 26, lineHeight: 32, fontWeight: FontWeight.bold, letterSpacing: -0.3 },
+  draftSub: { fontSize: FontSize.md, lineHeight: 21, marginTop: Spacing.xs },
+  draftCoach: { flexDirection: 'row', gap: Spacing.md, borderRadius: Radius.xl, borderWidth: 1, padding: Spacing.lg, marginTop: Spacing.xl },
+  draftCoachIcon: { width: 24, height: 24, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' },
+  draftCoachText: { fontSize: FontSize.base, lineHeight: 21 },
+  draftCoachSig: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, letterSpacing: 1, marginTop: Spacing.sm },
   // Goal intake chat: Build it / Change something under Drona's proposal.
   confirmRow: {
     flexDirection: 'row', gap: 8,
