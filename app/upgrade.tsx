@@ -326,7 +326,11 @@ export default function UpgradeScreen() {
   }, [storeDown, loading]);
   const lockedNow = isLocked && !storeDown && !storeFailed;
   useEffect(() => {
-    if (storeDown && isLocked) markStoreDown();
+    if (!(storeDown && isLocked)) return;
+    markStoreDown();
+    // Tracked so a real store outage can be told apart from a bad offering
+    // config or someone blocking the request.
+    track('paywall_store_down', { source, context, platform: STORE_NAME });
   }, [storeDown, isLocked]);
 
   // Where "done" goes. The funnel replaces into the app; a direct open pops
@@ -370,13 +374,13 @@ export default function UpgradeScreen() {
               if (error) throw error;
               if (user && (user as any).delete) {
                 try { await (user as any).delete(); } catch { /* already deleted by the function */ }
-              } else {
-                await signOut();
               }
               track('account_deleted', { from: 'paywall' });
               await flushAnalytics();
               paywallResolved.current = true;
-              invalidateCoachAccess();
+              // Always end the session and drop local data, even when Clerk's
+              // own delete already ran: a live session would bounce back here.
+              await signOutAndCleanUp({ userId: user?.id, supabase, clerkSignOut: signOut });
               router.replace('/(auth)');
             } catch (e: any) {
               setDeleting(false);
