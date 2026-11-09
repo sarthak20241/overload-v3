@@ -323,15 +323,18 @@ const k = StyleSheet.create({
     paddingBottom: Spacing.xxxl,
   },
   stepScrollCompact: { paddingTop: Spacing.lg, paddingBottom: Spacing.lg },
+  // Inter SemiBold 31 / Regular 16 (owner's pick, 2026-11-09). Questions are
+  // written to fit two lines at this size.
   question: {
-    fontFamily: FontFamily.display,
-    fontSize: 36,
-    letterSpacing: -0.5,
-    lineHeight: 43,
+    fontFamily: FontFamily.onboardingHeading,
+    fontSize: 31,
+    letterSpacing: -0.6,
+    lineHeight: 37,
   },
   questionSub: {
-    fontSize: FontSize.md,
-    lineHeight: 21,
+    fontFamily: FontFamily.onboardingBody,
+    fontSize: 16,
+    lineHeight: 22,
     marginTop: Spacing.md,
     marginBottom: Spacing.xxxl,
   },
