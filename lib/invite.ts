@@ -221,11 +221,25 @@ export function inviteIntroCopy(os: string): string {
 }
 
 /** iPhone: the friend's code is saved; the month itself comes from Apple next. */
-export function appleLinkedSummary(code: string, ownerRewarded: boolean): AppliedSummary {
+export function appleLinkedSummary(
+  code: string,
+  ownerRewarded: boolean,
+  // Months an old-app owner's friends earned them, given by our server.
+  earned?: { days: number; expiresAt: string | null },
+  locale = 'en-US',
+): AppliedSummary {
+  const until = earned?.expiresAt ? new Date(earned.expiresAt) : null;
+  const untilText = until && Number.isFinite(until.getTime())
+    ? until.toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' })
+    : null;
   return {
     title: 'Code saved.',
     rows: [
       { label: 'Code', value: normalizeCode(code) },
+      ...(earned && earned.days > 0
+        ? [{ label: 'From your friends', value: `${grantSpan(earned.days)} of Pro` }]
+        : []),
+      ...(earned && earned.days > 0 && untilText ? [{ label: 'Pro until', value: untilText }] : []),
       { label: 'Your free month', value: 'From Apple, next step' },
     ],
     friendLine: ownerRewarded ? 'Your friend got a free month too.' : null,

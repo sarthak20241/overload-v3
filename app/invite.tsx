@@ -104,7 +104,7 @@ export default function InviteScreen() {
       clearPendingInvite();
       invalidateCoachAccess();
       setSuccess(viaApple
-        ? { ...appleLinkedSummary(clean, result.ownerRewarded), appleOffer: APPLE_FRIEND_OFFER_CODE }
+        ? { ...appleLinkedSummary(clean, result.ownerRewarded, { days: result.days, expiresAt: result.expiresAt }), appleOffer: APPLE_FRIEND_OFFER_CODE }
         : appliedSummary(result, clean));
     } else if (result.reason === 'store_only') {
       // iPhone, a campaign or old-app code: Apple redeems it, not us.

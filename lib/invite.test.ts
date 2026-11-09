@@ -77,4 +77,7 @@ Deno.test('iPhone: the friend month comes from Apple, Android keeps ours', () =>
   assertEquals(a.rows[0].value, 'J9BQCH');
   assertEquals(a.friendLine, 'Your friend got a free month too.');
   assertEquals(storeRedeemUrl(APPLE_FRIEND_OFFER_CODE, 'ios').endsWith('code=FRIENDMONTH'), true);
+  const o = appleLinkedSummary('OLDAPP2', false, { days: 60, expiresAt: '2027-01-08T00:00:00Z' });
+  assertEquals(o.rows.map((r) => r.label), ['Code', 'From your friends', 'Pro until', 'Your free month']);
+  assertEquals(o.rows[1].value, '2 months of Pro');
 });
