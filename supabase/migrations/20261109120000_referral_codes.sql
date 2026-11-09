@@ -59,8 +59,9 @@ alter table invite_failed_tries enable row level security;
 revoke all on invite_failed_tries from anon, authenticated;
 revoke all on sequence invite_failed_tries_id_seq from anon, authenticated;
 
--- Note a failed try, and drop this account's tries older than a day so the
--- table never grows past what the 1-hour limit reads.
+-- Note a failed try, and drop this account's tries older than a day. Rows of
+-- accounts that never fail again stay; they are tiny, and can be cleared any
+-- time with: delete from invite_failed_tries where at < now() - interval '1 day';
 create or replace function invite_note_failed_try(p_user_id text)
 returns void
 language sql
