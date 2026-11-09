@@ -4449,7 +4449,10 @@ function RefineChatScreen({
           // See ChatScreen: the running turn's bubble is always the last one.
           const streaming = loading && idx === messages.length - 1 && msg.role === 'assistant';
           // A reply with no words yet: the orb says what Drona is doing.
-          if (msg.role === 'assistant' && msg.content === '') return null;
+          if (streaming && msg.content === '') return null;
+          // A finished turn that never got a word (no error text either):
+          // say so, rather than leave the user's message unanswered.
+          const noReply = msg.role === 'assistant' && msg.content === '';
           return (
           <View key={msg.id} onLayout={questionPin.userLayout(msg.id)}>
             <Pressable
@@ -4463,7 +4466,9 @@ function RefineChatScreen({
                   : s.assistantPlain
               }
             >
-              {msg.role === 'assistant' ? (
+              {noReply ? (
+                <Text style={[s.chatText, { color: C.textMuted }]}>No reply came back. Send it again.</Text>
+              ) : msg.role === 'assistant' ? (
                 <MessageContent
                   content={msg.content}
                   citations={msg.citations}
@@ -4737,8 +4742,7 @@ export function CoachSheet({
       hideSub.remove();
     };
   }, [visible]);
-  // Full screen (owner's call 2026-11-09): Drona opens as a page, not a
-  // 92% sheet. The sheet fills the window (flex: 1) and is lifted by the
+  // Full screen: Drona opens as a page, not a bottom sheet. The sheet fills the window (flex: 1) and is lifted by the
   // keyboard height on BOTH platforms. The old code only lifted on iOS,
   // assuming Android's adjustResize would shift the input up, but with
   // edge-to-edge always on in SDK 54 the window is never resized for the
