@@ -132,6 +132,16 @@ Deno.test("wrong codes: 10 an hour, then a pause; short campaign codes refused",
   await as("g");
   for (let i = 0; i < 10; i++) assertEquals((await redeem(`WRONG${i}`)).reason, "invalid_code");
   assertEquals((await redeem("WRONGX")).reason, "too_many_tries");
+  // An ended code counts as a try as well (it tells a guesser the code exists).
+  await user("h");
+  await as("h");
+  await q(`select create_campaign_code('ENDED1', 30, null, now() - interval '1 day')`);
+  for (let i = 0; i < 10; i++) assertEquals((await redeem("ENDED1")).reason, "expired");
+  assertEquals((await redeem("ENDED1")).reason, "too_many_tries");
+  // Tries older than a day are dropped on the next failure.
+  await q(`update invite_failed_tries set at = now() - interval '2 days' where clerk_user_id = 'h'`);
+  assertEquals((await redeem("NOPE12")).reason, "invalid_code");
+  assertEquals((await q<{ n: number }>(`select count(*)::int n from invite_failed_tries where clerk_user_id = 'h'`))[0].n, 1);
   let refused = false;
   try { await q(`select create_campaign_code('ABCD', 30)`); } catch { refused = true; }
   assert(refused, "a 4-character campaign code must be refused");
@@ -163,4 +173,5 @@ Deno.test("grants: clients call the two RPCs, nothing else", async () => {
   assertEquals(await can("invite_code_stats()"), false);
   assertEquals(await can("invite_is_paying(text)"), false);
   assertEquals(await can("invite_extend_trial(text,int)"), false);
+  assertEquals(await can("invite_note_failed_try(text)"), false);
 });

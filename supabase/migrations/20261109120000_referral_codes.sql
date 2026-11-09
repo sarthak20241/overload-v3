@@ -54,6 +54,20 @@ alter table invite_failed_tries enable row level security;
 revoke all on invite_failed_tries from anon, authenticated;
 revoke all on sequence invite_failed_tries_id_seq from anon, authenticated;
 
+-- Note a failed try, and drop this account's tries older than a day so the
+-- table never grows past what the 1-hour limit reads.
+create or replace function invite_note_failed_try(p_user_id text)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  delete from invite_failed_tries where clerk_user_id = p_user_id and at < now() - interval '1 day';
+  insert into invite_failed_tries (clerk_user_id) values (p_user_id);
+$$;
+
+revoke all on function invite_note_failed_try(text) from public, anon, authenticated;
+
 -- One referral code per account.
 create unique index if not exists idx_invite_codes_referral_owner
   on invite_codes (owner_clerk_user_id) where source = 'referral';
@@ -107,11 +121,14 @@ begin
    where code = upper(btrim(p_code))
      for update;
   if not found then
-    insert into invite_failed_tries (clerk_user_id) values (v_user_id);
+    perform invite_note_failed_try(v_user_id);
     return jsonb_build_object('ok', false, 'reason', 'invalid_code');
   end if;
 
+  -- Ended and full codes count as tries too: those answers tell a guesser
+  -- the code exists.
   if v_code.expires_at is not null and v_code.expires_at <= now() then
+    perform invite_note_failed_try(v_user_id);
     return jsonb_build_object('ok', false, 'reason', 'expired');
   end if;
 
@@ -145,6 +162,7 @@ begin
   -- The old-app owner can always redeem their own code; the cap is for friends.
   if not v_is_owner and v_code.max_redemptions is not null
      and v_friends >= v_code.max_redemptions then
+    perform invite_note_failed_try(v_user_id);
     return jsonb_build_object('ok', false, 'reason', 'code_full');
   end if;
 

@@ -120,6 +120,13 @@ export function readMyReferral(data: unknown, error: unknown): MyReferral {
   return { ok: false, reason: r.reason ?? 'unknown' };
 }
 
+/** Why the share screen has no code, in words the person can act on. */
+export function referralLoadError(reason: string): string {
+  if (reason === 'no_profile') return 'Finish setting up your account first, then come back here.';
+  if (reason === 'unauthenticated') return 'Sign in first, then come back here.';
+  return "I couldn't load your code. Check your connection.";
+}
+
 /**
  * "3 friends have joined. You earned 3 free months." The months are the ones
  * the server really gave (none while the sharer was paying), never the friend

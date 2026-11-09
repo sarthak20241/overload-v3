@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert';
-import { APP_STORE_ID, readMyReferral, redeemFailureCopy, referralLink, referralShareMessage, referralTally, storeRedeemUrl } from './invite.ts';
+import { APP_STORE_ID, readMyReferral, referralLoadError, redeemFailureCopy, referralLink, referralShareMessage, referralTally, storeRedeemUrl } from './invite.ts';
 
 Deno.test('store discount codes go to the right store, code filled in', () => {
   assertEquals(storeRedeemUrl(' spring-25 ', 'ios'), 'https://apps.apple.com/redeem?ctx=offercodes&id=6773063775&code=SPRING25');
@@ -29,6 +29,11 @@ Deno.test('the App Store id matches eas.json', async () => {
   const ids = JSON.stringify(eas).match(/"ascAppId":"(\d+)"/g) ?? [];
   assertEquals(ids.length > 0, true);
   for (const m of ids) assertEquals(m, `"ascAppId":"${APP_STORE_ID}"`);
+});
+
+Deno.test('share screen errors say what to do', () => {
+  assertEquals(referralLoadError('no_profile').startsWith('Finish setting up'), true);
+  assertEquals(referralLoadError('network').includes('connection'), true);
 });
 
 Deno.test('new refusal reasons have their own words', () => {

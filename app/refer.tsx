@@ -27,6 +27,7 @@ import { OrbLoader } from '@/components/ui/OrbLoader';
 import { track } from '@/lib/analytics';
 import {
   readMyReferral,
+  referralLoadError,
   referralShareMessage,
   referralTally,
   type MyReferral,
@@ -109,11 +110,13 @@ export default function ReferScreen() {
           ) : (
             <View style={s.codeWrap}>
               <Text style={[s.tally, { color: C.textMuted }]}>
-                {"I couldn't load your code. Check your connection."}
+                {referralLoadError(mine.reason)}
               </Text>
-              <TouchableOpacity onPress={load} accessibilityRole="button" hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                <Text style={[s.link, { color: C.accentText }]}>Try again</Text>
-              </TouchableOpacity>
+              {mine.reason === 'network' && (
+                <TouchableOpacity onPress={load} accessibilityRole="button" hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Text style={[s.link, { color: C.accentText }]}>Try again</Text>
+                </TouchableOpacity>
+              )}
             </View>
           )}
         </View>
