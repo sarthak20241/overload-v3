@@ -4622,9 +4622,22 @@ export function scopeCorrection(
  * addition that matches one line exactly. The cost of the rule is a user who
  * really ate the same two lines again in one message; that turn now edits the
  * card instead of doubling it, which they can see and fix.
+ *
+ * One copied line is enough when `text` (this message only) does not name its
+ * food. An addition lists only food the message names, so a card line the
+ * message never mentions came from the card. Live, 2026-11-09: "2 boiled eggs"
+ * made a one-line card, and "And a banana" came back as the egg line plus a
+ * banana, flagged an addition. The app appended both and the eggs counted
+ * twice. "3 more pooris and a dosa" still adds: it names the poori. "one
+ * more" on a one-banana card still adds: nothing new rode with the copy. The
+ * trade-off left: "2 anda aur kela" on a "2 boiled egg" card reads as a copy,
+ * since "anda" is not "egg". The card then shows no extra eggs, which the user
+ * can see and fix; doubled eggs they may never notice.
  */
-export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousItem[]): boolean {
-  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousItem[], text?: string): boolean {
+  // Letters of any script: ASCII only made every Devanagari name "", so two
+  // different foods compared equal.
+  const norm = (x: string) => foodNameKey(x);
   // "piece" / "pieces", "puri" / "puries", "box" / "boxes", "berry" /
   // "berries": one is the other plus a plural ending, and nothing else, so
   // "can" never matches "candy".
@@ -4645,7 +4658,19 @@ export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousIt
       sameUnit(it.unit || "serving", p.serving_label || "serving")
     )
   );
-  return copies.length >= 2;
+  if (copies.length >= 2) return true;
+  // The one-line rule needs all of these, or "one more" / "same again" on a
+  // one-line card (the copy is the whole answer) would lose a real addition:
+  // - a food beside the copy that is not on the card (the banana): the turn
+  //   really is an addition, and the copy rode along with it;
+  // - Latin letters in the message, and a name with words to compare: the
+  //   check is by words, and a name in another script has none.
+  if (text === undefined || copies.length !== 1 || !/[a-z]/i.test(text)) return false;
+  if (!extItems.some((it) => !copies.includes(it))) return false;
+  const named = foodWords(copies[0].name);
+  if (named.length === 0) return false;
+  const said = new Set(foodWords(text));
+  return !named.some((w) => said.has(w));
 }
 
 /**
@@ -7063,7 +7088,7 @@ async function runParseMealCore(
   // Only trust the correction flag when a previous meal was actually supplied.
   // A turn tagged as an addition that copies card lines back word for word is a
   // correction whatever the flag says (copiesCardLines).
-  const copiedCard = hasPrevious && ext.corrects_previous !== true && copiesCardLines(extItems, prevItems);
+  const copiedCard = hasPrevious && ext.corrects_previous !== true && copiesCardLines(extItems, prevItems, input.text);
   if (copiedCard) {
     steps.push({ iter: 0, tool: "correction_inferred", input: { reason: "copied_card_lines", extracted: extItems.length, previous: prevItems.length } });
   }

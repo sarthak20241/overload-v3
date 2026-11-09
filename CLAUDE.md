@@ -95,6 +95,8 @@ deno test --allow-all lib/screenCache.test.ts  # Goal & Plan screens paint from 
 deno test --allow-all lib/chartScale.test.ts   # Goal screen chart: readings width, goal ring at the program end
 deno test --allow-all lib/phasePick.test.ts    # the active phase by seq, never by list index
 deno test --allow-all lib/fitnessGoals.test.ts
+deno test --allow-all --unstable-sloppy-imports lib/goalIntake.test.ts # new goal: the question screens, what Drona is sent, ask before build
+deno test --allow-all lib/coachAffirm.test.ts  # a "yes, build it" turn forces the build; Build it shows only under a build question
 deno test --allow-all lib/coachTopic.test.ts   # chats opened from the app: Drona's hidden topic turn + what is sent
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/coachConversations.test.ts  # saved chats: topic title, hidden turn kept
 deno test --allow-all lib/missingColumn.test.ts # app-before-migration column fallbacks
@@ -112,6 +114,7 @@ deno test --allow-all lib/calorieBars.test.ts  # Analytics calorie bars: each da
 deno test --allow-all lib/pendingEntries.test.ts # an added suggestion or copy shows at once, swapped for the saved row
 deno test --allow-all lib/pendingParse.test.ts  # food search "Log it with Drona": handed to Nutrition once, with its meal and day
 deno test --allow-all lib/foodBarCard.test.ts   # food box: a save card sits beside the meal card, never replaces it
+deno test --allow-all lib/foodCardBack.test.ts  # food card return arrow: back one message, the card before it, 10 steps kept
 deno test --allow-all supabase/functions/ai-coach/foodFirstGate.test.ts # first message: plain -> parse, else the agent with the running parse
 deno test --allow-all lib/foodThread.test.ts    # food box thread ids + card versions, counted the way the server counts
 deno test --allow-all supabase/functions/ai-coach/foodThreads.test.ts # thread store: stable line ids, one conditional write, restore

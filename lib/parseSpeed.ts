@@ -93,3 +93,22 @@ export async function setParseSpeed(v: ParseSpeed): Promise<void> {
 export function effectiveParseSpeed(picked: ParseSpeed, canUsePrecise: boolean): ParseSpeed {
   return picked === 'precise' && !canUsePrecise ? 'quick' : picked;
 }
+
+/** What a card line's Double-check adds to its request.
+ *
+ *  A Precise card's check must say it is Precise (`tier`) and that this food
+ *  box can take the agent's answers (`canCreate`): the server sends a later
+ *  Precise message beside a card to the food agent, which has the label
+ *  lookup, only when both are there. Without them the check ran as the
+ *  retired middle tier, and the router could hand it to a reply with no web
+ *  tool that told the user it "can't look up online labels".
+ *
+ *  A Quick card adds nothing, so its check runs exactly as before.
+ *  The card's own tier wins over the current pick: the check belongs to the
+ *  card. The server still checks the account may use Precise. */
+export function doubleCheckRoute(
+  cardTier: ParseSpeed | undefined,
+  current: ParseSpeed,
+): { tier: 'precise'; canCreate: true } | Record<string, never> {
+  return (cardTier ?? current) === 'precise' ? { tier: 'precise', canCreate: true } : {};
+}
