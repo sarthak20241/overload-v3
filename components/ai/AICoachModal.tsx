@@ -9,7 +9,7 @@ import React, { useState, useRef, useEffect, useCallback, createContext, useCont
 import {
   View, Text, TouchableOpacity, StyleSheet, BackHandler, Pressable,
   TextInput, ScrollView, FlatList, Keyboard, Platform,
-  Linking, useWindowDimensions,
+  Linking,
   type LayoutChangeEvent,
 } from 'react-native';
 import Animated, {
@@ -145,30 +145,6 @@ function SparkleIcon({
   return <DronaMark size={size} color={color} state={state} />;
 }
 
-// ─── Thinking Indicator (Phase 2.6) ──────────────────────────────────────────
-// Shown inside the assistant bubble while waiting for the first streamed
-// token. Three dots cycle (./../...) at ~3 Hz to convey "the model is
-// working" without the visual heaviness of a spinner. The phase text updates
-// from server `status` events as the request moves through stages.
-function ThinkingIndicator({ phase }: { phase: string }) {
-  const { C } = useTheme();
-  const [dots, setDots] = useState('');
-  useEffect(() => {
-    const states = ['', '.', '..', '...'];
-    let i = 0;
-    const id = setInterval(() => {
-      i = (i + 1) % states.length;
-      setDots(states[i]);
-    }, 350);
-    return () => clearInterval(id);
-  }, []);
-  return (
-    <View style={s.thinkingRow}>
-      <Text style={[s.thinkingText, { color: C.textMuted }]}>{phase}{dots}</Text>
-    </View>
-  );
-}
-
 // ─── Drona orb geometry (ChatScreen) ─────────────────────────────────────────
 // Sizes of the orb's three homes. A size is the orb's visual box; the sphere
 // fills about 72% of it and the halo the rest.
@@ -176,6 +152,13 @@ const HERO_ORB = 168;
 const FIELD_ORB = 34;
 const LIFT_ORB = 104;
 const HERO_WEB = orbWebBox(HERO_ORB);
+// Where the orb sits inside the input box (box = its layout in the input
+// wrapper): border 1 + box padding 12 + slot margin -4, then half the slot
+// across; up from the box bottom by border 1, padding 6, half the 36 slot.
+// Shared by ChatScreen and RefineChatScreen, so both docks move together.
+function fieldOrbTarget(b: { x: number; y: number; h: number }) {
+  return { x: b.x + 1 + Spacing.md - 4 + FIELD_ORB / 2, y: b.y + b.h - 1 - 6 - 18, s: FIELD_ORB };
+}
 // The dock orb is ONE WebView that never resizes (a resize re-lays out the
 // page); it moves and scales instead. Sized so the lift is close to 1:1.
 const DOCK_WEB = 200;
@@ -1859,8 +1842,7 @@ function ChatScreen({
     const b = boxLayoutRef.current;
     if (!b || !wrapWidthRef.current) return null;
     if (liftedRef.current) return { x: wrapWidthRef.current / 2, y: LIFT_CENTER_Y, s: LIFT_ORB };
-    // Field slot: border 1 + box padding 12 + slot margin -4, then half the slot.
-    return { x: b.x + 1 + Spacing.md - 4 + FIELD_ORB / 2, y: b.y + b.h - 1 - 6 - 18, s: FIELD_ORB };
+    return fieldOrbTarget(b);
   }, []);
 
   const cx = useSharedValue(0);
@@ -4061,15 +4043,6 @@ function RefineChatScreen({
   const [turnFailed, setTurnFailed] = useState(false);
   useCoachBusy(loading, turnFailed);
   const closeSheet = useContext(CoachCloseContext);
-  // Header mark: traces while waiting on the coach, releases when the reply
-  // lands, static until the first send.
-  const everLoadedRef = useRef(false);
-  // Set after commit, not during render: React may discard a render pass, and
-  // a ref written there would keep the flag from a pass the user never saw.
-  useEffect(() => {
-    if (loading) everLoadedRef.current = true;
-  }, [loading]);
-  const headerMarkState: DronaMarkState = loading ? 'thinking' : everLoadedRef.current ? 'answer' : 'static';
   const scrollRef = useRef<ScrollView>(null);
   // See ChatScreen: a reply types in under its question at the top.
   const questionPin = useQuestionPin(scrollRef, messages, loading);
@@ -4348,17 +4321,115 @@ function RefineChatScreen({
     setSheetTarget({ role: msg.role, text: plainTextOf(msg), surface: `${kind}_${mode}` });
   }, [kind, mode, plainTextOf]);
 
+  // ─── Drona orb ─────────────────────────────────────────────────────────
+  // The same orb as ChatScreen, in its 'chat' stage only: this chat opens on
+  // Drona's starter line, so there is no empty hero. The orb sits in the
+  // input while you read and lifts big above it while you wait, with the
+  // soft light rising from the bottom.
+  const { mode: themeMode } = useTheme();
+  const orbColor = signalOrbColor(themeMode);
+  const lastMsg = messages[messages.length - 1];
+  // Waiting: no words yet on the running turn.
+  const pendingMsg = loading && lastMsg?.role === 'assistant' && lastMsg.content === '' ? lastMsg : null;
+  const writingMsg = loading && lastMsg?.role === 'assistant' && lastMsg.content !== '' ? lastMsg : null;
+  const statusLabel = pendingMsg?.thinkingPhase ?? 'Thinking';
+  const lifted = !!pendingMsg;
+  const [showTick, setShowTick] = useState(false);
+  const wasLoadingRef = useRef(false);
+  useEffect(() => {
+    const finished = wasLoadingRef.current && !loading;
+    wasLoadingRef.current = loading;
+    // A new turn ends the last one's tick.
+    if (loading) { setShowTick(false); return; }
+    if (!finished) return;
+    setShowTick(true);
+    const tm = setTimeout(() => setShowTick(false), 1600);
+    return () => clearTimeout(tm);
+  }, [loading]);
+  const orbShape: SignalOrbState = pendingMsg
+    ? (statusLabel === 'Thinking' ? 'thinking' : 'searching')
+    : writingMsg ? 'listening' : showTick ? 'done' : 'listening';
+  const orbLevel = writingMsg ? 0.85 : input.trim() ? 0.55 : 0.12;
+
+  // Dock geometry, in the input wrapper's coordinates (see ChatScreen).
+  const wrapWidthRef = useRef(0);
+  const boxLayoutRef = useRef<{ x: number; y: number; h: number } | null>(null);
+  const [layoutTick, setLayoutTick] = useState(0);
+  const cx = useSharedValue(0);
+  const cy = useSharedValue(0);
+  const sz = useSharedValue(FIELD_ORB);
+  const dockO = useSharedValue(0);
+  const liftSpace = useSharedValue(0);
+  const liftLabelO = useSharedValue(0);
+  const auraO = useSharedValue(0);
+  const auraBreath = useSharedValue(1);
+  const dockPlacedRef = useRef(false);
+  useEffect(() => {
+    const b = boxLayoutRef.current;
+    if (!b || !wrapWidthRef.current) return;
+    const tgt = lifted
+      ? { x: wrapWidthRef.current / 2, y: LIFT_CENTER_Y, s: LIFT_ORB }
+      : fieldOrbTarget(b);
+    if (!dockPlacedRef.current) {
+      cx.value = tgt.x;
+      cy.value = tgt.y;
+      sz.value = tgt.s;
+      dockPlacedRef.current = true;
+      dockO.value = withTiming(1, { duration: 300 });
+      return;
+    }
+    cx.value = withTiming(tgt.x, ORB_FLIGHT);
+    cy.value = withTiming(tgt.y, ORB_FLIGHT);
+    sz.value = withTiming(tgt.s, ORB_FLIGHT);
+  }, [lifted, layoutTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    liftSpace.value = withTiming(lifted ? LIFT_SPACE : 0, { duration: 600, easing: ORB_EASE });
+    liftLabelO.value = withTiming(lifted ? 1 : 0, { duration: lifted ? 450 : 200 });
+    auraO.value = withTiming(lifted ? 1 : 0, { duration: 800 });
+    auraBreath.value = lifted
+      ? withRepeat(withSequence(withTiming(0.7, { duration: 1600 }), withTiming(1, { duration: 1600 })), -1)
+      : withTiming(1, { duration: 300 });
+    if (lifted) {
+      const a = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
+      const b = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 650);
+      return () => { clearTimeout(a); clearTimeout(b); };
+    }
+  }, [lifted]); // eslint-disable-line react-hooks/exhaustive-deps
+  const dockStyle = useAnimatedStyle(() => ({
+    opacity: dockO.value,
+    transform: [
+      { translateX: cx.value - DOCK_WEB / 2 },
+      { translateY: cy.value - DOCK_WEB / 2 },
+      { scale: (sz.value * 0.72) / SIGNAL_ORB_SPHERE / DOCK_WEB },
+    ],
+  }));
+  const liftSpaceStyle = useAnimatedStyle(() => ({ height: liftSpace.value }));
+  const liftLabelStyle = useAnimatedStyle(() => ({
+    opacity: liftLabelO.value,
+    transform: [{ translateY: (1 - liftLabelO.value) * 6 }],
+  }));
+  const auraStyle = useAnimatedStyle(() => ({ opacity: auraO.value * auraBreath.value }));
+  const [auraSize, setAuraSize] = useState({ w: 0, h: 0 });
+  const userBubbleBg = themeMode === 'light' ? mixHex(C.background, C.foreground, 0.07) : C.muted;
+
   // See ChatScreen — keyboard avoidance lives at the AICoachModal sheet
-  // level (marginBottom + dynamic height), not via KeyboardAvoidingView,
-  // which is unreliable inside a transparent Modal on iOS.
+  // level (marginBottom), not via KeyboardAvoidingView.
   return (
     <View style={{ flex: 1 }}>
-      {/* Header */}
+      {/* Lift light, as in ChatScreen: first child, under the thread. */}
+      <Animated.View
+        pointerEvents="none"
+        style={[s.aura, auraStyle]}
+        onLayout={(e) => setAuraSize({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}
+      >
+        {auraSize.w > 0 && <DronaAura width={auraSize.w} height={auraSize.h} mode={themeMode} fadeTo={C.background} />}
+      </Animated.View>
+
+      {/* Header. The orb is Drona's face, so no mark here (as in ChatScreen). */}
       <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
         <TouchableOpacity onPress={loading && closeSheet ? closeSheet : onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
           <Feather name="arrow-left" size={16} color={C.foreground} />
         </TouchableOpacity>
-        <SparkleIcon size={16} color={C.accentText} state={headerMarkState} />
         <Text style={[s.screenTitle, { color: C.foreground }]}>
           {kind === 'discuss' ? 'Discuss' : 'Refine'} {mode === 'refine_program' ? 'Program' : mode === 'refine_plan' ? 'Plan' : 'Workout'}
         </Text>
@@ -4377,21 +4448,26 @@ function RefineChatScreen({
         {messages.map((msg, idx) => {
           // See ChatScreen: the running turn's bubble is always the last one.
           const streaming = loading && idx === messages.length - 1 && msg.role === 'assistant';
+          // A reply with no words yet: the orb says what Drona is doing.
+          if (streaming && msg.content === '') return null;
+          // A finished turn that never got a word (no error text either):
+          // say so, rather than leave the user's message unanswered.
+          const noReply = msg.role === 'assistant' && msg.content === '';
           return (
           <View key={msg.id} onLayout={questionPin.userLayout(msg.id)}>
             <Pressable
               onLongPress={() => openSelectSheet(msg)}
               delayLongPress={350}
               accessibilityHint="Press and hold to select text"
-              style={[
-                s.chatBubble,
+              style={
                 msg.role === 'user'
-                  ? [s.userBubble, { backgroundColor: Colors.primary }]
-                  : [s.assistantBubble, { backgroundColor: C.card, borderColor: C.borderSubtle }],
-              ]}
+                  ? [s.chatBubble, s.userBubble, { backgroundColor: userBubbleBg }]
+                  // Drona's replies are plain text on the page, no box.
+                  : s.assistantPlain
+              }
             >
-              {msg.role === 'assistant' && msg.content === '' ? (
-                <ThinkingIndicator phase={msg.thinkingPhase ?? 'Thinking'} />
+              {noReply ? (
+                <Text style={[s.chatText, { color: C.textMuted }]}>No reply came back. Send it again.</Text>
               ) : msg.role === 'assistant' ? (
                 <MessageContent
                   content={msg.content}
@@ -4400,7 +4476,7 @@ function RefineChatScreen({
                   streaming={streaming}
                 />
               ) : (
-                <Text style={[s.chatText, { color: Colors.primaryFg }]}>{msg.content}</Text>
+                <Text style={[s.chatText, { color: C.foreground }]}>{msg.content}</Text>
               )}
               {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
                 <CitationList citations={msg.citations} />
@@ -4420,15 +4496,32 @@ function RefineChatScreen({
           );
         })}
         <View style={{ height: questionPin.tailSpace }} onLayout={questionPin.onTailLayout} />
+        {/* Room for the lifted orb, so it never sits on the last message. */}
+        <Animated.View style={liftSpaceStyle} />
       </ScrollView>
 
-      {/* Input */}
-      <View style={[s.chatInputWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
-        <View style={[s.chatInputBox, { backgroundColor: C.inputBg, borderColor: C.border }]}>
+      {/* Input. Also the orb's dock (see ChatScreen). */}
+      <View
+        collapsable={false}
+        style={[s.chatInputWrap, { borderTopWidth: 0 }]}
+        onLayout={(e) => {
+          wrapWidthRef.current = e.nativeEvent.layout.width;
+          setLayoutTick((n) => n + 1);
+        }}
+      >
+        <View
+          style={[s.chatInputBox, { backgroundColor: C.inputBg, borderColor: C.border }]}
+          onLayout={(e) => {
+            const { x, y, height } = e.nativeEvent.layout;
+            boxLayoutRef.current = { x, y, h: height };
+            setLayoutTick((n) => n + 1);
+          }}
+        >
+          <View style={[s.fieldOrbSlot, { width: FIELD_ORB, marginLeft: -4, marginRight: 0 }]} />
           <TextInput
             value={input}
             onChangeText={setInput}
-            placeholder="Tell me what to change…"
+            placeholder={writingMsg ? 'Drona is writing' : 'Tell me what to change'}
             placeholderTextColor={C.textMuted}
             style={[s.chatInput, { color: C.foreground }]}
             multiline
@@ -4457,10 +4550,26 @@ function RefineChatScreen({
               accessibilityRole="button"
               accessibilityLabel="Send"
             >
-              <Feather name="send" size={16} color={input.trim() ? Colors.primaryFg : C.textMuted} />
+              <Feather name="arrow-up" size={17} color={input.trim() ? Colors.primaryFg : C.textMuted} />
             </TouchableOpacity>
           )}
         </View>
+        <MedicalDisclaimer variant="line" style={{ marginTop: Spacing.sm }} />
+
+        {/* What Drona is doing, under the lifted orb. */}
+        <Animated.View style={[s.liftLabel, liftLabelStyle]} pointerEvents="none">
+          {lifted && <PulsingStatus label={statusLabel} color={C.foreground} style={s.liftLabelText} />}
+        </Animated.View>
+        <Animated.View style={[s.dockOrb, dockStyle]} pointerEvents="none">
+          <SignalOrb
+            size={DOCK_WEB}
+            state={orbShape}
+            level={orbLevel}
+            particles={lifted ? 2200 : 650}
+            brightness={lifted ? 1 : 1.8}
+            color={orbColor}
+          />
+        </Animated.View>
       </View>
 
       <SelectTextSheet target={sheetTarget} onClose={() => setSheetTarget(null)} />
@@ -4617,9 +4726,7 @@ export function CoachSheet({
   // So a nested KeyboardAvoidingView would just add padding BELOW the visible
   // window and the input would stay hidden behind the keyboard. The reliable
   // fix (already used by analytics.tsx's BottomDrawer) is to track keyboard
-  // height ourselves and physically lift the sheet via marginBottom + cap its
-  // height to (winH - kbHeight) so the top doesn't get pushed off-screen.
-  const { height: winH } = useWindowDimensions();
+  // height ourselves and physically lift the sheet via marginBottom.
   const insets = useSafeAreaInsets();
   const [kbHeight, setKbHeight] = useState(0);
   useEffect(() => {
@@ -4635,18 +4742,11 @@ export function CoachSheet({
       hideSub.remove();
     };
   }, [visible]);
-  // Sheet sizing: when keyboard is up, cap height to the available space
-  // above it (minus a small top buffer) so the sheet doesn't overflow the
-  // viewport. When keyboard is down, fall back to the original 92% height.
-  // Lift by the keyboard height on BOTH platforms. The old code only lifted
-  // on iOS, assuming Android's adjustResize would shift the input up — but
-  // this sheet lives inside a React Native <Modal> (a separate window) and,
-  // with edge-to-edge always on in SDK 54, that window is never resized for
-  // the keyboard. The sheet is bottom-anchored, so without the lift the input
-  // stays pinned behind the keyboard and the user can't see what they type.
-  const sheetHeight = kbHeight > 0
-    ? Math.max(winH - kbHeight - 40, winH * 0.5)
-    : winH * 0.92;
+  // Full screen: Drona opens as a page, not a bottom sheet. The sheet fills the window (flex: 1) and is lifted by the
+  // keyboard height on BOTH platforms. The old code only lifted on iOS,
+  // assuming Android's adjustResize would shift the input up, but with
+  // edge-to-edge always on in SDK 54 the window is never resized for the
+  // keyboard, so without the lift the input stays behind the keyboard.
   const sheetMarginBottom = kbHeight;
 
   // What the sub-screens report (useCoachBusy), summed for the store.
@@ -5058,9 +5158,9 @@ export function CoachSheet({
         /*
           Rendered in the app's own window via <Portal>, not RN's <Modal> (a
           separate Android Dialog window that edge-to-edge insets by the nav
-          bar, leaving a gap below bottom sheets). Backdrop is a flex column
-          pushing the sheet to the bottom; the top region is a separate
-          Pressable for tap-to-close (menu/gate only). The sheet itself is a
+          bar, leaving a gap below bottom sheets). The page fills the screen
+          (flex: 1), so there is no backdrop to tap: the menu, the gate and
+          the paywall each have their own close button. The page itself is a
           plain View so inner ScrollViews keep their pan gestures.
         */
       <Animated.View
@@ -5073,14 +5173,6 @@ export function CoachSheet({
       >
         <CoachBusyContext.Provider value={reportBusy}>
         <CoachCloseContext.Provider value={handleClose}>
-        <Pressable
-          style={{ flex: 1 }}
-          // Backdrop closes on menu OR while the gate owns the modal —
-          // neither has user input that could be lost. Chat/plan/workout
-          // screens keep the tap inert so accidental backdrop hits don't
-          // throw away mid-conversation state.
-          onPress={(screen === 'menu' || !accessAllowed) ? handleClose : undefined}
-        />
         <Animated.View
           entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
           exiting={SlideOutDown.duration(200)}
@@ -5088,11 +5180,14 @@ export function CoachSheet({
             s.modalContainer,
             {
               backgroundColor: C.background,
-              height: sheetHeight,
+              flex: 1,
               marginBottom: sheetMarginBottom,
+              // Full screen: clear the status bar / notch ourselves.
+              paddingTop: insets.top,
               // Flush to the screen bottom now (portal, not a nav-bar-inset
-              // Modal window), so pad content past the gesture/nav bar.
-              paddingBottom: insets.bottom,
+              // Modal window), so pad content past the gesture/nav bar. With
+              // the keyboard up the page sits on the keyboard, so no pad.
+              paddingBottom: kbHeight > 0 ? 0 : insets.bottom,
             },
           ]}
         >
@@ -5336,13 +5431,11 @@ export function AICoachModal({ visible, onClose, ...props }: AICoachModalProps) 
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const s = StyleSheet.create({
-  backdrop: { flex: 1, justifyContent: 'flex-end' },
+  backdrop: { flex: 1 },
   keptHidden: { display: 'none' },
   modalContainer: {
-    borderTopLeftRadius: Radius.xxl,
-    borderTopRightRadius: Radius.xxl,
-    // height is set dynamically by AICoachModal to react to the on-screen
-    // keyboard (see kbHeight tracking there). Do NOT add a static height here.
+    // Full screen: flex 1, lifted by the keyboard height (see kbHeight in
+    // CoachSheet). Do NOT add a static height here.
     overflow: 'hidden',
   },
 
@@ -5617,17 +5710,6 @@ const s = StyleSheet.create({
   liftLabelText: {
     fontSize: FontSize.md,
     fontWeight: FontWeight.medium,
-  },
-  thinkingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    minHeight: 20,
-  },
-  thinkingText: {
-    fontSize: FontSize.sm,
-    fontStyle: 'italic',
-    letterSpacing: 0.2,
   },
   // Markdown rendering primitives
   mdList: {
