@@ -70,7 +70,7 @@ export function redeemFailureCopy(reason: string): string {
     case 'expired':
       return 'This code has ended.';
     case 'too_many_tries':
-      return 'Too many wrong codes. Try again in an hour.';
+      return "Too many codes that didn't work here. Try again in an hour. A store discount code goes in the App Store or Google Play.";
     case 'already_redeemed':
       return "You've already used a code on this account. It's one per account.";
     case 'already_pro':

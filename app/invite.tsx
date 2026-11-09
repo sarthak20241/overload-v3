@@ -163,7 +163,7 @@ export default function InviteScreen() {
               : 'A code from a friend gives you a month of Pro, free. No card needed.'}
           </Text>
 
-          {!success && !signedOut && (
+          {!signedOut && (
             <>
               <TextInput
                 value={code}
