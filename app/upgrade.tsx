@@ -44,6 +44,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   BackHandler,
   Linking,
   ScrollView,
@@ -79,7 +80,7 @@ import {
   Spacing,
 } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { track, setUserProps } from '@/lib/analytics';
+import { track, setUserProps, flushAnalytics } from '@/lib/analytics';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -348,6 +349,44 @@ export default function UpgradeScreen() {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
     return () => sub.remove();
   }, [lockedNow]);
+
+  // Apple 5.1.1(v): an account can be deleted inside the app. A locked new
+  // account can't reach Profile, so the paywall offers it too. Same server
+  // wipe as Profile (delete-account), then Clerk's own delete.
+  const [deleting, setDeleting] = useState(false);
+  const handleDeleteAccount = useCallback(() => {
+    Alert.alert(
+      'Delete your account?',
+      'This deletes your account and everything in it. It cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              const { error } = await supabase.functions.invoke('delete-account');
+              if (error) throw error;
+              if (user && (user as any).delete) {
+                try { await (user as any).delete(); } catch { /* already deleted by the function */ }
+              } else {
+                await signOut();
+              }
+              track('account_deleted', { from: 'paywall' });
+              await flushAnalytics();
+              paywallResolved.current = true;
+              invalidateCoachAccess();
+              router.replace('/(auth)');
+            } catch (e: any) {
+              setDeleting(false);
+              toast.error(e?.message ? `Couldn't delete the account. ${e.message}` : "Couldn't delete the account. Try again.");
+            }
+          },
+        },
+      ],
+    );
+  }, [supabase, user, signOut, router, toast]);
 
   const handleSignOut = useCallback(async () => {
     try {
@@ -979,6 +1018,16 @@ export default function UpgradeScreen() {
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
                   <Text style={[u.footLink, { color: C.textMuted }]}>Sign out</Text>
+                </TouchableOpacity>
+              )}
+              {isLocked && (
+                <TouchableOpacity
+                  onPress={handleDeleteAccount}
+                  disabled={deleting || purchasing || verifying || restoring}
+                  accessibilityRole="button"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={[u.footLink, { color: C.textMuted }]}>{deleting ? 'Deleting…' : 'Delete account'}</Text>
                 </TouchableOpacity>
               )}
               {/* Paid but still locked (a store webhook that never landed)

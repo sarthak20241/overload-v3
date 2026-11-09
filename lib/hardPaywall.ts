@@ -2,7 +2,7 @@
  * A UX gate, not server enforcement: the app routes a new unpaid account to
  * the paywall; the server keeps its own Pro checks and free-plan meters.
  *
- * Hard paywall (2026-11-08): accounts made on or after HARD_PAYWALL_FROM must
+ * Hard paywall (built 2026-11-08, starting 2026-11-09): accounts made on or after HARD_PAYWALL_FROM must
  * start a trial or subscribe to use the app. Older accounts keep the metered
  * free plan they signed up for.
  *
