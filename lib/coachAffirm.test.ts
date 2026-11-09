@@ -24,5 +24,10 @@ Deno.test('Build it shows only under a question about building', () => {
   assertEquals(asksToBuild('Ready? Should I build the program as written?'), true);
   // Mentions building the plan but does not offer to.
   assertEquals(asksToBuild('Can I build it around your Sunday race?'), false);
+  // Two closing questions: the offer is not the last one.
+  assertEquals(asksToBuild('Three blocks, 10 weeks. Want me to build it? Or change the days first?'), true);
+  assertEquals(asksToBuild('Shall I go ahead and build it?'), true);
+  // An offer earlier in the message, then a new clarifying paragraph: not yet.
+  assertEquals(asksToBuild('Want me to build it?\n\nActually, first: any injuries I should know about?'), false);
   assertEquals(asksToBuild(null), false);
 });

@@ -83,15 +83,14 @@ export function isPureAffirmative(text: string): boolean {
  */
 export function asksToBuild(text: string | null | undefined): boolean {
   const t = (text ?? '').trim();
-  const q = t.lastIndexOf('?');
-  if (q < 0) return false;
-  // The sentence that question mark closes: back to the previous . ! ? or line break.
-  const before = t.slice(0, q);
-  const start = Math.max(before.lastIndexOf('.'), before.lastIndexOf('!'), before.lastIndexOf('?'), before.lastIndexOf('\n')) + 1;
+  // Every question in the closing paragraph: Drona may close with two
+  // ("Want me to build it? Or change the days first?").
+  const last = t.split(/\n\s*\n/).pop() ?? '';
+  const questions = last.match(/[^.!?\n]*\?/g) ?? [];
   // An offer to build THE plan: "want me to build it", "shall I build this",
   // "should I build the program". A bare "build" ("build up your legs first?")
   // or a question that only mentions building ("can I build it around your
   // race?") is not one. Drona's discuss rules phrase the offer this way.
-  return /\b(want me to|shall i|should i|ready for me to|happy for me to|ok for me to|okay for me to) build (it|this|that|the (program|plan|phases?))\b/i
-    .test(t.slice(start, q));
+  const offer = /\b(want me to|shall i|should i|ready for me to|happy for me to|ok for me to|okay for me to|go ahead and) build (it|this|that|the (program|plan|phases?))\b/i;
+  return questions.some((q) => offer.test(q));
 }
