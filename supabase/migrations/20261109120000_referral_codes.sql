@@ -12,6 +12,7 @@
 --             with extra accounts. To cap it later, one statement:
 --               update invite_codes set max_rewards = 12 where source = 'referral';
 --             (new codes would need the same default in get_my_referral_code).
+--             Watched instead: referral_watch() lists heavy referrers.
 --   campaign  made by the owner of the app (create_campaign_code), for free
 --             access: any number of days, an optional cap and end date, no
 --             owner, no reward.
@@ -346,5 +347,61 @@ as $$
 $$;
 
 revoke all on function invite_code_stats() from public, anon, authenticated;
+
+-- Referral watch list (owner's choice, 2026-11-09): no hard limit on
+-- rewards, but heavy referrers are easy to spot. One row per referral code
+-- with friends; flagged when many friends joined lately and few of them have
+-- used the app (a workout or a meal logged after they redeemed). Admin only:
+--   select * from referral_watch();        -- last 7 days
+--   select * from referral_watch(30);      -- last 30 days
+create or replace function referral_watch(p_days int default 7)
+returns table (
+  code            text,
+  owner_id        text,
+  owner_email     text,
+  friends_total   bigint,
+  friends_recent  bigint,
+  months_given    bigint,
+  friends_active  bigint,
+  active_share    numeric,
+  last_redeemed   timestamptz,
+  flag            text
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  with r as (
+    select c.code, c.owner_clerk_user_id as owner_id, x.clerk_user_id as friend,
+           x.redeemed_at, x.owner_rewarded,
+           exists (select 1 from workouts w where w.user_id = x.clerk_user_id and w.created_at > x.redeemed_at)
+           or exists (select 1 from meals m where m.user_id = x.clerk_user_id and m.created_at > x.redeemed_at) as active
+      from invite_codes c
+      join invite_redemptions x on x.code = c.code and not x.is_owner
+     where c.source = 'referral'
+  )
+  select r.code, r.owner_id, max(p.email),
+         count(*),
+         count(*) filter (where r.redeemed_at > now() - make_interval(days => p_days)),
+         count(*) filter (where r.owner_rewarded),
+         count(*) filter (where r.active),
+         round(count(*) filter (where r.active)::numeric / count(*), 2),
+         max(r.redeemed_at),
+         case
+           when count(*) filter (where r.redeemed_at > now() - make_interval(days => p_days)) >= 5
+                and count(*) filter (where r.active)::numeric / count(*) < 0.3
+             then 'watch: many friends, few use the app'
+           when count(*) filter (where r.redeemed_at > now() - make_interval(days => p_days)) >= 10
+             then 'watch: many friends lately'
+           else ''
+         end
+    from r
+    left join user_profiles p on p.clerk_user_id = r.owner_id
+   group by r.code, r.owner_id
+   order by 5 desc, 4 desc
+$$;
+
+revoke all on function referral_watch(int) from public, anon, authenticated;
 
 notify pgrst, 'reload schema';

@@ -21,6 +21,8 @@ async function db() {
     create table public.user_profiles (
       clerk_user_id text primary key, email text default '', tier text, tier_expires_at timestamptz,
       created_at timestamptz default now());
+    create table public.workouts (id serial primary key, user_id text, created_at timestamptz default now());
+    create table public.meals (id serial primary key, user_id text, created_at timestamptz default now());
     create table public.coach_trials (
       clerk_user_id text primary key, started_at timestamptz, expires_at timestamptz,
       ended_at timestamptz, end_reason text);
@@ -147,6 +149,24 @@ Deno.test("wrong codes: 10 an hour, then a pause; short campaign codes refused",
   assert(refused, "a 7-character campaign code must be refused");
 });
 
+Deno.test("referral_watch: many friends who never use the app are flagged; no limit is applied", async () => {
+  const { q, as, user, myCode, redeem } = await db();
+  await user("farmer");
+  await as("farmer");
+  const code = String((await myCode()).code);
+  for (let i = 1; i <= 6; i++) {
+    await user(`fake${i}`);
+    await as(`fake${i}`);
+    assertEquals((await redeem(code)).owner_rewarded, true); // still rewarded: no hard limit
+  }
+  await q(`insert into workouts (user_id) values ('fake1')`);
+  const [w] = await q<{ friends_recent: number; friends_active: number; flag: string }>(
+    `select friends_recent::int, friends_active::int, flag from referral_watch() where owner_id = 'farmer'`);
+  assertEquals(w.friends_recent, 6);
+  assertEquals(w.friends_active, 1);
+  assert(w.flag.startsWith("watch"), w.flag);
+});
+
 Deno.test("old-app codes keep their rules: owner by email, 3 rewards", async () => {
   const { q, as, user, redeem, trialDays } = await db();
   await q(`insert into invite_codes (code, owner_email) values ('OLD1', 'Owner@x.com')`);
@@ -174,4 +194,5 @@ Deno.test("grants: clients call the two RPCs, nothing else", async () => {
   assertEquals(await can("invite_is_paying(text)"), false);
   assertEquals(await can("invite_extend_trial(text,int)"), false);
   assertEquals(await can("invite_note_failed_try(text)"), false);
+  assertEquals(await can("referral_watch(int)"), false);
 });
