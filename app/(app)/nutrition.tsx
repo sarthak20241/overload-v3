@@ -34,6 +34,7 @@ import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMealCard';
 import { MealWaitSheet } from '@/components/diet/MealWaitSheet';
+import { withBack, stepBack, boxAfterBack, type CardBack } from '@/lib/foodCardBack';
 import { MealResultScreen } from '@/components/diet/MealResultScreen';
 import {
   arrivalAction, showPlan, readyLine, readyAction, packReady, packAdding, unpackReady, readyStoreStep, settleRestoredKey, stepAmount, scaleLine, type ReadyKind,
@@ -170,14 +171,9 @@ type ParseFlow =
       tier?: ParseSpeed;
     };
 
-/** One step back on a reviewed card: see ParseFlow 'review' `before`. An
- *  interface, so the review state can name itself. */
-interface ReviewBack {
-  review: ParseFlow & { status: 'review' };
-  turns: { role: 'user' | 'drona'; text: string }[];
-  /** The message that moved the card on, as the user typed it. */
-  last: string;
-}
+/** One step back on a reviewed card: see ParseFlow 'review' `before` and
+ *  lib/foodCardBack. An interface, so the review state can name itself. */
+interface ReviewBack extends CardBack<ParseFlow & { status: 'review' }> {}
 
 /** The user asked to SAVE a food or meal, and Drona drafted it. Nothing is
  *  written until the card is tapped; `result` is what came back from that tap.
@@ -635,6 +631,8 @@ export default function NutritionScreen() {
     prevStatusRef.current = flow.status;
     const running = (st: ParseFlow['status']) => st === 'analysing' || st === 'streaming';
     if (!running(was) || running(flow.status)) return;
+    // The parse is over: nothing is in flight for a cancel to go back from.
+    inFlightBackRef.current = null;
     if (cancelledRef.current) { cancelledRef.current = false; return; }
     const how = arrivalAction({
       sheetOpen: waitOpenRef.current,
@@ -1252,8 +1250,11 @@ export default function NutritionScreen() {
     // it is read) can go back one step instead of throwing the card away.
     const back: ReviewBack | null = prevReview ? { review: prevReview, turns: turnsRef.current.slice(), last: t } : null;
     inFlightBackRef.current = back;
+    // A new send owns the arrival: a cancel flag left from before must not
+    // swallow this answer.
+    cancelledRef.current = false;
     /** A card this message left on screen remembers the card before it. */
-    const stamp = (f: ParseFlow & { status: 'review' }): ParseFlow & { status: 'review' } => (back ? { ...f, before: back } : f);
+    const stamp = (f: ParseFlow & { status: 'review' }): ParseFlow & { status: 'review' } => (back ? withBack(f, back) : f);
     setFlow({ status: 'analysing', raw: t, auto: !!auto });
     // Every send gets the calm wait, a follow-up typed on the result screen
     // too: the sheet paints over the result (declared after it), and the
@@ -2206,16 +2207,19 @@ export default function NutritionScreen() {
     if (flow.status === 'idle') return;
     // A card a follow-up moved on: one step back. The card goes back to how
     // it was before that message, and only that message returns to the box.
+    // Local edits made since that message go with it (lib/foodCardBack).
     // The server takes the app's card as the base on the next send
-    // (foodThreads recordThreadMessage), so the older version is safe.
-    if (flow.status === 'review' && flow.before) {
-      const back = flow.before;
+    // (foodThreads recordThreadMessage: the app's lines win, and a base
+    // behind the server's is written on top), so the older version is safe.
+    // A cancelled follow-up the server still finished is healed the same way.
+    const back = flow.status === 'review' ? stepBack(flow) : null;
+    if (flow.status === 'review' && back) {
       track('food_text_reused', { from: 'card', flow_status: flow.status, chars: back.last.length, step_back: true });
       parseTokenRef.current += 1;
       setChecking(null);
       turnsRef.current = back.turns;
       setFlow(back.review);
-      setText((cur) => (cur.trim() ? `${back.last}, ${cur.trim()}` : back.last));
+      setText((cur) => boxAfterBack(back.last, cur));
       // The box sits under the result screen: close it so the words are seen.
       setResultOpen(false);
       inputRef.current?.focus();
