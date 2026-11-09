@@ -16,6 +16,12 @@ export type IntakePlace = 'gym' | 'home' | 'bodyweight';
 export type WeightUnit = 'kg' | 'lbs';
 
 export interface GoalIntakeAnswers {
+  /** Every goal ticked, in the order ticked. */
+  goals: IntakeGoal[];
+  /**
+   * The main goal, which picks the target question: a weight goal when one is
+   * ticked (fat loss first), else the first ticked. Always mainGoal(goals).
+   */
   goal: IntakeGoal | null;
   /** The goal in the user's own words, when goal is 'other'. */
   goalNote: string;
@@ -44,6 +50,7 @@ export interface GoalIntakeAnswers {
 }
 
 export const EMPTY_INTAKE: GoalIntakeAnswers = {
+  goals: [],
   goal: null,
   goalNote: '',
   hasTarget: null,
@@ -90,6 +97,19 @@ export const MINUTE_CHOICES = [30, 45, 60, 90] as const;
 const clean = (s: string, max: number) => s.replace(/\s+/g, ' ').trim().slice(0, max);
 
 const LBS_PER_KG = 2.20462;
+
+/** The goal that leads: fat loss, then muscle, then the first one ticked. */
+export function mainGoal(goals: IntakeGoal[]): IntakeGoal | null {
+  if (goals.includes('fat_loss')) return 'fat_loss';
+  if (goals.includes('hypertrophy')) return 'hypertrophy';
+  return goals[0] ?? null;
+}
+
+/** Tick or untick one goal; the main goal follows. */
+export function toggleIntakeGoal(a: GoalIntakeAnswers, g: IntakeGoal): Pick<GoalIntakeAnswers, 'goals' | 'goal'> {
+  const goals = a.goals.includes(g) ? a.goals.filter((x) => x !== g) : [...a.goals, g];
+  return { goals, goal: mainGoal(goals) };
+}
 
 /** Goals whose target is a bodyweight: these get the weight wheel. */
 export function isWeightGoal(goal: IntakeGoal | null): boolean {
@@ -213,7 +233,7 @@ export function targetPrompt(goal: IntakeGoal | null): { question: string; place
 export function stepDone(step: IntakeStep, a: GoalIntakeAnswers): boolean {
   switch (step) {
     case 'goal':
-      return a.goal != null && (a.goal !== 'other' || clean(a.goalNote, 200).length > 0);
+      return a.goals.length > 0 && (!a.goals.includes('other') || clean(a.goalNote, 200).length > 0);
     case 'target':
       if (a.hasTarget === false) return true;
       if (a.hasTarget !== true) return false;
@@ -247,11 +267,16 @@ export function firstOpenStep(a: GoalIntakeAnswers): IntakeStep {
   return INTAKE_STEPS.find((s) => !stepDone(s, a)) ?? 'review';
 }
 
-export function goalText(a: GoalIntakeAnswers): string {
-  if (a.goal === 'other') return clean(a.goalNote, 200);
-  if (!a.goal) return '';
-  const label = GOAL_LABELS[a.goal];
+function oneGoalText(g: IntakeGoal, note: string): string {
+  if (g === 'other') return clean(note, 200);
+  const label = GOAL_LABELS[g];
   return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+/** "Lose fat + Get stronger": every goal ticked, the main one first. */
+export function goalText(a: GoalIntakeAnswers): string {
+  const order = a.goal ? [a.goal, ...a.goals.filter((g) => g !== a.goal)] : a.goals;
+  return order.map((g) => oneGoalText(g, a.goalNote)).filter(Boolean).join(' + ');
 }
 
 /** The target as the user sees it: the weight, the words, or no number. */
@@ -289,7 +314,14 @@ function fenced(label: string, text: string): string {
  */
 export function goalIntakeMessage(a: GoalIntakeAnswers, today: Date = new Date()): string {
   const lines: string[] = ['I answered your goal questions. Here is what I want:'];
-  if (a.goal && a.goal !== 'other') lines.push(`- Goal: ${GOAL_LABELS[a.goal]}`);
+  const named = a.goals.filter((g): g is CoachGoal => g !== 'other');
+  if (named.length === 1 && a.goals.length === 1) {
+    lines.push(`- Goal: ${GOAL_LABELS[named[0]]}`);
+  } else if (a.goals.length > 1) {
+    const all = a.goals.map((g) => (g === 'other' ? 'my own goal below' : GOAL_LABELS[g])).join(', ');
+    const main = a.goal && a.goal !== 'other' ? GOAL_LABELS[a.goal] : 'my own goal below';
+    lines.push(`- Goals: ${all} (the main one: ${main})`);
+  }
   if (a.hasTarget && isWeightGoal(a.goal) && a.targetKg != null) {
     const now = a.currentKg != null ? ` (I weigh ${formatWeight(a.currentKg, 'kg')} now)` : '';
     lines.push(`- Goal weight: ${formatWeight(a.targetKg, 'kg')}${now}`);
@@ -308,7 +340,7 @@ export function goalIntakeMessage(a: GoalIntakeAnswers, today: Date = new Date()
   if (a.place) lines.push(`- Where I train: ${PLACE_LABELS[a.place].toLowerCase()}`);
   if (a.hasTarget === false) lines.push('- Target: no set number');
   const blocks: string[] = [];
-  if (a.goal === 'other') {
+  if (a.goals.includes('other')) {
     const note = clean(a.goalNote, 200);
     if (note) blocks.push(fenced('My goal', note));
   }
@@ -335,7 +367,10 @@ export function intakeFromProfile(
   unit: WeightUnit = 'kg',
 ): GoalIntakeAnswers {
   const a = { ...EMPTY_INTAKE, unit };
-  if (p?.goal && Object.hasOwn(GOAL_LABELS, p.goal)) a.goal = p.goal as CoachGoal;
+  if (p?.goal && Object.hasOwn(GOAL_LABELS, p.goal)) {
+    a.goals = [p.goal as CoachGoal];
+    a.goal = p.goal as CoachGoal;
+  }
   const d = p?.weekly_target_sessions;
   if (typeof d === 'number' && (DAY_CHOICES as readonly number[]).includes(d)) a.days = d;
   a.currentKg = okKg(p?.weight_kg);

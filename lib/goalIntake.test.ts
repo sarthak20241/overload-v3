@@ -1,11 +1,12 @@
 import { assert, assertEquals, assertStringIncludes } from 'jsr:@std/assert@1';
 import {
-  EMPTY_INTAKE, afterEdit, dronaLead, firstOpenStep, formatWeight, goalIntakeMessage, goalIntakeSummary, intakeFromProfile,
+  EMPTY_INTAKE, afterEdit, dronaLead, goalText, mainGoal, toggleIntakeGoal, firstOpenStep, formatWeight, goalIntakeMessage, goalIntakeSummary, intakeFromProfile,
   paceDateText, paceDirection, paceLine, paceWeeks, reviewRows, stepDone, suggestedTargetKg, timelineDetail, usesPace,
   wheelStartKg, type GoalIntakeAnswers,
 } from './goalIntake.ts';
 
 const full: GoalIntakeAnswers = {
+  goals: ['fat_loss'],
   goal: 'fat_loss',
   goalNote: '',
   hasTarget: true,
@@ -30,9 +31,9 @@ Deno.test('a full intake lands on review', () => {
 });
 
 Deno.test('something else needs words before Continue', () => {
-  assertEquals(stepDone('goal', { ...EMPTY_INTAKE, goal: 'other' }), false);
-  assertEquals(stepDone('goal', { ...EMPTY_INTAKE, goal: 'other', goalNote: '   ' }), false);
-  assertEquals(stepDone('goal', { ...EMPTY_INTAKE, goal: 'other', goalNote: 'a handstand' }), true);
+  assertEquals(stepDone('goal', { ...EMPTY_INTAKE, goals: ['other'], goal: 'other' }), false);
+  assertEquals(stepDone('goal', { ...EMPTY_INTAKE, goals: ['other'], goal: 'other', goalNote: '   ' }), false);
+  assertEquals(stepDone('goal', { ...EMPTY_INTAKE, goals: ['other'], goal: 'other', goalNote: 'a handstand' }), true);
 });
 
 Deno.test('a target needs a number, or an explicit no', () => {
@@ -70,7 +71,7 @@ Deno.test('the user\'s words are fenced as data and cannot close the fence', () 
 });
 
 Deno.test('something else sends the goal in the user\'s words, no preset label', () => {
-  const m = goalIntakeMessage({ ...full, goal: 'other', goalNote: 'hold a handstand for 30 s' });
+  const m = goalIntakeMessage({ ...full, goals: ['other'], goal: 'other', goalNote: 'hold a handstand for 30 s' });
   assertStringIncludes(m, 'hold a handstand for 30 s');
   assert(!m.includes('- Goal:'));
 });
@@ -200,4 +201,32 @@ Deno.test('the pace reads as the slider shows it, never rounded to a different n
   const fast = { ...full, weeklyRateKg: 0.85 };
   assertStringIncludes(reviewRows(fast, new Date(2026, 10, 9))[2].value, '0.85 kg a week');
   assertStringIncludes(goalIntakeMessage(fast), 'about 0.85 kg a week');
+});
+
+Deno.test('several goals can be ticked; a weight goal leads', () => {
+  let a: GoalIntakeAnswers = { ...EMPTY_INTAKE };
+  a = { ...a, ...toggleIntakeGoal(a, 'strength') };
+  assertEquals(a.goal, 'strength');
+  a = { ...a, ...toggleIntakeGoal(a, 'fat_loss') };
+  assertEquals(a.goals, ['strength', 'fat_loss']);
+  assertEquals(a.goal, 'fat_loss'); // the weight goal picks the target question
+  assertEquals(goalText(a), 'Lose fat + Get stronger');
+  a = { ...a, ...toggleIntakeGoal(a, 'fat_loss') };
+  assertEquals(a.goals, ['strength']);
+  assertEquals(a.goal, 'strength');
+  assertEquals(mainGoal(['endurance', 'hypertrophy', 'fat_loss']), 'fat_loss');
+  assertEquals(mainGoal([]), null);
+});
+
+Deno.test('Drona gets every goal and which one leads', () => {
+  const m = goalIntakeMessage({ ...full, goals: ['strength', 'fat_loss'], goal: 'fat_loss' });
+  assertStringIncludes(m, '- Goals: get stronger, lose fat (the main one: lose fat)');
+  // One goal reads as before.
+  assertStringIncludes(goalIntakeMessage(full), '- Goal: lose fat');
+});
+
+Deno.test('every ticked goal must be complete, and none means no Continue', () => {
+  assertEquals(stepDone('goal', EMPTY_INTAKE), false);
+  assertEquals(stepDone('goal', { ...EMPTY_INTAKE, goals: ['strength', 'other'], goal: 'strength' }), false);
+  assertEquals(stepDone('goal', { ...EMPTY_INTAKE, goals: ['strength', 'other'], goal: 'strength', goalNote: 'a handstand' }), true);
 });

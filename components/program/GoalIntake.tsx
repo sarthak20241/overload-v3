@@ -33,7 +33,7 @@ import { useToast } from '@/components/ui/Toast';
 import { Colors, FontFamily, FontSize, FontWeight, Radius, Spacing } from '@/constants/theme';
 import {
   DAY_CHOICES, INTAKE_STEPS, MINUTE_CHOICES, PLACE_LABELS, TIMELINE_CHOICES, TIMELINE_LABELS,
-  afterEdit, dronaLead, formatWeight, paceDateText, paceDirection, paceLine, paceWeeks, usesPace, intakeFromProfile, isWeightGoal, reviewRows, stepDone, suggestedTargetKg, targetPrompt,
+  afterEdit, dronaLead, formatWeight, toggleIntakeGoal, paceDateText, paceDirection, paceLine, paceWeeks, usesPace, intakeFromProfile, isWeightGoal, reviewRows, stepDone, suggestedTargetKg, targetPrompt,
   timelineDetail, wheelStartKg,
   type GoalIntakeAnswers, type IntakeGoal, type IntakePlace, type IntakeStep, type IntakeTimeline,
 } from '@/lib/goalIntake';
@@ -215,7 +215,7 @@ export function GoalIntake({
     switch (step) {
       case 'goal':
         return (
-          <Question title="What are you working toward?" sub="Pick the one that matters most. Drona plans the phases around it.">
+          <Question title="What are you working toward?" sub="Pick all that apply. Drona plans the phases around them.">
             <View style={st.list}>
               {GOAL_OPTIONS.map((o, i) => (
                 <OptionCard
@@ -224,12 +224,13 @@ export function GoalIntake({
                   compact
                   icon={o.icon}
                   title={o.title}
-                  selected={a.goal === o.value}
-                  onPress={() => (o.value === 'other' ? set({ goal: 'other' }) : pickAndNext({ goal: o.value }))}
+                  multiple
+                  selected={a.goals.includes(o.value)}
+                  onPress={() => set(toggleIntakeGoal(a, o.value))}
                 />
               ))}
             </View>
-            {a.goal === 'other' && (
+            {a.goals.includes('other') && (
               <Field
                 value={a.goalNote}
                 onChangeText={(t) => set({ goalNote: t })}
