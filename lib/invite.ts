@@ -1,4 +1,8 @@
-// Invite codes: a free month of Pro (migration 20261031150000_invite_codes.sql).
+// Invite codes: free Pro time (migrations 20261031150000_invite_codes.sql and
+// 20261109120000_referral_codes.sql). Three kinds share one code box: a
+// friend's referral code, a campaign code from us, and an old-app code. A
+// code our server doesn't know may be a store discount code (App Store offer
+// code, Play promo code); storeRedeemUrl() hands it to the store.
 //
 // The email link is tryoverload.app/i/CODE, whose page opens
 // overload://invite?code=CODE. Someone who opens it signed out keeps the code
@@ -48,9 +52,13 @@ export function readRedeemResult(data: unknown, error: unknown): RedeemResult {
 export function redeemFailureCopy(reason: string): string {
   switch (reason) {
     case 'invalid_code':
-      return "I can't find that code. Check it against your email and try again.";
+      return "I can't find that code. Check the letters and try again.";
+    case 'own_code':
+      return "That's your own code. Send it to a friend: you both get a free month.";
+    case 'expired':
+      return 'This code has ended.';
     case 'already_redeemed':
-      return "You've already used an invite on this account. One free month each.";
+      return "You've already used a code on this account. It's one per account.";
     case 'already_pro':
       return "You're already on Pro, so you don't need this one. Pass the link to a friend.";
     case 'code_full':
@@ -70,4 +78,48 @@ export function redeemSuccessCopy(days: number): string {
     ? months === 1 ? '1 month' : `${months} months`
     : `${days} days`;
   return `You have ${span} of Pro, free. No card, and nothing renews.`;
+}
+
+/** The App Store's (numeric) id for Overload, from eas.json's ascAppId. */
+export const APP_STORE_ID = '6773063775';
+
+/**
+ * Where a store discount code is redeemed, with the code filled in. Apple's
+ * offer-code page and Play's redeem page both take it in the URL.
+ */
+export function storeRedeemUrl(code: string, os: 'ios' | 'android'): string {
+  const c = encodeURIComponent(normalizeCode(code));
+  return os === 'ios'
+    ? `https://apps.apple.com/redeem?ctx=offercodes&id=${APP_STORE_ID}&code=${c}`
+    : `https://play.google.com/redeem?code=${c}`;
+}
+
+/** The link a sharer sends. The page opens the app with the code. */
+export function referralLink(code: string): string {
+  return `https://tryoverload.app/i/${normalizeCode(code)}`;
+}
+
+/** The text that goes with the link in the share sheet. */
+export function referralShareMessage(code: string): string {
+  return `I'm training with Overload. Use my link and we both get a month of Pro free: ${referralLink(code)}`;
+}
+
+export type MyReferral =
+  | { ok: true; code: string; friends: number; paying: boolean }
+  | { ok: false; reason: string };
+
+/** get_my_referral_code()'s jsonb, or an RPC error, as one result. */
+export function readMyReferral(data: unknown, error: unknown): MyReferral {
+  if (error || !data || typeof data !== 'object') return { ok: false, reason: 'network' };
+  const r = data as { ok?: boolean; code?: string; friends?: number; paying?: boolean; reason?: string };
+  if (r.ok && r.code) return { ok: true, code: r.code, friends: r.friends ?? 0, paying: !!r.paying };
+  return { ok: false, reason: r.reason ?? 'unknown' };
+}
+
+/** "3 friends joined. You earned 3 free months." in plain words. */
+export function referralTally(friends: number, paying: boolean): string {
+  if (friends === 0) return 'No friends have joined yet.';
+  const who = friends === 1 ? '1 friend has joined' : `${friends} friends have joined`;
+  if (paying) return `${who}. Thank you.`;
+  return `${who}. You earned ${friends === 1 ? '1 free month' : `${friends} free months`}.`;
 }

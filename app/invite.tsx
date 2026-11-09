@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
+  Linking,
   Platform,
   StyleSheet,
   Text,
@@ -40,6 +41,7 @@ import {
   redeemFailureCopy,
   redeemSuccessCopy,
   savePendingInvite,
+  storeRedeemUrl,
 } from '@/lib/invite';
 
 export default function InviteScreen() {
@@ -52,6 +54,9 @@ export default function InviteScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  // Our server doesn't know the code: it may be an App Store or Play
+  // discount code, which only the store can redeem.
+  const [maybeStoreCode, setMaybeStoreCode] = useState<string | null>(null);
 
   useEffect(() => {
     track('invite_opened', { from_link: !!params.code });
@@ -71,6 +76,7 @@ export default function InviteScreen() {
     if (!clean || busy) return;
     setBusy(true);
     setError(null);
+    setMaybeStoreCode(null);
     let result;
     try {
       const { data, error: rpcError } = await supabase.rpc('redeem_invite', { p_code: clean });
@@ -89,6 +95,9 @@ export default function InviteScreen() {
       track('invite_failed', { reason: result.reason });
       if (result.reason === 'already_redeemed' || result.reason === 'already_pro') clearPendingInvite();
       setError(redeemFailureCopy(result.reason));
+      if (result.reason === 'invalid_code' && (Platform.OS === 'ios' || Platform.OS === 'android')) {
+        setMaybeStoreCode(clean);
+      }
     }
   }
 
@@ -115,13 +124,13 @@ export default function InviteScreen() {
         <View style={s.main}>
           <Text style={[s.eyebrow, { color: C.accentText }]}>INVITE</Text>
           <Text style={[s.title, { color: C.foreground }]}>
-            {success ? "You're in." : 'A free month of Pro.'}
+            {success ? "You're in." : 'Got a code?'}
           </Text>
           <Text style={[s.sub, { color: C.textSecondary }]}>
             {success
               ?? (signedOut
                 ? 'Make your free account first. Then open your invite link again, or enter the code here.'
-                : 'Unlimited chat with Drona, unlimited AI food logs, and a plan rewritten every week. No card needed.')}
+                : 'A code from a friend gives you a month of Pro, free. No card needed.')}
           </Text>
 
           {!success && !signedOut && (
@@ -144,6 +153,20 @@ export default function InviteScreen() {
                 style={[s.input, { backgroundColor: C.inputBg, color: C.foreground, borderColor: error ? C.dangerText : C.borderSubtle }]}
               />
               {error && <Text style={[s.error, { color: C.dangerText }]}>{error}</Text>}
+              {maybeStoreCode && (
+                <TouchableOpacity
+                  onPress={() => {
+                    track('invite_store_code', { platform: Platform.OS });
+                    void Linking.openURL(storeRedeemUrl(maybeStoreCode, Platform.OS === 'ios' ? 'ios' : 'android'));
+                  }}
+                  accessibilityRole="link"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={[s.storeLink, { color: C.accentText }]}>
+                    {Platform.OS === 'ios' ? 'Is it a discount code? Use it in the App Store' : 'Is it a discount code? Use it in Google Play'}
+                  </Text>
+                </TouchableOpacity>
+              )}
             </>
           )}
         </View>
@@ -168,7 +191,7 @@ export default function InviteScreen() {
                   ? 'Make my free account'
                   : busy
                     ? 'Checking your code…'
-                    : 'Get my free month'}
+                    : 'Use my code'}
             </Text>
           </PressableScale>
         </View>
@@ -219,6 +242,7 @@ const s = StyleSheet.create({
     textAlign: 'center',
   },
   error: { fontSize: FontSize.sm, lineHeight: 18, marginTop: Spacing.sm, textAlign: 'center' },
+  storeLink: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, marginTop: Spacing.md, textAlign: 'center' },
   footer: { paddingBottom: Spacing.lg },
   cta: {
     alignItems: 'center',
