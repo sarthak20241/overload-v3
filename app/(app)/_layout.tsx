@@ -459,7 +459,10 @@ export default function AppLayout() {
         </View>
       );
     }
-    if (mustPay({ createdAt: user?.createdAt, accessState: coachAccess.state, purchasesAvailable: true })) {
+    // Past the 8 s wait with no fresh read, the access on hand is the saved
+    // one, which right after a purchase still says 'free': treat it as
+    // unknown so a payer is never locked out by a hung read.
+    if (mustPay({ createdAt: user?.createdAt, accessState: gateFresh ? coachAccess.state : 'unknown', purchasesAvailable: true })) {
       return <Redirect href={{ pathname: '/upgrade', params: { flow: 'locked' } } as any} />;
     }
   }
