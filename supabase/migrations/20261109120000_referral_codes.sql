@@ -114,6 +114,10 @@ begin
     return jsonb_build_object('ok', false, 'reason', 'unauthenticated');
   end if;
 
+  -- One redemption at a time per account, so parallel calls can't all pass
+  -- the try count below before any of them records a failure.
+  perform pg_advisory_xact_lock(hashtext('redeem_invite:' || v_user_id));
+
   -- 10 wrong codes an hour per account, then a pause.
   if (select count(*) from invite_failed_tries
        where clerk_user_id = v_user_id and at > now() - interval '1 hour') >= 10 then
