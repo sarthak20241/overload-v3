@@ -152,6 +152,13 @@ const HERO_ORB = 168;
 const FIELD_ORB = 34;
 const LIFT_ORB = 104;
 const HERO_WEB = orbWebBox(HERO_ORB);
+// Where the orb sits inside the input box (box = its layout in the input
+// wrapper): border 1 + box padding 12 + slot margin -4, then half the slot
+// across; up from the box bottom by border 1, padding 6, half the 36 slot.
+// Shared by ChatScreen and RefineChatScreen, so both docks move together.
+function fieldOrbTarget(b: { x: number; y: number; h: number }) {
+  return { x: b.x + 1 + Spacing.md - 4 + FIELD_ORB / 2, y: b.y + b.h - 1 - 6 - 18, s: FIELD_ORB };
+}
 // The dock orb is ONE WebView that never resizes (a resize re-lays out the
 // page); it moves and scales instead. Sized so the lift is close to 1:1.
 const DOCK_WEB = 200;
@@ -1835,8 +1842,7 @@ function ChatScreen({
     const b = boxLayoutRef.current;
     if (!b || !wrapWidthRef.current) return null;
     if (liftedRef.current) return { x: wrapWidthRef.current / 2, y: LIFT_CENTER_Y, s: LIFT_ORB };
-    // Field slot: border 1 + box padding 12 + slot margin -4, then half the slot.
-    return { x: b.x + 1 + Spacing.md - 4 + FIELD_ORB / 2, y: b.y + b.h - 1 - 6 - 18, s: FIELD_ORB };
+    return fieldOrbTarget(b);
   }, []);
 
   const cx = useSharedValue(0);
@@ -4333,6 +4339,8 @@ function RefineChatScreen({
   useEffect(() => {
     const finished = wasLoadingRef.current && !loading;
     wasLoadingRef.current = loading;
+    // A new turn ends the last one's tick.
+    if (loading) { setShowTick(false); return; }
     if (!finished) return;
     setShowTick(true);
     const tm = setTimeout(() => setShowTick(false), 1600);
@@ -4361,8 +4369,7 @@ function RefineChatScreen({
     if (!b || !wrapWidthRef.current) return;
     const tgt = lifted
       ? { x: wrapWidthRef.current / 2, y: LIFT_CENTER_Y, s: LIFT_ORB }
-      // Field slot: border 1 + box padding 12 + slot margin -4, then half the slot.
-      : { x: b.x + 1 + Spacing.md - 4 + FIELD_ORB / 2, y: b.y + b.h - 1 - 6 - 18, s: FIELD_ORB };
+      : fieldOrbTarget(b);
     if (!dockPlacedRef.current) {
       cx.value = tgt.x;
       cy.value = tgt.y;
@@ -5147,9 +5154,9 @@ export function CoachSheet({
         /*
           Rendered in the app's own window via <Portal>, not RN's <Modal> (a
           separate Android Dialog window that edge-to-edge insets by the nav
-          bar, leaving a gap below bottom sheets). Backdrop is a flex column
-          pushing the sheet to the bottom; the top region is a separate
-          Pressable for tap-to-close (menu/gate only). The sheet itself is a
+          bar, leaving a gap below bottom sheets). The page fills the screen
+          (flex: 1), so there is no backdrop to tap: the menu, the gate and
+          the paywall each have their own close button. The page itself is a
           plain View so inner ScrollViews keep their pan gestures.
         */
       <Animated.View
@@ -5174,8 +5181,9 @@ export function CoachSheet({
               // Full screen: clear the status bar / notch ourselves.
               paddingTop: insets.top,
               // Flush to the screen bottom now (portal, not a nav-bar-inset
-              // Modal window), so pad content past the gesture/nav bar.
-              paddingBottom: insets.bottom,
+              // Modal window), so pad content past the gesture/nav bar. With
+              // the keyboard up the page sits on the keyboard, so no pad.
+              paddingBottom: kbHeight > 0 ? 0 : insets.bottom,
             },
           ]}
         >
@@ -5419,7 +5427,7 @@ export function AICoachModal({ visible, onClose, ...props }: AICoachModalProps) 
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const s = StyleSheet.create({
-  backdrop: { flex: 1, justifyContent: 'flex-end' },
+  backdrop: { flex: 1 },
   keptHidden: { display: 'none' },
   modalContainer: {
     // Full screen: flex 1, lifted by the keyboard height (see kbHeight in
