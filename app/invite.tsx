@@ -40,6 +40,10 @@ import {
   readRedeemResult,
   redeemFailureCopy,
   appliedSummary,
+  appleLinkedSummary,
+  APPLE_FRIEND_OFFER_CODE,
+  friendMonthFromStore,
+  inviteIntroCopy,
   type AppliedSummary,
   savePendingInvite,
   storeRedeemUrl,
@@ -54,7 +58,9 @@ export default function InviteScreen() {
   const [code, setCode] = useState(normalizeCode(params.code ?? ''));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<AppliedSummary | null>(null);
+  // appleOffer: iPhone, where the month itself is redeemed through Apple next.
+  const [success, setSuccess] = useState<(AppliedSummary & { appleOffer?: string }) | null>(null);
+  const viaApple = friendMonthFromStore(Platform.OS);
   // Our server doesn't know the code: it may be an App Store or Play
   // discount code, which only the store can redeem.
   const [maybeStoreCode, setMaybeStoreCode] = useState<string | null>(null);
@@ -85,7 +91,8 @@ export default function InviteScreen() {
     setMaybeStoreCode(null);
     let result;
     try {
-      const { data, error: rpcError } = await supabase.rpc('redeem_invite', { p_code: clean });
+      // iPhone: only record the referral; Apple gives the month (rule 3.1.1).
+      const { data, error: rpcError } = await supabase.rpc(viaApple ? 'link_referral' : 'redeem_invite', { p_code: clean });
       result = readRedeemResult(data, rpcError);
     } catch (e) {
       result = readRedeemResult(null, e);
@@ -93,10 +100,18 @@ export default function InviteScreen() {
       setBusy(false);
     }
     if (result.ok) {
-      track('invite_redeemed', { days: result.days, is_owner: result.isOwner });
+      track('invite_redeemed', { days: result.days, is_owner: result.isOwner, via_apple: viaApple });
       clearPendingInvite();
       invalidateCoachAccess();
-      setSuccess(appliedSummary(result, clean));
+      setSuccess(viaApple
+        ? { ...appleLinkedSummary(clean, result.ownerRewarded), appleOffer: APPLE_FRIEND_OFFER_CODE }
+        : appliedSummary(result, clean));
+    } else if (result.reason === 'store_only') {
+      // iPhone, a campaign or old-app code: Apple redeems it, not us.
+      track('invite_store_code', { platform: Platform.OS, reason: 'store_only' });
+      clearPendingInvite();
+      setError(redeemFailureCopy(result.reason));
+      void Linking.openURL(storeRedeemUrl(clean, 'ios'));
     } else {
       track('invite_failed', { reason: result.reason });
       // Codes that will never work for this account are not kept for later.
@@ -160,7 +175,7 @@ export default function InviteScreen() {
           <Text style={[s.sub, { color: C.textSecondary }]}>
             {signedOut
               ? 'Make your free account first. Then open your invite link again, or enter the code here.'
-              : 'A code from a friend gives you a month of Pro, free. No card needed.'}
+              : inviteIntroCopy(Platform.OS)}
           </Text>
 
           {!signedOut && (
@@ -205,7 +220,12 @@ export default function InviteScreen() {
         <View style={s.footer}>
           <PressableScale
             onPress={
-              success
+              success?.appleOffer
+                ? () => {
+                    track('invite_apple_offer_opened');
+                    void Linking.openURL(storeRedeemUrl(success.appleOffer!, 'ios'));
+                  }
+                : success
                 ? () => router.replace('/(app)')
                 : signedOut
                   ? () => router.replace('/(auth)')
@@ -216,7 +236,9 @@ export default function InviteScreen() {
             accessibilityRole="button"
           >
             <Text style={s.ctaText}>
-              {success
+              {success?.appleOffer
+                ? 'Get my free month'
+                : success
                 ? 'Start training'
                 : signedOut
                   ? 'Make my free account'
@@ -225,6 +247,16 @@ export default function InviteScreen() {
                     : 'Apply code'}
             </Text>
           </PressableScale>
+          {success?.appleOffer && (
+            <TouchableOpacity
+              onPress={() => router.replace('/(app)')}
+              accessibilityRole="button"
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={s.doneLink}
+            >
+              <Text style={[s.storeLink, { color: C.textMuted, marginTop: 0 }]}>Done</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -292,6 +324,7 @@ const s = StyleSheet.create({
   summaryLabel: { fontSize: FontSize.sm },
   summaryValue: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, flexShrink: 1, textAlign: 'right' },
   friendLine: { fontSize: FontSize.sm, marginTop: Spacing.md, textAlign: 'center' },
+  doneLink: { alignItems: 'center', marginTop: Spacing.md },
   storeLink: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, marginTop: Spacing.md, textAlign: 'center' },
   footer: { paddingBottom: Spacing.lg },
   cta: {

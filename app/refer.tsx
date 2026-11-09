@@ -96,8 +96,8 @@ export default function ReferScreen() {
             {!loaded
               ? 'Send your link to a friend. They get a month of Pro free.'
               : paying
-              ? 'Send your link. Your friend gets a month of Pro free. No card needed.'
-              : 'Send your link. When a friend joins with it, you both get a month of Pro free. No card needed, and no limit on friends.'}
+              ? 'Send your link. Your friend gets a month of Pro free.'
+              : 'Send your link. When a friend joins with it, you both get a month of Pro free. No limit on friends.'}
           </Text>
 
           {mine === null ? (

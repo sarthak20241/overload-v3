@@ -14,6 +14,7 @@ import { PGlite } from "npm:@electric-sql/pglite@0.2.17";
 
 const OLD = await Deno.readTextFile(new URL("../20261031150000_invite_codes.sql", import.meta.url));
 const SQL = await Deno.readTextFile(new URL("../20261109120000_referral_codes.sql", import.meta.url));
+const SQL_LINK = await Deno.readTextFile(new URL("../20261109150000_referral_link_store.sql", import.meta.url));
 
 async function db() {
   const pg = new PGlite();
@@ -31,6 +32,8 @@ async function db() {
   await pg.exec(OLD);
   await pg.exec(SQL);
   await pg.exec(SQL); // re-runnable
+  await pg.exec(SQL_LINK);
+  await pg.exec(SQL_LINK);
   const q = async <T = Record<string, unknown>>(s: string, p: unknown[] = []) => (await pg.query<T>(s, p)).rows;
   const as = async (user: string) => { await pg.exec(`select set_config('test.user', '${user}', false)`); };
   const user = (id: string, extra = "") => q(`insert into user_profiles (clerk_user_id ${extra ? ", tier, tier_expires_at" : ""}) values ($1 ${extra}) `, [id]);
@@ -39,8 +42,9 @@ async function db() {
     return r?.d ?? 0;
   };
   const redeem = async (code: string) => (await q<{ v: Record<string, unknown> }>(`select redeem_invite($1) v`, [code]))[0].v;
+  const link = async (code: string) => (await q<{ v: Record<string, unknown> }>(`select link_referral($1) v`, [code]))[0].v;
   const myCode = async () => (await q<{ v: Record<string, unknown> }>(`select get_my_referral_code() v`))[0].v;
-  return { q, as, user, trialDays, redeem, myCode };
+  return { q, as, user, trialDays, redeem, link, myCode };
 }
 
 Deno.test("a referral code is made once and kept", async () => {
@@ -167,6 +171,40 @@ Deno.test("referral_watch: many friends who never use the app are flagged; no li
   assert(w.flag.startsWith("watch"), w.flag);
 });
 
+Deno.test("iPhone link: the friend gets no server month, the sharer still does", async () => {
+  const { q, as, user, myCode, link, redeem, trialDays } = await db();
+  await user("alice");
+  await as("alice");
+  const code = String((await myCode()).code);
+  await user("ifriend");
+  await as("ifriend");
+  const r = await link(code.toLowerCase());
+  assertEquals(r.ok, true);
+  assertEquals(r.days, 0);
+  assertEquals(r.owner_rewarded, true);
+  assertEquals(await trialDays("ifriend"), 0); // Apple gives this month
+  assertEquals(await trialDays("alice"), 30);
+  assertEquals((await link(code)).reason, "already_redeemed");
+  assertEquals((await redeem(code)).reason, "already_redeemed"); // one per account, either way
+  await as("alice");
+  assertEquals((await myCode()).friends, 1);
+  assertEquals((await myCode()).months_earned, 1);
+  assertEquals((await q<{ n: number }>(`select days_granted n from invite_redemptions where clerk_user_id = 'ifriend'`))[0].n, 0);
+});
+
+Deno.test("iPhone link: campaign and old-app codes go to the App Store, not a try", async () => {
+  const { q, as, user, link } = await db();
+  await q(`select create_campaign_code('GYMBUDDY', 90)`);
+  await q(`insert into invite_codes (code, owner_email) values ('OLDAPP1', 'o@x.com')`);
+  await user("i2");
+  await as("i2");
+  assertEquals((await link("GYMBUDDY")).reason, "store_only");
+  assertEquals((await link("OLDAPP1")).reason, "store_only");
+  assertEquals((await link("NOPE123")).reason, "invalid_code");
+  assertEquals((await q<{ n: number }>(`select count(*)::int n from invite_failed_tries where clerk_user_id = 'i2'`))[0].n, 1);
+  assertEquals((await q<{ n: number }>(`select count(*)::int n from invite_redemptions where clerk_user_id = 'i2'`))[0].n, 0);
+});
+
 Deno.test("old-app codes keep their rules: owner by email, 3 rewards", async () => {
   const { q, as, user, redeem, trialDays } = await db();
   await q(`insert into invite_codes (code, owner_email) values ('OLD1', 'Owner@x.com')`);
@@ -195,4 +233,6 @@ Deno.test("grants: clients call the two RPCs, nothing else", async () => {
   assertEquals(await can("invite_extend_trial(text,int)"), false);
   assertEquals(await can("invite_note_failed_try(text)"), false);
   assertEquals(await can("referral_watch(int)"), false);
+  assertEquals(await can("link_referral(text)"), true);
+  assertEquals(await can("referral_redeem_core(text,boolean)"), false);
 });

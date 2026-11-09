@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert';
-import { APP_STORE_ID, appliedSummary, grantSpan, readMyReferral, readRedeemResult, referralLoadError, redeemFailureCopy, referralLink, referralShareMessage, referralTally, storeRedeemUrl } from './invite.ts';
+import { APP_STORE_ID, APPLE_FRIEND_OFFER_CODE, appleLinkedSummary, friendMonthFromStore, inviteIntroCopy, appliedSummary, grantSpan, readMyReferral, readRedeemResult, referralLoadError, redeemFailureCopy, referralLink, referralShareMessage, referralTally, storeRedeemUrl } from './invite.ts';
 
 Deno.test('store discount codes go to the right store, code filled in', () => {
   assertEquals(storeRedeemUrl(' spring-25 ', 'ios'), 'https://apps.apple.com/redeem?ctx=offercodes&id=6773063775&code=SPRING25');
@@ -65,4 +65,16 @@ Deno.test('code applied: a campaign code names its own length and no friend', ()
   assertEquals(a.rows.some((x) => x.label === 'Pro until'), false);
   assertEquals(a.friendLine, null);
   assertEquals(grantSpan(45), '45 days');
+});
+
+Deno.test('iPhone: the friend month comes from Apple, Android keeps ours', () => {
+  assertEquals(friendMonthFromStore('ios'), true);
+  assertEquals(friendMonthFromStore('android'), false);
+  assertEquals(inviteIntroCopy('ios').includes('No card'), false);
+  assertEquals(inviteIntroCopy('android').includes('No card'), true);
+  const a = appleLinkedSummary('j9b-qch', true);
+  assertEquals(a.title, 'Code saved.');
+  assertEquals(a.rows[0].value, 'J9BQCH');
+  assertEquals(a.friendLine, 'Your friend got a free month too.');
+  assertEquals(storeRedeemUrl(APPLE_FRIEND_OFFER_CODE, 'ios').endsWith('code=FRIENDMONTH'), true);
 });

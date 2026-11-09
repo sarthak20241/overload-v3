@@ -293,6 +293,7 @@ export type AnalyticsEvent =
   | 'invite_redeemed'
   | 'invite_failed'
   | 'invite_store_code'
+  | 'invite_apple_offer_opened'
   | 'referral_opened'
   | 'referral_shared'
   | 'milestone_upsell_shown'

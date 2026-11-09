@@ -69,6 +69,8 @@ export function redeemFailureCopy(reason: string): string {
       return "That's your own code. Send it to a friend instead.";
     case 'expired':
       return 'This code has ended.';
+    case 'store_only':
+      return 'This code is used in the App Store. Opening it now.';
     case 'too_many_tries':
       return "Too many codes that didn't work here. Try again in an hour. A store discount code goes in the App Store or Google Play.";
     case 'already_redeemed':
@@ -191,5 +193,37 @@ export function appliedSummary(
     friendLine: result.source === 'referral' && result.ownerRewarded
       ? 'Your friend got a free month too.'
       : null,
+  };
+}
+
+/**
+ * App Store rule 3.1.1: on iPhone, Pro is unlocked through Apple, not our own
+ * codes. There a friend's code only records who sent them (link_referral) and
+ * Apple gives the free month through this offer code, made in App Store
+ * Connect (Subscriptions, Offer Codes, custom code). Android and the web keep
+ * our server month.
+ */
+export const APPLE_FRIEND_OFFER_CODE = 'FRIENDMONTH';
+
+export function friendMonthFromStore(os: string): boolean {
+  return os === 'ios';
+}
+
+/** The words above the code box. On iPhone Apple's offer needs an Apple account, so no "no card" promise. */
+export function inviteIntroCopy(os: string): string {
+  return friendMonthFromStore(os)
+    ? 'A code from a friend gives you a month of Pro, free.'
+    : 'A code from a friend gives you a month of Pro, free. No card needed.';
+}
+
+/** iPhone: the friend's code is saved; the month itself comes from Apple next. */
+export function appleLinkedSummary(code: string, ownerRewarded: boolean): AppliedSummary {
+  return {
+    title: 'Code saved.',
+    rows: [
+      { label: 'Code', value: normalizeCode(code) },
+      { label: 'Your free month', value: 'From Apple, next step' },
+    ],
+    friendLine: ownerRewarded ? 'Your friend got a free month too.' : null,
   };
 }
