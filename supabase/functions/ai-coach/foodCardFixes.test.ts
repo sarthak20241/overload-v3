@@ -107,6 +107,14 @@ Deno.test("one copied line the message never named is a copy, not more of it", (
   assertEquals(copiesCardLines([line("boiled egg", 2, "piece"), line("banana", 1, "piece")], EGG_CARD, "2 more eggs and a banana"), false);
   // The poori case still holds: the message names the poori, so it may be more of it.
   assertEquals(copiesCardLines([line("poori", 3, "piece"), line("dosa", 1, "piece")], CARD, "3 more pooris and a dosa"), false);
+  // "one more" / "same again": the copy is the whole answer, so it is more of it.
+  assertEquals(copiesCardLines([line("boiled egg", 2, "piece")], EGG_CARD, "same again"), false);
+  assertEquals(copiesCardLines([line("banana", 1, "piece")], [prev("banana", 1, "piece", 118, 105)], "one more"), false);
+  // A message with no Latin letters is not checked by words.
+  assertEquals(copiesCardLines([line("boiled egg", 2, "piece"), line("banana", 1, "piece")], EGG_CARD, "दो अंडे और केला"), false);
+  // Two different names in another script are not the same food: केला (banana)
+  // is not a copy of अंडा (egg). Comparing ASCII only made both "".
+  assertEquals(copiesCardLines([line("केला", 2, "piece"), line("banana", 1, "piece")], [prev("अंडा", 2, "piece", 100, 156)], "and a banana"), false);
   // No text given: the old two-line rule only.
   assertEquals(copiesCardLines([line("poori", 3, "piece"), line("dosa", 1, "piece")], CARD), false);
 });
