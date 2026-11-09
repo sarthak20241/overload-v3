@@ -307,9 +307,10 @@ as $$
 declare
   v_code text := upper(regexp_replace(coalesce(p_code, ''), '[^a-zA-Z0-9]', '', 'g'));
 begin
-  -- 6+ characters: shorter ones are guessable.
-  if length(v_code) < 6 or length(v_code) > 16 then
-    raise exception 'A code is 6 to 16 letters or digits';
+  -- 8+ characters: accounts are free, so the wrong-code limit per account
+  -- can be spread over many accounts; a longer code keeps guessing useless.
+  if length(v_code) < 8 or length(v_code) > 16 then
+    raise exception 'A code is 8 to 16 letters or digits';
   end if;
   insert into invite_codes (code, source, days, max_redemptions, max_rewards, expires_at, note)
     values (v_code, 'campaign', p_days, p_max_redemptions, 0, p_expires_at, p_note);
