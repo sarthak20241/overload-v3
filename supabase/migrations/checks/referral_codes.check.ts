@@ -15,6 +15,7 @@ import { PGlite } from "npm:@electric-sql/pglite@0.2.17";
 const OLD = await Deno.readTextFile(new URL("../20261031150000_invite_codes.sql", import.meta.url));
 const SQL = await Deno.readTextFile(new URL("../20261109120000_referral_codes.sql", import.meta.url));
 const SQL_LINK = await Deno.readTextFile(new URL("../20261109150000_referral_link_store.sql", import.meta.url));
+const SQL_OLD = await Deno.readTextFile(new URL("../20261109170000_referral_link_old_app.sql", import.meta.url));
 
 async function db() {
   const pg = new PGlite();
@@ -34,6 +35,8 @@ async function db() {
   await pg.exec(SQL); // re-runnable
   await pg.exec(SQL_LINK);
   await pg.exec(SQL_LINK);
+  await pg.exec(SQL_OLD);
+  await pg.exec(SQL_OLD);
   const q = async <T = Record<string, unknown>>(s: string, p: unknown[] = []) => (await pg.query<T>(s, p)).rows;
   const as = async (user: string) => { await pg.exec(`select set_config('test.user', '${user}', false)`); };
   const user = (id: string, extra = "") => q(`insert into user_profiles (clerk_user_id ${extra ? ", tier, tier_expires_at" : ""}) values ($1 ${extra}) `, [id]);
@@ -53,7 +56,7 @@ Deno.test("a referral code is made once and kept", async () => {
   await as("alice");
   const a = await myCode();
   assertEquals(a.ok, true);
-  assert(/^[A-HJKMNP-Z2-9]{6}$/.test(String(a.code)), String(a.code));
+  assert(/^[A-HJKMNP-Z2-9]{8}$/.test(String(a.code)), String(a.code));
   assertEquals((await myCode()).code, a.code);
   assertEquals(a.friends, 0);
 });
@@ -192,21 +195,38 @@ Deno.test("iPhone link: the friend gets no server month, the sharer still does",
   assertEquals((await q<{ n: number }>(`select days_granted n from invite_redemptions where clerk_user_id = 'ifriend'`))[0].n, 0);
 });
 
-Deno.test("iPhone link: campaign and old-app codes go to the App Store and count as tries", async () => {
+Deno.test("iPhone link: campaign codes go to the App Store and count as tries", async () => {
   const { q, as, user, link } = await db();
   await q(`select create_campaign_code('GYMBUDDY', 90)`);
-  await q(`insert into invite_codes (code, owner_email) values ('OLDAPP1', 'o@x.com')`);
   await user("i2");
   await as("i2");
   assertEquals((await link("GYMBUDDY")).reason, "store_only");
-  assertEquals((await link("OLDAPP1")).reason, "store_only");
   assertEquals((await link("NOPE123")).reason, "invalid_code");
-  assertEquals((await q<{ n: number }>(`select count(*)::int n from invite_failed_tries where clerk_user_id = 'i2'`))[0].n, 3);
+  assertEquals((await q<{ n: number }>(`select count(*)::int n from invite_failed_tries where clerk_user_id = 'i2'`))[0].n, 2);
   // A hand-added short campaign code is refused by the table itself.
   let refused = false;
   try { await q(`insert into invite_codes (code, source) values ('SHORT1', 'campaign')`); } catch { refused = true; }
   assert(refused, "a 6-character campaign code must be refused");
   assertEquals((await q<{ n: number }>(`select count(*)::int n from invite_redemptions where clerk_user_id = 'i2'`))[0].n, 0);
+});
+
+Deno.test("iPhone link: an old-app owner and their friend link; Apple gives their months", async () => {
+  const { q, as, user, link, trialDays } = await db();
+  await q(`insert into invite_codes (code, owner_email) values ('OLDAPP1', 'o@x.com')`);
+  await q(`insert into user_profiles (clerk_user_id, email) values ('oldowner', 'o@x.com')`);
+  await as("oldowner");
+  const r = await link("OLDAPP1");
+  assertEquals(r.ok, true);
+  assertEquals(r.is_owner, true);
+  assertEquals(r.days, 0);
+  assertEquals(await trialDays("oldowner"), 0);
+  await user("ofriend");
+  await as("ofriend");
+  const f = await link("OLDAPP1");
+  assertEquals(f.ok, true);
+  assertEquals(f.owner_rewarded, true);
+  assertEquals(await trialDays("ofriend"), 0);
+  assertEquals(await trialDays("oldowner"), 30); // the owner still earns a month
 });
 
 Deno.test("old-app codes keep their rules: owner by email, 3 rewards", async () => {
