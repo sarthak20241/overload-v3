@@ -86,7 +86,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { DronaHeroOrb } from '@/components/coach/DronaHeroOrb';
-import { invalidateCoachAccess } from '@/hooks/useCoachAccess';
+import { invalidateCoachAccess, useCoachAccess } from '@/hooks/useCoachAccess';
 import { prefetchDashboard } from '@/lib/dashboardData';
 import {
   requestNotificationPermission,
@@ -201,8 +201,11 @@ export default function UpgradeScreen() {
   // The URL alone never locks an older account: 'locked' also needs a new
   // account once the user has loaded.
   const newOrLoading = !userLoaded || !user || isHardPaywallAccount(user.createdAt);
+  // Pro or a trial already (a code, an earlier purchase): never locked.
+  const { access: coachAccess } = useCoachAccess();
+  const hasAccess = coachAccess.state === 'paid' || coachAccess.state === 'trialing';
   const isLocked =
-    isPurchasesAvailable() && (params.flow === 'locked' || isFunnel) && newOrLoading;
+    isPurchasesAvailable() && (params.flow === 'locked' || isFunnel) && newOrLoading && !hasAccess;
   const source = params.flow === 'locked' ? 'locked' : isFunnel ? 'onboarding_funnel' : 'direct';
   const context = typeof params.context === 'string' ? params.context : null;
 
