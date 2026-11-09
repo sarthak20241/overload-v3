@@ -232,9 +232,9 @@ export default function ProfileScreen() {
   // The dashboard route itself re-checks via RLS, so this is a UX gate.
   const { isAdmin } = useAdminCheck();
   const signOut = async () => {
-    // Shared with the locked paywall (lib/signOutCleanup.ts). A failed Clerk
-    // sign-out still leaves for /(auth), as before.
-    try { await signOutAndCleanUp({ userId: user?.id, supabase, clerkSignOut }); } catch {}
+    // Shared with the locked paywall (lib/signOutCleanup.ts). As before, a
+    // failed Clerk sign-out still runs the cleanup and leaves for /(auth).
+    await signOutAndCleanUp({ userId: user?.id, supabase, clerkSignOut });
     router.replace('/(auth)');
   };
   const [deletingAccount, setDeletingAccount] = useState(false);
