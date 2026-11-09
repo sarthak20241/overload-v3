@@ -7,7 +7,11 @@
 --   referral  one per account, made on first ask (get_my_referral_code). A
 --             friend who redeems it gets `days` (30) of Pro, and the owner
 --             gets 30 more days. No cap on friends or rewards. The owner can't
---             redeem their own.
+--             redeem their own. KNOWN AND ACCEPTED (owner's choice,
+--             2026-11-09): with free accounts, one person can farm months
+--             with extra accounts. To cap it later, one statement:
+--               update invite_codes set max_rewards = 12 where source = 'referral';
+--             (new codes would need the same default in get_my_referral_code).
 --   campaign  made by the owner of the app (create_campaign_code), for free
 --             access: any number of days, an optional cap and end date, no
 --             owner, no reward.
