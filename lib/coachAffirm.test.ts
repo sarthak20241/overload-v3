@@ -22,5 +22,7 @@ Deno.test('Build it shows only under a question about building', () => {
   // "build" that is not about building the plan.
   assertEquals(asksToBuild('Do you want to build up your legs first?'), false);
   assertEquals(asksToBuild('Ready? Should I build the program as written?'), true);
+  // Mentions building the plan but does not offer to.
+  assertEquals(asksToBuild('Can I build it around your Sunday race?'), false);
   assertEquals(asksToBuild(null), false);
 });

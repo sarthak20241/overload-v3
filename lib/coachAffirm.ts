@@ -88,7 +88,10 @@ export function asksToBuild(text: string | null | undefined): boolean {
   // The sentence that question mark closes: back to the previous . ! ? or line break.
   const before = t.slice(0, q);
   const start = Math.max(before.lastIndexOf('.'), before.lastIndexOf('!'), before.lastIndexOf('?'), before.lastIndexOf('\n')) + 1;
-  // "build it", "build this", "build that", "build the program/plan": about
-  // building THE plan. A bare "build" ("build up your legs first?") is not.
-  return /\bbuild (it|this|that|the (program|plan|phases?))\b/i.test(t.slice(start, q));
+  // An offer to build THE plan: "want me to build it", "shall I build this",
+  // "should I build the program". A bare "build" ("build up your legs first?")
+  // or a question that only mentions building ("can I build it around your
+  // race?") is not one. Drona's discuss rules phrase the offer this way.
+  return /\b(want me to|shall i|should i|ready for me to|happy for me to|ok for me to|okay for me to) build (it|this|that|the (program|plan|phases?))\b/i
+    .test(t.slice(start, q));
 }
