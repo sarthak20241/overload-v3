@@ -54,7 +54,7 @@ export function redeemFailureCopy(reason: string): string {
     case 'invalid_code':
       return "I can't find that code. Check the letters and try again.";
     case 'own_code':
-      return "That's your own code. Send it to a friend: you both get a free month.";
+      return "That's your own code. Send it to a friend instead.";
     case 'expired':
       return 'This code has ended.';
     case 'too_many_tries':
@@ -101,9 +101,14 @@ export function referralLink(code: string): string {
   return `https://tryoverload.app/i/${normalizeCode(code)}`;
 }
 
-/** The text that goes with the link in the share sheet. */
-export function referralShareMessage(code: string): string {
-  return `I'm training with Overload. Use my link and we both get a month of Pro free: ${referralLink(code)}`;
+/**
+ * The text that goes with the link in the share sheet. A sharer who pays
+ * through a store earns nothing, so their message promises only the friend's
+ * month.
+ */
+export function referralShareMessage(code: string, paying = false): string {
+  const offer = paying ? 'you get a month of Pro free' : 'we both get a month of Pro free';
+  return `I'm training with Overload. Use my link and ${offer}: ${referralLink(code)}`;
 }
 
 export type MyReferral =

@@ -60,13 +60,16 @@ export default function ReferScreen() {
     if (!mine?.ok) return;
     try {
       // The link is inside the message. Passing `url` too shows it twice on iOS.
-      const r = await Share.share({ message: referralShareMessage(mine.code) });
+      const r = await Share.share({ message: referralShareMessage(mine.code, mine.paying) });
       track('referral_shared', { action: r.action, friends: mine.friends });
     } catch {
       /* the sheet closed or failed; nothing to do */
     }
   };
 
+  // Until the code loads we don't know if they pay: neutral words, no flash
+  // of a promise a payer won't get.
+  const loaded = !!mine?.ok;
   const paying = mine?.ok ? mine.paying : false;
 
   return (
@@ -87,10 +90,12 @@ export default function ReferScreen() {
         <View style={s.main}>
           <Text style={[s.eyebrow, { color: C.accentText }]}>INVITE FRIENDS</Text>
           <Text style={[s.title, { color: C.foreground }]}>
-            {paying ? 'Give a friend a free month.' : 'Give a month, get a month.'}
+            {!loaded ? 'Invite friends.' : paying ? 'Give a friend a free month.' : 'Give a month, get a month.'}
           </Text>
           <Text style={[s.sub, { color: C.textSecondary }]}>
-            {paying
+            {!loaded
+              ? 'Send your link to a friend. They get a month of Pro free.'
+              : paying
               ? 'Send your link. Your friend gets a month of Pro free. No card needed.'
               : 'Send your link. When a friend joins with it, you both get a month of Pro free. No card needed, and no limit on friends.'}
           </Text>

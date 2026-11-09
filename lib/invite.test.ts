@@ -9,6 +9,8 @@ Deno.test('store discount codes go to the right store, code filled in', () => {
 Deno.test('the share text carries the link', () => {
   assertEquals(referralLink('ab c12'), 'https://tryoverload.app/i/ABC12');
   assertEquals(referralShareMessage('ABC123').endsWith('https://tryoverload.app/i/ABC123'), true);
+  assertEquals(referralShareMessage('ABC123').includes('we both get'), true);
+  assertEquals(referralShareMessage('ABC123', true).includes('we both'), false);
 });
 
 Deno.test('my referral: ok, refused, network', () => {
