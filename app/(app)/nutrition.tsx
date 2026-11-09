@@ -60,7 +60,7 @@ import Svg, { Circle } from 'react-native-svg';
 import Animated, { FadeInDown, LinearTransition } from 'react-native-reanimated';
 import { ParseSpeedSheet } from '@/components/diet/ParseSpeedSheet';
 import {
-  getParseSpeed, setParseSpeed, peekParseSpeed, effectiveParseSpeed, type ParseSpeed,
+  getParseSpeed, setParseSpeed, peekParseSpeed, effectiveParseSpeed, doubleCheckRoute, type ParseSpeed,
 } from '@/lib/parseSpeed';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import {
@@ -1620,6 +1620,10 @@ export default function NutritionScreen() {
         // Only this line is looked up; the rest of the card stays as it is.
         researchLine: far ? 0 : i,
         turns: turnsRef.current.slice(),
+        // A Precise card's check goes to the food agent, which has the label
+        // lookup. Without this it ran as the retired middle tier and could
+        // land on a reply with no web tool (lib/parseSpeed doubleCheckRoute).
+        ...doubleCheckRoute(f.tier, effectiveParseSpeed(parseSpeedRef.current, canUsePreciseRef.current)),
       });
       // The daily allowance covers this lookup too, so a cap here has to say so
       // and open the paywall. Handled BEFORE setFlow: routing is a side effect
@@ -1698,6 +1702,12 @@ export default function NutritionScreen() {
           // Fire-and-forget still owes the user a word. Without this the
           // spinner just vanishes and the tap looks like it did nothing.
           return { ...cur, notice: 'Could not reach the web just now. Your numbers are unchanged.' };
+        }
+        if (res.kind === 'create') {
+          // A Precise check now says it can take agent answers, so a save card
+          // is possible in theory. A check has nowhere to draw one; say the
+          // line is unchanged rather than let the tap look like it did nothing.
+          return { ...cur, notice: 'I could not improve that one.' };
         }
         return cur;
       });
