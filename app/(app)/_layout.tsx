@@ -298,6 +298,7 @@ export default function AppLayout() {
   // and re-reads. Keep app/upgrade.tsx out of this group, or a new payer
   // would be judged on the read made before they paid.
   const [gateFresh, setGateFresh] = useState(false);
+  const [accessWaitOver, setAccessWaitOver] = useState(false);
   useEffect(() => {
     // A new account (sign-out, sign-in as someone else) starts unread.
     setGateFresh(false);
@@ -312,7 +313,6 @@ export default function AppLayout() {
   }, [gateApplies, user?.id]);
   // A hung read must not leave a new account on a spinner: after 8 s the gate
   // decides on what it has (an unknown state lets them in, fail open).
-  const [accessWaitOver, setAccessWaitOver] = useState(false);
   useEffect(() => {
     if (!gateApplies || gateFresh) return;
     const t = setTimeout(() => setAccessWaitOver(true), 8000);

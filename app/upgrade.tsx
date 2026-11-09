@@ -308,7 +308,13 @@ export default function UpgradeScreen() {
   // bought, so a locked paywall must not trap anyone. It offers a retry and
   // opens like every other failure in the gate (fail open).
   const storeDown = !loading && !packages.annual && !packages.monthly;
-  const lockedNow = isLocked && !storeDown;
+  // Once the store has failed, the way out stays while "try again" reloads.
+  const [storeFailed, setStoreFailed] = useState(false);
+  useEffect(() => {
+    if (storeDown) setStoreFailed(true);
+    else if (!loading) setStoreFailed(false);
+  }, [storeDown, loading]);
+  const lockedNow = isLocked && !storeDown && !storeFailed;
   useEffect(() => {
     if (storeDown && isLocked) markStoreDown();
   }, [storeDown, isLocked]);
