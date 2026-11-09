@@ -53,9 +53,10 @@ begin
 
   -- Linking (iPhone) only takes a friend's referral code. A campaign or
   -- old-app code would unlock Pro by itself, which on iPhone goes through
-  -- Apple: the app sends it to the App Store instead. Not a failed try: the
-  -- code is real.
+  -- Apple: the app sends it to the App Store instead. It counts as a try:
+  -- the answer tells a guesser the code exists.
   if not p_grant_friend and v_code.source <> 'referral' then
+    perform invite_note_failed_try(v_user_id);
     return jsonb_build_object('ok', false, 'reason', 'store_only');
   end if;
 
@@ -154,6 +155,12 @@ end;
 $$;
 
 revoke all on function referral_redeem_core(text, boolean) from public, anon, authenticated;
+
+-- Campaign codes are 8 to 16 letters or digits even when added by hand, not
+-- only through create_campaign_code: short ones are guessable.
+alter table invite_codes drop constraint if exists invite_codes_campaign_length_check;
+alter table invite_codes add constraint invite_codes_campaign_length_check
+  check (source <> 'campaign' or length(code) between 8 and 16);
 
 -- Android and web: the friend gets the code's days of Pro from our server.
 create or replace function redeem_invite(p_code text)

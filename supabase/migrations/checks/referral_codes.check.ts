@@ -192,7 +192,7 @@ Deno.test("iPhone link: the friend gets no server month, the sharer still does",
   assertEquals((await q<{ n: number }>(`select days_granted n from invite_redemptions where clerk_user_id = 'ifriend'`))[0].n, 0);
 });
 
-Deno.test("iPhone link: campaign and old-app codes go to the App Store, not a try", async () => {
+Deno.test("iPhone link: campaign and old-app codes go to the App Store and count as tries", async () => {
   const { q, as, user, link } = await db();
   await q(`select create_campaign_code('GYMBUDDY', 90)`);
   await q(`insert into invite_codes (code, owner_email) values ('OLDAPP1', 'o@x.com')`);
@@ -201,7 +201,11 @@ Deno.test("iPhone link: campaign and old-app codes go to the App Store, not a tr
   assertEquals((await link("GYMBUDDY")).reason, "store_only");
   assertEquals((await link("OLDAPP1")).reason, "store_only");
   assertEquals((await link("NOPE123")).reason, "invalid_code");
-  assertEquals((await q<{ n: number }>(`select count(*)::int n from invite_failed_tries where clerk_user_id = 'i2'`))[0].n, 1);
+  assertEquals((await q<{ n: number }>(`select count(*)::int n from invite_failed_tries where clerk_user_id = 'i2'`))[0].n, 3);
+  // A hand-added short campaign code is refused by the table itself.
+  let refused = false;
+  try { await q(`insert into invite_codes (code, source) values ('SHORT1', 'campaign')`); } catch { refused = true; }
+  assert(refused, "a 6-character campaign code must be refused");
   assertEquals((await q<{ n: number }>(`select count(*)::int n from invite_redemptions where clerk_user_id = 'i2'`))[0].n, 0);
 });
 
