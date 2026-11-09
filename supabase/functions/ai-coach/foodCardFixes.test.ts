@@ -115,6 +115,9 @@ Deno.test("one copied line the message never named is a copy, not more of it", (
   // Two different names in another script are not the same food: केला (banana)
   // is not a copy of अंडा (egg). Comparing ASCII only made both "".
   assertEquals(copiesCardLines([line("केला", 2, "piece"), line("banana", 1, "piece")], [prev("अंडा", 2, "piece", 100, 156)], "and a banana"), false);
+  // Known lean: a shared modifier counts as named. "boiled potato" on a
+  // "boiled egg" card keeps the addition path (the old behaviour).
+  assertEquals(copiesCardLines([line("boiled egg", 2, "piece"), line("boiled potato", 1, "piece")], EGG_CARD, "and a boiled potato"), false);
   // No text given: the old two-line rule only.
   assertEquals(copiesCardLines([line("poori", 3, "piece"), line("dosa", 1, "piece")], CARD), false);
 });
