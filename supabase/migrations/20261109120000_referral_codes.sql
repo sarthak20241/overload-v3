@@ -38,6 +38,22 @@ alter table invite_codes add constraint invite_codes_owner_check check (
   or (source = 'campaign' and owner_email is null and owner_clerk_user_id is null)
 );
 
+-- Did this friend's redemption earn the sharer a month? The friend count
+-- alone overstates it: a sharer who was paying at the time got nothing.
+alter table invite_redemptions add column if not exists owner_rewarded boolean not null default false;
+
+-- Failed code tries, for a per-account limit: a short campaign code must not
+-- be guessable by trying codes in a loop.
+create table if not exists invite_failed_tries (
+  id            bigserial primary key,
+  clerk_user_id text not null,
+  at            timestamptz not null default now()
+);
+create index if not exists idx_invite_failed_tries_user_at on invite_failed_tries (clerk_user_id, at);
+alter table invite_failed_tries enable row level security;
+revoke all on invite_failed_tries from anon, authenticated;
+revoke all on sequence invite_failed_tries_id_seq from anon, authenticated;
+
 -- One referral code per account.
 create unique index if not exists idx_invite_codes_referral_owner
   on invite_codes (owner_clerk_user_id) where source = 'referral';
@@ -80,11 +96,18 @@ begin
     return jsonb_build_object('ok', false, 'reason', 'unauthenticated');
   end if;
 
+  -- 10 wrong codes an hour per account, then a pause.
+  if (select count(*) from invite_failed_tries
+       where clerk_user_id = v_user_id and at > now() - interval '1 hour') >= 10 then
+    return jsonb_build_object('ok', false, 'reason', 'too_many_tries');
+  end if;
+
   -- Lock the code so two redemptions can't both pass the limit check.
   select * into v_code from invite_codes
    where code = upper(btrim(p_code))
      for update;
   if not found then
+    insert into invite_failed_tries (clerk_user_id) values (v_user_id);
     return jsonb_build_object('ok', false, 'reason', 'invalid_code');
   end if;
 
@@ -149,6 +172,7 @@ begin
      and not invite_is_paying(v_code.owner_clerk_user_id) then
     perform invite_extend_trial(v_code.owner_clerk_user_id, 30);
     v_rewarded := true;
+    update invite_redemptions set owner_rewarded = true where clerk_user_id = v_user_id;
   end if;
 
   return jsonb_build_object(
@@ -177,6 +201,8 @@ declare
   v_user_id text := current_clerk_user_id();
   v_code    text;
   v_friends int;
+  v_months  int;
+  v_bytes   bytea;
   -- No 0/O, 1/I/L: people read these aloud and type them.
   v_alpha   constant text := 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
   v_try     int := 0;
@@ -196,9 +222,11 @@ begin
     if v_try > 20 then
       return jsonb_build_object('ok', false, 'reason', 'no_code');
     end if;
+    -- gen_random_uuid() is a secure random source; random() is not.
+    v_bytes := uuid_send(gen_random_uuid());
     v_code := '';
-    for i in 1..6 loop
-      v_code := v_code || substr(v_alpha, 1 + floor(random() * length(v_alpha))::int, 1);
+    for i in 0..5 loop
+      v_code := v_code || substr(v_alpha, 1 + get_byte(v_bytes, i) % length(v_alpha), 1);
     end loop;
     begin
       insert into invite_codes (code, source, owner_clerk_user_id, max_redemptions, max_rewards)
@@ -211,13 +239,15 @@ begin
     end;
   end loop;
 
-  select count(*)::int into v_friends
+  select count(*)::int, count(*) filter (where owner_rewarded)::int
+    into v_friends, v_months
     from invite_redemptions where code = v_code and not is_owner;
 
   return jsonb_build_object(
     'ok', true,
     'code', v_code,
     'friends', v_friends,
+    'months_earned', v_months,
     'paying', invite_is_paying(v_user_id)
   );
 end;
@@ -244,8 +274,9 @@ as $$
 declare
   v_code text := upper(regexp_replace(coalesce(p_code, ''), '[^a-zA-Z0-9]', '', 'g'));
 begin
-  if length(v_code) < 4 or length(v_code) > 16 then
-    raise exception 'A code is 4 to 16 letters or digits';
+  -- 6+ characters: shorter ones are guessable.
+  if length(v_code) < 6 or length(v_code) > 16 then
+    raise exception 'A code is 6 to 16 letters or digits';
   end if;
   insert into invite_codes (code, source, days, max_redemptions, max_rewards, expires_at, note)
     values (v_code, 'campaign', p_days, p_max_redemptions, 0, p_expires_at, p_note);

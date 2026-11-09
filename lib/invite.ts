@@ -57,6 +57,8 @@ export function redeemFailureCopy(reason: string): string {
       return "That's your own code. Send it to a friend: you both get a free month.";
     case 'expired':
       return 'This code has ended.';
+    case 'too_many_tries':
+      return 'Too many wrong codes. Try again in an hour.';
     case 'already_redeemed':
       return "You've already used a code on this account. It's one per account.";
     case 'already_pro':
@@ -105,21 +107,27 @@ export function referralShareMessage(code: string): string {
 }
 
 export type MyReferral =
-  | { ok: true; code: string; friends: number; paying: boolean }
+  | { ok: true; code: string; friends: number; monthsEarned: number; paying: boolean }
   | { ok: false; reason: string };
 
 /** get_my_referral_code()'s jsonb, or an RPC error, as one result. */
 export function readMyReferral(data: unknown, error: unknown): MyReferral {
   if (error || !data || typeof data !== 'object') return { ok: false, reason: 'network' };
-  const r = data as { ok?: boolean; code?: string; friends?: number; paying?: boolean; reason?: string };
-  if (r.ok && r.code) return { ok: true, code: r.code, friends: r.friends ?? 0, paying: !!r.paying };
+  const r = data as { ok?: boolean; code?: string; friends?: number; months_earned?: number; paying?: boolean; reason?: string };
+  if (r.ok && r.code) {
+    return { ok: true, code: r.code, friends: r.friends ?? 0, monthsEarned: r.months_earned ?? 0, paying: !!r.paying };
+  }
   return { ok: false, reason: r.reason ?? 'unknown' };
 }
 
-/** "3 friends joined. You earned 3 free months." in plain words. */
-export function referralTally(friends: number, paying: boolean): string {
+/**
+ * "3 friends have joined. You earned 3 free months." The months are the ones
+ * the server really gave (none while the sharer was paying), never the friend
+ * count.
+ */
+export function referralTally(friends: number, monthsEarned: number): string {
   if (friends === 0) return 'No friends have joined yet.';
   const who = friends === 1 ? '1 friend has joined' : `${friends} friends have joined`;
-  if (paying) return `${who}. Thank you.`;
-  return `${who}. You earned ${friends === 1 ? '1 free month' : `${friends} free months`}.`;
+  if (monthsEarned === 0) return `${who}. Thank you.`;
+  return `${who}. You earned ${monthsEarned === 1 ? '1 free month' : `${monthsEarned} free months`}.`;
 }

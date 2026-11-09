@@ -104,7 +104,7 @@ export default function ReferScreen() {
                 <Text style={[s.codeLabel, { color: C.textMuted }]}>YOUR CODE</Text>
                 <Text selectable style={[s.code, { color: C.foreground }]}>{mine.code}</Text>
               </View>
-              <Text style={[s.tally, { color: C.textMuted }]}>{referralTally(mine.friends, mine.paying)}</Text>
+              <Text style={[s.tally, { color: C.textMuted }]}>{referralTally(mine.friends, mine.monthsEarned)}</Text>
             </>
           ) : (
             <View style={s.codeWrap}>

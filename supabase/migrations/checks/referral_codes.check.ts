@@ -69,6 +69,7 @@ Deno.test("friend and sharer both get a month, with no cap", async () => {
   assertEquals(await trialDays("alice"), 150);
   await as("alice");
   assertEquals((await myCode()).friends, 5);
+  assertEquals((await myCode()).months_earned, 5);
 });
 
 Deno.test("nobody redeems their own referral code, and one code per account", async () => {
@@ -99,6 +100,9 @@ Deno.test("a paying sharer gets no trial; a paying friend is refused", async () 
   assertEquals(r.ok, true);
   assertEquals(r.owner_rewarded, false);
   assertEquals(await trialDays("payer"), 0);
+  await as("payer");
+  assertEquals((await myCode()).friends, 1);
+  assertEquals((await myCode()).months_earned, 0); // the tally must not claim a month
   await user("payer2", ", 'pro', null");
   await as("payer2");
   assertEquals((await redeem(code)).reason, "already_pro");
@@ -107,7 +111,7 @@ Deno.test("a paying sharer gets no trial; a paying friend is refused", async () 
 Deno.test("campaign codes: own days, cap, end date, no owner reward", async () => {
   const { q, as, user, redeem, trialDays } = await db();
   assertEquals((await q(`select create_campaign_code('gym-buddy', 90, 2, null, 'poster') c`))[0].c, "GYMBUDDY");
-  await q(`select create_campaign_code('OLDDEAL', 30, null, now() - interval '1 day')`);
+  await q(`select create_campaign_code('OLDDEAL1', 30, null, now() - interval '1 day')`);
   for (const id of ["c1", "c2", "c3"]) await user(id);
   await as("c1");
   assertEquals((await redeem("GYMBUDDY")).days, 90);
@@ -116,10 +120,21 @@ Deno.test("campaign codes: own days, cap, end date, no owner reward", async () =
   assertEquals((await redeem("gymbuddy")).ok, true);
   await as("c3");
   assertEquals((await redeem("GYMBUDDY")).reason, "code_full");
-  assertEquals((await redeem("OLDDEAL")).reason, "expired");
+  assertEquals((await redeem("OLDDEAL1")).reason, "expired");
   assertEquals((await redeem("NOPE")).reason, "invalid_code");
   const [s] = await q<{ used: number }>(`select used::int from invite_code_stats() where code = 'GYMBUDDY'`);
   assertEquals(s.used, 2);
+});
+
+Deno.test("wrong codes: 10 an hour, then a pause; short campaign codes refused", async () => {
+  const { q, as, user, redeem } = await db();
+  await user("g");
+  await as("g");
+  for (let i = 0; i < 10; i++) assertEquals((await redeem(`WRONG${i}`)).reason, "invalid_code");
+  assertEquals((await redeem("WRONGX")).reason, "too_many_tries");
+  let refused = false;
+  try { await q(`select create_campaign_code('ABCD', 30)`); } catch { refused = true; }
+  assert(refused, "a 4-character campaign code must be refused");
 });
 
 Deno.test("old-app codes keep their rules: owner by email, 3 rewards", async () => {
