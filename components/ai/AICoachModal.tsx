@@ -5,7 +5,7 @@
  * 3. Generate a Workout
  * Matches Figma design exactly.
  */
-import React, { useState, useRef, useEffect, useCallback, createContext, useContext, useId } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, createContext, useContext, useId } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, BackHandler, Pressable,
   TextInput, ScrollView, FlatList, Keyboard, Platform,
@@ -20,6 +20,8 @@ import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
+import { GoalIntake } from '@/components/program/GoalIntake';
+import { goalIntakeMessage, goalIntakeSummary, type GoalIntakeAnswers } from '@/lib/goalIntake';
 import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
 import { pinOffset, pinRoom, tailAfterReply } from '@/lib/questionPin';
 import { fuelDaysText } from '@/lib/fuelDays';
@@ -3279,6 +3281,31 @@ function GenerateProgramScreen({
   // Its chat (RefineChatScreen) reports busy; this adds that a program exists.
   useCoachBusy(false, false, !!result);
   const [showRefine, setShowRefine] = useState(false);
+  // A NEW program starts with the question screens (components/program/
+  // GoalIntake), then the chat opens on the answers and Drona proposes the
+  // phases and asks to confirm. Changing a program, or a typed request,
+  // goes straight to the chat. 'asking': on the questions. 'skipped': the
+  // open chat. Answers: the chat, sent with them.
+  const [intake, setIntake] = useState<'asking' | 'skipped' | GoalIntakeAnswers>(
+    () => (existing || initialDraft ? 'skipped' : 'asking'),
+  );
+  // The last answers, so Back from the chat or the program reopens them on review.
+  const [lastAnswers, setLastAnswers] = useState<GoalIntakeAnswers | undefined>(undefined);
+  const intakeSend = useMemo(
+    () => (typeof intake === 'object' ? { text: goalIntakeMessage(intake), shown: goalIntakeSummary(intake) } : undefined),
+    [intake],
+  );
+
+  if (!result && intake === 'asking') {
+    return (
+      <GoalIntake
+        initial={lastAnswers}
+        onBack={onBack}
+        onSkip={() => setIntake('skipped')}
+        onDone={(answers) => { setLastAnswers(answers); setIntake(answers); }}
+      />
+    );
+  }
 
   // Discuss first: talk it through, coach emits generate_program → result card.
   if (!result) {
@@ -3286,11 +3313,12 @@ function GenerateProgramScreen({
       <RefineChatScreen
         kind="discuss"
         mode="refine_program"
-        onBack={onBack}
+        onBack={lastAnswers ? () => setIntake('asking') : onBack}
         onRefined={(next) => setResult(next as GeneratedProgram)}
         onRequestUpgrade={onRequestUpgrade}
         initialDraft={initialDraft}
         existing={existing}
+        autoSend={intakeSend}
       />
     );
   }
@@ -3322,7 +3350,7 @@ function GenerateProgramScreen({
     <View style={{ flex: 1 }}>
       <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
         <TouchableOpacity
-          onPress={() => setResult(null)}
+          onPress={() => { setResult(null); if (lastAnswers) setIntake('asking'); }}
           style={[s.backBtn, { backgroundColor: C.muted }]}
           hitSlop={8}
           accessibilityRole="button"
@@ -3952,6 +3980,7 @@ function RefineChatScreen({
   initialDraft,
   existing,
   phaseId,
+  autoSend,
 }: {
   // 'refine' — iterating on an already-generated workout/plan (workout or
   // plan must be provided). 'discuss' — talking with Coach Drona BEFORE any
@@ -3982,6 +4011,9 @@ function RefineChatScreen({
   // The program phase whose plan is being talked through. Sent so the server
   // can let a free user discuss the phase 1 draft they were given for free.
   phaseId?: string;
+  // Sent on open as the user's first turn (the goal intake's answers): text
+  // goes to Drona, shown is the short line the bubble shows instead.
+  autoSend?: { text: string; shown: string };
 }) {
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -4012,6 +4044,9 @@ function RefineChatScreen({
           ? `${existing.phaseName}, week ${existing.week} of ${existing.weeks}`
           : existing.phaseName;
         return `You're in ${where}. What would you like to change?`;
+      }
+      if (mode === 'refine_program' && autoSend) {
+        return "I'm Coach Drona. I have your answers. I'll shape the phases with you before I build anything.";
       }
       if (mode === 'refine_program') {
         return "I'm Coach Drona. Let's build a program toward your goal. Tell me what you're chasing, your timeline if you have one, how many days a week you can train, and anything I should work around. When you're set, I'll lay out the phases.";
@@ -4070,6 +4105,9 @@ function RefineChatScreen({
   const typewriterRef = useRef<ReturnType<typeof createTypewriter> | null>(null);
   const pendingAssistantIdRef = useRef<string | null>(null);
   const [sheetTarget, setSheetTarget] = useState<MessageSheetTarget | null>(null);
+  // User bubbles that show a short line instead of what was sent (autoSend).
+  const shownRef = useRef(new Map<string, string>());
+  const inputRef = useRef<TextInput>(null);
 
   // Translate a terminal-tool emission into the right shape and hand it
   // up. Guards against double-fire (live + done) and against tool-name
@@ -4089,11 +4127,12 @@ function RefineChatScreen({
     }
   }, [mode, onRefined]);
 
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
+  const handleSend = useCallback(async (override?: { text: string; shown?: string }) => {
+    const text = (override?.text ?? input).trim();
     if (!text || loading) return;
 
     const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', content: text };
+    if (override?.shown) shownRef.current.set(userMsg.id, override.shown);
     const assistantId = (Date.now() + 1).toString();
     const placeholder: ChatMessage = {
       id: assistantId, role: 'assistant', content: '',
@@ -4281,6 +4320,22 @@ function RefineChatScreen({
       freshToken: freshTokenFrom(getToken),
     });
   }, [input, loading, messages, getToken, recapText, starterText, mode, kind, handleStructured, onRequestUpgrade, phaseId]);
+
+  // The goal intake's answers go out once, on open.
+  const autoSentRef = useRef(false);
+  useEffect(() => {
+    if (!autoSend || autoSentRef.current) return;
+    autoSentRef.current = true;
+    handleSend(autoSend);
+  }, [autoSend, handleSend]);
+
+  // Drona has proposed and asked to confirm: one tap builds, one tap opens
+  // the box to change something. "Build it" is a pure affirmative, so the
+  // turn forces generate_program (isPureAffirmative above).
+  const lastShown = messages[messages.length - 1];
+  const showConfirm = !!autoSend && kind === 'discuss' && mode === 'refine_program'
+    && !loading && !turnFailed && messages.length > 2
+    && lastShown?.role === 'assistant' && !!lastShown.content && lastShown.content.includes('?');
 
   // Stop generating (see ChatScreen.handleStop). One difference: if the
   // terminal tool had already fired, the plan/workout exists server-side and
@@ -4476,7 +4531,7 @@ function RefineChatScreen({
                   streaming={streaming}
                 />
               ) : (
-                <Text style={[s.chatText, { color: C.foreground }]}>{msg.content}</Text>
+                <Text style={[s.chatText, { color: C.foreground }]}>{shownRef.current.get(msg.id) ?? msg.content}</Text>
               )}
               {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
                 <CitationList citations={msg.citations} />
@@ -4500,6 +4555,29 @@ function RefineChatScreen({
         <Animated.View style={liftSpaceStyle} />
       </ScrollView>
 
+      {showConfirm && (
+        <Animated.View entering={FadeInDown.duration(250)} style={s.confirmRow}>
+          <TouchableOpacity
+            onPress={() => { haptics.tap(); track('goal_intake_build_tapped'); handleSend({ text: 'Build it' }); }}
+            style={[s.confirmBtn, { backgroundColor: Colors.primary }]}
+            accessibilityRole="button"
+            accessibilityLabel="Build this program"
+          >
+            <Feather name="check" size={14} color={Colors.primaryFg} />
+            <Text style={[s.confirmText, { color: Colors.primaryFg }]}>Build it</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => { haptics.tap(); inputRef.current?.focus(); }}
+            style={[s.confirmBtn, { backgroundColor: C.muted }]}
+            accessibilityRole="button"
+            accessibilityLabel="Change something before building"
+          >
+            <Feather name="edit-2" size={13} color={C.foreground} />
+            <Text style={[s.confirmText, { color: C.foreground }]}>Change something</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      )}
+
       {/* Input. Also the orb's dock (see ChatScreen). */}
       <View
         collapsable={false}
@@ -4519,6 +4597,7 @@ function RefineChatScreen({
         >
           <View style={[s.fieldOrbSlot, { width: FIELD_ORB, marginLeft: -4, marginRight: 0 }]} />
           <TextInput
+            ref={inputRef}
             value={input}
             onChangeText={setInput}
             placeholder={writingMsg ? 'Drona is writing' : 'Tell me what to change'}
@@ -4526,7 +4605,7 @@ function RefineChatScreen({
             style={[s.chatInput, { color: C.foreground }]}
             multiline
             maxLength={500}
-            onSubmitEditing={handleSend}
+            onSubmitEditing={() => handleSend()}
             blurOnSubmit
           />
           {loading ? (
@@ -4541,7 +4620,7 @@ function RefineChatScreen({
             </TouchableOpacity>
           ) : (
             <TouchableOpacity
-              onPress={handleSend}
+              onPress={() => handleSend()}
               disabled={!input.trim()}
               style={[
                 s.sendBtn,
@@ -5584,6 +5663,16 @@ const s = StyleSheet.create({
   screenTitle: {
     fontSize: FontSize.lg, fontWeight: FontWeight.bold,
   },
+  // Goal intake chat: Build it / Change something under Drona's proposal.
+  confirmRow: {
+    flexDirection: 'row', gap: 8,
+    paddingHorizontal: Spacing.xl, paddingBottom: Spacing.sm,
+  },
+  confirmBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    height: 44, borderRadius: Radius.full,
+  },
+  confirmText: { fontSize: FontSize.md, fontWeight: FontWeight.semibold },
 
   // Chat
   chatMessages: {

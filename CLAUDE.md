@@ -95,6 +95,7 @@ deno test --allow-all lib/screenCache.test.ts  # Goal & Plan screens paint from 
 deno test --allow-all lib/chartScale.test.ts   # Goal screen chart: readings width, goal ring at the program end
 deno test --allow-all lib/phasePick.test.ts    # the active phase by seq, never by list index
 deno test --allow-all lib/fitnessGoals.test.ts
+deno test --allow-all --unstable-sloppy-imports lib/goalIntake.test.ts # new goal: the question screens, what Drona is sent, ask before build
 deno test --allow-all lib/coachTopic.test.ts   # chats opened from the app: Drona's hidden topic turn + what is sent
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/coachConversations.test.ts  # saved chats: topic title, hidden turn kept
 deno test --allow-all lib/missingColumn.test.ts # app-before-migration column fallbacks
