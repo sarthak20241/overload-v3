@@ -343,7 +343,10 @@ export default function UpgradeScreen() {
     while (Date.now() < deadline) {
       try {
         const { data } = await supabase.rpc('get_coach_access_status');
-        if ((data as { state?: string } | null)?.state === 'paid') return true;
+        // 'trialing' counts too: it is Pro everywhere, and the hard-paywall
+        // gate lets it in, so a buyer must never wait on it.
+        const state = (data as { state?: string } | null)?.state;
+        if (state === 'paid' || state === 'trialing') return true;
       } catch {
         /* network blip, keep polling */
       }
