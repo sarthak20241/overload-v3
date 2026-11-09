@@ -284,7 +284,10 @@ export default function AppLayout() {
   // fresh sign-up: that path routes to the phase 1 build and then the paywall
   // itself, so the gate must not jump ahead of it.
   const { access: coachAccess, refreshFresh: refreshCoachAccess } = useCoachAccess();
-  const [drainedSignup, setDrainedSignup] = useState(false);
+  // The account the drain was for: the exemption holds only for it, never
+  // for another account signed in later on the same mounted layout.
+  const [drainedFor, setDrainedFor] = useState<string | null>(null);
+  const drainedSignup = !!drainedFor && drainedFor === (user?.id ?? null);
   // The gate only decides on a fresh server answer. The hook paints the last
   // saved access first, and right after a purchase, restore or code that saved
   // value still says 'free': deciding on it would send a new Pro straight
@@ -314,7 +317,8 @@ export default function AppLayout() {
     if (!gateApplies || gateFresh) return;
     const t = setTimeout(() => setAccessWaitOver(true), 8000);
     return () => clearTimeout(t);
-  }, [gateApplies, gateFresh]);
+    // user?.id too: a new account restarts its own 8 s wait.
+  }, [gateApplies, gateFresh, user?.id]);
   // The per-request-auth client (stable identity): it fails loudly when no
   // Clerk token is available, so the check can't mistake an anon empty-rows
   // response for a brand-new account.
@@ -348,7 +352,7 @@ export default function AppLayout() {
       .then((drained) => {
         if (drained) {
           const { dest, firstPhaseId } = drained;
-          if (!cancelled) setDrainedSignup(true);
+          if (!cancelled) setDrainedFor(target.clerkId);
           void flushNow();
           settle(false);
           // Sign-up's next step is phase 1's workouts, not the dashboard:
