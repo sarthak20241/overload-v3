@@ -4622,8 +4622,15 @@ export function scopeCorrection(
  * addition that matches one line exactly. The cost of the rule is a user who
  * really ate the same two lines again in one message; that turn now edits the
  * card instead of doubling it, which they can see and fix.
+ *
+ * One copied line is enough when `text` (this message only) does not name its
+ * food. An addition lists only food the message names, so a card line the
+ * message never mentions came from the card. Live, 2026-11-09: "2 boiled eggs"
+ * made a one-line card, and "And a banana" came back as the egg line plus a
+ * banana, flagged an addition. The app appended both and the eggs counted
+ * twice. "3 more pooris and a dosa" still adds: it names the poori.
  */
-export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousItem[]): boolean {
+export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousItem[], text?: string): boolean {
   const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   // "piece" / "pieces", "puri" / "puries", "box" / "boxes", "berry" /
   // "berries": one is the other plus a plural ending, and nothing else, so
@@ -4645,7 +4652,10 @@ export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousIt
       sameUnit(it.unit || "serving", p.serving_label || "serving")
     )
   );
-  return copies.length >= 2;
+  if (copies.length >= 2) return true;
+  if (text === undefined) return false;
+  const said = new Set(foodWords(text));
+  return copies.some((it) => !foodWords(it.name).some((w) => said.has(w)));
 }
 
 /**
@@ -7063,7 +7073,7 @@ async function runParseMealCore(
   // Only trust the correction flag when a previous meal was actually supplied.
   // A turn tagged as an addition that copies card lines back word for word is a
   // correction whatever the flag says (copiesCardLines).
-  const copiedCard = hasPrevious && ext.corrects_previous !== true && copiesCardLines(extItems, prevItems);
+  const copiedCard = hasPrevious && ext.corrects_previous !== true && copiesCardLines(extItems, prevItems, input.text);
   if (copiedCard) {
     steps.push({ iter: 0, tool: "correction_inferred", input: { reason: "copied_card_lines", extracted: extItems.length, previous: prevItems.length } });
   }
