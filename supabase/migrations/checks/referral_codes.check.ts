@@ -229,6 +229,17 @@ Deno.test("iPhone link: an old-app owner and their friend link; Apple gives thei
   assertEquals(await trialDays("oldowner"), 30); // the owner still earns a month
 });
 
+Deno.test("iPhone link: an old-app owner who links after friends gets the months they earned", async () => {
+  const { q, as, user, link, redeem, trialDays } = await db();
+  await q(`insert into invite_codes (code, owner_email) values ('OLDAPP2', 'p@x.com')`);
+  for (const f of ["fa", "fb"]) { await user(f); await as(f); assertEquals((await redeem("OLDAPP2")).ok, true); }
+  await q(`insert into user_profiles (clerk_user_id, email) values ('lateowner', 'p@x.com')`);
+  await as("lateowner");
+  const r = await link("OLDAPP2");
+  assertEquals(r.days, 60);
+  assertEquals(await trialDays("lateowner"), 60);
+});
+
 Deno.test("old-app codes keep their rules: owner by email, 3 rewards", async () => {
   const { q, as, user, redeem, trialDays } = await db();
   await q(`insert into invite_codes (code, owner_email) values ('OLD1', 'Owner@x.com')`);

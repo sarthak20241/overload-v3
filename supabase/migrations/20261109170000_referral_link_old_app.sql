@@ -10,6 +10,15 @@
 --    spread the 10-an-hour guess limit, so a longer code keeps guessing
 --    useless. Codes already made keep their 6 characters.
 --
+-- 3. On iPhone an old-app owner still gets the months their friends already
+--    earned them (30 per friend, up to the code's cap): those are rewards, like
+--    a sharer's month, not their own code unlocking Pro. Apple's offer covers
+--    only their own first month.
+--
+-- KNOWN AND ACCEPTED (owner, 2026-11-09): on iPhone the sharer's month is
+-- given when a friend links, without checking the friend later redeems
+-- Apple's offer. Watched with referral_watch(), not limited.
+--
 -- Note for readers: redeem_invite's body in 20261109120000 is replaced by the
 -- wrapper in 20261109150000; referral_redeem_core is the live logic.
 
@@ -112,8 +121,10 @@ begin
   end if;
 
   if not p_grant_friend then
-    -- iPhone: Apple gives this person's month, not us.
-    v_days := 0;
+    -- iPhone: Apple gives this person's own month, not us. An old-app owner
+    -- still gets the months their friends earned them.
+    v_days := case when v_is_owner
+      then 30 * least(v_friends, coalesce(v_code.max_rewards, v_friends)) else 0 end;
   elsif v_is_owner then
     -- old_app owner: the code's days, plus a month for each friend who
     -- already joined.
