@@ -1,6 +1,6 @@
 // Run with: deno test --allow-all lib/foodCardBack.test.ts
 import { assertEquals } from 'jsr:@std/assert@1';
-import { withBack, stepBack, boxAfterBack, backDepth, BACK_STEPS, type CardBack } from './foodCardBack.ts';
+import { withBack, stepBack, boxAfterBack, backDepth, cancelPlan, arrivalAfter, BACK_STEPS, type CardBack } from './foodCardBack.ts';
 
 type Card = { items: string[]; before?: CardBack<Card> };
 
@@ -49,4 +49,26 @@ Deno.test('a long chat keeps only the last BACK_STEPS steps', () => {
 Deno.test('a half-typed follow-up rides after the words, not over them', () => {
   assertEquals(boxAfterBack('and a banana', ''), 'and a banana');
   assertEquals(boxAfterBack('and a banana', '  no sugar '), 'and a banana, no sugar');
+});
+
+Deno.test('cancel on a follow-up goes back to the card and its chat; on a first message the meal goes', () => {
+  const first: Card = withBack({ items: ['eggs'] }, null);
+  const turns = [{ role: 'user' as const, text: 'eggs' }];
+  const back = { review: first, turns, last: 'and a banana' };
+  assertEquals(cancelPlan(true, back), { kind: 'back', review: first, turns });
+  assertEquals(cancelPlan(true, null), { kind: 'discard' });
+  // Nothing in flight: the X is a Discard, even with a step stored.
+  assertEquals(cancelPlan(false, back), { kind: 'discard' });
+});
+
+Deno.test('a cancel is not an arrival, and the flag is used once', () => {
+  assertEquals(arrivalAfter(true), { show: false, cancelled: false });
+  assertEquals(arrivalAfter(false), { show: true, cancelled: false });
+});
+
+Deno.test('a reply that left the card as it was still gives its message back', () => {
+  const first: Card = withBack({ items: ['eggs'] }, null);
+  const replied = withBack({ items: ['eggs'] }, { review: first, turns: [], last: 'is that right?' });
+  const back = stepBack(replied)!;
+  assertEquals([back.last, back.review.items], ['is that right?', ['eggs']]);
 });

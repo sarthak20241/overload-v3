@@ -53,6 +53,24 @@ export function boxAfterBack(last: string, typed: string): string {
   return typed.trim() ? `${last}, ${typed.trim()}` : last;
 }
 
+/** Cancel while a message is read. A follow-up goes back to the card it was
+ *  about (and the chat before it); a first message has no card, so the meal
+ *  goes. `running`: a parse is in flight. Nothing running is a Discard. */
+export type CancelPlan<C> =
+  | { kind: 'back'; review: C; turns: Turn[] }
+  | { kind: 'discard' };
+
+export function cancelPlan<C>(running: boolean, back: CardBack<C> | null): CancelPlan<C> {
+  return running && back ? { kind: 'back', review: back.review, turns: back.turns } : { kind: 'discard' };
+}
+
+/** A parse stepped out of running. `cancelled`: the step was a cancel going
+ *  back to the card, not an answer, so nothing is opened or toasted. The
+ *  flag is used once: the next answer is a real one. */
+export function arrivalAfter(cancelled: boolean): { show: boolean; cancelled: false } {
+  return { show: !cancelled, cancelled: false };
+}
+
 /** How many messages the arrow can still go back on this card. */
 export function backDepth<C extends object>(card: WithBack<C>): number {
   let n = 0;

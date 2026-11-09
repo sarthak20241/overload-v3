@@ -34,7 +34,7 @@ import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMealCard';
 import { MealWaitSheet } from '@/components/diet/MealWaitSheet';
-import { withBack, stepBack, boxAfterBack, type CardBack } from '@/lib/foodCardBack';
+import { withBack, stepBack, boxAfterBack, cancelPlan, arrivalAfter, type CardBack } from '@/lib/foodCardBack';
 import { MealResultScreen } from '@/components/diet/MealResultScreen';
 import {
   arrivalAction, showPlan, readyLine, readyAction, packReady, packAdding, unpackReady, readyStoreStep, settleRestoredKey, stepAmount, scaleLine, type ReadyKind,
@@ -633,7 +633,9 @@ export default function NutritionScreen() {
     if (!running(was) || running(flow.status)) return;
     // The parse is over: nothing is in flight for a cancel to go back from.
     inFlightBackRef.current = null;
-    if (cancelledRef.current) { cancelledRef.current = false; return; }
+    const arrived = arrivalAfter(cancelledRef.current);
+    cancelledRef.current = arrived.cancelled;
+    if (!arrived.show) return;
     const how = arrivalAction({
       sheetOpen: waitOpenRef.current,
       resultOpen: resultOpenRef.current,
@@ -2015,16 +2017,16 @@ export default function NutritionScreen() {
   const onDismiss = useCallback(() => {
     // Cancelling a follow-up while it is read stops that message only. The
     // card it was about stays, as it was before the message.
-    const back = inFlightBackRef.current;
-    if ((flow.status === 'analysing' || flow.status === 'streaming') && back) {
+    const plan = cancelPlan(flow.status === 'analysing' || flow.status === 'streaming', inFlightBackRef.current);
+    if (plan.kind === 'back') {
       track('food_followup_cancelled', { flow_status: flow.status });
       parseTokenRef.current += 1;
       parseAbortRef.current?.abort();
       inFlightBackRef.current = null;
       cancelledRef.current = true;
-      turnsRef.current = back.turns;
+      turnsRef.current = plan.turns;
       setWaitOpen(false);
-      setFlow(back.review);
+      setFlow(plan.review);
       return;
     }
     track('parse_proposal_rejected', {
