@@ -180,23 +180,30 @@ begin
     v_days := v_code.days;
   end if;
 
-  v_expires := invite_extend_trial(v_user_id, v_days);
-
-  insert into invite_redemptions (clerk_user_id, code, is_owner, days_granted)
-    values (v_user_id, v_code.code, v_is_owner, v_days);
-
   -- A friend joined: the owner earns a month, if they have an account, are
   -- under the reward cap, and are not paying through a store. An old-app
   -- owner who has not joined yet gets it on their own redemption.
-  if not v_is_owner
+  v_rewarded := not v_is_owner
      and v_code.source <> 'campaign'
      and v_code.owner_clerk_user_id is not null
      and (v_code.max_rewards is null or v_friends < v_code.max_rewards)
-     and not invite_is_paying(v_code.owner_clerk_user_id) then
+     and not invite_is_paying(v_code.owner_clerk_user_id);
+
+  -- Two trial rows change: extend them in id order. Two friends using each
+  -- other's codes at the same moment would otherwise lock the rows in
+  -- opposite orders and deadlock.
+  if v_rewarded and v_code.owner_clerk_user_id < v_user_id then
     perform invite_extend_trial(v_code.owner_clerk_user_id, 30);
-    v_rewarded := true;
-    update invite_redemptions set owner_rewarded = true where clerk_user_id = v_user_id;
+    v_expires := invite_extend_trial(v_user_id, v_days);
+  else
+    v_expires := invite_extend_trial(v_user_id, v_days);
+    if v_rewarded then
+      perform invite_extend_trial(v_code.owner_clerk_user_id, 30);
+    end if;
   end if;
+
+  insert into invite_redemptions (clerk_user_id, code, is_owner, days_granted, owner_rewarded)
+    values (v_user_id, v_code.code, v_is_owner, v_days, v_rewarded);
 
   return jsonb_build_object(
     'ok', true,
