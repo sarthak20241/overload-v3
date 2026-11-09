@@ -905,20 +905,25 @@ export default function UpgradeScreen() {
                   <Text style={[u.footLink, { color: C.textMuted }]}>Restore</Text>
                 )}
               </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}
-                accessibilityRole="link"
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Text style={[u.footLink, { color: C.textMuted }]}>Terms</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => Linking.openURL('https://tryoverload.app/privacy.html')}
-                accessibilityRole="link"
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Text style={[u.footLink, { color: C.textMuted }]}>Privacy</Text>
-              </TouchableOpacity>
+              {/* One item, two links: Apple wants both pages on a paywall,
+                  and one item leaves room for "Have a code?". */}
+              <Text style={[u.footLink, { color: C.textMuted }]}>
+                <Text
+                  onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}
+                  accessibilityRole="link"
+                  suppressHighlighting
+                >
+                  Terms
+                </Text>
+                {' & '}
+                <Text
+                  onPress={() => Linking.openURL('https://tryoverload.app/privacy.html')}
+                  accessibilityRole="link"
+                  suppressHighlighting
+                >
+                  Privacy
+                </Text>
+              </Text>
               {isLocked && (
                 <TouchableOpacity
                   onPress={handleSignOut}
