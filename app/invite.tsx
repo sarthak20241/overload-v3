@@ -98,7 +98,10 @@ export default function InviteScreen() {
       setSuccess(redeemSuccessCopy(result.days));
     } else {
       track('invite_failed', { reason: result.reason });
-      if (result.reason === 'already_redeemed' || result.reason === 'already_pro') clearPendingInvite();
+      // Codes that will never work for this account are not kept for later.
+      if (['already_redeemed', 'already_pro', 'own_code', 'expired', 'code_full'].includes(result.reason)) {
+        clearPendingInvite();
+      }
       setError(redeemFailureCopy(result.reason));
       if (result.reason === 'invalid_code' && (Platform.OS === 'ios' || Platform.OS === 'android')) {
         setMaybeStoreCode(clean);
