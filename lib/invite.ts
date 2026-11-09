@@ -37,14 +37,26 @@ export async function clearPendingInvite(): Promise<void> {
 }
 
 export type RedeemResult =
-  | { ok: true; days: number; isOwner: boolean }
+  | { ok: true; days: number; isOwner: boolean; expiresAt: string | null; source: string; ownerRewarded: boolean }
   | { ok: false; reason: string };
 
 /** redeem_invite()'s jsonb, or an RPC error, as one result. */
 export function readRedeemResult(data: unknown, error: unknown): RedeemResult {
   if (error || !data || typeof data !== 'object') return { ok: false, reason: 'network' };
-  const r = data as { ok?: boolean; days?: number; is_owner?: boolean; reason?: string };
-  if (r.ok) return { ok: true, days: r.days ?? 30, isOwner: !!r.is_owner };
+  const r = data as {
+    ok?: boolean; days?: number; is_owner?: boolean; reason?: string;
+    expires_at?: string | null; source?: string; owner_rewarded?: boolean;
+  };
+  if (r.ok) {
+    return {
+      ok: true,
+      days: r.days ?? 30,
+      isOwner: !!r.is_owner,
+      expiresAt: r.expires_at ?? null,
+      source: r.source ?? 'referral',
+      ownerRewarded: !!r.owner_rewarded,
+    };
+  }
   return { ok: false, reason: r.reason ?? 'unknown' };
 }
 
@@ -142,4 +154,42 @@ export function referralTally(friends: number, monthsEarned: number): string {
   const who = friends === 1 ? '1 friend has joined' : `${friends} friends have joined`;
   if (monthsEarned === 0) return `${who}. Thank you.`;
   return `${who}. You earned ${monthsEarned === 1 ? '1 free month' : `${monthsEarned} free months`}.`;
+}
+
+/** "1 month", "3 months", "45 days": whole months when they are whole. */
+export function grantSpan(days: number): string {
+  const months = days / 30;
+  if (Number.isInteger(months)) return months === 1 ? '1 month' : `${months} months`;
+  return `${days} days`;
+}
+
+/** What the "code applied" screen shows, so the person sees exactly what they got. */
+export interface AppliedSummary {
+  title: string;
+  rows: Array<{ label: string; value: string }>;
+  friendLine: string | null;
+}
+
+export function appliedSummary(
+  result: Extract<RedeemResult, { ok: true }>,
+  code: string,
+  locale = 'en-US',
+): AppliedSummary {
+  const until = result.expiresAt ? new Date(result.expiresAt) : null;
+  const untilText = until && Number.isFinite(until.getTime())
+    ? until.toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' })
+    : null;
+  const rows = [
+    { label: 'Code', value: normalizeCode(code) },
+    { label: 'You got', value: `${grantSpan(result.days)} of Pro, free` },
+    ...(untilText ? [{ label: 'Pro until', value: untilText }] : []),
+    { label: 'Card', value: 'Not needed. Nothing renews.' },
+  ];
+  return {
+    title: 'Code applied.',
+    rows,
+    friendLine: result.source === 'referral' && result.ownerRewarded
+      ? 'Your friend got a free month too.'
+      : null,
+  };
 }

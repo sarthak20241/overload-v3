@@ -39,7 +39,8 @@ import {
   readPendingInvite,
   readRedeemResult,
   redeemFailureCopy,
-  redeemSuccessCopy,
+  appliedSummary,
+  type AppliedSummary,
   savePendingInvite,
   storeRedeemUrl,
 } from '@/lib/invite';
@@ -53,7 +54,7 @@ export default function InviteScreen() {
   const [code, setCode] = useState(normalizeCode(params.code ?? ''));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [success, setSuccess] = useState<AppliedSummary | null>(null);
   // Our server doesn't know the code: it may be an App Store or Play
   // discount code, which only the store can redeem.
   const [maybeStoreCode, setMaybeStoreCode] = useState<string | null>(null);
@@ -95,7 +96,7 @@ export default function InviteScreen() {
       track('invite_redeemed', { days: result.days, is_owner: result.isOwner });
       clearPendingInvite();
       invalidateCoachAccess();
-      setSuccess(redeemSuccessCopy(result.days));
+      setSuccess(appliedSummary(result, clean));
     } else {
       track('invite_failed', { reason: result.reason });
       // Codes that will never work for this account are not kept for later.
@@ -129,16 +130,37 @@ export default function InviteScreen() {
         style={s.body}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
+        {success ? (
+          // Code applied: say exactly what the person got, then one way on.
+          <View style={s.main}>
+            <View style={[s.doneMark, { backgroundColor: C.primaryMuted }]}>
+              <Feather name="check" size={28} color={C.accentText} />
+            </View>
+            <Text style={[s.eyebrow, { color: C.accentText }]}>OVERLOAD PRO</Text>
+            <Text style={[s.title, { color: C.foreground }]}>{success.title}</Text>
+            <View style={[s.summary, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+              {success.rows.map((row, i) => (
+                <View
+                  key={row.label}
+                  style={[s.summaryRow, i > 0 && { borderTopWidth: 1, borderTopColor: C.borderSubtle }]}
+                >
+                  <Text style={[s.summaryLabel, { color: C.textMuted }]}>{row.label}</Text>
+                  <Text style={[s.summaryValue, { color: C.foreground }]}>{row.value}</Text>
+                </View>
+              ))}
+            </View>
+            {success.friendLine && (
+              <Text style={[s.friendLine, { color: C.textSecondary }]}>{success.friendLine}</Text>
+            )}
+          </View>
+        ) : (
         <View style={s.main}>
           <Text style={[s.eyebrow, { color: C.accentText }]}>INVITE</Text>
-          <Text style={[s.title, { color: C.foreground }]}>
-            {success ? "You're in." : 'Got a code?'}
-          </Text>
+          <Text style={[s.title, { color: C.foreground }]}>Got a code?</Text>
           <Text style={[s.sub, { color: C.textSecondary }]}>
-            {success
-              ?? (signedOut
-                ? 'Make your free account first. Then open your invite link again, or enter the code here.'
-                : 'A code from a friend gives you a month of Pro, free. No card needed.')}
+            {signedOut
+              ? 'Make your free account first. Then open your invite link again, or enter the code here.'
+              : 'A code from a friend gives you a month of Pro, free. No card needed.'}
           </Text>
 
           {!success && !signedOut && (
@@ -178,6 +200,7 @@ export default function InviteScreen() {
             </>
           )}
         </View>
+        )}
 
         <View style={s.footer}>
           <PressableScale
@@ -198,8 +221,8 @@ export default function InviteScreen() {
                 : signedOut
                   ? 'Make my free account'
                   : busy
-                    ? 'Checking your code…'
-                    : 'Use my code'}
+                    ? 'Applying…'
+                    : 'Apply code'}
             </Text>
           </PressableScale>
         </View>
@@ -250,6 +273,25 @@ const s = StyleSheet.create({
     textAlign: 'center',
   },
   error: { fontSize: FontSize.sm, lineHeight: 18, marginTop: Spacing.sm, textAlign: 'center' },
+  doneMark: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing.lg,
+  },
+  summary: { marginTop: Spacing.xl, borderRadius: Radius.lg, borderWidth: 1, paddingHorizontal: Spacing.lg },
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingVertical: Spacing.md,
+  },
+  summaryLabel: { fontSize: FontSize.sm },
+  summaryValue: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, flexShrink: 1, textAlign: 'right' },
+  friendLine: { fontSize: FontSize.sm, marginTop: Spacing.md, textAlign: 'center' },
   storeLink: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, marginTop: Spacing.md, textAlign: 'center' },
   footer: { paddingBottom: Spacing.lg },
   cta: {

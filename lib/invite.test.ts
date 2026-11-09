@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert';
-import { APP_STORE_ID, readMyReferral, referralLoadError, redeemFailureCopy, referralLink, referralShareMessage, referralTally, storeRedeemUrl } from './invite.ts';
+import { APP_STORE_ID, appliedSummary, grantSpan, readMyReferral, readRedeemResult, referralLoadError, redeemFailureCopy, referralLink, referralShareMessage, referralTally, storeRedeemUrl } from './invite.ts';
 
 Deno.test('store discount codes go to the right store, code filled in', () => {
   assertEquals(storeRedeemUrl(' spring-25 ', 'ios'), 'https://apps.apple.com/redeem?ctx=offercodes&id=6773063775&code=SPRING25');
@@ -41,4 +41,28 @@ Deno.test('share screen errors say what to do', () => {
 Deno.test('new refusal reasons have their own words', () => {
   assertEquals(redeemFailureCopy('own_code').startsWith("That's your own code"), true);
   assertEquals(redeemFailureCopy('expired'), 'This code has ended.');
+});
+
+Deno.test('code applied: what was given, until when, and the friend line', () => {
+  const r = readRedeemResult({ ok: true, days: 30, is_owner: false, expires_at: '2026-12-09T10:00:00Z', source: 'referral', owner_rewarded: true }, null);
+  if (!r.ok) throw new Error('expected ok');
+  const a = appliedSummary(r, 'j9b-qch');
+  assertEquals(a.title, 'Code applied.');
+  assertEquals(a.rows, [
+    { label: 'Code', value: 'J9BQCH' },
+    { label: 'You got', value: '1 month of Pro, free' },
+    { label: 'Pro until', value: 'December 9, 2026' },
+    { label: 'Card', value: 'Not needed. Nothing renews.' },
+  ]);
+  assertEquals(a.friendLine, 'Your friend got a free month too.');
+});
+
+Deno.test('code applied: a campaign code names its own length and no friend', () => {
+  const r = readRedeemResult({ ok: true, days: 90, source: 'campaign', owner_rewarded: false }, null);
+  if (!r.ok) throw new Error('expected ok');
+  const a = appliedSummary(r, 'GYMBUDDY');
+  assertEquals(a.rows[1].value, '3 months of Pro, free');
+  assertEquals(a.rows.some((x) => x.label === 'Pro until'), false);
+  assertEquals(a.friendLine, null);
+  assertEquals(grantSpan(45), '45 days');
 });
