@@ -2976,6 +2976,17 @@ function sourcesDisagree(c: CandidateFood): boolean {
 
 // Exported for tests: this is the exact shape decide sees for a candidate, and
 // what it does NOT say on the agreeing case is as load-bearing as what it does.
+/** The saved food decide is asked to judge (saved_food_check). */
+export function savedCheckPayload(
+  check: { candidate: CandidateFood; confidence: number; from?: "score" | "choice" },
+): Record<string, unknown> {
+  // jev_same is read as "the chance it is the same food". A choice pick's
+  // odds are a share between her saved foods, so they are left out.
+  return check.from === "choice"
+    ? candidatePayload(check.candidate)
+    : { ...candidatePayload(check.candidate), jev_same: Math.round(check.confidence * 100) / 100 };
+}
+
 export function candidatePayload(c: CandidateFood): Record<string, unknown> {
   return {
     food_id: c.food_id,
@@ -3052,7 +3063,7 @@ export interface ResolvedItem extends ExtractedItem {
   /** A food this user saved that Jev scored between MEMORY_MAYBE_FLOOR and
    *  MEMORY_FLOOR: not served, and not a candidate. Decide is shown it beside
    *  the candidates and says whether the user's words mean it. */
-  savedCheck?: { candidate: CandidateFood; confidence: number };
+  savedCheck?: { candidate: CandidateFood; confidence: number; from?: "score" | "choice" };
   /** Rows the brand check took out (another company's product). Never logged;
    *  decide sees them only as a range for its own estimate. */
   similar?: CandidateFood[];
@@ -7947,7 +7958,7 @@ async function runParseMealCore(
           cand.food_id as string,
           memoryStamp(maybe, memTimeZone, memoryInputName({ name: memoryLineName(item), brand: item.brand ?? null })),
         );
-        const savedCheck = { candidate: cand, confidence: memory[idx]!.confidence };
+        const savedCheck = { candidate: cand, confidence: memory[idx]!.confidence, from: memory[idx]!.maybeFrom };
         return resolveOneItem(
           deps, item, steps, toolCalls, stapleNames,
           superMode
@@ -8192,10 +8203,7 @@ async function runParseMealCore(
       ...(r.labelNotFound ? { label_not_found: true } : {}),
       ...(r.savedCheck
         ? {
-          saved_food_check: {
-            ...candidatePayload(r.savedCheck.candidate),
-            jev_same: Math.round(r.savedCheck.confidence * 100) / 100,
-          },
+          saved_food_check: savedCheckPayload(r.savedCheck),
         }
         : {}),
       // No food_id on purpose: these can inform an estimate, never be logged.

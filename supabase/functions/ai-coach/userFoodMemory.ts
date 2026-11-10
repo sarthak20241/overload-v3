@@ -496,6 +496,10 @@ export interface MemoryMatch {
   /** No food served, but this one scored MEMORY_MAYBE_FLOOR or more: decide
    *  is asked whether it is the same food. `confidence` is its score. */
   maybe?: MemoryFood | null;
+  /** Where the maybe came from. "score": its own same-food score, which is
+   *  `confidence`. "choice": the choice question's odds against her other
+   *  saved foods, which are not a same-food score. */
+  maybeFrom?: "score" | "choice";
   trace: Record<string, unknown>;
 }
 
@@ -665,7 +669,7 @@ export async function matchMemory(
       const m = res?.ok ? decideMemory(list, scores, MEMORY_MAYBE_FLOOR, lookup) : null;
       if (m?.food) {
         trace.maybe = { name: m.food.name.slice(0, 60), conf: r2(m.confidence) };
-        return { food: null, confidence: m.confidence, maybe: m.food, trace };
+        return { food: null, confidence: m.confidence, maybe: m.food, maybeFrom: "score", trace };
       }
       // Nothing in the band: ask once which saved food it is, side by side.
       // Only after real scores: a Jev that answered nothing is not asked again.
@@ -688,7 +692,7 @@ export async function matchMemory(
           };
           if (pick && topP >= MEMORY_CHOICE_FLOOR) {
             trace.maybe = { name: pick.name.slice(0, 60), conf: r2(topP), from: "choice" };
-            return { food: null, confidence: topP, maybe: pick, trace };
+            return { food: null, confidence: topP, maybe: pick, maybeFrom: "choice", trace };
           }
         } else {
           trace.choice = { failed: c && !c.ok ? c.failure : "no_answer" };

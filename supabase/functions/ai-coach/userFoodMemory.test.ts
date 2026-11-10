@@ -23,7 +23,7 @@ import {
   servesTier,
   shortlist,
 } from "./userFoodMemory.ts";
-import { memoryLineName, memoryQuickItem, type ParsedItem, type ParseMealDeps, type ResolvedItem, runParseMeal, stampBrands } from "./parseMeal.ts";
+import { memoryLineName, memoryQuickItem, type ParsedItem, type ParseMealDeps, type ResolvedItem, runParseMeal, savedCheckPayload, stampBrands } from "./parseMeal.ts";
 
 const NOW = new Date("2026-09-27T12:00:00Z");
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
@@ -1032,6 +1032,19 @@ Deno.test("no saved food scored: the choice's top food goes to decide", async ()
   assertEquals([m.food, m.maybe?.name, m.confidence], [null, "Masala chai", 0.86]);
   assert(asked.includes("choice"));
   assertEquals((m.trace.choice as { pick: string }).pick, "Masala chai");
+});
+
+Deno.test("a food the choice picked is marked so: its odds are not a same-food score", async () => {
+  const chai = food("Masala chai", 45);
+  const fromChoice = await matchMemory(jevScoreThenChoice(0.4, { "Masala chai": 0.45, none: 0.4 }), [chai], { name: "masala tea", brand: null });
+  assertEquals([fromChoice.maybe?.name, fromChoice.maybeFrom], ["Masala chai", "choice"]);
+  const fromScore = await matchMemory(jevScoreThenChoice(0.65, {}), [chai], { name: "masala chai", brand: null });
+  assertEquals([fromScore.maybe?.name, fromScore.maybeFrom], ["Masala chai", "score"]);
+  // Decide reads jev_same as "the chance it is the same food". A choice's 0.45
+  // is a share between saved foods, so it is left out, not passed as 0.45.
+  const cand = { food_id: "fs:mem_chai", name: "Masala chai", brand: null, base_unit: "g", kcal: 45, protein_g: 1, carb_g: 7, fat_g: 1, fiber_g: null, servings: [], source: "catalog" } as never;
+  assertEquals(savedCheckPayload({ candidate: cand, confidence: 0.65, from: "score" }).jev_same, 0.65);
+  assertEquals("jev_same" in savedCheckPayload({ candidate: cand, confidence: 0.45, from: "choice" }), false);
 });
 
 Deno.test("the choice says none ahead of a food: nothing goes to decide", async () => {

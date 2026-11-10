@@ -2642,11 +2642,11 @@ function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
       : String(c.last_logged_at),
     persistent: true, confirmed_at: String(c.confirmed_at),
     // Absent before migration 20261031125900 (select "*"), so absent is null.
+    // Read by buildMemory (the brand shown apart to Jev) and the warm reads
+    // (foodWarmMemory.ts).
     brand: typeof c.brand === "string" && c.brand.trim() ? c.brand.trim().slice(0, 80) : null,
     origin: typeof c.origin === "string" ? c.origin : null,
     recipe: c.recipe ?? null,
-    // Read by the warm reads only (foodWarmMemory.ts); buildMemory ignores it.
-    brand: typeof c.brand === "string" ? c.brand : null,
     confirmed_aliases: Array.isArray(c.aliases) ? c.aliases.filter((a): a is string => typeof a === "string") : [],
   };
 }
