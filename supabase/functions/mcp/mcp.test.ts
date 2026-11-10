@@ -33,6 +33,14 @@ Deno.test("auth: aud may be a list that includes this server", async () => {
   assert((await verifyAccessToken(`Bearer ${t}`, opts)).ok);
 });
 
+Deno.test("auth: the URL with a trailing slash is the same server", async () => {
+  const both = { ...opts, audience: [RESOURCE, `${RESOURCE}/`] };
+  const t = await token({ sub: "user_1" }, `${RESOURCE}/`);
+  assert((await verifyAccessToken(`Bearer ${t}`, both)).ok);
+  const other = await token({ sub: "user_1" }, `${RESOURCE}/x`);
+  assertEquals((await verifyAccessToken(`Bearer ${other}`, both)).ok, false);
+});
+
 Deno.test("auth: an app session token (no aud) is refused", async () => {
   const t = await token({ sub: "user_1", sid: "sess_1" }, null);
   assertEquals((await verifyAccessToken(`Bearer ${t}`, opts)).ok, false);

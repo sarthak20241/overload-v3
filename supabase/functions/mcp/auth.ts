@@ -14,7 +14,8 @@ export type AuthResult =
 
 export async function verifyAccessToken(
   authHeader: string | null,
-  opts: { jwks: JWTVerifyGetKey; issuer: string; audience: string },
+  /** audience: the token's aud must include at least one of these. */
+  opts: { jwks: JWTVerifyGetKey; issuer: string; audience: string | string[] },
 ): Promise<AuthResult> {
   if (!authHeader) return { ok: false, reason: "no auth header" };
   if (!authHeader.startsWith("Bearer ")) return { ok: false, reason: "no Bearer prefix" };

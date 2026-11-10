@@ -47,13 +47,15 @@ Deno.serve(async (req) => {
   if (req.method === "GET" && path.endsWith("/.well-known/oauth-protected-resource")) {
     return json(resourceMetadata(RESOURCE, CLERK_ISSUER));
   }
-  // No server-sent event stream: this server only answers POSTs.
-  if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405, { Allow: "POST, OPTIONS" });
-
+  // Sign-in comes first for every method: a client with no token must get the
+  // 401 that starts sign-in, on GET too (Clerk's server check asks for it).
   const auth = await verifyAccessToken(req.headers.get("Authorization"), {
     jwks: JWKS,
     issuer: CLERK_ISSUER,
-    audience: RESOURCE,
+    // A client may send the resource as typed or with a trailing slash (URL
+    // normalizing turns https://host into https://host/), and Clerk copies it
+    // into aud. Both name this server.
+    audience: [RESOURCE, `${RESOURCE}/`],
   });
   if (!auth.ok) {
     console.log(`[mcp] 401: ${auth.reason}`);
@@ -62,6 +64,9 @@ Deno.serve(async (req) => {
       "WWW-Authenticate": wwwAuthenticate(METADATA_URL, hadToken ? "invalid_token" : undefined),
     });
   }
+
+  // No server-sent event stream: a signed-in client may only POST.
+  if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405, { Allow: "POST, OPTIONS" });
 
   const parsed = parseBody(await req.text());
   if ("reply" in parsed) return json(parsed.reply, 400);
