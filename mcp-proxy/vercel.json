@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/.well-known/oauth-protected-resource",
+      "destination": "https://rjmmslierxhvwdjgjilb.supabase.co/functions/v1/mcp/.well-known/oauth-protected-resource"
+    },
+    {
+      "source": "/.well-known/oauth-authorization-server",
+      "destination": "https://clerk.tryoverload.app/.well-known/oauth-authorization-server"
+    },
+    {
+      "source": "/",
+      "destination": "https://rjmmslierxhvwdjgjilb.supabase.co/functions/v1/mcp"
+    }
+  ]
+}

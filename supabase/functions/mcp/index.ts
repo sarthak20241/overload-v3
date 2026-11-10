@@ -17,10 +17,11 @@ import { TOOLS } from "./tools.ts";
 const CLERK_ISSUER = Deno.env.get("CLERK_ISSUER");
 if (!CLERK_ISSUER) throw new Error("CLERK_ISSUER env var is required (the Clerk Frontend API URL).");
 
-// The public URL of this function. It must match the MCP URL entered in the
-// Clerk Dashboard exactly, since Clerk writes it into the token's `aud`.
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const RESOURCE = (Deno.env.get("MCP_RESOURCE_URL") ?? `${SUPABASE_URL}/functions/v1/mcp`).replace(/\/+$/, "");
+// The public URL users paste into ChatGPT or Claude. mcp.tryoverload.app is a
+// Vercel forwarder to this function (mcp-proxy/). It must match the MCP URL
+// entered in the Clerk Dashboard exactly, since Clerk writes it into the
+// token's `aud`. MCP_RESOURCE_URL overrides it for a local run.
+const RESOURCE = (Deno.env.get("MCP_RESOURCE_URL") ?? "https://mcp.tryoverload.app").replace(/\/+$/, "");
 const METADATA_URL = `${RESOURCE}/.well-known/oauth-protected-resource`;
 
 const JWKS = createRemoteJWKSet(new URL(`${CLERK_ISSUER}/.well-known/jwks.json`));
