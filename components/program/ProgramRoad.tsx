@@ -6,7 +6,7 @@
  * goal questions (AICoachModal GenerateProgramScreen), so a plan reads the
  * same in both places, and the same as the Goal screen once it is saved.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { Feather } from '@expo/vector-icons';
@@ -25,7 +25,7 @@ export function ProgramRoad({
   openFirst = false,
 }: {
   program: GeneratedProgram;
-  /** Start with phase 1 open (the program draft); onboarding starts closed. */
+  /** Start with phase 1 open (the program draft and onboarding). */
   openFirst?: boolean;
   /** Entrance delay, so it can follow other cards in a stagger. */
   delay?: number;
@@ -82,6 +82,13 @@ export function ProgramRoad({
   const [openPhase, setOpenPhase] = useState<string | null>(
     openFirst && program.phases[0] ? `0-${program.phases[0].name}` : null,
   );
+  // Onboarding swaps its quick draft for the built plan (new row keys): keep
+  // phase 1 open across that swap until the person taps a row themselves.
+  const touched = useRef(false);
+  useEffect(() => {
+    if (!openFirst || touched.current || roadRows.length === 0) return;
+    if (!roadRows.some((r) => r.key === openPhase)) setOpenPhase(roadRows[0].key);
+  }, [openFirst, roadRows, openPhase]);
 
   // The whole route to the goal, not just week one.
   return (
@@ -89,7 +96,7 @@ export function ProgramRoad({
       entering={FadeInDown.delay(delay).duration(400)}
       style={[st.roadCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
     >
-      <Text style={[st.eyebrow, { color: C.textMuted }]}>THE ROAD</Text>
+      <Text style={[st.eyebrow, { color: C.textMuted }]}>YOUR PLAN</Text>
       <Text style={[st.roadTitle, { color: C.foreground }]}>{program.title}</Text>
       {program.objective ? (
         <ClampedText
@@ -104,7 +111,7 @@ export function ProgramRoad({
           return (
             <View key={row.key}>
               <Pressable
-                onPress={() => setOpenPhase(open ? null : row.key)}
+                onPress={() => { touched.current = true; setOpenPhase(open ? null : row.key); }}
                 style={st.roadRow}
                 hitSlop={6}
               >

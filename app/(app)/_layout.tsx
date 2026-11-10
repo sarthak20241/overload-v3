@@ -31,6 +31,9 @@ import { useForegroundProgramSync } from '@/lib/useProgramSync';
 import { resolveNeedsOnboarding } from '@/lib/onboarding';
 import { drainPendingOnboarding } from '@/lib/pendingOnboarding';
 import { useSync } from '@/components/SyncProvider';
+import { useCoachAccess } from '@/hooks/useCoachAccess';
+import { isPurchasesAvailable } from '@/lib/revenuecat';
+import { isHardPaywallAccount, mustPay, storeRecentlyDown } from '@/lib/hardPaywall';
 import type { Routine } from '@/lib/types';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 
@@ -276,6 +279,46 @@ export default function AppLayout() {
   // no local flag). Errors resolve to false inside resolveNeedsOnboarding so
   // a network blip can never lock an existing user out of the app.
   const [needsOnboarding, setNeedsOnboarding] = useState<boolean | null>(null);
+  // Hard paywall (lib/hardPaywall.ts): a new account with no Pro and no trial
+  // goes to the paywall, which has no way out. Set when this mount drained a
+  // fresh sign-up: that path routes to the phase 1 build and then the paywall
+  // itself, so the gate must not jump ahead of it.
+  const { access: coachAccess, refreshFresh: refreshCoachAccess } = useCoachAccess();
+  // The account the drain was for: the exemption holds only for it, never
+  // for another account signed in later on the same mounted layout.
+  const [drainedFor, setDrainedFor] = useState<string | null>(null);
+  const drainedSignup = !!drainedFor && drainedFor === (user?.id ?? null);
+  // The gate only decides on a fresh server answer. The hook paints the last
+  // saved access first, and right after a purchase, restore or code that saved
+  // value still says 'free': deciding on it would send a new Pro straight
+  // back to the paywall. So a new account waits for one fresh read per mount.
+  const gateApplies = !!isSignedIn && isPurchasesAvailable() && isHardPaywallAccount(user?.createdAt);
+  // Once per mount is enough only because /upgrade lives OUTSIDE (app):
+  // leaving the paywall replaces into (app), which mounts this layout fresh
+  // and re-reads. Keep app/upgrade.tsx out of this group, or a new payer
+  // would be judged on the read made before they paid.
+  const [gateFresh, setGateFresh] = useState(false);
+  const [accessWaitOver, setAccessWaitOver] = useState(false);
+  useEffect(() => {
+    // A new account (sign-out, sign-in as someone else) starts unread.
+    setGateFresh(false);
+    setAccessWaitOver(false);
+    if (!gateApplies) return;
+    let cancelled = false;
+    // Fresh only when the server answered. A failed read leaves the saved
+    // access on screen, so the gate waits out the 8 s and then lets them in.
+    refreshCoachAccess().then((ok) => { if (!cancelled && ok) setGateFresh(true); }, () => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount and account
+  }, [gateApplies, user?.id]);
+  // A hung read must not leave a new account on a spinner: after 8 s the gate
+  // decides on what it has (an unknown state lets them in, fail open).
+  useEffect(() => {
+    if (!gateApplies || gateFresh) return;
+    const t = setTimeout(() => setAccessWaitOver(true), 8000);
+    return () => clearTimeout(t);
+    // user?.id too: a new account restarts its own 8 s wait.
+  }, [gateApplies, gateFresh, user?.id]);
   // The per-request-auth client (stable identity): it fails loudly when no
   // Clerk token is available, so the check can't mistake an anon empty-rows
   // response for a brand-new account.
@@ -309,6 +352,7 @@ export default function AppLayout() {
       .then((drained) => {
         if (drained) {
           const { dest, firstPhaseId } = drained;
+          if (!cancelled) setDrainedFor(target.clerkId);
           void flushNow();
           settle(false);
           // Sign-up's next step is phase 1's workouts, not the dashboard:
@@ -415,6 +459,25 @@ export default function AppLayout() {
   }
   if (needsOnboarding) {
     return <Redirect href="/onboarding" />;
+  }
+
+  // Hard paywall. A new account waits for its access read (a spinner, not a
+  // flash of the dashboard); once read, not paying = the paywall. A failed
+  // read stays 'unknown' and never locks.
+  if (gateApplies && !drainedSignup && !storeRecentlyDown()) {
+    if (!gateFresh && !accessWaitOver) {
+      return (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.background }}>
+          <OrbLoader size="small" color={C.textMuted} />
+        </View>
+      );
+    }
+    // Past the 8 s wait with no fresh read, the access on hand is the saved
+    // one, which right after a purchase still says 'free': treat it as
+    // unknown so a payer is never locked out by a hung read.
+    if (mustPay({ createdAt: user?.createdAt, accessState: gateFresh ? coachAccess.state : 'unknown', purchasesAvailable: true })) {
+      return <Redirect href={{ pathname: '/upgrade', params: { flow: 'locked' } } as any} />;
+    }
   }
 
   return (

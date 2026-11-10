@@ -2650,6 +2650,7 @@ function GeneratePlanScreen({
   onRequestUpgrade,
   seed,
   phaseId,
+  phaseNumber,
   autoStart,
 }: {
   onBack: () => void;
@@ -2664,6 +2665,9 @@ function GeneratePlanScreen({
   // leaving this screen, closing the sheet or opening the paywall never
   // throws it away, and the next visit opens straight on it.
   phaseId?: string;
+  // The phase's number as people read it (1 = first): the title and Save say
+  // which phase these workouts are for.
+  phaseNumber?: number;
   // Skip the form and build at once (the post-sign-up build and the
   // dashboard's "Build phase 1"). Ignored when a draft is waiting.
   autoStart?: boolean;
@@ -3015,7 +3019,9 @@ function GeneratePlanScreen({
             <Feather name="arrow-left" size={16} color={C.foreground} />
           </TouchableOpacity>
           <SparkleIcon size={16} color={C.accentText} />
-          <Text style={[s.screenTitle, { color: C.foreground }]}>Your Plan</Text>
+          <Text style={[s.screenTitle, { color: C.foreground }]}>
+            {phaseId && phaseNumber ? `Phase ${phaseNumber} workouts` : 'Your Plan'}
+          </Text>
         </View>
         <ScrollView contentContainerStyle={{ padding: Spacing.xl, paddingBottom: 24, gap: 16 }}>
           {/* Plan header + plan-level rationale (the "why" for the whole program) */}
@@ -3081,7 +3087,7 @@ function GeneratePlanScreen({
             style={[s.primaryBtn, refining && { opacity: 0.6 }]}
           >
             <Feather name="check" size={16} color={Colors.primaryFg} />
-            <Text style={s.primaryBtnText}>{phaseId ? 'Save these workouts' : 'Save All Routines'}</Text>
+            <Text style={s.primaryBtnText}>{phaseId ? (phaseNumber ? `Save phase ${phaseNumber} workouts` : 'Save these workouts') : 'Save All Routines'}</Text>
           </TouchableOpacity>
           {phaseId ? (
             <Text style={[s.draftNote, { color: C.textMuted }]}>
@@ -4590,6 +4596,8 @@ export interface AICoachModalProps {
   // (routines.program_phase_id), so the Goal & Plan screen shows the phase's
   // split as built. Paired with planSeed for a "Build workout split" flow.
   linkRoutinesToPhaseId?: string;
+  /** That phase's number as people read it (1 = first), for the build screen's words. */
+  linkRoutinesPhaseNumber?: number;
   // When set, the chat screen runs in in-workout mode: the live session is
   // injected as context, the greeting is tailored, quick-question chips show,
   // and the chat's back arrow closes the sheet (there's no menu detour
@@ -4632,6 +4640,7 @@ export function CoachSheet({
   programDraft,
   programExisting,
   linkRoutinesToPhaseId,
+  linkRoutinesPhaseNumber,
   workoutContext,
   onApplyWorkoutEdit,
   source,
@@ -5325,6 +5334,7 @@ export function CoachSheet({
                   onSaveRoutines={handleSaveRoutines}
                   seed={planSeed}
                   phaseId={linkRoutinesToPhaseId}
+                  phaseNumber={linkRoutinesPhaseNumber}
                   autoStart={planAutoStart}
                   onRequestUpgrade={(kind) =>
                     handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')

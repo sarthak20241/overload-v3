@@ -150,9 +150,9 @@ const GOAL_OPTIONS: { value: CoachGoal; icon: keyof typeof Feather.glyphMap; tit
 ];
 
 const EXPERIENCE_OPTIONS: { value: ExperienceLevel; icon: keyof typeof Feather.glyphMap; title: string; sub: string }[] = [
-  { value: 'beginner', icon: 'sunrise', title: 'Just starting out', sub: 'Under a year of training' },
-  { value: 'intermediate', icon: 'trending-up', title: 'Finding my groove', sub: 'One to three years in' },
-  { value: 'advanced', icon: 'award', title: 'Been at this a while', sub: 'Three plus years under the bar' },
+  { value: 'beginner', icon: 'sunrise', title: 'Beginner', sub: 'Less than 1 year' },
+  { value: 'intermediate', icon: 'trending-up', title: 'Intermediate', sub: '1 to 3 years' },
+  { value: 'advanced', icon: 'award', title: 'Advanced', sub: 'More than 3 years' },
 ];
 
 const GOAL_PHRASES: Record<CoachGoal, string> = {
@@ -160,7 +160,7 @@ const GOAL_PHRASES: Record<CoachGoal, string> = {
   strength: 'Getting stronger',
   fat_loss: 'Cutting fat while keeping muscle',
   endurance: 'Building endurance',
-  general: 'Training for life',
+  general: 'Staying fit and healthy',
 };
 
 export default function OnboardingScreen() {
@@ -616,8 +616,8 @@ export default function OnboardingScreen() {
     const diff = Math.round(Math.abs(targetVal - weightVal) * 10) / 10;
     if (diff < 1) return 'Holding steady at your current weight. Good.';
     return targetVal < weightVal
-      ? `${diff} ${weightUnit} down. Your calorie budget will match.`
-      : `${diff} ${weightUnit} up. We will eat for it.`;
+      ? `${diff} ${weightUnit} down. We will set your calories for it.`
+      : `${diff} ${weightUnit} up. We will set your calories for it.`;
   }, [targetVal, weightVal, weightUnit]);
 
   const completeOnboarding = useCallback(
@@ -794,7 +794,7 @@ export default function OnboardingScreen() {
                   accessibilityLabel={isFreshVisitor ? 'I already have an account' : 'Skip setup'}
                 >
                   <Text style={[s.ghostLinkText, { color: WELCOME_LINK }]}>
-                    {isFreshVisitor ? 'I already have an account' : 'I know my way around'}
+                    {isFreshVisitor ? 'I already have an account' : 'Skip setup'}
                   </Text>
                 </TouchableOpacity>
               </Animated.View>
@@ -809,7 +809,7 @@ export default function OnboardingScreen() {
               // One short line, only when it changes something: the goal step
               // must fit one screen with no scroll.
               caption={selectedGoals(answers).includes('fat_loss')
-                ? 'Fat loss starts your nutrition in a deficit.'
+                ? 'To lose fat, you will eat a little less than your body burns.'
                 : undefined}
               compact
               keyboardTaps
@@ -868,8 +868,8 @@ export default function OnboardingScreen() {
           {step === 'experience' && (
             <QuestionStep
               stepKey="experience"
-              question="How long have you been lifting?"
-              sub="Sets your starting volume. It grows as you do."
+              question="How long have you been working out?"
+              sub="So we start you at the right level."
             >
               <View style={s.options}>
                 {EXPERIENCE_OPTIONS.map((opt, idx) => (
@@ -891,7 +891,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="frequency"
               question="How many days a week?"
-              sub="Be honest. A plan you keep beats a plan you admire."
+              sub="Pick what you can really keep up. You can change it later."
               footer={<PrimaryCta label="Continue" onPress={() => goTo('health')} />}
             >
                 <Animated.View entering={FadeInDown.delay(120).duration(400)} style={{ marginTop: Spacing.lg }}>
@@ -907,7 +907,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="health"
               question="Anything I should train around?"
-              sub="Injuries, joint pain, past surgeries, anything that changes how you should move. I will plan around it."
+              sub="Injuries, pain or past surgeries. We plan around them."
               caption="Optional. Leave it blank if there is nothing."
               keyboardTaps
               footer={
@@ -931,8 +931,8 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="prefs"
               question="How do you like to train?"
-              sub="Lifts you love or hate, equipment you have, home or gym, time per session. I will shape the plan to fit."
-              caption="Optional. Leave it blank and I will use what works best."
+              sub="Home or gym, moves you like, time you have."
+              caption="Optional. Leave it blank and we will pick what works best."
               keyboardTaps
               footer={
                 <PrimaryCta
@@ -953,8 +953,8 @@ export default function OnboardingScreen() {
           {step === 'gender' && (
             <QuestionStep
               stepKey="gender"
-              question="How should the math read you?"
-              sub="Gender changes the calorie equation, nothing else."
+              question="What is your sex?"
+              sub="It helps us set your calories and your plan."
             >
                 <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.genderCol}>
                   {(
@@ -999,7 +999,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="age"
               question="How old are you?"
-              sub="Age tunes your calorie baseline."
+              sub="It helps us set your daily calories."
               footer={<PrimaryCta label="Continue" onPress={commitAgeStep} />}
             >
                 <View style={s.heroCenter}>
@@ -1018,7 +1018,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="height"
               question="How tall are you?"
-              sub="Height anchors your calorie baseline."
+              sub="It helps us set your daily calories."
               footer={<PrimaryCta label="Continue" onPress={commitHeightStep} />}
             >
                 <View style={s.heroCenter}>
@@ -1067,7 +1067,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="weight"
               question="What do you weigh today?"
-              sub="Just a starting point. The trend is what we train."
+              sub="Just a starting point. We watch the trend."
               footer={<PrimaryCta label="Continue" onPress={commitWeightStep} />}
             >
                 <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
@@ -1103,8 +1103,8 @@ export default function OnboardingScreen() {
           {step === 'target' && (
             <QuestionStep
               stepKey="target"
-              question="Where are we heading?"
-              sub="A goal weight points your calories the right way. You can change it anytime."
+              question="What weight do you want to reach?"
+              sub="This tells us if you should eat more or less."
               footer={<PrimaryCta label="Continue" onPress={commitTargetStep} />}
             >
                 <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.heroCenter}>
@@ -1140,8 +1140,8 @@ export default function OnboardingScreen() {
           {step === 'pace' && (
             <QuestionStep
               stepKey="pace"
-              question="How fast do we go?"
-              sub="Pick a pace you can hold. The date follows the math."
+              question="How fast do you want to get there?"
+              sub="Pick a speed you can keep up."
               footer={<PrimaryCta label="Continue" onPress={() => goTo('interlude')} />}
             >
                 {paceCtx && weeklyRate != null && (
@@ -1160,15 +1160,15 @@ export default function OnboardingScreen() {
                       </Text>
                       {pacedPreview && (
                         <Text style={[s.paceCardSub, { color: C.textMuted }]}>
-                          Daily fuel: {pacedPreview.kcal.toLocaleString()} kcal · {pacedPreview.protein}g protein
+                          Eat about {pacedPreview.kcal.toLocaleString()} calories and {pacedPreview.protein}g protein a day
                         </Text>
                       )}
                       <Text style={[s.paceCardLine, { color: C.textDim }]}>
                         {weeklyRate < paceCtx.bounds.recommended - 0.05
-                          ? 'A gentler pace. Easier to hold on hard weeks.'
+                          ? 'Slower, but easier to keep up on busy weeks.'
                           : weeklyRate > paceCtx.bounds.recommended + 0.05
-                            ? 'Aggressive. Protein and sleep stop being optional.'
-                            : 'The balanced pace most people can keep.'}
+                            ? 'Fast. You will need enough protein and good sleep.'
+                            : 'A steady speed most people can keep up.'}
                       </Text>
                     </View>
                   </Animated.View>
@@ -1179,9 +1179,9 @@ export default function OnboardingScreen() {
           {step === 'interlude' && (
             <QuestionStep
               stepKey="interlude"
-              question="I set the route. You walk it."
-              sub={`${answers.frequency ?? 3} days a week${paceDate ? `, on track for ${paceDate}` : ''}${targets ? `, ${targets.kcal.toLocaleString()} kcal a day` : ''}.`}
-              footer={<PrimaryCta label="Lock it in" onPress={() => goTo('commit')} />}
+              question="I’m Drona, your coach."
+              sub={`${answers.frequency ?? 3} days a week${paceDate ? `, on track for ${paceDate}` : ''}${targets ? `, ${targets.kcal.toLocaleString()} calories a day` : ''}.`}
+              footer={<PrimaryCta label="Sounds good" onPress={() => goTo('commit')} />}
             >
                 <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
                   {/* The same orb as the paywall's trust screen, so Drona reads
@@ -1189,9 +1189,9 @@ export default function OnboardingScreen() {
                   <DronaHeroOrb />
                   <View style={s.claimList}>
                     {[
-                      'I watch your training, food and recovery',
-                      'When things go off track, I adjust your plan',
-                      'So you get there on time',
+                      'I make your plan and watch how it goes',
+                      'If you fall behind, I change the plan',
+                      'So you still reach your goal on time',
                     ].map((line, idx) => (
                       <Animated.View
                         key={line}
@@ -1210,7 +1210,7 @@ export default function OnboardingScreen() {
           {step === 'commit' && (
             <QuestionStep
               stepKey="commit"
-              question="Commit to it."
+              question="Make a promise to yourself."
               sub="A plan only works if you show up."
             >
                 <CommitmentHold
@@ -1226,10 +1226,10 @@ export default function OnboardingScreen() {
               <BuildMoment
                 lines={[
                   'Reading your answers',
-                  'Mapping the road to your goal',
+                  'Planning the weeks to your goal',
                   'Picking exercises for you',
-                  'Setting fuel targets',
-                  'Locking your first week',
+                  'Working out your daily calories',
+                  'Setting up your first week',
                 ]}
                 ready={buildReady}
                 onDone={() => goTo('plan')}
@@ -1241,7 +1241,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="plan"
               question={revealTitle}
-              sub={`${finalProgram.phases.length} ${finalProgram.phases.length === 1 ? 'phase' : 'phases'}, ${answers.frequency ?? 3} ${(answers.frequency ?? 3) === 1 ? 'day' : 'days'} a week${targets ? ', daily fuel set' : ''}.`}
+              sub={`${finalProgram.phases.length} ${finalProgram.phases.length === 1 ? 'phase' : 'phases'}, ${answers.frequency ?? 3} ${(answers.frequency ?? 3) === 1 ? 'day' : 'days'} a week${targets ? ', daily calories set' : ''}.`}
               footer={
                 <>
                   <PrimaryCta
@@ -1274,7 +1274,8 @@ export default function OnboardingScreen() {
 
                 {/* The road: the program's phases, so the reveal shows the whole
                     route to the goal and not just week one. */}
-                <ProgramRoad program={finalProgram} />
+                {/* Phase 1 starts open (owner, 2026-11-09): it is the part that starts now. */}
+                <ProgramRoad program={finalProgram} openFirst />
 
                 {/* Daily fuel targets: the diet half of the intake payoff */}
                 {targets ? (
@@ -1282,10 +1283,10 @@ export default function OnboardingScreen() {
                     entering={FadeInDown.delay(320).duration(400)}
                     style={[s.fuelCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
                   >
-                    <Text style={[s.fuelEyebrow, { color: C.textMuted }]}>DAILY FUEL</Text>
+                    <Text style={[s.fuelEyebrow, { color: C.textMuted }]}>EAT EACH DAY</Text>
                     <View style={s.fuelKcalRow}>
                       <Text style={[s.fuelKcal, { color: C.foreground }]}>{targets.kcal.toLocaleString()}</Text>
-                      <Text style={[s.fuelKcalUnit, { color: C.textMuted }]}>kcal a day</Text>
+                      <Text style={[s.fuelKcalUnit, { color: C.textMuted }]}>calories a day</Text>
                     </View>
                     <View style={s.macroRow}>
                       {(
@@ -1391,7 +1392,7 @@ const s = StyleSheet.create({
     gap: 4,
   },
   paceCardTitle: {
-    fontFamily: FontFamily.display,
+    fontFamily: FontFamily.onboardingHeading,
     fontSize: 22,
   },
   paceCardSub: { fontSize: FontSize.md },
@@ -1466,8 +1467,9 @@ const s = StyleSheet.create({
     paddingTop: Spacing.sm,
   },
   claimList: { gap: Spacing.lg, marginTop: Spacing.xxl, alignSelf: 'stretch' },
-  claimRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, justifyContent: 'center' },
-  claimText: { fontSize: FontSize.md },
+  // Left-aligned rows: centered rows put each check mark in a different place.
+  claimRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  claimText: { fontFamily: FontFamily.onboardingBody, fontSize: 16, lineHeight: 22, flexShrink: 1 },
   ghostLink: { alignItems: 'center', paddingVertical: Spacing.lg },
   ghostLinkText: { fontSize: FontSize.base },
 });

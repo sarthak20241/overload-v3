@@ -721,6 +721,7 @@ export default function GoalPlanPillarScreen() {
         } : undefined}
         planSeed={buildSeed ?? undefined}
         linkRoutinesToPhaseId={buildPhaseId ?? undefined}
+        linkRoutinesPhaseNumber={buildPhaseId && phase?.id === buildPhaseId ? phase.seq + 1 : undefined}
         onRoutineCreated={() => load()}
         onProgramApplied={() => load()}
       />

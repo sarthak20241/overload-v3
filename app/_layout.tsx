@@ -10,6 +10,7 @@ import {
   SpaceGrotesk_700Bold,
 } from '@expo-google-fonts/space-grotesk';
 import { InterTight_600SemiBold } from '@expo-google-fonts/inter-tight';
+import { Inter_400Regular, Inter_600SemiBold } from '@expo-google-fonts/inter';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { WorkoutProvider } from '@/hooks/useWorkout';
@@ -124,7 +125,9 @@ export default function RootLayout() {
   // stays on the system font. Non-blocking: screens render with the system
   // font for the instant before the load resolves, then re-render. Inter
   // Tight is the sign-up tour's headline face.
-  useFonts({ SpaceGrotesk_500Medium, SpaceGrotesk_700Bold, InterTight_600SemiBold });
+  // Tight is the sign-up tour's headline face. Inter (600 + 400) is the
+  // onboarding's question and subtitle face.
+  useFonts({ SpaceGrotesk_500Medium, SpaceGrotesk_700Bold, InterTight_600SemiBold, Inter_400Regular, Inter_600SemiBold });
 
   // A fresh store install first catches up to the newest update, before
   // Clerk or anything else starts (components/FirstOpenUpdateGate.tsx).
