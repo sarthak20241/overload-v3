@@ -156,6 +156,8 @@ deno test --allow-all --node-modules-dir=none supabase/migrations/checks/referra
 deno test --allow-all lib/weightWheel.test.ts    # onboarding weight wheels: whole + one decimal, the top of the scale, kg <-> lbs
 deno test --allow-all supabase/functions/ai-coach/freeGoalBuild.test.ts # one free goal plan per account: 1 build, 8 edit turns, a guest build spends it
 deno test --allow-all supabase/functions/ai-coach/regionRules.test.ts # FOOD_REGION_RULES: each region gets only its block, no rule lost, off = today
+deno test --allow-all --node-modules-dir=none supabase/functions/mcp/ # ChatGPT/Claude connector: sign-in token, every query filtered to the user, read + food write tools
+deno test --allow-all --node-modules-dir=none supabase/migrations/checks/mcp_food_writes.check.ts # connector food writes on PGlite: one meal per day, no double log, delete only connector lines (not in CI)
 # App Store offer codes (key + pool in ~/.config/overload, never in the repo).
 # FRIENDMONTH = 1 month free (monthly), the iPhone referral code. "Free year" =
 # one-time codes; Apple makes 500+ per batch. The admin site Coupons page keeps
