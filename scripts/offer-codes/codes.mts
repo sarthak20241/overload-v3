@@ -7,7 +7,10 @@
 //     - "Free year": 1 year free on overload_annual. No shared code: hand
 //       out one-time codes from `make`.
 //
-//   npx tsx scripts/offer-codes/codes.mts give 3 [--to "Rahul"] [--sandbox]
+//   give: RETIRED 2026-11-10. Codes live in the database now; hand them out
+//   from the admin site's Coupons page. (`give --local-pool` still runs the
+//   old local-file code, for a pool file you made yourself.)
+//   npx tsx scripts/offer-codes/codes.mts give 3 --local-pool [--to "Rahul"] [--sandbox]
 //     Prints 3 one-time "Free year" codes with their redeem links. Each code
 //     works once. Apple only makes batches of 500+, so the codes come from a
 //     local pool (free-year-codes.json next to the key); when it runs low, the
@@ -372,6 +375,12 @@ async function main() {
     const monthId = await createOffer(FRIEND_MONTH);
     await addCustomCode(monthId, FRIEND_MONTH);
     await createOffer(FREE_YEAR);
+  } else if (cmd === 'give' && !rest.includes('--local-pool')) {
+    // 2026-11-10: codes moved to the database (coupons table) and the admin
+    // site's Coupons page. Giving from here too could hand one code out twice.
+    console.log('Codes now live in the admin site: Coupons page (admin/app/(admin)/coupons).');
+    console.log('The old local pool was imported and renamed to free-year-codes.imported-2026-11-10.json.');
+    process.exitCode = 1;
   } else if (cmd === 'give') {
     const count = Number(rest[0] ?? 1);
     if (!Number.isInteger(count) || count < 1 || count > 1000) throw new Error('Usage: give [how many, 1-1000] [--to "name"] [--sandbox]');
