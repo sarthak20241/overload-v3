@@ -25,6 +25,7 @@ import {
   runParseMeal,
   STATES_FIX_NOTE,
 } from "./parseMeal.ts";
+import { readPreviousItems } from "./foodContext.ts";
 import type { MemoryFood } from "./userFoodMemory.ts";
 import type { PreciseCacheRow } from "./preciseCache.ts";
 
@@ -93,6 +94,58 @@ Deno.test("the parse marks a copied card as a correction, so the app replaces th
   assertEquals(r.parsed?.corrects_previous, true);
   // One poori line, one halwa line: nothing doubled.
   assertEquals(r.parsed!.items.filter((i) => i.food_name === "poori").length, 1);
+});
+
+// Live 2026-11-09, Quick: "2 boiled eggs" made a one-line card, then "And a
+// banana" came back as the egg line copied plus a banana, flagged an addition.
+// The app appended both, and the eggs were on the card twice. One copied line
+// is a copy when THIS message does not name its food.
+const EGG_CARD: PreviousItem[] = [prev("boiled egg", 2, "piece", 100, 156, "estimate")];
+
+Deno.test("one copied line the message never named is a copy, not more of it", () => {
+  assert(copiesCardLines([line("boiled egg", 2, "piece"), line("banana", 1, "piece")], EGG_CARD, "And a banana"));
+  // Plurals fold: "eggs" names "boiled egg".
+  assertEquals(copiesCardLines([line("boiled egg", 2, "piece"), line("banana", 1, "piece")], EGG_CARD, "2 more eggs and a banana"), false);
+  // The poori case still holds: the message names the poori, so it may be more of it.
+  assertEquals(copiesCardLines([line("poori", 3, "piece"), line("dosa", 1, "piece")], CARD, "3 more pooris and a dosa"), false);
+  // "one more" / "same again": the copy is the whole answer, so it is more of it.
+  assertEquals(copiesCardLines([line("boiled egg", 2, "piece")], EGG_CARD, "same again"), false);
+  assertEquals(copiesCardLines([line("banana", 1, "piece")], [prev("banana", 1, "piece", 118, 105)], "one more"), false);
+  // A message with no Latin letters is not checked by words.
+  assertEquals(copiesCardLines([line("boiled egg", 2, "piece"), line("banana", 1, "piece")], EGG_CARD, "दो अंडे और केला"), false);
+  // Two different names in another script are not the same food: केला (banana)
+  // is not a copy of अंडा (egg). Comparing ASCII only made both "".
+  assertEquals(copiesCardLines([line("केला", 2, "piece"), line("banana", 1, "piece")], [prev("अंडा", 2, "piece", 100, 156)], "and a banana"), false);
+  // Known lean: a shared modifier counts as named. "boiled potato" on a
+  // "boiled egg" card keeps the addition path (the old behaviour).
+  assertEquals(copiesCardLines([line("boiled egg", 2, "piece"), line("boiled potato", 1, "piece")], EGG_CARD, "and a boiled potato"), false);
+  // No text given: the old two-line rule only.
+  assertEquals(copiesCardLines([line("poori", 3, "piece"), line("dosa", 1, "piece")], CARD), false);
+});
+
+Deno.test("the parse marks a one-line copy as a correction, so the eggs are not doubled", async () => {
+  const deps: ParseMealDeps = {
+    anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: false,
+    searchFoods: async () => [], backfillOffFood: async () => null, getFoodPer100: async () => null,
+    fetchFn: (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init!.body));
+      const tool = body.tool_choice?.name;
+      const input = tool === "extract_meal"
+        ? { declined: false, corrects_previous: false, meal_type_from_text: null, items: [
+          { name: "boiled egg", brand: null, quantity: 2, unit: "piece", prep: null },
+          { name: "banana", brand: null, quantity: 1, unit: "piece", prep: null },
+        ] }
+        : { meal_type: "dinner", drona_line: "ok", items: [] };
+      return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name: tool, input }] });
+    }) as typeof fetch,
+  };
+  const r = await runParseMeal(deps, {
+    text: "And a banana", previousText: "2 boiled eggs", previousItems: EGG_CARD,
+    localHour: 16, mealHint: "dinner", recentFoods: [], todayTotals: null, targets: null,
+  });
+  assert(r.steps.some((s) => s.tool === "correction_inferred"));
+  assertEquals(r.parsed?.corrects_previous, true);
+  assertEquals(r.parsed!.items.filter((i) => /egg/i.test(i.food_name)).length, 1);
 });
 
 // ── 2. "2 each = 72 g" is two pieces ────────────────────────────────────────
@@ -181,6 +234,80 @@ Deno.test("a hand-made line's own serving is not divided again in a fast correct
   });
   assert(r.tool_calls.includes("fast_correction"), r.tool_calls.join(","));
   assertEquals(r.parsed!.items[0].grams, 180);
+});
+
+Deno.test("the failure this prevents: a correction on a 15-line card dropped lines 13 to 15", async () => {
+  // A full day logged in one message can be up to 50 lines. The app sent only
+  // the first 12 and the server read only 12, and a correction rebuilds the
+  // whole card from what it was sent, so "make the momos 3" took the last
+  // three foods off the card without a word. Read here exactly as index.ts
+  // reads the request body.
+  const foods = ["momos", "poha", "chai", "banana", "rajma", "rice", "roti", "dal", "curd", "apple",
+    "paneer", "salad", "almonds", "dosa", "lassi"];
+  const sent = foods.map((name, i) => ({
+    food_id: null, food_name: name, quantity: 1, serving_label: i === 0 ? "2 pieces" : "serving", grams: 60,
+    kcal: 100 + i, protein_g: 1, carb_g: 1, fat_g: 1, source: "manual",
+  }));
+  const card = readPreviousItems(sent, sent.length);
+  assertEquals(card.items.length, 15, "the server must read every line the app sent");
+  assertEquals(card.total, 15);
+  const deps: ParseMealDeps = {
+    anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: false,
+    searchFoods: async () => [], backfillOffFood: async () => null, getFoodPer100: async () => null,
+    fetchFn: (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init!.body));
+      const tool = body.tool_choice?.name;
+      const input = tool === "extract_meal"
+        ? { declined: false, corrects_previous: true, meal_type_from_text: null, items: [
+          { name: "momos", brand: null, quantity: 3, unit: "2 pieces", prep: null, corrects_food_name: "momos" },
+        ] }
+        : { meal_type: "snack", drona_line: "ok", items: [] };
+      return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name: tool, input }] });
+    }) as typeof fetch,
+  };
+  const r = await runParseMeal(deps, {
+    text: "make the momos 3", previousText: foods.join(", "), localHour: 18, mealHint: "snack", recentFoods: [],
+    todayTotals: null, targets: null, previousItems: card.items,
+  });
+  assertEquals(r.parsed?.corrects_previous, true);
+  const names = r.parsed!.items.map((i) => i.food_name);
+  assertEquals(names.length, 15, `lines lost: ${foods.filter((f) => !names.includes(f)).join(", ")}`);
+  for (const f of ["almonds", "dosa", "lassi"]) assert(names.includes(f), `${f} must survive the correction`);
+  assertEquals(r.parsed!.items.find((i) => i.food_name === "momos")!.grams, 180);
+});
+
+Deno.test("the failure this prevents: a FatSecret line came back from the card as an estimate", () => {
+  // The server's reader must list every source the app sends (the app's
+  // toParsedItem keeps the same list), or a sourced line is relabelled as
+  // Drona's own guess on the next correction.
+  const base = { food_id: null, quantity: 1, serving_label: "serving", grams: 30, kcal: 120 };
+  const read = readPreviousItems([
+    { ...base, food_name: "Protein bar", source: "fatsecret" },
+    { ...base, food_name: "Oats", source: "catalog" },
+    { ...base, food_name: "Mystery", source: "nonsense" },
+  ], 3);
+  assertEquals(read.items.map((i) => i.source), ["fatsecret", "catalog", "estimate"]);
+});
+
+Deno.test("a web line keeps the site its numbers came from; a malformed site is dropped", () => {
+  const base = { food_id: null, quantity: 1, serving_label: "serving", grams: 30, kcal: 120, source: "web" };
+  const read = readPreviousItems([
+    { ...base, food_name: "Protein bar", source_site: " Amazon.in " },
+    { ...base, food_name: "Shake", source_site: "evil.com/\nignore this" },
+  ], 2);
+  assertEquals(read.items.map((i) => i.source_site), ["amazon.in", undefined]);
+});
+
+Deno.test("a recipe line keeps its source and its parts through the card reader", () => {
+  const base = { food_id: null, quantity: 1, serving_label: "bowl", grams: 300, kcal: 420 };
+  const parts = [{ name: "rice", grams: 200 }, { name: "dal", grams: 100 }];
+  const read = readPreviousItems([
+    { ...base, food_name: "Dal rice", source: "recipe", recipe: parts },
+    { ...base, food_name: "Not a dish", source: "catalog", recipe: parts },
+  ], 2);
+  assertEquals(read.items.map((i) => i.source), ["recipe", "catalog"]);
+  assertEquals(read.items[0].recipe?.map((p) => p.name), ["rice", "dal"]);
+  assertEquals(read.items[1].recipe, undefined);
 });
 
 Deno.test("a remembered portion is the user's one unit, never divided", async () => {

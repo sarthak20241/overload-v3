@@ -21,6 +21,14 @@ EVAL_VIA_CLI=1 npx tsx scripts/parse-meal-eval/run.ts
 # Composable: ONLY=case-a,case-b  FAST_MODE=on  EVAL_WEB_SEARCH=1  DEBUG_STEPS=1
 # Wrong-catalog-row set (Thorough): CASE_SET=thorough-match, and
 # THOROUGH_MATCH_MODE=on (or shadow) to run Jev's row check (needs JEV_API_KEY).
+# Brand not in our catalog (generic or other-brand rows): CASE_SET=branded-oats.
+
+# Saved-food match (Jev only, no model calls): is a food she logged before served?
+# ONLY=too-yum,doctors-banana-caramel REPEAT=3 to see how steady a score is.
+# ASK=prod CAND_BRAND=brackets runs the app's own matchMemory end to end (score,
+# 0.6-0.7 to decide, then the choice question); other knobs are listed at the
+# top of the script (FLOOR, MAYBE_FLOOR, RESPELL=0, DROP_RULE, ASK=choice|pipeline).
+deno run -A scripts/memory-identity-eval/run.ts
 
 # Use the API key ONLY when the question is latency or token cost. The harness
 # warns that CLI timings are not comparable — they measure the CLI, not the
@@ -84,6 +92,7 @@ deno test --allow-all lib/xp.test.ts
 deno test --allow-all lib/tiers.test.ts
 deno test --unstable-sloppy-imports --import-map=lib/test-import-map.json lib/readiness.test.ts
 deno test --allow-all lib/coachErrors.test.ts  # which bucket a failure lands in
+deno test --allow-all lib/ssoOutcome.test.ts   # Google/Apple sign-in with no session: next step + user copy
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/directFetchRetry.test-import-map.json lib/directFetchRetry.test.ts  # Today pick + weekly card retry an expired token once
 deno test --allow-all lib/authRetry.test.ts    # expired Clerk token: one retry with a fresh one
 deno test --allow-all lib/purchaseErrors.test.ts # a pending store payment is not a failure; failures keep the store's reason
@@ -95,6 +104,8 @@ deno test --allow-all lib/screenCache.test.ts  # Goal & Plan screens paint from 
 deno test --allow-all lib/chartScale.test.ts   # Goal screen chart: readings width, goal ring at the program end
 deno test --allow-all lib/phasePick.test.ts    # the active phase by seq, never by list index
 deno test --allow-all lib/fitnessGoals.test.ts
+deno test --allow-all --unstable-sloppy-imports lib/goalIntake.test.ts # new goal: the question screens, what Drona is sent, ask before build
+deno test --allow-all lib/coachAffirm.test.ts  # a "yes, build it" turn forces the build; Build it shows only under a build question
 deno test --allow-all lib/coachTopic.test.ts   # chats opened from the app: Drona's hidden topic turn + what is sent
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/coachConversations.test.ts  # saved chats: topic title, hidden turn kept
 deno test --allow-all lib/missingColumn.test.ts # app-before-migration column fallbacks
@@ -112,6 +123,7 @@ deno test --allow-all lib/calorieBars.test.ts  # Analytics calorie bars: each da
 deno test --allow-all lib/pendingEntries.test.ts # an added suggestion or copy shows at once, swapped for the saved row
 deno test --allow-all lib/pendingParse.test.ts  # food search "Log it with Drona": handed to Nutrition once, with its meal and day
 deno test --allow-all lib/foodBarCard.test.ts   # food box: a save card sits beside the meal card, never replaces it
+deno test --allow-all lib/foodCardBack.test.ts  # food card return arrow: back one message, the card before it, 10 steps kept
 deno test --allow-all supabase/functions/ai-coach/foodFirstGate.test.ts # first message: plain -> parse, else the agent with the running parse
 deno test --allow-all lib/foodThread.test.ts    # food box thread ids + card versions, counted the way the server counts
 deno test --allow-all supabase/functions/ai-coach/foodThreads.test.ts # thread store: stable line ids, one conditional write, restore
@@ -132,9 +144,17 @@ deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coac
 deno test --allow-all lib/sheetText.test.ts     # text boxes in Portal sheets: late owner values never put old text back (Android letter drops)
 deno test --allow-all lib/firstOpenUpdate.test.ts # fresh store install: newest update before onboarding, 5 s cap, never reloads an open app
 deno test --allow-all lib/signupTour.test.ts    # the film tour after sign-up: its words, the tap rules, no promise the plan is done
+deno test --allow-all lib/hardPaywall.test.ts   # hard paywall: accounts from HARD_PAYWALL_FROM on must pay; older ones keep free
+deno test --allow-all --no-check lib/invite.test.ts   # referral link + share text, store discount code URLs, refusal words
+deno test --allow-all --node-modules-dir=none supabase/migrations/checks/referral_codes.check.ts # referral + campaign codes on PGlite: both get a month, no cap, no own code, old-app rules kept (not in CI)
 deno test --allow-all lib/weightWheel.test.ts    # onboarding weight wheels: whole + one decimal, the top of the scale, kg <-> lbs
 deno test --allow-all supabase/functions/ai-coach/freeGoalBuild.test.ts # one free goal plan per account: 1 build, 8 edit turns, a guest build spends it
 deno test --allow-all supabase/functions/ai-coach/regionRules.test.ts # FOOD_REGION_RULES: each region gets only its block, no rule lost, off = today
+# App Store offer codes (key + pool in ~/.config/overload, never in the repo).
+# FRIENDMONTH = 1 month free (monthly), the iPhone referral code. "Free year" =
+# one-time codes; Apple makes 500+ per batch. The admin site Coupons page keeps
+# them in the coupons table, gives one at a time, and makes 500 more per period.
+npx tsx scripts/offer-codes/codes.mts list   # also: setup. Handing out codes: admin site -> Coupons (coupons table)
 ```
 
 There are no configured lint or build scripts.
@@ -223,7 +243,7 @@ Supabase (PostgreSQL) with 6 tables: `user_profiles`, `exercises`, `routines`, `
 
 ### Design System
 
-All design tokens live in `constants/theme.ts`: colors (lime green `#c8ff00` primary accent), spacing scale, font sizes, border radii, and shadow presets. The app uses light theme only (`Colors.light`) — `Colors.dark` is defined but unused. Use Feather icons (`@expo/vector-icons`). The app's icon scale is deliberately compact: inline/row icons match the surrounding text size (10–16px, e.g. 11px glyphs inside the 24x24 `rowIcon` tiles); reserve 24px+ for standalone icons such as tab bar items or empty states.
+All design tokens live in `constants/theme.ts`: colors (lime green `#c8ff00` primary accent), spacing scale, font sizes, border radii, and shadow presets. The app has a dark and a light theme (`ThemeProvider` / `useTheme()` in `hooks/useTheme.tsx`), and it starts in dark. Read colors from the `C` object that `useTheme()` returns. Do not hard-code one theme's tokens: `Colors.light.muted`, for example, shows a light fill in the default dark UI. Use Feather icons (`@expo/vector-icons`). The app's icon scale is deliberately compact: inline/row icons match the surrounding text size (10–16px, e.g. 11px glyphs inside the 24x24 `rowIcon` tiles); reserve 24px+ for standalone icons such as tab bar items or empty states.
 
 ### XP/Leveling
 

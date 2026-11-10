@@ -673,6 +673,10 @@ export default function GoalPlanScreen() {
           weeks: currentPhase.duration_weeks,
         } : undefined}
         linkRoutinesToPhaseId={buildPhaseId ?? undefined}
+        linkRoutinesPhaseNumber={(() => {
+          const ph = program?.phases.find((p) => p.id === buildPhaseId);
+          return ph ? ph.seq + 1 : undefined;
+        })()}
         onRoutineCreated={() => load()}
         onProgramApplied={() => load()}
       />

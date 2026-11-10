@@ -139,7 +139,7 @@ Deno.test("agent: build_recipe with no card makes the card from the parts, summe
   const log: string[] = [];
   const bodies: Record<string, unknown>[] = [];
   const out = await runFoodAgent(
-    { text: "lunch was a sabji", defaultMeal: "lunch", later: true, first: true },
+    { text: "lunch was a sabji of 60 g low fat paneer, onion and oil", defaultMeal: "lunch", later: true, first: true },
     { model: "m", callModel: scripted([[SABJI]], bodies), readDiary: async () => ({}), savedMeals: async () => [], parseFood: fakeParse(log), buildRecipe: true },
   );
   assertEquals(out.kind, "log");
@@ -174,7 +174,7 @@ Deno.test("agent: rebuilding a dish on its line replaces it; the answered oil is
   const rebuilt = { name: "build_recipe", input: { ...SABJI.input, line_id: "L2", parts: [{ name: "low fat paneer", amount: "60 g" }, { name: "oil", amount: "10 g" }, { name: "onion", amount: "40 g" }] } };
   const out = await runFoodAgent(
     { text: "it was 2 tsp oil", defaultMeal: "lunch", later: true, card,
-      recentTurns: [{ role: "drona", text: "I assumed 1 tsp oil. Change it?" }] },
+      recentTurns: [{ role: "user", text: "a sabji of 60 g low fat paneer, oil and 40 g onion" }, { role: "drona", text: "I assumed 1 tsp oil. Change it?" }] },
     { model: "m", callModel: scripted([[rebuilt]]), readDiary: async () => ({}), savedMeals: async () => [], parseFood: fakeParse(), buildRecipe: true },
   );
   assertEquals(out.kind, "log");
@@ -238,7 +238,7 @@ Deno.test("recipeNote: a long dish keeps its assumed parts in the note, so the n
 Deno.test("agent: a dish with two parts not found is not put on the card", async () => {
   const twoMissing = { name: "build_recipe", input: { name: "Stew", parts: [{ name: "low fat paneer", amount: "60 g" }, { name: "zzz root" }, { name: "qqq leaf" }] } };
   const out = await runFoodAgent(
-    { text: "x", defaultMeal: "lunch", later: true, card: [{ food_name: "Rice", quantity: 1, serving_label: "katori", grams: 150, kcal: 195, meal_type: "lunch" }] },
+    { text: "a stew of 60 g low fat paneer, zzz root and qqq leaf", defaultMeal: "lunch", later: true, card: [{ food_name: "Rice", quantity: 1, serving_label: "katori", grams: 150, kcal: 195, meal_type: "lunch" }] },
     { model: "m", callModel: scripted([[twoMissing]]), readDiary: async () => ({}), savedMeals: async () => [], parseFood: fakeParse(), buildRecipe: true },
   );
   // Nothing changed: the card stays, and the line says which dish failed.
@@ -247,7 +247,7 @@ Deno.test("agent: a dish with two parts not found is not put on the card", async
   // One part missing still lands, at low confidence, with the part named.
   const oneMissing = { name: "build_recipe", input: { name: "Stew", parts: [{ name: "low fat paneer", amount: "60 g" }, { name: "oil" }, { name: "zzz root" }] } };
   const out2 = await runFoodAgent(
-    { text: "x", defaultMeal: "lunch", later: true, first: true },
+    { text: "a stew of 60 g low fat paneer, oil and zzz root", defaultMeal: "lunch", later: true, first: true },
     { model: "m", callModel: scripted([[oneMissing]]), readDiary: async () => ({}), savedMeals: async () => [], parseFood: fakeParse(), buildRecipe: true },
   );
   assertEquals(out2.kind, "log");
@@ -264,7 +264,7 @@ Deno.test("readRecipeParts: parts are kept only on a line whose source is recipe
 Deno.test("agent: with no card, a dish whose parts are all not found makes no card, only a line saying so", async () => {
   const none = { name: "build_recipe", input: { name: "Stew", parts: [{ name: "zzz root" }, { name: "qqq leaf" }] } };
   const out = await runFoodAgent(
-    { text: "x", defaultMeal: "lunch", later: true, first: true },
+    { text: "a stew of zzz root and qqq leaf", defaultMeal: "lunch", later: true, first: true },
     { model: "m", callModel: scripted([[none]]), readDiary: async () => ({}), savedMeals: async () => [], parseFood: fakeParse(), buildRecipe: true },
   );
   assertEquals(out.kind, "reply");
@@ -309,7 +309,7 @@ Deno.test("agent: a rebuild that fails on a card line says the line is as before
   const card: CardLine[] = [{ food_name: "Sabji", quantity: 1, serving_label: "serving", grams: 105, kcal: 212.6, source: "recipe", meal_type: "lunch" }];
   const rebuild = { name: "build_recipe", input: { name: "Sabji", line_id: "L1", parts: [{ name: "zzz a" }, { name: "zzz b" }] } };
   const out = await runFoodAgent(
-    { text: "x", defaultMeal: "lunch", later: true, card },
+    { text: "the sabji was zzz a and zzz b", defaultMeal: "lunch", later: true, card },
     { model: "m", callModel: scripted([[rebuild]]), readDiary: async () => ({}), savedMeals: async () => [], parseFood: fakeParse(), buildRecipe: true },
   );
   assertEquals(out.kind, "reply");
@@ -410,7 +410,7 @@ Deno.test("agent: parts not found and parts whose lookup failed are said apart i
   };
   const ask = { name: "build_recipe", input: { name: "Stew", parts: [{ name: "low fat paneer", amount: "60 g" }, { name: "zzz root" }, { name: "onion", amount: "40 g" }] } };
   const out = await runFoodAgent(
-    { text: "x", defaultMeal: "lunch", later: true, first: true },
+    { text: "a stew of 60 g low fat paneer, zzz root and 40 g onion", defaultMeal: "lunch", later: true, first: true },
     { model: "m", callModel: scripted([[ask]]), readDiary: async () => ({}), savedMeals: async () => [], parseFood: parse, buildRecipe: true },
   );
   assertEquals(out.kind, "reply");
@@ -424,7 +424,7 @@ Deno.test("agent: a dish added with the name of a line already on the card is no
   const card: CardLine[] = [{ food_name: "Paneer sabji", quantity: 1, serving_label: "serving", grams: 105, kcal: 212.6, source: "recipe", meal_type: "lunch" }];
   const again = { name: "build_recipe", input: { name: "Paneer sabji", parts: [{ name: "low fat paneer", amount: "60 g" }, { name: "oil" }] } };
   const out = await runFoodAgent(
-    { text: "x", defaultMeal: "lunch", later: true, card },
+    { text: "another paneer sabji, 60 g low fat paneer and oil", defaultMeal: "lunch", later: true, card },
     { model: "m", callModel: scripted([[again]]), readDiary: async () => ({}), savedMeals: async () => [], parseFood: fakeParse(), buildRecipe: true },
   );
   // Nothing new lands: the card stays as it was, and the line says why.

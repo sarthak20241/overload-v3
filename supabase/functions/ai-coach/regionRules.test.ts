@@ -17,7 +17,9 @@ import {
   REGION_RULES,
   REGION_SWAPS,
   type RegionPrompt,
+  startEarlyRegionRead,
 } from "./regionRules.ts";
+import { agentRegionRules } from "./foodBar.ts";
 import { buildDecideSystemPrompt, preciseExtractSystem, type ParseMealInput, waitForRegion } from "./parseMeal.ts";
 import { FOOD_AGENT_SYSTEM, FOOD_AGENT_SYSTEM_LATER, CARD_NOTE_LATER, type FoodAgentDeps, runFoodAgent } from "./foodAgent.ts";
 import { kindQuestion } from "./preciseMatch.ts";
@@ -190,4 +192,22 @@ Deno.test("a slow region read is no region, and says it timed out", async () => 
   assertEquals(await waitForRegion(async () => "us", 50), { region: "us", timedOut: false });
   assertEquals(await waitForRegion(() => new Promise((r) => setTimeout(() => r("us"), 200)), 20), { region: null, timedOut: true });
   assertEquals(await waitForRegion(() => Promise.reject(new Error("down")), 50), { region: null, timedOut: false });
+});
+
+Deno.test("the zone read starts at request time, only for Precise with the switch on", () => {
+  for (const [on, precise, want] of [[true, true, 1], [true, false, 0], [false, true, 0]] as const) {
+    let reads = 0;
+    const started = startEarlyRegionRead({ on, precise }, async () => { reads++; return null; });
+    assertEquals(reads, want, `on=${on} precise=${precise}`);
+    assertEquals(started, want === 1);
+  }
+});
+
+Deno.test("the food agent never waits on a hung zone read", async () => {
+  const t0 = Date.now();
+  const hung = new Promise<FoodRegion | null>(() => {});
+  assertEquals(await agentRegionRules(hung, 30), { region: null });
+  assert(Date.now() - t0 < 500);
+  assertEquals(await agentRegionRules(Promise.resolve("us"), 30), { region: "us" });
+  assertEquals(await agentRegionRules(null, 30), null);
 });

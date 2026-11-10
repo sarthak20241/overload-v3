@@ -178,3 +178,14 @@ export function regionalizePrompt(prompt: RegionPrompt, base: string, region: Fo
   }
   return out;
 }
+
+/** Starts the user's time zone read at request time, so a Precise parse finds
+ *  it done instead of starting it at extract and racing a 400 ms cap. Only
+ *  for a Precise request with FOOD_REGION_RULES on; Quick never reads it.
+ *  The read is memoized by the caller (index.ts readTimezone), so later
+ *  readers share it. Returns whether it started. */
+export function startEarlyRegionRead(opts: { on: boolean; precise: boolean }, read: () => Promise<unknown>): boolean {
+  if (!opts.on || !opts.precise) return false;
+  void read().catch(() => null);
+  return true;
+}

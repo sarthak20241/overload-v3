@@ -146,6 +146,52 @@ export function readRecipeAsk(input: Record<string, unknown>): RecipeAsk | { err
   return { name, parts };
 }
 
+// ── Parts come from the user ────────────────────────────────────────────────
+
+/** Words that describe a part rather than name it ("low fat", "cooked"). */
+const DESCRIBING = new Set([
+  "low", "fat", "free", "lite", "light", "full", "toned", "skimmed", "double", "cooked", "boiled", "fried", "roasted",
+  "grilled", "steamed", "raw", "fresh", "homemade", "home", "made", "plain", "whole", "chopped", "sliced", "diced",
+  "grated", "small", "medium", "large", "big", "little", "some", "bit", "cooking", "of", "and", "with", "the", "a", "an",
+  "in", "for", "my", "own", "g", "gm", "gms", "gram", "grams", "ml", "tsp", "tbsp", "cup", "cups",
+]);
+
+/** A word for matching: lowercase letters and digits, plural folded. */
+function stem(w: string): string {
+  if (w.length <= 3) return w;
+  if (w.endsWith("ies")) return `${w.slice(0, -3)}y`;
+  if (w.endsWith("oes") || w.endsWith("ches") || w.endsWith("shes")) return w.slice(0, -2);
+  if (w.endsWith("s") && !w.endsWith("ss")) return w.slice(0, -1);
+  return w;
+}
+
+function wordsOf(text: string): string[] {
+  return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^a-z0-9]+/).filter((w) => w && !/^\d/.test(w));
+}
+
+/** A cooking fat with no amount: the one part the agent may add on its own
+ *  (owner decision: assume it, show it, ask once). */
+export function assumableFat(p: { name: string; amount: string | null }): boolean {
+  if (p.amount) return false;
+  const last = wordsOf(p.name).pop() ?? "";
+  return (last === "oil" || last === "ghee" || last === "butter") && assumedAmount(p.name) !== null;
+}
+
+/**
+ * The parts of a dish the user never named. A part is the user's when every
+ * word that names it (not "low fat", "cooked", ...) is in the user's own words
+ * in this conversation, plural or singular. A cooking oil or fat with no
+ * amount may be assumed (assumableFat).
+ */
+export function partsNotFromUser(ask: RecipeAsk, userWords: string): string[] {
+  const said = new Set(wordsOf(userWords).map(stem));
+  return ask.parts.filter((p) => {
+    if (assumableFat(p)) return false;
+    const naming = wordsOf(p.name).filter((w) => !DESCRIBING.has(w)).map(stem);
+    return naming.length > 0 && !naming.every((w) => said.has(w));
+  }).map((p) => p.name);
+}
+
 // ── The sum ─────────────────────────────────────────────────────────────────
 
 /** One part after its lookup: the row's numbers per 100 g, and its weight. */
@@ -156,6 +202,9 @@ export interface PartFound {
   source: string;
   /** The amount was not the user's: "1 tsp" from the table, or "40 g". */
   assumed: string | null;
+  /** FOOD_WARM_MEMORY: the amount came from the user's last log of this dish
+   *  (food memory's recipe), not from the table. Never also `assumed`. */
+  remembered?: boolean;
 }
 
 const r1 = (v: number) => Math.round(v * 10) / 10;
@@ -179,9 +228,11 @@ export function recipeNote(parts: PartFound[], missing: string[] = []): string {
   // The assumed amounts go first: the note is cut at 160 characters, and the
   // ask-once check reads them (recipeQuestion), so they must never be the cut.
   const assumed = parts.filter((p) => p.assumed).map((p) => `${p.assumed} ${p.name}`);
+  const remembered = parts.filter((p) => p.remembered && !p.assumed).map((p) => `${Math.round(p.grams)} g ${p.name}`);
   const each = parts.map((p) => `${Math.round(p.grams)} g ${p.name}`);
   const note = [
     assumed.length ? `Assumed ${assumed.join(", ")}.` : null,
+    remembered.length ? `From your last log: ${remembered.join(", ")}.` : null,
     missing.length ? `Not found: ${missing.join(", ")}.` : null,
     `Parts: ${each.join(", ")}.`,
   ].filter(Boolean).join(" ");
@@ -292,6 +343,33 @@ export function partLookupText(p: { name: string; amount: string | null }): {
   return { text: p.name, grams: null, assumed: true, label: null };
 }
 
+/** A part's words, for matching it to a remembered part: lower case, plurals
+ *  folded. */
+const partWords = (s: string) => key(s).split(" ").filter(Boolean).map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w));
+
+/**
+ * The remembered part a part with no amount stands for (FOOD_WARM_MEMORY):
+ * the same name, else the one part with the same set of words (plurals
+ * folded, any order: "onions" and "onion", "red chilli" and "chilli red").
+ * Never a part that only shares some words: "butter" is not "peanut butter",
+ * and "oil" is not "mustard oil". Two that fit, or none: null, so the part
+ * takes the table's amount as before. Only a part with a weight counts.
+ */
+export function rememberedPart(recipe: RecipePart[] | null | undefined, name: string): RecipePart | null {
+  const parts = (recipe ?? []).filter((p) => p.grams > 0);
+  const k = key(name);
+  const same = parts.filter((p) => key(p.name) === k);
+  if (same.length === 1) return same[0];
+  if (same.length > 1) return null;
+  const said = new Set(partWords(name));
+  if (!said.size) return null;
+  const fits = parts.filter((p) => {
+    const w = new Set(partWords(p.name));
+    return w.size === said.size && [...said].every((x) => w.has(x));
+  });
+  return fits.length === 1 ? fits[0] : null;
+}
+
 /** A part's amount in grams when the user said it in grams ("50 g"), else
  *  null. Not ml: a millilitre weighs as much as a gram only for water. */
 function statedGrams(amount: string | null): number | null {
@@ -308,6 +386,11 @@ export async function buildRecipe(
   ask: RecipeAsk,
   meal: MealType,
   parse: (text: string) => Promise<ParseMealResult>,
+  /** FOOD_WARM_MEMORY: the parts of this same dish in the user's food memory
+   *  (rememberedRecipe). A part sent with no amount takes its remembered
+   *  grams instead of an assumed amount; a part with an amount keeps the
+   *  user's; a remembered part the agent did not send is not added. */
+  remembered: RecipePart[] | null = null,
 ): Promise<{
   item: ParsedItem | null;
   missing: string[];
@@ -317,7 +400,14 @@ export async function buildRecipe(
   results: (ParseMealResult | null)[];
 }> {
   const looked = await Promise.all(ask.parts.map(async (p) => {
-    const q = partLookupText(p);
+    // A remembered part whose amount was itself assumed stays an assumption:
+    // it takes the usual amount, the card says "Assumed", and the one
+    // question still asks about it (it is never stored as the user's answer).
+    const found = !p.amount && remembered ? rememberedPart(remembered, p.name) : null;
+    const mem = found && !found.assumed ? found : null;
+    const q: ReturnType<typeof partLookupText> & { remembered?: boolean } = mem
+      ? { text: `${r1(mem.grams)} g ${p.name}`, grams: mem.grams, assumed: false, label: null, remembered: true }
+      : partLookupText(p);
     let r: ParseMealResult | null = null;
     let failed = false;
     try {
@@ -343,6 +433,7 @@ export async function buildRecipe(
       per100: { kcal: row.kcal, protein_g: row.protein_g, carb_g: row.carb_g, fat_g: row.fat_g, fiber_g: row.fiber_g },
       source: row.source,
       assumed: q.assumed ? q.label ?? `${Math.round(grams)} g` : null,
+      ...(q.remembered ? { remembered: true } : {}),
     });
   }
   // A missing part the user weighed at least as heavy as every part found is
@@ -355,6 +446,19 @@ export async function buildRecipe(
   const ok = found.length > 0 && missing.length <= RECIPE_MAX_MISSING && !mainMissing;
   const errored = looked.filter((x) => x.failed).map((x) => x.p.name);
   return { item: ok ? sumRecipe(ask.name, found, meal, missing) : null, missing, errored, results: looked.map((x) => x.r) };
+}
+
+/** The parts of the user's remembered dish with this name (food memory's
+ *  recipe, matched by memoryKey, which drops a recipe written into a name),
+ *  or null when memory has no such dish with parts. */
+export function rememberedRecipe(
+  foods: { key: string; recipe?: RecipePart[] | null }[] | null | undefined,
+  dish: string,
+  keyOf: (name: string) => string,
+): RecipePart[] | null {
+  const k = keyOf(dish);
+  if (!k) return null;
+  return (foods ?? []).find((f) => f.key === k && (f.recipe?.length ?? 0) > 0)?.recipe ?? null;
 }
 
 // ── The one question ────────────────────────────────────────────────────────

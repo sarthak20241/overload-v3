@@ -33,7 +33,7 @@ export function tourScenes(firstName: string | null, phaseLine: string | null): 
     { id: 'train', title: 'Every set counts.', sub: 'Log weight and reps in one tap.' },
     { id: 'eat', title: 'Just say what you ate.', sub: 'I work out the calories and protein.' },
     { id: 'adapt', title: 'I adjust as you go.', sub: 'Your plan changes when you do.' },
-    { id: 'plan', title: 'Now, your phase 1.', sub: phaseLine?.trim() || 'Built from your answers.' },
+    { id: 'plan', title: 'Here is your first plan.', sub: phaseLine?.trim() || 'Built from your answers.' },
   ];
 }
 

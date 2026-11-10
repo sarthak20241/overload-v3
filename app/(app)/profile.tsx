@@ -54,6 +54,7 @@ import { flushEditQueue, getPendingEditCount } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 import { clearUserCache, hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { clearCoachConversations } from '@/lib/coachConversations';
+import { signOutAndCleanUp } from '@/lib/signOutCleanup';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { isLifetimeTier, PLAN_BENEFITS, tierLabel } from '@/lib/tiers';
@@ -231,46 +232,9 @@ export default function ProfileScreen() {
   // The dashboard route itself re-checks via RLS, so this is a UX gate.
   const { isAdmin } = useAdminCheck();
   const signOut = async () => {
-    const prevUserId = user?.id;
-    // Best-effort: push any queued workouts before the JWT drops. The queue is
-    // keyed per user, so anything that still can't sync (offline) is parked
-    // under this account and flushes the next time they sign in here — not lost.
-    if (
-      prevUserId &&
-      (getPendingCount(prevUserId) > 0 ||
-        getPendingRoutineCount(prevUserId) > 0 ||
-        getPendingEditCount(prevUserId) > 0)
-    ) {
-      try {
-        await Promise.race([
-          (async () => {
-            await flushRoutineQueue(supabase, prevUserId);
-            await flushQueue(supabase, prevUserId);
-            await flushEditQueue(supabase, prevUserId);
-          })(),
-          new Promise((r) => setTimeout(r, 3000)),
-        ]);
-      } catch {}
-    }
-    try { await clerkSignOut(); } catch {}
-    // Clear the guest flag too — sign-out should always land on /(auth),
-    // regardless of how the user originally got into /(app).
-    await setGuestMode(false);
-    // Drop the picker's cached customs list: it's keyed by user id (so it
-    // can't leak across accounts), but there's no reason to keep the old
-    // account's rows allocated past the session.
-    invalidateCustomExercisesCache();
-    // Drop this user's read cache (per-user keyed; clears stale data so the
-    // next account never paints from it). The sync queue stays parked per user.
-    // Best-effort local cleanup (both per-user keyed, so the next account never
-    // sees them). allSettled so a storage failure can't block the redirect after
-    // auth teardown has already happened.
-    if (prevUserId) {
-      await Promise.allSettled([
-        clearUserCache(prevUserId),
-        clearCoachConversations(prevUserId),
-      ]);
-    }
+    // Shared with the locked paywall (lib/signOutCleanup.ts). As before, a
+    // failed Clerk sign-out still runs the cleanup and leaves for /(auth).
+    await signOutAndCleanUp({ userId: user?.id, supabase, clerkSignOut });
     router.replace('/(auth)');
   };
   const [deletingAccount, setDeletingAccount] = useState(false);
@@ -1008,6 +972,20 @@ export default function ProfileScreen() {
                     </View>
                   </>
                 )}
+              </TouchableOpacity>
+              {/* Refer a friend (app/refer.tsx): open to everyone, payers too;
+                  that screen does not promise a payer free months. */}
+              <TouchableOpacity
+                onPress={() => router.push('/refer' as any)}
+                accessibilityRole="button"
+                accessibilityLabel="Invite friends"
+                style={styles.inviteLink}
+              >
+                <Feather name="users" size={12} color={C.accentText} />
+                {/* A store payer earns no months (refer.tsx), so no promise. */}
+                <Text style={[styles.inviteLinkText, { color: C.accentText }]}>
+                  {isPro ? 'Invite friends' : 'Invite friends, get a free month each'}
+                </Text>
               </TouchableOpacity>
               {/* Invite codes give a free month (lib/invite.ts). Not offered
                   to a paying user, whom redeem_invite() would refuse. */}

@@ -44,6 +44,8 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
+  BackHandler,
   Linking,
   ScrollView,
   StyleSheet,
@@ -51,7 +53,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
@@ -78,14 +80,14 @@ import {
   Spacing,
 } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { track, setUserProps } from '@/lib/analytics';
+import { track, setUserProps, flushAnalytics } from '@/lib/analytics';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { DronaHeroOrb } from '@/components/coach/DronaHeroOrb';
-import { invalidateCoachAccess } from '@/hooks/useCoachAccess';
+import { invalidateCoachAccess, useCoachAccess } from '@/hooks/useCoachAccess';
 import { prefetchDashboard } from '@/lib/dashboardData';
 import {
   requestNotificationPermission,
@@ -111,6 +113,8 @@ import {
   type RevenueCatCustomerInfo,
 } from '@/lib/revenuecat';
 import { OrbLoader } from '@/components/ui/OrbLoader';
+import { isHardPaywallAccount, markStoreDown } from '@/lib/hardPaywall';
+import { signOutAndCleanUp } from '@/lib/signOutCleanup';
 
 type FunnelStep = 'warmup' | 'reminder' | 'paywall' | 'success';
 
@@ -134,10 +138,14 @@ interface PurchaseOutcome {
 // someone to their goal, so the paywall draws that walk: three steps joined by
 // a line, ending at the goal. Every step is something only Pro can run today
 // (the server gates program/plan/workout building and refining as Pro).
+//
+// 2026-11-08: plain words. A first-time reader did not
+// know what "Drona", "program" or "coached" meant here, so each line says
+// what happens, in words anyone uses.
 const PRO_PATH = [
-  'A program built for your goal',
-  'Drona checks in. Your plan adapts to your routine.',
-  'Training and food, coached daily',
+  'A workout plan made for your goal',
+  'Your coach checks in and changes the plan when life gets busy',
+  'Help with your workouts and your meals, every day',
 ];
 
 interface FoundingStatus {
@@ -181,10 +189,26 @@ export default function UpgradeScreen() {
   const router = useRouter();
   const { C } = useTheme();
   const toast = useToast();
-  const { user } = useClerkUser();
+  const { user, signOut, isLoaded: userLoaded } = useClerkUser();
   const supabase = useSupabaseClient();
   const params = useLocalSearchParams<{ flow?: string; context?: string; dest?: string }>();
   const isFunnel = params.flow === 'onboarding';
+  // Hard paywall (lib/hardPaywall.ts). 'locked' is the app gate sending a new
+  // account with no Pro here; the sign-up funnel is locked for the same
+  // accounts. Locked = no close button, no Android back, and a sign-out link
+  // so someone on the wrong account is never stuck.
+  // In the funnel, until Clerk's user has loaded we can't read the account's
+  // date: count it as locked, so the close button never flashes for a new
+  // account. An older account sees the close once the user loads.
+  // The URL alone never locks an older account: 'locked' also needs a new
+  // account once the user has loaded.
+  const newOrLoading = !userLoaded || !user || isHardPaywallAccount(user.createdAt);
+  // Pro or a trial already (a code, an earlier purchase): never locked.
+  const { access: coachAccess } = useCoachAccess();
+  const hasAccess = coachAccess.state === 'paid' || coachAccess.state === 'trialing';
+  const isLocked =
+    isPurchasesAvailable() && (params.flow === 'locked' || isFunnel) && newOrLoading && !hasAccess;
+  const source = params.flow === 'locked' ? 'locked' : isFunnel ? 'onboarding_funnel' : 'direct';
   const context = typeof params.context === 'string' ? params.context : null;
 
   const [step, setStep] = useState<FunnelStep>(isFunnel ? 'warmup' : 'paywall');
@@ -194,6 +218,8 @@ export default function UpgradeScreen() {
   const [packages, setPackages] = useState<Partial<Record<PlanKey, RevenueCatPackage>>>({});
   const [founding, setFounding] = useState<FoundingStatus | null>(null);
   const [selectedPlan, setSelectedPlan] = useState<PlanKey>('annual');
+  // Bumped by "Try again" when the store's plans did not load.
+  const [storeTry, setStoreTry] = useState(0);
   const [purchasing, setPurchasing] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [restoring, setRestoring] = useState(false);
@@ -201,6 +227,9 @@ export default function UpgradeScreen() {
   // button stays off: a second tap could double-charge (Ask to Buy) or hit
   // Play's already-owned error while the first order is still pending.
   const [pendingOrder, setPendingOrder] = useState(false);
+  // Locked buyer whose payment went through but the server has not confirmed
+  // yet: the buy button stays off so they Restore instead of paying twice.
+  const [activationPending, setActivationPending] = useState(false);
   const [outcome, setOutcome] = useState<PurchaseOutcome | null>(null);
   // The pending wait outlives a tap by up to 2 minutes; nothing may update a
   // screen the buyer already left.
@@ -218,11 +247,11 @@ export default function UpgradeScreen() {
   const paywallOpenedAt = useRef(Date.now());
   const paywallResolved = useRef(false);
   useEffect(() => {
-    track('paywall_viewed', { source: isFunnel ? 'onboarding_funnel' : 'direct', context, purchases_available: purchasesUsable });
+    track('paywall_viewed', { source, context, purchases_available: purchasesUsable });
     return () => {
       if (paywallResolved.current) return;
       track('paywall_dismissed', {
-        source: isFunnel ? 'onboarding_funnel' : 'direct',
+        source,
         context,
         seconds_on_screen: Math.round((Date.now() - paywallOpenedAt.current) / 1000),
       });
@@ -237,7 +266,7 @@ export default function UpgradeScreen() {
   // when the OS reduce-motion setting is on.
   const reduceMotion = useReducedMotion();
   const ctaPulse = useSharedValue(1);
-  const pulseActive = step === 'paywall' && !purchasing && !verifying && !loading;
+  const pulseActive = step === 'paywall' && !purchasing && !verifying && !loading && !activationPending;
   useEffect(() => {
     if (!pulseActive || reduceMotion) {
       cancelAnimation(ctaPulse);
@@ -261,14 +290,19 @@ export default function UpgradeScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const [offerings, foundingResp] = await Promise.all([
+        // Loaded apart: a failed founding count must not throw away the
+        // store's plans (that would read as "store down" and open the gate).
+        const [offeringsRes, foundingRes] = await Promise.allSettled([
           getCoachOfferings(),
           supabase.rpc('get_founding_status'),
         ]);
         if (cancelled) return;
-        setPackages(offerings?.byPlan ?? {});
-        const rows = (foundingResp.data as FoundingStatus[] | null) ?? [];
-        setFounding(rows.find((r) => r.tier === 'founding_lifetime') ?? null);
+        if (offeringsRes.status === 'fulfilled') setPackages(offeringsRes.value?.byPlan ?? {});
+        else console.warn('[upgrade] offerings failed:', offeringsRes.reason);
+        if (foundingRes.status === 'fulfilled') {
+          const rows = (foundingRes.value.data as FoundingStatus[] | null) ?? [];
+          setFounding(rows.find((r) => r.tier === 'founding_lifetime') ?? null);
+        }
       } catch (e) {
         if (!cancelled) console.warn('[upgrade] load failed:', e);
       } finally {
@@ -278,19 +312,98 @@ export default function UpgradeScreen() {
     return () => {
       cancelled = true;
     };
-  }, [supabase]);
+  }, [supabase, storeTry]);
+
+  // The store's plans did not load (store down, no network): nothing can be
+  // bought, so a locked paywall must not trap anyone. It offers a retry and
+  // opens like every other failure in the gate (fail open).
+  const storeDown = !loading && !packages.annual && !packages.monthly;
+  // Once the store has failed, the way out stays while "try again" reloads.
+  const [storeFailed, setStoreFailed] = useState(false);
+  useEffect(() => {
+    if (storeDown) setStoreFailed(true);
+    else if (!loading) setStoreFailed(false);
+  }, [storeDown, loading]);
+  const lockedNow = isLocked && !storeDown && !storeFailed;
+  useEffect(() => {
+    if (!(storeDown && isLocked)) return;
+    markStoreDown();
+    // Tracked so a real store outage can be told apart from a bad offering
+    // config or someone blocking the request.
+    track('paywall_store_down', { source, context, platform: STORE_NAME });
+  }, [storeDown, isLocked]);
 
   // Where "done" goes. The funnel replaces into the app; a direct open pops
   // back to whatever surfaced the paywall.
   const finish = useCallback(() => {
-    if (isFunnel) {
+    if (params.flow === 'locked') {
+      router.replace('/(app)');
+    } else if (isFunnel) {
       router.replace(params.dest === 'routines' ? '/(app)/routines' : '/(app)');
     } else if (router.canGoBack()) {
       router.back();
     } else {
       router.replace('/(app)');
     }
-  }, [isFunnel, params.dest, router]);
+  }, [isFunnel, params.flow, params.dest, router]);
+
+  // Android back must not slip past a locked paywall.
+  useEffect(() => {
+    if (!lockedNow) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => sub.remove();
+  }, [lockedNow]);
+
+  // Apple 5.1.1(v): an account can be deleted inside the app. A locked new
+  // account can't reach Profile, so the paywall offers it too. Same server
+  // wipe as Profile (delete-account), then Clerk's own delete.
+  const [deleting, setDeleting] = useState(false);
+  const handleDeleteAccount = useCallback(() => {
+    Alert.alert(
+      'Delete your account?',
+      'This deletes your account and everything in it. It cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              const { error } = await supabase.functions.invoke('delete-account');
+              if (error) throw error;
+              if (user && (user as any).delete) {
+                try { await (user as any).delete(); } catch { /* already deleted by the function */ }
+              }
+              track('account_deleted', { from: 'paywall' });
+              await flushAnalytics();
+              paywallResolved.current = true;
+              // Always end the session and drop local data, even when Clerk's
+              // own delete already ran: a live session would bounce back here.
+              await signOutAndCleanUp({ userId: user?.id, supabase, clerkSignOut: signOut });
+              router.replace('/(auth)');
+            } catch (e: any) {
+              setDeleting(false);
+              toast.error(e?.message ? `Couldn't delete the account. ${e.message}` : "Couldn't delete the account. Try again.");
+            }
+          },
+        },
+      ],
+    );
+  }, [supabase, user, signOut, router, toast]);
+
+  const handleSignOut = useCallback(async () => {
+    try {
+      await signOutAndCleanUp({ userId: user?.id, supabase, clerkSignOut: signOut, throwIfSignOutFails: true });
+    } catch (e) {
+      console.warn('[upgrade] sign out failed:', e);
+      toast.error("Couldn't sign out. Check your connection and try again.");
+      return;
+    }
+    track('paywall_signed_out', { source, context });
+    paywallResolved.current = true;
+    router.replace('/(auth)');
+  }, [signOut, router, source, context, toast, user?.id, supabase]);
 
   // Longer `timeoutMs` for a pending payment: the store is waiting on a bank
   // mandate, which routinely lands well after the 30s a webhook flip needs.
@@ -299,7 +412,10 @@ export default function UpgradeScreen() {
     while (Date.now() < deadline) {
       try {
         const { data } = await supabase.rpc('get_coach_access_status');
-        if ((data as { state?: string } | null)?.state === 'paid') return true;
+        // 'trialing' counts too: it is Pro everywhere, and the hard-paywall
+        // gate lets it in, so a buyer must never wait on it.
+        const state = (data as { state?: string } | null)?.state;
+        if (state === 'paid' || state === 'trialing') return true;
       } catch {
         /* network blip, keep polling */
       }
@@ -314,15 +430,18 @@ export default function UpgradeScreen() {
       toast.error('Plan unavailable. Try again.');
       return;
     }
-    if (purchasing || verifying || pendingOrder) return;
+    if (purchasing || verifying || pendingOrder || activationPending) return;
     setPurchasing(true);
-    track('purchase_started', { plan: selectedPlan, context, source: isFunnel ? 'onboarding_funnel' : 'direct' });
+    track('purchase_started', { plan: selectedPlan, context, source });
     try {
       if (user?.id) await ensureIdentity(user.id);
       const customerInfo = await purchaseCoachPackage(pkg);
       setPurchasing(false);
       setVerifying(true);
-      const flipped = await waitForTierFlip();
+      // Locked: leaving before the tier flips would bounce a paying buyer
+      // straight back here (the app gate still reads 'free'), so a locked
+      // buyer waits longer before giving up.
+      const flipped = (await waitForTierFlip()) || (isLocked && (await waitForTierFlip(90_000)));
       invalidateCoachAccess();
       if (flipped) {
         // Honor the reminder screen's promise ONLY when the purchase
@@ -348,14 +467,20 @@ export default function UpgradeScreen() {
           plan: selectedPlan,
           on_trial: onTrial,
           context,
-          source: isFunnel ? 'onboarding_funnel' : 'direct',
+          source,
           seconds_to_purchase: Math.round((Date.now() - paywallOpenedAt.current) / 1000),
         });
         setOutcome({ plan: selectedPlan, onTrial });
         setStep('success');
+      } else if (isLocked) {
+        // Paid, but the server has not caught up. Stay here: Restore leaves
+        // once it has.
+        setActivationPending(true);
+        track('purchase_completed', { plan: selectedPlan, on_trial: false, context, source, tier_flip: 'pending' });
+        toast.info("Payment received. It's taking a moment. Tap Restore in a minute.", { durationMs: 10000 });
       } else {
         paywallResolved.current = true;
-        track('purchase_completed', { plan: selectedPlan, on_trial: false, context, tier_flip: 'pending' });
+        track('purchase_completed', { plan: selectedPlan, on_trial: false, context, source, tier_flip: 'pending' });
         toast.info(
           "Purchase received. We're finalizing. Pull to refresh or relaunch in a minute.",
           { durationMs: 8000 },
@@ -370,7 +495,6 @@ export default function UpgradeScreen() {
         // Nothing failed: the store is waiting on the buyer's bank (an Indian
         // card or UPI mandate, Ask to Buy, SEPA). Keep "Activating Pro…" up
         // and poll well past the normal window instead of saying "failed".
-        const source = isFunnel ? 'onboarding_funnel' : 'direct';
         track('purchase_pending', { plan: selectedPlan, context, source });
         setPurchasing(false);
         setVerifying(true);
@@ -418,7 +542,7 @@ export default function UpgradeScreen() {
           plan: selectedPlan,
           reason: 'error',
           context,
-          source: isFunnel ? 'onboarding_funnel' : 'direct',
+          source,
           error_code: err.code,
           error_readable: err.readable,
           error_underlying: err.underlying,
@@ -430,7 +554,7 @@ export default function UpgradeScreen() {
       setPurchasing(false);
       setVerifying(false);
     }
-  }, [packages, selectedPlan, purchasing, verifying, pendingOrder, user?.id, waitForTierFlip, toast, finish, supabase, context, isFunnel]);
+  }, [packages, selectedPlan, purchasing, verifying, pendingOrder, activationPending, user?.id, waitForTierFlip, toast, finish, supabase, context, isFunnel, isLocked, source]);
 
   const handleRestore = useCallback(async () => {
     if (restoring) return;
@@ -448,9 +572,10 @@ export default function UpgradeScreen() {
         // Only a found entitlement ends the pending lock; an empty restore
         // may just mean the bank has not approved yet.
         setPendingOrder(false);
-        const flipped = await waitForTierFlip();
+        const flipped = (await waitForTierFlip()) || (isLocked && (await waitForTierFlip(90_000)));
         invalidateCoachAccess();
         if (flipped) {
+          setActivationPending(false);
           paywallResolved.current = true;
           // The exact tier is not known here (a restore carries no plan), but
           // 'free' is now wrong. The bridge's next profile read sets the name.
@@ -481,7 +606,7 @@ export default function UpgradeScreen() {
     } finally {
       setRestoring(false);
     }
-  }, [restoring, waitForTierFlip, toast, finish]);
+  }, [restoring, waitForTierFlip, toast, finish, isLocked]);
 
   // Success screen. Opened from a cap-hit sheet the user was mid-task
   // (chatting, logging food), so the only sensible next step is back to it.
@@ -543,9 +668,11 @@ export default function UpgradeScreen() {
         ? 'That one is Overload Pro.'
         : context === 'cap_chat' || context === 'cap_parse'
           ? 'A coach who never runs out.'
-          : 'Always by your side. All the way to your goal.';
+          : 'A coach by your side until you reach your goal.';
   return (
     <SafeAreaView style={[u.safeArea, { backgroundColor: C.background }]}>
+      {/* No iOS swipe-back past a locked paywall. */}
+      <Stack.Screen options={{ gestureEnabled: !lockedNow }} />
       {step === 'warmup' && (
         <Animated.View key="warmup" entering={FadeIn.duration(250)} style={u.stepFill}>
           <View style={u.centerFill}>
@@ -556,7 +683,7 @@ export default function UpgradeScreen() {
               entering={FadeInDown.duration(400)}
               style={[u.displayTitle, { color: C.foreground, textAlign: 'center' }]}
             >
-              Your goal isn't yours alone anymore.
+              You don't have to do this alone.
             </Animated.Text>
             <Animated.View entering={FadeInDown.delay(150).duration(400)} style={u.quoteWrap}>
               {/* Drona's orb, the same one as the coach chat, speaking the
@@ -564,8 +691,8 @@ export default function UpgradeScreen() {
               <DronaHeroOrb style={u.trustOrb} />
               <View style={[u.quoteBubble, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
                 <Text style={[u.quoteText, { color: C.foreground }]}>
-                  From today, getting you there is my job too. I'll build the
-                  plan, check in, and adjust it whenever life gets in the way.
+                  I'm Drona, your coach. I'll make your plan, check on you,
+                  and change the plan when life gets busy.
                 </Text>
               </View>
             </Animated.View>
@@ -576,10 +703,10 @@ export default function UpgradeScreen() {
               onPress={() => { track('paywall_step_advanced', { from: 'warmup', to: 'reminder', context }); setStep('reminder'); }}
               style={[u.cta, Shadow.playBtn]}
               accessibilityRole="button"
-              accessibilityLabel="I'm in"
+              accessibilityLabel="Sounds good"
             >
               {/* The buyer's answer to Drona's promise, not a sales verb. */}
-              <Text style={u.ctaText}>I'm in</Text>
+              <Text style={u.ctaText}>Sounds good</Text>
             </PressableScale>
             <Text style={[u.ctaNote, { color: C.textMuted }]}>
               Billing starts only after your 7-day trial, unless you cancel.
@@ -612,8 +739,8 @@ export default function UpgradeScreen() {
               entering={FadeInDown.delay(120).duration(400)}
               style={[u.subText, { color: C.textSecondary, textAlign: 'center' }]}
             >
-              A notification on day 5, two days before your trial ends. Keep
-              notifications on and you'll never be surprised.
+              You'll get a message on day 5, two days before you pay anything.
+              Turn on notifications so you don't miss it.
             </Animated.Text>
             <Animated.View entering={FadeInDown.delay(240).duration(400)} style={u.bellWrap}>
               <View style={[u.bellCircle, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
@@ -630,9 +757,9 @@ export default function UpgradeScreen() {
               onPress={advanceFromReminder}
               style={[u.cta, Shadow.playBtn]}
               accessibilityRole="button"
-              accessibilityLabel="Continue for free"
+              accessibilityLabel="Continue"
             >
-              <Text style={u.ctaText}>Continue for free</Text>
+              <Text style={u.ctaText}>Continue</Text>
             </PressableScale>
           </Animated.View>
         </Animated.View>
@@ -660,6 +787,7 @@ export default function UpgradeScreen() {
               which cluttered the footer). It always leaves for the free plan,
               funnel included, so it is the skip. Restore lives under the CTA. */}
           <View style={[u.topBar, { justifyContent: 'flex-end' }]}>
+            {lockedNow ? <View style={u.closeBtn} /> : (
             <TouchableOpacity
               onPress={() => {
                 track('paywall_skipped', { via: 'close', context, seconds_on_screen: Math.round((Date.now() - paywallOpenedAt.current) / 1000) });
@@ -674,6 +802,7 @@ export default function UpgradeScreen() {
             >
               <Feather name="x" size={IconSize.md} color={C.textMuted} />
             </TouchableOpacity>
+            )}
           </View>
 
           {/* Sized to fit one viewport on modern phones (verified iPhone 17);
@@ -690,7 +819,7 @@ export default function UpgradeScreen() {
             <Text style={[u.eyebrow, { color: C.accentText }]}>OVERLOAD PRO</Text>
             <Text style={[u.hero, { color: C.foreground }]}>{paywallTitle}</Text>
             <Text style={[u.heroSub, { color: C.textSecondary }]}>
-              Free is a taste of Drona. Pro is the coaching.
+              Drona is your personal coach for workouts and food.
             </Text>
 
             {/* What Pro gives, as a path: three steps, then the goal. Free
@@ -713,7 +842,7 @@ export default function UpgradeScreen() {
               </View>
             </View>
             <Text style={[u.pathPlus, { color: C.textMuted }]}>
-              Plus unlimited coach chat and AI food logs.
+              Plus: ask your coach anything, and log meals by typing what you ate.
             </Text>
 
             {/* Spare height sits HERE, between the story and the plans, so the
@@ -780,6 +909,17 @@ export default function UpgradeScreen() {
                     </Text>
                   </TouchableOpacity>
                 )}
+                {storeDown && purchasesUsable && (
+                  <TouchableOpacity
+                    onPress={() => { track('paywall_store_retry', { source, context }); setLoading(true); setStoreTry((n) => n + 1); }}
+                    accessibilityRole="button"
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={[u.expoGoText, { color: C.textMuted }]}>
+                      {`Couldn't reach ${STORE_NAME}. Tap to try again.`}
+                    </Text>
+                  </TouchableOpacity>
+                )}
                 {!purchasesUsable && (
                   <Text style={[u.expoGoText, { color: C.mutedFg }]}>
                     In-app purchases need the {STORE_NAME} version of Overload.
@@ -793,8 +933,8 @@ export default function UpgradeScreen() {
             <Animated.View style={ctaPulseStyle}>
               <PressableScale
                 onPress={handlePurchase}
-                disabled={purchasing || verifying || loading || pendingOrder}
-                style={[u.cta, Shadow.playBtn, (loading || pendingOrder) && { opacity: 0.7 }]}
+                disabled={purchasing || verifying || loading || pendingOrder || activationPending}
+                style={[u.cta, Shadow.playBtn, (loading || pendingOrder || activationPending) && { opacity: 0.7 }]}
                 accessibilityRole="button"
                 accessibilityLabel={ctaLabel}
               >
@@ -815,6 +955,8 @@ export default function UpgradeScreen() {
                   </>
                 ) : pendingOrder ? (
                   <Text style={u.ctaText}>Waiting for your bank</Text>
+                ) : activationPending ? (
+                  <Text style={u.ctaText}>Payment received</Text>
                 ) : (
                   <Text style={u.ctaText}>{ctaLabel}</Text>
                 )}
@@ -842,20 +984,72 @@ export default function UpgradeScreen() {
                   <Text style={[u.footLink, { color: C.textMuted }]}>Restore</Text>
                 )}
               </TouchableOpacity>
+              {/* One item, two links: Apple wants both pages on a paywall,
+                  and one item leaves room for "Have a code?". */}
+              <View style={u.legalPair}>
+                <TouchableOpacity
+                  onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}
+                  accessibilityRole="link"
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 4 }}
+                >
+                  <Text style={[u.footLink, { color: C.textMuted }]}>Terms</Text>
+                </TouchableOpacity>
+                <Text style={[u.footLink, { color: C.textMuted }]}>{' & '}</Text>
+                <TouchableOpacity
+                  onPress={() => Linking.openURL('https://tryoverload.app/privacy.html')}
+                  accessibilityRole="link"
+                  hitSlop={{ top: 10, bottom: 10, left: 4, right: 10 }}
+                >
+                  <Text style={[u.footLink, { color: C.textMuted }]}>Privacy</Text>
+                </TouchableOpacity>
+              </View>
+              {/* Friend, campaign or store discount code: the invite screen
+                  takes all three. A locked new account leaves the paywall
+                  this way when a code gives it Pro. */}
               <TouchableOpacity
-                onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}
-                accessibilityRole="link"
+                onPress={() => { track('paywall_code_tapped', { source, context }); router.push('/invite' as any); }}
+                disabled={purchasing || verifying || restoring}
+                accessibilityRole="button"
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <Text style={[u.footLink, { color: C.textMuted }]}>Terms</Text>
+                <Text style={[u.footLink, { color: C.textMuted }]}>Have a code?</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => Linking.openURL('https://tryoverload.app/privacy.html')}
-                accessibilityRole="link"
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Text style={[u.footLink, { color: C.textMuted }]}>Privacy</Text>
-              </TouchableOpacity>
+              {isLocked && (
+                <TouchableOpacity
+                  onPress={handleSignOut}
+                  disabled={purchasing || verifying || restoring}
+                  accessibilityRole="button"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={[u.footLink, { color: C.textMuted }]}>Sign out</Text>
+                </TouchableOpacity>
+              )}
+              {isLocked && (
+                <TouchableOpacity
+                  onPress={handleDeleteAccount}
+                  disabled={deleting || purchasing || verifying || restoring}
+                  accessibilityRole="button"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={[u.footLink, { color: C.textMuted }]}>{deleting ? 'Deleting…' : 'Delete account'}</Text>
+                </TouchableOpacity>
+              )}
+              {/* Paid but still locked (a store webhook that never landed)
+                  and Restore can't fix it: a person to write to. */}
+              {isLocked && (
+                <TouchableOpacity
+                  onPress={() => {
+                    // No mail app: say where to write instead.
+                    Linking.openURL('mailto:support@tryoverload.app?subject=Overload%20Pro%20help').catch(() => {
+                      toast.info('Email us at support@tryoverload.app', { durationMs: 8000 });
+                    });
+                  }}
+                  accessibilityRole="link"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={[u.footLink, { color: C.textMuted }]}>Help</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
         </Animated.View>
@@ -890,7 +1084,7 @@ export default function UpgradeScreen() {
               {[
                 'Unlimited coach chat',
                 'Unlimited AI food logs',
-                'A plan built for you, rewritten every week',
+                'A plan made for you, updated every week',
               ].map((line, i) => (
                 <View
                   key={line}
@@ -1269,13 +1463,18 @@ const u = StyleSheet.create({
     textAlign: 'center',
     marginTop: Spacing.md,
   },
+  // Up to six links (Restore, Terms, Privacy, Have a code?, and when locked
+  // Sign out and Help): a smaller gap, and they wrap on narrow phones.
   footLinks: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'center',
-    gap: Spacing.xxl,
+    columnGap: Spacing.lg,
+    rowGap: Spacing.sm,
     marginTop: Spacing.lg,
   },
   footLink: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  legalPair: { flexDirection: 'row', alignItems: 'center' },
 
   expoGoNote: {
     flexDirection: 'row',

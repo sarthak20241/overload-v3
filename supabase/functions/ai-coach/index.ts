@@ -86,8 +86,8 @@ import {
   wantsFoodAgent,
   cardQuestionFellToParse,
 } from "./foodIntent.ts";
-import { parseFoodBuildRecipeMode, readRecipeParts } from "./recipe.ts";
-import { CARD_MAX_LINES, type CardLine, cardMayBeCut, readFoodContext, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
+import { parseFoodBuildRecipeMode } from "./recipe.ts";
+import { type CardLine, cardMayBeCut, cardOriginsOf, readFoodContext, readPreviousItems, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
 import { startHeartbeat } from "./streamHeartbeat.ts";
@@ -98,7 +98,10 @@ import {
   servedForThread,
   supabaseThreadStore,
   threadForAgent,
+  threadIsOpen,
+  type WarmThread,
 } from "./foodThreads.ts";
+import { firstMessageSafe, parseFoodWarmMemoryMode, THREAD_KEPT_DAYS, threadTurnsMemory, warmThreadFrom } from "./foodWarmMemory.ts";
 import {
   agentCouldUseThread,
   answeredByLabel,
@@ -107,6 +110,7 @@ import {
   type FoodBarOutcome,
   type FoodBarThread,
   type FoodBarUsageRow,
+  type FoodBarWarm,
   resolveFoodBarOutcome,
   runFirstMessage,
   runLaterMessage,
@@ -128,6 +132,7 @@ import {
   type AutoLogSkip,
   type AutoLogStore,
   autoLogBlocker,
+  idsInRowOrder,
   type LoggedSection,
   parseAbortFor,
   readAutoLogRequest,
@@ -138,7 +143,7 @@ import { preciseAliasStore } from "./preciseAlias.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
-import { type FoodRegion, foodRegionForTimezone, parseFoodRegionRulesMode } from "./regionRules.ts";
+import { type FoodRegion, foodRegionForTimezone, parseFoodRegionRulesMode, startEarlyRegionRead } from "./regionRules.ts";
 import { freeGoalTurnKind, freePhaseBuildCandidate, freePhaseRefineCandidate } from "./freePhaseBuild.ts";
 import { selectMatchRows } from "./ourSources.ts";
 import { MEMORY_DAYS, type MemoryEntry, type OriginTrustMode } from "./userFoodMemory.ts";
@@ -341,6 +346,14 @@ function readTimezone(userClient: SupabaseClient): Promise<string | null> {
  *  rides on the later-mode agent (FOOD_AGENT_LATER, FOOD_FIRST_GATE). off
  *  (default): the agent has no build_recipe, exactly as today. */
 const FOOD_BUILD_RECIPE = parseFoodBuildRecipeMode(Deno.env.get("FOOD_BUILD_RECIPE"));
+
+/** Precise food box, warm memory (foodWarmMemory.ts, plan sections 4 and 6):
+ *  the later-mode agent (FOOD_AGENT_LATER, FOOD_FIRST_GATE) gets recall_food
+ *  (the user's own food memory), the memory matches Jev already decided in
+ *  this message's parse, remembered recipe parts in build_recipe, and, with
+ *  FOOD_THREADS=on, the thread's first message, read_thread and
+ *  search_threads. off (default): none of it, exactly as today. */
+const FOOD_WARM_MEMORY = parseFoodWarmMemoryMode(Deno.env.get("FOOD_WARM_MEMORY"));
 
 /** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
  *  of a race it is supposed to win (measured ~700ms against a parse of 1.2s and
@@ -2628,6 +2641,10 @@ function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
       ? (c.confirmed_at ? String(c.confirmed_at) : new Date().toISOString())
       : String(c.last_logged_at),
     persistent: true, confirmed_at: String(c.confirmed_at),
+    // Absent before migration 20261031125900 (select "*"), so absent is null.
+    // Read by buildMemory (the brand shown apart to Jev) and the warm reads
+    // (foodWarmMemory.ts).
+    brand: typeof c.brand === "string" && c.brand.trim() ? c.brand.trim().slice(0, 80) : null,
     origin: typeof c.origin === "string" ? c.origin : null,
     recipe: c.recipe ?? null,
     confirmed_aliases: Array.isArray(c.aliases) ? c.aliases.filter((a): a is string => typeof a === "string") : [],
@@ -2840,6 +2857,20 @@ function keepAlive(p: Promise<unknown>): void {
   if (er?.waitUntil) er.waitUntil(p); else void p;
 }
 
+/** FOOD_WARM_MEMORY: requests (by their user client) whose parses and warm
+ *  reads share ONE food memory load. Only requests that can reach the
+ *  later-mode agent are added; every other request reads as before. */
+const sharedMemoryClients = new WeakSet<SupabaseClient>();
+const memoryReads = new WeakMap<SupabaseClient, Promise<{ entries: MemoryEntry[]; timeZone: string | null }>>();
+function sharedMemoryEntries(userClient: SupabaseClient): Promise<{ entries: MemoryEntry[]; timeZone: string | null }> {
+  let p = memoryReads.get(userClient);
+  if (!p) {
+    p = fetchMemoryEntries(userClient);
+    memoryReads.set(userClient, p);
+  }
+  return p;
+}
+
 /** The dependency bundle parseMeal.ts runs against. */
 function makeParseDeps(
   userClient: SupabaseClient,
@@ -2960,7 +2991,9 @@ function makeParseDeps(
     // theirs. Started now so it is ready by the time extract finishes.
     userMemory: USER_FOOD_MEMORY && JEV_API_KEY
       ? {
-        load: () => fetchMemoryEntries(userClient),
+        // FOOD_WARM_MEMORY: one load per request, shared with the agent's warm
+        // reads. Otherwise a read per parse, as before.
+        load: () => (sharedMemoryClients.has(userClient) ? sharedMemoryEntries(userClient) : fetchMemoryEntries(userClient)),
         originTrust: FOOD_ORIGIN_TRUST,
         // Exact aliases are queried separately so a long-lived user's alias
         // cannot disappear behind the recent-cache or top-N memory limits.
@@ -3034,9 +3067,11 @@ function makeParseDeps(
 
 /** The user-scoped client as the auto-log store. RLS holds throughout: meals
  *  default user_id from the JWT's sub and entries are scoped through their
- *  parent meal, exactly as the client's own writes are. Never the admin client:
- *  a bug here must not be able to write into someone else's diary. */
-function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
+ *  parent meal, exactly as the client's own writes are. Never the admin client
+ *  for the diary: a bug here must not be able to write into someone else's
+ *  diary. The one admin write is brandSavedFoods, on this user's saved foods
+ *  only (users may not write user_food_cache themselves). */
+function supabaseAutoLogStore(userClient: SupabaseClient, admin: SupabaseClient, userId: string): AutoLogStore {
   const rows = (data: unknown) => (data ?? []) as Array<Record<string, unknown>>;
   return {
     async entriesByClientId(clientId) {
@@ -3086,7 +3121,7 @@ function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
       return count ?? 0;
     },
     async insertEntries(entryRows) {
-      const { data, error } = await userClient.from("meal_entries").insert(entryRows).select("id");
+      const { data, error } = await userClient.from("meal_entries").insert(entryRows).select("id, position");
       if (error) {
         // 23505 here is 0115's uq_meal_entries_client_id_slot: a concurrent
         // attempt of this same send already wrote these lines. Same meaning as
@@ -3095,7 +3130,11 @@ function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
         if (error.code === "23505") return { conflict: true };
         return { error: error.message, code: error.code };
       }
-      return { ids: rows(data).map((r) => String(r.id)) };
+      const got = rows(data).map((r) => ({ id: String(r.id), position: r.position == null ? NaN : Number(r.position) }));
+      // No trusted order: the ids as returned, and a count that cannot match
+      // the lines, so writeAutoLog stamps no brand.
+      const ordered = idsInRowOrder(got);
+      return { ids: ordered ?? got.map((r) => r.id), ...(ordered ? {} : { unordered: true }) };
     },
     async deleteEntries(ids) {
       await userClient.from("meal_entries").delete().in("id", ids);
@@ -3104,6 +3143,18 @@ function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
       const { count } = await userClient
         .from("meal_entries").select("id", { count: "exact", head: true }).eq("meal_id", mealId);
       if ((count ?? 0) === 0) await userClient.from("meals").delete().eq("id", mealId);
+    },
+    // Admin, because users may only read and delete their saved foods. Scoped
+    // to this user and to the saved food each new entry just made.
+    // One update per line: each line has its own brand, and a meal has few.
+    async brandSavedFoods(pairs) {
+      await Promise.all(pairs.map(async ({ entry_id, brand }) => {
+        const { data, error } = await admin.from("user_food_cache").update({ brand })
+          .eq("user_id", userId).eq("last_entry_id", entry_id).select("id");
+        if (error) throw new Error(`brand stamp: ${error.message}`);
+        // The trigger saves no food for a line it skips (no weight, say).
+        if (!data?.length) console.log(`[parse_meal] auto-log brand stamp: no saved food for entry ${entry_id}`);
+      }));
     },
   };
 }
@@ -3353,61 +3404,19 @@ async function handleParseMealRequest(args: {
     : null;
   const baseFoodContext = readFoodContext(body.recent_turns, body.pending_meal);
   const recentTurns = baseFoodContext.recentTurns;
-  const previousItems: PreviousItem[] = Array.isArray(body.previous_items)
-    ? (body.previous_items as Array<Record<string, unknown>>).slice(0, CARD_MAX_LINES).flatMap((r) => {
-      const name = typeof r?.food_name === "string" ? r.food_name.trim().slice(0, 120) : "";
-      if (!name) return [];
-      const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
-      const src = r.source;
-      const recipe = readRecipeParts(r.recipe, src);
-      return [{
-        food_id: typeof r.food_id === "string" && r.food_id ? r.food_id : null,
-        food_name: name,
-        quantity: Number(r.quantity) > 0 ? Number(r.quantity) : 1,
-        serving_label: typeof r.serving_label === "string" ? r.serving_label.slice(0, 40) : "serving",
-        grams: Number(r.grams) > 0 ? Number(r.grams) : 0,
-        // Enough to hand an untouched line back exactly as the client had it.
-        kcal: n(r.kcal),
-        protein_g: n(r.protein_g),
-        carb_g: n(r.carb_g),
-        fat_g: n(r.fat_g),
-        fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : n(r.fiber_g),
-        source: src === "catalog" || src === "off" || src === "web" || src === "manual" || src === "estimate" ||
-            src === "recipe"
-          ? src
-          : "estimate",
-        assumption: typeof r.assumption === "string" && r.assumption.trim() ? r.assumption.trim().slice(0, 160) : null,
-        confidence: r.confidence === "high" || r.confidence === "low" ? r.confidence : "medium",
-        // The section the line is already in. Undefined for a client that
-        // predates full-day logging, and the parser falls back exactly as it
-        // did then, so an old build keeps working.
-        meal_type: r.meal_type === "breakfast" || r.meal_type === "lunch" ||
-            r.meal_type === "dinner" || r.meal_type === "snack"
-          ? r.meal_type
-          : undefined,
-        ...(typeof r.said_name === "string" && r.said_name.trim()
-          // Control characters stripped: it becomes a web search term and is
-          // shown back to extract inside previous_meal.
-          ? { said_name: r.said_name.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 100) }
-          : {}),
-        ...(r.research === true ? { research: true } : {}),
-        // Where a web line's numbers came from. An older app does not send it:
-        // the line then reads "from web" with no site.
-        ...(typeof r.source_site === "string" && /^[a-z0-9.-]{3,60}$/i.test(r.source_site.trim())
-          ? { source_site: r.source_site.trim().toLowerCase() }
-          : {}),
-        // A dish built from its parts (recipe.ts): its parts, when the app
-        // sends them back. An app that does not keeps the parts in the note.
-        ...(recipe ? { recipe } : {}),
-      }];
-    })
-    : [];
+  const fromApp = readPreviousItems(body.previous_items, body.previous_items_total);
+  const previousItems: PreviousItem[] = fromApp.items;
   // The card on screen, as the router and the agent see it: the lines with
   // their numbers, so a message beside a card can be an edit, a question, a
   // save, or new food, and the agent can hand lines back exactly as they were.
-  // Same 12-line cap as previous_items above (CARD_MAX_LINES): the agent's
-  // remove_card_lines names lines by these numbers.
-  const card: CardLine[] = previousItems.map((p) => ({
+  // The same list as previousItems, so the agent's remove_card_lines names
+  // lines by the numbers the correction path rebuilds from (CARD_MAX_LINES).
+  // Each line's origin as the app sent it, so the agent can tell a number the
+  // user typed from a catalog row or a guess (foodAgent.ts cardLinesWithIds).
+  // On the card only: previous_items (the parse's input) is unchanged.
+  const cardOrigins = cardOriginsOf(body.previous_items);
+  const card: CardLine[] = previousItems.map((p, i) => ({
+    ...(cardOrigins[i] ?? {}),
     food_name: p.food_name, quantity: p.quantity, serving_label: p.serving_label, grams: p.grams,
     kcal: p.kcal ?? 0, protein_g: p.protein_g, carb_g: p.carb_g, fat_g: p.fat_g,
     food_id: p.food_id, source: p.source,
@@ -3422,7 +3431,7 @@ async function handleParseMealRequest(args: {
   // of it, and with its card tools withheld an edit could only land as a
   // duplicate log_food line. Such a card stays on the parse path, exactly as a
   // message with no card does. Every check below reads this one value.
-  const cardOpen = card.length > 0 && !cardMayBeCut(card);
+  const cardOpen = card.length > 0 && !cardMayBeCut(card, fromApp.total);
 
   // "Just log it" (plan B). Honoured only with a uuid client_id (the
   // idempotency key), and never on a follow-up to a meal under review: a card
@@ -3435,7 +3444,7 @@ async function handleParseMealRequest(args: {
     text, mealHint, localDate, localHour, streamed: wouldStream(body),
     autoLog: auto.autoLog, clientId: auto.clientId, canCreate: clientSupportsFoodCreate(body),
   });
-  fbCard = { lines: card.length, may_be_cut: cardMayBeCut(card), open: cardOpen };
+  fbCard = { lines: card.length, may_be_cut: cardMayBeCut(card, fromApp.total), open: cardOpen };
   // One saved-meal read per request, shared by the router, the parse and the agent.
   let savedMealsShared: Promise<SavedMealForParse[]> | null = null;
   const savedMealsPFor = () => (savedMealsShared ??= fetchSavedMealsForParse(userClient));
@@ -3466,9 +3475,29 @@ async function handleParseMealRequest(args: {
   // At most 800 ms: a slow read must never hold up the answer. Past it the
   // message is served as if the thread had no earlier cards.
   let threadTimer: ReturnType<typeof setTimeout> | undefined;
+  // FOOD_WARM_MEMORY=on: the thread is loaded ONCE for the request, and the
+  // agent's index (threadForAgent) and the warm reads share that load.
+  // Only a request that can reach the later-mode agent (Precise, not a Quick
+  // stream, a model key, FOOD_AGENT_LATER or FOOD_FIRST_GATE on) does any warm
+  // work; every other request reads the thread exactly as before.
+  const mayReachLaterAgent = FOOD_WARM_MEMORY === "on" && !!ANTHROPIC_API_KEY && !wouldStream(body) &&
+    (FOOD_AGENT_LATER !== "off" || FOOD_FIRST_GATE !== "off") &&
+    isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier });
+  const warmThreadsOn = mayReachLaterAgent && FOOD_THREADS === "on" && !!threadReq && !!threadStore;
+  if (mayReachLaterAgent && USER_FOOD_MEMORY) sharedMemoryClients.add(userClient);
+  const memoryEntriesOnce = () => sharedMemoryEntries(userClient);
+  // With the newest turn and turn 1's text (load `turns`), so the warm reads
+  // need no read of their own for them.
+  const sharedThreadLoad = warmThreadsOn
+    ? threadStore!.load(userId, threadReq!.id, { turns: true }).catch(() => null).then((t) => {
+      // A failed turn-1 read, said apart from a thread with no first message.
+      if (t?.first_text_error) fbTrace.step({ src: "router", tool: "food_threads_first", result: { ran: false, error: t.first_text_error } });
+      return t;
+    })
+    : undefined;
   const threadP: Promise<FoodBarThread | null> = FOOD_THREADS === "on" && threadReq && threadStore
     ? Promise.race([
-      threadForAgent(threadStore, userId, threadReq).catch(() => null).then((th) => {
+      threadForAgent(threadStore, userId, threadReq, Date.now(), sharedThreadLoad).catch(() => null).then((th) => {
         // The index line's size on every message that has one, so the cost of
         // the hot context can be counted per user (PR body has the query).
         if (th?.indexStats) fbTrace.step({ src: "router", tool: "food_threads_index", result: th.indexStats });
@@ -3484,6 +3513,61 @@ async function handleParseMealRequest(args: {
       }),
     ]).finally(() => clearTimeout(threadTimer))
     : Promise.resolve(null);
+  // FOOD_WARM_MEMORY=on: this thread's turns, from memory first (foodWarmMemory
+  // threadTurnsMemory): the app's recent turns and the turn count from the
+  // shared load. The first message and read_thread read the database only for
+  // turns not in memory, one turnsFrom call per missing span.
+  const turnsMem = warmThreadsOn && sharedThreadLoad && threadStore?.turnsFrom
+    ? threadTurnsMemory({
+      stored: sharedThreadLoad.then((t) =>
+        t && threadIsOpen(t, Date.now())
+          ? { lastSeq: t.last_seq, lastTurn: t.last_turn ?? null, firstText: t.first_text ?? null }
+          : null
+      ),
+      recent: recentTurns,
+      // The shared load already proved the thread is this user's.
+      fetch: (from, limit) => threadStore.turnsFrom!(userId, threadReq!.id, from, limit, { owned: true }),
+    })
+    : null;
+  let warmTimer: ReturnType<typeof setTimeout> | undefined;
+  const warmThreadP: Promise<WarmThread | null> = turnsMem && sharedThreadLoad
+    ? Promise.race([
+      // The first message only while its card is the one on screen and
+      // nothing of the thread was added (firstMessageSafe).
+      sharedThreadLoad.then((t) => warmThreadFrom(turnsMem, firstMessageSafe(t, threadReq!.card_id))).catch(() => null),
+      new Promise<null>((r) => {
+        warmTimer = setTimeout(() => r(null), 800);
+      }),
+    ]).finally(() => clearTimeout(warmTimer))
+    : Promise.resolve(null);
+  // The user's food memory for the warm reads: the same read the parse's
+  // memory makes, through THEIR client (RLS keeps it theirs). Loaded once,
+  // by the agent run (foodBar.ts startFoodAgent).
+  const foodWarm: FoodBarWarm | undefined = mayReachLaterAgent
+    ? {
+      // One load for the request, shared with the parse's own memory read
+      // (makeParseDeps sharedMemory), so build_recipe never waits on a second.
+      ...(USER_FOOD_MEMORY ? { memory: memoryEntriesOnce, byOrigin: FOOD_ORIGIN_TRUST === "on" } : {}),
+      // Memory matches exist only where the parse asks Jev about memory.
+      matches: USER_FOOD_MEMORY && !!JEV_API_KEY,
+      ...(warmThreadsOn
+        ? {
+          thread: warmThreadP,
+          ...(turnsMem ? { readThread: (from: number, limit: number) => turnsMem.read(from, limit) } : {}),
+          ...(threadStore?.searchThreads
+            ? {
+              searchThreads: (words: string[], limit: number) =>
+                threadStore.searchThreads!(userId, words, {
+                  excludeThreadId: threadReq!.id,
+                  sinceIso: new Date(Date.now() - THREAD_KEPT_DAYS * 86_400_000).toISOString(),
+                  limit,
+                }),
+            }
+            : {}),
+        }
+        : {}),
+    }
+    : undefined;
   /** After the answer is sent: this message's turns and card change, as one
    *  conditional write on the app's base version. Never on the hot path. */
   // The agent (startFoodAgent) and this write read the SAME threadP, so they
@@ -3577,7 +3661,7 @@ async function handleParseMealRequest(args: {
       extra = { auto_log_skipped: "implausible" };
     } else {
       try {
-        const write = await writeAutoLog(supabaseAutoLogStore(userClient), {
+        const write = await writeAutoLog(supabaseAutoLogStore(userClient, admin, userId), {
           clientId: auto.clientId,
           items: result.parsed.items,
           fallbackMeal: result.parsed.meal_type,
@@ -3725,6 +3809,14 @@ async function handleParseMealRequest(args: {
   // because this block cannot be reached any other way.
   const wantsStream = wouldStream(body);
 
+  // The request is Precise (Pro, Precise on): one answer for every check below.
+  const preciseReq = isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier });
+  // Region rules: start the time zone read now, on every path (the stream
+  // and the food box), so the parse finds it done well inside its 400 ms cap.
+  startEarlyRegionRead(
+    { on: FOOD_REGION_RULES === "on", precise: preciseReq },
+    () => readTimezone(userClient),
+  );
   if (wantsStream) {
     const enc = new TextEncoder();
     // Client cancellation -> model cancellation. Without this the reader
@@ -3771,7 +3863,7 @@ async function handleParseMealRequest(args: {
         const agentP = startFoodAgent({
           intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary, readDiaryLines,
           contextPromise, userId, recentTurns, pendingMeal: foodContext.pendingMeal,
-          card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
+          card: card.length ? { lines: card, total: fromApp.total, previousText: previousText ?? null, previousWords, previousItems } : null,
           parseDeps: (fb) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
           logUsage: (row) => void logTokenUsage(admin, row),
           // Builds that do not know this event skip it (dietData ignores
@@ -4035,7 +4127,7 @@ async function handleParseMealRequest(args: {
   // Step 3 (FOOD_FIRST_GATE=on, Precise only): the first message of a thread
   // asks the gate question in the router's own Jev call.
   const firstGate = firstMessageGoesToGate({
-    mode: FOOD_FIRST_GATE, laterMode: FOOD_AGENT_LATER, intentMode: FOOD_INTENT_MODE, precise: isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier }), supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
+    mode: FOOD_FIRST_GATE, laterMode: FOOD_AGENT_LATER, intentMode: FOOD_INTENT_MODE, precise: preciseReq, supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
     turns: recentTurns.length, cardLines: card.length, pending: !!foodContext.pendingMeal,
   });
   const intentP = startTracedIntent(undefined, firstGate);
@@ -4052,15 +4144,17 @@ async function handleParseMealRequest(args: {
       mode: (wantsSuper ? "super" : wantsFast ? "fast" : null) as "super" | "fast" | null,
       savedMealsP, readDiary, readDiaryLines, contextPromise, userId, recentTurns,
       pendingMeal: foodContext.pendingMeal,
-      card: card.length ? { lines: card, previousText: previousText ?? null, previousWords, previousItems } : null,
+      card: card.length ? { lines: card, total: fromApp.total, previousText: previousText ?? null, previousWords, previousItems } : null,
       parseDeps: (fb?: FoodBarTraceCollector) => makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier, fbTrace: fb }),
       // The agent's own instructions take the region's examples (Precise only).
-      region: FOOD_REGION_RULES === "on" && isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier })
+      region: FOOD_REGION_RULES === "on" && preciseReq
         ? readTimezone(userClient).then(foodRegionForTimezone) as Promise<FoodRegion | null>
         : null,
       logUsage: (row: FoodBarUsageRow) => void logTokenUsage(admin, row),
       thread: threadP,
       fbTrace,
+      // FOOD_WARM_MEMORY=on: used by later-mode runs only (startFoodAgent).
+      ...(foodWarm ? { warm: foodWarm } : {}),
     };
     // Step 2 (FOOD_AGENT_LATER=on, Precise only): a later message of the
     // thread goes to the agent whatever the router says. Only a first message
@@ -4070,7 +4164,7 @@ async function handleParseMealRequest(args: {
       // app that sends it): a Precise correction carries no speed.
       // Behind the same server gate speed "super" passes (Precise on, not the
       // free tier): the client's tier never unlocks the agent path alone.
-      mode: FOOD_AGENT_LATER, precise: isPreciseRequest(body, { superOn: PARSE_SUPER_MODE !== "off", freeTier: parseFreeTier }),
+      mode: FOOD_AGENT_LATER, precise: preciseReq,
       supportsCreate, hasModelKey: !!ANTHROPIC_API_KEY,
       turns: recentTurns.length, cardLines: card.length, cardOpen, pending: !!foodContext.pendingMeal,
     });

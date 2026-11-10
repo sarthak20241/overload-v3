@@ -206,6 +206,11 @@ export interface ParsedItem {
   numbers_tier?: ParseTier;
   /** A proposed personal alias. Learned only when this food is saved. */
   memory_input_name?: string;
+  /** The brand this line's food is sold under, when known: the row it was
+   *  filled from, else the brand extract read in the user's words. Read off
+   *  the trace by the saved-food trigger (user_food_cache.brand), so a saved
+   *  food can be shown to Jev with its brand apart (brandApart). */
+  brand?: string | null;
   /** Other variants the user also logs ("vanilla whey" beside the "chocolate
    *  whey" served), priced at this line's weight from their own numbers, so
    *  the card can swap the line in one tap with no model call. */
@@ -764,6 +769,8 @@ export function codeFillItems(
   if (resolved.length === 0) return { items: [], blockedBy: "no items" };
   const out: ParsedItem[] = [];
   for (const r of resolved) {
+    // A saved food is waiting on decide's judgement: only decide can give it.
+    if (r.savedCheck) return { items: [], blockedBy: `saved food to judge: ${r.name}` };
     const top = r.candidates[0];
     if (!top || !top.food_id) return { items: [], blockedBy: `ungrounded: ${r.name}` };
     const per = candidatePer100.get(top.food_id);
@@ -2846,6 +2853,7 @@ function decideSystemToday(input: ParseMealInput): string {
 - looked_up_as on an item means the user's words found no label as written, and from what the search returned the product is most likely sold under that name. A candidate that is the looked_up_as product is the user's food; say in assumption which product you took it as.
 - similar_products on an item are other companies' products we found. They are NEVER the food: do not log one, and do not copy its numbers. Use them, with what you know of the user's brand and its range, only to keep your estimate in a sensible range.
 - label_not_found on an item means the web was searched for this product's label and none was found. If no candidate is acceptable, say so in assumption ("Couldn't find this exact label, so this is my estimate").
+- saved_food_check on an item is a food this user logged before, with the numbers they kept. A matcher was not sure it is the food they mean now (jev_same is its chance, 0 to 1), so you decide, from the user's words: is it the same product? Words the user left out (a flavour, a product-line word, part of the brand) and a brand spelled loosely or shortened are still the same product. A brand, flavour, preparation or fat grade the user DID write that differs from it makes it a different product. Same product: log it by its food_id, ahead of the candidates, since it is their own food. Different, or you cannot tell: leave it and choose from the candidates as usual.
 - No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
 - user_total on an item is the total the user wrote for that whole line; a null field is one they did not give. We did not look this food up, so it has no candidates. Estimate it (food_id null, source "estimate") with grams and macros that fit their numbers, and keep the food's name in the user's own words.
 - shares_user_total on an item means the user gave one total for it and other foods together, and it was not looked up either. Estimate it the same way and keep its name in the user's own words; the app shares their total across those foods.
@@ -2989,6 +2997,17 @@ function sourcesDisagree(c: CandidateFood): boolean {
 
 // Exported for tests: this is the exact shape decide sees for a candidate, and
 // what it does NOT say on the agreeing case is as load-bearing as what it does.
+/** The saved food decide is asked to judge (saved_food_check). */
+export function savedCheckPayload(
+  check: { candidate: CandidateFood; confidence: number; from?: "score" | "choice" },
+): Record<string, unknown> {
+  // jev_same is read as "the chance it is the same food". A choice pick's
+  // odds are a share between her saved foods, so they are left out.
+  return check.from === "choice"
+    ? candidatePayload(check.candidate)
+    : { ...candidatePayload(check.candidate), jev_same: Math.round(check.confidence * 100) / 100 };
+}
+
 export function candidatePayload(c: CandidateFood): Record<string, unknown> {
   return {
     food_id: c.food_id,
@@ -3062,6 +3081,10 @@ export interface ResolvedItem extends ExtractedItem {
   lookedUpAs?: string;
   /** Precise: the web was searched for this food's label and none was found. */
   labelNotFound?: boolean;
+  /** A food this user saved that Jev scored between MEMORY_MAYBE_FLOOR and
+   *  MEMORY_FLOOR: not served, and not a candidate. Decide is shown it beside
+   *  the candidates and says whether the user's words mean it. */
+  savedCheck?: { candidate: CandidateFood; confidence: number; from?: "score" | "choice" };
   /** Rows the brand check took out (another company's product). Never logged;
    *  decide sees them only as a range for its own estimate. */
   similar?: CandidateFood[];
@@ -4650,9 +4673,22 @@ export function scopeCorrection(
  * addition that matches one line exactly. The cost of the rule is a user who
  * really ate the same two lines again in one message; that turn now edits the
  * card instead of doubling it, which they can see and fix.
+ *
+ * One copied line is enough when `text` (this message only) does not name its
+ * food. An addition lists only food the message names, so a card line the
+ * message never mentions came from the card. Live, 2026-11-09: "2 boiled eggs"
+ * made a one-line card, and "And a banana" came back as the egg line plus a
+ * banana, flagged an addition. The app appended both and the eggs counted
+ * twice. "3 more pooris and a dosa" still adds: it names the poori. "one
+ * more" on a one-banana card still adds: nothing new rode with the copy. The
+ * trade-off left: "2 anda aur kela" on a "2 boiled egg" card reads as a copy,
+ * since "anda" is not "egg". The card then shows no extra eggs, which the user
+ * can see and fix; doubled eggs they may never notice.
  */
-export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousItem[]): boolean {
-  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousItem[], text?: string): boolean {
+  // Letters of any script: ASCII only made every Devanagari name "", so two
+  // different foods compared equal.
+  const norm = (x: string) => foodNameKey(x);
   // "piece" / "pieces", "puri" / "puries", "box" / "boxes", "berry" /
   // "berries": one is the other plus a plural ending, and nothing else, so
   // "can" never matches "candy".
@@ -4673,7 +4709,19 @@ export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousIt
       sameUnit(it.unit || "serving", p.serving_label || "serving")
     )
   );
-  return copies.length >= 2;
+  if (copies.length >= 2) return true;
+  // The one-line rule needs all of these, or "one more" / "same again" on a
+  // one-line card (the copy is the whole answer) would lose a real addition:
+  // - a food beside the copy that is not on the card (the banana): the turn
+  //   really is an addition, and the copy rode along with it;
+  // - Latin letters in the message, and a name with words to compare: the
+  //   check is by words, and a name in another script has none.
+  if (text === undefined || copies.length !== 1 || !/[a-z]/i.test(text)) return false;
+  if (!extItems.some((it) => !copies.includes(it))) return false;
+  const named = foodWords(copies[0].name);
+  if (named.length === 0) return false;
+  const said = new Set(foodWords(text));
+  return !named.some((w) => said.has(w));
 }
 
 /**
@@ -5221,7 +5269,7 @@ export function memoryCandidate(food: MemoryFood): CandidateFood {
   return {
     food_id: memoryFoodId(food),
     name: food.name,
-    brand: null,
+    brand: food.brand ?? null,
     base_unit: "g",
     kcal: food.per100.kcal,
     protein_g: food.per100.protein_g,
@@ -5576,6 +5624,7 @@ export function memoryQuickItem(
   return {
     food_id: null,
     food_name: food.name,
+    brand: food.brand ?? line.brand ?? null,
     memory_input_name: stamp.input_name,
     quantity: qty,
     serving_label: line.unit,
@@ -5659,6 +5708,29 @@ export function stampSaidNames(items: ParsedItem[], resolved: ResolvedItem[]): P
     const said = [r.prep && !norm(r.name).includes(norm(r.prep)) ? r.prep : null, foodLabel(r)]
       .filter(Boolean).join(" ").slice(0, 100);
     return norm(said) && norm(said) !== norm(it.food_name) ? { ...it, said_name: said } : it;
+  });
+}
+
+/**
+ * Stamp each line with its brand: the row it was filled from (a catalog,
+ * cache or saved-food row's own brand), else the brand extract read for the
+ * one item that line came from. An estimate line (no row) takes the item's
+ * brand only when its name carries it, so a brand never lands on a line it
+ * does not describe. Runs where stampSaidNames runs, before the ids go.
+ */
+export function stampBrands(items: ParsedItem[], resolved: ResolvedItem[]): ParsedItem[] {
+  const words = (x: string) => ` ${x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
+  return items.map((it) => {
+    if (it.brand !== undefined) return it;
+    if (it.food_id) {
+      const owners = resolved.filter((x) => x.candidates.some((c) => c.food_id === it.food_id));
+      if (owners.length !== 1) return it;
+      const row = owners[0].candidates.find((c) => c.food_id === it.food_id);
+      const brand = row?.brand?.trim() || owners[0].brand?.trim() || null;
+      return brand ? { ...it, brand } : it;
+    }
+    const named = resolved.filter((x) => x.brand?.trim() && words(it.food_name).includes(words(x.brand!)));
+    return named.length === 1 ? { ...it, brand: named[0].brand!.trim() } : it;
   });
 }
 
@@ -7163,7 +7235,7 @@ async function runParseMealCore(
   // Only trust the correction flag when a previous meal was actually supplied.
   // A turn tagged as an addition that copies card lines back word for word is a
   // correction whatever the flag says (copiesCardLines).
-  const copiedCard = hasPrevious && ext.corrects_previous !== true && copiesCardLines(extItems, prevItems);
+  const copiedCard = hasPrevious && ext.corrects_previous !== true && copiesCardLines(extItems, prevItems, input.text);
   if (copiedCard) {
     steps.push({ iter: 0, tool: "correction_inferred", input: { reason: "copied_card_lines", extracted: extItems.length, previous: prevItems.length } });
   }
@@ -7737,7 +7809,7 @@ async function runParseMealCore(
           // with no typed weight falls back to the memory like any line.
           !memoryEligible[idx] || statedFor(it)
             ? Promise.resolve(null)
-            : matchMemory(deps.jev!, memoryFoodsFor(it), { name: memoryLineName(it), brand: it.brand ?? null })
+            : matchMemory(deps.jev!, memoryFoodsFor(it), { name: memoryLineName(it), brand: it.brand ?? null }, { choice: !fastMode })
         ),
       );
       for (const m of matches) if (m) steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: m.trace });
@@ -7815,6 +7887,9 @@ async function runParseMealCore(
         steps.push({ iter: 2, tool: "fast_fill", input: { item: r.name, unit: r.unit }, result: { used: "stated" } });
         return statedLine;
       }
+      // Only a served match (`food`) fills a Quick line. A 0.6 to 0.7 `maybe`
+      // needs decide to judge it, and Quick has no decide, so it is ignored
+      // here and the line keeps its estimate.
       const remembered = memory[idx]?.food
         ? memoryQuickItem(memory[idx]!.food!, { ...r, name: memoryLineName(r), est: r.est ?? null }, memTimeZone)
         : null;
@@ -7890,7 +7965,11 @@ async function runParseMealCore(
 
     const fastDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
     const items = assignItemMeals(
-      checkAtwater(fastItems),
+      // fastItems is toResolve.map, one line per item in order; checked anyway
+      // so a later change to that cannot put a brand on another food.
+      checkAtwater(fastItems.length === toResolve.length
+        ? fastItems.map((it, idx) => (it.brand !== undefined ? it : { ...it, brand: toResolve[idx].brand ?? null }))
+        : fastItems),
       extItems,
       { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
     );
@@ -7969,18 +8048,33 @@ async function runParseMealCore(
           return { ...item, candidates: [cand], resolvedIdentity: true } as ResolvedItem;
         });
       }
+      // Jev was unsure (MEMORY_MAYBE_FLOOR to MEMORY_FLOOR): decide is shown
+      // the saved food to judge. Stamped now so that, if decide takes it, the
+      // line is her memory line like any other, her words included (the alias
+      // a kept line teaches).
+      const maybe = memory[idx]?.maybe;
+      let savedCheck: ResolvedItem["savedCheck"];
+      if (maybe) {
+        const cand = memoryCandidate(maybe);
+        memoryByFood.set(
+          cand.food_id as string,
+          memoryStamp(maybe, memTimeZone, memoryInputName({ name: memoryLineName(item), brand: item.brand ?? null })),
+        );
+        savedCheck = { candidate: cand, confidence: memory[idx]!.confidence, from: memory[idx]!.maybeFrom };
+      }
       // The user gave this line's total and no weight to put it per 100 g
       // ("280 cals of poha + vegetable dalia"). Their number is the answer, so
       // no lookup: a row could only shape the split of the macros they left
       // out, and decide estimates that well enough. On 2026-11-04 this line
       // spent four web searches and a page read, found nothing, and FatSecret's
       // "Groundcherries (Cape-Gooseberries or Poha)" became the line. A
-      // remembered food above still wins: it is the user's own split.
+      // remembered food above still wins: it is the user's own split, and an
+      // unsure one still goes to decide to judge.
       const userTotal = userLineTotal(item);
       if (userTotal) {
         toolCalls.push("user_stated");
         steps.push({ iter: 1, tool: "user_stated", input: { item: item.name }, result: { lookup: "skipped", total: userTotal } });
-        return { ...item, candidates: [], userTotal } as ResolvedItem;
+        return { ...item, candidates: [], userTotal, ...(savedCheck ? { savedCheck } : {}) } as ResolvedItem;
       }
       // The same for a food inside a total the user gave for a few foods
       // together: their number answers it, and decide's estimate only shapes
@@ -7988,7 +8082,17 @@ async function runParseMealCore(
       if (sharedIdx.has(idx)) {
         toolCalls.push("user_stated");
         steps.push({ iter: 1, tool: "user_stated", input: { item: item.name }, result: { lookup: "skipped", total: "shared" } });
-        return { ...item, candidates: [], sharesUserTotal: true } as ResolvedItem;
+        return { ...item, candidates: [], sharesUserTotal: true, ...(savedCheck ? { savedCheck } : {}) } as ResolvedItem;
+      }
+      // Unsure saved food: the lookup runs as it would have, beside it.
+      if (savedCheck) {
+        return resolveOneItem(
+          deps, item, steps, toolCalls, stapleNames,
+          superMode
+            ? (it: ExtractedItem, onRenamed?: (name: string) => void, onNoLabel?: () => void) =>
+              superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st) => steps.push(st), onRenamed, onNoLabel)
+            : undefined,
+        ).then((r) => ({ ...r, savedCheck }));
       }
       return resolveOneItem(
         deps,
@@ -8118,6 +8222,16 @@ async function runParseMealCore(
     });
   }
   const candidatePer100 = per100ForItems(resolved);
+  // A saved food decide may take is not a candidate, but its numbers must be
+  // known here: verifyItems recomputes a picked line from them.
+  for (const r of resolved) {
+    const c = r.savedCheck?.candidate;
+    if (c?.food_id && !candidatePer100.has(c.food_id)) {
+      candidatePer100.set(c.food_id, {
+        kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g, name: c.name,
+      });
+    }
+  }
 
 
   const skipMode = deps.skipDecideMode ?? "off";
@@ -8143,7 +8257,7 @@ async function runParseMealCore(
     const fillDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
     const filled = assignItemMeals(
       stripEphemeralIds(
-        stampSaidNames(
+        stampBrands(stampSaidNames(
           flagPrepMismatch(
             checkAtwater(reconcileQuantity(
               await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100),
@@ -8152,7 +8266,7 @@ async function runParseMealCore(
             prepForItems(resolved),
           ),
           resolved,
-        ),
+        ), resolved),
         verifiedForItems(resolved),
         memoryByFood,
         sitesForItems(resolved),
@@ -8196,6 +8310,11 @@ async function runParseMealCore(
     candidates: r.candidates.slice(0, 4).map(candidatePayload),
     ...(r.lookedUpAs ? { looked_up_as: r.lookedUpAs } : {}),
     ...(r.labelNotFound ? { label_not_found: true } : {}),
+    ...(r.savedCheck
+      ? {
+        saved_food_check: savedCheckPayload(r.savedCheck),
+      }
+      : {}),
     // No food_id on purpose: these can inform an estimate, never be logged.
     ...(r.similar?.length
       ? {
@@ -8274,6 +8393,21 @@ async function runParseMealCore(
     resolved,
     deps.log,
   );
+  // A saved food decide took is that line's answer from here on: its
+  // servings, name check and fallback all read the line's candidates.
+  if (resolved.some((r) => r.savedCheck)) {
+    resolved = resolved.map((r) => {
+      const c = r.savedCheck?.candidate;
+      if (!c) return r;
+      const taken = picked.some((it) => it.food_id === c.food_id);
+      steps.push({
+        iter: 2, tool: "saved_food_check",
+        input: { item: r.name, saved: c.name.slice(0, 60), conf: Math.round(r.savedCheck!.confidence * 100) / 100 },
+        result: { taken },
+      });
+      return taken ? { ...r, candidates: [c, ...r.candidates], resolvedIdentity: true } : r;
+    });
+  }
   let items = await verifyItems(deps, picked, candidatePer100);
   if (hits.length > 0) {
     const before = items;
@@ -8389,13 +8523,13 @@ async function runParseMealCore(
     items = reconcileExtracted(items, resolved, candidatePer100);
   }
 
-  items = stampSaidNames(
+  items = stampBrands(stampSaidNames(
     flagPrepMismatch(
       checkAtwater(reconcileQuantity(items, servingsForItems(resolved))),
       prepForItems(resolved),
     ),
     resolved,
-  );
+  ), resolved);
 
   // Shadow mode: decide already produced the real answer above. Compare what
   // the code fill WOULD have shipped, so the decision to skip decide is made on

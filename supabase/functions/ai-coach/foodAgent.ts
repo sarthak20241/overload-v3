@@ -18,7 +18,7 @@
 // Deps are injected so the loop is testable without the network.
 
 import { energyUnitKcal, fitPortionToStated, isWeightLabel, lineAmountNamed, totalNote, userNumbersOnLine } from "./statedNumbers.ts";
-import { type FoodOrigin, ORIGIN_RANK, originOf, parseRecipe } from "../_shared/foodOrigin.ts";
+import { dishName, type FoodOrigin, ORIGIN_RANK, originOf, parseRecipe } from "../_shared/foodOrigin.ts";
 import { summarize } from "./foodBarTrace.ts";
 import { CARD_MAX_LINES, type CardLine, cardLines, cardMayBeCut, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { sonnetSettings } from "../_shared/sonnet.ts";
@@ -36,7 +36,26 @@ import { lineAsItem, type ThreadLine } from "./foodThreads.ts";
 import { falseAgentClaim } from "./foodIntent.ts";
 import type { ThreadCardLines } from "./foodBar.ts";
 import { type FoodRegion, regionalizePrompt } from "./regionRules.ts";
-import { BUILD_RECIPE_TOOL, buildRecipe, RECIPE_NOTE, type RecipeAsk, readRecipeAsk, recipeQuestion } from "./recipe.ts";
+import { BUILD_RECIPE_TOOL, buildRecipe, partsNotFromUser, RECIPE_NOTE, type RecipeAsk, readRecipeAsk, recipeQuestion, rememberedRecipe } from "./recipe.ts";
+import {
+  type FoodAgentWarm,
+  hasOlderTurns,
+  memoryMatchesBlock,
+  memoryMatchesOf,
+  READ_THREAD_TOOL,
+  RECALL_FOOD_TOOL,
+  type RecallFood,
+  RECIPE_MEMORY_NOTE,
+  runWarmRead,
+  briefly,
+  RECIPE_MEMORY_WAIT_MS,
+  searchThreadsTool,
+  warmNote,
+  warmStatus,
+  warmThreadText,
+} from "./foodWarmMemory.ts";
+import type { WarmThread } from "./foodThreads.ts";
+import { memoryKey } from "./userFoodMemory.ts";
 
 export const MAX_TURNS = 5;
 
@@ -89,6 +108,10 @@ export interface FoodAgentDeps {
   /** A line for the user while the agent works. Never awaited. */
   onStatus?(label: string): void;
   log?(msg: string): void;
+  /** FOOD_WARM_MEMORY=on, later-mode runs only (foodWarmMemory.ts): the warm
+   *  reads recall_food, read_thread and search_threads, the matches block,
+   *  and remembered recipe parts in build_recipe. Absent: none of them. */
+  warm?: FoodAgentWarm;
 }
 
 export interface FoodAgentInput {
@@ -110,6 +133,9 @@ export interface FoodAgentInput {
    *  agent can edit it, add to it, remove from it, save it as a meal, or talk
    *  about it. Its numbers are the user's working copy, never to be re-guessed. */
   card?: CardLine[] | null;
+  /** How many lines the app says the card has (previous_items_total). Null or
+   *  absent for an app that sends no count; see cardMayBeCut. */
+  cardTotal?: number | null;
   /** The router's read of the message: which saved meal it names, and how
    *  sure (0-1). One line in the opening message, so the agent can fetch that
    *  one meal with list_saved_meals instead of reading them all. A pointer,
@@ -133,14 +159,24 @@ export interface FoodAgentInput {
   /** FOOD_REGION_RULES=on and a Precise message: the instructions take this
    *  region's examples (regionRules.ts). Absent: today's instructions. */
   regionRules?: { region: FoodRegion | null };
+  /** FOOD_WARM_MEMORY=on with the thread store on: this thread's first
+   *  message, summary and turn count (foodThreads.ts warm). Later mode only. */
+  warmThread?: WarmThread | null;
 }
 
 /** The card for the agent with stable line ids: "[L2] Roti: 2 piece, ...". An
  *  id names the line as the message found it, so a removal never renumbers
  *  what another call in the same turn points at. */
 export function cardLinesWithIds(card: CardLine[]): string[] {
-  return cardLines(card, { macros: true, sources: true }).map((l) => l.replace(/^(\d+)\.\s/, "[L$1] "));
+  // A line holding a number the user typed says so (CARD_NOTE_LATER): its
+  // number is explained and asked about, never re-guessed (planCardChanges).
+  return cardLines(card, { macros: true, sources: true }).map((l, i) =>
+    l.replace(/^(\d+)\.\s/, "[L$1] ") + (originOf(card[i]) === "user_typed" ? ` | ${USER_TYPED_MARK}` : "")
+  );
 }
+
+/** What a card line the user typed the numbers for ends with, for the agent. */
+export const USER_TYPED_MARK = "origin user_typed";
 
 /** "L2", "[L2]", "l2" or 2 to a card index (0-based), or null. */
 export function lineIndexOf(raw: unknown, cardLength: number): number | null {
@@ -150,14 +186,22 @@ export function lineIndexOf(raw: unknown, cardLength: number): number | null {
 
 /** The opening user message: the date, then (when this answers the agent's
  *  question) what was asked, then the user's words. */
-export function openingText(input: Pick<FoodAgentInput, "text" | "answering" | "card" | "savedHint" | "threadIndex" | "later">, days: string | null): string {
+export function openingText(
+  input: Pick<FoodAgentInput, "text" | "answering" | "card" | "savedHint" | "threadIndex" | "later">,
+  days: string | null,
+  /** FOOD_WARM_MEMORY: the thread lines and the matches block, each already
+   *  in brackets (foodWarmMemory.ts). Absent or null: left out. */
+  warm: { thread?: string | null; matches?: string | null } = {},
+): string {
   const parts: string[] = [];
   if (days) parts.push(`(${days})`);
   if (input.threadIndex) parts.push(`(${input.threadIndex})`);
+  if (warm.thread) parts.push(warm.thread);
   if (input.card?.length) {
     const lines = input.later ? cardLinesWithIds(input.card) : cardLines(input.card, { macros: true });
     parts.push(`(card on screen:\n${lines.join("\n")})`);
   }
+  if (warm.matches) parts.push(warm.matches);
   if (input.savedHint) {
     const name = JSON.stringify(input.savedHint.name);
     parts.push(
@@ -203,6 +247,8 @@ export type AgentEvent =
   | { tool: "restore_card"; ok: boolean; reason: "restored" | "not_found" | "card_open" | "no_thread" }
   | { tool: "read_card"; found: boolean; on_screen?: boolean }
   | { tool: "find_label"; found: boolean }
+  /** FOOD_WARM_MEMORY: build_recipe's wait for remembered parts ran out. */
+  | { tool: "recipe_memory"; timed_out: true; waited_ms: number }
   | {
     tool: "card_changes";
     /** Applied (ok) or sent back to the agent (a conflict, an unknown line). */
@@ -221,7 +267,9 @@ export type AgentEvent =
 export type FoodAgentOutcome =
   /** `answered`: a reply rode along with the change, and is the card's line. */
   | { kind: "log"; result: ParseMealResult; turns: AgentTurn[]; answered?: boolean }
-  | { kind: "create"; create: { tool: string; input: Record<string, unknown> }; turns: AgentTurn[] }
+  /** `reply`: the agent's reply sent beside the save card. The app shows one
+   *  line for a save card (its summary), so the reply leads that line. */
+  | { kind: "create"; create: { tool: string; input: Record<string, unknown> }; turns: AgentTurn[]; reply?: string }
   | { kind: "reply"; text: string; turns: AgentTurn[] }
   | { kind: "failed"; reason: string; turns: AgentTurn[] };
 
@@ -334,6 +382,23 @@ const SAVE_CARD_AS_MEAL_TOOL: AnthropicTool = {
       summary: { type: "string", description: "One short line written as an OFFER, never as done. No em dashes." },
     },
     required: ["name", "log_now", "summary"],
+  },
+};
+
+/** save_card_as_meal for a later message: the same tool, with the section
+ *  the card logs to when log_now is true ("save it and put it in dinner"). */
+const SAVE_CARD_AS_MEAL_TOOL_LATER: AnthropicTool = {
+  ...SAVE_CARD_AS_MEAL_TOOL,
+  input_schema: {
+    ...SAVE_CARD_AS_MEAL_TOOL.input_schema,
+    properties: {
+      ...SAVE_CARD_AS_MEAL_TOOL.input_schema.properties,
+      meal_type: {
+        type: "string",
+        enum: ["breakfast", "lunch", "dinner", "snack"],
+        description: "With log_now true: the section it is logged to. Omit for the card's own meal.",
+      },
+    },
   },
 };
 
@@ -510,13 +575,15 @@ const FINISH_TOOLS = new Set([
  *  gets no card tools either: editing, removing from, or saving a card the
  *  agent cannot see all of would drop the lines past the cap (cardMayBeCut).
  *  copy_lines when it has a source (the diary, or the thread's earlier cards),
- *  read_card with earlier cards, restore_card only with no card on screen. */
+ *  read_card with earlier cards, restore_card only with no card on screen.
+ *  `total` is the app's count of card lines (see cardMayBeCut). */
 export function toolsFor(
   card: CardLine[] | null | undefined,
   canRestore = false,
   copy: { thread?: boolean; diary?: boolean } = {},
+  total?: number | null,
 ): AnthropicTool[] {
-  const out = card?.length && !cardMayBeCut(card) ? [...FOOD_AGENT_TOOLS, ...CARD_TOOLS] : [...FOOD_AGENT_TOOLS];
+  const out = card?.length && !cardMayBeCut(card, total) ? [...FOOD_AGENT_TOOLS, ...CARD_TOOLS] : [...FOOD_AGENT_TOOLS];
   if (copy.thread || copy.diary) out.push(COPY_LINES_TOOL);
   if (copy.thread) out.push(READ_CARD_TOOL);
   if (canRestore) out.push(RESTORE_CARD_TOOL);
@@ -575,18 +642,20 @@ export const FOOD_AGENT_SYSTEM =
  *  screen: the one-line tools (edit_line, remove_lines, add_lines) in place
  *  of edit_card, remove_card_lines and log_food, plus save_card_as_meal. With
  *  no card: today's tools (log_food makes the card). A card cut at the cap
- *  never reaches this agent (laterMessageGoesToAgent). */
+ *  never reaches this agent (laterMessageGoesToAgent). `total` is the app's
+ *  count of card lines (see cardMayBeCut). */
 export function toolsForLater(
   card: CardLine[] | null | undefined,
   canRestore = false,
   copy: { thread?: boolean; diary?: boolean } = {},
   label = false,
+  total?: number | null,
 ): AnthropicTool[] {
-  const whole = !!card?.length && !cardMayBeCut(card);
+  const whole = !!card?.length && !cardMayBeCut(card, total);
   const out = whole
     ? [
       ...FOOD_AGENT_TOOLS.filter((t) => t.name !== LOG_FOOD_TOOL.name),
-      EDIT_LINE_TOOL, REMOVE_LINES_TOOL, ADD_LINES_TOOL, SAVE_CARD_AS_MEAL_TOOL,
+      EDIT_LINE_TOOL, REMOVE_LINES_TOOL, ADD_LINES_TOOL, SAVE_CARD_AS_MEAL_TOOL_LATER,
     ]
     : [...FOOD_AGENT_TOOLS];
   if (copy.thread || copy.diary) out.push(COPY_LINES_TOOL);
@@ -633,9 +702,14 @@ export const FOOD_AGENT_SYSTEM_LATER =
   "- Food the user says they had always goes on the card, even when the same message asks a question or reads like " +
   "chat. Answer the question too, with reply in the same turn. When you are unsure what they meant, put the food on " +
   "the card and say in a few words what you assumed. Losing a meal they meant to record is the worst outcome.\n" +
-  "- A save needs an explicit ask to save, keep or remember something as a reusable meal or food for later. Food " +
-  "names, numbers, the present tense, a question about saving, thanks, or a complaint are not a save. Without that " +
-  "ask never call save_card_as_meal, create_custom_meal or create_custom_food.\n" +
+  "- A save needs an explicit ask to save, keep or remember something as a reusable meal or food for later, in this " +
+  "message or in an earlier one of this conversation that no save card answered. Food names, numbers, the present " +
+  "tense, a question about saving, thanks, or a complaint are not a save. Without that ask never call " +
+  "save_card_as_meal, create_custom_meal or create_custom_food. A meal the user already has in My Meals with the same " +
+  "foods is not saved again.\n" +
+  "- An ask from an earlier message of this conversation that was never carried out (no card change or save card " +
+  "came after it) still stands. When the user asks whether it was done, or says it was not, say plainly that it was " +
+  "not done, and do it now in the same turn: the save, and every other change that same earlier message asked for.\n" +
   "- When the user turns down their saved meal for a food (\"not my saved one\", \"estimate it fresh\"), never use a " +
   "saved meal's lines for it: work it out again (edit_line on its line, or add_lines).\n" +
   "- When the opening message says this answers your question, the answer finishes that waiting meal: put ALL of its " +
@@ -670,8 +744,8 @@ export const FIRST_NOTE =
 
 /** Said to a later-message agent when a card is on screen. */
 export const CARD_NOTE_LATER =
-  "A meal card is on screen, not yet added to the diary. Each line has an id: [L1], [L2], ... Its numbers are the " +
-  "user's working copy: never re-guess them. Change it one line at a time:\n" +
+  "A meal card is on screen, not yet added to the diary. Each line has an id: [L1], [L2], ... and ends with where " +
+  "its numbers came from. A line the user does not mention never changes. Change it one line at a time:\n" +
   "- edit_line: one line changes (amount, size, preparation, which food it is, a number the user gives for it). Only " +
   "that line is worked out again.\n" +
   "- remove_lines: a line the user says they did not have, or that should not be there at all. When a dish already " +
@@ -682,8 +756,13 @@ export const CARD_NOTE_LATER =
   "already on the card (another roti, a second egg) is edit_line on its line with the new total, never add_lines.\n" +
   "Every line you do not name stays exactly as it is. Make all the changes a message needs in ONE turn, together: they " +
   "apply in a fixed order (edits, then removals, then additions). Never give one line two changes in the same turn. " +
-  "A question or complaint about the card with nothing to change is reply, using the card's own numbers (how a figure " +
-  "was reached, why a line is there), never a canned breakdown. A bare ok or thanks accepts the card as it is. The card " +
+  "When the user doubts or complains about a line's number: if it does not fit what the user said or what that food " +
+  "is, fix it in the SAME turn with edit_line on that line, giving their doubt as the change (the app works out the " +
+  "numbers), and reply saying what changed. If it fits, reply explaining it with that line's numbers and where they " +
+  "came from (how the figure was reached, why the line is there), never a canned breakdown, and change nothing. Never " +
+  "wait for another message to make a fix you already see. A line ending \"" + USER_TYPED_MARK + "\" holds the " +
+  "user's own number: explain where it came from and ask once whether to change it, and change it only when their " +
+  "message gives a new number. A bare ok or thanks accepts the card as it is. The card " +
   "has its own Add button: when the user wants it logged, reply that Add puts it in. save_card_as_meal only on an " +
   "explicit ask to keep the card as a reusable meal.";
 
@@ -770,7 +849,7 @@ export function statusFor(name: string, input: Record<string, unknown>): string 
   if (name === READ_CARD_TOOL.name) return "Checking that card";
   if (name === FIND_LABEL_TOOL.name) return "Looking up the label";
   if (name === BUILD_RECIPE_TOOL.name) return "Adding up the dish";
-  return null;
+  return warmStatus(name);
 }
 
 // ── History ─────────────────────────────────────────────────────────────────
@@ -876,11 +955,36 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   const indexLine = canRestore || canCopyThread
     ? `${input.threadIndex} ${canCopyThread ? threadToolsNote(canRestore) : "restore_card brings one back as the card on screen."}`
     : null;
-  const messages: unknown[] = historyMessages(input.recentTurns, openingText({ ...input, threadIndex: indexLine }, days));
   // A later message (FOOD_AGENT_LATER): its own instructions, one-line card
   // tools, and one more turn. Everything else in the loop is shared.
   const later = !!input.later;
-  const lineTools = later && cardOnScreen && !cardMayBeCut(input.card);
+  // FOOD_WARM_MEMORY (foodWarmMemory.ts), later mode only: the warm reads and
+  // the hot lines code builds for them. Without deps.warm every one of these
+  // is false or null, so the prompt, the tools and the loop are as before.
+  const warm = later ? deps.warm : undefined;
+  const canRecall = !!warm?.memory;
+  // read_thread only when the thread has turns the messages above do not.
+  const canReadThread = !!warm?.readThread && hasOlderTurns(input.warmThread, input.recentTurns, input.text);
+  const canSearch = !!warm?.searchThreads;
+  const warmTools = [
+    ...(canRecall ? [RECALL_FOOD_TOOL] : []),
+    ...(canReadThread ? [READ_THREAD_TOOL] : []),
+    ...(canSearch ? [searchThreadsTool(canCopy)] : []),
+  ];
+  const warmNames = new Set(warmTools.map((t) => t.name));
+  const isRead = (name: string) => READ_TOOLS.has(name) || warmNames.has(name);
+  // Memory matches Jev already decided (owner: Jev matches only). In the
+  // opening message only for a first-message run whose parse has ALREADY
+  // finished: it is peeked at, never awaited, so the agent starts no later
+  // than before. Every parse_food result carries them too (runRead).
+  // Only where matches can appear at all (USER_FOOD_MEMORY and Jev on).
+  const canMatch = !!warm?.matches;
+  const settled = canMatch && later && !!input.first && !cardOnScreen ? warm?.settledFirstParse?.() ?? null : null;
+  const warmText = warm
+    ? { thread: warmThreadText(input.warmThread, input.recentTurns, canReadThread, input.text), matches: memoryMatchesBlock(settled) }
+    : {};
+  const messages: unknown[] = historyMessages(input.recentTurns, openingText({ ...input, threadIndex: indexLine }, days, warmText));
+  const lineTools = later && cardOnScreen && !cardMayBeCut(input.card, input.cardTotal);
   // A first message (FOOD_FIRST_GATE) is a later-mode run with no card: its
   // own opening sentence and the note about the parse already running.
   const first = later && !!input.first && !cardOnScreen;
@@ -890,18 +994,26 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // build_recipe (FOOD_BUILD_RECIPE): a later-mode run, beside a whole card
   // or with none (a first message). A cut card never reaches later mode.
   const canRecipe = later && !!deps.buildRecipe && (lineTools || !cardOnScreen);
+  // Said only for the warm tools this run has; null with the switch off.
+  const warmSaid = warm ? warmNote({ recall: canRecall, readThread: canReadThread, searchThreads: canSearch, matches: canMatch }) : null;
+  const recipeMemory = canRecipe && canRecall ? RECIPE_MEMORY_NOTE : null;
   const systemToday = first
-    ? [FOOD_AGENT_SYSTEM_FIRST, FIRST_NOTE, canCopy ? COPY_NOTE : null, canRecipe ? RECIPE_NOTE : null].filter(Boolean).join("\n")
+    ? [FOOD_AGENT_SYSTEM_FIRST, FIRST_NOTE, canCopy ? COPY_NOTE : null, canRecipe ? RECIPE_NOTE : null, recipeMemory, warmSaid]
+      .filter(Boolean).join("\n")
     : later
     ? [
       FOOD_AGENT_SYSTEM_LATER, lineTools ? CARD_NOTE_LATER : cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null,
-      canLabel ? LABEL_NOTE : null, canRecipe ? RECIPE_NOTE : null,
+      canLabel ? LABEL_NOTE : null, canRecipe ? RECIPE_NOTE : null, recipeMemory, warmSaid,
     ].filter(Boolean).join("\n")
     : [FOOD_AGENT_SYSTEM, cardOnScreen ? CARD_NOTE : null, canCopy ? COPY_NOTE : null].filter(Boolean).join("\n");
   const system = input.regionRules ? regionalizePrompt("agent", systemToday, input.regionRules.region) : systemToday;
   const tools = later
-    ? [...toolsForLater(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary }, canLabel), ...(canRecipe ? [BUILD_RECIPE_TOOL] : [])]
-    : toolsFor(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary });
+    ? [
+      ...toolsForLater(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary }, canLabel, input.cardTotal),
+      ...(canRecipe ? [BUILD_RECIPE_TOOL] : []),
+      ...warmTools,
+    ]
+    : toolsFor(input.card, canRestore, { thread: canCopyThread, diary: canCopyDiary }, input.cardTotal);
   const maxTurns = later ? MAX_TURNS_LATER : MAX_TURNS;
   // Every food line a read returned, by name, with the calories it carried.
   // A line the agent says it COPIED is checked against this: the model is told
@@ -922,6 +1034,8 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
   // edit_line with use_label puts on the card.
   const labelLines = new Map<number, ParsedItem>();
   const labelCalls = { n: 0 };
+  // Warm read calls this run, per tool (foodWarmMemory WARM_CAPS).
+  const warmCalls = new Map<string, number>();
   // The foods on the card for copy_lines' duplicate check: the card as sent,
   // plus every line already staged in this run.
   const onCard = onCardOf(input.card ?? []);
@@ -1014,7 +1128,23 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     let plan: CardPlan | null = null;
     const rejected = new Map<ToolUse, string>();
     if (changes.length) {
-      const p = planCardChanges(input.card ?? [], changes, uses.some((u) => u.name === RESTORE_CARD_TOOL.name), recipeNoCard);
+      // build_recipe parts must come from the user's words (partsNotFromUser).
+      // With FOOD_WARM_MEMORY, the parts of the user's own remembered dish of
+      // that name count as theirs too ("the same sabji, 80 g paneer this
+      // time" sends the remembered onion). Waited for briefly, as for the build.
+      let userWords = userWordsOf(input);
+      const recipeUses = changes.filter(isRecipe);
+      if (recipeUses.length && warm?.memory && userWords !== undefined) {
+        const foods = await briefly(warm.memory(), RECIPE_MEMORY_WAIT_MS);
+        const remembered = recipeUses.flatMap((u) => {
+          const name = typeof u.input?.name === "string" ? u.input.name : "";
+          return (rememberedRecipe(foods, name, memoryKey) ?? []).map((p) => p.name);
+        });
+        if (remembered.length) userWords = `${userWords} ${remembered.join(" ")}`;
+      }
+      const p = planCardChanges(
+        input.card ?? [], changes, uses.some((u) => u.name === RESTORE_CARD_TOOL.name), recipeNoCard, input.text, userWords,
+      );
       if (p.ok) plan = p;
       else {
         for (const u of changes) rejected.set(u, p.error);
@@ -1030,8 +1160,11 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     // turn goes back unapplied, so a copy the agent meant to make from what it
     // reads is not lost to an addition that ended the run first. Not on the
     // last turn: there the reads never run, and the finish stands.
+    // The warm reads (recall_food, read_thread, search_threads) never hold:
+    // they are read only, and nothing they return can change a card change
+    // the turn already asked for, so the turn applies as if they were absent.
     if (later && !last && uses.some((u) => HOLD_READS.has(u.name))) {
-      const held = uses.filter((u) => !READ_TOOLS.has(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u));
+      const held = uses.filter((u) => !isRead(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u));
       for (const u of held) {
         rejected.set(u, "Not applied yet: this turn also reads data. Look at what the reads return, then send every change, " +
           "log, save or reply together in your next turn.");
@@ -1054,12 +1187,27 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     // in their words (plan 9b, "create needs an explicit ask"). The agent is
     // told and does what was asked instead; on the last turn the run ends and
     // the card stays as it was.
-    if (later && finish && SAVE_TOOLS.has(finish.name) && !userAskedToSave(input)) {
-      if (last) return { kind: "failed", reason: "save_not_asked", turns };
+    // A save asked for earlier counts while it was never carried out
+    // (unmetSaveAsk); one already offered as a save card is not offered twice.
+    // A save the user already has (same name, same lines) is not made again.
+    const saveRefusal = later && finish && SAVE_TOOLS.has(finish.name)
+      ? !userAskedToSave(input)
+        ? earlierSaveOffered(input.recentTurns)
+          ? "Not done: a save card for the user's earlier ask was already offered in this conversation, and a tap on it " +
+            "saves. No second one. Do what they asked now: change the card, add the food, or reply."
+          : "Not done: the user did not ask to save anything, so no save card. Do what they asked: change the card, add " +
+            "the food, or reply."
+        : await duplicateSaveRefusal(finish, input.card ?? [], deps)
+      : null;
+    if (saveRefusal && finish) {
+      if (last) {
+        // A duplicate on the last turn: the user still gets the true answer.
+        const dup = saveRefusal.startsWith(DUPLICATE_SAVE_LEAD) ? duplicateSaveLine(finish) : null;
+        return dup ? { kind: "reply", text: dup, turns } : { kind: "failed", reason: "save_not_asked", turns };
+      }
       for (const u of uses) {
-        if (!READ_TOOLS.has(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u)) {
-          rejected.set(u, "Not done: the user did not ask to save anything, so no save card. Do what they asked: change the " +
-            "card, add the food, or reply.");
+        if (!isRead(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u)) {
+          rejected.set(u, saveRefusal);
         }
       }
       plan = null;
@@ -1067,7 +1215,7 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
     }
     const copies = uses.filter((u) => u.name === COPY_LINES_TOOL.name);
     if (!finish) {
-      const unknown = uses.find((u) => !READ_TOOLS.has(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u));
+      const unknown = uses.find((u) => !isRead(u.name) && u.name !== COPY_LINES_TOOL.name && !refused.has(u) && !rejected.has(u));
       if (unknown) return { kind: "failed", reason: `unknown_tool_${unknown.name}`, turns };
     }
 
@@ -1106,7 +1254,22 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
       if (label) deps.onStatus?.(label);
       const replyText = replyUse && replyUse !== finish ? clean(typeof replyUse.input?.text === "string" ? replyUse.input.text : "") : "";
       if (plan) {
-        const out = await applyCardChanges(plan, input, deps, parse, seen, turns, replyText, staged.items, labelLines);
+        const out = await applyCardChanges(plan, input, { ...deps, warm }, parse, seen, turns, replyText, staged.items, labelLines, !last);
+        // A change left a food at 0 kcal: nothing lands, and the agent fixes
+        // the amount next turn (zeroKcalLine).
+        if (out.kind === "bounce") {
+          const why = (u: ToolUse) =>
+            changes.includes(u) ? { error: out.error }
+            : copyRuns.has(u) ? copyResultForAgent(copyRuns.get(u)!, copyRuns.get(u)!.items.length > 0)
+            : { error: "Not done: the card changes in this turn were refused, so nothing happened. Fix them first." };
+          thisTurn.results = uses.map((u) => ({ name: u.name, summary: summarize(why(u)) }));
+          messages.push({ role: "assistant", content: blocks }, {
+            role: "user",
+            content: uses.map((u) => ({ type: "tool_result", tool_use_id: u.id, content: JSON.stringify(why(u)) })),
+          });
+          deps.onEvent?.({ tool: "card_changes", ok: false, edits: 0, edits_failed: 0, removed: 0, added: 0, error: out.error });
+          continue;
+        }
         // A save asked for in the same turn as card changes: the changes win,
         // and the user is told the save has not happened (a save card cannot
         // ride with a changed meal card).
@@ -1166,7 +1329,9 @@ async function agentLoop(input: FoodAgentInput, deps: FoodAgentDeps, staged: Sta
           error: "A card is on screen, and restore_card would replace it, so it is not available now. To put foods " +
             "from that earlier card on this one, use copy_lines.",
         }
-        : await runRead(u, deps, parse, { card: input.card ?? [], labelLines, calls: labelCalls });
+        : warmNames.has(u.name)
+        ? await runWarmRead(u.name, u.input ?? {}, warm!, warmCalls)
+        : await runRead(u, deps, parse, { card: input.card ?? [], labelLines, calls: labelCalls, memoryMatches: canMatch });
       outs[i] = out;
       if (!run && !refused.has(u) && !rejected.has(u)) remember(seen, out);
       return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) };
@@ -1183,7 +1348,7 @@ async function runRead(
   u: ToolUse,
   deps: FoodAgentDeps,
   parse: (text: string) => Promise<ParseMealResult>,
-  ctx: { card: CardLine[]; labelLines: Map<number, ParsedItem>; calls: { n: number } } = { card: [], labelLines: new Map(), calls: { n: 0 } },
+  ctx: { card: CardLine[]; labelLines: Map<number, ParsedItem>; calls: { n: number }; memoryMatches?: boolean } = { card: [], labelLines: new Map(), calls: { n: 0 } },
 ): Promise<unknown> {
   try {
     if (u.name === FIND_LABEL_TOOL.name) return await runFindLabel(u.input ?? {}, deps, ctx);
@@ -1228,12 +1393,15 @@ async function runRead(
       if (!text.trim()) return { error: "text is required" };
       const r = await parse(text);
       if (!r.parsed) return { nothing_to_log: r.declined?.message ?? "no food found" };
+      // FOOD_WARM_MEMORY: the memory decisions this parse already made.
+      const matches = ctx.memoryMatches ? memoryMatchesOf(r) : [];
       return {
         meal_type: r.parsed.meal_type,
         items: r.parsed.items.map((i) => ({
           food_name: i.food_name, quantity: i.quantity, serving_label: i.serving_label, grams: i.grams,
           kcal: i.kcal, protein_g: i.protein_g, carb_g: i.carb_g, fat_g: i.fat_g,
         })),
+        ...(matches.length ? { memory_matches: matches } : {}),
       };
     }
   } catch (e) {
@@ -1360,7 +1528,7 @@ async function finishWith(
   // The card tools act on the card, so a card that may be cut at the cap
   // refuses them HERE too, not only in toolsFor: a model can name a tool it
   // was not offered, and the refusal has to sit where the tool would act.
-  if (cardMayBeCut(card) && (u.name === EDIT_CARD_TOOL.name || u.name === REMOVE_CARD_LINES_TOOL.name || u.name === SAVE_CARD_AS_MEAL_TOOL.name)) {
+  if (cardMayBeCut(card, input.cardTotal) && (u.name === EDIT_CARD_TOOL.name || u.name === REMOVE_CARD_LINES_TOOL.name || u.name === SAVE_CARD_AS_MEAL_TOOL.name)) {
     return { kind: "failed", reason: "card_may_be_cut", turns };
   }
   if (u.name === EDIT_CARD_TOOL.name) {
@@ -1447,6 +1615,8 @@ async function finishWith(
         estimated: l.source === "estimate" || l.source === "web",
       })),
       log_now: args.log_now === true,
+      // Only the later tool has it (SAVE_CARD_AS_MEAL_TOOL_LATER).
+      ...(args.log_now === true && isMeal(args.meal_type) ? { meal_type: args.meal_type } : {}),
       summary: summary || `${name}, ${card.length} items. Want it in My Meals?`,
     }, seen);
     return { kind: "create", create: { tool: CREATE_CUSTOM_MEAL_TOOL.name, input: createInput }, turns };
@@ -1557,17 +1727,142 @@ function asksToSave(text: string): boolean {
   return false;
 }
 
-/** Did the user ask for a save? In this message, or in their message just
- *  before it when Drona then asked them something ("save it" -> "save it as
- *  Dinner?" -> "yes"). Not any earlier turn: one "save" early in a thread does
- *  not leave the gate open for the rest of it. "keep" and "remember" count only
- *  as "keep it as / for": "keep the rice" is not a save. */
+/** A Drona turn that is a save card's line: the app records a save card's
+ *  summary as Drona's turn, and every summary code writes names My Meals
+ *  ("... Want it in My Meals?", SAVE_CARD_TAIL). */
+const SAVE_OFFER = /\bmy meals\b|\bsaved? card\b|\btap (?:the |this |it )?(?:save )?(?:card )?to (?:save|keep)\b/i;
+
+/** A Drona turn that says nothing was saved is not an offer of one. */
+const NOT_SAVED = /\b(?:not|n['’]t|never|nothing)\b[^.?!]{0,40}\bsav(?:e|ed|ing)\b/i;
+
+/** The user saying a save is done ("I saved it", "already saved"). */
+const SAVE_DONE = /\b(?:i|i['’]ve|i have|already|just)\s+(?:just\s+|already\s+)?saved\b/i;
+
+/** The user's newest earlier message that asked for a save, when no save card
+ *  came after it (no Drona turn offered one, and the user did not say they
+ *  saved it). Null when every ask was carried out, or there was none. */
+export function unmetSaveAsk(turns: { role: "user" | "drona"; text: string }[] | undefined): string | null {
+  const ts = turns ?? [];
+  for (let i = ts.length - 1; i >= 0; i--) {
+    const t = ts[i];
+    // Only the user's latest earlier message: once they moved on to something
+    // else, an older save ask no longer stands.
+    if (t.role !== "user") continue;
+    if (!asksToSave(t.text)) return null;
+    const after = ts.slice(i + 1);
+    const met = after.some((x) =>
+      x.role === "drona" ? SAVE_OFFER.test(x.text) && !NOT_SAVED.test(x.text) : SAVE_DONE.test(x.text)
+    );
+    return met ? null : t.text;
+  }
+  return null;
+}
+
+/** An earlier save ask that a save card already answered. */
+function earlierSaveOffered(turns: { role: "user" | "drona"; text: string }[] | undefined): boolean {
+  return (turns ?? []).some((t) => t.role === "user" && asksToSave(t.text)) && unmetSaveAsk(turns) === null;
+}
+
+/** Did the user ask for a save? In this message, or earlier in the thread
+ *  when that ask was never carried out (unmetSaveAsk): "save it" -> "save it
+ *  as Dinner?" -> "yes", or "save it" -> a reply that saved nothing -> "did
+ *  you save it?". An ask a save card answered does not keep the gate open.
+ *  "keep" and "remember" count only as "keep it as / for": "keep the rice" is
+ *  not a save. */
 export function userAskedToSave(input: Pick<FoodAgentInput, "text" | "recentTurns">): boolean {
-  if (asksToSave(input.text)) return true;
-  const turns = input.recentTurns ?? [];
-  const last = turns.at(-1);
-  const before = turns.at(-2);
-  return last?.role === "drona" && /\?\s*$/.test(last.text.trim()) && before?.role === "user" && asksToSave(before.text);
+  return asksToSave(input.text) || unmetSaveAsk(input.recentTurns) !== null;
+}
+
+/** Ends a save card's line that has none of SAVE_OFFER's words. */
+export const SAVE_CARD_TAIL = "Tap the card to keep it in My Meals.";
+
+/** The save card's one line with the agent's reply in front: the reply, then
+ *  the card's own summary when both fit the app's 300 characters, else the
+ *  reply and a short tail saying what the tap does. */
+export function saveCardLine(reply: string, summary: string): string {
+  const both = [reply, summary].filter(Boolean).join(" ");
+  if (both.length <= 300) return both;
+  if (SAVE_OFFER.test(reply)) return reply.slice(0, 300);
+  return `${reply.slice(0, 300 - SAVE_CARD_TAIL.length - 1).trim()} ${SAVE_CARD_TAIL}`;
+}
+
+/** A name for "the same saved meal": the dish name without a recipe written
+ *  into it, words only (userFoodMemory.ts memoryKey's normalisation). */
+export function savedNameKey(name: string): string {
+  return dishName(name).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** The lines a save would hold, as name and calories. */
+function saveLinesOf(u: ToolUse, card: CardLine[]): { name: string; lines: { name: string; kcal: number }[] } | null {
+  const a = u.input ?? {};
+  const name = typeof a.name === "string" ? a.name : "";
+  if (!name.trim()) return null;
+  if (u.name === SAVE_CARD_AS_MEAL_TOOL.name) return { name, lines: card.map((l) => ({ name: l.food_name, kcal: l.kcal })) };
+  if (u.name === CREATE_CUSTOM_FOOD_TOOL.name) {
+    const k = num(a.kcal);
+    return k === null ? null : { name, lines: [{ name, kcal: k }] };
+  }
+  const items = Array.isArray(a.items) ? a.items : [];
+  const lines = items.flatMap((raw) => {
+    const o = (raw ?? {}) as Record<string, unknown>;
+    const n = typeof o.name === "string" ? o.name : typeof o.food_name === "string" ? o.food_name : "";
+    const k = num(o.kcal);
+    return n && k !== null ? [{ name: n, kcal: k }] : [];
+  });
+  return lines.length ? { name, lines } : null;
+}
+
+/** Same lines: the same foods (by name, brackets dropped), each within 2 kcal
+ *  or 2%, in any order. */
+function sameLines(a: { name: string; kcal: number }[], b: { name: string; kcal: number }[]): boolean {
+  if (a.length !== b.length || a.length === 0) return false;
+  const key = (l: { name: string; kcal: number }) => savedNameKey(lineKey(l.name));
+  const left = [...b];
+  return a.every((l) => {
+    const i = left.findIndex((r) => key(r) === key(l) && Math.abs(r.kcal - l.kcal) <= Math.max(2, l.kcal * 0.02));
+    if (i < 0) return false;
+    left.splice(i, 1);
+    return true;
+  });
+}
+
+/** The user's saved meal this save would repeat: the same name and the same
+ *  lines. Null when there is none. */
+export function savedMealAlready(
+  u: ToolUse | { name: string; input: Record<string, unknown> },
+  card: CardLine[],
+  saved: SavedMealForParse[],
+): SavedMealForParse | null {
+  const s = saveLinesOf(u as ToolUse, card);
+  if (!s) return null;
+  const k = savedNameKey(s.name);
+  return saved.find((m) => {
+    if (savedNameKey(m.name) !== k) return false;
+    const theirs = m.items.length ? m.items.map((i) => ({ name: i.food_name, kcal: i.kcal })) : [{ name: m.name, kcal: m.kcal }];
+    return sameLines(s.lines, theirs);
+  }) ?? null;
+}
+
+const DUPLICATE_SAVE_LEAD = "Not done: the user already has";
+
+/** The refusal the agent reads for a save the user already has, or null. */
+async function duplicateSaveRefusal(u: ToolUse, card: CardLine[], deps: Pick<FoodAgentDeps, "savedMeals">): Promise<string | null> {
+  let saved: SavedMealForParse[] = [];
+  try {
+    saved = await deps.savedMeals();
+  } catch {
+    return null;
+  }
+  const hit = savedMealAlready(u, card, saved);
+  if (!hit) return null;
+  return `${DUPLICATE_SAVE_LEAD} ${JSON.stringify(hit.name)} in My Meals with these same foods, so no second save card. ` +
+    "Reply that it is in My Meals already, and do whatever else they asked.";
+}
+
+/** What the user reads when the last turn tried to save a meal they have. */
+function duplicateSaveLine(u: ToolUse): string {
+  const name = typeof u.input?.name === "string" && u.input.name.trim() ? u.input.name.trim().slice(0, 80) : "That meal";
+  return `${name} is in My Meals already, with these same foods.`;
 }
 
 /** Reads whose results a later-message agent acts on: a finish in the same
@@ -1610,6 +1905,12 @@ export function planCardChanges(
   restoreInTurn = false,
   /** No card on screen, and the turn builds a dish: additions make the card. */
   emptyCardOk = false,
+  /** The user's message. A line holding the user's own number (origin
+   *  user_typed) changes only when it gives a new number. Absent: no check. */
+  userText?: string,
+  /** Every word the user wrote in this conversation: build_recipe parts must
+   *  come from them (partsNotFromUser). Absent: no check. */
+  userWords?: string,
 ): CardPlan | { ok: false; error: string } {
   const tail = " Nothing was changed. Send the changes again, one change per line.";
   const fail = (why: string) => ({ ok: false as const, error: `${why}${tail}` });
@@ -1630,6 +1931,14 @@ export function planCardChanges(
     if (u.name === BUILD_RECIPE_TOOL.name) {
       const ask = readRecipeAsk(a);
       if ("error" in ask) return fail(ask.error);
+      const invented = userWords === undefined ? [] : partsNotFromUser(ask, userWords);
+      if (invented.length) {
+        return fail(
+          `build_recipe for ${JSON.stringify(ask.name)} names ${invented.length === 1 ? "a part" : "parts"} the user never ` +
+            `mentioned: ${names(invented)}. Give only the parts the user named, in their words (a cooking oil or fat with ` +
+            "no amount may be assumed), or ask the user whether the dish has that part.",
+        );
+      }
       let index: number | null = null;
       if (a.line_id !== undefined && a.line_id !== null && a.line_id !== "") {
         if (!card.length) return fail("No card is on screen yet, so build_recipe has no line to replace. Leave out line_id to add the dish.");
@@ -1642,6 +1951,15 @@ export function planCardChanges(
       if (i === null) return fail(`edit_line names ${JSON.stringify(a.line_id ?? null)}, which is not on the card. ${ids}`);
       const change = typeof a.change === "string" ? a.change.trim() : "";
       if (!change) return fail(`edit_line on L${i + 1} says no change.`);
+      // The user's own number is theirs (CARD_NOTE_LATER): a doubt with no new
+      // number is answered, never re-guessed. use_label keeps their number
+      // (lineFromLabel), so it may still fill in the rest.
+      if (userText !== undefined && a.use_label !== true && originOf(card[i]) === "user_typed" && !givesNumber(userText, card[i])) {
+        return fail(
+          `L${i + 1} holds the user's own number (${USER_TYPED_MARK}) and their message gives no new number, so edit_line ` +
+            "may not change it. Leave it out, and in your reply say where that number came from and ask once whether to change it.",
+        );
+      }
       edits.push({ index: i, change: change.slice(0, 400), ...(a.use_label === true ? { useLabel: true } : {}) });
     } else if (u.name === REMOVE_LINES_TOOL.name) {
       const asked = Array.isArray(a.line_ids) ? a.line_ids : [];
@@ -1677,6 +1995,27 @@ export function planCardChanges(
   const twice = [...count].filter(([, n]) => n > 1).map(([i]) => `L${i + 1}`).sort();
   if (twice.length) return fail(`${twice.join(", ")} ${twice.length === 1 ? "has" : "have"} two changes in one turn.`);
   return { ok: true, edits, removes: [...removes].sort((a, b) => a - b), adds, summaries, ...(recipes.length ? { recipes } : {}) };
+}
+
+/** Everything the user wrote in this conversation: the earlier turns, the
+ *  message a question is about, and this message. */
+export function userWordsOf(input: Pick<FoodAgentInput, "text" | "recentTurns" | "answering">): string {
+  return [...(input.recentTurns ?? []).filter((t) => t.role === "user").map((t) => t.text), input.answering?.text ?? "", input.text]
+    .join("\n");
+}
+
+/** The message gives a number: digits, or a number word ("two", "half"). */
+export function givesNumber(text: string, line?: Pick<CardLine, "kcal" | "grams" | "quantity" | "protein_g" | "carb_g" | "fat_g">): boolean {
+  // "one" is left out: "which one is wrong?" gives no number.
+  if (/\b(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|half|quarter|double|twice|dozen)\b/i.test(text)) return true;
+  const nums = [...text.matchAll(/\d+(?:\.\d+)?/g)].map((m) => Number(m[0]));
+  if (!nums.length) return false;
+  if (!line) return true;
+  // A number already on the line is the user asking about it ("why is the 120
+  // kcal so high?"), not a new one.
+  const onLine = [line.kcal, line.grams, line.quantity, line.protein_g, line.carb_g, line.fat_g]
+    .map((v) => Number(v)).filter((v) => Number.isFinite(v));
+  return nums.some((n) => !onLine.some((v) => Math.round(v) === Math.round(n)));
 }
 
 /** The card after one turn's changes: every line the agent did not name is
@@ -1780,14 +2119,17 @@ export function keepLineIdentity(original: CardLine, edited: ParsedItem, change:
 
 const MASS_LABELS = new Set(["g", "gm", "gms", "gram", "grams", "ml"]);
 const singular = (w: string) => (w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w);
+/** Units that count pieces whatever the food ("3 piece", "2 pcs", "4 nos"). */
+const PIECE_UNITS = new Set(["piece", "pc", "pcs", "nos", "no", "each"]);
 
 /**
  * A card line worked out from a label find_label returned. The model does no
  * arithmetic: the line keeps its name (the user's brand and product), its
  * quantity and its unit, and takes its weight from the label when the unit is
- * the label's piece ("2 x slice" with a label piece of "1 slice", 25 g: 50 g);
- * a weight line keeps its grams; any other line keeps its weight. Every macro
- * is the label's per-100 at that weight.
+ * the label's piece ("2 x slice" with a label piece of "1 slice", 25 g: 50 g)
+ * or a plain piece unit ("3 x piece" with a label piece of "1 poori", 36 g:
+ * 108 g); a weight line keeps its grams; any other line keeps its weight.
+ * Every macro is the label's per-100 at that weight.
  */
 export function lineFromLabel(line: CardLine, label: LabelFound, mealDefault: MealType): ParsedItem {
   const unit = line.serving_label.trim().toLowerCase();
@@ -1797,9 +2139,10 @@ export function lineFromLabel(line: CardLine, label: LabelFound, mealDefault: Me
   let servingLabel = line.serving_label;
   if (MASS_LABELS.has(unit) && line.quantity > 0) {
     grams = line.quantity;
-  } else if (label.piece && pieceNoun && unitNoun === pieceNoun && line.quantity > 0) {
+  } else if (label.piece && line.quantity > 0 && ((pieceNoun && unitNoun === pieceNoun) || PIECE_UNITS.has(unit) || PIECE_UNITS.has(unitNoun))) {
     grams = line.quantity * label.piece.grams;
-    servingLabel = `${pieceNoun} (${Math.round(label.piece.grams * 10) / 10} ${label.base_unit})`;
+    // The line's own word for a piece stays ("piece (36 g)"); the label's when they agree.
+    servingLabel = `${pieceNoun && unitNoun === pieceNoun ? pieceNoun : unitNoun || pieceNoun} (${Math.round(label.piece.grams * 10) / 10} ${label.base_unit})`;
   }
   const f = grams / 100;
   const r1 = (v: number) => Math.round(v * f * 10) / 10;
@@ -1848,6 +2191,142 @@ export function lineFromLabel(line: CardLine, label: LabelFound, mealDefault: Me
   return unitWeightMatchesGrams(item);
 }
 
+/** The label each find_label line was worked out from, for use_label with an
+ *  amount (labelLineAt). */
+const labelOfLine = new WeakMap<ParsedItem, LabelFound>();
+
+/** An amount said in words: a weight or volume ("200 ml", "65 g"), or a count
+ *  of something ("1 tetrapack", "2 slices", "3 small pooris"), with a weight
+ *  each when given ("36 g each"). */
+export interface StatedAmount {
+  count: number;
+  /** The counted thing, singular ("tetrapack", "slice"), or null for a weight. */
+  word: string | null;
+  /** The weight in the label's base unit (g or ml): the whole amount, or one
+   *  piece when `each`. */
+  grams: number | null;
+  unit: "g" | "ml" | null;
+  each: boolean;
+}
+
+// Not a macro ("9 g protein"): that is a number for the food, not its amount.
+const MASS_AMOUNT = /(\d+(?:[.,]\d+)?)\s*(kg|kgs|g|gm|gms|grams?|ml|mls|l|ltr|litres?|liters?)\b(?!\s*(?:of\s+)?(?:protein|carbs?|fats?|fib(?:er|re)|sugars?)\b)(\s*(?:each|apiece|per piece|a piece))?/i;
+const COUNT_WORD = /\b(\d+(?:[.,]\d+)?|one|two|three|four|five|six|half|an?)\s+(?:(?:small|medium|large|big|full|whole|regular)\s+)?([a-z]+)\b/gi;
+const NUMBER_WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, half: 0.5, a: 1, an: 1 };
+/** A count with "a" or "an" names one of these, so "a usual amount" is no amount. */
+const CONTAINER_WORDS = new Set([
+  "pack", "packet", "tetrapack", "tetra", "bottle", "can", "tin", "carton", "pouch", "cup", "glass", "bowl", "katori",
+  "box", "tub", "sachet", "scoop", "bar", "jar", "mug", "serving", "piece", "slice", "plate",
+]);
+/** Words after a number that are not a thing counted. */
+const NOT_COUNTED = new Set([
+  "kcal", "cal", "cals", "calorie", "calory", "kj", "x", "times", "percent", "per", "of", "more", "less", "extra", "the",
+  "g", "gm", "gms", "gram", "ml", "kg", "l", "ltr", "litre", "liter", "minute", "min", "hour", "day", "week",
+  "protein", "carb", "carbs", "fat", "fats", "fiber", "fibre", "sugar",
+]);
+
+/** The amount a change states, or null. A weight wins, except "36 g each"
+ *  with a count, which is the count at that weight each. */
+export function statedAmount(text: string): StatedAmount | null {
+  const t = text.toLowerCase();
+  const m = t.match(MASS_AMOUNT);
+  let count: { count: number; word: string } | null = null;
+  for (const c of t.matchAll(COUNT_WORD)) {
+    const word = singular(c[2]);
+    if (NOT_COUNTED.has(word) || NOT_COUNTED.has(c[2])) continue;
+    const raw = c[1];
+    if ((raw === "a" || raw === "an") && !CONTAINER_WORDS.has(word)) continue;
+    const n = NUMBER_WORDS[raw] ?? Number(raw.replace(",", "."));
+    if (!(n > 0)) continue;
+    count = { count: n, word };
+    break;
+  }
+  if (m) {
+    const v = Number(m[1].replace(",", "."));
+    const u = m[2];
+    const unit: "g" | "ml" = /^(ml|mls|l|ltr|litres?|liters?)$/.test(u) ? "ml" : "g";
+    const grams = /^(kg|kgs|l|ltr|litres?|liters?)$/.test(u) ? v * 1000 : v;
+    if (!(grams > 0)) return null;
+    if (m[3] && count) return { count: count.count, word: count.word, grams, unit, each: true };
+    return { count: 1, word: null, grams, unit, each: false };
+  }
+  return count ? { count: count.count, word: count.word, grams: null, unit: null, each: false } : null;
+}
+
+/** The amount the user's message states for this line: its one amount, when
+ *  that can only be this line's. Two amounts could be for other lines, so
+ *  none; a weight counts only on a one-line card; a count only of a container
+ *  or a piece, or of this food by name ("half kaju" is not the laddu's). */
+export function onlyAmount(text: string, line: Pick<CardLine, "food_name" | "said_name">, cardSize: number): StatedAmount | null {
+  const parts = text.split(/[,;]|\.(?=\s|$)|\band\b/i).map(statedAmount).filter((x): x is StatedAmount => !!x);
+  if (parts.length !== 1) return null;
+  const a = parts[0];
+  if (a.word === null) return cardSize === 1 ? a : null;
+  const own = new Set([...nameWords(line.food_name), ...nameWords(line.said_name ?? "")].map(singular));
+  return CONTAINER_WORDS.has(a.word) || PIECE_UNITS.has(a.word) || own.has(a.word) ? a : null;
+}
+
+/** The last word of a label's serving or piece ("1 Poori (36g)" -> "poori"). */
+function nounOf(label: string): string {
+  return singular(label.toLowerCase().replace(/\(.*\)/, "").trim().split(/\s+/).pop() ?? "");
+}
+
+/**
+ * A card line priced from a label at the amount the user stated, or null when
+ * the label gives no size for a counted amount (and `each` is not given). Code
+ * does the arithmetic: a weight is the weight; a count is count x the label's
+ * piece (a piece word) or its printed serving (any other container); `each` is
+ * a weight for one, chosen by the parse when the label has none, and then the
+ * line says it was assumed and is never "high".
+ */
+export function labelLineAt(line: CardLine, label: LabelFound, a: StatedAmount, mealDefault: MealType, each: number | null = null): ParsedItem | null {
+  const r1 = (v: number) => Math.round(v * 10) / 10;
+  const base = label.base_unit;
+  let grams: number;
+  let quantity: number;
+  let servingLabel: string;
+  let assumed: string | null = null;
+  if (a.word === null && a.grams !== null) {
+    grams = a.grams;
+    quantity = r1(a.grams);
+    servingLabel = a.unit ?? base;
+  } else {
+    const word = a.word ?? "serving";
+    const piece = label.piece && (nounOf(label.piece.label) === word || PIECE_UNITS.has(word)) ? label.piece : null;
+    const serving = !piece && label.serving ? label.serving : null;
+    const one = a.each && a.grams !== null ? a.grams : piece?.grams ?? serving?.grams ?? each;
+    if (!(one && one > 0)) return null;
+    grams = a.count * one;
+    quantity = a.count;
+    const printed = a.each && a.grams !== null || piece || serving;
+    servingLabel = `${word} (${printed ? "" : "about "}${r1(one)} ${base})`;
+    if (!printed) {
+      const amount = `${a.count === 1 ? (/^[aeiou]/.test(word) ? "an" : "a") : a.count} ${word}${a.count === 1 ? "" : "s"}`;
+      assumed = `Took ${amount} as about ${Math.round(a.count * one)} ${base}, a usual size; the label gives none. Numbers from the label online.`;
+    }
+  }
+  const f = grams / 100;
+  return {
+    food_id: null,
+    food_name: line.food_name,
+    ...(line.said_name ? { said_name: line.said_name } : {}),
+    quantity,
+    serving_label: servingLabel,
+    grams: r1(grams),
+    kcal: r1(label.per_100.kcal * f),
+    protein_g: r1(label.per_100.protein_g * f),
+    carb_g: r1(label.per_100.carb_g * f),
+    fat_g: r1(label.per_100.fat_g * f),
+    fiber_g: label.per_100.fiber_g === null ? null : r1(label.per_100.fiber_g * f),
+    source: "web",
+    assumption: assumed ?? "From the label online",
+    ...(label.site ? { source_site: label.site } : {}),
+    // An assumed size is never "high".
+    confidence: label.verified && !assumed ? "high" : "medium",
+    meal_type: line.meal_type ?? mealDefault,
+  };
+}
+
 /** find_label for the agent: the label, and for a card line, the line from it. */
 async function runFindLabel(
   input: Record<string, unknown>,
@@ -1886,6 +2365,7 @@ async function runFindLabel(
   if (line && index !== null) {
     const item = lineFromLabel(line, label, line.meal_type ?? "snack");
     ctx.labelLines.set(index, item);
+    labelOfLine.set(item, label);
     out.line_from_label = {
       line_id: `L${index + 1}`, food_name: item.food_name, quantity: item.quantity, serving_label: item.serving_label,
       grams: item.grams, kcal: item.kcal, protein_g: item.protein_g, carb_g: item.carb_g, fat_g: item.fat_g,
@@ -1893,6 +2373,34 @@ async function runFindLabel(
     };
   }
   return out;
+}
+
+/** Calories per 100 g at or under which a food has next to none (water, black
+ *  tea or coffee, diet soda, plain spices). Decided by the numbers, never by
+ *  the food's name. */
+export const NEAR_ZERO_KCAL_PER_100 = 5;
+
+/**
+ * A line that came out at 0 kcal for a food that has calories: an amount that
+ * was lost (no weight, a piece the label could not weigh), not a real 0. A
+ * food is near zero only when its row's own numbers say so: `per100` (the
+ * label's kcal per 100) when known, else the line's own calories and macros
+ * per gram. A line with no weight and no calories has no numbers to say so.
+ */
+export function zeroKcalLine(i: Pick<ParsedItem, "kcal" | "grams" | "protein_g" | "carb_g" | "fat_g">, per100: number | null = null): boolean {
+  if (!(Math.round(Number(i.kcal) || 0) === 0)) return false;
+  if (per100 !== null) return per100 > NEAR_ZERO_KCAL_PER_100;
+  if (!(i.grams > 0)) return true;
+  const fromMacros = (4 * (i.protein_g || 0) + 4 * (i.carb_g || 0) + 9 * (i.fat_g || 0)) / i.grams * 100;
+  return fromMacros > NEAR_ZERO_KCAL_PER_100;
+}
+
+/** What the agent reads when a change left a food at 0 kcal. */
+export function zeroKcalError(lines: Pick<ParsedItem, "food_name" | "grams">[]): string {
+  const what = names(lines.map((l) => `${l.food_name} (${Math.round(l.grams || 0)} g)`));
+  return `Not applied: ${what} came out at 0 kcal, and that food has calories, so its amount was lost. Nothing was ` +
+    "changed. Send the changes again with the amount the user gave for it (grams, ml or pieces), or a usual amount for " +
+    "that food.";
 }
 
 const EMPTY_USAGE = (): ParseMealResult["usage"] => ({
@@ -1916,7 +2424,7 @@ function addUsage(a: ParseMealResult["usage"], b: ParseMealResult["usage"] | und
 async function applyCardChanges(
   plan: CardPlan,
   input: FoodAgentInput,
-  deps: Pick<FoodAgentDeps, "editLine" | "onEvent">,
+  deps: Pick<FoodAgentDeps, "editLine" | "onEvent" | "warm">,
   parse: (text: string) => Promise<ParseMealResult>,
   seen: Seen,
   turns: AgentTurn[],
@@ -1926,7 +2434,10 @@ async function applyCardChanges(
   stagedItems: ParsedItem[] = [],
   /** Card lines find_label worked out from a label (use_label). */
   labelLines: ReadonlyMap<number, ParsedItem> = new Map(),
-): Promise<FoodAgentOutcome> {
+  /** Turns are left: a change that leaves a food at 0 kcal goes back to the
+   *  agent (bounce) instead of landing. On the last turn it is left off. */
+  canRetry = false,
+): Promise<FoodAgentOutcome | { kind: "bounce"; error: string }> {
   const card = input.card ?? [];
   const meal: MealType = card[0]?.meal_type ?? input.defaultMeal;
   const [editsOut, addsOut, recipesOut] = await Promise.all([
@@ -1935,7 +2446,29 @@ async function applyCardChanges(
       // the one code worked out. No label for it: the edit fails, the line stays.
       if (e.useLabel) {
         const l = labelLines.get(e.index);
-        return { e, r: null, item: l && l.food_name === card[e.index].food_name ? l : null };
+        const line = card[e.index];
+        const label = l ? labelOfLine.get(l) ?? null : null;
+        const per100 = label?.per_100.kcal ?? null;
+        if (!l || l.food_name !== line.food_name) return { e, r: null, item: null, per100 };
+        // The amount the user stated ("1 tetrapack", "200 ml"), priced from
+        // the label: in the change, else the user's message when it states
+        // one amount. A line of the user's own numbers keeps them (lineFromLabel).
+        const amount = label && !userNumbersOnLine(line) ? statedAmount(e.change) ?? onlyAmount(input.text, line, card.length) : null;
+        if (!label || !amount) return { e, r: null, item: l, per100 };
+        const priced = labelLineAt(line, label, amount, line.meal_type ?? meal);
+        if (priced) return { e, r: null, item: priced, per100 };
+        // No size for that container or piece on the label: the usual one,
+        // from the same parse an edit runs (the model chooses an amount, never
+        // a number for the food), marked as assumed.
+        let r: ParseMealResult | null = null;
+        try {
+          r = deps.editLine ? await deps.editLine(e.index, e.change) : null;
+        } catch {
+          r = null;
+        }
+        const picked = pickEditedLine(line, r);
+        const each = picked && picked.grams > 0 && amount.count > 0 ? picked.grams / amount.count : null;
+        return { e, r, item: each ? labelLineAt(line, label, amount, line.meal_type ?? meal, each) : null, per100 };
       }
       let r: ParseMealResult | null = null;
       try {
@@ -1944,7 +2477,7 @@ async function applyCardChanges(
         r = null;
       }
       const picked = pickEditedLine(card[e.index], r);
-      return { e, r, item: picked ? keepLineIdentity(card[e.index], picked, e.change) : null };
+      return { e, r, item: picked ? keepLineIdentity(card[e.index], picked, e.change) : null, per100: null as number | null };
     })),
     Promise.all(plan.adds.map(async (a) => {
       const m = a.meal ?? meal;
@@ -1964,14 +2497,38 @@ async function applyCardChanges(
     // code (recipe.ts). A dish on a card line keeps that line's section.
     Promise.all((plan.recipes ?? []).map(async (x) => {
       const m = x.meal ?? (x.index !== null ? card[x.index].meal_type : null) ?? meal;
-      const b = await buildRecipe(x.ask, m, parse);
+      // FOOD_WARM_MEMORY: the same dish in the user's memory lends its
+      // remembered amounts to parts sent with none (recipe.ts buildRecipe).
+      // Waited for briefly: a slow load builds the dish as the switch off would,
+      // and the trace says the wait ran out.
+      let foods: RecallFood[] | null = null;
+      if (deps.warm?.memory) {
+        let landed = false;
+        foods = await briefly(deps.warm.memory().finally(() => { landed = true; }), RECIPE_MEMORY_WAIT_MS);
+        if (!landed) deps.onEvent?.({ tool: "recipe_memory", timed_out: true, waited_ms: RECIPE_MEMORY_WAIT_MS });
+      }
+      const b = await buildRecipe(x.ask, m, parse, rememberedRecipe(foods, x.ask.name, memoryKey));
       return { x, ...b };
     })),
   ]);
+  // No change may leave a food at 0 kcal (an amount lost on the way). With
+  // turns left the agent fixes the amount; on the last turn an edit stays as
+  // it was and an addition is left off, both named.
+  const zeroEdits = editsOut.filter((x) => x.item && zeroKcalLine(x.item, x.per100));
+  const zeroRecipes = recipesOut.filter((x) => x.item && zeroKcalLine(x.item));
+  // A copy (a saved meal's or the diary's line) keeps its stored numbers,
+  // a stored 0 included: it is not worked out here.
+  const zeroAddLines = addsOut.flatMap((x) => x.items.filter((i) => !i.copied_from && zeroKcalLine(i)));
+  const zeroLines = [...zeroEdits.map((x) => x.item!), ...zeroRecipes.map((x) => x.item!), ...zeroAddLines];
+  if (zeroLines.length && canRetry) return { kind: "bounce", error: zeroKcalError(zeroLines) };
+  const zeroNames = zeroLines.map((i) => i.food_name);
+  const editsKept = editsOut.map((x) => (zeroEdits.includes(x) ? { ...x, item: null } : x));
+  const recipesKept = recipesOut.filter((x) => !zeroRecipes.includes(x));
+  const addsKept = addsOut.map((x) => ({ ...x, items: x.items.filter((i) => !zeroAddLines.includes(i)) }));
   const edited = new Map<number, ParsedItem>();
-  for (const x of editsOut) if (x.item) edited.set(x.e.index, x.item);
-  for (const x of recipesOut) if (x.item && x.x.index !== null) edited.set(x.x.index, x.item);
-  const recipeAdds = recipesOut.flatMap((x) => (x.item && x.x.index === null ? [x.item] : []));
+  for (const x of editsKept) if (x.item) edited.set(x.e.index, x.item);
+  for (const x of recipesKept) if (x.item && x.x.index !== null) edited.set(x.x.index, x.item);
+  const recipeAdds = recipesKept.flatMap((x) => (x.item && x.x.index === null ? [x.item] : []));
   const removes = new Set(plan.removes);
   // An addition never puts a second copy of a food that stays on the card
   // (an edit changes the line; a second portion is a copy_lines add_again or
@@ -1984,7 +2541,7 @@ async function applyCardChanges(
     if (s.food_id) ids.add(s.food_id);
   }
   const dupAdds: string[] = [];
-  const added = [...recipeAdds, ...addsOut.flatMap((x) => x.items)].filter((i) => {
+  const added = [...recipeAdds, ...addsKept.flatMap((x) => x.items)].filter((i) => {
     const key = sameFoodKey(i.food_name);
     const dup = keys.has(key) || (!!i.food_id && ids.has(i.food_id));
     if (dup) dupAdds.push(i.food_name);
@@ -2004,6 +2561,7 @@ async function applyCardChanges(
   // lands where the card is.
   const items = buildChangedCard(card, removes, edited, added, meal);
 
+  // A 0 kcal line is named apart (zeroNames), not as a failed edit or addition.
   const failedEdits = editsOut.filter((x) => !x.item).map((x) => card[x.e.index].food_name);
   const failedAdds = addsOut.filter((x) => x.a.text && x.items.length === 0).map((x) => x.a.text!);
   const failedRecipes = recipesOut.filter((x) => !x.item).map((x) => ({ name: x.x.ask.name, missing: x.missing, errored: x.errored, onLine: x.x.index !== null }));
@@ -2025,6 +2583,7 @@ async function applyCardChanges(
       `I could not ${recipeMissText(f.missing, f.errored)}, so ${f.name} ${f.onLine ? "is as before" : "is not on the card"}.`
     ),
     missingParts.length ? `I could not find ${missingParts.join("; ")}, so it is left out.` : null,
+    zeroNames.length ? `I could not work out an amount for ${names(zeroNames)}, so ${zeroNames.length === 1 ? "it is" : "they are"} as before or not added.` : null,
     dupAdds.length ? `${names(dupAdds)} ${dupAdds.length === 1 ? "is" : "are"} already on the card, so I did not add ${dupAdds.length === 1 ? "it" : "them"} again.` : null,
     overflow.length ? `The card holds ${CARD_MAX_LINES} foods, so I left off ${names(overflow)}. Add this card first, then send ${overflow.length === 1 ? "it" : "them"}.` : null,
   ].filter(Boolean).join(" ");
@@ -2042,7 +2601,7 @@ async function applyCardChanges(
   const said = sameFoodKey(agentText);
   const namesLeftOff = leftKeys.some((k) => ` ${said} `.includes(` ${k} `));
   const useAgent = !!agentText && !falseClaim && !failedEdits.length && !failedAdds.length && !failedRecipes.length &&
-    !missingParts.length && !namesLeftOff;
+    !missingParts.length && !namesLeftOff && !zeroNames.length;
   const notice = [
     dupAdds.length ? `${names(dupAdds)} ${dupAdds.length === 1 ? "is" : "are"} already on the card, so I did not add ${dupAdds.length === 1 ? "it" : "them"} again.` : null,
     overflow.length ? `The card holds ${CARD_MAX_LINES} foods, so I left off ${names(overflow)}. Add this card first, then send ${overflow.length === 1 ? "it" : "them"}.` : null,
@@ -2133,10 +2692,16 @@ export function checkedLater(out: FoodAgentOutcome, input: Pick<FoodAgentInput, 
     return falseAgentClaim(out.text, { cardChanged: false }) ? { ...out, text: honestLine(cardOnScreen) } : out;
   }
   if (out.kind === "create") {
-    const s = typeof out.create.input.summary === "string" ? out.create.input.summary : "";
-    if (!s || !falseAgentClaim(s, { cardChanged: false })) return out;
+    const raw = typeof out.create.input.summary === "string" ? out.create.input.summary : "";
     const name = typeof out.create.input.name === "string" ? out.create.input.name : "this";
-    return { ...out, create: { ...out.create, input: { ...out.create.input, summary: `${name}. Want it in My Meals?` } } };
+    const s = raw && falseAgentClaim(raw, { cardChanged: false }) ? `${name}. Want it in My Meals?` : raw;
+    // The reply sent beside the save card ("No, it was not saved before. Here
+    // it is."): the app shows one line for a save card, its summary, so the
+    // reply leads it. A reply that claims a save or a log is dropped.
+    const reply = replyText && !falseAgentClaim(replyText, { cardChanged: false }) ? replyText : "";
+    const summary = reply ? saveCardLine(reply, s) : s;
+    if (summary === raw && !reply) return out;
+    return { ...out, create: { ...out.create, input: { ...out.create.input, summary } }, ...(reply ? { reply } : {}) };
   }
   if (out.kind !== "log") return out;
   const p = out.result.parsed;

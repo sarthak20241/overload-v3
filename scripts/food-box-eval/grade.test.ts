@@ -6,7 +6,7 @@
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import { CASES, isFirstMessage } from "./cases.ts";
-import { grade, inRange, nameKey } from "./grade.ts";
+import { caseSkipReason, grade, inRange, nameKey, regionKey } from "./grade.ts";
 import type { FoodBoxCase, Line, Outcome } from "./types.ts";
 
 const L = (name: string, kcal: number, more: Partial<Line> = {}): Line => ({ name, kcal, ...more });
@@ -209,4 +209,37 @@ Deno.test("baseline: the saved meal had calories and no macros", () => {
 
 Deno.test("baseline: a plain greeting passed", () => {
   assert(recordedGrade("greeting").pass);
+});
+
+Deno.test("savedMeal.logTo: the save card must also log to that meal", () => {
+  const c = base({ savedMeal: { nameMatch: "paneer", logTo: "dinner" } });
+  const saved = (logTo: "dinner" | "lunch" | null) =>
+    out(null, ["save"], null, { name: "Paneer", kcal: 95, protein_g: 0, carb_g: 0, fat_g: 0, logTo });
+  assertEquals(failed(c, saved("dinner")), []);
+  assertEquals(failed(c, saved(null)), ["savedMeal"]);
+  assertEquals(failed(c, saved("lunch")), ["savedMeal"]);
+});
+
+Deno.test("caseSkipReason: a case behind a switch runs only with the switch at its value", () => {
+  const c = { ...base({ does: ["log"] }), requiresEnv: { name: "FOOD_REGION_RULES", value: "on", why: "region rules" } };
+  const env = (v: string) => (k: string) => (k === "FOOD_REGION_RULES" ? v : "");
+  assertEquals(caseSkipReason(c, env("on")), null);
+  assertEquals(caseSkipReason(c, env(" ON ")), null);
+  assertEquals(caseSkipReason(c, env("")), "needs FOOD_REGION_RULES=on: region rules");
+  assertEquals(caseSkipReason(c, env("off")), "needs FOOD_REGION_RULES=on: region rules");
+  assertEquals(caseSkipReason(base({ does: ["log"] }), env("")), null);
+  // The region case is behind its switch.
+  assertEquals(CASES.find((x) => x.id === "region-us-tea")?.requiresEnv?.name, "FOOD_REGION_RULES");
+});
+
+Deno.test("regionKey: EVAL_REGION as india/us/uk or IN/US/UK; unknown is not India", () => {
+  assertEquals(["india", "IN", "in", "us", "US", "uk", "UK", ""].map(regionKey), ["india", "india", "india", "us", "us", "uk", "uk", null]);
+  assertEquals(regionKey("mars"), undefined);
+});
+
+Deno.test("copy-lunch-from-yesterday: every diary source in it is one meal_entries can hold", () => {
+  const c = CASES.find((x) => x.id === "copy-lunch-from-yesterday")!;
+  const stored = new Set(["catalog", "off", "web", "estimate", "manual", "label"]);
+  for (const d of c.fixtures?.diary ?? []) for (const l of d.lines) assert(stored.has(l.source ?? "manual"), `${l.name}: ${l.source}`);
+  assert(!(c.expect.lines ?? []).some((s) => s.source?.includes("user")));
 });
