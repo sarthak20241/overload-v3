@@ -1,22 +1,23 @@
 /**
- * A logged line's portion, as the editor shows it: a serving SIZE in some
- * UNIT, eaten COUNT times ("100 g" x 1.5, "1 slice" x 2).
+ * A logged line's portion, as the editor shows it: an AMOUNT of a UNIT
+ * ("150 g", "2 roti", "2 x 250 ml bottle"). Two boxes, the same two the line
+ * stores, (quantity, serving_label). It used to be three (size, unit, count),
+ * and before that "Quantity" beside "Amount"; both made the user do sums.
  *
- * A line stores only (quantity, serving_label), in two shapes:
- *   - a bare measurement unit: quantity 150, label "g"      -> 150 g
- *   - a named serving:         quantity 2,   label "1 roti" -> 2 x 1 roti
- * The editor used to show those raw, as "Quantity" beside an "Amount" in
- * grams, and on a gram line both boxes read 15. Nobody could tell them apart.
- * These two functions move between the stored shape and the three fields.
+ * A stored label can carry a number of its own, in two kinds:
+ *   - a plain size: "100 g", "1 roti", "1/2 katori". It folds into the
+ *     amount, so 1.5 x "100 g" shows as 150 g and 3 x "1/2 katori" as 1.5 katori.
+ *   - a number that names the thing: "250 ml bottle". Two of those are two
+ *     bottles, not "500 ml bottle", so the label stays whole as the unit.
+ * A plain size is a "1", or a number before a measurement or before one word.
  *
  * No imports, so Deno can test it directly. The caller passes the unit check
  * (lib/units.ts isMeasurementUnit).
  */
 
-export interface ServingParts {
-  size: number;   // how big one serving is, in `unit`
-  unit: string;   // g, ml, slice, tub, roti...
-  count: number;  // how many servings were eaten
+export interface Portion {
+  amount: number; // how much, in `unit`
+  unit: string;   // g, ml, slice, roti, 250 ml bottle...
 }
 
 // "100 g", "1.5 cup", "1/2 katori", "100g". A leading number, then the rest.
@@ -30,52 +31,58 @@ function parseNum(s: string): number {
   return Number(s.replace(',', '.'));
 }
 
-/** Stored (quantity, label) -> the three fields. */
-export function splitServing(
+const r3 = (n: number) => Math.round(n * 1000) / 1000;
+
+/** The label's own size and unit, when its number is a plain size. */
+function labelSize(label: string, isMeasurement: (unit: string) => boolean): { size: number; unit: string } | null {
+  const m = label.trim().match(LEAD);
+  if (!m) return null;
+  const size = parseNum(m[1]);
+  const rest = m[2].trim();
+  if (!(size > 0)) return null;
+  if (size === 1 || isMeasurement(rest) || !/\s/.test(rest)) return { size, unit: rest };
+  return null;
+}
+
+/** Stored (quantity, label) -> the two boxes. */
+export function toPortion(
   quantity: number,
   label: string,
   isMeasurement: (unit: string) => boolean,
-): ServingParts {
+): Portion {
   const q = quantity > 0 ? quantity : 1;
   const l = label.trim();
-  // "15 x g" is one serving of 15 g, not fifteen servings of one gram.
-  if (isMeasurement(l)) return { size: q, unit: l, count: 1 };
-  const m = l.match(LEAD);
-  if (m) {
-    const size = parseNum(m[1]);
-    if (size > 0) return { size, unit: m[2].trim(), count: q };
-  }
-  return { size: 1, unit: l || 'serving', count: q };
+  if (isMeasurement(l)) return { amount: q, unit: l };
+  const sized = labelSize(l, isMeasurement);
+  if (sized) return { amount: r3(q * sized.size), unit: sized.unit };
+  return { amount: q, unit: l || 'serving' };
 }
 
-const fmt = (n: number) => String(Math.round(n * 1000) / 1000);
-
-/** The three fields -> stored (quantity, label), in the shape the line
- *  already had, so an untouched line saves back byte for byte. */
-export function joinServing(
-  parts: ServingParts,
+/** The two boxes -> stored (quantity, label), in the shape the line already
+ *  had where it can, so an untouched line saves back byte for byte. */
+export function fromPortion(
+  portion: Portion,
   original: { quantity: number; serving_label: string },
   isMeasurement: (unit: string) => boolean,
 ): { quantity: number; serving_label: string } {
-  const unit = parts.unit.trim();
-  const size = parts.size > 0 ? parts.size : 1;
-  const count = parts.count > 0 ? parts.count : 1;
-  const was = splitServing(original.quantity, original.serving_label, isMeasurement);
+  const unit = portion.unit.trim() || 'serving';
+  const amount = portion.amount > 0 ? r3(portion.amount) : 1;
+  const was = toPortion(original.quantity, original.serving_label, isMeasurement);
   // Nothing moved: keep the line exactly as written ("0.50 cup" stays so).
-  if (was.size === size && was.unit === unit && was.count === count) {
+  if (r3(was.amount) === amount && was.unit === unit) {
     return { quantity: original.quantity, serving_label: original.serving_label };
   }
-  // A gram line stays a gram line: 100 g x 1.5 is stored as 150 "g".
-  if (isMeasurement(unit)) {
-    return { quantity: Math.round(size * count * 1000) / 1000, serving_label: unit };
+  // A measurement is stored as its total: 150 "g", not 1.5 x "100 g".
+  if (isMeasurement(unit)) return { quantity: amount, serving_label: unit };
+  // Same named serving, new count: keep its exact label ("1 roti", "250 ml
+  // bottle"). Only when one of the label is one of the unit, so a "1/2 katori"
+  // line moved to 2 reads "2 katori", not "4 x 1/2 katori".
+  const sized = labelSize(original.serving_label, isMeasurement);
+  const perOne = sized ? sized.size : 1;
+  if (was.unit === unit && perOne === 1 && !isMeasurement(original.serving_label.trim())) {
+    return { quantity: amount, serving_label: original.serving_label };
   }
-  // Same serving, new count: keep its exact label.
-  if (was.size === size && was.unit === unit && !isMeasurement(original.serving_label.trim())) {
-    return { quantity: count, serving_label: original.serving_label };
-  }
-  // "slice" with no number reads fine as one serving; anything else says its size.
-  const bare = size === 1 && !LEAD.test(original.serving_label.trim()) && was.size === 1;
-  return { quantity: count, serving_label: bare ? unit : `${fmt(size)} ${unit}` };
+  return { quantity: amount, serving_label: unit };
 }
 
 /** Normalize a completed unit edit, preserving the amount of food. Call after
