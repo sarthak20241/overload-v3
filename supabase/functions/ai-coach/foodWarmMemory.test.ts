@@ -302,13 +302,13 @@ function line(food_name: string, kcal: number, more: Partial<ParsedItem> = {}): 
 Deno.test("memoryFacts: the chosen food and the near ones (VARIANT_FLOOR up to MEMORY_FLOOR), from the parse's own steps", () => {
   const f = memoryFacts([
     jevStep("jeera rice", [["Jeera Rice", 0.92], ["Jeera rice (homemade)", 0.64], ["Rice", 0.3]], "Jeera Rice", 0.92),
-    jevStep("paneer sabji", [["Milky Mist low fat paneer sabji", 0.7], ["Paneer tikka", 0.2]], null, 0.7),
+    jevStep("paneer sabji", [["Milky Mist low fat paneer sabji", 0.68], ["Paneer tikka", 0.2]], null, 0.68),
     jevStep("chai", [["Masala chai", 0.4]], null, 0.4),
     { iter: 1, tool: "user_memory", input: { tier: "precise" }, result: { skipped: "existing_card" } },
   ]);
   assertEquals(f, [
     { words: "jeera rice", path: "jev", chosen: { name: "Jeera Rice", score: 0.92 }, near: [{ name: "Jeera rice (homemade)", score: 0.64 }] },
-    { words: "paneer sabji", path: "jev", chosen: null, near: [{ name: "Milky Mist low fat paneer sabji", score: 0.7 }] },
+    { words: "paneer sabji", path: "jev", chosen: null, near: [{ name: "Milky Mist low fat paneer sabji", score: 0.68 }] },
   ]);
 });
 
@@ -325,12 +325,12 @@ Deno.test("memoryFacts: a confirmed alias, as matchMemory's real trace has it (n
 Deno.test("memoryMatchesOf: each decision tied to the line it was for, no kcal beside a name", () => {
   const r = parsed([line("Jeera Rice", 171), line("Paneer sabji", 200, { said_name: "paneer sabji" })], [
     jevStep("jeera rice", [["Jeera Rice", 0.92]], "Jeera Rice", 0.92),
-    jevStep("paneer sabji", [["Milky Mist low fat paneer sabji", 0.7]], null, 0.7),
+    jevStep("paneer sabji", [["Milky Mist low fat paneer sabji", 0.68]], null, 0.68),
   ]);
   const m = memoryMatchesOf(r);
   assertEquals(m, [
     { for_words: "jeera rice", line: "Jeera Rice", chosen: { name: "Jeera Rice", jev_score: 0.92 }, near: [] },
-    { for_words: "paneer sabji", line: "Paneer sabji", chosen: null, near: [{ name: "Milky Mist low fat paneer sabji", jev_score: 0.7, chosen: false }] },
+    { for_words: "paneer sabji", line: "Paneer sabji", chosen: null, near: [{ name: "Milky Mist low fat paneer sabji", jev_score: 0.68, chosen: false }] },
   ]);
   assertFalse(JSON.stringify(m).includes("kcal"));
   assertEquals(memoryMatchesOf(parsed([line("Egg", 70)], [])), []);
