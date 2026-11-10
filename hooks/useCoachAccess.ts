@@ -77,6 +77,9 @@ export interface UseCoachAccessReturn {
   access: CoachAccess;
   loading: boolean;
   refresh: () => Promise<void>;
+  /** refresh(), resolving true when the server answered (the access on
+   *  screen is fresh) and false when the read failed. */
+  refreshFresh: () => Promise<boolean>;
 }
 
 const UNKNOWN: CoachAccess = { state: 'unknown' };
@@ -352,7 +355,7 @@ export function useCoachAccess(): UseCoachAccessReturn {
     };
   }, [userId, authLoaded, signedOut]);
 
-  const refresh = useCallback(async (): Promise<void> => {
+  const refreshFresh = useCallback(async (): Promise<boolean> => {
     // Manual invalidation. Used after starting a trial, after a purchase
     // completes, or on pull-to-refresh. Doesn't flip `loading` to true —
     // existing data is fine as a placeholder while the new value lands.
@@ -374,12 +377,14 @@ export function useCoachAccess(): UseCoachAccessReturn {
     // counter and notify every listener for no reason.
     if (signedOut) {
       setAccess(SIGNED_OUT);
-      return;
+      return true;
     }
     invalidateCoachAccess();
     const next = await fetchCoachAccess(supabaseRef.current, userId);
     if (next) setAccess(next);
+    return next !== null;
   }, [userId, signedOut]);
+  const refresh = useCallback(async (): Promise<void> => { await refreshFresh(); }, [refreshFresh]);
 
-  return { access, loading, refresh };
+  return { access, loading, refresh, refreshFresh };
 }

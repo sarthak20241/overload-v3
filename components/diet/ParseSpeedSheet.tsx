@@ -1,11 +1,11 @@
 /**
  * ParseSpeedSheet — how should Drona log what you type?
  *
- * Three tiers, set once and sticky (lib/parseSpeed): Quick is the default
- * estimate-first fast parse, Thorough is the full catalog pipeline, Precise is
- * the Pro tier that reads the product's own numbers off the web and
- * cross-checks two sources. Below them, one switch: "Just log it"
- * (lib/autoLog), where send commits and the server writes the diary itself.
+ * Two tiers, set once and sticky (lib/parseSpeed): Quick is the default
+ * estimate-first fast parse, Precise is the Pro tier that reads the product's
+ * own numbers off the web and cross-checks two sources. Below them, one
+ * switch: "Just log it" (lib/autoLog), where send commits and the server
+ * writes the diary itself.
  * One sheet answers the whole question of how Drona logs, so the composer
  * grows no extra chrome. Portal sheet like the other diet sheets; no keyboard
  * input, so the plain SlideInDown idiom (DayPickerSheet's) is enough and
@@ -27,7 +27,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
 import { haptics } from '@/lib/haptics';
-import type { ParseSpeed } from '@/lib/parseSpeed';
+import { PARSE_SPEED_COPY, type ParseSpeed } from '@/lib/parseSpeed';
 
 interface Props {
   open: boolean;
@@ -45,20 +45,13 @@ interface Props {
 
 const OPTIONS: {
   key: ParseSpeed;
-  icon: 'zap' | 'target' | 'award';
+  icon: 'zap' | 'award';
   title: string;
   sub: string;
   pro?: boolean;
 }[] = [
-  { key: 'quick', icon: 'zap', title: 'Quick', sub: 'Logs in seconds. Drona estimates from what you typed.' },
-  { key: 'thorough', icon: 'target', title: 'Thorough', sub: 'A few seconds slower. Drona double-checks every item against the food catalog.' },
-  {
-    key: 'precise',
-    icon: 'award',
-    title: 'Precise',
-    sub: 'Slowest, and worth it on packaged food. Drona reads the product’s own numbers and checks them against a second source. He remembers, so the next time is instant.',
-    pro: true,
-  },
+  { key: 'quick', icon: 'zap', ...PARSE_SPEED_COPY.quick },
+  { key: 'precise', icon: 'award', ...PARSE_SPEED_COPY.precise, pro: true },
 ];
 
 export function ParseSpeedSheet({
@@ -151,7 +144,7 @@ export function ParseSpeedSheet({
               <View style={s.rowBody}>
                 <Text style={[s.rowTitle, { color: C.foreground }]}>Just log it</Text>
                 <Text style={[s.rowSub, { color: C.textSecondary }]}>
-                  Drona adds it straight to your diary. Close the app if you like. Undo from the diary any time.
+                  Straight into your diary. Undo any time.
                 </Text>
               </View>
               <Switch

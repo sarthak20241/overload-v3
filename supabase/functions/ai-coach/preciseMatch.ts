@@ -23,6 +23,7 @@
 // held-out (feedback: no eval-overfit prompts).
 
 import type { JevChoiceAnswer, JevQuestion } from "./jev.ts";
+import { type FoodRegion, regionalizePrompt } from "./regionRules.ts";
 
 export type FoodKind = "plain" | "packaged" | "restaurant" | "dish";
 export const FOOD_KINDS: FoodKind[] = ["plain", "packaged", "restaurant", "dish"];
@@ -67,7 +68,18 @@ const foodRef = (key: string) => `food ${key} in "foods"`;
 
 // ── Question 1: what kind of food ───────────────────────────────────────────
 
-export function kindQuestion(key: string): JevQuestion {
+export function kindQuestion(key: string, regionRules?: { region: FoodRegion | null }): JevQuestion {
+  const q = kindQuestionToday(key);
+  if (!regionRules) return q;
+  const local = (t: string) => regionalizePrompt("jev", t, regionRules.region);
+  return {
+    type: "choice",
+    instructions: local(q.instructions),
+    criteria: Object.fromEntries(Object.entries(q.criteria).map(([k, v]) => [k, local(v)])),
+  };
+}
+
+function kindQuestionToday(key: string): { type: "choice"; instructions: string; criteria: Record<string, string> } {
   return {
     type: "choice",
     instructions:

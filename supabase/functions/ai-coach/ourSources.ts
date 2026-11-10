@@ -31,6 +31,7 @@ import {
   mealState,
   tiebreakQuestion,
 } from "./preciseMatch.ts";
+import type { FoodRegion } from "./regionRules.ts";
 
 export interface OurSourcesDeps<F> {
   jev: JevDeps;
@@ -38,6 +39,9 @@ export interface OurSourcesDeps<F> {
    *  and the fields Jev and the gate read (`meta`). */
   findCandidates(item: MatchItem): Promise<Array<{ food: F; meta: MatchCandidate }>>;
   log?: (msg: string) => void;
+  /** FOOD_REGION_RULES (Precise): Jev's kind question takes this region's
+   *  examples. Absent: today's question. */
+  regionRules?: { region: FoodRegion | null };
 }
 
 export interface OurSourcesResult<F> {
@@ -96,7 +100,7 @@ export async function matchOurSources<F>(deps: OurSourcesDeps<F>, item: MatchIte
   try {
     const state = mealState([item]);
     const [kindRes, found] = await Promise.all([
-      askJev(state, { [`${KEY}_kind`]: kindQuestion(KEY) }, deps.jev).catch(() => null),
+      askJev(state, { [`${KEY}_kind`]: kindQuestion(KEY, deps.regionRules) }, deps.jev).catch(() => null),
       deps.findCandidates(item).catch((e) => {
         deps.log?.(`[our_sources] candidate search failed: ${String(e).slice(0, 120)}`);
         return [] as Array<{ food: F; meta: MatchCandidate }>;

@@ -1,0 +1,126 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  :root{--bg:#0a0a0a;--card:#1c1c1e;--muted:#242428;--mfg:#a1a1aa;--dim:#6a6a72;--lime:#c8ff00;--line:rgba(255,255,255,.08);--warn:#f59e0b}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:402px;height:874px;overflow:hidden;background:var(--bg);color:#fff;
+    font-family:system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+  .status{height:54px;position:relative}
+  .time{position:absolute;left:52px;top:17px;font-weight:600;font-size:17px;line-height:22px;letter-spacing:-.2px}
+  .island{position:absolute;left:50%;top:11px;width:124px;height:36px;margin-left:-62px;background:#000;border-radius:20px}
+  .icons{position:absolute;right:30px;top:20px;display:flex;gap:6px;align-items:center}
+  .head{height:46px;display:flex;align-items:center;justify-content:center;position:relative}
+  .btn{position:absolute;left:16px;width:36px;height:36px;border-radius:18px;background:var(--card);display:flex;align-items:center;justify-content:center}
+  .head h1{font-size:17px;font-weight:600;letter-spacing:-.2px}
+  .wrap{padding:6px 16px 0;display:flex;flex-direction:column;gap:10px}
+  .card{background:var(--card);border-radius:22px;padding:16px 18px 14px}
+  .row{display:flex;align-items:center;justify-content:space-between}
+  .goal{display:flex;align-items:center;gap:10px}
+  .goal h2{font-size:24px;line-height:28px;font-weight:700;letter-spacing:-.6px}
+  .pill{font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--lime);background:rgba(200,255,0,.10);padding:4px 9px 3px;border-radius:999px}
+  .when{margin-top:4px;font-size:13.5px;color:var(--mfg);font-weight:500}
+  .when b{color:#fff;font-weight:600}
+  .lab{margin-top:16px;font-size:11.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--mfg)}
+  .lab b{color:#fff;font-weight:700}
+  .hero{display:flex;align-items:baseline;gap:6px;margin-top:4px}
+  .hero b{font-size:40px;line-height:44px;font-weight:700;letter-spacing:-1.2px}
+  .hero span{font-size:17px;font-weight:500;color:var(--mfg)}
+  .sub{margin-top:1px;font-size:13.5px;line-height:18px;font-weight:500;color:var(--mfg)}
+  .sub b{color:#fff;font-weight:600}
+  .chart{margin-top:6px}
+  .grid{display:grid;gap:4px;height:62px;margin-top:10px}
+  .grid i{display:block;border-radius:3px}
+  .gl{display:flex;justify-content:space-between;margin-top:6px;font-size:11px;font-weight:600;color:var(--dim)}
+  .bar{display:flex;gap:3px;height:6px;margin-top:12px}
+  .seg{border-radius:3px;background:#2e2e33;position:relative;overflow:hidden}
+  .seg.past{background:rgba(200,255,0,.35)}
+  .seg .fill{position:absolute;left:0;top:0;bottom:0;background:var(--lime);border-radius:3px}
+  .cap{margin-top:9px;font-size:13px;font-weight:500;color:var(--mfg)}
+  .cap b{color:#fff;font-weight:600}
+  .coach{display:flex;gap:10px;align-items:flex-start}
+  .coach .av{flex:none;width:22px;height:22px;border-radius:6px;background:var(--lime);display:flex;align-items:center;justify-content:center;margin-top:1px}
+  .coach p{font-size:13.5px;line-height:18px;color:#fff;font-weight:500}
+  .strip{display:flex;justify-content:space-between;margin-top:14px}
+  .dc{width:42px;display:flex;flex-direction:column;align-items:center;gap:3px}
+  .dc em{font-style:normal;font-size:10px;font-weight:600;color:var(--dim);letter-spacing:.4px}
+  .dc b{font-size:12.5px;font-weight:600;color:#fff}
+  .dc.r b{color:var(--dim);font-weight:500}
+  .dc s{display:block;width:26px;height:4px;border-radius:2px;background:#333338;text-decoration:none;margin-top:2px}
+  .dc.r s{background:transparent}
+  .dc.f s{background:var(--lime)}
+  .scap{margin-top:8px;font-size:12px;font-weight:500;color:var(--mfg);display:flex;align-items:center;gap:6px}
+  .scap s{display:inline-block;width:14px;height:4px;border-radius:2px;background:var(--lime);text-decoration:none}
+  .mlab{margin-top:12px;padding-top:12px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+  .mlab span:first-child{font-size:11.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--mfg)}
+  .mlab span:last-child{font-size:12px;font-weight:500;color:var(--dim)}
+  .ms-wrap{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+  .m{background:var(--muted);border-radius:14px;padding:9px 11px 10px}
+  .mt{display:flex;justify-content:space-between;align-items:center;gap:6px}
+  .mn{font-size:12px;font-weight:600;color:#fff;white-space:nowrap}
+  .ms{font-size:10.5px;font-weight:600;white-space:nowrap}
+  .ms.ok{color:var(--lime)}.ms.warn{color:var(--warn)}.ms.dim{color:var(--dim)}
+  .mv{display:flex;align-items:baseline;gap:5px;margin-top:4px}
+  .mv b{font-size:17px;font-weight:700;letter-spacing:-.3px;line-height:20px}
+  .mv i{font-style:normal;font-size:11.5px;color:var(--mfg);font-weight:500}
+  .mb{height:3px;border-radius:2px;background:rgba(255,255,255,.08);margin-top:6px;overflow:hidden}
+  .mb span{display:block;height:100%;background:var(--lime);border-radius:2px}
+  .plan{padding:4px 18px}
+  .ph{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line)}
+  .ph:first-child{border-top:0}
+  .ph .d{flex:none;width:8px;height:8px;border-radius:4px;border:1.5px solid var(--dim)}
+  .ph .d.past{background:rgba(200,255,0,.4);border-color:transparent}
+  .ph .d.cur{background:var(--lime);border-color:var(--lime)}
+  .pn{flex:1;display:flex;flex-direction:column;gap:2px}
+  .pn .n{font-size:15px;font-weight:500;color:#fff}
+  .pn .n.past{color:var(--mfg)}
+  .pn .pm{font-size:12px;font-weight:500;color:var(--mfg)}
+  .ph .w{font-size:13px;font-weight:500;color:var(--mfg)}
+  .ph .w.cur{color:var(--lime);font-weight:600}
+  .tag{margin-left:10px;align-self:center;font-size:11px;font-weight:600;letter-spacing:.4px;text-transform:none;color:var(--mfg);background:var(--muted);padding:2px 7px;border-radius:999px;vertical-align:1px}
+  .log{font-size:13px;font-weight:600;color:#0a0a0a;background:var(--lime);padding:7px 12px;border-radius:999px}
+  .mac{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+  .mac .eyebrow{font-size:11.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--mfg)}
+  .kc{font-size:13px;color:var(--mfg);font-weight:500}.kc b{color:#fff;font-weight:700;font-size:15px}
+  .stack{display:flex;gap:3px;height:6px;margin-top:9px}.stack div{border-radius:3px}
+  .leg{display:flex;gap:16px;margin-top:8px}.leg div{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--mfg);font-weight:500}
+  .leg b{color:#fff;font-weight:600}.leg s{display:inline-block;width:6px;height:6px;border-radius:3px;text-decoration:none}
+</style></head><body>
+<div class="status">
+  <div class="time">9:41</div><div class="island"></div>
+  <div class="icons">
+    <svg width="19" height="12" viewBox="0 0 19 12"><rect x="0" y="8" width="3.2" height="4" rx="1" fill="#fff"/><rect x="5" y="5.5" width="3.2" height="6.5" rx="1" fill="#fff"/><rect x="10" y="3" width="3.2" height="9" rx="1" fill="#fff"/><rect x="15" y="0" width="3.2" height="12" rx="1" fill="#fff"/></svg>
+    <svg width="17" height="12" viewBox="0 0 17 12"><path d="M8.5 2.3c2.3 0 4.4.9 6 2.4l1.2-1.2C13.8 1.6 11.3.5 8.5.5S3.2 1.6 1.3 3.5l1.2 1.2c1.6-1.5 3.7-2.4 6-2.4zm0 3.4c1.4 0 2.6.5 3.6 1.4l1.2-1.2C12 4.7 10.3 4 8.5 4S5 4.7 3.7 5.9l1.2 1.2c1-.9 2.2-1.4 3.6-1.4zm0 3.4c.5 0 1 .2 1.3.5L8.5 11 7.2 9.6c.3-.3.8-.5 1.3-.5z" fill="#fff"/></svg>
+    <svg width="27" height="13" viewBox="0 0 27 13"><rect x=".5" y=".5" width="23" height="12" rx="3.8" fill="none" stroke="rgba(255,255,255,.4)"/><rect x="2" y="2" width="20" height="9" rx="2.4" fill="#fff"/><path d="M25 4.5v4c.8-.3 1.3-1.1 1.3-2s-.5-1.7-1.3-2z" fill="rgba(255,255,255,.4)"/></svg>
+  </div>
+</div>
+
+<div class="head">
+  <div class="btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></div>
+  <h1>Goal &amp; Plan</h1>
+</div>
+
+<div class="wrap">
+  <div class="card">
+    <div class="goal"><h2>{{GOAL}}</h2><span class="pill">{{PILL}}</span></div>
+    <div class="when">{{WHEN}}</div>
+    <div class="lab">{{HERO_LABEL}}</div>
+    <div class="row"><div class="hero"><b>{{HERO}}</b><span>{{UNIT}}</span>{{HERO_TAG}}</div>{{LOGBTN}}</div>
+    <div class="sub">{{HERO_SUB}}</div>
+    <div class="chart">{{CHART}}</div>
+    <div class="bar">{{BAR}}</div>
+    <div class="row cap"><span>{{PHASE}}</span><span>{{PHASE_R}}</span></div>
+  </div>
+
+  <div class="card">
+    <div class="coach"><span class="av"><svg width="11" height="11" viewBox="0 0 24 24"><path d="M12 2 L21 21 L12 16 L3 21 Z" fill="#0a0a0a"/></svg></span><p>{{COACH}}</p></div>
+    <div class="strip">{{STRIP}}</div>
+    <div class="scap">{{STRIP_CAP}}</div>
+    {{MACROS}}
+    <div class="mlab"><span>Phase targets</span><span>Drona checks these weekly</span></div>
+    <div class="ms-wrap">{{METRICS}}</div>
+    <div class="scap" style="margin-top:10px">{{RULE}}</div>
+  </div>
+
+  <div class="card plan">{{PHASES}}</div>
+</div>
+</body></html>

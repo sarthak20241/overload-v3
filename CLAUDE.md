@@ -39,29 +39,109 @@ EVAL_VIA_CLI=1 npx tsx scripts/program-goal-eval/run.mts
 # goal, a gain or strength hold with no ask gets neither. Same CLI rule.
 EVAL_VIA_CLI=1 npx tsx scripts/program-activity-eval/run.mts
 
+# Lean chat context: does Drona fetch a held-back section (routines, volume,
+# plan changes, tape) when a question needs it, and skip it when the summary
+# answers? Same CLI rule.
+EVAL_VIA_CLI=1 npx tsx scripts/lean-context-eval/run.mts
+
+# Region rules (FOOD_REGION_RULES=on, Precise): EVAL_REGION=india|us|uk sets the
+# time zone for both evals; EVAL_PRECISE=1 runs parse-meal-eval in Precise.
+# Both print a kcal error line (against each kcal range's middle).
+# Food box (Precise): 58 cases (44 recorded conversations, 14 with no recording) graded on the outcome
+# (card kept, lines not lost, saves with macros, no false claims). ADAPTER=recorded grades
+# what the live box served; no model call. Plan: .planning/precise-food-logger-plan.md
+# `recorded` replays stored answers, so it says nothing about today's code and
+# always exits 0. ADAPTER=live (below) is the run that measures today's code.
+npx tsx scripts/food-box-eval/run.mts            # TAG=correction  ONLY=id  WRITE_BASELINE=1
+# Thread usage per user, last 7 days (copy_lines, restore_card, index size): scripts/food-box-eval/thread-usage.sql
+# Today's food box code on each case, with the case's saved meals, memory and
+# diary. Reads the live catalog, writes nothing. Same CLI rule as above.
+EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts   # EVAL_CONCURRENCY=6  DEBUG_STEPS=1
+# FOOD_THREADS=on: the case's earlier cards go in an in-memory thread store, the
+# agent gets restore_card. Its own BASELINE.md section (live_threads).
+FOOD_THREADS=on EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts
+# FOOD_FIRST_GATE=on (step 3): the first message asks Jev "fully plain log?"; plain -> parse,
+# else the agent. Measured with FOOD_THREADS=on FOOD_AGENT_LATER=on (section live_first).
+FOOD_THREADS=on FOOD_AGENT_LATER=on FOOD_FIRST_GATE=on EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts
+# The gate's floor (PLAIN_LOG_FLOOR) alone, Jev only: every first-message case, then HELD_OUT=1.
+npx tsx scripts/food-box-eval/gate-probe.mts
+# FOOD_AGENT_LATER=on (step 2): every later message of a thread goes to the food
+# agent, with one-line card edits. Its own BASELINE.md section (live_later), and
+# the run prints cost and agent turns per message (CLI token counts).
+FOOD_THREADS=on FOOD_AGENT_LATER=on EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts
+# FOOD_BUILD_RECIPE=on (step 5): the agent gets build_recipe. Home-dish cases: TAG=recipe-build.
+FOOD_BUILD_RECIPE=on FOOD_THREADS=on FOOD_AGENT_LATER=on FOOD_FIRST_GATE=on EVAL_VIA_CLI=1 ADAPTER=live npx tsx scripts/food-box-eval/run.mts
+deno test --allow-all scripts/food-box-eval/grade.test.ts
+
 # Edge function unit tests (the one real test suite).
 deno test --allow-all supabase/functions/ai-coach/
 deno test --allow-all supabase/functions/revenuecat-webhook/
+deno test --allow-all supabase/functions/session-refresh/   # who may get a sign-in ticket
+deno test --allow-all lib/sessionRefresh.test.ts             # silent re-sign-in: ticket, then sign-out, then sign-in
 deno test --allow-all supabase/functions/_shared/   # TODAY pick rules, shared by app + daily-suggestion
+deno test --allow-all supabase/functions/drona-cards/ # weekly phase metrics check, against a fake database
 deno test --allow-all lib/xp.test.ts
 deno test --allow-all lib/tiers.test.ts
 deno test --unstable-sloppy-imports --import-map=lib/test-import-map.json lib/readiness.test.ts
 deno test --allow-all lib/coachErrors.test.ts  # which bucket a failure lands in
 deno test --allow-all lib/ssoOutcome.test.ts   # Google/Apple sign-in with no session: next step + user copy
+deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/directFetchRetry.test-import-map.json lib/directFetchRetry.test.ts  # Today pick + weekly card retry an expired token once
+deno test --allow-all lib/authRetry.test.ts    # expired Clerk token: one retry with a fresh one
+deno test --allow-all lib/purchaseErrors.test.ts # a pending store payment is not a failure; failures keep the store's reason
 deno test --allow-all lib/coachBlocks.test.ts  # tables/charts/stats/progress in Drona's replies
 deno test --allow-all lib/servingSize.test.ts # food editor portion <-> stored serving
 deno test --allow-all lib/logDay.test.ts      # "2 eggs for tomorrow" -> which day a food log lands on
+deno test --allow-all --unstable-sloppy-imports lib/phaseMetricHeadline.test.ts # one number per phase metric on every screen
+deno test --allow-all lib/screenCache.test.ts  # Goal & Plan screens paint from cache; a pre-write read is never stored
+deno test --allow-all lib/chartScale.test.ts   # Goal screen chart: readings width, goal ring at the program end
+deno test --allow-all lib/phasePick.test.ts    # the active phase by seq, never by list index
 deno test --allow-all lib/fitnessGoals.test.ts
+deno test --allow-all --unstable-sloppy-imports lib/goalIntake.test.ts # new goal: the question screens, what Drona is sent, ask before build
+deno test --allow-all lib/coachAffirm.test.ts  # a "yes, build it" turn forces the build; Build it shows only under a build question
 deno test --allow-all lib/coachTopic.test.ts   # chats opened from the app: Drona's hidden topic turn + what is sent
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/coachConversations.test.ts  # saved chats: topic title, hidden turn kept
 deno test --allow-all lib/missingColumn.test.ts # app-before-migration column fallbacks
+deno test --allow-all --no-check --unstable-sloppy-imports lib/foodOrigin.test.ts # food line origins in the app; edit-sheet rule pinned to the SQL trigger
+deno run --node-modules-dir=none --allow-read --allow-env --allow-net --allow-write --allow-sys supabase/tests/food_memory_local.ts # food memory triggers on PGlite (downloads it; not in CI)
 deno test --allow-all --unstable-sloppy-imports lib/planExercise.test.ts # Drona plan exercise -> exercises + routine rows
 deno test --allow-all --unstable-sloppy-imports lib/routineTargets.test.ts # "45s" / "5km" -> routine time + distance targets
 deno test --allow-all lib/maintenance.test.ts   # the Nutrition screen's maintenance row and sheet
 deno test --allow-all lib/foodPatterns.test.ts  # usual foods per meal, and when each meal is offered
+deno test --allow-all --unstable-sloppy-imports lib/yourFoods.test.ts # manual search: foods you logged before come first
 deno test --allow-all lib/mealCleanup.test.ts   # empty meal rows go in one safe database step
 deno test --allow-all lib/mealCardSplit.test.ts # big food card: list vs note when the box is short
+deno test --allow-all lib/mealReady.test.ts   # AI food log: open the result or toast when it lands; a waiting meal survives a restart; - / + amounts
+deno test --allow-all lib/calorieBars.test.ts  # Analytics calorie bars: each day against its own goal ±10%
+deno test --allow-all lib/pendingEntries.test.ts # an added suggestion or copy shows at once, swapped for the saved row
+deno test --allow-all lib/pendingParse.test.ts  # food search "Log it with Drona": handed to Nutrition once, with its meal and day
+deno test --allow-all lib/foodBarCard.test.ts   # food box: a save card sits beside the meal card, never replaces it
+deno test --allow-all lib/foodCardBack.test.ts  # food card return arrow: back one message, the card before it, 10 steps kept
+deno test --allow-all supabase/functions/ai-coach/foodFirstGate.test.ts # first message: plain -> parse, else the agent with the running parse
+deno test --allow-all lib/foodThread.test.ts    # food box thread ids + card versions, counted the way the server counts
+deno test --allow-all supabase/functions/ai-coach/foodThreads.test.ts # thread store: stable line ids, one conditional write, restore
+deno test --allow-all supabase/functions/ai-coach/foodAgentLater.test.ts # step 2: later messages to the agent, one-line edits in a fixed order, no line lost
+deno test --allow-all supabase/functions/ai-coach/recipe.test.ts # step 5: build_recipe, parts summed in code, an assumed oil asked about once (FOOD_BUILD_RECIPE)
+deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_threads.check.ts # the food_threads migration on PGlite (real Postgres, downloads it; not in CI)
+deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_card_lines_recipe.check.ts # food_card_lines.recipe: a dish keeps its parts in the thread store (PGlite; not in CI)
+deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
+deno test --allow-all lib/questionPin.test.ts  # Drona chat: a reply types in under its question at the top
+deno test --allow-all lib/orbTheme.test.ts     # loading orb: which way a tinted orb fades
+deno test --allow-all lib/coachSessions.test.ts # coach sheets kept while Drona works: when kept, brought back, dropped
+deno test --allow-all --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/readyInbox.test.ts # what waits behind the dashboard bell
+deno test --allow-all lib/backgroundHolds.test.ts # iOS background time: shared task, a hung hold lets go by itself
+deno test --allow-all lib/healthCardio.test.ts  # watch runs -> cardio workouts: cardio types only, long enough, never twice
+deno test --allow-all --unstable-sloppy-imports lib/cardioLog.test.ts # dashboard cardio sheet: a logged session counts, queued ones count before sync
+deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coachConversations.test-import-map.json lib/parseSpeed.test.ts # food log mode: Quick / Precise, a stored Thorough reads as Quick
+deno test --allow-all lib/sheetText.test.ts     # text boxes in Portal sheets: late owner values never put old text back (Android letter drops)
+deno test --allow-all lib/firstOpenUpdate.test.ts # fresh store install: newest update before onboarding, 5 s cap, never reloads an open app
+deno test --allow-all lib/signupTour.test.ts    # the film tour after sign-up: its words, the tap rules, no promise the plan is done
+deno test --allow-all lib/hardPaywall.test.ts   # hard paywall: accounts from HARD_PAYWALL_FROM on must pay; older ones keep free
+deno test --allow-all --no-check lib/invite.test.ts   # referral link + share text, store discount code URLs, refusal words
+deno test --allow-all --node-modules-dir=none supabase/migrations/checks/referral_codes.check.ts # referral + campaign codes on PGlite: both get a month, no cap, no own code, old-app rules kept (not in CI)
+deno test --allow-all lib/weightWheel.test.ts    # onboarding weight wheels: whole + one decimal, the top of the scale, kg <-> lbs
+deno test --allow-all supabase/functions/ai-coach/freeGoalBuild.test.ts # one free goal plan per account: 1 build, 8 edit turns, a guest build spends it
+deno test --allow-all supabase/functions/ai-coach/regionRules.test.ts # FOOD_REGION_RULES: each region gets only its block, no rule lost, off = today
 ```
 
 There are no configured lint or build scripts.
@@ -150,7 +230,7 @@ Supabase (PostgreSQL) with 6 tables: `user_profiles`, `exercises`, `routines`, `
 
 ### Design System
 
-All design tokens live in `constants/theme.ts`: colors (lime green `#c8ff00` primary accent), spacing scale, font sizes, border radii, and shadow presets. The app uses light theme only (`Colors.light`) — `Colors.dark` is defined but unused. Use Feather icons (`@expo/vector-icons`). The app's icon scale is deliberately compact: inline/row icons match the surrounding text size (10–16px, e.g. 11px glyphs inside the 24x24 `rowIcon` tiles); reserve 24px+ for standalone icons such as tab bar items or empty states.
+All design tokens live in `constants/theme.ts`: colors (lime green `#c8ff00` primary accent), spacing scale, font sizes, border radii, and shadow presets. The app has a dark and a light theme (`ThemeProvider` / `useTheme()` in `hooks/useTheme.tsx`), and it starts in dark. Read colors from the `C` object that `useTheme()` returns. Do not hard-code one theme's tokens: `Colors.light.muted`, for example, shows a light fill in the default dark UI. Use Feather icons (`@expo/vector-icons`). The app's icon scale is deliberately compact: inline/row icons match the surrounding text size (10–16px, e.g. 11px glyphs inside the 24x24 `rowIcon` tiles); reserve 24px+ for standalone icons such as tab bar items or empty states.
 
 ### XP/Leveling
 

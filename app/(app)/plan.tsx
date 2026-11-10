@@ -13,7 +13,6 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   Linking,
   Platform,
   ScrollView,
@@ -34,6 +33,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { isLifetimeTier, isStorePurchase, PLAN_BENEFITS, tierLabel } from '@/lib/tiers';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 export default function PlanScreen() {
   const router = useRouter();
@@ -165,7 +165,7 @@ export default function PlanScreen() {
     return (
       <SafeAreaView style={[s.safe, { backgroundColor: C.background }]} edges={['top']}>
         <View style={s.centerFill}>
-          <ActivityIndicator color={C.foreground} />
+          <OrbLoader size="large" state="searching" />
         </View>
       </SafeAreaView>
     );
@@ -266,7 +266,7 @@ export default function PlanScreen() {
         >
           {loadingStats && proDays === null ? (
             <View style={s.statLoading}>
-              <ActivityIndicator size="small" color={C.textMuted} />
+              <OrbLoader size="small" color={C.textMuted} />
             </View>
           ) : (
             <>

@@ -24,8 +24,16 @@ import {
   clampCardioSessions, clampStepsTarget, hasActivityGoals, normalizeActivityGoals, type ActivityGoals,
 } from '@/lib/activityGoals';
 import { track } from '@/lib/analytics';
-import { missingColumn, withoutColumns } from '@/lib/missingColumn';
+import { missingColumn, missingTable, nextColumnSet, withoutColumns } from '@/lib/missingColumn';
+import { fetchShared, invalidateUserProgram, peek } from '@/lib/screenCache';
+import { activePhaseOn, computeActivePhaseSeq, daysBetweenISO, phaseFor } from '@/lib/phasePick';
+// Re-exported: the screens and helpers import these from here.
+export { activePhaseOn, computeActivePhaseSeq, daysBetweenISO, phaseFor };
 import { programGoalFor } from '@/lib/fitnessGoals';
+import {
+  escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, namesAnExercise, normalizeMetrics, phaseProgress, statusFor,
+  type MetricRef, type PhaseMetricInput, type PhaseMetricRow,
+} from '@/lib/phaseMetrics';
 
 // ── Client shapes ────────────────────────────────────────────────────────────
 export interface ProgramDiet {
@@ -63,6 +71,14 @@ export interface ProgramPhase {
    * coach when the goal calls for it. Undefined = no activity goals this phase.
    */
   activity?: ActivityGoals;
+  /**
+   * What the phase is judged on (lib/phaseMetrics): one hero metric and a few
+   * supporting targets. Undefined or empty = the phase has none (every program
+   * built before this).
+   */
+  metrics?: PhaseMetricInput[];
+  /** The phase's job in one line, e.g. "Bring weight 71.0 to 69.6 kg". */
+  job_text?: string;
 }
 
 /** The coach's emitted program (from the generate_program terminal tool). */
@@ -88,14 +104,7 @@ export function todayLocalISO(): string {
   return toLocalISO(new Date());
 }
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
-/** Whole days from aISO to bISO (b - a), computed at local midnight. */
-export function daysBetweenISO(aISO: string, bISO: string): number {
-  const [ay, am, ad] = aISO.split('-').map((n) => parseInt(n, 10));
-  const [by, bm, bd] = bISO.split('-').map((n) => parseInt(n, 10));
-  const a = new Date(ay, am - 1, ad).getTime();
-  const b = new Date(by, bm - 1, bd).getTime();
-  return Math.round((b - a) / 86_400_000);
-}
+
 
 // ── Normalizer (generate_program tool input -> GeneratedProgram) ──────────────
 // Free-text fields are capped so an oversized or adversarial emission cannot
@@ -184,7 +193,15 @@ function normalizePhase(v: unknown, i: number): ProgramPhase {
     training_block: normalizeBlock(p.training_block),
     fuel_days: fuelDaysFromCoach(p.fuel_days),
     ...activityOf(p.activity),
+    ...metricsOf(p.metrics),
+    job_text: strOrUndef(p.job_text)?.slice(0, 80),
   };
+}
+
+/** The phase's metrics, made safe; no key at all when it set none. */
+function metricsOf(v: unknown): { metrics?: PhaseMetricInput[] } {
+  const m = normalizeMetrics(v);
+  return m.length > 0 ? { metrics: m } : {};
 }
 
 /** The phase's activity goals, clamped; no key at all when it set none. */
@@ -196,6 +213,13 @@ function activityOf(v: unknown): { activity?: ActivityGoals } {
 // The activity goal columns (migration 20261018120000). The app ships before
 // the migration, so every read and write of them falls back without them.
 const ACTIVITY_COLS = ['activity_steps_target', 'cardio_sessions_per_week'] as const;
+// The phase metrics columns and tables (migration 20261022022018). Same rule.
+const JOB_COLS = ['job_text', 'coach_line'] as const;
+const METRICS_TABLE = 'coach_program_phase_metrics';
+const METRIC_LOGS_TABLE = 'coach_program_phase_metric_logs';
+// Every optional phase column an insert may have to drop, so a database from
+// before any one of these migrations still takes the program.
+const OPTIONAL_PHASE_COLS = [...ACTIVITY_COLS, ...JOB_COLS] as const;
 
 export function structuredToProgram(input: Record<string, unknown>): GeneratedProgram {
   const phases = Array.isArray(input.phases)
@@ -216,36 +240,6 @@ export function structuredToProgram(input: Record<string, unknown>): GeneratedPr
 }
 
 // ── Active-phase math ─────────────────────────────────────────────────────────
-/**
- * Which phase index is active on todayISO, or null if the program hasn't
- * started yet (today < start) or has already ended (today past the last phase).
- * Phases are consecutive: phase i spans [offsetWeeks*7, (offsetWeeks+dur)*7)
- * days from start_date. Pure + local-date, so the client and any later server
- * job agree.
- */
-export function computeActivePhaseSeq(
-  startDateISO: string,
-  phases: Array<{ duration_weeks: number; start_offset_weeks?: number }>,
-  todayISO: string,
-): number | null {
-  const days = daysBetweenISO(startDateISO, todayISO);
-  if (days < 0) return null;
-  // Prefer the PERSISTED start_offset_weeks when the row carries one (the
-  // load path), and only derive it cumulatively when it does not (the save
-  // path, which is what computes those offsets in the first place). Deriving
-  // unconditionally was correct only while seq always equalled array index;
-  // an update-in-place that edits one phase's duration would silently desync
-  // the DB offsets from the recomputed ones with no error surfaced.
-  let derivedOffset = 0;
-  for (let i = 0; i < phases.length; i++) {
-    const offsetWeeks = phases[i].start_offset_weeks ?? derivedOffset;
-    const startD = offsetWeeks * 7;
-    const endD = (offsetWeeks + phases[i].duration_weeks) * 7;
-    if (days >= startD && days < endD) return i;
-    derivedOffset = offsetWeeks + phases[i].duration_weeks;
-  }
-  return null;
-}
 
 /** Cumulative start-offset (in weeks) for each phase, phase 0 = 0. */
 function offsetsOf(phases: Array<{ duration_weeks: number }>): number[] {
@@ -388,7 +382,7 @@ export async function saveProgram(
   supabase: Supa,
   clerkId: string,
   program: GeneratedProgram,
-): Promise<{ programId: string; phaseIds: string[] }> {
+): Promise<{ programId: string; phaseIds: string[]; metricsSaved: boolean }> {
   // A zero-phase program is not saveable: total_weeks would be 0, activeSeq
   // null, the phases insert a no-op, and the Goal & Plan screen would render a
   // program with no NOW card and no timeline. The tool schema's minItems only
@@ -505,17 +499,24 @@ export async function saveProgram(
       activity_steps_target: clampStepsTarget(ph.activity.steps_per_day),
       cardio_sessions_per_week: clampCardioSessions(ph.activity.cardio_sessions_per_week),
     } : {}),
+    // And the phase's job line, only when the coach wrote one.
+    ...(ph.job_text ? { job_text: ph.job_text } : {}),
   }));
   const insertPhases = (rows: typeof phaseRows) => supabase
     .from('coach_program_phases')
     .insert(rows)
     .select('id, seq');
-  let { data: phaseInserted, error: phErr } = await insertPhases(phaseRows);
-  // A database from before the activity goals: save the program without them
-  // rather than failing it. The goals come back with the next program built.
-  if (phErr && missingColumn(phErr, ACTIVITY_COLS)) {
-    console.warn('[programs] activity goal columns missing; saving without them');
-    ({ data: phaseInserted, error: phErr } = await insertPhases(withoutColumns(phaseRows, ACTIVITY_COLS)));
+  let rows = phaseRows;
+  let { data: phaseInserted, error: phErr } = await insertPhases(rows);
+  // A database from before one of the optional columns (activity goals, the
+  // job line): save the program without that column rather than failing it.
+  // PostgREST names one missing column at a time, so drop them one by one.
+  for (let i = 0; i < OPTIONAL_PHASE_COLS.length && phErr; i++) {
+    const missing = OPTIONAL_PHASE_COLS.filter((c) => missingColumn(phErr, [c]));
+    if (missing.length === 0) break;
+    console.warn(`[programs] column${missing.length > 1 ? 's' : ''} ${missing.join(', ')} missing; saving without`);
+    rows = withoutColumns(rows, missing);
+    ({ data: phaseInserted, error: phErr } = await insertPhases(rows));
   }
   if (phErr) {
     // A phase-less active program is worse than none: loadActiveProgram would
@@ -551,7 +552,118 @@ export async function saveProgram(
   const phaseIds = ((phaseInserted ?? []) as { id: string; seq: number }[])
     .sort((x, y) => x.seq - y.seq)
     .map((r) => r.id);
-  return { programId: prog.id, phaseIds };
+
+  // 5. The phase metrics. Non-fatal like step 4: the program and its phases
+  //    are committed, and a program without its metrics still renders (the
+  //    Goal screen falls back to the plain layout for it).
+  let metricsSaved = true;
+  try {
+    await saveProgramMetrics(supabase, clerkId, prog.id, program.phases, phaseIds);
+  } catch (e) {
+    // Visible in analytics and to the caller (which tells the user), not
+    // only the console: a program that lost its metrics renders without a
+    // hero until it is rebuilt.
+    metricsSaved = false;
+    console.warn('[programs] metrics save failed; program kept without them', e);
+    track('program_metrics_save_failed', {
+      phases: program.phases.length,
+      metrics: program.phases.reduce((n, ph) => n + (ph.metrics?.length ?? 0), 0),
+      code: (e as { code?: string })?.code ?? null,
+    });
+  }
+  invalidateProgram(clerkId);
+  return { programId: prog.id, phaseIds, metricsSaved };
+}
+
+/**
+ * Write each phase's metrics (coach_program_phase_metrics). A lift metric
+ * names its exercise; the id is looked up by name here (the user's own and the
+ * built-in catalog), so the weekly check can read user_lift_stats by id. A
+ * name that matches nothing keeps the name in `ref`; the weekly check then
+ * looks it up again. A database without the table (the app before the
+ * migration) is a warning, not an error. Any other failure throws, and the
+ * caller (saveProgram step 5) catches it: the program and its phases are
+ * already committed and still render, so metrics are best-effort there.
+ */
+async function saveProgramMetrics(
+  supabase: Supa,
+  clerkId: string,
+  programId: string,
+  phases: ProgramPhase[],
+  phaseIds: string[],
+): Promise<void> {
+  const names = new Set<string>();
+  for (const ph of phases) for (const m of ph.metrics ?? []) {
+    if (namesAnExercise(m.kind) && m.ref?.exercise_name && !m.ref.exercise_id) names.add(m.ref.exercise_name);
+  }
+  const idByName = new Map<string, string>();
+  // The winner for a name: the user's own exercise of that name, else the
+  // first catalog row by id, so two catalog rows with one name always pick
+  // the same one.
+  const ownIds = new Set<string>();
+  const keep = (rows: { id: string; name: string; user_id: string | null }[]) => {
+    for (const e of [...rows].sort((a, b) => (a.id < b.id ? -1 : 1))) {
+      const key = e.name.toLowerCase();
+      const have = idByName.get(key);
+      const haveIsOwn = have != null && ownIds.has(have);
+      if (e.user_id === clerkId) ownIds.add(e.id);
+      if (have == null || (e.user_id === clerkId && !haveIsOwn)) idByName.set(key, e.id);
+    }
+  };
+  if (names.size > 0) {
+    // The user's own exercises, then the catalog: two plain reads, no filter
+    // string built from the id (the weekly job does the same).
+    const own = await supabase.from('exercises').select('id, name, user_id').eq('user_id', clerkId).in('name', [...names]);
+    const catalog = await supabase.from('exercises').select('id, name, user_id').is('user_id', null).in('name', [...names]);
+    const error = own.error ?? catalog.error;
+    if (error) console.warn('[programs] exercise lookup for metrics failed', error.message);
+    keep([...(own.data ?? []), ...(catalog.data ?? [])] as { id: string; name: string; user_id: string | null }[]);
+    // Second pass, case-insensitive, for names the coach cased differently:
+    // one ilike per name, with the model's text escaped so `%` and `_` in a
+    // name cannot act as wildcards and match a different lift.
+    const missing = [...names].filter((n) => !idByName.has(n.toLowerCase()));
+    for (const n of missing) {
+      const escaped = escapeIlike(n);
+      if (!escaped) continue;
+      const looseOwn = await supabase.from('exercises').select('id, name, user_id').eq('user_id', clerkId).ilike('name', escaped);
+      const looseCatalog = await supabase.from('exercises').select('id, name, user_id').is('user_id', null).ilike('name', escaped);
+      keep([...(looseOwn.data ?? []), ...(looseCatalog.data ?? [])] as { id: string; name: string; user_id: string | null }[]);
+    }
+  }
+  const rows: Record<string, unknown>[] = [];
+  phases.forEach((ph, i) => {
+    const phaseId = phaseIds[i];
+    if (!phaseId) return;
+    (ph.metrics ?? []).forEach((m, seq) => {
+      const ref: MetricRef = { ...(m.ref ?? {}) };
+      if (namesAnExercise(m.kind) && !ref.exercise_id && ref.exercise_name) {
+        const id = idByName.get(ref.exercise_name.toLowerCase());
+        if (id) ref.exercise_id = id;
+      }
+      rows.push({
+        program_id: programId,
+        phase_id: phaseId,
+        user_id: clerkId,
+        seq,
+        is_hero: m.is_hero,
+        kind: m.kind,
+        ref: Object.keys(ref).length > 0 ? ref : null,
+        unit: m.unit || null,
+        direction: m.direction,
+        start_value: m.start_value ?? null,
+        target_value: m.target_value,
+      });
+    });
+  });
+  if (rows.length === 0) return;
+  const { error } = await supabase.from(METRICS_TABLE).insert(rows);
+  if (error) {
+    if (missingTable(error, METRICS_TABLE)) {
+      console.warn('[programs] phase metrics table missing; saving the program without metrics');
+      return;
+    }
+    throw error;
+  }
 }
 
 // ── Load + reconcile (used by the Goal & Plan screen and programSync) ─────────
@@ -580,6 +692,12 @@ export interface ActiveProgramPhaseRow {
   activity_steps_target: number | null;
   /** Cardio sessions a week this phase; null = no cardio goal. */
   cardio_sessions_per_week: number | null;
+  /** The phase's job in one line; null = none written (or a database from before it). */
+  job_text: string | null;
+  /** Drona's sentence for this week, from the weekly check; null = none yet. */
+  coach_line: string | null;
+  /** What the phase is judged on; empty = no metrics (a program from before them). */
+  metrics: PhaseMetricRow[];
   routine_id: string | null;
   // Routines built for this phase (linked via routines.program_phase_id).
   // Populated by loadActiveProgram; empty until a split is built.
@@ -597,14 +715,134 @@ export interface ActiveProgram {
   total_weeks: number | null;
   applied_phase_seq: number | null;
   phases: ActiveProgramPhaseRow[];
-  /** Index into phases that is active today, or null (not started / ended). */
+  /** The `seq` of the phase active today (look it up with phaseFor, never as an array index), or null (not started / ended). */
   currentPhaseSeq: number | null;
   /** 1-based week within the current phase, or null. */
   weekInPhase: number | null;
 }
 
-/** Read the user's active program + phases, with the current phase computed. */
-export async function loadActiveProgram(
+
+/**
+ * Read the user's active program + phases, with the current phase computed.
+ *
+ * Through the screen cache (lib/screenCache.ts): screens that ask at the same
+ * time share one read, and the answer is kept for the next screen to paint
+ * from at once. Writes that change the program call invalidateProgram.
+ *
+ * The happy path is one round trip: the program with its phases and their
+ * routines embedded, and the metrics of the active program, read side by
+ * side. The old step-by-step read (loadActiveProgramSteps) is the fallback
+ * for a database whose relationships the embedded read cannot use.
+ */
+export function loadActiveProgram(supabase: Supa, clerkId: string): Promise<ActiveProgram | null> {
+  return fetchShared(`program:${clerkId}`, () => loadActiveProgramFast(supabase, clerkId));
+}
+
+/** The program cached for this user: undefined = not read yet, null = no active program. */
+export function peekActiveProgram(clerkId: string | null | undefined): ActiveProgram | null | undefined {
+  return clerkId ? peek<ActiveProgram | null>(`program:${clerkId}`) : undefined;
+}
+
+/** Forget the cached program (and its routines) after a write that changes it. */
+export function invalidateProgram(clerkId: string): void {
+  invalidateUserProgram(clerkId);
+}
+
+const PROGRAM_COLS = 'id, title, objective, goal, target_weight_kg, target_date, start_date, total_weeks, applied_phase_seq';
+const PHASE_BASE_COLS = 'id, seq, name, duration_weeks, start_offset_weeks, diet_calorie_target, diet_protein_g, diet_carb_g, diet_fat_g, diet_directive, training_directive, readiness_directive, training_block, routine_id';
+/**
+ * The phase column sets, widest first, in migration order; each drops the
+ * columns a database one migration older does not have. Postgres names only
+ * the FIRST missing column in select-list order, so a database missing
+ * several names an older one; nextColumnSet skips straight to the first set
+ * without it (tested in lib/missingColumn.test.ts).
+ */
+const PHASE_BASE_LIST = PHASE_BASE_COLS.split(', ');
+const PHASE_COL_SETS: readonly (readonly string[])[] = [
+  [...PHASE_BASE_LIST, 'diet_fuel_days', ...ACTIVITY_COLS, ...JOB_COLS],
+  [...PHASE_BASE_LIST, 'diet_fuel_days', ...ACTIVITY_COLS],
+  [...PHASE_BASE_LIST, 'diet_fuel_days'],
+  PHASE_BASE_LIST,
+];
+/** The widest phase column set this database has answered; later reads start there, so an older database costs the extra trip once. */
+let phaseColLevel = 0;
+
+/** PostgREST could not use an embedded relationship (PGRST200 not found, PGRST201 ambiguous). */
+function relationshipError(e: unknown): boolean {
+  const code = (e as { code?: string } | null)?.code ?? '';
+  return code === 'PGRST200' || code === 'PGRST201';
+}
+
+async function loadActiveProgramFast(supabase: Supa, clerkId: string): Promise<ActiveProgram | null> {
+  // The metrics of the user's active program, side by side with the program
+  // read (they do not need its id). Never fails the load: see loadProgramMetrics.
+  const metricsP = loadProgramMetrics(supabase, { activeFor: clerkId }).then(
+    (m) => m,
+    (e) => { console.warn('[programs] metrics read failed; program loaded without them', e); return new Map<string, MetricRowWithLog[]>(); },
+  );
+  let tree: Record<string, unknown> | null = null;
+  for (let lvl = phaseColLevel; ;) {
+    const set = PHASE_COL_SETS[lvl];
+    // routines!program_phase_id: phases and routines point at each other
+    // twice (routines.program_phase_id and coach_program_phases.routine_id),
+    // so the embed names the link it means.
+    const { data, error } = await supabase
+      .from('coach_programs')
+      .select(`${PROGRAM_COLS}, coach_program_phases(${set.join(', ')}, routines!program_phase_id(id, name, created_at))`)
+      .eq('user_id', clerkId)
+      .eq('status', 'active')
+      .maybeSingle();
+    if (!error) { phaseColLevel = lvl; tree = data as Record<string, unknown> | null; break; }
+    const next = nextColumnSet(error, PHASE_COL_SETS, lvl);
+    if (next != null) { lvl = next; continue; }
+    if (relationshipError(error)) {
+      console.warn('[programs] embedded program read not available; reading step by step', error);
+      return loadActiveProgramSteps(supabase, clerkId);
+    }
+    // Throw rather than return null: see loadActiveProgramSteps.
+    throw error;
+  }
+  if (!tree) return null;
+  const rawPhases = (Array.isArray(tree.coach_program_phases) ? tree.coach_program_phases : []) as Record<string, unknown>[];
+  rawPhases.sort((a, b) => Number(a.seq) - Number(b.seq));
+  const routinesByPhase = new Map<string, PhaseRoutine[]>();
+  for (const ph of rawPhases) {
+    const rts = (Array.isArray(ph.routines) ? ph.routines : []) as { id: string; name: string; created_at?: string }[];
+    rts.sort((a, b) => String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')));
+    routinesByPhase.set(String(ph.id), rts.map((r) => ({ id: r.id, name: r.name })));
+    delete ph.routines;
+  }
+  const { coach_program_phases: _phases, ...prog } = tree;
+  const phases = normalizePhaseRows(rawPhases);
+  if (phases.length === 0) {
+    console.warn('[programs] active program has no phases; treating as none', prog);
+    return null;
+  }
+  for (const ph of phases) ph.routines = routinesByPhase.get(ph.id) ?? [];
+  // The metrics read joined on "the active program"; keep only this program's
+  // rows in case an archive and a new program crossed between the two reads.
+  const byPhase = await metricsP;
+  const ids = new Set(phases.map((ph) => ph.id));
+  for (const k of [...byPhase.keys()]) if (!ids.has(k)) byPhase.delete(k);
+  return finishProgram(prog, phases, byPhase);
+}
+
+/** The phase rows as the screens use them: clamped, normalized, no metrics or routines yet. */
+function normalizePhaseRows(phaseData: unknown[]): ActiveProgramPhaseRow[] {
+  return ((phaseData ?? []) as unknown as ActiveProgramPhaseRow[]).map((ph) => ({
+    ...ph,
+    diet_fuel_days: ph.diet_fuel_days == null ? null : normalizeFuelDays(ph.diet_fuel_days),
+    activity_steps_target: clampStepsTarget(ph.activity_steps_target),
+    cardio_sessions_per_week: clampCardioSessions(ph.cardio_sessions_per_week),
+    job_text: typeof ph.job_text === 'string' && ph.job_text.length > 0 ? ph.job_text : null,
+    coach_line: typeof ph.coach_line === 'string' && ph.coach_line.length > 0 ? ph.coach_line : null,
+    metrics: [] as PhaseMetricRow[],
+    routines: [] as PhaseRoutine[],
+  }));
+}
+
+/** The step-by-step read: program, then phases, then routines, then metrics. The fallback. */
+async function loadActiveProgramSteps(
   supabase: Supa,
   clerkId: string,
 ): Promise<ActiveProgram | null> {
@@ -627,10 +865,19 @@ export async function loadActiveProgram(
     .select(cols)
     .eq('program_id', (prog as { id: string }).id)
     .order('seq', { ascending: true });
-  // Keep diet_fuel_days BEFORE the activity columns. Postgres names only the
-  // first missing column, and the two fallbacks below rely on that order: a
-  // database missing both reports diet_fuel_days, and the second one catches it.
-  let { data: phaseData, error: phaseErr } = await readPhases(`${PHASE_COLS}, diet_fuel_days, ${ACTIVITY_COLS.join(', ')}`);
+  // Keep the columns in migration order: diet_fuel_days, then the activity
+  // columns, then the job columns. Postgres names only the first missing
+  // column, and the fallbacks below rely on that order: a database missing
+  // everything from the activity goals on reports activity_steps_target, and
+  // the second fallback drops the job columns with it.
+  let { data: phaseData, error: phaseErr } = await readPhases(
+    `${PHASE_COLS}, diet_fuel_days, ${ACTIVITY_COLS.join(', ')}, ${JOB_COLS.join(', ')}`,
+  );
+  // A database from before the phase metrics: read the rest, so the program
+  // still loads and simply has no job line.
+  if (phaseErr && missingColumn(phaseErr, JOB_COLS)) {
+    ({ data: phaseData, error: phaseErr } = await readPhases(`${PHASE_COLS}, diet_fuel_days, ${ACTIVITY_COLS.join(', ')}`));
+  }
   // A database from before the activity goals: read the rest, so the program
   // still loads and simply shows no activity goals.
   if (phaseErr && missingColumn(phaseErr, ACTIVITY_COLS)) {
@@ -644,12 +891,7 @@ export async function loadActiveProgram(
     ({ data: phaseData, error: phaseErr } = await readPhases(PHASE_COLS));
   }
   if (phaseErr) throw phaseErr;
-  const phases = ((phaseData ?? []) as unknown as ActiveProgramPhaseRow[]).map((ph) => ({
-    ...ph,
-    diet_fuel_days: ph.diet_fuel_days == null ? null : normalizeFuelDays(ph.diet_fuel_days),
-    activity_steps_target: clampStepsTarget(ph.activity_steps_target),
-    cardio_sessions_per_week: clampCardioSessions(ph.cardio_sessions_per_week),
-  }));
+  const phases = normalizePhaseRows((phaseData ?? []) as unknown[]);
   // An active program with no phases is corruption, not a real state:
   // saveProgram rejects zero-phase programs, so the only way to get one is a
   // failed phase insert whose rollback also failed. Rendering it gives a hero
@@ -685,15 +927,46 @@ export async function loadActiveProgram(
     ph.routines = routinesByPhase.get(ph.id) ?? [];
   }
 
-  const p = prog as Record<string, unknown>;
+  // The phase metrics. A database without the table (the app before the
+  // migration) is a program with no metrics, which the screen renders in the
+  // plain layout. Any other failure is a warning, not a failed load: the
+  // metrics are optional on top of a program every caller needs (the Goal
+  // screen's empty state on a failed load is the dangerous one, and the
+  // phase reconcile does not read metrics at all).
+  let byPhase = new Map<string, MetricRowWithLog[]>();
+  try {
+    byPhase = await loadProgramMetrics(supabase, { programId: String((prog as { id: string }).id) });
+  } catch (e) {
+    console.warn('[programs] metrics read failed; program loaded without them', e);
+  }
+  return finishProgram(prog as Record<string, unknown>, phases, byPhase);
+}
+
+/** The current phase, the week in it, and each phase's metrics (live for the active phase's custom ones). */
+function finishProgram(
+  p: Record<string, unknown>,
+  phases: ActiveProgramPhaseRow[],
+  byPhase: Map<string, MetricRowWithLog[]>,
+): ActiveProgram {
   const startDate = String(p.start_date);
   const today = todayLocalISO();
-  const currentPhaseSeq = computeActivePhaseSeq(startDate, phases, today);
-  const weekInPhase = currentPhaseSeq != null
-    ? Math.floor(
-        (daysBetweenISO(startDate, today) - phases[currentPhaseSeq].start_offset_weeks * 7) / 7,
-      ) + 1
-    : null;
+  // Found by its place in time, reported by its own seq (activePhaseOn).
+  const { phase: activePhase, seq: currentPhaseSeq, weekInPhase } = activePhaseOn(startDate, phases, today);
+
+  for (const ph of phases) {
+    const list = byPhase.get(ph.id) ?? [];
+    // A custom metric of the ACTIVE phase reads the latest log live: the
+    // weekly check can be days behind the value the user logged this
+    // morning. Any other phase keeps what the job wrote: its progress is not
+    // today's, so a live recompute would disagree with the stored status.
+    const isActive = activePhase != null && ph.id === activePhase.id;
+    const progress = isActive ? phaseProgress(weekInPhase, ph.duration_weeks) : 0;
+    ph.metrics = list.map((m) => {
+      if (!isActive || m.kind !== 'custom' || m.latest_log == null) return m;
+      const current_value = m.latest_log;
+      return { ...m, current_value, status: statusFor({ ...m, current_value, progress }) };
+    });
+  }
 
   return {
     id: String(p.id),
@@ -709,6 +982,159 @@ export async function loadActiveProgram(
     currentPhaseSeq,
     weekInPhase,
   };
+}
+
+/** One metric row as the table holds it, plus the latest hand-logged value for a custom one. */
+type MetricRowWithLog = PhaseMetricRow & { latest_log: number | null };
+
+/**
+ * Every metric of a program, by phase id, in seq order. Empty map when the
+ * table is not there yet. By the program's id, or by "the user's active
+ * program" (an inner join on coach_programs), so the fast load can read the
+ * metrics side by side with the program instead of after it.
+ */
+async function loadProgramMetrics(
+  supabase: Supa,
+  which: { programId: string } | { activeFor: string },
+): Promise<Map<string, MetricRowWithLog[]>> {
+  const out = new Map<string, MetricRowWithLog[]>();
+  const COLS = 'id, phase_id, seq, is_hero, kind, ref, unit, direction, start_value, target_value, current_value, status, status_note, checked_at';
+  const { data, error } = await ('programId' in which
+    ? supabase.from(METRICS_TABLE).select(COLS).eq('program_id', which.programId)
+    : supabase.from(METRICS_TABLE).select(`${COLS}, coach_programs!inner(status)`)
+      .eq('user_id', which.activeFor).eq('coach_programs.status', 'active')
+  ).order('seq', { ascending: true });
+  if (error) {
+    if (missingTable(error, METRICS_TABLE)) return out;
+    throw error;
+  }
+  const rows: MetricRowWithLog[] = [];
+  for (const r of (data ?? []) as Record<string, unknown>[]) {
+    if (!isMetricKind(r.kind)) continue;
+    const num = (v: unknown): number | null => (v == null ? null : Number.isFinite(Number(v)) ? Number(v) : null);
+    const target = num(r.target_value);
+    if (target == null) continue;
+    rows.push({
+      id: String(r.id),
+      phase_id: String(r.phase_id),
+      seq: Number(r.seq ?? 0),
+      is_hero: r.is_hero === true,
+      kind: r.kind,
+      ref: (r.ref && typeof r.ref === 'object' ? r.ref : undefined) as MetricRef | undefined,
+      unit: typeof r.unit === 'string' ? r.unit : '',
+      direction: isMetricDirection(r.direction) ? r.direction : 'up',
+      start_value: num(r.start_value) ?? undefined,
+      target_value: target,
+      current_value: num(r.current_value),
+      status: isMetricStatus(r.status) ? r.status : 'set',
+      status_note: typeof r.status_note === 'string' ? r.status_note : null,
+      checked_at: typeof r.checked_at === 'string' ? r.checked_at : null,
+      latest_log: null,
+    });
+  }
+  // The latest log per custom metric (one read for all of them).
+  const customIds = rows.filter((r) => r.kind === 'custom').map((r) => r.id);
+  if (customIds.length > 0) {
+    const { data: logs, error: logErr } = await supabase
+      .from(METRIC_LOGS_TABLE)
+      .select('metric_id, value, logged_on')
+      .in('metric_id', customIds)
+      // Up to today: a future-dated log must not become the current value.
+      .lte('logged_on', todayLocalISO())
+      .order('logged_on', { ascending: false });
+    if (logErr && !missingTable(logErr, METRIC_LOGS_TABLE)) throw logErr;
+    const seen = new Set<string>();
+    for (const l of (logs ?? []) as { metric_id: string; value: unknown }[]) {
+      if (seen.has(l.metric_id)) continue;
+      seen.add(l.metric_id);
+      const v = Number(l.value);
+      const row = rows.find((r) => r.id === l.metric_id);
+      if (row && Number.isFinite(v)) row.latest_log = v;
+    }
+  }
+  for (const r of rows) {
+    const list = out.get(r.phase_id) ?? [];
+    list.push(r);
+    out.set(r.phase_id, list);
+  }
+  return out;
+}
+
+export interface MetricLog {
+  logged_on: string;
+  value: number;
+  note: string | null;
+}
+
+/** Every hand-logged value of one custom metric, oldest first. */
+export async function loadMetricLogs(supabase: Supa, metricId: string): Promise<MetricLog[]> {
+  const { data, error } = await supabase
+    .from(METRIC_LOGS_TABLE)
+    .select('logged_on, value, note')
+    .eq('metric_id', metricId)
+    .order('logged_on', { ascending: true });
+  if (error) {
+    if (missingTable(error, METRIC_LOGS_TABLE)) return [];
+    throw error;
+  }
+  return ((data ?? []) as { logged_on: string; value: unknown; note: string | null }[])
+    .map((l) => ({ logged_on: l.logged_on, value: Number(l.value), note: l.note ?? null }))
+    .filter((l) => Number.isFinite(l.value));
+}
+
+/**
+ * Log today's value for a custom metric (one row per metric per local day; a
+ * second log the same day replaces the first) and move the metric's current
+ * value to it, with the status recomputed by the shared rules. The weekly
+ * check will do the same on Monday; this is so the card moves at once.
+ *
+ * Two writes, no transaction: if the metric update fails after the log
+ * landed, the log still exists and loadActiveProgram reads the latest log
+ * live for a custom metric, so the card shows the logged number anyway and
+ * the weekly check sets the status. `progress` is the current phase's: the
+ * Goal screen offers logging only on the current phase's hero.
+ */
+export async function logMetricValue(
+  supabase: Supa,
+  clerkId: string,
+  metric: PhaseMetricRow,
+  value: number,
+  progress: number,
+  note?: string,
+): Promise<void> {
+  if (!Number.isFinite(value)) throw new Error('That is not a number.');
+  // The same bounds as the table's check: a negative or absurd number would
+  // skew the status and the chart.
+  if (value < 0 || value > 1_000_000) throw new Error('That number is out of range.');
+  const { error } = await supabase
+    .from(METRIC_LOGS_TABLE)
+    .upsert(
+      { metric_id: metric.id, user_id: clerkId, value, logged_on: todayLocalISO(), note: note?.trim() || null },
+      { onConflict: 'metric_id,logged_on' },
+    );
+  if (error) throw error;
+  // The log has landed: the cached program is stale from here even if the
+  // metric update below fails, so the next read must go to the database.
+  invalidateProgram(clerkId);
+  const status = statusFor({ ...metric, current_value: value, progress });
+  const { data: moved, error: upErr } = await supabase
+    .from(METRICS_TABLE)
+    .update({
+      current_value: value,
+      status,
+      // The first log of a metric with no start is its start.
+      ...(metric.start_value == null ? { start_value: value } : {}),
+      // Not checked_at: that is the weekly job's stamp (and the client's
+      // grant leaves the column out), so logging never skips a week's check.
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', metric.id)
+    .select('id');
+  if (upErr) throw upErr;
+  // The update policy lets a client move a custom metric only; an update
+  // that matched no row is reported, never swallowed as a save.
+  if ((moved?.length ?? 0) === 0) throw new Error('That metric is not one you log by hand.');
+  invalidateProgram(clerkId);
 }
 
 /**
@@ -727,6 +1153,7 @@ export async function endActiveProgram(supabase: Supa, clerkId: string): Promise
     .eq('status', 'active')
     .select('id');
   if (error) throw error;
+  invalidateProgram(clerkId);
   return (data?.length ?? 0) > 0;
 }
 
@@ -759,6 +1186,7 @@ export async function reconcileActiveProgram(
         .from('coach_programs')
         .update({ status: 'completed', updated_at: new Date().toISOString() })
         .eq('id', active.id);
+      invalidateProgram(clerkId);
       if (!error) track('program_completed', { phases: active.phases.length, total_weeks: active.total_weeks ?? null });
     }
     return null;
@@ -767,7 +1195,8 @@ export async function reconcileActiveProgram(
   // Same phase as last applied → do nothing (respects manual in-phase edits).
   if (active.currentPhaseSeq === active.applied_phase_seq) return null;
 
-  const phase = active.phases[active.currentPhaseSeq];
+  const phase = active.phases.find((ph) => ph.seq === active.currentPhaseSeq);
+  if (!phase) return null;
   await applyPhaseTargets(supabase, clerkId, {
     calories: phase.diet_calorie_target ?? undefined,
     protein_g: phase.diet_protein_g ?? undefined,
@@ -778,6 +1207,7 @@ export async function reconcileActiveProgram(
     .from('coach_programs')
     .update({ applied_phase_seq: active.currentPhaseSeq, updated_at: new Date().toISOString() })
     .eq('id', active.id);
+  invalidateProgram(clerkId);
   // System event, not a tap: the program rolled into its next phase and the
   // diet targets were rewritten. Only once the cursor write landed, or the
   // next reconcile will do this again and count it twice.

@@ -163,7 +163,7 @@ class FakeStore implements AutoLogStore {
   // unique index firing) cannot assign its replacement.
   insertEntries(
     rows: AutoLogEntryRow[],
-  ): Promise<{ ids: string[] } | { conflict: true } | { error: string }> {
+  ): Promise<{ ids: string[] } | { conflict: true } | { error: string; code?: string }> {
     this.calls.push(`insertEntries:${rows.length}`);
     if (this.failInsert) return Promise.resolve({ error: "boom" });
     const ids = rows.map((r) => {
@@ -361,4 +361,44 @@ Deno.test("write: each line records the tier whose numbers it carries (0149)", a
   });
   assert("logged" in res);
   assertEquals(store.entries.map((e) => e.tier), ["fast", "precise"]);
+});
+
+Deno.test("write: a dish built from its parts keeps source recipe where the diary allows it, else retries as an estimate", async () => {
+  const ok = new FakeStore();
+  const res = await writeAutoLog(ok, writeArgs([line("paneer sabji", { meal_type: "lunch", source: "recipe" })]));
+  assert("logged" in res);
+  assertEquals(ok.entries[0].source, "recipe");
+  // A diary without migration 20261107120000: its source check refuses
+  // "recipe", and the write is tried once more with "estimate".
+  const old = new FakeStore();
+  const insert = old.insertEntries.bind(old);
+  old.insertEntries = (rows) =>
+    rows.some((r) => r.source === "recipe")
+      ? Promise.resolve({ error: 'new row for relation "meal_entries" violates check constraint "meal_entries_source_check"' })
+      : insert(rows);
+  const res2 = await writeAutoLog(old, writeArgs([line("paneer sabji", { meal_type: "lunch", source: "recipe" }), line("rice", { meal_type: "lunch" })]));
+  assert("logged" in res2);
+  assertEquals(old.entries[0].source, "estimate");
+});
+
+Deno.test("write: only the diary's source check refusal is retried as an estimate", async () => {
+  const store = new FakeStore();
+  let tries = 0;
+  store.insertEntries = () => {
+    tries++;
+    return Promise.resolve({ error: "network down" });
+  };
+  const res = await writeAutoLog(store, writeArgs([line("paneer sabji", { meal_type: "lunch", source: "recipe" })]));
+  assert("error" in res);
+  assertEquals(tries, 1);
+});
+
+Deno.test("write: the source check refusal is known by its code too, whatever the message says", async () => {
+  const store = new FakeStore();
+  const insert = store.insertEntries.bind(store);
+  store.insertEntries = (rows) =>
+    rows.some((r) => r.source === "recipe") ? Promise.resolve({ error: "check violation", code: "23514" }) : insert(rows);
+  const res = await writeAutoLog(store, writeArgs([line("paneer sabji", { meal_type: "lunch", source: "recipe" })]));
+  assert("logged" in res);
+  assertEquals(store.entries[0].source, "estimate");
 });

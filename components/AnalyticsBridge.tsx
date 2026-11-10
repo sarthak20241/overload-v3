@@ -18,6 +18,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { screen, identifyUser, resetAnalytics, setUserProps, registerSuperProps, analyticsEnabled } from '@/lib/analytics';
+import { clearCache } from '@/lib/screenCache';
 
 /** Person props re-read from user_profiles at most this often on foreground. */
 const PROFILE_REFRESH_MS = 10 * 60 * 1000;
@@ -73,6 +74,15 @@ export function AnalyticsBridge() {
   }, [segments, pathname]);
 
   // ── Who is this ──────────────────────────────────────────────────────────
+  // The Goal & Plan screen cache (lib/screenCache.ts) goes with the session,
+  // whatever ended it: the profile's sign-out, an expired or revoked session,
+  // or a forced sign-out on refresh. Its keys carry the user id, so this is
+  // hygiene rather than a leak. Separate from the analytics reset below,
+  // which is skipped when analytics is off.
+  useEffect(() => {
+    if (isLoaded && (!isSignedIn || !user?.id)) clearCache();
+  }, [isLoaded, isSignedIn, user?.id]);
+
   useEffect(() => {
     if (!analyticsEnabled || !isLoaded) return;
 

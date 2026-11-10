@@ -35,6 +35,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import type { FoodServing, MealType } from '@/lib/foods';
 import { isMassUnit, isMeasurementUnit, massToGrams } from '@/lib/units';
 import { joinServing, splitServing, sizeForUnitChange, scaleServingNutrition } from '@/lib/servingSize';
+import { numbersTyped } from '@/lib/loggedEntryEdit';
 
 const MEAL_OPTIONS: { value: MealType; label: string }[] = [
   { value: 'breakfast', label: 'Breakfast' },
@@ -290,6 +291,13 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
       ? scaleServingNutrition({ kcal: per100.kcal, protein: per100.protein_g,
         carb: per100.carb_g, fat: per100.fat_g }, grams / 100)
       : scaleServingNutrition(b, ratio);
+    // Typed numbers are the user's own (step 4), by the same rule as the edit
+    // sheet and the database: touching a box and leaving the numbers as they
+    // were, or changing only the amount, keeps where they came from.
+    const typed = macrosTouched && numbersTyped(
+      { grams_logged: item.grams > 0 ? item.grams : null, kcal: item.kcal, protein_g: item.protein_g, carb_g: item.carb_g, fat_g: item.fat_g },
+      { grams, kcal: numOr(kcal, 0), protein_g: numOr(protein, 0), carb_g: numOr(carb, 0), fat_g: numOr(fat, 0) },
+    );
     onSave({
       ...item,
       food_name: name.trim(),
@@ -301,8 +309,16 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
       protein_g: !changed ? item.protein_g : macrosTouched ? numOr(protein, 0) : scaled.protein,
       carb_g: !changed ? item.carb_g : macrosTouched ? numOr(carb, 0) : scaled.carb,
       fat_g: !changed ? item.fat_g : macrosTouched ? numOr(fat, 0) : scaled.fat,
+      // Fiber has no box, so it moves with the weight like everything else did.
+      // Kept as it was, 3 roti cut to 1 still carried three rotis of fiber.
+      // Only a weight change moves it: a calories-only edit keeps it unrounded.
+      fiber_g: !changed || item.fiber_g == null || grams === item.grams || !(grams > 0 && item.grams > 0)
+        ? item.fiber_g
+        : Math.round(item.fiber_g * (grams / item.grams) * 10) / 10,
       // A corrected line carries the user's numbers, not the parser's.
       source: changed ? 'manual' : item.source,
+      origin: typed ? 'user_typed' : item.origin,
+      copied_from: typed ? undefined : item.copied_from,
       confidence: changed ? 'high' : item.confidence,
       assumption: changed ? null : item.assumption,
       // And it stops being ours to vouch for. `verified` is a claim that two

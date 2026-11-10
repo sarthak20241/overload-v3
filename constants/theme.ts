@@ -129,6 +129,7 @@ export const Colors = {
     goal: '#f59e0b',
     bodyFat: '#ef4444',
     bug: '#f97316',
+    rate: '#eab308',
     trainingGoal: '#84cc16',
     experience: '#3b82f6',
     frequency: '#8b5cf6',
@@ -248,6 +249,12 @@ export const FontWeight = {
 export const FontFamily = {
   display: 'SpaceGrotesk_700Bold',
   displayMedium: 'SpaceGrotesk_500Medium',
+  // The sign-up tour's film headlines.
+  tourHeadline: 'InterTight_600SemiBold',
+  // Onboarding (2026-11-09, owner's pick): Inter SemiBold questions, Inter
+  // Regular subtitles. Plainer and easier to read than Space Grotesk.
+  onboardingHeading: 'Inter_600SemiBold',
+  onboardingBody: 'Inter_400Regular',
 };
 
 // Letter-spacing scale. The app tracks titles/big numbers tight and all-caps

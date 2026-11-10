@@ -12,7 +12,6 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Linking,
   Pressable,
   ScrollView,
@@ -41,6 +40,7 @@ import {
 } from '@/lib/form/api';
 import { isPersistableId, resolveFormRules, type RuleResolution } from '@/lib/form/resolve';
 import { summarize, unusableMessage, type FormSummary } from '@/lib/form/summarize';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 type Phase = 'resolving' | 'unsupported' | 'setup' | 'recording' | 'analyzing' | 'result';
 
@@ -295,7 +295,7 @@ export default function FormCheckScreen() {
         <View style={styles.closeBtn} />
       </View>
 
-      {phase === 'resolving' && <Centered><ActivityIndicator color={Colors.primary} /></Centered>}
+      {phase === 'resolving' && <Centered><OrbLoader size="large" state="searching" /></Centered>}
 
       {phase === 'unsupported' && (
         <Centered>
@@ -329,7 +329,7 @@ export default function FormCheckScreen() {
 
       {phase === 'analyzing' && (
         <Centered>
-          <ActivityIndicator color={Colors.primary} />
+          <OrbLoader size="large" />
           <Text style={[styles.body, { color: C.textSecondary }]}>
             Give me a second, I&apos;m looking at that.
           </Text>

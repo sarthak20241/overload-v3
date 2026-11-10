@@ -31,3 +31,23 @@ export function wallClock(moment: string | number | Date, timeZone: string): str
 export function isTimeZone(tz: unknown): tz is string {
   return typeof tz === 'string' && tz.length > 0 && tz.length < 64 && wallClock(0, tz) !== null;
 }
+
+/**
+ * Each user's local day for a cron run. A user with no saved zone (or one
+ * this runtime does not know) is read in UTC rather than skipped: the app
+ * saves the zone only when it calls in, so someone who never came back after
+ * onboarding would otherwise get nothing from the cron at all. The facts
+ * RPCs make the same UTC fallback, and the app's next call saves the real
+ * zone, which wins from then on.
+ */
+export function cronDays(
+  users: { clerk_user_id: string | null; timezone: string | null }[],
+  now: Date,
+): { userId: string; tz: string; day: string }[] {
+  return users
+    .filter((u) => !!u.clerk_user_id)
+    .map((u) => {
+      const tz = isTimeZone(u.timezone) ? u.timezone : 'UTC';
+      return { userId: u.clerk_user_id as string, tz, day: wallClock(now, tz)!.slice(0, 10) };
+    });
+}

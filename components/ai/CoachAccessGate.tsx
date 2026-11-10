@@ -30,7 +30,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { track } from '@/lib/analytics';
 import {
-  View, Text, TouchableOpacity, ScrollView, ActivityIndicator, StyleSheet,
+  View, Text, TouchableOpacity, ScrollView, StyleSheet,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -39,6 +39,7 @@ import { useTheme } from '@/hooks/useTheme';
 import type { CoachAccess } from '@/hooks/useCoachAccess';
 import { Paywall } from './Paywall';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 type GateScreen =
   | 'allow'                  // pass-through: caller renders the real content
@@ -227,7 +228,7 @@ function GateBody({
       >
         {screen === 'loading' && (
           <View style={s.spinnerWrap}>
-            <ActivityIndicator color={C.foreground} />
+            <OrbLoader size="large" state="searching" />
           </View>
         )}
 
@@ -259,7 +260,7 @@ function GateBody({
               }}
             >
               {retrying ? (
-                <ActivityIndicator color={Colors.primaryFg} />
+                <OrbLoader color={Colors.primaryFg} />
               ) : (
                 <Text style={[s.primaryBtnText, { color: Colors.primaryFg }]}>Retry</Text>
               )}
@@ -325,7 +326,7 @@ function GateBody({
               disabled={starting}
             >
               {starting ? (
-                <ActivityIndicator color={Colors.primaryFg} />
+                <OrbLoader color={Colors.primaryFg} />
               ) : (
                 <Text style={[s.primaryBtnText, { color: Colors.primaryFg }]}>
                   Start 7-day free trial

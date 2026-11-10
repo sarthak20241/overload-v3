@@ -15,7 +15,7 @@
  *               never leads with "Connect health".
  */
 import { useCallback, useState } from 'react';
-import { View, Text, Pressable, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, Text, Pressable, StyleSheet } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { Feather } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -30,6 +30,7 @@ import type { ReadinessContributor, ReadinessResult } from '@/lib/readiness';
 import { formatSleepMinutes } from '@/lib/format';
 import { Colors, Radius, Spacing, FontSize, FontWeight, colorWithAlpha } from '@/constants/theme';
 import { ReadinessRing } from '@/components/ui/ReadinessRing';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 interface CardState {
   loading: boolean;
@@ -154,7 +155,7 @@ export function ReadinessCard() {
 
       {state.loading ? (
         <View style={styles.center}>
-          <ActivityIndicator color={accent} />
+          <OrbLoader color={accent} />
         </View>
       ) : hasScore ? (
         <View style={styles.center}>

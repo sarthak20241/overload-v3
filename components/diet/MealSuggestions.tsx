@@ -2,8 +2,9 @@
  * MealSuggestions: the user's usual foods for one meal, drawn as ghost rows
  * inside that meal's section, right where they would land.
  *
- * A ghost row is the logged row's outline without its fill: dashed border, no
- * card, muted name. It reads as "not in your day yet", and it sits in the
+ * A ghost row is an empty slot: a grey dashed outline, muted name, and a small
+ * soft-lime + as its one spot of color. It reads as "not in your day yet"
+ * without a lime edge, which the food box owns. It sits in the
  * meal it belongs to, so there is no separate list to scan and no question of
  * where a tap will log. Three show at first; the rest are one tap behind
  * "N more", so a long habit list never pushes the diary down the screen.
@@ -13,7 +14,7 @@
  *   Add all          logs every usual (had more than half the time) at once
  *
  * Adding answers at once, before the write lands: the row fills in, its +
- * turns into a check with a small spring, and "Added" replaces the calories.
+ * turns into a check with a small dip, and "Added" replaces the calories.
  * When the diary reloads, the row leaves (fade, the list closes up) and the
  * logged line fades in above it. Add all runs the same beat down the rows,
  * a step apart, so the meal visibly fills itself. A failed write turns the
@@ -24,7 +25,7 @@ import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   FadeIn, FadeOut, LinearTransition,
-  useSharedValue, useAnimatedStyle, withDelay, withSequence, withSpring, withTiming,
+  useSharedValue, useAnimatedStyle, withDelay, withSequence, withTiming,
 } from 'react-native-reanimated';
 import { Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -75,7 +76,7 @@ export function MealSuggestions({ items, mealLogged, mealLabel, weekday, fromWor
   return (
     <Animated.View entering={FadeIn.duration(220)} exiting={FadeOut.duration(150)} layout={LinearTransition.duration(220)} style={s.wrap}>
       <View style={s.head}>
-        <DronaMark size={9} color={C.accentText} state="static" />
+        <DronaMark size={9} color={`${C.accentText}99`} state="static" />
         <Text style={[s.headTxt, { color: C.textMuted }]} numberOfLines={1}>{title}</Text>
         <View style={{ flex: 1 }} />
         {usual.length > 1 && (
@@ -90,7 +91,7 @@ export function MealSuggestions({ items, mealLogged, mealLabel, weekday, fromWor
               ? `Add all ${usual.length} foods from ${fromWord}, ${usualKcal} calories`
               : `Add all ${usual.length} usual foods, ${usualKcal} calories`}
           >
-            <Text style={[s.addAll, { color: C.accentText }]}>{`Add all · ${usualKcal}`}</Text>
+            <Text style={[s.addAll, { color: C.textSecondary }]}>{`Add all · ${usualKcal}`}</Text>
           </Pressable>
         )}
       </View>
@@ -140,9 +141,11 @@ function SuggestionRow({ item, added, delayMs, why, onAdd, onEdit }: {
       return;
     }
     fill.value = withDelay(delayMs, withTiming(1, { duration: 180 }));
+    // A dip and back, no overshoot: an underdamped spring here wobbled the
+    // icon and read as the whole row shaking.
     pop.value = withDelay(delayMs, withSequence(
-      withTiming(0.55, { duration: 90 }),
-      withSpring(1, { damping: 9, stiffness: 280, mass: 0.6 }),
+      withTiming(0.7, { duration: 90 }),
+      withTiming(1, { duration: 160 }),
     ));
     const t = setTimeout(() => setShownAdded(true), delayMs + 90);
     return () => clearTimeout(t);
@@ -162,13 +165,17 @@ function SuggestionRow({ item, added, delayMs, why, onAdd, onEdit }: {
       <Pressable
         onPress={onAdd}
         disabled={added}
+        // A grey dashed outline: an empty slot waiting for this food. Grey, not
+        // lime, so the food box keeps the loudest edge on the screen. textDim at
+        // half alpha, not C.border: border is 8% black on light, and a dash
+        // that thin vanishes.
         style={({ pressed }) => [
           s.row,
           {
-            borderColor: shownAdded ? C.accentText : C.border,
+            borderColor: shownAdded ? C.accentText : `${C.textDim}80`,
             borderStyle: shownAdded ? 'solid' : 'dashed',
-            transform: [{ scale: pressed ? 0.98 : 1 }],
           },
+          pressed && { backgroundColor: C.muted },
         ]}
         accessibilityRole="button"
         accessibilityState={{ disabled: added }}
@@ -179,16 +186,18 @@ function SuggestionRow({ item, added, delayMs, why, onAdd, onEdit }: {
         {/* The fill sits under the content and fades in, so the row reads as
             becoming a logged line rather than swapping to one. */}
         <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, s.tint, { backgroundColor: `${C.accentText}1F` }, tint]} />
+        {/* The row's one spot of color: a small soft-lime +. Solid lime with
+            a check once added. */}
         <Animated.View style={[s.icon, shownAdded
           ? { backgroundColor: C.accentText, borderColor: C.accentText }
-          : { borderColor: C.accentText }, iconStyle]}
+          : { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder }, iconStyle]}
         >
           <Feather name={shownAdded ? 'check' : 'plus'} size={11} color={shownAdded ? C.background : C.accentText} />
         </Animated.View>
         <Text style={[s.name, { color: shownAdded ? C.foreground : C.textSecondary }]} numberOfLines={1}>
           {item.food_name} <Text style={[s.serving, { color: C.textMuted }]}>· {formatServing(item.quantity, item.serving_unit)}</Text>
         </Text>
-        {why && !shownAdded && <Text style={[s.why, { color: C.accentText }]} numberOfLines={1}>{why}</Text>}
+        {why && !shownAdded && <Text style={[s.why, { color: C.textSecondary }]} numberOfLines={1}>{why}</Text>}
         {shownAdded
           ? <Text style={[s.addedTxt, { color: C.accentText }]}>Added</Text>
           : <Text style={[s.kcal, { color: C.textMuted }]}>{`${Math.round(item.kcal)} cal`}</Text>}

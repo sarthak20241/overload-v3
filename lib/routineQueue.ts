@@ -18,6 +18,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveExerciseRow } from '@/lib/exerciseResolve';
 import type { MetricType } from '@/lib/exercises';
 import { readCache, writeCache } from '@/lib/localCache';
+import { invalidateUserProgram } from '@/lib/screenCache';
 import { targetColumns, withoutTargetColumns, writeWithTargetFallback } from '@/lib/routineTargets';
 
 const KEY = (userId: string) => `pending_routines_v1::${userId}`;
@@ -250,6 +251,7 @@ async function flushPendingRoutine(
           .from('routines')
           .update({ program_phase_id: entry.programPhaseId })
           .eq('id', entry.routineId);
+        invalidateUserProgram(userId);
       } catch { /* linking is non-critical */ }
     }
     phase = 'routine_upserted';

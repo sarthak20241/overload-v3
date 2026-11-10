@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  ActivityIndicator,
   BackHandler,
   Keyboard,
   Platform,
@@ -27,6 +26,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { readCardHistory } from '@/lib/dronaCard';
 import { waitingCount } from '@/lib/dronaInbox';
 import { track, flushAnalytics } from '@/lib/analytics';
+import { openStorePage } from '@/lib/storeReview';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, getGuestProfile, updateGuestProfile, type GuestProfile } from '@/lib/guestStore';
 import { invalidateCustomExercisesCache } from '@/components/routines/ExercisePickerSheet';
@@ -35,6 +35,7 @@ import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { selectedGoals, toggleGoal } from '@/lib/fitnessGoals';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
 import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
@@ -53,10 +54,12 @@ import { flushEditQueue, getPendingEditCount } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 import { clearUserCache, hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { clearCoachConversations } from '@/lib/coachConversations';
+import { signOutAndCleanUp } from '@/lib/signOutCleanup';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { isLifetimeTier, PLAN_BENEFITS, tierLabel } from '@/lib/tiers';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 type Gender = 'M' | 'F' | 'O';
 type WeightUnit = 'kg' | 'lbs';
@@ -229,46 +232,9 @@ export default function ProfileScreen() {
   // The dashboard route itself re-checks via RLS, so this is a UX gate.
   const { isAdmin } = useAdminCheck();
   const signOut = async () => {
-    const prevUserId = user?.id;
-    // Best-effort: push any queued workouts before the JWT drops. The queue is
-    // keyed per user, so anything that still can't sync (offline) is parked
-    // under this account and flushes the next time they sign in here — not lost.
-    if (
-      prevUserId &&
-      (getPendingCount(prevUserId) > 0 ||
-        getPendingRoutineCount(prevUserId) > 0 ||
-        getPendingEditCount(prevUserId) > 0)
-    ) {
-      try {
-        await Promise.race([
-          (async () => {
-            await flushRoutineQueue(supabase, prevUserId);
-            await flushQueue(supabase, prevUserId);
-            await flushEditQueue(supabase, prevUserId);
-          })(),
-          new Promise((r) => setTimeout(r, 3000)),
-        ]);
-      } catch {}
-    }
-    try { await clerkSignOut(); } catch {}
-    // Clear the guest flag too — sign-out should always land on /(auth),
-    // regardless of how the user originally got into /(app).
-    await setGuestMode(false);
-    // Drop the picker's cached customs list: it's keyed by user id (so it
-    // can't leak across accounts), but there's no reason to keep the old
-    // account's rows allocated past the session.
-    invalidateCustomExercisesCache();
-    // Drop this user's read cache (per-user keyed; clears stale data so the
-    // next account never paints from it). The sync queue stays parked per user.
-    // Best-effort local cleanup (both per-user keyed, so the next account never
-    // sees them). allSettled so a storage failure can't block the redirect after
-    // auth teardown has already happened.
-    if (prevUserId) {
-      await Promise.allSettled([
-        clearUserCache(prevUserId),
-        clearCoachConversations(prevUserId),
-      ]);
-    }
+    // Shared with the locked paywall (lib/signOutCleanup.ts). As before, a
+    // failed Clerk sign-out still runs the cleanup and leaves for /(auth).
+    await signOutAndCleanUp({ userId: user?.id, supabase, clerkSignOut });
     router.replace('/(auth)');
   };
   const [deletingAccount, setDeletingAccount] = useState(false);
@@ -795,7 +761,7 @@ export default function ProfileScreen() {
   if (loading) {
     return (
       <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
-        <ActivityIndicator color={Colors.primary} style={{ marginTop: 100 }} />
+        <OrbLoader size="large" state="searching" style={{ marginTop: 100 }} />
       </SafeAreaView>
     );
   }
@@ -1007,6 +973,33 @@ export default function ProfileScreen() {
                   </>
                 )}
               </TouchableOpacity>
+              {/* Refer a friend (app/refer.tsx): open to everyone, payers too;
+                  that screen does not promise a payer free months. */}
+              <TouchableOpacity
+                onPress={() => router.push('/refer' as any)}
+                accessibilityRole="button"
+                accessibilityLabel="Invite friends"
+                style={styles.inviteLink}
+              >
+                <Feather name="users" size={12} color={C.accentText} />
+                {/* A store payer earns no months (refer.tsx), so no promise. */}
+                <Text style={[styles.inviteLinkText, { color: C.accentText }]}>
+                  {isPro ? 'Invite friends' : 'Invite friends, get a free month each'}
+                </Text>
+              </TouchableOpacity>
+              {/* Invite codes give a free month (lib/invite.ts). Not offered
+                  to a paying user, whom redeem_invite() would refuse. */}
+              {!planUnknown && !isPro && (
+                <TouchableOpacity
+                  onPress={() => router.push('/invite' as any)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Enter an invite code"
+                  style={styles.inviteLink}
+                >
+                  <Feather name="gift" size={12} color={C.textMuted} />
+                  <Text style={[styles.inviteLinkText, { color: C.textMuted }]}>Have an invite code?</Text>
+                </TouchableOpacity>
+              )}
             </View>
           )}
 
@@ -1412,6 +1405,23 @@ export default function ProfileScreen() {
                 />
               </View>
 
+              {/* Rate Overload: the store page, open to anyone at any time. */}
+              <TouchableOpacity
+                onPress={() => {
+                  void openStorePage().then((ok) => {
+                    if (!ok) toast.error('Could not open the store. Try again later.');
+                  });
+                }}
+                activeOpacity={0.7}
+                accessibilityRole="link"
+                accessibilityHint="Opens Overload in the app store"
+                style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}
+              >
+                <RowIcon name="star" color={Colors.rowIcon.rate} />
+                <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>Rate Overload</Text>
+                <Feather name="chevron-right" size={14} color={C.textDim} />
+              </TouchableOpacity>
+
               {/* Report a Bug */}
               <TouchableOpacity
                 onPress={() => setBugModalOpen(true)}
@@ -1560,7 +1570,7 @@ export default function ProfileScreen() {
                       style={[styles.deleteConfirmBtn, { backgroundColor: '#ef4444', opacity: deletingAccount ? 0.6 : 1 }]}
                     >
                       {deletingAccount
-                        ? <ActivityIndicator size="small" color="#fff" />
+                        ? <OrbLoader size="small" color="#fff" />
                         : <Feather name="trash-2" size={10} color="#fff" />}
                       <Text style={[styles.deleteConfirmBtnText, { color: '#fff' }]}>Delete</Text>
                     </TouchableOpacity>
@@ -1665,7 +1675,7 @@ export default function ProfileScreen() {
                 })}
               </View>
 
-              <TextInput
+              <SheetTextInput
                 value={bugTitle}
                 onChangeText={setBugTitle}
                 placeholder="Brief summary..."
@@ -1678,7 +1688,7 @@ export default function ProfileScreen() {
                 }]}
               />
 
-              <TextInput
+              <SheetTextInput
                 value={bugDescription}
                 onChangeText={setBugDescription}
                 placeholder="What happened?"
@@ -1702,7 +1712,7 @@ export default function ProfileScreen() {
                 }]}
               >
                 {bugSubmitting ? (
-                  <ActivityIndicator color={Colors.primaryFg} />
+                  <OrbLoader color={Colors.primaryFg} />
                 ) : (
                   <>
                     <Feather name="send" size={14} color={Colors.primaryFg} />
@@ -1817,6 +1827,14 @@ const styles = StyleSheet.create({
   planBenefitText: { flex: 1, fontSize: FontSize.xs, fontWeight: FontWeight.medium },
   planCardAction: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   planCardActionText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
+  inviteLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: Spacing.md,
+  },
+  inviteLinkText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
   proBadge: {
     flexDirection: 'row',
     alignItems: 'center',

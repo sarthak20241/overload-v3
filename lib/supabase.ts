@@ -2,6 +2,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { useMemo, useRef } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { hasClerkKey } from '@/hooks/useClerkUser';
+import { FRESH_TOKEN_BUDGET_MS, sendWithFreshTokenRetry, sharedInFlight, tokenWithin, tokenWithinTimed } from '@/lib/authRetry';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'placeholder';
@@ -24,9 +25,12 @@ const ExpoSecureStoreAdapter = {
 //
 // Without a registered getter (guest mode, sign-out, pre-Clerk boot) the
 // callback returns null and the client falls back to the anon key.
-let clerkTokenGetter: (() => Promise<string | null>) | null = null;
+// `skipCache` asks Clerk for a token minted now instead of its cached one: the
+// retry after an expired-token 401 (lib/authRetry.ts).
+type ClerkTokenGetter = (opts?: { skipCache?: boolean }) => Promise<string | null>;
+let clerkTokenGetter: ClerkTokenGetter | null = null;
 
-export function setSupabaseTokenGetter(fn: (() => Promise<string | null>) | null): void {
+export function setSupabaseTokenGetter(fn: ClerkTokenGetter | null): void {
   clerkTokenGetter = fn;
 }
 
@@ -49,6 +53,19 @@ export async function getSupabaseAccessToken(): Promise<string | null> {
     return null;
   }
 }
+
+/**
+ * A token straight from Clerk with its cache skipped, for the callers of
+ * `getSupabaseAccessToken` to retry with once the server says theirs expired
+ * (lib/authRetry.ts). Null when there is no session, on a throw, or after
+ * FRESH_TOKEN_BUDGET_MS. Requests that 401 together share one fetch.
+ */
+export const getFreshSupabaseAccessToken = sharedInFlight(() =>
+  tokenWithin(
+    () => (clerkTokenGetter ? clerkTokenGetter({ skipCache: true }) : Promise.resolve(null)),
+    FRESH_TOKEN_BUDGET_MS,
+  ),
+);
 
 export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
@@ -100,6 +117,11 @@ export function useSupabaseClient(): SupabaseClient {
   getTokenRef.current = getToken;
 
   return useMemo(() => {
+    // One skip-cache token fetch for every request that 401s on the same
+    // stale token at once (lib/authRetry.ts). Bounded like any token read.
+    const sharedFreshToken = sharedInFlight(() =>
+      tokenWithin(() => getTokenRef.current({ skipCache: true }), FRESH_TOKEN_BUDGET_MS),
+    );
     return createClient(supabaseUrl, supabaseAnonKey, {
       global: {
         fetch: async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -119,19 +141,7 @@ export function useSupabaseClient(): SupabaseClient {
           // landed and cached. TOKEN_BUDGET_MS buys that refresh room to
           // finish while still bounding the wait, and it stays well under the
           // time a parse itself takes, so it costs a healthy request nothing.
-          let token: string | null = null;
-          let timedOut = false;
-          try {
-            token = await Promise.race([
-              getTokenRef.current(),
-              new Promise<null>((resolve) => setTimeout(() => {
-                timedOut = true;
-                resolve(null);
-              }, TOKEN_BUDGET_MS)),
-            ]);
-          } catch {
-            token = null;
-          }
+          const { token, timedOut } = await tokenWithinTimed(() => getTokenRef.current(), TOKEN_BUDGET_MS);
           // No token (offline + expired token, or getToken timed out): FAIL the
           // request rather than send it unauthenticated. An anon request passes
           // RLS as "no rows" and returns empty data with NO error — which screens
@@ -149,9 +159,20 @@ export function useSupabaseClient(): SupabaseClient {
               ? `Auth token timed out after ${TOKEN_BUDGET_MS}ms (slow connection?)`
               : 'No auth token available (offline?)');
           }
-          const headers = new Headers(init.headers);
-          headers.set('Authorization', `Bearer ${token}`);
-          return fetch(input as any, { ...init, headers });
+          // An expired token from Clerk's cache gets one retry with a fresh
+          // one (lib/authRetry.ts), so a stale cache never reads as a dead
+          // session. The retry re-sends init.body as is: fine for the string
+          // bodies supabase-js sends, but a one-shot stream body could not be
+          // sent twice.
+          return sendWithFreshTokenRetry(
+            (t) => {
+              const headers = new Headers(init.headers);
+              headers.set('Authorization', `Bearer ${t}`);
+              return fetch(input as any, { ...init, headers });
+            },
+            token,
+            sharedFreshToken,
+          );
         },
       },
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },

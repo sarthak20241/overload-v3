@@ -1,0 +1,186 @@
+/**
+ * Does Drona pick a sensible hero metric per phase?
+ *
+ * Each case builds a program the way the app does (the onboarding brief, or a
+ * program conversation), runs the coach's metrics through the app's own
+ * normalizer (lib/phaseMetrics normalizeMetrics, what actually gets saved),
+ * and scores:
+ *   hero     every phase has metrics, and the first phase's hero kind is one
+ *            the case allows (a cut is judged on bodyweight, a strength block
+ *            on a lift, a "show up" phase on sessions, a skill on custom)
+ *   custom   `custom` appears only where the case allows it (never when an
+ *            app-measured kind fits)
+ *   chart    a habit-only phase's hero is a weekly kind (bars), never a line
+ *   job      every phase has a job_text
+ *
+ * Held out: none of these inputs appear in the prompt. Keep it that way.
+ *
+ *   EVAL_VIA_CLI=1 npx tsx scripts/program-metrics-eval/run.mts
+ *   EVAL_VIA_CLI=1 REPEAT=2 ONLY=chat-handstand npx tsx scripts/program-metrics-eval/run.mts
+ *
+ * Keep EVAL_CONCURRENCY at 6-8 on the CLI (more and the shim times out).
+ * Latency from a CLI run is meaningless (see claude-cli-fetch.ts).
+ */
+import { buildSystemPrompt } from "../../supabase/functions/ai-coach/prompt.ts";
+import { buildAnonProgramMessage, sanitizeAnonIntake, type AnonIntake } from "../../supabase/functions/ai-coach/anonOnboarding.ts";
+import { makeClaudeCliFetch } from "../parse-meal-eval/claude-cli-fetch.ts";
+import { requireTool, SONNET_MODEL, SONNET_SETTINGS } from "../../supabase/functions/_shared/sonnet.ts";
+import { chartKindOf, heroOf, normalizeMetrics, type MetricKind } from "../../supabase/functions/_shared/phaseMetrics.ts";
+
+const MODEL = SONNET_MODEL;
+const VIA_CLI = process.env.EVAL_VIA_CLI === "1";
+const API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
+if (!VIA_CLI && !API_KEY) { console.error("Set EVAL_VIA_CLI=1 (subscription) or ANTHROPIC_API_KEY (ask first)."); process.exit(2); }
+const REPEAT = Math.max(1, Number(process.env.REPEAT || "") || 2);
+const CONCURRENCY = Math.max(1, Math.min(8, Number(process.env.EVAL_CONCURRENCY || "") || 6));
+const ONLY = (process.env.ONLY ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+const fetchFn: typeof fetch = VIA_CLI ? makeClaudeCliFetch(MODEL) : fetch;
+const TODAY = "2026-10-21";
+
+type Turns = { role: "user" | "assistant"; content: string }[];
+interface Case {
+  id: string;
+  build: () => { mode: "generate_program" | "discuss_program"; userContext: Record<string, unknown> | null; turns: Turns };
+  /** Hero kinds that count as right for the FIRST phase. */
+  heroes: MetricKind[];
+  /** May a custom metric appear anywhere in the program? */
+  customOk: boolean;
+  /** Must the first phase's hero be a weekly (bars) kind? */
+  habitOnly?: boolean;
+}
+
+const onboard = (intake: AnonIntake) => () => ({
+  mode: "generate_program" as const,
+  userContext: null,
+  turns: [{ role: "user" as const, content: buildAnonProgramMessage(sanitizeAnonIntake(intake), TODAY) }],
+});
+const body = { experience: "intermediate", frequency: 4, gender: "M", ageYears: 31, heightCm: 176 };
+const chat = (profile: Record<string, unknown>, turns: Turns, extra: Record<string, unknown> = {}) => () => ({
+  mode: "discuss_program" as const,
+  userContext: { profile, today: { date: TODAY, weekday: "Wednesday", time_zone: "Asia/Kolkata" }, ...extra },
+  turns,
+});
+
+const CASES: Case[] = [
+  {
+    // A cut: the scale is the number.
+    id: "onboard-cut",
+    build: onboard({ ...body, goal: "fat_loss", goals: ["fat_loss"], weightKg: 86, goalWeightKg: 79, weeklyRateKg: 0.5, direction: "loss",
+      targets: { kcal: 2100, protein: 170, carb: 200, fat: 65 } }),
+    heroes: ["bodyweight"],
+    customOk: false,
+  },
+  {
+    // A gain: the scale, upward.
+    id: "onboard-gain",
+    build: onboard({ ...body, goal: "hypertrophy", goals: ["hypertrophy"], weightKg: 64, goalWeightKg: 69, weeklyRateKg: 0.25, direction: "gain",
+      targets: { kcal: 2900, protein: 140, carb: 370, fat: 85 } }),
+    heroes: ["bodyweight"],
+    customOk: false,
+  },
+  {
+    // Strength with no weight change and lifts on record: a lift's e1RM.
+    id: "chat-strength",
+    build: chat(
+      { goal: "strength", experience_level: "intermediate", weekly_target_sessions: 4, weight_kg: 82, height_cm: 180, gender: "M", age_years: 28 },
+      [
+        { role: "user", content: "I want to get my bench from about 100 to 110 and my squat up over the next 10 weeks. Weight can stay where it is. 4 days a week." },
+        { role: "assistant", content: "A 10-week strength block: two heavy blocks with a deload between, bench and squat leading, calories at maintenance so you stay at 82. Build it?" },
+        { role: "user", content: "Yes, build it." },
+      ],
+      { top_lifts: [
+        { exercise: "Barbell Bench Press", muscle: "Chest", estimated_1rm_kg: 101, best_set_ever: { weight_kg: 90, reps: 4 }, sessions_last_28d: 8 },
+        { exercise: "Barbell Back Squat", muscle: "Quads", estimated_1rm_kg: 135, best_set_ever: { weight_kg: 120, reps: 4 }, sessions_last_28d: 8 },
+      ] },
+    ),
+    heroes: ["lift_e1rm"],
+    customOk: false,
+  },
+  {
+    // Nothing to chase yet: the habit is the job.
+    id: "chat-habit",
+    build: chat(
+      { goal: "general", experience_level: "beginner", weekly_target_sessions: 3, weight_kg: 70, height_cm: 168, gender: "F", age_years: 36 },
+      [
+        { role: "user", content: "I keep starting and stopping. I just want to actually show up three times a week for the next two months. No weight goal, nothing fancy." },
+        { role: "assistant", content: "Then the plan is the habit: two short full-body sessions and a walk to start, three sessions a week once that sticks, and we only chase a number after that. Build it?" },
+        { role: "user", content: "Go ahead." },
+      ],
+    ),
+    heroes: ["sessions_per_week"],
+    customOk: false,
+    habitOnly: true,
+  },
+  {
+    // A skill the app cannot see: custom is the right call here, and only here.
+    id: "chat-handstand",
+    build: chat(
+      { goal: "general", experience_level: "intermediate", weekly_target_sessions: 3, weight_kg: 68, height_cm: 172, gender: "M", age_years: 25 },
+      [
+        { role: "user", content: "I want to hold a freestanding handstand for 20 seconds. I can do about 5 seconds against a wall now. Give me 8 weeks." },
+        { role: "assistant", content: "Wrist prep and wall holds first, then kick-ups and free holds, three skill sessions a week beside your lifting. I will track the hold time week by week. Build it?" },
+        { role: "user", content: "Yes." },
+      ],
+    ),
+    heroes: ["custom", "duration"],
+    customOk: true,
+  },
+];
+
+interface Verdict { ok: boolean; note: string }
+
+async function runCase(c: Case): Promise<Verdict> {
+  const { mode, userContext, turns } = c.build();
+  const { system, tools } = buildSystemPrompt({ userContext, retrievedResearch: [], mode } as never);
+  const res = await fetchFn("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01" },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: 8000,
+      system,
+      tools,
+      messages: [...turns, requireTool("generate_program")],
+      ...SONNET_SETTINGS,
+    }),
+  });
+  const json = await res.json() as { content?: { type: string; name?: string; input?: Record<string, unknown> }[]; error?: unknown };
+  const call = json.content?.find((b) => b.type === "tool_use" && b.name === "generate_program");
+  if (!call?.input) return { ok: false, note: `no generate_program call ${json.error ? JSON.stringify(json.error).slice(0, 160) : ""}` };
+  const phases = Array.isArray(call.input.phases) ? (call.input.phases as Record<string, unknown>[]) : [];
+  if (phases.length === 0) return { ok: false, note: "no phases" };
+  const normalized = phases.map((p) => normalizeMetrics(p.metrics));
+  const heroes = normalized.map((m) => heroOf(m)?.kind ?? "(none)");
+  const jobs = phases.map((p) => typeof p.job_text === "string" && p.job_text.length > 0);
+  const anyCustom = normalized.some((m) => m.some((x) => x.kind === "custom"));
+  const first = heroes[0];
+  const checks = {
+    hero: normalized.every((m) => m.length > 0) && c.heroes.includes(first as MetricKind),
+    custom: c.customOk || !anyCustom,
+    chart: !c.habitOnly || (first !== "(none)" && chartKindOf(first as MetricKind) === "bars"),
+    job: jobs.every(Boolean),
+  };
+  const failed = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
+  const note = `heroes=[${heroes.join(",")}] custom=${anyCustom} jobs=${jobs.filter(Boolean).length}/${phases.length}${failed.length ? ` FAILED ${failed.join(",")}` : ""}`;
+  return { ok: failed.length === 0, note };
+}
+
+const cases = ONLY.length ? CASES.filter((c) => ONLY.includes(c.id)) : CASES;
+const jobs = cases.flatMap((c) => Array.from({ length: REPEAT }, (_, i) => ({ c, i })));
+const results: { c: Case; i: number; ok: boolean; note: string }[] = [];
+let next = 0;
+await Promise.all(Array.from({ length: CONCURRENCY }, async () => {
+  while (next < jobs.length) {
+    const job = jobs[next++];
+    try { results.push({ ...job, ...(await runCase(job.c)) }); }
+    catch (e) { results.push({ ...job, ok: false, note: `error ${(e as Error).message}` }); }
+  }
+}));
+results.sort((a, b) => a.c.id.localeCompare(b.c.id) || a.i - b.i);
+let pass = 0;
+for (const r of results) {
+  if (r.ok) pass++;
+  console.log(`${r.ok ? "PASS" : "FAIL"}  ${r.c.id} #${r.i + 1}  ${r.note}`);
+}
+console.log(`\n${pass}/${results.length} passed (${VIA_CLI ? "CLI, subscription" : "API key"}, concurrency ${CONCURRENCY})`);
+process.exit(pass === results.length ? 0 : 1);

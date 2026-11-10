@@ -212,6 +212,10 @@ function toParsedItems(c: CoachFoodCreate, mealType: MealType): ParsedMealItem[]
     fat_g: l.fatG,
     fiber_g: null,
     source: 'manual',
+    // A save card's numbers are Drona's reading of the user's words, copied
+    // from the card: not proof the user typed them (step 4).
+    origin: 'unknown',
+    copied_from: 'card',
     assumption: null,
     confidence: 'high',
     meal_type: mealType,

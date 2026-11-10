@@ -23,6 +23,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
 import {
@@ -162,7 +163,7 @@ export function NutritionGoalSheet({
       if (supabase && clerkId) {
         loadActiveProgram(supabase, clerkId)
           .then((p) => {
-            const ph = p && p.currentPhaseSeq != null ? p.phases[p.currentPhaseSeq] : null;
+            const ph = p && p.currentPhaseSeq != null ? p.phases.find((x) => x.seq === p.currentPhaseSeq) ?? null : null;
             setPhase(ph
               ? {
                   id: ph.id,
@@ -425,7 +426,7 @@ export function NutritionGoalSheet({
               <View key={f.key} style={[s.row, { borderColor: C.borderSubtle }]}>
                 <View style={[s.dot, { backgroundColor: f.color(C) }]} />
                 <Text style={[s.rowLabel, { color: C.foreground }]}>{f.label}</Text>
-                <TextInput
+                <SheetTextInput
                   style={[s.input, { color: C.foreground, backgroundColor: C.muted }]}
                   value={vals[f.key]}
                   onChangeText={(t) => onChangeField(f.key, t)}

@@ -6,7 +6,8 @@
  * no token all come back as null, and the dashboard picks on the phone instead.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getSupabaseAccessToken } from '@/lib/supabase';
+import { getFreshSupabaseAccessToken, getSupabaseAccessToken } from '@/lib/supabase';
+import { sendWithFreshTokenRetry } from '@/lib/authRetry';
 
 export interface SavedSuggestion {
   day: string;
@@ -75,12 +76,19 @@ export async function requestSuggestion(timeZone: string): Promise<SavedSuggesti
   try {
     const token = await getSupabaseAccessToken();
     if (!token) return null;
-    const res = await fetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/daily-suggestion`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'app', tz: timeZone }),
-      signal: controller.signal,
-    });
+    // An expired token from Clerk's cache gets one retry with a fresh one
+    // (lib/authRetry.ts), so a stale cache does not lose today's pick.
+    const res = await sendWithFreshTokenRetry(
+      (t) =>
+        fetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/daily-suggestion`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: 'app', tz: timeZone }),
+          signal: controller.signal,
+        }),
+      token,
+      getFreshSupabaseAccessToken,
+    );
     if (!res.ok) return null;
     const body = await res.json();
     return asSaved(body?.suggestion);

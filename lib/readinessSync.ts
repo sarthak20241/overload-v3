@@ -10,6 +10,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { computeReadiness, type BaselineStat, type ReadinessResult } from './readiness';
 import { syncHealthData } from './healthSync';
+import { syncHealthCardio } from './healthCardioSync';
 import { dowOfISO, normalizeFuelDays } from './fuelDays';
 import { storeReadinessParts } from './readinessParts';
 import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from './targetHistory';
@@ -309,7 +310,7 @@ export async function computeAndStoreReadiness(
 export async function runHealthSyncAndReadiness(
   supabase: SupabaseClient,
   userId: string,
-): Promise<{ synced: number | null; readiness: ReadinessResult | null }> {
+): Promise<{ synced: number | null; cardio: number | null; readiness: ReadinessResult | null }> {
   let synced: number | null = null;
   try {
     const r = await syncHealthData(supabase, userId);
@@ -317,6 +318,14 @@ export async function runHealthSyncAndReadiness(
   } catch {
     // A mirror failure should not block readiness from recomputing on cached data.
   }
+  // Watch runs land as workouts before readiness reads the week's training.
+  let cardio: number | null = null;
+  try {
+    const c = await syncHealthCardio(supabase, userId);
+    cardio = c?.imported ?? null;
+  } catch {
+    // Same rule: a failed import never holds readiness back.
+  }
   const readiness = await computeAndStoreReadiness(supabase, userId);
-  return { synced, readiness };
+  return { synced, cardio, readiness };
 }

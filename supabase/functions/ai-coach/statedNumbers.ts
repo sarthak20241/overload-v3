@@ -336,3 +336,171 @@ export function shareNote(t: StatedTotal): string {
   if (t.fat_g !== null) parts.push(`${r1(t.fat_g)} g fat`);
   return `Scaled to fit your meal total: ${parts.join(", ")}`;
 }
+
+// ── The portion behind the user's numbers ───────────────────────────────────
+//
+// "150 cals of atta bread" names the energy and no weight. The kcal is the
+// user's; the weight is ours to find. A food keeps its own density (the label,
+// the catalog row or the estimate it was priced from), so the portion is the
+// one that carries the user's numbers at that density: 150 kcal of a 252 kcal
+// per 100 g bread is about 60 g. Keeping the looked-up weight instead (a
+// label's "1 piece (40 g)", a 100 g default) and only swapping the kcal gives
+// a food no label prints (2026-11-08: 150 kcal in 40 g, 375 per 100 g).
+
+/** Words that name energy, not a portion. "150 kcal" of a food is its energy:
+ *  never 150 portions. kJ converts at 4.184. */
+const ENERGY_UNITS: Record<string, number> = {
+  kcal: 1, kcals: 1, cal: 1, cals: 1, calorie: 1, calories: 1, kilocalorie: 1, kilocalories: 1,
+  kj: 1 / 4.184, kjs: 1 / 4.184, kilojoule: 1 / 4.184, kilojoules: 1 / 4.184,
+};
+
+/** The kcal an amount names when its unit is energy ("150", "kcal" = 150),
+ *  else null. */
+export function energyUnitKcal(quantity: number, unit: string | null | undefined): number | null {
+  const k = ENERGY_UNITS[(unit ?? "").trim().toLowerCase().replace(/\.$/, "")];
+  return k !== undefined && Number.isFinite(quantity) && quantity > 0 ? r1(quantity * k) : null;
+}
+
+/** How much a line's portion must change to carry the user's numbers at its
+ *  own density: their kcal over its kcal, or with no kcal given, the energy of
+ *  the macros they gave over the same macros' energy on the line. null when
+ *  the line has nothing to measure against (0 kcal, no such macros). */
+export function statedPortionRatio(line: LineMacros, t: StatedTotal): number | null {
+  let ratio: number | null = null;
+  if (t.kcal !== null) {
+    ratio = line.kcal > 0 ? t.kcal / line.kcal : null;
+  } else {
+    const parts = ([["protein_g", 4], ["carb_g", 4], ["fat_g", 9]] as const).filter(([k]) => t[k] !== null);
+    const given = parts.reduce((a, [k, w]) => a + (t[k] as number) * w, 0);
+    const had = parts.reduce((a, [k, w]) => a + Math.max(0, line[k]) * w, 0);
+    ratio = parts.length && had > 0 ? given / had : null;
+  }
+  return ratio !== null && Number.isFinite(ratio) && ratio > 0 ? ratio : null;
+}
+
+/** How far the user's numbers may move a line's portion, either way. */
+const MAX_PORTION_RATIO = 10;
+
+/** A line that can be weighed: its amount as shown and its grams. */
+export interface PortionLine extends LineMacros {
+  quantity: number;
+  serving_label: string;
+  grams: number;
+}
+
+const WEIGHT_IN_LABEL = /\s*\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|grams?|ml)\s*\)/gi;
+const LIQUID_LABELS = new Set(["ml", "millilitre", "milliliter", "millilitres", "milliliters"]);
+const WEIGHT_LABELS = new Set(["g", "gm", "gms", "gram", "grams", ...LIQUID_LABELS]);
+
+/** A unit that is itself a weight or volume ("g", "ml"): its quantity IS the
+ *  grams, so it is never a count to keep while the grams move. */
+export function isWeightLabel(label: string): boolean {
+  return WEIGHT_LABELS.has(label.trim().toLowerCase());
+}
+
+/**
+ * The line carrying the user's numbers at a portion that fits them. Every
+ * number the user gave is kept exactly (honourLineTotals); the macros they did
+ * not give come from the line's own food at that portion. The grams follow the
+ * ratio. `amountTyped` says whether the user named an amount ("2 slices"):
+ * that amount stays and only the weight moves, with any weight printed in the
+ * label dropped, since it no longer holds. With no amount named, the line is
+ * shown by weight ("60 g"). A line with nothing to measure against keeps its
+ * portion and simply takes the numbers.
+ */
+export function fitPortionToStated<T extends PortionLine>(line: T, t: StatedTotal, amountTyped: boolean): T {
+  // A weight the user typed ("100 g, 150 kcal") is theirs as much as the kcal:
+  // both stay, and the line simply takes their numbers.
+  if (amountTyped && isWeightLabel(line.serving_label)) return honourLineTotals(line, t);
+  const ratio = statedPortionRatio(line, t);
+  // Far past what any portion moves by, the line's own numbers are the
+  // problem (a trace-kcal default, a misread), not a density to trust: the
+  // line takes the user's numbers and keeps its portion.
+  if (ratio === null || !(line.grams > 0) || Math.abs(ratio - 1) < 0.01 || ratio > MAX_PORTION_RATIO || ratio < 1 / MAX_PORTION_RATIO) {
+    return honourLineTotals(line, t);
+  }
+  const m = (v: number) => v * ratio;
+  const scaled: T = {
+    ...line,
+    kcal: m(line.kcal),
+    protein_g: m(line.protein_g),
+    carb_g: m(line.carb_g),
+    fat_g: m(line.fat_g),
+    fiber_g: line.fiber_g === null ? null : m(line.fiber_g),
+  };
+  const grams = r1(line.grams * ratio);
+  const unit = line.serving_label.trim().toLowerCase();
+  const portion = amountTyped && energyUnitKcal(line.quantity, line.serving_label) === null
+    ? { quantity: line.quantity, serving_label: line.serving_label.replace(WEIGHT_IN_LABEL, "").trim() || line.serving_label }
+    : { quantity: grams, serving_label: LIQUID_LABELS.has(unit) ? "ml" : "g" };
+  return { ...honourLineTotals(scaled, t), ...portion, grams };
+}
+
+/**
+ * The user's own numbers on a card line, read back off the note totalNote
+ * wrote ("Your numbers: 150 kcal for this line, the rest estimated"), or off
+ * an amount whose unit is energy ("150 kcal"). Cards carry no other record of
+ * which numbers are the user's, so an edit can keep them. null when neither.
+ */
+export function userNumbersOnLine(l: { quantity: number; serving_label: string; assumption?: string | null }): StatedTotal | null {
+  const kcal = energyUnitKcal(l.quantity, l.serving_label);
+  if (kcal !== null) return { kcal, protein_g: null, carb_g: null, fat_g: null, fiber_g: null };
+  const m = /^Your numbers: (.+?) for (?:this line|the meal)\b/.exec(l.assumption ?? "");
+  if (!m) return null;
+  const read = (re: RegExp) => {
+    const x = re.exec(m[1]);
+    return x ? Number(x[1]) : null;
+  };
+  return boundedTotal({
+    kcal: read(/(\d+(?:\.\d+)?) kcal/),
+    protein_g: read(/(\d+(?:\.\d+)?) g protein/),
+    carb_g: read(/(\d+(?:\.\d+)?) g carbs/),
+    fat_g: read(/(\d+(?:\.\d+)?) g fat/),
+    fiber_g: null,
+  });
+}
+
+/**
+ * An extracted amount whose unit is energy ("150 cals of atta bread" read as
+ * 150 x "kcal") moved to where it belongs: the user's own kcal for the line,
+ * with no amount named (1 serving), so the portion is found from the food.
+ * The user's own numbers, when the model also copied them, win.
+ */
+export function energyAmountAsStated(
+  quantity: number,
+  unit: string,
+  stated: StatedRaw | null,
+): { quantity: number; unit: string; stated: StatedRaw | null } {
+  const kcal = energyUnitKcal(quantity, unit);
+  if (kcal === null) return { quantity, unit, stated };
+  return {
+    quantity: 1,
+    unit: "serving",
+    // The model's own copy of the user's numbers wins; the energy amount fills
+    // in its kcal when that copy has none.
+    // Filled that way it is a line total: the energy amount was never a
+    // per-100 or per-serving figure.
+    stated: stated
+      ? (stated.kcal !== null ? stated : { ...stated, basis: "total", serving_g: null, kcal })
+      : { basis: "total", serving_g: null, kcal, protein_g: null, carb_g: null, fat_g: null, fiber_g: null },
+  };
+}
+
+/** Does a card line show an amount the user named ("2 slice"), rather than
+ *  the no-amount default (1 "serving", "1 serving (50 g)") or an energy read
+ *  as an amount ("150 kcal")? */
+export function lineAmountNamed(l: { quantity: number; serving_label: string }): boolean {
+  if (energyUnitKcal(l.quantity, l.serving_label) !== null) return false;
+  const label = l.serving_label.trim().toLowerCase().replace(WEIGHT_IN_LABEL, "").trim();
+  return !(l.quantity === 1 && (label === "serving" || label === "1 serving"));
+}
+
+/** The numbers in a total, said plainly: "150 kcal, 12 g protein". */
+export function totalParts(t: StatedTotal): string {
+  const parts: string[] = [];
+  if (t.kcal !== null) parts.push(`${r1(t.kcal)} kcal`);
+  if (t.protein_g !== null) parts.push(`${r1(t.protein_g)} g protein`);
+  if (t.carb_g !== null) parts.push(`${r1(t.carb_g)} g carbs`);
+  if (t.fat_g !== null) parts.push(`${r1(t.fat_g)} g fat`);
+  return parts.join(", ");
+}

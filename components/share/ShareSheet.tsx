@@ -1,7 +1,7 @@
 import { useRef, useState, ReactElement, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, Pressable, StyleSheet,
-  ActivityIndicator, useWindowDimensions, Alert,
+  useWindowDimensions, Alert,
 } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -12,6 +12,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { captureAndShare } from '@/lib/share/captureAndShare';
 import { track } from '@/lib/analytics';
 import { Spacing, FontSize, FontWeight } from '@/constants/theme';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 interface Props {
   visible: boolean;
@@ -121,7 +122,7 @@ export function ShareSheet({ visible, onClose, card, source }: Props) {
             disabled={sharing}
           >
             {sharing ? (
-              <ActivityIndicator color="#0a0a0a" size="small" />
+              <OrbLoader color="#0a0a0a" size="small" />
             ) : (
               <>
                 <Feather name="share" size={16} color="#0a0a0a" />

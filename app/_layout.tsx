@@ -9,6 +9,8 @@ import {
   SpaceGrotesk_500Medium,
   SpaceGrotesk_700Bold,
 } from '@expo-google-fonts/space-grotesk';
+import { InterTight_600SemiBold } from '@expo-google-fonts/inter-tight';
+import { Inter_400Regular, Inter_600SemiBold } from '@expo-google-fonts/inter';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { WorkoutProvider } from '@/hooks/useWorkout';
@@ -17,6 +19,8 @@ import { BasicInfoProvider } from '@/hooks/useBasicInfo';
 import { PreferencesProvider } from '@/hooks/usePreferences';
 import { hydrateGuestStore } from '@/lib/guestStore';
 import { hydrateActiveWorkout } from '@/lib/activeWorkoutPersistence';
+import { holdSplashForGate, SessionRefreshGate } from '@/components/SessionRefreshGate';
+import { FirstOpenUpdateGate } from '@/components/FirstOpenUpdateGate';
 import { ClerkSupabaseBridge } from '@/components/ClerkSupabaseBridge';
 import { RevenueCatBridge } from '@/components/RevenueCatBridge';
 import { SyncProvider } from '@/components/SyncProvider';
@@ -24,6 +28,7 @@ import { ToastProvider } from '@/components/ui/Toast';
 import { AnalyticsBridge } from '@/components/AnalyticsBridge';
 import { posthog } from '@/lib/analytics';
 import { PortalProvider } from '@/components/ui/Portal';
+import { CoachSheetHost } from '@/components/ai/CoachSheetHost';
 import { PostHogProvider } from 'posthog-react-native';
 
 // Required for OAuth flows to complete when the auth session returns.
@@ -46,6 +51,11 @@ const tokenCache = {
 };
 
 const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? '';
+
+// SessionRefreshGate renders nothing until Clerk has loaded and any session
+// swap is over (seconds, at most). Keep the native splash over that wait
+// instead of a blank screen; the gate hides it when done.
+if (publishableKey) holdSplashForGate();
 
 function AppInner() {
   const { C } = useTheme();
@@ -74,10 +84,15 @@ function AppInner() {
                 <Stack.Screen name="(auth)" options={{ headerShown: false }} />
                 <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'fade' }} />
                 <Stack.Screen name="upgrade" options={{ headerShown: false, animation: 'fade' }} />
+                <Stack.Screen name="invite" options={{ headerShown: false, animation: 'fade' }} />
+                <Stack.Screen name="refer" options={{ headerShown: false, animation: 'fade' }} />
                 <Stack.Screen name="sso-callback" options={{ headerShown: false }} />
                 <Stack.Screen name="workout/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
                 <Stack.Screen name="workout/edit/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
               </Stack>
+              {/* Every coach sheet draws here, so one closed (or left) while
+                  Drona works keeps going and says when it is ready. */}
+              <CoachSheetHost />
             </PortalProvider>
           </SyncProvider>
         </WorkoutProvider>
@@ -109,17 +124,28 @@ function AppContent() {
 export default function RootLayout() {
   // Display face (Space Grotesk) for questions/headlines/big numbers; body/UI
   // stays on the system font. Non-blocking: screens render with the system
-  // font for the instant before the load resolves, then re-render.
-  useFonts({ SpaceGrotesk_500Medium, SpaceGrotesk_700Bold });
+  // font for the instant before the load resolves, then re-render. Inter
+  // Tight is the sign-up tour's headline face.
+  // Tight is the sign-up tour's headline face. Inter (600 + 400) is the
+  // onboarding's question and subtitle face.
+  useFonts({ SpaceGrotesk_500Medium, SpaceGrotesk_700Bold, InterTight_600SemiBold, Inter_400Regular, Inter_600SemiBold });
 
+  // A fresh store install first catches up to the newest update, before
+  // Clerk or anything else starts (components/FirstOpenUpdateGate.tsx).
   const tree = !publishableKey ? (
     <AppContent />
   ) : (
-    <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
-      <ClerkSupabaseBridge />
-      <RevenueCatBridge />
-      <AppContent />
-    </ClerkProvider>
+    <FirstOpenUpdateGate>
+      <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
+        {/* Swaps a nearly expired session for a fresh one before anything
+            that reacts to auth mounts (components/SessionRefreshGate.tsx). */}
+        <SessionRefreshGate>
+          <ClerkSupabaseBridge />
+          <RevenueCatBridge />
+          <AppContent />
+        </SessionRefreshGate>
+      </ClerkProvider>
+    </FirstOpenUpdateGate>
   );
 
   // No PostHog key configured (local dev, CI) -> no provider, no network, no
