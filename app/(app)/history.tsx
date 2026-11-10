@@ -32,12 +32,14 @@ import { isShareAvailable } from '@/lib/share/captureAndShare';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache, evictWorkoutFromCaches } from '@/lib/localCache';
+import { invalidateWorkouts, loadRecentWorkouts } from '@/lib/recentWorkouts';
 import { getPendingWorkouts, removePendingWorkout } from '@/lib/syncQueue';
 import { pendingToHistoryRow } from '@/lib/pendingAdapters';
 import { earnedXp, importedFromLabel } from '@/lib/healthCardio';
 import { applyEditsToHistoryRows, getPendingEdit, removePendingEdit } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
+import { invalidateProfile } from '@/lib/profileReads';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -694,7 +696,7 @@ export default function HistoryScreen() {
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const toast = useToast();
-  const { pendingCount } = useSync();
+  const { pendingCount, syncedTick } = useSync();
   const [workouts, setWorkouts] = useState<WorkoutRaw[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -712,7 +714,9 @@ export default function HistoryScreen() {
   const openRowRef = useRef<SwipeableMethods | null>(null);
   const searchBarY = useRef(0);
 
-  const fetchWorkouts = useCallback(async () => {
+  // `network: false` repaints from the cache with the queue merged on (a local
+  // save); `fresh` skips the shared read's freshness window (pull to refresh).
+  const fetchWorkouts = useCallback(async ({ network = true, fresh = false }: { network?: boolean; fresh?: boolean } = {}) => {
     if (isGuestSession) {
       setWorkouts(getGuestWorkouts() as unknown as WorkoutRaw[]);
       return;
@@ -749,22 +753,16 @@ export default function HistoryScreen() {
     // revalidation below runs in the background and must not hold the spinner
     // (offline it can hang, which left the screen spinning forever).
     setLoading(false);
+    if (!network) return;
 
-    const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-    let q = supabase
-      .from('workouts')
-      // The notes embed carries its own exercises(name) join: an exercise can be
-      // in a workout for its note alone (no completed sets), and then there is no
-      // workout_sets row to read the name from.
-      .select('*, workout_exercise_notes(exercise_id, note, exercises(name, metric_type, muscle_group)), workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, superset_group, exercises(name, metric_type, muscle_group))')
-      .gte('started_at', sinceIso)
-      .order('started_at', { ascending: false });
-    if (clerkId) q = q.eq('user_id', clerkId);
     try {
-      const { data, error } = await q;
-      if (error) throw error;
+      // The 90-day read the dashboard and Analytics share (lib/recentWorkouts).
+      // Its notes embed carries its own exercises(name) join: an exercise can be
+      // in a workout for its note alone (no completed sets), and then there is
+      // no workout_sets row to read the name from.
+      const data = await loadRecentWorkouts(supabase, clerkId, { fresh });
       // Transform supabase data to include exercises grouping
-      const transformed = (data || []).map((w: any) => {
+      const transformed = data.map((w: any) => {
         // Per-exercise session notes, keyed by exercise so the grouping below
         // can hang each one off its exercise. Most match an exercise that has
         // sets; one written on an exercise with no completed sets has no set
@@ -804,25 +802,34 @@ export default function HistoryScreen() {
     }
   }, [user?.id, isGuestSession]);
 
-  useEffect(() => {
-    // Mid-hydration Clerk has no user yet, so isGuestSession reads true and a
-    // signed-in user would flash an empty guest history on cold launch.
-    // Hold the spinner until Clerk settles; the effect re-runs when it does.
-    if (!clerkLoaded) return;
-    fetchWorkouts().finally(() => setLoading(false));
-  }, [fetchWorkouts, clerkLoaded, pendingCount]);
-
   // Re-pull on focus so an edit made on the edit screen (guest / pending /
   // synced) is reflected the moment the user returns to History. fetchWorkouts
-  // is cache-first, so this paints instantly and revalidates in the background.
+  // is cache-first, so this paints instantly and revalidates in the background
+  // (from the shared read when it is fresh). Focus fires on mount too, so this
+  // is the only load: a separate mount effect read everything twice.
+  // Mid-hydration Clerk has no user yet, so isGuestSession reads true and a
+  // signed-in user would flash an empty guest history on cold launch; hold the
+  // spinner until Clerk settles (the callback re-runs when it does). A flush
+  // landing (syncedTick) re-reads while the screen is open.
   useFocusEffect(
     useCallback(() => {
-      if (clerkLoaded) fetchWorkouts();
-    }, [clerkLoaded, fetchWorkouts]),
+      if (clerkLoaded) fetchWorkouts().finally(() => setLoading(false));
+    }, [clerkLoaded, fetchWorkouts, syncedTick]),
   );
 
+  // A local save (the queue grew): merge it on with no read.
+  const lastPending = useRef(pendingCount);
+  useEffect(() => {
+    const rose = pendingCount > lastPending.current;
+    lastPending.current = pendingCount;
+    if (rose && clerkLoaded) fetchWorkouts({ network: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingCount]);
+
   // The hook ends the orb even when the read throws.
-  const { refreshing, onRefresh: handleRefresh } = usePullRefresh(fetchWorkouts);
+  const { refreshing, onRefresh: handleRefresh } = usePullRefresh(
+    useCallback(() => fetchWorkouts({ fresh: true }), [fetchWorkouts]),
+  );
 
   const handleDelete = (id: string) => {
     setDeleteId(id);
@@ -874,7 +881,8 @@ export default function HistoryScreen() {
       const refundVol = pendingEdit ? pendingEdit.baseVolumeKg : (target?.total_volume_kg ?? 0);
       // A workout imported from Apple Health / Health Connect never awarded XP.
       const earned = earnedXp(target?.source) ? getXpForWorkout(refundSets, refundVol) : 0;
-      if (earned > 0) supabase.rpc('award_xp', { p_earned: -earned }).then(() => {}, () => {});
+      // The refund moves the shared profile row's xp (lib/profileReads).
+      if (earned > 0) supabase.rpc('award_xp', { p_earned: -earned }).then(() => invalidateProfile(user?.id), () => {});
       // Drop any queued edit for this workout so it doesn't flush against a
       // now-deleted row — the INSERT would FK-fail (23503), get misread as a
       // parkable data error, and keep retrying on every reconnect (backoff caps
@@ -883,6 +891,7 @@ export default function HistoryScreen() {
       // Prune it from the persisted workout caches so an offline reopen of
       // history/dashboard/analytics doesn't resurrect the deleted workout.
       evictWorkoutFromCaches(user?.id, id);
+      invalidateWorkouts(user?.id);
       // After the row is gone, so a failed delete (rolled back above) never
       // counts. Retry re-enters this function but only reaches here once.
       track('history_workout_deleted', { backend: 'synced' });

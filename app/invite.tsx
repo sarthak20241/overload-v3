@@ -33,6 +33,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { invalidateCoachAccess } from '@/hooks/useCoachAccess';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { track } from '@/lib/analytics';
+import { invalidateProfile } from '@/lib/profileReads';
 import {
   clearPendingInvite,
   normalizeCode,
@@ -93,6 +94,7 @@ export default function InviteScreen() {
     try {
       // iPhone: only record the referral; Apple gives the month (rule 3.1.1).
       const { data, error: rpcError } = await supabase.rpc(viaApple ? 'link_referral' : 'redeem_invite', { p_code: clean });
+      invalidateProfile();
       result = readRedeemResult(data, rpcError);
     } catch (e) {
       result = readRedeemResult(null, e);

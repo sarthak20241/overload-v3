@@ -245,6 +245,8 @@ async function flushPendingRoutine(
       { onConflict: 'id' },
     );
     if (error) throw error;
+    // A phase's routines (and their names) are part of the cached program.
+    invalidateUserProgram(userId);
     if (entry.programPhaseId) {
       try {
         await supabase
@@ -317,6 +319,8 @@ async function flushPendingRoutine(
 export interface RoutineFlushResult {
   pendingCount: number;
   lastError: string | null;
+  /** Entries this flush put on the server. */
+  flushed: number;
 }
 
 export async function flushRoutineQueue(
@@ -325,10 +329,12 @@ export async function flushRoutineQueue(
 ): Promise<RoutineFlushResult> {
   const queue = [...getPendingRoutines(userId)].sort((a, b) => a.createdAt - b.createdAt);
   let lastError: string | null = null;
+  let flushed = 0;
   for (const entry of queue) {
     if (entry.nextAttemptAt > Date.now()) continue;
     try {
       await flushPendingRoutine(supabase, userId, entry);
+      flushed += 1;
     } catch (err: any) {
       const msg = String(err?.message ?? err);
       patchRoutine(userId, entry.routineId, {
@@ -340,5 +346,5 @@ export async function flushRoutineQueue(
       if (!isDataError(err)) break; // transport failure: stop, retry later
     }
   }
-  return { pendingCount: getPendingRoutineCount(userId), lastError };
+  return { pendingCount: getPendingRoutineCount(userId), lastError, flushed };
 }

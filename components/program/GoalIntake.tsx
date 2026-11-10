@@ -31,6 +31,7 @@ import { paceBounds } from '@/lib/onboarding';
 import { weightLog as serverWeightLog } from '@/lib/bodyLogSync';
 import { useToast } from '@/components/ui/Toast';
 import { Colors, FontFamily, FontSize, FontWeight, Radius, Spacing } from '@/constants/theme';
+import { loadProfileRow } from '@/lib/profileReads';
 import {
   DAY_CHOICES, INTAKE_STEPS, MINUTE_CHOICES, PLACE_LABELS, TIMELINE_CHOICES, TIMELINE_LABELS,
   afterEdit, dronaLead, formatWeight, toggleIntakeGoal, paceDateText, paceDirection, paceLine, paceWeeks, usesPace, intakeFromProfile, isWeightGoal, reviewRows, stepDone, suggestedTargetKg, targetPrompt,
@@ -123,14 +124,11 @@ export function GoalIntake({
   useEffect(() => {
     if (!clerkId || !isSupabaseConfigured) return;
     let live = true;
-    supabase
-      .from('user_profiles')
-      .select('goal, weekly_target_sessions, weight_kg, goal_weight_kg')
-      .eq('clerk_user_id', clerkId)
-      .maybeSingle()
-      .then(({ data }) => {
+    // The profile row the app shares (lib/profileReads).
+    loadProfileRow(supabase, clerkId)
+      .then((data) => {
         if (!live || touched.current || !data) return;
-        const next = intakeFromProfile(data, weightUnit);
+        const next = intakeFromProfile(data as any, weightUnit);
         setA({ ...next, targetKg: next.targetKg ?? goalWeight ?? null });
       }, () => {});
     return () => { live = false; };

@@ -32,6 +32,7 @@ import {
 } from '@/lib/guestStore';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { missingGoalsColumn, primaryGoal, profileGoalFields, selectedGoals } from '@/lib/fitnessGoals';
+import { invalidateProfile } from '@/lib/profileReads';
 
 // ─── Answers ─────────────────────────────────────────────────────────────────
 
@@ -415,4 +416,6 @@ export async function saveOnboardingProfile(
   } catch {
     /* best-effort; see docstring */
   }
+  // The shared profile row (lib/profileReads) is stale either way.
+  invalidateProfile();
 }

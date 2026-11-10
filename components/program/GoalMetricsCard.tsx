@@ -14,7 +14,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { track } from '@/lib/analytics';
-import { loadActiveProgram, daysBetweenISO, todayLocalISO, type ActiveProgram } from '@/lib/programData';
+import { loadActiveProgram, peekActiveProgram, daysBetweenISO, todayLocalISO, type ActiveProgram } from '@/lib/programData';
 import {
   chartKindOf, formatMetricValue, heroOf, metricLabel, STATUS_LABEL, statusTone, type PhaseMetricRow,
 } from '@/lib/phaseMetrics';
@@ -47,12 +47,21 @@ export function GoalMetricsCard({ chartWidth }: Props) {
     const seq = ++loadSeq.current;
     const fresh = () => seq === loadSeq.current;
     if (!supabase || !clerkId) { setProgram(null); setItems([]); return; }
-    try {
-      const p = await loadActiveProgram(supabase, clerkId);
+    // What the series were last read for, so a program that comes back the
+    // same (the cached one, then its revalidation) reads them once.
+    let shownFor: string | null = null;
+    const show = async (p: ActiveProgram | null) => {
       const phase = p && p.currentPhaseSeq != null ? p.phases.find((ph) => ph.seq === p.currentPhaseSeq) ?? null : null;
-      if (!p || !phase || phase.metrics.length === 0) { if (fresh()) { setProgram(null); setItems([]); } return; }
+      if (!p || !phase || phase.metrics.length === 0) {
+        shownFor = null;
+        if (fresh()) { setProgram(null); setItems([]); }
+        return;
+      }
       const hero = heroOf(phase.metrics);
       const picks = phase.metrics.filter((m) => m.id === hero?.id || m.kind === 'custom');
+      const inputs = JSON.stringify([p.start_date, programWeeks(p), phase.diet_protein_g, picks]);
+      if (inputs === shownFor) return;
+      shownFor = inputs;
       const loaded = await Promise.all(picks.map(async (metric) => ({
         metric,
         series: await loadMetricSeries(supabase, clerkId, p, metric, phase.diet_protein_g),
@@ -61,6 +70,21 @@ export function GoalMetricsCard({ chartWidth }: Props) {
       setProgram(p);
       setItems(loaded);
       if (!viewedSent.current) { viewedSent.current = true; track('goal_metrics_viewed', { metrics: loaded.length }); }
+    };
+    try {
+      // The series start from the cached program at once; the program is
+      // revalidated beside them, and its series read only if it changed. In
+      // that order, so the fresh program's paint is always the last.
+      const cached = peekActiveProgram(clerkId);
+      const programP = loadActiveProgram(supabase, clerkId);
+      // Awaited below; a no-op handler keeps a failure that lands while the
+      // cached series load from being reported as unhandled.
+      programP.catch(() => {});
+      if (cached !== undefined) {
+        // A failure here must not skip the fresh program below.
+        try { await show(cached); } catch (e) { console.warn('[programs] goal metrics (cached) failed', e); }
+      }
+      await show(await programP);
     } catch (e) {
       // Keep what we had; the card is a nicety on a busy screen.
       console.warn('[programs] goal metrics load failed', e);

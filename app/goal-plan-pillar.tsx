@@ -175,7 +175,7 @@ export default function GoalPlanPillarScreen() {
   const footerSpace = useFooterSpace();
   const loadSeq = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     const n = ++loadSeq.current;
     if (!supabase || !clerkId) { setLoading(false); return; }
     try {
@@ -184,7 +184,7 @@ export default function GoalPlanPillarScreen() {
       // program they start now too, and are read again only if the fresh
       // program links different routines.
       const known = phaseFor(peekActiveProgram(clerkId) ?? null, seqAsked)?.routines.map((r) => r.id) ?? null;
-      const programP = loadActiveProgram(supabase, clerkId);
+      const programP = loadActiveProgram(supabase, clerkId, { fresh });
       const routinesP = pillar === 'train' && known ? sharedRoutineSummaries(supabase, clerkId, known) : null;
       const weekP = pillar === 'train' ? sharedWeekSessions(supabase, clerkId) : null;
       const nightsP = pillar === 'recover' ? sharedLastNights(supabase, clerkId) : null;
@@ -634,7 +634,7 @@ export default function GoalPlanPillarScreen() {
       </View>
       <ScrollView
         contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: 6, paddingBottom: program && phase ? footerSpace : insets.bottom + S.xxl }}
-        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
+        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(true); }} />}
       >
         <RefreshOrb refreshing={refreshing} />
         {loading ? (
@@ -642,7 +642,7 @@ export default function GoalPlanPillarScreen() {
         ) : !program || !phase ? (
           <View style={{ paddingTop: S.md }}>
             {loadFailed && !program
-              ? <LoadFailed onRetry={() => { setLoading(true); load(); }} />
+              ? <LoadFailed onRetry={() => { setLoading(true); load(true); }} />
               : <Text style={[styles.bodyText, { color: pal.muted }]}>No program yet. Build one from Goal & Plan and this screen fills in.</Text>}
           </View>
         ) : (

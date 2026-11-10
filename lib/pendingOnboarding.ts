@@ -24,6 +24,7 @@ import {
   type OnboardingAnswers,
 } from '@/lib/onboarding';
 import { saveProgram, type GeneratedProgram } from '@/lib/programData';
+import { invalidateProfile } from '@/lib/profileReads';
 
 const PENDING_KEY = 'pending_onboarding_v1';
 
@@ -162,6 +163,7 @@ export async function saveOnboardingProgram(
 async function markFreeGoalBuildUsed(client: SupabaseClient): Promise<void> {
   try {
     const { error } = await client.rpc('mark_free_goal_build_used');
+    invalidateProfile();
     if (error) console.warn('[onboarding] mark_free_goal_build_used failed', error.message);
   } catch (e) {
     console.warn('[onboarding] mark_free_goal_build_used threw', e);

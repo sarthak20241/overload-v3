@@ -60,6 +60,7 @@ import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { isLifetimeTier, PLAN_BENEFITS, tierLabel } from '@/lib/tiers';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import { OrbLoader } from '@/components/ui/OrbLoader';
+import { invalidateProfile, loadProfileRow } from '@/lib/profileReads';
 
 type Gender = 'M' | 'F' | 'O';
 type WeightUnit = 'kg' | 'lbs';
@@ -227,7 +228,7 @@ export default function ProfileScreen() {
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const toast = useToast();
-  const { pendingCount } = useSync();
+  const { pendingCount, syncedTick } = useSync();
   // Admin status determines whether the "Admin Tools" section renders.
   // The dashboard route itself re-checks via RLS, so this is a UX gate.
   const { isAdmin } = useAdminCheck();
@@ -276,7 +277,7 @@ export default function ProfileScreen() {
   useFocusEffect(useCallback(() => {
     let live = true;
     if (!user?.id) { setDronaWaiting(null); return; }
-    readCardHistory(supabase, user.id, 20).then((rows) => {
+    readCardHistory(supabase, user.id, 20, { shared: true }).then((rows) => {
       if (live && rows) setDronaWaiting(waitingCount(rows, Date.now()));
     });
     return () => { live = false; };
@@ -410,7 +411,17 @@ export default function ProfileScreen() {
     if (!clerkLoaded) return;
     loadProfile();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clerkLoaded, isGuestSession, user?.id, pendingCount]);
+  }, [clerkLoaded, isGuestSession, user?.id, syncedTick]);
+
+  // A local save (the queue grew): count it in with no read. A drop is a flush
+  // landing, which bumps syncedTick and re-reads above.
+  const lastPending = useRef(pendingCount);
+  useEffect(() => {
+    const rose = pendingCount > lastPending.current;
+    lastPending.current = pendingCount;
+    if (rose && clerkLoaded) loadProfile({ network: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingCount]);
 
   // Logs wait for the saved kg/lbs choice too: a signed-in user's series is
   // stored in kg and shown in that unit, and the first load uploads the old
@@ -419,7 +430,7 @@ export default function ProfileScreen() {
     if (!clerkLoaded || !basicInfoReady) return;
     loadLogs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clerkLoaded, basicInfoReady, isGuestSession, user?.id, pendingCount, weightUnit]);
+  }, [clerkLoaded, basicInfoReady, isGuestSession, user?.id, syncedTick, weightUnit]);
 
   // A load that finishes after the session changed (sign-out, account switch)
   // must not paint the previous account's entries.
@@ -473,9 +484,11 @@ export default function ProfileScreen() {
   }, [weightUnit]);
 
   const lastIdentityRef = useRef<string | null>(null);
-  const loadProfile = async () => {
+  // `network: false` repaints from the cache with the queue counted in (a
+  // local save, which needs no read).
+  const loadProfile = async ({ network = true }: { network?: boolean } = {}) => {
     // Only RESET fields when the session identity actually changed (sign-out to
-    // guest, account switch). loadProfile also re-runs on pendingCount changes;
+    // guest, account switch). loadProfile also re-runs on queue changes;
     // resetting then would flash every field to empty/0 before the cache
     // repaints. The cache/network paint below still runs every time.
     const identity = `${isGuestSession}:${user?.id ?? ''}`;
@@ -532,9 +545,11 @@ export default function ProfileScreen() {
         setTrainingAgeMonths(profile.training_age_months != null ? String(profile.training_age_months) : '');
         setBirthYear(profile.date_of_birth ? String(new Date(profile.date_of_birth).getFullYear()) : '');
       };
-      const profileQuery = clerkId
-        ? supabase.from('user_profiles').select('*').eq('clerk_user_id', clerkId).maybeSingle()
-        : supabase.from('user_profiles').select('*').limit(1).maybeSingle();
+      // The row the app shares (lib/profileReads): read lazily, below, only
+      // when the network read runs.
+      const profileQuery = () => (clerkId
+        ? loadProfileRow(supabase, clerkId).then((data) => ({ data: data as any, error: null }))
+        : supabase.from('user_profiles').select('*').limit(1).maybeSingle());
       const countQuery = clerkId
         ? supabase.from('workouts').select('*', { count: 'exact', head: true }).eq('user_id', clerkId)
         : supabase.from('workouts').select('*', { count: 'exact', head: true });
@@ -551,8 +566,9 @@ export default function ProfileScreen() {
         setTotalWorkouts((cachedProfile.count || 0) + pendingExtra);
         setLoading(false);
       }
+      if (!network) return;
       try {
-        const [{ data: profile, error: pErr }, { count, error: cErr }] = await Promise.all([profileQuery, countQuery]);
+        const [{ data: profile, error: pErr }, { count, error: cErr }] = await Promise.all([profileQuery(), countQuery]);
         // A failed/unauthenticated request must not reset the screen to empty/0;
         // throw so the catch keeps the cached values.
         if (pErr || cErr) throw pErr || cErr;
@@ -586,6 +602,7 @@ export default function ProfileScreen() {
         clerk_user_id: clerkId,
         ...patch,
       }, { onConflict: 'clerk_user_id' });
+      invalidateProfile(clerkId);
       if (error) throw error;
     } catch (err: any) {
       setShowErrorAlert(err.message);
@@ -1383,6 +1400,7 @@ export default function ProfileScreen() {
                       .update({ drona_auto_adjust: next })
                       .eq('clerk_user_id', user.id)
                       .then(({ error }) => {
+                        invalidateProfile(user.id);
                         if (error) {
                           setAutoAdjust(!next); // it did not save: put it back
                           toast.error('Could not save that. Try again.');

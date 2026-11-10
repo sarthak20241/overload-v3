@@ -27,9 +27,11 @@ import { track } from '@/lib/analytics';
 import { missingColumn, missingTable, nextColumnSet, withoutColumns } from '@/lib/missingColumn';
 import { fetchShared, invalidateUserProgram, peek } from '@/lib/screenCache';
 import { activePhaseOn, computeActivePhaseSeq, daysBetweenISO, phaseFor } from '@/lib/phasePick';
+import { toLocalISO, todayLocalISO } from '@/lib/programDates';
 // Re-exported: the screens and helpers import these from here.
-export { activePhaseOn, computeActivePhaseSeq, daysBetweenISO, phaseFor };
+export { activePhaseOn, computeActivePhaseSeq, daysBetweenISO, phaseFor, todayLocalISO };
 import { programGoalFor } from '@/lib/fitnessGoals';
+import { invalidateProfile } from '@/lib/profileReads';
 import {
   escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, namesAnExercise, normalizeMetrics, phaseProgress, statusFor,
   type MetricRef, type PhaseMetricInput, type PhaseMetricRow,
@@ -93,18 +95,9 @@ export interface GeneratedProgram {
   phases: ProgramPhase[];
 }
 
-// ── Local-date helpers (mirror lib/readinessSync.ts; never UTC) ───────────────
-function toLocalISO(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-export function todayLocalISO(): string {
-  return toLocalISO(new Date());
-}
+// The local-date helpers live in lib/programDates (pure, so the dashboard's
+// program helpers can be tested without this file's imports).
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
-
 
 // ── Normalizer (generate_program tool input -> GeneratedProgram) ──────────────
 // Free-text fields are capped so an oversized or adversarial emission cannot
@@ -239,8 +232,6 @@ export function structuredToProgram(input: Record<string, unknown>): GeneratedPr
   };
 }
 
-// ── Active-phase math ─────────────────────────────────────────────────────────
-
 /** Cumulative start-offset (in weeks) for each phase, phase 0 = 0. */
 function offsetsOf(phases: Array<{ duration_weeks: number }>): number[] {
   const out: number[] = [];
@@ -322,6 +313,7 @@ export async function applyPhaseTargets(
   const { error } = await supabase
     .from('user_profiles')
     .upsert(payload, { onConflict: 'clerk_user_id' });
+  invalidateProfile(clerkId);
   if (error) throw error;
 }
 
@@ -729,14 +721,33 @@ export interface ActiveProgram {
  * time share one read, and the answer is kept for the next screen to paint
  * from at once. Writes that change the program call invalidateProgram.
  *
+ * An answer younger than PROGRAM_FRESH_MS is used as it is, so the dashboard
+ * cards and the Goal & Plan screens opened one after another share one read.
+ * Pass `fresh` (pull to refresh) to read regardless.
+ *
  * The happy path is one round trip: the program with its phases and their
  * routines embedded, and the metrics of the active program, read side by
  * side. The old step-by-step read (loadActiveProgramSteps) is the fallback
  * for a database whose relationships the embedded read cannot use.
  */
-export function loadActiveProgram(supabase: Supa, clerkId: string): Promise<ActiveProgram | null> {
-  return fetchShared(`program:${clerkId}`, () => loadActiveProgramFast(supabase, clerkId));
+export function loadActiveProgram(
+  supabase: Supa,
+  clerkId: string,
+  opts?: { fresh?: boolean },
+): Promise<ActiveProgram | null> {
+  return fetchShared(
+    `program:${clerkId}`,
+    () => loadActiveProgramFast(supabase, clerkId),
+    opts?.fresh ? undefined : { maxAgeMs: PROGRAM_FRESH_MS },
+  );
 }
+
+/**
+ * How long a read program is used as it is. Every write from this app clears
+ * it at once; this only bounds how late a change made elsewhere (the weekly
+ * check's coach line, another device) shows up on a screen opened right after.
+ */
+export const PROGRAM_FRESH_MS = 30_000;
 
 /** The program cached for this user: undefined = not read yet, null = no active program. */
 export function peekActiveProgram(clerkId: string | null | undefined): ActiveProgram | null | undefined {

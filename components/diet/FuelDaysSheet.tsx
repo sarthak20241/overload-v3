@@ -167,7 +167,7 @@ export function FuelDaysSheet({ open, initial, baseKcal, source, phaseId, planOn
       }
     }
     const { error } = planOnly && targetPhase
-      ? await savePlannedFuelDays(supabase, targetPhase, chosen)
+      ? await savePlannedFuelDays(supabase, clerkId, targetPhase, chosen)
       : await saveFuelDays(supabase, clerkId, chosen, targetPhase);
     setBusy(false);
     if (error) { haptics.warning(); setFailed(true); return; }

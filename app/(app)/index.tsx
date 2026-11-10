@@ -27,7 +27,8 @@ import { HomeLogButton, HOME_LOG_BUTTON_ROOM } from '@/components/home/HomeLogBu
 import { START_GUIDE_ENABLED, type StartStepId } from '@/lib/startGuide';
 import { readPhaseDraft } from '@/lib/phaseDraft';
 import { hasCompletedOnboarding } from '@/lib/onboarding';
-import { loadActiveProgram, type ActiveProgram } from '@/lib/programData';
+import { loadActiveProgram, peekActiveProgram, type ActiveProgram } from '@/lib/programData';
+import { pickProgramFrom } from '@/lib/dashboardProgram';
 import { InsightsStrip } from '@/components/insights/InsightsStrip';
 import { MilestoneUpsellCard } from '@/components/insights/MilestoneUpsellCard';
 import { detectInsights } from '@/lib/insights';
@@ -40,7 +41,7 @@ import { DronaCardPopup } from '@/components/coach/DronaCardPopup';
 import { useToast } from '@/components/ui/Toast';
 import { InboxBell } from '@/components/ui/InboxBell';
 import {
-  countWaitingCards, currentWeekStart, deferCard, movesFor, readCheckinCard, readMomentCard, readWeeklyCard, requestWeeklyCard, setCardStatus,
+  currentWeekStart, deferCard, movesFor, readCheckinCard, readDashboardCards, readMomentCard, requestWeeklyCard, setCardStatus,
   type SavedDronaCard,
 } from '@/lib/dronaCard';
 import { useWorkout } from '@/hooks/useWorkout';
@@ -50,7 +51,6 @@ import { pickUpNext, resolveToday, type PickProgram } from '@/lib/todayPick';
 import { deviceTimeZone, localDayISO, readSavedSuggestion, requestSuggestion, type SavedSuggestion } from '@/lib/dailySuggestion';
 import { DoneTodaySheet, type DoneWorkout, type UpNext } from '@/components/workout/DoneTodaySheet';
 import { groupSetsByExercise } from '@/lib/workoutSummary';
-import { weekPatternFor } from '@/lib/weekPattern';
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { useTodayNutrition, useNutritionTargets } from '@/lib/dietData';
@@ -178,7 +178,7 @@ export default function DashboardScreen() {
   const { user, isLoaded: clerkLoaded, getToken } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
-  const { pendingCount } = useSync();
+  const { pendingCount, syncedTick } = useSync();
   const [workouts, setWorkouts] = useState<Workout[]>([]);
   const [routines, setRoutines] = useState<any[]>([]);
   // The active coach program, just enough to know today's phase. The TODAY
@@ -195,6 +195,8 @@ export default function DashboardScreen() {
   // Resolves the pull's promise once the workouts read it asked for lands, so
   // the orb stays for the real load and not a fixed time.
   const refreshDone = useRef<(() => void) | null>(null);
+  // Set by a pull: the next workouts read skips the shared freshness window.
+  const pullFresh = useRef(false);
   const settleRefresh = useCallback(() => {
     refreshDone.current?.();
     refreshDone.current = null;
@@ -224,6 +226,32 @@ export default function DashboardScreen() {
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
   const userName = user?.firstName || user?.fullName || user?.emailAddresses?.[0]?.emailAddress?.split('@')[0] || 'Athlete';
 
+  // Merge not-yet-synced workouts (saved locally, still in the flush queue) on
+  // top of a base list, deduped against rows already on the server by
+  // client_id. Returns the merged rows + the XP those pending workouts add.
+  const withPending = useCallback((clerkId: string | undefined, base: any[]) => {
+    const serverClientIds = new Set(
+      base.map((w: any) => w?.client_id).filter(Boolean),
+    );
+    const pending = clerkId
+      ? getPendingWorkouts(clerkId).filter((e) => !serverClientIds.has(e.clientId))
+      : [];
+    // Overlay not-yet-synced edits so an edited synced workout shows its new
+    // volume/sets even after a background revalidate. (XP stays as-is until
+    // the edit itself syncs, same as a pending new workout.)
+    const rows = applyEditsToDashboardRows(clerkId, [
+      ...pending.map(pendingToDashboardWorkout),
+      ...base,
+    ]);
+    // Exclude entries already credited server-side (phase 'done', briefly
+    // still in the queue) so we don't double-count their XP with the freshly
+    // fetched server total.
+    const xp = pending.reduce((sum, e) => sum + (e.phase === 'done' ? 0 : pendingXp(e)), 0);
+    return { rows, xp };
+  }, []);
+
+  // The server read runs on mount and when a flush lands (syncedTick), not on
+  // every change of the queue: a local save is merged on below with no read.
   useEffect(() => {
     // Mid-hydration Clerk has no user yet, so isGuestSession reads true and a
     // signed-in user would flash an empty guest dashboard on cold launch.
@@ -246,30 +274,6 @@ export default function DashboardScreen() {
     const clerkId = user?.id;
     let cancelled = false;
 
-    // Merge not-yet-synced workouts (saved locally, still in the flush queue) on
-    // top of a base list, deduped against rows already on the server by
-    // client_id. Returns the merged rows + the XP those pending workouts add.
-    const withPending = (base: any[]) => {
-      const serverClientIds = new Set(
-        base.map((w: any) => w?.client_id).filter(Boolean),
-      );
-      const pending = clerkId
-        ? getPendingWorkouts(clerkId).filter((e) => !serverClientIds.has(e.clientId))
-        : [];
-      // Overlay not-yet-synced edits so an edited synced workout shows its new
-      // volume/sets even after a background revalidate. (XP stays as-is until
-      // the edit itself syncs, same as a pending new workout.)
-      const rows = applyEditsToDashboardRows(clerkId, [
-        ...pending.map(pendingToDashboardWorkout),
-        ...base,
-      ]);
-      // Exclude entries already credited server-side (phase 'done', briefly
-      // still in the queue) so we don't double-count their XP with the freshly
-      // fetched server total.
-      const xp = pending.reduce((sum, e) => sum + (e.phase === 'done' ? 0 : pendingXp(e)), 0);
-      return { rows, xp };
-    };
-
     (async () => {
       await hydrateCache(clerkId);
       // Cache-first paint so the dashboard renders last-known data instantly and
@@ -278,7 +282,7 @@ export default function DashboardScreen() {
       // empty state for a fresh online user with nothing to show.
       const cachedW = readCache<any[]>('dashboardWorkouts', clerkId);
       const cachedXp = readCache<number>('profileXp', clerkId) ?? 0;
-      const { rows: cachedRows, xp: cachedPendXp } = withPending(cachedW ?? []);
+      const { rows: cachedRows, xp: cachedPendXp } = withPending(clerkId, cachedW ?? []);
       if (!cancelled) {
         if (cachedW || cachedRows.length > 0) {
           setWorkouts(cachedRows as any[]);
@@ -295,9 +299,11 @@ export default function DashboardScreen() {
       // failed/unauthenticated request throws and must NOT overwrite the cache
       // (it would wipe the dashboard to empty); the catch keeps the cached view.
       try {
-        const { workouts: normalized, xp } = await fetchDashboardData(supabase, clerkId);
+        const fresh = pullFresh.current;
+        pullFresh.current = false;
+        const { workouts: normalized, xp } = await fetchDashboardData(supabase, clerkId, { fresh });
         if (cancelled) return;
-        const { rows, xp: pendXp } = withPending(normalized);
+        const { rows, xp: pendXp } = withPending(clerkId, normalized);
         setWorkouts(rows as any[]);
         setUserXP(xp + pendXp);
         setLoading(false);
@@ -314,7 +320,27 @@ export default function DashboardScreen() {
     return () => {
       cancelled = true;
     };
-  }, [user?.id, isGuestSession, clerkLoaded, pendingCount, refreshTick]);
+  }, [user?.id, isGuestSession, clerkLoaded, syncedTick, refreshTick, withPending]);
+
+  // A local save (the queue grew): merge it onto the last server rows with no
+  // read, so a just-finished workout shows at once. A drop is a flush landing,
+  // which bumps syncedTick and re-reads above.
+  const lastPending = useRef(pendingCount);
+  useEffect(() => {
+    const rose = pendingCount > lastPending.current;
+    lastPending.current = pendingCount;
+    const clerkId = user?.id;
+    if (!rose || !clerkLoaded || isGuestSession || !clerkId) return;
+    const cachedW = readCache<any[]>('dashboardWorkouts', clerkId);
+    const cachedXp = readCache<number>('profileXp', clerkId) ?? 0;
+    const { rows, xp } = withPending(clerkId, cachedW ?? []);
+    setWorkouts(rows as any[]);
+    setUserXP(cachedXp + xp);
+    // A queued routine: routines.tsx writes it into the shared cache at once.
+    const cachedR = readCache<any[]>('routines', clerkId);
+    if (cachedR) setRoutines(cachedR);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingCount]);
 
   // Bumped each time the dashboard comes BACK into focus, so routines and the
   // program reload after another screen changed them. The Goal screen builds a
@@ -326,20 +352,14 @@ export default function DashboardScreen() {
   // The bell's share of server cards: the ones put off with Later.
   const [cardsWaiting, setCardsWaiting] = useState(0);
   // Bumped by a Later: a count read that started before it is stale, and
-  // must not overwrite the +1 (the next read sees the deferred card).
+  // must not overwrite the +1 (the next read sees the deferred card). The
+  // count itself comes with the cards' one read below.
   const countGenRef = useRef(0);
+  // A refocus reloads the fuel targets by itself (useNutritionTargets has its
+  // own focus effect); only a pull asks for them here.
   useEffect(() => {
-    if (!user?.id || isGuestSession) { setCardsWaiting(0); return; }
-    let live = true;
-    const gen = ++countGenRef.current;
-    void countWaitingCards(supabase, user.id).then((n) => {
-      if (live && gen === countGenRef.current) setCardsWaiting(n);
-    });
-    return () => { live = false; };
-  }, [user?.id, isGuestSession, supabase, focusTick]);
-  useEffect(() => {
-    if (focusTick > 0) reloadFuel();
-  }, [focusTick, reloadFuel]);
+    if (refreshTick > 0) reloadFuel({ fresh: true });
+  }, [refreshTick, reloadFuel]);
   const hasFocusedOnce = useRef(false);
   useFocusEffect(
     useCallback(() => {
@@ -355,6 +375,7 @@ export default function DashboardScreen() {
   const { refreshing, onRefresh } = usePullRefresh(useCallback(() => new Promise<void>((resolve) => {
     settleRefresh();
     refreshDone.current = resolve;
+    pullFresh.current = true;
     setRefreshTick((t) => t + 1);
     setFocusTick((t) => t + 1);
   }), [settleRefresh]));
@@ -390,7 +411,7 @@ export default function DashboardScreen() {
       if (!cancelled) markSettled('routines');
     })();
     return () => { cancelled = true; };
-  }, [user?.id, isGuestSession, clerkLoaded, pendingCount, focusTick]);
+  }, [user?.id, isGuestSession, clerkLoaded, syncedTick, focusTick]);
 
   // ── The phase 1 split prompt ────────────────────────────────────────────
   // Onboarding hands out the program and stops; the week of workouts is built
@@ -460,6 +481,9 @@ export default function DashboardScreen() {
   // Load the active program's start date + phases for the TODAY pick. Offline-
   // first like routines: the cached shape is wrapped so "no program" (null) is
   // told apart from "nothing cached yet". A failed read keeps what we had.
+  // The program is the one lib/programData shares with the split prompt above,
+  // the movement-goals row and Goal & Plan, so a focus costs one read for all
+  // of them (none inside its freshness window), not one each.
   useEffect(() => {
     if (!clerkLoaded) return;
     const clerkId = user?.id;
@@ -473,32 +497,10 @@ export default function DashboardScreen() {
       await hydrateCache(clerkId);
       const cached = readCache<{ program: PickProgram | null }>('activeProgram', clerkId);
       if (cached && !cancelled) setProgram(cached.program);
+      const inMemory = peekActiveProgram(clerkId);
+      if (inMemory !== undefined && !cancelled) setProgram(pickProgramFrom(inMemory));
       try {
-        const { data: prog, error: progErr } = await supabase
-          .from('coach_programs')
-          .select('id, start_date')
-          .eq('user_id', clerkId)
-          .eq('status', 'active')
-          .maybeSingle();
-        if (progErr) throw progErr;
-        let next: PickProgram | null = null;
-        if (prog) {
-          const { data: phases, error: phErr } = await supabase
-            .from('coach_program_phases')
-            .select('id, duration_weeks, start_offset_weeks, training_block')
-            .eq('program_id', prog.id)
-            .order('seq', { ascending: true });
-          if (phErr) throw phErr;
-          // The week pattern is resolved here (coach's if it holds up, else the
-          // one built from days_per_week) so lib/todayPick stays import-free.
-          next = {
-            id: String(prog.id),
-            start_date: String(prog.start_date),
-            phases: ((phases ?? []) as Array<PickProgram['phases'][number] & { training_block?: any }>).map(
-              ({ training_block, ...ph }) => ({ ...ph, week_pattern: weekPatternFor(training_block) ?? null }),
-            ),
-          };
-        }
+        const next = pickProgramFrom(await loadActiveProgram(supabase, clerkId));
         if (cancelled) return;
         setProgram(next);
         writeCache('activeProgram', clerkId, { program: next });
@@ -508,7 +510,7 @@ export default function DashboardScreen() {
       if (!cancelled) markSettled('program');
     })();
     return () => { cancelled = true; };
-  }, [user?.id, isGuestSession, clerkLoaded, pendingCount, focusTick]);
+  }, [user?.id, isGuestSession, clerkLoaded, syncedTick, focusTick]);
 
   // The day's saved TODAY pick. The daily-suggestion function makes it at the
   // user's local 00:00 so it is ready before the app opens. If it is missing,
@@ -609,6 +611,7 @@ export default function DashboardScreen() {
       setWeeklyCard(null);
       setCheckinCard(null);
       setMomentCard(null);
+      setCardsWaiting(0);
       return;
     }
     let live = true;
@@ -620,11 +623,16 @@ export default function DashboardScreen() {
       shownCards.current.add(card.id);
       track('drona_card_shown', { kind: card.kind, topic: card.topic, slot: card.slot });
     };
+    // The bell's Later count rides along with the cards (one read for all four).
+    const gen = ++countGenRef.current;
     (async () => {
-      const [row, check, moment] = await Promise.all([
-        readWeeklyCard(supabase, clerkId), readCheckinCard(supabase, clerkId), readMomentCard(supabase, clerkId),
-      ]);
+      const cards = await readDashboardCards(supabase, clerkId);
       if (!live) return;
+      // undefined = the read failed: keep everything as it is.
+      const row = cards?.weekly ?? (cards ? null : undefined);
+      const check = cards?.checkin ?? (cards ? null : undefined);
+      const moment = cards?.moment ?? (cards ? null : undefined);
+      if (cards && gen === countGenRef.current) setCardsWaiting(cards.waiting);
       if (moment !== undefined) setMomentCard((prev) => keepWaitingMoment(prev, moment));
       if (check !== undefined) setCheckinCard(check);
       shown(check);
@@ -703,6 +711,10 @@ export default function DashboardScreen() {
         : `${popupCard.payload.to_name ?? 'The swap'} is in the plan.`;
       void moves.apply(supabase, popupCard.id).then((result) => {
         toast.success(result === 'ok' ? done : 'That has changed since. Nothing was touched.');
+        // A new target moved the FUEL card's numbers: reload them (a refocus
+        // would, but this screen never left focus). The move itself cleared
+        // the shared program (lib/dronaCard).
+        reloadFuel();
         setFocusTick((t) => t + 1);
       });
       return;
@@ -772,6 +784,7 @@ export default function DashboardScreen() {
       toast.info(
         result === 'ok' ? undone : 'That has changed since. Nothing was touched.',
       );
+      reloadFuel();
       setFocusTick((t) => t + 1);
     });
   };

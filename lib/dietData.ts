@@ -34,6 +34,9 @@ import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from '@/lib/t
 import { readSwapOptions, type SwapOption } from '@/lib/variantSwap';
 import { relogColumns, type RelogLabels } from '@/lib/foodPatterns';
 import { deleteMealIfEmpty } from '@/lib/mealCleanup';
+import { invalidateUserProgram } from '@/lib/screenCache';
+import { invalidateProfile, loadDayGoals, loadProfileRow, loadTargetHistory } from '@/lib/profileReads';
+import { dayReadRange, dayTotalsFromMeals, entriesNewestFirst, itemsInPositionOrder } from '@/lib/foodReads';
 import { buildYourFoods, type YourFood, type YourFoodEntry, type YourFoodMark } from '@/lib/yourFoods';
 import {
   pendingRows, prunePending, settlePending as settleGroup, settledKeys, withPending, r0, r1,
@@ -317,9 +320,20 @@ export function useDayNutrition(dayIso: string): DayData {
       const cached = isToday ? !!_navCache && _navCache.key === key : _dayCache.has(key);
       if (cached && !isToday) setByMealForDay(_dayCache.get(key)!, dayIso);
       if (!cached) setLoading(true);
-      const day = dateFromYmd(dayIso);
-      const res = await fetchDayRange(supabase, day, day);
+      // One read for the day and the past days of its week not in memory yet,
+      // which the Nutrition strip would otherwise fetch right after this one
+      // (usePrefetchWeek finds them here and reads nothing).
+      const uid = user?.id;
+      const todayIsoNow = ymd(new Date());
+      const range = dayReadRange(dayIso, todayIsoNow, (iso) => !uid || _dayCache.has(`${uid}:${iso}`));
+      const res = await fetchDayRange(supabase, dateFromYmd(range.first), dateFromYmd(range.last));
       if (cancelled) return;
+      if (res.ok && uid) {
+        for (const iso of range.filled) {
+          const other = res.byDay.get(iso);
+          if (other) _dayCache.set(`${uid}:${iso}`, other);
+        }
+      }
       // A FAILED query must not blank the day or be cached as "nothing logged":
       // an offline blip would keep painting an empty ring after the network
       // came back. Keep what we have and stop.
@@ -390,7 +404,9 @@ const WEEK_PREFETCH_TTL_MS = 60_000;
  * tap on any other day of the strip paints at once.
  *
  * Today and future days are skipped: today has its own cache and fetch, and a
- * future day has nothing to show.
+ * future day has nothing to show. So are days already in memory: each visit
+ * keeps its day current (useDayNutrition revalidates on open), so a week the
+ * user has walked through is not read again; only the days still missing are.
  */
 export function usePrefetchWeek(weekStartIso: string, ready: boolean) {
   const supabase = useSupabaseClient();
@@ -409,7 +425,13 @@ export function usePrefetchWeek(weekStartIso: string, ready: boolean) {
     yesterday.setDate(yesterday.getDate() - 1);
     const end = lastDay < yesterday ? lastDay : yesterday;
     if (end < first) return; // the week is all today-or-later
-    void fetchDayRange(supabase, first, end).then((res) => {
+    // Narrow to the days not in memory yet; none missing, no read.
+    const missing: Date[] = [];
+    for (let d = new Date(first); d <= end; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) {
+      if (!_dayCache.has(`${user.id}:${ymd(d)}`)) missing.push(d);
+    }
+    if (missing.length === 0) return;
+    void fetchDayRange(supabase, missing[0], missing[missing.length - 1]).then((res) => {
       if (!res.ok) { _weekPrefetched.delete(wk); return; }
       for (const [iso, byMeal] of res.byDay) {
         if (iso === todayIso) continue;
@@ -439,36 +461,21 @@ export async function loadNutritionHistory(supabase: Supa | null, days = 14): Pr
 /** Per-day macro totals for `days` calendar days starting at `startDate`
  *  (oldest → newest), zeros for unlogged days. Used by the diary week strip. */
 export async function loadNutritionRange(supabase: Supa | null, startDate: Date, days: number): Promise<DayNutrition[]> {
-  // Empty per-day skeleton first, so gaps render as zeros in order.
-  const out: DayNutrition[] = [];
-  const idx = new Map<string, number>();
+  // The day skeleton, so gaps render as zeros in order.
+  const dayIsos: string[] = [];
   for (let i = 0; i < days; i++) {
-    const d = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + i);
-    const iso = ymd(d);
-    idx.set(iso, out.length);
-    out.push({ dayIso: iso, kcal: 0, protein_g: 0, carb_g: 0, fat_g: 0 });
+    dayIsos.push(ymd(new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + i)));
   }
-  if (!supabase) return out;
+  const dayOf = (loggedAt: string) => ymd(new Date(loggedAt));
+  if (!supabase) return dayTotalsFromMeals(dayIsos, [], dayOf);
   const lastDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + (days - 1));
   const { start } = dayRange(startDate);
   const { end } = dayRange(lastDate);
+  // One trip: each meal with its entries' macros embedded.
   const { data: meals } = await supabase
-    .from('meals').select('id, logged_at')
+    .from('meals').select('logged_at, meal_entries(kcal, protein_g, carb_g, fat_g)')
     .gte('logged_at', start).lte('logged_at', end);
-  if (!meals || meals.length === 0) return out;
-  const mealDay = new Map<string, string>();
-  for (const m of meals as any[]) mealDay.set(m.id, ymd(new Date(m.logged_at)));
-  const { data: entries } = await supabase
-    .from('meal_entries').select('meal_id, kcal, protein_g, carb_g, fat_g')
-    .in('meal_id', (meals as any[]).map((m) => m.id));
-  for (const e of (entries ?? []) as any[]) {
-    const iso = mealDay.get(e.meal_id);
-    const i = iso == null ? undefined : idx.get(iso);
-    if (i == null) continue;
-    out[i].kcal += num(e.kcal); out[i].protein_g += num(e.protein_g);
-    out[i].carb_g += num(e.carb_g); out[i].fat_g += num(e.fat_g);
-  }
-  return out;
+  return dayTotalsFromMeals(dayIsos, (meals ?? []) as any[], dayOf);
 }
 
 /** Consecutive days (ending today) on which the user logged at least one meal.
@@ -580,22 +587,18 @@ export async function searchCatalog(supabase: Supa | null, query: string): Promi
  *  the serving they used is carried so re-logging is one tap at the same portion. */
 export async function recentFoods(supabase: Supa | null, limit = 20): Promise<PickerFood[]> {
   if (!supabase) return [];
+  // One trip: the 40 newest meals with their entries embedded.
   const { data: meals } = await supabase
-    .from('meals').select('id, logged_at')
+    .from('meals')
+    .select('logged_at, meal_entries(food_id, food_name, serving_unit, grams_logged, quantity, kcal, protein_g, carb_g, fat_g, fiber_g, sugar_g, sat_fat_g, sodium_mg)')
     // Food logged ahead for a later day is planned, not eaten, so it is not
     // "recent" yet, and it must not crowd real meals out of the 40.
     .lte('logged_at', new Date().toISOString())
     .order('logged_at', { ascending: false }).limit(40);
   if (!meals || meals.length === 0) return [];
-  const order = new Map<string, number>(meals.map((m: any) => [m.id, new Date(m.logged_at).getTime()]));
-  const { data: entries } = await supabase
-    .from('meal_entries')
-    .select('food_id, food_name, serving_unit, grams_logged, quantity, kcal, protein_g, carb_g, fat_g, fiber_g, sugar_g, sat_fat_g, sodium_mg, meal_id')
-    .in('meal_id', meals.map((m: any) => m.id));
-  if (!entries || entries.length === 0) return [];
-  const sorted = [...entries].sort(
-    (a: any, b: any) => (order.get(b.meal_id) ?? 0) - (order.get(a.meal_id) ?? 0),
-  );
+  // Newest meal first, as the old sort by meal time put them.
+  const sorted = entriesNewestFirst((meals ?? []) as { meal_entries?: any[] | null }[]);
+  if (sorted.length === 0) return [];
   const seen = new Set<string>();
   const out: PickerFood[] = [];
   for (const e of sorted as any[]) {
@@ -1705,7 +1708,7 @@ interface CachedTargets {
  *  (lib/fuelDays) add calories on their weekday, and a PAST day is held to the
  *  goal it had then (lib/targetHistory), not to today's. */
 export function useNutritionTargets(): {
-  targets: NutritionTargets; isCustom: boolean; reload: () => void;
+  targets: NutritionTargets; isCustom: boolean; reload: (opts?: { fresh?: boolean }) => void;
   apply: (t: NutritionTargets) => void;
   fuelDays: FuelDay[];
   applyFuelDays: (days: FuelDay[]) => void;
@@ -1735,7 +1738,12 @@ export function useNutritionTargets(): {
   const dayTargetsRef = useRef(dayTargets);
   dayTargetsRef.current = dayTargets;
   const [tick, setTick] = useState(0);
-  const reload = useCallback(() => setTick((t) => t + 1), []);
+  // Set by reload({ fresh: true }): the next read skips the shared window.
+  const freshNext = useRef(false);
+  const reload = useCallback((opts?: { fresh?: boolean }) => {
+    if (opts?.fresh === true) freshNext.current = true;
+    setTick((t) => t + 1);
+  }, []);
   // Optimistic update so the ring/pill reflect a saved goal instantly, without
   // waiting out read-after-write lag on the refetch.
   const apply = useCallback((t: NutritionTargets) => {
@@ -1803,35 +1811,37 @@ export function useNutritionTargets(): {
       }
 
       if (!supabase) return;
-      const cols = 'daily_calorie_target, protein_target_g, carb_target_g, fat_target_g';
-      // Fuel days in their own read, in parallel: a build that ships before
-      // the column exists (0139) must still paint the base targets, so a
-      // failure there keeps whatever fuel days we had instead of taking the
-      // targets with it.
-      // The history the same way: its own read, so a build ahead of 0150 only
-      // loses the past-day goals, never today's.
-      const [{ data }, fuelRes, historyRes, dayRes] = await Promise.all([
-        clerkId
-          ? supabase.from('user_profiles').select(cols).eq('clerk_user_id', clerkId).maybeSingle()
-          : supabase.from('user_profiles').select(cols).limit(1).maybeSingle(),
-        clerkId
-          ? supabase.from('user_profiles').select('calorie_day_boosts').eq('clerk_user_id', clerkId).maybeSingle()
-          : Promise.resolve(null),
-        clerkId
-          ? supabase.from('user_target_history')
-            .select('effective_from, kcal, protein_g, carb_g, fat_g, calorie_day_boosts')
-            .eq('user_id', clerkId)
-            .order('effective_from', { ascending: true })
-          : Promise.resolve(null),
-        // One-day goals from the last 90 days: far enough back for any day the
-        // app lets you scroll to without paging, and small.
-        clerkId
-          ? supabase.from('user_day_targets')
-            .select('day, kcal, protein_g, carb_g, fat_g')
-            .eq('user_id', clerkId)
-            .gte('day', ymd(new Date(Date.now() - 90 * 86_400_000)))
-          : Promise.resolve(null),
-      ]);
+      // The profile row, the goal history and the one-day goals are each one
+      // read shared app-wide (lib/profileReads): the dashboard, the trends
+      // card, readiness and this hook in every screen answer from the same
+      // rows. A failed history or day-goal read (a build ahead of 0150 / 0151)
+      // only loses the past-day goals, never today's.
+      // Every write to these tables clears them, so a refocus inside the
+      // window reads nothing; a pull (reload({ fresh: true })) reads past it.
+      const fresh = freshNext.current;
+      freshNext.current = false;
+      const settle = <T,>(p: Promise<T>) => p.then((v) => ({ ok: true as const, v }), () => ({ ok: false as const, v: null }));
+      const [profileRes, historyRes, dayRes] = clerkId
+        ? await Promise.all([
+          settle(loadProfileRow(supabase, clerkId, { fresh })),
+          settle(loadTargetHistory(supabase, clerkId, { fresh })),
+          settle(loadDayGoals(supabase, clerkId, ymd(new Date()), { fresh })),
+        ])
+        : [
+          await settle((async () => {
+            const { data: d } = await supabase.from('user_profiles')
+              .select('daily_calorie_target, protein_target_g, carb_target_g, fat_target_g').limit(1).maybeSingle();
+            return d as Record<string, unknown> | null;
+          })()),
+          { ok: false as const, v: null },
+          { ok: false as const, v: null },
+        ];
+      const data = profileRes.ok ? profileRes.v : null;
+      // A row read with every column: the fuel days are on it (a database
+      // before 0139 just has no such key, and keeps the fuel days we had).
+      const fuelRes = clerkId && data && 'calorie_day_boosts' in data
+        ? { data: { calorie_day_boosts: data.calorie_day_boosts }, error: null }
+        : null;
       if (cancelled || !data) return;
       const d = data as Record<string, unknown>;
       const pick = (v: unknown, def: number) => (v == null ? def : Number(v));
@@ -1849,13 +1859,13 @@ export function useNutritionTargets(): {
         nextFuel = normalizeFuelDays((fuelRes.data as { calorie_day_boosts?: unknown } | null)?.calorie_day_boosts);
       }
       let nextHistory = historyRef.current;
-      if (historyRes && !historyRes.error) nextHistory = (historyRes.data ?? []) as TargetHistoryRow[];
+      if (historyRes.ok) nextHistory = (historyRes.v ?? []) as TargetHistoryRow[];
       setTargets(next);
       setIsCustom(nextIsCustom);
       setFuelDays(nextFuel);
       setHistory(nextHistory);
       let nextDays = dayTargetsRef.current;
-      if (dayRes && !dayRes.error) nextDays = (dayRes.data ?? []) as DayTargetRow[];
+      if (dayRes.ok) nextDays = (dayRes.v ?? []) as DayTargetRow[];
       setDayTargets(nextDays);
       writeCache<CachedTargets>('nutritionTargets', clerkId, {
         targets: next, isCustom: nextIsCustom, fuelDays: nextFuel, history: nextHistory ?? undefined,
@@ -1888,6 +1898,7 @@ export async function saveDayTarget(
   const { error } = await supabase.from('user_day_targets').upsert({
     user_id: clerkId, day: dayISO, kcal: t.kcal, protein_g: t.protein, carb_g: t.carb, fat_g: t.fat,
   }, { onConflict: 'user_id,day' });
+  invalidateProfile(clerkId);
   return error ? { error: error.message } : {};
 }
 
@@ -1898,6 +1909,7 @@ export async function clearDayTarget(
   dayISO: string,
 ): Promise<{ error?: string }> {
   const { error } = await supabase.from('user_day_targets').delete().eq('user_id', clerkId).eq('day', dayISO);
+  invalidateProfile(clerkId);
   return error ? { error: error.message } : {};
 }
 
@@ -1925,16 +1937,21 @@ export async function saveFuelDays(
     clerk_user_id: clerkId,
     calorie_day_boosts: clean.length > 0 ? clean : null,
   }, { onConflict: 'clerk_user_id' });
+  // The shared profile row (and the goal history its trigger keeps) is stale.
+  invalidateProfile(clerkId);
   if (error) return { error: error.message };
   if (phaseId) {
     const { error: phaseErr } = await supabase
       .from('coach_program_phases')
       .update({ diet_fuel_days: clean })
       .eq('id', phaseId);
+    // The phase's fuel days are part of the cached program (Goal & Plan).
+    invalidateUserProgram(clerkId);
     if (phaseErr) {
       await supabase.from('user_profiles')
         .update({ calorie_day_boosts: before })
         .eq('clerk_user_id', clerkId);
+      invalidateProfile(clerkId);
       return { error: phaseErr.message };
     }
   }
@@ -1948,6 +1965,7 @@ export async function saveFuelDays(
  */
 export async function savePlannedFuelDays(
   supabase: Supa,
+  clerkId: string,
   phaseId: string,
   days: FuelDay[],
 ): Promise<{ error?: string }> {
@@ -1955,6 +1973,8 @@ export async function savePlannedFuelDays(
     .from('coach_program_phases')
     .update({ diet_fuel_days: normalizeFuelDays(days) })
     .eq('id', phaseId);
+  // The phase's fuel days are part of the cached program (Goal & Plan).
+  invalidateUserProgram(clerkId);
   return error ? { error: error.message } : {};
 }
 
@@ -1972,6 +1992,7 @@ export async function saveNutritionTargets(
     carb_target_g: t.carb,
     fat_target_g: t.fat,
   }, { onConflict: 'clerk_user_id' });
+  invalidateProfile(clerkId);
   return error ? { error: error.message } : {};
 }
 
@@ -2061,33 +2082,27 @@ async function insertSavedItems(supabase: Supa, rows: Record<string, unknown>[])
 
 /** All of the user's saved meals + recipes, newest first, with their items. */
 export async function listSavedMeals(supabase: Supa): Promise<SavedMeal[]> {
-  const { data: heads, error } = await supabase
+  // One trip: each saved meal with its items embedded.
+  const itemCols = 'food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, position';
+  const read = (ic: string) => supabase
     .from('saved_meals')
-    .select('id, name, kind, servings, serving_label, kcal, protein_g, carb_g, fat_g, created_at')
+    .select(`id, name, kind, servings, serving_label, kcal, protein_g, carb_g, fat_g, created_at, saved_meal_items(${ic})`)
     .order('created_at', { ascending: false });
-  if (error || !heads || heads.length === 0) return [];
-  const ids = (heads as any[]).map((h) => h.id);
-  const cols = 'saved_meal_id, food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g';
-  const read = (c: string) => supabase.from('saved_meal_items').select(c).in('saved_meal_id', ids).order('position');
-  let { data: items, error: itemsErr } = await read(`${cols}, origin`);
+  let { data: heads, error } = await read(`${itemCols}, origin`);
   // A database before migration 20261107120000 has no origin column.
-  if (itemsErr && missingColumn(itemsErr, ['origin'])) ({ data: items } = await read(cols));
-  const byMeal = new Map<string, SavedMealItem[]>();
-  for (const it of (items ?? []) as any[]) {
-    const arr = byMeal.get(it.saved_meal_id) ?? [];
-    arr.push({
-      food_id: it.food_id ?? null, food_name: it.food_name, quantity: num(it.quantity),
-      serving_unit: it.serving_unit, grams_logged: it.grams_logged == null ? null : num(it.grams_logged),
-      kcal: num(it.kcal), protein_g: num(it.protein_g), carb_g: num(it.carb_g), fat_g: num(it.fat_g),
-      fiber_g: it.fiber_g == null ? null : num(it.fiber_g),
-      origin: isFoodOrigin(it.origin) ? it.origin : null,
-    });
-    byMeal.set(it.saved_meal_id, arr);
-  }
+  if (error && missingColumn(error, ['origin'])) ({ data: heads, error } = await read(itemCols));
+  if (error || !heads || heads.length === 0) return [];
+  const itemOf = (it: any): SavedMealItem => ({
+    food_id: it.food_id ?? null, food_name: it.food_name, quantity: num(it.quantity),
+    serving_unit: it.serving_unit, grams_logged: it.grams_logged == null ? null : num(it.grams_logged),
+    kcal: num(it.kcal), protein_g: num(it.protein_g), carb_g: num(it.carb_g), fat_g: num(it.fat_g),
+    fiber_g: it.fiber_g == null ? null : num(it.fiber_g),
+    origin: isFoodOrigin(it.origin) ? it.origin : null,
+  });
   return (heads as any[]).map((h) => ({
     id: h.id, name: h.name, kind: h.kind, servings: num(h.servings), serving_label: h.serving_label ?? null,
     kcal: num(h.kcal), protein_g: num(h.protein_g), carb_g: num(h.carb_g), fat_g: num(h.fat_g),
-    items: byMeal.get(h.id) ?? [], created_at: h.created_at,
+    items: itemsInPositionOrder(h.saved_meal_items as any[] | null).map(itemOf), created_at: h.created_at,
   }));
 }
 

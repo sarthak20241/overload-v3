@@ -34,6 +34,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { isLifetimeTier, isStorePurchase, PLAN_BENEFITS, tierLabel } from '@/lib/tiers';
 import { OrbLoader } from '@/components/ui/OrbLoader';
+import { loadProfileRow } from '@/lib/profileReads';
 
 export default function PlanScreen() {
   const router = useRouter();
@@ -82,11 +83,8 @@ export default function PlanScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const { data: profile } = await supabase
-          .from('user_profiles')
-          .select('tier_started_at')
-          .eq('clerk_user_id', clerkId)
-          .maybeSingle();
+        // The profile row the app shares (lib/profileReads).
+        const profile = (await loadProfileRow(supabase, clerkId).catch(() => null)) as { tier_started_at?: unknown } | null;
         const startedAt = (profile?.tier_started_at as string | null) ?? null;
         if (cancelled) return;
         setTierStartedAt(startedAt);

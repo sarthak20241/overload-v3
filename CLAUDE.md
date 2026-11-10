@@ -101,6 +101,12 @@ deno test --allow-all lib/servingSize.test.ts # food editor portion <-> stored s
 deno test --allow-all lib/logDay.test.ts      # "2 eggs for tomorrow" -> which day a food log lands on
 deno test --allow-all --unstable-sloppy-imports lib/phaseMetricHeadline.test.ts # one number per phase metric on every screen
 deno test --allow-all lib/screenCache.test.ts  # Goal & Plan screens paint from cache; a pre-write read is never stored
+deno test --allow-all lib/syncTick.test.ts     # screens re-read only when a sync flush lands; a local save merges with no read
+deno test --allow-all lib/workoutWindows.test.ts # Analytics: the shared 90-day workouts read plus the older half
+deno test --allow-all --unstable-sloppy-imports --import-map=lib/test-import-map.json lib/dashboardProgram.test.ts # dashboard TODAY pick + activity goals from the shared program read
+deno test --allow-all lib/foodReads.test.ts     # meals with entries, saved meals with items: one read each; the day read fills its week
+deno test --allow-all --unstable-sloppy-imports lib/profileReads.test.ts # one shared user_profiles / goal history / day-goal read; every write clears it
+deno test --allow-all --unstable-sloppy-imports --import-map=lib/test-import-map.json lib/dashboardCards.test.ts # dashboard Drona cards + bell count from one read
 deno test --allow-all lib/chartScale.test.ts   # Goal screen chart: readings width, goal ring at the program end
 deno test --allow-all lib/phasePick.test.ts    # the active phase by seq, never by list index
 deno test --allow-all lib/fitnessGoals.test.ts

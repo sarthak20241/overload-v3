@@ -426,6 +426,8 @@ export async function flushPendingWorkout(
 export interface FlushResult {
   pendingCount: number;
   lastError: string | null;
+  /** Entries this flush put on the server. */
+  flushed: number;
 }
 
 /**
@@ -439,10 +441,12 @@ export async function flushQueue(
 ): Promise<FlushResult> {
   const queue = [...getPendingWorkouts(userId)].sort((a, b) => a.createdAt - b.createdAt);
   let lastError: string | null = null;
+  let flushed = 0;
   for (const entry of queue) {
     if (entry.nextAttemptAt > Date.now()) continue;
     try {
       await flushPendingWorkout(supabase, userId, entry);
+      flushed += 1;
     } catch (err: any) {
       const msg = String(err?.message ?? err);
       patchEntry(userId, entry.clientId, {
@@ -455,5 +459,5 @@ export async function flushQueue(
       // data error: park this one, keep going
     }
   }
-  return { pendingCount: getPendingCount(userId), lastError };
+  return { pendingCount: getPendingCount(userId), lastError, flushed };
 }

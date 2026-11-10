@@ -30,7 +30,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { loadReadiness, loadReadinessHistory, runHealthSyncAndReadiness } from '@/lib/readinessSync';
+import { loadReadinessHistory, runHealthSyncAndReadiness, sharedReadiness } from '@/lib/readinessSync';
 import {
   loadConnectedMetrics,
   loadMetricSeries,
@@ -178,7 +178,7 @@ export default function HealthScreen() {
   const accent = stat.readiness;
   const metricColor = (colorKey: string) => stat[colorKey] ?? C.textSecondary;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     if (!userId) {
       setLoading(false);
       return;
@@ -207,7 +207,9 @@ export default function HealthScreen() {
     // The hero gates the spinner. On a transient failure keep the last-known
     // result (nulling it would misreport "no readiness") and surface a retry banner.
     try {
-      const r = await loadReadiness(supabase, userId);
+      // The dashboard card's answer when it is fresh (lib/readinessSync keeps it
+      // current after a sleep log or a sync that wrote rows); a pull reads anew.
+      const r = await sharedReadiness(supabase, userId, { fresh });
       setResult(r);
       setLoadError(false);
     } catch {
@@ -237,7 +239,7 @@ export default function HealthScreen() {
   }, [params.log, userId, recentSleepReady]);
 
   // The hook ends the orb even when load() throws.
-  const { refreshing, onRefresh } = usePullRefresh(load);
+  const { refreshing, onRefresh } = usePullRefresh(useCallback(() => load(true), [load]));
 
   // Open Drona on this metric (its value + the user's usual). Drona speaks first.
   function askAboutMetric(def: DailyMetricDef, pts: { date: string; value: number }[]) {
@@ -377,7 +379,7 @@ export default function HealthScreen() {
         ) : (
           <>
             {loadError && (
-              <Pressable onPress={load} style={[styles.card, { backgroundColor: Colors.dangerBg, borderColor: C.borderSubtle }]}>
+              <Pressable onPress={() => load(true)} style={[styles.card, { backgroundColor: Colors.dangerBg, borderColor: C.borderSubtle }]}>
                 <Text style={[styles.statusText, { color: C.foreground }]}>
                   Could not load your readiness just now. Tap to retry.
                 </Text>

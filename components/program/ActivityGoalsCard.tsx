@@ -6,7 +6,7 @@
  * goals live; the cardio half opens the cardio sheet, to start a session or log
  * one already done.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -15,6 +15,8 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { cardioLine, shortSteps, stepsLine, type GoalProgress } from '@/lib/activityGoals';
 import { loadActivityProgress, type ActivityProgress } from '@/lib/activityProgress';
+import { activityTargetsFrom, type ActivityTargets } from '@/lib/dashboardProgram';
+import { loadActiveProgram, peekActiveProgram, type ActiveProgram } from '@/lib/programData';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { useSync } from '@/components/SyncProvider';
 import { CardioSheet } from '@/components/program/CardioSheet';
@@ -56,16 +58,41 @@ export function ActivityGoalsCard() {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
   const [data, setData] = useState<ActivityProgress | null>(null);
+  // Only the newest reading may paint: the cached program's run and the
+  // revalidated one can resolve out of order.
+  const runSeq = useRef(0);
   const [cardioOpen, setCardioOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   // A queued workout counts until it syncs; re-read when the queue changes so
   // the count holds steady across the upload.
   const { pendingCount } = useSync();
 
+  // The goals come from the program the dashboard shares (cached, so this
+  // paints without waiting on it); only today's steps and the week's cardio
+  // are read here, and read again only if the fresh program moved the goals.
   useFocusEffect(useCallback(() => {
-    if (!user?.id) { setData(null); return; }
+    const clerkId = user?.id;
+    if (!clerkId) { setData(null); return; }
     let live = true;
-    loadActivityProgress(supabase, user.id).then((p) => { if (live) setData(p); });
+    let shown: ActivityTargets | null | undefined;
+    const run = (program: ActiveProgram | null) => {
+      const targets = activityTargetsFrom(program);
+      if (shown !== undefined && JSON.stringify(targets) === JSON.stringify(shown)) return;
+      shown = targets;
+      const seq = ++runSeq.current;
+      if (!targets) { setData(null); return; }
+      loadActivityProgress(supabase, clerkId, targets).then((p) => {
+        if (live && seq === runSeq.current) setData(p);
+      });
+    };
+    const cached = peekActiveProgram(clerkId);
+    if (cached !== undefined) run(cached);
+    loadActiveProgram(supabase, clerkId).then(
+      (p) => { if (live) run(p); },
+      // A failed program read hides the row, as before, unless a cached
+      // program already answered.
+      () => { if (live && cached === undefined) run(null); },
+    );
     return () => { live = false; };
   }, [supabase, user?.id, pendingCount, reloadKey]));
 

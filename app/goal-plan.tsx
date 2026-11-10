@@ -147,19 +147,19 @@ export default function GoalPlanScreen() {
   useFocusEffect(useCallback(() => {
     let live = true;
     if (!user?.id) return;
-    readCardHistory(supabase, user.id, 20).then((rows) => {
+    readCardHistory(supabase, user.id, 20, { shared: true }).then((rows) => {
       if (live && rows) setDronaWaiting(waitingCount(rows, Date.now()));
     });
     return () => { live = false; };
   }, [user?.id, supabase]));
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     const seq = ++loadSeq.current;
     if (!supabase || !clerkId) { setProgram(null); setLoading(false); setRefreshing(false); return; }
     try {
       // A failed live read keeps the readings the screen had; only the
       // program read can fail the load.
-      const [p, lv] = await Promise.all([loadActiveProgram(supabase, clerkId), loadLiveReadings(supabase, clerkId).catch(() => null)]);
+      const [p, lv] = await Promise.all([loadActiveProgram(supabase, clerkId, { fresh }), loadLiveReadings(supabase, clerkId).catch(() => null)]);
       if (seq !== loadSeq.current) return;
       setProgram(p);
       if (lv) setLive(lv);
@@ -226,44 +226,43 @@ export default function GoalPlanScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase, clerkId, program?.id, hero?.id, hero?.current_value, hero?.checked_at, currentPhase?.diet_protein_g, seriesTick]);
 
-  // No hero metric (a program from before them): today's weight is the top number.
+  // Today's readiness score (the Recover row when the phase tracks no sleep)
+  // and, with no hero metric (a program from before them), the latest weight,
+  // which is then the top number. One read of daily_metrics for both: newest
+  // first, today's readiness and the latest weight are always in the top two.
   useEffect(() => {
-    if (!supabase || !clerkId || !program || hero) { setWeightKg(null); return; }
+    if (!supabase || !clerkId || !program) { setReadinessToday(null); setWeightKg(null); return; }
     let live = true;
-    supabase
+    const today = todayLocalISO();
+    const wantWeight = !hero;
+    if (!wantWeight) setWeightKg(null);
+    const num = (v: unknown) => (v != null && Number.isFinite(Number(v)) ? Number(v) : null);
+    let q = supabase
       .from('daily_metrics')
-      .select('value')
-      .eq('user_id', clerkId)
-      .eq('metric_type', 'bodyweight_kg')
-      .order('metric_date', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-      .then(
-        ({ data }) => { if (live) setWeightKg(data?.value != null && Number.isFinite(Number(data.value)) ? Number(data.value) : null); },
-        (e: unknown) => { console.warn('[programs] weight read failed', e); },
-      );
+      .select('metric_type, metric_date, value')
+      .eq('user_id', clerkId);
+    q = wantWeight
+      ? q.or(`metric_type.eq.bodyweight_kg,and(metric_type.eq.readiness_score,metric_date.eq.${today})`)
+        .order('metric_date', { ascending: false })
+        .limit(2)
+      : q.eq('metric_type', 'readiness_score').eq('metric_date', today).limit(1);
+    q.then(
+      ({ data, error }: { data: { metric_type: string; metric_date: string; value: unknown }[] | null; error: unknown }) => {
+        if (!live) return;
+        if (error) { console.warn('[programs] weight / readiness read failed', error); return; }
+        const rows = data ?? [];
+        const r = rows.find((x) => x.metric_type === 'readiness_score' && x.metric_date === today);
+        setReadinessToday(r ? num(r.value) : null);
+        if (wantWeight) {
+          const w = rows.find((x) => x.metric_type === 'bodyweight_kg');
+          setWeightKg(w ? num(w.value) : null);
+        }
+      },
+      (e: unknown) => { console.warn('[programs] weight / readiness read failed', e); },
+    );
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase, clerkId, program?.id, hero?.id, focusTick]);
-
-  // Today's readiness score, for the Recover row when the phase tracks no sleep.
-  useEffect(() => {
-    if (!supabase || !clerkId || !program) { setReadinessToday(null); return; }
-    let live = true;
-    supabase
-      .from('daily_metrics')
-      .select('value')
-      .eq('user_id', clerkId)
-      .eq('metric_type', 'readiness_score')
-      .eq('metric_date', todayLocalISO())
-      .maybeSingle()
-      .then(
-        ({ data }) => { if (live) setReadinessToday(data?.value != null && Number.isFinite(Number(data.value)) ? Number(data.value) : null); },
-        (e: unknown) => { console.warn('[programs] readiness read failed', e); },
-      );
-    return () => { live = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supabase, clerkId, program?.id, focusTick]);
 
   const buildSplitFor = useCallback((ph: ActiveProgramPhaseRow, auto = false) => {
     setBuildSeed(phaseBuildSeed(ph));
@@ -560,13 +559,13 @@ export default function GoalPlanScreen() {
 
       <ScrollView
         contentContainerStyle={{ paddingHorizontal: S.xl, paddingTop: 6, paddingBottom: program ? FOOTER_H + footerBottom + S.lg : insets.bottom + S.xl }}
-        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); setFocusTick((t) => t + 1); }} />}
+        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(true); setFocusTick((t) => t + 1); }} />}
       >
         <RefreshOrb refreshing={refreshing} />
         {loading ? (
           <ScreenSkeleton variant="goal" />
         ) : !program && loadFailed ? (
-          <LoadFailed onRetry={() => { setLoading(true); load(); }} />
+          <LoadFailed onRetry={() => { setLoading(true); load(true); }} />
         ) : !program ? (
           <View style={styles.empty}>
             <View style={[styles.emptyIconWrap, { backgroundColor: C.primarySubtle }]}>
