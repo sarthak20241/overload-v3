@@ -1,10 +1,15 @@
 /**
- * Coupons: App Store offer codes. Give the next unused code for a period,
- * pick one from the list, make 500 more, or make a named code (like RAHUL).
- * The codes live in coupon_batches + coupons (migration 20261110120000).
+ * Coupons, two stores:
+ * - iPhone (?store=apple, the default): App Store offer codes. Give the next
+ *   unused code for a period, pick one from the list, make 500 more, or make a
+ *   named code (like RAHUL). In coupon_batches + coupons (20261110120000).
+ * - Android (?store=android): our own server codes, any free time, no card,
+ *   nothing renews. In invite_codes (20261110150000). Google is not involved.
  */
+import Link from 'next/link';
 import { getSupabaseServerClient } from '@/lib/supabase';
 import { hasKey, PERIODS, PERIOD_LABEL, redeemUrl, type Period } from '@/lib/appstore';
+import { AndroidCoupons, type ServerCodeRow } from './AndroidCoupons';
 import { CouponsInteractive, type CouponRow, type BatchRow, type StockRow } from './CouponsInteractive';
 
 export const dynamic = 'force-dynamic';
@@ -31,8 +36,9 @@ function toRow(c: Record<string, unknown>): CouponRow {
 
 export default async function CouponsPage({
   searchParams,
-}: { searchParams: Promise<{ period?: string }> }) {
+}: { searchParams: Promise<{ period?: string; store?: string }> }) {
   const sp = await searchParams;
+  if (sp.store === 'android') return <AndroidPage />;
   const period: Period = (PERIODS as readonly string[]).includes(sp.period ?? '') ? (sp.period as Period) : 'ONE_YEAR';
   const supabase = await getSupabaseServerClient();
   const soon = new Date(Date.now() + 14 * 86_400_000).toISOString().slice(0, 10);
@@ -66,12 +72,7 @@ export default async function CouponsPage({
 
   return (
     <div className="px-8 py-7 max-w-6xl">
-      <div className="mb-6">
-        <h1 className="text-xl font-semibold">Coupons</h1>
-        <p className="text-sm text-muted-fg mt-1">
-          Free Pro time on iPhone, as App Store offer codes. Each one-time code works for one person.
-        </p>
-      </div>
+      <Header store="apple" />
       {error && (
         <div className="mb-4 rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
           Could not read coupons: {error.message}
@@ -91,6 +92,47 @@ export default async function CouponsPage({
         given={(given.data ?? []).map(toRow)}
         batches={(batches.data ?? []) as BatchRow[]}
       />
+    </div>
+  );
+}
+
+function Header({ store }: { store: 'apple' | 'android' }) {
+  const tab = (id: 'apple' | 'android', label: string) => (
+    <Link
+      href={`/coupons?store=${id}`}
+      className={`rounded-md px-3 py-1.5 text-sm ${store === id ? 'bg-primary-subtle text-primary' : 'text-muted-fg hover:text-fg'}`}
+    >
+      {label}
+    </Link>
+  );
+  return (
+    <div className="mb-6">
+      <h1 className="text-xl font-semibold">Coupons</h1>
+      <p className="text-sm text-muted-fg mt-1">
+        {store === 'apple'
+          ? 'Free Pro time on iPhone, as App Store offer codes. Each one-time code works for one person.'
+          : 'Free Pro time on Android, as our own codes. No card, nothing renews, and Google is not involved.'}
+      </p>
+      <div className="mt-4 flex gap-1">
+        {tab('apple', 'iPhone')}
+        {tab('android', 'Android')}
+      </div>
+    </div>
+  );
+}
+
+async function AndroidPage() {
+  const supabase = await getSupabaseServerClient();
+  const { data, error } = await supabase.rpc('admin_server_codes', { p_limit: 300 });
+  return (
+    <div className="px-8 py-7 max-w-6xl">
+      <Header store="android" />
+      {error && (
+        <div className="mb-4 rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
+          Could not read Android codes: {error.message}
+        </div>
+      )}
+      <AndroidCoupons codes={(data ?? []) as ServerCodeRow[]} now={Date.now()} />
     </div>
   );
 }
