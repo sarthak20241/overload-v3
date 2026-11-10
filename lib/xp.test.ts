@@ -12,7 +12,7 @@
 //      eight titles were dead and "Regular" was the ceiling for everyone.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { getLevelInfo, getTierForLevel, getXpForWorkout, isMaxLevel, TITLE_TIERS, XP_PER_LEVEL } from "./xp.ts";
+import { editXpDelta, getLevelInfo, getTierForLevel, getXpForWorkout, isMaxLevel, TITLE_TIERS, XP_PER_LEVEL } from "./xp.ts";
 
 /** The original table, hardcoded. Do not "fix" these to match a change. */
 const FROZEN_PREFIX = [0, 283, 600, 1000, 1500, 2200, 3100, 4200, 5500, 7000, 9000];
@@ -97,4 +97,19 @@ Deno.test("isMaxLevel matches getLevelInfo's own clamp", () => {
   assertEquals(isMaxLevel(1), false);
   // The clamp and the predicate must agree, or a caller prints "1 / 1".
   assertEquals(isMaxLevel(getLevelInfo(XP_PER_LEVEL[cap - 1]).level), true);
+});
+
+Deno.test("editing a logged workout moves XP by the difference", () => {
+  // 3 sets at 1000 kg (16 XP) -> 4 sets at 1200 kg (20 XP).
+  assertEquals(editXpDelta({ source: null, newSetCount: 4, newVolumeKg: 1200, baseSetCount: 3, baseVolumeKg: 1000 }), 4);
+  assertEquals(editXpDelta({ newSetCount: 2, newVolumeKg: 1000, baseSetCount: 3, baseVolumeKg: 1000 }), -2);
+});
+
+Deno.test("editing a workout imported from Apple Health / Health Connect never moves XP", () => {
+  // The import awarded none, so adding sets to it must not mint any, and
+  // removing them must not take back XP it never gave.
+  for (const source of ["healthkit", "health_connect"]) {
+    assertEquals(editXpDelta({ source, newSetCount: 5, newVolumeKg: 0, baseSetCount: 1, baseVolumeKg: 0 }), 0, source);
+    assertEquals(editXpDelta({ source, newSetCount: 0, newVolumeKg: 0, baseSetCount: 1, baseVolumeKg: 0 }), 0, source);
+  }
 });

@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
-  RefreshControl, BackHandler, Pressable, TextInput, useWindowDimensions,
-  Platform, Keyboard,
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, BackHandler, Pressable, TextInput, useWindowDimensions,
+  Platform, Keyboard, AppState,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -14,7 +13,11 @@ import Animated, {
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
+import { announceReady } from '@/lib/readyNotice';
+import { readyInbox } from '@/lib/readyInbox';
+import { holdBackgroundTime, NOTICE_GRACE_MS } from '@/lib/backgroundTime';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { fromKg, weightLogInUnit } from '@/lib/bodyLog';
@@ -48,6 +51,8 @@ import {
   loadMeasurements, saveMeasurements, saveMeasurementUnit,
   type WeightEntry, type BodyFatEntry, type MeasurementEntry, type MeasurementsData,
 } from '@/lib/bodyStats';
+import { OrbLoader } from '@/components/ui/OrbLoader';
+import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -471,7 +476,7 @@ function AddEntryModal({
       </View>
       <View style={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.xl }}>
         <Text style={[styles.fieldLabel, { color: C.textMuted }]}>{label} ({unit})</Text>
-        <TextInput
+        <SheetTextInput
           value={value}
           onChangeText={onChange}
           keyboardType="decimal-pad"
@@ -860,7 +865,7 @@ function LogMeasurementsDrawer({
         keyboardShouldPersistTaps="handled"
       >
         <Text style={[styles.mGroupLabel, { color: C.textMuted, marginBottom: 6 }]}>DATE</Text>
-        <TextInput
+        <SheetTextInput
           value={date}
           onChangeText={setDate}
           placeholder="YYYY-MM-DD"
@@ -877,7 +882,7 @@ function LogMeasurementsDrawer({
                   <View style={[styles.mDot, { backgroundColor: f.color }]} />
                   <Text style={[styles.mInputLabel, { color: C.foreground }]} numberOfLines={1}>{f.label}</Text>
                   <View style={{ flex: 1 }}>
-                    <TextInput
+                    <SheetTextInput
                       value={values[f.key] || ''}
                       onChangeText={(t) => setValues((p) => ({ ...p, [f.key]: t }))}
                       keyboardType="decimal-pad"
@@ -1270,7 +1275,6 @@ export default function AnalyticsScreen() {
   const bigChartWidth = winWidth - Spacing.xl * 2 - Spacing.lg * 2;
   const [workouts, setWorkouts] = useState<WorkoutRaw[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
 
   const [selectedExercise, setSelectedExercise] = useState('');
   const [chartMode, setChartMode] = useState<'weight' | 'volume'>('weight');
@@ -1426,8 +1430,8 @@ export default function AnalyticsScreen() {
     return () => { live = false; };
   }, [loadWeightSeries, loadBodyFatSeries, clerkLoaded, basicInfoReady, syncedTick]);
 
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
+  // The hook ends the orb even when a read throws.
+  const { refreshing, onRefresh: handleRefresh } = usePullRefresh(useCallback(async () => {
     await fetchData({ fresh: true });
     const [wl, bfl] = await Promise.all([
       loadWeightSeries().catch(() => weightLog),
@@ -1435,8 +1439,7 @@ export default function AnalyticsScreen() {
     ]);
     setWeightLog(wl);
     setBodyFatLog(bfl);
-    setRefreshing(false);
-  }, [fetchData, loadWeightSeries, loadBodyFatSeries, weightLog, bodyFatLog]);
+  }, [fetchData, loadWeightSeries, loadBodyFatSeries, weightLog, bodyFatLog]));
 
   // ── Stats ──
   const weekStart = getWeekStart();
@@ -1629,6 +1632,23 @@ export default function AnalyticsScreen() {
   // training history server-side). A successful real read is cached per session
   // so re-opening does not re-bill; a fallback stays retryable. Guests (no
   // coach access) always get the local read.
+  // The read takes up to 25 s. One that lands after the user left the tab (or
+  // the app) says so; the tab stays mounted, so the sheet is still open here.
+  const insightsFocusedRef = useRef(true);
+  useFocusEffect(useCallback(() => {
+    insightsFocusedRef.current = true;
+    readyInbox.remove('insights');
+    return () => { insightsFocusedRef.current = false; };
+  }, []));
+  // Back in the app on this tab: the read is on screen, so its bell entry
+  // (filed while the app was away) is done.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active' && insightsFocusedRef.current) readyInbox.remove('insights');
+    });
+    return () => sub.remove();
+  }, []);
+
   const runAnalyze = async () => {
     setInsightsOpen(true);
     // Skip re-billing only when we already have a REAL coach read this session.
@@ -1644,6 +1664,9 @@ export default function AnalyticsScreen() {
       return;
     }
 
+    const release = holdBackgroundTime();
+    // Only a real coach read is news; the local fallback is not "ready".
+    let fromCoach = false;
     try {
       const summary = `This week: ${weekWorkouts.length} sessions, ${weekVolume}kg volume, about ${avgDurationMin} min per session${pr != null ? `, ${selectedExercise} best ${prLabel}` : ''}.`;
       const messages = [{
@@ -1661,6 +1684,7 @@ export default function AnalyticsScreen() {
         ? []
         : text.split('\n').map(cleanLine).filter((l) => l.length > 0).slice(0, 4);
       if (lines.length > 0) {
+        fromCoach = true;
         setInsightsFromCoach(true);
         setInsights(lines);
       } else {
@@ -1672,6 +1696,10 @@ export default function AnalyticsScreen() {
       setInsights(localInsights());
     } finally {
       setAiLoading(false);
+      setTimeout(release, NOTICE_GRACE_MS);
+      if (fromCoach && (!insightsFocusedRef.current || AppState.currentState !== 'active')) {
+        announceReady({ title: 'Your training read is ready.', body: 'Tap to read it.', target: { route: '/analytics' }, inbox: 'insights' });
+      }
     }
   };
 
@@ -1715,7 +1743,7 @@ export default function AnalyticsScreen() {
   if (loading) {
     return (
       <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
-        <ActivityIndicator color={Colors.primary} style={{ marginTop: 60 }} />
+        <OrbLoader size="large" state="searching" style={{ marginTop: 60 }} />
       </SafeAreaView>
     );
   }
@@ -1725,8 +1753,9 @@ export default function AnalyticsScreen() {
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 120 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={Colors.primary} colors={[Colors.primary]} />}
+        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
       >
+        <RefreshOrb refreshing={refreshing} />
         {/* Header */}
         <View style={styles.header}>
           <Text style={[styles.screenTitle, { color: C.foreground }]}>Analytics</Text>
@@ -1762,7 +1791,7 @@ export default function AnalyticsScreen() {
                     <Text style={[styles.aiTitle, { color: C.foreground }]}>Insights from Coach Drona</Text>
                   </View>
                   {aiLoading ? (
-                    <ActivityIndicator color={C.accentText} size="small" />
+                    <OrbLoader color={C.accentText} size="small" />
                   ) : (
                     <Text style={[styles.aiAction, { color: C.accentText }]}>
                       {insightsOpen ? 'Hide' : 'Analyze'}
@@ -1843,9 +1872,6 @@ export default function AnalyticsScreen() {
               </View>
             )}
 
-            {/* 3.6 Nutrition trends (self-gating: renders only if food is logged). */}
-            <NutritionTrendsCard />
-
             {/* 3.5 Body Distribution (moved here from the dashboard). */}
             {hasMuscleData && (
               <View style={[styles.bigCard, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
@@ -1869,6 +1895,10 @@ export default function AnalyticsScreen() {
                 <BodyHeatmap counts={muscleCounts} gender={profileGender} width={bigChartWidth} />
               </View>
             )}
+
+            {/* 3.6 Nutrition trends, below the body chart (self-gating: renders only
+                once a period has food logged). */}
+            <NutritionTrendsCard />
 
             {/* 4. Exercise Progress */}
             {allExerciseNames.length > 0 && (

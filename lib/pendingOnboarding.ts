@@ -35,6 +35,10 @@ export interface PendingOnboarding {
   /** The goal program (phases to the target). Saved only under a real account;
    *  guests have no program store. Older blobs predate the field. */
   program?: GeneratedProgram | null;
+  /** True when Drona built `program` (the guest path), false when it is the
+   *  phone-made starter. A Drona plan spends the account's one free goal
+   *  build once it is saved. Older blobs predate the field: read as false. */
+  programByDrona?: boolean;
   /** Whether to actually create the routines, or just save the profile. */
   createPlan: boolean;
   /** Where to land after the plan is drained under the resolved identity. */
@@ -88,7 +92,7 @@ export async function drainPendingOnboarding(target: {
   isGuest: boolean;
   clerkId: string | null;
   client: SupabaseClient;
-}): Promise<PendingOnboarding['dest'] | null> {
+}): Promise<{ dest: PendingOnboarding['dest']; firstPhaseId: string | null } | null> {
   const pending = await getPendingOnboarding();
   if (!pending) return null;
 
@@ -101,7 +105,13 @@ export async function drainPendingOnboarding(target: {
   // The program only. Onboarding no longer saves workouts: phase 1's split is
   // built from the Goal screen once this account exists. A blob stashed by an
   // older build may still carry `plan`; it is ignored rather than saved.
-  if (pending.createPlan && pending.program) await saveOnboardingProgram(pending.program, target);
+  // Phase 1's id comes back so the caller can open its build straight away.
+  const firstPhaseId = pending.createPlan && pending.program
+    ? await saveOnboardingProgram(pending.program, target)
+    : null;
+  // Drona built this plan before the account existed, on the guest path. That
+  // was the account's one free goal plan, so spend it now that it is saved.
+  if (firstPhaseId && pending.programByDrona) await markFreeGoalBuildUsed(target.client);
   await markOnboardingDone(identity);
   await clearPendingOnboarding();
   // Closes the funnel opened by onboarding_completed{outcome:'handed_to_signup'}.
@@ -113,7 +123,7 @@ export async function drainPendingOnboarding(target: {
     routines: 0,
     is_guest: target.isGuest,
   });
-  return pending.dest ?? '/(app)';
+  return { dest: pending.dest ?? '/(app)', firstPhaseId };
 }
 
 /**
@@ -140,5 +150,20 @@ export async function saveOnboardingProgram(
   } catch (e) {
     console.warn('[onboarding] program save failed; routines save unlinked', e);
     return null;
+  }
+}
+
+/**
+ * Spend the account's one free goal plan build (migration
+ * 20261106130000_free_goal_build). Best-effort: a failure leaves the build
+ * unspent, which only means a free user may get one more Drona build later.
+ * Never blocks the finish line.
+ */
+async function markFreeGoalBuildUsed(client: SupabaseClient): Promise<void> {
+  try {
+    const { error } = await client.rpc('mark_free_goal_build_used');
+    if (error) console.warn('[onboarding] mark_free_goal_build_used failed', error.message);
+  } catch (e) {
+    console.warn('[onboarding] mark_free_goal_build_used threw', e);
   }
 }

@@ -245,6 +245,8 @@ async function flushPendingRoutine(
       { onConflict: 'id' },
     );
     if (error) throw error;
+    // A phase's routines (and their names) are part of the cached program.
+    invalidateUserProgram(userId);
     if (entry.programPhaseId) {
       try {
         await supabase

@@ -31,7 +31,7 @@ import {
   type GuestProfile,
 } from '@/lib/guestStore';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
-import { missingGoalsColumn, primaryGoal, selectedGoals } from '@/lib/fitnessGoals';
+import { missingGoalsColumn, primaryGoal, profileGoalFields, selectedGoals } from '@/lib/fitnessGoals';
 
 // ─── Answers ─────────────────────────────────────────────────────────────────
 
@@ -47,6 +47,11 @@ export interface OnboardingAnswers {
   heightCm: number | null;
   weightKg: number | null;
   goalWeightKg: number | null;
+  /**
+   * Optional free text: the goal in the user's own words ("Something else" on
+   * the goal step). null = not chosen; '' = chosen but not written yet.
+   */
+  goalNote?: string | null;
   /** Optional free text: injuries / conditions the plan should train around. */
   healthNotes: string | null;
   /** Optional free text: preferences for the routine (lifts, equipment, etc.). */
@@ -355,11 +360,8 @@ export async function saveOnboardingProfile(
   opts: { isGuest: boolean; clerkId: string | null; client: SupabaseClient },
 ): Promise<void> {
   const patch: Partial<GuestProfile> = {};
-  const goals = selectedGoals(answers);
-  if (goals.length) {
-    patch.goal = primaryGoal(answers);
-    patch.goals = goals;
-  }
+  const goalFields = profileGoalFields(answers);
+  if (goalFields) Object.assign(patch, goalFields);
   if (answers.experience) {
     patch.experience_level = answers.experience;
     patch.training_age_months = TRAINING_AGE_MONTHS[answers.experience];
@@ -390,6 +392,11 @@ export async function saveOnboardingProfile(
   // earlier note. Guests skip these (their local store has no such fields).
   const injury = answers.healthNotes?.trim();
   const prefs = answers.routinePrefs?.trim();
+  // A goal in their own words lands in goal_detail, which Drona's memory and
+  // context already read ("goal detail"), so it outlives the starter plan.
+  // Like the notes above, guests lose it and a blank note keeps an old one.
+  const goalNote = answers.goalNote?.trim();
+  if (goalNote) row.goal_detail = goalNote.slice(0, 500);
   if (injury) row.injury_notes = injury.slice(0, 500);
   if (prefs) row.training_preferences = prefs.slice(0, 500);
   if (Object.keys(row).length === 1) return; // nothing beyond the id

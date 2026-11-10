@@ -68,3 +68,15 @@ Deno.test("client-written text reaches the coach context cut to size, on one lin
   assertEquals(out.phases[0].job_text.includes("\n"), false);
   assertEquals(out.phases[0].job_text.length <= 80, true);
 });
+
+Deno.test("a custom metric's stored status never reaches the coach: the client can write it", () => {
+  // The log sheet lets a client set status on its own custom metric, so a
+  // stored "done" is not a check. Drona gets the logged value and the target
+  // and judges from those; app-measured kinds keep the job's status.
+  const custom = { phase_id: "p0", seq: 2, is_hero: false, kind: "custom", ref: { name: "Plank" }, unit: "s", direction: "up", start_value: "30", target_value: "60", current_value: "40", status: "done", checked_at: null };
+  const out = metricForPrompt(custom as never, true) as unknown as Record<string, unknown>;
+  assertEquals(out.current_value, 40);
+  assertEquals(out.target, 60);
+  assertEquals("status" in out, false);
+  assertEquals((metricForPrompt(rows[0] as never, true) as unknown as Record<string, unknown>).status, "on_track");
+});

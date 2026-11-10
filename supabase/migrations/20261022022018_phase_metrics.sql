@@ -1,4 +1,4 @@
--- 20261021120000_phase_metrics.sql: one hero metric and a few supporting targets per program phase
+-- 20261022022018_phase_metrics.sql: one hero metric and a few supporting targets per program phase
 --
 -- A phase used to carry only diet targets and directives. Now Drona picks what
 -- each phase is judged on (.planning/phase-metrics/SPEC.md):
@@ -29,9 +29,19 @@
 -- new tables cascade from it (metrics from the phase, logs from the metric),
 -- so the function body is left as it is.
 --
--- After apply_migration of a NEW table, run:  notify pgrst, 'reload schema';
--- (PostgREST does not see a new table until it reloads its schema cache.)
--- The migration is applied by the user, not by a session. NOT YET APPLIED.
+-- PostgREST does not see a new table until it reloads its schema cache, so the
+-- migration sends the reload itself, inside the transaction: Postgres delivers
+-- a NOTIFY at commit, so it fires only if everything above landed.
+-- The migration is applied by the user, not by a session.
+--
+-- PRODUCTION: an early revision of this file is applied there under this same
+-- version (20261022022018 "phase_metrics"), then 20261022115109
+-- "phase_metrics_delta_checked_week_grants" (a no-op placeholder here). This
+-- file was first written as 20261021120000 and renamed so the repo's history
+-- matches production's: `supabase db push` skips both. The differences since
+-- that early revision are brought over by 20261023120000_phase_metrics_sync.sql,
+-- which must be applied before drona-cards is deployed (the weekly job needs
+-- retry_tries/retry_week).
 
 begin;
 
@@ -48,7 +58,7 @@ create table if not exists public.coach_program_phase_metrics (
   user_id       text not null default current_clerk_user_id(),
   -- At most eight rows a phase (the coach emits 3 to 5): a client cannot
   -- fill a phase with rows the weekly job would read one by one.
-  seq           integer not null default 0 check (seq between 0 and 7),
+  seq           integer not null default 0 constraint coach_program_phase_metrics_seq_range check (seq between 0 and 7),
   is_hero       boolean not null default false,
   kind          text not null check (kind in (
                   'bodyweight', 'lift_e1rm', 'sets_per_muscle', 'steps',
@@ -57,15 +67,15 @@ create table if not exists public.coach_program_phase_metrics (
   -- lift_e1rm: {exercise_id, exercise_name}; sets_per_muscle: {muscle};
   -- custom: {name}. Other kinds: null. Sizes are capped: ref and unit reach
   -- the coach-line prompt (capped again there), status_note is a note.
-  ref           jsonb check (ref is null or pg_column_size(ref) <= 2000),
-  unit          text check (unit is null or char_length(unit) <= 24),
+  ref           jsonb constraint coach_program_phase_metrics_ref_size check (ref is null or pg_column_size(ref) <= 2000),
+  unit          text constraint coach_program_phase_metrics_unit_size check (unit is null or char_length(unit) <= 24),
   direction     text not null default 'up' check (direction in ('up', 'down', 'hold')),
   start_value   numeric,
   target_value  numeric,
   current_value numeric,
   status        text not null default 'set' check (status in (
                   'set', 'on_track', 'close', 'slipping', 'behind', 'due', 'done')),
-  status_note   text check (status_note is null or char_length(status_note) <= 200),
+  status_note   text constraint coach_program_phase_metrics_status_note_size check (status_note is null or char_length(status_note) <= 200),
   checked_at    timestamptz,
   -- The user's LOCAL week (its Monday) the last check belongs to. The weekly
   -- job compares this, a local date, with the user's local week start; a UTC
@@ -75,9 +85,9 @@ create table if not exists public.coach_program_phase_metrics (
   -- in retry_week ended with a failed source read or a failed coach line.
   -- After three the phase is stamped for the week and left alone. Job-only
   -- columns (not in the client grants), so a client cannot edit the count.
-  -- A client can still delete and re-insert its own rows, which starts a
-  -- fresh ledger; that costs it at most one check per cron tick for its own
-  -- phase, which is the cost of a new program anyway.
+  -- Accepted risk: a client can still delete and re-insert its own rows,
+  -- which starts a fresh ledger. That costs at most one check per cron tick,
+  -- only for its own phase, which is the cost of a new program anyway.
   retry_tries   integer not null default 0,
   retry_week    date,
   created_at    timestamptz not null default now(),
@@ -149,6 +159,11 @@ grant insert (id, program_id, phase_id, user_id, seq, is_hero, kind, ref, unit, 
 -- as checked. seq and is_hero are not updatable either: the app never
 -- reorders or re-heroes rows, and the unique constraints on both are not
 -- deferrable, so a swap by updates could fail halfway.
+-- current_value and status are client-writable for the caller's own custom
+-- metrics only (the update policy above), so the log sheet moves the card at
+-- once. They are not trusted: the weekly job recomputes a custom metric's
+-- value and status from its latest log and overwrites both, and Drona's line
+-- is built from that check, never from the stored status.
 grant update (ref, unit, direction, start_value, target_value, current_value, status, status_note, updated_at)
   on table public.coach_program_phase_metrics to authenticated;
 
@@ -157,9 +172,9 @@ create table if not exists public.coach_program_phase_metric_logs (
   id          uuid primary key default gen_random_uuid(),
   metric_id   uuid not null references public.coach_program_phase_metrics(id) on delete cascade,
   user_id     text not null default current_clerk_user_id(),
-  value       numeric not null check (value >= 0 and value <= 1000000),
+  value       numeric not null constraint coach_program_phase_metric_logs_value_range check (value >= 0 and value <= 1000000),
   logged_on   date not null,   -- the user's LOCAL day
-  note        text check (note is null or char_length(note) <= 200),
+  note        text constraint coach_program_phase_metric_logs_note_size check (note is null or char_length(note) <= 200),
   created_at  timestamptz not null default now(),
   unique (metric_id, logged_on)
 );
@@ -188,7 +203,12 @@ create policy "coach_program_phase_metric_logs_owner_insert" on public.coach_pro
 
 drop policy if exists "coach_program_phase_metric_logs_owner_update" on public.coach_program_phase_metric_logs;
 create policy "coach_program_phase_metric_logs_owner_update" on public.coach_program_phase_metric_logs
-  for update to authenticated using (user_id = current_clerk_user_id())
+  for update to authenticated using (
+    user_id = current_clerk_user_id()
+    and exists (select 1 from public.coach_program_phase_metrics m
+                 where m.id = coach_program_phase_metric_logs.metric_id
+                   and m.user_id = current_clerk_user_id()
+                   and m.kind = 'custom'))
   with check (
     user_id = current_clerk_user_id()
     and exists (select 1 from public.coach_program_phase_metrics m
@@ -211,12 +231,12 @@ grant insert (metric_id, user_id, value, logged_on, note) on table public.coach_
 -- own metric, so neither can be pointed at anyone else's.
 grant update (metric_id, user_id, value, logged_on, note) on table public.coach_program_phase_metric_logs to authenticated;
 
+-- New tables are invisible to PostgREST until it reloads; sent at commit.
+notify pgrst, 'reload schema';
+
 commit;
 
--- Run after applying (new tables are invisible to PostgREST until it reloads):
--- notify pgrst, 'reload schema';
---
--- Then VERIFY the grants rather than assume them (a project default grant
+-- After applying, VERIFY the grants rather than assume them (a project default grant
 -- that survived would be invisible otherwise). Both should list only the
 -- columns granted above, with no 'checked_at', 'checked_week', 'retry_tries',
 -- 'retry_week' for authenticated and nothing for anon:

@@ -68,11 +68,10 @@ export function tierLabel(tier: string | null | undefined): string {
  * What Pro gives you, shared by the profile card and the plan page so the two
  * cannot drift.
  *
- * Deliberately shorter and blunter than the paywall's comparison table
- * (app/upgrade.tsx COMPARE_CORE): that table sells by contrast against a free
- * column and needs four rows to do it, while these two surfaces are read by
- * someone who has already paid and only wants confirmation. Nothing enforces
- * parity with the paywall, so if the offer changes, both need editing.
+ * Kept apart from the paywall's own list (app/upgrade.tsx PRO_PATH): that
+ * one sells to someone deciding, these two surfaces confirm it to someone who
+ * already paid. Nothing enforces parity with the paywall, so if the offer
+ * changes, both need editing.
  */
 export const PLAN_BENEFITS = [
   'Unlimited coach chat',

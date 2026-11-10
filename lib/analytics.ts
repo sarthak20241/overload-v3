@@ -86,6 +86,13 @@ export type AnalyticsEvent =
   | 'signed_in'
   | 'signed_out'
   | 'auth_failed'
+  // Silent re-sign-in before Clerk's 7-day session end (SessionRefreshGate).
+  | 'session_refreshed'
+  | 'session_refresh_skipped'
+  | 'session_refresh_failed'
+  // Fresh store install waiting on the splash for the newest update
+  // (FirstOpenUpdateGate): outcome reloading / up_to_date / timed_out / failed.
+  | 'first_open_update'
   | 'account_deleted'
   | 'guest_mode_entered'
   | 'guest_converted'
@@ -117,6 +124,8 @@ export type AnalyticsEvent =
   | 'workout_completed'
   | 'workout_discarded'
   | 'workout_share_opened'
+  | 'review_prompt_requested'
+  | 'rate_app_opened'
   | 'workout_edited'
   | 'workout_edit_failed'
   | 'workout_preference_changed'
@@ -154,7 +163,14 @@ export type AnalyticsEvent =
   | 'health_connect_result'
   | 'health_sync_run'
   | 'health_sync_failed'
+  | 'health_cardio_imported'
+  | 'health_cardio_skipped'
+  | 'health_workouts_asked'
   | 'readiness_card_tapped'
+  // Dashboard cardio row: the sheet, a session started from it, one logged after the fact.
+  | 'cardio_sheet_opened'
+  | 'cardio_started'
+  | 'cardio_logged'
   // ── Nutrition ────────────────────────────────────────────────────────────
   | 'meal_logged'
   | 'meal_undone'
@@ -164,11 +180,18 @@ export type AnalyticsEvent =
   | 'parse_proposal_accepted'
   | 'parse_proposal_edited'
   | 'parse_proposal_rejected'
+  | 'meal_wait_closed'
+  | 'meal_ready_shown'
+  | 'meal_result_opened'
   | 'parse_tier_changed'
   | 'auto_log_toggled'
   | 'food_searched'
   | 'food_picked'
   | 'quick_add_opened'
+  // The food search's "Log it with Drona" row (or the keyboard's send): the
+  // typed words go to the Nutrition food box instead of a catalog row. Against
+  // food_picked, this is how often a manual search becomes an AI log.
+  | 'food_search_ai_log'
   // Drona built a food or meal out of what the user said. Two events, not one:
   // the gap between them is how many proposals get dismissed, which is the only
   // read we have on whether the cards are worth showing.
@@ -202,8 +225,20 @@ export type AnalyticsEvent =
   | 'coach_failed'
   | 'coach_new_chat_started'
   | 'coach_generation_stopped'
+  // Goal intake (components/program/GoalIntake): the question screens before
+  // Drona plans a new program. step_viewed per screen, then sent or skipped.
+  | 'goal_intake_step_viewed'
+  | 'goal_intake_sent'
+  | 'goal_intake_skipped'
+  | 'goal_intake_build_tapped'
+  // A sheet closed while Drona worked, kept to finish out of sight.
+  | 'coach_kept_working'
+  // Drona finished out of sight: a notification sent (or not), and opened.
+  | 'ready_notice_sent'
+  | 'ready_notice_opened'
   | 'coach_message_copied'
   | 'food_text_reused'
+  | 'food_followup_cancelled'
   | 'coach_message_select_opened'
   | 'coach_history_opened'
   | 'coach_conversation_opened'
@@ -221,6 +256,26 @@ export type AnalyticsEvent =
   | 'program_viewed'
   | 'program_phase_expanded'
   | 'program_split_build_started'
+  // A built phase plan kept on the device until Save (lib/phaseDraft.ts).
+  | 'phase_draft_restored'
+  | 'phase_draft_saved'
+  // The next phase, built in the background for Pro (lib/phaseBuild.ts).
+  | 'phase_auto_built'
+  | 'phase_auto_build_failed'
+  | 'next_phase_card_shown'
+  | 'next_phase_card_tapped'
+  // The phase-ready popup put off: it flew into the dashboard bell.
+  | 'next_phase_ready_later'
+  // The dashboard's getting-started checklist (lib/startGuide.ts).
+  | 'start_guide_shown'
+  | 'start_guide_step_tapped'
+  | 'start_guide_dismissed'
+  // The film tour after sign-up (components/onboarding/SignupTour.tsx).
+  | 'signup_tour_shown'
+  | 'signup_tour_scene'
+  | 'signup_tour_done'
+  // The dashboard's floating log-food button (components/home/HomeLogButton.tsx).
+  | 'home_log_food_tapped'
   | 'program_phase_advanced'
   | 'program_completed'
   | 'program_ended'
@@ -228,6 +283,7 @@ export type AnalyticsEvent =
   | 'program_phase_opened'
   | 'program_pillar_opened'
   | 'program_pillar_viewed'
+  | 'program_pillar_adjust' // Adjust with Drona on a Train / Eat / Recover screen: { pillar, seq }
   | 'program_metrics_save_failed'
   | 'program_metric_logged'
   | 'goal_metrics_viewed'
@@ -240,6 +296,13 @@ export type AnalyticsEvent =
   // ── Money ────────────────────────────────────────────────────────────────
   | 'limit_reached'
   | 'upgrade_prompt_tapped'
+  | 'invite_opened'
+  | 'invite_redeemed'
+  | 'invite_failed'
+  | 'invite_store_code'
+  | 'invite_apple_offer_opened'
+  | 'referral_opened'
+  | 'referral_shared'
   | 'milestone_upsell_shown'
   | 'milestone_upsell_snoozed'
   | 'paywall_viewed'
@@ -248,8 +311,14 @@ export type AnalyticsEvent =
   | 'paywall_plan_selected'
   | 'paywall_plans_expanded'
   | 'paywall_skipped'
+  | 'paywall_signed_out'
+  | 'paywall_code_tapped'
+  | 'paywall_store_retry'
+  | 'paywall_store_down'
   | 'paywall_success_cta'
   | 'purchase_started'
+  | 'purchase_pending'
+  | 'purchase_pending_resolved'
   | 'purchase_completed'
   | 'purchase_failed'
   | 'purchase_restore_started'

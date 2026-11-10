@@ -5,21 +5,28 @@
  * 3. Generate a Workout
  * Matches Figma design exactly.
  */
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, createContext, useContext, useId } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, BackHandler, Pressable,
   TextInput, ScrollView, FlatList, Keyboard, Platform,
-  ActivityIndicator, Linking, useWindowDimensions,
+  Linking,
+  type LayoutChangeEvent,
 } from 'react-native';
 import Animated, {
   SlideInDown, SlideOutDown, FadeIn, FadeInDown, Easing,
-  useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming,
+  useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming, runOnJS,
 } from 'react-native-reanimated';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
+import { GoalIntake } from '@/components/program/GoalIntake';
+import { ClampedText, ProgramRoad } from '@/components/program/ProgramRoad';
+import { ProjectedCurve } from '@/components/onboarding/ProjectedCurve';
+import { formatWeight as formatIntakeWeight, goalIntakeMessage, goalIntakeSummary, type GoalIntakeAnswers } from '@/lib/goalIntake';
+import { BUILD_IT, asksToBuild, isPureAffirmative } from '@/lib/coachAffirm';
 import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
+import { pinOffset, pinRoom, tailAfterReply } from '@/lib/questionPin';
 import { fuelDaysText } from '@/lib/fuelDays';
 import { invalidateUserProgram } from '@/lib/screenCache';
 import { newClientId } from '@/lib/syncQueue';
@@ -62,13 +69,18 @@ import { SignalOrb, SIGNAL_ORB_SPHERE, signalOrbColor, type SignalOrbState } fro
 import { OrbStage, PulsingStatus, orbWebBox } from '@/components/coach/OrbStage';
 import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 import { ensureActiveConversationId } from '@/lib/coachConversations';
+import { createCoachSessionStore, withStableCallbacks } from '@/lib/coachSessions';
 import { haptics } from '@/lib/haptics';
 import { SelectTextSheet, coachPlainText, type MessageSheetTarget } from '@/components/coach/SelectTextSheet';
 import { MessageCopyButton } from '@/components/coach/MessageCopyButton';
 import { PastChatsList } from '@/components/coach/PastChatsList';
-import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
+import { coachErrorMessage, coachInvokeErrorMessage, cooldownMessageFromBody } from '@/lib/coachErrors';
+import { FRESH_TOKEN_BUDGET_MS, freshTokenAfterExpiry, tokenWithin } from '@/lib/authRetry';
 import { withChangeSource } from '@/lib/planChangeSource';
-import { ilikeExact, parseNewExercise, planExerciseInsert, planRepsAndNote, type NewExerciseDef } from '@/lib/planExercise';
+import { ilikeExact, planExerciseInsert, planRepsAndNote } from '@/lib/planExercise';
+import { structuredToPlan, structuredToWorkout, type GeneratedExercise, type GeneratedPlan, type GeneratedWorkout } from '@/lib/generatedPlan';
+import { clearPhaseDraft, readPhaseDraft, writePhaseDraft } from '@/lib/phaseDraft';
+import { phaseBuildPrompt } from '@/lib/phaseBuild';
 import { writeWithTargetFallback } from '@/lib/routineTargets';
 import { findCatalogExerciseByName } from '@/lib/exerciseResolve';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
@@ -82,6 +94,24 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Screen = 'menu' | 'chat' | 'plan' | 'workout' | 'program';
+
+// Each sub-screen says whether Drona is working for it, so the sheet knows
+// whether closing it should keep it (lib/coachSessions). Nested screens (the
+// refine chat inside a plan) report too; any one busy makes the sheet busy.
+// `result`: the screen holds a built workout, split or program, so "ready"
+// can say so instead of "I answered you".
+type BusyState = { busy: boolean; failed: boolean; result: boolean };
+type BusyReport = (key: string, state: BusyState | null) => void;
+const CoachBusyContext = createContext<BusyReport | null>(null);
+// Closes the whole sheet. A nested screen's back uses it while Drona is
+// replying, since stepping back would unmount it and abort the reply.
+const CoachCloseContext = createContext<(() => void) | null>(null);
+function useCoachBusy(busy: boolean, failed = false, result = false) {
+  const report = useContext(CoachBusyContext);
+  const key = useId();
+  useEffect(() => { report?.(key, { busy, failed, result }); }, [report, key, busy, failed, result]);
+  useEffect(() => () => report?.(key, null), [report, key]);
+}
 
 // Chat message + citation shapes live in lib/coachConversations.ts so the
 // persistence layer and the UI share one definition. Aliased here to keep the
@@ -109,79 +139,6 @@ interface CoachReply {
   citations: Citation[];
 }
 
-interface GeneratedExercise {
-  name: string;
-  sets: number;
-  reps: string;
-  rest: string;
-  // Phase 2.5: coaching cue. Examples: "RIR 2", "Go heavy, control eccentric",
-  // "Hams-focused, push hips back", "Last set to failure".
-  note?: string;
-  // Set when Drona invented this exercise because the catalog had nothing
-  // that fit (a stretch, a mobility drill). Saved as the user's own custom.
-  new_exercise?: NewExerciseDef;
-}
-
-interface GeneratedWorkout {
-  name: string;
-  exercises: GeneratedExercise[];
-  // Phase 2.5: explanation shown above the exercise list — why this workout
-  // fits THIS user. Set by the coach's generate_workout tool. Optional so
-  // older callers (mocks) still type-check.
-  rationale?: string;
-  focus?: string;
-  estimated_duration_min?: number;
-}
-
-interface GeneratedPlan {
-  name: string;
-  rationale: string;
-  split_type?: string;
-  days_per_week?: number;
-  workouts: Array<GeneratedWorkout & { note?: string }>;
-}
-
-// Normalize the structured input from generate_workout/generate_plan into
-// our GeneratedWorkout shape (the existing one used rest as "90s" strings;
-// the tool schema uses rest_seconds as int — we convert).
-function structuredToWorkout(input: Record<string, unknown>): GeneratedWorkout {
-  const exercises = Array.isArray(input.exercises)
-    ? (input.exercises as Array<Record<string, unknown>>).map((e) => ({
-        name: String(e.name ?? ''),
-        sets: Number(e.sets ?? 3),
-        reps: String(e.reps ?? '8-12'),
-        rest: typeof e.rest_seconds === 'number' ? `${e.rest_seconds}s` : '90s',
-        note: typeof e.note === 'string' && e.note.length > 0 ? e.note : undefined,
-        new_exercise: parseNewExercise(e.new_exercise),
-      }))
-    : [];
-  return {
-    name: String(input.name ?? 'New Workout'),
-    rationale: typeof input.rationale === 'string' ? input.rationale : undefined,
-    focus: typeof input.focus === 'string' ? input.focus : undefined,
-    estimated_duration_min: typeof input.estimated_duration_min === 'number'
-      ? input.estimated_duration_min
-      : undefined,
-    exercises,
-  };
-}
-
-function structuredToPlan(input: Record<string, unknown>): GeneratedPlan {
-  const workouts = Array.isArray(input.workouts)
-    ? (input.workouts as Array<Record<string, unknown>>).map((w) => ({
-        ...structuredToWorkout(w),
-        note: typeof w.note === 'string' && w.note.length > 0 ? w.note : undefined,
-      }))
-    : [];
-  return {
-    name: String(input.name ?? 'New Plan'),
-    rationale: String(input.rationale ?? ''),
-    split_type: typeof input.split_type === 'string' ? input.split_type : undefined,
-    days_per_week: typeof input.days_per_week === 'number' ? input.days_per_week : undefined,
-    workouts,
-  };
-}
-
 // ─── Coach mark ──────────────────────────────────────────────────────────────
 // Drona's arrowhead identity (DronaMark) behind the legacy SparkleIcon name so
 // every coach surface in this modal swaps at once. Default state is 'static'
@@ -194,30 +151,6 @@ function SparkleIcon({
   return <DronaMark size={size} color={color} state={state} />;
 }
 
-// ─── Thinking Indicator (Phase 2.6) ──────────────────────────────────────────
-// Shown inside the assistant bubble while waiting for the first streamed
-// token. Three dots cycle (./../...) at ~3 Hz to convey "the model is
-// working" without the visual heaviness of a spinner. The phase text updates
-// from server `status` events as the request moves through stages.
-function ThinkingIndicator({ phase }: { phase: string }) {
-  const { C } = useTheme();
-  const [dots, setDots] = useState('');
-  useEffect(() => {
-    const states = ['', '.', '..', '...'];
-    let i = 0;
-    const id = setInterval(() => {
-      i = (i + 1) % states.length;
-      setDots(states[i]);
-    }, 350);
-    return () => clearInterval(id);
-  }, []);
-  return (
-    <View style={s.thinkingRow}>
-      <Text style={[s.thinkingText, { color: C.textMuted }]}>{phase}{dots}</Text>
-    </View>
-  );
-}
-
 // ─── Drona orb geometry (ChatScreen) ─────────────────────────────────────────
 // Sizes of the orb's three homes. A size is the orb's visual box; the sphere
 // fills about 72% of it and the halo the rest.
@@ -225,6 +158,13 @@ const HERO_ORB = 168;
 const FIELD_ORB = 34;
 const LIFT_ORB = 104;
 const HERO_WEB = orbWebBox(HERO_ORB);
+// Where the orb sits inside the input box (box = its layout in the input
+// wrapper): border 1 + box padding 12 + slot margin -4, then half the slot
+// across; up from the box bottom by border 1, padding 6, half the 36 slot.
+// Shared by ChatScreen and RefineChatScreen, so both docks move together.
+function fieldOrbTarget(b: { x: number; y: number; h: number }) {
+  return { x: b.x + 1 + Spacing.md - 4 + FIELD_ORB / 2, y: b.y + b.h - 1 - 6 - 18, s: FIELD_ORB };
+}
 // The dock orb is ONE WebView that never resizes (a resize re-lays out the
 // page); it moves and scales instead. Sized so the lift is close to 1:1.
 const DOCK_WEB = 200;
@@ -553,11 +493,22 @@ interface StreamingOptions {
   // free user's first phase-1 build through on it (once); for everyone else
   // it is ignored.
   phaseId?: string;
+  // A token straight from Clerk with the cache skipped. Called once, when the
+  // server rejects `token` as expired (lib/authRetry.ts).
+  freshToken?: () => Promise<string | null>;
+}
+
+// The stream's `freshToken`: a token straight from Clerk with the cache
+// skipped, or null when there is no Clerk session to ask.
+function freshTokenFrom(
+  getToken: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null,
+): () => Promise<string | null> {
+  return () => getToken?.({ skipCache: true }) ?? Promise.resolve(null);
 }
 
 function callAICoachStreaming(
   messages: { role: string; content: string }[],
-  token: string,
+  initialToken: string,
   callbacks: StreamingCallbacks,
   options: StreamingOptions = {},
 ): { abort: () => void } {
@@ -581,6 +532,9 @@ function callAICoachStreaming(
   }
 
   let buffer = '';
+  let token = initialToken;
+  // One fresh-token retry per call (lib/authRetry.ts decides when).
+  let tokenRetried = false;
 
   const processChunk = (text: string) => {
     buffer += text;
@@ -630,8 +584,12 @@ function callAICoachStreaming(
   };
 
   // One attempt. Returns 'retry_without_mode' when the server rejected the
-  // requested mode as a Pro flow because it predates that mode existing.
-  const attempt = async (mode: StreamingOptions['mode']): Promise<'retry_without_mode' | void> => {
+  // requested mode as a Pro flow because it predates that mode existing, and
+  // 'retry_fresh_token' when it rejected the token as expired and `token` now
+  // holds a fresh one.
+  const attempt = async (
+    mode: StreamingOptions['mode'],
+  ): Promise<'retry_without_mode' | 'retry_fresh_token' | void> => {
       const response = await expoFetch(`${supabaseUrl}/functions/v1/ai-coach`, {
         method: 'POST',
         headers: {
@@ -658,6 +616,21 @@ function callAICoachStreaming(
 
       if (!response.ok) {
         const body = await response.text();
+        if (options.freshToken && !tokenRetried) {
+          const freshToken = options.freshToken;
+          const next = await freshTokenAfterExpiry(
+            response.status,
+            body,
+            token,
+            () => tokenWithin(freshToken, FRESH_TOKEN_BUDGET_MS),
+          );
+          if (controller.signal.aborted) return;
+          if (next) {
+            tokenRetried = true;
+            token = next;
+            return 'retry_fresh_token';
+          }
+        }
         // 402s carry a structured reason. Cap hits are a product moment
         // (upgrade sheet), not an error state — route them to onCapHit when
         // the caller can render one.
@@ -694,6 +667,16 @@ function callAICoachStreaming(
             }
           } catch { /* fall through to the generic failure */ }
         }
+        // A Pro cooldown says how long to wait, which the generic busy line
+        // cannot.
+        if (response.status === 429) {
+          let cooldown: string | null = null;
+          try { cooldown = cooldownMessageFromBody(429, JSON.parse(body)); } catch { /* not JSON */ }
+          if (cooldown) {
+            if (!controller.signal.aborted) callbacks.onError(cooldown);
+            return;
+          }
+        }
         fail(`HTTP ${response.status}: ${body.slice(0, 200)}`);
         return;
       }
@@ -720,11 +703,20 @@ function callAICoachStreaming(
 
   (async () => {
     try {
-      if (await attempt(options.mode) === 'retry_without_mode') {
-        // Second and last attempt; a plain-chat request can't trip the same
-        // guard, so this can't loop.
+      let mode = options.mode;
+      let modeRetried = false;
+      // Each retry kind happens at most once (attempt() and modeRetried see
+      // to that), so this ends in three attempts at worst.
+      while (true) {
+        const outcome = await attempt(mode);
+        if (outcome === 'retry_without_mode' && !modeRetried) {
+          // A plain-chat request can't trip the same guard again.
+          modeRetried = true;
+          mode = undefined;
+        } else if (outcome !== 'retry_fresh_token') {
+          return;
+        }
         buffer = '';
-        await attempt(undefined);
       }
     } catch (e: any) {
       if (e?.name === 'AbortError' || controller.signal.aborted) return;
@@ -746,7 +738,6 @@ type SetMessagesFn = React.Dispatch<React.SetStateAction<ChatMessage[]>>;
 function createTypewriter(
   messageId: string,
   setMessages: SetMessagesFn,
-  scrollRef: React.RefObject<ScrollView | null>,
   // An opening holds its first line back until it is clearly not a pre-tool
   // "let me check" line (a tool call starts, a line break, or it grows past
   // what that line can be), so the line never flashes on screen.
@@ -791,8 +782,8 @@ function createTypewriter(
     setMessages(prev => prev.map(m =>
       m.id === messageId ? { ...m, content: displayed } : m
     ));
-    // Auto-scroll while typing — animated:false keeps it cheap.
-    scrollRef.current?.scrollToEnd({ animated: false });
+    // No scroll while typing: the reader stays on the reply's first lines and
+    // scrolls on when they are ready.
   };
 
   const start = () => {
@@ -1062,6 +1053,105 @@ function WorkoutEditCard({
   );
 }
 
+// When a reply starts, scroll once so the question it answers sits at the top
+// of the screen; the reply then types in under it with no more scrolling. A
+// tail space under the thread gives that scroll room: one full screen while
+// the reply types (it follows the screen's height), then only what a short
+// reply still needs, so the question does not drop when it ends. Once per
+// reply, so a lookup mid-reply never pulls the reader back.
+function useQuestionPin(
+  scrollRef: React.RefObject<ScrollView | null>,
+  messages: ChatMessage[],
+  loading: boolean,
+  // Read as the reply starts: false leaves that reply where it is.
+  shouldPin: () => boolean = () => true,
+) {
+  const lastUserYRef = useRef(0);
+  const contentHRef = useRef(0);
+  // Where the thread ends: the tail's own top, so it never counts the tail.
+  const threadEndRef = useRef(0);
+  const pinnedIdRef = useRef<string | null>(null);
+  // The scroll waits until the tail space is in, or it would stop short. A
+  // reply that ends first still gets it: the wait outlives the reply.
+  const pendingRef = useRef(false);
+  const shouldPinRef = useRef(shouldPin);
+  shouldPinRef.current = shouldPin;
+  const [viewH, setViewH] = useState(0);
+  const [tail, setTail] = useState<'fill' | number>(0);
+  const tailRef = useRef(tail);
+  tailRef.current = tail;
+  const tailSpace = tail === 'fill' ? viewH : tail;
+
+  const last = messages[messages.length - 1];
+  const writingId = loading && last?.role === 'assistant' && last.content !== '' ? last.id : null;
+  const lastUserId = [...messages].reverse().find((m) => m.role === 'user' && !m.context)?.id ?? null;
+
+  const neededH = () => pinRoom(lastUserYRef.current, Spacing.md, viewH);
+  const pin = () => {
+    pendingRef.current = false;
+    scrollRef.current?.scrollTo({ y: pinOffset(lastUserYRef.current, Spacing.md), animated: true });
+  };
+  const settleTail = () => {
+    const next = tailAfterReply(threadEndRef.current, lastUserYRef.current, Spacing.md, viewH);
+    if (next !== tailRef.current) setTail(next);
+  };
+
+  useEffect(() => {
+    if (!writingId || pinnedIdRef.current === writingId) return;
+    pinnedIdRef.current = writingId;
+    if (!shouldPinRef.current()) return;
+    setTail('fill');
+    // Room already there: no new content size is coming to wait for.
+    if (contentHRef.current >= neededH()) pin();
+    else pendingRef.current = true;
+  }, [writingId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (loading || tailRef.current === 0) return;
+    settleTail();
+  }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The screen's height changed (first layout, or the keyboard closing) while
+  // a pin waits: the room it needs moved, and no content change may follow.
+  useEffect(() => {
+    if (pendingRef.current && contentHRef.current >= neededH()) pin();
+  }, [viewH]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A new turn, or another chat opened: no tail, no scroll waiting.
+  const reset = useCallback(() => {
+    pendingRef.current = false;
+    pinnedIdRef.current = null;
+    setTail(0);
+  }, []);
+
+  return {
+    tailSpace,
+    reset,
+    // A kept sheet (closed while Drona works) is hidden with display: none and
+    // lays out at 0 height; keep the last real height so a reply finishing out
+    // of sight still gets the tail it needs when the sheet comes back.
+    onScrollLayout: (e: LayoutChangeEvent) => {
+      const h = e.nativeEvent.layout.height;
+      if (h > 0) setViewH(h);
+    },
+    onContentSizeChange: (_w: number, h: number) => {
+      contentHRef.current = h;
+      if (pendingRef.current && h >= neededH()) pin();
+    },
+    // onLayout for the tail space. The reply's last rows (copy button,
+    // sources) land after loading ends and move the tail down, so a finished
+    // reply's tail is worked out again each time it moves.
+    onTailLayout: (e: LayoutChangeEvent) => {
+      threadEndRef.current = e.nativeEvent.layout.y;
+      if (!loading && tailRef.current !== 0) settleTail();
+    },
+    // onLayout for a message row: only the latest question is measured.
+    userLayout: (id: string) => (id === lastUserId
+      ? (e: LayoutChangeEvent) => { lastUserYRef.current = e.nativeEvent.layout.y; }
+      : undefined),
+  };
+}
+
 // ─── Chat Screen ─────────────────────────────────────────────────────────────
 function ChatScreen({
   onBack,
@@ -1108,7 +1198,7 @@ function ChatScreen({
   // Falls back to null in guest mode (no Clerk key).
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
-  const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
+  const getToken: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
   // The starter (visible greeting) the chat opens on. Tailored to workout mode.
   const makeStarter = (): ChatMessage =>
     workoutContext
@@ -1160,6 +1250,9 @@ function ChatScreen({
   }, [workoutContext]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  // The last turn ended in an error, for the "couldn't finish" notice.
+  const [turnFailed, setTurnFailed] = useState(false);
+  useCoachBusy(loading, turnFailed);
   const toast = useToast();
   // P4: a coach-proposed nutrition-target change (from the propose_targets
   // terminal tool). Transient, not persisted: it is an action prompt that sits
@@ -1177,6 +1270,12 @@ function ChatScreen({
   // re-answers regardless.
   const [capHit, setCapHit] = useState<null | 'cap' | 'pro'>(null);
   const scrollRef = useRef<ScrollView>(null);
+  // The very first reply needs no pin: the hero folds away and the thread
+  // starts at the top anyway. This reads heroVisible as the first words land;
+  // the hero only hides after its fold (setHeroVisible(false) on a timer), so
+  // it is still true then. Hiding it sooner would pin the first reply too.
+  const questionPin = useQuestionPin(scrollRef, messages, loading,
+    () => stage === 'chat' && !(heroVisible && !workoutContext));
   // Tracks the in-flight stream so we can abort it on screen dismiss /
   // unmount and avoid late callbacks firing into an unmounted component
   // (also stops burning Anthropic tokens after the user has left).
@@ -1246,7 +1345,10 @@ function ChatScreen({
     // reply's text.
     typewriterRef.current = null;
     if (!opens) setInput('');
+    Keyboard.dismiss();
+    questionPin.reset();
     setLoading(true);
+    setTurnFailed(false);
     const askedAt = Date.now();
     track('coach_message_sent', {
       chars: text.length,
@@ -1296,6 +1398,7 @@ function ChatScreen({
           ? err.message
           : 'Coach Drona is currently unavailable. Try again in a moment.';
         setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: errText } : m));
+        setTurnFailed(true);
       }
       setLoading(false);
       return;
@@ -1312,6 +1415,7 @@ function ChatScreen({
       setMessages(prev => prev.map(m =>
         m.id === assistantId ? { ...m, content: 'Not signed in. Please sign in again.' } : m
       ));
+      setTurnFailed(true);
       setLoading(false);
       return;
     }
@@ -1326,7 +1430,7 @@ function ChatScreen({
     // if the server delivers in chunky bursts the user sees smooth typing.
     // This is how ChatGPT/Claude.ai/Perplexity all do it: the network is
     // bursty, the animation is smooth.
-    const typewriter = createTypewriter(assistantId, setMessages, scrollRef, { holdFirstLine: opens });
+    const typewriter = createTypewriter(assistantId, setMessages, { holdFirstLine: opens });
     typewriterRef.current = typewriter;
     // Per-invocation flag: did the live `structured` event already deliver this
     // turn's workout edit? Guards the onDone fallback against a double card.
@@ -1471,6 +1575,7 @@ function ChatScreen({
       onError: (errStr) => {
         typewriter.fail(errStr);
         track('coach_failed', { latency_ms: Date.now() - askedAt, mode: workoutContext ? 'live_workout' : 'chat' });
+        setTurnFailed(true);
         setLoading(false);
         streamRef.current = null;
       },
@@ -1502,6 +1607,7 @@ function ChatScreen({
       conversationId: workoutContext ? undefined : ensureActiveConversationId(userId),
       clientMsgId: workoutContext ? undefined : userMsg?.id,
       ...(opens ? { openedByApp: true } : {}),
+      freshToken: freshTokenFrom(getToken),
     });
   }, [input, loading, messages, supabase, getToken, workoutContext, canEditWorkout, markStarted, setMessages, userId]);
 
@@ -1742,8 +1848,7 @@ function ChatScreen({
     const b = boxLayoutRef.current;
     if (!b || !wrapWidthRef.current) return null;
     if (liftedRef.current) return { x: wrapWidthRef.current / 2, y: LIFT_CENTER_Y, s: LIFT_ORB };
-    // Field slot: border 1 + box padding 12 + slot margin -4, then half the slot.
-    return { x: b.x + 1 + Spacing.md - 4 + FIELD_ORB / 2, y: b.y + b.h - 1 - 6 - 18, s: FIELD_ORB };
+    return fieldOrbTarget(b);
   }, []);
 
   const cx = useSharedValue(0);
@@ -1839,12 +1944,19 @@ function ChatScreen({
     auraBreath.value = lifted
       ? withRepeat(withSequence(withTiming(0.7, { duration: 1600 }), withTiming(1, { duration: 1600 })), -1)
       : withTiming(1, { duration: 300 });
-    if (lifted) {
+    // Only the first wait scrolls down to the orb. A lookup after the reply
+    // has started leaves the reader where they are. pendingMsg is read
+    // outside the deps on purpose: lifted flips in the same render that sets
+    // it, so this render's value is the one that lifted.
+    if (lifted && pendingMsg?.content === '') {
       const a = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
       const b = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 650);
       return () => { clearTimeout(a); clearTimeout(b); };
     }
   }, [lifted]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A new chat starts with no tail space.
+  useEffect(() => { if (stage !== 'chat') questionPin.reset(); }, [stage, questionPin.reset]);
 
   const dockStyle = useAnimatedStyle(() => ({
     opacity: dockO.value,
@@ -1944,6 +2056,8 @@ function ChatScreen({
         contentContainerStyle={s.chatMessages}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        onLayout={questionPin.onScrollLayout}
+        onContentSizeChange={questionPin.onContentSizeChange}
       >
         {/* Hero: the empty chat and the first wait. Folds away (height to 0)
             once the first words arrive and the orb has left for the dock. */}
@@ -2018,7 +2132,10 @@ function ChatScreen({
           // Derived from state, so render never reads a mutable ref.
           const streaming = loading && idx === messages.length - 1 && msg.role === 'assistant';
           return (
-            <View key={msg.id}>
+            <View
+              key={msg.id}
+              onLayout={questionPin.userLayout(msg.id)}
+            >
               {!bubbleOnlyHoldsTheCard && (
               <>
               <Pressable
@@ -2079,6 +2196,10 @@ function ChatScreen({
             </View>
           );
         })}
+        {/* The question pin's tail space sits right under the thread, above
+            the lifted orb's room, so the orb's room shrinking away never
+            moves the point it measures from. */}
+        <View style={{ height: questionPin.tailSpace }} onLayout={questionPin.onTailLayout} />
         {/* Room for the lifted orb, so it never sits on the last message. */}
         <Animated.View style={liftSpaceStyle} />
       </ScrollView>
@@ -2229,7 +2350,7 @@ function ChatScreen({
             </TouchableOpacity>
           )}
         </View>
-        <MedicalDisclaimer variant="short" style={{ marginTop: Spacing.sm }} />
+        <MedicalDisclaimer variant="line" style={{ marginTop: Spacing.sm }} />
 
         {/* What Drona is doing, under the lifted orb. */}
         <Animated.View style={[s.liftLabel, liftLabelStyle]} pointerEvents="none">
@@ -2292,6 +2413,7 @@ function ChatScreen({
               // A reply still streaming belongs to the thread being left.
               handleStop();
               openConversation(id);
+              questionPin.reset();
               setShowHistory(false);
               setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 50);
             }}
@@ -2306,6 +2428,68 @@ function ChatScreen({
 
       <SelectTextSheet target={sheetTarget} onClose={() => setSheetTarget(null)} />
     </View>
+  );
+}
+
+// The "why" under a generated workout or plan shows 2 lines. Drona is asked
+// for 25 words, but an older reply or a refine can run long, so a tap opens
+// the rest instead of losing it behind the ellipsis.
+function BriefRationale({ text, color }: { text: string; color: string }) {
+  const [open, setOpen] = useState(false);
+  // A refine swaps the text: start it closed again.
+  useEffect(() => setOpen(false), [text]);
+  return (
+    <Text
+      style={[s.rationaleText, { color }]}
+      numberOfLines={open ? undefined : 2}
+      onPress={() => setOpen((o) => !o)}
+      suppressHighlighting
+      accessibilityRole="button"
+      accessibilityState={{ expanded: open }}
+      accessibilityHint={open ? undefined : 'Shows the rest'}
+    >
+      {text}
+    </Text>
+  );
+}
+
+// One exercise, compact: number, name, sets x reps. A tap opens its rest and
+// the coach's cue underneath, so the day reads as a short list, not a page.
+function PlanExerciseRow({ ex, index, first }: { ex: GeneratedExercise; index: number; first: boolean }) {
+  const { C } = useTheme();
+  const [open, setOpen] = useState(false);
+  // A reply can leave reps out; then the row says the sets alone.
+  const setsText = ex.reps ? `${ex.sets} × ${ex.reps}` : `${ex.sets} sets`;
+  // A screen reader hears the rest always, and the cue once the row is open;
+  // closed, it hears that there is one to open.
+  const spoken = [
+    ex.reps ? `${ex.name}, ${ex.sets} sets of ${ex.reps}` : `${ex.name}, ${ex.sets} sets`,
+    ex.rest ? `rest ${ex.rest}` : null,
+    ex.note ? (open ? ex.note : 'has a coaching tip') : null,
+  ].filter(Boolean).join(', ');
+  return (
+    <Pressable
+      onPress={() => setOpen((o) => !o)}
+      style={[s.exRow, !first && { borderTopWidth: StyleSheet.hairlineWidth, borderColor: C.borderSubtle }]}
+      accessibilityRole="button"
+      accessibilityState={{ expanded: open }}
+      accessibilityLabel={spoken}
+    >
+      <View style={s.exRowTop}>
+        <Text style={[s.exIndex, { color: C.textMuted }]}>{String(index + 1).padStart(2, '0')}</Text>
+        <Text style={[s.exName, { color: C.foreground }]} numberOfLines={open ? undefined : 1}>{ex.name}</Text>
+        <Text style={[s.exSets, { color: C.textSecondary }]}>{setsText}</Text>
+        <Feather name={open ? 'chevron-up' : 'chevron-down'} size={12} color={C.textMuted} />
+      </View>
+      {open && (
+        <Animated.View entering={FadeIn.duration(160)} style={s.exDetail}>
+          {ex.rest ? (
+            <Text style={[s.exDetailMeta, { color: C.textMuted }]}>Rest {ex.rest}</Text>
+          ) : null}
+          {ex.note ? <Text style={[s.exDetailNote, { color: C.textSecondary }]}>{ex.note}</Text> : null}
+        </Animated.View>
+      )}
+    </Pressable>
   );
 }
 
@@ -2330,7 +2514,12 @@ function WorkoutCard({
 }) {
   const { C } = useTheme();
   const exerciseCountLabel = `${workout.exercises.length} exercise${workout.exercises.length === 1 ? '' : 's'}`;
+  // An estimate, so it keeps its ~.
   const durationLabel = workout.estimated_duration_min ? ` · ~${workout.estimated_duration_min} min` : '';
+  // One line under the title: the day's theme, or its focus. A tap opens a
+  // longer one; the card is the only place the day note is shown.
+  const subLine = workoutNote ?? workout.focus ?? null;
+  const [subOpen, setSubOpen] = useState(false);
   const Wrapper: any = animated ? Animated.View : View;
   const wrapperProps: any = animated
     ? { entering: FadeInDown.delay(delayMs).duration(300) }
@@ -2340,47 +2529,35 @@ function WorkoutCard({
       {...wrapperProps}
       style={[s.resultCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
     >
-      <Text style={[s.resultCardTitle, { color: C.foreground }]}>{workout.name}</Text>
-      {workout.focus && (
-        <Text style={[s.resultCardFocus, { color: C.accentText }]}>{workout.focus}</Text>
-      )}
-      <Text style={[s.resultCardSub, { color: C.mutedFg }]}>
-        {exerciseCountLabel}{durationLabel}
-      </Text>
-
-      {workoutNote && (
-        <Text style={[s.workoutNoteCaption, { color: C.mutedFg }]}>
-          {workoutNote}
+      <View style={s.dayHead}>
+        <Text style={[s.dayTitle, { color: C.foreground }]} numberOfLines={1}>{workout.name}</Text>
+        <Text style={[s.dayCount, { color: C.textMuted }]}>{exerciseCountLabel}{durationLabel}</Text>
+      </View>
+      {subLine ? (
+        <Text
+          style={[s.daySub, { color: C.textMuted }]}
+          numberOfLines={subOpen ? undefined : 1}
+          onPress={() => setSubOpen((o) => !o)}
+          suppressHighlighting
+          accessibilityRole="button"
+          accessibilityState={{ expanded: subOpen }}
+          accessibilityHint={subOpen ? undefined : 'Shows the rest'}
+        >
+          {subLine}
         </Text>
-      )}
+      ) : null}
 
       {showRationale && workout.rationale && (
-        <View style={[s.rationaleCallout, { backgroundColor: C.primarySubtle, borderColor: C.borderSubtle }]}>
-          <View style={s.rationaleHeader}>
-            <SparkleIcon size={11} color={C.accentText} />
-            <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS WORKS FOR YOU</Text>
-          </View>
-          <Text style={[s.rationaleText, { color: C.foreground }]}>
-            {workout.rationale}
-          </Text>
+        <View style={s.whyBlock}>
+          <BriefRationale text={workout.rationale} color={C.textSecondary} />
         </View>
       )}
 
-      {workout.exercises.map((ex, ei) => (
-        <View key={ei} style={[s.resultExRowOuter, { borderColor: C.borderSubtle }]}>
-          <View style={s.resultExRowTop}>
-            <Text style={[s.resultExName, { color: C.foreground, flex: 1 }]} numberOfLines={2}>{ex.name}</Text>
-            <Text style={[s.resultExDetail, { color: C.mutedFg }]}>
-              {ex.sets}×{ex.reps} · {ex.rest}
-            </Text>
-          </View>
-          {ex.note && (
-            <Text style={[s.resultExNote, { color: C.mutedFg }]} numberOfLines={3}>
-              {ex.note}
-            </Text>
-          )}
-        </View>
-      ))}
+      <View style={s.exList}>
+        {workout.exercises.map((ex, ei) => (
+          <PlanExerciseRow key={ei} ex={ex} index={ei} first={ei === 0} />
+        ))}
+      </View>
     </Wrapper>
   );
 }
@@ -2474,6 +2651,8 @@ function GeneratePlanScreen({
   onRequestUpgrade,
   seed,
   phaseId,
+  phaseNumber,
+  autoStart,
 }: {
   onBack: () => void;
   onSaveRoutines: (routines: GeneratedWorkout[]) => void;
@@ -2482,13 +2661,22 @@ function GeneratePlanScreen({
   // the form + prompt so the generated split matches a specific program phase.
   seed?: { goal?: string; days?: string; note?: string };
   // The phase being built. Sent with the request so a free user's first
-  // phase-1 build is let through by the server.
+  // phase-1 build is let through by the server. Also keys the draft
+  // (lib/phaseDraft.ts): a built plan is kept on the device until Save, so
+  // leaving this screen, closing the sheet or opening the paywall never
+  // throws it away, and the next visit opens straight on it.
   phaseId?: string;
+  // The phase's number as people read it (1 = first): the title and Save say
+  // which phase these workouts are for.
+  phaseNumber?: number;
+  // Skip the form and build at once (the post-sign-up build and the
+  // dashboard's "Build phase 1"). Ignored when a draft is waiting.
+  autoStart?: boolean;
 }) {
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
-  const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
+  const getToken: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
 
   const [goal, setGoal] = useState(seed?.goal ?? '');
   const [days, setDays] = useState(seed?.days ?? '4 days');
@@ -2507,6 +2695,10 @@ function GeneratePlanScreen({
   const planDaysRef = useRef(0);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [result, setResult] = useState<GeneratedPlan | null>(null);
+  useCoachBusy(loading || refining, !!errorText, !!result);
+  // True while the phase draft is being read, so the form never flashes
+  // before a waiting draft (or an auto build) takes the screen.
+  const [restoring, setRestoring] = useState(!!phaseId);
   // Toggled by the "Refine with AI" button on the result view. When true
   // (and result is non-null), we mount RefineChatScreen instead of the
   // result card. The chat hands back the updated plan via onRefined,
@@ -2554,6 +2746,9 @@ function GeneratePlanScreen({
   };
 
   const buildInitialPrompt = () =>
+    // An automatic build has no form answers, so it asks Drona to use what
+    // the profile already says rather than the form's defaults.
+    autoStart && seed?.note ? phaseBuildPrompt(seed.note) :
     // Gate on the NOTE, not just `seed`: the note is the entire substance of a
     // phase-seeded build (it carries the split + cadence). Without it this
     // branch would emit "Design my training split. undefined Keep sessions..."
@@ -2704,9 +2899,14 @@ function GeneratePlanScreen({
         },
       },
       // phaseId only on a fresh build: each request carrying it spends one of a
-      // free user's 3 phase-1 tries. (Refine runs through RefineChatScreen with
-      // a mode, which the server never counts.)
-      { forceTool: 'generate_plan', phaseId: isRefine ? undefined : phaseId },
+      // free user's 3 phase-1 tries. (Refine runs through RefineChatScreen in
+      // refine_plan mode; with the phase id it spends one of the free user's
+      // 8 refine turns on that draft instead, try_claim_free_phase_refine.)
+      {
+        forceTool: 'generate_plan',
+        phaseId: isRefine ? undefined : phaseId,
+        freshToken: freshTokenFrom(getToken),
+      },
     );
   };
 
@@ -2715,6 +2915,35 @@ function GeneratePlanScreen({
     conversationRef.current = [{ role: 'user', content: prompt }];
     await runGeneration(conversationRef.current, false);
   };
+
+  // On open: a waiting draft wins (it is what the user built and has not
+  // saved); else an automatic build starts. Runs once per phase.
+  const openedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!phaseId) { setRestoring(false); return; }
+    if (openedFor.current === phaseId) return;
+    openedFor.current = phaseId;
+    let alive = true;
+    readPhaseDraft(phaseId).then((d) => {
+      if (!alive) return;
+      setRestoring(false);
+      if (d) {
+        setResult(d.plan);
+        conversationRef.current = [{ role: 'assistant', content: planToText(d.plan) }];
+        track('phase_draft_restored', { source: d.source, workouts: d.plan.workouts.length, age_hours: Math.round((Date.now() - d.builtAt) / 3600000) });
+        return;
+      }
+      if (autoStart && seed?.note) void handleGenerate();
+    });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phaseId]);
+
+  // Every plan this screen holds for a phase is kept as its draft, refined
+  // versions included, until Save clears it (handleSaveRoutines).
+  useEffect(() => {
+    if (phaseId && result) void writePhaseDraft(phaseId, result, 'build');
+  }, [phaseId, result]);
 
   // ── Discuss chat (pre-generate conversational) ──────────────────────────
   // Mounted instead of the form when the user taps "Or chat with Coach
@@ -2728,6 +2957,7 @@ function GeneratePlanScreen({
       <RefineChatScreen
         kind="discuss"
         mode="refine_plan"
+        phaseId={phaseId}
         onRequestUpgrade={onRequestUpgrade}
         onBack={() => setShowDiscussChat(false)}
         onRefined={(next) => {
@@ -2756,6 +2986,7 @@ function GeneratePlanScreen({
         kind="refine"
         mode="refine_plan"
         plan={result}
+        phaseId={phaseId}
         onRequestUpgrade={onRequestUpgrade}
         onBack={() => setShowRefineChat(false)}
         onRefined={(next) => {
@@ -2775,7 +3006,12 @@ function GeneratePlanScreen({
       <View style={{ flex: 1 }}>
         <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
           <TouchableOpacity
-            onPress={() => { setResult(null); setShowRefineChat(false); conversationRef.current = []; }}
+            // A phase plan is a draft: Back leaves it waiting instead of
+            // dropping the user on an empty form (one way plans were lost).
+            onPress={() => {
+              if (phaseId) { onBack(); return; }
+              setResult(null); setShowRefineChat(false); conversationRef.current = [];
+            }}
             style={[s.backBtn, { backgroundColor: C.muted }]}
             hitSlop={8}
             accessibilityRole="button"
@@ -2784,7 +3020,9 @@ function GeneratePlanScreen({
             <Feather name="arrow-left" size={16} color={C.foreground} />
           </TouchableOpacity>
           <SparkleIcon size={16} color={C.accentText} />
-          <Text style={[s.screenTitle, { color: C.foreground }]}>Your Plan</Text>
+          <Text style={[s.screenTitle, { color: C.foreground }]}>
+            {phaseId && phaseNumber ? `Phase ${phaseNumber} workouts` : 'Your Plan'}
+          </Text>
         </View>
         <ScrollView contentContainerStyle={{ padding: Spacing.xl, paddingBottom: 24, gap: 16 }}>
           {/* Plan header + plan-level rationale (the "why" for the whole program) */}
@@ -2792,29 +3030,18 @@ function GeneratePlanScreen({
             entering={FadeInDown.duration(300)}
             style={[s.resultCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
           >
-            <Text style={[s.resultCardTitle, { color: C.foreground }]}>{result.name}</Text>
+            <Text style={[s.planTitle, { color: C.foreground }]}>{result.name}</Text>
             {(result.split_type || result.days_per_week) && (
-              <View style={s.planMetaRow}>
-                {result.split_type && (
-                  <Text style={[s.planMetaText, { color: C.accentText }]}>{result.split_type}</Text>
-                )}
-                {result.split_type && result.days_per_week && (
-                  <Text style={[s.planMetaText, { color: C.mutedFg }]}>·</Text>
-                )}
-                {result.days_per_week && (
-                  <Text style={[s.planMetaText, { color: C.mutedFg }]}>
-                    {result.days_per_week} day{result.days_per_week === 1 ? '' : 's'}/week
-                  </Text>
-                )}
-              </View>
+              <Text style={[s.planMeta, { color: C.textMuted }]}>
+                {[
+                  result.split_type,
+                  result.days_per_week ? `${result.days_per_week} day${result.days_per_week === 1 ? '' : 's'} a week` : null,
+                ].filter(Boolean).join(' · ')}
+              </Text>
             )}
             {result.rationale && (
-              <View style={[s.rationaleCallout, { backgroundColor: C.primarySubtle, borderColor: C.borderSubtle }]}>
-                <View style={s.rationaleHeader}>
-                  <SparkleIcon size={11} color={C.accentText} />
-                  <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS PLAN FITS YOU</Text>
-                </View>
-                <Text style={[s.rationaleText, { color: C.foreground }]}>{result.rationale}</Text>
+              <View style={s.whyBlock}>
+                <BriefRationale text={result.rationale} color={C.textSecondary} />
               </View>
             )}
           </Animated.View>
@@ -2853,7 +3080,7 @@ function GeneratePlanScreen({
             style={[s.secondaryBtn, { backgroundColor: C.muted }, refining && { opacity: 0.6 }]}
           >
             <Feather name="message-circle" size={14} color={C.mutedFg} />
-            <Text style={[s.secondaryBtnText, { color: C.mutedFg }]}>Refine with AI</Text>
+            <Text style={[s.secondaryBtnText, { color: C.mutedFg }]}>{phaseId ? 'Talk it through with Drona' : 'Refine with AI'}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             onPress={() => onSaveRoutines(result.workouts)}
@@ -2861,12 +3088,20 @@ function GeneratePlanScreen({
             style={[s.primaryBtn, refining && { opacity: 0.6 }]}
           >
             <Feather name="check" size={16} color={Colors.primaryFg} />
-            <Text style={s.primaryBtnText}>Save All Routines</Text>
+            <Text style={s.primaryBtnText}>{phaseId ? (phaseNumber ? `Save phase ${phaseNumber} workouts` : 'Save these workouts') : 'Save All Routines'}</Text>
           </TouchableOpacity>
+          {phaseId ? (
+            <Text style={[s.draftNote, { color: C.textMuted }]}>
+              Nothing is saved until you tap Save. I keep this draft for you.
+            </Text>
+          ) : null}
         </View>
       </View>
     );
   }
+
+  // Reading the draft: a quiet frame, never the form.
+  if (restoring) return <View style={{ flex: 1 }} />;
 
   // ── Loading state (first generation only — refinement now happens in a
   // separate RefineChatScreen mounted via showRefineChat, not over the card).
@@ -3018,6 +3253,21 @@ function GeneratePlanScreen({
 }
 
 // ─── Generate Program Screen ─────────────────────────────────────────────────
+/**
+ * The program the user already follows, when the program chat is opened to
+ * CHANGE it (Goal & Plan's "Adjust with Drona"): Drona's greeting says where
+ * they are instead of offering to build a new program. The server already
+ * reads the active program into every mode's context; this only sets the
+ * conversation's opening.
+ */
+export interface ExistingProgramOpener {
+  title: string;
+  phaseName: string;
+  /** The week inside the phase, when the phase is the one running now. */
+  week: number | null;
+  weeks: number | null;
+}
+
 // Coach designs a scheduled multi-week program through conversation
 // (discuss_program), emits it via generate_program, and the user reviews the
 // phase timeline and taps Apply. Apply (handleSaveProgram in the parent)
@@ -3028,15 +3278,46 @@ function GenerateProgramScreen({
   onApply,
   onRequestUpgrade,
   initialDraft,
+  existing,
 }: {
   onBack: () => void;
   onApply: (program: GeneratedProgram) => void;
   onRequestUpgrade?: (kind: 'cap' | 'pro') => void;
   initialDraft?: string;
+  existing?: ExistingProgramOpener;
 }) {
   const { C } = useTheme();
   const [result, setResult] = useState<GeneratedProgram | null>(null);
+  // Its chat (RefineChatScreen) reports busy; this adds that a program exists.
+  useCoachBusy(false, false, !!result);
   const [showRefine, setShowRefine] = useState(false);
+  // A NEW program starts with the question screens (components/program/
+  // GoalIntake), then the chat opens on the answers and Drona proposes the
+  // phases and asks to confirm. Changing a program, or a typed request,
+  // goes straight to the chat. 'asking': on the questions. 'skipped': the
+  // open chat. Answers: the chat, sent with them.
+  const [intake, setIntake] = useState<'asking' | 'skipped' | GoalIntakeAnswers>(
+    () => (existing || initialDraft ? 'skipped' : 'asking'),
+  );
+  // The last answers, so Back from the chat or the program reopens them on review.
+  // Intended: Back leaves the chat, and "Ask Drona to plan it" then starts a
+  // fresh one on the (maybe changed) answers. The old talk is not carried over.
+  const [lastAnswers, setLastAnswers] = useState<GoalIntakeAnswers | undefined>(undefined);
+  const intakeSend = useMemo(
+    () => (typeof intake === 'object' ? { text: goalIntakeMessage(intake), shown: goalIntakeSummary(intake) } : undefined),
+    [intake],
+  );
+
+  if (!result && intake === 'asking') {
+    return (
+      <GoalIntake
+        initial={lastAnswers}
+        onBack={onBack}
+        onSkip={() => setIntake('skipped')}
+        onDone={(answers) => { setLastAnswers(answers); setIntake(answers); }}
+      />
+    );
+  }
 
   // Discuss first: talk it through, coach emits generate_program → result card.
   if (!result) {
@@ -3044,10 +3325,12 @@ function GenerateProgramScreen({
       <RefineChatScreen
         kind="discuss"
         mode="refine_program"
-        onBack={onBack}
+        onBack={lastAnswers ? () => setIntake('asking') : onBack}
         onRefined={(next) => setResult(next as GeneratedProgram)}
         onRequestUpgrade={onRequestUpgrade}
         initialDraft={initialDraft}
+        existing={existing}
+        autoSend={intakeSend}
       />
     );
   }
@@ -3066,20 +3349,29 @@ function GenerateProgramScreen({
     );
   }
 
-  // Cumulative week ranges for the phase timeline (relative to program start).
-  let acc = 0;
-  const ranges = result.phases.map((p) => {
-    const start = acc + 1;
-    acc += p.duration_weeks;
-    return { start, end: acc };
-  });
-  const totalWeeks = acc;
+  // The draft reads like onboarding's plan reveal: the name and its numbers,
+  // the weight curve when there is a weight to move, the road of phases
+  // (components/program/ProgramRoad, shared with onboarding), and Drona's why.
+  const totalWeeks = result.phases.reduce((n, p) => n + p.duration_weeks, 0);
+  const unit = lastAnswers?.unit ?? 'kg';
+  const nowKg = lastAnswers?.currentKg ?? null;
+  const goalKg = result.target_weight_kg ?? null;
+  const endDate = result.target_date
+    ? new Date(`${result.target_date}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    : null;
+  const showCurve = nowKg != null && goalKg != null && endDate != null && Math.abs(goalKg - nowKg) >= 1;
+  const draftSub = [
+    totalWeeks > 0 ? `${totalWeeks} weeks` : null,
+    `${result.phases.length} ${result.phases.length === 1 ? 'phase' : 'phases'}`,
+    goalKg != null ? `${nowKg != null ? `${formatIntakeWeight(nowKg, unit)} to ` : 'target '}${formatIntakeWeight(goalKg, unit)}` : null,
+    endDate ? `by ${endDate}` : null,
+  ].filter(Boolean).join(' · ');
 
   return (
     <View style={{ flex: 1 }}>
       <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
         <TouchableOpacity
-          onPress={() => setResult(null)}
+          onPress={() => { setResult(null); if (lastAnswers) setIntake('asking'); }}
           style={[s.backBtn, { backgroundColor: C.muted }]}
           hitSlop={8}
           accessibilityRole="button"
@@ -3090,94 +3382,38 @@ function GenerateProgramScreen({
         <SparkleIcon size={16} color={C.accentText} />
         <Text style={[s.screenTitle, { color: C.foreground }]}>Your Program</Text>
       </View>
-      <ScrollView contentContainerStyle={{ padding: Spacing.xl, paddingBottom: 24, gap: 16 }}>
-        <Animated.View
-          entering={FadeInDown.duration(300)}
-          style={[s.resultCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
-        >
-          <Text style={[s.resultCardTitle, { color: C.foreground }]}>{result.title}</Text>
-          <View style={s.planMetaRow}>
-            {totalWeeks > 0 && (
-              <Text style={[s.planMetaText, { color: C.accentText }]}>{totalWeeks} weeks</Text>
-            )}
-            {result.target_weight_kg != null && (
-              <Text style={[s.planMetaText, { color: C.mutedFg }]}>· target {result.target_weight_kg} kg</Text>
-            )}
-            {result.target_date && (
-              <Text style={[s.planMetaText, { color: C.mutedFg }]}>· by {result.target_date}</Text>
-            )}
-          </View>
-          {result.objective && (
-            <Text style={[s.rationaleText, { color: C.foreground, marginTop: 8 }]}>{result.objective}</Text>
-          )}
-          {result.rationale && (
-            <View style={[s.rationaleCallout, { backgroundColor: C.primarySubtle, borderColor: C.borderSubtle }]}>
-              <View style={s.rationaleHeader}>
-                <SparkleIcon size={11} color={C.accentText} />
-                <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS PROGRAM</Text>
-              </View>
-              <Text style={[s.rationaleText, { color: C.foreground }]}>{result.rationale}</Text>
-            </View>
-          )}
+      <ScrollView contentContainerStyle={{ padding: Spacing.xl, paddingBottom: 24 }}>
+        <Animated.View entering={FadeInDown.duration(300)}>
+          <Text style={[s.draftTitle, { color: C.foreground }]}>{result.title}</Text>
+          {draftSub !== '' && <Text style={[s.draftSub, { color: C.textMuted }]}>{draftSub}</Text>}
         </Animated.View>
 
-        {result.phases.map((ph, i) => {
-          const r = ranges[i];
-          const weekLabel = r.start === r.end ? `Week ${r.start}` : `Weeks ${r.start}-${r.end}`;
-          const d = ph.diet;
-          const dietLine = [
-            d.calories != null ? `${d.calories} kcal` : null,
-            d.protein_g != null ? `${d.protein_g}g protein` : null,
-          ].filter(Boolean).join(' · ');
-          const blockLine = ph.training_block
-            ? [ph.training_block.split_type,
-               ph.training_block.days_per_week ? `${ph.training_block.days_per_week} days/week` : null,
-               ph.training_block.emphasis].filter(Boolean).join(' · ')
-            : '';
-          return (
-            <Animated.View
-              key={i}
-              entering={FadeInDown.duration(300).delay((i + 1) * 70)}
-              style={[s.resultCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
-            >
-              <Text style={[s.resultCardTitle, { color: C.foreground, fontSize: FontSize.base }]}>{ph.name}</Text>
-              <Text style={[s.planMetaText, { color: C.accentText, marginTop: 2 }]}>
-                {weekLabel} · {ph.duration_weeks} week{ph.duration_weeks === 1 ? '' : 's'}
-              </Text>
-              {dietLine !== '' && (
-                <Text style={{ color: C.foreground, fontSize: FontSize.sm, marginTop: 8 }}>{dietLine}</Text>
-              )}
-              {ph.fuel_days && ph.fuel_days.length > 0 && (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 }}>
-                  <Feather name="zap" size={11} color={C.accentText} />
-                  <Text style={{ color: C.accentText, fontSize: FontSize.sm, flexShrink: 1 }}>
-                    {fuelDaysText(ph.fuel_days)}
-                  </Text>
-                </View>
-              )}
-              {ph.activity && (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 }}>
-                  <Feather name="activity" size={11} color={C.accentText} />
-                  <Text style={{ color: C.accentText, fontSize: FontSize.sm, flexShrink: 1 }}>
-                    {activityText(ph.activity)}
-                  </Text>
-                </View>
-              )}
-              {ph.diet_directive && (
-                <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, marginTop: 4 }}>Diet: {ph.diet_directive}</Text>
-              )}
-              {blockLine !== '' && (
-                <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, marginTop: 4 }}>Training: {blockLine}</Text>
-              )}
-              {ph.training_directive && (
-                <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, marginTop: 4 }}>{ph.training_directive}</Text>
-              )}
-              {ph.readiness_directive && (
-                <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, marginTop: 4 }}>Recovery: {ph.readiness_directive}</Text>
-              )}
-            </Animated.View>
-          );
-        })}
+        {showCurve && (
+          <Animated.View entering={FadeInDown.delay(80).duration(400)} style={{ marginTop: Spacing.lg }}>
+            <ProjectedCurve
+              direction={goalKg! < nowKg! ? 'loss' : 'gain'}
+              startLabel={`Now · ${formatIntakeWeight(nowKg!, unit)}`}
+              endLabel={`${endDate} · ${formatIntakeWeight(goalKg!, unit)}`}
+            />
+          </Animated.View>
+        )}
+
+        <ProgramRoad program={result} delay={140} openFirst />
+
+        {result.rationale ? (
+          <Animated.View
+            entering={FadeInDown.delay(260).duration(400)}
+            style={[s.draftCoach, { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder }]}
+          >
+            <View style={[s.draftCoachIcon, { backgroundColor: C.muted }]}>
+              <SparkleIcon size={12} color={C.accentText} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <ClampedText lines={4} style={[s.draftCoachText, { color: C.foreground }]} text={result.rationale} />
+              <Text style={[s.draftCoachSig, { color: C.accentText }]}>WHY THIS PROGRAM</Text>
+            </View>
+          </Animated.View>
+        ) : null}
       </ScrollView>
 
       <View style={[s.refineWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
@@ -3210,7 +3446,7 @@ function GenerateWorkoutScreen({
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
-  const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
+  const getToken: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
 
   const [focus, setFocus] = useState('');
   const [duration, setDuration] = useState('45 min');
@@ -3226,6 +3462,7 @@ function GenerateWorkoutScreen({
   const [genStatus, setGenStatus] = useState<GenStatus>(GEN_START);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [result, setResult] = useState<GeneratedWorkout | null>(null);
+  useCoachBusy(loading || refining, !!errorText, !!result);
   // Toggled by the "Refine with AI" button on the result view. When true
   // (and result is non-null), we mount RefineChatScreen instead of the
   // result card. The chat hands back the updated workout via onRefined,
@@ -3369,7 +3606,7 @@ function GenerateWorkoutScreen({
           onRequestUpgrade?.(kind);
         },
       },
-      { forceTool: 'generate_workout' },
+      { forceTool: 'generate_workout', freshToken: freshTokenFrom(getToken) },
     );
   };
 
@@ -3611,73 +3848,8 @@ function GenerateWorkoutScreen({
   );
 }
 
-// ─── Pure-affirmative detector (refine safety net) ───────────────────────────
-// True when the user's message is essentially "yes — go". Used by
-// RefineChatScreen to set forceTool on the next stream, which guarantees
-// the model emits the refined workout/plan via tool_use instead of writing
-// it as text in the chat (which would be unsaveable). Conservative on
-// purpose: we DON'T want to match "yes but bump volume" or "yes, change
-// the bench to incline" — those are still substantive turns and the model
-// should be free to chat or refine without being forced. So we require
-// the cleaned text to be a short stand-alone affirmation.
-function isPureAffirmative(text: string): boolean {
-  // Strip trailing punctuation and lowercase. Keep length budget tight —
-  // anything past ~30 chars is almost certainly carrying additional intent
-  // beyond the affirmation.
-  const clean = text.trim().toLowerCase().replace(/[.!?,]+$/, '');
-  if (clean.length === 0 || clean.length > 30) return false;
-  const patterns: RegExp[] = [
-    /^yes$/,
-    /^yeah$/,
-    /^yep$/,
-    /^yup$/,
-    /^sure$/,
-    /^ok$/,
-    /^okay$/,
-    /^go$/,
-    /^go ahead$/,
-    /^do it$/,
-    /^let'?s do it$/,
-    /^let'?s go$/,
-    /^sounds good$/,
-    /^looks good$/,
-    /^perfect$/,
-    /^great$/,
-    /^alright$/,
-    /^please$/,
-    /^yes please$/,
-    /^yes go ahead$/,
-    /^go for it$/,
-    /^proceed$/,
-    /^definitely$/,
-    /^absolutely$/,
-    /^confirm$/,
-    // "build" / "build it" family — common in discuss flows where the user
-    // is approving the proposed structure and asking for the build. Mirror
-    // each variant for yes/yeah/yep/yup + build to catch typical phrasings
-    // like "yep build", "yes build it", "yeah build it now".
-    /^build$/,
-    /^build it$/,
-    /^build it now$/,
-    /^build the (plan|workout)$/,
-    /^build it please$/,
-    /^(yes|yeah|yep|yup|ok|okay|sure) build$/,
-    /^(yes|yeah|yep|yup|ok|okay|sure) build it$/,
-    /^(yes|yeah|yep|yup|ok|okay|sure) build it now$/,
-    /^(yes|yeah|yep|yup|ok|okay|sure)[, ]+(go|do it|build it)$/,
-    /^make it$/,
-    /^create it$/,
-    /^let'?s build$/,
-    /^let'?s build it$/,
-    /^confirmed$/,
-    /^finalize$/,
-    /^finalise$/,
-    /^generate$/,
-    /^generate it$/,
-    /^generate the (plan|workout)$/,
-  ];
-  return patterns.some(p => p.test(clean));
-}
+// isPureAffirmative (the refine safety net that forces the terminal tool)
+// lives in lib/coachAffirm.ts, with its tests.
 
 // ─── Refine Chat Screen ──────────────────────────────────────────────────────
 // Conversational refinement of a just-generated workout or plan. Opens from
@@ -3706,6 +3878,9 @@ function RefineChatScreen({
   onRefined,
   onRequestUpgrade,
   initialDraft,
+  existing,
+  phaseId,
+  autoSend,
 }: {
   // 'refine' — iterating on an already-generated workout/plan (workout or
   // plan must be provided). 'discuss' — talking with Coach Drona BEFORE any
@@ -3731,11 +3906,19 @@ function RefineChatScreen({
   // Typed into the box on open, NOT sent: the user reads it and taps send
   // (e.g. the goal sheet's "Change my whole plan with Drona").
   initialDraft?: string;
+  // Discuss-program opened to change the program the user already follows.
+  existing?: ExistingProgramOpener;
+  // The program phase whose plan is being talked through. Sent so the server
+  // can let a free user discuss the phase 1 draft they were given for free.
+  phaseId?: string;
+  // Sent on open as the user's first turn (the goal intake's answers): text
+  // goes to Drona, shown is the short line the bubble shows instead.
+  autoSend?: { text: string; shown: string };
 }) {
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
-  const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
+  const getToken: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
 
   // Pre-compute the recap and the tailored starter. These live as the
   // first two conversation turns (synthetic user recap, then assistant
@@ -3756,6 +3939,15 @@ function RefineChatScreen({
 
   const starterText = (() => {
     if (kind === 'discuss') {
+      if (mode === 'refine_program' && existing) {
+        const where = existing.week != null && existing.weeks != null
+          ? `${existing.phaseName}, week ${existing.week} of ${existing.weeks}`
+          : existing.phaseName;
+        return `You're in ${where}. What would you like to change?`;
+      }
+      if (mode === 'refine_program' && autoSend) {
+        return "I'm Coach Drona. I have your answers. I'll shape the phases with you before I build anything.";
+      }
       if (mode === 'refine_program') {
         return "I'm Coach Drona. Let's build a program toward your goal. Tell me what you're chasing, your timeline if you have one, how many days a week you can train, and anything I should work around. When you're set, I'll lay out the phases.";
       }
@@ -3783,16 +3975,12 @@ function RefineChatScreen({
   ]);
   const [input, setInput] = useState(initialDraft ?? '');
   const [loading, setLoading] = useState(false);
-  // Header mark: traces while waiting on the coach, releases when the reply
-  // lands, static until the first send.
-  const everLoadedRef = useRef(false);
-  // Set after commit, not during render: React may discard a render pass, and
-  // a ref written there would keep the flag from a pass the user never saw.
-  useEffect(() => {
-    if (loading) everLoadedRef.current = true;
-  }, [loading]);
-  const headerMarkState: DronaMarkState = loading ? 'thinking' : everLoadedRef.current ? 'answer' : 'static';
+  const [turnFailed, setTurnFailed] = useState(false);
+  useCoachBusy(loading, turnFailed);
+  const closeSheet = useContext(CoachCloseContext);
   const scrollRef = useRef<ScrollView>(null);
+  // See ChatScreen: a reply types in under its question at the top.
+  const questionPin = useQuestionPin(scrollRef, messages, loading);
   // Stable abort handle — refine turns can run long when the model
   // decides to fetch the user's volume series before proposing changes.
   const streamRef = useRef<{ abort: () => void } | null>(null);
@@ -3817,6 +4005,9 @@ function RefineChatScreen({
   const typewriterRef = useRef<ReturnType<typeof createTypewriter> | null>(null);
   const pendingAssistantIdRef = useRef<string | null>(null);
   const [sheetTarget, setSheetTarget] = useState<MessageSheetTarget | null>(null);
+  // User bubbles that show a short line instead of what was sent (autoSend).
+  const shownRef = useRef(new Map<string, string>());
+  const inputRef = useRef<TextInput>(null);
 
   // Translate a terminal-tool emission into the right shape and hand it
   // up. Guards against double-fire (live + done) and against tool-name
@@ -3836,11 +4027,12 @@ function RefineChatScreen({
     }
   }, [mode, onRefined]);
 
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
+  const handleSend = useCallback(async (override?: { text: string; shown?: string }) => {
+    const text = (override?.text ?? input).trim();
     if (!text || loading) return;
 
     const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', content: text };
+    if (override?.shown) shownRef.current.set(userMsg.id, override.shown);
     const assistantId = (Date.now() + 1).toString();
     const placeholder: ChatMessage = {
       id: assistantId, role: 'assistant', content: '',
@@ -3853,7 +4045,10 @@ function RefineChatScreen({
     // reply's text.
     typewriterRef.current = null;
     setInput('');
+    Keyboard.dismiss();
+    questionPin.reset();
     setLoading(true);
+    setTurnFailed(false);
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
 
     // Build the API conversation. Order matters: the synthetic opener
@@ -3871,7 +4066,9 @@ function RefineChatScreen({
     // therefore optional) overrides. For refine kind, the opener carries
     // the recap because the model needs the live state of the workout/plan.
     const syntheticOpener = kind === 'discuss'
-      ? (mode === 'refine_program'
+      ? (mode === 'refine_program' && existing
+          ? `I already follow my program "${existing.title}" and I'm in ${existing.phaseName}. I want to change part of it. Let's discuss the change before you lay out the updated phases.`
+          : mode === 'refine_program'
           ? "I want to build a scheduled multi-week program toward my goal. Let's discuss it before you lay out the phases."
           : mode === 'refine_plan'
             ? "I want to build a new training plan. Let's discuss what should be in it before you write it."
@@ -3937,12 +4134,13 @@ function RefineChatScreen({
       setMessages(prev => prev.map(m =>
         m.id === assistantId ? { ...m, content: 'Not signed in. Please sign in again.' } : m
       ));
+      setTurnFailed(true);
       setLoading(false);
       return;
     }
 
     streamRef.current?.abort();
-    const typewriter = createTypewriter(assistantId, setMessages, scrollRef);
+    const typewriter = createTypewriter(assistantId, setMessages);
     typewriterRef.current = typewriter;
     streamRef.current = callAICoachStreaming(apiMessages, token, {
       onDelta: (chunk) => typewriter.append(chunk),
@@ -3989,6 +4187,7 @@ function RefineChatScreen({
       },
       onError: (errStr) => {
         typewriter.fail(errStr);
+        setTurnFailed(true);
         setLoading(false);
         streamRef.current = null;
       },
@@ -4009,6 +4208,7 @@ function RefineChatScreen({
       },
     }, {
       mode: effectiveMode,
+      ...(phaseId && mode === 'refine_plan' ? { phaseId } : {}),
       // forceTool is the escape hatch for pure-affirmative turns —
       // guarantees the model emits structured output instead of writing
       // the refined workout as text in the chat. Backend accepts both
@@ -4017,8 +4217,28 @@ function RefineChatScreen({
       // which is true for all refine_*+generate_* and discuss_*+generate_*
       // combinations.
       ...(shouldForceTool ? { forceTool: forceToolName } : {}),
+      freshToken: freshTokenFrom(getToken),
     });
-  }, [input, loading, messages, getToken, recapText, starterText, mode, kind, handleStructured, onRequestUpgrade]);
+  }, [input, loading, messages, getToken, recapText, starterText, mode, kind, handleStructured, onRequestUpgrade, phaseId]);
+
+  // The goal intake's answers go out once, on open.
+  const autoSentRef = useRef(false);
+  useEffect(() => {
+    // Marked sent only when the send can start: a turn still running would
+    // make handleSend return without sending, and the answers would be lost.
+    if (!autoSend || autoSentRef.current || loading) return;
+    autoSentRef.current = true;
+    handleSend(autoSend);
+  }, [autoSend, handleSend, loading]);
+
+  // Drona has proposed and asked whether to build: one tap builds, one tap
+  // opens the box to change something. Only after a question about building
+  // (lib/coachAffirm asksToBuild), never a clarifying one, since "Build it" is
+  // a pure affirmative and forces generate_program.
+  const lastShown = messages[messages.length - 1];
+  const showConfirm = !!autoSend && kind === 'discuss' && mode === 'refine_program'
+    && !loading && !turnFailed && messages.length > 2
+    && lastShown?.role === 'assistant' && asksToBuild(lastShown.content);
 
   // Stop generating (see ChatScreen.handleStop). One difference: if the
   // terminal tool had already fired, the plan/workout exists server-side and
@@ -4059,17 +4279,115 @@ function RefineChatScreen({
     setSheetTarget({ role: msg.role, text: plainTextOf(msg), surface: `${kind}_${mode}` });
   }, [kind, mode, plainTextOf]);
 
+  // ─── Drona orb ─────────────────────────────────────────────────────────
+  // The same orb as ChatScreen, in its 'chat' stage only: this chat opens on
+  // Drona's starter line, so there is no empty hero. The orb sits in the
+  // input while you read and lifts big above it while you wait, with the
+  // soft light rising from the bottom.
+  const { mode: themeMode } = useTheme();
+  const orbColor = signalOrbColor(themeMode);
+  const lastMsg = messages[messages.length - 1];
+  // Waiting: no words yet on the running turn.
+  const pendingMsg = loading && lastMsg?.role === 'assistant' && lastMsg.content === '' ? lastMsg : null;
+  const writingMsg = loading && lastMsg?.role === 'assistant' && lastMsg.content !== '' ? lastMsg : null;
+  const statusLabel = pendingMsg?.thinkingPhase ?? 'Thinking';
+  const lifted = !!pendingMsg;
+  const [showTick, setShowTick] = useState(false);
+  const wasLoadingRef = useRef(false);
+  useEffect(() => {
+    const finished = wasLoadingRef.current && !loading;
+    wasLoadingRef.current = loading;
+    // A new turn ends the last one's tick.
+    if (loading) { setShowTick(false); return; }
+    if (!finished) return;
+    setShowTick(true);
+    const tm = setTimeout(() => setShowTick(false), 1600);
+    return () => clearTimeout(tm);
+  }, [loading]);
+  const orbShape: SignalOrbState = pendingMsg
+    ? (statusLabel === 'Thinking' ? 'thinking' : 'searching')
+    : writingMsg ? 'listening' : showTick ? 'done' : 'listening';
+  const orbLevel = writingMsg ? 0.85 : input.trim() ? 0.55 : 0.12;
+
+  // Dock geometry, in the input wrapper's coordinates (see ChatScreen).
+  const wrapWidthRef = useRef(0);
+  const boxLayoutRef = useRef<{ x: number; y: number; h: number } | null>(null);
+  const [layoutTick, setLayoutTick] = useState(0);
+  const cx = useSharedValue(0);
+  const cy = useSharedValue(0);
+  const sz = useSharedValue(FIELD_ORB);
+  const dockO = useSharedValue(0);
+  const liftSpace = useSharedValue(0);
+  const liftLabelO = useSharedValue(0);
+  const auraO = useSharedValue(0);
+  const auraBreath = useSharedValue(1);
+  const dockPlacedRef = useRef(false);
+  useEffect(() => {
+    const b = boxLayoutRef.current;
+    if (!b || !wrapWidthRef.current) return;
+    const tgt = lifted
+      ? { x: wrapWidthRef.current / 2, y: LIFT_CENTER_Y, s: LIFT_ORB }
+      : fieldOrbTarget(b);
+    if (!dockPlacedRef.current) {
+      cx.value = tgt.x;
+      cy.value = tgt.y;
+      sz.value = tgt.s;
+      dockPlacedRef.current = true;
+      dockO.value = withTiming(1, { duration: 300 });
+      return;
+    }
+    cx.value = withTiming(tgt.x, ORB_FLIGHT);
+    cy.value = withTiming(tgt.y, ORB_FLIGHT);
+    sz.value = withTiming(tgt.s, ORB_FLIGHT);
+  }, [lifted, layoutTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    liftSpace.value = withTiming(lifted ? LIFT_SPACE : 0, { duration: 600, easing: ORB_EASE });
+    liftLabelO.value = withTiming(lifted ? 1 : 0, { duration: lifted ? 450 : 200 });
+    auraO.value = withTiming(lifted ? 1 : 0, { duration: 800 });
+    auraBreath.value = lifted
+      ? withRepeat(withSequence(withTiming(0.7, { duration: 1600 }), withTiming(1, { duration: 1600 })), -1)
+      : withTiming(1, { duration: 300 });
+    if (lifted) {
+      const a = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
+      const b = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 650);
+      return () => { clearTimeout(a); clearTimeout(b); };
+    }
+  }, [lifted]); // eslint-disable-line react-hooks/exhaustive-deps
+  const dockStyle = useAnimatedStyle(() => ({
+    opacity: dockO.value,
+    transform: [
+      { translateX: cx.value - DOCK_WEB / 2 },
+      { translateY: cy.value - DOCK_WEB / 2 },
+      { scale: (sz.value * 0.72) / SIGNAL_ORB_SPHERE / DOCK_WEB },
+    ],
+  }));
+  const liftSpaceStyle = useAnimatedStyle(() => ({ height: liftSpace.value }));
+  const liftLabelStyle = useAnimatedStyle(() => ({
+    opacity: liftLabelO.value,
+    transform: [{ translateY: (1 - liftLabelO.value) * 6 }],
+  }));
+  const auraStyle = useAnimatedStyle(() => ({ opacity: auraO.value * auraBreath.value }));
+  const [auraSize, setAuraSize] = useState({ w: 0, h: 0 });
+  const userBubbleBg = themeMode === 'light' ? mixHex(C.background, C.foreground, 0.07) : C.muted;
+
   // See ChatScreen — keyboard avoidance lives at the AICoachModal sheet
-  // level (marginBottom + dynamic height), not via KeyboardAvoidingView,
-  // which is unreliable inside a transparent Modal on iOS.
+  // level (marginBottom), not via KeyboardAvoidingView.
   return (
     <View style={{ flex: 1 }}>
-      {/* Header */}
+      {/* Lift light, as in ChatScreen: first child, under the thread. */}
+      <Animated.View
+        pointerEvents="none"
+        style={[s.aura, auraStyle]}
+        onLayout={(e) => setAuraSize({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}
+      >
+        {auraSize.w > 0 && <DronaAura width={auraSize.w} height={auraSize.h} mode={themeMode} fadeTo={C.background} />}
+      </Animated.View>
+
+      {/* Header. The orb is Drona's face, so no mark here (as in ChatScreen). */}
       <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
-        <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
+        <TouchableOpacity onPress={loading && closeSheet ? closeSheet : onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
           <Feather name="arrow-left" size={16} color={C.foreground} />
         </TouchableOpacity>
-        <SparkleIcon size={16} color={C.accentText} state={headerMarkState} />
         <Text style={[s.screenTitle, { color: C.foreground }]}>
           {kind === 'discuss' ? 'Discuss' : 'Refine'} {mode === 'refine_program' ? 'Program' : mode === 'refine_plan' ? 'Plan' : 'Workout'}
         </Text>
@@ -4082,25 +4400,32 @@ function RefineChatScreen({
         contentContainerStyle={s.chatMessages}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        onLayout={questionPin.onScrollLayout}
+        onContentSizeChange={questionPin.onContentSizeChange}
       >
         {messages.map((msg, idx) => {
           // See ChatScreen: the running turn's bubble is always the last one.
           const streaming = loading && idx === messages.length - 1 && msg.role === 'assistant';
+          // A reply with no words yet: the orb says what Drona is doing.
+          if (streaming && msg.content === '') return null;
+          // A finished turn that never got a word (no error text either):
+          // say so, rather than leave the user's message unanswered.
+          const noReply = msg.role === 'assistant' && msg.content === '';
           return (
-          <View key={msg.id}>
+          <View key={msg.id} onLayout={questionPin.userLayout(msg.id)}>
             <Pressable
               onLongPress={() => openSelectSheet(msg)}
               delayLongPress={350}
               accessibilityHint="Press and hold to select text"
-              style={[
-                s.chatBubble,
+              style={
                 msg.role === 'user'
-                  ? [s.userBubble, { backgroundColor: Colors.primary }]
-                  : [s.assistantBubble, { backgroundColor: C.card, borderColor: C.borderSubtle }],
-              ]}
+                  ? [s.chatBubble, s.userBubble, { backgroundColor: userBubbleBg }]
+                  // Drona's replies are plain text on the page, no box.
+                  : s.assistantPlain
+              }
             >
-              {msg.role === 'assistant' && msg.content === '' ? (
-                <ThinkingIndicator phase={msg.thinkingPhase ?? 'Thinking'} />
+              {noReply ? (
+                <Text style={[s.chatText, { color: C.textMuted }]}>No reply came back. Send it again.</Text>
               ) : msg.role === 'assistant' ? (
                 <MessageContent
                   content={msg.content}
@@ -4109,7 +4434,7 @@ function RefineChatScreen({
                   streaming={streaming}
                 />
               ) : (
-                <Text style={[s.chatText, { color: Colors.primaryFg }]}>{msg.content}</Text>
+                <Text style={[s.chatText, { color: C.foreground }]}>{shownRef.current.get(msg.id) ?? msg.content}</Text>
               )}
               {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
                 <CitationList citations={msg.citations} />
@@ -4128,20 +4453,62 @@ function RefineChatScreen({
           </View>
           );
         })}
+        <View style={{ height: questionPin.tailSpace }} onLayout={questionPin.onTailLayout} />
+        {/* Room for the lifted orb, so it never sits on the last message. */}
+        <Animated.View style={liftSpaceStyle} />
       </ScrollView>
 
-      {/* Input */}
-      <View style={[s.chatInputWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
-        <View style={[s.chatInputBox, { backgroundColor: C.inputBg, borderColor: C.border }]}>
+      {showConfirm && (
+        <Animated.View entering={FadeInDown.duration(250)} style={s.confirmRow}>
+          <TouchableOpacity
+            onPress={() => { haptics.tap(); track('goal_intake_build_tapped'); handleSend({ text: BUILD_IT }); }}
+            style={[s.confirmBtn, { backgroundColor: Colors.primary }]}
+            accessibilityRole="button"
+            accessibilityLabel="Build this program"
+          >
+            <Feather name="check" size={14} color={Colors.primaryFg} />
+            <Text style={[s.confirmText, { color: Colors.primaryFg }]}>Build it</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => { haptics.tap(); inputRef.current?.focus(); }}
+            style={[s.confirmBtn, { backgroundColor: C.muted }]}
+            accessibilityRole="button"
+            accessibilityLabel="Change something before building"
+          >
+            <Feather name="edit-2" size={13} color={C.foreground} />
+            <Text style={[s.confirmText, { color: C.foreground }]}>Change something</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      )}
+
+      {/* Input. Also the orb's dock (see ChatScreen). */}
+      <View
+        collapsable={false}
+        style={[s.chatInputWrap, { borderTopWidth: 0 }]}
+        onLayout={(e) => {
+          wrapWidthRef.current = e.nativeEvent.layout.width;
+          setLayoutTick((n) => n + 1);
+        }}
+      >
+        <View
+          style={[s.chatInputBox, { backgroundColor: C.inputBg, borderColor: C.border }]}
+          onLayout={(e) => {
+            const { x, y, height } = e.nativeEvent.layout;
+            boxLayoutRef.current = { x, y, h: height };
+            setLayoutTick((n) => n + 1);
+          }}
+        >
+          <View style={[s.fieldOrbSlot, { width: FIELD_ORB, marginLeft: -4, marginRight: 0 }]} />
           <TextInput
+            ref={inputRef}
             value={input}
             onChangeText={setInput}
-            placeholder="Tell me what to change…"
+            placeholder={writingMsg ? 'Drona is writing' : 'Tell me what to change'}
             placeholderTextColor={C.textMuted}
             style={[s.chatInput, { color: C.foreground }]}
             multiline
             maxLength={500}
-            onSubmitEditing={handleSend}
+            onSubmitEditing={() => handleSend()}
             blurOnSubmit
           />
           {loading ? (
@@ -4156,7 +4523,7 @@ function RefineChatScreen({
             </TouchableOpacity>
           ) : (
             <TouchableOpacity
-              onPress={handleSend}
+              onPress={() => handleSend()}
               disabled={!input.trim()}
               style={[
                 s.sendBtn,
@@ -4165,10 +4532,26 @@ function RefineChatScreen({
               accessibilityRole="button"
               accessibilityLabel="Send"
             >
-              <Feather name="send" size={16} color={input.trim() ? Colors.primaryFg : C.textMuted} />
+              <Feather name="arrow-up" size={17} color={input.trim() ? Colors.primaryFg : C.textMuted} />
             </TouchableOpacity>
           )}
         </View>
+        <MedicalDisclaimer variant="line" style={{ marginTop: Spacing.sm }} />
+
+        {/* What Drona is doing, under the lifted orb. */}
+        <Animated.View style={[s.liftLabel, liftLabelStyle]} pointerEvents="none">
+          {lifted && <PulsingStatus label={statusLabel} color={C.foreground} style={s.liftLabelText} />}
+        </Animated.View>
+        <Animated.View style={[s.dockOrb, dockStyle]} pointerEvents="none">
+          <SignalOrb
+            size={DOCK_WEB}
+            state={orbShape}
+            level={orbLevel}
+            particles={lifted ? 2200 : 650}
+            brightness={lifted ? 1 : 1.8}
+            color={orbColor}
+          />
+        </Animated.View>
       </View>
 
       <SelectTextSheet target={sheetTarget} onClose={() => setSheetTarget(null)} />
@@ -4191,22 +4574,12 @@ class RoutineBatchError extends Error {
 }
 
 // ─── Main Modal ──────────────────────────────────────────────────────────────
-export function AICoachModal({
-  visible,
-  onClose,
-  onRoutineCreated,
-  onProgramApplied,
-  initialScreen = 'menu',
-  initialTopic,
-  planSeed,
-  programDraft,
-  linkRoutinesToPhaseId,
-  workoutContext,
-  onApplyWorkoutEdit,
-  source,
-}: {
+export interface AICoachModalProps {
   visible: boolean;
   onClose: () => void;
+  /** Something drawn above the sheet owns Android back for now (the sign-up
+   *  tour), so the sheet's handler stands aside instead of consuming it. */
+  deferHardwareBack?: boolean;
   /** Which surface opened the sheet (dashboard hero, insight, in-workout...). Analytics only. */
   source?: string;
   onRoutineCreated?: () => void;
@@ -4224,13 +4597,22 @@ export function AICoachModal({
   // plan generator's form + prompt to a specific program phase. Pass
   // initialScreen="plan" alongside it.
   planSeed?: { goal?: string; days?: string; note?: string };
+  // Build at once instead of showing the plan form (a waiting phase draft
+  // still opens first). Pass with planSeed + linkRoutinesToPhaseId.
+  planAutoStart?: boolean;
   // When set, the program chat opens with this typed in, unsent (the goal
   // sheet's "Change my whole plan with Drona"). Pass initialScreen="program".
   programDraft?: string;
+  // When set, the program chat opens to CHANGE this program (Goal & Plan's
+  // "Adjust with Drona"): Drona's greeting names the phase and asks what to
+  // change, instead of offering to build a new program.
+  programExisting?: ExistingProgramOpener;
   // When set, routines saved from this session are linked to the program phase
   // (routines.program_phase_id), so the Goal & Plan screen shows the phase's
   // split as built. Paired with planSeed for a "Build workout split" flow.
   linkRoutinesToPhaseId?: string;
+  /** That phase's number as people read it (1 = first), for the build screen's words. */
+  linkRoutinesPhaseNumber?: number;
   // When set, the chat screen runs in in-workout mode: the live session is
   // injected as context, the greeting is tailored, quick-question chips show,
   // and the chat's back arrow closes the sheet (there's no menu detour
@@ -4241,7 +4623,43 @@ export function AICoachModal({
   // coach change the workout at all: without it the edit tool isn't offered,
   // so the coach is never in a position to promise a change it can't make.
   onApplyWorkoutEdit?: (ops: CoachWorkoutEditOp[]) => CoachEditApplyResult;
-}) {
+}
+
+/** What the session store holds for a sheet: its props minus the opener's visibility. */
+export type CoachSheetProps = Omit<AICoachModalProps, 'visible' | 'onClose'>;
+
+/** Every coach sheet, open or kept (lib/coachSessions). CoachSheetHost renders them. */
+export const coachSessions = createCoachSessionStore<CoachSheetProps>();
+
+// A topic opens its chat once. The latch outlives a sheet: a fresh sheet is
+// mounted per open now, and an opener may leave a used topic set.
+const usedTopics = new WeakSet<CoachTopic>();
+
+/**
+ * The coach sheet itself. Mounted by CoachSheetHost, one per session: `visible`
+ * is whether it shows, `kept` whether it stays mounted out of sight while
+ * Drona works. Openers use AICoachModal below, which is unchanged for them.
+ */
+export function CoachSheet({
+  sessionId,
+  kept,
+  visible,
+  onClose,
+  deferHardwareBack,
+  onRoutineCreated,
+  onProgramApplied,
+  initialScreen = 'menu',
+  initialTopic,
+  planSeed,
+  planAutoStart,
+  programDraft,
+  programExisting,
+  linkRoutinesToPhaseId,
+  linkRoutinesPhaseNumber,
+  workoutContext,
+  onApplyWorkoutEdit,
+  source,
+}: AICoachModalProps & { sessionId: number; kept: boolean }) {
   const { C } = useTheme();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
@@ -4273,12 +4691,9 @@ export function AICoachModal({
     if (visible) void refreshAccess();
   }, [visible, refreshAccess]);
 
-  // The topic the chat already opened on. The sheet stays mounted while the
-  // chat screen comes and goes (back to the menu, into chat again), so the
-  // latch lives here: one topic, one opening.
-  const usedTopicRef = useRef<CoachTopic | null>(null);
+  // The topic the chat already opened on: one topic, one opening (usedTopics).
   const markTopicUsed = useCallback((t: CoachTopic) => {
-    usedTopicRef.current = t;
+    usedTopics.add(t);
   }, []);
 
   const coachOpenedAt = useRef(Date.now());
@@ -4310,9 +4725,7 @@ export function AICoachModal({
   // So a nested KeyboardAvoidingView would just add padding BELOW the visible
   // window and the input would stay hidden behind the keyboard. The reliable
   // fix (already used by analytics.tsx's BottomDrawer) is to track keyboard
-  // height ourselves and physically lift the sheet via marginBottom + cap its
-  // height to (winH - kbHeight) so the top doesn't get pushed off-screen.
-  const { height: winH } = useWindowDimensions();
+  // height ourselves and physically lift the sheet via marginBottom.
   const insets = useSafeAreaInsets();
   const [kbHeight, setKbHeight] = useState(0);
   useEffect(() => {
@@ -4328,23 +4741,58 @@ export function AICoachModal({
       hideSub.remove();
     };
   }, [visible]);
-  // Sheet sizing: when keyboard is up, cap height to the available space
-  // above it (minus a small top buffer) so the sheet doesn't overflow the
-  // viewport. When keyboard is down, fall back to the original 92% height.
-  // Lift by the keyboard height on BOTH platforms. The old code only lifted
-  // on iOS, assuming Android's adjustResize would shift the input up — but
-  // this sheet lives inside a React Native <Modal> (a separate window) and,
-  // with edge-to-edge always on in SDK 54, that window is never resized for
-  // the keyboard. The sheet is bottom-anchored, so without the lift the input
-  // stays pinned behind the keyboard and the user can't see what they type.
-  const sheetHeight = kbHeight > 0
-    ? Math.max(winH - kbHeight - 40, winH * 0.5)
-    : winH * 0.92;
+  // Full screen: Drona opens as a page, not a bottom sheet. The sheet fills the window (flex: 1) and is lifted by the
+  // keyboard height on BOTH platforms. The old code only lifted on iOS,
+  // assuming Android's adjustResize would shift the input up, but with
+  // edge-to-edge always on in SDK 54 the window is never resized for the
+  // keyboard, so without the lift the input stays behind the keyboard.
   const sheetMarginBottom = kbHeight;
 
+  // What the sub-screens report (useCoachBusy), summed for the store.
+  const busyReportsRef = useRef(new Map<string, BusyState>());
+  const [activity, setActivity] = useState<BusyState>({ busy: false, failed: false, result: false });
+  const reportBusy = useCallback<BusyReport>((key, state) => {
+    const m = busyReportsRef.current;
+    if (state) m.set(key, state); else m.delete(key);
+    const sum: BusyState = { busy: false, failed: false, result: false };
+    m.forEach((v) => {
+      sum.busy = sum.busy || v.busy;
+      sum.failed = sum.failed || v.failed;
+      sum.result = sum.result || v.result;
+    });
+    setActivity((a) => (a.busy === sum.busy && a.failed === sum.failed && a.result === sum.result ? a : sum));
+  }, []);
   useEffect(() => {
-    if (visible) setScreen(initialScreen);
-  }, [visible, initialScreen]);
+    coachSessions.report(sessionId, { screen, ...activity });
+  }, [sessionId, screen, activity]);
+
+  // A kept sheet (closed while Drona works) slides down and fades, then is
+  // tucked out of sight (display: none) while staying mounted. Brought back,
+  // it slides up again. An idle sheet unmounts and plays its own exit.
+  const away = useSharedValue(0);
+  const [tucked, setTucked] = useState(false);
+  useEffect(() => {
+    if (visible) {
+      setTucked(false);
+      away.value = withTiming(0, { duration: 240, easing: Easing.out(Easing.cubic) });
+      return;
+    }
+    if (!kept) return;
+    away.value = withTiming(1, { duration: 200, easing: Easing.in(Easing.cubic) }, (done) => {
+      if (done) runOnJS(setTucked)(true);
+    });
+  }, [visible, kept, away]);
+  const awayStyle = useAnimatedStyle(() => ({
+    opacity: 1 - away.value,
+    transform: [{ translateY: away.value * 140 }],
+  }));
+
+  // Back to the menu would unmount the screen Drona is working for and abort
+  // it. While busy, back closes the sheet instead, and the store keeps it.
+  const goMenu = () => {
+    if (activity.busy) handleClose();
+    else setScreen('menu');
+  };
 
   const router = useRouter();
 
@@ -4352,8 +4800,8 @@ export function AICoachModal({
     track('coach_closed', {
       screen,
       seconds_open: Math.round((Date.now() - coachOpenedAt.current) / 1000),
+      kept: activity.busy,
     });
-    setScreen('menu');
     onClose();
   };
 
@@ -4392,6 +4840,7 @@ export function AICoachModal({
   useEffect(() => {
     if (!visible) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (deferHardwareBack) return false;
       // Gate or menu owns the modal → close it entirely (nothing to lose).
       if (!accessAllowed || screen === 'menu') { handleClose(); return true; }
       // Paywall overlay (trialing upgrade) → dismiss back to the menu.
@@ -4399,13 +4848,13 @@ export function AICoachModal({
       // Chat opened from an active workout has no menu to return to — its
       // back arrow closes, so match that.
       if (screen === 'chat' && workoutContext) { handleClose(); return true; }
-      // chat / plan / workout → step back to the menu.
-      setScreen('menu');
+      // chat / plan / workout → step back to the menu (or close, while busy).
+      goMenu();
       return true;
     });
     return () => sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, accessAllowed, screen, showPaywall, workoutContext]);
+  }, [visible, accessAllowed, screen, showPaywall, workoutContext, activity.busy, deferHardwareBack]);
 
   // Live-workout edit: hand the operations to the workout screen, then get out
   // of the way. Anything that actually landed is on the screen behind this
@@ -4648,6 +5097,11 @@ export function AICoachModal({
         toast.info(workouts.length > 1 ? `Saving ${workouts.length} routines…` : `Saving “${workouts[0]?.name}”…`);
         await insertRoutinesToBackend(workouts, phaseId);
         toast.success(workouts.length > 1 ? `Saved ${workouts.length} routines` : 'Routine saved');
+        // The draft has done its job: the phase's workouts are real now.
+        if (phaseId) {
+          void clearPhaseDraft(phaseId);
+          track('phase_draft_saved', { workouts: workouts.length });
+        }
         onRoutineCreated?.();
       } catch (err: any) {
         // Log the real failure — a swallowed error here made "couldn't save"
@@ -4717,24 +5171,25 @@ export function AICoachModal({
 
   return (
     <Portal>
-      {visible && (
+      {(visible || kept) && (
         /*
           Rendered in the app's own window via <Portal>, not RN's <Modal> (a
           separate Android Dialog window that edge-to-edge insets by the nav
-          bar, leaving a gap below bottom sheets). Backdrop is a flex column
-          pushing the sheet to the bottom; the top region is a separate
-          Pressable for tap-to-close (menu/gate only). The sheet itself is a
+          bar, leaving a gap below bottom sheets). The page fills the screen
+          (flex: 1), so there is no backdrop to tap: the menu, the gate and
+          the paywall each have their own close button. The page itself is a
           plain View so inner ScrollViews keep their pan gestures.
         */
-      <View style={[s.backdrop, { backgroundColor: C.overlay }]}>
-        <Pressable
-          style={{ flex: 1 }}
-          // Backdrop closes on menu OR while the gate owns the modal —
-          // neither has user input that could be lost. Chat/plan/workout
-          // screens keep the tap inert so accidental backdrop hits don't
-          // throw away mid-conversation state.
-          onPress={(screen === 'menu' || !accessAllowed) ? handleClose : undefined}
-        />
+      <Animated.View
+        // A kept sheet (closed while Drona works) stays mounted, so its stream
+        // and state live on, but takes no space, touches or screen reader.
+        style={[s.backdrop, { backgroundColor: C.overlay }, awayStyle, !visible && tucked && s.keptHidden]}
+        pointerEvents={visible ? 'auto' : 'none'}
+        accessibilityElementsHidden={!visible}
+        importantForAccessibility={visible ? 'auto' : 'no-hide-descendants'}
+      >
+        <CoachBusyContext.Provider value={reportBusy}>
+        <CoachCloseContext.Provider value={handleClose}>
         <Animated.View
           entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
           exiting={SlideOutDown.duration(200)}
@@ -4742,11 +5197,14 @@ export function AICoachModal({
             s.modalContainer,
             {
               backgroundColor: C.background,
-              height: sheetHeight,
+              flex: 1,
               marginBottom: sheetMarginBottom,
+              // Full screen: clear the status bar / notch ourselves.
+              paddingTop: insets.top,
               // Flush to the screen bottom now (portal, not a nav-bar-inset
-              // Modal window), so pad content past the gesture/nav bar.
-              paddingBottom: insets.bottom,
+              // Modal window), so pad content past the gesture/nav bar. With
+              // the keyboard up the page sits on the keyboard, so no pad.
+              paddingBottom: kbHeight > 0 ? 0 : insets.bottom,
             },
           ]}
         >
@@ -4877,6 +5335,9 @@ export function AICoachModal({
                       handleRequestUpgrade('pro_feature');
                       return;
                     }
+                    // Drona is already on this one (closed mid-build, or
+                    // done and unseen): show that sheet, not a second one.
+                    if (coachSessions.pickScreen(sessionId, next)) return;
                     setScreen(next);
                   }}
                 />
@@ -4885,9 +5346,9 @@ export function AICoachModal({
                 <ChatScreen
                   // In workout mode the back arrow closes the sheet (no menu
                   // detour mid-workout); otherwise it returns to the menu.
-                  onBack={workoutContext ? handleClose : () => setScreen('menu')}
+                  onBack={workoutContext ? handleClose : goMenu}
                   onSaveRoutine={(name) => handleSaveRoutine({ name, exercises: [] })}
-                  topic={initialTopic && usedTopicRef.current !== initialTopic ? initialTopic : undefined}
+                  topic={initialTopic && !usedTopics.has(initialTopic) ? initialTopic : undefined}
                   onTopicOpened={markTopicUsed}
                   userId={user?.id ?? null}
                   workoutContext={workoutContext}
@@ -4902,10 +5363,12 @@ export function AICoachModal({
               )}
               {screen === 'plan' && (
                 <GeneratePlanScreen
-                  onBack={() => setScreen('menu')}
+                  onBack={goMenu}
                   onSaveRoutines={handleSaveRoutines}
                   seed={planSeed}
                   phaseId={linkRoutinesToPhaseId}
+                  phaseNumber={linkRoutinesPhaseNumber}
+                  autoStart={planAutoStart}
                   onRequestUpgrade={(kind) =>
                     handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')
                   }
@@ -4913,7 +5376,7 @@ export function AICoachModal({
               )}
               {screen === 'workout' && (
                 <GenerateWorkoutScreen
-                  onBack={() => setScreen('menu')}
+                  onBack={goMenu}
                   onSaveRoutine={handleSaveRoutine}
                   onRequestUpgrade={(kind) =>
                     handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')
@@ -4922,9 +5385,10 @@ export function AICoachModal({
               )}
               {screen === 'program' && (
                 <GenerateProgramScreen
-                  onBack={() => setScreen('menu')}
+                  onBack={goMenu}
                   onApply={handleSaveProgram}
                   initialDraft={programDraft}
+                  existing={programExisting}
                   onRequestUpgrade={(kind) =>
                     handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')
                   }
@@ -4933,20 +5397,63 @@ export function AICoachModal({
             </>
           )}
         </Animated.View>
-      </View>
+        </CoachCloseContext.Provider>
+        </CoachBusyContext.Provider>
+      </Animated.View>
       )}
     </Portal>
   );
 }
 
+/**
+ * What screens render to open Drona. It draws nothing itself: it hands its
+ * props to the session store, and CoachSheetHost (app root) draws the sheet.
+ * So the sheet outlives this component. Close it, leave the screen, and a
+ * build still running finishes, then says so (lib/readyNotice).
+ *
+ * Same props as before, so no opener changed: `visible` true opens a sheet
+ * (or brings back a kept one of the same kind), false hides it.
+ */
+export function AICoachModal({ visible, onClose, ...props }: AICoachModalProps) {
+  // Stable for the store, which uses it to tell openers apart.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const close = useCallback(() => closeRef.current(), []);
+  // Callbacks go to the store as stable wrappers over the latest ones, so a
+  // re-render with fresh inline callbacks is "no change" (lib/coachSessions).
+  const latestRef = useRef(props);
+  latestRef.current = props;
+  const wrappersRef = useRef(new Map<string, (...args: unknown[]) => unknown>());
+  const stable = withStableCallbacks(props, latestRef, wrappersRef.current);
+  const stableRef = useRef(stable);
+  stableRef.current = stable;
+  const idRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!visible) return;
+    const id = coachSessions.open(stableRef.current, close);
+    idRef.current = id;
+    return () => {
+      idRef.current = null;
+      coachSessions.release(id, close);
+    };
+  }, [visible, close]);
+
+  // Fresh props reach the open sheet (a refreshed program, a new topic).
+  useEffect(() => {
+    if (visible && idRef.current != null) coachSessions.update(idRef.current, stable, close);
+  });
+
+  return null;
+}
+
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const s = StyleSheet.create({
-  backdrop: { flex: 1, justifyContent: 'flex-end' },
+  backdrop: { flex: 1 },
+  keptHidden: { display: 'none' },
   modalContainer: {
-    borderTopLeftRadius: Radius.xxl,
-    borderTopRightRadius: Radius.xxl,
-    // height is set dynamically by AICoachModal to react to the on-screen
-    // keyboard (see kbHeight tracking there). Do NOT add a static height here.
+    // Full screen: flex 1, lifted by the keyboard height (see kbHeight in
+    // CoachSheet). Do NOT add a static height here.
     overflow: 'hidden',
   },
 
@@ -5095,6 +5602,23 @@ const s = StyleSheet.create({
   screenTitle: {
     fontSize: FontSize.lg, fontWeight: FontWeight.bold,
   },
+  // Program draft, laid out like onboarding's plan reveal.
+  draftTitle: { fontSize: 26, lineHeight: 32, fontWeight: FontWeight.bold, letterSpacing: -0.3 },
+  draftSub: { fontSize: FontSize.md, lineHeight: 21, marginTop: Spacing.xs },
+  draftCoach: { flexDirection: 'row', gap: Spacing.md, borderRadius: Radius.xl, borderWidth: 1, padding: Spacing.lg, marginTop: Spacing.xl },
+  draftCoachIcon: { width: 24, height: 24, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' },
+  draftCoachText: { fontSize: FontSize.base, lineHeight: 21 },
+  draftCoachSig: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, letterSpacing: 1, marginTop: Spacing.sm },
+  // Goal intake chat: Build it / Change something under Drona's proposal.
+  confirmRow: {
+    flexDirection: 'row', gap: 8,
+    paddingHorizontal: Spacing.xl, paddingBottom: Spacing.sm,
+  },
+  confirmBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    height: 44, borderRadius: Radius.full,
+  },
+  confirmText: { fontSize: FontSize.md, fontWeight: FontWeight.semibold },
 
   // Chat
   chatMessages: {
@@ -5221,17 +5745,6 @@ const s = StyleSheet.create({
   liftLabelText: {
     fontSize: FontSize.md,
     fontWeight: FontWeight.medium,
-  },
-  thinkingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    minHeight: 20,
-  },
-  thinkingText: {
-    fontSize: FontSize.sm,
-    fontStyle: 'italic',
-    letterSpacing: 0.2,
   },
   // Markdown rendering primitives
   mdList: {
@@ -5577,23 +6090,12 @@ const s = StyleSheet.create({
     fontWeight: FontWeight.bold,
     marginBottom: 2,
   },
-  resultCardSub: {
-    fontSize: FontSize.sm,
-    marginBottom: Spacing.md,
-  },
   resultExRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 10,
     borderTopWidth: 1,
-  },
-  resultExName: {
-    fontSize: FontSize.base,
-    fontWeight: FontWeight.medium,
-  },
-  resultExDetail: {
-    fontSize: FontSize.sm,
   },
   resultActions: {
     position: 'absolute',
@@ -5608,27 +6110,6 @@ const s = StyleSheet.create({
 
   // ── Phase 2.5: generated card extras (rationale callout, exercise notes,
   //              refine chat strip, loading + error states) ────────────────
-  resultCardFocus: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.medium,
-    marginBottom: 2,
-  },
-  resultExRowOuter: {
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    gap: 4,
-  },
-  resultExRowTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 12,
-  },
-  resultExNote: {
-    fontSize: FontSize.xs,
-    fontStyle: 'italic',
-    lineHeight: 14,
-  },
   rationaleCallout: {
     marginTop: Spacing.xs,
     marginBottom: Spacing.sm,
@@ -5651,11 +6132,23 @@ const s = StyleSheet.create({
     fontSize: FontSize.sm,
     lineHeight: 18,
   },
-  workoutNoteCaption: {
-    fontSize: FontSize.xs,
-    fontStyle: 'italic',
-    marginBottom: 4,
-  },
+  // ── Compact plan: one line per exercise, details on tap ──────────────────
+  planTitle: { fontSize: FontSize.xl, fontWeight: FontWeight.bold, letterSpacing: -0.3 },
+  planMeta: { fontSize: FontSize.sm, marginTop: 4 },
+  whyBlock: { marginTop: Spacing.md },
+  dayHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: Spacing.md },
+  dayTitle: { flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.bold },
+  dayCount: { fontSize: FontSize.xs, fontWeight: FontWeight.medium },
+  daySub: { fontSize: FontSize.sm, marginTop: 2 },
+  exList: { marginTop: Spacing.md },
+  exRow: { paddingVertical: 11 },
+  exRowTop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  exIndex: { width: 18, fontSize: FontSize.xs, fontWeight: FontWeight.semibold, fontVariant: ['tabular-nums'] },
+  exName: { flex: 1, fontSize: FontSize.base, fontWeight: FontWeight.medium },
+  exSets: { fontSize: FontSize.sm, fontWeight: FontWeight.medium, fontVariant: ['tabular-nums'] },
+  exDetail: { marginTop: 6, marginLeft: 28, marginRight: 22, gap: 3 },
+  exDetailMeta: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
+  exDetailNote: { fontSize: FontSize.sm, lineHeight: 18 },
   planMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -5666,6 +6159,10 @@ const s = StyleSheet.create({
   planMetaText: {
     fontSize: FontSize.sm,
     fontWeight: FontWeight.medium,
+  },
+  draftNote: {
+    fontSize: FontSize.xs,
+    textAlign: 'center',
   },
   refineWrap: {
     paddingHorizontal: Spacing.xl,

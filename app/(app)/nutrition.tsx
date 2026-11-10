@@ -21,24 +21,38 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import { router, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
+import { announceReady } from '@/lib/readyNotice';
+import { readyInbox } from '@/lib/readyInbox';
+import { holdBackgroundTime, NOTICE_GRACE_MS } from '@/lib/backgroundTime';
 import {
   Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow,
 } from '@/constants/theme';
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMealCard';
-import { MealCardPopover, type CardRect } from '@/components/diet/MealCardPopover';
+import { MealWaitSheet } from '@/components/diet/MealWaitSheet';
+import { withBack, stepBack, boxAfterBack, cancelPlan, arrivalAfter, type CardBack } from '@/lib/foodCardBack';
+import { MealResultScreen } from '@/components/diet/MealResultScreen';
+import {
+  arrivalAction, showPlan, readyLine, readyAction, packReady, packAdding, unpackReady, readyStoreStep, settleRestoredKey, stepAmount, scaleLine, type ReadyKind,
+} from '@/lib/mealReady';
+import { isMeasurementUnit } from '@/lib/units';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 import { DayLoadFailed, DaySummaryLoading, MealRowsLoading } from '@/components/diet/DayLoading';
 import { ParsedItemEditor } from '@/components/diet/ParsedItemEditor';
 import { EntryEditSheet } from '@/components/diet/EntryEditSheet';
+import { SwipeToRemove } from '@/components/diet/SwipeToRemove';
+import { useToast } from '@/components/ui/Toast';
 import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
 import { MaintenanceRow } from '@/components/diet/MaintenanceRow';
 import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
 import { fuelOn } from '@/lib/fuelDays';
 import { goalDayFor, latestLogDay, readLogDayPhrase } from '@/lib/logDay';
+import { takePendingParse } from '@/lib/pendingParse';
 import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
 import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
@@ -46,15 +60,15 @@ import Svg, { Circle } from 'react-native-svg';
 import Animated, { FadeInDown, LinearTransition } from 'react-native-reanimated';
 import { ParseSpeedSheet } from '@/components/diet/ParseSpeedSheet';
 import {
-  getParseSpeed, setParseSpeed, effectiveParseSpeed, type ParseSpeed,
+  getParseSpeed, setParseSpeed, peekParseSpeed, effectiveParseSpeed, doubleCheckRoute, type ParseSpeed,
 } from '@/lib/parseSpeed';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
   type PendingFoodMeal, parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext, sectionsOf,
   loadNutritionRange, dateFromYmd, listSavedMeals, savedMealAsItems, usePrefetchWeek,
-  type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
-  FOOD_TURNS_KEPT,
+  deleteMealEntry, type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
+  FOOD_TURNS_KEPT, CARD_MAX_LINES,
 } from '@/lib/dietData';
 import {
   applyCoachFoodCreate,
@@ -63,6 +77,8 @@ import {
   type CoachFoodCreateResult,
 } from '@/lib/coachFoodCreate';
 import { FoodCreateCard } from '@/components/ai/FoodCreateCard';
+import { cardAfter } from '@/lib/foodBarCard';
+import { afterAnswer, beginSend, type FoodThreadAnswer, type FoodThreadState } from '@/lib/foodThread';
 import { haptics } from '@/lib/haptics';
 import {
   getAutoLog, setAutoLog, newAutoLogClientId, addPending, removePending, touchPending,
@@ -74,10 +90,12 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import type { MealType } from '@/lib/foods';
 import { formatServing, formatMacroGrams } from '@/lib/foods';
+import { fixWeightLabel } from '@/lib/servingSize';
 import { swapToAlternative } from '@/lib/variantSwap';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { MealSuggestions } from '@/components/diet/MealSuggestions';
 import { CopyMealSheet } from '@/components/diet/CopyMealSheet';
+import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 import { learnPatterns, mealsToSuggest, copyableFromDay, withPreviousDay, type FoodSuggestion, type HistoryEntry } from '@/lib/foodPatterns';
 import { useFoodHistory, useDayMealLines, relogLines, lineAsItem } from '@/lib/foodPatternsData';
 
@@ -112,9 +130,13 @@ type ParseFlow =
       // flag their pick silently reverts on the next message.
       mealTypePicked?: boolean;
       // Everything the user wrote for this meal, follow-ups joined ("1 apple;
-      // make it a small one"). `raw` keeps only a correction's own words, so
-      // the card's return arrow sends this instead. Absent: same as `raw`.
+      // make it a small one"). `raw` keeps only a correction's own words.
+      // The server reads this as the card's history. Absent: same as `raw`.
       words?: string;
+      // The card as it was before the last message, with that message and
+      // the chat turns before it. The return arrow goes back to it: the card
+      // stays, only the last message comes back to the box. Never stored.
+      before?: ReviewBack;
       notice?: string | null;
       // Researched numbers that disagree with what is shown, offered as a
       // choice. Applying is local, so picking costs no round trip.
@@ -124,6 +146,11 @@ type ParseFlow =
       // while the meal has no habit. Add keeps the line's original labels
       // (relogColumns) and reports which one it was.
       origin?: 'pattern' | 'copy_day';
+      // The diary day Add writes to, fixed when the parse was sent: the user
+      // may page the diary elsewhere while it waits. Absent: the day on screen.
+      dayIso?: string;
+      // The tier that read this meal, for the result screen's chip.
+      tier?: ParseSpeed;
     }
   | { status: 'declined'; raw: string; message: string; pendingMeal?: PendingFoodMeal | null }
   // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
@@ -138,13 +165,27 @@ type ParseFlow =
       words?: string;
       /** A suggestion's origin, kept so a retried Add is still reported as one. */
       origin?: 'pattern' | 'copy_day';
-    }
-  // The user asked to SAVE a food or meal, and Drona drafted it. Nothing is
-  // written until the card is tapped; `result` is what came back from that tap.
-  | {
-      status: 'create'; raw: string; create: CoachFoodCreate;
-      result: CoachFoodCreateResult | null; busy: boolean;
+      /** A failed Add keeps the day and tier it was for, so Retry (and a
+       *  restart, which stores this as waiting) still means the same meal. */
+      dayIso?: string;
+      tier?: ParseSpeed;
     };
+
+/** One step back on a reviewed card: see ParseFlow 'review' `before` and
+ *  lib/foodCardBack. An interface, so the review state can name itself. */
+interface ReviewBack extends CardBack<ParseFlow & { status: 'review' }> {}
+
+/** The user asked to SAVE a food or meal, and Drona drafted it. Nothing is
+ *  written until the card is tapped; `result` is what came back from that tap.
+ *  Its own state, not a ParseFlow: it sits BESIDE the meal card. As a flow it
+ *  replaced the card, and live 2026-11-05 a lunch the user had not added yet
+ *  was lost to "save this sabji as a meal" (lib/foodBarCard). */
+type SaveCard = {
+  create: CoachFoodCreate; result: CoachFoodCreateResult | null; busy: boolean;
+  /** The diary day the message was sent for. A "log it too" save lands here,
+   *  even if the user pages to another day before tapping. */
+  day: Date;
+};
 
 /** The "use your saved meal?" offer for a reviewed card, or null. The FIRST
  *  suggestion whose line is still on the card wins; the proposal is the whole
@@ -209,6 +250,15 @@ function openSearch(meal: MealType) {
   router.push({ pathname: '/food-search', params: { meal } });
 }
 
+/** How long "Your lunch is ready to check" stays up. Long enough to notice
+ *  and reach from another screen; the strip on Nutrition keeps it after. */
+const READY_TOAST_MS = 8000;
+/** How long a swiped-away food can still be brought back. */
+const UNDO_MS = 4000;
+/** The delete waits a beat past the bar, so an Undo tap as the bar leaves
+ *  still finds the rows pending instead of already deleted. */
+const COMMIT_MS = UNDO_MS + 400;
+
 interface MealDef { type: MealType; label: string; icon: keyof typeof Feather.glyphMap }
 
 const MEALS: MealDef[] = [
@@ -220,9 +270,8 @@ const MEALS: MealDef[] = [
 
 /** Composer chip face per tier. Kept next to MEALS rather than inline so the
  *  icon and the screen-reader label cannot drift apart. */
-const SPEED_CHIP: Record<ParseSpeed, { icon: 'zap' | 'target' | 'award'; label: string }> = {
+const SPEED_CHIP: Record<ParseSpeed, { icon: 'zap' | 'award'; label: string }> = {
   quick: { icon: 'zap', label: 'Quick' },
-  thorough: { icon: 'target', label: 'Thorough' },
   precise: { icon: 'award', label: 'Precise' },
 };
 
@@ -284,7 +333,12 @@ export default function NutritionScreen() {
     return out;
   }, [firstWeekIso, latestWeekIso]);
   const weekIndex = weekStarts.findIndex((w) => ymd(w) === weekStartIso);
-  const { byMeal, totals, totalsDayIso, loading, failedDayIso, reload } = useDayNutrition(viewIso);
+  const {
+    byMeal, totals: dayTotals, totalsDayIso, loading, failedDayIso, reload,
+    addPending: addPendingLines, settlePending: settlePendingLines, dropPending: dropPendingLines, rowKey,
+  } = useDayNutrition(viewIso);
+  // A pull re-reads the day on screen, for foods logged from another device.
+  const { refreshing, onRefresh } = usePullRefresh(reload);
   // The numbers on screen belong to `totalsDayIso`. On a day switch that lags
   // `viewIso` by a fetch, and the old day's ring, macros and food sat under the
   // new day's header for a second or two. Shimmer until they agree: a stale
@@ -299,7 +353,7 @@ export default function NutritionScreen() {
   // screen has landed, so it never competes with it.
   usePrefetchWeek(weekStartIso, !dayUnknown);
   const supabase = useSupabaseClient();
-  const { isSignedIn } = useClerkUser();
+  const { isSignedIn, user } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();
   const { width: winW, height: winH } = useWindowDimensions();
   // Bottom edge of the calorie ring + macro bars, in the day scroll's CONTENT
@@ -369,11 +423,59 @@ export default function NutritionScreen() {
   // Undo lives on the receipt strip and on each diary row Drona added.
   const [text, setText] = useState('');
   const inputRef = useRef<TextInput>(null);
+
+  // A Drona card's "Try it" lands here with focus=ai: open the keyboard on the
+  // box. This tab stays mounted, so clear the param once used, or the next
+  // visit would focus it again and a second card could not. A focus effect, not
+  // a plain one: leaving the tab before the timer fires must cancel it, or the
+  // hidden box would raise the keyboard over another screen.
+  const { focus } = useLocalSearchParams<{ focus?: string }>();
+  useFocusEffect(useCallback(() => {
+    if (focus !== 'ai' || !isSignedIn) return;
+    // After the tab switch settles; focusing mid-transition drops the keyboard.
+    // Cleared after, not before: clearing re-runs this effect, whose cleanup
+    // would cancel the pending focus.
+    const t = setTimeout(() => {
+      inputRef.current?.focus();
+      router.setParams({ focus: undefined });
+    }, 350);
+    return () => clearTimeout(t);
+  }, [focus, isSignedIn]));
   const [flow, setFlow] = useState<ParseFlow>({ status: 'idle' });
+  const [saveCard, setSaveCard] = useState<SaveCard | null>(null);
+  // The send (its parse token) whose answer was a save card, read once by the
+  // arrival effect: that answer is a reply (the meal card did not change), so
+  // the result screen closes and both cards show above the food box. Tied to
+  // the send, not a bare flag: a value left from an older send can never match
+  // a later one, so it cannot close the wrong result screen.
+  const saveArrivedRef = useRef<number | null>(null);
+  // The food box thread (lib/foodThread.ts): its id, and the card on screen as
+  // the server counts it. `threadEndedRef` is a thread whose card was added,
+  // closed on the server by the next message.
+  const threadRef = useRef<FoodThreadState | null>(null);
+  const threadEndedRef = useRef<{ id: string; why: 'added' } | null>(null);
+  /** The card went into the diary: its thread is done. The next send starts
+   *  a new one and tells the server this one closed. */
+  const endThreadOnAdd = useCallback(() => {
+    if (threadRef.current) threadEndedRef.current = { id: threadRef.current.id, why: 'added' };
+    threadRef.current = null;
+  }, []);
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).
   const flowRef = useRef<ParseFlow>(flow);
+  /** The card a running follow-up started from: a cancel goes back to it. */
+  const inFlightBackRef = useRef<ReviewBack | null>(null);
+  /** Set by a cancelled follow-up: the card coming back is not a landed
+   *  parse, so the arrival effect must not open or toast it. */
+  const cancelledRef = useRef(false);
   useEffect(() => { flowRef.current = flow; }, [flow]);
+  // Time to finish a parse if the user leaves the app mid-way (lib/backgroundTime).
+  const parseWorking = flow.status === 'analysing' || flow.status === 'streaming';
+  useEffect(() => {
+    if (!parseWorking) return;
+    const release = holdBackgroundTime();
+    return () => { setTimeout(release, NOTICE_GRACE_MS); };
+  }, [parseWorking]);
   // What was said, so a bare "yes" can answer whatever Drona just offered.
   // Kept in a ref (never rendered) and trimmed to the last few turns.
   const turnsRef = useRef<{ role: 'user' | 'drona'; text: string }[]>([]);
@@ -385,6 +487,27 @@ export default function NutritionScreen() {
   }, []);
   const [adding, setAdding] = useState(false);
   const [editEntry, setEditEntry] = useState<LoggedEntry | null>(null);
+  // Rows swiped away. They leave the list and the ring at once; the delete
+  // itself waits behind the Undo bar (commitRemoves). An id stays here after
+  // its delete lands, so a reload still in flight cannot flash the row back.
+  const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(new Set());
+  const pendingRemoves = useRef<LoggedEntry[]>([]);
+  const removeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The toast context hands out a new object on every show, so effects and
+  // callbacks read it through a ref. As a dep it re-ran the leave-screen flush
+  // below on each show, which hid the Undo bar and deleted at once.
+  const toast = useToast();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+  const totals = useMemo(() => {
+    if (removedIds.size === 0) return dayTotals;
+    const t = { ...dayTotals };
+    for (const m of MEALS) for (const e of byMeal[m.type]) {
+      if (!removedIds.has(e.id)) continue;
+      t.kcal -= e.kcal; t.protein_g -= e.protein_g; t.carb_g -= e.carb_g; t.fat_g -= e.fat_g;
+    }
+    return { kcal: Math.max(0, t.kcal), protein_g: Math.max(0, t.protein_g), carb_g: Math.max(0, t.carb_g), fat_g: Math.max(0, t.fat_g) };
+  }, [dayTotals, byMeal, removedIds]);
   // `baseTargets` is an ordinary day. The viewed day may be a fuel day (a long
   // run, a leg day) with more on top, so the ring, bars and Drona line all
   // read `targets`, the viewed day's own numbers.
@@ -406,89 +529,226 @@ export default function NutritionScreen() {
   // parse can force it open: a meal the user has not seen yet must never
   // arrive already hidden behind a summary line.
   const [cardMinimized, setCardMinimized] = useState(false);
-  // The parse card lifted into the bigger view (MealCardPopover). `pop` keeps
-  // it mounted through the return trip; `popOpen` is which way it is heading.
-  // origin null = nowhere to go back to, so it fades out where it is.
-  // Drona's reply opens it by default, and it stays up through follow-ups
-  // typed in the food box below it; the user puts it back when they want the
-  // day in view.
-  const parseCardRef = useRef<View>(null);
-  const [pop, setPop] = useState<{ origin: CardRect | null; natural: number } | null>(null);
-  const [popOpen, setPopOpen] = useState(false);
-  const openPop = useCallback((natural: number) => {
-    parseCardRef.current?.measureInWindow((x, y, width, height) => {
-      // The measure is async: Add or Discard may have landed meanwhile, and
-      // opening then would flash a popover for a card that is already gone.
-      if (flowRef.current.status !== 'review') return;
-      haptics.tap();
-      setPop({ origin: { x, y, width, height }, natural });
-      setPopOpen(true);
-    });
-  }, []);
-  const closePop = useCallback(() => {
-    // Measure again: the keyboard may have come or gone, which moved the card.
-    const el = parseCardRef.current;
-    if (!el) { setPop((p) => p && { ...p, origin: null }); setPopOpen(false); return; }
-    // A close must always close. If the measure never calls back (the view
-    // detached mid-measure), fade out in place after a beat instead of
-    // leaving the backdrop up over the day.
-    let settled = false;
-    const fallback = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      setPop((p) => p && { ...p, origin: null });
-      setPopOpen(false);
-    }, 150);
-    el.measureInWindow((x, y, width, height) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(fallback);
-      // Async, like openPop: if Add or Discard landed meanwhile, that rect is
-      // a spot the card no longer has, so fade out in place instead.
-      const st = flowRef.current.status;
-      const gone = st === 'idle' || st === 'create';
-      setPop((p) => p && { ...p, origin: gone ? null : { x, y, width, height } });
-      setPopOpen(false);
-    });
-  }, []);
-  // The card went (Add landed, Discard, words back to the box): there is no
-  // spot to return to, so it fades where it is. A follow-up being read is
-  // NOT this - the conversation carries on in the popover.
-  const cardGone = flow.status === 'idle' || flow.status === 'create';
+  // After send: the calm wait (MealWaitSheet), then Drona's read full screen
+  // (MealResultScreen). Neither holds the parse: closing the sheet, closing
+  // the result or leaving the screen only stops watching. The parse runs on,
+  // and a result nobody added waits on this screen (the strip above the food
+  // box) until it is added or discarded. lib/mealReady decides, when a parse
+  // lands, whether to open the result or tell the user with a toast.
+  const [waitOpen, setWaitOpen] = useState(false);
+  const [resultOpen, setResultOpen] = useState(false);
+  const [resultDayOpen, setResultDayOpen] = useState(false);
+  const waitOpenRef = useRef(false);
+  waitOpenRef.current = waitOpen;
+  const resultOpenRef = useRef(false);
+  resultOpenRef.current = resultOpen;
+  const focusedRef = useRef(false);
+  const appActiveRef = useRef(AppState.currentState === 'active');
+  // The meal last under review. A correction typed on the result screen
+  // flips the flow to 'analysing', and the screen keeps showing this meal,
+  // dimmed, until the answer replaces it.
+  const lastReviewRef = useRef<Extract<ParseFlow, { status: 'review' }> | null>(null);
+  if (flow.status === 'review') lastReviewRef.current = flow;
+  // "Just log it" landed: the sections it wrote, so the arrival can say so.
+  const autoLandedRef = useRef<MealType[] | null>(null);
+  // A toast for a parse that landed while the app was in the background,
+  // shown the next time it comes to the front.
+  const tellLaterRef = useRef<(() => void) | null>(null);
+  // Sheets live in the root portal, over every screen, so they only show
+  // while this one is in front. Leaving closes them; nothing is thrown away.
+  useFocusEffect(useCallback(() => {
+    focusedRef.current = true;
+    // Back on the tab: the meal waiting behind the bell is right here.
+    readyInbox.remove('meal');
+    return () => {
+      focusedRef.current = false;
+      setWaitOpen(false);
+      setResultOpen(false);
+      setResultDayOpen(false);
+    };
+  }, []));
   useEffect(() => {
-    // Only while open. A return trip already in flight just finishes: cutting
-    // its origin mid-flight would snap the frame back to the big rect.
-    if (!cardGone || !pop || !popOpen) return;
-    setPop((p) => p && { ...p, origin: null });
-    setPopOpen(false);
-  }, [cardGone, pop, popOpen]);
-  const onPopNatural = useCallback((natural: number) => {
-    setPop((p) => (p && p.natural !== natural ? { ...p, natural } : p));
+    const sub = AppState.addEventListener('change', (next) => {
+      appActiveRef.current = next === 'active';
+      // Back in the app on this tab: the meal is on screen, so its bell entry
+      // (filed while the app was away) is done.
+      if (next === 'active' && focusedRef.current) readyInbox.remove('meal');
+      if (next !== 'active' || !tellLaterRef.current) return;
+      const show = tellLaterRef.current;
+      tellLaterRef.current = null;
+      show();
+    });
+    return () => sub.remove();
   }, []);
-  // A reply landing (reading/streaming -> review) opens the card big. The
-  // card itself lifts off once laid out, from wherever it first appeared.
-  // Keyed on popOpen, not pop: a reply that lands during the return trip
-  // reopens the card rather than being left small.
-  const [autoPopKey, setAutoPopKey] = useState(0);
-  const prevStatus = useRef(flow.status);
+  const openResult = useCallback((via: 'toast' | 'strip' | 'wait') => {
+    if (flowRef.current.status !== 'review') return;
+    track('meal_result_opened', { via });
+    if (!focusedRef.current) router.navigate('/nutrition');
+    Keyboard.dismiss();
+    setWaitOpen(false);
+    setResultOpen(true);
+  }, []);
+  /** Tell the user a parse landed while they were not watching it.
+   *  `onShown` runs when the toast is actually up: now, or on the return to
+   *  the app when it lands in the background. */
+  const tell = useCallback((kind: ReadyKind, meals: MealType[], onShown?: () => void) => {
+    // The same news behind the dashboard bell, and as a phone notification
+    // when the app is in the background (lib/readyNotice). Bannerless: the
+    // toast below is this screen's own banner.
+    announceReady({
+      title: readyLine(kind, meals),
+      body: kind === 'review' ? 'Tap to check it and add it.' : 'Tap to open it.',
+      failed: kind === 'error',
+      target: { route: '/nutrition' },
+      // On this tab with the app open, the meal is right here: nothing to
+      // file behind the bell.
+      inbox: focusedRef.current && appActiveRef.current ? false : 'meal',
+      bannerless: true,
+    });
+    const show = () => {
+      toastRef.current.show({
+        type: kind === 'error' ? 'error' : 'success',
+        text: readyLine(kind, meals),
+        action: {
+          label: readyAction(kind),
+          onPress: kind === 'review'
+            ? () => openResult('toast')
+            : () => { if (!focusedRef.current) router.navigate('/nutrition'); },
+        },
+        durationMs: READY_TOAST_MS,
+      });
+      onShown?.();
+    };
+    if (!appActiveRef.current) { tellLaterRef.current = show; return; }
+    show();
+  }, [openResult]);
+  // A parse landed: open the result for someone watching, tell anyone else.
+  // Only on the step out of a running parse, so a Discard, an edit or a
+  // restored meal never fires it.
+  const prevStatusRef = useRef(flow.status);
   useEffect(() => {
-    const was = prevStatus.current;
-    prevStatus.current = flow.status;
-    if (flow.status === 'review' && (was === 'analysing' || was === 'streaming') && !popOpen) {
-      setAutoPopKey((k) => k + 1);
+    const was = prevStatusRef.current;
+    prevStatusRef.current = flow.status;
+    const running = (st: ParseFlow['status']) => st === 'analysing' || st === 'streaming';
+    if (!running(was) || running(flow.status)) return;
+    // The parse is over: nothing is in flight for a cancel to go back from.
+    inFlightBackRef.current = null;
+    const arrived = arrivalAfter(cancelledRef.current);
+    cancelledRef.current = arrived.cancelled;
+    if (!arrived.show) return;
+    const how = arrivalAction({
+      sheetOpen: waitOpenRef.current,
+      resultOpen: resultOpenRef.current,
+      screenFocused: focusedRef.current,
+      appActive: appActiveRef.current,
+    });
+    setWaitOpen(false);
+    const landed = autoLandedRef.current;
+    autoLandedRef.current = null;
+    const saveArrived = saveArrivedRef.current !== null && saveArrivedRef.current === parseTokenRef.current;
+    saveArrivedRef.current = null;
+    const kind: ReadyKind | null = saveArrived ? 'reply'
+      : flow.status === 'review' ? 'review'
+      : flow.status === 'idle' ? (landed ? 'logged' : null)
+      : flow.status === 'declined' ? 'reply'
+      : flow.status === 'error' ? 'error'
+      : null;
+    // Not a meal to check (it went in, or it is a reply or a failure, which
+    // show above the food box): the result screen has nothing to show. A save
+    // card shows above the food box too, beside the meal card's strip.
+    if (flow.status !== 'review' || saveArrived) setResultOpen(false);
+    if (!kind) return;
+    // Counted when the user can see it (lib/mealReady showPlan).
+    const shown = () => track('meal_ready_shown', { kind, how });
+    const plan = showPlan(kind, how);
+    if (plan.via === 'result') { Keyboard.dismiss(); setResultOpen(true); shown(); }
+    else if (plan.via === 'toast') tell(kind, flow.status === 'review' ? sectionsOf(flow.meal) : (landed ?? []), shown);
+    else shown();
+  }, [flow, tell]);
+
+  // A meal waiting to be added survives the app being closed: it is work
+  // the user would otherwise type again. Read once per account before
+  // anything is written, so the first idle render cannot wipe it.
+  // `restoredKey` names the account whose meal was read back. It is a key,
+  // not a flag, so the render that switches accounts already sees "not
+  // read yet" and cannot file the last account's meal under the new key.
+  const readyKey = user?.id ? `overload.mealReady.${user.id}` : null;
+  const [restoredKey, setRestoredKey] = useState<string | null>(null);
+  const lastReadyKey = useRef<string | null>(null);
+  useEffect(() => {
+    // Another account signed in: whatever was on screen was the last
+    // account's, so it goes, and its parse with it. Its stored meal stays
+    // under its own key for when it signs back in.
+    if (lastReadyKey.current && lastReadyKey.current !== readyKey) {
+      parseTokenRef.current += 1;
+      parseAbortRef.current?.abort();
+      turnsRef.current = [];
+      lastReviewRef.current = null;
+      setWaitOpen(false);
+      setResultOpen(false);
+      setFlow({ status: 'idle' });
+      // A save card waiting for its tap was the last account's ask.
+      setSaveCard(null);
     }
-  }, [flow.status, popOpen]);
-  // Parse tier (Quick default / Thorough opt-in / Precise for Pro). A ref
+    lastReadyKey.current = readyKey;
+    // Any change, a sign-out included, means this account's meal is not read
+    // back yet. Without this, signing back in as the same account found
+    // "already read" with an idle flow and cleared the store mid-read.
+    setRestoredKey((r) => settleRestoredKey(r, readyKey));
+    if (!readyKey) return;
+    let alive = true;
+    AsyncStorage.getItem(readyKey)
+      .then((raw) => {
+        if (!alive) return;
+        const back = unpackReady<Extract<ParseFlow, { status: 'review' }>>(raw);
+        if (!back) return;
+        // A meal waiting since before the weight fix still carries 15 x "100 g"
+        // behind 15 g. New results are fixed on arrival (toParsedItem); this is
+        // the one way in that skips it, and - / + steps the stored amount.
+        const items = back.meal.items.map((it) => ({ ...it, ...fixWeightLabel(it.quantity, it.serving_label, it.grams) }));
+        const fixed = { ...back, meal: { ...back.meal, items } };
+        setFlow((f) => (f.status === 'idle' ? fixed : f));
+      })
+      .catch(() => {})
+      .finally(() => { if (alive) setRestoredKey(readyKey); });
+    return () => { alive = false; };
+  }, [readyKey]);
+  useEffect(() => {
+    // lib/mealReady decides: an Add still writing keeps the meal stored, a
+    // failed Add stores it as waiting again, only a finished card clears it.
+    const step = readyStoreStep(flow, { key: readyKey, restoredKey, adding });
+    if (!readyKey) return;
+    // The back chain stays in memory: a card back from a restart starts its
+    // undo from there.
+    if (step.kind === 'save') AsyncStorage.setItem(readyKey, packReady({ ...step.flow, before: undefined })).catch(() => {});
+    else if (step.kind === 'clear') AsyncStorage.removeItem(readyKey).catch(() => {});
+  }, [flow, readyKey, restoredKey, adding]);
+
+  // Parse tier (Quick default / Precise for Pro). A ref
   // mirrors the state so onSend reads the CURRENT choice, matching the flowRef
   // idiom above.
   const [parseSpeed, setParseSpeedState] = useState<ParseSpeed>('quick');
   const parseSpeedRef = useRef<ParseSpeed>('quick');
   const [speedSheetOpen, setSpeedSheetOpen] = useState(false);
+  // The dashboard's getting-started "Pick how I log food" lands here with
+  // modes=<stamp>: open the mode sheet once per stamp, then clear it (this tab
+  // stays mounted, like focus=ai above).
+  const { modes: modesParam } = useLocalSearchParams<{ modes?: string }>();
+  const modesShown = useRef<string | null>(null);
+  useFocusEffect(useCallback(() => {
+    if (!modesParam || modesShown.current === modesParam) return;
+    modesShown.current = modesParam;
+    const t = setTimeout(() => {
+      setSpeedSheetOpen(true);
+      router.setParams({ modes: undefined });
+    }, 350);
+    return () => clearTimeout(t);
+  }, [modesParam]));
   // Live entitlement for the Precise tier. Trialing counts: a trial that could
   // not reach the tier it is meant to sell is not a trial.
   //
   // Anything else - free, unknown, still loading, offline - reads as NOT
-  // entitled, which is the safe direction: it degrades Precise to Thorough and
+  // entitled, which is the safe direction: it degrades Precise to Quick and
   // still logs the meal. The server holds the real lock (index.ts 402s a free
   // tier asking for super), so a wrong guess here costs a tier, never access.
   const { access: coachAccess } = useCoachAccess();
@@ -517,6 +777,14 @@ export default function NutritionScreen() {
   useEffect(() => {
     getParseSpeed().then((v) => { parseSpeedRef.current = v; setParseSpeedState(v); });
   }, []);
+  // The food search has its own mode switch. Coming back from it, take its
+  // pick at once (in memory, no storage wait): its "Log it with Drona"
+  // hand-off parses on this same focus, further down, and must run in the
+  // mode the user just chose there.
+  useFocusEffect(useCallback(() => {
+    const v = peekParseSpeed();
+    if (v && v !== parseSpeedRef.current) { parseSpeedRef.current = v; setParseSpeedState(v); }
+  }, []));
   const pickParseSpeed = (v: ParseSpeed) => {
     track('parse_tier_changed', { from: parseSpeedRef.current, to: v });
     parseSpeedRef.current = v;
@@ -583,8 +851,10 @@ export default function NutritionScreen() {
   // copied or learned from without a restart. Signed-in only, like parsing.
   // Portion and numbers ride along with the ids: a portion edit keeps the
   // row's id, and the copy sheet and the usual portion must still see it.
+  // Lines still saving are left out: the history has nothing new until the
+  // save lands, and the read that follows it changes the version anyway.
   const diaryVersion = useMemo(
-    () => `${totalsDayIso}|${MEALS.map((m) => byMeal[m.type].map((e) =>
+    () => `${totalsDayIso}|${MEALS.map((m) => byMeal[m.type].filter((e) => !e.pending).map((e) =>
       `${e.id}:${e.quantity}:${e.serving_unit}:${e.kcal}:${e.protein_g}:${e.carb_g}:${e.fat_g}`).join(',')).join('|')}`,
     [byMeal, totalsDayIso],
   );
@@ -662,8 +932,10 @@ export default function NutritionScreen() {
     const items = picked.filter((x) => !addedRef.current.has(x.key));
     if (items.length === 0) return;
     const keys = items.map((x) => x.key);
-    // Answer the tap now: the rows read "Added" while the write is under way.
+    // Answer the tap now: the lines go into the meal while the write is under
+    // way (the save is a few round trips), and the suggestion reads "Added".
     markAdded(keys, true);
+    const pendingId = addPendingLines(items, meal);
     haptics.tap();
     const fromPrev = items.every((x) => x.reason === 'previous_day');
     void enqueue(async () => {
@@ -680,15 +952,17 @@ export default function NutritionScreen() {
         from_previous_day: fromPrev,
       });
       if (error || !ref) {
+        dropPendingLines(pendingId);
         markAdded(keys, false);
         haptics.warning();
         return;
       }
       haptics.success();
+      settlePendingLines(pendingId, ref.sections.flatMap((sec) => sec.entryIds));
       rememberRelog(ref, fromPrev ? `Copied from ${prevWord}` : all ? 'Your usual' : 'From your usual');
       reload();
     });
-  }, [supabase, viewDate, isToday, rememberRelog, reload, prevWord, markAdded, enqueue]);
+  }, [supabase, viewDate, isToday, rememberRelog, reload, prevWord, markAdded, enqueue, addPendingLines, settlePendingLines, dropPendingLines]);
 
   // A key is "Added" only until its row leaves: once the diary shows the
   // line, mealsToSuggest drops the suggestion and the key goes with it, so an
@@ -718,14 +992,20 @@ export default function NutritionScreen() {
       },
       mealType: meal, mealTypePicked: true,
       origin: item.reason === 'previous_day' ? 'copy_day' : 'pattern',
+      dayIso: viewIso,
     });
-  }, [isToday, prevWord]);
+    setResultOpen(true);
+  }, [isToday, prevWord, viewIso]);
 
   const onCopyLines = useCallback(async (lines: HistoryEntry[]) => {
     if (!supabase || !copyMeal || relogBusyRef.current) return;
     const meal = copyMeal;
     relogBusyRef.current = true;
     setRelogBusy('*');
+    // Same as a suggestion: the lines show in the meal now, the sheet closes,
+    // and a failed write takes them back off.
+    const pendingId = addPendingLines(lines, meal);
+    setCopyMeal(null);
     let res: Awaited<ReturnType<typeof relogLines>>;
     try {
       res = await enqueue(() => relogLines(supabase, lines, meal, viewDate, 'copy_day'));
@@ -740,12 +1020,19 @@ export default function NutritionScreen() {
       meal_type: meal, item_count: lines.length, of_count: prevLines[meal].length,
       from_yesterday: prevLabel === 'Yesterday', is_today: isToday, write_failed: !!error,
     });
-    if (error || !ref) { haptics.warning(); return; }
+    if (error || !ref) {
+      // The sheet closed on the tap, so open it again: the copy is one tap
+      // from a retry, as it was before the lines showed early.
+      dropPendingLines(pendingId);
+      haptics.warning();
+      setCopyMeal(meal);
+      return;
+    }
     haptics.success();
+    settlePendingLines(pendingId, ref.sections.flatMap((sec) => sec.entryIds));
     rememberRelog(ref, `Copied from ${prevLabel === 'Yesterday' ? 'yesterday' : prevLabel}`);
-    setCopyMeal(null);
     reload();
-  }, [supabase, copyMeal, viewDate, prevLines, prevLabel, isToday, rememberRelog, reload, enqueue]);
+  }, [supabase, copyMeal, viewDate, prevLines, prevLabel, isToday, rememberRelog, reload, enqueue, addPendingLines, settlePendingLines, dropPendingLines]);
 
   const onUndoRelog = useCallback(async (ref: LoggedParseRef) => {
     if (!supabase) return;
@@ -866,8 +1153,16 @@ export default function NutritionScreen() {
   /** `retry`: re-send a "Just log it" send with its ORIGINAL id and day (from
    *  the error card or a "Drona didn't get" line). Forces auto mode even if the
    *  toggle has since been flipped: the user is retrying that send, not making
-   *  a new choice. */
-  const runParse = useCallback(async (raw: string, retry?: { clientId: string; logDate: string }) => {
+   *  a new choice.
+   *
+   *  `from`: a sentence handed over from the food search (lib/pendingParse).
+   *  Its meal is the row the user tapped Add on, so it outranks the card's and
+   *  the clock's guess; its day is the one that screen was logging to. */
+  const runParse = useCallback(async (
+    raw: string,
+    retry?: { clientId: string; logDate: string },
+    from?: { mealHint: MealType; day: Date },
+  ) => {
     const t = raw.trim();
     if (!t || !supabase) return;
     // "2 eggs for tomorrow": the message names its own day. Go there first, so
@@ -876,15 +1171,19 @@ export default function NutritionScreen() {
     // it was first sent for and only needs the same words taken out.
     const named = readLogDayPhrase(t);
     const sendText = named ? named.rest : t;
-    const logDay = !retry && named ? named.date : viewDate;
-    if (!retry && named && ymd(named.date) !== ymd(viewDate)) {
-      track('nutrition_day_changed', { direction: named.date > viewDate ? 'forward' : 'back', source: 'text' });
-      setViewDate(named.date);
+    const logDay = !retry && named ? named.date : (from?.day ?? viewDate);
+    if (!retry && ymd(logDay) !== ymd(viewDate)) {
+      if (named) track('nutrition_day_changed', { direction: named.date > viewDate ? 'forward' : 'back', source: 'text' });
+      setViewDate(logDay);
     }
     // Only a day ("for tomorrow"): moving there was the whole ask.
     if (!sendText) return;
     setSavedReview(false);
     setCardMinimized(false);
+    saveArrivedRef.current = null;
+    // A save card that is done (saved, or failed with its reason shown) has
+    // said its piece. One still waiting for its tap stays.
+    if (!retry) setSaveCard((c) => (c?.result ? null : c));
     // A meal still under review is context for the next line: "make it a small
     // one" should correct THAT samosa, not log a second one. Captured before we
     // switch to 'analysing' (which drops the reviewed meal from flow).
@@ -928,7 +1227,43 @@ export default function NutritionScreen() {
       else await addPending({ client_id: auto.clientId, text: t, sent_at: Date.now(), log_date: auto.logDate });
       setLostSends((l) => l.filter((x) => x.client_id !== auto.clientId));
     }
+    // The thread this message belongs to. A retry re-sends one past message
+    // with no context (see `pending`), so it carries no thread either.
+    const thread = retry ? null : beginSend(threadRef.current, {
+      now: Date.now(), hasCard: !!pending, ended: threadEndedRef.current, newId: newAutoLogClientId,
+    });
+    if (thread) {
+      threadRef.current = thread.state;
+      // A new conversation (the last card was added, or 30 minutes idle)
+      // starts with no turns: an old chat must not steer this message. A card
+      // still on screen keeps its turns: they are what a correction to it needs.
+      if (thread.fresh && !pending) turnsRef.current = [];
+    }
+    /** What this answer did to the card, counted the way the server counts. */
+    const settleThread = (answer: FoodThreadAnswer) => {
+      if (thread && threadRef.current?.id === thread.state.id) {
+        threadRef.current = afterAnswer(threadRef.current, thread.send, answer, Date.now());
+      }
+      // The server has this send, so it has the close it carried. Cleared
+      // here, not at send time: a send that never arrives keeps it for the next.
+      if (thread?.send.closed && threadEndedRef.current?.id === thread.send.closed.id) threadEndedRef.current = null;
+    };
+    // The card before this message, so the return arrow (and a cancel while
+    // it is read) can go back one step instead of throwing the card away.
+    const back: ReviewBack | null = prevReview ? { review: prevReview, turns: turnsRef.current.slice(), last: t } : null;
+    inFlightBackRef.current = back;
+    // A new send owns the arrival: a cancel flag left from before must not
+    // swallow this answer.
+    cancelledRef.current = false;
+    /** A card this message left on screen remembers the card before it. */
+    const stamp = (f: ParseFlow & { status: 'review' }): ParseFlow & { status: 'review' } => (back ? withBack(f, back) : f);
     setFlow({ status: 'analysing', raw: t, auto: !!auto });
+    // Every send gets the calm wait, a follow-up typed on the result screen
+    // too: the sheet paints over the result (declared after it), and the
+    // answer opens the result again (arrivalAction 'show').
+    // The sheet lives in the app window, so the keyboard would sit over it.
+    Keyboard.dismiss();
+    setWaitOpen(true);
     const turns = retry ? [] : turnsRef.current.slice();
     pushTurn('user', t);
     // The card on screen is a better hint than the wall clock. "and a dosa"
@@ -939,19 +1274,22 @@ export default function NutritionScreen() {
     // for a first-shot log, which is what it was always for.
     const args = {
       text: sendText,
-      mealHint: prevReview?.mealType ?? mealForNow(),
+      // A food-search hand-off names its meal outright: the user tapped Add
+      // on Breakfast, so Breakfast it is, card or clock notwithstanding. Words
+      // that name a meal ("for dinner") still win on the server.
+      mealHint: from?.mealHint ?? prevReview?.mealType ?? mealForNow(),
       previous: pending,
       pendingMeal,
       turns,
       autoLog: auto,
       // The food bar can draw a save card, so it asks for creates.
       canCreate: true,
+      thread: thread?.send ?? null,
     };
     // Streaming is only worth it on a first-shot log: a correction needs the
     // full pipeline anyway, and parseMealStreaming falls back on its own, but
-    // not opening the stream saves the wasted round trip. Thorough and Precise
-    // both take that full-pipeline road; they differ only in the speed field,
-    // and no field at all is what the server reads as smart.
+    // not opening the stream saves the wasted round trip. Precise takes the
+    // full-pipeline road with speed 'super'.
     const tier = effectiveParseSpeed(parseSpeedRef.current, canUsePreciseRef.current);
     // Corrections stay on smart even for a Precise user. The lookup already
     // happened on the first shot and its answer is banked; re-running it to
@@ -970,7 +1308,9 @@ export default function NutritionScreen() {
     // saved meals") has to come back in the tier the user picked.
     const followUpSpeed = precise ? { speed: 'super' as const } : pending && tier === 'quick' ? { speed: 'fast' as const } : {};
     const res = pending || tier !== 'quick'
-      ? await parseMeal(supabase, { ...args, ...followUpSpeed })
+      // `tier` on every message, corrections too: the server routes a Precise
+      // thread's later messages on it, while `speed` keeps a correction smart.
+      ? await parseMeal(supabase, { ...args, ...followUpSpeed, tier: tier === 'precise' ? 'precise' : 'quick' })
       : await parseMealStreaming(supabase, args, (rows) => {
         // A stream that resolves after the user has moved on must not repaint
         // the card they are now looking at.
@@ -994,7 +1334,11 @@ export default function NutritionScreen() {
     // transport failure cannot say whether the request arrived, and the card's
     // Retry re-uses the same id so the server writes at most once.
     if (auto && res.kind !== 'sent' && res.kind !== 'error') void removePending(auto.clientId);
+    // A send still settling reached the server, which writes its thread
+    // after it finishes. A cap or an error never reaches the thread write, so
+    // it does not count as activity: the two idle clocks stay the same.
     if (res.kind === 'sent') {
+      settleThread('unchanged');
       setFlow({ status: 'sent', raw: t, message: res.message, clientId: auto?.clientId ?? '' });
       if (sentTimerRef.current) clearTimeout(sentTimerRef.current);
       sentTimerRef.current = setTimeout(() => { void reconcile(); }, 6000);
@@ -1004,16 +1348,19 @@ export default function NutritionScreen() {
     // meal still under review — that is unlogged work the user would have to
     // retype. Keep the card and show the reply as a notice on it.
     if (res.kind === 'declined') {
+      settleThread(res.cleared ? 'cleared' : 'unchanged');
       pushTurn('drona', res.message);
-      // The user removed the last line, so there is no card left to protect.
-      // Keeping it would show the line they just deleted under a message saying
-      // it is gone. Matches what the X button already does at the last item.
+      // The shared rule (lib/foodBarCard.ts): a reply keeps the card; the user
+      // removing the last line clears it. Keeping it would show the line they
+      // just deleted under a message saying it is gone, which is also what the
+      // X button already does at the last item.
+      const kept = cardAfter(prevReview?.meal.items ?? null, { kind: 'declined', cleared: !!res.cleared });
       if (res.cleared) {
         setFlow({ status: 'idle' });
         return;
       }
-      if (prevReview) {
-        setFlow({ ...prevReview, notice: res.message, proposal: res.proposal ?? null });
+      if (prevReview && kept) {
+        setFlow(stamp({ ...prevReview, meal: { ...prevReview.meal, items: kept }, notice: res.message, proposal: res.proposal ?? null }));
         return;
       }
       setFlow({ status: 'declined', raw: t, message: res.message, pendingMeal: res.pendingMeal });
@@ -1027,7 +1374,7 @@ export default function NutritionScreen() {
       track('limit_reached', { feature: 'meal_parse', kind: res.scope, used: res.used ?? null, limit: res.limit ?? null });
       const capLine = capNotice(res);
       pushTurn('drona', capLine);
-      if (prevReview) setFlow({ ...prevReview, notice: capLine, proposal: null });
+      if (prevReview) setFlow(stamp({ ...prevReview, notice: capLine, proposal: null }));
       else setFlow({ status: 'declined', raw: t, message: capLine });
       router.push({ pathname: '/upgrade', params: { context: capUpgradeContext(res) } });
       return;
@@ -1037,7 +1384,7 @@ export default function NutritionScreen() {
       // Clear any standing proposal: it answered the previous message, and
       // leaving it up would attach "use these numbers" to an error the user
       // just got for something else entirely.
-      if (prevReview) { setFlow({ ...prevReview, notice: res.message, proposal: null }); return; }
+      if (prevReview) { setFlow(stamp({ ...prevReview, notice: res.message, proposal: null })); return; }
       setFlow({
         status: 'error', raw: t, message: res.message,
         ...(auto ? { clientId: auto.clientId, logDate: auto.logDate } : {}),
@@ -1051,7 +1398,9 @@ export default function NutritionScreen() {
     if (res.kind === 'create') {
       const create = parseCoachFoodCreate(res.tool, res.input);
       if (!create) {
-        setFlow({ status: 'declined', raw: t, message: 'I could not put that one together. Give me the name and the calories and I will save it.' });
+        const line = 'I could not put that one together. Give me the name and the calories and I will save it.';
+        if (prevReview) setFlow(stamp({ ...prevReview, notice: line, proposal: null }));
+        else setFlow({ status: 'declined', raw: t, message: line });
         return;
       }
       track('drona_food_create_proposed', {
@@ -1061,10 +1410,27 @@ export default function NutritionScreen() {
         log_now: create.logNow,
         estimated: create.estimated.length > 0 || create.lines.some((l) => l.estimated),
       });
+      settleThread('unchanged');
       pushTurn('drona', create.summary || `Save ${create.name}?`);
-      setFlow({ status: 'create', raw: t, create, result: null, busy: false });
+      // The save card goes BESIDE the meal card. The meal card comes back as
+      // it was, with its words and turns, so a Discard or a Save on the save
+      // card leaves the lunch the user was logging right where it was.
+      saveArrivedRef.current = token;
+      // A newer save card takes the place of one not tapped yet: the latest
+      // ask is the one the user means. The meal card is not touched. One that
+      // is saving right now stays until its answer lands: replacing it would
+      // hide that result and leave a card a second tap could save twice.
+      setSaveCard((cur) => (cur?.busy ? cur : { create, result: null, busy: false, day: logDay }));
+      // The shared rule (lib/foodBarCard.ts, the eval uses it too): a save card
+      // leaves the meal card's lines as they were. Its notice and proposal
+      // answered the message before this one, so they go.
+      const kept = cardAfter(prevReview?.meal.items ?? null, { kind: 'create' });
+      setFlow(prevReview && kept
+        ? stamp({ ...prevReview, meal: { ...prevReview.meal, items: kept }, notice: null, proposal: null })
+        : { status: 'idle' });
       return;
     }
+    settleThread('meal');
     pushTurn('drona', res.meal.drona_line);
     // "Just log it": the server already wrote these lines, so there is nothing
     // left to review and no card to show. The rows themselves are the receipt -
@@ -1096,7 +1462,10 @@ export default function NutritionScreen() {
       });
       markAddedByDrona(res.logged);
       reload();
+      // In the diary: this thread is done, and the next message starts one.
+      endThreadOnAdd();
       turnsRef.current = [];
+      autoLandedRef.current = sectionsOf(res.meal);
       setFlow({ status: 'idle' });
       return;
     }
@@ -1129,9 +1498,10 @@ export default function NutritionScreen() {
     // A follow-up either CORRECTS the pending meal (replace its lines) or ADDS
     // to it (append) — appending is what keeps "and a dosa" from silently
     // dropping the samosa the user already reviewed.
-    const reviewFlow: ParseFlow = (pending && !res.meal.corrects_previous)
+    const reviewFlow = stamp((pending && !res.meal.corrects_previous)
       ? (() => {
-          const items = [...pending.items, ...res.meal.items];
+          // The shared rule: new lines join the card on screen.
+          const items = cardAfter(pending.items, { kind: 'meal', items: res.meal.items, correctsPrevious: false });
           const head = keptMealType ?? headOf(items);
           return {
             status: 'review',
@@ -1140,6 +1510,8 @@ export default function NutritionScreen() {
             meal: { ...res.meal, items, meal_type: head },
             mealType: head,
             mealTypePicked: prevReview?.mealTypePicked,
+            dayIso: prevReview?.dayIso ?? ymd(logDay),
+            tier: prevReview?.tier ?? tier,
           };
         })()
       : (() => {
@@ -1151,8 +1523,10 @@ export default function NutritionScreen() {
             meal: { ...res.meal, meal_type: head },
             mealType: head,
             mealTypePicked: prevReview?.mealTypePicked,
+            dayIso: prevReview?.dayIso ?? ymd(logDay),
+            tier: prevReview?.tier ?? tier,
           };
-        })();
+        })());
     // A food that is only PART of a saved meal was searched as asked ("oats",
     // saved "Oats with milk"). Offer the saved meal as a choice, never a swap:
     // the numbers on the card do not change unless the user taps. Loaded
@@ -1218,10 +1592,10 @@ export default function NutritionScreen() {
     const token = ++checkTokenRef.current;
     setChecking({ token, index: i });
     try {
-      // The server reads at most 12 previous lines. A tapped line past that is
-      // sent on its own, so the check still reaches it; only this line is ever
-      // applied from the answer, so the others need not ride along.
-      const far = i >= 12;
+      // The app sends at most CARD_MAX_LINES previous lines. A tapped line past
+      // that is sent on its own, so the check still reaches it; only this line
+      // is ever applied from the answer, so the others need not ride along.
+      const far = i >= CARD_MAX_LINES;
       const res = await parseMeal(supabase, {
         // Phrased as ACCEPTING a lookup, not as asking a question. Tapping the
         // button IS the request, so the turn must land on requests_research
@@ -1246,6 +1620,10 @@ export default function NutritionScreen() {
         // Only this line is looked up; the rest of the card stays as it is.
         researchLine: far ? 0 : i,
         turns: turnsRef.current.slice(),
+        // A Precise card's check goes to the food agent, which has the label
+        // lookup. Without this it ran as the retired middle tier and could
+        // land on a reply with no web tool (lib/parseSpeed doubleCheckRoute).
+        ...doubleCheckRoute(f.tier, effectiveParseSpeed(parseSpeedRef.current, canUsePreciseRef.current)),
       });
       // The daily allowance covers this lookup too, so a cap here has to say so
       // and open the paywall. Handled BEFORE setFlow: routing is a side effect
@@ -1309,7 +1687,7 @@ export default function NutritionScreen() {
           // looked-up line may come back under the user's own words (said_name)
           // rather than the card's name, so position is the last fallback.
           const sentAt = far ? 0 : i;
-          const sentCount = far ? 1 : Math.min(cur.meal.items.length, 12);
+          const sentCount = far ? 1 : Math.min(cur.meal.items.length, CARD_MAX_LINES);
           const found = res.meal.items.find((r) => key(r) === originalKey)
             ?? res.meal.items.find(
               (r) => r.food_name.toLowerCase() === item.food_name.toLowerCase(),
@@ -1324,6 +1702,12 @@ export default function NutritionScreen() {
           // Fire-and-forget still owes the user a word. Without this the
           // spinner just vanishes and the tap looks like it did nothing.
           return { ...cur, notice: 'Could not reach the web just now. Your numbers are unchanged.' };
+        }
+        if (res.kind === 'create') {
+          // A Precise check now says it can take agent answers, so a save card
+          // is possible in theory. A check has nowhere to draw one; say the
+          // line is unchanged rather than let the tap look like it did nothing.
+          return { ...cur, notice: 'I could not improve that one.' };
         }
         return cur;
       });
@@ -1349,6 +1733,23 @@ export default function NutritionScreen() {
     setFlow((f): ParseFlow => {
       if (f.status !== 'review' || !f.meal.items[i]) return f;
       const items = f.meal.items.map((it, idx) => (idx === i ? swapToAlternative(it, k) : it));
+      return { ...f, meal: { ...f.meal, items } };
+    });
+  }, []);
+
+  /** One - or + on a line's amount in the result screen. Every number on
+   *  the line moves with it (lib/mealReady scaleLine). */
+  const onStepAmount = useCallback((i: number, dir: 1 | -1) => {
+    const cur = flowRef.current;
+    if (cur.status !== 'review' || !cur.meal.items[i]) return;
+    editCountRef.current += 1;
+    track('parse_proposal_edited', { action: 'step_amount', direction: dir > 0 ? 'more' : 'less' });
+    haptics.tick();
+    setFlow((f): ParseFlow => {
+      if (f.status !== 'review' || !f.meal.items[i]) return f;
+      const items = f.meal.items.map((it, idx) => (
+        idx === i ? scaleLine(it, stepAmount(it.quantity, isMeasurementUnit(it.serving_label), dir)) : it
+      ));
       return { ...f, meal: { ...f.meal, items } };
     });
   }, []);
@@ -1450,8 +1851,38 @@ export default function NutritionScreen() {
     });
   }, []);
 
+  // A second tap during the write must not log the meal twice. State lags a
+  // render; this ref is set before the first await.
+  const addingRef = useRef(false);
+  /** Undo from the "Added" toast: the lines come out and the meal goes back
+   *  to waiting, so an Undo is never a silent discard. */
+  const onUndoAdd = useCallback(async (ref: LoggedParseRef, review: Extract<ParseFlow, { status: 'review' }>) => {
+    if (!supabase) return;
+    track('meal_undone', {
+      section_count: ref.sections.length,
+      entry_count: ref.sections.reduce((t, sec) => t + sec.entryIds.length, 0),
+      via: 'toast',
+    });
+    let failed = false;
+    try {
+      failed = !!(await undoParsedMeal(supabase, ref)).error;
+    } catch {
+      failed = true;
+    }
+    reload();
+    if (failed) {
+      haptics.warning();
+      toastRef.current.error('That did not undo. The food is still in your diary.');
+      return;
+    }
+    haptics.tap();
+    if (flowRef.current.status === 'idle') setFlow(review);
+  }, [supabase, reload]);
+
   const onAdd = useCallback(async () => {
-    if (flow.status !== 'review' || !supabase || adding) return;
+    if (flow.status !== 'review' || !supabase || addingRef.current) return;
+    const review = flow;
+    addingRef.current = true;
     setAdding(true);
     // The LINES say where they go, always. Every control that can change a
     // section now writes it onto the lines (the chip row stamps all of them,
@@ -1459,47 +1890,94 @@ export default function NutritionScreen() {
     // is no second opinion to reconcile here. meal_type rides along only as
     // the fallback for a line that carries none, which is what an older
     // server's response looks like.
-    const { error } = await logParsedMeal(
-      supabase, { ...flow.meal, meal_type: flow.mealType }, viewDate,
-      flow.origin ?? 'ai',
-    );
-    if (flow.origin) {
+    const meal = { ...review.meal, meal_type: review.mealType };
+    const day = review.dayIso ? dateFromYmd(review.dayIso) : viewDate;
+    const sections = sectionsOf(meal);
+    const destination = sections.length > 1
+      ? `${sections.length} meals`
+      : (MEALS.find((m) => m.type === sections[0])?.label ?? 'your diary').toLowerCase();
+    // Answer the tap: the screen closes and the lines show in their meals at
+    // once (lib/pendingEntries) while the write runs. A meal for another day
+    // takes the diary there instead; that day's read shows the lines.
+    const sameDay = ymd(day) === viewIso;
+    const groups = sameDay
+      ? sections.map((sec) => ({
+          sec,
+          id: addPendingLines(
+            meal.items.filter((it) => (it.meal_type ?? meal.meal_type) === sec).map((it) => ({
+              food_id: it.food_id, food_name: it.food_name, quantity: it.quantity,
+              serving_unit: it.serving_label, grams_logged: it.grams,
+              kcal: it.kcal, protein_g: it.protein_g, carb_g: it.carb_g, fat_g: it.fat_g, source: it.source,
+            })),
+            sec,
+          ),
+        }))
+      : [];
+    if (!sameDay) setViewDate(day);
+    setResultOpen(false);
+    setCardMinimized(false);
+    setFlow({ status: 'idle' });
+    // Stored as "being added" before the write: an app killed after the
+    // write lands but before the store clears brings it back with a note
+    // that it may already be in the diary, not as a fresh Add.
+    if (readyKey) await AsyncStorage.setItem(readyKey, packAdding(review)).catch(() => {});
+    let res: Awaited<ReturnType<typeof logParsedMeal>>;
+    try {
+      res = await logParsedMeal(supabase, meal, day, review.origin ?? 'ai');
+    } catch (e) {
+      res = { error: e instanceof Error ? e.message : 'Could not add that' };
+    }
+    const { ref, error } = res;
+    if (review.origin) {
       track('food_suggestion_logged', {
-        meal_type: flow.mealType, item_count: flow.meal.items.length, all: false,
+        meal_type: review.mealType, item_count: review.meal.items.length, all: false,
         edited: editCountRef.current > 0, is_today: isToday, write_failed: !!error,
-        from_previous_day: flow.origin === 'copy_day',
+        from_previous_day: review.origin === 'copy_day',
       });
     }
+    addingRef.current = false;
     setAdding(false);
-    if (!flow.origin) {
+    if (!review.origin) {
       track('parse_proposal_accepted', {
-        item_count: flow.meal.items.length,
-        section_count: sectionsOf(flow.meal).length,
+        item_count: review.meal.items.length,
+        section_count: sections.length,
         edit_count: editCountRef.current,
-        meal_type_picked: !!flow.mealTypePicked,
+        meal_type_picked: !!review.mealTypePicked,
         is_today: isToday,
         write_failed: !!error,
       });
     }
-    if (!error) editCountRef.current = 0;
-    if (error) {
+    if (error || !ref) {
+      for (const g of groups) dropPendingLines(g.id);
+      haptics.warning();
       // Keep the reviewed meal so Retry re-attempts the write (see onRetry).
-      setFlow({ status: 'error', raw: flow.raw, message: 'Could not add that. Try again.', meal: flow.meal, mealType: flow.mealType, words: flow.words, origin: flow.origin });
+      setFlow({ status: 'error', raw: review.raw, message: 'Could not add that. Try again.', meal: review.meal, mealType: review.mealType, words: review.words, origin: review.origin, dayIso: review.dayIso, tier: review.tier });
       return;
     }
+    editCountRef.current = 0;
+    // The card is in the diary, so its thread is done (lib/foodThread.ts).
+    endThreadOnAdd();
+    for (const g of groups) {
+      const sec = ref.sections.find((x) => x.mealType === g.sec);
+      if (sec) settlePendingLines(g.id, sec.entryIds);
+      else dropPendingLines(g.id);
+    }
+    haptics.success();
     reload();
-    // Reset here too: Undo puts the card back in review, and it should come
-    // back open rather than as a summary line the user has to expand.
-    setCardMinimized(false);
-    setFlow({ status: 'idle' });
-  }, [flow, supabase, adding, reload, viewDate, isToday]);
+    toastRef.current.show({
+      type: 'success',
+      text: `Added to ${destination}`,
+      action: { label: 'Undo', onPress: () => { void onUndoAdd(ref, review); } },
+      durationMs: UNDO_MS,
+    });
+  }, [flow, supabase, reload, viewDate, viewIso, isToday, readyKey, addPendingLines, settlePendingLines, dropPendingLines, onUndoAdd]);
 
   const onRetry = useCallback(() => {
     if (flow.status !== 'error') return;
     // A write failure kept the meal → re-show the review card (tapping Add re-writes
     // it, to the current day). Only re-run the AI parse if the meal is gone.
     if (flow.meal && flow.mealType) {
-      setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.mealType, words: flow.words, origin: flow.origin });
+      setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.mealType, words: flow.words, origin: flow.origin, dayIso: flow.dayIso ?? viewIso, tier: flow.tier });
     } else {
       // A failed "Just log it" send retries under its ORIGINAL id (see ParseFlow).
       void runParse(
@@ -1507,25 +1985,25 @@ export default function NutritionScreen() {
         flow.clientId && flow.logDate ? { clientId: flow.clientId, logDate: flow.logDate } : undefined,
       );
     }
-  }, [flow, runParse]);
+  }, [flow, runParse, viewIso]);
 
   // Save the food or meal Drona drafted, and log it too when the user said they
   // ate it. Guarded against a double tap, which would put a duplicate in My
   // Meals. Logs to the day on screen, same as every other add from this box.
   const onApplyCreate = useCallback(async () => {
-    if (flow.status !== 'create' || flow.busy || flow.result || !supabase) return;
-    const { create } = flow;
-    setFlow({ ...flow, busy: true });
-    const res = await applyCoachFoodCreate(supabase, create, mealForNow(), viewDate);
+    if (!saveCard || saveCard.busy || saveCard.result || !supabase) return;
+    const { create } = saveCard;
+    setSaveCard({ ...saveCard, busy: true });
+    const res = await applyCoachFoodCreate(supabase, create, mealForNow(), saveCard.day);
     track('drona_food_create_applied', { kind: create.kind, logged: res.logged, ok: !res.error });
-    setFlow((cur) => (cur.status === 'create' && cur.create === create ? { ...cur, busy: false, result: res } : cur));
+    setSaveCard((cur) => (cur && cur.create === create ? { ...cur, busy: false, result: res } : cur));
     if (res.savedMealId) {
       if (res.logged) reload();
       haptics.success();
     } else {
       haptics.warning();
     }
-  }, [flow, supabase, viewDate, reload]);
+  }, [saveCard, supabase, reload]);
 
   /** Close the card with no verdict on it. Discard calls this after counting a
    *  rejection; editing your words calls it without one, since taking the words
@@ -1540,10 +2018,27 @@ export default function NutritionScreen() {
     parseTokenRef.current += 1;
     parseAbortRef.current?.abort();
     turnsRef.current = [];
+    lastReviewRef.current = null;
+    setWaitOpen(false);
+    setResultOpen(false);
     setFlow({ status: 'idle' });
   }, []);
 
   const onDismiss = useCallback(() => {
+    // Cancelling a follow-up while it is read stops that message only. The
+    // card it was about stays, as it was before the message.
+    const plan = cancelPlan(flow.status === 'analysing' || flow.status === 'streaming', inFlightBackRef.current);
+    if (plan.kind === 'back') {
+      track('food_followup_cancelled', { flow_status: flow.status });
+      parseTokenRef.current += 1;
+      parseAbortRef.current?.abort();
+      inFlightBackRef.current = null;
+      cancelledRef.current = true;
+      turnsRef.current = plan.turns;
+      setWaitOpen(false);
+      setFlow(plan.review);
+      return;
+    }
     track('parse_proposal_rejected', {
       flow_status: flow.status,
       item_count: flow.status === 'review' ? flow.meal.items.length : null,
@@ -1577,6 +2072,95 @@ export default function NutritionScreen() {
     reload();
   }, [supabase, reload]);
 
+  /** Deletes every row waiting behind the Undo bar, one at a time so two lines
+   *  of one meal never race the empty-meal cleanup. A failed one comes back. */
+  const commitRemoves = useCallback(async () => {
+    if (removeTimer.current) { clearTimeout(removeTimer.current); removeTimer.current = null; }
+    const batch = pendingRemoves.current;
+    pendingRemoves.current = [];
+    if (!batch.length || !supabase) return;
+    const failed: string[] = [];
+    for (const e of batch) {
+      try {
+        if ((await deleteMealEntry(supabase, e)).error) failed.push(e.id);
+        else track('meal_entry_deleted', { meal_type: e.meal_type, kcal: Math.round(e.kcal), via: 'swipe' });
+      } catch {
+        failed.push(e.id);
+      }
+    }
+    if (failed.length) {
+      setRemovedIds((ids) => { const next = new Set(ids); for (const id of failed) next.delete(id); return next; });
+      haptics.warning();
+      // A newer swipe's Undo bar may be up. Replacing it would leave those
+      // rows to delete with no Undo, and the failed rows reappearing say enough.
+      if (!pendingRemoves.current.length) toastRef.current.error(failed.length === 1 ? 'That food did not delete. It is back on the list.' : `${failed.length} foods did not delete. They are back on the list.`);
+    }
+    reload();
+  }, [supabase, reload]);
+  const commitRef = useRef(commitRemoves);
+  commitRef.current = commitRemoves;
+
+  /** Undo brings back every row removed since the bar appeared. */
+  const undoRemoves = useCallback(() => {
+    if (removeTimer.current) { clearTimeout(removeTimer.current); removeTimer.current = null; }
+    const back = pendingRemoves.current;
+    pendingRemoves.current = [];
+    if (!back.length) return;
+    setRemovedIds((ids) => { const next = new Set(ids); for (const e of back) next.delete(e.id); return next; });
+    haptics.tap();
+  }, []);
+
+  /** A row swiped off the screen. Each new swipe restarts the Undo window, so
+   *  clearing a meal line by line ends in one bar: "Removed 3 foods · Undo".
+   *  False when it cannot be removed now, so the swiped row springs back. */
+  const onRemoveEntry = useCallback((e: LoggedEntry) => {
+    if (!supabase || e.pending) { haptics.warning(); return false; }
+    if (pendingRemoves.current.some((p) => p.id === e.id)) return true;
+    pendingRemoves.current = [...pendingRemoves.current, e];
+    setRemovedIds((ids) => new Set(ids).add(e.id));
+    haptics.medium();
+    const n = pendingRemoves.current.length;
+    toastRef.current.show({
+      type: 'success',
+      text: n === 1 ? `Removed ${e.food_name}` : `Removed ${n} foods`,
+      action: { label: 'Undo', onPress: undoRemoves },
+      durationMs: UNDO_MS,
+    });
+    if (removeTimer.current) clearTimeout(removeTimer.current);
+    removeTimer.current = setTimeout(() => { void commitRef.current(); }, COMMIT_MS);
+    return true;
+  }, [supabase, undoRemoves]);
+
+  // Leaving the screen or the app sends the deletes now: the Undo goes with it.
+  useFocusEffect(useCallback(() => () => {
+    if (!pendingRemoves.current.length) return;
+    toastRef.current.hide();
+    void commitRef.current();
+  }, []));
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      // Background only: 'inactive' is also the notification shade or a
+      // system prompt, which would drop the Undo bar early.
+      if (next !== 'background' || !pendingRemoves.current.length) return;
+      toastRef.current.hide();
+      void commitRef.current();
+    });
+    return () => sub.remove();
+  }, []);
+
+  // A sentence the food search's "Log it with Drona" row left for this box.
+  // Taking it clears it, so it runs once however often this effect re-runs
+  // (runParse changes identity with the day; a re-focus finds nothing). It
+  // waits while a parse is still running here, as the composer's send does,
+  // and then goes in exactly as if typed into the box: with a card under
+  // review it is a follow-up to that card, never a silent discard of it.
+  useFocusEffect(useCallback(() => {
+    if (!supabase || !isSignedIn || parseInFlight) return;
+    const p = takePendingParse();
+    if (!p) return;
+    void runParse(p.text, undefined, { mealHint: p.meal, day: p.day });
+  }, [supabase, isSignedIn, parseInFlight, runParse]));
+
   /** A send the server never took, re-sent under the SAME id and day. */
   const onRetryLost = useCallback((p: PendingAutoLog) => {
     setLostSends((l) => l.filter((x) => x.client_id !== p.client_id));
@@ -1602,11 +2186,79 @@ export default function NutritionScreen() {
 
   const s = makeStyles(C);
 
-  /** The parse card, once, for both places it shows: pinned above the food
-   *  bar and lifted into the popover. Same props and callbacks in both, so a
-   *  change made in the bigger view is the change on the card. */
+  // Shared by the inline card and the result screen, so a choice made on
+  // either is the same change to the meal.
+  const acceptProposal = () => setFlow((f) => {
+    if (f.status !== 'review' || !f.proposal) return f;
+    // The proposal replaces the LINES, never their placement. Each
+    // incoming line inherits the section of the line it stands in
+    // for, matched by name and falling back to position, so
+    // accepting better numbers for a breakfast item cannot move it.
+    // POSITION first, then name. A name-keyed map cannot tell two
+    // same-named lines in different sections apart - the later key
+    // overwrites the earlier - and a proposal is a positional
+    // replacement of the same list, so the index is the stronger
+    // handle. The name is the fallback for a reordered list.
+    const key = (n: string) => n.trim().toLowerCase();
+    const bySection = new Map(f.meal.items.map((it) => [key(it.food_name), it.meal_type]));
+    const items = f.proposal.items.map((it, i) => {
+      const atIdx = f.meal.items[i];
+      const positional = atIdx && key(atIdx.food_name) === key(it.food_name)
+        ? atIdx.meal_type
+        : undefined;
+      return {
+        ...it,
+        meal_type: it.meal_type ?? positional ?? bySection.get(key(it.food_name)) ?? f.mealType,
+      };
+    });
+    return { ...f, meal: { ...f.meal, items }, notice: null, proposal: null };
+  });
+  const dismissNotice = () => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f));
+  const editWordsBlocked = parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && (!!flow.clientId || !!flow.meal));
+  const editWords = () => {
+    if (flow.status === 'idle') return;
+    // A card a follow-up moved on: one step back. The card goes back to how
+    // it was before that message, and only that message returns to the box.
+    // Local edits made since that message go with it (lib/foodCardBack).
+    // The server takes the app's card as the base on the next send
+    // (foodThreads recordThreadMessage: the app's lines win, and a base
+    // behind the server's is written on top), so the older version is safe.
+    // A cancelled follow-up the server still finished is healed the same way.
+    const back = flow.status === 'review' ? stepBack(flow) : null;
+    if (flow.status === 'review' && back) {
+      track('food_text_reused', { from: 'card', flow_status: flow.status, chars: back.last.length, step_back: true });
+      parseTokenRef.current += 1;
+      setChecking(null);
+      turnsRef.current = back.turns;
+      setFlow(back.review);
+      setText((cur) => boxAfterBack(back.last, cur));
+      // The box sits under the result screen: close it so the words are seen.
+      setResultOpen(false);
+      inputRef.current?.focus();
+      return;
+    }
+    // The first message: nothing earlier to go back to, so the meal starts
+    // over. (`words` is the whole chat only on a card back from a restart,
+    // which keeps no steps.)
+    const raw = flow.status === 'review' && flow.words ? flow.words : flow.raw;
+    track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
+    clearCard();
+    // Keep a half-typed follow-up: it rides after the words, not over them.
+    setText((cur) => (cur.trim() ? `${raw}, ${cur.trim()}` : raw));
+    inputRef.current?.focus();
+  };
+
+  // What the result screen draws: the meal under review, or, while a
+  // correction typed there is read, the meal it is correcting.
+  const shownReview = flow.status === 'review' ? flow : parseInFlight && resultOpen ? lastReviewRef.current : null;
+  const closeWait = () => { track('meal_wait_closed', { status: flow.status }); setWaitOpen(false); };
+  const closeResult = () => setResultOpen(false);
+
+  /** The inline card above the food box: a decline, an error, a "Just log
+   *  it" send still settling, and a reviewed meal folded to its one-line
+   *  strip while it waits (the meal itself opens full screen). */
   const renderParseCard = (extra: Partial<React.ComponentProps<typeof ParsedMealCard>>) => {
-    if (flow.status === 'idle' || flow.status === 'create') return null;
+    if (flow.status === 'idle') return null;
     return (
       <ParsedMealCard
         state={flow.status as ParseCardState}
@@ -1627,32 +2279,8 @@ export default function NutritionScreen() {
         onMoveGroup={flow.status === 'review' ? onMoveGroup : undefined}
         notice={flow.status === 'review' ? flow.notice ?? null : null}
         proposalLabel={flow.status === 'review' ? flow.proposal?.note ?? null : null}
-        onAcceptProposal={() => setFlow((f) => {
-          if (f.status !== 'review' || !f.proposal) return f;
-          // The proposal replaces the LINES, never their placement. Each
-          // incoming line inherits the section of the line it stands in
-          // for, matched by name and falling back to position, so
-          // accepting better numbers for a breakfast item cannot move it.
-          // POSITION first, then name. A name-keyed map cannot tell two
-          // same-named lines in different sections apart - the later key
-          // overwrites the earlier - and a proposal is a positional
-          // replacement of the same list, so the index is the stronger
-          // handle. The name is the fallback for a reordered list.
-          const key = (n: string) => n.trim().toLowerCase();
-          const bySection = new Map(f.meal.items.map((it) => [key(it.food_name), it.meal_type]));
-          const items = f.proposal.items.map((it, i) => {
-            const atIdx = f.meal.items[i];
-            const positional = atIdx && key(atIdx.food_name) === key(it.food_name)
-              ? atIdx.meal_type
-              : undefined;
-            return {
-              ...it,
-              meal_type: it.meal_type ?? positional ?? bySection.get(key(it.food_name)) ?? f.mealType,
-            };
-          });
-          return { ...f, meal: { ...f.meal, items }, notice: null, proposal: null };
-        })}
-        onDismissNotice={() => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f))}
+        onAcceptProposal={acceptProposal}
+        onDismissNotice={dismissNotice}
         // Frozen while a check is in flight: editing or removing a line
         // mid-lookup shifts indices and races the write below.
         onEditItem={flow.status === 'review' && checkingIndex === null ? onEditItem : undefined}
@@ -1673,15 +2301,7 @@ export default function NutritionScreen() {
         // Nor while Add is writing, nor after Add failed (the error card
         // keeps the meal): the write may still have landed, and the words
         // left in the box could log the meal twice. Retry is the safe path.
-        onEditWords={parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && (!!flow.clientId || !!flow.meal)) ? undefined : () => {
-          // The whole conversation, not just a correction's own words.
-          const raw = flow.status === 'review' && flow.words ? flow.words : flow.raw;
-          track('food_text_reused', { from: 'card', flow_status: flow.status, chars: raw.length });
-          clearCard();
-          // Keep a half-typed follow-up: it rides after the words, not over them.
-          setText((cur) => (cur.trim() ? `${raw}, ${cur.trim()}` : raw));
-          inputRef.current?.focus();
-        }}
+        onEditWords={editWordsBlocked ? undefined : editWords}
         minimized={cardMinimized}
         onToggleMinimize={() => setCardMinimized((v) => !v)}
         {...extra}
@@ -1694,14 +2314,16 @@ export default function NutritionScreen() {
       <ScrollView
         // The blurred day behind the open card is out of the screen-reader
         // tree too; the card and the food box (outside this list) stay in it.
-        accessibilityElementsHidden={popOpen}
-        importantForAccessibility={popOpen ? 'no-hide-descendants' : 'auto'}
+        accessibilityElementsHidden={resultOpen}
+        importantForAccessibility={resultOpen ? 'no-hide-descendants' : 'auto'}
         contentContainerStyle={{ paddingTop: insets.top + Spacing.sm, paddingBottom: 150 }}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         onScroll={onDayScroll}
         scrollEventThrottle={16}
+        refreshControl={<OrbRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
+        <RefreshOrb refreshing={refreshing} />
         {/* Header — back + a day stepper (‹ Today ›, tap the label for the calendar) */}
         <View style={s.header}>
           <Pressable onPress={() => router.back()} hitSlop={12} style={s.back}>
@@ -1886,7 +2508,7 @@ export default function NutritionScreen() {
             the same stale-number bug wearing a coach's voice. */}
         {!dayUnknown && (
           <View style={s.drona}>
-            <View style={s.avatar}><DronaMark size={11} color={C.accentText} state="static" /></View>
+            <View style={s.avatar}><DronaMark size={11} color={`${C.accentText}99`} state="static" /></View>
             <Text style={s.dronaTxt}>{dronaLine}</Text>
           </View>
         )}
@@ -1910,7 +2532,7 @@ export default function NutritionScreen() {
 
         {/* Meal sections */}
         {MEALS.map((m) => {
-          const entries = dayUnknown ? [] : byMeal[m.type];
+          const entries = dayUnknown ? [] : byMeal[m.type].filter((e) => !removedIds.has(e.id));
           const sub = entries.reduce((a, e) => ({ kcal: a.kcal + e.kcal, protein: a.protein + e.protein_g }), { kcal: 0, protein: 0 });
           // Copy the day before's meal: offered while that meal holds anything
           // this one does not have yet.
@@ -1950,8 +2572,10 @@ export default function NutritionScreen() {
                 // A row Drona added in "Just log it" this launch wears a quiet
                 // chip with Undo, so a meal logged while the app was closed is
                 // still one tap from gone. Cleared by the next app launch.
-                const dronaRef = addedByDronaRef(e.id);
-                const relog = relogged.get(e.id);
+                // A line still saving has no row to open or undo yet: it
+                // shows dimmed and quiet until the day is read back with it.
+                const dronaRef = e.pending ? undefined : addedByDronaRef(e.id);
+                const relog = e.pending ? undefined : relogged.get(e.id);
                 // Undo takes back the whole add (a copy or Add all can be
                 // several lines), so the chip says so when there is more than one.
                 const relogCount = relog ? relog.ref.sections.reduce((t, sec) => t + sec.entryIds.length, 0) : 0;
@@ -1965,25 +2589,49 @@ export default function NutritionScreen() {
                   // the end of the beat its suggestion row started. Lines that
                   // were already there mount still, so a day load never ripples.
                   <Animated.View
-                    key={e.id}
+                    key={rowKey(e.id)}
                     style={s.entryWrap}
-                    entering={relog ? FadeInDown.duration(280).springify().damping(16) : undefined}
+                    // Timed, not sprung: a spring overshot and the suggestion
+                    // rows below, pushed down by it, bobbed before settling.
+                    entering={relog || e.pending ? FadeInDown.duration(220) : undefined}
                     layout={LinearTransition.duration(220)}
                   >
-                    <Pressable style={s.entry} onPress={() => setEditEntry(e)}>
-                      <Text style={s.entryName}>
-                        {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit)}</Text>
-                      </Text>
-                      <View style={s.macros}>
-                        <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
-                        <Text style={[s.macroNum, { color: C.macro.protein }]}>{formatMacroGrams(e.protein_g)}g P</Text>
-                        <Text style={[s.macroNum, { color: C.macro.carbs }]}>{formatMacroGrams(e.carb_g)}g C</Text>
-                        <Text style={[s.macroNum, { color: C.macro.fat }]}>{formatMacroGrams(e.fat_g)}g F</Text>
+                    {/* A plain list row, not a card: only the summary and the food
+                        box carry a surface, so the box reads as the thing to use.
+                        The chevron and the pressed wash say the row opens.
+                        Swipe it off to the left to remove it. */}
+                    {/* A line still saving has no row to delete yet, so it does not swipe. */}
+                    <SwipeToRemove style={s.entrySwipe} disabled={!!e.pending} onRemove={() => onRemoveEntry(e)}>
+                    <Pressable
+                      style={({ pressed }) => [s.entry, { backgroundColor: pressed ? C.muted : C.background }, e.pending && s.entryPending]}
+                      onPress={e.pending ? undefined : () => setEditEntry(e)}
+                      disabled={e.pending}
+                      accessibilityRole="button"
+                      accessibilityState={{ busy: !!e.pending, disabled: !!e.pending }}
+                      accessibilityHint={e.pending ? 'Saving' : 'Edit this food'}
+                      // Screen readers get Remove from the actions rotor, no swipe needed.
+                      accessibilityActions={e.pending ? undefined : [{ name: 'delete', label: 'Remove' }]}
+                      onAccessibilityAction={(ev) => {
+                        if (ev.nativeEvent.actionName === 'delete') onRemoveEntry(e);
+                      }}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.entryName}>
+                          {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit, e.grams_logged)}</Text>
+                        </Text>
+                        <View style={s.macros}>
+                          <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
+                          <Text style={[s.macroNum, { color: C.macro.protein }]}>{formatMacroGrams(e.protein_g)}g P</Text>
+                          <Text style={[s.macroNum, { color: C.macro.carbs }]}>{formatMacroGrams(e.carb_g)}g C</Text>
+                          <Text style={[s.macroNum, { color: C.macro.fat }]}>{formatMacroGrams(e.fat_g)}g F</Text>
+                        </View>
                       </View>
+                      <Feather name="chevron-right" size={14} color={C.textDim} />
                     </Pressable>
+                    </SwipeToRemove>
                     {dronaRef && (
                       <View style={s.dronaChip}>
-                        <DronaMark size={9} color={C.accentText} state="static" />
+                        <DronaMark size={9} color={`${C.accentText}99`} state="static" />
                         <Text style={s.dronaChipTxt}>Added by Drona</Text>
                         <Text style={s.dronaChipTxt}>·</Text>
                         <Pressable
@@ -2027,7 +2675,7 @@ export default function NutritionScreen() {
               />
 
               <Pressable style={s.add} hitSlop={8} onPress={() => openSearch(m.type)}>
-                <Feather name="plus" size={14} color={C.accentText} />
+                <Feather name="plus" size={14} color={C.textSecondary} />
                 <Text style={s.addTxt}>Add to {m.label.toLowerCase()}</Text>
               </Pressable>
             </View>
@@ -2043,40 +2691,53 @@ export default function NutritionScreen() {
         s.inputWrap,
         { bottom: kbHeight, paddingBottom: barPadBottom },
       ]}>
-        {flow.status === 'create' && (
+        {saveCard && (
           <View style={{ marginBottom: Spacing.sm }}>
             <FoodCreateCard
-              create={flow.create}
-              result={flow.result}
-              busy={flow.busy}
+              create={saveCard.create}
+              result={saveCard.result}
+              busy={saveCard.busy}
               fallbackMeal={mealForNow()}
               onApply={() => void onApplyCreate()}
-              onDismiss={() => setFlow({ status: 'idle' })}
+              // Only the save card goes. The meal card beside it stays.
+              onDismiss={() => setSaveCard(null)}
               fullWidth
             />
           </View>
         )}
-        {flow.status !== 'idle' && flow.status !== 'create' && (
-          <View
-            ref={parseCardRef}
-            collapsable={false}
-            // While the popover is up it IS this card, so the original steps
-            // aside rather than showing twice through the blur.
-            style={{ marginBottom: Spacing.sm, opacity: pop ? 0 : 1 }}
-            pointerEvents={pop ? 'none' : 'auto'}
-            // Hidden from screen readers too, or every control (Add, Discard)
-            // would be in the tree twice while the popover is up.
-            accessibilityElementsHidden={!!pop}
-            importantForAccessibility={pop ? 'no-hide-descendants' : 'auto'}
-          >
-            {renderParseCard({
-              // A standing notice (a question answered, a saved meal offered)
-              // is a decision moment: give the card the whole gap so the foods
-              // keep their room under it rather than being squeezed out.
-              maxHeight: flow.status === 'review' && flow.notice ? Math.max(0, hardAvail) : cardMaxHeight,
-              onExpand: openPop,
-              autoExpandKey: autoPopKey,
-            })}
+        {/* Hidden while the sheet or the result is up: they are this card,
+            bigger, and two live orbs on one screen is one too many. */}
+        {flow.status !== 'idle' && !resultOpen && !(parseInFlight && waitOpen) && (
+          <View style={{ marginBottom: Spacing.sm }}>
+            {parseInFlight ? (
+              // The sheet was closed. The parse runs on; one quiet line says
+              // so, and a tap brings the sheet back.
+              <View style={s.waitStrip}>
+                <Pressable
+                  onPress={() => { haptics.tap(); setWaitOpen(true); }}
+                  style={s.waitStripMain}
+                  accessibilityRole="button"
+                  accessibilityLabel="Drona is working on your meal. Show it."
+                >
+                  <OrbLoader size="small" />
+                  <Text style={s.waitStripTxt} numberOfLines={1}>
+                    {flow.status === 'analysing' && flow.statusLabel
+                      ? `${flow.statusLabel}...`
+                      : flow.auto ? 'Adding it to your diary...' : 'Working out the macros...'}
+                  </Text>
+                  <Feather name="chevron-up" size={15} color={C.textMuted} />
+                </Pressable>
+                {!flow.auto && (
+                  <Pressable onPress={onDismiss} hitSlop={8} accessibilityRole="button" accessibilityLabel="Cancel this meal">
+                    <Feather name="x" size={14} color={C.textMuted} />
+                  </Pressable>
+                )}
+              </View>
+            ) : flow.status === 'review' ? (
+              renderParseCard({ minimized: true, onToggleMinimize: () => { haptics.tap(); openResult('strip'); } })
+            ) : (
+              renderParseCard({})
+            )}
           </View>
         )}
 
@@ -2093,7 +2754,7 @@ export default function NutritionScreen() {
               // "Just log it" changes what send DOES, and the placeholder is the
               // honest always-visible signal of that: send now commits.
               placeholder={autoLog ? 'Tell Drona what you ate, it goes straight in' : 'Tell Drona what you ate'}
-              placeholderTextColor={C.textDim}
+              placeholderTextColor={C.textSecondary}
               returnKeyType="send"
               onSubmitEditing={onSend}
               blurOnSubmit={false}
@@ -2104,8 +2765,8 @@ export default function NutritionScreen() {
             {/* Parse-tier chip: quiet in the default (Quick), lime once the user
                 has opted up, so only the non-default state draws the eye. Tap
                 opens the sheet; the choice is sticky. It shows the tier that
-                will actually RUN, so a lapsed subscriber sees Thorough rather
-                than a Precise badge over a Thorough parse. */}
+                will actually RUN, so a lapsed subscriber sees Quick rather
+                than a Precise badge over a Quick parse. */}
             <Pressable
               onPress={() => {
                 // The portal shares the app window, so the keyboard would cover
@@ -2125,11 +2786,15 @@ export default function NutritionScreen() {
               />
             </Pressable>
             <Pressable
-              onPress={onSend}
+              // Bright while empty, so a tap must do something: open the field.
+              onPress={() => (text.trim() ? onSend() : inputRef.current?.focus())}
               hitSlop={8}
-              disabled={!text.trim() || parseInFlight}
-              style={[s.send, { opacity: text.trim() && !parseInFlight ? 1 : 0.4 }]}
-              accessibilityLabel={autoLog ? 'Log it' : 'Send to Drona'}
+              disabled={parseInFlight}
+              // Full strength while empty too: the send circle is what marks
+              // this bar as the place to log. Dimmed only while a parse runs.
+              style={[s.send, { opacity: parseInFlight ? 0.4 : 1 }]}
+              // Says what a tap does now: with nothing typed it only opens the field.
+              accessibilityLabel={!text.trim() ? 'Type what you ate' : autoLog ? 'Log it' : 'Send to Drona'}
             >
               <Feather name={autoLog ? 'check' : 'arrow-up'} size={16} color={C.background} />
             </Pressable>
@@ -2193,23 +2858,52 @@ export default function NutritionScreen() {
         onSaved={(saved) => { setFuelOpen(false); applyFuelDays(saved); }}
       />
 
-      {/* The review card, bigger. Declared BEFORE the line editor and save
-          sheets: portal order is paint order, so those open on top of it.
-          While it is up, the inline card stays mounted (hidden) as the spot
-          to return to, so two ParsedMealCards exist at once. Keep the card
-          free of side effects (analytics, writes) for that reason: those
-          belong in the callbacks here, which run once. */}
-      <MealCardPopover
-        visible={!!pop}
-        open={popOpen}
-        origin={pop?.origin ?? null}
-        naturalHeight={pop?.natural ?? 0}
-        bottomEdge={popBottomEdge}
-        onRequestClose={closePop}
-        onClosed={() => setPop(null)}
-      >
-        {renderParseCard({ expanded: true, onCollapse: closePop, onToggleMinimize: undefined, onNaturalHeight: onPopNatural })}
-      </MealCardPopover>
+      {/* The meal full screen, then the calm wait. Declared BEFORE the line
+          editor, save and day sheets: portal order is paint order, so those
+          open on top of the result. */}
+      <MealResultScreen
+        open={resultOpen && !!shownReview}
+        meal={shownReview?.meal ?? null}
+        mealType={shownReview?.mealType ?? 'snack'}
+        words={shownReview ? shownReview.words ?? shownReview.raw : ''}
+        tier={shownReview?.tier ?? null}
+        dayLabel={dayLabel(shownReview?.dayIso ? dateFromYmd(shownReview.dayIso) : viewDate)}
+        notice={flow.status === 'review' ? flow.notice ?? null : null}
+        proposalLabel={flow.status === 'review' ? flow.proposal?.note ?? null : null}
+        saved={savedReview}
+        adding={adding}
+        checkingIndex={flow.status === 'review' ? checkingIndex : null}
+        updating={parseInFlight
+          ? flow.status === 'analysing' && flow.statusLabel ? `${flow.statusLabel}...` : 'Updating your meal...'
+          : null}
+        onClose={closeResult}
+        onDiscard={onDismiss}
+        onAdd={() => { void onAdd(); }}
+        onMealTypeChange={onMealTypeChange}
+        onMoveGroup={onMoveGroup}
+        onPickDay={() => setResultDayOpen(true)}
+        onEditItem={onEditItem}
+        onRemoveItem={onRemoveItem}
+        onSwapItem={onSwapItem}
+        onCheckItem={(i) => { void onCheckItem(i); }}
+        onStepAmount={onStepAmount}
+        onAcceptProposal={acceptProposal}
+        onDismissNotice={dismissNotice}
+        onSave={() => { if (flow.status === 'review') setSaveItems(flow.meal.items); }}
+        onCorrect={(t) => { void runParse(t); }}
+        onEditWords={editWordsBlocked ? undefined : editWords}
+      />
+      {/* After the result: portal order is paint order, so a follow-up
+          typed on the result shows its wait card on top. */}
+      <MealWaitSheet
+        open={waitOpen && parseInFlight}
+        words={parseInFlight ? flow.raw : ''}
+        statusLabel={flow.status === 'analysing' ? flow.statusLabel ?? null : null}
+        rows={flow.status === 'streaming' ? flow.rows : null}
+        autoLogging={parseInFlight && !!flow.auto}
+        onClose={closeWait}
+        onCancel={onDismiss}
+      />
 
       {/* Correct a parsed line (serving / quantity / macros) before adding it. */}
       <ParsedItemEditor
@@ -2250,7 +2944,8 @@ export default function NutritionScreen() {
       {/* Jump the diary to any past day, or ahead to plan one. */}
       <ParseSpeedSheet
         open={speedSheetOpen}
-        value={parseSpeed}
+        // The tier that runs, so a lapsed Precise pick still ticks Quick.
+        value={runningSpeed}
         autoLog={autoLog}
         canUsePrecise={canUsePrecise}
         onClose={() => setSpeedSheetOpen(false)}
@@ -2263,6 +2958,13 @@ export default function NutritionScreen() {
         date={viewDate}
         onClose={() => setCalendarOpen(false)}
         onPick={setViewDate}
+      />
+      {/* The result screen's day: where this one meal goes, not the diary. */}
+      <DayPickerSheet
+        open={resultDayOpen}
+        date={shownReview?.dayIso ? dateFromYmd(shownReview.dayIso) : viewDate}
+        onClose={() => setResultDayOpen(false)}
+        onPick={(d) => setFlow((f) => (f.status === 'review' ? { ...f, dayIso: ymd(d) } : f))}
       />
     </View>
   );
@@ -2317,8 +3019,14 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     // SIBLING of the row's Pressable rather than nested inside it. marginTop
     // moves here; the entry itself no longer sets it, or every row would gain
     // a second gap.
-    entryWrap: { marginTop: Spacing.sm },
-    entry: { backgroundColor: C.card, borderRadius: Radius.md, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.md, ...Shadow.card },
+    // The hairline sits on the wrapper so a row's Drona chip stays inside it.
+    entryWrap: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border, paddingBottom: Spacing.xs },
+    // The swipe box bleeds a little past the column so the pressed wash has
+    // room around the text. On the box, not the row, or the box would clip it.
+    entrySwipe: { marginHorizontal: -Spacing.sm, borderRadius: Radius.sm },
+    entry: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.md, paddingHorizontal: Spacing.sm, borderRadius: Radius.sm },
+    // Still saving: the whole row, chevron included, so nothing moves when it lands.
+    entryPending: { opacity: 0.5 },
     raw: { fontSize: 10, color: C.textDim, marginBottom: 1 },
     entryName: { fontSize: FontSize.base, fontWeight: FontWeight.medium, color: C.foreground },
     serving: { fontSize: FontSize.sm, color: C.textMuted, fontWeight: FontWeight.regular },
@@ -2329,7 +3037,9 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
 
     add: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: Spacing.sm, paddingLeft: 2 },
     copyBtn: { marginLeft: Spacing.sm, padding: 2 },
-    addTxt: { fontSize: FontSize.sm, color: C.accentText, fontWeight: FontWeight.medium },
+    // Grey, not lime: four of these per day would spend the accent the food
+    // box needs. textSecondary, not textMuted: muted misses 4.5:1 on light.
+    addTxt: { fontSize: FontSize.sm, color: C.textSecondary, fontWeight: FontWeight.medium },
 
     // "Just log it". The chip is a receipt line under the row, muted except for
     // the Undo it exists to offer; the miss line sits where Drona's own line
@@ -2341,12 +3051,23 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     lostTxt: { flex: 1, fontSize: FontSize.sm, lineHeight: 18, color: C.textSecondary },
     lostAction: { fontSize: FontSize.sm, lineHeight: 18, color: C.accentText, fontWeight: FontWeight.semibold },
 
+    // A parse running with its sheet closed: one line, the card's look.
+    waitStrip: {
+      flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+      backgroundColor: C.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: C.borderSubtle,
+      paddingVertical: 10, paddingHorizontal: Spacing.md, ...Shadow.card,
+    },
+    waitStripMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+    waitStripTxt: { flex: 1, fontSize: FontSize.sm, color: C.foreground, fontWeight: FontWeight.medium },
     inputWrap: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm, backgroundColor: C.background },
     // alignItems flex-end keeps the search + send icons on the bottom line as the field grows.
     // Radius.xxl, not lg: a 16px corner on a 48pt full-width bar reads as a wide
     // flat box; a near-pill reads as a composer. Fixed radius, so the corners
     // stay sane when the multiline field grows the bar.
-    input: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: Radius.xxl, paddingHorizontal: Spacing.lg, paddingVertical: 10, ...Shadow.card },
+    // The one lime-edged surface on the screen, so it is the first place the
+    // eye lands. The edge carries that, not the fill: inputBg is lighter than
+    // the card on dark but a grey field on light.
+    input: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, backgroundColor: C.inputBg, borderWidth: 1, borderColor: C.primaryBorder, borderRadius: Radius.xxl, paddingHorizontal: Spacing.lg, paddingVertical: 12, ...Shadow.card },
     // maxHeight caps growth (~4 lines) then scrolls; textAlignVertical top for Android multiline.
     // The row bottom-aligns (icons must hug the bottom as the field grows), so
     // at REST the centres drift: the 28pt send circle's centre sits higher than

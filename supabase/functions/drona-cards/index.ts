@@ -29,12 +29,12 @@ import {
   chooseTexts, QUESTIONS, questionKey, readText, stateFor, type StoredSignal, type WordFacts, type WordText,
   wordBehaviours, wordSignals,
 } from "../_shared/dronaWords.ts";
-import { askJev } from "../ai-coach/jev.ts";
+import { askJev, type JevUsage } from "../ai-coach/jev.ts";
 import { catchMemory, MEMORY_WRITER_MODEL, readMemoryRows, saveResult } from "../_shared/dronaMemory.ts";
 import { type MomentPerson, momentRow, pickMoment } from "../_shared/dronaMoments.ts";
-import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
+import { cronDays, isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
-import { type Db as MetricsDb, metricsStep } from "./metrics.ts";
+import { type Db as MetricsDb, dueReadFailure, metricsPassBlocked, metricsStep } from "./metrics.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -218,6 +218,41 @@ async function checkin(
 
 type WordsState = "none" | "stored" | "asked" | "failed";
 
+const USAGE_WRITE_TIMEOUT_MS = 5_000;
+
+/** Jev's usage hook: a token_usage_log row per answered call, priced by
+ *  model_pricing (input tokens only). Pushed to `into` so the caller settles the
+ *  writes before its response: the isolate may stop once that is sent. Each
+ *  write gives up after USAGE_WRITE_TIMEOUT_MS, so a stalled log never holds a
+ *  card, and a refused one says so in the logs (supabase-js returns database
+ *  errors in the result, it does not throw them). */
+function jevUsage(
+  db: SupabaseClient,
+  into: PromiseLike<unknown>[],
+  pipeline: string,
+  via: string,
+  userId: string,
+): (u: JevUsage) => void {
+  return (u) => {
+    into.push(
+      Promise.resolve(
+        db.rpc("log_token_usage", {
+          p_pipeline: pipeline, p_provider: "typesafe", p_model: u.model,
+          p_input_tokens: u.input_tokens, p_output_tokens: u.output_tokens, p_cache_read_tokens: 0,
+          p_cache_creation_tokens: 0, p_metadata: {
+            via, questions: u.questions, ...(u.served_model ? { served_model: u.served_model } : {}),
+            ...(u.usage_missing ? { usage_missing: true } : {}), user_id: userId,
+          },
+          p_latency_ms: u.latency_ms, p_status: "success", p_error_message: null,
+        }).abortSignal(AbortSignal.timeout(USAGE_WRITE_TIMEOUT_MS)),
+      ).then(
+        ({ error }) => { if (error) console.error(`[drona-cards] jev usage (${via}):`, error.message.slice(0, 160)); },
+        (e) => console.error(`[drona-cards] jev usage (${via}) threw:`, String(e).slice(0, 160)),
+      ),
+    );
+  };
+}
+
 /**
  * The word step (.planning/drona-word-behaviours.md): what the person told
  * Drona in the week that just ended. Stored answers are reused, so Jev is asked
@@ -245,21 +280,29 @@ async function wordStep(
 
   // One call per text, a few at a time: each text's answers stay tied to its day.
   const questions = Object.fromEntries(Object.entries(QUESTIONS).map(([q, v]) => [questionKey(0, q), v]));
-  const deps = { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, log: (m: string) => console.error(`[drona-cards] ${m}`) };
+  const usageLogs: PromiseLike<unknown>[] = [];
+  const deps = {
+    apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, log: (m: string) => console.error(`[drona-cards] ${m}`),
+    onUsage: jevUsage(db, usageLogs, "drona_card", "words", userId),
+  };
   // Every text carries the same questions under index 0 (one call per text).
   const ask = (t: WordText) => askJev(stateFor(t, texts), questions, deps);
   const answers: Awaited<ReturnType<typeof askJev>>[] = [];
-  for (let i = 0; i < texts.length; i += JEV_CONCURRENCY) {
-    answers.push(...await Promise.all(texts.slice(i, i + JEV_CONCURRENCY).map(ask)));
-  }
-  // One more try for the texts that failed: one flaky call must not hold a
-  // chatty person's whole week. Still failing: the week fails (a missing text
-  // could be the one that says "travelling").
-  const failed = texts.map((_, i) => i).filter((i) => !answers[i].ok);
-  for (let k = 0; k < failed.length; k += JEV_CONCURRENCY) {
-    const batch = failed.slice(k, k + JEV_CONCURRENCY);
-    const again = await Promise.all(batch.map((i) => ask(texts[i])));
-    batch.forEach((i, j) => { answers[i] = again[j]; });
+  try {
+    for (let i = 0; i < texts.length; i += JEV_CONCURRENCY) {
+      answers.push(...await Promise.all(texts.slice(i, i + JEV_CONCURRENCY).map(ask)));
+    }
+    // One more try for the texts that failed: one flaky call must not hold a
+    // chatty person's whole week. Still failing: the week fails (a missing text
+    // could be the one that says "travelling").
+    const failed = texts.map((_, i) => i).filter((i) => !answers[i].ok);
+    for (let k = 0; k < failed.length; k += JEV_CONCURRENCY) {
+      const batch = failed.slice(k, k + JEV_CONCURRENCY);
+      const again = await Promise.all(batch.map((i) => ask(texts[i])));
+      batch.forEach((i, j) => { answers[i] = again[j]; });
+    }
+  } finally {
+    await Promise.allSettled(usageLogs);
   }
   const readings = [];
   let model: string | null = null;
@@ -432,7 +475,7 @@ async function runCron(): Promise<Response> {
     const users: { clerk_user_id: string | null; timezone: string | null }[] = [];
     for (let from = 0; ; from += USER_PAGE) {
       const { data, error } = await retried(() =>
-        db.from("user_profiles").select("clerk_user_id, timezone").not("timezone", "is", null)
+        db.from("user_profiles").select("clerk_user_id, timezone")
           .order("clerk_user_id", { ascending: true }).range(from, from + USER_PAGE - 1)
       );
       if (error) return json({ error: error.message, stage: "users" }, 500);
@@ -440,12 +483,9 @@ async function runCron(): Promise<Response> {
       if (!data || data.length < USER_PAGE) break;
     }
 
-    const weeks = users
-      .filter((u) => u.clerk_user_id && isTimeZone(u.timezone))
-      .map((u) => {
-        const day = wallClock(now, u.timezone as string)!.slice(0, 10);
-        return { userId: u.clerk_user_id as string, day, week: weekStartOf(day) };
-      })
+    // No saved zone is read in UTC, not skipped (cronDays).
+    const weeks = cronDays(users, now)
+      .map(({ userId, day }) => ({ userId, day, week: weekStartOf(day) }))
       .filter((u): u is { userId: string; day: string; week: string } => !!u.week);
 
     // Who already has this week's card, per slot (from an earlier run, or the
@@ -520,21 +560,27 @@ async function runCron(): Promise<Response> {
     // user whose own Monday has not come yet is listed too, and pays three
     // small reads per run until it does.
     // A time budget keeps the moments pass below from being starved.
-    const latestWeek = weekStarts.length > 0 ? [...weekStarts].sort().pop()! : null;
+    // No model key: the pass is skipped whole and named once (metricsPassBlocked).
+    const blocked = metricsPassBlocked(ANTHROPIC_API_KEY);
+    if (blocked) failures.push(blocked);
+    const latestWeek = !blocked && weekStarts.length > 0 ? [...weekStarts].sort().pop()! : null;
     const dueMetrics = new Set<string>();
     if (latestWeek) {
       for (let from = 0; ; from += USER_PAGE) {
         // Active programs only, rows the check can read (a target), and a
         // stable page key (user_id, id) so no row straddles a page edge.
         const { data: unchecked, error: uncheckedErr } = await retried(() =>
-          db.from("coach_program_phase_metrics").select("user_id, coach_programs!inner(status)")
+          // retry_tries is selected on purpose: without the sync migration
+          // (20261023120000) this read fails once and names it (dueReadFailure),
+          // instead of every user's check failing on its own.
+          db.from("coach_program_phase_metrics").select("user_id, retry_tries, coach_programs!inner(status)")
             .eq("coach_programs.status", "active")
             .not("target_value", "is", null)
             .or(`checked_week.is.null,checked_week.lt.${latestWeek}`)
             .order("user_id", { ascending: true }).order("id", { ascending: true })
             .range(from, from + USER_PAGE - 1)
         );
-        if (uncheckedErr) { failures.push(`metrics: due read: ${uncheckedErr.message}`); break; }
+        if (uncheckedErr) { failures.push(dueReadFailure(uncheckedErr)); break; }
         for (const m of unchecked ?? []) if (m.user_id) dueMetrics.add(String(m.user_id));
         if (!unchecked || unchecked.length < USER_PAGE) break;
       }
@@ -545,6 +591,8 @@ async function runCron(): Promise<Response> {
     const rotate = dueUsers.length > 0 ? Math.floor(now.getTime() / 900_000) % dueUsers.length : 0;
     const metricUsers = [...dueUsers.slice(rotate), ...dueUsers.slice(0, rotate)];
     let metricsSkipped = 0;
+    // Lines skipped for lack of time (routine; the phase is retried next run).
+    let linesOutOfTime = 0;
     const metricsStart = Date.now();
     const metricsDeadline = Math.min(metricsStart + METRICS_BUDGET_MS, now.getTime() + METRICS_LATEST_MS);
     for (let i = 0; i < metricUsers.length; i += CRON_CONCURRENCY) {
@@ -562,13 +610,19 @@ async function runCron(): Promise<Response> {
       results.forEach((m, j) => {
         metricsChecked += m.checked;
         if (m.line) linesWritten += 1;
-        if (m.error) failures.push(`${batch[j].userId.slice(0, 12)} metrics: ${m.error}`);
+        if (m.outOfTime) linesOutOfTime += 1;
+        // An out-of-time line is routine (counted above); it stays out of the
+        // failure list unless its un-stamp write also failed.
+        const routine = m.outOfTime && !m.error?.includes("ledger write failed");
+        if (m.error && !routine) failures.push(`${batch[j].userId.slice(0, 12)} metrics: ${m.error}`);
       });
     }
+    // Where the pass ended against the run's 55 s, so a timeout can be traced.
+    console.log(`[drona-cards] metrics pass: ${metricUsers.length} due, ${metricsChecked} checked, ${metricsSkipped} skipped, ${linesOutOfTime} lines out of time; started ${metricsStart - now.getTime()} ms in, ended ${Date.now() - now.getTime()} ms in`);
 
     return json({ users: weeks.length, due: due.length, saved, held, checkins, pick_failed: pickFailed,
       words_asked: wordsAsked, words_failed: wordsFailed, moments_made: moments.made, moments_failed: moments.failed,
-      metrics_checked: metricsChecked, coach_lines: linesWritten, metrics_skipped: metricsSkipped,
+      metrics_checked: metricsChecked, coach_lines: linesWritten, metrics_skipped: metricsSkipped, lines_out_of_time: linesOutOfTime,
       failures: failures.slice(0, 20) });
   } finally {
     // Settled on every path: the runtime may stop the worker once the response
@@ -610,7 +664,7 @@ async function runMemorySweep(): Promise<Response> {
       for (const t of mine) {
         if (Date.now() - started > SWEEP_BUDGET_MS) { tally.left += 1; continue; }
         const r = await catchMemory(t.text, t.kind, {
-          jev: { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS },
+          jev: { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, onUsage: jevUsage(db, logs, "drona_memory", "gate_sweep", userId) },
           anthropicKey: ANTHROPIC_API_KEY,
           today,
           readMemory: () => readMemoryRows(db as never, userId),

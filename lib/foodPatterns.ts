@@ -44,6 +44,8 @@ export interface HistoryEntry {
   kcal: number; protein_g: number; carb_g: number; fat_g: number;
   fiber_g: number | null;
   source?: string | null;
+  /** meal_entries.origin (step 4), when the database has it. */
+  origin?: string | null;
   /** How the original line was written, and the tier its numbers came from.
    *  A re-log carries both over, so an estimate stays an estimate. */
   logged_via?: string | null;
@@ -255,17 +257,20 @@ export interface RelogLabels {
    *  'manual'; comparing with this tells that edit apart from a line that
    *  was already 'manual' (corrected when it was first logged). */
   source?: string | null;
+  /** The original line's origin (step 4). A copy keeps it. */
+  origin?: string | null;
 }
 
 /** The labels a past line carries into its copy. ai_auto means the server
  *  wrote the row itself; the copy is the client's, so it goes back as 'ai'.
  *  Anything unknown is null, the same as a picker log. */
-export function relogLabels(e: { logged_via?: string | null; tier?: string | null; source?: string | null }): RelogLabels {
+export function relogLabels(e: { logged_via?: string | null; tier?: string | null; source?: string | null; origin?: string | null }): RelogLabels {
   const v = e.logged_via;
   return {
     logged_via: v === 'manual' ? 'manual' : v === 'ai' || v === 'ai_auto' ? 'ai' : null,
     tier: e.tier ?? null,
     source: e.source ?? null,
+    origin: e.origin ?? null,
   };
 }
 

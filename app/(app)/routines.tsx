@@ -5,8 +5,6 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  ActivityIndicator,
-  RefreshControl,
   TextInput,
   Pressable,
   KeyboardAvoidingView,
@@ -57,6 +55,7 @@ import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
 import { RoutineDetailSheet } from '@/components/routines/RoutineDetailSheet';
 import ReorderableList, {
@@ -67,7 +66,10 @@ import ReorderableList, {
 } from 'react-native-reorderable-list';
 import { metricTypeOf, usesReps, type ExerciseDef, type MetricType } from '@/lib/exercises';
 import { formatDuration } from '@/lib/format';
+import { invalidateUserProgram } from '@/lib/screenCache';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { OrbLoader } from '@/components/ui/OrbLoader';
+import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -625,7 +627,7 @@ function ExerciseEditorCard({
                 >
                   {distanceLabel(exercise.targetDistance).text}
                 </Text>
-                <TextInput
+                <SheetTextInput
                   value={exercise.targetDistance}
                   onChangeText={(v) => onChange({ ...exercise, targetDistance: v })}
                   onFocus={onInputFocus}
@@ -646,7 +648,7 @@ function ExerciseEditorCard({
                 >
                   {timeLabel(exercise.targetDuration).text}
                 </Text>
-                <TextInput
+                <SheetTextInput
                   value={exercise.targetDuration}
                   onChangeText={(v) => onChange({ ...exercise, targetDuration: v })}
                   onFocus={onInputFocus}
@@ -689,7 +691,7 @@ function ExerciseEditorCard({
               on the workout screen. */}
           <View>
             <Text style={[styles.editorLabel, { color: C.textMuted }]}>Note for this routine (optional)</Text>
-            <TextInput
+            <SheetTextInput
               value={exercise.notes}
               onChangeText={(v) => onChange({ ...exercise, notes: v })}
               onFocus={onInputFocus}
@@ -1538,7 +1540,6 @@ export default function RoutinesScreen() {
   const toast = useToast();
   const [routines, setRoutines] = useState<RoutineRaw[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editingRoutine, setEditingRoutine] = useState<{ id?: string; name: string; description: string } | null>(null);
   const [menuRoutine, setMenuRoutine] = useState<RoutineRaw | null>(null);
@@ -1600,11 +1601,8 @@ export default function RoutinesScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingCount]);
 
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await fetchRoutines();
-    setRefreshing(false);
-  }, [fetchRoutines]);
+  // The hook ends the orb even when the read throws.
+  const { refreshing, onRefresh: handleRefresh } = usePullRefresh(fetchRoutines);
 
   const handleDelete = async (id: string) => {
     const target = routines.find((r) => r.id === id);
@@ -1629,6 +1627,8 @@ export default function RoutinesScreen() {
       if (user?.id) q = q.eq('user_id', user.id);
       const { error } = await q;
       if (error) throw error;
+      // A phase's routine list is part of the cached program (Goal & Plan).
+      if (user?.id) invalidateUserProgram(user.id);
       // After the row is gone: a failed delete is rolled back below and must
       // not count. Retry re-enters handleDelete but only reaches here once.
       track('routine_deleted', { is_guest: false, exercise_count: target.routine_exercises?.length ?? 0 });
@@ -1702,16 +1702,15 @@ export default function RoutinesScreen() {
           routines.length === 0 && !loading && styles.listContentEmpty,
         ]}
         refreshControl={
-          <RefreshControl
+          <OrbRefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
-            tintColor={Colors.primary}
-            colors={[Colors.primary]}
           />
         }
       >
+        <RefreshOrb refreshing={refreshing} />
         {loading ? (
-          <ActivityIndicator color={Colors.primary} style={styles.loader} />
+          <OrbLoader size="large" state="searching" style={styles.loader} />
         ) : routines.length === 0 ? (
           <EmptyState onAdd={openCreate} onAI={() => { setAiCoachSource('routines_empty'); setAiCoachOpen(true); }} />
         ) : (

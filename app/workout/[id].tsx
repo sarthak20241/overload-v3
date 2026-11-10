@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, TextInput, ScrollView, FlatList,
-  StyleSheet, ActivityIndicator, Pressable, BackHandler,
+  StyleSheet, Pressable, BackHandler,
   Keyboard, Platform, useWindowDimensions, AppState,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -23,6 +23,7 @@ import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, u
 import { getActiveWorkoutSnapshot, clearActiveWorkout, takeResumeCapture, type ActiveWorkoutCapture, type InputDraft } from '@/lib/activeWorkoutPersistence';
 import { findCatalogExerciseByName, resolveExerciseRow } from '@/lib/exerciseResolve';
 import { enqueueWorkout, newClientId, type PendingWorkout } from '@/lib/syncQueue';
+import { takeCardioStart } from '@/lib/cardioLog';
 import { enqueueRoutine, applyRoutineToCache, type PendingRoutine } from '@/lib/routineQueue';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { getLocalPreviousPerformance, getLocalAllTimeBestWeight } from '@/lib/previousPerformance';
@@ -45,6 +46,7 @@ import { RpePickerSheet } from '@/components/workout/RpePickerSheet';
 import { StartTimeEditor } from '@/components/workout/StartTimeEditor';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useToast } from '@/components/ui/Toast';
 import { openMusicApp } from '@/lib/musicLinks';
@@ -52,6 +54,8 @@ import { startRestEndCue, endRestEndCue } from '@/lib/restCue';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
+import { askForReview, noteWorkoutSaved } from '@/lib/storeReview';
+import { hasSavedPr } from '@/lib/reviewPrompt';
 import { roundVolume, abbreviateNumber, formatWeight, formatDuration, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
 import { metricTypeOf, metricTypeDef, usesReps } from '@/lib/exercises';
 import {
@@ -79,6 +83,7 @@ import {
   type CoachWorkoutEditOp,
 } from '@/lib/workoutCoachEdit';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 // Paused-state colour now lives in Colors.paused (constants/theme.ts).
 
@@ -408,6 +413,15 @@ export default function ActiveWorkoutScreen() {
   // clears it), parked in a ref so the routine-sync answer can pick it up after.
   const pendingRecapRef = useRef<WorkoutRecap | null>(null);
   const [shareRecap, setShareRecap] = useState<WorkoutRecap | null>(null);
+  // Whether the session just saved earned a store rating ask (lib/storeReview).
+  // Asked only after the share card is gone, never on top of it.
+  const reviewDueRef = useRef<Promise<boolean> | null>(null);
+  // Whether the workout as saved holds a PR (hasSavedPr), set at save time
+  // because finishWorkout() empties the exercises before the review ask runs.
+  const savedPrRef = useRef(false);
+  // PRs hit this session, reported on workout_completed. Screen-local: the
+  // screen unmounts after a finish, so it resets with the next session.
+  const prCountRef = useRef(0);
 
   // Keep the screen awake during a workout when the user has opted in. Tied to
   // this screen's lifetime: activates on mount (or when the pref flips on) and
@@ -708,6 +722,25 @@ export default function ActiveWorkoutScreen() {
       editedForExRef.current = null;
       resumePendingRef.current = null;
       if (id === 'new') {
+        // "Start cardio" from the dashboard hands over one exercise (one-shot,
+        // lib/cardioLog). A fallback row without an id resolves like a library
+        // add: temp id now, the real row in the background.
+        const cardio = takeCardioStart();
+        if (cardio) {
+          const exId = cardio.id ?? `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          const def: ExerciseDef = { name: cardio.name, muscle_group: 'Cardio', category: cardio.category, metric_type: cardio.metric_type };
+          workout.startWorkout('new', cardio.name, [{
+            exercise: { id: exId, ...def },
+            sets: [{ weight_kg: 0, reps: 0, completed: false }],
+            targetSets: 1,
+            repsMin: 0,
+            repsMax: 0,
+            restSeconds: 90,
+          }], { ownerId: user?.id ?? null, isGuestSession });
+          if (!cardio.id) void reconcileExerciseRow(def, exId);
+          setLoading(false);
+          return;
+        }
         workout.startWorkout('new', 'New Workout', [], { ownerId: user?.id ?? null, isGuestSession });
         setLoading(false);
         return;
@@ -2549,12 +2582,24 @@ export default function ActiveWorkoutScreen() {
       });
   };
 
+  // Ask for a store rating once the finish flow is gone, if the save earned it.
+  const askIfDue = useCallback(() => {
+    const due = reviewDueRef.current;
+    reviewDueRef.current = null;
+    void due?.then((yes) => { if (yes) askForReview(); });
+  }, []);
+
   /**
    * Last step of finishing: show the recap card, or go straight to history when
-   * there's nothing to show (sharing unsupported, or the recap never got built
-   * because the save threw). Every exit from the finish flow goes through here.
+   * there's nothing to show (sharing unsupported, or no recap was built). Every
+   * successful exit from the finish flow goes through here. A save that threw
+   * does not: confirmFinish's catch shows the error and stays put, so the
+   * review ask below only ever counts saved workouts.
    */
   const leaveAfterFinish = useCallback(() => {
+    // Once per finish: a second call before askIfDue must not count the
+    // workout twice.
+    if (!reviewDueRef.current) reviewDueRef.current = noteWorkoutSaved(savedPrRef.current ? 1 : 0);
     const recap = pendingRecapRef.current;
     if (recap && isShareAvailable()) {
       track('workout_share_opened', {
@@ -2567,12 +2612,14 @@ export default function ActiveWorkoutScreen() {
     }
     pendingRecapRef.current = null;
     router.replace('/(app)/history');
+    askIfDue();
   }, [router]);
 
   const dismissShareRecap = useCallback(() => {
     setShareRecap(null);
     pendingRecapRef.current = null;
     router.replace('/(app)/history');
+    askIfDue();
   }, [router]);
 
   const confirmRoutineSync = () => {
@@ -2604,9 +2651,6 @@ export default function ActiveWorkoutScreen() {
   };
 
   const finishingRef = useRef(false);
-  // PRs hit this session, reported on workout_completed. Screen-local: the
-  // screen unmounts after a finish, so it resets with the next session.
-  const prCountRef = useRef(0);
   const confirmFinish = async (opts?: { name?: string; notes?: string; routineNameToSave?: string; startedAtIso?: string }) => {
     // Synchronous re-entry guard: setSaving is async, so a fast double-tap on
     // the confirm alert's Finish button (which has no disabled state during its
@@ -2670,6 +2714,17 @@ export default function ActiveWorkoutScreen() {
       // heatmap: completed sets per muscle group, warmups included (they're
       // work the body did, even though they don't count toward volume).
       const savedExercises = exercises.filter(keepInSavedWorkout);
+      savedPrRef.current = hasSavedPr(savedExercises.map((e) => ({
+        allTimeBestWeight: e.allTimeBestWeight,
+        previousSets: e.previousSets,
+        sets: e.sets.map((s) => ({
+          completed: s.completed,
+          working: countsAsWorkingSet(s.set_type),
+          weight_kg: s.weight_kg,
+          is_unilateral: s.is_unilateral,
+          weight_kg_right: s.weight_kg_right,
+        })),
+      })));
       const recapCounts: Record<string, number> = {};
       savedExercises.forEach((e) => {
         const group = e.exercise.muscle_group;
@@ -3593,7 +3648,7 @@ export default function ActiveWorkoutScreen() {
   if (loading) {
     return (
       <View style={[styles.loadingContainer, { paddingTop: insets.top, backgroundColor: C.background }]}>
-        <ActivityIndicator color={Colors.primary} size="large" />
+        <OrbLoader size="large" state="searching" />
       </View>
     );
   }
@@ -3663,7 +3718,7 @@ export default function ActiveWorkoutScreen() {
             style={[styles.finishBtn, saving && { opacity: 0.6 }]}
           >
             {saving ? (
-              <ActivityIndicator size="small" color={Colors.primaryFg} />
+              <OrbLoader size="small" color={Colors.primaryFg} />
             ) : (
               <>
                 <Feather name="check" size={12} color={Colors.primaryFg} />
@@ -4041,12 +4096,12 @@ export default function ActiveWorkoutScreen() {
 
                 {/* Workout name — pre-filled suggestion, selectTextOnFocus so
                     replacing it is a single tap + type */}
-                {/* Uncontrolled + autocorrect off, same reasoning as the
+                {/* SheetTextInput + autocorrect off, same reasoning as the
                     custom-exercise field in ExercisePickerSheet; the per-second
-                    `elapsed` re-render gives this sheet the most to lose. Safe
-                    because prefill runs before setShowFinishSheet mounts it. */}
+                    `elapsed` re-render gives this sheet the most to lose.
+                    Prefill runs before setShowFinishSheet mounts it. */}
                 <Text style={[styles.formLabel, { color: C.textDim }]}>WORKOUT NAME</Text>
-                <TextInput
+                <SheetTextInput
                   key={`name-${finishOpenId}`}
                   defaultValue={finishName}
                   onChangeText={setFinishName}
@@ -4063,7 +4118,7 @@ export default function ActiveWorkoutScreen() {
                 {/* Notes — a workout-level reflection written at finish. Saved
                     to workouts.notes and shown in history. */}
                 <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>NOTES (OPTIONAL)</Text>
-                <TextInput
+                <SheetTextInput
                   key={`notes-${finishOpenId}`}
                   defaultValue={finishNotes}
                   onChangeText={setFinishNotes}
@@ -4117,7 +4172,7 @@ export default function ActiveWorkoutScreen() {
                 {saveAsRoutine && (
                   <Animated.View entering={FadeIn.duration(200)}>
                     <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>ROUTINE NAME</Text>
-                    <TextInput
+                    <SheetTextInput
                       key={`routine-${finishOpenId}`}
                       defaultValue={routineNameInput}
                       onChangeText={setRoutineNameInput}
@@ -4146,7 +4201,7 @@ export default function ActiveWorkoutScreen() {
                   ]}
                 >
                   {saving ? (
-                    <ActivityIndicator size="small" color={Colors.primaryFg} />
+                    <OrbLoader size="small" color={Colors.primaryFg} />
                   ) : (
                     <>
                       <Feather name="check" size={15} color={Colors.primaryFg} />

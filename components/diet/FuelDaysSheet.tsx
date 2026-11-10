@@ -16,9 +16,10 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
-import { saveFuelDays } from '@/lib/dietData';
+import { saveFuelDays, savePlannedFuelDays } from '@/lib/dietData';
 import { loadActiveProgram } from '@/lib/programData';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -41,6 +42,11 @@ interface Props {
    * the current phase up itself at save time.
    */
   phaseId?: string | null;
+  /**
+   * The phase has not started: save only its planned fuel days
+   * (savePlannedFuelDays), never the live ones. Needs `phaseId`.
+   */
+  planOnly?: boolean;
   onClose: () => void;
   onSaved: (saved: FuelDay[]) => void;
 }
@@ -53,7 +59,7 @@ function joinDays(names: string[]): string {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
-export function FuelDaysSheet({ open, initial, baseKcal, source, phaseId, onClose, onSaved }: Props) {
+export function FuelDaysSheet({ open, initial, baseKcal, source, phaseId, planOnly, onClose, onSaved }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   const { height: winH } = useWindowDimensions();
@@ -160,7 +166,9 @@ export function FuelDaysSheet({ open, initial, baseKcal, source, phaseId, onClos
         return;
       }
     }
-    const { error } = await saveFuelDays(supabase, clerkId, chosen, targetPhase);
+    const { error } = planOnly && targetPhase
+      ? await savePlannedFuelDays(supabase, clerkId, targetPhase, chosen)
+      : await saveFuelDays(supabase, clerkId, chosen, targetPhase);
     setBusy(false);
     if (error) { haptics.warning(); setFailed(true); return; }
     track('fuel_days_saved', {
@@ -237,9 +245,9 @@ export function FuelDaysSheet({ open, initial, baseKcal, source, phaseId, onClos
                 <Animated.View key={dow} entering={FadeInDown.duration(180)} style={[s.row, { borderColor: C.borderSubtle }]}>
                   <View style={{ flex: 1, gap: 4 }}>
                     <Text style={[s.dayName, { color: C.foreground }]}>{DAY_NAMES[dow]}</Text>
-                    <TextInput
-                      // Uncontrolled on purpose: a controlled input inside the
-                      // Portal can drop keystrokes while the sheet re-renders.
+                    <SheetTextInput
+                      // SheetTextInput: a plain input fed from this sheet's state
+                      // drops keystrokes on Android through the Portal.
                       defaultValue={d.label ?? ''}
                       onChangeText={(t) => setLabel(dow, t)}
                       placeholder="What's on? Long run, leg day..."

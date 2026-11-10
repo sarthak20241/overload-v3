@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:402px;height:874px;overflow:hidden;background:#0B0D0F;color:#fff;
+    font-family:system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+  .status{height:54px;position:relative}
+  .time{position:absolute;left:52px;top:17px;font-weight:600;font-size:17px}
+  .island{position:absolute;left:50%;top:11px;width:124px;height:36px;margin-left:-62px;background:#000;border-radius:20px}
+  .nav{height:44px;display:flex;align-items:center;justify-content:center;position:relative}
+  .nav svg{position:absolute;left:16px}
+  .nav h1{font-size:17px;font-weight:600}
+  .page{padding:4px 24px 0}
+  .muted{color:#9A9EA6}
+  .sub{font-size:15px;color:#9A9EA6}
+  .sub i{font-style:normal;margin:0 6px}
+  .lab{font-size:11px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#8E939B}
+  .hero{margin-top:28px}
+  .hero .n{display:flex;align-items:baseline;gap:6px;margin-top:6px}
+  .hero .n b{font-size:44px;font-weight:700;letter-spacing:-1px;line-height:48px}
+  .hero .n span{font-size:17px;color:#9A9EA6}
+  .hero .s{margin-top:6px;font-size:13px;color:#9A9EA6}
+  .hero .s i{font-style:normal;margin:0 6px}
+  .warn{color:#F59E0B}
+  .sec{margin-top:32px}
+  .sec .lab{margin-bottom:12px}
+  .row{display:flex;align-items:center;height:52px;border-top:1px solid rgba(255,255,255,.07)}
+  .row:last-child{border-bottom:1px solid rgba(255,255,255,.07)}
+  .row .t{flex:1;font-size:16px;font-weight:500}
+  .row .v{font-size:14px;color:#9A9EA6}
+  .row .v b{color:#fff;font-weight:600}
+  .tip{display:flex;gap:12px;margin-top:32px}
+  .tip p{font-size:14px;line-height:20px;margin-top:4px}
+  .edit{font-size:13px;font-weight:600;color:#C8FF00;letter-spacing:0;text-transform:none}
+  .fw{display:flex;justify-content:space-between;margin-top:4px}
+  .fc{width:46px;display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0 8px;border-radius:12px}
+  .fc em{font-style:normal;font-size:11px;font-weight:600;color:#6B7078}
+  .fc b{font-size:13px;font-weight:600;color:#fff}
+  .fc s{display:block;width:4px;height:4px;border-radius:2px;background:transparent;text-decoration:none}
+  .fc.f{background:#15191C}
+  .fc.f b{color:#C8FF00}
+  .fc.td em{color:#fff}
+  .fc.td s{background:#9A9EA6}
+  .fc.f.td s{background:#C8FF00}
+  .leg{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:#9A9EA6}
+  .leg .dot{width:6px;height:6px;border-radius:3px;background:#C8FF00;flex:none}
+</style></head><body>
+<div class="status"><div class="time">9:41</div><div class="island"></div></div>
+<div class="nav"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg><h1>Eat</h1></div>
+<div class="page">
+  <div class="sub">Deficit block 1<i>·</i>Week 4 of 5</div>
+
+  <div class="hero">
+    <div class="lab">This phase</div>
+    <div class="n"><b>1,800</b><span>kcal a day</span></div>
+    <div class="s">Protein 5 of 7 days last week<i>·</i><span class="warn">Slipping</span></div>
+  </div>
+
+  <div class="sec">
+    <div class="lab">Daily targets</div>
+    <div class="row"><span class="t">Protein</span><span class="v"><b>115</b> g</span></div>
+    <div class="row"><span class="t">Carbs</span><span class="v"><b>225</b> g</span></div>
+    <div class="row"><span class="t">Fat</span><span class="v"><b>50</b> g</span></div>
+  </div>
+
+  <div class="sec">
+    <div class="lab" style="display:flex;justify-content:space-between;align-items:center">Calories by day<span class="edit">Edit fuel days</span></div>
+    <div class="fw"><div class="fc"><em>M</em><b>1,800</b><s></s></div><div class="fc"><em>T</em><b>1,800</b><s></s></div><div class="fc"><em>W</em><b>1,800</b><s></s></div><div class="fc f"><em>T</em><b>2,100</b><s></s></div><div class="fc"><em>F</em><b>1,800</b><s></s></div><div class="fc f td"><em>S</em><b>2,100</b><s></s></div><div class="fc"><em>S</em><b>1,800</b><s></s></div></div>
+    <div class="leg"><span class="dot"></span>Fuel days: Thursday (Legs) and Saturday (Push), +300 kcal as carbs</div>
+  </div>
+
+  <div class="tip">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#C8FF00" stroke-width="1.75" stroke-linejoin="round" style="flex:none;margin-top:1px"><path d="M12 3c.7 4.6 3.4 7.3 8 8-4.6.7-7.3 3.4-8 8-.7-4.6-3.4-7.3-8-8 4.6-.7 7.3-3.4 8-8z"/></svg>
+    <div><div class="lab">Drona's tip</div><p>Protein first, every meal. Log it and I hold the line.</p></div>
+  </div>
+</div>
+</body></html>

@@ -10,7 +10,7 @@
  * duration/quality state, reset each time it opens.
  */
 import { useEffect, useState } from 'react';
-import { View, Text, Pressable, TouchableOpacity, ActivityIndicator, StyleSheet, BackHandler } from 'react-native';
+import { View, Text, Pressable, TouchableOpacity, StyleSheet, BackHandler } from 'react-native';
 import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -19,6 +19,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
 import { haptics } from '@/lib/haptics';
 import { formatSleepMinutes } from '@/lib/format';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 interface Props {
   visible: boolean;
@@ -155,7 +156,7 @@ export function SleepLogSheet({ visible, initialMinutes, initialQuality, editing
                 activeOpacity={0.85}
               >
                 {saving ? (
-                  <ActivityIndicator color={Colors.primaryFg} />
+                  <OrbLoader color={Colors.primaryFg} />
                 ) : (
                   <Text style={s.saveText}>{editing ? 'Update' : 'Save'}</Text>
                 )}

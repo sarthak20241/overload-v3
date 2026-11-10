@@ -26,7 +26,10 @@ import {
 import { track } from '@/lib/analytics';
 import { missingColumn, missingTable, nextColumnSet, withoutColumns } from '@/lib/missingColumn';
 import { fetchShared, invalidateUserProgram, peek } from '@/lib/screenCache';
-import { computeActivePhaseSeq, daysBetweenISO, toLocalISO, todayLocalISO } from '@/lib/programDates';
+import { activePhaseOn, computeActivePhaseSeq, daysBetweenISO, phaseFor } from '@/lib/phasePick';
+import { toLocalISO, todayLocalISO } from '@/lib/programDates';
+// Re-exported: the screens and helpers import these from here.
+export { activePhaseOn, computeActivePhaseSeq, daysBetweenISO, phaseFor, todayLocalISO };
 import { programGoalFor } from '@/lib/fitnessGoals';
 import {
   escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, namesAnExercise, normalizeMetrics, phaseProgress, statusFor,
@@ -91,10 +94,8 @@ export interface GeneratedProgram {
   phases: ProgramPhase[];
 }
 
-// The local-date helpers and the active-phase math live in lib/programDates
-// (pure, so the dashboard's program helpers can be tested without this file's
-// imports); re-exported so existing imports keep working.
-export { computeActivePhaseSeq, daysBetweenISO, todayLocalISO } from '@/lib/programDates';
+// The local-date helpers live in lib/programDates (pure, so the dashboard's
+// program helpers can be tested without this file's imports).
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // ── Normalizer (generate_program tool input -> GeneratedProgram) ──────────────
@@ -204,7 +205,7 @@ function activityOf(v: unknown): { activity?: ActivityGoals } {
 // The activity goal columns (migration 20261018120000). The app ships before
 // the migration, so every read and write of them falls back without them.
 const ACTIVITY_COLS = ['activity_steps_target', 'cardio_sessions_per_week'] as const;
-// The phase metrics columns and tables (migration 20261021120000). Same rule.
+// The phase metrics columns and tables (migration 20261022022018). Same rule.
 const JOB_COLS = ['job_text', 'coach_line'] as const;
 const METRICS_TABLE = 'coach_program_phase_metrics';
 const METRIC_LOGS_TABLE = 'coach_program_phase_metric_logs';
@@ -710,17 +711,6 @@ export interface ActiveProgram {
   weekInPhase: number | null;
 }
 
-/**
- * The phase a screen shows: the one asked for by seq, else the current one,
- * else the first (before the program starts). One helper, so the phase,
- * pillar and phase-card screens can never resolve it differently.
- */
-export function phaseFor(program: ActiveProgram | null, seq: number | null): ActiveProgramPhaseRow | null {
-  if (!program) return null;
-  return (seq != null ? program.phases.find((p) => p.seq === seq) ?? null : null)
-    ?? (program.currentPhaseSeq != null ? program.phases.find((p) => p.seq === program.currentPhaseSeq) ?? null : null)
-    ?? program.phases[0] ?? null;
-}
 
 /**
  * Read the user's active program + phases, with the current phase computed.
@@ -969,16 +959,8 @@ function finishProgram(
 ): ActiveProgram {
   const startDate = String(p.start_date);
   const today = todayLocalISO();
-  // computeActivePhaseSeq answers with an INDEX into the seq-ordered list;
-  // what leaves this function is the phase's own seq value, so every reader
-  // looks a phase up by seq (saveProgram writes dense 0-based seqs, so the
-  // two agree today, but nothing outside this function depends on it).
-  const activeIdx = computeActivePhaseSeq(startDate, phases, today);
-  const activePhase = activeIdx != null ? phases[activeIdx] : null;
-  const currentPhaseSeq = activePhase ? activePhase.seq : null;
-  const weekInPhase = activePhase
-    ? Math.floor((daysBetweenISO(startDate, today) - activePhase.start_offset_weeks * 7) / 7) + 1
-    : null;
+  // Found by its place in time, reported by its own seq (activePhaseOn).
+  const { phase: activePhase, seq: currentPhaseSeq, weekInPhase } = activePhaseOn(startDate, phases, today);
 
   for (const ph of phases) {
     const list = byPhase.get(ph.id) ?? [];
@@ -1140,6 +1122,9 @@ export async function logMetricValue(
       { onConflict: 'metric_id,logged_on' },
     );
   if (error) throw error;
+  // The log has landed: the cached program is stale from here even if the
+  // metric update below fails, so the next read must go to the database.
+  invalidateProgram(clerkId);
   const status = statusFor({ ...metric, current_value: value, progress });
   const { data: moved, error: upErr } = await supabase
     .from(METRICS_TABLE)

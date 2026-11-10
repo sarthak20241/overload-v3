@@ -31,18 +31,20 @@ export interface DashboardData {
  * holds — a failed read must never blank the dashboard.
  *
  * The workouts are the read History and Analytics share (lib/recentWorkouts),
- * so a screen opened right after this one reads none of them again.
+ * so a screen opened right after this one reads none of them again. `fresh`
+ * (a pull to refresh) reads them regardless of the shared freshness window.
  */
 export async function fetchDashboardData(
   supabase: SupabaseClient<any, any, any>,
   clerkId: string | undefined,
+  opts?: { fresh?: boolean },
 ): Promise<DashboardData> {
   // Only the last 90 days, to cap payload size; the client-side stats need
   // recent history only.
   const profileQ = clerkId
     ? supabase.from('user_profiles').select('xp').eq('clerk_user_id', clerkId).maybeSingle()
     : supabase.from('user_profiles').select('xp').limit(1).maybeSingle();
-  const [rows, pRes] = await Promise.all([loadRecentWorkouts(supabase, clerkId), profileQ]);
+  const [rows, pRes] = await Promise.all([loadRecentWorkouts(supabase, clerkId, opts), profileQ]);
   if (pRes.error) throw pRes.error;
   const workouts = rows.map((w: any) => ({
     ...w,

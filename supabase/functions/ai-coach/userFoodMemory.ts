@@ -25,7 +25,9 @@
 //
 // Runtime-agnostic (no Deno globals), like ourSources.ts.
 
-import { askJev, type JevDeps, type JevQuestion } from "./jev.ts";
+import { asChoice, askJev, type JevDeps, type JevQuestion } from "./jev.ts";
+import { damerau } from "./textMatch.ts";
+import { dishName, type FoodOrigin, ORIGIN_RANK, originOf, parseRecipe, type RecipePart } from "../_shared/foodOrigin.ts";
 
 
 export type ParseTierName = "fast" | "thorough" | "precise";
@@ -38,9 +40,36 @@ export const MEMORY_DAYS = 10;
 export const MEMORY_MAX_FOODS = 300;
 /** Rows Jev scores per line, closest names first. */
 export const MEMORY_SHORTLIST = 10;
-/** Jev's chance that a remembered food IS this line, needed to serve it. Same
- *  floor as the catalog match (preciseMatch.MATCH_FLOOR). */
-export const MEMORY_FLOOR = 0.75;
+/** Jev's chance that a remembered food IS this line, needed to serve it. Below
+ *  the catalog match (preciseMatch.MATCH_FLOOR, 0.75) on purpose (owner
+ *  decision 2026-10-31): a food this user saved and logged herself is better
+ *  evidence than a catalog row, and her branded foods sat at 0.68-0.73 when
+ *  she left out a flavour (memory-identity-eval, too-yum cases). */
+export const MEMORY_FLOOR = 0.7;
+/** Under MEMORY_FLOOR but at least this: not served, but handed to decide (in
+ *  Thorough and Precise) to judge from the user's words whether it is the same
+ *  food. Quick has no decide call and ignores it. Owner decision 2026-10-31
+ *  (memory-identity-eval): with saved brands shown apart, 0.7 serve + 0.6 to
+ *  decide served 44 of 60 right, sent no wrong food to decide and missed 2.
+ *  A bar of 0.3 here sent "peanut chikki" -> peanuts and gained nothing. When
+ *  nothing reaches this floor, the choice question below may still find one. */
+export const MEMORY_MAYBE_FLOOR = 0.6;
+/** No saved food reached the maybe floor: one choice question asks which saved
+ *  food it is, or none, and its top answer goes to decide only when it is a
+ *  food with at least this chance (owner decision 2026-10-31). The score asks
+ *  about each saved food alone; the choice sees them side by side, which is
+ *  what caught "masala tea" -> "Masala chai" (86%). "None" must not be ahead:
+ *  taking the best food regardless sent Milk chocolate for "chocolate milk"
+ *  (none 67%) and peanuts for "peanut chikki" (none 49%, peanuts 47%). */
+export const MEMORY_CHOICE_FLOOR = 0.3;
+/** The choice is asked only when some saved food scored at least this, not on
+ *  every new food (a second, serial Jev call). In the eval it helped only
+ *  where a saved food had scored ("masala tea": 0.91, then blocked by the word
+ *  veto); with every score under 0.15 it never found a right food, and once
+ *  sent peanuts for "peanut chikki". */
+export const MEMORY_CHOICE_MIN_SCORE = 0.3;
+/** The choice question's "none" option. */
+export const MEMORY_CHOICE_NONE = "None of these saved foods is the food the user means.";
 /** A variant of a product that already cleared MEMORY_FLOOR may compete with
  *  it when Jev thinks it more likely the food than not. */
 export const VARIANT_FLOOR = 0.5;
@@ -61,17 +90,29 @@ export interface MemoryEntry {
   logged_via: string | null;
   tier: string | null;
   logged_at: string;
+  /** The brand it is sold under, when known (user_food_cache.brand, from the
+   *  parse that logged it). Diary lines carry none. Read by buildMemory and
+   *  the warm reads (foodWarmMemory.ts). */
+  brand?: string | null;
   /** Durable, saved diary evidence loaded from this user’s private cache. */
   persistent?: boolean;
   confirmed_at?: string;
   alias_lookup?: boolean;
   confirmed_aliases?: string[];
+  /** meal_entries / user_food_cache .origin (migration 20261107120000).
+   *  Absent on rows from before it: originOf reads the old fields. */
+  origin?: string | null;
+  /** user_food_cache.recipe / meal_entries.recipe: a home dish's parts. */
+  recipe?: unknown;
 }
 
 /** A remembered food: the newest eligible entry for a name, as per 100 g. */
 export interface MemoryFood {
   key: string;
   name: string;
+  /** The brand it is sold under, when known. Shown to Jev apart from the name
+   *  (brandApart), never merged into it. */
+  brand?: string | null;
   food_id: string | null;
   per100: { kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number | null };
   /** One unit of what the user logged it in ("1 piece" = 50 g), when it was
@@ -86,6 +127,10 @@ export interface MemoryFood {
   times: number;
   last_logged_at: string;
   confirmed_aliases?: string[];
+  /** Where its numbers came from. */
+  origin?: FoodOrigin;
+  /** Its parts, when it is a home dish with a recipe. */
+  recipe?: RecipePart[];
   /** Set by the decision only: other remembered foods that are also what the
    *  user's words describe but a different variant ("vanilla whey" beside
    *  "chocolate whey"), named on the card so the user can say which it was. */
@@ -98,8 +143,8 @@ export interface MemoryFood {
 const RANK: Record<ParseTierName, number> = { fast: 1, thorough: 2, precise: 3 };
 
 /** How high a tier an entry's numbers may serve. */
-export function entryLevel(e: Pick<MemoryEntry, "tier" | "source" | "logged_via">): ParseTierName {
-  if (e.source === "manual" || e.logged_via === "manual") return "precise";
+export function entryLevel(e: Pick<MemoryEntry, "tier" | "source" | "logged_via"> & { origin?: string | null }): ParseTierName {
+  if (e.origin === "user_typed" || e.source === "manual" || e.logged_via === "manual") return "precise";
   if (e.tier === "precise" || e.tier === "thorough" || e.tier === "fast") return e.tier;
   return "fast";
 }
@@ -111,10 +156,31 @@ export function entryLevel(e: Pick<MemoryEntry, "tier" | "source" | "logged_via"
  * numbers. Newest-wins let a Quick guess of 6.3 kcal/100 g replace the user's own
  * 12.5 for cucumber (live, 2026-10-04).
  */
-export function entryTrust(e: Pick<MemoryEntry, "tier" | "source" | "logged_via">): number {
+export function entryTrust(
+  e: Pick<MemoryEntry, "tier" | "source" | "logged_via"> & { origin?: string | null; food_id?: string | null },
+  byOrigin = false,
+): number {
+  if (byOrigin) return entryOriginTrust(e);
   if (e.source === "manual" || e.logged_via === "manual") return 4;
   return RANK[entryLevel(e)];
 }
+
+/**
+ * Trust by origin (FOOD_ORIGIN_TRUST=on, step 4): user_typed > label >
+ * catalog > recipe > guess = unknown, then the tier as a tie-break. "manual"
+ * alone is no longer the top: it read as the user's own numbers for every
+ * copied line. Scaled by 10 so a tier never outranks an origin.
+ */
+export function entryOriginTrust(e: { origin?: string | null; source?: string | null; food_id?: string | null; tier?: string | null }): number {
+  const o = originOf({ origin: e.origin, source: e.source, food_id: e.food_id });
+  const tier = e.tier === "precise" || e.tier === "thorough" || e.tier === "fast" ? RANK[e.tier] : 1;
+  return ORIGIN_RANK[o] * 10 + tier;
+}
+
+/** FOOD_ORIGIN_TRUST: off = today's trust; shadow = today's trust, and the
+ *  parse records where trust by origin would pick other numbers; on = trust
+ *  by origin. */
+export type OriginTrustMode = "off" | "shadow" | "on";
 
 /** A remembered food's trust; hand-built foods without one rank by level. */
 const trustOf = (f: MemoryFood) => f.trust ?? RANK[f.level];
@@ -125,10 +191,16 @@ export function servesTier(level: ParseTierName, tier: ParseTierName): boolean {
 }
 
 export function memoryKey(name: string): string {
-  return name.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  // A recipe written into the name is not part of it (same as the database's
+  // name_key, migration 20261107120000).
+  return dishName(name).normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 const MASS_UNIT = /^(g|gm|gms|gram|grams|kg|ml|mls|l|litre|liter)$/i;
+// A stated weight ("100 g", "250 ml") is an amount, not a portion, just like a
+// bare "g". Kept as a serving, a line saved as 15 x "100 g" (15 g) became a
+// "100 g" serving weighing 1 g, and every later log printed "1500 g".
+const STATED_WEIGHT = /^\d+(?:[.,]\d+)?\s*(g|gm|gms|gram|grams|kg|ml|mls|l|litre|liter)$/i;
 const r1 = (n: number) => Math.round(n * 10) / 10;
 
 /**
@@ -142,9 +214,10 @@ export function buildMemory(
   tier: ParseTierName,
   now: Date = new Date(),
   days = MEMORY_DAYS,
+  byOrigin = false,
 ): MemoryFood[] {
   const since = now.getTime() - days * 86_400_000;
-  const byKey = new Map<string, { newest: MemoryEntry; times: number }>();
+  const byKey = new Map<string, { newest: MemoryEntry; times: number; brand: string | null }>();
   for (const e of entries) {
     const at = Date.parse(e.logged_at);
     if (!Number.isFinite(at) || (!e.persistent && at < since)) continue;
@@ -152,22 +225,26 @@ export function buildMemory(
     if (!servesTier(entryLevel(e), tier)) continue;
     const key = memoryKey(e.food_name);
     if (!key) continue;
+    const brand = e.brand?.trim() || null;
     const got = byKey.get(key);
-    if (!got) byKey.set(key, { newest: e, times: 1 });
+    if (!got) byKey.set(key, { newest: e, times: 1, brand });
     else {
       got.times++;
-      const [t, kept] = [entryTrust(e), entryTrust(got.newest)];
+      // Any row's brand names the food: diary lines carry none, the saved row does.
+      if (!got.brand) got.brand = brand;
+      const [t, kept] = [entryTrust(e, byOrigin), entryTrust(got.newest, byOrigin)];
       const newer = Date.parse(e.confirmed_at ?? e.logged_at) > Date.parse(got.newest.confirmed_at ?? got.newest.logged_at);
       if (t > kept || (t === kept && newer)) got.newest = e;
     }
   }
-  const foods: MemoryFood[] = [...byKey.entries()].map(([key, { newest: e, times }]) => {
+  const foods: MemoryFood[] = [...byKey.entries()].map(([key, { newest: e, times, brand }]) => {
     const f = 100 / (e.grams as number);
     const unit = (e.serving_unit ?? "").trim();
     const perUnit = e.quantity && e.quantity > 0 ? (e.grams as number) / e.quantity : null;
     return {
       key,
-      name: e.food_name.trim(),
+      name: dishName(e.food_name.trim()),
+      ...(brand ? { brand } : {}),
       food_id: e.food_id,
       per100: {
         kcal: r1(e.kcal * f),
@@ -176,12 +253,14 @@ export function buildMemory(
         fat_g: r1(e.fat_g * f),
         fiber_g: e.fiber_g == null ? null : r1(e.fiber_g * f),
       },
-      serving: unit && !MASS_UNIT.test(unit) && perUnit && perUnit > 0 && perUnit <= 2000
+      serving: unit && !MASS_UNIT.test(unit) && !STATED_WEIGHT.test(unit) && perUnit && perUnit > 0 && perUnit <= 2000
         ? { label: unit, grams: r1(perUnit) }
         : null,
       source: e.source,
       level: entryLevel(e),
-      trust: entryTrust(e),
+      trust: entryTrust(e, byOrigin),
+      origin: originOf({ origin: e.origin, source: e.source, food_id: e.food_id }),
+      ...(parseRecipe(e.recipe) ? { recipe: parseRecipe(e.recipe)! } : {}),
       times,
       last_logged_at: e.logged_at,
       confirmed_aliases: e.confirmed_aliases ?? [],
@@ -235,6 +314,12 @@ export function shortlist(foods: MemoryFood[], line: string, n = MEMORY_SHORTLIS
  *
  * Keep the input and candidate names IN each question: references alone
  * confused Jev in the multi-row regression.
+ *
+ * No word-order sentence (owner decision 2026-10-31): Jev tells "milk
+ * chocolate" from "chocolate milk" without one (memory-identity-eval, order-*
+ * cases), and dropping it raised the rows that should match (84.5 to 86.3 avg)
+ * with no wrong row reaching 0.6. preciseMatch.ts keeps its own: there the
+ * same cut cost one right match.
  */
 export const MEMORY_LEVELS = [
   "Different: the core food is another food, or a detail the user DID write (brand, flavour, preparation, fat level, variant) conflicts with the candidate.",
@@ -249,7 +334,6 @@ export const MEMORY_RULE =
   "A dish, snack or drink made from the food is a different food, even when its name contains the food. " +
   "Punctuation, plurals, possessives, abbreviation and obvious spelling errors may be shorthand. A partial brand may name the full one. " +
   "The core food or ingredient must be the same. Different ingredients or plant species are different foods even when both are seeds, nuts, grains or milk. " +
-  "Word order matters: chocolate milk is not milk chocolate. " +
   "Every flavour, brand, preparation, fat level and other variant the user DID write must agree. " +
   "An explicit different flavour or brand, or raw versus cooked, is a conflict. " +
   "Do not prefer protein products merely because the user logged them. " +
@@ -262,11 +346,29 @@ export function memoryInputName(line: { name: string; brand: string | null }): s
     ? `${line.brand} ${line.name}` : line.name;
 }
 
+/** One choice over the shortlist: which saved food (m1..mN, each with its brand
+ *  apart) the user's words describe, or none. The same rule as the score, said
+ *  for a choice. */
+export function memoryChoiceQuestion(line: { name: string; brand: string | null }, foods: MemoryFood[]): JevQuestion {
+  const body = MEMORY_RULE
+    .replace("Judge one thing: is the candidate, a food this user logged before, a food the user's words describe? ", "")
+    .replace(" Score the candidate using the ordered criteria.", "");
+  const criteria: Record<string, string> = {};
+  foods.forEach((f, i) => { criteria[`m${i + 1}`] = brandApart(f.name, f.brand ?? null); });
+  criteria.none = MEMORY_CHOICE_NONE;
+  return {
+    type: "choice",
+    instructions: "Which of these foods, each one this user logged before, is the food the user's words describe? " +
+      body + ` Answer none when no candidate is that food. Input food: ${memoryInputName(line)}.`,
+    criteria,
+  };
+}
+
 /** One identity question per remembered food, keyed m1..mN in list order. */
 export function memoryQuestions(line: { name: string; brand: string | null }, foods: MemoryFood[]): Record<string, JevQuestion> {
   return Object.fromEntries(foods.map((f, i) => [`m${i + 1}`, {
     type: "score",
-    instructions: MEMORY_RULE + ` Input food: ${memoryInputName(line)}. Candidate previously logged by this user: ${f.name}.`,
+    instructions: MEMORY_RULE + ` Input food: ${memoryInputName(line)}. Candidate previously logged by this user: ${brandApart(f.name, f.brand ?? null)}.`,
     criteria: MEMORY_LEVELS,
   }]));
 }
@@ -391,7 +493,104 @@ export function decideMemory(
 export interface MemoryMatch {
   food: MemoryFood | null;
   confidence: number;
+  /** No food served, but this one scored MEMORY_MAYBE_FLOOR or more: decide
+   *  is asked whether it is the same food. `confidence` is its score. */
+  maybe?: MemoryFood | null;
+  /** Where the maybe came from. "score": its own same-food score, which is
+   *  `confidence`. "choice": the choice question's odds against her other
+   *  saved foods, which are not a same-food score. */
+  maybeFrom?: "score" | "choice";
   trace: Record<string, unknown>;
+}
+
+const squash = (s: string) => memoryKey(s).replace(/ /g, "");
+
+/**
+ * A saved food as Jev reads it: its brand out of the name and in brackets,
+ * "Kesar pista oats (Yogabar)". Saved names copy whatever wording logged them,
+ * and a brand left inside one can read as part of the food: "Kesar pista oats
+ * yogabar" scored 0.11 for "kesar pista oats" (an oats "bar"), the bracketed
+ * form 0.94-0.99 (memory-identity-eval, owner decision 2026-10-31). The brand's
+ * words are found in any spacing ("yogabar" for "Yoga Bar"). A name that is only
+ * the brand, or no brand, is left as it is.
+ */
+export function brandApart(name: string, brand: string | null): string {
+  const b = brand?.trim();
+  if (!b || squash(b).length < 2) return name;
+  const target = squash(b);
+  const words = name.split(/\s+/).filter(Boolean);
+  for (let i = 0; i < words.length; i++) {
+    for (let j = i + 1; j <= Math.min(words.length, i + 4); j++) {
+      if (squash(words.slice(i, j).join(" ")) !== target) continue;
+      const rest = [...words.slice(0, i), ...words.slice(j)].join(" ")
+        .replace(/^[\s!,:;.-]+|[\s,:;-]+$/g, "").replace(/\s{2,}/g, " ").trim();
+      return rest ? `${rest} (${b})` : name;
+    }
+  }
+  return `${name} (${b})`;
+}
+/** A brand group shorter than this is never respelled: one letter off a short
+ *  word ("oat", "dahi") is usually another word. */
+const RESPELL_MIN_CHARS = 5;
+
+/**
+ * The line as Jev should read it: a brand typed one letter off from how one of
+ * the user's saved foods spells it ("too yum" for "Too Yumm!") is written the
+ * saved way, in the brand field and in the name. Null when nothing changes.
+ *
+ * Why: Jev reads a brand the user wrote as a detail that must agree, and a
+ * one-letter slip read as maybe another company. Spelled as saved, the same
+ * line scored 0.77 instead of 0.51 (memory-identity-eval, 2026-10-31).
+ *
+ * Exactly one edit, never two: rival brands sit two letters apart (Bikano and
+ * Bikaji, textMatch.ts). Only the leading words of a saved name are compared,
+ * where a brand is written, and a saved food's own brand when it has one. With
+ * no brand field, a single typed word is compared with saved brands only: one
+ * word one letter from a saved name's first word is usually another food
+ * ("mango" and "Mange tout"). Only for Jev: the alias key, the
+ * shortlist and the card keep what the user typed.
+ */
+export function respellForJev(
+  line: { name: string; brand: string | null },
+  foods: MemoryFood[],
+): { name: string; brand: string | null } | null {
+  const typedWords = memoryKey(line.name).split(" ").filter(Boolean);
+  // The words to respell: the brand field, else the name's first one to three.
+  // `names`: whether a saved name's leading words may be the spelling, or only
+  // a saved brand (a single unbranded word).
+  const groups = line.brand?.trim()
+    ? [{ typed: line.brand.trim(), names: true }]
+    : [1, 2, 3].filter((k) => k <= typedWords.length).map((k) => ({ typed: typedWords.slice(0, k).join(" "), names: k >= 2 }));
+  const spellings = new Map<string, { typed: string; saved: string }>();
+  for (const { typed, names } of groups) {
+    const t = squash(typed);
+    if (t.length < RESPELL_MIN_CHARS) continue;
+    for (const f of foods) {
+      const savedWords = f.name.split(/\s+/).filter(Boolean);
+      // The saved brand, when known, is a spelling too, wherever the name puts it.
+      const spellingsOf = [
+        ...(names ? [1, 2, 3].filter((j) => j <= savedWords.length).map((j) => savedWords.slice(0, j).join(" ")) : []),
+        ...(f.brand?.trim() ? [f.brand.trim()] : []),
+      ];
+      for (const raw of spellingsOf) {
+        const saved = raw.replace(/[^\p{L}\p{N}' ]+/gu, "").trim();
+        const s = squash(saved);
+        if (s === t) return null; // already spelled as saved
+        if (s.length >= RESPELL_MIN_CHARS && damerau(s, t, 1) === 1) spellings.set(s, { typed, saved });
+      }
+    }
+  }
+  if (spellings.size !== 1) return null; // none, or saved foods disagree
+  const { typed, saved } = [...spellings.values()][0];
+  // Replace the typed words in the name wherever they appear, in any case.
+  const words = typed.split(" ").map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const inName = new RegExp(`(^|[^\\p{L}\\p{N}])${words.join("[^\\p{L}\\p{N}]+")}(?=$|[^\\p{L}\\p{N}])`, "iu");
+  const name = line.name.replace(inName, (_m, lead: string) => `${lead}${saved}`);
+  const brand = line.brand?.trim() ? saved : line.brand;
+  // The words matched only once folded (an accent, say) and the raw name
+  // could not take them: nothing changed, so the trace must not say respelled.
+  if (name === line.name && brand === line.brand) return null;
+  return { name, brand };
 }
 
 /** Ask Jev whether one of the user's remembered foods is this line. Never
@@ -400,6 +599,9 @@ export async function matchMemory(
   jev: JevDeps,
   foods: MemoryFood[],
   line: { name: string; brand: string | null },
+  /** choice: false skips the choice question. Quick has no decide step to
+   *  judge its answer, so there the call would be wasted. */
+  opts: { choice?: boolean } = {},
 ): Promise<MemoryMatch> {
   const lookup = memoryInputName(line);
   const trace: Record<string, unknown> = { item: line.name, lookup_name: lookup, remembered: foods.length, policy: "identity-v2" };
@@ -431,12 +633,16 @@ export async function matchMemory(
       trace.decision = { match: null, reason: "no_foods" };
       return { food: null, confidence: 0, trace };
     }
+    // Jev reads the brand as her saved foods spell it (respellForJev).
+    const respelled = respellForJev(line, list);
+    const asked = respelled ?? line;
+    if (respelled) trace.respelled = { name: asked.name, brand: asked.brand };
     // The other remembered foods are deliberately NOT in the state: Jev judges
     // each one alone, so a second name for the same food cannot pull an answer
     // from "same" to "unclear".
     const res = await askJev(
-      { foods: [{ id: "f1", name: line.name, brand: line.brand }] },
-      memoryQuestions(line, list),
+      { foods: [{ id: "f1", name: asked.name, brand: asked.brand }] },
+      memoryQuestions(asked, list),
       jev,
     ).catch(() => null);
     const chances = list.map((_, i) => {
@@ -458,6 +664,40 @@ export async function matchMemory(
     const d = decideMemory(list, scores, MEMORY_FLOOR, lookup);
     if (!d.food) {
       trace.decision = { match: null, reason: res && !res.ok ? `jev_${res.failure}` : d.reason, conf: r2(d.confidence) };
+      // Not sure enough to serve: the same choice at the maybe floor is handed
+      // to decide, which reads the user's words and says same or different.
+      const m = res?.ok ? decideMemory(list, scores, MEMORY_MAYBE_FLOOR, lookup) : null;
+      if (m?.food) {
+        trace.maybe = { name: m.food.name.slice(0, 60), conf: r2(m.confidence) };
+        return { food: null, confidence: m.confidence, maybe: m.food, maybeFrom: "score", trace };
+      }
+      // Nothing in the band: ask once which saved food it is, side by side.
+      // Only after real scores: a Jev that answered nothing is not asked again.
+      const best = Math.max(0, ...scores.map((x) => x ?? 0));
+      if (opts.choice !== false && res?.ok && scores.some((x) => x !== null) && best < MEMORY_CHOICE_MIN_SCORE) {
+        trace.choice = { skipped: "low_scores", best: r2(best) };
+      } else if (opts.choice !== false && res?.ok && scores.some((x) => x !== null)) {
+        const c = await askJev(
+          { foods: [{ id: "f1", name: asked.name, brand: asked.brand }] },
+          { pick: memoryChoiceQuestion(asked, list) },
+          jev,
+        ).catch(() => null);
+        const a = c?.ok ? asChoice(c.response.answers.pick) : null;
+        if (a) {
+          const ranked = Object.entries(a.probabilities ?? {}).sort((x, y) => y[1] - x[1]);
+          const [topKey, topP] = ranked[0] ?? ["none", 0];
+          const pick = topKey === "none" ? null : list[Number(topKey.slice(1)) - 1] ?? null;
+          trace.choice = {
+            pick: pick?.name.slice(0, 60) ?? "none", p: r2(topP), none: r2(a.probabilities?.none ?? 0),
+          };
+          if (pick && topP >= MEMORY_CHOICE_FLOOR) {
+            trace.maybe = { name: pick.name.slice(0, 60), conf: r2(topP), from: "choice" };
+            return { food: null, confidence: topP, maybe: pick, maybeFrom: "choice", trace };
+          }
+        } else {
+          trace.choice = { failed: c && !c.ok ? c.failure : "no_answer" };
+        }
+      }
       return { food: null, confidence: d.confidence, trace };
     }
     trace.decision = decided(d);

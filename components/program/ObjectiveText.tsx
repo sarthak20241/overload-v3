@@ -1,12 +1,12 @@
 /**
- * The program's objective (the plan Drona wrote) under the title line on the
- * Goal screen: one muted paragraph, clamped to two lines with an inline
+ * The program's objective (the plan Drona wrote) under the week line on the
+ * Goal screen: one muted line (14pt), clamped with an inline
  * "More" that opens it in place, and "Less" to close it again. No box, no
  * label, no icon. Nothing at all when the objective is empty.
  *
  * React Native has no "clamp with an inline link", so an invisible copy of
  * the full text, laid out at the same width, reports its lines; when there
- * are more than two, the visible text is the first two lines cut short
+ * are more than `lines`, the visible text is those lines, the last cut short
  * enough to end in "… More".
  */
 import { useState } from 'react';
@@ -15,12 +15,19 @@ import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
 import { FontWeight } from '@/constants/theme';
 
-const MAX_LINES = 2;
 /** Room for "… More" at the end of the second line, in characters. */
 const LINK_ROOM = 8;
 
-export function ObjectiveText({ text, style }: { text: string | null | undefined; style?: object }) {
+export function ObjectiveText({ text, style, lines: maxLines = 2, color }: {
+  text: string | null | undefined;
+  style?: object;
+  /** Lines shown before "More" (the Goal screen shows one). */
+  lines?: number;
+  /** The muted colour, when the screen has its own (the Goal palette). */
+  color?: string;
+}) {
   const { C } = useTheme();
+  const MAX_LINES = maxLines;
   const [lines, setLines] = useState<string[] | null>(null);
   const [open, setOpen] = useState(false);
   const body = (text ?? '').trim();
@@ -67,7 +74,7 @@ export function ObjectiveText({ text, style }: { text: string | null | undefined
       >
         {body}
       </Text>
-      <Text style={[styles.body, { color: C.mutedFg }]} accessibilityLabel={body}>
+      <Text style={[styles.body, { color: color ?? C.mutedFg }]} accessibilityLabel={body}>
         {shown}
         {long ? (open ? <> {link('Less')}</> : link('More')) : null}
       </Text>
@@ -76,7 +83,7 @@ export function ObjectiveText({ text, style }: { text: string | null | undefined
 }
 
 const styles = StyleSheet.create({
-  body: { fontSize: 15, lineHeight: 21, fontWeight: FontWeight.regular },
-  link: { fontSize: 15, lineHeight: 21, fontWeight: FontWeight.semibold },
+  body: { fontSize: 14, lineHeight: 19, fontWeight: FontWeight.regular },
+  link: { fontSize: 14, lineHeight: 19, fontWeight: FontWeight.semibold },
   measure: { position: 'absolute', left: 0, right: 0, opacity: 0 },
 });

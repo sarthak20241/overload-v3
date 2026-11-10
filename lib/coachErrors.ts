@@ -9,12 +9,44 @@
  *
  * Buckets are intentionally coarse. The user only needs to know two things:
  * is this on them (offline, signed out) or on us, and is it worth retrying.
+ * The one exception is a Pro cooldown, which says exactly how long to wait.
  */
 
 const OFFLINE = "Lost the connection. Check your network and come back at me.";
 const SIGNED_OUT = "Your session timed out. Sign in again and we'll pick this up.";
 const BUSY = "I'm handling a lot right now. Give it a few seconds and ask again.";
 const GENERIC = "Something broke on my end. Try that again in a moment.";
+
+/** How long, in words a coach would say. Rounded up: "a minute" never
+ *  means 70 seconds. */
+function waitWords(seconds: number): string {
+  const minutes = Math.max(1, Math.ceil(seconds / 60));
+  return minutes === 1 ? 'a minute' : `${minutes} minutes`;
+}
+
+/**
+ * Pro has no daily limit, only a cooldown when requests come far faster than
+ * a person sends them. The server says so with a 429 carrying
+ * `cooldown: true` and the exact wait; builds before this one show BUSY.
+ */
+export function cooldownMessage(feature: string | undefined, retryAfterSeconds: number): string {
+  const wait = waitWords(retryAfterSeconds);
+  return feature === 'food'
+    ? `You're logging faster than I can keep up. Give me ${wait}, then send the next one.`
+    : `We've been going hard. Give me ${wait} to catch up, then send that again.`;
+}
+
+/** The cooldown line for a 429 body, or null if the body is anything else. */
+export function cooldownMessageFromBody(status: number, body: unknown): string | null {
+  if (status !== 429 || !body || typeof body !== 'object') return null;
+  const b = body as { cooldown?: unknown; feature?: unknown; retry_after_seconds?: unknown };
+  if (b.cooldown !== true) return null;
+  const seconds = Number(b.retry_after_seconds);
+  return cooldownMessage(
+    typeof b.feature === 'string' ? b.feature : undefined,
+    Number.isFinite(seconds) && seconds > 0 ? seconds : 60,
+  );
+}
 
 /** Best-effort readable text out of anything throwable. Plain objects with a
  *  `message` field count too — not everything that reaches here is an Error. */
@@ -58,6 +90,11 @@ export async function coachInvokeErrorMessage(error: unknown): Promise<string> {
     try {
       if (typeof ctx.json === 'function') {
         const body = await ctx.json();
+        const cooldown = cooldownMessageFromBody(ctx.status, body);
+        if (cooldown) {
+          console.warn('[coach] cooldown:', JSON.stringify(body));
+          return cooldown;
+        }
         const inner = body?.error
           ? `${body.error}${body.debug ? ` (${body.debug})` : ''}`
           : JSON.stringify(body);

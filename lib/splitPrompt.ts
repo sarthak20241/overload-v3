@@ -7,8 +7,10 @@
  * Goal screen, so it is written against a real user id. This module decides
  * when to say so.
  *
- * Two different asks, because two different things are missing:
+ * Three different asks, because three different things are missing:
  *   'build'  - signed in, program saved, phase 1 has no routines yet.
+ *   'review' - same, but a built plan is waiting on the device as a draft
+ *              (lib/phaseDraft.ts): the user built it and never tapped Save.
  *   'signin' - no account, so there is no program row at all. Their program is
  *              held in the pending blob and lands the moment they sign in.
  *
@@ -19,7 +21,7 @@
 /** How long "Later" buys. Long enough not to nag, short enough to return. */
 export const SNOOZE_MS = 3 * 24 * 60 * 60 * 1000;
 
-export type SplitPromptAction = 'build' | 'signin' | null;
+export type SplitPromptAction = 'build' | 'review' | 'signin' | null;
 
 export interface SplitPromptState {
   /** False while auth or the program query is still settling. */
@@ -36,6 +38,8 @@ export interface SplitPromptState {
    * on every cold start.
    */
   phaseRoutineCount: number | null;
+  /** A built, unsaved plan for this phase is waiting on the device. */
+  hasDraft?: boolean;
   /** Epoch ms of the last "Later", or null. */
   dismissedAt: number | null;
   nowMs: number;
@@ -53,7 +57,8 @@ export function splitPromptFor(s: SplitPromptState): SplitPromptAction {
   if (s.isGuest) return 'signin';
   if (!s.hasProgram) return null;
   if (s.phaseRoutineCount == null) return null;
-  return s.phaseRoutineCount === 0 ? 'build' : null;
+  if (s.phaseRoutineCount !== 0) return null;
+  return s.hasDraft ? 'review' : 'build';
 }
 
 /**

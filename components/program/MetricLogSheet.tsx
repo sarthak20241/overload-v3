@@ -9,7 +9,7 @@
 import { useEffect, useState } from 'react';
 import {
   View, Text, TextInput, Pressable, TouchableOpacity, StyleSheet, BackHandler, Keyboard, Platform,
-  ActivityIndicator, useWindowDimensions,
+  useWindowDimensions,
 } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,9 +17,11 @@ import { Feather } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
 import { formatMetricValue, metricLabel, type PhaseMetricRow } from '@/lib/phaseMetrics';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 interface Props {
   visible: boolean;
@@ -113,7 +115,7 @@ export function MetricLogSheet({ visible, metric, saving, onSave, onClose }: Pro
                 <Feather name="minus" size={20} color={C.foreground} />
               </TouchableOpacity>
               <View style={s.readout}>
-                <TextInput
+                <SheetTextInput
                   style={[s.input, { color: C.foreground }]}
                   value={text}
                   onChangeText={setText}
@@ -132,7 +134,7 @@ export function MetricLogSheet({ visible, metric, saving, onSave, onClose }: Pro
               </TouchableOpacity>
             </View>
 
-            <TextInput
+            <SheetTextInput
               style={[s.note, { color: C.foreground, backgroundColor: C.muted }]}
               value={note}
               onChangeText={setNote}
@@ -151,7 +153,7 @@ export function MetricLogSheet({ visible, metric, saving, onSave, onClose }: Pro
               accessibilityRole="button"
               accessibilityLabel="Save today's value"
             >
-              {saving ? <ActivityIndicator color={Colors.primaryFg} /> : <Text style={s.saveText}>Log it</Text>}
+              {saving ? <OrbLoader color={Colors.primaryFg} /> : <Text style={s.saveText}>Log it</Text>}
             </TouchableOpacity>
           </Pressable>
         </Animated.View>

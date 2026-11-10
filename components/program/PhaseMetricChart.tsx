@@ -12,7 +12,7 @@
  *                    phase target. x runs from the first reading inside the
  *                    program to the program's end, so the line always starts
  *                    at the left edge. The readings get the left part of the
- *                    width (HISTORY_SHARE) even when they cover a few days of
+ *                    width (HISTORY_SHARE in lib/chartScale.ts) even when they cover a few days of
  *                    a long program, so the line reads as a line, not a stub;
  *                    the dashed stretch to the goal takes the rest.
  *   MetricBarsChart  a habit: one bar per program week against a dotted
@@ -24,16 +24,16 @@ import Svg, { Circle, Defs, Line, LinearGradient, Path, Rect, Stop, Text as SvgT
 import { Colors } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { monotonePath } from '@/components/ui/MiniAreaChart';
+import { useGoalPalette } from '@/components/program/finish';
+import { metricXScale } from '@/lib/chartScale';
 
-export const CHART_HEIGHT = 58;
+export const CHART_HEIGHT = 61;
 const BARS_HEIGHT = 88;
-const PAD_TOP = 6;
+const PAD_TOP = 2;
 const PAD_BOTTOM = 6;
 const X0 = 4;
 const X1_INSET = 10;
 const LABEL_FONT = 10.5;
-/** The share of the width the readings so far get, at least. */
-const HISTORY_SHARE = 0.58;
 
 export interface LinePoint {
   /** Program weeks from the start (fractional). */
@@ -49,11 +49,13 @@ interface LineProps {
   weeks: number;
   /** The value the hollow ring at the end marks: the program goal, else the phase target. */
   endTarget: number;
+  /** The chart's height; CHART_HEIGHT unless the screen needs it shorter. */
+  height?: number;
 }
 
-export function MetricLineChart({ width, points, weeks, endTarget }: LineProps) {
-  const { C } = useTheme();
-  const H = CHART_HEIGHT;
+export function MetricLineChart({ width, points, weeks, endTarget, height = CHART_HEIGHT }: LineProps) {
+  const pal = useGoalPalette();
+  const H = height;
   const x1 = width - X1_INSET;
   // From the first reading inside the program to the program's end.
   const inside = points.filter((p) => p.x >= 0);
@@ -68,17 +70,9 @@ export function MetricLineChart({ width, points, weeks, endTarget }: LineProps) 
   // does not hug the top edge.
   const padY = (hi - lo) * 0.15;
   lo -= padY; hi += padY;
-  // Two pieces: first reading to now across at least HISTORY_SHARE of the
-  // width, now to the program's end across the rest.
+  // First reading to now, then now to the program's end (lib/chartScale.ts).
   const xNow = inside.length > 0 ? inside[inside.length - 1].x : xStart;
-  const linearShare = (xNow - xStart) / (xEnd - xStart);
-  const share = inside.length >= 2 ? Math.max(HISTORY_SHARE, linearShare) : linearShare;
-  const xMid = X0 + (x1 - X0) * share;
-  const X = (w: number) => {
-    const c = Math.max(xStart, Math.min(xEnd, w));
-    if (xNow <= xStart || c <= xNow) return xNow <= xStart ? X0 : X0 + (xMid - X0) * (c - xStart) / (xNow - xStart);
-    return xMid + (x1 - xMid) * (c - xNow) / Math.max(1e-9, xEnd - xNow);
-  };
+  const X = metricXScale({ x0: X0, x1, xStart, xNow, xEnd, readings: inside.length });
   const Y = (v: number) => PAD_TOP + (H - PAD_TOP - PAD_BOTTOM) * (hi - v) / (hi - lo);
 
   const pts = inside.map((p) => ({ x: X(p.x), y: Y(p.y) }));
@@ -94,13 +88,12 @@ export function MetricLineChart({ width, points, weeks, endTarget }: LineProps) 
     <View style={{ width, height: H }}>
       <Svg width={width} height={H} viewBox={`0 0 ${width} ${H}`}>
         <Defs>
-          {/* A soft wash, not a block: ~12% lime at the line, gone by 70% of
-              the way down. In user space from the line's top to the floor, so
-              the fade is the same however flat the line is. */}
-          <LinearGradient id="metricFill" gradientUnits="userSpaceOnUse" x1="0" y1={String(fillTop)} x2="0" y2={String(H)}>
-            <Stop offset="0" stopColor={Colors.primary} stopOpacity={0.12} />
-            <Stop offset="0.35" stopColor={Colors.primary} stopOpacity={0.04} />
-            <Stop offset="0.7" stopColor={Colors.primary} stopOpacity={0} />
+          {/* A soft glow, not a block: ~6% lime at the line (measured on the
+              reference), gone by 70% of the way to the chart's floor so no
+              edge shows. In user space from the line's top, so it fades the
+              same however flat the line is. */}
+          <LinearGradient id="metricFill" gradientUnits="userSpaceOnUse" x1="0" y1={String(fillTop)} x2="0" y2={String(fillTop + (H - fillTop) * 0.7)}>
+            <Stop offset="0" stopColor={Colors.primary} stopOpacity={0.06} />
             <Stop offset="1" stopColor={Colors.primary} stopOpacity={0} />
           </LinearGradient>
         </Defs>
@@ -108,16 +101,16 @@ export function MetricLineChart({ width, points, weeks, endTarget }: LineProps) 
         {last && (
           <Path
             d={`M ${last.x},${last.y} L ${tx},${ty}`}
-            stroke={C.textMuted}
-            strokeWidth={1.5}
-            strokeDasharray="4 5"
+            stroke={pal.dash}
+            strokeWidth={1}
+            strokeDasharray="3 4"
             strokeLinecap="round"
             fill="none"
           />
         )}
-        {line && <Path d={line} stroke={Colors.primary} strokeWidth={2.5} fill="none" strokeLinecap="round" strokeLinejoin="round" />}
-        {last && <Circle cx={last.x} cy={last.y} r={5.5} fill={Colors.primary} />}
-        <Circle cx={tx} cy={ty} r={5.5} fill={C.background} stroke={C.mutedFg} strokeWidth={1.6} />
+        {line && <Path d={line} stroke={Colors.primary} strokeWidth={2} fill="none" strokeLinecap="round" strokeLinejoin="round" />}
+        {last && <Circle cx={last.x} cy={last.y} r={4.5} fill={Colors.primary} />}
+        <Circle cx={tx} cy={ty} r={5} fill={pal.bg} stroke={pal.ring} strokeWidth={1.25} />
       </Svg>
     </View>
   );

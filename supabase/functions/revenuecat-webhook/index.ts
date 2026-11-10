@@ -28,6 +28,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { pickTransferIds } from "./transferIds.ts";
 import { decideTransfer } from "./transferDecision.ts";
 import { effectiveProductId } from "./eventProduct.ts";
+import { ensureProfileRow } from "./profileRow.ts";
 
 const REVENUECAT_WEBHOOK_SECRET = Deno.env.get("REVENUECAT_WEBHOOK_SECRET");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -293,6 +294,7 @@ async function handleTransfer(event: RcEvent): Promise<void> {
   if (action === "none") return;
 
   if (action === "move") {
+    await ensureProfileRow(admin, newClerkId);
     const { data, error } = await admin
       .from("user_profiles")
       .update({
@@ -367,6 +369,8 @@ async function handleSubscriptionStart(event: RcEvent): Promise<void> {
     ? new Date(event.expiration_at_ms).toISOString()
     : null;
 
+  // A buyer who never saved anything has no row; see profileRow.ts.
+  await ensureProfileRow(admin, event.app_user_id);
   const { data, error } = await admin
     .from("user_profiles")
     .update({
@@ -415,6 +419,8 @@ async function handleNonRenewingPurchase(event: RcEvent): Promise<void> {
     return;
   }
 
+  // claim_founding_tier locks the buyer's row and fails without one.
+  await ensureProfileRow(admin, event.app_user_id);
   const { data, error } = await admin.rpc("claim_founding_tier", {
     p_clerk_user_id: event.app_user_id,
     p_tier: "founding_lifetime",
@@ -471,6 +477,7 @@ async function handleRenewal(event: RcEvent): Promise<void> {
   // Check the user's current tier. If it's "free", the INITIAL_PURCHASE was
   // missed (e.g. sandbox gate was active when it fired). Treat this renewal as
   // a full activation so the user isn't stuck on free forever.
+  await ensureProfileRow(admin, event.app_user_id);
   const { data: profile } = await admin
     .from("user_profiles")
     .select("tier")

@@ -1,0 +1,11 @@
+-- 20261022115109_phase_metrics_delta_checked_week_grants.sql: placeholder, intentionally a no-op
+--
+-- Production applied this version on 2026-10-22, between review rounds of
+-- PR #278 (checked_week and its grants, applied by hand). Its effect is now
+-- part of 20261022022018_phase_metrics.sql, and anything still missing on
+-- production is brought over by 20261023120000_phase_metrics_sync.sql.
+--
+-- The file exists so the repo's migration history matches production's:
+-- `supabase db push` then sees this version as applied and skips it, and a
+-- fresh database runs nothing here.
+select 1;

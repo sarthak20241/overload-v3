@@ -65,6 +65,30 @@ export interface Db {
  * rebuilt mid-week starts a fresh count with its fresh rows.
  */
 export const TRIES_PER_WEEK = 3;
+/**
+ * Why the cron skips the whole metrics pass, or null when it may run. Without
+ * a model key every phase would get its numbers and its week stamp but no
+ * line, and a key restored mid-week could not write that week's line. Skipped,
+ * nothing is written and every phase stays due, so the first run after the
+ * key is back does the week in full.
+ */
+export function metricsPassBlocked(anthropicKey: string): string | null {
+  return anthropicKey ? null : "metrics: skipped, ANTHROPIC_API_KEY is not set; every phase stays due";
+}
+/**
+ * The cron's due read selects retry_tries, so a database without the sync
+ * migration (20261023120000) fails it once, with this message, and the whole
+ * metrics pass is skipped; without it every user's check would fail on its
+ * own read instead. Any other failure is reported as it is.
+ */
+export function dueReadFailure(err: { code?: string; message?: string }): string {
+  const msg = err.message ?? "";
+  if (err.code === "42703" && /retry_(tries|week)/.test(msg)) {
+    return "metrics: skipped, the database lacks retry_tries; apply 20261023120000_phase_metrics_sync.sql";
+  }
+  return `metrics: due read: ${msg}`;
+}
+
 /** Under this much time left in the run, the coach line waits for the next run. */
 export const MIN_LINE_MS = 5_000;
 
@@ -74,6 +98,12 @@ export interface MetricsStepResult {
   /** The coach line was written. */
   line: boolean;
   error?: string;
+  /**
+   * The line was skipped because the run had no time left for a model call.
+   * Routine, not a failure: the cron counts these (lines_out_of_time) and
+   * keeps them out of its failure list, unless a ledger write also failed.
+   */
+  outOfTime?: true;
 }
 
 interface PhaseRow {
@@ -214,6 +244,25 @@ export async function metricsStep(
     const readable = metrics.filter((m) => !failed.has(m.kind));
     const checks = checkMetrics(readable, readings, progress, weekIn <= 1);
 
+    // One failed try this week, counted in the phase's own job-only columns
+    // (retry_tries for retry_week), so no single row carries the signal.
+    // Under TRIES_PER_WEEK the rows also get `onRetry`; at the limit they get
+    // `onGiveUp`, so a source or model that stays down does not hold the user
+    // on the due list all week. A ledger that cannot be written is said out
+    // loud in the summary: the tries would not advance, so the give-up could
+    // never land.
+    const recordTry = async (onRetry: Record<string, unknown>, onGiveUp: Record<string, unknown>) => {
+      const tries = triesSoFar(rows, weekStart) + 1;
+      const giveUp = tries >= TRIES_PER_WEEK;
+      const { error } = await retried(() =>
+        db.from("coach_program_phase_metrics")
+          .update({ retry_tries: tries, retry_week: weekStart, ...(giveUp ? onGiveUp : onRetry) })
+          .eq("user_id", userId).eq("phase_id", phase.id)
+      );
+      if (error) console.log(`[drona-cards] could not record the tries for ${userId.slice(0, 12)}: ${error.message}`);
+      return { tries, giveUp, failed: error != null, ledgerNote: error ? `; ledger write failed: ${error.message}` : "" };
+    };
+
     let checked = 0;
     const writeErrors: string[] = [];
     for (const c of checks) {
@@ -225,7 +274,7 @@ export async function metricsStep(
           checked_at: now,
           checked_week: weekStart,
           updated_at: now,
-        }).eq("id", c.id)
+        }).eq("id", c.id).eq("user_id", userId)
       );
       // Keep going: a row left unstamped makes the group due again on the
       // next run (checkDue), and every write here is idempotent.
@@ -239,28 +288,31 @@ export async function metricsStep(
     // stays down the phase keeps last week's line.
     if (writeErrors.length > 0 || readable.length < metrics.length) {
       const why = [...writeErrors, ...(readable.length < metrics.length ? [`read failed for ${[...failed].join(", ")}`] : [])];
-      // Retried next run (the unwritten rows are still unstamped), up to
-      // TRIES_PER_WEEK: then every row is stamped for the week so a source
-      // that stays down does not hold the user on the due list all week.
-      const tries = triesSoFar(rows, weekStart) + 1;
-      const ledger = { retry_tries: tries, retry_week: weekStart };
-      const giveUp = tries >= TRIES_PER_WEEK;
-      const { error: ledgerErr } = await retried(() =>
-        db.from("coach_program_phase_metrics")
-          .update(giveUp ? { ...ledger, checked_at: now, checked_week: weekStart } : ledger)
-          .eq("user_id", userId).eq("phase_id", phase.id)
-      );
-      // A ledger that cannot be written is said out loud in the summary: the
-      // tries would not advance, so the give-up could never land.
-      if (ledgerErr) console.log(`[drona-cards] could not record the tries: ${ledgerErr.message}`);
-      if (giveUp && !ledgerErr) await stampOthers(phase.id);
-      const ledgerNote = ledgerErr ? `; ledger write failed: ${ledgerErr.message}` : "";
-      return { checked, line: false, error: `${why.join("; ")}${giveUp ? `, gave up for the week after ${tries} tries` : ", retry next run"}${ledgerNote}` };
+      // Retried next run (the unwritten rows are still unstamped). At the
+      // limit every row is stamped for the week instead.
+      const t = await recordTry({}, { checked_at: now, checked_week: weekStart });
+      let fallback = "";
+      let stamped = t.giveUp && !t.failed;
+      if (t.failed) {
+        // Without the ledger the tries never advance, so the give-up could
+        // never land and the phase would be re-read every run all week. The
+        // phase is stamped for the week instead: no retries, but bounded.
+        const { error: stampErr } = await retried(() =>
+          db.from("coach_program_phase_metrics").update({ checked_at: now, checked_week: weekStart })
+            .eq("user_id", userId).eq("phase_id", phase.id)
+        );
+        stamped = !stampErr;
+        fallback = stampErr ? `; fallback stamp failed: ${stampErr.message}` : "; stamped for the week instead";
+      }
+      if (stamped) await stampOthers(phase.id);
+      return { checked, line: false, error: `${why.join("; ")}${t.giveUp ? `, gave up for the week after ${t.tries} tries` : ", retry next run"}${t.ledgerNote}${fallback}` };
     }
 
     await stampOthers(phase.id);
 
-    // The line, from the numbers just written. No key, no line.
+    // The line, from the numbers just written. No key, no line: the cron never
+    // gets here without one (metricsPassBlocked skips the pass), so this only
+    // serves a caller that wants the numbers alone, such as the tests.
     if (!anthropicKey) return { checked, line: false };
     // Every metric has a check here: the early return above guarantees
     // readable.length === metrics.length, so the lookup cannot miss.
@@ -287,7 +339,7 @@ export async function metricsStep(
         db.from("coach_program_phase_metrics").update({ checked_week: null }).eq("user_id", userId).eq("phase_id", phase.id)
       );
       if (unstampErr) console.log(`[drona-cards] could not mark the line for retry: ${unstampErr.message}`);
-      return { checked, line: false, error: `line: out of time, retry next run${unstampErr ? `; ledger write failed: ${unstampErr.message}` : ""}` };
+      return { checked, line: false, outOfTime: true, error: `line: out of time, retry next run${unstampErr ? `; ledger write failed: ${unstampErr.message}` : ""}` };
     }
     const answer = await askCoachLine({
       program_title: String(prog.title ?? "Your program"),
@@ -297,35 +349,24 @@ export async function metricsStep(
       weeks_total: phase.duration_weeks,
       metrics: lineMetrics,
     }, anthropicKey, fetchFn, undefined, Number.isFinite(left) ? left : undefined);
-    if (!answer.line) {
-      // The line is retried this week, up to TRIES_PER_WEEK: every row of
-      // the phase is un-stamped, so the cron lists the user again and the
-      // next run re-checks the phase (idempotent) and asks the model once
-      // more. The tries are counted in the rows' own job-only columns
-      // (retry_tries for retry_week), so a model that keeps failing (a bad key,
-      // a 4xx) costs at most three calls a week and the phase keeps last
-      // week's line, and no single row carries the signal.
-      const tries = triesSoFar(rows, weekStart) + 1;
-      const ledger = { retry_tries: tries, retry_week: weekStart };
-      if (tries >= TRIES_PER_WEEK) {
-        console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} failed ${tries} times this week (${answer.error ?? "no line"}); keeping last week's line`);
-        const { error: noteErr } = await retried(() =>
-          db.from("coach_program_phase_metrics").update(ledger).eq("user_id", userId).eq("phase_id", phase.id)
-        );
-        if (noteErr) console.log(`[drona-cards] could not record the line tries: ${noteErr.message}`);
-        return { checked, line: false, error: `line: ${answer.error ?? "no line"}, gave up for the week after ${tries} tries${noteErr ? `; ledger write failed: ${noteErr.message}` : ""}` };
-      }
-      console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} not written: ${answer.error ?? "no line"}; retry next run (${tries} of ${TRIES_PER_WEEK})`);
-      const { error: unstampErr } = await retried(() =>
-        db.from("coach_program_phase_metrics").update({ checked_week: null, ...ledger }).eq("user_id", userId).eq("phase_id", phase.id)
+    // A line that is saved ends here. A model that gives no line, or a line
+    // that cannot be saved, is retried this week: the rows are un-stamped,
+    // so the cron lists the user again and the next run re-checks the phase
+    // (idempotent) and asks the model once more. A model that keeps failing
+    // (a bad key, a 4xx) costs at most TRIES_PER_WEEK calls a week; the phase
+    // keeps last week's line. At the limit the rows keep their stamp.
+    let why: string | null = answer.line ? null : answer.error ?? "no line";
+    if (answer.line) {
+      const { error: lineErr } = await retried(() =>
+        db.from("coach_program_phases").update({ coach_line: answer.line }).eq("id", phase.id).eq("user_id", userId)
       );
-      if (unstampErr) console.log(`[drona-cards] could not mark the line for retry: ${unstampErr.message}`);
-      return { checked, line: false, error: `line: ${answer.error ?? "no line"}, retry next run${unstampErr ? `; ledger write failed: ${unstampErr.message}` : ""}` };
+      if (lineErr) why = lineErr.message;
     }
-    const { error: lineErr } = await retried(() =>
-      db.from("coach_program_phases").update({ coach_line: answer.line }).eq("id", phase.id).eq("user_id", userId)
-    );
-    if (lineErr) return { checked, line: false, error: `line: ${lineErr.message}` };
+    if (why != null) {
+      const t = await recordTry({ checked_week: null }, {});
+      console.log(`[drona-cards] coach line for ${userId.slice(0, 12)} not written: ${why}; ${t.giveUp ? "keeping last week's line" : "retry next run"} (${t.tries} of ${TRIES_PER_WEEK})`);
+      return { checked, line: false, error: `line: ${why}, ${t.giveUp ? `gave up for the week after ${t.tries} tries` : "retry next run"}${t.ledgerNote}` };
+    }
     // A clean line clears the retry ledger. A failed clear leaves a stale
     // count for this week only (the next week starts its own); it is named
     // in the run summary rather than dropped.
@@ -367,10 +408,22 @@ async function gatherReadings(
     console.log(`[drona-cards] metric read failed (${ks.join(", ")}): ${why}`);
     for (const k of ks) if (kinds.has(k)) failed.add(k);
   };
+  // Each read carries the kinds it feeds, so a read that throws fails only
+  // those kinds; the others' readings still count. The handler is attached
+  // the moment the read starts: a read that fails while the exercise lookup
+  // below is still awaited would otherwise be an unhandled rejection, which
+  // ends a Deno run.
   const jobs: Promise<void>[] = [];
+  const add = (ks: MetricToCheck["kind"][], p: Promise<void>) => { jobs.push(p.catch((e) => fail(String(e), ...ks))); };
 
+  // Bodyweight is the latest weigh-in of the last 14 days, not this week's
+  // only: many people weigh once a week or less, and a week with no weigh-in
+  // would otherwise read as "no reading" while the trend is known. The Goal
+  // screen calls it "current weight", which is what this is. With nothing in
+  // the last 14 days there is no fresh reading, and the check keeps the last
+  // stored value (bodyweight is a progress kind: checkMetric).
   if (kinds.has("bodyweight")) {
-    jobs.push((async () => {
+    add(["bodyweight"], (async () => {
       const { data, error } = await retried(() =>
         db.from("daily_metrics").select("value").eq("user_id", userId).eq("metric_type", "bodyweight_kg")
           .gte("metric_date", addDays(localDay, -14)).lte("metric_date", localDay)
@@ -421,7 +474,7 @@ async function gatherReadings(
     })().catch((e) => fail(String(e), ...new Set(named.map((m) => m.kind))));
   }
   if (kinds.has("lift_e1rm")) {
-    jobs.push((async () => {
+    add(["lift_e1rm"], (async () => {
       const lifts = metrics.filter((m) => m.kind === "lift_e1rm");
       const ids = lifts.filter((m) => m.ref?.exercise_id).map((m) => m.ref!.exercise_id!);
       if (ids.length === 0) return;
@@ -436,7 +489,7 @@ async function gatherReadings(
     })());
   }
   if (kinds.has("sets_per_muscle")) {
-    jobs.push((async () => {
+    add(["sets_per_muscle"], (async () => {
       const { data, error } = await retried(() =>
         db.from("user_volume_stats").select("muscle_group, set_count").eq("user_id", userId).eq("week_start", prevWeek)
       );
@@ -448,7 +501,7 @@ async function gatherReadings(
     })());
   }
   if (kinds.has("sessions_per_week") || kinds.has("cardio_sessions") || kinds.has("steps") || kinds.has("sleep_hours")) {
-    jobs.push((async () => {
+    add(["sessions_per_week", "cardio_sessions", "steps", "sleep_hours"], (async () => {
       // Last whole week's facts, rebuilt by pg_cron (drona_rebuild_all_facts).
       const { data, error } = await retried(() =>
         db.from("drona_week_facts").select("t_sessions, a_cardio_sessions, r_steps_avg, r_sleep_avg_min")
@@ -488,7 +541,7 @@ async function gatherReadings(
     })());
   }
   if (kinds.has("protein_days")) {
-    jobs.push((async () => {
+    add(["protein_days"], (async () => {
       let target = phaseProteinG;
       if (target == null) {
         const { data: prof, error: profErr } = await retried(() =>
@@ -539,17 +592,17 @@ async function gatherReadings(
   for (const kind of ["distance", "duration"] as const) {
     if (!kinds.has(kind)) continue;
     const ofKind = metrics.filter((m) => m.kind === kind);
-    for (const m of ofKind.filter((m) => m.ref?.exercise_id)) jobs.push(bestSet(kind, m)());
+    for (const m of ofKind.filter((m) => m.ref?.exercise_id)) add([kind], bestSet(kind, m)());
     // The any-exercise read is only for metrics tied to no exercise (no id,
     // no name). A metric tied to one whose read found nothing gets no reading
     // rather than another exercise's best (currentValueFor reads it the same way).
-    if (ofKind.some((m) => !ownExercise(m))) jobs.push(bestSet(kind, null)());
+    if (ofKind.some((m) => !ownExercise(m))) add([kind], bestSet(kind, null)());
   }
   if (kinds.has("custom")) {
     // The latest log of each custom metric, one read per metric (a phase
     // has one or two), so no metric's latest can be cut off by another's.
     for (const m of metrics.filter((m) => m.kind === "custom")) {
-      jobs.push((async () => {
+      add(["custom"], (async () => {
         const { data, error } = await retried(() =>
           // Up to today only: the table does not bound logged_on, so a
           // future-dated log written straight to it must not become the reading.
@@ -563,7 +616,7 @@ async function gatherReadings(
       })());
     }
   }
-  // A read that threw is a failed read too: the caller skips those kinds.
-  await Promise.all(jobs.map((j) => j.catch((e) => fail(String(e), ...kinds))));
+  // A read that threw is a failed read too: the caller skips its kinds.
+  await Promise.all(jobs);
   return { readings: r, failed };
 }

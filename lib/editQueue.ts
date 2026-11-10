@@ -16,7 +16,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveExerciseRow } from '@/lib/exerciseResolve';
-import { getXpForWorkout } from '@/lib/xp';
+import { editXpDelta } from '@/lib/xp';
 
 const KEY = (userId: string) => `pending_edits_v1::${userId}`;
 const SCHEMA = 1 as const;
@@ -82,6 +82,8 @@ export interface PendingWorkoutEdit {
    */
   baseSetCount: number;
   baseVolumeKg: number;
+  /** workouts.source: set for a workout imported from Apple Health / Health Connect, which earns no XP. */
+  source?: string | null;
   // --- flush progress / idempotency ---
   phase: 'queued' | 'sets_replaced' | 'done';
   attempts: number;
@@ -153,6 +155,7 @@ export async function enqueueEdit(
     totalVolumeKg: number;
     baseSetCount: number;
     baseVolumeKg: number;
+    source?: string | null;
   },
 ): Promise<void> {
   const list = (_byUser[userId] ??= []);
@@ -175,6 +178,8 @@ export async function enqueueEdit(
     totalVolumeKg: input.totalVolumeKg,
     baseSetCount: base.baseSetCount,
     baseVolumeKg: base.baseVolumeKg,
+    // Where the workout came from never changes, so a superseding edit keeps the first one's.
+    source: idx >= 0 ? list[idx].source ?? input.source ?? null : input.source ?? null,
     phase: 'queued',
     attempts: 0,
     nextAttemptAt: 0,
@@ -435,10 +440,13 @@ async function flushPendingEdit(
     // delete-refund / finish-award posture). The stats tables recompute
     // themselves from the changed sets via their own trigger.
     try {
-      const newCount = entry.exercises.reduce((n, e) => n + e.sets.length, 0);
-      const delta =
-        getXpForWorkout(newCount, entry.totalVolumeKg) -
-        getXpForWorkout(entry.baseSetCount, entry.baseVolumeKg);
+      const delta = editXpDelta({
+        source: entry.source,
+        newSetCount: entry.exercises.reduce((n, e) => n + e.sets.length, 0),
+        newVolumeKg: entry.totalVolumeKg,
+        baseSetCount: entry.baseSetCount,
+        baseVolumeKg: entry.baseVolumeKg,
+      });
       if (delta !== 0) await supabase.rpc('award_xp', { p_earned: delta });
     } catch {
       // non-fatal

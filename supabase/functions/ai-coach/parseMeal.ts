@@ -24,6 +24,7 @@
 // passes the deterministic guardrails (density clamp, Atwater, prep-state),
 // so catalog-backed numbers are never model-invented.
 
+import { sawContext } from "./foodBarTrace.ts";
 import { continuationText, FOOD_TURN_CHARS, FOOD_TURNS_KEPT, type PendingFoodMeal } from "./foodContext.ts";
 import { nearWord } from "./textMatch.ts";
 import {
@@ -33,6 +34,9 @@ import {
   type SavedHit,
   type SavedMealForParse,
   rejectsSavedMeal,
+  hintOfferTarget,
+  MAX_SAVED_IN_PROMPT,
+  type SavedMealHint,
   savedMealsBlock,
   suggestSavedMeal,
 } from "./savedMeals.ts";
@@ -44,13 +48,15 @@ import {
   type SourceReading,
   VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
-import { foodLabel, parseSuggestion, runTavilyLookup, suggestSearchPayload, withPrep } from "./tavilyLookup.ts";
+import { foodLabel, hostOf, parseSuggestion, runTavilyLookup, suggestSearchPayload, withPrep } from "./tavilyLookup.ts";
 import { otherBrandRows } from "./brandCheck.ts";
 import { matchOurSources } from "./ourSources.ts";
+import { type FoodRegion, regionalizePrompt, regionBlock } from "./regionRules.ts";
 import { applyJudgement, judgeThorough, type ThoroughMatchMode, wantsBrandWeb } from "./thoroughMatch.ts";
 import {
+  energyAmountAsStated,
   fillStated,
-  honourLineTotals,
+  fitPortionToStated,
   readStated,
   readStatedTotal,
   remainingTotal,
@@ -74,6 +80,7 @@ import {
   memoryInputName,
   alsoSentence,
   memoryNote,
+  type OriginTrustMode,
 } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 
@@ -82,6 +89,16 @@ import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 export const SHADOW_GRACE_MS = 1500;
 import type { TavilyDeps } from "./tavily.ts";
 import { asNoul, askJev, type JevDeps } from "./jev.ts";
+import {
+  type CopiedFrom,
+  type FoodOrigin,
+  originOf,
+  parseRecipe,
+  recipePer100,
+  type RecipePart,
+  statedPartGrams,
+  withPartGrams,
+} from "../_shared/foodOrigin.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -128,6 +145,9 @@ export interface CandidateFood {
   // not replicating the DB), so those candidates carry food_id null and their
   // per-100 numbers travel with them. See fatsecret.ts.
   source: "catalog" | "off" | "fatsecret";
+  /** The site a web-looked-up candidate's numbers came from (Precise lookup
+   *  and its cache rows), e.g. "fatsecret.co.in". Absent elsewhere. */
+  source_site?: string;
   // ── Evidence, on the candidate that was actually researched ───────────────
   // Super and precise-cache hits only. superLookupOne already computed both to
   // write the cache row, and both used to die there: the verdict never left the
@@ -158,7 +178,9 @@ export interface ParsedItem {
   fiber_g: number | null;
   // 'manual' never originates here: it comes back from the client when the user
   // corrected a line in the review card, and must round-trip intact.
-  source: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
+  // 'recipe': a dish code added up from its parts (recipe.ts, step 5). Its
+  // parts ride in `recipe`, its origin is "recipe".
+  source: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual" | "recipe";
   assumption: string | null;
   confidence: "high" | "medium" | "low";
   /** The candidate behind this line cleared the verification bar: two
@@ -184,6 +206,11 @@ export interface ParsedItem {
   numbers_tier?: ParseTier;
   /** A proposed personal alias. Learned only when this food is saved. */
   memory_input_name?: string;
+  /** The brand this line's food is sold under, when known: the row it was
+   *  filled from, else the brand extract read in the user's words. Read off
+   *  the trace by the saved-food trigger (user_food_cache.brand), so a saved
+   *  food can be shown to Jev with its brand apart (brandApart). */
+  brand?: string | null;
   /** Other variants the user also logs ("vanilla whey" beside the "chocolate
    *  whey" served), priced at this line's weight from their own numbers, so
    *  the card can swap the line in one tap with no model call. */
@@ -193,6 +220,17 @@ export interface ParsedItem {
    *  the food up by THESE: looking up the card's name only re-checks the row
    *  that may be the mistake. */
   said_name?: string;
+  /** The site the numbers came from, for a web-looked-up line
+   *  ("fatsecret.co.in"). The food agent sees it on the card. */
+  source_site?: string;
+  /** Where the numbers came from, said plainly (_shared/foodOrigin.ts). Trust
+   *  reads this, never `source`: "manual" on the wire only means "the numbers
+   *  are fixed". Stamped on every line before it leaves runParseMeal. */
+  origin?: FoodOrigin;
+  /** A copied line keeps its origin and says where it was copied from. */
+  copied_from?: CopiedFrom;
+  /** A home dish's parts (RecipePart), when the line is one. */
+  recipe?: RecipePart[];
 }
 
 /** One tap-to-swap option for a line: everything that changes when the user
@@ -217,6 +255,39 @@ export interface ParseStep {
   tool: string;
   input?: unknown;
   result?: unknown;
+  /** ms since the request began, stamped when the step was recorded. Only
+   *  when deps.stepClock is set (the food box trace), so tests see no change. */
+  at_ms?: number;
+}
+
+/** One Anthropic round trip, as the food box trace keeps it. */
+export interface ParseModelCall {
+  stage: string;
+  model: string | null;
+  ms: number;
+  ok: boolean;
+  http_status: number | null;
+  error: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  saw_recent_turns: boolean;
+  saw_card: boolean;
+}
+
+/** A step list that stamps each step with when it was recorded. The step is
+ *  stamped in place, not copied, so code that pushes a step and fills in its
+ *  result afterwards still fills in the same object. */
+function stampedSteps(t0: number | undefined): ParseStep[] {
+  const steps: ParseStep[] = [];
+  if (typeof t0 !== "number") return steps;
+  const push = steps.push.bind(steps);
+  steps.push = (...items: ParseStep[]) => {
+    const now = Date.now() - t0;
+    for (const it of items) if (it && typeof it === "object" && it.at_ms === undefined) it.at_ms = now;
+    return push(...items);
+  };
+  return steps;
 }
 
 export interface ParseMealResult {
@@ -323,6 +394,13 @@ export interface PreviousItem {
   meal_type?: MealType;
   /** ParsedItem.said_name, sent back by the client. */
   said_name?: string;
+  /** The site the line's numbers came from, when the app sent it back. */
+  source_site?: string;
+  /** ParsedItem.origin / copied_from / recipe, when the app sent them back.
+   *  An app that predates them sends none: originOf reads the old fields. */
+  origin?: FoodOrigin;
+  copied_from?: CopiedFrom;
+  recipe?: RecipePart[];
   /** The line the user tapped "double check" on. When any line carries it,
    *  research looks up ONLY the marked lines and leaves the rest as they were. */
   research?: boolean;
@@ -347,7 +425,18 @@ function previousAsParsedItem(p: PreviousItem): ParsedItem {
     confidence: p.confidence ?? "medium",
     // Kept so the NEXT double check on this line still looks up the user's words.
     ...(p.said_name ? { said_name: p.said_name } : {}),
+    ...(p.source_site ? { source_site: p.source_site } : {}),
+    ...keptOrigin(p),
   };
+}
+
+/** A previous line carried through a correction keeps its origin. */
+function keptOrigin(p: PreviousItem): Pick<ParsedItem, "origin" | "copied_from" | "recipe"> {
+  const recipe = parseRecipe(p.recipe);
+  const origin = originOf(p);
+  // The user's own numbers on this card are not a copy of anything.
+  const copied = p.copied_from ?? (origin === "user_typed" ? undefined : "correction");
+  return { origin, ...(copied ? { copied_from: copied } : {}), ...(recipe ? { recipe } : {}) };
 }
 
 /**
@@ -382,7 +471,9 @@ export function keepUncoveredPrevious(
     // word-overlaps "tofu", so the guard below reads the tofu line as dropped
     // and helpfully restores it. The guard exists to stop data loss; on an
     // identity swap it would otherwise cause data duplication.
-    replaced?.has(p.food_name.toLowerCase()) ||
+    // Same normalization as removedTargets (trim + lower), so the two can
+    // never disagree about which line a removal named.
+    replaced?.has(p.food_name.trim().toLowerCase()) ||
     items.some((it) =>
       (p.food_id && it.food_id === p.food_id) || wordsOverlap(it.food_name, p.food_name)
     );
@@ -424,6 +515,7 @@ export function preserveManual(
       source: "manual",
       assumption: m.assumption ?? it.assumption,
       confidence: m.confidence ?? "high",
+      ...keptOrigin(m),
     };
   });
 }
@@ -630,7 +722,7 @@ export function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number
   // production on 2026-08-28: "2 oreo biscuits and 1 amul cheese slice" logged
   // 200 g / 966 kcal and 100 g / 316 kcal against a true ~22 g / ~105 kcal and
   // ~20 g / ~63 kcal, because both rows carry "100 g" and nothing else. Smart
-  // never hits this - buildDecideSystemPrompt spells the household weights out
+  // never hits this - buildDecideSystemPrompt tells decide to weigh pieces
   // ("2 biscuits is ~15-20 g, never 90") - and Fast skips decide entirely, so
   // the refusal here IS Fast's version of that knowledge: the caller drops to
   // the model's own est_total_g, which the fused extract call already returned
@@ -672,6 +764,8 @@ export function codeFillItems(
   if (resolved.length === 0) return { items: [], blockedBy: "no items" };
   const out: ParsedItem[] = [];
   for (const r of resolved) {
+    // A saved food is waiting on decide's judgement: only decide can give it.
+    if (r.savedCheck) return { items: [], blockedBy: `saved food to judge: ${r.name}` };
     const top = r.candidates[0];
     if (!top || !top.food_id) return { items: [], blockedBy: `ungrounded: ${r.name}` };
     const per = candidatePer100.get(top.food_id);
@@ -750,6 +844,27 @@ export function verifiedForItems(resolved: ResolvedItem[]): Map<string, boolean>
     }
   }
   return byFood;
+}
+
+/** The site behind every web-looked-up candidate, keyed like verifiedForItems,
+ *  so a line can say where its numbers came from after its id is erased. */
+export function sitesForItems(resolved: ResolvedItem[]): Map<string, string> {
+  const byFood = new Map<string, string>();
+  for (const r of resolved) {
+    for (const c of r.candidates) {
+      if (c.food_id && c.source_site && !byFood.has(c.food_id)) byFood.set(c.food_id, c.source_site);
+    }
+  }
+  return byFood;
+}
+
+/** The first reading's site, for a candidate's source_site. */
+export function siteOfReadings(readings: { ref?: string | null }[] | null | undefined): string | undefined {
+  for (const r of readings ?? []) {
+    const h = hostOf(r?.ref ?? null);
+    if (h) return h.slice(0, 60);
+  }
+  return undefined;
 }
 
 /** Serving options for every candidate we offered, so the display quantity can
@@ -955,6 +1070,13 @@ export interface ParseMealInput {
    *  catalog, not the web (savedMeals.ts). A promise so the read can start
    *  alongside everything else; it is awaited just before the first call. */
   savedMeals?: SavedMealForParse[] | Promise<SavedMealForParse[]>;
+  /** The router's pick among those saved meals, with Jev's confidence. Shown
+   *  to the model as a pointer when the router has answered by the time the
+   *  prompt is built, and offered as a swap on the card when the model does
+   *  not tag it. Never logged from here (see SavedMealHint). A promise so the
+   *  parse never waits for the router before extracting: the common path pays
+   *  nothing for the router question (see hintBox). */
+  savedHint?: SavedMealHint | null | Promise<SavedMealHint | null>;
   todayTotals: { kcal: number; protein_g: number } | null;
   targets: { daily_calorie_target: number | null; protein_target_g: number | null } | null;
   // Optional: when set, the recents/targets/totals above are placeholders and
@@ -1012,6 +1134,8 @@ export interface ParseMealDeps {
   userMemory?: {
     load: () => Promise<{ entries: MemoryEntry[]; timeZone: string | null }>;
     lookupAliases?: (keys: string[]) => Promise<MemoryEntry[]>;
+    /** FOOD_ORIGIN_TRUST (step 4). Absent = off. */
+    originTrust?: OriginTrustMode;
   };
   anthropicApiKey: string;
   model: string;
@@ -1068,6 +1192,14 @@ export interface ParseMealDeps {
    *  searchCountry.ts). When present its answer wins, null included: null
    *  means "no boost", which is right for a zone we cannot place. */
   resolveSearchCountry?(): Promise<string | null>;
+  /** FOOD_REGION_RULES=on: the user's food region from their time zone
+   *  (regionRules.ts foodRegionForTimezone; null when it cannot be placed).
+   *  Precise only: its prompts carry only that region's rules and examples.
+   *  Absent: the switch is off and every prompt is today's. */
+  foodRegion?(): Promise<FoodRegion | null>;
+  /** Set by runParseMeal once foodRegion has answered, for the steps that
+   *  read it (Jev's kind question in our sources). Never set by a caller. */
+  regionRules?: { region: FoodRegion | null };
   /** Thorough: Jev checks that the catalog row IS the food named, the same
    *  check Precise runs before the web (thoroughMatch.ts). "shadow" asks and
    *  only records; "on" serves Jev's row, or no row so decide estimates.
@@ -1145,6 +1277,10 @@ export interface ParseMealDeps {
    *  correction path simply falls back to the full pipeline. */
   getFoodServings?(foodId: string): Promise<ServingOption[]>;
   fetchFn?: typeof fetch;
+  /** The food box trace: request start (epoch ms) for stamping steps, and a
+   *  hook told about every model call. Both optional; absent, nothing changes. */
+  stepClock?: number;
+  onModelCall?: (call: ParseModelCall) => void;
   /** Aborts the model calls when the caller no longer wants the answer.
    *
    *  The SSE transport hands this the stream's own cancellation, so a client
@@ -1535,19 +1671,20 @@ const LOG_MEAL_TOOL = {
             food_name: { type: "string", description: "Display name for the log." },
             quantity: {
               type: "number",
-              description: "How many of serving_label the user ate, e.g. 2 for '2 rotis'.",
+              description: 'How many serving_labels the user ate: 2 for "2 roti", 150 for "150 g".',
             },
             serving_label: {
               type: "string",
               description:
-                'Human-readable unit, e.g. "roti", "katori", "100 g", "scoop", "500 ml". ' +
-                "Prefer a serving option label from the chosen candidate when one fits.",
+                'The unit for quantity. If the user gave a weight or volume, use "g" or "ml": ' +
+                '"30 g peanuts" is quantity 30, serving_label "g". Otherwise use a serving option ' +
+                'from the chosen candidate ("1 scoop (31 g)") or the user\'s own unit ("roti", "katori").',
             },
             grams: {
               type: "number",
               description:
-                "TOTAL amount in grams (or ml for liquids) for this line: quantity times the " +
-                "per-serving weight. This drives the macro math, so convert carefully.",
+                "TOTAL grams for this line (ml for liquids): quantity times the weight of one " +
+                "serving_label. This drives the macro math, so convert carefully.",
             },
             kcal: { type: "number", description: "TOTAL kcal. OMIT for catalog/off items (food_id set) — the app computes them from grams. REQUIRED only for estimate/web items." },
             protein_g: { type: "number", description: "TOTAL protein grams. Omit when food_id is set; required for estimate/web." },
@@ -1881,7 +2018,7 @@ async function runWebLookup(
       tools: [WEB_SEARCH_TOOL, WEB_LOOKUP_TOOL],
       messages: conversation,
       ...(lastTurn ? { tool_choice: { type: "tool", name: "report_labels" } } : {}),
-    });
+    }, "web_label");
     if (!result.ok) {
       deps.log?.(`[parse_meal] web lookup failed: ${result.status}`);
       return null;
@@ -1931,6 +2068,9 @@ export interface SuperFinding {
   readings: SourceReading[];
   serving_label: string | null;
   serving_grams: number | null;
+  /** The reader's count and piece word for that serving (Tavily path). */
+  serving_count?: number | null;
+  serving_unit?: string | null;
   source_note: string | null;
   /** Brand the pages printed, when the line's words name it (Tavily path). */
   brand?: string | null;
@@ -2059,7 +2199,7 @@ export async function runSuperLookup(
       tools: [WEB_SEARCH_TOOL, SUPER_LOOKUP_TOOL],
       messages: conversation,
       ...(lastTurn ? { tool_choice: { type: "tool", name: "report_sources" } } : {}),
-    });
+    }, "web_sources");
     if (!result.ok) {
       deps.log?.(`[parse_meal] super lookup failed: ${result.status}`);
       return null;
@@ -2605,7 +2745,51 @@ Output: {"declined": true, "decline_message": "That's training, not a meal. Tell
 
 const EXTRACT_SYSTEM_SMART = EXTRACT_SYSTEM_HEAD + EXTRACT_NO_NUTRITION + EXTRACT_SHARED_RULES;
 
-export function buildDecideSystemPrompt(input: ParseMealInput): string {
+/** How long a Precise parse waits for the user's region (FOOD_REGION_RULES).
+ *  The read starts at request time, so it is normally done by then. */
+export const REGION_WAIT_MS = 400;
+
+/** The user's region, or null when the read fails or takes longer than
+ *  `ms`. The timer is cleared either way. `timedOut` says which, for the trace. */
+export async function waitForRegion(
+  read: () => Promise<FoodRegion | null>,
+  ms = REGION_WAIT_MS,
+): Promise<{ region: FoodRegion | null; timedOut: boolean }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((r) => { timer = setTimeout(() => r("late"), ms); });
+  try {
+    const got = await Promise.race([read().catch(() => null), late]);
+    return got === "late" ? { region: null, timedOut: true } : { region: got, timedOut: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The extract prompt outside Quick, with the correction rules when a card is
+ *  on screen. With region rules (FOOD_REGION_RULES, Precise only) the India
+ *  rules leave the shared text, this region's examples go in, and the
+ *  region's rules go after the shared text (only the pending-meal notes come
+ *  later), so the shared part stays one stable text. */
+export function preciseExtractSystem(hasPrevious: boolean, regionRules?: { region: FoodRegion | null }): string {
+  const base = hasPrevious ? EXTRACT_SYSTEM_SMART + EXTRACT_CORRECTION_RULES : EXTRACT_SYSTEM_SMART;
+  if (!regionRules) return base;
+  return regionalizePrompt("extract", base, regionRules.region) + regionBlock("extract", regionRules.region);
+}
+
+/** buildDecideSystemPrompt with region rules (FOOD_REGION_RULES, Precise
+ *  only): the shared rules lose the India rules and take this region's
+ *  examples, and the region block sits late, just before the user's own
+ *  context. Without regionRules: today's prompt, unchanged. */
+export function buildDecideSystemPrompt(input: ParseMealInput, regionRules?: { region: FoodRegion | null }): string {
+  const today = decideSystemToday(input);
+  if (!regionRules) return today;
+  const at = today.indexOf("\n<user_context>");
+  const shared = at >= 0 ? today.slice(0, at) : today;
+  const rest = at >= 0 ? today.slice(at) : "";
+  return regionalizePrompt("decide", shared, regionRules.region) + regionBlock("decide", regionRules.region).replace(/\n$/, "") + rest;
+}
+
+function decideSystemToday(input: ParseMealInput): string {
   const hint = input.mealHint ?? mealForHour(input.localHour);
 
   // I13: frequency first, with the count and the USUAL amount. "last: 1 serving"
@@ -2651,16 +2835,17 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
 - looked_up_as on an item means the user's words found no label as written, and from what the search returned the product is most likely sold under that name. A candidate that is the looked_up_as product is the user's food; say in assumption which product you took it as.
 - similar_products on an item are other companies' products we found. They are NEVER the food: do not log one, and do not copy its numbers. Use them, with what you know of the user's brand and its range, only to keep your estimate in a sensible range.
 - label_not_found on an item means the web was searched for this product's label and none was found. If no candidate is acceptable, say so in assumption ("Couldn't find this exact label, so this is my estimate").
+- saved_food_check on an item is a food this user logged before, with the numbers they kept. A matcher was not sure it is the food they mean now (jev_same is its chance, 0 to 1), so you decide, from the user's words: is it the same product? Words the user left out (a flavour, a product-line word, part of the brand) and a brand spelled loosely or shortened are still the same product. A brand, flavour, preparation or fat grade the user DID write that differs from it makes it a different product. Same product: log it by its food_id, ahead of the candidates, since it is their own food. Different, or you cannot tell: leave it and choose from the candidates as usual.
 - No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
 </candidate_rules>
 
 <quantity_rules>
 - Macros output: for any item you matched to a candidate (food_id set, source catalog or off), give ONLY grams and OMIT kcal/protein_g/carb_g/fat_g/fiber_g — the app computes them from grams and the food row. For estimate or web items (food_id null) you MUST include all four macros, since there is no row to compute from.
 - Candidates list macros PER 100 of base_unit (g or ml). grams on each logged item is the TOTAL amount eaten; when you do provide macros (estimate/web only) compute them as per100 * grams / 100.
-- Use the candidate's serving options to convert household units. When the user gives an explicit amount ("50g", "500 ml"), that wins over any serving default.
-- Spoon and cup weights DEPEND ON THE FOOD; a tablespoon is 15 g only for water-like liquids. If the candidate has a cup serving, derive from it (1 cup = 16 tbsp = 48 tsp). Otherwise: 1 tbsp of nuts, seeds, or roasted snacks ~8 g; powders (protein, flour, spices) ~7-9 g; oil or ghee ~14 g; nut butter, honey ~16-20 g. A guessed spoon weight is never confidence high.
-- Indian household defaults when the user gives no amount and no serving option fits: 1 roti ~40 g, 1 katori ~150 g cooked, 1 glass ~250 ml, 1 cup ~200 ml, 1 bowl ~250 g, 1 scoop whey ~32 g, 1 egg ~50 g. Record any such guess in assumption.
-- Piece counts for small foods use the candidate's per-piece serving when one exists; otherwise: 1 almond ~1.2 g, 1 cashew ~1.5 g, 1 walnut half ~2 g, 1 peanut ~0.9 g, 1 kimia date ~8 g, 1 medjool date ~24 g, 1 small packaged biscuit (Good Day, Marie, Parle-G) ~5-10 g. "5 almonds" is ~6 g, never 25; "2 biscuits" is ~15-20 g, never 90.
+- When the user gives an explicit amount ("50g", "500 ml"), that wins over any serving option.
+- When the user names their own unit (scoop, bottle, katori, piece) and the chosen candidate has a serving option for that unit or for one pack or piece of this product, use that option's weight. Keep the user's word and show the weight: serving_label "scoop (31 g)".
+- When no serving option fits, estimate the weight of one unit of this exact food from what you know: a scoop, spoon, katori, cup or piece weighs different amounts for different foods. Put the weight you used in assumption ("Took a scoop as about 30 g"), and never set confidence high on it.
+- Small foods counted by the piece (nuts, dates, biscuits) weigh a few grams each: a count of them is never a full serving per piece.
 - Match the preparation state the user typed: "roasted" or "dried" foods are 2-3x more calorie-dense per gram than "cooked" or "boiled" ones. Never log a roasted/dried item against a cooked/boiled candidate row; prefer a correct-state candidate or estimate instead.
 - "half" quantities are fine (quantity 0.5).
 </quantity_rules>
@@ -2669,7 +2854,7 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
 - The user's recent foods (below) are strong hints: "milk" from someone who always logs Toned Milk means toned milk. Say so in assumption when you rely on this.
 - meal_type: if the text names a meal ("for lunch", "dinner was"), use that. Otherwise use the hint EXACTLY: ${hint}. Do NOT infer the meal from what the food "usually" is: paneer bhurji at 9pm is dinner, not breakfast. Time of day decides, never the dish.
 - Multiple foods in one text = multiple items in ONE log_meal call.
-- NEVER ask the user a question. This is a one-shot logger, not a chat: the user gets no chance to reply. If an amount is missing, assume ONE standard serving (use the household defaults above) and note it in assumption, e.g. "Took that as one katori, 150 g." If a brand/variant is ambiguous, pick the most common one and say so. Estimate and log; do not stall for clarification.
+- NEVER ask the user a question. This is a one-shot logger, not a chat: the user gets no chance to reply. If an amount is missing, assume ONE typical serving of this food and put the weight you used in assumption, the same way. If a brand/variant is ambiguous, pick the most common one and say so. Estimate and log; do not stall for clarification.
 - An item with no candidates is NEVER dropped: estimate the macros from your own knowledge (source "estimate"), note it in assumption, and log it. A branded snack you recognize (Haldiram's bhujia, Epigamia yogurt, etc.) always gets logged with an estimate, never skipped.
 - You MUST finish by calling log_meal exactly once, covering every extracted item. Never write the parsed meal, macros, or a follow-up question as assistant text.
 - USE THE USER'S OWN STAPLES when the text is VAGUE. The context lists what this person actually eats, with how many times and their usual amount. If they say "milk" and the list shows "Toned Milk (7 times, usually 200 ml)", log THEIR toned milk at THEIR 200 ml. Do not fall back to a generic or whole-fat default and then tell them their history says otherwise: they told you what they eat by eating it. Same for the amount, prefer their usual over a standard serving.
@@ -2710,6 +2895,32 @@ function withToolCache(tools: unknown[]): unknown[] {
 }
 
 async function callAnthropicOnce(
+  deps: ParseMealDeps,
+  payload: Record<string, unknown>,
+  stage = "unknown",
+): Promise<{ ok: true; data: any } | { ok: false; status: number; body: string }> {
+  if (!deps.onModelCall) return callAnthropicRaw(deps, payload);
+  const t0 = Date.now();
+  const res = await callAnthropicRaw(deps, payload);
+  try {
+    const u = res.ok ? res.data?.usage : null;
+    deps.onModelCall({
+      stage,
+      model: typeof payload.model === "string" ? payload.model : null,
+      ms: Date.now() - t0,
+      ok: res.ok,
+      http_status: res.ok ? null : res.status,
+      error: res.ok ? null : String(res.body ?? "").slice(0, 200),
+      input_tokens: typeof u?.input_tokens === "number" ? u.input_tokens : null,
+      output_tokens: typeof u?.output_tokens === "number" ? u.output_tokens : null,
+      cache_read_tokens: typeof u?.cache_read_input_tokens === "number" ? u.cache_read_input_tokens : null,
+      ...sawContext(payload),
+    });
+  } catch { /* a trace hook never costs the parse */ }
+  return res;
+}
+
+async function callAnthropicRaw(
   deps: ParseMealDeps,
   payload: Record<string, unknown>,
 ): Promise<{ ok: true; data: any } | { ok: false; status: number; body: string }> {
@@ -2765,6 +2976,17 @@ function sourcesDisagree(c: CandidateFood): boolean {
 
 // Exported for tests: this is the exact shape decide sees for a candidate, and
 // what it does NOT say on the agreeing case is as load-bearing as what it does.
+/** The saved food decide is asked to judge (saved_food_check). */
+export function savedCheckPayload(
+  check: { candidate: CandidateFood; confidence: number; from?: "score" | "choice" },
+): Record<string, unknown> {
+  // jev_same is read as "the chance it is the same food". A choice pick's
+  // odds are a share between her saved foods, so they are left out.
+  return check.from === "choice"
+    ? candidatePayload(check.candidate)
+    : { ...candidatePayload(check.candidate), jev_same: Math.round(check.confidence * 100) / 100 };
+}
+
 export function candidatePayload(c: CandidateFood): Record<string, unknown> {
   return {
     food_id: c.food_id,
@@ -2778,7 +3000,10 @@ export function candidatePayload(c: CandidateFood): Record<string, unknown> {
       fat_g: c.fat_g,
       ...(c.fiber_g !== null ? { fiber_g: c.fiber_g } : {}),
     },
-    servings: c.servings.slice(0, 6),
+    // The per-100 basis ("100 g") is how the numbers are stored, not a portion
+    // anyone eats. Offered as a serving, decide took it as the label for a
+    // gram count: "30 g peanuts" came back 30 x "100 g".
+    servings: c.servings.filter((sv) => !isBasisServing(sv)).slice(0, 6),
     source: c.source,
     // Emitted ONLY when the sources fought, which is the rare case. Sending a
     // spread (or a `verified` flag) on every candidate would add a line to
@@ -2835,6 +3060,10 @@ export interface ResolvedItem extends ExtractedItem {
   lookedUpAs?: string;
   /** Precise: the web was searched for this food's label and none was found. */
   labelNotFound?: boolean;
+  /** A food this user saved that Jev scored between MEMORY_MAYBE_FLOOR and
+   *  MEMORY_FLOOR: not served, and not a candidate. Decide is shown it beside
+   *  the candidates and says whether the user's words mean it. */
+  savedCheck?: { candidate: CandidateFood; confidence: number; from?: "score" | "choice" };
   /** Rows the brand check took out (another company's product). Never logged;
    *  decide sees them only as a range for its own estimate. */
   similar?: CandidateFood[];
@@ -2884,22 +3113,19 @@ export function perOneServing(sv: ServingOption): ServingOption {
   // The words after the count, up to the first non-word ("each" in "2 each -
   // 4 4/5\" diameter", "large eggs" in "2 large eggs").
   const m = sv.label.match(/^\s*(\d+)\s+([a-z]+(?:\s+[a-z]+)*)(.*)$/i);
-  if (!m || !(sv.grams > 0)) return sv;
+  if (!(sv.grams > 0)) return sv;
+  if (!m) return countInsideLabel(sv);
   const n = Number(m[1]);
   const words = m[2].toLowerCase().split(/\s+/);
   // Pieces only: "2 cups" or "12 fl oz" are amounts, and their labels stay as
   // the catalog wrote them. A size is not a count: "10 inch" is one pizza.
   // A pack is one thing bought, not a count of pieces: "12 count box" stays.
-  if (!(n > 1) || MASS_UNITS.has(words[0]) || words.some((w) => SIZE_WORDS.has(w) || PACK_WORDS.has(w)) || !namesAPiece(sv)) return sv;
+  if (!(n > 1) || MASS_UNITS.has(words[0]) || words.some((w) => SIZE_WORDS.has(w) || PACK_WORDS.has(w)) || !namesAPiece(sv)) {
+    return countInsideLabel(sv);
+  }
   // The noun is the last word ("2 large eggs" -> "1 large egg"). "1 each" is a
-  // label-database word; the card reads "3 × 1 piece". A plain trailing "s"
-  // goes ("pooris", "slices"), but not where the singular is a guess
-  // ("cookies", "potatoes", "boxes"): a guessed "cooky" would no longer
-  // contain the user's unit, and the plural still does.
-  const last = words[words.length - 1];
-  words[words.length - 1] = last === "each" || last === "pieces" ? "piece"
-    : last.endsWith("s") && !/(ss|ies|oes|xes|shes|ches|zes|ves)$/.test(last) ? last.slice(0, -1)
-    : last;
+  // label-database word; the card reads "3 × 1 piece".
+  words[words.length - 1] = singularNoun(words[words.length - 1]);
   // The group's weight goes from the text, in brackets or not: left in, it
   // would contradict the divided grams ("1 biscuit 30g" at 10 g).
   const rest = m[3]
@@ -2907,6 +3133,168 @@ export function perOneServing(sv: ServingOption): ServingOption {
     .replace(/\b[\d.]+\s*(g|gm|grams?|ml)\b/gi, "")
     .replace(/\s+/g, " ").trimEnd();
   return { ...sv, label: `1 ${words.join(" ")}${rest}`, grams: round1(sv.grams / n) };
+}
+
+/** One piece's word from the label's plural. "1 each" is a label-database
+ *  word; the card reads "3 × 1 piece". A plain trailing "s" goes ("pooris",
+ *  "slices"), but not where the singular is a guess ("cookies", "potatoes",
+ *  "boxes"): a guessed "cooky" would no longer contain the user's unit, and the
+ *  plural still does. */
+function singularNoun(w: string): string {
+  return w === "each" || w === "pieces" ? "piece"
+    : w.endsWith("s") && !/(ss|ies|oes|xes|shes|ches|zes|ves)$/.test(w) ? w.slice(0, -1)
+    : w;
+}
+
+/** Words a "<number> <word>" can hold that are not a piece of the food. */
+const NOT_PIECE_WORDS = new Set([
+  "x", "kcal", "cal", "cals", "calorie", "calories", "kj", "mg", "mcg", "percent", "pct", "min", "mins", "minutes",
+  "and", "or", "to", "with", "for", "in",
+]);
+/** Size words that come before the piece noun ("2 large eggs"). */
+const PIECE_SIZE_WORDS = new Set(["large", "medium", "small", "big", "thin", "thick", "whole", "mini", "regular"]);
+
+/**
+ * A count of pieces and their weight, read out of a serving text wherever the
+ * count sits: "2 slices (50 g)", "50 g (2 slices)", "1 serving (2 slices, 50 g)",
+ * "Serving size: 2 slices = 50g", "per 3 biscuits (30 g)".
+ *
+ * Labels print the serving as a group. The group's weight is NOT one piece: a
+ * label serving of "2 slices (50 g)" stored as one slice = 50 g turned 2 slices
+ * into 100 g (live, 2026-11-07, 4 of 4 runs). So the code divides: grams per
+ * piece = grams / count. `grams` is the printed weight, else the one given.
+ * Null when the text names no count of pieces, or no weight at all.
+ */
+export function servingCount(
+  label: string,
+  grams?: number | null,
+): { count: number; noun: string; grams: number; perUnit: number } | null {
+  const text = label.toLowerCase();
+  const printed = text.match(/(\d+(?:\.\d+)?)\s*(?:g|gm|gms|grams?|ml)\b/);
+  const g = printed ? Number(printed[1]) : grams ?? null;
+  if (!(typeof g === "number" && g > 0)) return null;
+  // A measure anywhere makes the text an amount ("1 cup (2 slices)" is not read).
+  if (text.split(/[^a-z]+/).some((w) => MEASURE_WORDS.has(w))) return null;
+  // A whole number not inside a decimal or a fraction, then up to two words.
+  for (const m of text.matchAll(/(?:^|[^\d.\/])(\d+)\s+(?:about\s+|approx\.?\s+)?([a-z]+)(?:\s+([a-z]+))?/g)) {
+    const n = Number(m[1]);
+    if (!(n >= 1 && n <= 50)) continue;
+    const noun = PIECE_SIZE_WORDS.has(m[2]) && m[3] ? m[3] : m[2];
+    if (
+      MASS_UNITS.has(noun) || MEASURE_WORDS.has(noun) || SIZE_WORDS.has(noun) || PACK_WORDS.has(noun) ||
+      GENERIC_PORTION_WORDS.has(noun) || NOT_PIECE_WORDS.has(noun)
+    ) continue;
+    const perUnit = round1(g / n);
+    if (!(perUnit >= 0.3)) return null;
+    return { count: n, noun, grams: g, perUnit };
+  }
+  return null;
+}
+
+/**
+ * A web finding's serving as candidate servings. The reader copies the printed
+ * count and piece word ("2", "slice") beside the serving's grams; the code
+ * divides: one slice = 50 / 2 = 25 g. With no count from the reader the
+ * printed serving is kept as is, and perOneServing's text reading
+ * (servingCount) is the fallback, as it is for sources with no reader step
+ * (FatSecret's API, the catalog).
+ */
+export function servingsFromFinding(
+  f: Pick<SuperFinding, "serving_label" | "serving_grams" | "serving_count" | "serving_unit">,
+): ServingOption[] {
+  const g = f.serving_grams;
+  if (!(typeof g === "number" && g > 0) || !f.serving_label) return [];
+  const n = f.serving_count;
+  const unit = (f.serving_unit ?? "").trim().toLowerCase();
+  const word = unit.split(/\s+/).pop() ?? "";
+  const piece = !!word && !MASS_UNITS.has(word) && !MEASURE_WORDS.has(word) && !GENERIC_PORTION_WORDS.has(word) &&
+    !SIZE_WORDS.has(word) && !PACK_WORDS.has(word);
+  if (typeof n === "number" && n >= 2 && piece && g / n >= 0.3) {
+    return [{ label: `1 ${unit.split(/\s+/).map((w, i, a) => (i === a.length - 1 ? singularNoun(w) : w)).join(" ")}`, grams: round1(g / n) }];
+  }
+  return [{ label: f.serving_label, grams: g }];
+}
+
+/** perOneServing for a label whose count is not its first word: "1 serving
+ *  (2 slices, 50 g)" and "50 g (2 slices)" are two slices, 25 g each. */
+function countInsideLabel(sv: ServingOption): ServingOption {
+  const c = servingCount(sv.label, sv.grams);
+  if (!c || c.count < 2) return sv;
+  // The weight in the text is the group's, and must be the serving's own: a
+  // text that prints another weight is not this serving.
+  if (Math.abs(c.grams - sv.grams) > Math.max(1, sv.grams * 0.05)) return sv;
+  return { ...sv, label: `1 ${singularNoun(c.noun)}`, grams: c.perUnit };
+}
+
+/**
+ * A line whose serving names one unit's weight must weigh quantity x that
+ * weight: 2 x "slice (25 g)" is 50 g.
+ *
+ * decide returns quantity, serving_label and grams as three free numbers, and
+ * only grams drives the macros. Live, 2026-11-07: a card read 2 x "slice
+ * (25 g)" over 100 g and 242 kcal, the label's two-slice serving counted once
+ * per slice. The unit weight came from a serving the code read; the total is
+ * the model's arithmetic. So the unit wins, and the grams and every macro are
+ * scaled to it (they were worked out from the grams, so they move together).
+ *
+ * Narrow on purpose. Only a unit that names one piece and its weight
+ * ("slice (25 g)") proves a piece weight, and only a whole multiple (the count
+ * applied twice) is fixed: any other gap may be a weight the user gave. A group
+ * label ("2 slices (50 g)") whose line already weighs quantity x one piece is
+ * restated per piece, numbers unchanged; any other group line stays, since the
+ * quantity may count servings. A serving or measure unit proves no piece. A "total"
+ * label, a bare weight label ("g", "100 g", amountMatchesGrams's job), a line
+ * with no unit weight, and a line of numbers the user stated are left alone.
+ */
+export function unitWeightMatchesGrams(it: ParsedItem): ParsedItem {
+  if (!(it.grams > 0) || !(it.quantity > 0)) return it;
+  const label = it.serving_label.trim();
+  if (/\btotal\b/i.test(label)) return it;
+  const m = label.match(/^(?:(\d+)\s+)?([a-z][a-z\s-]*?)\s*\(\s*(\d+(?:\.\d+)?)\s*(g|gm|gms|grams?|ml)\s*(?:each)?\s*\)$/i);
+  if (!m) return it;
+  const n = m[1] ? Number(m[1]) : 1;
+  const noun = m[2].trim().toLowerCase();
+  const words = noun.split(/\s+/);
+  if (!(n >= 1) || words.some((w) => MASS_UNITS.has(w))) return it;
+  // Numbers the user stated are theirs.
+  if (it.source === "manual") return it;
+  const groupG = Number(m[3]);
+  if (!(groupG > 0)) return it;
+  const unit = m[4].toLowerCase() === "ml" ? "ml" : "g";
+  const perUnit = groupG / n;
+  const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(1, b * 0.15);
+  const pieceWord = n > 1 ? words.map((w, i) => (i === words.length - 1 ? singularNoun(w) : w)).join(" ") : noun;
+  const perOneLabel = `${pieceWord} (${round1(perUnit)} ${unit})`;
+  const scaled = (quantity: number, grams: number): ParsedItem => {
+    const f = grams / it.grams;
+    return {
+      ...it,
+      quantity: round1(quantity),
+      serving_label: perOneLabel,
+      grams: round1(grams),
+      kcal: round1(it.kcal * f),
+      protein_g: round1(it.protein_g * f),
+      carb_g: round1(it.carb_g * f),
+      fat_g: round1(it.fat_g * f),
+      fiber_g: typeof it.fiber_g === "number" ? round1(it.fiber_g * f) : it.fiber_g,
+    };
+  };
+  if (near(it.grams, it.quantity * perUnit)) return n > 1 ? scaled(it.quantity, it.grams) : it;
+  // A group label ("2 slices (50 g)") the quantity may count as groups or as
+  // pieces: the line cannot say which (2 servings, or 2 slices counted twice?),
+  // so it stays. Group servings are restated per piece before decide sees them
+  // (perOneServings, servingsFromFinding), so decide seldom writes one.
+  if (n > 1) return it;
+  // A unit that names a piece only: "serving (15 g)" or "tbsp (17 g)" proves
+  // no piece weight.
+  if (words.some((w) => GENERIC_PORTION_WORDS.has(w) || MEASURE_WORDS.has(w))) return it;
+  // Only the count applied twice: the line weighs a whole multiple (2x, 3x)
+  // of quantity x the unit. Any other gap may be a weight the user gave
+  // ("150 g dal" against a "bowl (250 g)" unit), and stays.
+  const k = it.grams / (it.quantity * perUnit);
+  const whole = Math.round(k);
+  if (whole >= 2 && Math.abs(k - whole) <= 0.05 * whole) return scaled(it.quantity, it.quantity * perUnit);
+  return it;
 }
 
 /** Every serving of a candidate restated per one piece (perOneServing). */
@@ -3295,10 +3683,16 @@ export function reconcileReadings(
 /**
  * Precise's web lookup for one food, on whichever provider deps selects.
  *
- * Tavily falls back to the Anthropic lookup ONLY when Tavily could not be used
- * at all (no key, auth, out of credits, down). "Searched and found nothing" is
- * an answer, not an outage: re-asking a second provider would double the cost
- * of every obscure food for the same null.
+ * Tavily falls back to the Anthropic lookup when Tavily could not be used at
+ * all (no key, auth, out of credits, down), and when it FOUND the food's label
+ * but could not read it: the reader agreed a page was this food, and the text
+ * Tavily handed over never said what its numbers were per. Seen live
+ * 2026-10-23: Instamart printed "per 250 ml" above an Epigamia shake's panel,
+ * Tavily's snippet cut it off, the label was dropped and the line became a
+ * guess, 150 kcal for a 141 kcal bottle; the user's own "check online" then
+ * ran this same Anthropic lookup and got it. "Searched and found nothing" is
+ * still an answer, not an outage: re-asking a second provider would double the
+ * cost of every obscure food for the same null.
  */
 async function webFindingFor(
   deps: ParseMealDeps,
@@ -3320,7 +3714,7 @@ async function webFindingFor(
       model: deps.model,
       log: deps.log,
       callModel: async (payload) => {
-        const r = await callAnthropicOnce(deps, payload);
+        const r = await callAnthropicOnce(deps, payload, "tavily_read");
         if (!r.ok) {
           deps.log?.(`[parse_meal] tavily read failed: ${r.status}`);
           return null;
@@ -3330,7 +3724,7 @@ async function webFindingFor(
         return r.data;
       },
       suggestSearch: deps.searchRewrite === false ? undefined : async (food, seen) => {
-        const r = await callAnthropicOnce(deps, suggestSearchPayload(deps.model, food, seen));
+        const r = await callAnthropicOnce(deps, suggestSearchPayload(deps.model, food, seen), "suggest_search");
         if (!r.ok) {
           deps.log?.(`[parse_meal] search rewrite failed: ${r.status}`);
           return null;
@@ -3348,8 +3742,15 @@ async function webFindingFor(
     for (const st of out.steps) {
       onStep?.({ iter: 1, tool: st.tool, input: { item: item.name, ...(st.input as object) }, result: st.result });
     }
-    if (!out.unavailable) return out.finding ?? undefined;
-    onStep?.({ iter: 1, tool: "web_fallback", input: { item: item.name, from: "tavily" }, result: null });
+    if (!out.unavailable && (out.finding || !out.labelUnread?.length)) return out.finding ?? undefined;
+    onStep?.({
+      iter: 1,
+      tool: "web_fallback",
+      input: out.unavailable
+        ? { item: item.name, from: "tavily" }
+        : { item: item.name, from: "tavily_unread", sites: out.labelUnread },
+      result: null,
+    });
   }
   const found = await runSuperLookup(deps, [item], onUsage, onCall);
   return found?.get(item.name) ?? (found ? [...found.values()][0] : undefined);
@@ -3408,9 +3809,8 @@ export async function superLookupOne(
   // contested number and the client has to badge an uncontested one, and
   // neither can do that from a row it never sees.
   const spread = kcalSpread(finding.readings);
-  const servings = finding.serving_label && finding.serving_grams
-    ? [{ label: finding.serving_label, grams: finding.serving_grams }]
-    : [];
+  const servings = servingsFromFinding(finding);
+  const site = siteOfReadings(finding.readings);
   // foodLabel, not a bare "brand name": extract reports brand "Parle" AND name
   // "Parle Hide and Seek biscuits", which put "Parle Parle ..." on the card
   // and into precise_cache.display_name (live, ai-coach v186, 2026-09-26).
@@ -3468,10 +3868,12 @@ export async function superLookupOne(
     source: "catalog",
     verified,
     ...(spread === null ? {} : { kcal_spread: spread }),
+    ...(site ? { source_site: site } : {}),
   };
 }
 
 export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
+  const site = siteOfReadings(row.evidence);
   return {
     // Ephemeral, not the row's real uuid: precise_cache is not `foods`, so the
     // id must never reach meal_entries' FK. Addressable for decide, stripped
@@ -3487,6 +3889,7 @@ export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
     fiber_g: row.fiber_g,
     servings: (row.servings ?? []).filter((sv) => sv && sv.grams > 0),
     source: "catalog",
+    ...(site ? { source_site: site } : {}),
     // A hit is the SAME verdict superLookupOne reached, read back instead of
     // re-bought. Dropping it here would have made the badge and decide's
     // hedging flicker on cache state - a food shown as contested on the lookup
@@ -3573,7 +3976,7 @@ async function resolveOneItem(
     const pm = deps.preciseMatch;
     const ours = pm && pm.mode !== "off" && deps.jev
       ? matchOurSources(
-        { jev: deps.jev, findCandidates: pm.findCandidates, log: deps.log },
+        { jev: deps.jev, findCandidates: pm.findCandidates, log: deps.log, regionRules: deps.regionRules },
         { name: item.name, brand: item.brand ?? null },
       )
       : null;
@@ -4242,9 +4645,22 @@ export function scopeCorrection(
  * addition that matches one line exactly. The cost of the rule is a user who
  * really ate the same two lines again in one message; that turn now edits the
  * card instead of doubling it, which they can see and fix.
+ *
+ * One copied line is enough when `text` (this message only) does not name its
+ * food. An addition lists only food the message names, so a card line the
+ * message never mentions came from the card. Live, 2026-11-09: "2 boiled eggs"
+ * made a one-line card, and "And a banana" came back as the egg line plus a
+ * banana, flagged an addition. The app appended both and the eggs counted
+ * twice. "3 more pooris and a dosa" still adds: it names the poori. "one
+ * more" on a one-banana card still adds: nothing new rode with the copy. The
+ * trade-off left: "2 anda aur kela" on a "2 boiled egg" card reads as a copy,
+ * since "anda" is not "egg". The card then shows no extra eggs, which the user
+ * can see and fix; doubled eggs they may never notice.
  */
-export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousItem[]): boolean {
-  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousItem[], text?: string): boolean {
+  // Letters of any script: ASCII only made every Devanagari name "", so two
+  // different foods compared equal.
+  const norm = (x: string) => foodNameKey(x);
   // "piece" / "pieces", "puri" / "puries", "box" / "boxes", "berry" /
   // "berries": one is the other plus a plural ending, and nothing else, so
   // "can" never matches "candy".
@@ -4265,7 +4681,19 @@ export function copiesCardLines(extItems: ExtractedItem[], prevItems: PreviousIt
       sameUnit(it.unit || "serving", p.serving_label || "serving")
     )
   );
-  return copies.length >= 2;
+  if (copies.length >= 2) return true;
+  // The one-line rule needs all of these, or "one more" / "same again" on a
+  // one-line card (the copy is the whole answer) would lose a real addition:
+  // - a food beside the copy that is not on the card (the banana): the turn
+  //   really is an addition, and the copy rode along with it;
+  // - Latin letters in the message, and a name with words to compare: the
+  //   check is by words, and a name in another script has none.
+  if (text === undefined || copies.length !== 1 || !/[a-z]/i.test(text)) return false;
+  if (!extItems.some((it) => !copies.includes(it))) return false;
+  const named = foodWords(copies[0].name);
+  if (named.length === 0) return false;
+  const said = new Set(foodWords(text));
+  return !named.some((w) => said.has(w));
 }
 
 /**
@@ -4599,12 +5027,18 @@ export interface MemoryStamp {
   source: ParsedItem["source"];
   canonical_name?: string;
   input_name?: string;
+  /** The remembered food's origin; a memory line is a copy of it. */
+  origin?: FoodOrigin;
+  copied_from?: CopiedFrom;
+  recipe?: RecipePart[];
   /** The variants to offer beside this food (MemoryFood.alsoFoods), priced
    *  once the line's final weight is known. */
   swap?: { foods: MemoryFood[]; timeZone?: string | null };
 }
 
-const MEMORY_SOURCES = new Set<ParsedItem["source"]>(["catalog", "off", "fatsecret", "web", "estimate", "manual"]);
+// "recipe": a remembered dish built from its parts is served as one, with its
+// parts (memoryStamp), never relabelled as a catalog row.
+const MEMORY_SOURCES = new Set<ParsedItem["source"]>(["catalog", "off", "fatsecret", "web", "estimate", "manual", "recipe"]);
 
 /** The ephemeral candidate id for a remembered food: unique per food, so the
  *  final line maps back to it exactly, and stripped before the client sees it. */
@@ -4620,6 +5054,9 @@ export function memoryStamp(food: MemoryFood, timeZone?: string | null, inputNam
     note: memoryNote(food, timeZone),
     level: food.level,
     source: MEMORY_SOURCES.has(src) ? src : "catalog",
+    origin: food.origin ?? originOf({ source: food.source, food_id: food.food_id }),
+    copied_from: "memory",
+    ...(food.recipe ? { recipe: food.recipe } : {}),
     ...(food.alsoFoods?.length ? { swap: { foods: food.alsoFoods, timeZone } } : {}),
   };
 }
@@ -4804,7 +5241,7 @@ export function memoryCandidate(food: MemoryFood): CandidateFood {
   return {
     food_id: memoryFoodId(food),
     name: food.name,
-    brand: null,
+    brand: food.brand ?? null,
     base_unit: "g",
     kcal: food.per100.kcal,
     protein_g: food.per100.protein_g,
@@ -4838,7 +5275,7 @@ export function statedFor(it: ExtractedItem): StatedPer100 | null {
 /** What a line answered by the user's own numbers carries onto the card. They
  *  are the user's, so the saved line is 'manual' and serves every tier. */
 export function statedStamp(s: StatedPer100, filled: "looked up" | "estimated"): MemoryStamp {
-  return { note: statedNote(s, filled), level: "precise", source: "manual" };
+  return { note: statedNote(s, filled), level: "precise", source: "manual", origin: "user_typed" };
 }
 
 /** A Thorough/Precise candidate carrying the user's numbers: all of them for a
@@ -4907,7 +5344,10 @@ export interface StatedCapture {
   /** For the whole meal (extract's stated_meal_total). */
   meal: StatedTotal | null;
   /** For one line each: totals statedFor could not put on a per-100 basis. */
-  lines: { name: string; correctsFoodName: string | null; totals: StatedTotal }[];
+  lines: { name: string; correctsFoodName: string | null; totals: StatedTotal; amountTyped: boolean }[];
+  /** A message of one food: whether the user named its amount. A meal total
+   *  on that one line sets its portion the way a line total does. */
+  soleAmountTyped?: boolean | null;
   /** Numbers the user wrote that could not be used, with why. Traced, so "my
    *  number was ignored" can be answered from the trace. */
   ignored?: string[];
@@ -4922,13 +5362,21 @@ export function captureStatedTotals(extMealTotal: unknown, extItems: ExtractedIt
     // partial panel is filled from a row that is the right food.
     if (!it.stated || statedFor(it)) continue;
     const totals = statedLineTotal(it.stated, it.quantity, MASS_UNITS.has(it.unit.trim().toLowerCase()));
-    if (totals) lines.push({ name: foodLabel(it), correctsFoodName: it.correctsFoodName ?? null, totals });
+    if (totals) lines.push({ name: foodLabel(it), correctsFoodName: it.correctsFoodName ?? null, totals, amountTyped: amountTyped(it) });
     else ignored.push(`${foodLabel(it).slice(0, 60)}: ${it.stated.basis} numbers could not be used (past what any food carries, or a serving with no weight)`);
   }
   const meal = readStatedTotal(extMealTotal);
   const rawMeal = extMealTotal && typeof extMealTotal === "object" ? Object.values(extMealTotal as Record<string, unknown>) : [];
   if (!meal && rawMeal.some((v) => typeof v === "number")) ignored.push("meal total past what any meal carries");
-  return { meal, lines, ignored };
+  return { meal, lines, ignored, soleAmountTyped: extItems.length === 1 ? amountTyped(extItems[0]) : null };
+}
+
+/** Did the user name an amount? The extraction writes 1 "serving" when the
+ *  text states none (EXTRACT_NO_NUTRITION). A heuristic: a user who typed
+ *  "1 serving" in so many words reads the same, so that line is shown by the
+ *  weight their kcal works out to, which is still their serving. */
+function amountTyped(it: Pick<ExtractedItem, "quantity" | "unit">): boolean {
+  return !(it.quantity === 1 && it.unit.trim().toLowerCase() === "serving");
 }
 
 /** The one line a named total belongs to, or -1 when it is not exactly one. */
@@ -4971,9 +5419,13 @@ export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, step
       steps.push({ iter: 8, tool: "user_stated_total", input: { line: t.name }, result: { applied: false, reason: "no single line by that name" } });
       continue;
     }
+    // The user's numbers at a portion that fits them: the food keeps its
+    // density, the weight follows (fitPortionToStated).
     out[i] = {
-      ...honourLineTotals(out[i], t.totals),
+      ...fitPortionToStated(out[i], t.totals, t.amountTyped),
       source: "manual",
+      origin: "user_typed",
+      copied_from: undefined,
       numbers_tier: "precise",
       assumption: totalNote(t.totals, "line"),
       confidence: "high",
@@ -4993,8 +5445,10 @@ export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, step
     const target = left ?? meal;
     if (pool.length === 1 && out.length === 1) {
       out[0] = {
-        ...honourLineTotals(out[0], meal),
+        ...fitPortionToStated(out[0], meal, cap.soleAmountTyped ?? true),
         source: "manual",
+        origin: "user_typed",
+        copied_from: undefined,
         numbers_tier: "precise",
         assumption: totalNote(meal, "meal"),
         confidence: "high",
@@ -5055,8 +5509,13 @@ export function memoryQuickItem(
 ): ParsedItem | null {
   const qty = line.quantity > 0 ? line.quantity : 1;
   const unit = line.unit.trim().toLowerCase();
+  // "1 x 250 ml" states its amount. The memory used to hold "250 ml" as a
+  // serving of 250 and answer it there; it keeps no stated weight as a serving
+  // now (userFoodMemory STATED_WEIGHT), so the amount is read off the unit.
+  const stated = unit.match(/^(\d+(?:\.\d+)?)\s*([a-z]+)$/);
   let grams: number | null = null;
   if (MASS_UNITS.has(unit)) grams = qty;
+  else if (stated && MASS_UNITS.has(stated[2]) && Number(stated[1]) > 0) grams = qty * Number(stated[1]);
   else if (food.serving && unitKey(food.serving.label) === unitKey(unit)) grams = qty * food.serving.grams;
   else if (line.est && line.est.total_g > 0) grams = line.est.total_g;
   if (!grams || !(grams > 0) || grams > 5000) return null;
@@ -5065,6 +5524,7 @@ export function memoryQuickItem(
   return {
     food_id: null,
     food_name: food.name,
+    brand: food.brand ?? line.brand ?? null,
     memory_input_name: stamp.input_name,
     quantity: qty,
     serving_label: line.unit,
@@ -5078,7 +5538,17 @@ export function memoryQuickItem(
     assumption: stamp.note,
     confidence: "high",
     numbers_tier: stamp.level,
+    ...stampOrigin(stamp),
     ...(stamp.swap ? { alternatives: memoryAlternatives(stamp.swap.foods, grams, stamp.swap.timeZone) } : {}),
+  };
+}
+
+/** The origin fields a stamp puts on its line. */
+function stampOrigin(s: MemoryStamp): Pick<ParsedItem, "origin" | "copied_from" | "recipe"> {
+  return {
+    ...(s.origin ? { origin: s.origin } : {}),
+    ...(s.copied_from ? { copied_from: s.copied_from } : {}),
+    ...(s.recipe ? { recipe: s.recipe } : {}),
   };
 }
 
@@ -5091,14 +5561,18 @@ export function stripEphemeralIds(
   /** food_id -> the user's remembered food behind that candidate. Stamped here
    *  for the same reason as `verified`: the id is about to be erased. */
   memoryByFood?: Map<string, MemoryStamp>,
+  /** food_id -> the site a web candidate's numbers came from (sitesForItems). */
+  siteByFood?: Map<string, string>,
 ): ParsedItem[] {
   return items.map((it) => {
+    const site = it.food_id ? siteByFood?.get(it.food_id) : undefined;
+    if (site && !(it.food_id && memoryByFood?.has(it.food_id))) it = { ...it, source_site: site };
     const verdict = it.food_id ? verifiedByFood?.get(it.food_id) : undefined;
     const mem = it.food_id ? memoryByFood?.get(it.food_id) : undefined;
     const base = mem
       ? {
         ...it, food_name: mem.canonical_name ?? it.food_name, memory_input_name: mem.input_name, assumption: mem.note,
-        numbers_tier: mem.level, source: mem.source, confidence: "high" as const,
+        numbers_tier: mem.level, source: mem.source, confidence: "high" as const, ...stampOrigin(mem),
         ...(mem.swap ? { alternatives: memoryAlternatives(mem.swap.foods, it.grams, mem.swap.timeZone) } : {}),
       }
       : it;
@@ -5134,6 +5608,29 @@ export function stampSaidNames(items: ParsedItem[], resolved: ResolvedItem[]): P
     const said = [r.prep && !norm(r.name).includes(norm(r.prep)) ? r.prep : null, foodLabel(r)]
       .filter(Boolean).join(" ").slice(0, 100);
     return norm(said) && norm(said) !== norm(it.food_name) ? { ...it, said_name: said } : it;
+  });
+}
+
+/**
+ * Stamp each line with its brand: the row it was filled from (a catalog,
+ * cache or saved-food row's own brand), else the brand extract read for the
+ * one item that line came from. An estimate line (no row) takes the item's
+ * brand only when its name carries it, so a brand never lands on a line it
+ * does not describe. Runs where stampSaidNames runs, before the ids go.
+ */
+export function stampBrands(items: ParsedItem[], resolved: ResolvedItem[]): ParsedItem[] {
+  const words = (x: string) => ` ${x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
+  return items.map((it) => {
+    if (it.brand !== undefined) return it;
+    if (it.food_id) {
+      const owners = resolved.filter((x) => x.candidates.some((c) => c.food_id === it.food_id));
+      if (owners.length !== 1) return it;
+      const row = owners[0].candidates.find((c) => c.food_id === it.food_id);
+      const brand = row?.brand?.trim() || owners[0].brand?.trim() || null;
+      return brand ? { ...it, brand } : it;
+    }
+    const named = resolved.filter((x) => x.brand?.trim() && words(it.food_name).includes(words(x.brand!)));
+    return named.length === 1 ? { ...it, brand: named[0].brand!.trim() } : it;
   });
 }
 
@@ -5641,6 +6138,75 @@ async function answerAboutPrevious(
   return scrubDashes(parts.join(" ")).slice(0, 400);
 }
 
+/** One product's printed label, as find_label hands it to the food agent. */
+export interface LabelFound {
+  /** The product as the label sells it. */
+  name: string;
+  brand: string | null;
+  base_unit: "g" | "ml";
+  per_100: { kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number | null };
+  /** The serving as printed ("2 slices (50 g)"), when the label prints one. */
+  serving: ServingOption | null;
+  /** One piece of it ("1 slice", 25 g), when the serving names a count of
+   *  pieces (perOneServing). The code divides; the label only prints. */
+  piece: ServingOption | null;
+  /** Two or more sources agreed (meetsVerificationBar). */
+  verified: boolean;
+  /** The site the label was read from, when known. */
+  site?: string;
+}
+
+/**
+ * find_label: one product's label off the web, by the same lookup Precise runs
+ * (Tavily with Jev's relevance, the brand's own site first, the reader that
+ * copies the panel; or the server web search where that is the deploy's
+ * lookup). Returns the label per 100 and its serving. The numbers on a line are
+ * worked out from it by code (foodAgent.ts lineFromLabel), never by a model.
+ * Null when no lookup is configured or nothing was found.
+ */
+export async function findLabel(
+  deps: ParseMealDeps,
+  product: { name: string; brand: string | null; quantity?: number; unit?: string },
+): Promise<{ label: LabelFound | null; usage: ParseMealResult["usage"]; steps: ParseStep[] }> {
+  const usage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0, tavily_credits: 0 };
+  const steps: ParseStep[] = [];
+  const out = (label: LabelFound | null) => ({ label, usage, steps });
+  if (!deps.webSearchEnabled && !(deps.webLookup === "tavily" && deps.tavily)) return out(null);
+  const name = product.name.trim();
+  if (!name) return out(null);
+  const onUsage = (data: any) => {
+    const u = data?.usage ?? {};
+    usage.input_tokens += u.input_tokens ?? 0;
+    usage.output_tokens += u.output_tokens ?? 0;
+    usage.cache_creation_input_tokens += u.cache_creation_input_tokens ?? 0;
+    usage.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
+    usage.web_search_requests += u.server_tool_use?.web_search_requests ?? 0;
+    usage.tavily_credits += typeof data?.tavily_credits === "number" ? data.tavily_credits : 0;
+  };
+  const item: ExtractedItem = {
+    name,
+    brand: product.brand?.trim() || null,
+    quantity: product.quantity && product.quantity > 0 ? product.quantity : 1,
+    unit: product.unit?.trim() || "serving",
+    prep: null,
+  };
+  const c = await superLookupOne(deps, item, onUsage, () => {}, (st) => steps.push(st)).catch(() => null);
+  steps.push({ iter: 1, tool: "find_label", input: { name: item.name, brand: item.brand }, result: c ? { kcal: c.kcal, servings: c.servings } : null });
+  if (!c) return out(null);
+  const serving = c.servings.find((sv) => sv.grams > 0 && !isBasisServing(sv)) ?? null;
+  const one = serving ? perOneServing(serving) : null;
+  return out({
+    name: c.name,
+    brand: c.brand,
+    base_unit: c.base_unit,
+    per_100: { kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g },
+    serving,
+    piece: one && one !== serving ? one : serving && namesAPiece(serving) && servingCount(serving.label, serving.grams)?.count === 1 ? serving : null,
+    verified: c.verified === true,
+    ...(c.source_site ? { site: c.source_site } : {}),
+  });
+}
+
 /**
  * The user accepted an offer to go and check: look the label up on the web and
  * rebuild their lines from it.
@@ -5869,6 +6435,7 @@ export async function tryFastCorrection(
         source: "manual",
         assumption: prev.assumption ?? null,
         confidence: prev.confidence ?? "high",
+        ...keptOrigin(prev),
         // The line stays in the section it is already in. Without this a
         // correction stamps the whole meal with one default.
         meal_type: prev.meal_type,
@@ -5921,8 +6488,97 @@ export async function runParseMeal(
   input: ParseMealInput,
 ): Promise<ParseMealResult> {
   const result = await runParseMealOnce(deps, input);
+  if (result.parsed) result.parsed.items = result.parsed.items.map(unitWeightMatchesGrams).map(amountMatchesGrams);
+  if (result.proposal) result.proposal.items = result.proposal.items.map(unitWeightMatchesGrams).map(amountMatchesGrams);
   if (input.variantChips && result.parsed) result.parsed.items = result.parsed.items.map(forSwapChips);
+  if (result.parsed) result.parsed.items = finishOrigins(result.parsed.items, input.text);
+  if (result.proposal) result.proposal.items = finishOrigins(result.proposal.items, input.text);
   return result;
+}
+
+/**
+ * Every line leaves with an origin (originOf reads the old fields of a line
+ * that has none), and a remembered recipe follows the user's words for one
+ * part: "60 g paneer" this time changes the paneer, not the whole dish. The
+ * dish's numbers are then the parts' sum (code, never the model); with a part
+ * whose numbers are not known, the dish's own per-100 g is kept at the new
+ * weight.
+ */
+export function finishOrigins(items: ParsedItem[], text: string): ParsedItem[] {
+  return items.map((it, idx) => {
+    const line: ParsedItem = { ...it, origin: originOf(it) };
+    const recipe = parseRecipe(it.recipe);
+    if (!recipe) return line;
+    const hit = statedPartGrams(recipe, text);
+    if (!hit || Math.abs(recipe[hit.part].grams - hit.grams) < 0.5) return { ...line, recipe };
+    // The weight may belong to another line on the card ("sabji and 60 g
+    // paneer" logs paneer on its own): then it is not this dish's.
+    const partKey = recipe[hit.part].name.toLowerCase().split(/\s+/).pop() ?? "";
+    if (partKey.length > 2 && items.some((o, j) => j !== idx && o.food_name.toLowerCase().includes(partKey))) {
+      return { ...line, recipe };
+    }
+    const next = withPartGrams(recipe, hit.part, hit.grams);
+    const per = recipePer100(next.recipe) ??
+      (it.grams > 0 ? { kcal: it.kcal * 100 / it.grams, protein_g: it.protein_g * 100 / it.grams, carb_g: it.carb_g * 100 / it.grams, fat_g: it.fat_g * 100 / it.grams } : null);
+    if (!per || !(next.grams > 0)) return { ...line, recipe };
+    const f = next.grams / 100;
+    const note = `Took ${round1(hit.grams)} g ${recipe[hit.part].name} from your words; the rest of the recipe as before.`;
+    return {
+      ...line,
+      recipe: next.recipe,
+      grams: round1(next.grams),
+      quantity: round1(next.grams),
+      serving_label: "g",
+      kcal: round1(per.kcal * f),
+      protein_g: round1(per.protein_g * f),
+      carb_g: round1(per.carb_g * f),
+      fat_g: round1(per.fat_g * f),
+      fiber_g: null,
+      assumption: line.assumption ? `${line.assumption} ${note}` : note,
+    };
+  });
+}
+
+const GRAM_UNITS = new Set(["g", "gm", "gms", "gram", "grams"]);
+const ML_UNITS = new Set(["ml", "mls"]);
+
+/**
+ * quantity x serving_label is what the card prints, and it must say the grams
+ * the numbers were worked out from.
+ *
+ * decide returns quantity, serving_label and grams as three free numbers, and
+ * only grams drives the macros, so nothing ever checked the other two. It
+ * wrote "30 g peanuts" as 30 x "100 g" (the row's basis label, which the
+ * schema offers as an example) and "4 g chia" as 4 x "4 g": the card read
+ * "3000 g" and "16 g" over correct calories. The saved line then taught the
+ * food memory a "100 g" serving of 1 g, so the next log came back wrong too.
+ * sanitizeItems also caps quantity at 100, which turned 130 g of rice into
+ * 100 x "100 g".
+ *
+ * A weight label that disagrees with the grams is rewritten in the grams'
+ * terms, the same shape the editor saves: 30 "g". A ml label only moves when
+ * it is far off, since a liquid's grams can sit a little off its ml.
+ *
+ * lib/servingSize.ts fixWeightLabel is the app's copy, for lines already
+ * saved. Change the rules in both, and in both test files
+ * (amountMatchesGrams.test.ts, lib/servingSize.test.ts).
+ */
+export function amountMatchesGrams(it: ParsedItem): ParsedItem {
+  if (!(it.grams > 0) || !(it.quantity > 0)) return it;
+  const label = it.serving_label.trim().toLowerCase();
+  const asGrams = (unit: string): ParsedItem => ({ ...it, quantity: round1(it.grams), serving_label: unit });
+  const off = (amount: number, tolerance: number) => {
+    const ratio = amount / it.grams;
+    return ratio > 1 + tolerance || ratio < 1 / (1 + tolerance);
+  };
+  if (GRAM_UNITS.has(label)) return off(it.quantity, 0.1) ? asGrams("g") : it;
+  if (ML_UNITS.has(label)) return off(it.quantity, 0.5) ? asGrams("ml") : it;
+  const m = label.match(/^(\d+(?:\.\d+)?)\s*([a-z]+)$/);
+  if (!m) return it;
+  const size = Number(m[1]);
+  const unit = GRAM_UNITS.has(m[2]) ? "g" : ML_UNITS.has(m[2]) ? "ml" : null;
+  if (!unit || !(size > 0)) return it;
+  return off(it.quantity * size, 0.5) ? asGrams(unit) : it;
 }
 
 async function runParseMealOnce(
@@ -5943,7 +6599,8 @@ async function runParseMealOnce(
   const hits: SavedHit[] = [];
   const suggestions: NonNullable<ParseMealResult["saved_suggestions"]> = [];
   const stated: StatedCapture = { meal: null, lines: [] };
-  let result = await runParseMealCore(deps, input, saved, hits, suggestions, stated);
+  const hint = hintBox(input.savedHint);
+  let result = await runParseMealCore(deps, input, saved, hits, suggestions, stated, hint);
   // A continuation that declined anyway: the prompt forbids it, and this makes
   // the rule true. The waiting meal and the answer go through once more as one
   // message that may not be declined. A second decline stands (the meal keeps
@@ -5955,7 +6612,7 @@ async function runParseMealOnce(
       text: continuationText(input.text, input.pendingMeal),
       pendingMeal: null,
       mustLog: true,
-    }, saved, [], [], stated);
+    }, saved, [], [], stated, hint);
     result.steps = [
       ...first.steps,
       { iter: 9, tool: "pending_retry", input: { declined: first.declined!.message }, result: { logged: !!result.parsed } },
@@ -5988,6 +6645,9 @@ async function runParseMealOnce(
       previousItems: [],
       recentTurns: [],
       savedMeals: undefined,
+      // The pick was turned down with the meal; the rerun must not read it
+      // as a meal the model was never shown.
+      savedHint: null,
     });
     if (fresh.parsed) {
       fresh.parsed = {
@@ -5997,7 +6657,14 @@ async function runParseMealOnce(
       };
     }
     // The call that noticed the rejection was billed too: keep its cost.
-    fresh.steps = [...result.steps, ...fresh.steps];
+    const h = hint.peek();
+    fresh.steps = [
+      ...result.steps,
+      ...(h
+        ? [{ iter: 0, tool: "saved_hint", input: { id: h.id, name: h.name, confidence: h.confidence, pointer: hint.pointer }, result: "rejected" }]
+        : []),
+      ...fresh.steps,
+    ];
     fresh.tool_calls = [...result.tool_calls, ...fresh.tool_calls];
     fresh.iterations += result.iterations;
     for (const k of Object.keys(fresh.usage) as (keyof ParseMealResult["usage"])[]) {
@@ -6007,6 +6674,36 @@ async function runParseMealOnce(
   }
 
   if (suggestions.length > 0) result.saved_suggestions = suggestions;
+  // Who was right about the router's pick, for the trace: the model logged
+  // it, the card offers it, the words turned saved meals down, the pick was
+  // past the prompt cap, or no line could carry the offer.
+  // A pick that landed after the offer step gave up was never shown or
+  // offered either, so it is not judged (it would read as "no_line").
+  const h = hint.gaveUp ? undefined : hint.peek();
+  if (h === undefined) {
+    // The router had not answered when the parse finished: nothing was
+    // shown or offered, and the trace says so rather than saying "no pick".
+    // "pending" when the offer step waited and gave up, "skipped" when it
+    // never asked (no line to offer on, or the words turned saved meals down).
+    result.steps = [...result.steps, { iter: 0, tool: "saved_hint", input: null, result: hint.waited ? "pending" : "skipped" }];
+  } else if (h) {
+    const offered = suggestions.find((s) => s.saved_id === h.id);
+    const verdict = hits.some((x) => x.meal.id === h.id)
+      ? "logged"
+      : offered
+      ? `offered:${offered.food_name}`
+      : rejectsSavedMeal(input.text)
+      ? "rejected"
+      : !saved.slice(0, MAX_SAVED_IN_PROMPT).some((m) => m.id === h.id)
+      ? "not_listed"
+      : "no_line";
+    result.steps = [...result.steps, {
+      iter: 0,
+      tool: "saved_hint",
+      input: { id: h.id, name: h.name, confidence: h.confidence, pointer: hint.pointer },
+      result: verdict,
+    }];
+  }
   let final = result;
   if (hits.length > 0) {
     final = mergeSavedLines(result, hits, input.mealHint ?? mealForHour(input.localHour));
@@ -6030,6 +6727,65 @@ async function runParseMealOnce(
   return final;
 }
 
+/** How long the offer step waits for a router that is still out, measured
+ *  from the moment extraction returns. Jev is usually back long before. */
+const HINT_WAIT_MS = 1500;
+
+/** The router's pick as the parse sees it. forPrompt: whatever has settled
+ *  when the prompt is built, and remembers whether a pointer went in. wait:
+ *  the answer once extraction is back, capped. peek: the answer, undefined
+ *  while the router is still out. The parse never waits for the router
+ *  before extracting, so the common path keeps paying nothing for it. */
+interface HintBox {
+  pointer: boolean;
+  /** Whether the offer step ever waited: a trace "pending" means the router
+   *  was still out after that wait, "skipped" means nobody asked. */
+  waited: boolean;
+  /** The wait ran out before the router answered. An answer that lands
+   *  after that was never shown or offered, so the trace must still say
+   *  "pending" and not judge a pick nobody acted on. */
+  gaveUp: boolean;
+  forPrompt(): SavedMealHint | null;
+  peek(): SavedMealHint | null | undefined;
+  wait(ms: number): Promise<SavedMealHint | null>;
+}
+
+export function hintBox(src: ParseMealInput["savedHint"]): HintBox {
+  let settled: SavedMealHint | null | undefined;
+  let pending: Promise<SavedMealHint | null> | null = null;
+  if (src && typeof (src as Promise<unknown>).then === "function") {
+    pending = (src as Promise<SavedMealHint | null>).then((v) => (settled = v ?? null), () => (settled = null));
+  } else {
+    settled = (src as SavedMealHint | null | undefined) ?? null;
+  }
+  const box: HintBox = {
+    pointer: false,
+    waited: false,
+    gaveUp: false,
+    forPrompt: () => {
+      const v = settled ?? null;
+      if (v) box.pointer = true;
+      return v;
+    },
+    peek: () => settled,
+    wait: (ms) => {
+      box.waited = true;
+      if (settled !== undefined || !pending) return Promise.resolve(settled ?? null);
+      return new Promise((resolve) => {
+        const t = setTimeout(() => {
+          box.gaveUp = true;
+          resolve(null);
+        }, ms);
+        pending!.then((v) => {
+          clearTimeout(t);
+          resolve(v);
+        });
+      });
+    },
+  };
+  return box;
+}
+
 async function runParseMealCore(
   deps: ParseMealDeps,
   input: ParseMealInput,
@@ -6037,6 +6793,7 @@ async function runParseMealCore(
   hits: SavedHit[],
   suggestions: NonNullable<ParseMealResult["saved_suggestions"]>,
   statedOut: StatedCapture,
+  hint: HintBox,
 ): Promise<ParseMealResult> {
   const usage = {
     input_tokens: 0,
@@ -6047,7 +6804,7 @@ async function runParseMealCore(
     tavily_credits: 0,
   };
   const toolCalls: string[] = [];
-  const steps: ParseStep[] = [];
+  const steps: ParseStep[] = stampedSteps(deps.stepClock);
   let anthropicCalls = 0;
   // Stage timing (temporary #1 latency instrumentation, folded into steps).
   const T: Record<string, number> = {};
@@ -6103,6 +6860,19 @@ async function runParseMealCore(
   const tier = resolveParseTier(input.mode, hasPrevious);
   const fastMode = tier === "fast";
   const superMode = tier === "precise";
+  // Region rules (FOOD_REGION_RULES): Precise only. The region read started
+  // when the deps were made, so this rarely waits. A failed read is no region.
+  // A read slower than REGION_WAIT_MS is no region for this parse: a region
+  // must never hold up the log.
+  const regionRead = superMode && deps.foodRegion ? await waitForRegion(deps.foodRegion) : null;
+  const regionRules = regionRead ? { region: regionRead.region } : undefined;
+  if (regionRules) {
+    deps = { ...deps, regionRules };
+    steps.push({
+      iter: 0, tool: "region_rules", input: { tier },
+      result: { region: regionRules.region, ...(regionRead!.timedOut ? { timed_out: true } : {}) },
+    });
+  }
   // First-shot reads overlap extraction. Follow-ups wait until extraction has
   // identified food additions/replacements, so questions and research requests
   // do not read memory only to discard it.
@@ -6160,9 +6930,7 @@ async function runParseMealCore(
     system: cacheableSystem(
       (fastMode
         ? FAST_EXTRACT_SYSTEM
-        : hasPrevious
-        ? EXTRACT_SYSTEM_SMART + EXTRACT_CORRECTION_RULES
-        : EXTRACT_SYSTEM_SMART) + (input.pendingMeal
+        : preciseExtractSystem(hasPrevious, regionRules)) + (input.pendingMeal
           ? "\nThe message contains an unlogged pending_meal and the user's clarification. Re-extract ALL foods from pending_meal.text, applying the clarification to the questioned item. Preserve amounts and meal sections for every other food. This is one meal request, not an additional log. The question is context, not a food to extract: a food named only in the question is an example Drona gave, never something the user ate. " +
             PENDING_MUST_LOG
           : input.mustLog
@@ -6177,6 +6945,9 @@ async function runParseMealCore(
         ? JSON.stringify({
           text: userText.text,
           // What was actually SAID, so "yes" / "no, the other one" resolve.
+          // The keys `recent_turns` and `previous_meal` are what the food box
+          // trace reads to say this call saw the turns and the card
+          // (foodBarTrace.ts sawContext). Rename them there too.
           recent_turns: (input.recentTurns ?? []).slice(-FOOD_TURNS_KEPT).map((t) => ({
             [t.role === "user" ? "user" : "drona"]: t.text.slice(0, FOOD_TURN_CHARS),
           })),
@@ -6192,12 +6963,12 @@ async function runParseMealCore(
               grams: p.grams,
             })),
           },
-        }) + savedMealsBlock(saved)
+        }) + savedMealsBlock(saved, hint.forPrompt())
         : input.pendingMeal
-        ? JSON.stringify({ text: userText.text, pending_meal: input.pendingMeal }) + savedMealsBlock(saved)
-        : userText.text + savedMealsBlock(saved),
+        ? JSON.stringify({ text: userText.text, pending_meal: input.pendingMeal }) + savedMealsBlock(saved, hint.forPrompt())
+        : userText.text + savedMealsBlock(saved, hint.forPrompt()),
     }],
-  });
+  }, "extract");
   const extractRes = await callExtract();
   if (extractRes && !extractRes.ok) {
     throw new Error(`anthropic_${extractRes.status}: ${extractRes.body.slice(0, 300)}`);
@@ -6260,7 +7031,11 @@ async function runParseMealCore(
       // Forced to a correction: this turn questions the card, so whatever it
       // lists edits the card. Tagged as an addition, "3 small puris" on a
       // one-line card would sit beside the old poori instead of replacing it.
-      if (again.data?.stop_reason !== "max_tokens" && Array.isArray(items) && items.length > 0) {
+      // A retry that only REMOVES lines ("why did you add tomato and onion
+      // separately") carries no items and is just as much a fix. Live,
+      // 2026-10-21: such a retry was thrown away and the canned answer sent.
+      const removes = Array.isArray(blk?.input?.removed_food_names) && blk!.input.removed_food_names.length > 0;
+      if (again.data?.stop_reason !== "max_tokens" && ((Array.isArray(items) && items.length > 0) || removes)) {
         retried = { ...blk!.input, corrects_previous: true };
       }
     }
@@ -6288,8 +7063,15 @@ async function runParseMealCore(
       // NOT capped at 100: for a mass/volume unit the quantity IS the amount,
       // so "500 ml milk" or "250 g chicken" would be silently truncated. The
       // bound only exists to stop absurd input reaching the model.
-      const quantity = coerceQuantity(o.quantity);
-      const unit = typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving";
+      // An amount in energy ("150 cals of atta bread" as 150 x "kcal") is the
+      // user's kcal for the line, never a count of portions.
+      const read = energyAmountAsStated(
+        coerceQuantity(o.quantity),
+        typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving",
+        readStated(o.stated),
+      );
+      const quantity = read.quantity;
+      const unit = read.unit;
       // All five or nothing: a partial estimate is not an estimate, and a
       // missing field silently read as 0 is how zero-kcal lines shipped once
       // before.
@@ -6337,7 +7119,7 @@ async function runParseMealCore(
           ? o.meal
           : null,
         est: chained ? chained.est : rawEst,
-        stated: readStated(o.stated),
+        stated: read.stated,
         savedMeal: typeof o.saved_meal === "string" && o.saved_meal.trim() ? o.saved_meal.trim().slice(0, 120) : null,
       }];
     });
@@ -6353,7 +7135,7 @@ async function runParseMealCore(
   // Only trust the correction flag when a previous meal was actually supplied.
   // A turn tagged as an addition that copies card lines back word for word is a
   // correction whatever the flag says (copiesCardLines).
-  const copiedCard = hasPrevious && ext.corrects_previous !== true && copiesCardLines(extItems, prevItems);
+  const copiedCard = hasPrevious && ext.corrects_previous !== true && copiesCardLines(extItems, prevItems, input.text);
   if (copiedCard) {
     steps.push({ iter: 0, tool: "correction_inferred", input: { reason: "copied_card_lines", extracted: extItems.length, previous: prevItems.length } });
   }
@@ -6467,6 +7249,7 @@ async function runParseMealCore(
   // The user's saved meals come out HERE, before any lookup can run on them.
   // Nothing past this line sees a saved item: no estimate, no catalog, no web.
   if (saved.length > 0 && ext.requests_research !== true) {
+    const rejects = rejectsSavedMeal(input.text);
     extItems = extItems.filter((it) => {
       // Do not reinterpret a card's existing food as a saved meal just because
       // extraction attached a saved_meal tag while changing its portion.
@@ -6476,13 +7259,33 @@ async function runParseMealCore(
       if (existing) return true;
       const meal = findSavedMeal(it.savedMeal, saved);
       if (!meal) {
-        const offer = suggestSavedMeal(it.name, saved);
+        // No swap offer of any kind when the words turn saved meals down.
+        const offer = rejects ? null : suggestSavedMeal(it.name, saved);
         if (offer) suggestions.push({ food_name: it.name, saved_id: offer.id, saved_name: offer.name });
         return true;
       }
       hits.push({ meal, count: savedCount(it.quantity, it.unit), mealType: it.meal ?? mealFromText ?? null });
       return false;
     });
+    // The router's pick (Jev) when the model did not tag it: a swap offer on
+    // the line that shares its words, never a log. The user taps if they
+    // meant the saved meal; the parsed line stands if they did not. Lines
+    // already on the card are the correction paths' to keep.
+    // Lines an offer could sit on: new ones, not the card's own.
+    const fresh = extItems.filter((it) =>
+      !(correctsPrevious && prevItems.some((p) => memoryKey(p.food_name) === memoryKey(it.name)))
+    );
+    // Extraction is back, so the router has had that long to answer. A slow
+    // router can still hold the log, but only up to the cap (1.5 s, or the
+    // deps timeout if lower), and only when an offer could come of it: a
+    // line to put it on, and words that do not turn saved meals down.
+    const pick = fresh.length > 0 && !rejects
+      ? await hint.wait(Math.min(deps.timeoutMs, HINT_WAIT_MS))
+      : null;
+    if (pick && !hits.some((h) => h.meal.id === pick.id) && !suggestions.some((s) => s.saved_id === pick.id)) {
+      const target = hintOfferTarget(pick, saved, fresh.map((it) => it.name));
+      if (target) suggestions.push({ food_name: target, saved_id: pick.id, saved_name: pick.name });
+    }
     // Everything they said was a saved meal. There is nothing left to look up,
     // so return now: runParseMeal fills the lines in from the stored rows.
     if (hits.length > 0 && extItems.length === 0) {
@@ -6668,9 +7471,44 @@ async function runParseMealCore(
   // them to say what they ate - next to the line they just deleted, because a
   // decline keeps the card. Removing the last line by TEXT should behave like
   // removing it with the X button, which already clears the card.
-  if (hasPrevious && extItems.length === 0 && removedNames.length > 0) {
+  // Only when NOTHING survives: a removal that names one line of several
+  // ("why did you add the halwa separately") lists no items either, and must
+  // leave the other lines standing, not clear the card. Live, 2026-10-21.
+  const survivors = hasPrevious && removedNames.length > 0
+    ? prevItems.filter((p) => !removedTargets.has(p.food_name.trim().toLowerCase()))
+    : prevItems;
+  if (hasPrevious && extItems.length === 0 && removedNames.length > 0 && survivors.length === 0) {
     const what = removedNames.length === 1 ? removedNames[0] : "those";
     return declineResult(`Removed ${what}. Nothing left on this one.`, true);
+  }
+  // Only when a named line was FOUND. A misspelled or invented name matches
+  // nothing: the old decline stands, rather than a "took it off" that changed
+  // nothing and a corrects_previous that re-sends the card as is.
+  if (hasPrevious && extItems.length === 0 && removedNames.length > 0 && removedTargets.size > 0) {
+    // Hand the survivors back untouched, as a correction: the card is replaced
+    // by itself minus the removed lines. keepUncoveredPrevious is the SAME
+    // restore the correction guard runs at the end of the full path, and the
+    // lines come straight from previous_items, so their provenance (source,
+    // note, confidence) needs no preserveManual pass: nothing was re-resolved.
+    // Decide never ran (decide_ms 0 below), which is why the timing step is
+    // pushed here instead of by the decide block.
+    const kept = keepUncoveredPrevious([], prevItems, replacedNames);
+    const what = removedNames.length === 1 ? removedNames[0] : "those";
+    T.decide_ms = 0;
+    steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: false } });
+    return {
+      parsed: {
+        meal_type: kept[0]?.meal_type ?? (mealFromText ?? input.mealHint ?? mealForHour(input.localHour)),
+        items: kept,
+        drona_line: `Took ${what} off.`,
+        corrects_previous: true,
+      },
+      declined: null,
+      usage,
+      tool_calls: [...toolCalls, "remove_lines"],
+      steps,
+      iterations: anthropicCalls,
+    };
   }
 
   if (ext.declined === true || extItems.length === 0) {
@@ -6820,7 +7658,22 @@ async function runParseMealCore(
       const aliases = await deps.userMemory?.lookupAliases?.(toResolve.filter((_, idx) => memoryEligible[idx]).map((it) =>
         memoryKey(memoryInputName({ name: memoryLineName(it), brand: it.brand ?? null }))
       )).catch(() => [] as MemoryEntry[]) ?? [];
-      const foods = buildMemory([...aliases, ...loaded.entries], tier);
+      const trustMode = deps.userMemory?.originTrust ?? "off";
+      const foods = buildMemory([...aliases, ...loaded.entries], tier, undefined, undefined, trustMode === "on");
+      if (trustMode === "shadow") {
+        // Where trust by origin would serve other numbers for the same food.
+        const byOrigin = new Map(buildMemory([...aliases, ...loaded.entries], tier, undefined, undefined, true).map((f) => [f.key, f]));
+        const differs = foods.filter((f) => {
+          const o = byOrigin.get(f.key);
+          return o && (o.per100.kcal !== f.per100.kcal || o.origin !== f.origin);
+        });
+        steps.push({
+          iter: 1,
+          tool: "origin_trust_shadow",
+          input: { tier, foods: foods.length },
+          result: { differs: differs.length, foods: differs.slice(0, 10).map((f) => ({ name: f.name, now: f.per100.kcal, by_origin: byOrigin.get(f.key)?.per100.kcal, origin: byOrigin.get(f.key)?.origin })) },
+        });
+      }
       if (foods.length === 0) {
         steps.push({
           iter: 1,
@@ -6856,7 +7709,7 @@ async function runParseMealCore(
           // with no typed weight falls back to the memory like any line.
           !memoryEligible[idx] || statedFor(it)
             ? Promise.resolve(null)
-            : matchMemory(deps.jev!, memoryFoodsFor(it), { name: memoryLineName(it), brand: it.brand ?? null })
+            : matchMemory(deps.jev!, memoryFoodsFor(it), { name: memoryLineName(it), brand: it.brand ?? null }, { choice: !fastMode })
         ),
       );
       for (const m of matches) if (m) steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: m.trace });
@@ -6934,6 +7787,9 @@ async function runParseMealCore(
         steps.push({ iter: 2, tool: "fast_fill", input: { item: r.name, unit: r.unit }, result: { used: "stated" } });
         return statedLine;
       }
+      // Only a served match (`food`) fills a Quick line. A 0.6 to 0.7 `maybe`
+      // needs decide to judge it, and Quick has no decide, so it is ignored
+      // here and the line keeps its estimate.
       const remembered = memory[idx]?.food
         ? memoryQuickItem(memory[idx]!.food!, { ...r, name: memoryLineName(r), est: r.est ?? null }, memTimeZone)
         : null;
@@ -7009,7 +7865,11 @@ async function runParseMealCore(
 
     const fastDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
     const items = assignItemMeals(
-      checkAtwater(fastItems),
+      // fastItems is toResolve.map, one line per item in order; checked anyway
+      // so a later change to that cannot put a brand on another food.
+      checkAtwater(fastItems.length === toResolve.length
+        ? fastItems.map((it, idx) => (it.brand !== undefined ? it : { ...it, brand: toResolve[idx].brand ?? null }))
+        : fastItems),
       extItems,
       { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
     );
@@ -7086,6 +7946,26 @@ async function runParseMealCore(
           memoryByFood.set(cand.food_id as string, { ...stamp, note });
           return { ...item, candidates: [cand], resolvedIdentity: true } as ResolvedItem;
         });
+      }
+      // Jev was unsure (MEMORY_MAYBE_FLOOR to MEMORY_FLOOR): the lookup runs
+      // as it would have, and decide is shown the saved food to judge. Stamped
+      // now so that, if decide takes it, the line is her memory line like any
+      // other, her words included (the alias a kept line teaches).
+      const maybe = memory[idx]?.maybe;
+      if (maybe) {
+        const cand = memoryCandidate(maybe);
+        memoryByFood.set(
+          cand.food_id as string,
+          memoryStamp(maybe, memTimeZone, memoryInputName({ name: memoryLineName(item), brand: item.brand ?? null })),
+        );
+        const savedCheck = { candidate: cand, confidence: memory[idx]!.confidence, from: memory[idx]!.maybeFrom };
+        return resolveOneItem(
+          deps, item, steps, toolCalls, stapleNames,
+          superMode
+            ? (it: ExtractedItem, onRenamed?: (name: string) => void, onNoLabel?: () => void) =>
+              superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st) => steps.push(st), onRenamed, onNoLabel)
+            : undefined,
+        ).then((r) => ({ ...r, savedCheck }));
       }
       return resolveOneItem(
         deps,
@@ -7214,6 +8094,16 @@ async function runParseMealCore(
     });
   }
   const candidatePer100 = per100ForItems(resolved);
+  // A saved food decide may take is not a candidate, but its numbers must be
+  // known here: verifyItems recomputes a picked line from them.
+  for (const r of resolved) {
+    const c = r.savedCheck?.candidate;
+    if (c?.food_id && !candidatePer100.has(c.food_id)) {
+      candidatePer100.set(c.food_id, {
+        kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g, name: c.name,
+      });
+    }
+  }
 
 
   const skipMode = deps.skipDecideMode ?? "off";
@@ -7239,7 +8129,7 @@ async function runParseMealCore(
     const fillDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
     const filled = assignItemMeals(
       stripEphemeralIds(
-        stampSaidNames(
+        stampBrands(stampSaidNames(
           flagPrepMismatch(
             checkAtwater(reconcileQuantity(
               await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100),
@@ -7248,9 +8138,10 @@ async function runParseMealCore(
             prepForItems(resolved),
           ),
           resolved,
-        ),
+        ), resolved),
         verifiedForItems(resolved),
         memoryByFood,
+        sitesForItems(resolved),
       ),
       extItems,
       { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
@@ -7270,7 +8161,7 @@ async function runParseMealCore(
       iterations: anthropicCalls,
     };
   }
-  const decideSystem = buildDecideSystemPrompt(input);
+  const decideSystem = buildDecideSystemPrompt(input, regionRules);
   const decidePayload = {
     // The same clamped text extract saw. Decide reads this to place quantities
     // and sections against the user's own words, so feeding it a shorter cut
@@ -7310,6 +8201,11 @@ async function runParseMealCore(
       candidates: r.candidates.slice(0, 4).map(candidatePayload),
       ...(r.lookedUpAs ? { looked_up_as: r.lookedUpAs } : {}),
       ...(r.labelNotFound ? { label_not_found: true } : {}),
+      ...(r.savedCheck
+        ? {
+          saved_food_check: savedCheckPayload(r.savedCheck),
+        }
+        : {}),
       // No food_id on purpose: these can inform an estimate, never be logged.
       ...(r.similar?.length
         ? {
@@ -7330,7 +8226,7 @@ async function runParseMealCore(
     tools: withToolCache([LOG_MEAL_TOOL]),
     tool_choice: { type: "tool", name: PARSE_TERMINAL_TOOL },
     messages: [{ role: "user", content: JSON.stringify(decidePayload) }],
-  });
+  }, "decide");
   if (!result.ok) {
     throw new Error(`anthropic_${result.status}: ${result.body.slice(0, 300)}`);
   }
@@ -7361,6 +8257,21 @@ async function runParseMealCore(
     resolved,
     deps.log,
   );
+  // A saved food decide took is that line's answer from here on: its
+  // servings, name check and fallback all read the line's candidates.
+  if (resolved.some((r) => r.savedCheck)) {
+    resolved = resolved.map((r) => {
+      const c = r.savedCheck?.candidate;
+      if (!c) return r;
+      const taken = picked.some((it) => it.food_id === c.food_id);
+      steps.push({
+        iter: 2, tool: "saved_food_check",
+        input: { item: r.name, saved: c.name.slice(0, 60), conf: Math.round(r.savedCheck!.confidence * 100) / 100 },
+        result: { taken },
+      });
+      return taken ? { ...r, candidates: [c, ...r.candidates], resolvedIdentity: true } : r;
+    });
+  }
   let items = await verifyItems(deps, picked, candidatePer100);
   if (hits.length > 0) {
     const before = items;
@@ -7422,13 +8333,13 @@ async function runParseMealCore(
     items = reconcileExtracted(items, resolved, candidatePer100);
   }
 
-  items = stampSaidNames(
+  items = stampBrands(stampSaidNames(
     flagPrepMismatch(
       checkAtwater(reconcileQuantity(items, servingsForItems(resolved))),
       prepForItems(resolved),
     ),
     resolved,
-  );
+  ), resolved);
 
   // Shadow mode: decide already produced the real answer above. Compare what
   // the code fill WOULD have shipped, so the decision to skip decide is made on
@@ -7480,7 +8391,7 @@ async function runParseMealCore(
   // See stripEphemeralIds: every path that returns items to the client must
   // strip them, not just this one. The verification map goes in with them,
   // because the id it keys on is what this call is about to erase.
-  items = stripEphemeralIds(items, verifiedForItems(resolved), memoryByFood);
+  items = stripEphemeralIds(items, verifiedForItems(resolved), memoryByFood, sitesForItems(resolved));
   if (items.length === 0) {
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",

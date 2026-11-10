@@ -5,7 +5,7 @@
 // trust than a missed one earns. So most of these pin silence.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { ACTION_ROUTES, decideCard, type DronaFacts, onCooldown, pickCurrentCard, signalsFrom, weekStartOf } from "./dronaCards.ts";
+import { ACTION_ROUTES, actionTarget, decideCard, type DronaFacts, onCooldown, pickCurrentCard, signalsFrom, weekStartOf } from "./dronaCards.ts";
 
 /** A settled user: months in, training to plan, logging food and weight. */
 function steady(over: Partial<DronaFacts> = {}): DronaFacts {
@@ -187,4 +187,12 @@ Deno.test("every request card's action has somewhere to go, and food goes to nut
   assertEquals(ACTION_ROUTES.log_food, "/(app)/nutrition");
   assertEquals(ACTION_ROUTES.log_weight, "/(app)/analytics");
   assertEquals("start_session" in ACTION_ROUTES, false); // handled on the dashboard itself
+});
+
+Deno.test("actionTarget: focus 'ai' opens Nutrition on the Drona box, nothing else carries params", () => {
+  assertEquals(actionTarget({ action: "log_food", focus: "ai" }), { pathname: "/(app)/nutrition", params: { focus: "ai" } });
+  assertEquals(actionTarget({ action: "log_food" }), { pathname: "/(app)/nutrition" });
+  assertEquals(actionTarget({ action: "log_weight", focus: "ai" }), { pathname: "/(app)/analytics" });
+  assertEquals(actionTarget({ action: "start_session" }), null);
+  assertEquals(actionTarget({}), null);
 });

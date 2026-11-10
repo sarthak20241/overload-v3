@@ -46,7 +46,7 @@ import {
  *  'improvise' (build me something from what I have) and 'challenge' (push back
  *  on what I logged) are still coming. They stay out until the downstream code
  *  can handle them: an option with nowhere to go is a route to nowhere. */
-export type FoodIntent = "log" | "create" | "other" | "steps" | "continue";
+export type FoodIntent = "log" | "create" | "other" | "steps" | "continue" | "edit";
 
 /** Where the answer came from. Carried so the logs can show the ladder working,
  *  and so a regression in routing can be attributed to a step rather than
@@ -76,6 +76,14 @@ export interface FoodIntentDecision {
   /** The answer to a question the FOOD AGENT asked: send it back to the agent,
    *  which can read the diary again, not to the parse. */
   resumeAgent?: boolean;
+  /** Why Jev's verdict was not the one used: no key, a timeout or HTTP error,
+   *  an unusable answer, or a score under the floor. Set only on the model and
+   *  default rungs; for the trace, never read by the policy. */
+  jevMiss?: string | null;
+  /** FOOD_FIRST_GATE: Jev's chance (0-1) that this first message is a fully
+   *  plain food log that asks for nothing else (PLAIN_LOG_QUESTION). Present
+   *  only when the gate asked; null when Jev did not answer. */
+  plainLog?: number | null;
 }
 
 /**
@@ -130,6 +138,23 @@ export const JEV_INTENT_FLOOR = 0.4;
 /** Exported ONLY so the probe measures what ships. A probe holding its own
  *  copy of the wording measures a copy. */
 export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
+  edit: {
+    what:
+      "A meal card is on screen (the `card` list) and the latest message changes something ON it: an amount, a size, " +
+      "a preparation, which food a line is, or asks for a line to be removed. Use only when `card` exists. " +
+      "A complaint about a line's number that also says what it should be is an edit (\"that's too much, I had 2\").",
+    not_for:
+      "Food that is not on the card yet (that is log). A question about the card that gives nothing to change " +
+      "(\"how is it 240 kcal?\", \"why did you add that?\"): that is other. A request to save the card as a meal: that is create. " +
+      "A change that needs food looked up from an earlier day: that is steps.",
+    examples: [
+      "make it 2 rotis",
+      "they were small",
+      "it was navratri chana, not boiled",
+      "remove the dal",
+      "the sabji had onion and tomato in it, not separate",
+    ],
+  },
   continue: {
     what: "The latest message answers the clarification question or supplies details for pending_meal, which has not been logged. Use only when pending_meal exists.",
     not_for: "An unrelated question, greeting, thanks, cancellation, or a separate new meal. Food mentioned only in history is not a new log.",
@@ -160,6 +185,10 @@ export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
       "If you have to infer that they probably want it kept, they did not ask, and this is not the option. " +
       "A QUESTION about whether saving or creating is possible is not an instruction either: it asks about ability and names nothing to save. " +
       "A polite request that names the specific food or meal to save (\"could you save X\") IS an instruction. " +
+      "A card on screen is not a request to save it: only words asking to keep, save or make a meal of it are. " +
+      "A bare acknowledgement beside a card (\"ok\", \"yes\", \"cool\", \"looks good\", \"thanks\") is NOT a request to save: " +
+      "the user is accepting the card as shown, and tapping Add is how they log it. That is other. " +
+      "A complaint or question about the card (\"you did not reply\", \"how is it 240 kcal\") is never this. " +
       "If the food to save has to be looked up in what they logged before, or they also want it logged, that is not this option.",
     examples: [
       "create this as a new meal called Desk Lunch",
@@ -175,6 +204,10 @@ export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
       "Greetings, thanks, small talk, and questions all belong here: questions about what this box or the app can do " +
       "(even when they use the words create, save or meal, because asking whether something is possible is not asking for it), " +
       "questions about the user's own progress, totals or history, and questions about nutrition in general. " +
+      "With a card on screen: a question or complaint about it that gives nothing to change (\"how is it 240 kcal?\", " +
+      "\"why is that there?\", \"you did not answer me\", \"what??\") is also this, never edit and never create. " +
+      "So is a bare acknowledgement of the card (\"ok\", \"yes\", \"cool\", \"looks good\", \"thanks\"): it names no " +
+      "change and asks for no save. " +
       "These get a spoken answer, which is why they are kept apart from logging and saving.",
     not_for:
       "Any message that reports eating or drinking. That holds even when no specific food or dish is named, " +
@@ -218,6 +251,7 @@ export const INTENT_INSTRUCTIONS = {
   default_rule:
     "If the message reports eating or drinking and does not explicitly ask to save anything, the answer is log. " +
     "If it answers a clarification or supplies details for pending_meal, the answer is continue, even when it names no food. " +
+    "If a card is on screen and the message changes a line on it, the answer is edit. " +
     "Otherwise, if it reports no eating at all, the answer is other. " +
     "If the food has to be looked up in earlier logs, or two actions are asked for, the answer is steps.",
 };
@@ -330,10 +364,11 @@ export function parseFoodIntentMode(raw: string | undefined): FoodIntentMode {
  * wrong in both directions, and asking would spend a call to receive a
  * meaningless answer.
  */
-export function shouldRouteFoodIntent(mode: FoodIntentMode, isCorrection: boolean): boolean {
-  if (mode === "off") return false;
-  if (isCorrection) return false;
-  return true;
+export function shouldRouteFoodIntent(mode: FoodIntentMode): boolean {
+  // The router runs with a card open too, since PR #277: before, every message
+  // beside a card was a correction, so a question got a canned breakdown and
+  // "make it a meal" was never heard. The router itself now reads the card.
+  return mode !== "off";
 }
 
 /** One of the user's saved foods or meals, reduced to what a match needs. The
@@ -399,6 +434,9 @@ export interface FoodIntentDeps {
    */
   classify?(text: string): Promise<FoodIntent | null>;
   log?: (msg: string) => void;
+  /** FOOD_FIRST_GATE: also ask PLAIN_LOG_QUESTION, in the same Jev call. Set
+   *  only for the first message of a thread (firstMessageGoesToGate). */
+  askPlain?: boolean;
 }
 
 /** Build the saved-meal Choice, plus the map from option key back to row id.
@@ -449,7 +487,7 @@ function savedMealQuestion(
 }
 
 function isIntent(v: unknown): v is FoodIntent {
-  return v === "log" || v === "create" || v === "other" || v === "steps" || v === "continue";
+  return v === "log" || v === "create" || v === "other" || v === "steps" || v === "continue" || v === "edit";
 }
 
 /**
@@ -462,6 +500,19 @@ export async function routeFoodIntent(
   deps: FoodIntentDeps = {},
   context?: FoodConversationContext,
 ): Promise<FoodIntentDecision> {
+  // The gate's answer rides on whatever the router decides. Only when asked,
+  // so with FOOD_FIRST_GATE off the decision is exactly what it was.
+  const gate = { plain: null as number | null };
+  const d = await routeIntent(text, deps, context, gate);
+  return deps.askPlain ? { ...d, plainLog: gate.plain } : d;
+}
+
+async function routeIntent(
+  text: string,
+  deps: FoodIntentDeps,
+  context: FoodConversationContext | undefined,
+  gate: { plain: number | null },
+): Promise<FoodIntentDecision> {
   const trimmed = text.trim();
   // Nothing to judge. Not worth a call in either direction, and 'log' is where
   // an empty string already went.
@@ -473,6 +524,7 @@ export async function routeFoodIntent(
   let savedMatch: SavedMealMatch | null = null;
   let hasFood: number | null = null;
   let pendingAction: PendingAction | null = null;
+  let jevMiss: string | null = deps.jev?.apiKey ? null : "no_jev_key";
 
   // ── Step 1: Jev ───────────────────────────────────────────────────────────
   if (deps.jev?.apiKey) {
@@ -486,6 +538,7 @@ export async function routeFoodIntent(
     if (savedQ) questions.saved = savedQ.question;
     questions.has_food = HAS_FOOD_QUESTION;
     if (context?.pendingMeal) questions.pending = PENDING_QUESTION;
+    if (deps.askPlain) questions.plain = PLAIN_LOG_QUESTION;
 
     let res: JevResult;
     try {
@@ -515,6 +568,7 @@ export async function routeFoodIntent(
       }
 
       hasFood = asNoul(res.response.answers.has_food);
+      if (deps.askPlain) gate.plain = asNoul(res.response.answers.plain);
       const choice = asChoice(res.response.answers.intent);
       const pc = context?.pendingMeal ? asChoice(res.response.answers.pending) : null;
       if (pc) {
@@ -557,7 +611,16 @@ export async function routeFoodIntent(
         }
       }
 
-      if (choice && isIntent(choice.choice) && (choice.choice !== "continue" || context?.pendingMeal)) {
+      // A bare ack beside a card is accepting the card, not asking to save it,
+      // edit it, or talk: Jev calls "ok" create at 0.46-0.75 (see isBareAck),
+      // and could as well call it edit or log. Whatever the verdict, it is
+      // read as 'other' under the bar, so it falls to the parse and nothing is
+      // drafted or started.
+      if (choice && context?.card?.length && isBareAck(trimmed)) {
+        deps.log?.(`[food_intent] bare ack beside a card (jev=${choice.choice} @ ${choice.confidence.toFixed(2)}), read as other under the bar`);
+        return { intent: "other", source: "jev", confidence: 0, note: `jev ${res.response.model} bare_ack`, savedMatch, hasFood, pendingAction };
+      }
+      if (choice && isIntent(choice.choice) && (choice.choice !== "continue" || context?.pendingMeal) && (choice.choice !== "edit" || context?.card?.length)) {
         if (choice.confidence >= JEV_INTENT_FLOOR) {
           deps.log?.(
             `[food_intent] jev=${choice.choice} conf=${choice.confidence.toFixed(2)} model=${res.response.model}`,
@@ -575,11 +638,14 @@ export async function routeFoodIntent(
         deps.log?.(
           `[food_intent] jev unsure (${choice.choice} @ ${choice.confidence.toFixed(2)} < ${JEV_INTENT_FLOOR}), falling through`,
         );
+        jevMiss = `unsure:${choice.choice}@${choice.confidence.toFixed(2)}<${JEV_INTENT_FLOOR}`;
       } else {
         deps.log?.("[food_intent] jev returned an unusable answer, falling through");
+        jevMiss = choice ? `unusable:${choice.choice}@${choice.confidence.toFixed(2)}` : "unusable:no_intent_answer";
       }
     } else {
       deps.log?.(`[food_intent] jev ${res.failure}: ${res.detail}`);
+      jevMiss = `${res.failure}:${String(res.detail ?? "").slice(0, 120)}`;
     }
   }
 
@@ -587,9 +653,9 @@ export async function routeFoodIntent(
   if (deps.classify) {
     try {
       const guess = await deps.classify(state);
-      if (isIntent(guess) && (guess !== "continue" || context?.pendingMeal)) {
+      if (isIntent(guess) && (guess !== "continue" || context?.pendingMeal) && (guess !== "edit" || context?.card?.length)) {
         deps.log?.(`[food_intent] model=${guess}`);
-        return { intent: guess, source: "model", confidence: null, note: "model fallback", savedMatch, hasFood, pendingAction };
+        return { intent: guess, source: "model", confidence: null, note: "model fallback", savedMatch, hasFood, pendingAction, jevMiss };
       }
     } catch (e) {
       deps.log?.(`[food_intent] model classify threw: ${String(e).slice(0, 120)}`);
@@ -601,7 +667,7 @@ export async function routeFoodIntent(
   // a card they dismiss; getting it wrong in the log direction loses the meal
   // they sat down to record.
   deps.log?.("[food_intent] defaulted to log");
-  return { intent: "log", source: "default", confidence: null, note: "no router available", savedMatch, hasFood, pendingAction };
+  return { intent: "log", source: "default", confidence: null, note: "no router available", savedMatch, hasFood, pendingAction, jevMiss };
 }
 
 // ── Policy: what the food bar actually DOES ─────────────────────────────────
@@ -650,7 +716,58 @@ export interface FoodActionInputs {
    *  the food bar, the exact failure 0088's `state: 'free'` caused a day before
    *  the client understood it. Old clients keep today's behaviour. */
   clientSupportsCreate: boolean;
+  /** A meal card is on screen. With one, an edit, a save request, or a question
+   *  about it all go to the food agent, which holds the card and can change it,
+   *  remove from it, save it, or answer about it. */
+  cardOpen?: boolean;
+  /** No card on screen, but the food box thread holds earlier cards the agent
+   *  can bring back (foodThreads.ts, FOOD_THREADS=on). Never set otherwise. */
+  earlierCards?: boolean;
 }
+
+/**
+ * A bare acknowledgement: a few stock words and nothing else ("ok", "yes",
+ * "thanks", "cool", "looks good"). Beside a card Jev reads these as a save
+ * request at 0.46-0.75 (measured 2026-10-22, live), which sits right against
+ * the create bar; a real "make it a meal" scores 0.76-0.82. The margin is too
+ * thin for a floor, so this is code: a bare ack is never a create and never
+ * starts the agent. The user is accepting the card as shown, and tapping Add
+ * is how they log it. Anything with more words is not touched.
+ */
+export function isBareAck(text: string): boolean {
+  // Single stray letters are punctuation fragments ("that's" -> "that", "s"),
+  // not words, so they are dropped before the count.
+  const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").trim().split(/\s+/).filter((w) => w.length > 1 || w === "k");
+  if (words.length === 0 || words.length > 4) return false;
+  // At least one word that MEANS yes or thanks, and nothing outside the
+  // list. Filler alone ("it good", "that all") is not an ack, and a question
+  // word anywhere ("is", "right", "go") is not an ack either.
+  const STRONG = new Set([
+    "ok", "okay", "k", "kk", "yes", "yep", "yeah", "ya", "yup", "sure", "fine", "cool", "good", "great", "nice",
+    "perfect", "thanks", "thank", "thx", "ty", "done", "alright", "noted", "got",
+  ]);
+  const FILLER = new Set(["you", "looks", "that", "thats", "it", "all", "sounds"]);
+  return words.some((w) => STRONG.has(w)) && words.every((w) => STRONG.has(w) || FILLER.has(w));
+}
+
+/**
+ * A card was open, the verdict was a question or complaint, and the policy
+ * still sent it to the parse (under the bar, or not Jev's). That is the one
+ * path where the canned per-line breakdown can still show, so it is counted
+ * in the trace. Pure, and here rather than in index.ts, so a test can reach
+ * it: index.ts boots the server on import.
+ */
+export function cardQuestionFellToParse(
+  d: Pick<FoodIntentDecision, "intent"> | null,
+  outcome: { cardOpen?: boolean; action: FoodAction } | null | undefined,
+): boolean {
+  return !!(outcome?.cardOpen && d?.intent === "other" && outcome.action === "log");
+}
+
+/** The bar for 'edit' and for a card question reaching the agent. Below it the
+ *  correction path runs as before, which is the safe miss: the card is edited
+ *  from the user's words, never thrown away. */
+export const CARD_AGENT_FLOOR = 0.4;
 
 /** The agent itself wrote this reply, so a question in it is the agent's.
  *  A failed agent turn also replies, with a canned "try it as two messages":
@@ -678,12 +795,204 @@ export function continuesPendingMeal(d: FoodIntentDecision | null): boolean {
  *  because the agent is STARTED as soon as the router answers, long before the
  *  parse that decideFoodAction also looks at has finished. The agent can end in
  *  a save card, so it needs a client that can draw one. */
-export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreate: boolean): boolean {
+export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreate: boolean, cardOpen = false, earlierCards = false): boolean {
   // An answer to the agent's own question goes back to it at any confidence
   // that cleared "proceed": the agent asked, so it is the one that can finish.
   if (d?.resumeAgent) return clientSupportsCreate;
-  return !!d && clientSupportsCreate && d.intent === "steps" && d.source === "jev" &&
-    d.confidence !== null && d.confidence >= STEPS_ACTION_FLOOR;
+  if (!d || !clientSupportsCreate || d.source !== "jev" || d.confidence === null) return false;
+  if (d.intent === "steps") return d.confidence >= STEPS_ACTION_FLOOR;
+  // With a card on screen the agent is the one that can edit it, remove from
+  // it, save it, or answer about it. 'other' beside a card goes there too: the
+  // plain reply path cannot see the card. A 'create' keeps the create bar:
+  // live, "u didn't even reply to me?" read as create at 0.50 and the agent
+  // offered a save card. A save is never inferred from a weak verdict.
+  if (cardOpen && d.intent === "create") return d.confidence >= CREATE_ACTION_FLOOR;
+  if (cardOpen && (d.intent === "edit" || d.intent === "other")) return d.confidence >= CARD_AGENT_FLOOR;
+  // No card on screen, and earlier cards in the thread: "bring back that card"
+  // and "use the lunch from before" need the agent, which can restore one.
+  // The plain reply cannot (live 2026-11-05, three asks in a row).
+  if (!cardOpen && earlierCards && (d.intent === "edit" || d.intent === "other")) return d.confidence >= CARD_AGENT_FLOOR;
+  return false;
+}
+
+// ── Step 2: every later message goes to the agent (FOOD_AGENT_LATER) ─────────
+//
+// .planning/precise-food-logger-plan.md section 2: after the first message of a
+// food box thread, the router stops deciding who answers. The agent replies,
+// edits, saves and logs. Only a first message with no card takes the router's
+// path. Precise only; the switch ships off.
+
+export type FoodAgentLaterMode = "off" | "on";
+
+/** FOOD_AGENT_LATER: anything but "on" is off. */
+export function parseFoodAgentLaterMode(raw: string | undefined): FoodAgentLaterMode {
+  return raw?.trim().toLowerCase() === "on" ? "on" : "off";
+}
+
+/** Is this food box message from a Precise thread? A first message says so in
+ *  `speed` ("super"). A correction sends no speed (it stays on the smart
+ *  pipeline), so the app sends the picked mode in `tier` on every message. An
+ *  app without `tier` keeps today's reading: Precise only with speed "super". */
+export function isPreciseRequest(
+  body: { speed?: unknown; tier?: unknown },
+  /** The server's own gate, the same one speed "super" passes today: Precise
+   *  switched on (PARSE_SUPER_MODE) and an account that may use it (not the
+   *  free tier). `tier` is the client's word and never unlocks it alone. */
+  gate: { superOn: boolean; freeTier: boolean },
+): boolean {
+  if (!gate.superOn || gate.freeTier) return false;
+  return body.speed === "super" || body.tier === "precise";
+}
+
+/** The tier the user picked, for the usage logs. A Precise correction sends
+ *  no speed (it stays on the smart pipeline) but says tier "precise", and is
+ *  recorded as precise. An old build with neither reads as thorough. */
+export function tierSelectedOf(body: { speed?: unknown; tier?: unknown }): "fast" | "precise" | "thorough" {
+  if (body.speed === "fast") return "fast";
+  if (body.speed === "super" || body.tier === "precise") return "precise";
+  return "thorough";
+}
+
+export interface LaterMessageInputs {
+  mode: FoodAgentLaterMode;
+  /** The user picked Precise for this message (speed "super"). */
+  precise: boolean;
+  /** The client can draw a save card (the agent can end in one). */
+  supportsCreate: boolean;
+  /** A model key is configured. Without it the agent cannot run. */
+  hasModelKey: boolean;
+  /** Earlier turns of this thread the app sent. */
+  turns: number;
+  /** Lines on the card on screen, whole or not. */
+  cardLines: number;
+  /** The card is on screen AND whole (not cut at the cap). */
+  cardOpen: boolean;
+  /** A question Drona asked is waiting for its answer. */
+  pending: boolean;
+}
+
+/**
+ * Does this message go to the food agent, whatever the router says?
+ *
+ * Yes when the thread has any earlier turn, OR a card is open, OR a question is
+ * waiting. A card cut at the cap is the one exception: the agent cannot see all
+ * of it, so its card tools are withheld, and the message keeps the parse path
+ * (whose correction guard puts every line back).
+ */
+export function laterMessageGoesToAgent(i: LaterMessageInputs): boolean {
+  if (i.mode !== "on" || !i.precise || !i.supportsCreate || !i.hasModelKey) return false;
+  if (i.cardLines > 0 && !i.cardOpen) return false;
+  return i.turns > 0 || i.cardOpen || i.pending;
+}
+
+// ── Step 3: the first message (FOOD_FIRST_GATE) ─────────────────────────────
+//
+// .planning/precise-food-logger-plan.md sections 2, 8 and 9: the first message
+// of a thread gets ONE yes/no question. A fully plain food log goes to the
+// parse, as today. Anything else, or unsure, goes to the food agent, which can
+// use the parse already running for the same text. Precise only; ships off.
+
+export type FoodFirstGateMode = "off" | "on";
+
+/** FOOD_FIRST_GATE: anything but "on" is off. */
+export function parseFoodFirstGateMode(raw: string | undefined): FoodFirstGateMode {
+  return raw?.trim().toLowerCase() === "on" ? "on" : "off";
+}
+
+/**
+ * The gate. Narrow on purpose: Jev judges one thing, "is there anything in
+ * this message besides food to log". It does not pick a route, and a no only
+ * means the agent reads the message. The examples are generic shapes, never an
+ * eval message (owner rule): the eval measures this wording, it does not
+ * teach it.
+ */
+export const PLAIN_LOG_QUESTION: JevQuestion = {
+  type: "noul",
+  instructions:
+    "Is the latest message a fully plain food log: it describes food or drink the user had, and asks for nothing else? " +
+    "Judge what the message asks for, not the food. Amounts, brands, how a dish was made, the meal, and numbers the user " +
+    "gives (calories, macros, a label) are all part of a plain log, and so is a greeting or thanks beside the food.",
+  criteria: {
+    true:
+      "Every food in it is described in the message itself, and the one thing to do is log it. Nothing in it needs an " +
+      "answer, a check, or any other action.",
+    false:
+      "Anything else is in it: a question of any kind (about the food, the numbers, their goals, or the app), a request " +
+      "to save, keep or remember a food or meal, any food taken from an earlier day or meal instead of described (even " +
+      "one item, even beside new food), a request to change, remove or check something, or no food at all (a greeting, " +
+      "thanks, chatter). When in doubt, false.",
+  },
+};
+
+/**
+ * At or above this the first message is plain and goes to the parse.
+ *
+ * MEASURED: scripts/food-box-eval/gate-probe.mts, jev-1.13.0, 2026-11-07, 3
+ * runs each, on the 29 first-message eval cases (cases.ts FIRST_MESSAGE_PLAIN)
+ * and 13 held-out messages written after the wording was fixed:
+ *
+ *                       non-plain max   plain logs under 0.6
+ *   eval cases (29)     0.23            2 of 16 (0.12, 0.17)
+ *   held out (13)       0.14            0 of 6
+ *
+ * The rule is ZERO false plains: a message that asks for anything must never
+ * take the parse path, where nobody answers it. A plain log under the floor
+ * only costs the agent's time and money: the agent still logs it. 0.6 sits
+ * well above every non-plain score and under every plain one but the two
+ * (a "please estimate it correctly" log and a calorie-only quick add, both
+ * read by Jev as asking for more). The wording was changed once, before the
+ * held-out set was written: the first version let a copy-plus-new-food message
+ * score 0.74. Re-run the probe before moving JEV_MODEL.
+ */
+export const PLAIN_LOG_FLOOR = 0.6;
+
+/** Does this first message go through the gate? Only the first message of a
+ *  thread: no earlier turn, no card on screen (whole or cut), no question
+ *  waiting. The same Precise, client and key rules as a later message, and
+ *  only with FOOD_AGENT_LATER on too: the gate's agent runs in later mode, and
+ *  every message after it must reach the same agent. The gate was measured
+ *  only with both on, so the gate on and step 2 off is today's routing. And
+ *  only with FOOD_INTENT_MODE on: the gate is a question in the router's Jev
+ *  call, and that mode is the router's kill switch. Router off or shadow:
+ *  today's routing, the gate never asked. */
+export function firstMessageGoesToGate(
+  i: Omit<LaterMessageInputs, "mode" | "cardOpen"> & { mode: FoodFirstGateMode; laterMode: FoodAgentLaterMode; intentMode: FoodIntentMode },
+): boolean {
+  if (i.mode !== "on" || i.laterMode !== "on" || i.intentMode !== "on") return false;
+  if (!i.precise || !i.supportsCreate || !i.hasModelKey) return false;
+  return i.turns === 0 && i.cardLines === 0 && !i.pending;
+}
+
+/** The gate's verdict: plain only when Jev answered and cleared the floor.
+ *  No answer, or under it, is the agent. */
+export function isPlainFirstLog(d: Pick<FoodIntentDecision, "plainLog"> | null): boolean {
+  return typeof d?.plainLog === "number" && d.plainLog >= PLAIN_LOG_FLOOR;
+}
+
+/** A word in a claim that says the food reached the diary or a saved meal.
+ *  Neither can happen in the food box without the user's tap. */
+const LOG_OR_SAVE_WORD = /\b(?:log(?:ged|ging)?|sav(?:ed|ing|e)|record(?:ed|ing)?)\b/i;
+
+/** A log or a save said as done without "I": a sentence that opens with it,
+ *  or a passive ("has been logged", "is saved"). */
+const PASSIVE_LOG_CLAIM = /^\s*(?:logged|saved|recorded)\b|\b(?:been|is|are|was|were)\s+(?:now\s+|already\s+)?(?:logged|saved|recorded)\b/i;
+
+/**
+ * A false claim in an agent line: the same per-sentence test as claimsAction,
+ * judged against what really happened. Nothing the food box does logs or saves
+ * on its own (the card waits for Add, the save card for a tap), so a claim of a
+ * log or a save is always false. A claim of a card change ("added the eggs",
+ * "updated the rice") is true only when the card changed.
+ */
+export function falseAgentClaim(text: string, did: { cardChanged: boolean }): boolean {
+  return text.split(/(?<=[.!?])\s+/).some((sentence) => {
+    if (sentence.trim().endsWith("?")) return false;
+    // "Logged it without the salad.", "it has been saved": shapes claimsAction
+    // was not measured on, and always false from the agent.
+    if (PASSIVE_LOG_CLAIM.test(sentence)) return true;
+    if (!DONE_CLAIM.test(sentence) && !PROMISE_CLAIM.test(sentence)) return false;
+    return LOG_OR_SAVE_WORD.test(sentence) || !did.cardChanged;
+  });
 }
 
 export function decideFoodAction(i: FoodActionInputs): FoodAction {
@@ -691,6 +1000,19 @@ export function decideFoodAction(i: FoodActionInputs): FoodAction {
   if (i.mode !== "on" || !i.decision) return "log";
 
   const { intent, confidence, source } = i.decision;
+
+  // A card on screen: the agent takes edits, saves and questions about it.
+  // 'log' (new food beside the card) stays on the parse, and so does any
+  // unsure verdict: the correction path edits the card from the user's words.
+  if (i.cardOpen && wantsFoodAgent(i.decision, i.clientSupportsCreate, true)) return "agent";
+  // 'continue' keeps its own routing below: a pending meal and a card rarely
+  // coexist, but when they do the answer to Drona's question comes first.
+  if (i.cardOpen && intent !== "steps" && intent !== "continue") return "log";
+  // Earlier cards and none on screen: the agent, unless the parse found food
+  // to log (log wins every tie, so a meal is never lost to this rule).
+  if (!i.cardOpen && i.earlierCards && !i.parseFoundFood && wantsFoodAgent(i.decision, i.clientSupportsCreate, false, true)) {
+    return "agent";
+  }
 
   if (intent === "create") {
     if (!i.clientSupportsCreate) return "log";

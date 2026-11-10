@@ -7,7 +7,7 @@
 // cases against a real key, and it belongs in the harness rather than in a unit
 // test that would then fail whenever their service hiccups.
 
-import { assertEquals } from "jsr:@std/assert@1";
+import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
   type FoodIntent,
   type FoodIntentDeps,
@@ -271,7 +271,7 @@ Deno.test("the whole ladder is exercised in order: jev, then model, then default
 
 // A compile-time reminder that the union is what the criteria advertise. If a
 // new intent is added to FoodIntent without a rubric, this stops being valid.
-const _exhaustive: Record<FoodIntent, true> = { log: true, create: true, other: true, steps: true, continue: true };
+const _exhaustive: Record<FoodIntent, true> = { log: true, create: true, other: true, steps: true, continue: true, edit: true };
 void _exhaustive;
 
 // ── The gate: should we even ask? ───────────────────────────────────────────
@@ -280,21 +280,21 @@ void _exhaustive;
 // is real behaviour, not plumbing.
 
 Deno.test("mode off asks nothing", () => {
-  assertEquals(shouldRouteFoodIntent("off", false), false);
-  assertEquals(shouldRouteFoodIntent("off", true), false);
+  assertEquals(shouldRouteFoodIntent("off"), false);
 });
 
-Deno.test("a correction turn is never routed, in any live mode", () => {
-  // A parsed meal is already on screen and the user said "no, the other one".
-  // That is editing. It is neither logging nor creating, so both answers are
-  // wrong and asking spends a call to learn nothing.
-  assertEquals(shouldRouteFoodIntent("shadow", true), false);
-  assertEquals(shouldRouteFoodIntent("on", true), false);
+Deno.test("a correction turn is routed too, in any live mode", () => {
+  // A parsed meal is on screen. The message may edit it, ask about it, save
+  // it, or add to it: the router reads the card and says which (PR #277).
+  // Before, every such message was a correction, and a question about the
+  // card got a canned breakdown.
+  assertEquals(shouldRouteFoodIntent("shadow"), true);
+  assertEquals(shouldRouteFoodIntent("on"), true);
 });
 
 Deno.test("a first-shot message is routed in shadow and on", () => {
-  assertEquals(shouldRouteFoodIntent("shadow", false), true);
-  assertEquals(shouldRouteFoodIntent("on", false), true);
+  assertEquals(shouldRouteFoodIntent("shadow"), true);
+  assertEquals(shouldRouteFoodIntent("on"), true);
 });
 
 Deno.test("mode parsing accepts the three words and nothing else", () => {
@@ -559,4 +559,39 @@ Deno.test("steps: the floor is 0.6 and unsure steps fall to log or reply", () =>
   // so it gets a spoken answer, not a decline.
   assertEquals(decideFoodAction({ ...on, decision: dec("steps", 0.49), parseFoundFood: false }), "reply");
   assertEquals(decideFoodAction({ ...on, decision: dec("steps", 0.49), parseFoundFood: true }), "log");
+});
+
+// ── Earlier cards in the thread (FOOD_THREADS=on) ─────────────────────────────
+// Live 2026-11-05: three "bring back that card" asks with no card on screen
+// went to the plain reply, which cannot act. With earlier cards in the thread
+// they go to the agent, which has restore_card. Food in the message still logs.
+
+Deno.test("policy: no card, earlier cards in the thread, a question or edit goes to the agent", () => {
+  const noFood = { ...on, parseFoundFood: false, cardOpen: false };
+  assertEquals(decideFoodAction({ ...noFood, earlierCards: true, decision: dec("other", 0.5) }), "agent");
+  assert(wantsFoodAgent(dec("other", 0.5), true, false, true));
+  // Without earlier cards it is the plain reply, as before.
+  assertEquals(decideFoodAction({ ...noFood, decision: dec("other", 0.5) }), "reply");
+  assert(!wantsFoodAgent(dec("other", 0.5), true, false, false));
+});
+
+Deno.test("policy: earlier cards never cost a meal: food in the message still logs", () => {
+  assertEquals(decideFoodAction({ ...on, cardOpen: false, earlierCards: true, decision: dec("other", 0.9) }), "log");
+  assertEquals(decideFoodAction({ ...on, cardOpen: false, earlierCards: true, parseFoundFood: false, decision: dec("log", 0.9) }), "log");
+});
+
+Deno.test("policy: earlier cards do not lower the agent's bar", () => {
+  assertEquals(decideFoodAction({ ...on, cardOpen: false, earlierCards: true, parseFoundFood: false, decision: dec("other", 0.3) }), "reply");
+});
+
+Deno.test("agentCouldUseThread: no card, or a whole card with a verdict the agent takes; never a cut card", async () => {
+  const { agentCouldUseThread } = await import("./foodBar.ts");
+  // No card: an edit or other at the card floor goes to the agent with the thread.
+  assertEquals(agentCouldUseThread(dec("other", 0.5) as never, true, 0), true);
+  // A whole card: copy_lines needs the thread beside it.
+  assertEquals(agentCouldUseThread(dec("other", 0.5) as never, true, 2, true), true);
+  // A card on screen with no cardOpen (index.ts earlierCardsFor, or a cut card): no.
+  assertEquals(agentCouldUseThread(dec("other", 0.5) as never, true, 2), false);
+  // A plain log beside a card stays on the parse.
+  assertEquals(agentCouldUseThread(dec("log", 0.9) as never, true, 2, true), false);
 });

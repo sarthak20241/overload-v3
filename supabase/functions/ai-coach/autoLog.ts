@@ -5,7 +5,8 @@
  * mode send IS the commit: the user typed, hit send, and may have closed the
  * app already. So the parse keeps running after the client hangs up, and on a
  * good result the SERVER writes meals + meal_entries with the user's own JWT
- * (RLS holds; nothing here runs as admin).
+ * (RLS holds). The one admin write is the brand stamp on the saved food each
+ * new entry made (brandSavedFoods): users may not write saved foods themselves.
  *
  * Structural like parseMeal.ts: no supabase-js types. index.ts adapts the real
  * client to `AutoLogStore`; the tests hand in a fake.
@@ -187,6 +188,8 @@ export interface AutoLogEntryRow {
   sodium_mg: null;
   position: number;
   logged_via: "ai_auto";
+  /** "recipe" needs migration 20261107120000 (step 4) in the diary's source
+   *  check: writeAutoLog retries a refused write once with "estimate". */
   source: ParsedItem["source"];
   client_id: string;
   /** The tier whose numbers the line carries (migration 0149). The trigger
@@ -213,9 +216,14 @@ export interface AutoLogStore {
    *  from 0115 - another attempt of this same send inserted these rows first. */
   insertEntries(
     rows: AutoLogEntryRow[],
-  ): Promise<{ ids: string[] } | { conflict: true } | { error: string }>;
+  ): Promise<{ ids: string[]; unordered?: true } | { conflict: true } | { error: string; code?: string }>;
   deleteEntries(ids: string[]): Promise<void>;
   deleteMealIfEmpty(mealId: string): Promise<void>;
+  /** Put each line's brand on the saved food its entry just made. The
+   *  saved-food trigger reads brands off the parse trace, and this mode writes
+   *  the diary before the trace, so the trigger finds none. Best effort: a
+   *  failure costs the brand, never the log. */
+  brandSavedFoods?(pairs: { entry_id: string; brand: string }[]): Promise<void>;
 }
 
 export interface LoggedSection {
@@ -297,6 +305,7 @@ export async function writeAutoLog(
 
   const { start, end, loggedAt } = dayWindow(args.logDate, args.tzOffsetMin, args.nowMs);
   const done: LoggedSection[] = [];
+  const brands: { entry_id: string; brand: string }[] = [];
 
   const rollback = async () => {
     for (const s of done) {
@@ -353,7 +362,16 @@ export async function writeAutoLog(
       client_id: clientId,
       tier: it.numbers_tier ?? args.tier ?? null,
     }));
-    const inserted = await store.insertEntries(rows);
+    let inserted = await store.insertEntries(rows);
+    // A diary without migration 20261107120000 refuses source "recipe" (its
+    // check, 0114, predates it). One more try, the dish as an estimate.
+    // Known by the Postgres code (23514, a check violation) or by the
+    // constraint's name in the message, whichever the driver passes on.
+    const sourceRefused = "error" in inserted &&
+      (inserted.code === "23514" || /meal_entries_source_check/.test(inserted.error));
+    if (sourceRefused && rows.some((r) => r.source === "recipe")) {
+      inserted = await store.insertEntries(rows.map((r) => (r.source === "recipe" ? { ...r, source: "estimate" } : r)));
+    }
     if ("conflict" in inserted) {
       // A concurrent attempt of this same send wrote these lines first. The
       // entriesByClientId pre-check above could not see it - it had not landed
@@ -371,9 +389,39 @@ export async function writeAutoLog(
       return { error: inserted.error };
     }
     done.push({ meal_type: section.meal_type, meal_id: mealId, entry_ids: inserted.ids, created_meal: createdMeal });
+    // Ids are taken to come back in row order. A different count means they
+    // cannot be tied to lines, and a wrong pairing would brand another food.
+    // The stamp finds each saved food by last_entry_id, which the saved-food
+    // trigger (cache_saved_food, AFTER INSERT) has set by the time the insert
+    // returns.
+    if (!inserted.unordered && inserted.ids.length === section.items.length) {
+      section.items.forEach((it, idx) => {
+        const brand = it.brand?.trim().slice(0, 80);
+        if (brand) brands.push({ entry_id: inserted.ids[idx], brand });
+      });
+    } else if (section.items.some((it) => it.brand?.trim())) {
+      console.log(`[parse_meal] auto-log brand stamp skipped: ${inserted.ids.length} ids for ${section.items.length} lines${inserted.unordered ? ", order unknown" : ""}`);
+    }
   }
 
+  if (brands.length > 0 && store.brandSavedFoods) {
+    await store.brandSavedFoods(brands).catch((e) => console.log(`[parse_meal] auto-log brand stamp failed: ${String(e)}`));
+  }
   return { logged: { sections: done }, replayed: false };
+}
+
+/** The ids an insert returned, in the order the rows were sent. insert ...
+ *  returning makes no promise about order, and writeAutoLog pairs ids with
+ *  lines by index (for the brand stamp). Rows carry position = base + index,
+ *  so sorting on it gives the sent order back. Null when a position is
+ *  missing or repeated: then no order can be trusted, and no brand is paired. */
+export function idsInRowOrder(rows: { id: string; position: number }[]): string[] | null {
+  const seen = new Set<number>();
+  for (const r of rows) {
+    if (!Number.isFinite(r.position) || seen.has(r.position)) return null;
+    seen.add(r.position);
+  }
+  return [...rows].sort((a, b) => a.position - b.position).map((r) => r.id);
 }
 
 /** Rebuild the sections of an earlier attempt from its entries. */

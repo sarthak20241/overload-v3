@@ -95,7 +95,10 @@ export function metricForPrompt(r: PhaseMetricDbRow, withProgress: boolean): Pro
   if (withProgress) {
     const cur = num(r.current_value);
     if (cur != null) out.current_value = cur;
-    if (isMetricStatus(r.status)) out.status = r.status;
+    // A custom metric's status is client-writable (the log sheet sets it), so
+    // a stored "done" is not a check: Drona gets the logged value and the
+    // target and judges from those. App-measured kinds keep the job's status.
+    if (r.kind !== "custom" && isMetricStatus(r.status)) out.status = r.status;
     if (typeof r.checked_at === "string") out.checked_at = r.checked_at;
   }
   return out;

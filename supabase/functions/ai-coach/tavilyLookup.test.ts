@@ -9,8 +9,13 @@ import {
   brandFromPages,
   findPanelText,
   foodLabel,
+  isBrandSite,
+  namesProduct,
+  onBrandSite,
   type PageReport,
+  preferBrandSite,
   readingFromReport,
+  readReport,
   runTavilyLookup,
   type TavilyLookupDeps,
 } from "./tavilyLookup.ts";
@@ -53,7 +58,7 @@ Deno.test("foodLabel does not repeat a brand already in the name", () => {
 });
 
 const report = (over: Partial<PageReport>): PageReport => ({
-  page_id: "p1", same_food: true, basis: "per_100g", serving_grams: null, serving_label: null,
+  page_id: "p1", same_food: true, basis: "per_100g", serving_grams: null, serving_label: null, serving_count: null, serving_unit: null,
   kcal: 72, energy_kj: null, protein_g: 3.1, carb_g: 4.6, fat_g: 4.5, fiber_g: null, brand: null, ...over,
 });
 
@@ -419,7 +424,10 @@ Deno.test("the second look can say no, and the page is never read", async () => 
 
 Deno.test("a page Jev rejects outright is not extracted", async () => {
   const calls = newCalls();
-  const net = fakeNet({ searches: [{ results: [AMUL_SITE] }, { results: [] }], jevYes: () => 0.2 }, calls);
+  // A shop page: the brand's own page for this product is always judged again
+  // (the brand-site tests below), so this one is not on amul.com.
+  const shop = { ...AMUL_SITE, url: "https://www.jiomart.com/p/amul-masti-dahi" };
+  const net = fakeNet({ searches: [{ results: [shop] }, { results: [] }], jevYes: () => 0.2 }, calls);
   await runTavilyLookup(lookupDeps(net, calls), DAHI);
   assertEquals(calls.extract, 0);
 });
@@ -553,4 +561,279 @@ Deno.test("Precise writes the pages' brand to the cache when extract left it in 
   assertEquals(found?.brand, "Amul");
   // The key stays on the words as extracted, so the same line still hits.
   assertEquals(rows[0].cache_key, "amul masti dahi");
+});
+
+// ── A label found but not readable (live 2026-10-23, Epigamia shake) ─────────
+//
+// Instamart prints "Nutritional Information per 250 ml" above the panel. Tavily
+// had no text for the Swiggy page and its extract failed, so all we held was
+// the search snippet, which cut the basis off. The reader agreed it was the
+// shake, said it could not tell what the numbers were per, and the line was
+// guessed at 150 kcal. The user's "check online" ran the Anthropic lookup and
+// got 135. Replayed on the exact snippet: 5 of 5 reader runs gave no usable
+// basis (3 "none", 2 "per serving" with no grams).
+
+const SHAKE_SNIPPET = {
+  title: "Epigamia Cookies & Cream Turbo Protein Milkshake - Instamart",
+  url: "https://www.swiggy.com/instamart/item/epigamia-turbo",
+  content: "Energy: 141 kcal · Protein: 25 g · Carbohydrate: 8 g · Total Sugars: 7 g · Added Sugars: 0 g · " +
+    "Total Fat: 1 g · Saturated Fat: 0 g · Trans Fat: 0 g",
+  score: 0.8,
+  raw_content: null,
+};
+const SHAKE = { name: "Epigamia cookies and cream protein milkshake", brand: "Epigamia" };
+
+/** A reader that answers every page the same way, recording what it was given. */
+function cannedReader(answer: Partial<PageReport>, seen: Array<Record<string, unknown>> = []) {
+  return async (payload: Record<string, unknown>) => {
+    const msg = JSON.parse((payload.messages as Array<{ content: string }>)[0].content);
+    seen.push(...msg.pages);
+    return {
+      content: [{
+        type: "tool_use",
+        name: "report_page_panels",
+        input: { pages: msg.pages.map((p: { page_id: string }) => ({ ...report(answer), page_id: p.page_id })) },
+      }],
+    };
+  };
+}
+
+Deno.test("each way a report can fail has its own reason", () => {
+  const u = "https://e.com";
+  assertEquals(readReport(report({ same_food: false }), u), { dropped: "not_same_food" });
+  assertEquals(readReport(report({ basis: "none" }), u), { dropped: "no_basis" });
+  assertEquals(readReport(report({ kcal: null }), u), { dropped: "no_kcal" });
+  assertEquals(readReport(report({ basis: "per_serving", serving_grams: null }), u), { dropped: "serving_no_grams" });
+  assertEquals(readReport(report({ kcal: 2400 }), u), { dropped: "kcal_too_high" });
+  assertEquals(readReport(report({ protein_g: 60, carb_g: 40, fat_g: 20 }), u), { dropped: "macros_over_100" });
+  assert("reading" in readReport(report({}), u));
+});
+
+Deno.test("the failure this prevents: a snippet cut above its panel is traced, and marked as an unread label", async () => {
+  const calls = newCalls();
+  const net = fakeNet({ searches: [{ results: [SHAKE_SNIPPET] }], extractPages: [] }, calls);
+  const out = await runTavilyLookup(
+    { ...lookupDeps(net, calls), callModel: cannedReader({ basis: "none", kcal: null, protein_g: null, carb_g: null, fat_g: null }) },
+    SHAKE,
+  );
+  assertEquals(out.finding, null);
+  assertEquals(out.unavailable, false);
+  assertEquals(out.labelUnread, ["swiggy.com"]);
+  const read = out.steps.find((s) => s.tool === "web_read");
+  assertEquals((read?.result as { dropped: unknown }).dropped, [{ site: "swiggy.com", why: "no_basis", from: "snippet" }]);
+});
+
+Deno.test("per serving with no grams is an unread label too", async () => {
+  const calls = newCalls();
+  const net = fakeNet({ searches: [{ results: [SHAKE_SNIPPET] }], extractPages: [] }, calls);
+  const out = await runTavilyLookup(
+    { ...lookupDeps(net, calls), callModel: cannedReader({ basis: "per_serving", serving_grams: null, kcal: 141 }) },
+    SHAKE,
+  );
+  assertEquals(out.labelUnread, ["swiggy.com"]);
+});
+
+Deno.test("a page the reader calls another product is not an unread label", async () => {
+  const calls = newCalls();
+  const net = fakeNet({ searches: [{ results: [SHAKE_SNIPPET] }], extractPages: [] }, calls);
+  const out = await runTavilyLookup({ ...lookupDeps(net, calls), callModel: cannedReader({ same_food: false }) }, SHAKE);
+  assertEquals(out.finding, null);
+  assertEquals(out.labelUnread, undefined);
+});
+
+Deno.test("the reader sees the page's opening words, so a pack size printed there can fill a serving", async () => {
+  const calls = newCalls();
+  const page = {
+    ...SHAKE_SNIPPET,
+    url: "https://instamart.in/p/epigamia-turbo",
+    raw_content: "Epigamia Cookies & Cream Turbo Protein Milkshake 250 ml Rs 99. " + "Explore more. ".repeat(80) +
+      "Energy: 141 kcal Protein: 25 g Carbohydrate: 8 g Total Fat: 1 g",
+  };
+  const seen: Array<Record<string, unknown>> = [];
+  const net = fakeNet({ searches: [{ results: [page] }] }, calls);
+  await runTavilyLookup({ ...lookupDeps(net, calls), callModel: cannedReader({}, seen) }, SHAKE);
+  assertEquals(seen.length, 1);
+  assert(String(seen[0].top).startsWith("Epigamia Cookies & Cream Turbo Protein Milkshake 250 ml"), String(seen[0].top));
+  // A page whose panel already holds its opening words does not send them twice.
+  const calls2 = newCalls();
+  const seen2: Array<Record<string, unknown>> = [];
+  const net2 = fakeNet({ searches: [{ results: [RIGHT] }] }, calls2);
+  await runTavilyLookup({ ...lookupDeps(net2, calls2), callModel: cannedReader({}, seen2) }, DAHI);
+  assertEquals(seen2[0].top, undefined);
+});
+
+/** Tavily serves the shake's cut snippet; the reader cannot read it; the
+ *  Anthropic lookup answers with the bottle's label. */
+function shakeNet(anthropicTools: string[][], readerSays: Partial<PageReport>): typeof fetch {
+  const calls = newCalls();
+  const tav = fakeNet({ searches: [{ results: [SHAKE_SNIPPET] }], extractPages: [] }, calls);
+  return (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    if (!u.includes("anthropic")) return tav(url, init);
+    const body = JSON.parse(String(init?.body));
+    const tools = (body.tools ?? []).map((t: { name: string }) => t.name);
+    anthropicTools.push(tools);
+    if (tools.includes("report_page_panels")) {
+      return Response.json({
+        stop_reason: "tool_use",
+        usage: { input_tokens: 900, output_tokens: 80 },
+        content: [{ type: "tool_use", name: "report_page_panels", input: { pages: [{ ...report(readerSays), page_id: "p1" }] } }],
+      });
+    }
+    return Response.json({
+      stop_reason: "tool_use",
+      usage: { input_tokens: 20000, output_tokens: 300, server_tool_use: { web_search_requests: 2 } },
+      content: [{
+        type: "tool_use", name: "report_sources",
+        input: {
+          results: [{
+            for_item: SHAKE.name, found: true,
+            readings: [{ url: "https://world.openfoodfacts.org/p/epigamia-turbo", per_100: { kcal: 54, protein_g: 10, carb_g: 3.6, fat_g: 0.1 } }],
+          }],
+        },
+      }],
+    });
+  }) as typeof fetch;
+}
+
+const SHAKE_ITEM = { name: SHAKE.name, brand: "Epigamia", quantity: 1, unit: "bottle" } as never;
+
+Deno.test("a label Tavily found but could not read is looked up again on the Anthropic search", async () => {
+  const tools: string[][] = [];
+  const steps: Array<{ tool: string; input: unknown }> = [];
+  const found = await superLookupOne(
+    preciseDeps(shakeNet(tools, { basis: "none", kcal: null }), "tavily"), SHAKE_ITEM, () => {}, () => {},
+    (s) => steps.push({ tool: s.tool, input: s.input }),
+  );
+  assert(found !== null, "the bottle's label must be found, not guessed");
+  assertEquals(tools.at(-1), ["web_search", "report_sources"]);
+  const fb = steps.find((s) => s.tool === "web_fallback");
+  assertEquals((fb?.input as { from: string; sites: string[] }).from, "tavily_unread");
+  assertEquals((fb?.input as { sites: string[] }).sites, ["swiggy.com"]);
+});
+
+Deno.test("a miss on another product is still an answer: no second provider is paid", async () => {
+  const tools: string[][] = [];
+  const steps: string[] = [];
+  await superLookupOne(
+    preciseDeps(shakeNet(tools, { same_food: false }), "tavily"), SHAKE_ITEM, () => {}, () => {}, (s) => steps.push(s.tool),
+  );
+  assert(!tools.some((t) => t.includes("web_search")), JSON.stringify(tools));
+  assert(!steps.includes("web_fallback"));
+});
+
+// ── The brand's own site (2026-11-07) ───────────────────────────────────────
+// A protein bread: Tavily returned the maker's own pages, Jev scored them 0.08
+// to 0.52 and they were dropped, and only a database page was read (15.2 g
+// protein per 100 g, the label about 22 g). The brand's site must never rank
+// below a third-party site for that brand's product.
+
+Deno.test("isBrandSite: the brand's words run together are the host's name", () => {
+  assertEquals(isBrandSite("https://www.thehealthfactory.in/products/protein-bread", "Health Factory"), true);
+  assertEquals(isBrandSite("https://milkymist.com/yogurt", "Milky Mist"), true);
+  assertEquals(isBrandSite("https://shop.amul.com/products/x", "Amul"), true);
+  assertEquals(isBrandSite("https://www.myprotein.co.in/p/1", "MyProtein"), true);
+  // Shops and databases are never a brand's site, whatever they list.
+  assertEquals(isBrandSite("https://www.fatsecret.co.in/calories-nutrition/the-health-factory/protein-bread", "Health Factory"), false);
+  assertEquals(isBrandSite("https://www.bigbasket.com/pd/1/the-health-factory-protein-bread", "Health Factory"), false);
+  // No brand, a short brand, another brand.
+  assertEquals(isBrandSite("https://www.thehealthfactory.in/x", null), false);
+  assertEquals(isBrandSite("https://www.abc.in/x", "ABC"), false);
+  assertEquals(isBrandSite("https://www.milkymist.com/x", "Health Factory"), false);
+});
+
+Deno.test("preferBrandSite: the brand's own reading wins when there is one", () => {
+  const db = { brandSite: false, kcal: 242 };
+  const own = { brandSite: true, kcal: 242 };
+  assertEquals(preferBrandSite([db, own]), [own]);
+  assertEquals(preferBrandSite([db]), [db]);
+});
+
+Deno.test("namesProduct: a brand's page counts only when it names this product", () => {
+  assertEquals(namesProduct(MAKER, BREAD), true);
+  assertEquals(namesProduct({ title: "Zero Maida Bread Whole Wheat 350g", url: "https://www.thehealthfactory.in/products/zero-maida-bread" }, BREAD), false);
+  // The link can name it when the title does not.
+  assertEquals(namesProduct({ title: "Shop", url: "https://www.thehealthfactory.in/products/protein-breads" }, BREAD), true);
+});
+
+Deno.test("the brand's page Jev reads as another product on its own words is not read", async () => {
+  const calls = newCalls();
+  const net = fakeNet({
+    searches: [{ results: [DATABASE, MAKER] }],
+    // First look low for the maker's page; second look, on its own text, sure it is not this food.
+    jevYes: (r) => (r.title.startsWith("Calories") ? 0.87 : r.pieces ? 0.05 : 0.14),
+  }, calls);
+  await runTavilyLookup(lookupDeps(net, calls), BREAD);
+  assertEquals(calls.readPages, [["fatsecret.co.in"]]);
+});
+
+const BREAD = { name: "protein bread", brand: "Health Factory" };
+const BREAD_PANEL = "Nutrition information per 100 g: Energy 242 kcal, Protein 22 g, Carbohydrate 30 g, Fat 3.4 g.";
+const MAKER = {
+  title: "Protein Bread - (Multi Protein)",
+  url: "https://www.thehealthfactory.in/products/protein-bread-multi-protein",
+  content: "Protein Bread offers up to 10g of protein in two slices.",
+  score: 0.5,
+  raw_content: "Protein Bread - (Multi Protein). " + BREAD_PANEL,
+};
+const DATABASE = {
+  title: "Calories in The Health Factory Protein Bread",
+  url: "https://www.fatsecret.co.in/calories-nutrition/the-health-factory/protein-bread/1-serving",
+  content: "Cals 242, Prot 15.24g",
+  score: 0.9,
+  raw_content: "The Health Factory Protein Bread. Energy 242 kcal, Protein 15.2 g, Carbohydrate 41.5 g, Fat 1.7 g per 100 g",
+};
+
+Deno.test("the maker's page Jev scored low is read, and its label is the answer", async () => {
+  const calls = newCalls();
+  const net = fakeNet({
+    searches: [{ results: [DATABASE, MAKER] }],
+    // Jev's scores as seen live: the database page high, the maker's low
+    // (0.14 on the title, 0.4 once it saw the page's own words).
+    jevYes: (r) => (r.title.startsWith("Calories") ? 0.87 : r.pieces ? 0.4 : 0.14),
+  }, calls);
+  const out = await runTavilyLookup(lookupDeps(net, calls), BREAD);
+  // Read, and first: never below the third-party page.
+  assertEquals(calls.readPages[0][0], "thehealthfactory.in");
+  assertEquals(out.finding?.readings.map((r) => !!r.ref?.includes("thehealthfactory.in")), [true]);
+});
+
+Deno.test("no brand on the food: no site is lifted", async () => {
+  const calls = newCalls();
+  const net = fakeNet({
+    searches: [{ results: [DATABASE, MAKER] }],
+    jevYes: (r) => (r.title.startsWith("Calories") ? 0.87 : 0.14),
+  }, calls);
+  await runTavilyLookup(lookupDeps(net, calls), { name: "protein bread", brand: null });
+  assertEquals(calls.readPages, [["fatsecret.co.in"]]);
+});
+
+Deno.test("onBrandSite: with no brand, the name's first words can be the brand (find_label's card name)", () => {
+  assertEquals(onBrandSite(MAKER, { name: "Health Factory protein bread", brand: null }), true);
+  // A plain food: no first words are a host, nothing is lifted.
+  assertEquals(onBrandSite(MAKER, { name: "protein bread", brand: null }), false);
+  // The rest of the name must still be named by the page.
+  assertEquals(onBrandSite(MAKER, { name: "Health Factory multigrain bun", brand: null }), false);
+});
+
+Deno.test("the reader's serving count and piece word reach the finding", async () => {
+  const calls = newCalls();
+  const net = fakeNet({ searches: [{ results: [RIGHT] }] }, calls);
+  const deps = lookupDeps(net, calls);
+  deps.callModel = async (payload) => {
+    const msg = JSON.parse((payload.messages as Array<{ content: string }>)[0].content);
+    return {
+      content: [{
+        type: "tool_use", name: "report_page_panels",
+        input: {
+          pages: msg.pages.map((p: { page_id: string }) => ({
+            page_id: p.page_id, same_food: true, basis: "per_100g", serving_label: "1 serving (50 g)", serving_grams: 50,
+            serving_count: 2, serving_unit: "Slices", kcal: 72, protein_g: 3, carb_g: 5, fat_g: 4,
+          })),
+        },
+      }],
+    };
+  };
+  const out = await runTavilyLookup(deps, DAHI);
+  assertEquals([out.finding?.serving_count, out.finding?.serving_unit], [2, "slices"]);
 });

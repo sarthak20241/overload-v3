@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, BackHandler, Platform, Pressable, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, BackHandler, Platform, Pressable, ScrollView, useWindowDimensions, Easing as RNEasing } from 'react-native';
 import { Tabs, useRouter, Redirect, usePathname } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   Easing,
   useSharedValue,
   useAnimatedStyle,
+  useReducedMotion,
   withTiming,
   runOnJS,
 } from 'react-native-reanimated';
@@ -17,7 +18,7 @@ import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getGuestRoutines } from '@/lib/guestStore';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { mergePendingRoutines } from '@/lib/routineQueue';
-import { BottomNav } from '@/components/ui/BottomNav';
+import { BottomNav, TAB_SWITCH_MS } from '@/components/ui/BottomNav';
 import { ResumeWorkoutPrompt } from '@/components/workout/ResumeWorkoutPrompt';
 import { OfflineBanner } from '@/components/ui/OfflineBanner';
 import { Portal } from '@/components/ui/Portal';
@@ -30,9 +31,26 @@ import { useForegroundProgramSync } from '@/lib/useProgramSync';
 import { resolveNeedsOnboarding } from '@/lib/onboarding';
 import { drainPendingOnboarding } from '@/lib/pendingOnboarding';
 import { useSync } from '@/components/SyncProvider';
+import { useCoachAccess } from '@/hooks/useCoachAccess';
+import { isPurchasesAvailable } from '@/lib/revenuecat';
+import { isHardPaywallAccount, mustPay, storeRecentlyDown } from '@/lib/hardPaywall';
 import type { Routine } from '@/lib/types';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 const ROUTINE_COLORS = Colors.routineColors;
+
+// Switching between the bottom-nav tabs: the new screen slides a little from
+// the side of the tab you tapped and fades in. The tab library animates with
+// RN's Animated, so this is RN's Easing, not Reanimated's. Only the main tabs
+// get it; the hidden screens (nutrition, food search, ...) keep their instant
+// switch.
+const TAB_SWITCH = {
+  animation: 'shift',
+  transitionSpec: {
+    animation: 'timing',
+    config: { duration: TAB_SWITCH_MS, easing: RNEasing.out(RNEasing.cubic) },
+  },
+} as const;
 
 function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const router = useRouter();
@@ -212,7 +230,7 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
               showsVerticalScrollIndicator={false}
             >
               {loading ? (
-                <ActivityIndicator color={Colors.primary} style={{ marginTop: 24 }} />
+                <OrbLoader size="large" state="searching" style={{ marginTop: 24 }} />
               ) : routines.length === 0 ? (
                 <View style={{ alignItems: 'center', paddingVertical: 24 }}>
                   <Text style={{ color: C.textMuted, fontSize: FontSize.base }}>No routines yet.</Text>
@@ -261,6 +279,46 @@ export default function AppLayout() {
   // no local flag). Errors resolve to false inside resolveNeedsOnboarding so
   // a network blip can never lock an existing user out of the app.
   const [needsOnboarding, setNeedsOnboarding] = useState<boolean | null>(null);
+  // Hard paywall (lib/hardPaywall.ts): a new account with no Pro and no trial
+  // goes to the paywall, which has no way out. Set when this mount drained a
+  // fresh sign-up: that path routes to the phase 1 build and then the paywall
+  // itself, so the gate must not jump ahead of it.
+  const { access: coachAccess, refreshFresh: refreshCoachAccess } = useCoachAccess();
+  // The account the drain was for: the exemption holds only for it, never
+  // for another account signed in later on the same mounted layout.
+  const [drainedFor, setDrainedFor] = useState<string | null>(null);
+  const drainedSignup = !!drainedFor && drainedFor === (user?.id ?? null);
+  // The gate only decides on a fresh server answer. The hook paints the last
+  // saved access first, and right after a purchase, restore or code that saved
+  // value still says 'free': deciding on it would send a new Pro straight
+  // back to the paywall. So a new account waits for one fresh read per mount.
+  const gateApplies = !!isSignedIn && isPurchasesAvailable() && isHardPaywallAccount(user?.createdAt);
+  // Once per mount is enough only because /upgrade lives OUTSIDE (app):
+  // leaving the paywall replaces into (app), which mounts this layout fresh
+  // and re-reads. Keep app/upgrade.tsx out of this group, or a new payer
+  // would be judged on the read made before they paid.
+  const [gateFresh, setGateFresh] = useState(false);
+  const [accessWaitOver, setAccessWaitOver] = useState(false);
+  useEffect(() => {
+    // A new account (sign-out, sign-in as someone else) starts unread.
+    setGateFresh(false);
+    setAccessWaitOver(false);
+    if (!gateApplies) return;
+    let cancelled = false;
+    // Fresh only when the server answered. A failed read leaves the saved
+    // access on screen, so the gate waits out the 8 s and then lets them in.
+    refreshCoachAccess().then((ok) => { if (!cancelled && ok) setGateFresh(true); }, () => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount and account
+  }, [gateApplies, user?.id]);
+  // A hung read must not leave a new account on a spinner: after 8 s the gate
+  // decides on what it has (an unknown state lets them in, fail open).
+  useEffect(() => {
+    if (!gateApplies || gateFresh) return;
+    const t = setTimeout(() => setAccessWaitOver(true), 8000);
+    return () => clearTimeout(t);
+    // user?.id too: a new account restarts its own 8 s wait.
+  }, [gateApplies, gateFresh, user?.id]);
   // The per-request-auth client (stable identity): it fails loudly when no
   // Clerk token is available, so the check can't mistake an anon empty-rows
   // response for a brand-new account.
@@ -291,17 +349,36 @@ export default function AppLayout() {
     // check - draining marks onboarding done, so the check then returns false
     // and they land straight on the dashboard with their plan.
     drainPendingOnboarding(target)
-      .then((dest) => {
-        if (dest) {
+      .then((drained) => {
+        if (drained) {
+          const { dest, firstPhaseId } = drained;
+          if (!cancelled) setDrainedFor(target.clerkId);
           void flushNow();
           settle(false);
-          // Paywall funnel (paywall-plan.md): a signed-in convert on iOS gets
-          // the warm-up → reminder → paywall sequence right after their plan
-          // is saved; /upgrade routes to the reveal choice's destination when
-          // they finish or skip. Guests aren't sold to (no Clerk id for the
-          // RC webhook to attribute a purchase to), and Android has no
-          // billing until the Play blocker clears.
-          if (isSignedIn && Platform.OS === 'ios') {
+          // Sign-up's next step is phase 1's workouts, not the dashboard:
+          // the Goal screen opens the build at once, the user reads the
+          // draft, talks it through with Drona if they like, and taps Save.
+          // The onboarding paywall comes after that sheet closes (then=upgrade
+          // on mobile), so the first thing they see is their plan, not a price.
+          if (isSignedIn && firstPhaseId && dest !== '/(app)/routines') {
+            router.replace({
+              pathname: '/goal-plan',
+              params: {
+                build: 'phase',
+                auto: '1',
+                // The film tour plays on top while phase 1 builds.
+                tour: '1',
+                ...(Platform.OS === 'ios' || Platform.OS === 'android' ? { then: 'upgrade' } : {}),
+              },
+            } as any);
+            return;
+          }
+          // Paywall funnel (paywall-plan.md): a signed-in convert on iOS or
+          // Android gets the warm-up → reminder → paywall sequence right after
+          // their plan is saved; /upgrade routes to the reveal choice's
+          // destination when they finish or skip. Guests aren't sold to (no
+          // Clerk id for the RC webhook to attribute a purchase to).
+          if (isSignedIn && (Platform.OS === 'ios' || Platform.OS === 'android')) {
             router.replace({
               pathname: '/upgrade',
               params: {
@@ -343,6 +420,10 @@ export default function AppLayout() {
   // returns below (rules of hooks).
   useForegroundProgramSync();
 
+  // "Reduce Motion" on the phone turns the tab slide off.
+  const reduceMotion = useReducedMotion();
+  const tabOptions = reduceMotion ? undefined : TAB_SWITCH;
+
   // Wait for both auth and guest-flag reads on cold start; otherwise we may
   // briefly redirect a signed-in user (Clerk hasn't restored from SecureStore
   // yet) or a returning guest (AsyncStorage flag hasn't loaded yet). The
@@ -372,7 +453,7 @@ export default function AppLayout() {
   if (needsOnboarding === null) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.background }}>
-        <ActivityIndicator size="small" color={C.textMuted} />
+        <OrbLoader size="small" color={C.textMuted} />
       </View>
     );
   }
@@ -380,58 +461,86 @@ export default function AppLayout() {
     return <Redirect href="/onboarding" />;
   }
 
+  // Hard paywall. A new account waits for its access read (a spinner, not a
+  // flash of the dashboard); once read, not paying = the paywall. A failed
+  // read stays 'unknown' and never locks.
+  if (gateApplies && !drainedSignup && !storeRecentlyDown()) {
+    if (!gateFresh && !accessWaitOver) {
+      return (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.background }}>
+          <OrbLoader size="small" color={C.textMuted} />
+        </View>
+      );
+    }
+    // Past the 8 s wait with no fresh read, the access on hand is the saved
+    // one, which right after a purchase still says 'free': treat it as
+    // unknown so a payer is never locked out by a hung read.
+    if (mustPay({ createdAt: user?.createdAt, accessState: gateFresh ? coachAccess.state : 'unknown', purchasesAvailable: true })) {
+      return <Redirect href={{ pathname: '/upgrade', params: { flow: 'locked' } } as any} />;
+    }
+  }
+
   return (
     <>
-      <Tabs
-        screenOptions={{ headerShown: false, tabBarStyle: { display: 'none' } }}
-      >
-        <Tabs.Screen name="index" />
-        <Tabs.Screen name="routines" />
-        <Tabs.Screen name="history" />
-        <Tabs.Screen name="analytics" />
-        <Tabs.Screen name="profile" />
-        {/*
-          Exercise Library management screen. Hidden from the bottom nav —
-          reached via the Routines header book icon or Profile > My Exercises.
-        */}
-        <Tabs.Screen name="exercises" options={{ href: null }} />
-        {/*
-          Import Data screen (Hevy CSV). Hidden from the bottom nav —
-          reached via Profile > Import Data.
-        */}
-        <Tabs.Screen name="import" options={{ href: null }} />
-        {/*
-          Nutrition day view (diet tracking). Hidden from the bottom nav for now —
-          reached via a dashboard card / deep-link (`/nutrition`) until the nav
-          placement lands post-design-polish.
-        */}
-        <Tabs.Screen name="nutrition" options={{ href: null }} />
-        {/* Diet logging: full-screen catalog search + food detail (MFP model). */}
-        <Tabs.Screen name="food-search" options={{ href: null }} />
-        <Tabs.Screen name="food-detail" options={{ href: null }} />
-        <Tabs.Screen name="meal-builder" options={{ href: null }} />
-        {/* Quick add: calories the user already knows, no catalog row behind them. */}
-        <Tabs.Screen name="quick-add" options={{ href: null }} />
-        {/*
-          Plan screen — what your subscription is and what it has done for you.
-          Hidden from the bottom nav; reached from the Profile plan card. The
-          route itself sends guests and free users to /upgrade.
-        */}
-        <Tabs.Screen name="plan" options={{ href: null }} />
-        {/*
-          From Drona: the cards the user pushed to Later, and what Drona has
-          changed. Hidden from the bottom nav; reached from Profile and Goal.
-        */}
-        <Tabs.Screen name="from-drona" options={{ href: null }} />
-        {/*
-          Admin dashboard for research-kb review (Phase 3).
-          Hidden from the bottom nav — only reachable via deep-link
-          (`/admin/research`) or the "Admin Tools" button rendered for
-          admin users on the Profile screen. The route itself enforces
-          the admin check via useAdminCheck + Postgres RLS.
-        */}
-        <Tabs.Screen name="admin/research" options={{ href: null }} />
-      </Tabs>
+      {/* Mid-switch both screens are see-through, so the space behind them
+          and each scene's own fill must be the app background. Otherwise the
+          navigation library's light grey default flashes through. */}
+      <View style={{ flex: 1, backgroundColor: C.background }}>
+        <Tabs
+          screenOptions={{
+            headerShown: false,
+            tabBarStyle: { display: 'none' },
+            sceneStyle: { backgroundColor: C.background },
+          }}
+        >
+          <Tabs.Screen name="index" options={tabOptions} />
+          <Tabs.Screen name="routines" options={tabOptions} />
+          <Tabs.Screen name="history" options={tabOptions} />
+          <Tabs.Screen name="analytics" options={tabOptions} />
+          <Tabs.Screen name="profile" options={tabOptions} />
+          {/*
+            Exercise Library management screen. Hidden from the bottom nav —
+            reached via the Routines header book icon or Profile > My Exercises.
+          */}
+          <Tabs.Screen name="exercises" options={{ href: null }} />
+          {/*
+            Import Data screen (Hevy CSV). Hidden from the bottom nav —
+            reached via Profile > Import Data.
+          */}
+          <Tabs.Screen name="import" options={{ href: null }} />
+          {/*
+            Nutrition day view (diet tracking). Hidden from the bottom nav for now —
+            reached via a dashboard card / deep-link (`/nutrition`) until the nav
+            placement lands post-design-polish.
+          */}
+          <Tabs.Screen name="nutrition" options={{ href: null }} />
+          {/* Diet logging: full-screen catalog search + food detail (MFP model). */}
+          <Tabs.Screen name="food-search" options={{ href: null }} />
+          <Tabs.Screen name="food-detail" options={{ href: null }} />
+          <Tabs.Screen name="meal-builder" options={{ href: null }} />
+          {/* Quick add: calories the user already knows, no catalog row behind them. */}
+          <Tabs.Screen name="quick-add" options={{ href: null }} />
+          {/*
+            Plan screen — what your subscription is and what it has done for you.
+            Hidden from the bottom nav; reached from the Profile plan card. The
+            route itself sends guests and free users to /upgrade.
+          */}
+          <Tabs.Screen name="plan" options={{ href: null }} />
+          {/*
+            From Drona: the cards the user pushed to Later, and what Drona has
+            changed. Hidden from the bottom nav; reached from Profile and Goal.
+          */}
+          <Tabs.Screen name="from-drona" options={{ href: null }} />
+          {/*
+            Admin dashboard for research-kb review (Phase 3).
+            Hidden from the bottom nav — only reachable via deep-link
+            (`/admin/research`) or the "Admin Tools" button rendered for
+            admin users on the Profile screen. The route itself enforces
+            the admin check via useAdminCheck + Postgres RLS.
+          */}
+          <Tabs.Screen name="admin/research" options={{ href: null }} />
+        </Tabs>
+      </View>
 
       {!hideWorkoutChrome && <BottomNav onOpenModal={() => { track('start_workout_modal_opened'); setModalOpen(true); }} />}
       {!hideWorkoutChrome && (

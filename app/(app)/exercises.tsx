@@ -15,7 +15,6 @@ import {
   TouchableOpacity,
   ScrollView,
   StyleSheet,
-  ActivityIndicator,
   BackHandler,
   Pressable,
   Keyboard,
@@ -40,9 +39,11 @@ import { MuscleGroupPicker } from '@/components/exercises/MuscleGroupPicker';
 import type { MetricType } from '@/lib/exercises';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Portal } from '@/components/ui/Portal';
+import { SheetTextInput } from '@/components/ui/SheetTextInput';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
+import { OrbLoader } from '@/components/ui/OrbLoader';
 
 interface DbExercise {
   id: string;
@@ -504,7 +505,7 @@ export default function ExerciseLibraryScreen() {
         keyboardShouldPersistTaps="handled"
       >
         {loading ? (
-          <ActivityIndicator color={Colors.primary} style={{ marginTop: 40 }} />
+          <OrbLoader size="large" state="searching" style={{ marginTop: 40 }} />
         ) : (
           <>
             {filteredCustoms.length > 0 && (
@@ -578,7 +579,7 @@ export default function ExerciseLibraryScreen() {
                   contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg }}
                   keyboardShouldPersistTaps="handled"
                 >
-                  {/* Uncontrolled + autocorrect off, same reasoning as the
+                  {/* SheetTextInput + autocorrect off, same reasoning as the
                       custom-exercise field in ExercisePickerSheet. Keyed on the
                       row being edited because useSheetSlide holds `mounted` true
                       through the ~200ms slide-out: closing and reopening on a
@@ -586,7 +587,7 @@ export default function ExerciseLibraryScreen() {
                       this input, so defaultValue would not reapply and the field
                       would still show the previous exercise's name. */}
                   <Text style={[styles.formLabel, { color: C.textDim }]}>EXERCISE NAME</Text>
-                  <TextInput
+                  <SheetTextInput
                     key={editTarget?.id ?? 'none'}
                     defaultValue={editName}
                     onChangeText={setEditName}

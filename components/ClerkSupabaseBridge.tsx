@@ -27,9 +27,9 @@ export function ClerkSupabaseBridge() {
       setSupabaseTokenGetter(null);
       return;
     }
-    setSupabaseTokenGetter(async () => {
+    setSupabaseTokenGetter(async (opts) => {
       try {
-        return (await getToken()) ?? null;
+        return (await getToken(opts)) ?? null;
       } catch {
         return null;
       }

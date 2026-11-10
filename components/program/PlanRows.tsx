@@ -14,8 +14,8 @@ import type { ActiveProgramPhaseRow } from '@/lib/programData';
 import { heroOf, STATUS_LABEL, statusTone, type MetricKind, type MetricStatus } from '@/lib/phaseMetrics';
 import { weekPatternFor, REST } from '@/lib/weekPattern';
 import { PILLAR_OF, type Pillar } from '@/components/program/PhaseDetail';
-import { rowLine, type LiveReadings } from '@/lib/phaseMetricHeadline';
-import { Row, SectionLabel, Stagger, S, T, useStatusColor } from '@/components/program/finish';
+import { planRowLine, rowLine, type LiveReadings } from '@/lib/phaseMetricHeadline';
+import { Row, SectionLabel, Stagger, S, T, useGoalPalette, useStatusColor } from '@/components/program/finish';
 import { DumbbellIcon, MoonIcon, UtensilsIcon } from '@/components/program/LineIcons';
 import { FontWeight } from '@/constants/theme';
 
@@ -77,18 +77,39 @@ interface Props {
   staggerFrom?: number;
   /** Show the "Your plan" heading. */
   heading?: boolean;
+  /** Space between the "Your plan" heading and the first row. */
+  headingGap?: number;
 }
 
-export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, heading = true }: Props) {
+export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, heading = true, headingGap = 6 }: Props) {
   const { C } = useTheme();
   const router = useRouter();
   const statusColor = useStatusColor();
+  // The Goal screen draws the reference's look: 58pt rows, thin icons in a
+  // 40pt column (the dumbbell drawn larger: it is wide and short), 16/500
+  // titles over 13pt subtitles, 1pt lines, dots with 6pt of air,
+  // plan-first lines, status words in the same muted colour.
+  const pal = useGoalPalette();
+  const goal = from === 'goal';
   // The approved reference's thin outline icons (Lucide paths, drawn inline).
   const rows: { pillar: Pillar; Icon: typeof DumbbellIcon; title: string }[] = [
     { pillar: 'train', Icon: DumbbellIcon, title: 'Train' },
     { pillar: 'eat', Icon: UtensilsIcon, title: 'Eat' },
     { pillar: 'recover', Icon: MoonIcon, title: 'Recover' },
   ];
+  const goalLine = (pillar: Pillar) => {
+    const pattern = weekPatternFor(phase.training_block);
+    return planRowLine(pillar, {
+      split: phase.training_block?.split_type ?? null,
+      days: phase.training_block?.days_per_week ?? (pattern ? pattern.filter((d) => d !== REST).length : null),
+      kcal: phase.diet_calorie_target,
+      proteinG: phase.diet_protein_g,
+      sleep: phase.metrics.find((m) => m.kind === 'sleep_hours') ?? null,
+    }, live, readinessToday);
+  };
+  // Say which phase these rows are for (seq is 0-based): "the plan" alone
+  // read as the whole goal's plan.
+  const planTitle = `Your plan for phase ${phase.seq + 1}`;
   const open = (pillar: Pillar) => {
     track('program_pillar_opened', { pillar, seq: phase.seq, from });
     router.push({ pathname: '/goal-plan-pillar', params: { pillar, seq: String(phase.seq) } } as any);
@@ -97,18 +118,27 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
     <View>
       {heading && (
         <Stagger index={staggerFrom}>
-          <Text style={[T.heading, { color: C.foreground, marginBottom: 6 }]}>Your plan</Text>
+          <Text style={[T.heading, { color: C.foreground, marginBottom: headingGap }]}>{planTitle}</Text>
         </Stagger>
       )}
-      {!heading && <SectionLabel style={{ marginBottom: S.md }}>Your plan</SectionLabel>}
+      {!heading && <SectionLabel style={{ marginBottom: S.md }}>{planTitle}</SectionLabel>}
       {rows.map(({ pillar, Icon, title }, i) => {
-        const s = pillarSummary(phase, pillar, readinessToday, live);
+        // The Goal screen uses the reference's plan-first line; the phase
+        // screen keeps the metric line with its coloured status.
+        const s = goal ? goalLine(pillar) : pillarSummary(phase, pillar, readinessToday, live);
         return (
           <Stagger key={pillar} index={staggerFrom + 1 + i}>
             <Row
-              iconNode={<Icon size={26} color={C.foreground} />}
+              iconNode={goal
+                ? <Icon size={pillar === 'train' ? 40 : pillar === 'recover' ? 31 : 29} strokeWidth={1.6} color={pal.icon} />
+                : <Icon size={26} color={C.foreground} />}
               title={title}
-              minHeight={54}
+              minHeight={goal ? 58 : 54}
+              look={goal ? {
+                muted: pal.muted, divider: pal.divider, titleSize: 16, titleWeight: FontWeight.medium, subSize: 12.5,
+                sub: pal.rowSub, chevron: pal.chevron, iconColumn: 40,
+              } : undefined}
+              subtitleParts={goal ? [...s.text.split(' · '), ...(s.status ? [STATUS_LABEL[s.status]] : [])] : undefined}
               first={i === 0}
               last={i === rows.length - 1}
               onPress={() => open(pillar)}
@@ -119,7 +149,7 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
                   {/* Calm by default: a good or neutral status reads in the
                       same muted colour; only a problem (Slipping, Behind) gets colour. */}
                   {s.status ? (
-                    <Text style={statusTone(s.status) === 'warn' ? { color: statusColor('warn'), fontWeight: FontWeight.medium } : null}>
+                    <Text style={!goal && statusTone(s.status) === 'warn' ? { color: statusColor('warn'), fontWeight: FontWeight.medium } : null}>
                       {` · ${STATUS_LABEL[s.status]}`}
                     </Text>
                   ) : null}

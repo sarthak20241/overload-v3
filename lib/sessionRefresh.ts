@@ -1,0 +1,134 @@
+/**
+ * Silent re-sign-in before Clerk's fixed 7-day session lifetime ends.
+ *
+ * On Clerk's Hobby plan every session ends 7 days after sign-in, and users were
+ * sent to the sign-in screen every week. The session-refresh edge function
+ * mints a one-time sign-in ticket for a user whose session is near its end;
+ * this trades it for a fresh session. The instance is in single-session mode,
+ * so the old session has to be signed out before the ticket can sign in. That
+ * swap runs at app start, behind SessionRefreshGate, before any screen or
+ * bridge is mounted, so nothing sees the moment in between.
+ *
+ * The order matters, and it is what the tests pin:
+ *   1. get the ticket first. No ticket (offline, not due, server error):
+ *      nothing changes and the user stays signed in.
+ *   2. only then sign out. A failed sign-out also changes nothing.
+ *   3. sign in with the ticket, retried, because a failure HERE is the one
+ *      that leaves the user signed out. The retry covers a request that
+ *      never reached Clerk. It cannot cover one Clerk redeemed but whose
+ *      reply was lost: tickets are one-time, so the retries fail on a used
+ *      ticket and the user is signed out a few days early.
+ *
+ * The caller may give up while waiting for the ticket (the gate cannot hold
+ * the app forever), but never after the sign-out has begun: by then the only
+ * way out is through the ticket. `beforeSignOut` is where that line is drawn.
+ *
+ * No imports, so Deno can test it directly (lib/sessionRefresh.test.ts).
+ */
+
+/** Ask for a ticket once the session ends within this window. Must match
+ *  REFRESH_WITHIN_MS in supabase/functions/session-refresh/refresh.ts, which
+ *  refuses earlier asks (the test checks the two agree). */
+export const REFRESH_WITHIN_MS = 3 * 24 * 60 * 60 * 1000;
+
+/** Is this session close enough to its end to replace it now? */
+export function shouldRefreshSession(expireAt: Date | null | undefined, now: number): boolean {
+  if (!expireAt) return false;
+  const remaining = expireAt.getTime() - now;
+  return remaining > 0 && remaining <= REFRESH_WITHIN_MS;
+}
+
+export interface RefreshSteps {
+  /** The ticket for the signed-in user, or null when there is none to use.
+   *  Throws when the server answered with an error. */
+  fetchTicket: () => Promise<{ ticket: string; userId: string } | null>;
+  /** The user signed in right now. A ticket for anyone else is not used. */
+  currentUserId: string;
+  signOut: () => Promise<void>;
+  /** Sign in with the ticket and make that session active. Throws on failure. */
+  signInWithTicket: (ticket: string) => Promise<void>;
+  /** Waits between sign-in attempts. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Called once, right before the sign-out. Returning false stops here with
+   *  nothing changed: the caller has stopped waiting and moved on. */
+  beforeSignOut?: () => boolean;
+}
+
+export type RefreshOutcome =
+  /** New session active. */
+  | 'refreshed'
+  /** Nothing changed; the old session is still active. */
+  | 'no_ticket'
+  /** Nothing changed, but the ticket server answered with an error. */
+  | 'ticket_error'
+  | 'ticket_user_mismatch'
+  /** The caller stopped waiting before the sign-out; nothing changed. */
+  | 'abandoned'
+  | 'sign_out_failed'
+  /** Signed out and the ticket never signed in: the user must sign in. */
+  | 'sign_in_failed';
+
+/** Outcomes that leave the user as they were AND point to nothing wrong:
+ *  offline, not due, gave up waiting. `ticket_user_mismatch` also changes
+ *  nothing but is left out on purpose: a ticket for the wrong user is a bug
+ *  to see, so it counts as a failure. */
+export const SKIPPED_OUTCOMES: readonly GateOutcome[] = [
+  'no_ticket',
+  'abandoned',
+  'ticket_timed_out',
+  'clerk_load_timed_out',
+];
+
+/** Everything SessionRefreshGate can report: the run's own outcomes plus its
+ *  timeouts and an unexpected throw. One union, so a typo fails the build. */
+export type GateOutcome =
+  | RefreshOutcome
+  | 'clerk_load_timed_out'
+  | 'ticket_timed_out'
+  | 'swap_timed_out'
+  | 'error';
+
+/** Waits before the 2nd and 3rd ticket sign-in attempts. */
+const SIGN_IN_RETRY_MS = [500, 1500];
+
+export async function runSessionRefresh(steps: RefreshSteps): Promise<RefreshOutcome> {
+  const sleep = steps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+
+  let got: { ticket: string; userId: string } | null = null;
+  try {
+    got = await steps.fetchTicket();
+  } catch {
+    // The server answered with an error. Nothing changes for the user, but
+    // unlike no ticket this is something to fix, so it is its own outcome.
+    return 'ticket_error';
+  }
+  if (!got) return 'no_ticket';
+  if (got.userId !== steps.currentUserId) return 'ticket_user_mismatch';
+  if (steps.beforeSignOut && !steps.beforeSignOut()) return 'abandoned';
+
+  try {
+    await steps.signOut();
+  } catch {
+    // A sign-out can throw after it has already cleared the session. One
+    // ticket attempt covers that case. If the old session is in fact still
+    // active, single-session mode should make Clerk refuse the ticket
+    // (session_exists), leaving things as they were. That refusal is Clerk's
+    // documented single-session rule, not something these tests can show.
+    try {
+      await steps.signInWithTicket(got.ticket);
+      return 'refreshed';
+    } catch {
+      return 'sign_out_failed';
+    }
+  }
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await steps.signInWithTicket(got.ticket);
+      return 'refreshed';
+    } catch {
+      if (attempt >= SIGN_IN_RETRY_MS.length) return 'sign_in_failed';
+      await sleep(SIGN_IN_RETRY_MS[attempt]);
+    }
+  }
+}
