@@ -14,11 +14,13 @@ type Json = Record<string, any>;
 /** A write the database refused for a reason the user can fix. */
 export class WriteRefused extends Error {}
 
-async function call(db: Db, fn: string, args: Json): Promise<Json> {
+async function call(db: Db, fn: string, args: Json, notFound = "No such food line in this account."): Promise<Json> {
   const { data, error } = await db.rpc(fn, args);
   if (error) {
-    // P0002: not found / not theirs. 22023: bad value. 55P03: same request running.
-    if (error.code === "P0002") throw new WriteRefused("No such food line in this account.");
+    // P0002: not found / not theirs. 22023: bad value. 55P03: same request
+    // running. 42501: not allowed (an app workout to a connector delete).
+    if (error.code === "P0002") throw new WriteRefused(notFound);
+    if (error.code === "42501") throw new WriteRefused(`Not allowed: ${error.message}.`);
     if (error.code === "55P03") throw new WriteRefused("That same request is still being saved. Wait a moment, then check the day.");
     if (error.code === "22023" || error.code === "23514") throw new WriteRefused(`Overload refused a value: ${error.message}`);
     throw new Error(`${fn}: ${error.message}`);
@@ -49,6 +51,19 @@ export function makeWrites(db: Db) {
 
     deleteFoodEntries: (u: string, ids: string[]) =>
       call(db, "mcp_delete_food_entries", { p_user: u, p_ids: ids }),
+
+    logWorkout: (u: string, w: { name: string; startedAt: string; durationSeconds: number; notes: string | null }, exercises: Json[], requestId: string | null) =>
+      call(db, "mcp_log_workout", {
+        p_user: u, p_name: w.name, p_started_at: w.startedAt, p_duration_seconds: w.durationSeconds,
+        p_notes: w.notes, p_exercises: exercises, p_request_id: requestId,
+      }, "An exercise is not in Overload's list or this user's own exercises. Use search_exercises for ids."),
+
+    updateWorkout: (u: string, id: string, set: Json, replace: Json[] | null) =>
+      call(db, "mcp_update_workout", { p_user: u, p_workout: id, p_set: set, p_replace: replace },
+        "No such workout in this account, or an exercise is not in Overload's list."),
+
+    deleteWorkout: (u: string, id: string) =>
+      call(db, "mcp_delete_workout", { p_user: u, p_workout: id }, "No such workout in this account."),
   };
 }
 

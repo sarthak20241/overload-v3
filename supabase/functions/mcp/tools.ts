@@ -399,6 +399,8 @@ const getWorkout: Tool = {
       minutes: w.duration_seconds ? Math.round(w.duration_seconds / 60) : null,
       total_volume_kg: r0(w.total_volume_kg),
       notes: w.notes || null,
+      // Only these can be removed with delete_workout.
+      ...(w.source === "mcp" ? { logged_by_assistant: true } : {}),
       exercises: groups,
     });
   },
