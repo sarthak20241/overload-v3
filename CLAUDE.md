@@ -144,9 +144,9 @@ deno test --allow-all supabase/functions/ai-coach/freeGoalBuild.test.ts # one fr
 deno test --allow-all supabase/functions/ai-coach/regionRules.test.ts # FOOD_REGION_RULES: each region gets only its block, no rule lost, off = today
 # App Store offer codes (key + pool in ~/.config/overload, never in the repo).
 # FRIENDMONTH = 1 month free (monthly), the iPhone referral code. "Free year" =
-# one-time codes, 1 year free (annual); Apple makes 500+ per batch, so `give`
-# hands them out from a local pool and refills it when low.
-npx tsx scripts/offer-codes/codes.mts give 3 --to "name"   # also: setup | list
+# one-time codes; Apple makes 500+ per batch. The admin site Coupons page keeps
+# them in the coupons table, gives one at a time, and makes 500 more per period.
+npx tsx scripts/offer-codes/codes.mts list   # also: setup. Handing out codes: admin site -> Coupons (coupons table)
 ```
 
 There are no configured lint or build scripts.
