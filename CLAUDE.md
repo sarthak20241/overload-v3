@@ -21,6 +21,14 @@ EVAL_VIA_CLI=1 npx tsx scripts/parse-meal-eval/run.ts
 # Composable: ONLY=case-a,case-b  FAST_MODE=on  EVAL_WEB_SEARCH=1  DEBUG_STEPS=1
 # Wrong-catalog-row set (Thorough): CASE_SET=thorough-match, and
 # THOROUGH_MATCH_MODE=on (or shadow) to run Jev's row check (needs JEV_API_KEY).
+# Brand not in our catalog (generic or other-brand rows): CASE_SET=branded-oats.
+
+# Saved-food match (Jev only, no model calls): is a food she logged before served?
+# ONLY=too-yum,doctors-banana-caramel REPEAT=3 to see how steady a score is.
+# ASK=prod CAND_BRAND=brackets runs the app's own matchMemory end to end (score,
+# 0.6-0.7 to decide, then the choice question); other knobs are listed at the
+# top of the script (FLOOR, MAYBE_FLOOR, RESPELL=0, DROP_RULE, ASK=choice|pipeline).
+deno run -A scripts/memory-identity-eval/run.ts
 
 # Use the API key ONLY when the question is latency or token cost. The harness
 # warns that CLI timings are not comparable — they measure the CLI, not the
