@@ -1339,4 +1339,22 @@ export const CASES: EvalCase[] = [
       items: [{ nameIncludes: "apple", kcalBetween: [88, 92] }],
     },
   },
+  // ── A line total inside a long list (live 2026-11-04, Precise) ─────────────
+  // The poha line spent four web searches, decide left it out of the 13 foods,
+  // and the fallback logged FatSecret's "Groundcherries (Cape-Gooseberries or
+  // Poha)" at 53 kcal. The line is the user's 280 kcal, under her own words.
+  {
+    id: "stated-line-total-long-list",
+    text: "Snacks:\n60g sweet potato, 6 almonds, 10g walnut, 0.5 dried fig, 200 ml skimmed milk, 9g casein, 170g apple, 60g musk melon\nBreakfast: 1 scoop ON whey, 4g sabja seeds, \nLunch: 1 whole egg, 2 egg whites, 280 cals of \u201cpoha + vegetable dalia\u201d",
+    hour: 17,
+    expect: {
+      // Read as one line, poha carries all 280; read as two foods sharing the
+      // total, poha takes part of it. Either way the day adds up: ~680 kcal of
+      // other foods plus her 280. Shrinking the whole day to 280 fails here.
+      minItems: 12,
+      items: [{ nameIncludes: "poha", kcalBetween: [90, 281], meal: "lunch" }],
+      totalKcalBetween: [820, 1150],
+      forbidNames: ["groundcherr", "gooseberr"],
+    },
+  },
 ];

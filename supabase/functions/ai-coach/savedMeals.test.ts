@@ -372,7 +372,9 @@ Deno.test("the rejection fires even when the model does not flag it", async () =
     previousItems: [{ food_id: "f-oats", food_name: "oats", quantity: 48, serving_label: "g", grams: 48, kcal: 180, source: "manual" }],
   });
   // Thorough mode: the fresh parse lands on the catalog row, not the saved oats.
-  assertEquals(r.parsed?.items.map((i) => i.food_name), ["Oatmeal, cooked"]);
+  // Decide returns nothing here, so the line is the fallback's: the catalog
+  // row's numbers under the user's own word.
+  assertEquals(r.parsed?.items.map((i) => [i.food_name, i.kcal, i.saved_meal ?? null]), [["oatmeal", 28.4, null]]);
   assertEquals(r.parsed?.corrects_previous, true);
 });
 

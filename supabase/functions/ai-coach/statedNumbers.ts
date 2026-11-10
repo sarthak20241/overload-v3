@@ -328,13 +328,13 @@ export function splitTotal<T extends LineMacros>(lines: T[], t: StatedTotal): { 
 }
 
 /** The card note on a line scaled to fit a meal total. */
-export function shareNote(t: StatedTotal): string {
+export function shareNote(t: StatedTotal, scope: "meal" | "foods" = "meal"): string {
   const parts: string[] = [];
   if (t.kcal !== null) parts.push(`${r1(t.kcal)} kcal`);
   if (t.protein_g !== null) parts.push(`${r1(t.protein_g)} g protein`);
   if (t.carb_g !== null) parts.push(`${r1(t.carb_g)} g carbs`);
   if (t.fat_g !== null) parts.push(`${r1(t.fat_g)} g fat`);
-  return `Scaled to fit your meal total: ${parts.join(", ")}`;
+  return `Scaled to fit your ${scope === "foods" ? "total for these foods" : "meal total"}: ${parts.join(", ")}`;
 }
 
 // ── The portion behind the user's numbers ───────────────────────────────────

@@ -129,14 +129,15 @@ const input = { text: "2 slices of toast", localHour: 13, mealHint: null, recent
 Deno.test("on: decide sees only the row Jev accepted", async () => {
   const h = harness("on", { scores: [0.95, 0.05] });
   const r = await runParseMeal(h.deps, { ...input, mode: null });
-  assertEquals(h.decideRows, [["Bread, white, toasted"]]);
+  // This decide logs nothing, so the retry asks again with the same rows.
+  assertEquals(h.decideRows, [["Bread, white, toasted"], ["Bread, white, toasted"]]);
   assert(r.steps.some((s) => s.tool === "thorough_match"));
 });
 
 Deno.test("on: no accepted row means decide gets none and estimates", async () => {
   const h = harness("on", { scores: [0.1, 0.1] });
   await runParseMeal(h.deps, { ...input, mode: null });
-  assertEquals(h.decideRows, [[]]);
+  assertEquals(h.decideRows, [[], []]);
 });
 
 Deno.test("shadow: Jev is asked and recorded, decide is untouched", async () => {
