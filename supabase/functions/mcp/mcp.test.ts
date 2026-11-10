@@ -95,8 +95,23 @@ Deno.test("tools/list lists ping with its schema", async () => {
 
 Deno.test("tools/call ping names the signed-in account", async () => {
   const r = await handleMessage(rpc("tools/call", { name: "ping", arguments: {} }), TOOLS, CTX) as any;
-  assertEquals(r.result.content[0].text, "Connected to Overload as a@example.test.");
+  assertEquals(r.result.structuredContent.text, "Connected to Overload as a@example.test.");
   assertEquals(r.result.isError, false);
+  const named = await handleMessage(rpc("tools/call", { name: "ping" }), TOOLS, { ...CTX, profile: { name: "Sam" } }) as any;
+  assertEquals(named.result.structuredContent.text, "Connected to Overload as Sam.");
+});
+
+Deno.test("a gate refusal is the answer, and done() hears how each call ended", async () => {
+  const seen: string[] = [];
+  const hooks = {
+    gate: (t: Tool) =>
+      Promise.resolve(t.name === "ping" ? null : { status: "denied" as const, result: { text: "Pro only", isError: true } }),
+    done: (t: Tool, status: string) => { seen.push(`${t.name}:${status}`); return Promise.resolve(); },
+  };
+  const denied = await handleMessage(rpc("tools/call", { name: "get_profile" }), TOOLS, CTX, hooks) as any;
+  assertEquals(denied.result, { content: [{ type: "text", text: "Pro only" }], isError: true });
+  await handleMessage(rpc("tools/call", { name: "ping" }), TOOLS, CTX, hooks);
+  assertEquals(seen, ["get_profile:denied", "ping:ok"]);
 });
 
 Deno.test("an unknown tool or method is a JSON-RPC error", async () => {

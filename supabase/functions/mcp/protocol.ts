@@ -18,6 +18,15 @@ export const INSTRUCTIONS =
 export interface ToolContext {
   userId: string;
   email: string | null;
+  // deno-lint-ignore no-explicit-any
+  [key: string]: any;
+}
+
+/** Around every tools/call. `gate` may refuse the call (not Pro, rate limit)
+ *  with a result the assistant shows the user; `done` sees how it ended. */
+export interface CallHooks {
+  gate?(tool: Tool): Promise<{ result: ToolResult; status: "denied" | "limited" } | null>;
+  done?(tool: Tool, status: "ok" | "error" | "denied" | "limited" | "failed", ms: number): Promise<void>;
 }
 
 export interface ToolResult {
@@ -33,6 +42,8 @@ export interface Tool {
   description: string;
   inputSchema: Record<string, unknown>;
   annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean };
+  /** Open to every signed-in user, not only Pro (the connection check). */
+  free?: boolean;
   run(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 }
 
@@ -74,6 +85,7 @@ export async function handleMessage(
   msg: unknown,
   tools: Tool[],
   ctx: ToolContext,
+  hooks: CallHooks = {},
 ): Promise<RpcReply | null> {
   if (!isObject(msg) || msg.jsonrpc !== "2.0" || typeof msg.method !== "string") {
     const id = isObject(msg) && (typeof msg.id === "string" || typeof msg.id === "number") ? msg.id : null;
@@ -113,21 +125,28 @@ export async function handleMessage(
       const tool = tools.find((t) => t.name === name);
       if (!tool) return fail(id, INVALID_PARAMS, `Unknown tool: ${String(name)}`);
       const args = isObject(params.arguments) ? params.arguments : {};
-      try {
-        const r = await tool.run(args, ctx);
-        return ok(id, {
+      const t0 = performance.now();
+      const toReply = (r: ToolResult) =>
+        ok(id, {
           content: [{ type: "text", text: r.text }],
           ...(r.data ? { structuredContent: r.data } : {}),
           isError: r.isError ?? false,
         });
+      try {
+        const refused = hooks.gate ? await hooks.gate(tool) : null;
+        if (refused) {
+          await hooks.done?.(tool, refused.status, performance.now() - t0);
+          return toReply(refused.result);
+        }
+        const r = await tool.run(args, ctx);
+        await hooks.done?.(tool, r.isError ? "error" : "ok", performance.now() - t0);
+        return toReply(r);
       } catch (e) {
         // A tool failure is a tool result with isError, not a protocol error,
         // so the assistant sees it and can tell the user.
         console.error(`[mcp] tool ${tool.name} failed:`, e);
-        return ok(id, {
-          content: [{ type: "text", text: "Something went wrong on Overload's side. Try again in a minute." }],
-          isError: true,
-        });
+        await hooks.done?.(tool, "failed", performance.now() - t0);
+        return toReply({ text: "Something went wrong on Overload's side. Try again in a minute.", isError: true });
       }
     }
     default:
