@@ -160,6 +160,8 @@ export function referralTally(friends: number, monthsEarned: number): string {
 
 /** "1 month", "3 months", "45 days": whole months when they are whole. */
 export function grantSpan(days: number): string {
+  // Admin Coupons makes a year as 365 days (366 covers a leap year).
+  if (days === 365 || days === 366) return '1 year';
   const months = days / 30;
   if (Number.isInteger(months)) return months === 1 ? '1 month' : `${months} months`;
   return `${days} days`;
@@ -213,11 +215,16 @@ export function friendMonthFromStore(os: string): boolean {
   return os === 'ios';
 }
 
-/** The words above the code box. On iPhone Apple's offer needs an Apple account, so no "no card" promise. */
+/**
+ * The words above the code box. On iPhone Apple's offer needs an Apple
+ * account, so no "no card" promise. On Android a code can be a friend's month
+ * or a coupon of any length (Admin Coupons), so no length is promised here;
+ * the next screen names it.
+ */
 export function inviteIntroCopy(os: string): string {
   return friendMonthFromStore(os)
     ? 'A code from a friend gives you a month of Pro, free.'
-    : 'A code from a friend gives you a month of Pro, free. No card needed.';
+    : 'Enter your code to get Pro, free. No card needed.';
 }
 
 /** iPhone: the friend's code is saved; the month itself comes from Apple next. */

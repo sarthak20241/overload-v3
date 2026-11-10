@@ -78,3 +78,13 @@ export const PLAN_BENEFITS = [
   'Unlimited AI food logs',
   'Personalized plans, rewritten every week',
 ];
+
+/**
+ * "7 days left" for a server trial. days_left comes from the server as a float
+ * (epoch / 86400), so it is rounded up to whole days here.
+ */
+export function trialDaysLeftLabel(daysLeft: number | null | undefined): string {
+  if (typeof daysLeft !== 'number' || !Number.isFinite(daysLeft)) return '… days left';
+  const n = Math.max(0, Math.ceil(daysLeft));
+  return `${n} day${n === 1 ? '' : 's'} left`;
+}

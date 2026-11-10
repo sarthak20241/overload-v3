@@ -26,7 +26,7 @@ const LENGTHS = [
   { days: 30, label: '1 month' },
   { days: 60, label: '2 months' },
   { days: 90, label: '3 months' },
-  { days: 182, label: '6 months' },
+  { days: 180, label: '6 months' },
   { days: 365, label: '1 year' },
 ];
 

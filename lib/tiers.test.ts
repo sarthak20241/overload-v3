@@ -8,7 +8,7 @@
 // for a purchase redeemed with a code that no store has ever seen.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { isLifetimeTier, isStorePurchase, PLAN_BENEFITS, tierLabel } from "./tiers.ts";
+import { isLifetimeTier, isStorePurchase, PLAN_BENEFITS, tierLabel, trialDaysLeftLabel } from "./tiers.ts";
 
 /**
  * The CHECK constraint on user_profiles.tier, read from production on
@@ -87,4 +87,14 @@ Deno.test("the benefit list is non-empty and has no blank entries", () => {
   for (const line of PLAN_BENEFITS) {
     assertEquals(line.trim().length > 0, true);
   }
+});
+
+// The server sends days_left as a float (epoch / 86400). Profile once printed
+// "364.99947712377315 days left" after a 1-year code.
+Deno.test("trial days left: whole days, rounded up, never below 0", () => {
+  assertEquals(trialDaysLeftLabel(364.99947712377315), "365 days left");
+  assertEquals(trialDaysLeftLabel(6.2), "7 days left");
+  assertEquals(trialDaysLeftLabel(0.4), "1 day left");
+  assertEquals(trialDaysLeftLabel(-0.5), "0 days left");
+  assertEquals(trialDaysLeftLabel(undefined), "… days left");
 });

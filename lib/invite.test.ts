@@ -65,6 +65,10 @@ Deno.test('code applied: a campaign code names its own length and no friend', ()
   assertEquals(a.rows.some((x) => x.label === 'Pro until'), false);
   assertEquals(a.friendLine, null);
   assertEquals(grantSpan(45), '45 days');
+  // Admin Coupons lengths: 1 year is 365 days, 6 months is 180.
+  assertEquals(grantSpan(365), '1 year');
+  assertEquals(grantSpan(366), '1 year');
+  assertEquals(grantSpan(180), '6 months');
 });
 
 Deno.test('iPhone: the friend month comes from Apple, Android keeps ours', () => {
@@ -72,6 +76,8 @@ Deno.test('iPhone: the friend month comes from Apple, Android keeps ours', () =>
   assertEquals(friendMonthFromStore('android'), false);
   assertEquals(inviteIntroCopy('ios').includes('No card'), false);
   assertEquals(inviteIntroCopy('android').includes('No card'), true);
+  // Android codes can be any length (Admin Coupons), so no "a month" promise.
+  assertEquals(inviteIntroCopy('android').includes('month'), false);
   const a = appleLinkedSummary('j9b-qch', true);
   assertEquals(a.title, 'Code saved.');
   assertEquals(a.rows[0].value, 'J9BQCH');
