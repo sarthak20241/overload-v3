@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { foodIntentState, pendingFoodMeal, readFoodContext, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
+import { CARD_MAX_LINES, foodIntentState, pendingFoodMeal, readFoodContext, FOOD_TURN_CHARS, FOOD_TURNS_KEPT } from "./foodContext.ts";
 import { decideFoodAction, routeFoodIntent } from "./foodIntent.ts";
 
 const original = "1 scoop ON mango whey, 6g chia seeds for breakfast\n150g apple 2 whole eggs 2 cucumber for snacks";
@@ -80,7 +80,7 @@ Deno.test("ten turns travel, so a fix in message 5 still sees the food added in 
   assertEquals(c.recentTurns.at(-1)!.text, "turn 13");
 });
 
-Deno.test("the app sends the same number of turns and characters the server keeps", async () => {
+Deno.test("the app sends the same number of turns, characters and card lines the server keeps", async () => {
   // lib/dietData.ts cannot import this file (separate builds), so its copy is
   // read as text: a change on one side alone fails here.
   const app = await Deno.readTextFile(new URL("../../../lib/dietData.ts", import.meta.url));
@@ -91,4 +91,7 @@ Deno.test("the app sends the same number of turns and characters the server keep
   };
   assertEquals(num("FOOD_TURNS_KEPT"), FOOD_TURNS_KEPT);
   assertEquals(num("FOOD_TURN_CHARS"), FOOD_TURN_CHARS);
+  // Fewer card lines sent than the server reads would mark every long card as
+  // cut; more would be cut by the server and do the same.
+  assertEquals(num("CARD_MAX_LINES"), CARD_MAX_LINES);
 });

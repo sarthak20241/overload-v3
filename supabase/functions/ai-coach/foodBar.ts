@@ -594,7 +594,9 @@ export function startFoodAgent(args: {
   /** The meal waiting on a question; handed to the agent when it asked it. */
   pendingMeal: PendingFoodMeal | null;
   /** The card on screen, with what the correction path needs to rework it. */
-  card?: { lines: CardLine[]; previousText: string | null; previousWords: string | null; previousItems: PreviousItem[] } | null;
+  /** `total`: the app's count of card lines; absent or null for an app that
+   *  sends none (see cardMayBeCut). */
+  card?: { lines: CardLine[]; total?: number | null; previousText: string | null; previousWords: string | null; previousItems: PreviousItem[] } | null;
   onStatus?: (label: string) => void;
   fbTrace?: FoodBarTraceCollector;
   /** FOOD_THREADS=on: the thread's earlier cards, as an index line and a way
@@ -651,7 +653,7 @@ export function startFoodAgent(args: {
     });
   return args.intentP.then(async (d) => {
     // Open AND whole, the same rule index.ts applies (see `cardOpen` there).
-    const cardOpen = !!args.card?.lines.length && !cardMayBeCut(args.card.lines);
+    const cardOpen = !!args.card?.lines.length && !cardMayBeCut(args.card.lines, args.card.total);
     // A card cut at the cap gets no thread: copy_lines checks the new lines
     // against the whole card, and the agent cannot see past the cap. The
     // earlier-cards ROUTE is for NO card on screen; beside a whole card the
@@ -681,6 +683,7 @@ export function startFoodAgent(args: {
           ? { text: args.pendingMeal.text, question: args.pendingMeal.question }
           : null,
         card: args.card?.lines ?? null,
+        cardTotal: args.card?.total ?? null,
         savedHint: d?.savedMatch ?? null,
         threadIndex: thread?.index ?? null,
         ...(later ? { later: true } : {}),

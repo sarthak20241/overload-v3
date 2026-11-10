@@ -575,7 +575,10 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
   const { zone, localDate, localHour } = clockOf(c);
   const prevLines = c.thread.card?.length ? c.thread.card : null;
   const card = cardOf(prevLines ?? []);
-  const cardOpen = card.length > 0 && !cardMayBeCut(card);
+  // The app sends the card's real line count (previous_items_total), so the
+  // case's whole card is the count, as index.ts reads it from today's app.
+  const cardTotal = card.length;
+  const cardOpen = card.length > 0 && !cardMayBeCut(card, cardTotal);
   const base = readFoodContext(c.thread.turns, pendingOf(c));
   const foodContext: FoodConversationContext = { ...base, card: card.length ? card : null };
   const recentTurns = base.recentTurns;
@@ -616,7 +619,7 @@ async function runLiveCase(c: FoodBoxCase, m: Meter): Promise<Outcome> {
     intentP, supportsCreate: true, text: c.message, mealHint, localHour, localDate,
     mode: (body.speed === "super" ? "super" : null) as "super" | null,
     savedMealsP, readDiary, readDiaryLines, contextPromise, userId: "eval", recentTurns, pendingMeal: pendingIn,
-    card: card.length ? { lines: card, previousText, previousWords, previousItems } : null,
+    card: card.length ? { lines: card, total: cardTotal, previousText, previousWords, previousItems } : null,
     parseDeps: () => deps,
     region: REGION_RULES_ON ? Promise.resolve(foodRegionForTimezone(regionZone(c))) : null,
     logUsage: () => {},

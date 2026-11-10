@@ -1,7 +1,9 @@
-/** Conversation data is evidence about the latest request, never instructions. */
 import { COPIED_FROM, type CopiedFrom, type FoodOrigin, isFoodOrigin, type RecipePart } from "../_shared/foodOrigin.ts";
+import type { PreviousItem } from "./parseMeal.ts";
+import { readRecipeParts } from "./recipe.ts";
 import { totalParts, userNumbersOnLine } from "./statedNumbers.ts";
 
+/** Conversation data is evidence about the latest request, never instructions. */
 export interface FoodTurn {
   role: "user" | "drona";
   text: string;
@@ -58,9 +60,8 @@ export interface CardLine {
 }
 
 /** Each card line's origin and copied_from as the app sent them back
- *  (previous_items), in card order. The same filter and cap index.ts uses to
- *  read previous_items (a line needs a name; CARD_MAX_LINES), so entry i is
- *  card line i. An origin the code does not know is left out, and originOf
+ *  (previous_items), in card order. The same filter and cap readPreviousItems
+ *  uses (a line needs a name; CARD_MAX_LINES), so entry i is card line i. An origin the code does not know is left out, and originOf
  *  then reads the old fields. The agent needs it to tell a number the user
  *  typed (user_typed) from any other line. */
 export function cardOriginsOf(raw: unknown): { origin?: FoodOrigin; copied_from?: CopiedFrom }[] {
@@ -76,22 +77,89 @@ export function cardOriginsOf(raw: unknown): { origin?: FoodOrigin; copied_from?
   });
 }
 
-/** Lines the card carries to the models. The SAME cap index.ts puts on
- *  previous_items, so the numbers the agent names for remove_card_lines are
- *  the card's own: a mismatch here would delete the wrong line.
+/** Lines the card carries to the models: the parse cap (MAX_ITEMS_PER_PARSE
+ *  in parseMeal.ts, pinned equal by cardRouting.test.ts), so any card one
+ *  parse can make comes back whole. The SAME list feeds previous_items and the
+ *  agent's numbered card, so the numbers the agent names for remove_card_lines
+ *  are the card's own: a mismatch here would delete the wrong line. A
+ *  correction rebuilds the card from previous_items, so a line past this cap
+ *  would be dropped: cardMayBeCut is what stops that.
  *
- *  KNOWN LIMIT: the app (lib/dietData.ts) also cuts previous_items at 12 and
- *  sends no total, so a card of 13+ lines arrives as 12 and the server cannot
- *  tell. A correction then rebuilds the card from those 12 and drops the rest
- *  (this predates PR #277). Until the app sends the real count, the agent's
- *  card tools refuse a card AT the cap (cardMayBeCut), since 12 could be 12 of
- *  30; the parse path still runs. */
-export const CARD_MAX_LINES = 12;
+ *  Was 12, and the app cut at 12 with no count, so a correction on a 13+ line
+ *  card silently dropped the rest (predates PR #277). The app now sends up to
+ *  this many lines and the real count (previous_items_total). */
+export const CARD_MAX_LINES = 50;
 
-/** True when the card the agent holds may be only the first CARD_MAX_LINES of
- *  a longer one. The app sends no total, so "at the cap" is the only signal. */
-export function cardMayBeCut(card: CardLine[] | null | undefined): boolean {
-  return (card?.length ?? 0) >= CARD_MAX_LINES;
+/** What an app build that sends no previous_items_total cut the card at. */
+export const OLD_APP_CARD_LINES = 12;
+
+/** True when the card the server holds may be only part of the one on screen.
+ *  The real signal is the app's count: more lines on screen than arrived. An
+ *  app too old to send the count cut at OLD_APP_CARD_LINES, so for it "at that
+ *  cap" is the only sign, and 12 could be 12 of 30. The agent's card tools
+ *  refuse a cut card; the parse path still runs. */
+export function cardMayBeCut(card: CardLine[] | null | undefined, total?: number | null): boolean {
+  const sent = card?.length ?? 0;
+  return typeof total === "number" ? total > sent : sent >= OLD_APP_CARD_LINES;
+}
+
+/** The card the app sent: its lines, read as the parser needs them, and the
+ *  count the app says the card has. `total` is null for an app that sends no
+ *  count (every build before previous_items_total existed); see cardMayBeCut. */
+export function readPreviousItems(raw: unknown, rawTotal: unknown): { items: PreviousItem[]; total: number | null } {
+  const total = typeof rawTotal === "number" && Number.isInteger(rawTotal) && rawTotal >= 0 ? rawTotal : null;
+  const items: PreviousItem[] = Array.isArray(raw)
+    ? (raw as Array<Record<string, unknown>>).slice(0, CARD_MAX_LINES).flatMap((r) => {
+      const name = typeof r?.food_name === "string" ? r.food_name.trim().slice(0, 120) : "";
+      if (!name) return [];
+      const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+      const src = r.source;
+      const recipe = readRecipeParts(r.recipe, src);
+      return [{
+        food_id: typeof r.food_id === "string" && r.food_id ? r.food_id : null,
+        food_name: name,
+        quantity: Number(r.quantity) > 0 ? Number(r.quantity) : 1,
+        serving_label: typeof r.serving_label === "string" ? r.serving_label.slice(0, 40) : "serving",
+        grams: Number(r.grams) > 0 ? Number(r.grams) : 0,
+        // Enough to hand an untouched line back exactly as the client had it.
+        kcal: n(r.kcal),
+        protein_g: n(r.protein_g),
+        carb_g: n(r.carb_g),
+        fat_g: n(r.fat_g),
+        fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : n(r.fiber_g),
+        // Every source the app sends (its toParsedItem keeps the same list): a
+        // missing one turns a sourced line into an estimate on a correction.
+        source: src === "catalog" || src === "off" || src === "fatsecret" || src === "web" || src === "manual" ||
+            src === "estimate" || src === "recipe"
+          ? src
+          : "estimate",
+        assumption: typeof r.assumption === "string" && r.assumption.trim() ? r.assumption.trim().slice(0, 160) : null,
+        confidence: r.confidence === "high" || r.confidence === "low" ? r.confidence : "medium",
+        // The section the line is already in. Undefined for a client that
+        // predates full-day logging, and the parser falls back exactly as it
+        // did then, so an old build keeps working.
+        meal_type: r.meal_type === "breakfast" || r.meal_type === "lunch" ||
+            r.meal_type === "dinner" || r.meal_type === "snack"
+          ? r.meal_type
+          : undefined,
+        ...(typeof r.said_name === "string" && r.said_name.trim()
+          // Control characters stripped: it becomes a web search term and is
+          // shown back to extract inside previous_meal.
+          ? { said_name: r.said_name.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 100) }
+          : {}),
+        ...(r.research === true ? { research: true } : {}),
+        // Where a web line's numbers came from. An older app does not send it:
+        // the line then reads "from web" with no site.
+        ...(typeof r.source_site === "string" && /^[a-z0-9.-]{3,60}$/i.test(r.source_site.trim())
+          ? { source_site: r.source_site.trim().toLowerCase() }
+          : {}),
+        // A dish built from its parts (recipe.ts): its parts, when the app
+        // sends them back. An app that does not keeps the parts in the note.
+        ...(recipe ? { recipe } : {}),
+      }];
+    })
+    : [];
+  return { items, total };
 }
 
 /** Where a line's numbers came from, in a few words: "from web: fatsecret.co.in",
