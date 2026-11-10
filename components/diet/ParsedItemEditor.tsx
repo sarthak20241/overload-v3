@@ -11,9 +11,9 @@
  *     so a corrected line stays as trustworthy as a parsed one.
  *   - ESTIMATE/web line (food_id null): no serving list exists, so the user
  *     edits the serving and macros directly.
- * The portion reads as serving SIZE + UNIT, eaten QUANTITY times (100 g x 1.5,
- * 1 slice x 2), with the total spelled out under it. It used to be "Quantity"
- * beside "Amount", and on a gram line both boxes said 15.
+ * The portion is two boxes, AMOUNT and UNIT ("150 g", "2 roti"), the same two
+ * the line stores. It was three (size, unit, quantity: 100 g x 1.5), and
+ * before that "Quantity" beside "Amount"; both left the user doing sums.
  * The name is editable too: a rename is a label fix, so it keeps the numbers
  * and does not mark the line 'manual' on its own.
  * Macro fields are always editable; touching one stops the auto-derive so the
@@ -34,7 +34,7 @@ import { haptics } from '@/lib/haptics';
 import { useSupabaseClient } from '@/lib/supabase';
 import type { FoodServing, MealType } from '@/lib/foods';
 import { isMassUnit, isMeasurementUnit, massToGrams } from '@/lib/units';
-import { joinServing, splitServing, sizeForUnitChange, scaleServingNutrition } from '@/lib/servingSize';
+import { fromPortion, toPortion, sizeForUnitChange, scaleServingNutrition } from '@/lib/servingSize';
 import { numbersTyped } from '@/lib/loggedEntryEdit';
 
 const MEAL_OPTIONS: { value: MealType; label: string }[] = [
@@ -87,11 +87,10 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
   const [name, setName] = useState('');
   const [servings, setServings] = useState<FoodServing[]>([]);
   const [per100, setPer100] = useState<Per100Macros | null>(null);
-  const [size, setSize] = useState('1');
   const [unit, setUnit] = useState('');
   const committedUnit = useRef('');
   const derivedFromCatalog = useRef(false);
-  const [qty, setQty] = useState('1');
+  const [amount, setAmount] = useState('1');
   const [grams, setGrams] = useState(0);
   const base = useRef<Base>({ total: 1, grams: 0, kcal: 0, protein: 0, carb: 0, fat: 0 });
   const [kcal, setKcal] = useState('0');
@@ -125,14 +124,13 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
   useEffect(() => {
     if (!item) return;
     setName(item.food_name);
-    const p = splitServing(item.quantity, item.serving_label, isMeasurementUnit);
-    setSize(fmt(p.size));
+    const p = toPortion(item.quantity, item.serving_label, isMeasurementUnit);
+    setAmount(fmt(p.amount));
     setUnit(p.unit);
     committedUnit.current = p.unit;
-    setQty(fmt(p.count));
     setGrams(item.grams);
     base.current = {
-      total: p.size * p.count, grams: item.grams,
+      total: p.amount, grams: item.grams,
       kcal: item.kcal, protein: item.protein_g, carb: item.carb_g, fat: item.fat_g,
     };
     setKcal(String(r0(item.kcal)));
@@ -153,8 +151,7 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
     return () => { alive = false; };
   }, [item, supabase]);
 
-  const sizeNum = useMemo(() => numOr(size, 0), [size]);
-  const qtyNum = useMemo(() => numOr(qty, 0), [qty]);
+  const amountNum = useMemo(() => numOr(amount, 0), [amount]);
 
   // The same advisory cross-check as Quick Add. A label may differ from 4/4/9;
   // the user's calories remain authoritative, even when the numbers disagree.
@@ -176,11 +173,11 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
     setFat(String(r1(basis.fat_g * f)));
   }
 
-  /** Size or quantity moved: grams and (unless the user owns them) macros
-   *  follow. Before this, estimate lines had no serving rows to recompute
-   *  from, and "1 samosa" edited to 3 saved as 3 carrying one samosa's macros. */
-  function recompute(nextSize: string, nextQty: string, u = unit) {
-    const total = numOr(nextSize, 0) * numOr(nextQty, 0);
+  /** The amount moved: grams and (unless the user owns them) macros follow.
+   *  Before this, estimate lines had no serving rows to recompute from, and
+   *  "1 samosa" edited to 3 saved as 3 carrying one samosa's macros. */
+  function recompute(nextAmount: string, u = unit) {
+    const total = numOr(nextAmount, 0);
     if (!(total > 0)) return;              // a box mid-edit; wait for a number
     const b = base.current;
     const g = gramsOf(total, u) ?? (b.total > 0 ? b.grams * (total / b.total) : b.grams);
@@ -194,37 +191,35 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
     setFat(String(r1(b.fat * ratio)));
   }
 
-  function onSizeChange(next: string) { setSize(next); recompute(next, qty); }
-  function onQtyChange(next: string) { setQty(next); recompute(size, next); }
+  function onAmountChange(next: string) { setAmount(next); recompute(next); }
 
   /** Convert only the completed label. Transient text ("glass" -> "g" -> "")
-   * must not change the serving size while the user is deleting or typing. */
+   * must not change the amount while the user is deleting or typing.
+   * 150 g moved to kg reads 0.15 kg; moved to "slice" it reads 1 slice. */
   function commitUnit(next = unit): number {
-    const nextSize = sizeForUnitChange(sizeNum, qtyNum, grams,
+    const nextAmount = sizeForUnitChange(amountNum, 1, grams,
       committedUnit.current, next, u => gramsOf(1, u));
     if (next !== committedUnit.current) {
       committedUnit.current = next;
-      if (nextSize !== sizeNum) setSize(fmt(nextSize));
-      if (nextSize * qtyNum > 0) {
+      if (nextAmount !== amountNum) setAmount(fmt(nextAmount));
+      if (nextAmount > 0) {
         const b = base.current;
         const nutrition = macrosTouched
           ? { kcal: numOr(kcal, 0), protein: numOr(protein, 0), carb: numOr(carb, 0), fat: numOr(fat, 0) }
-          : scaleServingNutrition(b, b.grams > 0 ? grams / b.grams : (b.total > 0 ? sizeNum * qtyNum / b.total : 1));
-        base.current = { total: nextSize * qtyNum, grams, ...nutrition };
+          : scaleServingNutrition(b, b.grams > 0 ? grams / b.grams : (b.total > 0 ? amountNum / b.total : 1));
+        base.current = { total: nextAmount, grams, ...nutrition };
       }
     }
-    return nextSize;
+    return nextAmount;
   }
 
-  /** Pick a catalog serving: it sets size + unit and its real grams. */
+  /** Pick a catalog serving: one of it, at its real grams. */
   function applyServing(sv: FoodServing) {
-    const p = splitServing(1, sv.label, isMeasurementUnit);
-    setSize(fmt(p.size));
+    const p = toPortion(1, sv.label, isMeasurementUnit);
+    setAmount(fmt(p.amount));
     setUnit(p.unit);
     committedUnit.current = p.unit;
-    const count = qtyNum > 0 ? qtyNum : 1;
-    if (!(qtyNum > 0)) setQty('1');
-    const g = sv.grams * count;
+    const g = sv.grams;
     const b = base.current;
     const ratio = b.grams > 0 ? g / b.grams : 1;
     let next = {
@@ -242,24 +237,20 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
       setCarb(String(r1(next.carb))); setFat(String(r1(next.fat)));
     }
     setGrams(g);
-    base.current = { total: p.size * count, grams: g, ...next };
+    base.current = { total: p.amount, grams: g, ...next };
   }
 
   const servingOn = (sv: FoodServing) => {
-    const p = splitServing(1, sv.label, isMeasurementUnit);
-    return p.size === sizeNum && p.unit.toLowerCase() === unit.trim().toLowerCase();
+    const p = toPortion(1, sv.label, isMeasurementUnit);
+    return p.amount === amountNum && p.unit.toLowerCase() === unit.trim().toLowerCase();
   };
 
-  // "Total 150 g", or "Total 2 slice, about 40 g" when the unit is not grams.
-  const totalLine = useMemo(() => {
-    const total = sizeNum * qtyNum;
+  // "About 40 g" under "2 slice". Mass and ml/l already say their grams.
+  const aboutLine = useMemo(() => {
     const u = unit.trim();
-    if (!(total > 0) || !u) return '';
-    // Mass and ml/l already say their grams; only other units get "about".
-    const exact = gramsOf(1, u) !== null;
-    const about = !exact && grams > 0 ? `, about ${r0(grams)} g` : '';
-    return `Total ${fmt(total)} ${u}${about}`;
-  }, [sizeNum, qtyNum, unit, grams]);
+    if (!(amountNum > 0) || !u || gramsOf(1, u) !== null || !(grams > 0)) return '';
+    return `About ${r0(grams)} g`;
+  }, [amountNum, unit, grams]);
 
   const touch = (setter: (v: string) => void) => (v: string) => {
     setMacrosTouched(true);
@@ -268,15 +259,15 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
 
   // An empty or zero box has no amount to save. Save used to fall back to 1
   // and keep the grams of the last real number, so the two disagreed.
-  const canSave = !busy && name.trim().length > 0 && sizeNum > 0 && qtyNum > 0 && unit.trim().length > 0;
+  const canSave = !busy && name.trim().length > 0 && amountNum > 0 && unit.trim().length > 0;
 
   const close = () => { if (!busy) { Keyboard.dismiss(); onCancel(); } };
 
   function save() {
     if (!item || !canSave) return;
-    const finalSize = commitUnit();
-    const stored = joinServing(
-      { size: finalSize, unit: unit.trim() || 'serving', count: qtyNum },
+    const finalAmount = commitUnit();
+    const stored = fromPortion(
+      { amount: finalAmount, unit: unit.trim() || 'serving' },
       item, isMeasurementUnit,
     );
     const changed =
@@ -286,7 +277,7 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
       Math.abs(grams - item.grams) > 0.5;
     const b = base.current;
     const ratio = b.grams > 0 && grams > 0 ? grams / b.grams
-      : (b.total > 0 ? finalSize * qtyNum / b.total : 1);
+      : (b.total > 0 ? finalAmount / b.total : 1);
     const scaled = derivedFromCatalog.current && !preserveSnapshot && per100 && grams > 0
       ? scaleServingNutrition({ kcal: per100.kcal, protein: per100.protein_g,
         carb: per100.carb_g, fat: per100.fat_g }, grams / 100)
@@ -407,36 +398,25 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
             </>
           )}
 
-          {/* One row: [size | unit] x [quantity]. Size and unit share a box
-              because together they are ONE serving ("100 g", "1 slice"). */}
-          <View style={s.portionRow}>
-            <View style={s.servingCol}>
-              <Text style={s.eyebrow}>Serving</Text>
-              <View style={s.servingBox}>
-                <TextInput
-                  value={size} onChangeText={onSizeChange} keyboardType="decimal-pad"
-                  style={[s.inlineInput, s.sizeInput]} placeholderTextColor={C.textDim}
-                  accessibilityLabel="Serving size"
-                />
-                <View style={s.servingDivider} />
-                <TextInput
-                  value={unit} onChangeText={setUnit} onBlur={() => { commitUnit(); }} placeholder="g, slice"
-                  autoCapitalize="none" autoCorrect={false}
-                  style={[s.inlineInput, s.unitInput]} placeholderTextColor={C.textDim}
-                  accessibilityLabel="Serving unit"
-                />
-              </View>
-            </View>
-            <Text style={s.times}>×</Text>
-            <View style={s.qtyCol}>
-              <Text style={s.eyebrow}>Quantity</Text>
+          {/* Two boxes, the two the line stores: [amount] [unit], "150 g". */}
+          <View style={s.row}>
+            <View style={s.amountCol}>
+              <Text style={s.eyebrow}>Amount</Text>
               <TextInput
-                value={qty} onChangeText={onQtyChange} keyboardType="decimal-pad"
-                style={s.input} placeholderTextColor={C.textDim} accessibilityLabel="Number of servings"
+                value={amount} onChangeText={onAmountChange} keyboardType="decimal-pad"
+                style={s.input} placeholderTextColor={C.textDim} accessibilityLabel="Amount"
+              />
+            </View>
+            <View style={s.unitCol}>
+              <Text style={s.eyebrow}>Unit</Text>
+              <TextInput
+                value={unit} onChangeText={setUnit} onBlur={() => { commitUnit(); }} placeholder="g, slice"
+                autoCapitalize="none" autoCorrect={false}
+                style={s.input} placeholderTextColor={C.textDim} accessibilityLabel="Unit"
               />
             </View>
           </View>
-          {!!totalLine && <Text style={s.totalTxt} numberOfLines={1}>{totalLine}</Text>}
+          {!!aboutLine && <Text style={s.totalTxt} numberOfLines={1}>{aboutLine}</Text>}
 
           <Text style={[s.eyebrow, { marginTop: Spacing.sm }]}>
             {!preserveSnapshot && !macrosTouched && per100 ? 'Macros, auto from serving' : 'Macros'}
@@ -528,24 +508,11 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     chipTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
     row: { flexDirection: 'row', gap: Spacing.md },
     field: { flex: 1, marginBottom: Spacing.sm },
-    portionRow: { flexDirection: 'row', alignItems: 'flex-end', gap: Spacing.sm },
-    servingCol: { flex: 2 },
-    qtyCol: { flex: 1 },
-    servingBox: {
-      flexDirection: 'row', alignItems: 'center',
-      borderWidth: 1, borderColor: C.border, borderRadius: Radius.md,
-    },
-    inlineInput: {
-      paddingHorizontal: Spacing.md, paddingVertical: 9,
-      color: C.foreground, fontSize: FontSize.base, fontVariant: ['tabular-nums'],
-    },
-    sizeInput: { flex: 2 },
-    unitInput: { flex: 3 },
-    servingDivider: { width: 1, alignSelf: 'stretch', backgroundColor: C.border },
-    times: { fontSize: FontSize.base, color: C.textMuted, paddingBottom: 10 },
+    amountCol: { flex: 2, marginBottom: Spacing.sm },
+    unitCol: { flex: 3, marginBottom: Spacing.sm },
     totalTxt: {
       fontSize: FontSize.sm, color: C.textSecondary, fontVariant: ['tabular-nums'],
-      marginTop: 6, marginBottom: Spacing.sm,
+      marginTop: -2, marginBottom: Spacing.sm,
     },
     macroLbl: { fontSize: FontSize.sm, color: C.textSecondary, marginBottom: 6 },
     input: {

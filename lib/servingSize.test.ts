@@ -4,47 +4,62 @@
 // check is a copy of the two tables' keys in lib/units.ts.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { joinServing, splitServing, sizeForUnitChange, scaleServingNutrition, servingText, formatCount, fixWeightLabel } from "./servingSize.ts";
+import { fromPortion, toPortion, sizeForUnitChange, scaleServingNutrition, servingText, formatCount, fixWeightLabel } from "./servingSize.ts";
 
 const UNITS = new Set(["g", "kg", "oz", "lb", "ml", "l", "cup", "tbsp", "tsp"]);
 const isM = (u: string) => UNITS.has(u.trim().toLowerCase());
 
-Deno.test("a gram line is one serving of its grams, not N servings of 1 g", () => {
+Deno.test("a gram line shows its grams: 15 g, not 15 x g", () => {
   // The reported sheet: "15 g" of cheese sauce showed Quantity 15, Amount 15.
-  assertEquals(splitServing(15, "g", isM), { size: 15, unit: "g", count: 1 });
+  assertEquals(toPortion(15, "g", isM), { amount: 15, unit: "g" });
 });
 
-Deno.test("a named serving splits into size, unit and count", () => {
-  assertEquals(splitServing(2, "1 roti", isM), { size: 1, unit: "roti", count: 2 });
-  assertEquals(splitServing(1.5, "100 g", isM), { size: 100, unit: "g", count: 1.5 });
-  assertEquals(splitServing(1, "1/2 katori", isM), { size: 0.5, unit: "katori", count: 1 });
-  assertEquals(splitServing(3, "slice", isM), { size: 1, unit: "slice", count: 3 });
+Deno.test("a number in the label folds into the amount when it is a plain size", () => {
+  assertEquals(toPortion(2, "1 roti", isM), { amount: 2, unit: "roti" });
+  assertEquals(toPortion(1.5, "100 g", isM), { amount: 150, unit: "g" });
+  assertEquals(toPortion(3, "1/2 katori", isM), { amount: 1.5, unit: "katori" });
+  assertEquals(toPortion(1, "0.50 cup", isM), { amount: 0.5, unit: "cup" });
+  assertEquals(toPortion(3, "slice", isM), { amount: 3, unit: "slice" });
+  assertEquals(toPortion(2, "1 medium (65 g)", isM), { amount: 2, unit: "medium (65 g)" });
+});
+
+Deno.test("a number that names the thing stays in the unit: 2 x 250 ml bottle", () => {
+  // Folding it would read "500 ml bottle", one big bottle instead of two.
+  assertEquals(toPortion(2, "250 ml bottle", isM), { amount: 2, unit: "250 ml bottle" });
+  assertEquals(toPortion(1, "2 pc pack", isM), { amount: 1, unit: "2 pc pack" });
 });
 
 Deno.test("an untouched line saves back exactly as it came in", () => {
-  for (const [q, l] of [[15, "g"], [2, "1 roti"], [3, "slice"], [1, "0.50 cup"], [2, "cup"], [1, "medium (65 g)"]] as const) {
-    const back = joinServing(splitServing(q, l, isM), { quantity: q, serving_label: l }, isM);
-    assertEquals(back, { quantity: q, serving_label: l }, `${q} x ${l}`);
+  for (const [q, l] of [[15, "g"], [2, "1 roti"], [3, "slice"], [1, "0.50 cup"], [2, "cup"],
+    [1, "medium (65 g)"], [1.5, "100 g"], [3, "1/2 katori"], [2, "250 ml bottle"], [0.333, "100 g"]] as const) {
+    const orig = { quantity: q, serving_label: l };
+    const shown = toPortion(q, l, isM);
+    // The editor shows the amount through a 3-decimal box and reads it back.
+    const typed = { amount: Number(String(Math.round(shown.amount * 1000) / 1000)), unit: shown.unit };
+    assertEquals(fromPortion(typed, orig, isM), orig, `${q} x ${l}`);
   }
 });
 
-Deno.test("a gram serving stays stored as grams", () => {
-  const orig = { quantity: 15, serving_label: "g" };
-  assertEquals(joinServing({ size: 100, unit: "g", count: 1.5 }, orig, isM), { quantity: 150, serving_label: "g" });
+Deno.test("a measurement is stored as its total: 150 g, not 1.5 x 100 g", () => {
+  const orig = { quantity: 1.5, serving_label: "100 g" };
+  assertEquals(fromPortion({ amount: 200, unit: "g" }, orig, isM), { quantity: 200, serving_label: "g" });
+  assertEquals(fromPortion({ amount: 0.065, unit: "kg" }, { quantity: 1, serving_label: "1 roti" }, isM),
+    { quantity: 0.065, serving_label: "kg" });
 });
 
-Deno.test("a new size or unit writes the size into the label", () => {
-  const slice = { quantity: 1, serving_label: "slice" };
-  assertEquals(joinServing({ size: 2, unit: "slice", count: 1 }, slice, isM), { quantity: 1, serving_label: "2 slice" });
-  assertEquals(joinServing({ size: 1, unit: "tub", count: 2 }, slice, isM), { quantity: 2, serving_label: "tub" });
-  const gram = { quantity: 15, serving_label: "g" };
-  assertEquals(joinServing({ size: 1, unit: "tub", count: 1 }, gram, isM), { quantity: 1, serving_label: "1 tub" });
+Deno.test("a new count of the same named serving keeps its exact label", () => {
+  assertEquals(fromPortion({ amount: 3, unit: "roti" }, { quantity: 2, serving_label: "1 roti" }, isM),
+    { quantity: 3, serving_label: "1 roti" });
+  assertEquals(fromPortion({ amount: 3, unit: "250 ml bottle" }, { quantity: 2, serving_label: "250 ml bottle" }, isM),
+    { quantity: 3, serving_label: "250 ml bottle" });
 });
 
-Deno.test("a small metric serving keeps its grams", () => {
-  // 65 g of roti moved to kg is 0.065 kg. Two decimals stored 0.07 kg (70 g).
-  const orig = { quantity: 1, serving_label: "1 roti" };
-  assertEquals(joinServing({ size: 0.065, unit: "kg", count: 1 }, orig, isM), { quantity: 0.065, serving_label: "kg" });
+Deno.test("a folded named serving with a new amount is stored as amount + unit", () => {
+  // 3 x "1/2 katori" (1.5 katori) changed to 2 katori: 2 "katori", not 4 x "1/2 katori".
+  assertEquals(fromPortion({ amount: 2, unit: "katori" }, { quantity: 3, serving_label: "1/2 katori" }, isM),
+    { quantity: 2, serving_label: "katori" });
+  assertEquals(fromPortion({ amount: 2, unit: "tub" }, { quantity: 3, serving_label: "slice" }, isM),
+    { quantity: 2, serving_label: "tub" });
 });
 
 Deno.test("a completed named-unit edit ignores temporary mass-unit text", () => {
