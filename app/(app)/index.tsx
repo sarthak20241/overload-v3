@@ -41,7 +41,7 @@ import { DronaCardPopup } from '@/components/coach/DronaCardPopup';
 import { useToast } from '@/components/ui/Toast';
 import { InboxBell } from '@/components/ui/InboxBell';
 import {
-  countWaitingCards, currentWeekStart, deferCard, movesFor, readCheckinCard, readMomentCard, readWeeklyCard, requestWeeklyCard, setCardStatus,
+  currentWeekStart, deferCard, movesFor, readCheckinCard, readDashboardCards, readMomentCard, requestWeeklyCard, setCardStatus,
   type SavedDronaCard,
 } from '@/lib/dronaCard';
 import { useWorkout } from '@/hooks/useWorkout';
@@ -352,17 +352,9 @@ export default function DashboardScreen() {
   // The bell's share of server cards: the ones put off with Later.
   const [cardsWaiting, setCardsWaiting] = useState(0);
   // Bumped by a Later: a count read that started before it is stale, and
-  // must not overwrite the +1 (the next read sees the deferred card).
+  // must not overwrite the +1 (the next read sees the deferred card). The
+  // count itself comes with the cards' one read below.
   const countGenRef = useRef(0);
-  useEffect(() => {
-    if (!user?.id || isGuestSession) { setCardsWaiting(0); return; }
-    let live = true;
-    const gen = ++countGenRef.current;
-    void countWaitingCards(supabase, user.id).then((n) => {
-      if (live && gen === countGenRef.current) setCardsWaiting(n);
-    });
-    return () => { live = false; };
-  }, [user?.id, isGuestSession, supabase, focusTick]);
   // A refocus reloads the fuel targets by itself (useNutritionTargets has its
   // own focus effect); only a pull asks for them here.
   useEffect(() => {
@@ -619,6 +611,7 @@ export default function DashboardScreen() {
       setWeeklyCard(null);
       setCheckinCard(null);
       setMomentCard(null);
+      setCardsWaiting(0);
       return;
     }
     let live = true;
@@ -630,11 +623,16 @@ export default function DashboardScreen() {
       shownCards.current.add(card.id);
       track('drona_card_shown', { kind: card.kind, topic: card.topic, slot: card.slot });
     };
+    // The bell's Later count rides along with the cards (one read for all four).
+    const gen = ++countGenRef.current;
     (async () => {
-      const [row, check, moment] = await Promise.all([
-        readWeeklyCard(supabase, clerkId), readCheckinCard(supabase, clerkId), readMomentCard(supabase, clerkId),
-      ]);
+      const cards = await readDashboardCards(supabase, clerkId);
       if (!live) return;
+      // undefined = the read failed: keep everything as it is.
+      const row = cards?.weekly ?? (cards ? null : undefined);
+      const check = cards?.checkin ?? (cards ? null : undefined);
+      const moment = cards?.moment ?? (cards ? null : undefined);
+      if (cards && gen === countGenRef.current) setCardsWaiting(cards.waiting);
       if (moment !== undefined) setMomentCard((prev) => keepWaitingMoment(prev, moment));
       if (check !== undefined) setCheckinCard(check);
       shown(check);
@@ -713,6 +711,10 @@ export default function DashboardScreen() {
         : `${popupCard.payload.to_name ?? 'The swap'} is in the plan.`;
       void moves.apply(supabase, popupCard.id).then((result) => {
         toast.success(result === 'ok' ? done : 'That has changed since. Nothing was touched.');
+        // A new target moved the FUEL card's numbers: reload them (a refocus
+        // would, but this screen never left focus). The move itself cleared
+        // the shared program (lib/dronaCard).
+        reloadFuel();
         setFocusTick((t) => t + 1);
       });
       return;
@@ -782,6 +784,7 @@ export default function DashboardScreen() {
       toast.info(
         result === 'ok' ? undone : 'That has changed since. Nothing was touched.',
       );
+      reloadFuel();
       setFocusTick((t) => t + 1);
     });
   };

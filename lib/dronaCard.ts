@@ -11,6 +11,8 @@ import { getFreshSupabaseAccessToken, getSupabaseAccessToken } from '@/lib/supab
 import { sendWithFreshTokenRetry } from '@/lib/authRetry';
 import { localDayISO } from '@/lib/dailySuggestion';
 import { pickCurrentCard, weekStartOf } from '@/lib/dronaRules';
+import { dashboardCardsFilter, splitDashboardCards } from '@/lib/dashboardCards';
+import { invalidate } from '@/lib/screenCache';
 
 export type DronaCardKind = 'request' | 'notice' | 'act' | 'talk';
 export type DronaCardStatus = 'pending' | 'applied' | 'dismissed' | 'undone' | 'opened' | 'done' | 'expired' | 'held';
@@ -140,6 +142,37 @@ export async function readMomentCard(
   }
 }
 
+/**
+ * The dashboard's four card answers (weekly, check-in, moment, Later count) in
+ * one read of drona_cards; lib/dashboardCards picks each from the rows exactly
+ * as its own query did. `undefined` = the read failed: the dashboard keeps what
+ * it shows and asks for nothing.
+ */
+export async function readDashboardCards(
+  supabase: SupabaseClient,
+  clerkId: string,
+  now: Date = new Date(),
+): Promise<{ weekly: SavedDronaCard | null; checkin: SavedDronaCard | null; moment: SavedDronaCard | null; waiting: number } | undefined> {
+  try {
+    const nowIso = now.toISOString();
+    const day = localDayISO(now);
+    const { sinceWeek } = dashboardCardsFilter(day, nowIso);
+    const { data, error } = await supabase
+      .from('drona_cards')
+      .select(CARD_COLUMNS)
+      .eq('user_id', clerkId)
+      .or(`week_start.gte.${sinceWeek},expires_at.gt.${nowIso}`);
+    if (error) return undefined;
+    // Only rows a card can be made of, so a malformed row is skipped the way
+    // the old per-slot reads skipped it.
+    const rows = (data ?? []).filter((r: any) => asCard(r) != null) as any[];
+    const out = splitDashboardCards(rows, day, nowIso);
+    return { weekly: asCard(out.weekly), checkin: asCard(out.checkin), moment: asCard(out.moment), waiting: out.waiting };
+  } catch {
+    return undefined;
+  }
+}
+
 async function readSlotCard(
   supabase: SupabaseClient,
   clerkId: string,
@@ -234,6 +267,10 @@ async function swapMove(
     taggable.setHeader?.('x-change-source', 'card');
     taggable.setHeader?.('x-change-card', cardId);
     const { data, error } = await request;
+    // The database may have changed a phase's targets or a routine's
+    // exercise: any user's cached program is stale (only this user's exists).
+    invalidate('program');
+    invalidate('pillar:routines');
     if (error) return null;
     return typeof data === 'string' ? data : null;
   } catch {
