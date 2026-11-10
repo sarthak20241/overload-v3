@@ -7,9 +7,11 @@
 //     - "Free year": 1 year free on overload_annual. No shared code: hand
 //       out one-time codes from `make`.
 //
-//   npx tsx scripts/offer-codes/codes.mts make 10 [--expires 2027-01-31] [--sandbox]
-//     Makes 10 one-time "Free year" codes, waits for Apple, prints them and
-//     saves a CSV next to the key file. Each code works once.
+//   npx tsx scripts/offer-codes/codes.mts give 3 [--to "Rahul"] [--sandbox]
+//     Prints 3 one-time "Free year" codes with their redeem links. Each code
+//     works once. Apple only makes batches of 500+, so the codes come from a
+//     local pool (free-year-codes.json next to the key); when it runs low, the
+//     script asks Apple for 500 more (a minute or two).
 //
 //   npx tsx scripts/offer-codes/codes.mts list
 //     The offers and their code batches.
@@ -22,9 +24,9 @@
 //   ASC_KEY_PATH=/Users/you/.config/overload/AuthKey_XXXXXXXXXX.p8
 // Environment variables with the same names win over the file.
 //
-// Apple limits: one-time codes are capped per app per quarter (150,000), a
-// batch expires on its date (at most 6 months out for one-time codes), and a
-// person can redeem one code per offer.
+// Apple limits: batches of 500 to 25,000 one-time codes, capped per app per
+// quarter, each batch ends on its date (at most 6 months out), and a person
+// can redeem one code per offer.
 
 import { createPrivateKey, sign } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -228,13 +230,49 @@ async function addCustomCode(offerId: string, spec: OfferSpec): Promise<void> {
   console.log(`+ Code ${spec.customCode} made (${spec.customCodeCount} uses, no end date).`);
 }
 
-function defaultExpiry(): string {
-  // Apple allows one-time codes up to 6 months out; 90 days is plenty to hand out.
-  const d = new Date(Date.now() + 90 * 24 * 3600 * 1000);
-  return d.toISOString().slice(0, 10);
+// ---------- one-time codes: a local pool ----------
+//
+// Apple makes one-time codes in batches of 500 to 25,000, so `give` hands
+// codes out from a pool kept in POOL_FILE, and asks Apple for a new batch of
+// 500 only when the pool runs low or its codes are close to their end date.
+// Apple knows which codes were redeemed; the pool knows which were handed out.
+
+type Pool = {
+  batches: { id: string; expires: string; codes: string[]; sandbox?: boolean }[];
+  given: Record<string, { at: string; to?: string }>;
+};
+
+const BATCH_SIZE = 500; // Apple's smallest batch for subscription one-time codes
+const BATCH_DAYS = 150; // Apple allows up to 6 months
+const MIN_DAYS_LEFT = 14; // never hand out a code that dies within 2 weeks
+
+function poolFile(): string {
+  const dir = env.ASC_KEY_PATH ? dirname(env.ASC_KEY_PATH) : join(homedir(), '.config/overload');
+  return join(dir, 'free-year-codes.json');
 }
 
-async function makeOneTime(count: number, expires: string, sandbox: boolean): Promise<void> {
+function readPool(): Pool {
+  const f = poolFile();
+  return existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : { batches: [], given: {} };
+}
+
+function writePool(pool: Pool): void {
+  writeFileSync(poolFile(), JSON.stringify(pool, null, 2), { mode: 0o600 });
+}
+
+function daysFromNow(days: number): string {
+  return new Date(Date.now() + days * 24 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+function unused(pool: Pool, sandbox: boolean): { code: string; expires: string }[] {
+  const cutoff = daysFromNow(MIN_DAYS_LEFT);
+  return pool.batches
+    .filter((b) => !!b.sandbox === sandbox && b.expires >= cutoff)
+    .sort((x, y) => x.expires.localeCompare(y.expires)) // oldest batch first
+    .flatMap((b) => b.codes.filter((c) => !pool.given[c]).map((code) => ({ code, expires: b.expires })));
+}
+
+async function newBatch(count: number, expires: string, sandbox: boolean): Promise<Pool['batches'][number]> {
   const { offer } = await findOffer(FREE_YEAR);
   if (!offer) throw new Error('No "Free year" offer yet. Run `setup` first.');
   const batch = await api('/v1/subscriptionOfferCodeOneTimeUseCodes', {
@@ -252,7 +290,7 @@ async function makeOneTime(count: number, expires: string, sandbox: boolean): Pr
     },
   });
   const id = batch.data.id;
-  process.stdout.write(`Batch ${id}: waiting for Apple to make ${count} codes`);
+  process.stderr.write(`Asking Apple for ${count} new codes (batch ${id})`);
   // Apple builds the codes in the background; the values call fails until then.
   let csv = '';
   for (let i = 0; i < 60; i++) {
@@ -260,24 +298,51 @@ async function makeOneTime(count: number, expires: string, sandbox: boolean): Pr
       csv = await api(`/v1/subscriptionOfferCodeOneTimeUseCodes/${id}/values`, { accept: 'text/csv' });
       if (csv.trim()) break;
     } catch { /* not ready yet */ }
-    process.stdout.write('.');
+    process.stderr.write('.');
     await new Promise((r) => setTimeout(r, 5000));
   }
-  process.stdout.write('\n');
-  if (!csv.trim()) {
-    console.log(`Not ready after 5 minutes. Get them later in App Store Connect, or run: list`);
-    return;
+  process.stderr.write('\n');
+  const codes = csv.split(/\r?\n/).map((l) => l.split(',')[0].trim()).filter((c) => /^[A-Z0-9]{6,}$/.test(c));
+  if (!codes.length) throw new Error(`Batch ${id} not ready after 5 minutes. Run the same command again later.`);
+  return { id, expires, codes, ...(sandbox ? { sandbox: true } : {}) };
+}
+
+/** Hand out `count` unused one-time codes, topping the pool up from Apple when needed. */
+async function give(count: number, to: string | undefined, sandbox: boolean): Promise<void> {
+  const pool = readPool();
+  // A batch made earlier but never saved (the wait ran out): pick it up first.
+  const { offer } = await findOffer(FREE_YEAR);
+  if (offer) {
+    const known = new Set(pool.batches.map((b) => b.id));
+    for (const b of await all(`/v1/subscriptionOfferCodes/${offer.id}/oneTimeUseCodes?limit=50`)) {
+      if (known.has(b.id) || b.attributes.active === false) continue;
+      try {
+        const csv: string = await api(`/v1/subscriptionOfferCodeOneTimeUseCodes/${b.id}/values`, { accept: 'text/csv' });
+        const codes = csv.split(/\r?\n/).map((l) => l.split(',')[0].trim()).filter((c) => /^[A-Z0-9]{6,}$/.test(c));
+        const isSandbox = b.attributes.environment === 'SANDBOX';
+        if (codes.length) pool.batches.push({ id: b.id, expires: b.attributes.expirationDate, codes, ...(isSandbox ? { sandbox: true } : {}) });
+      } catch { /* still being made */ }
+    }
   }
-  const codes = csv.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !/code/i.test(l));
-  const dir = env.ASC_KEY_PATH ? dirname(env.ASC_KEY_PATH) : process.cwd();
-  const file = join(dir, `free-year-codes-${new Date().toISOString().slice(0, 10)}-${id.slice(0, 8)}.csv`);
-  writeFileSync(file, csv);
-  console.log(`${codes.length} one-time codes, 1 year free each, valid until ${expires}${sandbox ? ' (SANDBOX)' : ''}:\n`);
-  for (const c of codes) console.log(`  ${c}   https://apps.apple.com/redeem?ctx=offercodes&id=${APP_ID}&code=${c}`);
-  console.log(`\nSaved: ${file}`);
+  while (unused(pool, sandbox).length < count) {
+    const need = Math.max(BATCH_SIZE, count - unused(pool, sandbox).length);
+    pool.batches.push(await newBatch(Math.min(need, 25000), daysFromNow(BATCH_DAYS), sandbox));
+    writePool(pool); // save at once: a later failure must not lose a batch
+  }
+  const picked = unused(pool, sandbox).slice(0, count);
+  const at = new Date().toISOString();
+  for (const p of picked) pool.given[p.code] = { at, ...(to ? { to } : {}) };
+  writePool(pool);
+  console.log(`${picked.length} one-time code${picked.length === 1 ? '' : 's'}, 1 year of Pro free each${sandbox ? ' (SANDBOX)' : ''}${to ? `, for ${to}` : ''}:\n`);
+  for (const p of picked) {
+    console.log(`  ${p.code}   use by ${p.expires}   https://apps.apple.com/redeem?ctx=offercodes&id=${APP_ID}&code=${p.code}`);
+  }
+  console.log(`\n${unused(pool, sandbox).length} unused codes left in ${poolFile()}`);
 }
 
 async function list(): Promise<void> {
+  const pool = readPool();
+  console.log(`Pool ${poolFile()}: ${unused(pool, false).length} unused, ${Object.keys(pool.given).length} handed out`);
   for (const spec of [FRIEND_MONTH, FREE_YEAR]) {
     const { offer } = await findOffer(spec);
     if (!offer) {
@@ -307,16 +372,14 @@ async function main() {
     const monthId = await createOffer(FRIEND_MONTH);
     await addCustomCode(monthId, FRIEND_MONTH);
     await createOffer(FREE_YEAR);
-  } else if (cmd === 'make') {
-    const count = Number(rest[0]);
-    if (!Number.isInteger(count) || count < 1 || count > 10000) throw new Error('Usage: make <how many, 1-10000> [--expires YYYY-MM-DD] [--sandbox]');
-    const expires = flag('--expires') ?? defaultExpiry();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(expires)) throw new Error('--expires must be YYYY-MM-DD');
-    await makeOneTime(count, expires, rest.includes('--sandbox'));
+  } else if (cmd === 'give') {
+    const count = Number(rest[0] ?? 1);
+    if (!Number.isInteger(count) || count < 1 || count > 1000) throw new Error('Usage: give [how many, 1-1000] [--to "name"] [--sandbox]');
+    await give(count, flag('--to'), rest.includes('--sandbox'));
   } else if (cmd === 'list') {
     await list();
   } else {
-    console.log('Usage: npx tsx scripts/offer-codes/codes.mts setup | make <count> [--expires YYYY-MM-DD] [--sandbox] | list');
+    console.log('Usage: npx tsx scripts/offer-codes/codes.mts setup | give [count] [--to "name"] [--sandbox] | list');
     process.exitCode = 1;
   }
 }
