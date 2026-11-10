@@ -39,3 +39,34 @@ export function entriesNewestFirst<E>(meals: { meal_entries?: E[] | null }[]): E
 export function itemsInPositionOrder<I extends { position?: unknown }>(items: I[] | null | undefined): I[] {
   return [...(items ?? [])].sort((a, b) => num(a.position) - num(b.position));
 }
+
+const isoOf = (y: number, m: number, d: number) => {
+  const t = new Date(y, m, d);
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+};
+
+/**
+ * The days one diary read should cover: `dayIso` itself, plus the past days of
+ * its Sunday-start week (the Nutrition strip's week) that are not in memory
+ * yet. The week used to come in a second read of the same meals right after
+ * the day landed; reading them together is one request. Today and later days
+ * are never filled (today keeps its own cache; a later day holds only plans).
+ */
+export function dayReadRange(
+  dayIso: string,
+  todayIso: string,
+  inMemory: (iso: string) => boolean,
+): { first: string; last: string; weekStartIso: string; filled: string[] } {
+  const [y, m, d] = dayIso.split('-').map((n) => parseInt(n, 10));
+  const dow = new Date(y, m - 1, d).getDay();
+  const weekStartIso = isoOf(y, m - 1, d - dow);
+  const filled: string[] = [];
+  for (let i = 0; i < 7; i++) {
+    const iso = isoOf(y, m - 1, d - dow + i);
+    // A future day (a plan) reads alone: filling would span today and beyond.
+    if (dayIso > todayIso || iso === dayIso || iso >= todayIso || inMemory(iso)) continue;
+    filled.push(iso);
+  }
+  const all = [dayIso, ...filled].sort();
+  return { first: all[0], last: all[all.length - 1], weekStartIso, filled };
+}

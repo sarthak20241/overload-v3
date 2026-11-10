@@ -12,7 +12,8 @@ import { sendWithFreshTokenRetry } from '@/lib/authRetry';
 import { localDayISO } from '@/lib/dailySuggestion';
 import { pickCurrentCard, weekStartOf } from '@/lib/dronaRules';
 import { dashboardCardsFilter, splitDashboardCards } from '@/lib/dashboardCards';
-import { invalidate } from '@/lib/screenCache';
+import { fetchShared, invalidate } from '@/lib/screenCache';
+import { invalidateProfile } from '@/lib/profileReads';
 
 export type DronaCardKind = 'request' | 'notice' | 'act' | 'talk';
 export type DronaCardStatus = 'pending' | 'applied' | 'dismissed' | 'undone' | 'opened' | 'done' | 'expired' | 'held';
@@ -218,6 +219,8 @@ export async function requestWeeklyCard(timeZone: string | null): Promise<SavedD
       getFreshSupabaseAccessToken,
     );
     if (!res.ok) return null;
+    // The server may have written a card (and a check-in).
+    cardsChanged();
     const json = await res.json();
     return asCard(json?.card);
   } catch {
@@ -238,6 +241,7 @@ export async function setCardStatus(
       .from('drona_cards')
       .update({ status, decided_at: new Date().toISOString() })
       .eq('id', cardId);
+    cardsChanged();
   } catch {
     // The card is already off the screen; a failed write means it comes back
     // next open, which is better than blocking the tap.
@@ -271,6 +275,9 @@ async function swapMove(
     // exercise: any user's cached program is stale (only this user's exists).
     invalidate('program');
     invalidate('pillar:routines');
+    cardsChanged();
+    // A targets card moves the profile's targets (and so the goal history).
+    invalidateProfile();
     if (error) return null;
     return typeof data === 'string' ? data : null;
   } catch {
@@ -290,6 +297,7 @@ export const undoSwap = (supabase: SupabaseClient, cardId: string) =>
 export async function deferCard(supabase: SupabaseClient, cardId: string): Promise<string | null> {
   try {
     const { data, error } = await supabase.rpc('drona_defer_card', { p_card_id: cardId });
+    cardsChanged();
     if (error) return null;
     return typeof data === 'string' ? data : null;
   } catch {
@@ -327,8 +335,14 @@ export async function readCardHistory(
   supabase: SupabaseClient,
   clerkId: string,
   limit = 40,
+  /**
+   * `shared`: answer from a read of the same list younger than
+   * CARD_HISTORY_FRESH_MS (Profile and Goal & Plan both count the waiting
+   * cards on every focus). Every card write in this file clears it.
+   */
+  opts?: { shared?: boolean },
 ): Promise<SavedDronaCard[] | undefined> {
-  try {
+  const read = async () => {
     const { data, error } = await supabase
       .from('drona_cards')
       .select(CARD_COLUMNS)
@@ -336,11 +350,25 @@ export async function readCardHistory(
       .order('week_start', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(limit);
-    if (error) return undefined;
+    // Thrown, so a failed read is never kept as the shared answer.
+    if (error) throw error;
     return (data ?? []).map(asCard).filter((c): c is SavedDronaCard => c != null);
+  };
+  try {
+    return opts?.shared
+      ? await fetchShared(`cards:${clerkId}:${limit}`, read, { maxAgeMs: CARD_HISTORY_FRESH_MS })
+      : await read();
   } catch {
     return undefined;
   }
+}
+
+/** How long a shared card list (readCardHistory with `shared`) is used as it is. */
+export const CARD_HISTORY_FRESH_MS = 30_000;
+
+/** A card was written or made: the shared card lists are stale. */
+function cardsChanged(): void {
+  invalidate('cards');
 }
 
 /** "Set 1950 kcal" on a calories act card (B1). The database re-derives the macros. */

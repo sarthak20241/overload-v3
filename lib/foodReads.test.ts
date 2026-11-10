@@ -4,7 +4,7 @@
 // to one embedded select. These tests pin that the embedded rows reshape to
 // what the two-trip version produced.
 import { assertEquals } from 'jsr:@std/assert@1';
-import { dayTotalsFromMeals, entriesNewestFirst, itemsInPositionOrder } from './foodReads.ts';
+import { dayReadRange, dayTotalsFromMeals, entriesNewestFirst, itemsInPositionOrder } from './foodReads.ts';
 
 const e = (kcal: number, p = 0, c = 0, f = 0) => ({ kcal, protein_g: p, carb_g: c, fat_g: f });
 const dayOf = (loggedAt: string) => loggedAt.slice(0, 10);
@@ -46,4 +46,26 @@ Deno.test('saved meal items: in position order, as the ordered items read gave t
   const items = [{ food_name: 'b', position: 1 }, { food_name: 'c', position: 2 }, { food_name: 'a', position: 0 }];
   assertEquals(itemsInPositionOrder(items).map((x) => x.food_name), ['a', 'b', 'c']);
   assertEquals(itemsInPositionOrder(null), []);
+});
+
+Deno.test('the day read brings the past days of its week not in memory, and nothing from today on', () => {
+  // 2026-11-10 is a Tuesday: its week starts Sunday 2026-11-08.
+  const r = dayReadRange('2026-11-10', '2026-11-10', () => false);
+  assertEquals(r, { first: '2026-11-08', last: '2026-11-10', weekStartIso: '2026-11-08', filled: ['2026-11-08', '2026-11-09'] });
+});
+
+Deno.test('days already in memory are not asked for again; none missing reads the day alone', () => {
+  const r = dayReadRange('2026-11-10', '2026-11-10', () => true);
+  assertEquals(r, { first: '2026-11-10', last: '2026-11-10', weekStartIso: '2026-11-08', filled: [] });
+});
+
+Deno.test('a past day fills the rest of its week up to yesterday', () => {
+  const r = dayReadRange('2026-11-03', '2026-11-05', (iso) => iso === '2026-11-02');
+  assertEquals(r.filled, ['2026-11-01', '2026-11-04']);
+  assertEquals([r.first, r.last], ['2026-11-01', '2026-11-04']);
+});
+
+Deno.test('a future day reads alone', () => {
+  const r = dayReadRange('2026-11-12', '2026-11-10', () => false);
+  assertEquals([r.first, r.last, r.filled.length], ['2026-11-12', '2026-11-12', 0]);
 });

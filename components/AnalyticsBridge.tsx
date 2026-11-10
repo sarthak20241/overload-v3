@@ -19,6 +19,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { screen, identifyUser, resetAnalytics, setUserProps, registerSuperProps, analyticsEnabled } from '@/lib/analytics';
 import { clearCache } from '@/lib/screenCache';
+import { loadProfileRow } from '@/lib/profileReads';
 
 /** Person props re-read from user_profiles at most this often on foreground. */
 const PROFILE_REFRESH_MS = 10 * 60 * 1000;
@@ -115,11 +116,8 @@ export function AnalyticsBridge() {
     lastProfileFetch.current = Date.now();
     (async () => {
       try {
-        const { data } = await supabase
-          .from('user_profiles')
-          .select('tier, level, xp, streak, goal, experience_level, weekly_target_sessions, gender, daily_calorie_target')
-          .eq('clerk_user_id', user.id)
-          .maybeSingle();
+        // The profile row the app shares (lib/profileReads), not a read of its own.
+        const data = (await loadProfileRow(supabase, user.id)) as Record<string, any> | null;
         if (cancelled || !data) return;
         setUserProps({
           tier: data.tier ?? 'free',

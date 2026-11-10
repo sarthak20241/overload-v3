@@ -358,7 +358,7 @@ export default function DashboardScreen() {
   // A refocus reloads the fuel targets by itself (useNutritionTargets has its
   // own focus effect); only a pull asks for them here.
   useEffect(() => {
-    if (refreshTick > 0) reloadFuel();
+    if (refreshTick > 0) reloadFuel({ fresh: true });
   }, [refreshTick, reloadFuel]);
   const hasFocusedOnce = useRef(false);
   useFocusEffect(

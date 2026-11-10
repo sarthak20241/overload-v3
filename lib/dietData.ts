@@ -35,7 +35,8 @@ import { readSwapOptions, type SwapOption } from '@/lib/variantSwap';
 import { relogColumns, type RelogLabels } from '@/lib/foodPatterns';
 import { deleteMealIfEmpty } from '@/lib/mealCleanup';
 import { invalidateUserProgram } from '@/lib/screenCache';
-import { dayTotalsFromMeals, entriesNewestFirst, itemsInPositionOrder } from '@/lib/foodReads';
+import { invalidateProfile, loadDayGoals, loadProfileRow, loadTargetHistory } from '@/lib/profileReads';
+import { dayReadRange, dayTotalsFromMeals, entriesNewestFirst, itemsInPositionOrder } from '@/lib/foodReads';
 import { buildYourFoods, type YourFood, type YourFoodEntry, type YourFoodMark } from '@/lib/yourFoods';
 import {
   pendingRows, prunePending, settlePending as settleGroup, settledKeys, withPending, r0, r1,
@@ -319,9 +320,20 @@ export function useDayNutrition(dayIso: string): DayData {
       const cached = isToday ? !!_navCache && _navCache.key === key : _dayCache.has(key);
       if (cached && !isToday) setByMealForDay(_dayCache.get(key)!, dayIso);
       if (!cached) setLoading(true);
-      const day = dateFromYmd(dayIso);
-      const res = await fetchDayRange(supabase, day, day);
+      // One read for the day and the past days of its week not in memory yet,
+      // which the Nutrition strip would otherwise fetch right after this one
+      // (usePrefetchWeek finds them here and reads nothing).
+      const uid = user?.id;
+      const todayIsoNow = ymd(new Date());
+      const range = dayReadRange(dayIso, todayIsoNow, (iso) => !uid || _dayCache.has(`${uid}:${iso}`));
+      const res = await fetchDayRange(supabase, dateFromYmd(range.first), dateFromYmd(range.last));
       if (cancelled) return;
+      if (res.ok && uid) {
+        for (const iso of range.filled) {
+          const other = res.byDay.get(iso);
+          if (other) _dayCache.set(`${uid}:${iso}`, other);
+        }
+      }
       // A FAILED query must not blank the day or be cached as "nothing logged":
       // an offline blip would keep painting an empty ring after the network
       // came back. Keep what we have and stop.
@@ -1696,7 +1708,7 @@ interface CachedTargets {
  *  (lib/fuelDays) add calories on their weekday, and a PAST day is held to the
  *  goal it had then (lib/targetHistory), not to today's. */
 export function useNutritionTargets(): {
-  targets: NutritionTargets; isCustom: boolean; reload: () => void;
+  targets: NutritionTargets; isCustom: boolean; reload: (opts?: { fresh?: boolean }) => void;
   apply: (t: NutritionTargets) => void;
   fuelDays: FuelDay[];
   applyFuelDays: (days: FuelDay[]) => void;
@@ -1726,7 +1738,12 @@ export function useNutritionTargets(): {
   const dayTargetsRef = useRef(dayTargets);
   dayTargetsRef.current = dayTargets;
   const [tick, setTick] = useState(0);
-  const reload = useCallback(() => setTick((t) => t + 1), []);
+  // Set by reload({ fresh: true }): the next read skips the shared window.
+  const freshNext = useRef(false);
+  const reload = useCallback((opts?: { fresh?: boolean }) => {
+    if (opts?.fresh === true) freshNext.current = true;
+    setTick((t) => t + 1);
+  }, []);
   // Optimistic update so the ring/pill reflect a saved goal instantly, without
   // waiting out read-after-write lag on the refetch.
   const apply = useCallback((t: NutritionTargets) => {
@@ -1794,43 +1811,37 @@ export function useNutritionTargets(): {
       }
 
       if (!supabase) return;
-      const cols = 'daily_calorie_target, protein_target_g, carb_target_g, fat_target_g';
-      // The targets and the fuel days in one read of the profile row. A
-      // database from before the fuel days column (0139) must still paint the
-      // base targets, so that one error reads the targets alone and keeps
-      // whatever fuel days we had instead of taking the targets with it.
-      const readProfile = async (): Promise<{ data: unknown; fuel: { data: unknown; error: unknown } | null }> => {
-        if (!clerkId) {
-          const { data } = await supabase.from('user_profiles').select(cols).limit(1).maybeSingle();
-          return { data, fuel: null };
-        }
-        const both = await supabase.from('user_profiles').select(`${cols}, calorie_day_boosts`)
-          .eq('clerk_user_id', clerkId).maybeSingle();
-        if (both.error && missingColumn(both.error, ['calorie_day_boosts'])) {
-          const { data } = await supabase.from('user_profiles').select(cols).eq('clerk_user_id', clerkId).maybeSingle();
-          return { data, fuel: { data: null, error: both.error } };
-        }
-        return { data: both.data, fuel: both };
-      };
-      // The history in its own read, so a build ahead of 0150 only loses the
-      // past-day goals, never today's.
-      const [{ data, fuel: fuelRes }, historyRes, dayRes] = await Promise.all([
-        readProfile(),
-        clerkId
-          ? supabase.from('user_target_history')
-            .select('effective_from, kcal, protein_g, carb_g, fat_g, calorie_day_boosts')
-            .eq('user_id', clerkId)
-            .order('effective_from', { ascending: true })
-          : Promise.resolve(null),
-        // One-day goals from the last 90 days: far enough back for any day the
-        // app lets you scroll to without paging, and small.
-        clerkId
-          ? supabase.from('user_day_targets')
-            .select('day, kcal, protein_g, carb_g, fat_g')
-            .eq('user_id', clerkId)
-            .gte('day', ymd(new Date(Date.now() - 90 * 86_400_000)))
-          : Promise.resolve(null),
-      ]);
+      // The profile row, the goal history and the one-day goals are each one
+      // read shared app-wide (lib/profileReads): the dashboard, the trends
+      // card, readiness and this hook in every screen answer from the same
+      // rows. A failed history or day-goal read (a build ahead of 0150 / 0151)
+      // only loses the past-day goals, never today's.
+      // Every write to these tables clears them, so a refocus inside the
+      // window reads nothing; a pull (reload({ fresh: true })) reads past it.
+      const fresh = freshNext.current;
+      freshNext.current = false;
+      const settle = <T,>(p: Promise<T>) => p.then((v) => ({ ok: true as const, v }), () => ({ ok: false as const, v: null }));
+      const [profileRes, historyRes, dayRes] = clerkId
+        ? await Promise.all([
+          settle(loadProfileRow(supabase, clerkId, { fresh })),
+          settle(loadTargetHistory(supabase, clerkId, { fresh })),
+          settle(loadDayGoals(supabase, clerkId, ymd(new Date()), { fresh })),
+        ])
+        : [
+          await settle((async () => {
+            const { data: d } = await supabase.from('user_profiles')
+              .select('daily_calorie_target, protein_target_g, carb_target_g, fat_target_g').limit(1).maybeSingle();
+            return d as Record<string, unknown> | null;
+          })()),
+          { ok: false as const, v: null },
+          { ok: false as const, v: null },
+        ];
+      const data = profileRes.ok ? profileRes.v : null;
+      // A row read with every column: the fuel days are on it (a database
+      // before 0139 just has no such key, and keeps the fuel days we had).
+      const fuelRes = clerkId && data && 'calorie_day_boosts' in data
+        ? { data: { calorie_day_boosts: data.calorie_day_boosts }, error: null }
+        : null;
       if (cancelled || !data) return;
       const d = data as Record<string, unknown>;
       const pick = (v: unknown, def: number) => (v == null ? def : Number(v));
@@ -1848,13 +1859,13 @@ export function useNutritionTargets(): {
         nextFuel = normalizeFuelDays((fuelRes.data as { calorie_day_boosts?: unknown } | null)?.calorie_day_boosts);
       }
       let nextHistory = historyRef.current;
-      if (historyRes && !historyRes.error) nextHistory = (historyRes.data ?? []) as TargetHistoryRow[];
+      if (historyRes.ok) nextHistory = (historyRes.v ?? []) as TargetHistoryRow[];
       setTargets(next);
       setIsCustom(nextIsCustom);
       setFuelDays(nextFuel);
       setHistory(nextHistory);
       let nextDays = dayTargetsRef.current;
-      if (dayRes && !dayRes.error) nextDays = (dayRes.data ?? []) as DayTargetRow[];
+      if (dayRes.ok) nextDays = (dayRes.v ?? []) as DayTargetRow[];
       setDayTargets(nextDays);
       writeCache<CachedTargets>('nutritionTargets', clerkId, {
         targets: next, isCustom: nextIsCustom, fuelDays: nextFuel, history: nextHistory ?? undefined,
@@ -1887,6 +1898,7 @@ export async function saveDayTarget(
   const { error } = await supabase.from('user_day_targets').upsert({
     user_id: clerkId, day: dayISO, kcal: t.kcal, protein_g: t.protein, carb_g: t.carb, fat_g: t.fat,
   }, { onConflict: 'user_id,day' });
+  invalidateProfile(clerkId);
   return error ? { error: error.message } : {};
 }
 
@@ -1897,6 +1909,7 @@ export async function clearDayTarget(
   dayISO: string,
 ): Promise<{ error?: string }> {
   const { error } = await supabase.from('user_day_targets').delete().eq('user_id', clerkId).eq('day', dayISO);
+  invalidateProfile(clerkId);
   return error ? { error: error.message } : {};
 }
 
@@ -1924,6 +1937,8 @@ export async function saveFuelDays(
     clerk_user_id: clerkId,
     calorie_day_boosts: clean.length > 0 ? clean : null,
   }, { onConflict: 'clerk_user_id' });
+  // The shared profile row (and the goal history its trigger keeps) is stale.
+  invalidateProfile(clerkId);
   if (error) return { error: error.message };
   if (phaseId) {
     const { error: phaseErr } = await supabase
@@ -1936,6 +1951,7 @@ export async function saveFuelDays(
       await supabase.from('user_profiles')
         .update({ calorie_day_boosts: before })
         .eq('clerk_user_id', clerkId);
+      invalidateProfile(clerkId);
       return { error: phaseErr.message };
     }
   }
@@ -1976,6 +1992,7 @@ export async function saveNutritionTargets(
     carb_target_g: t.carb,
     fat_target_g: t.fat,
   }, { onConflict: 'clerk_user_id' });
+  invalidateProfile(clerkId);
   return error ? { error: error.message } : {};
 }
 

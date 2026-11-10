@@ -16,6 +16,7 @@ import { flushRoutineQueue, getPendingRoutineCount, hydrateRoutineQueue } from '
 import { flushEditQueue, getPendingEditCount, hydrateEditQueue } from '@/lib/editQueue';
 import { hydrateCache } from '@/lib/localCache';
 import { invalidate } from '@/lib/screenCache';
+import { invalidateProfile } from '@/lib/profileReads';
 import { nextSyncCounts, type SyncCounts } from '@/lib/syncTick';
 
 /** Workouts + routines + workout edits still waiting to sync for this user. */
@@ -76,6 +77,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     if (synced && uid) {
       invalidate(`workouts:${uid}`);
       invalidate(`readiness:${uid}`);
+      // A synced workout's award_xp moved the profile row's xp.
+      invalidateProfile(uid);
     }
     setCounts(counts);
   }, []);

@@ -60,6 +60,7 @@ import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { isLifetimeTier, PLAN_BENEFITS, tierLabel } from '@/lib/tiers';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import { OrbLoader } from '@/components/ui/OrbLoader';
+import { invalidateProfile, loadProfileRow } from '@/lib/profileReads';
 
 type Gender = 'M' | 'F' | 'O';
 type WeightUnit = 'kg' | 'lbs';
@@ -276,7 +277,7 @@ export default function ProfileScreen() {
   useFocusEffect(useCallback(() => {
     let live = true;
     if (!user?.id) { setDronaWaiting(null); return; }
-    readCardHistory(supabase, user.id, 20).then((rows) => {
+    readCardHistory(supabase, user.id, 20, { shared: true }).then((rows) => {
       if (live && rows) setDronaWaiting(waitingCount(rows, Date.now()));
     });
     return () => { live = false; };
@@ -544,9 +545,11 @@ export default function ProfileScreen() {
         setTrainingAgeMonths(profile.training_age_months != null ? String(profile.training_age_months) : '');
         setBirthYear(profile.date_of_birth ? String(new Date(profile.date_of_birth).getFullYear()) : '');
       };
-      const profileQuery = clerkId
-        ? supabase.from('user_profiles').select('*').eq('clerk_user_id', clerkId).maybeSingle()
-        : supabase.from('user_profiles').select('*').limit(1).maybeSingle();
+      // The row the app shares (lib/profileReads): read lazily, below, only
+      // when the network read runs.
+      const profileQuery = () => (clerkId
+        ? loadProfileRow(supabase, clerkId).then((data) => ({ data: data as any, error: null }))
+        : supabase.from('user_profiles').select('*').limit(1).maybeSingle());
       const countQuery = clerkId
         ? supabase.from('workouts').select('*', { count: 'exact', head: true }).eq('user_id', clerkId)
         : supabase.from('workouts').select('*', { count: 'exact', head: true });
@@ -565,7 +568,7 @@ export default function ProfileScreen() {
       }
       if (!network) return;
       try {
-        const [{ data: profile, error: pErr }, { count, error: cErr }] = await Promise.all([profileQuery, countQuery]);
+        const [{ data: profile, error: pErr }, { count, error: cErr }] = await Promise.all([profileQuery(), countQuery]);
         // A failed/unauthenticated request must not reset the screen to empty/0;
         // throw so the catch keeps the cached values.
         if (pErr || cErr) throw pErr || cErr;
@@ -599,6 +602,7 @@ export default function ProfileScreen() {
         clerk_user_id: clerkId,
         ...patch,
       }, { onConflict: 'clerk_user_id' });
+      invalidateProfile(clerkId);
       if (error) throw error;
     } catch (err: any) {
       setShowErrorAlert(err.message);
@@ -1396,6 +1400,7 @@ export default function ProfileScreen() {
                       .update({ drona_auto_adjust: next })
                       .eq('clerk_user_id', user.id)
                       .then(({ error }) => {
+                        invalidateProfile(user.id);
                         if (error) {
                           setAutoAdjust(!next); // it did not save: put it back
                           toast.error('Could not save that. Try again.');

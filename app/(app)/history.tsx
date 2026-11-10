@@ -39,6 +39,7 @@ import { earnedXp, importedFromLabel } from '@/lib/healthCardio';
 import { applyEditsToHistoryRows, getPendingEdit, removePendingEdit } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
+import { invalidateProfile } from '@/lib/profileReads';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -880,7 +881,8 @@ export default function HistoryScreen() {
       const refundVol = pendingEdit ? pendingEdit.baseVolumeKg : (target?.total_volume_kg ?? 0);
       // A workout imported from Apple Health / Health Connect never awarded XP.
       const earned = earnedXp(target?.source) ? getXpForWorkout(refundSets, refundVol) : 0;
-      if (earned > 0) supabase.rpc('award_xp', { p_earned: -earned }).then(() => {}, () => {});
+      // The refund moves the shared profile row's xp (lib/profileReads).
+      if (earned > 0) supabase.rpc('award_xp', { p_earned: -earned }).then(() => invalidateProfile(user?.id), () => {});
       // Drop any queued edit for this workout so it doesn't flush against a
       // now-deleted row — the INSERT would FK-fail (23503), get misread as a
       // parkable data error, and keep retrying on every reconnect (backoff caps

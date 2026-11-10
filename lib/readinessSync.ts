@@ -15,6 +15,7 @@ import { dowOfISO, normalizeFuelDays } from './fuelDays';
 import { storeReadinessParts } from './readinessParts';
 import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from './targetHistory';
 import { fetchShared, peek, put } from './screenCache';
+import { loadDayGoals, loadProfileRow, loadTargetHistory } from './profileReads';
 
 const BASELINE_DAYS = 28;
 // sleep_quality rides along for today's read only; it is a subjective modifier, so
@@ -121,9 +122,25 @@ export function peekReadiness(userId: string): ReadinessResult | null | undefine
 }
 
 /** Today's readiness, from the cache when it is fresh. Throws on a failed read. */
-export function sharedReadiness(supabase: SupabaseClient, userId: string): Promise<ReadinessResult | null> {
-  const day = todayLocalISO();
-  return fetchShared(readinessKey(userId, day), () => loadReadiness(supabase, userId, day), { maxAgeMs: READINESS_FRESH_MS });
+export function sharedReadiness(
+  supabase: SupabaseClient,
+  userId: string,
+  opts?: { fresh?: boolean },
+): Promise<ReadinessResult | null> {
+  return sharedReadinessFor(supabase, userId, todayLocalISO(), opts);
+}
+
+function sharedReadinessFor(
+  supabase: SupabaseClient,
+  userId: string,
+  day: string,
+  opts?: { fresh?: boolean },
+): Promise<ReadinessResult | null> {
+  return fetchShared(
+    readinessKey(userId, day),
+    () => loadReadiness(supabase, userId, day),
+    opts?.fresh ? undefined : { maxAgeMs: READINESS_FRESH_MS },
+  );
 }
 
 /** Fallback daily targets, mirroring lib/dietData DEFAULT_TARGETS. */
@@ -149,48 +166,29 @@ async function loadNutritionFactor(
   try {
     const from = shiftDaysISO(today, -NUTRITION_LOOKBACK);
     const to = shiftDaysISO(today, -1);
-    const [statsRes, profileRes, fuelRes, historyRes, dayRes] = await Promise.all([
+    // The profile row, goal history and one-day goals are the reads the app
+    // shares (lib/profileReads): the fuel targets on the same screen asked
+    // for the same rows a moment ago. History and one-day goals are best
+    // effort: without them every day is scored against today's goal.
+    const settle = <T,>(p: Promise<T>) => p.then((v) => ({ ok: true as const, v }), () => ({ ok: false as const, v: null }));
+    const [statsRes, profileRes, historyRes, dayRes] = await Promise.all([
       supabase
         .from('user_nutrition_stats')
         .select('day, kcal, protein_g')
         .eq('user_id', userId)
         .gte('day', from)
         .lte('day', to),
-      supabase
-        .from('user_profiles')
-        .select('protein_target_g, daily_calorie_target')
-        .eq('clerk_user_id', userId)
-        .maybeSingle(),
-      // Its own read, best effort: a missing column (a build ahead of 0139)
-      // just scores every day against the base, as before.
-      supabase
-        .from('user_profiles')
-        .select('calorie_day_boosts')
-        .eq('clerk_user_id', userId)
-        .maybeSingle(),
-      // The goal each past day had (0150), best effort the same way: without
-      // it, every day is scored against today's goal, as before.
-      supabase
-        .from('user_target_history')
-        .select('effective_from, kcal, protein_g, carb_g, fat_g, calorie_day_boosts')
-        .eq('user_id', userId),
-      // Goals set for one day only (0151), same best-effort rule.
-      supabase
-        .from('user_day_targets')
-        .select('day, kcal, protein_g, carb_g, fat_g')
-        .eq('user_id', userId)
-        .gte('day', from)
-        .lte('day', to),
+      settle(loadProfileRow(supabase, userId)),
+      settle(loadTargetHistory(supabase, userId)),
+      settle(loadDayGoals(supabase, userId, today)),
     ]);
     // Either query erroring means we can't trust the ratios; skip the factor
     // rather than silently scoring against fallback targets (the "any failure
     // returns null" contract). A profile that simply has no custom targets set is
     // NOT an error, and legitimately uses the defaults below.
-    if (statsRes.error || profileRes.error) return null;
+    if (statsRes.error || !profileRes.ok) return null;
     const days = (statsRes.data ?? []) as { day: string; kcal: number | string; protein_g: number | string }[];
-    const fuel = fuelRes.error
-      ? []
-      : normalizeFuelDays((fuelRes.data as { calorie_day_boosts?: unknown } | null)?.calorie_day_boosts);
+    const fuel = normalizeFuelDays((profileRes.v as { calorie_day_boosts?: unknown } | null)?.calorie_day_boosts);
     // Only days with actual food logged count toward the average.
     const logged = days
       .map((d) => ({ day: d.day, kcal: Number(d.kcal), protein: Number(d.protein_g) }))
@@ -200,15 +198,16 @@ async function loadNutritionFactor(
     const avgProtein = logged.reduce((a, d) => a + d.protein, 0) / logged.length;
     const avgKcal = logged.reduce((a, d) => a + d.kcal, 0) / logged.length;
 
-    const prof = (profileRes.data ?? {}) as { protein_target_g?: number | string | null; daily_calorie_target?: number | string | null };
+    const prof = (profileRes.v ?? {}) as { protein_target_g?: number | string | null; daily_calorie_target?: number | string | null };
     const live = {
       kcal: Number(prof.daily_calorie_target) || DEFAULT_KCAL_TARGET,
       protein: Number(prof.protein_target_g) || DEFAULT_PROTEIN_TARGET,
       carb: 0,
       fat: 0,
     };
-    const history = historyRes.error ? null : (historyRes.data ?? []) as TargetHistoryRow[];
-    const overrides = dayRes.error ? null : (dayRes.data ?? []) as DayTargetRow[];
+    const history = historyRes.ok ? (historyRes.v ?? []) as TargetHistoryRow[] : null;
+    // The shared read reaches 90 days back; only the scored days matter.
+    const overrides = dayRes.ok ? ((dayRes.v ?? []) as DayTargetRow[]).filter((r) => r.day >= from && r.day <= to) : null;
     // Each logged day asked for its own amount: the goal it had then (a goal
     // changed today does not rewrite yesterday), plus its fuel day (a long-run
     // Sunday eaten to its +300 is on plan). Compare against the mean of the
@@ -305,13 +304,24 @@ export async function loadReadinessHistory(
 export async function computeAndStoreReadiness(
   supabase: SupabaseClient,
   userId: string,
+  /**
+   * true when nothing the score reads changed since the shared readiness was
+   * computed (a foreground sync that wrote no rows): today's shared answer is
+   * used if it is fresh, instead of the same reads a second time.
+   */
+  reuseShared = false,
 ): Promise<ReadinessResult | null> {
   // One local day for the score, its inputs and both rows, so a save around
   // midnight cannot score one day and file it under another.
   const day = todayLocalISO();
-  const result = await loadReadiness(supabase, userId, day);
-  // The freshest answer there is: the dashboard card paints it on its next focus.
-  put(readinessKey(userId, day), result);
+  let result: ReadinessResult | null;
+  if (reuseShared) {
+    result = await sharedReadinessFor(supabase, userId, day);
+  } else {
+    result = await loadReadiness(supabase, userId, day);
+    // The freshest answer there is: the dashboard card paints it on its next focus.
+    put(readinessKey(userId, day), result);
+  }
   if (result && result.score != null) {
     const { error: upErr } = await supabase.from('daily_metrics').upsert(
       { user_id: userId, metric_date: day, metric_type: 'readiness_score', value: result.score, unit: 'score', source: 'manual' },
@@ -351,6 +361,10 @@ export async function runHealthSyncAndReadiness(
   } catch {
     // Same rule: a failed import never holds readiness back.
   }
-  const readiness = await computeAndStoreReadiness(supabase, userId);
+  // Nothing new landed (no hub, or no new readings or sessions): the score's
+  // inputs are what the dashboard card just read, so its shared answer (or the
+  // read it has in flight) is used instead of running every read again.
+  const nothingNew = !synced && !cardio;
+  const readiness = await computeAndStoreReadiness(supabase, userId, nothingNew);
   return { synced, cardio, readiness };
 }

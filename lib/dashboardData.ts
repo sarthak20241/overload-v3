@@ -18,6 +18,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { loadRecentWorkouts } from '@/lib/recentWorkouts';
+import { loadProfileRow } from '@/lib/profileReads';
 
 export interface DashboardData {
   /** Workouts from the last 90 days, newest first, with `sets` normalized. */
@@ -41,8 +42,10 @@ export async function fetchDashboardData(
 ): Promise<DashboardData> {
   // Only the last 90 days, to cap payload size; the client-side stats need
   // recent history only.
+  // XP from the profile row the app shares (lib/profileReads); a sync flush
+  // that awarded XP clears it.
   const profileQ = clerkId
-    ? supabase.from('user_profiles').select('xp').eq('clerk_user_id', clerkId).maybeSingle()
+    ? loadProfileRow(supabase, clerkId, opts).then((data) => ({ data, error: null }))
     : supabase.from('user_profiles').select('xp').limit(1).maybeSingle();
   const [rows, pRes] = await Promise.all([loadRecentWorkouts(supabase, clerkId, opts), profileQ]);
   if (pRes.error) throw pRes.error;

@@ -19,6 +19,7 @@ import { importErrorAction, planCardioImports, queuedCardioWindows, type BusyWin
 import { getPendingWorkouts } from './syncQueue';
 import { getActiveWorkoutSnapshot } from './activeWorkoutPersistence';
 import { track } from './analytics';
+import { invalidate } from './screenCache';
 
 const CURSOR_KEY = (userId: string) => `health_cardio_cursor_v1::${userId}`;
 const DEFAULT_BACKFILL_DAYS = 28;
@@ -101,6 +102,7 @@ export async function syncHealthCardio(
       if (action === 'missing') return null;
       // Offline or a passing database error: stop, keep the cursor, retry next sync.
       if (action === 'stop') {
+        if (imported > 0) invalidate(`workouts:${userId}`);
         if (imported > 0) track('health_cardio_imported', { count: imported, hub: adapter.hub });
         return { imported };
       }
@@ -115,6 +117,8 @@ export async function syncHealthCardio(
   }
 
   await setCursor(userId, today);
+  // New workouts on the server: the shared 90-day read is stale.
+  if (imported > 0) invalidate(`workouts:${userId}`);
   if (imported > 0) track('health_cardio_imported', { count: imported, hub: adapter.hub });
   return { imported };
 }

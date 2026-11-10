@@ -40,6 +40,7 @@ import type { CoachAccess } from '@/hooks/useCoachAccess';
 import { Paywall } from './Paywall';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { OrbLoader } from '@/components/ui/OrbLoader';
+import { invalidateProfile } from '@/lib/profileReads';
 
 type GateScreen =
   | 'allow'                  // pass-through: caller renders the real content
@@ -178,6 +179,7 @@ function GateBody({
     setError(null);
     try {
       const { data, error: rpcErr } = await supabase.rpc('start_coach_trial');
+      invalidateProfile();
       if (rpcErr) throw rpcErr;
       // RPC contract: { ok: boolean, reason?: string, ... }
       const ok = (data as any)?.ok === true;

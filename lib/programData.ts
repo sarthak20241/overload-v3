@@ -31,6 +31,7 @@ import { toLocalISO, todayLocalISO } from '@/lib/programDates';
 // Re-exported: the screens and helpers import these from here.
 export { activePhaseOn, computeActivePhaseSeq, daysBetweenISO, phaseFor, todayLocalISO };
 import { programGoalFor } from '@/lib/fitnessGoals';
+import { invalidateProfile } from '@/lib/profileReads';
 import {
   escapeIlike, isMetricDirection, isMetricKind, isMetricStatus, namesAnExercise, normalizeMetrics, phaseProgress, statusFor,
   type MetricRef, type PhaseMetricInput, type PhaseMetricRow,
@@ -312,6 +313,7 @@ export async function applyPhaseTargets(
   const { error } = await supabase
     .from('user_profiles')
     .upsert(payload, { onConflict: 'clerk_user_id' });
+  invalidateProfile(clerkId);
   if (error) throw error;
 }
 

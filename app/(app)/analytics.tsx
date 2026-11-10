@@ -53,6 +53,7 @@ import {
 } from '@/lib/bodyStats';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
+import { loadProfileRow } from '@/lib/profileReads';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -1364,12 +1365,9 @@ export default function AnalyticsScreen() {
     if (clerkId && !cachedProfile?.profile?.gender) {
       void (async () => {
         try {
-          const { data } = await supabase
-            .from('user_profiles')
-            .select('gender')
-            .eq('clerk_user_id', clerkId)
-            .maybeSingle();
-          if (data?.gender) setProfileGender(data.gender);
+          // The profile row the app shares (lib/profileReads).
+          const data = (await loadProfileRow(supabase, clerkId)) as { gender?: string | null } | null;
+          if (data?.gender) setProfileGender(data.gender as any);
         } catch {
           // Offline or unauthenticated — the default silhouette is fine.
         }
