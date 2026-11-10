@@ -38,7 +38,7 @@ function recorder() {
 const ID = "00000000-0000-4000-8000-000000000000";
 const SAMPLE_ARGS: Record<string, unknown[]> = {
   profile: [U], trial: [U], recentCalls: [U, 60], targetHistory: [U],
-  dayTargets: [U, "2026-11-01", "2026-11-10"], meals: [U, "a", "b"], workouts: [U, "a", "b", 5],
+  dayTargets: [U, "2026-11-01", "2026-11-10"], meals: [U, "a", "b"], foodEntry: [U, ID], workouts: [U, "a", "b", 5],
   workout: [U, ID], liftStat: [U, ID], exerciseSets: [U, ID], volume: [U, "2026-11-02"],
   weights: [U, "2026-11-01", "2026-11-10"], exerciseById: [U, ID], searchExercises: [U, "bench"],
 };

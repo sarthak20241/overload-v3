@@ -78,8 +78,15 @@ export function makeData(db: Db) {
     meals: (u: string, start: string, end: string) =>
       rows(own(db, "meals",
         "id, meal_type, logged_at, meal_entries(id, food_name, quantity, serving_unit, grams_logged, " +
-          "kcal, protein_g, carb_g, fat_g, fiber_g, position)",
+          "kcal, protein_g, carb_g, fat_g, fiber_g, position, logged_via)",
         "user_id", u).gte("logged_at", start).lt("logged_at", end).order("logged_at")),
+
+    /** One food line with its meal, if the meal is this user's. */
+    foodEntry: (u: string, id: string) =>
+      one(own(db, "meal_entries",
+        "id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, origin, " +
+          "logged_via, meals!inner(meal_type, logged_at, user_id)",
+        "meals.user_id", u).eq("id", id).maybeSingle()),
 
     workouts: (u: string, start: string, end: string, limit: number) =>
       rows(own(db, "workouts",

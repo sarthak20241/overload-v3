@@ -4,9 +4,13 @@ import { createRemoteJWKSet } from "npm:jose@5";
 import { hasPro, limitHit, NOT_PRO, writeTrace } from "./access.ts";
 import { resourceMetadata, verifyAccessToken, wwwAuthenticate } from "./auth.ts";
 import { makeData } from "./data.ts";
+import { FOOD_WRITE_TOOLS } from "./foodWrites.ts";
 import { zoneOf } from "./days.ts";
 import { handleMessage, parseBody } from "./protocol.ts";
 import { type Ctx, TOOLS } from "./tools.ts";
+import { makeWrites } from "./writes.ts";
+
+const ALL_TOOLS = [...TOOLS, ...FOOD_WRITE_TOOLS];
 
 // The Overload MCP server: lets a user's own ChatGPT or Claude read their
 // Overload data and log food and workouts. Plan: .planning/mcp-tools-plan.md
@@ -89,8 +93,10 @@ Deno.serve(async (req) => {
   // The profile is read only when a tool runs (initialize and tools/list need
   // no database). gate() fills it in before the tool sees the context.
   const data = makeData(ADMIN);
-  const ctx: Ctx = { userId: auth.userId, email: auth.email, data, profile: null, tz: "UTC", now: new Date() };
-  const reply = await handleMessage(parsed.msg, TOOLS, ctx, {
+  const ctx: Ctx = {
+    userId: auth.userId, email: auth.email, data, writes: makeWrites(ADMIN), profile: null, tz: "UTC", now: new Date(),
+  };
+  const reply = await handleMessage(parsed.msg, ALL_TOOLS, ctx, {
     async gate(tool) {
       const [profile, trial, lastMinute, lastDay] = await Promise.all([
         data.profile(auth.userId),

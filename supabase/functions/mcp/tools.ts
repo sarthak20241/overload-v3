@@ -8,6 +8,7 @@
 import { normalizeFuelDays, dowOfISO, type DayTargets } from "../_shared/fuelDays.ts";
 import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from "../_shared/targetHistory.ts";
 import type { Data } from "./data.ts";
+import type { Writes } from "./writes.ts";
 import { addDays, dayOf, dayRange, daysBetween, isDay, localTime, todayIn, weekStart } from "./days.ts";
 import type { Tool, ToolContext, ToolResult } from "./protocol.ts";
 
@@ -17,6 +18,8 @@ type Row = Record<string, any>;
 /** What index.ts puts in the context for every call. */
 export interface Ctx extends ToolContext {
   data: Data;
+  /** Only the write tools use it. */
+  writes?: Writes;
   profile: Row | null;
   tz: string;
   now: Date;
@@ -26,21 +29,21 @@ export interface Ctx extends ToolContext {
 const DEFAULT_TARGETS: DayTargets = { kcal: 2000, protein: 125, carb: 250, fat: 56 };
 const MEALS = ["breakfast", "lunch", "dinner", "snack"];
 
-const r0 = (n: unknown) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n)));
-const r1 = (n: unknown) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n) * 10) / 10);
+export const r0 = (n: unknown) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n)));
+export const r1 = (n: unknown) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n) * 10) / 10);
 
-function answer(data: Record<string, unknown>): ToolResult {
+export function answer(data: Record<string, unknown>): ToolResult {
   return { text: JSON.stringify(data), data };
 }
 
-function refuse(text: string): ToolResult {
+export function refuse(text: string): ToolResult {
   return { text, isError: true };
 }
 
-const DATE_PROP = { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" };
+export const DATE_PROP = { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" };
 
 /** A day argument: absent -> fallback, present -> must be a real date. */
-function dayArg(v: unknown, fallback: string, name: string): string | ToolResult {
+export function dayArg(v: unknown, fallback: string, name: string): string | ToolResult {
   if (v == null || v === "") return fallback;
   return isDay(v) ? v : refuse(`${name} must be a date written YYYY-MM-DD.`);
 }
@@ -50,7 +53,7 @@ function intArg(v: unknown, fallback: number, min: number, max: number): number 
   return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.trunc(n))) : fallback;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ── targets ─────────────────────────────────────────────────────────────────
 
@@ -201,6 +204,13 @@ const getDayNutrition: Tool = {
     const today = todayIn(ctx.tz, ctx.now);
     const day = dayArg(a.date, today, "date");
     if (typeof day !== "string") return day;
+    return answer(await daySummary(ctx, day));
+  },
+};
+
+/** One local day of food: meals with lines, totals, target, what is left. */
+export async function daySummary(ctx: Ctx, day: string): Promise<Record<string, unknown>> {
+  {
     const { start, end } = dayRange(day, day, ctx.tz);
     const [meals, targetOn] = await Promise.all([ctx.data.meals(ctx.userId, start, end), targetReader(ctx, day, day)]);
     const total = zero();
@@ -222,11 +232,13 @@ const getDayNutrition: Tool = {
           carb_g: r1(e.carb_g),
           fat_g: r1(e.fat_g),
           ...(e.fiber_g != null ? { fiber_g: r1(e.fiber_g) } : {}),
+          // Only these can be removed with delete_food_entries.
+          ...(e.logged_via === "mcp" ? { logged_by_assistant: true } : {}),
         });
       }
     }
     const target = targetOn(day);
-    return answer({
+    return {
       date: day,
       meals: MEALS.filter((k) => byMeal[k]?.lines.length).map((k) => ({
         meal: k,
@@ -241,9 +253,9 @@ const getDayNutrition: Tool = {
         carb_g: r1(target.carb - total.carb_g),
         fat_g: r1(target.fat - total.fat_g),
       },
-    });
-  },
-};
+    };
+  }
+}
 
 const getNutritionHistory: Tool = {
   name: "get_nutrition_history",
