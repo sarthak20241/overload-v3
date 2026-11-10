@@ -1355,6 +1355,30 @@ export default function ProfileScreen() {
             </View>
           )}
 
+          {/* ─── ChatGPT and Claude ───
+              The connector (supabase/functions/mcp): log and ask from the
+              assistant they already use. Setup lives on its own screen. */}
+          {!isGuest && (
+            <View style={styles.section}>
+              <SectionLabel icon="message-circle">CONNECTIONS</SectionLabel>
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => router.push('/connect-ai' as any)}
+                accessibilityRole="button"
+                accessibilityLabel="Use Overload in ChatGPT or Claude"
+                style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+              >
+                <View style={[styles.infoRow, { borderBottomWidth: 0 }]}>
+                  <View style={[styles.rowIcon, { backgroundColor: C.glowBg }]}>
+                    <Feather name="message-circle" size={11} color={C.mutedFg} />
+                  </View>
+                  <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>ChatGPT and Claude</Text>
+                  <Feather name="chevron-right" size={14} color={C.textDim} />
+                </View>
+              </TouchableOpacity>
+            </View>
+          )}
+
           {/* ─── Preferences ─── */}
           <View style={styles.section}>
             <SectionLabel icon="shield">PREFERENCES</SectionLabel>
