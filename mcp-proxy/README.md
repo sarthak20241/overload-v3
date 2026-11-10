@@ -6,7 +6,7 @@ A forwarder only. No code runs here. Vercel passes each call on:
 |---|---|
 | `/` | the `mcp` edge function (`supabase/functions/mcp`) |
 | `/.well-known/oauth-protected-resource` | the function's sign-in info |
-| `/.well-known/oauth-authorization-server` | Clerk's sign-in server info (for older MCP clients) |
+| `/.well-known/oauth-authorization-server` | a redirect to Clerk's sign-in server info (for older MCP clients). A redirect, not a rewrite: through a rewrite Clerk names the wrong host as its issuer |
 
 The public MCP URL is `https://mcp.tryoverload.app`. It must match, exactly:
 
