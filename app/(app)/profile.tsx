@@ -57,7 +57,7 @@ import { clearCoachConversations } from '@/lib/coachConversations';
 import { signOutAndCleanUp } from '@/lib/signOutCleanup';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
-import { isLifetimeTier, PLAN_BENEFITS, tierLabel } from '@/lib/tiers';
+import { isLifetimeTier, PLAN_BENEFITS, tierLabel, trialDaysLeftLabel } from '@/lib/tiers';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 import { invalidateProfile, loadProfileRow } from '@/lib/profileReads';
@@ -379,7 +379,7 @@ export default function ProfileScreen() {
           ? `${planLabel} · renews ${renewsOn}`
           : planLabel
       : coachAccess.state === 'trialing'
-        ? `Pro trial · ${coachAccess.daysLeft ?? '…'} days left`
+        ? `Pro trial · ${trialDaysLeftLabel(coachAccess.daysLeft)}`
         : '3 coach messages and 3 AI food logs a day';
   const levelProgress = xpNeeded > 0 ? xpInLevel / xpNeeded : 0;
 
