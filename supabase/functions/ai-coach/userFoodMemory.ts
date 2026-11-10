@@ -91,7 +91,8 @@ export interface MemoryEntry {
   tier: string | null;
   logged_at: string;
   /** The brand it is sold under, when known (user_food_cache.brand, from the
-   *  parse that logged it). Diary lines carry none. */
+   *  parse that logged it). Diary lines carry none. Read by buildMemory and
+   *  the warm reads (foodWarmMemory.ts). */
   brand?: string | null;
   /** Durable, saved diary evidence loaded from this user’s private cache. */
   persistent?: boolean;
@@ -103,9 +104,6 @@ export interface MemoryEntry {
   origin?: string | null;
   /** user_food_cache.recipe / meal_entries.recipe: a home dish's parts. */
   recipe?: unknown;
-  /** user_food_cache.brand. Read by the warm reads (foodWarmMemory.ts) only;
-   *  buildMemory ignores it. */
-  brand?: string | null;
 }
 
 /** A remembered food: the newest eligible entry for a name, as per 100 g. */
