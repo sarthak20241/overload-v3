@@ -973,6 +973,20 @@ export default function ProfileScreen() {
                   </>
                 )}
               </TouchableOpacity>
+              {/* Refer a friend (app/refer.tsx): open to everyone, payers too;
+                  that screen does not promise a payer free months. */}
+              <TouchableOpacity
+                onPress={() => router.push('/refer' as any)}
+                accessibilityRole="button"
+                accessibilityLabel="Invite friends"
+                style={styles.inviteLink}
+              >
+                <Feather name="users" size={12} color={C.accentText} />
+                {/* A store payer earns no months (refer.tsx), so no promise. */}
+                <Text style={[styles.inviteLinkText, { color: C.accentText }]}>
+                  {isPro ? 'Invite friends' : 'Invite friends, get a free month each'}
+                </Text>
+              </TouchableOpacity>
               {/* Invite codes give a free month (lib/invite.ts). Not offered
                   to a paying user, whom redeem_invite() would refuse. */}
               {!planUnknown && !isPro && (

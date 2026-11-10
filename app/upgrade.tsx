@@ -1003,6 +1003,17 @@ export default function UpgradeScreen() {
                   <Text style={[u.footLink, { color: C.textMuted }]}>Privacy</Text>
                 </TouchableOpacity>
               </View>
+              {/* Friend, campaign or store discount code: the invite screen
+                  takes all three. A locked new account leaves the paywall
+                  this way when a code gives it Pro. */}
+              <TouchableOpacity
+                onPress={() => { track('paywall_code_tapped', { source, context }); router.push('/invite' as any); }}
+                disabled={purchasing || verifying || restoring}
+                accessibilityRole="button"
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={[u.footLink, { color: C.textMuted }]}>Have a code?</Text>
+              </TouchableOpacity>
               {isLocked && (
                 <TouchableOpacity
                   onPress={handleSignOut}
@@ -1452,8 +1463,8 @@ const u = StyleSheet.create({
     textAlign: 'center',
     marginTop: Spacing.md,
   },
-  // Up to five links when locked: a smaller gap, and they wrap on narrow
-  // phones.
+  // Up to six links (Restore, Terms, Privacy, Have a code?, and when locked
+  // Sign out and Help): a smaller gap, and they wrap on narrow phones.
   footLinks: {
     flexDirection: 'row',
     flexWrap: 'wrap',
