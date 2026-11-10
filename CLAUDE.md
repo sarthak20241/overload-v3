@@ -229,7 +229,7 @@ Supabase (PostgreSQL) with 6 tables: `user_profiles`, `exercises`, `routines`, `
 
 ### Design System
 
-All design tokens live in `constants/theme.ts`: colors (lime green `#c8ff00` primary accent), spacing scale, font sizes, border radii, and shadow presets. The app uses light theme only (`Colors.light`) — `Colors.dark` is defined but unused. Use Feather icons (`@expo/vector-icons`). The app's icon scale is deliberately compact: inline/row icons match the surrounding text size (10–16px, e.g. 11px glyphs inside the 24x24 `rowIcon` tiles); reserve 24px+ for standalone icons such as tab bar items or empty states.
+All design tokens live in `constants/theme.ts`: colors (lime green `#c8ff00` primary accent), spacing scale, font sizes, border radii, and shadow presets. The app has a dark and a light theme (`ThemeProvider` / `useTheme()` in `hooks/useTheme.tsx`), and it starts in dark. Read colors from the `C` object that `useTheme()` returns. Do not hard-code one theme's tokens: `Colors.light.muted`, for example, shows a light fill in the default dark UI. Use Feather icons (`@expo/vector-icons`). The app's icon scale is deliberately compact: inline/row icons match the surrounding text size (10–16px, e.g. 11px glyphs inside the 24x24 `rowIcon` tiles); reserve 24px+ for standalone icons such as tab bar items or empty states.
 
 ### XP/Leveling
 
