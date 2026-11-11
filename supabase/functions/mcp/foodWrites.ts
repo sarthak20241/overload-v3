@@ -292,7 +292,9 @@ export function planUpdate(cur: Row, a: Row): { set: Row } | ToolResult {
   }
 
   if (amountGiven || numbersGiven) {
-    if (kcal > 5000 || [p, c, f].some((m) => m > 1000)) return refuse("Numbers out of range for one food line.");
+    if (kcal > 5000 || [p, c, f].some((m) => m > 1000) || (fib != null && fib > 300)) {
+      return refuse("Numbers out of range for one food line.");
+    }
     if (q > 10000 || (g != null && g > 5000)) return refuse("Amount out of range for one food line.");
     const bad = badNumbers(set.name ?? cur.food_name, kcal, p, c, f, g);
     if (bad) return refuse(bad);

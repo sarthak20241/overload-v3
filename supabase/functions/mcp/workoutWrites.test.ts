@@ -38,6 +38,9 @@ Deno.test("cleanSet: needs reps, a duration or a distance; set types and ranges 
   assert(typeof cleanSet({ reps: 5, rpe: 11 }, "s") === "string");
   assert(typeof cleanSet({ reps: 5, weight_kg: 1200 }, "s") === "string");
   assertEquals(cleanSet({ reps: 8, reps_right: 7 }, "s"), { reps: 8, set_type: "normal" }, "right side only for one-side sets");
+  assert(typeof cleanSet({ weight_kg: 20, reps_right: 8 }, "s") === "string", "right reps alone, not one-side, is no work");
+  assertEquals(cleanSet({ reps_right: 8, one_side_at_a_time: true }, "s"),
+    { reps_right: 8, set_type: "normal", one_side_at_a_time: true }, "a one-side set may log the right side only");
   assertEquals(cleanSet({ reps: 8, reps_right: 7, one_side_at_a_time: true }, "s"),
     { reps: 8, reps_right: 7, set_type: "normal", one_side_at_a_time: true });
 });

@@ -75,6 +75,12 @@ export function cleanSet(s: Row, where: string): Row | string {
   if ((x.distance_m ?? 0) > 200000) return `${where}: more than 200 km.`;
   if (x.rpe != null && (x.rpe < 1 || x.rpe > 10)) return `${where}: rpe must be 1 to 10.`;
   if (x.duration_seconds != null) x.duration_seconds = Math.round(x.duration_seconds);
+  // Right-side fields belong to one-side sets only. Drop them first, so the
+  // work check below never counts reps that will not be saved.
+  if (s.one_side_at_a_time !== true) {
+    delete x.reps_right;
+    delete x.weight_kg_right;
+  }
   if (!(x.reps > 0 || x.duration_seconds > 0 || x.distance_m > 0 || x.reps_right > 0)) {
     return `${where}: a set needs reps, a duration or a distance.`;
   }
@@ -82,10 +88,6 @@ export function cleanSet(s: Row, where: string): Row | string {
   if (!SET_TYPES.includes(t)) return `${where}: set_type must be one of ${SET_TYPES.join(", ")}.`;
   x.set_type = t;
   if (s.one_side_at_a_time === true) x.one_side_at_a_time = true;
-  else {
-    delete x.reps_right;
-    delete x.weight_kg_right;
-  }
   return x;
 }
 

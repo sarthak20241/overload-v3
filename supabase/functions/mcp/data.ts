@@ -107,12 +107,22 @@ export function makeData(db: Db) {
           "last_set_reps, last_performed_at, sessions_last_28d",
         "user_id", u).eq("exercise_id", exerciseId).maybeSingle()),
 
-    /** This user's sets of one exercise, newest workouts first. */
-    exerciseSets: (u: string, exerciseId: string) =>
-      rows(own(db, "workout_sets",
-        "weight_kg, reps, duration_seconds, distance_m, set_type, rpe, is_unilateral, reps_right, weight_kg_right, " +
-          "order, workouts!inner(id, started_at, user_id)",
-        "workouts.user_id", u).eq("exercise_id", exerciseId).limit(600)),
+    /** The newest `limit` workouts of this user that include one exercise,
+     *  each with only that exercise's sets (the !inner join filters both). */
+    exerciseSessions: (u: string, exerciseId: string, limit: number) =>
+      rows(own(db, "workouts",
+        "id, started_at, workout_sets!inner(weight_kg, reps, duration_seconds, distance_m, set_type, rpe, " +
+          "is_unilateral, reps_right, weight_kg_right, order, exercise_id)",
+        "user_id", u).eq("workout_sets.exercise_id", exerciseId)
+        .order("started_at", { ascending: false }).limit(limit)),
+
+    /** How many of this user's workouts include the exercise. */
+    exerciseSessionCount: async (u: string, exerciseId: string) => {
+      const { count, error } = await own(db, "workouts", "id, workout_sets!inner(exercise_id)", "user_id", u, true)
+        .eq("workout_sets.exercise_id", exerciseId);
+      if (error) throw new Error(error.message);
+      return count ?? 0;
+    },
 
     volume: (u: string, fromWeek: string) =>
       rows(own(db, "user_volume_stats", "muscle_group, week_start, total_volume_kg, set_count", "user_id", u)

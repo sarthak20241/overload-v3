@@ -60,7 +60,11 @@ Write (6):
 
 Updates work on any row the user owns, also rows logged in the app ("make my
 lunch rice 200 g"). Each update returns the old values, so the assistant can
-put them back. Deletes only touch rows the connector wrote. A wrong tool call
+put the numbers back. A put-back restores the numbers, not the grade: new
+numbers from an assistant are always origin `guess`, so a catalog or label line
+whose macros were edited stays `guess` after a put-back. That is on purpose: an
+assistant cannot raise a line's grade. To get a catalog line back, log it again
+from the app. Deletes only touch rows the connector wrote. A wrong tool call
 can then never remove what the user logged in the app.
 
 `update_food_entry` rules: a new amount with no new macros scales the macros
@@ -129,9 +133,11 @@ Server rules:
    AND ChatGPT. This is the biggest risk, so it goes first. If Clerk does not
    work with both, stop and rethink sign-in before anything else.
 1. **Read tools.** The 9 read tools + Pro check + rate limit + `mcp_traces`.
-2. **Food writes.** `log_food`, `delete_food_entries`, the `logged_via` migration.
-3. **Workout writes.** `log_workout`, `delete_workout`, the `source` migration,
-   the XP variant.
+2. **Food writes.** `log_food`, `update_food_entry`, `delete_food_entries`, the
+   `logged_via` migration.
+3. **Workout writes.** `log_workout`, `update_workout`, `delete_workout`, the
+   `source` migration. Connector workouts earn no XP (shipped instead of an XP
+   variant).
 4. **App + site.** A Profile row "Use with ChatGPT or Claude" with the URL to
    copy and 3 setup steps. A page on the website. Privacy policy line: the
    user's data goes to the assistant they connect.
@@ -161,6 +167,6 @@ Steps 2 and 3 do not depend on each other.
 
 ## Later, not v1
 
-Edit a logged line. Routines and program read tools. Create custom exercises.
+Routines and program read tools. Create custom exercises.
 Use our own food catalog for the numbers (a `search_foods` tool), so a log is
 `catalog` grade and not a guess.

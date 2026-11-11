@@ -39,7 +39,7 @@ const ID = "00000000-0000-4000-8000-000000000000";
 const SAMPLE_ARGS: Record<string, unknown[]> = {
   profile: [U], trial: [U], recentCalls: [U, 60], targetHistory: [U],
   dayTargets: [U, "2026-11-01", "2026-11-10"], meals: [U, "a", "b"], foodEntry: [U, ID], workouts: [U, "a", "b", 5],
-  workout: [U, ID], liftStat: [U, ID], exerciseSets: [U, ID], volume: [U, "2026-11-02"],
+  workout: [U, ID], liftStat: [U, ID], exerciseSessions: [U, ID, 5], exerciseSessionCount: [U, ID], volume: [U, "2026-11-02"],
   weights: [U, "2026-11-01", "2026-11-10"], exerciseById: [U, ID], searchExercises: [U, "bench"],
 };
 
@@ -59,6 +59,16 @@ Deno.test("data: every query is filtered to the user (or the shared catalog + th
       assert(userEq || catalog, `${m}: query on ${q.table} has no user filter: ${JSON.stringify(q.calls)}`);
     }
   }
+});
+
+Deno.test("data: exercise history reads the newest workouts first, not any 600 sets", async () => {
+  const { db, queries } = recorder();
+  await makeData(db as any).exerciseSessions(U, ID, 5);
+  const calls = queries[0].calls;
+  assertEquals(queries[0].table, "workouts");
+  assert(calls.some(([fn, a]) => fn === "order" && a[0] === "started_at" && (a[1] as any)?.ascending === false), JSON.stringify(calls));
+  assert(calls.some(([fn, a]) => fn === "limit" && a[0] === 5));
+  assert(calls.some(([fn, a]) => fn === "eq" && a[0] === "workout_sets.exercise_id" && a[1] === ID));
 });
 
 Deno.test("data: no query starts outside own() / catalog()", async () => {
@@ -133,7 +143,8 @@ function ctxWith(over: Partial<Record<string, unknown>> = {}, profile: any = {})
     workouts: () => Promise.resolve([]),
     workout: () => Promise.resolve(null),
     liftStat: () => Promise.resolve(null),
-    exerciseSets: () => Promise.resolve([]),
+    exerciseSessions: () => Promise.resolve([]),
+    exerciseSessionCount: () => Promise.resolve(0),
     volume: () => Promise.resolve([]),
     weights: () => Promise.resolve([]),
     exerciseById: () => Promise.resolve(null),
@@ -245,14 +256,23 @@ Deno.test("get_exercise_history: sessions newest first, sets in order", async ()
   const ctx = ctxWith({
     exerciseById: () => Promise.resolve({ id: ID, name: "Bench Press", muscle_group: "chest", metric_type: "weight_reps" }),
     liftStat: () => Promise.resolve({ estimated_1rm: 100, top_set_weight: 85, top_set_reps: 5, sessions_last_28d: 2 }),
-    exerciseSets: () =>
-      Promise.resolve([
-        { order: 1, weight_kg: 80, reps: 6, set_type: "normal", workouts: { id: "w1", started_at: "2026-11-01T03:00:00Z" } },
-        { order: 0, weight_kg: 85, reps: 5, set_type: "normal", workouts: { id: "w2", started_at: "2026-11-08T03:00:00Z" } },
-        { order: 0, weight_kg: 75, reps: 8, set_type: "normal", workouts: { id: "w1", started_at: "2026-11-01T03:00:00Z" } },
-      ]),
+    // The database answers newest first, at most `limit` workouts.
+    exerciseSessions: (_u: string, _id: string, limit: number) => {
+      asked = limit;
+      return Promise.resolve([
+        { id: "w2", started_at: "2026-11-08T03:00:00Z", workout_sets: [{ order: 0, weight_kg: 85, reps: 5, set_type: "normal" }] },
+        { id: "w1", started_at: "2026-11-01T03:00:00Z", workout_sets: [
+          { order: 1, weight_kg: 80, reps: 6, set_type: "normal" },
+          { order: 0, weight_kg: 75, reps: 8, set_type: "normal" },
+        ] },
+      ]);
+    },
+    exerciseSessionCount: () => Promise.resolve(41),
   });
-  const r = await run("get_exercise_history", { exercise_id: ID }, ctx);
+  let asked = 0;
+  const r = await run("get_exercise_history", { exercise_id: ID, sessions: 2 }, ctx);
+  assertEquals(asked, 2, "only the sessions asked for are read");
+  assertEquals(r.json.total_sessions_found, 41);
   assertEquals(r.json.recent_sessions.map((s: any) => s.workout_id), ["w2", "w1"]);
   assertEquals(r.json.recent_sessions[1].sets.map((s: any) => s.weight_kg), [75, 80]);
   assertEquals(r.json.stats.estimated_1rm_kg, 100);
