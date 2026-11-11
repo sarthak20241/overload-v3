@@ -119,8 +119,9 @@ export async function handleMessage(
           inputSchema: t.inputSchema,
           // Every tool reads or writes only the user's own Overload data, never
           // the open web, so openWorldHint is false unless a tool says otherwise.
-          // ChatGPT's review checks this hint.
-          annotations: { openWorldHint: false, ...t.annotations },
+          // ChatGPT's review checks this hint. The title is repeated in
+          // annotations because Claude's directory reads annotations.title.
+          annotations: { title: t.title, openWorldHint: false, ...t.annotations },
         })),
       });
     case "tools/call": {
