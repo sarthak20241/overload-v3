@@ -121,7 +121,12 @@ export async function handleMessage(
           // the open web, so openWorldHint is false unless a tool says otherwise.
           // ChatGPT's review checks this hint. The title is repeated in
           // annotations because Claude's directory reads annotations.title.
-          annotations: { title: t.title, openWorldHint: false, ...t.annotations },
+          // All three hints are always sent as explicit booleans: ChatGPT's
+          // scan flags a missing one, and MCP reads a missing destructiveHint
+          // as true, so a read tool would show as destructive.
+          annotations: {
+            title: t.title, readOnlyHint: false, destructiveHint: false, openWorldHint: false, ...t.annotations,
+          },
         })),
       });
     case "tools/call": {

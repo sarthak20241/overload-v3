@@ -92,7 +92,7 @@ Deno.test("tools/list lists ping with its schema", async () => {
   const r = await handleMessage(rpc("tools/list"), TOOLS, CTX) as any;
   const ping = r.result.tools.find((t: any) => t.name === "ping");
   assertEquals(ping.inputSchema.type, "object");
-  assertEquals(ping.annotations, { title: ping.title, openWorldHint: false, readOnlyHint: true });
+  assertEquals(ping.annotations, { title: ping.title, readOnlyHint: true, destructiveHint: false, openWorldHint: false });
 });
 
 Deno.test("tools/list: every tool has a title, says read or write, and is closed-world (directory review)", async () => {
@@ -103,6 +103,10 @@ Deno.test("tools/list: every tool has a title, says read or write, and is closed
     assert(typeof t.title === "string" && t.title.length > 0, `${t.name}: title`);
     assert(t.name.length <= 64, `${t.name}: name too long`);
     assertEquals(t.annotations.openWorldHint, false, t.name);
+    for (const k of ["readOnlyHint", "destructiveHint", "openWorldHint"]) {
+      assertEquals(typeof t.annotations[k], "boolean", `${t.name}: ${k} must be explicit`);
+    }
+    assert(!(t.annotations.readOnlyHint && t.annotations.destructiveHint), `${t.name}: read-only and destructive`);
     assertEquals(t.annotations.title, t.title, `${t.name}: annotations.title`);
     assert(t.annotations.readOnlyHint === true || t.annotations.destructiveHint !== undefined, `${t.name}: read or write hint`);
   }

@@ -37,7 +37,7 @@ begin
   update user_profiles set
     name = 'Alex Reviewer', tier = 'annual', tier_started_at = now(),
     tier_expires_at = '2027-12-31', purchase_provider = null,
-    height_cm = 180, weight_kg = 78.2, goal_weight_kg = 75, gender = coalesce(gender, 'male'),
+    height_cm = 180, weight_kg = 78.2, goal_weight_kg = 75, gender = coalesce(gender, 'M'), experience_level = coalesce(experience_level, 'intermediate'),
     goal = 'fat_loss', daily_calorie_target = 2200, protein_target_g = 165,
     carb_target_g = 230, fat_target_g = 70, timezone = 'America/New_York'
   where clerk_user_id = u;

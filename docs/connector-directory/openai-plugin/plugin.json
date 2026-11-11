@@ -15,7 +15,7 @@
         "shortDescription": "Your food and lifting log",
         "longDescription": "Overload is a workout and food tracker with an AI coach. Connect it to ChatGPT to ask about your own training and eating, and to log as you go.\n\nAsk how much protein you had today, how your bench press moved over the last two months, or which muscles you trained least this week. Say \"log 2 eggs and toast for breakfast\" or \"log my push day: bench 3x8 at 80 kg\" and it lands in your Overload diary, the same as logging in the app.\n\nWhat it can do:\n- Read your goals, calorie and macro targets\n- Read any day of food, or daily totals over a range\n- Read your workouts, sets, lift history and weekly volume per muscle\n- Read your body weight trend\n- Log, change and remove food lines\n- Log, change and remove workouts logged from ChatGPT\n\nYou sign in with your Overload account. ChatGPT sees only your own data.",
         "developerName": "Overload",
-        "category": "Lifestyle",
+        "category": "LIFESTYLE",
         "websiteURL": "https://tryoverload.app",
         "supportURL": "https://tryoverload.app/chatgpt-claude",
         "privacyPolicyURL": "https://tryoverload.app/privacy.html",
