@@ -16,7 +16,7 @@ Vercel forwarder in `mcp-proxy/`). Sign-in: Clerk OAuth. Use needs Overload Pro.
      have data to read.
    - Run every test case with this account in Claude and in ChatGPT.
 2. **Deploy this branch's `mcp` function** and apply
-   `supabase/migrations/20261111150000_mcp_update_workout_order.sql`.
+   `supabase/migrations/20261112130000_mcp_update_workout_old_week.sql`.
 3. **Redeploy `mcp-proxy/`** (`vercel deploy --prod` from `mcp-proxy/`) so the
    OpenAI domain check path is forwarded.
 
