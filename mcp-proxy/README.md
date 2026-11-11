@@ -15,13 +15,27 @@ The public MCP URL is `https://mcp.tryoverload.app`. It must match, exactly:
 
 Never change it once users connect: every user would have to connect again.
 
-## Set up (once)
+## How it is deployed
 
-1. Vercel: New Project -> import this repo -> Root Directory `mcp-proxy` ->
-   Framework "Other" -> Deploy.
-2. Vercel project -> Settings -> Domains -> add `mcp.tryoverload.app`.
-3. Namecheap DNS for tryoverload.app: add `CNAME` record, host `mcp`,
-   value `cname.vercel-dns.com`.
-4. Vercel project -> Settings -> Git -> Ignored Build Step: only build when
-   `mcp-proxy/` changes (`git diff --quiet HEAD^ HEAD -- .`), so app commits
-   do not make new deploys here.
+The Vercel project `overload-mcp` is NOT connected to Git. App commits never
+build it, so nothing can skip or race a deploy. After changing `vercel.json`,
+deploy it by hand from this folder:
+
+```bash
+cd mcp-proxy && vercel deploy --prod
+```
+
+Set up on 2026-11-10:
+
+1. `vercel link --project overload-mcp` from this folder, then `vercel deploy --prod`.
+2. `vercel domains add mcp.tryoverload.app` (to the linked project).
+3. Namecheap DNS for tryoverload.app: `A` record, host `mcp`, value `76.76.21.21`.
+
+Check it after any change:
+
+```bash
+curl -s https://mcp.tryoverload.app/.well-known/oauth-protected-resource
+```
+
+It must name `"resource":"https://mcp.tryoverload.app"` and Clerk as the
+authorization server.

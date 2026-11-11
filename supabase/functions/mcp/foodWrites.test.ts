@@ -118,6 +118,8 @@ Deno.test("planUpdate: a new unit with no grams or numbers is refused; a name al
   assert((planUpdate(noGrams, { unit: "cup" }) as any).isError);
   assertEquals((planUpdate(rice, { name: "Basmati rice" }) as any).set, { name: "Basmati rice" });
   assert((planUpdate(rice, { kcal: 10, carb_g: 42 }) as any).isError, "42 g carbs is not 10 kcal");
+  assert((planUpdate(rice, { fiber_g: 1e9 }) as any).isError, "fiber has the same 300 g cap as log_food");
+  assert((planUpdate({ ...rice, fiber_g: 250 }, { grams: 300 }) as any).isError, "scaling may not push fiber past 300 g");
 });
 
 Deno.test("update_food_entry: a move to another meal sends the place; nothing to change is refused", async () => {

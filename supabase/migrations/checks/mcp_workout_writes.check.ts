@@ -14,7 +14,15 @@
 import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1";
 import { PGlite } from "npm:@electric-sql/pglite@0.2.17";
 
-const SQL = await Deno.readTextFile(new URL("../20261111140000_mcp_workout_writes.sql", import.meta.url));
+// The original migration, then every later fix to its functions, in order.
+const FILES = ["20261111140000_mcp_workout_writes.sql", "20261112120000_mcp_workout_set_order.sql"];
+const SQL = (await Promise.all(FILES.map(async (f) => {
+  try {
+    return await Deno.readTextFile(new URL(`../${f}`, import.meta.url));
+  } catch {
+    return ""; // a fix not written yet
+  }
+}))).join("\n");
 
 const BENCH = "00000000-0000-4000-8000-0000000000b1";
 const ROW = "00000000-0000-4000-8000-0000000000b2";
@@ -109,6 +117,24 @@ Deno.test("update: replace one exercise's sets, others kept; another user's work
   // Removing the last exercise's sets entirely is refused: use delete.
   await assertRejects(() => q(`select mcp_update_workout('u1', $1, '{}'::jsonb, $2::jsonb)`,
     [w.id, exs([{ exercise_id: BENCH, sets: [] }, { exercise_id: MINE, sets: [] }])]));
+});
+
+Deno.test("update: more sets for one exercise never share an order with the next exercise", async () => {
+  const { q } = await db();
+  const w = await logIt(q, "u1", exs([
+    { exercise_id: BENCH, sets: [{ weight_kg: 60, reps: 8 }, { weight_kg: 60, reps: 8 }, { weight_kg: 60, reps: 8 }] },
+    { exercise_id: ROW, sets: [{ weight_kg: 50, reps: 10 }, { weight_kg: 50, reps: 10 }, { weight_kg: 50, reps: 10 }] },
+  ]));
+  const five = Array.from({ length: 5 }, () => ({ weight_kg: 62.5, reps: 6 }));
+  await q(`select mcp_update_workout('u1', $1, '{}'::jsonb, $2::jsonb)`, [w.id, exs([{ exercise_id: BENCH, sets: five }])]);
+  const rows = await q(`select "order" o, exercise_id e from workout_sets order by "order", id`);
+  assertEquals(new Set(rows.map((r) => r.o)).size, rows.length, "every set has its own order");
+  assertEquals(rows.map((r) => r.e === BENCH ? "B" : "R").join(""), "BBBBBRRR", "bench first, then row, not mixed");
+  assertEquals(rows.map((r) => r.o), [0, 1, 2, 3, 4, 5, 6, 7], "no gaps");
+  // Fewer sets: still in place, no gaps.
+  await q(`select mcp_update_workout('u1', $1, '{}'::jsonb, $2::jsonb)`, [w.id, exs([{ exercise_id: BENCH, sets: [five[0]] }])]);
+  const after = await q(`select "order" o, exercise_id e from workout_sets order by "order", id`);
+  assertEquals(after.map((r) => [r.o, r.e === BENCH ? "B" : "R"]), [[0, "B"], [1, "R"], [2, "R"], [3, "R"]]);
 });
 
 Deno.test("update: an app workout's new sets move XP by the app's formula", async () => {

@@ -488,26 +488,17 @@ const getExerciseHistory: Tool = {
       return refuse("Give exercise_id or exercise_name.");
     }
     const sessionsWanted = intArg(a.sessions, 5, 1, 20);
-    const [stat, sets] = await Promise.all([
+    const [stat, workouts, total] = await Promise.all([
       ctx.data.liftStat(ctx.userId, ex.id),
-      ctx.data.exerciseSets(ctx.userId, ex.id),
+      ctx.data.exerciseSessions(ctx.userId, ex.id, sessionsWanted),
+      ctx.data.exerciseSessionCount(ctx.userId, ex.id),
     ]);
-    const byWorkout = new Map<string, { started_at: string; sets: Row[] }>();
-    for (const s of sets) {
-      const w = s.workouts;
-      if (!w?.id) continue;
-      const g = byWorkout.get(w.id) ?? { started_at: w.started_at as string, sets: [] as Row[] };
-      g.sets.push(s);
-      byWorkout.set(w.id, g);
-    }
-    const sessions = [...byWorkout.entries()]
-      .sort((x, y) => Date.parse(y[1].started_at) - Date.parse(x[1].started_at))
-      .slice(0, sessionsWanted)
-      .map(([id, g]) => ({
-        workout_id: id,
-        date: dayOf(g.started_at, ctx.tz),
-        sets: g.sets.sort((x, y) => (x.order ?? 0) - (y.order ?? 0)).map(setOut),
-      }));
+    // Newest first already (the query orders by start time).
+    const sessions = workouts.map((w) => ({
+      workout_id: w.id,
+      date: dayOf(w.started_at, ctx.tz),
+      sets: [...(w.workout_sets ?? [])].sort((x: Row, y: Row) => (x.order ?? 0) - (y.order ?? 0)).map(setOut),
+    }));
     return answer({
       exercise: { id: ex.id, name: ex.name, muscle_group: ex.muscle_group, metric: ex.metric_type },
       stats: stat
@@ -520,7 +511,7 @@ const getExerciseHistory: Tool = {
         }
         : null,
       recent_sessions: sessions,
-      total_sessions_found: byWorkout.size,
+      total_sessions_found: total,
     });
   },
 };
