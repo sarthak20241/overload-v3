@@ -13,6 +13,10 @@
       "destination": "https://rjmmslierxhvwdjgjilb.supabase.co/functions/v1/mcp/.well-known/oauth-protected-resource"
     },
     {
+      "source": "/.well-known/openai-apps-challenge",
+      "destination": "https://rjmmslierxhvwdjgjilb.supabase.co/functions/v1/mcp/.well-known/openai-apps-challenge"
+    },
+    {
       "source": "/",
       "destination": "https://rjmmslierxhvwdjgjilb.supabase.co/functions/v1/mcp"
     }

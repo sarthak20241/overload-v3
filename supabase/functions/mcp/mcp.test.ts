@@ -2,7 +2,9 @@ import { assert, assertEquals } from "jsr:@std/assert@1";
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "npm:jose@5";
 import { verifyAccessToken, wwwAuthenticate } from "./auth.ts";
 import { handleMessage, parseBody, PROTOCOL_VERSIONS, type Tool } from "./protocol.ts";
+import { FOOD_WRITE_TOOLS } from "./foodWrites.ts";
 import { TOOLS } from "./tools.ts";
+import { WORKOUT_WRITE_TOOLS } from "./workoutWrites.ts";
 
 const ISSUER = "https://clerk.example.test";
 const RESOURCE = "https://proj.supabase.co/functions/v1/mcp";
@@ -90,7 +92,19 @@ Deno.test("tools/list lists ping with its schema", async () => {
   const r = await handleMessage(rpc("tools/list"), TOOLS, CTX) as any;
   const ping = r.result.tools.find((t: any) => t.name === "ping");
   assertEquals(ping.inputSchema.type, "object");
-  assertEquals(ping.annotations, { readOnlyHint: true });
+  assertEquals(ping.annotations, { openWorldHint: false, readOnlyHint: true });
+});
+
+Deno.test("tools/list: every tool has a title, says read or write, and is closed-world (directory review)", async () => {
+  const all = [...TOOLS, ...FOOD_WRITE_TOOLS, ...WORKOUT_WRITE_TOOLS];
+  const r = await handleMessage(rpc("tools/list"), all, CTX) as any;
+  assertEquals(r.result.tools.length, all.length);
+  for (const t of r.result.tools) {
+    assert(typeof t.title === "string" && t.title.length > 0, `${t.name}: title`);
+    assert(t.name.length <= 64, `${t.name}: name too long`);
+    assertEquals(t.annotations.openWorldHint, false, t.name);
+    assert(t.annotations.readOnlyHint === true || t.annotations.destructiveHint !== undefined, `${t.name}: read or write hint`);
+  }
 });
 
 Deno.test("tools/call ping names the signed-in account", async () => {

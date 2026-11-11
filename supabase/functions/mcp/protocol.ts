@@ -41,7 +41,7 @@ export interface Tool {
   title: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean };
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean };
   /** Open to every signed-in user, not only Pro (the connection check). */
   free?: boolean;
   run(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
@@ -117,7 +117,10 @@ export async function handleMessage(
           title: t.title,
           description: t.description,
           inputSchema: t.inputSchema,
-          ...(t.annotations ? { annotations: t.annotations } : {}),
+          // Every tool reads or writes only the user's own Overload data, never
+          // the open web, so openWorldHint is false unless a tool says otherwise.
+          // ChatGPT's review checks this hint.
+          annotations: { openWorldHint: false, ...t.annotations },
         })),
       });
     case "tools/call": {

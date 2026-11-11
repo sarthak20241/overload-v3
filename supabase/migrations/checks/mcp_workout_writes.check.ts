@@ -15,7 +15,11 @@ import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1";
 import { PGlite } from "npm:@electric-sql/pglite@0.2.17";
 
 // The original migration, then every later fix to its functions, in order.
-const FILES = ["20261111140000_mcp_workout_writes.sql", "20261112120000_mcp_workout_set_order.sql"];
+const FILES = [
+  "20261111140000_mcp_workout_writes.sql",
+  "20261112120000_mcp_workout_set_order.sql",
+  "20261112130000_mcp_update_workout_old_week.sql",
+];
 const SQL = (await Promise.all(FILES.map(async (f) => {
   try {
     return await Deno.readTextFile(new URL(`../${f}`, import.meta.url));
@@ -156,6 +160,15 @@ Deno.test("update: a start in another week recomputes the old week", async () =>
   assertEquals(calls, [{ muscle: "arms", week: "2026-11-09" }, { muscle: "chest", week: "2026-11-09" }]);
   const [row] = await q(`select finished_at::text f from workouts`);
   assert(row.f.startsWith("2026-11-03 04:00"));
+});
+
+Deno.test("update: a new week and a removed muscle still recompute that muscle's old week", async () => {
+  const { q } = await db();
+  const w = await logIt(q);
+  await q(`select mcp_update_workout('u1', $1, '{"started_at": "2026-11-03T03:00:00Z"}'::jsonb, $2::jsonb)`,
+    [w.id, exs([{ exercise_id: MINE, sets: [] }])]);
+  const calls = await q(`select muscle, week::text from recompute_calls order by muscle`);
+  assertEquals(calls, [{ muscle: "arms", week: "2026-11-09" }, { muscle: "chest", week: "2026-11-09" }]);
 });
 
 Deno.test("delete: only a connector workout of this user", async () => {
