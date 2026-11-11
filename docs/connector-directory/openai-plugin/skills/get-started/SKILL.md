@@ -1,6 +1,6 @@
 ---
 name: get-started
-description: Read and log the user's Overload food diary, workouts, body weight and training plan. Use when the user asks about what they ate, their macros, their workouts, lifts, weekly volume or weight trend, or asks to log food or a workout in Overload.
+description: Read and log the user's Overload food diary, workouts, lifts and body weight. Use when the user asks about what they ate, their macros, their workouts, lifts, weekly volume or weight trend, or asks to log food or a workout in Overload.
 ---
 
 # Overload

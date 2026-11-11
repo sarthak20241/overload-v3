@@ -22,7 +22,7 @@ export const NOT_PRO: ToolResult = {
   // States the plan this needs, nothing more: ChatGPT's directory rules bar
   // tools that promote upgrades or link to a purchase.
   text: "This Overload account does not have Overload Pro, which using Overload from ChatGPT or Claude needs. " +
-    "No data was read or changed.",
+    "The requested tool did not run, and nothing in the diary was changed.",
   isError: true,
 };
 

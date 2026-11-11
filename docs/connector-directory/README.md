@@ -48,21 +48,22 @@ Rules: https://claude.com/docs/connectors/building/submission
 Portal: https://platform.openai.com/plugins
 Rules: https://developers.openai.com/plugins/deploy/submission
 
-1. Organization settings: verify your identity (individual or business). The
-   listing shows that verified name. To show "Overload", verify a business.
-2. MCPs -> Connect -> `https://mcp.tryoverload.app`, OAuth.
-3. The portal shows a domain token. Set it, then press verify:
+1. Organization settings: verify your identity (individual or business).
+2. Upload the package first; the portal makes the draft from it. The zip
+   holds one folder (`overload/`) with `plugin.json`, `.codex-plugin/plugin.json`,
+   `mcp.json`, `.mcp.json`, `skills/` and `assets/`. `tools_triggered` is a
+   string. The plugin category comes from the plugin list (Productivity,
+   Developer Tools, ...); it has no health option, and LIFESTYLE (the old
+   apps list) is refused.
+3. MCPs -> Connect. The portal shows a domain token. Set it, then press verify:
    `supabase secrets set OPENAI_APPS_CHALLENGE=<token>`
    Check: `curl https://mcp.tryoverload.app/.well-known/openai-apps-challenge`
-   prints only the token.
-4. Zip the `openai-plugin/` folder (the files at the zip root) and upload it.
-   The portal checks the file. Fix any field it flags; the exact
-   `plugin.json` layout here follows OpenAI's docs page, not a sample file.
-5. Review details form: reviewer email + password and sign-in steps. These
-   never go in the zip.
-6. Optional: a short screen recording of the 5 test cases
-   (`review.demo_recording_url`).
-7. Submit for review. After approval, press Publish plugin.
+   prints only the token. Then connect and sign in with the reviewer account.
+4. Every tool must send readOnlyHint, destructiveHint and openWorldHint as
+   explicit booleans (protocol.ts does this). Rescan after a deploy.
+5. Add review information: reviewer email + password and sign-in steps (never
+   in the zip), and a demo recording URL (required).
+6. Submit for review. After approval, press Publish plugin.
 
 The 5 positive and 3 negative test cases are in `openai-plugin/plugin.json`
 under `review.test_cases`. Use the same 5 prompts for Claude's reviewers.

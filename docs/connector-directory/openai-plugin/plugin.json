@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "overload",
   "version": "1.0.0",
-  "description": "Read and log your Overload food diary, workouts, body weight and training plan from ChatGPT.",
+  "description": "Read and log your Overload food diary, workouts, lifts and body weight from ChatGPT.",
   "author": {
     "name": "Overload",
     "email": "hello@tryoverload.app",
