@@ -6,6 +6,8 @@ A forwarder only. No code runs here. Vercel passes each call on:
 |---|---|
 | `/` | the `mcp` edge function (`supabase/functions/mcp`) |
 | `/.well-known/oauth-protected-resource` | the function's sign-in info |
+| `/favicon.ico` | a redirect to the site's app icon, so Claude and ChatGPT show the Overload icon |
+| `/.well-known/openai-apps-challenge` | the function's OpenAI domain token (secret `OPENAI_APPS_CHALLENGE`), for the ChatGPT directory |
 | `/.well-known/oauth-authorization-server` | a redirect to Clerk's sign-in server info (for older MCP clients). A redirect, not a rewrite: through a rewrite Clerk names the wrong host as its issuer |
 
 The public MCP URL is `https://mcp.tryoverload.app`. It must match, exactly:

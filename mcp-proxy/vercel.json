@@ -2,6 +2,11 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "redirects": [
     {
+      "source": "/favicon.ico",
+      "destination": "https://tryoverload.app/apple-icon.png",
+      "permanent": false
+    },
+    {
       "source": "/.well-known/oauth-authorization-server",
       "destination": "https://clerk.tryoverload.app/.well-known/oauth-authorization-server",
       "permanent": false
@@ -11,6 +16,10 @@
     {
       "source": "/.well-known/oauth-protected-resource",
       "destination": "https://rjmmslierxhvwdjgjilb.supabase.co/functions/v1/mcp/.well-known/oauth-protected-resource"
+    },
+    {
+      "source": "/.well-known/openai-apps-challenge",
+      "destination": "https://rjmmslierxhvwdjgjilb.supabase.co/functions/v1/mcp/.well-known/openai-apps-challenge"
     },
     {
       "source": "/",

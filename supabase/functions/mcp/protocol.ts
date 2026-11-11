@@ -41,7 +41,7 @@ export interface Tool {
   title: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean };
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean };
   /** Open to every signed-in user, not only Pro (the connection check). */
   free?: boolean;
   run(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
@@ -117,7 +117,16 @@ export async function handleMessage(
           title: t.title,
           description: t.description,
           inputSchema: t.inputSchema,
-          ...(t.annotations ? { annotations: t.annotations } : {}),
+          // Every tool reads or writes only the user's own Overload data, never
+          // the open web, so openWorldHint is false unless a tool says otherwise.
+          // ChatGPT's review checks this hint. The title is repeated in
+          // annotations because Claude's directory reads annotations.title.
+          // All three hints are always sent as explicit booleans: ChatGPT's
+          // scan flags a missing one, and MCP reads a missing destructiveHint
+          // as true, so a read tool would show as destructive.
+          annotations: {
+            title: t.title, readOnlyHint: false, destructiveHint: false, openWorldHint: false, ...t.annotations,
+          },
         })),
       });
     case "tools/call": {

@@ -19,8 +19,10 @@ export function hasPro(profile: Row, trial: Row, now: Date = new Date()): boolea
 }
 
 export const NOT_PRO: ToolResult = {
-  text: "Using Overload from ChatGPT or Claude is part of Overload Pro. " +
-    "Tell the user they can upgrade in the Overload app (Profile, then Overload Pro), then try again.",
+  // States the plan this needs, nothing more: ChatGPT's directory rules bar
+  // tools that promote upgrades or link to a purchase.
+  text: "This Overload account does not have Overload Pro, which using Overload from ChatGPT or Claude needs. " +
+    "The requested tool did not run, and nothing in the diary was changed.",
   isError: true,
 };
 

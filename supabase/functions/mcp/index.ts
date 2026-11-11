@@ -67,6 +67,15 @@ Deno.serve(async (req) => {
   if (req.method === "GET" && path.endsWith("/.well-known/oauth-protected-resource")) {
     return json(resourceMetadata(RESOURCE, CLERK_ISSUER));
   }
+  // OpenAI's domain check for the ChatGPT directory: the token OpenAI shows on
+  // platform.openai.com, served as plain text. Set it with
+  // `supabase secrets set OPENAI_APPS_CHALLENGE=<token>`. No secret = 404.
+  if (req.method === "GET" && path.endsWith("/.well-known/openai-apps-challenge")) {
+    const token = Deno.env.get("OPENAI_APPS_CHALLENGE")?.trim();
+    return token
+      ? new Response(token, { headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS } })
+      : new Response("not found", { status: 404, headers: CORS });
+  }
   // Sign-in comes first for every method: a client with no token must get the
   // 401 that starts sign-in, on GET too (Clerk's server check asks for it).
   const auth = await verifyAccessToken(req.headers.get("Authorization"), {
