@@ -1,4 +1,5 @@
 {
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "overload",
   "version": "1.0.0",
   "description": "Read and log your Overload food diary, workouts, body weight and training plan from ChatGPT.",
@@ -7,16 +8,14 @@
     "email": "hello@tryoverload.app",
     "url": "https://tryoverload.app"
   },
-  "skills": "./skills/",
-  "mcpServers": "./mcp.json",
   "extensions": {
     "com.openai": {
       "interface": {
         "displayName": "Overload",
         "shortDescription": "Your food and lifting log",
-        "longDescription": "Overload is a workout and food tracker with an AI coach. Connect it to ChatGPT to ask about your own training and eating, and to log as you go.\n\nAsk how much protein you had today, how your bench press moved over the last two months, or which muscles you trained least this week. Say \"log 2 eggs and toast for breakfast\" or \"log my push day: bench 3x8 at 80 kg\" and it lands in your Overload diary, the same as logging in the app.\n\nWhat it can do:\n- Read your goals, calorie and macro targets\n- Read any day of food, or daily totals over a range\n- Read your workouts, sets, lift history and weekly volume per muscle\n- Read your body weight trend\n- Log, change and remove food lines\n- Log, change and remove workouts logged from ChatGPT\n\nYou sign in with your Overload account. ChatGPT sees only your own data. Using Overload from ChatGPT is part of Overload Pro.",
+        "longDescription": "Overload is a workout and food tracker with an AI coach. Connect it to ChatGPT to ask about your own training and eating, and to log as you go.\n\nAsk how much protein you had today, how your bench press moved over the last two months, or which muscles you trained least this week. Say \"log 2 eggs and toast for breakfast\" or \"log my push day: bench 3x8 at 80 kg\" and it lands in your Overload diary, the same as logging in the app.\n\nWhat it can do:\n- Read your goals, calorie and macro targets\n- Read any day of food, or daily totals over a range\n- Read your workouts, sets, lift history and weekly volume per muscle\n- Read your body weight trend\n- Log, change and remove food lines\n- Log, change and remove workouts logged from ChatGPT\n\nYou sign in with your Overload account. ChatGPT sees only your own data.",
         "developerName": "Overload",
-        "category": "Health & Fitness",
+        "category": "Lifestyle",
         "websiteURL": "https://tryoverload.app",
         "supportURL": "https://tryoverload.app/chatgpt-claude",
         "privacyPolicyURL": "https://tryoverload.app/privacy.html",
@@ -29,9 +28,13 @@
         "brandColor": "#0B0B0B",
         "brandColorDark": "#C8FF00",
         "composerIcon": "./assets/icon.png",
-        "logo": "./assets/logo.png"
+        "logo": "./assets/logo.png",
+        "capabilities": [
+          "Read",
+          "Write"
+        ]
       },
-      "onboardingSkill": "get-started",
+      "onboardingSkill": "./skills/get-started/SKILL.md",
       "review": {
         "commerce": false,
         "test_cases": {
@@ -39,31 +42,31 @@
             {
               "description": "Read today's food against the user's targets",
               "prompt": "How many calories and how much protein have I had today, and how far am I from my targets?",
-              "tools_triggered": ["get_profile", "get_day_nutrition"],
+              "tools_triggered": "get_profile, get_day_nutrition",
               "expected_behavior": "Reads the profile targets and today's food, then gives today's calories and protein next to the targets and the gap."
             },
             {
               "description": "Log a simple breakfast",
               "prompt": "Log 2 boiled eggs and one medium banana for breakfast today.",
-              "tools_triggered": ["log_food"],
+              "tools_triggered": "log_food",
               "expected_behavior": "Logs two lines in today's breakfast with amounts, calories and macros, and reports the day's new total."
             },
             {
               "description": "Fix the amount of a logged food",
               "prompt": "Actually it was 3 eggs, not 2. Fix that.",
-              "tools_triggered": ["get_day_nutrition", "update_food_entry"],
+              "tools_triggered": "get_day_nutrition, update_food_entry",
               "expected_behavior": "Finds the egg line and changes it to 3 eggs; calories and macros scale with it."
             },
             {
               "description": "Log a workout",
               "prompt": "Log a workout for today: bench press 3 sets of 8 at 60 kg, then barbell row 3 sets of 10 at 50 kg.",
-              "tools_triggered": ["search_exercises", "log_workout"],
+              "tools_triggered": "search_exercises, log_workout",
               "expected_behavior": "Finds both exercises, logs one workout with 6 sets, and reports the workout and its total volume."
             },
             {
               "description": "Lift progress over time",
               "prompt": "How has my bench press changed over the last 2 months?",
-              "tools_triggered": ["search_exercises", "get_exercise_history"],
+              "tools_triggered": "search_exercises, get_exercise_history",
               "expected_behavior": "Finds bench press and summarises top sets or estimated 1RM by session over the period."
             }
           ],
@@ -90,5 +93,13 @@
         "release_notes": "First release: read food, workouts, lifts, volume and weight; log, change and remove food and workouts."
       }
     }
-  }
+  },
+  "homepage": "https://tryoverload.app",
+  "keywords": [
+    "fitness",
+    "nutrition",
+    "workouts",
+    "food log",
+    "calories"
+  ]
 }

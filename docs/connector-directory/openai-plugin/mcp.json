@@ -3,7 +3,17 @@
   "mcpServers": {
     "overload": {
       "type": "streamable-http",
-      "url": "https://mcp.tryoverload.app"
+      "url": "https://mcp.tryoverload.app",
+      "extensions": {
+        "com.openai": {
+          "auth": {
+            "type": "oauth",
+            "client": {
+              "mode": "cimd"
+            }
+          }
+        }
+      }
     }
   }
 }

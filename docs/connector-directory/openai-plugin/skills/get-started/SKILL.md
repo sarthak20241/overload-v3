@@ -24,5 +24,5 @@ signed-in user's own Overload data.
 - To fix a line, use `update_food_entry` or `update_workout`. To undo, use
   `delete_food_entries` or `delete_workout`. Ask before removing anything.
 
-Use of Overload from ChatGPT needs Overload Pro. If a tool says so, tell the
-user they can upgrade in the Overload app.
+Use of Overload from ChatGPT needs an Overload Pro plan. If a tool says the
+account does not have it, tell the user that, and that nothing was changed.

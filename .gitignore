@@ -63,3 +63,4 @@ skills-lock.json
 # super-probe crash-recovery snapshots of production precise_cache rows.
 # Written before the probe deletes anything; removed once the rows are back.
 tools/super-probe/.borrowed-*.json
+docs/connector-directory/*.zip
