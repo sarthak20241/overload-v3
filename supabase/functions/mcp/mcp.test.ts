@@ -30,6 +30,19 @@ Deno.test("auth: an OAuth token for this server gets the user id, email and scop
   assertEquals(r, { ok: true, userId: "user_1", email: "a@example.test", clientId: "c1", scopes: ["profile", "email"] });
 });
 
+Deno.test("auth: a token with azp (no client_id) still says which assistant", async () => {
+  const t = await token({ sub: "user_1", azp: "https://claude.ai/oauth/client" });
+  const r = await verifyAccessToken(`Bearer ${t}`, opts);
+  assert(r.ok && r.clientId === "https://claude.ai/oauth/client");
+});
+
+Deno.test("auth: client_id wins over azp; no id at all is null", async () => {
+  const both = await verifyAccessToken(`Bearer ${await token({ sub: "u", client_id: "c1", azp: "a1" })}`, opts);
+  assert(both.ok && both.clientId === "c1");
+  const none = await verifyAccessToken(`Bearer ${await token({ sub: "u" })}`, opts);
+  assert(none.ok && none.clientId === null);
+});
+
 Deno.test("auth: aud may be a list that includes this server", async () => {
   const t = await token({ sub: "user_1" }, ["https://other.test", RESOURCE]);
   assert((await verifyAccessToken(`Bearer ${t}`, opts)).ok);

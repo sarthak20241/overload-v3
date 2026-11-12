@@ -131,7 +131,11 @@ Deno.serve(async (req) => {
     },
     async done(tool, status, ms) {
       if (!ctx.profile) return;
-      await writeTrace(ADMIN, { userId: auth.userId, tool: tool.name, status, ms, clientId: auth.clientId });
+      await writeTrace(ADMIN, { userId: auth.userId, tool: tool.name, status, ms, clientId: auth.clientId,
+        // The caller's app name (ChatGPT's and Claude's requests say who they
+        // are here); a second way to tell them apart if the token has no id.
+        userAgent: req.headers.get("User-Agent"),
+      });
     },
   });
   if (!reply) return new Response(null, { status: 202, headers: CORS });
