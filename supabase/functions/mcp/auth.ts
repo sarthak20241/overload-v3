@@ -30,12 +30,23 @@ export async function verifyAccessToken(
       ok: true,
       userId: payload.sub,
       email: typeof payload.email === "string" ? payload.email : null,
-      clientId: typeof payload.client_id === "string" ? payload.client_id : null,
+      clientId: clientIdOf(payload),
       scopes: scope.split(" ").filter(Boolean),
     };
   } catch (e) {
     return { ok: false, reason: `verify failed: ${(e as Error).message}` };
   }
+}
+
+/** Which OAuth app (Claude, ChatGPT) the token was made for. Clerk's tokens
+ *  had no client_id claim (every mcp_traces.client_id was null), so read the
+ *  other standard names too: azp (OpenID "authorized party") and cid. */
+export function clientIdOf(payload: Record<string, unknown>): string | null {
+  for (const k of ["client_id", "azp", "cid"]) {
+    const v = payload[k];
+    if (typeof v === "string" && v) return v;
+  }
+  return null;
 }
 
 /** RFC 9728 protected resource metadata: tells the assistant which server

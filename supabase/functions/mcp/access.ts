@@ -41,7 +41,7 @@ export type TraceStatus = "ok" | "error" | "denied" | "limited" | "failed";
 export async function writeTrace(
   // deno-lint-ignore no-explicit-any
   db: SupabaseClient<any, "public", any>,
-  t: { userId: string; tool: string; status: TraceStatus; ms: number; clientId: string | null },
+  t: { userId: string; tool: string; status: TraceStatus; ms: number; clientId: string | null; userAgent?: string | null },
 ): Promise<void> {
   try {
     const { error } = await db.from("mcp_traces").insert({
@@ -50,6 +50,7 @@ export async function writeTrace(
       status: t.status,
       ms: Math.max(0, Math.round(t.ms)),
       client_id: t.clientId?.slice(0, 300) ?? null,
+      user_agent: t.userAgent?.slice(0, 300) || null,
     });
     if (error) console.error("[mcp] trace insert:", error.message);
   } catch (e) {
