@@ -27,6 +27,7 @@ import {
 import { envInt } from "../_shared/envInt.ts";
 import { requireTool, retryTool, SONNET_MODEL, SONNET_SETTINGS, sonnetSettings } from "../_shared/sonnet.ts";
 import { AI_LIMITS } from "../_shared/aiLimits.ts";
+import { aiBlocked, connectRefusal } from "../_shared/connectAccess.ts";
 import { cooldownBody, reserveProSlot } from "../_shared/aiCooldown.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { AREAS as WORD_AREAS, QUESTIONS as WORD_QUESTIONS, YES as WORD_YES } from "../_shared/dronaWords.ts";
@@ -3308,6 +3309,13 @@ async function handleParseMealRequest(args: {
       return respond({ error: "drona_access_required", state }, 402);
     }
     parseFreeTier = state === "free";
+    // Connect has no in-app AI food log (its AI is the user's own, through
+    // the connector). Refused BEFORE a parse slot is reserved.
+    if (aiBlocked(accessData)) {
+      trace.status = "unauthorized";
+      trace.error_message = "parse_connect_no_ai";
+      return respond(connectRefusal("parse"), 402);
+    }
   } catch (e) {
     trace.status = "internal_error";
     trace.error_message = `parse_access_status_threw: ${String(e).slice(0, 200)}`;
@@ -4698,6 +4706,13 @@ Deno.serve(async (req) => {
       );
     }
     freeTier = state === "free";
+    // Connect has no Drona in the app: no chat, and none of the free builds
+    // below. Refused before any claim RPC and before a chat slot is reserved.
+    if (aiBlocked(accessData)) {
+      trace.status = "unauthorized";
+      trace.error_message = "connect_no_ai";
+      return respond(connectRefusal(String((body as { mode?: unknown }).mode ?? "chat")), 402);
+    }
     if (freeTier) {
       // Peek at the requested mode (fully resolved later, same rules): an
       // explicit non-chat mode or any force_tool means a generate / refine /

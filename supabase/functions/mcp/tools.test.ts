@@ -1,6 +1,6 @@
 // deno-lint-ignore-file no-explicit-any
 import { assert, assertEquals, assertThrows } from "jsr:@std/assert@1";
-import { hasPro, limitHit, RATE } from "./access.ts";
+import { hasConnect, hasConnectorAccess, hasPro, limitHit, RATE } from "./access.ts";
 import { makeData } from "./data.ts";
 import { addDays, dayRange, dayStart, isDay, localTime, weekStart } from "./days.ts";
 import type { Tool } from "./protocol.ts";
@@ -37,7 +37,7 @@ function recorder() {
 
 const ID = "00000000-0000-4000-8000-000000000000";
 const SAMPLE_ARGS: Record<string, unknown[]> = {
-  profile: [U], trial: [U], recentCalls: [U, 60], targetHistory: [U],
+  profile: [U], trial: [U], connect: [U], recentCalls: [U, 60], targetHistory: [U],
   dayTargets: [U, "2026-11-01", "2026-11-10"], meals: [U, "a", "b"], foodEntry: [U, ID], workouts: [U, "a", "b", 5],
   workout: [U, ID], liftStat: [U, ID], exerciseSessions: [U, ID, 5], exerciseSessionCount: [U, ID], volume: [U, "2026-11-02"],
   weights: [U, "2026-11-01", "2026-11-10"], exerciseById: [U, ID], searchExercises: [U, "bench"],
@@ -123,6 +123,20 @@ Deno.test("access: Pro is a live paid tier or a live trial", () => {
   assert(!hasPro(null, null, now));
   assert(hasPro({ tier: "free" }, { expires_at: "2026-11-20T00:00:00Z", ended_at: null }, now));
   assert(!hasPro({ tier: "free" }, { expires_at: "2026-11-20T00:00:00Z", ended_at: "2026-11-05T00:00:00Z" }, now));
+});
+
+Deno.test("access: an active Connect plan opens the connector, an expired one does not", () => {
+  const now = new Date("2026-11-12T12:00:00Z");
+  const free = { tier: "free" };
+  assert(hasConnectorAccess(free, null, { connect_plan: "monthly", connect_expires_at: "2026-12-12T00:00:00Z" }, now));
+  assert(hasConnectorAccess(free, null, { connect_plan: "lifetime", connect_expires_at: null }, now));
+  assert(!hasConnectorAccess(free, null, { connect_plan: "annual", connect_expires_at: "2026-11-01T00:00:00Z" }, now));
+  assert(!hasConnectorAccess(free, null, { connect_plan: null, connect_expires_at: null }, now));
+  // A read that failed (migration not applied yet) is no Connect, not an error.
+  assert(!hasConnectorAccess(free, null, null, now));
+  // Pro still opens it with no Connect at all.
+  assert(hasConnectorAccess({ tier: "annual", tier_expires_at: null }, null, null, now));
+  assert(!hasConnect({ connect_plan: "" }, now));
 });
 
 Deno.test("access: rate limit per minute and per day", () => {

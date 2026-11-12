@@ -158,6 +158,7 @@ deno test --allow-all supabase/functions/ai-coach/freeGoalBuild.test.ts # one fr
 deno test --allow-all supabase/functions/ai-coach/regionRules.test.ts # FOOD_REGION_RULES: each region gets only its block, no rule lost, off = today
 deno test --allow-all --node-modules-dir=none supabase/functions/mcp/ # ChatGPT/Claude connector: sign-in token, every query filtered to the user, read + food write tools
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/mcp_food_writes.check.ts # connector food writes on PGlite: one meal per day, no double log, delete only connector lines (not in CI)
+deno test --allow-all --node-modules-dir=none supabase/migrations/checks/connect_plan.check.ts # Connect plan on PGlite: Pro unchanged, Connect = free + connector, no in-app AI for new accounts (not in CI)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/mcp_workout_writes.check.ts # connector workout writes on PGlite: app volume, no XP for connector workouts, app-edit XP, delete only connector workouts (not in CI)
 # App Store offer codes (key + pool in ~/.config/overload, never in the repo).
 # FRIENDMONTH = 1 month free (monthly), the iPhone referral code. "Free year" =
