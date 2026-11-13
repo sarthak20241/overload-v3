@@ -90,7 +90,7 @@ cancel Pro.
 1. Pro on AppSumo? Recommended: no (Connect only, Pro as the in-app upgrade).
 2. AppSumo price for Tier 1 (suggested $39).
 
-## Outcome 2026-11-13
+## Outcome (form sent 2026-11-13, StackSocial replied 2026-11-14)
 
 - AppSumo: REFUSED by the automatic check at partners.appsumo.com/self-submission
   ("Tryoverload isn't a fit for AppSumo right now"). AppSumo wants B2B software;
@@ -98,7 +98,9 @@ cancel Pro.
 - StackSocial (StackCommerce): seller form SENT at
   stackcommerce.com/become-a-merchant-partner. Digital Products, Shops,
   product "Overload Connect (lifetime)", the owner's work email, no phone, no
-  newsletter. StackSocial replied 2026-11-14 with partnership questions. Page said "We will take a look ... and be in touch soon."
+  newsletter, sent 2026-11-13. A day later (2026-11-14) StackSocial emailed
+  partnership questions: direct sale (not affiliate), a lifetime promo,
+  redemption by unique codes or URLs, ideal customer, past promos, 90-day goal.
 - Pro is NOT sold as a lifetime deal anywhere (owner agreed): it costs model money
   every month. Pro shows only as the in-app upgrade.
 - The redeem build (webhook/codes, redeem page on the website) waits for the

@@ -56,8 +56,9 @@ shows in `ps` while login runs. The variable keeps it out of shell history.
 
 ```bash
 cd mcp-proxy
-PRIV="$(/opt/homebrew/opt/openssl@3/bin/openssl pkey -in ~/.config/overload/mcp-registry-key.pem -noout -text | grep -A3 'priv:' | tail -n +2 | tr -d ' :\n')"
-mcp-publisher login http --domain tryoverload.app --private-key "$PRIV" && unset PRIV
+# The Ed25519 private key is the last 32 bytes of the key's DER form, as hex.
+PRIV="$(/opt/homebrew/opt/openssl@3/bin/openssl pkey -in ~/.config/overload/mcp-registry-key.pem -outform DER | tail -c 32 | xxd -p -c 64)"
+mcp-publisher login http --domain tryoverload.app --private-key "$PRIV"; unset PRIV
 mcp-publisher publish
 ```
 
