@@ -76,23 +76,26 @@ export async function requestNotificationPermission(): Promise<boolean> {
 export async function scheduleTrialReminder(plan: 'pro' | 'connect' = 'pro', trialDays = 0): Promise<boolean> {
   // trialDays 0 = unknown: day 5 of the usual 7. A known trial too short for
   // "two days left" gets no reminder, never one after the charge.
-  if (trialDays > 0 && trialDays < 3) return false;
   const N = loadNotifications();
   if (!N) return false;
   try {
+    // Cancel first: a reminder left from an earlier trial must not fire after
+    // a new one, even when the new one gets no reminder.
+    await N.cancelScheduledNotificationAsync(TRIAL_REMINDER_ID).catch(() => {});
+    if (trialDays > 0 && trialDays < 3) return false;
     const perms = await N.getPermissionsAsync();
     if (!perms.granted) return false;
-    await N.cancelScheduledNotificationAsync(TRIAL_REMINDER_ID).catch(() => {});
     await N.scheduleNotificationAsync({
       identifier: TRIAL_REMINDER_ID,
       content: {
+        // "two days" matches the trigger below (trialDays - 2). Change both together.
         title: 'Two days left on your trial',
         body: plan === 'connect'
           ? 'Your Overload Connect trial converts in two days. To keep it, do nothing. To stop it, cancel in Settings.'
           : "Drona here. Your trial converts in two days. Staying is one tap of nothing; leaving is two taps in Settings. Either way, you were warned like I promised.",
       },
       trigger: {
-        // SDK 53 time-interval trigger. Seconds from now to day 5.
+        // SDK 53 time-interval trigger. Seconds from now to two days before the end.
         type: N.SchedulableTriggerInputTypes.TIME_INTERVAL,
         // Two days before the trial ends; day 5 when the length is unknown.
         seconds: (trialDays > 0 ? trialDays - 2 : TRIAL_REMINDER_DAY) * 24 * 60 * 60,
