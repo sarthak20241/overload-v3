@@ -2,7 +2,7 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import type { Tool } from "./protocol.ts";
 import type { Ctx } from "./tools.ts";
-import { cleanSlot, PLAN_TOOLS, planPosition } from "./planTools.ts";
+import { cleanSlot, PLAN_TOOLS, planPosition, repsText } from "./planTools.ts";
 import { WriteRefused } from "./writes.ts";
 
 const U = "user_1";
@@ -87,6 +87,10 @@ Deno.test("planPosition: phase and week by offset, not list place; before and af
   assertEquals([gap.state, gap.phase?.id], ["between_phases", "b"], "a gap is not the end of the plan");
   const noOffset = planPosition("2026-11-09", [{ id: "a", seq: 0, duration_weeks: 2 }], "2026-11-10");
   assertEquals([noOffset.state, noOffset.phase?.id, noOffset.week], ["running", "a", 1], "a missing offset is week 0, not skipped");
+});
+
+Deno.test("repsText: one target, a range, one side missing, none", () => {
+  assertEquals([repsText(5, 5), repsText(8, 12), repsText(null, 10), repsText(null, null)], ["5", "8-12", "10", null]);
 });
 
 // ── get_plan ────────────────────────────────────────────────────────────────

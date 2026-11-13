@@ -83,6 +83,13 @@ function metricOut(m: Row) {
   };
 }
 
+/** "5", "8-12", or null when the row has no rep target. */
+export function repsText(lo: unknown, hi: unknown): string | null {
+  if (lo == null && hi == null) return null;
+  if (lo == null || hi == null || lo === hi) return `${lo ?? hi}`;
+  return `${lo}-${hi}`;
+}
+
 function routineOut(r: Row) {
   const list = [...(r.routine_exercises ?? [])].sort((a: Row, b: Row) => (a.order ?? 0) - (b.order ?? 0));
   return {
@@ -91,7 +98,7 @@ function routineOut(r: Row) {
     exercises: list.map((e: Row) => ({
       name: e.exercises?.name ?? "Unknown exercise",
       sets: e.sets,
-      reps: e.reps_min === e.reps_max ? `${e.reps_min}` : `${e.reps_min}-${e.reps_max}`,
+      ...(repsText(e.reps_min, e.reps_max) ? { reps: repsText(e.reps_min, e.reps_max) } : {}),
       rest_seconds: e.rest_seconds,
       ...(e.target_duration_seconds ? { seconds_per_set: e.target_duration_seconds } : {}),
       ...(e.target_distance_m ? { meters_per_set: r1(e.target_distance_m) } : {}),
@@ -161,10 +168,8 @@ const getPlan: Tool = {
     }
     const today = todayIn(ctx.tz, ctx.now);
     const phases = [...(prog.coach_program_phases ?? [])].sort((a: Row, b: Row) => a.seq - b.seq);
-    const [metrics, pos] = await Promise.all([
-      ctx.data.programMetrics(ctx.userId, prog.id),
-      Promise.resolve(planPosition(prog.start_date, phases, today, prog.total_weeks)),
-    ]);
+    const pos = planPosition(prog.start_date, phases, today, prog.total_weeks);
+    const metrics = await ctx.data.programMetrics(ctx.userId, prog.id);
     return answer({
       has_plan: true,
       today,
