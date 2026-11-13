@@ -1237,14 +1237,14 @@ const u = StyleSheet.create({
   // Two-sided paywall (2026-11-12).
   pwTitle: {
     fontFamily: FontFamily.onboardingHeading,
-    fontSize: 26,
-    lineHeight: 31,
+    fontSize: 24,
+    lineHeight: 29,
     letterSpacing: -0.5,
     marginTop: 0,
-    marginBottom: 16,
+    marginBottom: 14,
   },
-  pwSub: { fontSize: 13, textAlign: 'center', marginTop: 8, marginBottom: 14, fontFamily: FontFamily.onboardingBody },
-  pwGap: { height: 16 },
+  pwSub: { fontSize: 13, textAlign: 'center', marginTop: 7, marginBottom: 11, fontFamily: FontFamily.onboardingBody },
+  pwGap: { height: 12 },
   pwPrices: { marginBottom: 12 },
   pwPriceLine: { fontSize: 12, textAlign: 'center', marginTop: 8, fontFamily: FontFamily.onboardingBody },
   hero: {

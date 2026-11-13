@@ -138,6 +138,7 @@ Apple, DONE 2026-11-12/13:
 2. New entitlement `connect`; attach the 3 Connect products. The Pro entitlement stays as is.
 3. Default offering: add packages `connect_monthly`, `connect_annual`, `connect_lifetime`. Remove `$rc_lifetime` (Founding) from every offering the app reads.
 
+DONE 2026-11-13: default offering has custom packages connect_annual, connect_monthly, connect_lifetime (Apple + Play products each; CUSTOM type so the live app ignores them). Verified in the dev client: $14.99 / $2.99 / $49.99, 7-day trial on monthly and yearly.
 DONE 2026-11-12: the 3 Apple Connect products added to the App Store app in RevenueCat, and a new entitlement `connect` ("Overload Connect") with all 3 attached. The Pro entitlement is `drona_access`. Offering packages NOT added yet: do it with PR 2 (the new paywall), so today's paywall never shows them. Play products still to add once they exist.
 
 ### Supabase secrets
