@@ -19,7 +19,7 @@ const TIME = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 export const REQUEST_ID = /^[A-Za-z0-9_.:-]{1,100}$/;
 const MAX_BACK_DAYS = 365;
 
-const num = (v: unknown): number | null => {
+export const num = (v: unknown): number | null => {
   const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
   return Number.isFinite(n) ? n : null;
 };

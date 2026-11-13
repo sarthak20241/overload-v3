@@ -15,15 +15,11 @@ import { type MetricKind, metricLabel, type MetricRef, STATUS_LABEL, type Metric
 import { addDays, daysBetween, todayIn } from "./days.ts";
 import type { Tool } from "./protocol.ts";
 import { answer, type Ctx, r0, r1, refuse } from "./tools.ts";
-import { guarded, REQUEST_ID, resolveExercise } from "./workoutWrites.ts";
+import { guarded, num, REQUEST_ID, resolveExercise } from "./workoutWrites.ts";
 
 // deno-lint-ignore no-explicit-any
 type Row = Record<string, any>;
 
-const num = (v: unknown): number | null => {
-  const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
-  return Number.isFinite(n) ? n : null;
-};
 
 // ── where today sits in the plan ────────────────────────────────────────────
 
@@ -232,7 +228,8 @@ const saveRoutine: Tool = {
     "so they can start it there. Each exercise gets sets, a rep target or range, rest, and an " +
     "optional cue. Use exercise ids from search_exercises (or exact names). Show the user the " +
     "workout and get a clear yes before saving. add_to_plan: true also puts it in the current " +
-    "phase of their plan (get_plan), or its next phase if none is running yet. This never changes or removes a routine the user already has.",
+    "phase of their plan (get_plan), or its next phase if none is running yet. Send a request_id, " +
+    "so a retry after a timeout does not save it twice. This never changes or removes a routine the user already has.",
   inputSchema: {
     type: "object",
     properties: {
