@@ -83,12 +83,67 @@ export const CONNECT_CLEARED: Readonly<Record<string, null>> = {
   connect_expires_at: null,
 };
 
+/** The Connect columns as the row holds them now. */
+export interface StoredConnect {
+  connect_plan: string | null;
+  connect_expires_at: string | null;
+}
+
+function ms(at: string | null | undefined): number | null {
+  if (!at) return null;
+  const t = Date.parse(at);
+  return Number.isFinite(t) ? t : null;
+}
+
 /**
- * May an EXPIRATION for a Connect product clear the row's Connect? Not when
- * the row holds a Connect lifetime: a lifetime and a subscription can both
- * exist on one Apple ID, and the subscription's end must not erase the
- * lifetime the user also bought.
+ * Why a Connect purchase or renewal must NOT be written, or null to write it.
+ *
+ * - A subscription with no expiry would read as active forever (the access
+ *   check treats a null expiry as no end), so it is never written. A lifetime
+ *   has no expiry by design.
+ * - A subscription never replaces a Connect lifetime: a lifetime and a
+ *   subscription can both exist on one Apple ID, and the subscription's later
+ *   expiry would then clear the lifetime the user paid for.
+ * - A RENEWAL retried late, after a newer renewal of the same plan, must not
+ *   move the expiry back. Only the same plan is compared: a plan change may
+ *   rightly bring an earlier date.
  */
-export function connectExpiryClears(currentPlan: string | null | undefined): boolean {
-  return currentPlan !== "lifetime";
+export function connectWriteSkip(
+  stored: StoredConnect | null | undefined,
+  plan: ConnectPlan,
+  eventType: string,
+  expiresAt: string | null,
+): string | null {
+  if (plan === "lifetime") return null;
+  if (!expiresAt) return "subscription event has no expiry";
+  if (stored?.connect_plan === "lifetime") return "row holds a Connect lifetime";
+  if (eventType === "RENEWAL" && stored?.connect_plan === plan) {
+    const have = ms(stored.connect_expires_at);
+    const next = ms(expiresAt);
+    if (have !== null && next !== null && next <= have) return "older renewal than the stored one";
+  }
+  return null;
+}
+
+/**
+ * May an EXPIRATION or refund of `ended` clear the row's Connect? Only when
+ * the row still holds that plan. Otherwise the end belongs to a plan the row
+ * has already moved past (a monthly event late after an annual was written,
+ * or a subscription beside a lifetime), and clearing would take away the plan
+ * the user holds now. An expiry also keeps a row whose stored period ends
+ * after the expiring one: a newer renewal already landed.
+ */
+export function connectEndClears(
+  stored: StoredConnect | null | undefined,
+  ended: ConnectPlan,
+  why: "expiration" | "refund",
+  eventExpiresAtMs?: number | null,
+): boolean {
+  if (!stored?.connect_plan) return false; // nothing to clear
+  if (stored.connect_plan !== ended) return false;
+  if (why === "expiration" && ended !== "lifetime") {
+    const have = ms(stored.connect_expires_at);
+    if (have !== null && typeof eventExpiresAtMs === "number" && have > eventExpiresAtMs) return false;
+  }
+  return true;
 }

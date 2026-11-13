@@ -119,7 +119,7 @@ Do this FIRST: new products need store review, about 1 to 2 days.
 
 1. `connect_plan`, `connect_started_at`, `connect_expires_at` on `user_profiles`, CHECK on `connect_plan`.
 2. Replace `get_coach_access_status`: same states, plus `connect` (bool) and `connect_plan`. Old app bundles ignore new fields.
-3. Active Connect user who is not Pro: `daily_limit = 0`, `parse_daily_limit = 0` (no in-app AI).
+3. Active Connect user who is not Pro, on an account created on or after 2026-11-09 (`ai_blocked`): `daily_limit = 0`, `parse_daily_limit = 0` (no in-app AI). Older accounts keep the free meter.
 4. SQL helper `has_connector_access(user)`: Pro, trial, or active Connect.
 5. `supabase/migrations/checks/connect_plan.check.ts` on PGlite: Pro unchanged; Connect user is `free` + `connect`; expired Connect is plain `free`; lifetime never expires.
 
@@ -128,16 +128,16 @@ Do this FIRST: new products need store review, about 1 to 2 days.
 1. `productIdToPlan()`: `{ kind: 'pro', tier }` or `{ kind: 'connect', plan }`.
 2. INITIAL_PURCHASE / RENEWAL / UNCANCELLATION: Pro writes `tier*`, Connect writes `connect_*`.
 3. NON_RENEWING_PURCHASE: Connect lifetime writes `connect_plan = 'lifetime'`, no expiry; it does NOT use `claim_founding_tier`.
-4. EXPIRATION / CANCELLATION: clear only the side of that product.
-5. PRODUCT_CHANGE (`effectiveProductId`): Connect to Pro sets `tier`, clears a Connect subscription (never a Connect lifetime). Pro to Connect does the reverse.
+4. EXPIRATION: clear only the side of that product, and only when the row still holds that plan. CANCELLATION clears nothing: a cancelled plan stays paid until its period ends, and its EXPIRATION ends it.
+5. PRODUCT_CHANGE (`effectiveProductId`): an event writes only its own product's side. No cross-clearing either way: each side ends on its own expiry date. Pro to Connect never clears Pro early (Apple keeps the paid Pro period until it ends).
 6. TRANSFER: copy and release `connect_*` like `tier*`.
 7. Tests that fail without the fix: a Connect buy never changes `tier`; a Pro expiry never clears Connect lifetime; the upgrade path; the transfer.
 
 ### Phase C. Server gates
 
 1. `mcp/access.ts`: `hasConnectorAccess` (Pro, trial, active Connect). Refusal text names both plans. Update `mcp.test.ts`.
-2. `ai-coach`, `form-check`, `drona-cards`, `daily-suggestion`: a Connect user who is not Pro gets no AI (0 chats, 0 AI food logs, no goal build); typed error the app maps to "This is part of Drona".
-3. `_shared/aiLimits.ts`: a Connect block (all zero), tested against the SQL.
+2. `ai-coach`, `form-check`, `drona-cards`, `daily-suggestion`: an `ai_blocked` Connect user (not Pro, account created on or after 2026-11-09) gets no AI (0 chats, 0 AI food logs, no goal build); typed error the app maps to "This is part of Drona".
+3. `_shared/aiLimits.ts`: a Connect block (all zero) for `ai_blocked` accounts only, tested against the SQL.
 
 ### Phase D. App
 

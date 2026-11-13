@@ -8,8 +8,9 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   buildProductMap,
   CONNECT_CLEARED,
-  connectExpiryClears,
+  connectEndClears,
   connectStart,
+  connectWriteSkip,
   isLifetimePlan,
   productIdToPlan,
 } from "./plans.ts";
@@ -78,8 +79,51 @@ Deno.test("clearing Connect touches only Connect columns", () => {
   assertEquals(Object.keys(CONNECT_CLEARED).sort(), ["connect_expires_at", "connect_plan", "connect_started_at"]);
 });
 
+const JAN = "2027-01-01T00:00:00.000Z";
+const FEB = "2027-02-01T00:00:00.000Z";
+
 Deno.test("a subscription expiry never erases a Connect lifetime", () => {
-  assertEquals(connectExpiryClears("lifetime"), false);
-  assertEquals(connectExpiryClears("monthly"), true);
-  assertEquals(connectExpiryClears(null), true);
+  const life = { connect_plan: "lifetime", connect_expires_at: null };
+  assertEquals(connectEndClears(life, "monthly", "expiration", Date.parse(JAN)), false);
+  assertEquals(connectEndClears(life, "monthly", "refund"), false);
+  // A refund of the lifetime itself clears it.
+  assertEquals(connectEndClears(life, "lifetime", "refund"), true);
+});
+
+Deno.test("an end clears only the plan the row holds", () => {
+  const annual = { connect_plan: "annual", connect_expires_at: FEB };
+  // A monthly event late after the annual was written keeps the annual.
+  assertEquals(connectEndClears(annual, "monthly", "expiration", Date.parse(JAN)), false);
+  assertEquals(connectEndClears(annual, "monthly", "refund"), false);
+  assertEquals(connectEndClears(annual, "annual", "expiration", Date.parse(FEB)), true);
+  assertEquals(connectEndClears(annual, "annual", "refund"), true);
+  assertEquals(connectEndClears(null, "monthly", "expiration", Date.parse(JAN)), false);
+});
+
+Deno.test("an expiry keeps a newer period of the same plan", () => {
+  const renewed = { connect_plan: "monthly", connect_expires_at: FEB };
+  assertEquals(connectEndClears(renewed, "monthly", "expiration", Date.parse(JAN)), false);
+  assertEquals(connectEndClears(renewed, "monthly", "expiration", Date.parse(FEB)), true);
+});
+
+Deno.test("a subscription never replaces a Connect lifetime", () => {
+  const life = { connect_plan: "lifetime", connect_expires_at: null };
+  assertEquals(connectWriteSkip(life, "monthly", "INITIAL_PURCHASE", JAN) !== null, true);
+  assertEquals(connectWriteSkip(life, "annual", "RENEWAL", JAN) !== null, true);
+  // A lifetime may replace a subscription.
+  assertEquals(connectWriteSkip({ connect_plan: "monthly", connect_expires_at: JAN }, "lifetime", "NON_RENEWING_PURCHASE", null), null);
+});
+
+Deno.test("a subscription with no expiry is never written", () => {
+  assertEquals(connectWriteSkip(null, "monthly", "INITIAL_PURCHASE", null) !== null, true);
+  assertEquals(connectWriteSkip(null, "monthly", "INITIAL_PURCHASE", JAN), null);
+});
+
+Deno.test("a late renewal never moves the expiry back", () => {
+  const renewed = { connect_plan: "monthly", connect_expires_at: FEB };
+  assertEquals(connectWriteSkip(renewed, "monthly", "RENEWAL", JAN) !== null, true);
+  assertEquals(connectWriteSkip(renewed, "monthly", "RENEWAL", FEB) !== null, true);
+  assertEquals(connectWriteSkip({ connect_plan: "monthly", connect_expires_at: JAN }, "monthly", "RENEWAL", FEB), null);
+  // A plan change may bring an earlier date.
+  assertEquals(connectWriteSkip({ connect_plan: "annual", connect_expires_at: FEB }, "monthly", "RENEWAL", JAN), null);
 });

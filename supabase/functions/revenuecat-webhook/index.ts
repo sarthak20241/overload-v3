@@ -32,8 +32,9 @@ import { ensureProfileRow } from "./profileRow.ts";
 import {
   buildProductMap,
   CONNECT_CLEARED,
-  connectExpiryClears,
+  connectEndClears,
   connectStart,
+  connectWriteSkip,
   type ConnectPlan,
   type Plan,
   type ProTier,
@@ -397,20 +398,44 @@ async function writeConnect(event: RcEvent, plan: ConnectPlan): Promise<void> {
   }
   const row = connectStart(plan, event);
   await ensureProfileRow(admin, event.app_user_id);
-  const { data, error } = await admin
+  const { data: stored, error: readErr } = await admin
+    .from("user_profiles")
+    .select("connect_plan, connect_expires_at")
+    .eq("clerk_user_id", event.app_user_id)
+    .maybeSingle();
+  if (readErr) throw new Error(`connect read failed: ${readErr.message}`);
+
+  const skip = connectWriteSkip(stored, plan, event.type, row.connect_expires_at);
+  if (skip) {
+    console.warn(`[revenuecat] connect ${plan} ${event.type} not written (${skip}): user=${event.app_user_id}`);
+    return;
+  }
+
+  // Write only if the row still holds what was just read. A Connect event
+  // that landed in between (a lifetime, a newer renewal) makes this match 0
+  // rows; the throw below makes RevenueCat retry, and the retry decides again
+  // on the new values.
+  let update = admin
     .from("user_profiles")
     .update(row)
-    .eq("clerk_user_id", event.app_user_id)
-    .select("clerk_user_id");
+    .eq("clerk_user_id", event.app_user_id);
+  update = stored?.connect_plan == null
+    ? update.is("connect_plan", null)
+    : update.eq("connect_plan", stored.connect_plan);
+  update = stored?.connect_expires_at == null
+    ? update.is("connect_expires_at", null)
+    : update.eq("connect_expires_at", stored.connect_expires_at);
+  const { data, error } = await update.select("clerk_user_id");
   if (error) throw new Error(`connect update failed: ${error.message}`);
   if (!data || data.length === 0) {
-    // Same as the Pro path: the row may not exist yet, so retry, never drop.
+    // No row yet, or the row changed since the read: retry, never drop.
     console.error(
       `[revenuecat] connect ${event.type} matched 0 user_profiles rows for app_user_id=${event.app_user_id} — forcing retry`,
     );
-    throw new Error(`no user_profiles row for app_user_id=${event.app_user_id}`);
+    throw new Error(`no matching user_profiles row for app_user_id=${event.app_user_id}`);
   }
-  await admin.rpc("mark_trial_converted", { p_clerk_user_id: event.app_user_id });
+  // No mark_trial_converted here: it closes an open Drona trial, and Connect
+  // does not include Drona. A trial runs on to its own end.
   console.log(
     `[revenuecat] connect set: ${plan} expires=${row.connect_expires_at} user=${event.app_user_id} (${event.type})`,
   );
@@ -622,28 +647,36 @@ async function handleRenewal(event: RcEvent): Promise<void> {
 
 /**
  * End a Connect plan (expiry or refund). Only the Connect columns change, so a
- * Pro tier on the same row is untouched. A subscription expiry keeps a Connect
- * lifetime; a refund of the lifetime itself clears it.
+ * Pro tier on the same row is untouched. Only the plan that ended is cleared:
+ * a row that holds another Connect plan, or a newer period of the same one,
+ * keeps it (plans.ts connectEndClears).
  */
 async function endConnect(event: RcEvent, why: "expiration" | "refund", ended: ConnectPlan): Promise<void> {
   if (!event.app_user_id) return;
-  const { data: profile } = await admin
+  const { data: stored, error: readErr } = await admin
     .from("user_profiles")
-    .select("connect_plan")
+    .select("connect_plan, connect_expires_at")
     .eq("clerk_user_id", event.app_user_id)
     .maybeSingle();
-  if (why === "expiration" && !connectExpiryClears(profile?.connect_plan)) {
-    console.log(`[revenuecat] connect ${ended} expired but user has Connect lifetime — keeping it`);
+  if (readErr) throw new Error(`connect read failed: ${readErr.message}`);
+  if (!connectEndClears(stored, ended, why, event.expiration_at_ms)) {
+    console.log(
+      `[revenuecat] connect ${ended} ${why} kept the row's Connect ` +
+      `(holds ${stored?.connect_plan ?? "none"} until ${stored?.connect_expires_at ?? "-"}): user=${event.app_user_id}`,
+    );
     return;
   }
-  if (why === "refund" && ended !== "lifetime" && profile?.connect_plan === "lifetime") {
-    console.log(`[revenuecat] connect ${ended} refunded but user has Connect lifetime — keeping it`);
-    return;
-  }
-  const { error } = await admin
+  // Clear only if the row still holds what was just read; a Connect write in
+  // between leaves it alone.
+  let update = admin
     .from("user_profiles")
     .update(CONNECT_CLEARED)
-    .eq("clerk_user_id", event.app_user_id);
+    .eq("clerk_user_id", event.app_user_id)
+    .eq("connect_plan", ended);
+  update = stored?.connect_expires_at == null
+    ? update.is("connect_expires_at", null)
+    : update.eq("connect_expires_at", stored.connect_expires_at);
+  const { error } = await update;
   if (error) throw new Error(`connect ${why} failed: ${error.message}`);
   console.log(`[revenuecat] connect ${why} → cleared: user=${event.app_user_id}`);
 }
