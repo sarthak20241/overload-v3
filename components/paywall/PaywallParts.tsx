@@ -137,7 +137,7 @@ export function ExampleCard({ side }: { side: PaywallSide }) {
               <View style={[s.goalFill, { backgroundColor: g.lime }]} />
             </View>
             <Text style={[s.caption, { color: g.C.textMuted }]}>Drona</Text>
-            <Bubble text="You ate 900 calories extra this week. I fixed next week for you to approve. You still reach 72 kg by Mar 3." />
+            <Bubble text="You ate 900 calories extra this week. I drafted next week for you. Approve it and you still reach 72 kg by Mar 3." />
           </>
         ) : (
           <>

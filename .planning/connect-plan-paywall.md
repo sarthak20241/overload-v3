@@ -197,7 +197,7 @@ DONE 2026-11-12: the 3 Apple Connect products added to the App Store app in Reve
 2. A fresh sandbox Apple ID: the Drona button says "Try Drona free for 7 days"; an Apple ID that had a trial sees "Continue".
 3. A Connect account: no Drona in the app, the server refuses AI, the connector works.
 5. ChatGPT with our server (only Claude is proven). If it fails, the paywall names Claude only.
-6. DONE 2026-11-13: the Drona message says "I fixed next week for you to approve", since the weekly card proposes and the user approves.
+6. DONE 2026-11-13: the Drona message says "I drafted next week for you. Approve it and you still reach 72 kg by Mar 3.", since the weekly card proposes and the user approves.
 7. Both themes, a small phone, Android.
 8. Deno suites: webhook, mcp, ai-coach, `_shared`, the new PGlite check.
 
