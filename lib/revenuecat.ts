@@ -92,40 +92,10 @@ export type RevenueCatCustomerInfo = {
   };
 };
 
-// Our app's canonical product slugs. We map RC's package identifiers into
-// these so the Paywall + downstream code don't have to know about RC's
-// `$rc_*` convention.
-export type PlanKey = 'monthly' | 'annual' | 'founding_lifetime';
-
-// RC's package identifiers (left) → our slugs (right). Some are conventional
-// ($rc_monthly etc.) and some are custom. Add both forms so we tolerate the
-// dashboard being configured either way.
-const PACKAGE_ID_MAP: Record<string, PlanKey> = {
-  '$rc_monthly': 'monthly',
-  '$rc_annual': 'annual',
-  '$rc_lifetime': 'founding_lifetime',
-  'monthly': 'monthly',
-  'annual': 'annual',
-  'founding_lifetime': 'founding_lifetime',
-  'lifetime': 'founding_lifetime',
-};
-
-// Fallback when the identifier isn't recognized: match on RC's packageType.
-// RC's standard types are MONTHLY, ANNUAL, LIFETIME, plus weekly/two-month/etc.
-// — the three we care about all map cleanly. CUSTOM packages have no
-// standard type, so they must use a recognized identifier above.
-function packageTypeToPlanKey(packageType: string | undefined): PlanKey | null {
-  switch (packageType) {
-    case 'MONTHLY': return 'monthly';
-    case 'ANNUAL': return 'annual';
-    case 'LIFETIME': return 'founding_lifetime';
-    default: return null;
-  }
-}
-
-function packageToPlanKey(pkg: RCPackage): PlanKey | null {
-  return PACKAGE_ID_MAP[pkg.identifier] ?? packageTypeToPlanKey(pkg.packageType);
-}
+// Plan slugs and the package -> plan rules live in lib/planKeys.ts (pure,
+// so they are unit-tested without the native module).
+import { packageToPlanKey, type PlanKey } from './planKeys';
+export { CONNECT_PLANS, isConnectPlan, packageToPlanKey, type PlanKey } from './planKeys';
 
 let cachedModule: any | null | undefined;
 

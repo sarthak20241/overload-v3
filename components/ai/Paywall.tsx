@@ -76,7 +76,10 @@ interface PaywallProps {
 
 // Display metadata for each plan. RC's product titles are usually generic
 // ("Monthly Subscription"); we override with our own marketing copy.
-const PLAN_COPY: Record<PlanKey, { title: string; subtitle: string; badge?: string }> = {
+// Pro plans only: this older sheet never sells Overload Connect (the
+// two-sided paywall in app/upgrade.tsx does).
+type ProPlanKey = 'monthly' | 'annual' | 'founding_lifetime';
+const PLAN_COPY: Record<ProPlanKey, { title: string; subtitle: string; badge?: string }> = {
   monthly: {
     title: 'Monthly',
     subtitle: 'Cancel anytime',
@@ -93,7 +96,7 @@ const PLAN_COPY: Record<PlanKey, { title: string; subtitle: string; badge?: stri
   },
 };
 
-const PLAN_ORDER: PlanKey[] = ['annual', 'monthly', 'founding_lifetime'];
+const PLAN_ORDER: ProPlanKey[] = ['annual', 'monthly', 'founding_lifetime'];
 
 export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
   const { C } = useTheme();

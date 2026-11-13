@@ -319,6 +319,8 @@ export type AnalyticsEvent =
   | 'paywall_store_retry'
   | 'paywall_store_down'
   | 'paywall_success_cta'
+  | 'paywall_side_switched'
+  | 'paywall_period_selected'
   | 'purchase_started'
   | 'purchase_pending'
   | 'purchase_pending_resolved'
@@ -445,3 +447,25 @@ export function consumeWorkoutSource(): string {
 
 /** True when a real key is configured. Used by the provider to skip mounting. */
 export const analyticsEnabled = !!posthog;
+
+/**
+ * A PostHog feature flag's variant, or `fallback` when PostHog is off, the
+ * flag is unknown, or it does not load in `timeoutMs`. Never throws: an A/B
+ * test must never block a screen.
+ */
+export async function getFlagVariant(flag: string, fallback: string, timeoutMs = 1500): Promise<string> {
+  if (!posthog) return fallback;
+  try {
+    const read = (async () => {
+      const now = posthog!.getFeatureFlag(flag);
+      if (typeof now === 'string') return now;
+      await posthog!.reloadFeatureFlagsAsync();
+      const after = posthog!.getFeatureFlag(flag);
+      return typeof after === 'string' ? after : fallback;
+    })();
+    const timeout = new Promise<string>((r) => setTimeout(() => r(fallback), timeoutMs));
+    return await Promise.race([read, timeout]);
+  } catch {
+    return fallback;
+  }
+}

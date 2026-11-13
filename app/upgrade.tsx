@@ -1,4 +1,10 @@
 /**
+ * The paywall. Since 2026-11-12 it sells two plans on one screen (plan file
+ * .planning/connect-plan-paywall.md): "Drona coach" = Overload Pro, and
+ * "Your own AI" = Overload Connect (tracker + ChatGPT / Claude connector, no
+ * Drona). Parts in components/paywall/PaywallParts.tsx, rules in
+ * lib/paywallPlans.ts, layout A/B from the PostHog flag `paywall-layout`.
+ *
  * The Overload Pro funnel (.planning/paywall-plan.md, design review artifact
  * "open-reveal"). One route, three internal screens, modeled beat-for-beat on
  * the Cal AI funnel with our adaptations (soft wall, 7-day trial, transparent
@@ -80,7 +86,21 @@ import {
   Spacing,
 } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { track, setUserProps, flushAnalytics } from '@/lib/analytics';
+import { track, setUserProps, flushAnalytics, getFlagVariant } from '@/lib/analytics';
+import {
+  ctaLabel as paywallCta,
+  initialSide,
+  layoutFromFlag,
+  PAYWALL_LAYOUT_FLAG,
+  planFor,
+  priceLine,
+  SIDE_PERIODS,
+  SIDE_SUB,
+  type PaywallLayout,
+  type PaywallPeriod,
+  type PaywallSide,
+} from '@/lib/paywallPlans';
+import { ExampleCard, Features, PAYWALL_LIME, PlanSwitch, PriceBoxes } from '@/components/paywall/PaywallParts';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -101,6 +121,7 @@ import {
   restorePurchases,
   getCustomerInfo,
   freeTrialDays,
+  isConnectPlan,
   PurchaseCancelledError,
   PurchasePendingError,
   describePurchaseError,
@@ -125,45 +146,6 @@ interface PurchaseOutcome {
   onTrial: boolean;
 }
 
-// What the paywall says Pro gives. Readiness dropped from Pro (2026-07-29):
-// the app never gated it client-side, so advertising it was a bug.
-//
-// 2026-10-22: the Free/Pro table (FREE + PRO columns, a "See the full
-// comparison" expander and SOON rows) read as a wall of text on a real
-// Android phone and pushed the headline off screen. Pro is now four short
-// lines; each one is something Pro does today.
-//
-// 2026-10-23: four feature lines still sold features, not the product. Free
-// is a sample (3 chats, 3 AI food logs a day); Pro is the coaching that walks
-// someone to their goal, so the paywall draws that walk: three steps joined by
-// a line, ending at the goal. Every step is something only Pro can run today
-// (the server gates program/plan/workout building and refining as Pro).
-//
-// 2026-11-08: plain words. A first-time reader did not
-// know what "Drona", "program" or "coached" meant here, so each line says
-// what happens, in words anyone uses.
-const PRO_PATH = [
-  'A workout plan made for your goal',
-  'Your coach checks in and changes the plan when life gets busy',
-  'Help with your workouts and your meals, every day',
-];
-
-interface FoundingStatus {
-  tier: string;
-  cap: number;
-  claimed: number;
-  closed_at: string | null;
-}
-
-/**
- * "₹999.00" → "₹". Currency symbol straight from the store-localized price
- * string, so the derived per-month figure always matches the store currency.
- */
-function currencySymbol(priceString: string): string {
-  const sym = priceString.replace(/[\d.,\s]/g, '');
-  return sym || '';
-}
-
 /**
  * Is this buyer actually on a trial right now? Read from the active
  * entitlement's periodType (INTRO | TRIAL), never from the selected plan or
@@ -175,14 +157,6 @@ function entitlementOnTrial(customerInfo: RevenueCatCustomerInfo | null | undefi
     const t = e?.periodType;
     return t === 'TRIAL' || t === 'INTRO' || t === 'trial' || t === 'intro';
   });
-}
-
-function perMonthLabel(pkg: RevenueCatPackage): string | null {
-  const price = pkg.product?.price;
-  if (typeof price !== 'number' || price <= 0) return null;
-  const sym = currencySymbol(pkg.product.priceString ?? '');
-  const v = price / 12;
-  return `${sym}${v >= 20 ? String(Math.round(v)) : v.toFixed(2)}`;
 }
 
 export default function UpgradeScreen() {
@@ -205,7 +179,8 @@ export default function UpgradeScreen() {
   const newOrLoading = !userLoaded || !user || isHardPaywallAccount(user.createdAt);
   // Pro or a trial already (a code, an earlier purchase): never locked.
   const { access: coachAccess } = useCoachAccess();
-  const hasAccess = coachAccess.state === 'paid' || coachAccess.state === 'trialing';
+  // A Connect buyer has paid too: they come here to add Drona, never locked.
+  const hasAccess = coachAccess.state === 'paid' || coachAccess.state === 'trialing' || coachAccess.connect === true;
   const isLocked =
     isPurchasesAvailable() && (params.flow === 'locked' || isFunnel) && newOrLoading && !hasAccess;
   const source = params.flow === 'locked' ? 'locked' : isFunnel ? 'onboarding_funnel' : 'direct';
@@ -216,8 +191,19 @@ export default function UpgradeScreen() {
   // ── Offerings + founding status (loaded once, shown on the paywall) ──────
   const [loading, setLoading] = useState(true);
   const [packages, setPackages] = useState<Partial<Record<PlanKey, RevenueCatPackage>>>({});
-  const [founding, setFounding] = useState<FoundingStatus | null>(null);
-  const [selectedPlan, setSelectedPlan] = useState<PlanKey>('annual');
+  // Two sides (Drona = Pro, Your own AI = Connect) and a period. The plan
+  // sold is derived from both (lib/paywallPlans.ts). Yearly is preselected.
+  const [side, setSide] = useState<PaywallSide>(() => initialSide(typeof params.context === 'string' ? params.context : null));
+  const [period, setPeriod] = useState<PaywallPeriod>('annual');
+  const selectedPlan: PlanKey = planFor(side, period) ?? 'annual';
+  const buyingConnect = isConnectPlan(selectedPlan);
+  // A/B test (PostHog flag paywall-layout): tiles (A, default) or icon list (B).
+  const [layout, setLayout] = useState<PaywallLayout>('tiles');
+  useEffect(() => {
+    let live = true;
+    void getFlagVariant(PAYWALL_LAYOUT_FLAG, 'tiles').then((v) => { if (live) setLayout(layoutFromFlag(v)); });
+    return () => { live = false; };
+  }, []);
   // Bumped by "Try again" when the store's plans did not load.
   const [storeTry, setStoreTry] = useState(0);
   const [purchasing, setPurchasing] = useState(false);
@@ -235,10 +221,6 @@ export default function UpgradeScreen() {
   // screen the buyer already left.
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
-  // Founding Lifetime is a distracting third option (and its ASC IAP isn't
-  // provisioned yet), so it's collapsed behind a link by default. Once
-  // expanded, the row inflates in place and the link disappears.
-  const [showAllPlans, setShowAllPlans] = useState(false);
   const purchasesUsable = isPurchasesAvailable();
 
   // Paywall analytics. `context` is what sent them here (a usage cap, the
@@ -247,7 +229,7 @@ export default function UpgradeScreen() {
   const paywallOpenedAt = useRef(Date.now());
   const paywallResolved = useRef(false);
   useEffect(() => {
-    track('paywall_viewed', { source, context, purchases_available: purchasesUsable });
+    track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side, paywall_layout: layout });
     return () => {
       if (paywallResolved.current) return;
       track('paywall_dismissed', {
@@ -290,19 +272,9 @@ export default function UpgradeScreen() {
     let cancelled = false;
     (async () => {
       try {
-        // Loaded apart: a failed founding count must not throw away the
-        // store's plans (that would read as "store down" and open the gate).
-        const [offeringsRes, foundingRes] = await Promise.allSettled([
-          getCoachOfferings(),
-          supabase.rpc('get_founding_status'),
-        ]);
+        const offerings = await getCoachOfferings();
         if (cancelled) return;
-        if (offeringsRes.status === 'fulfilled') setPackages(offeringsRes.value?.byPlan ?? {});
-        else console.warn('[upgrade] offerings failed:', offeringsRes.reason);
-        if (foundingRes.status === 'fulfilled') {
-          const rows = (foundingRes.value.data as FoundingStatus[] | null) ?? [];
-          setFounding(rows.find((r) => r.tier === 'founding_lifetime') ?? null);
-        }
+        setPackages(offerings?.byPlan ?? {});
       } catch (e) {
         if (!cancelled) console.warn('[upgrade] load failed:', e);
       } finally {
@@ -407,15 +379,18 @@ export default function UpgradeScreen() {
 
   // Longer `timeoutMs` for a pending payment: the store is waiting on a bank
   // mandate, which routinely lands well after the 30s a webhook flip needs.
-  const waitForTierFlip = useCallback(async (timeoutMs = 30_000): Promise<boolean> => {
+  // A Connect purchase never makes the state 'paid' (no Drona): it lands as
+  // `connect: true` on the same answer, so `wantConnect` waits for that.
+  const waitForTierFlip = useCallback(async (timeoutMs = 30_000, wantConnect = false): Promise<boolean> => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       try {
         const { data } = await supabase.rpc('get_coach_access_status');
         // 'trialing' counts too: it is Pro everywhere, and the hard-paywall
         // gate lets it in, so a buyer must never wait on it.
-        const state = (data as { state?: string } | null)?.state;
-        if (state === 'paid' || state === 'trialing') return true;
+        const row = data as { state?: string; connect?: boolean } | null;
+        if (wantConnect && row?.connect === true) return true;
+        if (row?.state === 'paid' || row?.state === 'trialing') return true;
       } catch {
         /* network blip, keep polling */
       }
@@ -432,7 +407,7 @@ export default function UpgradeScreen() {
     }
     if (purchasing || verifying || pendingOrder || activationPending) return;
     setPurchasing(true);
-    track('purchase_started', { plan: selectedPlan, context, source });
+    track('purchase_started', { plan: selectedPlan, context, source, side, period, paywall_layout: layout });
     try {
       if (user?.id) await ensureIdentity(user.id);
       const customerInfo = await purchaseCoachPackage(pkg);
@@ -441,7 +416,7 @@ export default function UpgradeScreen() {
       // Locked: leaving before the tier flips would bounce a paying buyer
       // straight back here (the app gate still reads 'free'), so a locked
       // buyer waits longer before giving up.
-      const flipped = (await waitForTierFlip()) || (isLocked && (await waitForTierFlip(90_000)));
+      const flipped = (await waitForTierFlip(30_000, buyingConnect)) || (isLocked && (await waitForTierFlip(90_000, buyingConnect)));
       invalidateCoachAccess();
       if (flipped) {
         // Honor the reminder screen's promise ONLY when the purchase
@@ -468,6 +443,9 @@ export default function UpgradeScreen() {
           on_trial: onTrial,
           context,
           source,
+          side,
+          period,
+          paywall_layout: layout,
           seconds_to_purchase: Math.round((Date.now() - paywallOpenedAt.current) / 1000),
         });
         setOutcome({ plan: selectedPlan, onTrial });
@@ -490,7 +468,7 @@ export default function UpgradeScreen() {
     } catch (e) {
       if (e instanceof PurchaseCancelledError) {
         /* backed out of the payment sheet, stay put */
-        track('purchase_failed', { plan: selectedPlan, reason: 'cancelled', context });
+        track('purchase_failed', { plan: selectedPlan, reason: 'cancelled', context, side, period, paywall_layout: layout });
       } else if (e instanceof PurchasePendingError) {
         // Nothing failed: the store is waiting on the buyer's bank (an Indian
         // card or UPI mandate, Ask to Buy, SEPA). Keep "Activating Pro…" up
@@ -498,7 +476,7 @@ export default function UpgradeScreen() {
         track('purchase_pending', { plan: selectedPlan, context, source });
         setPurchasing(false);
         setVerifying(true);
-        const flipped = await waitForTierFlip(120_000);
+        const flipped = await waitForTierFlip(120_000, buyingConnect);
         invalidateCoachAccess();
         track('purchase_pending_resolved', { plan: selectedPlan, context, source, flipped });
         if (flipped) {
@@ -554,7 +532,7 @@ export default function UpgradeScreen() {
       setPurchasing(false);
       setVerifying(false);
     }
-  }, [packages, selectedPlan, purchasing, verifying, pendingOrder, activationPending, user?.id, waitForTierFlip, toast, finish, supabase, context, isFunnel, isLocked, source]);
+  }, [packages, selectedPlan, buyingConnect, side, period, layout, purchasing, verifying, pendingOrder, activationPending, user?.id, waitForTierFlip, toast, finish, supabase, context, isFunnel, isLocked, source]);
 
   const handleRestore = useCallback(async () => {
     if (restoring) return;
@@ -572,7 +550,8 @@ export default function UpgradeScreen() {
         // Only a found entitlement ends the pending lock; an empty restore
         // may just mean the bank has not approved yet.
         setPendingOrder(false);
-        const flipped = (await waitForTierFlip()) || (isLocked && (await waitForTierFlip(90_000)));
+        // A restore carries no plan: either Pro or Connect landing counts.
+        const flipped = (await waitForTierFlip(30_000, true)) || (isLocked && (await waitForTierFlip(90_000, true)));
         invalidateCoachAccess();
         if (flipped) {
           setActivationPending(false);
@@ -627,48 +606,36 @@ export default function UpgradeScreen() {
     setStep('paywall');
   }, [context]);
 
-  const annual = packages.annual ?? null;
-  const monthly = packages.monthly ?? null;
-  const lifetime = packages.founding_lifetime ?? null;
-  // Trial length per plan, straight from the store (0 = no trial). Lifetime
-  // is a non-consumable and can't carry one.
-  const trialDays: Record<PlanKey, number> = {
-    annual: freeTrialDays(annual),
-    monthly: freeTrialDays(monthly),
-    founding_lifetime: 0,
-  };
-  const selectedTrial = trialDays[selectedPlan];
-  const trialBadge = (days: number) => (days > 0 ? `${days} DAYS FREE` : undefined);
-  const ctaLabel =
-    selectedTrial > 0
-      ? `Start my ${selectedTrial} days free`
-      : selectedPlan === 'annual'
-        ? 'Subscribe yearly'
-        : selectedPlan === 'monthly'
-          ? 'Subscribe monthly'
-          : 'Claim founding lifetime';
-  const perMonth = annual ? perMonthLabel(annual) : null;
-  const savePct =
-    annual?.product?.price && monthly?.product?.price
-      ? Math.round((1 - annual.product.price / (monthly.product.price * 12)) * 100)
-      : null;
-  const foundingSoldOut =
-    founding !== null && (founding.closed_at !== null || founding.claimed >= founding.cap);
-  const foundingLeft = founding ? Math.max(0, founding.cap - founding.claimed) : null;
+  // Price and trial per period of the side on screen, straight from the store
+  // (0 trial days = none). A period whose product did not load is hidden.
+  const sidePrices: Partial<Record<PaywallPeriod, string>> = {};
+  const sideTrials: Partial<Record<PaywallPeriod, number>> = {};
+  for (const p of SIDE_PERIODS[side]) {
+    const key = planFor(side, p);
+    const pkg = key ? packages[key] : undefined;
+    if (pkg?.product?.priceString) {
+      sidePrices[p] = pkg.product.priceString;
+      sideTrials[p] = p === 'lifetime' ? 0 : freeTrialDays(pkg);
+    }
+  }
+  const selectedTrial = sideTrials[period] ?? 0;
+  const ctaLabel = paywallCta(side, period, selectedTrial);
+  const selectedPrice = sidePrices[period] ?? null;
+  // Connect products not in the offering yet (or not on this build's store):
+  // the switch stays, but that side says so instead of an empty price row.
+  const sideUnavailable = !loading && Object.keys(sidePrices).length === 0;
 
-  // Headline: the core of the app, not a feature (RevenueCat 7-uses
-  // framework: "Educate and Frame Value"). Overload is a coach that walks you
-  // to your goal, so the default headline says exactly that. Sarthak's
-  // phrase: "always by your side". History: v5 was "Never write a training
-  // plan again." (a mechanic; the paywall must say what the app IS).
-  const paywallTitle =
-    context === 'milestone'
-      ? 'Your next four weeks, programmed.'
-      : context === 'pro_feature'
-        ? 'That one is Overload Pro.'
-        : context === 'cap_chat' || context === 'cap_parse'
-          ? 'A coach who never runs out.'
-          : 'A coach by your side until you reach your goal.';
+  const switchSide = useCallback((next: PaywallSide) => {
+    if (next === side) return;
+    track('paywall_side_switched', { from: side, to: next, context, paywall_layout: layout });
+    setSide(next);
+    setPeriod('annual');
+  }, [side, context, layout]);
+  const selectPeriod = useCallback((next: PaywallPeriod) => {
+    track('paywall_period_selected', { side, period: next, previous_period: period, paywall_layout: layout });
+    track('paywall_plan_selected', { plan: planFor(side, next), previous_plan: selectedPlan });
+    setPeriod(next);
+  }, [side, period, layout, selectedPlan]);
   return (
     <SafeAreaView style={[u.safeArea, { backgroundColor: C.background }]}>
       {/* No iOS swipe-back past a locked paywall. */}
@@ -816,37 +783,17 @@ export default function UpgradeScreen() {
             bounces={false}
             alwaysBounceVertical={false}
           >
-            <Text style={[u.eyebrow, { color: C.accentText }]}>OVERLOAD PRO</Text>
-            <Text style={[u.hero, { color: C.foreground }]}>{paywallTitle}</Text>
-            <Text style={[u.heroSub, { color: C.textSecondary }]}>
-              Drona is your personal coach for workouts and food.
-            </Text>
+            {/* Two-sided paywall (owner's design 2026-11-12, plan file
+                .planning/connect-plan-paywall.md section 3): one title, a
+                switch between Drona (Pro) and Your own AI (Connect), one
+                concrete example, what each side includes, then its prices. */}
+            <Text style={[u.pwTitle, { color: C.foreground }]}>A coach for your food and workouts</Text>
+            <PlanSwitch side={side} onChange={switchSide} disabled={purchasing || verifying} />
+            <Text style={[u.pwSub, { color: C.textSecondary }]}>{SIDE_SUB[side]}</Text>
+            <ExampleCard side={side} />
+            <View style={u.pwGap} />
+            <Features side={side} layout={layout} />
 
-            {/* What Pro gives, as a path: three steps, then the goal. Free
-                users already know the free side (they hit its caps). */}
-            <View style={u.points}>
-              {PRO_PATH.map((step) => (
-                <View key={step} style={u.pathRow}>
-                  <View style={u.pathRail}>
-                    <View style={[u.pathDot, { borderColor: C.accentText }]} />
-                    <View style={[u.pathLine, { backgroundColor: C.borderSubtle }]} />
-                  </View>
-                  <Text style={[u.pointText, { color: C.foreground }]}>{step}</Text>
-                </View>
-              ))}
-              <View style={u.pathRow}>
-                <View style={u.pathRail}>
-                  <Feather name="flag" size={IconSize.sm} color={C.accentText} />
-                </View>
-                <Text style={[u.pathGoal, { color: C.accentText }]}>Your goal</Text>
-              </View>
-            </View>
-            <Text style={[u.pathPlus, { color: C.textMuted }]}>
-              Plus: ask your coach anything, and log meals by typing what you ate.
-            </Text>
-
-            {/* Spare height sits HERE, between the story and the plans, so the
-                plans rest right above the CTA like most store paywalls. */}
             <View style={u.planSpacer} />
 
             {loading ? (
@@ -855,59 +802,12 @@ export default function UpgradeScreen() {
               </View>
             ) : (
               <View style={u.plans}>
-                {annual && (
-                  <Animated.View entering={FadeInDown.delay(80).duration(350)}>
-                    <PlanRow
-                      selected={selectedPlan === 'annual'}
-                      highlight
-                      badge={trialBadge(trialDays.annual)}
-                      name="Annual"
-                      saveTag={savePct && savePct > 0 ? `SAVE ${savePct}%` : undefined}
-                      price={annual.product.priceString}
-                      priceUnit="/yr"
-                      note={perMonth ? `${perMonth}/mo, billed yearly` : 'Billed yearly'}
-                      onPress={() => { track('paywall_plan_selected', { plan: 'annual', previous_plan: selectedPlan }); setSelectedPlan('annual'); }}
-                    />
-                  </Animated.View>
-                )}
-                {monthly && (
-                  <Animated.View entering={FadeInDown.delay(180).duration(350)}>
-                    <PlanRow
-                      selected={selectedPlan === 'monthly'}
-                      name="Monthly"
-                      badge={trialBadge(trialDays.monthly)}
-                      price={monthly.product.priceString}
-                      priceUnit="/mo"
-                      note={trialDays.monthly > 0 ? 'Then billed monthly' : 'Billed monthly · no trial'}
-                      onPress={() => { track('paywall_plan_selected', { plan: 'monthly', previous_plan: selectedPlan }); setSelectedPlan('monthly'); }}
-                    />
-                  </Animated.View>
-                )}
-                {showAllPlans && lifetime && lifetime.product?.priceString && !foundingSoldOut && (
-                  <PlanRow
-                    selected={selectedPlan === 'founding_lifetime'}
-                    name="Founding Lifetime"
-                    price={lifetime.product.priceString}
-                    priceUnit=" once"
-                    note={
-                      foundingLeft !== null && founding
-                        ? `${foundingLeft} of ${founding.cap} spots left · never comes back`
-                        : 'One-time · Drona forever'
-                    }
-                    onPress={() => { track('paywall_plan_selected', { plan: 'founding_lifetime', previous_plan: selectedPlan }); setSelectedPlan('founding_lifetime'); }}
-                  />
-                )}
-                {lifetime && lifetime.product?.priceString && !foundingSoldOut && !showAllPlans && (
-                  <TouchableOpacity
-                    onPress={() => { track('paywall_plans_expanded'); setShowAllPlans(true); }}
-                    accessibilityRole="button"
-                    accessibilityLabel="See all plans"
-                  >
-                    <Text style={[u.morePlans, { color: C.textMuted }]}>
-                      See Founding Lifetime
-                      {foundingLeft !== null && founding ? ` · ${foundingLeft}/${founding.cap} left` : ''}
-                    </Text>
-                  </TouchableOpacity>
+                {sideUnavailable && !storeDown && purchasesUsable && (
+                  <Text style={[u.expoGoText, { color: C.textMuted }]}>
+                    {side === 'own_ai'
+                      ? 'Your own AI plans are coming to this version soon.'
+                      : `Couldn't load the plans from ${STORE_NAME}.`}
+                  </Text>
                 )}
                 {storeDown && purchasesUsable && (
                   <TouchableOpacity
@@ -930,11 +830,24 @@ export default function UpgradeScreen() {
           </ScrollView>
 
           <View style={u.paywallFooter}>
+            {/* Prices sit in the fixed footer, right above the button, so they
+                are never scrolled away (the features scroll on short phones). */}
+            {!loading && !sideUnavailable && (
+              <View style={u.pwPrices}>
+                <PriceBoxes
+                  periods={SIDE_PERIODS[side]}
+                  prices={sidePrices}
+                  selected={period}
+                  onSelect={selectPeriod}
+                  disabled={purchasing || verifying}
+                />
+              </View>
+            )}
             <Animated.View style={ctaPulseStyle}>
               <PressableScale
                 onPress={handlePurchase}
-                disabled={purchasing || verifying || loading || pendingOrder || activationPending}
-                style={[u.cta, Shadow.playBtn, (loading || pendingOrder || activationPending) && { opacity: 0.7 }]}
+                disabled={purchasing || verifying || loading || pendingOrder || activationPending || !selectedPrice}
+                style={[u.cta, Shadow.playBtn, { backgroundColor: PAYWALL_LIME }, (loading || pendingOrder || activationPending || !selectedPrice) && { opacity: 0.7 }]}
                 accessibilityRole="button"
                 accessibilityLabel={ctaLabel}
               >
@@ -951,7 +864,7 @@ export default function UpgradeScreen() {
                 ) : verifying ? (
                   <>
                     <OrbLoader size="small" color={Colors.primaryFg} />
-                    <Text style={u.ctaText}>Activating Pro…</Text>
+                    <Text style={u.ctaText}>{buyingConnect ? 'Activating…' : 'Activating Pro…'}</Text>
                   </>
                 ) : pendingOrder ? (
                   <Text style={u.ctaText}>Waiting for your bank</Text>
@@ -962,6 +875,11 @@ export default function UpgradeScreen() {
                 )}
               </PressableScale>
             </Animated.View>
+            {selectedPrice && (
+              <Text style={[u.pwPriceLine, { color: C.textSecondary }]}>
+                {priceLine(period, selectedPrice, selectedTrial)}
+              </Text>
+            )}
             {/* 2026-10-23: the trust line ("No payment today · Miss your goal?
                 Full refund.") is gone at the owner's call to cut clutter. The
                 trial still reads off the badges and the CTA, and the goal
@@ -1071,7 +989,13 @@ export default function UpgradeScreen() {
               entering={FadeInDown.delay(200).duration(400)}
               style={[u.subText, { color: C.textSecondary, textAlign: 'center' }]}
             >
-              {outcome?.plan === 'founding_lifetime'
+              {outcome && isConnectPlan(outcome.plan)
+                ? outcome.plan === 'connect_lifetime'
+                  ? 'Overload Connect is yours for good. Connect your AI in Profile.'
+                  : outcome.onTrial
+                    ? 'Your 7 free days start now. Connect your AI in Profile.'
+                    : 'Overload Connect is active. Connect your AI in Profile.'
+                : outcome?.plan === 'founding_lifetime'
                 ? "Founding member. Overload Pro is yours for good, and I'm yours to keep."
                 : outcome?.onTrial
                   ? "Your 7 days start now. I'll remind you on day 5, before anything is charged."
@@ -1081,11 +1005,10 @@ export default function UpgradeScreen() {
               entering={FadeInDown.delay(320).duration(400)}
               style={[u.unlockCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
             >
-              {[
-                'Unlimited coach chat',
-                'Unlimited AI food logs',
-                'A plan made for you, updated every week',
-              ].map((line, i) => (
+              {(outcome && isConnectPlan(outcome.plan)
+                ? ['Food and workout tracker', 'Log in ChatGPT, Claude, and more', 'Charts and history']
+                : ['Unlimited coach chat', 'Unlimited AI food logs', 'A plan made for you, updated every week']
+              ).map((line, i) => (
                 <View
                   key={line}
                   style={[u.unlockRow, i > 0 && { borderTopWidth: 1, borderTopColor: C.borderSubtle }]}
@@ -1123,82 +1046,6 @@ function NoPaymentRow({ color }: { color: string }) {
   );
 }
 
-/**
- * Compact plan row. The highlighted (annual) variant has more visual weight
- * (bg tint + border + badge), the rest read as light options — visual
- * hierarchy matches the intended default choice. Radios on the left for a
- * fast scan, price on the right in tabular figures.
- */
-function PlanRow({
-  selected,
-  highlight = false,
-  badge,
-  name,
-  saveTag,
-  price,
-  priceUnit,
-  note,
-  onPress,
-}: {
-  selected: boolean;
-  highlight?: boolean;
-  badge?: string;
-  name: string;
-  saveTag?: string;
-  price: string;
-  priceUnit: string;
-  note?: string;
-  onPress: () => void;
-}) {
-  const { C } = useTheme();
-  return (
-    <PressableScale
-      onPress={onPress}
-      style={[
-        u.planRow,
-        {
-          backgroundColor: highlight ? C.primarySubtle : C.card,
-          borderColor: selected ? C.accentText : C.borderSubtle,
-          borderWidth: selected ? 2 : 1,
-        },
-      ]}
-      accessibilityRole="button"
-      accessibilityLabel={name}
-      accessibilityState={{ selected }}
-    >
-      {badge && (
-        <View style={u.planBadge}>
-          <Text style={u.planBadgeText}>{badge}</Text>
-        </View>
-      )}
-      <View
-        style={[
-          u.planRadio,
-          selected
-            ? { backgroundColor: C.accentText, borderColor: C.accentText }
-            : { borderColor: C.border },
-        ]}
-      >
-        {selected && <View style={[u.planRadioDot, { backgroundColor: C.background }]} />}
-      </View>
-      <View style={u.planText}>
-        <View style={u.planNameRow}>
-          <Text style={[u.planName, { color: C.foreground }]}>{name}</Text>
-          {saveTag && (
-            <View style={[u.saveTag, { backgroundColor: Colors.primaryFg }]}>
-              <Text style={[u.saveTagText, { color: Colors.primary }]}>{saveTag}</Text>
-            </View>
-          )}
-        </View>
-        {note && <Text style={[u.planNote, { color: C.textMuted }]}>{note}</Text>}
-      </View>
-      <View style={u.planPriceCol}>
-        <Text style={[u.planPrice, { color: C.foreground }]}>{price}</Text>
-        <Text style={[u.planPriceUnit, { color: C.textMuted }]}>{priceUnit}</Text>
-      </View>
-    </PressableScale>
-  );
-}
 
 const u = StyleSheet.create({
   safeArea: { flex: 1 },
@@ -1376,6 +1223,19 @@ const u = StyleSheet.create({
     paddingBottom: Spacing.md,
   },
   planSpacer: { flexGrow: 1, minHeight: Spacing.lg },
+  // Two-sided paywall (2026-11-12).
+  pwTitle: {
+    fontFamily: FontFamily.onboardingHeading,
+    fontSize: 26,
+    lineHeight: 31,
+    letterSpacing: -0.5,
+    marginTop: 0,
+    marginBottom: 16,
+  },
+  pwSub: { fontSize: 13, textAlign: 'center', marginTop: 8, marginBottom: 14, fontFamily: FontFamily.onboardingBody },
+  pwGap: { height: 16 },
+  pwPrices: { marginBottom: 12 },
+  pwPriceLine: { fontSize: 12, textAlign: 'center', marginTop: 8, fontFamily: FontFamily.onboardingBody },
   hero: {
     fontFamily: FontFamily.display,
     fontSize: 28,

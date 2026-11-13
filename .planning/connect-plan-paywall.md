@@ -95,7 +95,36 @@ Do this FIRST: new products need store review, about 1 to 2 days.
 7. India: set prices by hand, or accept auto-mapping (open decision).
 8. Submit the new products with the app update that shows them (Apple reviews first IAPs with a build).
 
+#### DONE 2026-11-12 (Apple, by Claude in Chrome)
+
+- `overload_connect_annual` (Apple ID 6833917369): 1 year, $14.99 US, 175 regions auto-priced, display "Overload Connect Yearly", 1-week free intro offer from 2026-11-12, no end date. Level 3.
+- `overload_connect_monthly` (Apple ID 6833918533): 1 month, $2.99 US, 175 regions, display "Overload Connect Monthly", 1-week free intro offer. Level 4.
+- `overload_connect_lifetime` (Apple ID 6833922562): non-consumable, $49.99 US, 175 regions, display "Overload Connect Lifetime".
+- All three: "Prepare for Submission". Still missing: the review screenshot (needs the new paywall screen) and submission with the 1.0.5 build.
+- NOT done yet (owner must confirm, they change live prices for new buyers at once): Pro repricing to $9.99 / $49.99, and removing Founding Lifetime from sale.
+- Note: the group's customer-facing display name is "Overload Pro"; Connect buyers will see that name in their subscription settings. Consider renaming to "Overload".
+
 ### Google Play Console
+
+DONE 2026-11-12 (developer account "build-better", Chrome Google account slot /u/2):
+- `overload_connect_annual` subscription, base plan `annual` ($14.99 US, 178 regions incl. India auto-converted), offer `annual-free-trial` (1 week, new customers who never had ANY subscription in the app). Active.
+- `overload_connect_monthly` subscription, base plan `monthly` ($2.99 US), offer `monthly-free-trial` (same rule). Active.
+- `overload_connect_lifetime` one-time product, purchase option `lifetime`, $49.99 US. Active.
+- Pro repriced for NEW subscribers (existing keep legacy price): `overload_annual:annual` $49.99, `overload_monthly:monthly` $9.99. India left at ₹999 / ₹299 on purpose (owner's India decision is still open).
+- `overload_founding_lifetime` purchase option `founding-lifetime` DEACTIVATED (past buyers keep it).
+- Note: Play Connect products are live and buyable as soon as an app shows them; today's app does not.
+
+Supabase secrets to set (Apple id, Play id):
+- `RC_PRODUCT_CONNECT_MONTHLY=overload_connect_monthly,overload_connect_monthly:monthly`
+- `RC_PRODUCT_CONNECT_ANNUAL=overload_connect_annual,overload_connect_annual:annual`
+- `RC_PRODUCT_CONNECT_LIFETIME=overload_connect_lifetime`
+
+Apple, DONE 2026-11-12/13:
+- `overload_annual`: price change to $49.99 scheduled from 2026-11-14 in 174 regions (India kept at its old price), existing subscribers preserved at their current price.
+- `overload_monthly`: price change to $9.99 scheduled from 2026-11-14, same rules.
+- The 7-day intro offers on both were not touched.
+- `overload_founding_lifetime`: status "Developer Removed from Sale" (checked 2026-11-13).
+- Subscription group display name: a new English (U.S.) version "Overload" added 2026-11-13 (Prepare for Submission); the approved "Overload Pro" shows until Apple reviews it with the next build. Buyers then see "Overload" with the plan name (Pro Yearly, Connect Yearly...).
 
 1. Monetize, Subscriptions: create `overload_connect` with 2 auto-renewing base plans: `monthly` ($2.99) and `annual` ($14.99). Add a 7-day free-trial offer on each, for new customers.
 2. Monetize, In-app products: create `overload_connect_lifetime`, $49.99, active.
@@ -108,6 +137,8 @@ Do this FIRST: new products need store review, about 1 to 2 days.
 1. Import the 5 new store products (3 Connect + the 2 repriced Pro, which keep their ids).
 2. New entitlement `connect`; attach the 3 Connect products. The Pro entitlement stays as is.
 3. Default offering: add packages `connect_monthly`, `connect_annual`, `connect_lifetime`. Remove `$rc_lifetime` (Founding) from every offering the app reads.
+
+DONE 2026-11-12: the 3 Apple Connect products added to the App Store app in RevenueCat, and a new entitlement `connect` ("Overload Connect") with all 3 attached. The Pro entitlement is `drona_access`. Offering packages NOT added yet: do it with PR 2 (the new paywall), so today's paywall never shows them. Play products still to add once they exist.
 
 ### Supabase secrets
 

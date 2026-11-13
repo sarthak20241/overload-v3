@@ -151,6 +151,8 @@ deno test --allow-all lib/sheetText.test.ts     # text boxes in Portal sheets: l
 deno test --allow-all lib/firstOpenUpdate.test.ts # fresh store install: newest update before onboarding, 5 s cap, never reloads an open app
 deno test --allow-all lib/signupTour.test.ts    # the film tour after sign-up: its words, the tap rules, no promise the plan is done
 deno test --allow-all lib/hardPaywall.test.ts   # hard paywall: accounts from HARD_PAYWALL_FROM on must pay; older ones keep free
+deno test --allow-all lib/paywallPlans.test.ts  # two-sided paywall: Drona = Pro, Your own AI = Connect; trial words only when the store gives one
+deno test --allow-all lib/revenuecatPlans.test.ts # store package -> plan: a Connect product is never sold as Pro
 deno test --allow-all --no-check lib/invite.test.ts   # referral link + share text, store discount code URLs, refusal words
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/referral_codes.check.ts # referral + campaign codes on PGlite: both get a month, no cap, no own code, old-app rules kept (not in CI)
 deno test --allow-all lib/weightWheel.test.ts    # onboarding weight wheels: whole + one decimal, the top of the scale, kg <-> lbs
