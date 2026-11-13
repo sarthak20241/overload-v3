@@ -320,6 +320,7 @@ export type AnalyticsEvent =
   | 'paywall_store_down'
   | 'paywall_success_cta'
   | 'paywall_side_switched'
+  | 'paywall_side_unavailable'
   | 'paywall_period_selected'
   | 'purchase_started'
   | 'purchase_pending'

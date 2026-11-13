@@ -73,7 +73,7 @@ export async function requestNotificationPermission(): Promise<boolean> {
  * permission, so callers never branch. A Connect trial has no Drona, so it
  * gets the plain reminder instead of Drona's voice.
  */
-export async function scheduleTrialReminder(plan: 'pro' | 'connect' = 'pro'): Promise<boolean> {
+export async function scheduleTrialReminder(plan: 'pro' | 'connect' = 'pro', trialDays = 7): Promise<boolean> {
   const N = loadNotifications();
   if (!N) return false;
   try {
@@ -91,7 +91,8 @@ export async function scheduleTrialReminder(plan: 'pro' | 'connect' = 'pro'): Pr
       trigger: {
         // SDK 53 time-interval trigger. Seconds from now to day 5.
         type: N.SchedulableTriggerInputTypes.TIME_INTERVAL,
-        seconds: TRIAL_REMINDER_DAY * 24 * 60 * 60,
+        // Two days before the trial ends; day 5 when the length is unknown.
+        seconds: (trialDays >= 3 ? trialDays - 2 : TRIAL_REMINDER_DAY) * 24 * 60 * 60,
       },
     });
     return true;

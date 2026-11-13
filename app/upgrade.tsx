@@ -467,7 +467,7 @@ export default function UpgradeScreen() {
         // periodType (INTRO | TRIAL) rather than trusting the plan.
         const onTrial = entitlementOnTrial(customerInfo);
         if (onTrial) {
-          void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro').then((scheduled) => {
+          void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro', selectedTrial || 7).then((scheduled) => {
             track('trial_reminder_scheduled', { scheduled, plan });
           });
         }
@@ -529,7 +529,7 @@ export default function UpgradeScreen() {
           // they run even if the buyer left during the wait. These are exactly
           // the slow-bank buyers this branch exists for.
           if (onTrial) {
-            void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro').then((scheduled) => {
+            void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro', selectedTrial || 7).then((scheduled) => {
               track('trial_reminder_scheduled', { scheduled, plan });
             });
           }
@@ -654,6 +654,14 @@ export default function UpgradeScreen() {
   // Connect products not in the offering yet (or not on this build's store):
   // the switch stays, but that side says so instead of an empty price row.
   const sideUnavailable = !loading && Object.keys(sidePrices).length === 0;
+  // A side with no plans while the store answered: an offering or product id
+  // set up wrong (a Play base-plan id, say). Once per side per screen.
+  const unavailableTracked = useRef<Set<PaywallSide>>(new Set());
+  useEffect(() => {
+    if (!sideUnavailable || storeDown || !purchasesUsable || unavailableTracked.current.has(side)) return;
+    unavailableTracked.current.add(side);
+    track('paywall_side_unavailable', { side, context, loaded_plans: Object.keys(packages).join(',') });
+  }, [sideUnavailable, storeDown, purchasesUsable, side, context, packages]);
 
   const switchSide = useCallback((next: PaywallSide) => {
     if (next === side) return;
