@@ -4,6 +4,7 @@ import { verifyAccessToken, wwwAuthenticate } from "./auth.ts";
 import { handleMessage, parseBody, PROTOCOL_VERSIONS, type Tool } from "./protocol.ts";
 import { FOOD_WRITE_TOOLS } from "./foodWrites.ts";
 import { TOOLS } from "./tools.ts";
+import { PLAN_TOOLS } from "./planTools.ts";
 import { WORKOUT_WRITE_TOOLS } from "./workoutWrites.ts";
 
 const ISSUER = "https://clerk.example.test";
@@ -109,7 +110,7 @@ Deno.test("tools/list lists ping with its schema", async () => {
 });
 
 Deno.test("tools/list: every tool has a title, says read or write, and is closed-world (directory review)", async () => {
-  const all = [...TOOLS, ...FOOD_WRITE_TOOLS, ...WORKOUT_WRITE_TOOLS];
+  const all = [...TOOLS, ...PLAN_TOOLS, ...FOOD_WRITE_TOOLS, ...WORKOUT_WRITE_TOOLS];
   const r = await handleMessage(rpc("tools/list"), all, CTX) as any;
   assertEquals(r.result.tools.length, all.length);
   for (const t of r.result.tools) {

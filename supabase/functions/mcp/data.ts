@@ -132,6 +132,25 @@ export function makeData(db: Db) {
       rows(own(db, "daily_metrics", "metric_date, value, source", "user_id", u)
         .eq("metric_type", "bodyweight_kg").gte("metric_date", from).lte("metric_date", to).order("metric_date")),
 
+    /** The active Goal & Plan program with its phases, and each phase's
+     *  linked routines (the app's own embed: routines.program_phase_id). */
+    activeProgram: (u: string) =>
+      one(own(db, "coach_programs",
+        "id, title, objective, goal, target_weight_kg, target_date, start_date, total_weeks, " +
+          "coach_program_phases(id, seq, name, duration_weeks, start_offset_weeks, diet_calorie_target, " +
+          "diet_protein_g, diet_carb_g, diet_fat_g, diet_fuel_days, diet_directive, training_directive, " +
+          "training_block, activity_steps_target, cardio_sessions_per_week, job_text, coach_line, " +
+          "routines!program_phase_id(id, name, routine_exercises(sets, reps_min, reps_max, rest_seconds, " +
+          "target_duration_seconds, target_distance_m, note, order, exercises(name))))",
+        "user_id", u).eq("status", "active").order("created_at", { ascending: false }).limit(1).maybeSingle()),
+
+    /** The hero and supporting targets of every phase of one program. */
+    programMetrics: (u: string, programId: string) =>
+      rows(own(db, "coach_program_phase_metrics",
+        "phase_id, seq, is_hero, kind, ref, unit, direction, start_value, target_value, current_value, " +
+          "status, status_note, checked_at",
+        "user_id", u).eq("program_id", programId).order("seq")),
+
     exerciseById: (u: string, id: string) =>
       one(catalog(db, "id, name, muscle_group, metric_type", u).eq("id", id).maybeSingle()),
 
