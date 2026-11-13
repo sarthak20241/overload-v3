@@ -466,6 +466,8 @@ export async function getFlagVariant(flag: string, fallback: string, timeoutMs =
   const miss: FlagRead = { variant: fallback, fromFlag: false };
   if (!posthog) return miss;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // The reload this call waits on, so the timeout drops only that one.
+  let waitedOn: Promise<void> | null = null;
   try {
     const read = (async (): Promise<FlagRead> => {
       const now = posthog!.getFeatureFlag(flag);
@@ -481,13 +483,14 @@ export async function getFlagVariant(flag: string, fallback: string, timeoutMs =
         );
         flagsReload = mine;
       }
+      waitedOn = flagsReload;
       await flagsReload;
       const after = posthog!.getFeatureFlag(flag);
       return typeof after === 'string' ? { variant: after, fromFlag: true } : miss;
     })();
     // A reload that hangs is dropped on timeout, so the next open asks again
     // instead of waiting on it forever.
-    const timeout = new Promise<FlagRead>((r) => { timer = setTimeout(() => { flagsReload = null; r(miss); }, timeoutMs); });
+    const timeout = new Promise<FlagRead>((r) => { timer = setTimeout(() => { if (waitedOn && flagsReload === waitedOn) flagsReload = null; r(miss); }, timeoutMs); });
     return await Promise.race([read, timeout]);
   } catch {
     return miss;
