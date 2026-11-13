@@ -48,7 +48,8 @@ Listed as `app.tryoverload/overload` (published 2026-11-13, version 1.0.0) from
 `mcp-proxy/server.json`. Proof file: `https://tryoverload.app/.well-known/mcp-registry-auth`
 (overload-website PR #14). Private key: `~/.config/overload/mcp-registry-key.pem`, never in a repo.
 
-To change the listing, bump `version` (each version is published once), then
+Any edit to `server.json` needs a new `version` (1.0.0 is taken; the registry
+refuses a version it already has). To change the listing, bump `version`, then
 run this on the owner's Mac (the openssl path is Homebrew's openssl@3 on Apple
 Silicon; macOS's own LibreSSL cannot read Ed25519 keys). `mcp-publisher` takes
 the key only as `--private-key` (no env var or file option in 1.8.9), so the key

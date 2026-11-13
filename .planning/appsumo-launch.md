@@ -1,10 +1,22 @@
-# Lifetime deal + launch sites for Overload Connect (2026-11-13)
+# Lifetime deal + launch sites for Overload Connect (started 2026-11-13, updated 2026-11-14 IST)
 
 **Status:** AppSumo refused us (see "Outcome" below). The AppSumo sections
 ("How AppSumo works", "What we build") are SUPERSEDED: do not build the AppSumo
 webhook or OAuth page from them. The redeem flow waits for StackSocial's terms.
 What still holds: what we sell, no Pro lifetime, the listing text, and the
 launch site shortlist at the end.
+
+Rules for ANY redeem flow (StackSocial codes or another deal site), kept from
+the AppSumo plan:
+- A code sets `connect_plan = 'lifetime'`, `connect_expires_at = null`. Never
+  touch `tier` (every `tier <> 'free'` check reads as Pro).
+- A refund clears Connect lifetime only if that code gave it (compare-and-set,
+  like the RevenueCat webhook).
+- Already Pro: keep Pro, still record Connect lifetime. Already on a store
+  Connect subscription: lifetime wins; tell them to cancel the store plan.
+- One code, one account. Admin can search by code.
+- iPhone: redeem only on the website, never inside the iOS app (App Store
+  3.1.3(b) multiplatform; Connect lifetime is also an in-app purchase).
 
 ## What we sell
 
