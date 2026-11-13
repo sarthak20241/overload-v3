@@ -47,7 +47,7 @@ export function planPosition(startDate: string, phases: Row[], today: string, to
   const days = daysBetween(startDate, today);
   if (days < 0) return { state: "not_started", week: null, totalWeeks: total, phase: sorted[0] ?? null, weekInPhase: null };
   for (const p of sorted) {
-    const from = p.start_offset_weeks * 7;
+    const from = (p.start_offset_weeks ?? 0) * 7;
     if (days >= from && days < from + p.duration_weeks * 7) {
       return {
         state: "running",
@@ -221,7 +221,7 @@ const saveRoutine: Tool = {
     "so they can start it there. Each exercise gets sets, a rep target or range, rest, and an " +
     "optional cue. Use exercise ids from search_exercises (or exact names). Show the user the " +
     "workout and get a clear yes before saving. add_to_plan: true also puts it in the current " +
-    "phase of their plan (get_plan). This never changes or removes a routine the user already has.",
+    "phase of their plan (get_plan), or its first phase if the plan has not started yet. This never changes or removes a routine the user already has.",
   inputSchema: {
     type: "object",
     properties: {

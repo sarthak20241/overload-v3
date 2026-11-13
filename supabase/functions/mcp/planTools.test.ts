@@ -80,6 +80,8 @@ Deno.test("planPosition: phase and week by offset, not list place; before and af
   const late = planPosition("2026-10-20", ph, "2026-12-08", 7); // day 49
   assertEquals([late.state, late.phase], ["finished", null]);
   assertEquals(planPosition("2026-10-20", ph, "2026-11-10").totalWeeks, 7, "no total_weeks: summed from phases");
+  const noOffset = planPosition("2026-11-09", [{ id: "a", seq: 0, duration_weeks: 2 }], "2026-11-10");
+  assertEquals([noOffset.state, noOffset.phase?.id, noOffset.week], ["running", "a", 1], "a missing offset is week 0, not skipped");
 });
 
 // ── get_plan ────────────────────────────────────────────────────────────────
@@ -159,6 +161,10 @@ Deno.test("save_routine: add_to_plan links the current phase; no plan or an ende
     ctxWith({ activeProgram: () => Promise.resolve({ ...structuredClone(PROGRAM), start_date: "2026-01-05" }) }, { saveRoutine }));
   assert(ended.isError);
   assertEquals(calls.length, 1, "a refused call writes nothing");
+
+  const early = await body("save_routine", { name: "U", exercises: ex, add_to_plan: true },
+    ctxWith({ activeProgram: () => Promise.resolve({ ...structuredClone(PROGRAM), start_date: "2026-11-20" }) }, { saveRoutine }));
+  assertEquals([calls[1][1].phaseId, early.out.added_to_phase], [PH1, "Deficit block"], "before the start: the first phase");
 });
 
 Deno.test("save_routine: bad input is refused before any write", async () => {
