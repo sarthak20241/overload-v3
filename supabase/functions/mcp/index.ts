@@ -1,7 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet } from "npm:jose@5";
-import { hasPro, limitHit, NOT_PRO, writeTrace } from "./access.ts";
+import { hasConnectorAccess, limitHit, NOT_PRO, writeTrace } from "./access.ts";
 import { resourceMetadata, verifyAccessToken, wwwAuthenticate } from "./auth.ts";
 import { makeData } from "./data.ts";
 import { FOOD_WRITE_TOOLS } from "./foodWrites.ts";
@@ -108,9 +108,10 @@ Deno.serve(async (req) => {
   };
   const reply = await handleMessage(parsed.msg, ALL_TOOLS, ctx, {
     async gate(tool) {
-      const [profile, trial, lastMinute, lastDay] = await Promise.all([
+      const [profile, trial, connect, lastMinute, lastDay] = await Promise.all([
         data.profile(auth.userId),
         tool.free ? Promise.resolve(null) : data.trial(auth.userId),
+        tool.free ? Promise.resolve(null) : data.connect(auth.userId),
         // A broken count never blocks the user: the limit is a guard, not a gate.
         data.recentCalls(auth.userId, 60).catch(countFailed),
         data.recentCalls(auth.userId, 86_400).catch(countFailed),
@@ -125,7 +126,7 @@ Deno.serve(async (req) => {
           result: { text: "No Overload account data yet. The user should open the Overload app once.", isError: true },
         };
       }
-      if (!tool.free && !hasPro(profile, trial)) return { status: "denied", result: NOT_PRO };
+      if (!tool.free && !hasConnectorAccess(profile, trial, connect)) return { status: "denied", result: NOT_PRO };
       const hit = limitHit(lastMinute, lastDay);
       return hit ? { status: "limited", result: hit } : null;
     },

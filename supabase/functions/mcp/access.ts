@@ -18,10 +18,23 @@ export function hasPro(profile: Row, trial: Row, now: Date = new Date()): boolea
   return false;
 }
 
+/** An active Connect plan (migration 20261112150000): a plan, and either a
+ *  lifetime (no expiry) or an expiry still ahead. */
+export function hasConnect(connect: Row, now: Date = new Date()): boolean {
+  if (typeof connect?.connect_plan !== "string" || !connect.connect_plan) return false;
+  const exp = connect.connect_expires_at;
+  return !exp || Date.parse(exp) > now.getTime();
+}
+
+/** Who may use the connector: Pro (paid or trial) or an active Connect plan. */
+export function hasConnectorAccess(profile: Row, trial: Row, connect: Row, now: Date = new Date()): boolean {
+  return hasPro(profile, trial, now) || hasConnect(connect, now);
+}
+
 export const NOT_PRO: ToolResult = {
   // States the plan this needs, nothing more: ChatGPT's directory rules bar
   // tools that promote upgrades or link to a purchase.
-  text: "This Overload account does not have Overload Pro, which using Overload from ChatGPT or Claude needs. " +
+  text: "This Overload account does not have an Overload plan (Connect or Pro), which using Overload from ChatGPT or Claude needs. " +
     "The requested tool did not run, and nothing in the diary was changed.",
   isError: true,
 };

@@ -28,6 +28,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 import { envInt } from "../_shared/envInt.ts";
+import { aiBlocked, connectRefusal } from "../_shared/connectAccess.ts";
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -781,6 +782,10 @@ Deno.serve(async (req) => {
   // way is a user who cannot use the feature at all until a client ships.
   if (state === "unauthenticated") {
     return respond({ error: "drona_access_required", state }, 402);
+  }
+  // Connect has no in-app AI, form check included.
+  if (aiBlocked(accessData)) {
+    return respond(connectRefusal("form_check"), 402);
   }
   if (state !== "paid" && state !== "trialing" && state !== "free") {
     console.log("[form-check] unrecognised access state, treating as free", JSON.stringify({ state }));
