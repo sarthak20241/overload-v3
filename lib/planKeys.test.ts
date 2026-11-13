@@ -1,4 +1,4 @@
-// deno test --allow-all lib/revenuecatPlans.test.ts
+// deno test --allow-all lib/planKeys.test.ts
 //
 // Which plan a store package is. The expensive mistake: a Connect product
 // sold as Pro (the buyer pays $14.99 and gets no Drona), or the reverse.

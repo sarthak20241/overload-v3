@@ -1,6 +1,6 @@
 /**
  * Overload's plan slugs, and which slug a RevenueCat package is. Pure (no
- * native module), so lib/revenuecatPlans.test.ts can run it. lib/revenuecat.ts
+ * native module), so lib/planKeys.test.ts can run it. lib/revenuecat.ts
  * re-exports everything here.
  */
 
