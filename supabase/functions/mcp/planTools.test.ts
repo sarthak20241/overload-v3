@@ -80,6 +80,11 @@ Deno.test("planPosition: phase and week by offset, not list place; before and af
   const late = planPosition("2026-10-20", ph, "2026-12-08", 7); // day 49
   assertEquals([late.state, late.phase], ["finished", null]);
   assertEquals(planPosition("2026-10-20", ph, "2026-11-10").totalWeeks, 7, "no total_weeks: summed from phases");
+  const gap = planPosition("2026-11-02", [
+    { id: "a", seq: 0, duration_weeks: 1, start_offset_weeks: 0 },
+    { id: "b", seq: 1, duration_weeks: 1, start_offset_weeks: 2 },
+  ], "2026-11-10"); // day 8: after a, before b
+  assertEquals([gap.state, gap.phase?.id], ["between_phases", "b"], "a gap is not the end of the plan");
   const noOffset = planPosition("2026-11-09", [{ id: "a", seq: 0, duration_weeks: 2 }], "2026-11-10");
   assertEquals([noOffset.state, noOffset.phase?.id, noOffset.week], ["running", "a", 1], "a missing offset is week 0, not skipped");
 });

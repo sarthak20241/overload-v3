@@ -133,6 +133,14 @@ Deno.test("save: a request id never saves twice", async () => {
   assertEquals(b.id, a.id);
   assertEquals(b.replayed, true);
   assertEquals((await q(`select count(*)::int n from routines where source = 'mcp'`))[0].n, 1);
+  await q(`insert into mcp_requests (user_id, request_id, tool, result) values ('u1', 'r-2', 'log_food', '{"id": "x"}')`);
+  await assertRejects(() => save(q, { req: "r-2" }), Error, "another action");
+});
+
+Deno.test("save: a NULL exercise list is refused, not a routine with no exercises", async () => {
+  const { q } = await db();
+  await assertRejects(() => q(`select mcp_save_routine('u1', 'A', null, null, null, null)`), Error, "1 to 30");
+  assertEquals((await q(`select count(*)::int n from routines`))[0].n, 1);
 });
 
 Deno.test("save: at most 50 connector routines; app routines do not count", async () => {

@@ -45,7 +45,7 @@ begin
   if coalesce(trim(p_name), '') = '' then
     raise exception 'a routine needs a name' using errcode = '22023';
   end if;
-  if jsonb_typeof(p_exercises) <> 'array' or jsonb_array_length(p_exercises) not between 1 and 30 then
+  if coalesce(jsonb_typeof(p_exercises), '') <> 'array' or jsonb_array_length(p_exercises) not between 1 and 30 then
     raise exception 'exercises must be 1 to 30' using errcode = '22023';
   end if;
   if exists (
@@ -63,6 +63,9 @@ begin
     on conflict do nothing;
     get diagnostics v_claimed = row_count;
     if v_claimed = 0 then
+      if exists (select 1 from mcp_requests where user_id = p_user and request_id = p_request_id and tool <> 'save_routine') then
+        raise exception 'this request_id was used for another action; send a new one' using errcode = '22023';
+      end if;
       select result into v_prev from mcp_requests where user_id = p_user and request_id = p_request_id;
       if v_prev is null then
         raise exception 'same request still running' using errcode = '55P03';

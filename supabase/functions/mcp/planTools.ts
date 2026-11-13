@@ -28,12 +28,14 @@ const num = (v: unknown): number | null => {
 // ── where today sits in the plan ────────────────────────────────────────────
 
 export interface PlanPosition {
-  /** running: a phase covers today. not_started / finished: before or after. */
-  state: "running" | "not_started" | "finished";
+  /** running: a phase covers today. not_started / finished: before or after.
+   *  between_phases: a gap before a later phase (offsets are cumulative when
+   *  the app saves them, so this is a guard). */
+  state: "running" | "not_started" | "between_phases" | "finished";
   /** 1-based week of the whole plan (null unless running). */
   week: number | null;
   totalWeeks: number;
-  /** The current phase, or the first one before the start. */
+  /** The current phase, or the next one before the start or in a gap. */
   phase: Row | null;
   /** 1-based week inside that phase (null unless running). */
   weekInPhase: number | null;
@@ -58,6 +60,8 @@ export function planPosition(startDate: string, phases: Row[], today: string, to
       };
     }
   }
+  const next = sorted.find((p) => (p.start_offset_weeks ?? 0) * 7 > days);
+  if (next) return { state: "between_phases", week: null, totalWeeks: total, phase: next, weekInPhase: null };
   return { state: "finished", week: null, totalWeeks: total, phase: null, weekInPhase: null };
 }
 
@@ -179,13 +183,15 @@ const getPlan: Tool = {
         ? { week_of_plan: pos.week, week_of_phase: pos.weekInPhase }
         : pos.state === "not_started"
         ? { note: `The plan starts on ${prog.start_date}. current_phase is its first phase.` }
+        : pos.state === "between_phases"
+        ? { note: "Today falls between two phases. current_phase is the next one." }
         : { note: "Every phase has ended. The user can start a new goal in the app." }),
       current_phase: pos.phase ? phaseDetail(pos.phase, metrics) : null,
       phases: phases.map((p: Row) => ({
         seq: p.seq,
         name: p.name,
-        starts: addDays(prog.start_date, p.start_offset_weeks * 7),
-        ends: addDays(prog.start_date, (p.start_offset_weeks + p.duration_weeks) * 7 - 1),
+        starts: addDays(prog.start_date, (p.start_offset_weeks ?? 0) * 7),
+        ends: addDays(prog.start_date, ((p.start_offset_weeks ?? 0) + p.duration_weeks) * 7 - 1),
         weeks: p.duration_weeks,
         ...(pos.phase?.id === p.id ? { current: true } : {}),
         kcal: r0(p.diet_calorie_target),
@@ -221,7 +227,7 @@ const saveRoutine: Tool = {
     "so they can start it there. Each exercise gets sets, a rep target or range, rest, and an " +
     "optional cue. Use exercise ids from search_exercises (or exact names). Show the user the " +
     "workout and get a clear yes before saving. add_to_plan: true also puts it in the current " +
-    "phase of their plan (get_plan), or its first phase if the plan has not started yet. This never changes or removes a routine the user already has.",
+    "phase of their plan (get_plan), or its next phase if none is running yet. This never changes or removes a routine the user already has.",
   inputSchema: {
     type: "object",
     properties: {
