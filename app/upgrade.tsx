@@ -557,7 +557,7 @@ export default function UpgradeScreen() {
           }
           paywallResolved.current = true;
           // Connect is not a tier: keep the PostHog `tier` prop Pro-only.
-        setUserProps(isConnectPlan(plan) ? { connect_plan: plan, on_trial: onTrial } : { tier: plan, on_trial: onTrial });
+          setUserProps(isConnectPlan(plan) ? { connect_plan: plan, on_trial: onTrial } : { tier: plan, on_trial: onTrial });
           track('purchase_completed', { plan, on_trial: onTrial, context, source, was_pending: true, side, period, paywall_layout: layout });
           if (!mounted.current) return;
           void prefetchDashboard(supabase, user?.id);
