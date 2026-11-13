@@ -26,6 +26,9 @@
 // duplicating them here would just rot. The Paywall consumes these via
 // runtime property access; mistakes surface immediately in the UI.
 import { isPaymentPending } from './purchaseErrors';
+// Plan slugs and the package -> plan rules live in lib/planKeys.ts (pure,
+// so they are unit-tested without the native module).
+import { packageToPlanKey, type PlanKey } from './planKeys';
 
 type RCPackage = {
   identifier: string;
@@ -92,9 +95,6 @@ export type RevenueCatCustomerInfo = {
   };
 };
 
-// Plan slugs and the package -> plan rules live in lib/planKeys.ts (pure,
-// so they are unit-tested without the native module).
-import { packageToPlanKey, type PlanKey } from './planKeys';
 export { CONNECT_PLANS, isConnectPlan, packageToPlanKey, type PlanKey } from './planKeys';
 
 let cachedModule: any | null | undefined;

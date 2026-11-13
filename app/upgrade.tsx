@@ -7,7 +7,7 @@
  *
  * The Overload Pro funnel (.planning/paywall-plan.md, design review artifact
  * "open-reveal"). One route, three internal screens, modeled beat-for-beat on
- * the Cal AI funnel with our adaptations (soft wall, 7-day trial, transparent
+ * the Cal AI funnel with our adaptations (soft wall, the store's free trial, transparent
  * price headline):
  *
  *   warmup    "Your goal isn't yours alone anymore." Trust first, Drona's
@@ -199,6 +199,9 @@ export default function UpgradeScreen() {
   // sold is derived from both (lib/paywallPlans.ts). Yearly is preselected.
   const [side, setSide] = useState<PaywallSide>(() => initialSide(typeof params.context === 'string' ? params.context : null));
   const [period, setPeriod] = useState<PaywallPeriod>('annual');
+  // The side on screen now, for view events fired from run-once effects.
+  const sideRef = useRef(side);
+  sideRef.current = side;
   // planFor is null only for a side/period pair the screen never offers
   // (Drona has no lifetime). Then nothing is sold: the button is off and
   // handlePurchase stops, never falling back to another plan.
@@ -228,7 +231,7 @@ export default function UpgradeScreen() {
       const resolved = layoutFromFlag(v);
       setLayout(resolved);
       viewTracked.current = true;
-      track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side, paywall_layout: resolved, flag_status: 'resolved' });
+      track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side: sideRef.current, paywall_layout: resolved, flag_status: 'resolved' });
     });
     return () => { live = false; };
   }, []);
@@ -257,9 +260,6 @@ export default function UpgradeScreen() {
   const paywallOpenedAt = useRef(Date.now());
   const paywallResolved = useRef(false);
   const viewTracked = useRef(false);
-  // The side on screen now, for the unmount event (its effect runs once).
-  const sideRef = useRef(side);
-  sideRef.current = side;
   useEffect(() => {
     return () => {
       // Left before the layout flag resolved: still count the view, so fast
@@ -832,14 +832,12 @@ export default function UpgradeScreen() {
               </View>
             ) : (
               <View style={u.plans}>
-                {sideUnavailable && !storeDown && purchasesUsable && (
+                {sideUnavailable && !storeDown && purchasesUsable && side === 'own_ai' && (
                   <Text style={[u.expoGoText, { color: C.textMuted }]}>
-                    {side === 'own_ai'
-                      ? 'Your own AI plans are coming to this version soon.'
-                      : `Couldn't load the plans from ${STORE_NAME}.`}
+                    Your own AI plans are coming to this version soon.
                   </Text>
                 )}
-                {storeDown && purchasesUsable && (
+                {(storeDown || (sideUnavailable && side === 'drona')) && purchasesUsable && (
                   <TouchableOpacity
                     onPress={() => { track('paywall_store_retry', { source, context }); setLoading(true); setStoreTry((n) => n + 1); }}
                     accessibilityRole="button"
