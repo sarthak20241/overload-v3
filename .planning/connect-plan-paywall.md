@@ -30,7 +30,7 @@
 - Switch: "Drona coach" | "Your own AI". Drona and Yearly are selected first.
 - Line under the switch: "The coach inside the app" / "Log and analyze in ChatGPT, Claude, and more".
 - Example chat card (strong glass, the hero):
-  - Drona: goal bar "72 kg by Mar 3" + one Drona message. PLACEHOLDER words. Replace with what Drona really sends.
+  - Drona: goal bar "72 kg by Mar 3" + one Drona message. Example words, true to the weekly card: Drona proposes, the user approves (2026-11-13).
   - Your own AI: "In your ChatGPT": log a meal, then ask about protein this week.
 - Features. Drona side, all on: Say a meal, it is logged / Ask your coach / A plan that adapts to you / Weekly insights / Food and workout tracker / Log in ChatGPT, Claude, more. Your own AI side, on first: Food and workout tracker / Log in ChatGPT, Claude, more / Charts and history. Locked: Coach in the app / A plan that adapts to you / Weekly insights.
 - Price boxes show only the selected side; outline only; the selected one has a lime outline. Lifetime shows only on "Your own AI".
@@ -197,7 +197,7 @@ DONE 2026-11-12: the 3 Apple Connect products added to the App Store app in Reve
 2. A fresh sandbox Apple ID: the Drona button says "Try Drona free for 7 days"; an Apple ID that had a trial sees "Continue".
 3. A Connect account: no Drona in the app, the server refuses AI, the connector works.
 5. ChatGPT with our server (only Claude is proven). If it fails, the paywall names Claude only.
-6. Replace the placeholder Drona message with real words.
+6. DONE 2026-11-13: the Drona message says "I drafted next week for you. Approve it and you still reach 72 kg by Mar 3.", since the weekly card proposes and the user approves.
 7. Both themes, a small phone, Android.
 8. Deno suites: webhook, mcp, ai-coach, `_shared`, the new PGlite check.
 

@@ -127,8 +127,8 @@ export function ExampleCard({ side }: { side: PaywallSide }) {
       >
         {side === 'drona' ? (
           <>
-            {/* PLACEHOLDER words until a real over-week Drona card replaces
-                them (plan file, section 7 phase F). */}
+            {/* An example of Drona's weekly card. It must stay true to the
+                app: Drona proposes a change and the user approves it. */}
             <View style={s.goalRow}>
               <Text style={[s.goalLabel, { color: g.C.textSecondary }]}>Your goal</Text>
               <Text style={[s.goalValue, { color: g.C.foreground }]}>72 kg by Mar 3</Text>
@@ -137,7 +137,7 @@ export function ExampleCard({ side }: { side: PaywallSide }) {
               <View style={[s.goalFill, { backgroundColor: g.lime }]} />
             </View>
             <Text style={[s.caption, { color: g.C.textMuted }]}>Drona</Text>
-            <Bubble text="You ate 900 calories extra this week. I changed next week. You still reach 72 kg by Mar 3." />
+            <Bubble text="You ate 900 calories extra this week. I drafted next week for you. Approve it and you still reach 72 kg by Mar 3." />
           </>
         ) : (
           <>
