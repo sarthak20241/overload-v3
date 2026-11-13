@@ -281,8 +281,17 @@ const saveRoutine: Tool = {
       }
 
       const saved = await ctx.writes.saveRoutine(ctx.userId, { name, description, phaseId }, out, requestId);
+      // A replay wrote nothing: answer only with what the first save stored,
+      // never this call's sets or phase.
+      if (saved.replayed) {
+        return answer({
+          note: "This request_id was already saved; nothing new was saved. This is the routine it saved.",
+          routine: { id: saved.id, name: saved.name, exercises: saved.exercise_names ?? [] },
+          added_to_plan: !!saved.program_phase_id,
+          where: "In the Overload app: Routines. The user can edit or remove it there.",
+        });
+      }
       return answer({
-        ...(saved.replayed ? { note: "This request_id was already saved; nothing new was saved." } : {}),
         routine: {
           id: saved.id,
           name: saved.name ?? name,

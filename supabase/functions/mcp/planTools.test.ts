@@ -201,6 +201,18 @@ Deno.test("save_routine: a name with one exact match is used; otherwise candidat
   assertEquals(JSON.parse(loose.text).candidates.length, 2);
 });
 
+Deno.test("save_routine: a replay answers with what the first save stored, not this call's sets", async () => {
+  const ctx = ctxWith({}, {
+    saveRoutine: () => Promise.resolve({ id: "old", name: "Upper A", exercise_names: ["Row"], program_phase_id: null, replayed: true }),
+  });
+  const { out } = await body("save_routine", {
+    name: "Upper B", exercises: [{ exercise_id: BENCH, sets: 5, reps: 3 }], add_to_plan: true, request_id: "r-1",
+  }, ctx);
+  assertEquals(out.routine, { id: "old", name: "Upper A", exercises: ["Row"] });
+  assertEquals([out.added_to_plan, out.added_to_phase], [false, undefined]);
+  assert(out.note.includes("nothing new"));
+});
+
 Deno.test("save_routine: a database refusal comes back as the tool's answer", async () => {
   const ctx = ctxWith({}, { saveRoutine: () => Promise.reject(new WriteRefused("Overload refused a value: 50 routines")) });
   const r = await tool("save_routine").run({ name: "A", exercises: [{ exercise_id: BENCH }] }, ctx);
