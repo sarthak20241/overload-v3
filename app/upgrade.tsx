@@ -696,7 +696,8 @@ export default function UpgradeScreen() {
   }, [side, context, layout]);
   const selectPeriod = useCallback((next: PaywallPeriod) => {
     track('paywall_period_selected', { side, period: next, previous_period: period, paywall_layout: layout });
-    track('paywall_plan_selected', { plan: planFor(side, next), previous_plan: plannedKey });
+    const nextPlan = planFor(side, next);
+    if (nextPlan) track('paywall_plan_selected', { plan: nextPlan, previous_plan: plannedKey });
     setPeriod(next);
   }, [side, period, layout, plannedKey]);
   return (
@@ -1058,6 +1059,7 @@ export default function UpgradeScreen() {
                   : outcome.onTrial
                     ? `${outcome.trialDays > 0 ? `Your ${outcome.trialDays} free days start` : 'Your free trial starts'} now. Connect your AI in Profile.`
                     : 'Overload Connect is active. Connect your AI in Profile.'
+                // Off sale since 2026-11-12, kept for owners who restore it.
                 : outcome?.plan === 'founding_lifetime'
                 ? "Founding member. Overload Pro is yours for good, and I'm yours to keep."
                 : outcome?.onTrial
