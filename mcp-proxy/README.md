@@ -41,3 +41,26 @@ curl -s https://mcp.tryoverload.app/.well-known/oauth-protected-resource
 
 It must name `"resource":"https://mcp.tryoverload.app"` and Clerk as the
 authorization server.
+
+## Official MCP Registry
+
+Listed as `app.tryoverload/overload` (published 2026-11-13, version 1.0.0) from
+`mcp-proxy/server.json`. Proof file: `https://tryoverload.app/.well-known/mcp-registry-auth`
+(overload-website PR #14). Private key: `~/.config/overload/mcp-registry-key.pem`, never in a repo.
+
+Any edit to `server.json` needs a new `version` (1.0.0 is taken; the registry
+refuses a version it already has). To change the listing, bump `version`, then
+run this on the owner's Mac (the openssl path is Homebrew's openssl@3 on Apple
+Silicon; macOS's own LibreSSL cannot read Ed25519 keys). `mcp-publisher` takes
+the key only as `--private-key` (no env var or file option in 1.8.9), so the key
+shows in `ps` while login runs. The variable keeps it out of shell history.
+
+```bash
+cd mcp-proxy
+# The Ed25519 private key is the last 32 bytes of the key's DER form, as hex.
+PRIV="$(/opt/homebrew/opt/openssl@3/bin/openssl pkey -in ~/.config/overload/mcp-registry-key.pem -outform DER | tail -c 32 | xxd -p -c 64)"
+mcp-publisher login http --domain tryoverload.app --private-key "$PRIV"; unset PRIV
+mcp-publisher publish
+```
+
+Check: `curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=app.tryoverload/overload"`.

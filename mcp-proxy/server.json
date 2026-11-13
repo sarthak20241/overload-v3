@@ -1,0 +1,14 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "app.tryoverload/overload",
+  "title": "Overload",
+  "description": "Log food and workouts in Overload from ChatGPT or Claude, then ask about your training and diet.",
+  "websiteUrl": "https://tryoverload.app/your-ai",
+  "version": "1.0.0",
+  "icons": [
+    { "src": "https://tryoverload.app/apple-icon.png", "mimeType": "image/png" }
+  ],
+  "remotes": [
+    { "type": "streamable-http", "url": "https://mcp.tryoverload.app" }
+  ]
+}
