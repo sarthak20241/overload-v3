@@ -1,4 +1,10 @@
-# AppSumo launch: Overload Connect lifetime (draft 2026-11-13, nothing built)
+# Lifetime deal + launch sites for Overload Connect (2026-11-13)
+
+**Status:** AppSumo refused us (see "Outcome" below). The AppSumo sections
+("How AppSumo works", "What we build") are SUPERSEDED: do not build the AppSumo
+webhook or OAuth page from them. The redeem flow waits for StackSocial's terms.
+What still holds: what we sell, no Pro lifetime, the listing text, and the
+launch site shortlist at the end.
 
 ## What we sell
 
@@ -13,7 +19,7 @@
 - Suggested AppSumo price: $39 (owner decides). Below the store's $49.99 because
   the store takes 15-30% and AppSumo buyers expect a deal.
 
-## How AppSumo works (docs.licensing.appsumo.com, read 2026-11-13)
+## How AppSumo works (SUPERSEDED: AppSumo refused us; kept for reference)
 
 1. Owner applies: https://partners.appsumo.com/self-submission . About 10% are
    accepted. Risk: AppSumo lists "consumer-only products" as not a fit. Pitch
@@ -36,7 +42,7 @@
 5. Money: we keep 70% of sales AppSumo brings, 95% of sales we bring. Paid 60
    days after each sales month.
 
-## What we build (after acceptance; URLs need the Partner Portal to test)
+## What we build (SUPERSEDED: was the AppSumo plan; the deal site picks the redeem flow)
 
 1. Migration `appsumo_licenses`: license_key (pk), prev_license_key, tier,
    status, clerk_user_id (null until linked), events log, timestamps.
@@ -91,8 +97,8 @@ cancel Pro.
   Overload is consumer. No person reviewed it.
 - StackSocial (StackCommerce): seller form SENT at
   stackcommerce.com/become-a-merchant-partner. Digital Products, Shops,
-  product "Overload Connect (lifetime)", contact sarthak@tryoverload.app, no
-  phone, no newsletter. Page said "We will take a look ... and be in touch soon."
+  product "Overload Connect (lifetime)", the owner's work email, no phone, no
+  newsletter. StackSocial replied 2026-11-14 with partnership questions. Page said "We will take a look ... and be in touch soon."
 - Pro is NOT sold as a lifetime deal anywhere (owner agreed): it costs model money
   every month. Pro shows only as the in-app upgrade.
 - The redeem build (webhook/codes, redeem page on the website) waits for the
