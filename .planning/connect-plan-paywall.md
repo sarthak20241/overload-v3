@@ -136,7 +136,7 @@ Do this FIRST: new products need store review, about 1 to 2 days.
 ### Phase C. Server gates
 
 1. `mcp/access.ts`: `hasConnectorAccess` (Pro, trial, active Connect). Refusal text names both plans. Update `mcp.test.ts`.
-2. `ai-coach`, `form-check`, `drona-cards`, `daily-suggestion`: an `ai_blocked` Connect user (not Pro, account created on or after 2026-11-09) gets no AI (0 chats, 0 AI food logs, no goal build); typed error the app maps to "This is part of Drona".
+2. `ai-coach`, `form-check`: an `ai_blocked` Connect user (not Pro, account created on or after 2026-11-09) gets no AI. `drona-cards` and `daily-suggestion` are left ungated on purpose: they already run for free users, so Connect costs the same (0 chats, 0 AI food logs, no goal build); typed error the app maps to "This is part of Drona".
 3. `_shared/aiLimits.ts`: a Connect block (all zero) for `ai_blocked` accounts only, tested against the SQL.
 
 ### Phase D. App
