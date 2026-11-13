@@ -295,6 +295,7 @@ const createProgram: Tool = {
       return refuse("start_date must be within the last 4 weeks or the next 90 days.");
     }
     if (a.target_date != null && !isDay(a.target_date)) return refuse("target_date must be YYYY-MM-DD.");
+    if (a.target_date != null && a.target_date < start) return refuse("target_date must be on or after start_date.");
     const target = a.target_weight_kg == null ? null : num(a.target_weight_kg);
     if (a.target_weight_kg != null && (target == null || target < 30 || target > 300)) {
       return refuse("target_weight_kg must be 30-300.");
@@ -318,7 +319,7 @@ const createProgram: Tool = {
 
     const program = {
       title,
-      objective: typeof a.objective === "string" ? a.objective.trim().replace(/—/g, ", ") : null,
+      objective: typeof a.objective === "string" ? a.objective.trim().replace(/—/g, ", ").slice(0, 2000) : null,
       goal,
       target_weight_kg: target,
       target_date: a.target_date ?? null,
@@ -397,7 +398,9 @@ const updateProgram: Tool = {
       if (!t) return refuse("title cannot be empty.");
       fields.title = t;
     }
-    if (a.objective !== undefined) fields.objective = typeof a.objective === "string" ? a.objective.replace(/—/g, ", ") : null;
+    if (a.objective !== undefined) {
+      fields.objective = typeof a.objective === "string" ? a.objective.trim().replace(/—/g, ", ").slice(0, 2000) : null;
+    }
     if (a.target_date !== undefined) {
       if (a.target_date !== null && !isDay(a.target_date)) return refuse("target_date must be YYYY-MM-DD or null.");
       fields.target_date = a.target_date;
@@ -496,7 +499,8 @@ const deleteProgram: Tool = {
   title: "Delete a program",
   description: "Delete one program for good: its phases, targets history and phase metrics. This cannot be undone. " +
     "Two steps: call without confirm_title to see what will be deleted, show that to the user, and only after the " +
-    "user says yes, call again with confirm_title set to the program's exact title. Routines linked to it stay. " +
+    "user says yes, call again with confirm_title set to the program's exact title. The title is a check against " +
+    "deleting the wrong program; the user's yes is yours to get. Routines linked to it stay. " +
     "The user's daily targets stay as they are. To only stop a plan, use end_program.",
   inputSchema: {
     type: "object",

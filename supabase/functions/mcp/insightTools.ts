@@ -10,9 +10,13 @@
 //                       muscles, readiness
 //   get_planning_guide  how Drona plans (planningGuide.ts)
 //
-// Never sent: the user's raw words. drona_week_facts.wd_texts and the note
-// columns, and drona_word_facts, hold chat and note text; word signals go out
-// as the signal name only. weekly_reports is left out: nothing writes it.
+// Never sent: the user's raw chat and note text. drona_week_facts.wd_texts and
+// the note columns, and drona_word_facts, hold it; word signals go out as the
+// signal name only, and get_facts passes text columns only from an allowlist
+// (SAFE_TEXT). Sent on purpose: Drona's remembered facts (coach_memory, short
+// key/value lines Drona saved, which the user sees and edits in the app) and
+// the plan log's from/to values and names. weekly_reports is left out:
+// nothing writes it.
 
 import { addDays, todayIn, weekStart } from "./days.ts";
 import { PLANNING_GUIDE, PLANNING_GUIDE_URI } from "./planningGuide.ts";
@@ -78,13 +82,37 @@ const WORD_MEANING: Record<string, string> = {
 /** Columns that hold raw user text or bookkeeping, never sent. */
 const HIDDEN = new Set(["user_id", "wd_texts", "wd_injury_notes", "wd_training_prefs", "p_change_list", "source_version"]);
 
+/**
+ * The text, list and JSON columns of the facts tables that are codes or
+ * Drona's own words, never the user's (checked against the live columns on
+ * 2026-11-13). Fail safe: numbers, booleans and dates always go out; any other
+ * value goes out only when its column is named here, so a text column added
+ * later stays in until someone looks at it and adds it.
+ */
+const SAFE_TEXT = new Set([
+  // drona_week_facts
+  "c_action", "c_by_topic_to_date", "c_kind", "c_outcome", "c_signals", "c_status", "c_title", "c_topic",
+  "f_target_source", "g_goal_from", "g_target_from", "m_source", "p_changes_by_entity", "p_changes_by_source",
+  "p_goal", "p_goal_src", "p_phase_name", "p_program_goal", "p_program_src", "p_program_title", "p_target_src",
+  "r_sleep_sources", "r_steps_sources", "t_back_to_back_muscles", "t_parents_trained", "t_plan_parents_missed",
+  "t_plan_source", "t_weekday_weeks_8w", "t_weekdays", "tape_sites", "w_sources", "wd_chat_by_mode",
+  // drona_day_facts, drona_training_day_facts, drona_recovery_day_facts
+  "target_source", "muscles", "parents", "pick_kind", "pick_parents_extra", "pick_parents_missed",
+  "dropped", "readiness_hrv_why", "readiness_rhr_why", "readiness_sleep_basis", "readiness_tier",
+  "sleep_source", "steps_source",
+  // drona_exercise_week_facts, drona_muscle_week_facts, readiness_parts
+  "exercise_name", "muscle", "parent", "role", "tier", "band", "sleep_basis", "rhr_why", "hrv_why",
+]);
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
 /** A facts row without raw text, bookkeeping or empty values. */
 export function cleanFacts(r: Row): Row {
   const out: Row = {};
   for (const [k, v] of Object.entries(r)) {
-    if (HIDDEN.has(k) || k.endsWith("computed_at") || k.endsWith("_text") || v == null) continue;
+    if (HIDDEN.has(k) || k.endsWith("computed_at") || v == null) continue;
     if (Array.isArray(v) && v.length === 0) continue;
-    out[k] = typeof v === "number" ? Math.round(v * 100) / 100 : v;
+    if (typeof v === "number") out[k] = Math.round(v * 100) / 100;
+    else if (typeof v === "boolean" || (typeof v === "string" && DATE.test(v)) || SAFE_TEXT.has(k)) out[k] = v;
   }
   return out;
 }

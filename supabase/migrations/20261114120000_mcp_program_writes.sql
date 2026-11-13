@@ -57,8 +57,8 @@ begin
     if v in ('manual', 'chat', 'card', 'auto', 'onboarding') then
       return v;
     end if;
-    -- Only the service role may claim 'mcp': a signed-in app user cannot make
-    -- their own edit read as the connector's.
+    -- A signed-in app user cannot claim 'mcp': only a request with no claims
+    -- (a direct database session) or the service role's may.
     if v = 'mcp' and (claims is null or claims = '' or (claims::json)->>'role' = 'service_role') then
       return 'mcp';
     end if;

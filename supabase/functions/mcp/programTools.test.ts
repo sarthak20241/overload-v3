@@ -95,6 +95,7 @@ Deno.test("create: bad input is refused before any write", async () => {
     { title: "A", objective: "x", phases: [PHASE({ diet: { calories: 2000, protein_g: 150, carb_g: 400, fat_g: 90 } })] },
     { title: "A", objective: "x", phases: [PHASE()], start_date: "2027-06-01" },
     { title: "A", objective: "x", phases: [PHASE()], target_weight_kg: 900 },
+    { title: "A", objective: "x", phases: [PHASE()], target_date: "2026-01-01" },
     { title: "A", objective: "x", phases: [PHASE()], request_id: "has space" },
   ]) {
     const r = await tool("create_program").run(args, ctx);

@@ -85,6 +85,9 @@ Deno.test("get_facts: the user's own words never leave; bookkeeping and empty va
   assertEquals(r.rows, [{ week_start: "2026-11-02", w_avg_kg: 80.12, f_days_logged: 6 }]);
   assert(!JSON.stringify(r).includes("knee"));
   assertEquals(cleanFacts({ wd_texts: ["x"], wd_training_prefs: "x", p_change_list: [1], a_computed_at: "x" }), {});
+  // Fail safe: a text or JSON column nobody has looked at stays in.
+  assertEquals(cleanFacts({ new_note: "my words", new_json: { a: 1 }, day: "2026-11-10", ok: true, m_source: "measured" }),
+    { day: "2026-11-10", ok: true, m_source: "measured" });
 });
 
 Deno.test("get_facts: each kind reads its own table and range; long ranges are refused", async () => {
