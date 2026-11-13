@@ -4,7 +4,7 @@
  * lazy-require pattern in lib/revenuecat.ts: callers get a uniform API and
  * never need "is the module here?" checks.
  *
- * v1 scope is deliberately tiny: the paywall funnel's day-5 trial reminder.
+ * v1 scope is deliberately tiny: the paywall funnel's trial reminder (two days before the trial ends).
  * The reminder screen PROMISES a notification two days before the trial
  * converts ("I'll remind you before you pay"), so this is a product
  * commitment, not a nice-to-have: scheduleTrialReminder() is called the
@@ -24,7 +24,7 @@ const TRIAL_REMINDER_ID = 'overload-trial-day5';
 // not replace a Pro trial's reminder, or the reverse.
 const CONNECT_TRIAL_REMINDER_ID = 'overload-connect-trial-reminder';
 const reminderId = (plan: 'pro' | 'connect') => (plan === 'connect' ? CONNECT_TRIAL_REMINDER_ID : TRIAL_REMINDER_ID);
-const TRIAL_REMINDER_DAY = 5; // fire on day 5 of a 7-day trial
+const TRIAL_REMINDER_DAY = 5; // only when the trial length is unknown: day 5 of the usual 7
 
 // Loosely typed on purpose (same as lib/revenuecat.ts): the module may not
 // be installed yet, and `typeof import(...)` would fail typecheck until it is.
@@ -72,7 +72,7 @@ export async function requestNotificationPermission(): Promise<boolean> {
 }
 
 /**
- * Schedule the day-5 "your trial converts in 2 days" reminder, replacing any
+ * Schedule the "your trial converts in 2 days" reminder (two days before the end), replacing any
  * previously scheduled one. No-ops (returning false) without the module or
  * permission, so callers never branch. A Connect trial has no Drona, so it
  * gets the plain reminder instead of Drona's voice.
