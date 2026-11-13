@@ -449,12 +449,6 @@ export function consumeWorkoutSource(): string {
 /** True when a real key is configured. Used by the provider to skip mounting. */
 export const analyticsEnabled = !!posthog;
 
-/**
- * A PostHog feature flag's variant, or `fallback` when PostHog is off, the
- * flag is unknown, or it does not load in `timeoutMs`. `fromFlag` says which:
- * a fallback is not a real exposure, and the A/B analysis must know. Never
- * throws: an A/B test must never block a screen.
- */
 // One network reload per app session at most: a user outside the experiment
 // must not pay a reload on every paywall open. A failed reload clears it, so
 // the next paywall open tries again.
@@ -462,6 +456,12 @@ let flagsReload: Promise<void> | null = null;
 
 export type FlagRead = { variant: string; fromFlag: boolean };
 
+/**
+ * A PostHog feature flag's variant, or `fallback` when PostHog is off, the
+ * flag is unknown, or it does not load in `timeoutMs`. `fromFlag` says which:
+ * a fallback is not a real exposure, and the A/B analysis must know. Never
+ * throws: an A/B test must never block a screen.
+ */
 export async function getFlagVariant(flag: string, fallback: string, timeoutMs = 1500): Promise<FlagRead> {
   const miss: FlagRead = { variant: fallback, fromFlag: false };
   if (!posthog) return miss;
@@ -480,7 +480,9 @@ export async function getFlagVariant(flag: string, fallback: string, timeoutMs =
       const after = posthog!.getFeatureFlag(flag);
       return typeof after === 'string' ? { variant: after, fromFlag: true } : miss;
     })();
-    const timeout = new Promise<FlagRead>((r) => { timer = setTimeout(() => r(miss), timeoutMs); });
+    // A reload that hangs is dropped on timeout, so the next open asks again
+    // instead of waiting on it forever.
+    const timeout = new Promise<FlagRead>((r) => { timer = setTimeout(() => { flagsReload = null; r(miss); }, timeoutMs); });
     return await Promise.race([read, timeout]);
   } catch {
     return miss;

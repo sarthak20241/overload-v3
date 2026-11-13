@@ -154,10 +154,16 @@ interface PurchaseOutcome {
  * Is this buyer actually on a trial right now? Read from the active
  * entitlement's periodType (INTRO | TRIAL), never from the selected plan or
  * the product's offer: an existing subscriber who upgrades has no intro
- * trial, and the day-5 reminder would promise one they are not on.
+ * trial, and the day-5 reminder would promise one they are not on. Only the
+ * entitlement of the product just bought counts: a Pro trialer who buys
+ * Connect (or the reverse) is not on a trial for the new plan. Play ids carry
+ * ":baseplan", so ids are compared without it.
  */
-function entitlementOnTrial(customerInfo: RevenueCatCustomerInfo | null | undefined): boolean {
+function entitlementOnTrial(customerInfo: RevenueCatCustomerInfo | null | undefined, productId: string | undefined): boolean {
+  const base = (id: string | undefined) => String(id ?? '').split(':')[0];
+  const want = base(productId);
   return Object.values(customerInfo?.entitlements?.active ?? {}).some((e) => {
+    if (!want || base(e?.productIdentifier) !== want) return false;
     const t = e?.periodType;
     return t === 'TRIAL' || t === 'INTRO' || t === 'trial' || t === 'intro';
   });
@@ -477,7 +483,7 @@ export default function UpgradeScreen() {
         // scheduling would fire a false "your trial converts in 2 days"
         // notification 5 days later. Check the active entitlement's
         // periodType (INTRO | TRIAL) rather than trusting the plan.
-        const onTrial = entitlementOnTrial(customerInfo);
+        const onTrial = entitlementOnTrial(customerInfo, pkg.product?.identifier);
         if (onTrial) {
           void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro', selectedTrial).then((scheduled) => {
             track('trial_reminder_scheduled', { scheduled, plan });
@@ -536,7 +542,7 @@ export default function UpgradeScreen() {
           // product that offers a trial says nothing about whether THIS buyer
           // got one (a returning subscriber does not), and the day-5 reminder
           // must not promise a trial they are not on.
-          const onTrial = entitlementOnTrial(await getCustomerInfo());
+          const onTrial = entitlementOnTrial(await getCustomerInfo(), pkg.product?.identifier);
           // Conversion tracking and the reminder do not need this screen, so
           // they run even if the buyer left during the wait. These are exactly
           // the slow-bank buyers this branch exists for.

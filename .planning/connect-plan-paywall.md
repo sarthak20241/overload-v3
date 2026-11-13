@@ -181,6 +181,8 @@ DONE 2026-11-12: the 3 Apple Connect products added to the App Store app in Reve
 6. Profile and plan screens: `lib/tiers.ts` gets `connectLabel()` and Connect benefits; "Manage in the store" only for subscriptions.
 7. Connector setup screen (#382): open to trial, Connect, and Pro.
 
+- Store partly down: the locked paywall fails open only when NO plan loads. If only Connect loads, the Drona side shows "tap to try again" and the buyer can still buy Connect, which unlocks the app. A side with no plans sends `paywall_side_unavailable`.
+
 ### Phase E. A/B test (paywall layout)
 
 1. PostHog feature flag `paywall-layout`, variants `tiles` (A) and `list` (B), 50/50, sticky per user. Read it once with `posthog-react-native` feature flags; if the flag does not load in 1.5 s, show A.
