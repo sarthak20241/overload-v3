@@ -7,10 +7,12 @@
 // one database function (migration 20261114120000) that also logs the change
 // in plan_changes with source 'mcp', so Drona sees what the assistant did.
 //
-// Access: these tools need Overload Pro like every connector tool except
-// ping (index.ts gate). Pro has no program-build limit in the app, so the free
-// "one goal build" rule (ai-coach freeGoalBuild) never applies here. A cap of
-// 10 programs a day per user stops a looping assistant.
+// Access: like every connector tool except ping, these need Pro, a trial, or
+// the Connect plan (index.ts gate, hasConnectorAccess). The free "one goal
+// build" rule (ai-coach freeGoalBuild) limits Drona's model cost; here the
+// user's own assistant does the planning, so it does not apply
+// (.planning/connect-plan-paywall.md wants Connect users to build plans this
+// way). A cap of 10 programs a day per user stops a looping assistant.
 
 import { DAY_NAMES } from "../_shared/fuelDays.ts";
 import { addDays, todayIn } from "./days.ts";
