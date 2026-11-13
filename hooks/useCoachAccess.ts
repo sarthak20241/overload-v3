@@ -71,6 +71,14 @@ export interface CoachAccess {
   hadTrial?: boolean;
   endReason?: string;
   endedAt?: string;
+  /** An active Overload Connect plan (migration 20261112150000): the tracker
+   *  plus the ChatGPT / Claude connector, no Drona. Absent on servers before
+   *  that migration, which reads as no Connect. */
+  connect?: boolean;
+  connectPlan?: 'monthly' | 'annual' | 'lifetime';
+  /** Connect without Pro on an account made under the hard paywall: no
+   *  in-app AI at all. The server refuses it too; this only picks the UI. */
+  aiBlocked?: boolean;
 }
 
 export interface UseCoachAccessReturn {
@@ -174,6 +182,12 @@ function normalize(row: any): CoachAccess {
     hadTrial: typeof row.had_trial === 'boolean' ? row.had_trial : undefined,
     endReason: row.end_reason ?? undefined,
     endedAt: row.ended_at ?? undefined,
+    connect: row.connect === true,
+    connectPlan:
+      row.connect_plan === 'monthly' || row.connect_plan === 'annual' || row.connect_plan === 'lifetime'
+        ? row.connect_plan
+        : undefined,
+    aiBlocked: row.ai_blocked === true,
   };
 }
 

@@ -45,9 +45,13 @@ export function mustPay(opts: {
   createdAt: Date | number | string | null | undefined;
   accessState: string;
   purchasesAvailable: boolean;
+  /** An active Overload Connect plan. Its access state is 'free' (no Drona),
+   *  but the buyer paid, so the app opens for them. */
+  hasConnect?: boolean;
 }): boolean {
   return (
     opts.purchasesAvailable &&
+    !opts.hasConnect &&
     isHardPaywallAccount(opts.createdAt) &&
     NOT_PAYING.has(opts.accessState)
   );

@@ -319,6 +319,9 @@ export type AnalyticsEvent =
   | 'paywall_store_retry'
   | 'paywall_store_down'
   | 'paywall_success_cta'
+  | 'paywall_side_switched'
+  | 'paywall_side_unavailable'
+  | 'paywall_period_selected'
   | 'purchase_started'
   | 'purchase_pending'
   | 'purchase_pending_resolved'
@@ -445,3 +448,53 @@ export function consumeWorkoutSource(): string {
 
 /** True when a real key is configured. Used by the provider to skip mounting. */
 export const analyticsEnabled = !!posthog;
+
+// One network reload per app session at most: a user outside the experiment
+// must not pay a reload on every paywall open. A failed reload clears it, so
+// the next paywall open tries again.
+let flagsReload: Promise<void> | null = null;
+
+export type FlagRead = { variant: string; fromFlag: boolean };
+
+/**
+ * A PostHog feature flag's variant, or `fallback` when PostHog is off, the
+ * flag is unknown, or it does not load in `timeoutMs`. `fromFlag` says which:
+ * a fallback is not a real exposure, and the A/B analysis must know. Never
+ * throws: an A/B test must never block a screen.
+ */
+export async function getFlagVariant(flag: string, fallback: string, timeoutMs = 1500): Promise<FlagRead> {
+  const miss: FlagRead = { variant: fallback, fromFlag: false };
+  if (!posthog) return miss;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // The reload this call waits on, so the timeout drops only that one.
+  let waitedOn: Promise<void> | null = null;
+  try {
+    const read = (async (): Promise<FlagRead> => {
+      const now = posthog!.getFeatureFlag(flag);
+      if (typeof now === 'string') return { variant: now, fromFlag: true };
+      if (!flagsReload) {
+        // Only this reload may clear itself: a stale one (dropped on timeout)
+        // must not null out a newer reload in flight.
+        const mine: Promise<void> = Promise.resolve(posthog!.reloadFeatureFlagsAsync()).then(
+          // The SDK resolves undefined on a failed request instead of
+          // rejecting: treat that as a failure too, so a later open retries.
+          (r) => { if (r === undefined && flagsReload === mine) flagsReload = null; },
+          (e) => { if (flagsReload === mine) flagsReload = null; throw e; },
+        );
+        flagsReload = mine;
+      }
+      waitedOn = flagsReload;
+      await flagsReload;
+      const after = posthog!.getFeatureFlag(flag);
+      return typeof after === 'string' ? { variant: after, fromFlag: true } : miss;
+    })();
+    // A reload that hangs is dropped on timeout, so the next open asks again
+    // instead of waiting on it forever.
+    const timeout = new Promise<FlagRead>((r) => { timer = setTimeout(() => { if (waitedOn && flagsReload === waitedOn) flagsReload = null; r(miss); }, timeoutMs); });
+    return await Promise.race([read, timeout]);
+  } catch {
+    return miss;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}

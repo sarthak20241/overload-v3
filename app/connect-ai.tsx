@@ -35,9 +35,10 @@ export default function ConnectAiScreen() {
   const [app, setApp] = useState<AiApp>('claude');
   const [copied, setCopied] = useState(false);
 
-  // Same rule as the server: a paid plan or a live trial.
+  // Same rule as the server (mcp/access.ts hasConnectorAccess): a paid plan,
+  // a live trial, or an active Overload Connect plan.
   const known = !loading && access.state !== 'unknown';
-  const hasPlan = access.state === 'paid' || access.state === 'trialing';
+  const hasPlan = access.state === 'paid' || access.state === 'trialing' || access.connect === true;
 
   useEffect(() => {
     track('ai_connect_opened');
@@ -129,14 +130,14 @@ export default function ConnectAiScreen() {
         {known && !hasPlan ? (
           <>
             <PressableScale
-              onPress={() => { track('upgrade_prompt_tapped', { from: 'ai_connect' }); router.push('/upgrade' as any); }}
+              onPress={() => { track('upgrade_prompt_tapped', { from: 'ai_connect' }); router.push('/upgrade?context=connect' as any); }}
               style={[s.cta, Shadow.playBtn]}
               accessibilityRole="button"
-              accessibilityLabel="Get Pro to connect"
+              accessibilityLabel="See plans to connect"
             >
-              <Text style={s.ctaText}>Get Pro to connect</Text>
+              <Text style={s.ctaText}>See plans to connect</Text>
             </PressableScale>
-            <Text style={[s.footNote, { color: C.textMuted }]}>The connector is part of Overload Pro.</Text>
+            <Text style={[s.footNote, { color: C.textMuted }]}>The connector is part of Overload Connect and Overload Pro.</Text>
           </>
         ) : (
           <PressableScale

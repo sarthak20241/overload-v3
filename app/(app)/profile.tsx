@@ -380,7 +380,11 @@ export default function ProfileScreen() {
           : planLabel
       : coachAccess.state === 'trialing'
         ? `Pro trial · ${trialDaysLeftLabel(coachAccess.daysLeft)}`
-        : '3 coach messages and 3 AI food logs a day';
+        : coachAccess.connect
+          ? coachAccess.connectPlan === 'lifetime'
+            ? 'Overload Connect · yours forever'
+            : 'Overload Connect · tracker and your own AI'
+          : '3 coach messages and 3 AI food logs a day';
   const levelProgress = xpNeeded > 0 ? xpInLevel / xpNeeded : 0;
 
   // Goal progress derived from current weight, goal, and starting weight from log
@@ -935,7 +939,9 @@ export default function ProfileScreen() {
                           ? 'Overload Pro'
                           : coachAccess.state === 'trialing'
                             ? 'Overload Pro trial'
-                            : 'Free plan'}
+                            : coachAccess.connect
+                              ? 'Overload Connect'
+                              : 'Free plan'}
                     </Text>
                     <Text style={[styles.planCardSub, { color: C.textMuted }]}>{planSub}</Text>
                   </View>
@@ -979,7 +985,7 @@ export default function ProfileScreen() {
                           color: hasSubscription ? C.textMuted : C.accentText,
                         }]}
                       >
-                        {hasSubscription ? 'See your plan details' : 'Upgrade to Pro'}
+                        {hasSubscription ? 'See your plan details' : coachAccess.connect ? 'Add Drona coach' : 'Upgrade to Pro'}
                       </Text>
                       <Feather
                         name="chevron-right"

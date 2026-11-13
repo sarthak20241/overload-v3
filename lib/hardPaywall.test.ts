@@ -18,6 +18,11 @@ Deno.test('paid and trialing are never locked', () => {
   }
 });
 
+Deno.test('a Connect buyer is never locked, though their access state is free', () => {
+  assertEquals(mustPay({ createdAt: NEW, accessState: 'free', purchasesAvailable: true, hasConnect: true }), false);
+  assertEquals(mustPay({ createdAt: NEW, accessState: 'free', purchasesAvailable: true, hasConnect: false }), true);
+});
+
 Deno.test('unknown or signed-out access never locks (network blip)', () => {
   for (const s of ['unknown', 'unauthenticated']) {
     assertEquals(mustPay({ createdAt: NEW, accessState: s, purchasesAvailable: true }), false, s);

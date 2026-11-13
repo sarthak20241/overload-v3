@@ -148,6 +148,9 @@ jobs:
           deno test --allow-all lib/phasePick.test.ts
           deno test --allow-all lib/questionPin.test.ts
           deno test --allow-all lib/signupTour.test.ts
+          deno test --allow-all lib/paywallPlans.test.ts
+          deno test --allow-all lib/planKeys.test.ts
+          deno test --allow-all lib/hardPaywall.test.ts
 
       # The saved-food triggers that ai-coach's food memory reads, on an
       # in-memory Postgres. food-memory-tests.yml runs the same command on PRs.

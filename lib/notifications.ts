@@ -4,7 +4,7 @@
  * lazy-require pattern in lib/revenuecat.ts: callers get a uniform API and
  * never need "is the module here?" checks.
  *
- * v1 scope is deliberately tiny: the paywall funnel's day-5 trial reminder.
+ * v1 scope is deliberately tiny: the paywall funnel's trial reminder (two days before the trial ends).
  * The reminder screen PROMISES a notification two days before the trial
  * converts ("I'll remind you before you pay"), so this is a product
  * commitment, not a nice-to-have: scheduleTrialReminder() is called the
@@ -20,7 +20,11 @@
 import { track } from '@/lib/analytics';
 
 const TRIAL_REMINDER_ID = 'overload-trial-day5';
-const TRIAL_REMINDER_DAY = 5; // fire on day 5 of a 7-day trial
+// Connect has its own billing date, so its own reminder: a Connect trial must
+// not replace a Pro trial's reminder, or the reverse.
+const CONNECT_TRIAL_REMINDER_ID = 'overload-connect-trial-reminder';
+const reminderId = (plan: 'pro' | 'connect') => (plan === 'connect' ? CONNECT_TRIAL_REMINDER_ID : TRIAL_REMINDER_ID);
+const TRIAL_REMINDER_DAY = 5; // only when the trial length is unknown: day 5 of the usual 7
 
 // Loosely typed on purpose (same as lib/revenuecat.ts): the module may not
 // be installed yet, and `typeof import(...)` would fail typecheck until it is.
@@ -68,28 +72,37 @@ export async function requestNotificationPermission(): Promise<boolean> {
 }
 
 /**
- * Schedule the day-5 "your trial converts in 2 days" reminder, replacing any
+ * Schedule the "your trial converts in 2 days" reminder (two days before the end), replacing any
  * previously scheduled one. No-ops (returning false) without the module or
- * permission, so callers never branch.
+ * permission, so callers never branch. A Connect trial has no Drona, so it
+ * gets the plain reminder instead of Drona's voice.
  */
-export async function scheduleTrialReminder(): Promise<boolean> {
+export async function scheduleTrialReminder(plan: 'pro' | 'connect' = 'pro', trialDays = 0): Promise<boolean> {
+  // trialDays 0 = unknown: day 5 of the usual 7. A known trial too short for
+  // "two days left" gets no reminder, never one after the charge.
   const N = loadNotifications();
   if (!N) return false;
   try {
+    // Cancel first: a reminder left from an earlier trial must not fire after
+    // a new one, even when the new one gets no reminder.
+    await N.cancelScheduledNotificationAsync(reminderId(plan)).catch(() => {});
+    if (trialDays > 0 && trialDays < 3) return false;
     const perms = await N.getPermissionsAsync();
     if (!perms.granted) return false;
-    await N.cancelScheduledNotificationAsync(TRIAL_REMINDER_ID).catch(() => {});
     await N.scheduleNotificationAsync({
-      identifier: TRIAL_REMINDER_ID,
+      identifier: reminderId(plan),
       content: {
+        // "two days" matches the trigger below (trialDays - 2). Change both together.
         title: 'Two days left on your trial',
-        body:
-          "Drona here. Your trial converts in two days. Staying is one tap of nothing; leaving is two taps in Settings. Either way, you were warned like I promised.",
+        body: plan === 'connect'
+          ? 'Your Overload Connect trial converts in two days. To keep it, do nothing. To stop it, cancel in Settings.'
+          : "Drona here. Your trial converts in two days. Staying is one tap of nothing; leaving is two taps in Settings. Either way, you were warned like I promised.",
       },
       trigger: {
-        // SDK 53 time-interval trigger. Seconds from now to day 5.
+        // SDK 53 time-interval trigger. Seconds from now to two days before the end.
         type: N.SchedulableTriggerInputTypes.TIME_INTERVAL,
-        seconds: TRIAL_REMINDER_DAY * 24 * 60 * 60,
+        // Two days before the trial ends; day 5 when the length is unknown.
+        seconds: (trialDays > 0 ? trialDays - 2 : TRIAL_REMINDER_DAY) * 24 * 60 * 60,
       },
     });
     return true;
@@ -98,14 +111,12 @@ export async function scheduleTrialReminder(): Promise<boolean> {
   }
 }
 
-/** Cancel the pending day-5 reminder (tier flipped to paid, sub cancelled). */
+/** Cancel the pending trial reminders, Pro and Connect (sign-out). */
 export async function cancelTrialReminder(): Promise<void> {
   const N = loadNotifications();
   if (!N) return;
-  try {
-    await N.cancelScheduledNotificationAsync(TRIAL_REMINDER_ID);
-  } catch {
-    /* nothing to cancel */
+  for (const id of [TRIAL_REMINDER_ID, CONNECT_TRIAL_REMINDER_ID]) {
+    await N.cancelScheduledNotificationAsync(id).catch(() => {});
   }
 }
 
