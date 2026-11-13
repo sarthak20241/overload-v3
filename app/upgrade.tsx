@@ -201,7 +201,14 @@ export default function UpgradeScreen() {
   const [layout, setLayout] = useState<PaywallLayout>('tiles');
   useEffect(() => {
     let live = true;
-    void getFlagVariant(PAYWALL_LAYOUT_FLAG, 'tiles').then((v) => { if (live) setLayout(layoutFromFlag(v)); });
+    // paywall_viewed waits for the layout (flag or 1.5 s timeout), so every
+    // event of the funnel carries the layout this viewer really saw.
+    void getFlagVariant(PAYWALL_LAYOUT_FLAG, 'tiles').then((v) => {
+      if (!live) return;
+      const resolved = layoutFromFlag(v);
+      setLayout(resolved);
+      track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side, paywall_layout: resolved });
+    });
     return () => { live = false; };
   }, []);
   // Bumped by "Try again" when the store's plans did not load.
@@ -229,7 +236,6 @@ export default function UpgradeScreen() {
   const paywallOpenedAt = useRef(Date.now());
   const paywallResolved = useRef(false);
   useEffect(() => {
-    track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side, paywall_layout: layout });
     return () => {
       if (paywallResolved.current) return;
       track('paywall_dismissed', {
@@ -289,7 +295,8 @@ export default function UpgradeScreen() {
   // The store's plans did not load (store down, no network): nothing can be
   // bought, so a locked paywall must not trap anyone. It offers a retry and
   // opens like every other failure in the gate (fail open).
-  const storeDown = !loading && !packages.annual && !packages.monthly;
+  // Any purchasable plan counts: Connect alone loading is not an outage.
+  const storeDown = !loading && Object.keys(packages).length === 0;
   // Once the store has failed, the way out stays while "try again" reloads.
   const [storeFailed, setStoreFailed] = useState(false);
   useEffect(() => {
@@ -379,9 +386,11 @@ export default function UpgradeScreen() {
 
   // Longer `timeoutMs` for a pending payment: the store is waiting on a bank
   // mandate, which routinely lands well after the 30s a webhook flip needs.
-  // A Connect purchase never makes the state 'paid' (no Drona): it lands as
-  // `connect: true` on the same answer, so `wantConnect` waits for that.
-  const waitForTierFlip = useCallback(async (timeoutMs = 30_000, wantConnect = false): Promise<boolean> => {
+  // What a purchase must turn on. A Connect purchase never makes the state
+  // 'paid' (no Drona): it lands as `connect: true`. A Pro buyer who already
+  // has Connect (or the reverse) must wait for the plan they just bought, so
+  // 'either' is for Restore only.
+  const waitForTierFlip = useCallback(async (timeoutMs = 30_000, want: 'pro' | 'connect' | 'either' = 'pro'): Promise<boolean> => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       try {
@@ -389,8 +398,9 @@ export default function UpgradeScreen() {
         // 'trialing' counts too: it is Pro everywhere, and the hard-paywall
         // gate lets it in, so a buyer must never wait on it.
         const row = data as { state?: string; connect?: boolean } | null;
-        if (wantConnect && row?.connect === true) return true;
-        if (row?.state === 'paid' || row?.state === 'trialing') return true;
+        const pro = row?.state === 'paid' || row?.state === 'trialing';
+        const connect = row?.connect === true;
+        if (want === 'pro' ? pro : want === 'connect' ? connect : pro || connect) return true;
       } catch {
         /* network blip, keep polling */
       }
@@ -416,7 +426,8 @@ export default function UpgradeScreen() {
       // Locked: leaving before the tier flips would bounce a paying buyer
       // straight back here (the app gate still reads 'free'), so a locked
       // buyer waits longer before giving up.
-      const flipped = (await waitForTierFlip(30_000, buyingConnect)) || (isLocked && (await waitForTierFlip(90_000, buyingConnect)));
+      const want = buyingConnect ? 'connect' : 'pro';
+      const flipped = (await waitForTierFlip(30_000, want)) || (isLocked && (await waitForTierFlip(90_000, want)));
       invalidateCoachAccess();
       if (flipped) {
         // Honor the reminder screen's promise ONLY when the purchase
@@ -476,7 +487,7 @@ export default function UpgradeScreen() {
         track('purchase_pending', { plan: selectedPlan, context, source });
         setPurchasing(false);
         setVerifying(true);
-        const flipped = await waitForTierFlip(120_000, buyingConnect);
+        const flipped = await waitForTierFlip(120_000, buyingConnect ? 'connect' : 'pro');
         invalidateCoachAccess();
         track('purchase_pending_resolved', { plan: selectedPlan, context, source, flipped });
         if (flipped) {
@@ -551,7 +562,7 @@ export default function UpgradeScreen() {
         // may just mean the bank has not approved yet.
         setPendingOrder(false);
         // A restore carries no plan: either Pro or Connect landing counts.
-        const flipped = (await waitForTierFlip(30_000, true)) || (isLocked && (await waitForTierFlip(90_000, true)));
+        const flipped = (await waitForTierFlip(30_000, 'either')) || (isLocked && (await waitForTierFlip(90_000, 'either')));
         invalidateCoachAccess();
         if (flipped) {
           setActivationPending(false);

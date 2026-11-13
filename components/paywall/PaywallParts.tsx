@@ -165,6 +165,7 @@ export function Features({ side, layout }: { side: PaywallSide; layout: PaywallL
           <View
             key={f.label}
             style={[s.listRow, i > 0 && { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: g.quietEdge }]}
+            accessible
             accessibilityLabel={f.included ? f.label : `${f.label}, not included`}
           >
             <View
@@ -188,6 +189,7 @@ export function Features({ side, layout }: { side: PaywallSide; layout: PaywallL
       {items.map((f) => (
         <View
           key={f.label}
+          accessible
           accessibilityLabel={f.included ? f.label : `${f.label}, not included`}
           style={[
             s.tile,
