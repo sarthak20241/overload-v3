@@ -16,15 +16,15 @@ type Row = Record<string, any>;
 
 const SET_TYPES = ["normal", "warmup", "dropset", "failure", "negative"];
 const TIME = /^([01]?\d|2[0-3]):([0-5]\d)$/;
-const REQUEST_ID = /^[A-Za-z0-9_.:-]{1,100}$/;
+export const REQUEST_ID = /^[A-Za-z0-9_.:-]{1,100}$/;
 const MAX_BACK_DAYS = 365;
 
-const num = (v: unknown): number | null => {
+export const num = (v: unknown): number | null => {
   const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
   return Number.isFinite(n) ? n : null;
 };
 
-async function guarded(fn: () => Promise<ToolResult>): Promise<ToolResult> {
+export async function guarded(fn: () => Promise<ToolResult>): Promise<ToolResult> {
   try {
     return await fn();
   } catch (e) {
@@ -91,6 +91,36 @@ export function cleanSet(s: Row, where: string): Row | string {
   return x;
 }
 
+/** One exercise entry's id: the given exercise_id, or the one exact name
+ *  match in the catalog plus the user's own. Otherwise a refusal (with
+ *  candidates when the name matched loosely). Shared with save_routine. */
+export async function resolveExercise(ctx: Ctx, e: Row, i: number): Promise<{ id: string; label: string } | ToolResult> {
+  let label = `Exercise ${i + 1}`;
+  if (typeof e.exercise_id === "string" && e.exercise_id) {
+    if (!UUID.test(e.exercise_id)) return refuse(`${label}: exercise_id must be an id from search_exercises.`);
+    return { id: e.exercise_id, label };
+  }
+  if (typeof e.exercise_name === "string" && e.exercise_name.trim().length >= 2) {
+    const name = e.exercise_name.trim();
+    label = `"${name}"`;
+    const found = await ctx.data.searchExercises(ctx.userId, name, 15);
+    const exact = found.filter((f) => f.name.toLowerCase() === name.toLowerCase());
+    if (exact.length !== 1) {
+      return {
+        text: JSON.stringify({
+          matched: false,
+          exercise: name,
+          note: "No single exact exercise match. Pick an id and send exercise_id, or ask the user.",
+          candidates: found.slice(0, 8).map((f) => ({ id: f.id, name: f.name, muscle_group: f.muscle_group })),
+        }),
+        isError: true,
+      };
+    }
+    return { id: exact[0].id, label };
+  }
+  return refuse(`${label}: give exercise_id or exercise_name.`);
+}
+
 /** Exercises with ids, names resolved, sets checked. `allowEmpty`: an empty
  *  set list means "remove this exercise" (update only). */
 async function cleanExercises(ctx: Ctx, list: unknown, allowEmpty: boolean): Promise<Row[] | ToolResult> {
@@ -98,31 +128,9 @@ async function cleanExercises(ctx: Ctx, list: unknown, allowEmpty: boolean): Pro
   const out: Row[] = [];
   for (const [i, raw] of list.entries()) {
     const e = (raw ?? {}) as Row;
-    let id: string | null = null;
-    let label = `Exercise ${i + 1}`;
-    if (typeof e.exercise_id === "string" && e.exercise_id) {
-      if (!UUID.test(e.exercise_id)) return refuse(`${label}: exercise_id must be an id from search_exercises.`);
-      id = e.exercise_id;
-    } else if (typeof e.exercise_name === "string" && e.exercise_name.trim().length >= 2) {
-      const name = e.exercise_name.trim();
-      label = `"${name}"`;
-      const found = await ctx.data.searchExercises(ctx.userId, name, 15);
-      const exact = found.filter((f) => f.name.toLowerCase() === name.toLowerCase());
-      if (exact.length !== 1) {
-        return {
-          text: JSON.stringify({
-            matched: false,
-            exercise: name,
-            note: "No single exact exercise match. Pick an id and send exercise_id, or ask the user.",
-            candidates: found.slice(0, 8).map((f) => ({ id: f.id, name: f.name, muscle_group: f.muscle_group })),
-          }),
-          isError: true,
-        };
-      }
-      id = exact[0].id;
-    } else {
-      return refuse(`${label}: give exercise_id or exercise_name.`);
-    }
+    const r = await resolveExercise(ctx, e, i);
+    if ("text" in r) return r;
+    const { id, label } = r;
     if (out.some((o) => o.exercise_id === id)) return refuse(`${label} appears twice. Put all its sets in one entry.`);
     if (!Array.isArray(e.sets) || e.sets.length > 50 || (!allowEmpty && e.sets.length < 1)) {
       return refuse(`${label}: sets must hold ${allowEmpty ? 0 : 1} to 50 sets.`);

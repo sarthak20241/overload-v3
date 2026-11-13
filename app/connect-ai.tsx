@@ -75,8 +75,9 @@ export default function ConnectAiScreen() {
         <Text style={[s.eyebrow, { color: C.accentText }]}>CHATGPT AND CLAUDE</Text>
         <Text style={[s.title, { color: C.foreground }]}>Talk to your training where you already chat.</Text>
         <Text style={[s.sub, { color: C.textSecondary }]}>
-          Connect Overload to ChatGPT or Claude. Log food and workouts there, and ask about your
-          progress. It all lands in your Overload diary.
+          Connect Overload to ChatGPT or Claude. Log food and workouts there, ask about your
+          progress and your plan, and save the workouts it writes as routines. It all lands in
+          your Overload app.
         </Text>
 
         {/* The link: shown to everyone, so the steps make sense before paying. */}
@@ -121,7 +122,8 @@ export default function ConnectAiScreen() {
 
         <Text style={[s.note, { color: C.textMuted }]}>
           ChatGPT setup and available actions depend on your plan and workspace settings. Either
-          assistant can delete only entries logged through the connector. Disconnect any time in
+          assistant can delete only entries logged through the connector, and it never changes
+          or removes your own routines. Disconnect any time in
           your assistant’s settings. Workouts logged through the connector earn no XP.
         </Text>
       </ScrollView>

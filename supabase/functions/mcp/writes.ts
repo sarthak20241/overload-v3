@@ -62,6 +62,12 @@ export function makeWrites(db: Db) {
       call(db, "mcp_update_workout", { p_user: u, p_workout: id, p_set: set, p_replace: replace },
         "No such workout in this account, or an exercise is not in Overload's list."),
 
+    saveRoutine: (u: string, r: { name: string; description: string | null; phaseId: string | null }, exercises: Json[], requestId: string | null) =>
+      call(db, "mcp_save_routine", {
+        p_user: u, p_name: r.name, p_description: r.description, p_exercises: exercises,
+        p_phase: r.phaseId, p_request_id: requestId,
+      }, "An exercise is not in Overload's list or this user's own exercises, or the plan phase is gone. Use search_exercises for ids."),
+
     deleteWorkout: (u: string, id: string) =>
       call(db, "mcp_delete_workout", { p_user: u, p_workout: id }, "No such workout in this account."),
   };

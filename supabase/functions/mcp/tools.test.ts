@@ -41,6 +41,7 @@ const SAMPLE_ARGS: Record<string, unknown[]> = {
   dayTargets: [U, "2026-11-01", "2026-11-10"], meals: [U, "a", "b"], foodEntry: [U, ID], workouts: [U, "a", "b", 5],
   workout: [U, ID], liftStat: [U, ID], exerciseSessions: [U, ID, 5], exerciseSessionCount: [U, ID], volume: [U, "2026-11-02"],
   weights: [U, "2026-11-01", "2026-11-10"], exerciseById: [U, ID], searchExercises: [U, "bench"],
+  activeProgram: [U], programMetrics: [U, ID],
 };
 
 Deno.test("data: every query is filtered to the user (or the shared catalog + theirs)", async () => {

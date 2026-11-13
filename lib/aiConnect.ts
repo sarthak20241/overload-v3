@@ -38,4 +38,5 @@ export const TRY_ASKING = [
   'Log 2 eggs and toast for breakfast.',
   'How did my bench press move this month?',
   'Was I under my calories this week?',
+  'Write my next leg day for this phase and save it as a routine.',
 ];

@@ -5,16 +5,17 @@ import { hasConnectorAccess, limitHit, NOT_PRO, writeTrace } from "./access.ts";
 import { resourceMetadata, verifyAccessToken, wwwAuthenticate } from "./auth.ts";
 import { makeData } from "./data.ts";
 import { FOOD_WRITE_TOOLS } from "./foodWrites.ts";
+import { PLAN_TOOLS } from "./planTools.ts";
 import { WORKOUT_WRITE_TOOLS } from "./workoutWrites.ts";
 import { zoneOf } from "./days.ts";
 import { handleMessage, parseBody } from "./protocol.ts";
 import { type Ctx, TOOLS } from "./tools.ts";
 import { makeWrites } from "./writes.ts";
 
-const ALL_TOOLS = [...TOOLS, ...FOOD_WRITE_TOOLS, ...WORKOUT_WRITE_TOOLS];
+const ALL_TOOLS = [...TOOLS, ...PLAN_TOOLS, ...FOOD_WRITE_TOOLS, ...WORKOUT_WRITE_TOOLS];
 
 // The Overload MCP server: lets a user's own ChatGPT or Claude read their
-// Overload data and log food and workouts. Plan: .planning/mcp-tools-plan.md
+// Overload data and plan, log food and workouts, and save routines. Plan: .planning/mcp-tools-plan.md
 //
 //   GET  .../mcp/.well-known/oauth-protected-resource  -> who signs users in
 //   POST .../mcp                                        -> one JSON-RPC message
