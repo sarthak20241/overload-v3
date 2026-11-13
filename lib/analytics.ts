@@ -455,17 +455,26 @@ export const analyticsEnabled = !!posthog;
  */
 export async function getFlagVariant(flag: string, fallback: string, timeoutMs = 1500): Promise<string> {
   if (!posthog) return fallback;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const read = (async () => {
       const now = posthog!.getFeatureFlag(flag);
       if (typeof now === 'string') return now;
-      await posthog!.reloadFeatureFlagsAsync();
+      // One network reload per app session at most: a user outside the
+      // experiment must not pay a reload on every paywall open.
+      if (!flagsReloaded) {
+        flagsReloaded = true;
+        await posthog!.reloadFeatureFlagsAsync();
+      }
       const after = posthog!.getFeatureFlag(flag);
       return typeof after === 'string' ? after : fallback;
     })();
-    const timeout = new Promise<string>((r) => setTimeout(() => r(fallback), timeoutMs));
+    const timeout = new Promise<string>((r) => { timer = setTimeout(() => r(fallback), timeoutMs); });
     return await Promise.race([read, timeout]);
   } catch {
     return fallback;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
+let flagsReloaded = false;

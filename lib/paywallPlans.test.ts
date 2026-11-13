@@ -1,6 +1,7 @@
 // deno test --allow-all lib/paywallPlans.test.ts
 import { assertEquals } from 'jsr:@std/assert';
 import {
+  accessHasPlan,
   ctaLabel,
   initialSide,
   layoutFromFlag,
@@ -55,4 +56,20 @@ Deno.test('layout A unless the flag says list; opens on Drona unless asked', () 
   assertEquals(initialSide('connect'), 'own_ai');
   assertEquals(initialSide(null), 'drona');
   assertEquals(initialSide('cap_chat'), 'drona');
+});
+
+Deno.test('a purchase waits for the plan it bought; Restore takes either', () => {
+  const proOnly = { state: 'paid', connect: false };
+  const connectOnly = { state: 'free', connect: true };
+  const both = { state: 'paid', connect: true };
+  // A Pro subscriber buying Connect is not done until Connect is on.
+  assertEquals(accessHasPlan(proOnly, 'connect'), false);
+  assertEquals(accessHasPlan(both, 'connect'), true);
+  // A Connect buyer adding Pro is not done until Pro is on.
+  assertEquals(accessHasPlan(connectOnly, 'pro'), false);
+  assertEquals(accessHasPlan({ state: 'trialing' }, 'pro'), true);
+  assertEquals(accessHasPlan(connectOnly, 'either'), true);
+  assertEquals(accessHasPlan(proOnly, 'either'), true);
+  assertEquals(accessHasPlan({ state: 'free' }, 'either'), false);
+  assertEquals(accessHasPlan(null, 'either'), false);
 });

@@ -121,3 +121,18 @@ export function priceLine(period: PaywallPeriod, price: string, trialDays: numbe
 export function initialSide(context: string | null | undefined): PaywallSide {
   return context === 'connect' ? 'own_ai' : 'drona';
 }
+
+/**
+ * Has the access answer (get_coach_access_status) turned on what a purchase
+ * bought? A Connect purchase never makes the state 'paid' (no Drona): it lands
+ * as `connect: true`, which the server sets whether or not the buyer also has
+ * Pro. 'either' is for Restore only, which carries no plan.
+ */
+export function accessHasPlan(
+  row: { state?: string; connect?: boolean } | null | undefined,
+  want: 'pro' | 'connect' | 'either',
+): boolean {
+  const pro = row?.state === 'paid' || row?.state === 'trialing';
+  const connect = row?.connect === true;
+  return want === 'pro' ? pro : want === 'connect' ? connect : pro || connect;
+}

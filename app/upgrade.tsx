@@ -88,6 +88,7 @@ import {
 import { useTheme } from '@/hooks/useTheme';
 import { track, setUserProps, flushAnalytics, getFlagVariant } from '@/lib/analytics';
 import {
+  accessHasPlan,
   ctaLabel as paywallCta,
   initialSide,
   layoutFromFlag,
@@ -195,7 +196,11 @@ export default function UpgradeScreen() {
   // sold is derived from both (lib/paywallPlans.ts). Yearly is preselected.
   const [side, setSide] = useState<PaywallSide>(() => initialSide(typeof params.context === 'string' ? params.context : null));
   const [period, setPeriod] = useState<PaywallPeriod>('annual');
-  const selectedPlan: PlanKey = planFor(side, period) ?? 'annual';
+  // planFor is null only for a side/period pair the screen never offers
+  // (Drona has no lifetime). Then nothing is sold: the button is off and
+  // handlePurchase stops, never falling back to another plan.
+  const plannedKey = planFor(side, period);
+  const selectedPlan: PlanKey = plannedKey ?? 'annual';
   const buyingConnect = isConnectPlan(selectedPlan);
   // A/B test (PostHog flag paywall-layout): tiles (A, default) or icon list (B).
   const [layout, setLayout] = useState<PaywallLayout>('tiles');
@@ -207,6 +212,7 @@ export default function UpgradeScreen() {
       if (!live) return;
       const resolved = layoutFromFlag(v);
       setLayout(resolved);
+      viewTracked.current = true;
       track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side, paywall_layout: resolved });
     });
     return () => { live = false; };
@@ -235,8 +241,15 @@ export default function UpgradeScreen() {
   // paywall converts badly" and "one entry point converts badly".
   const paywallOpenedAt = useRef(Date.now());
   const paywallResolved = useRef(false);
+  const viewTracked = useRef(false);
   useEffect(() => {
     return () => {
+      // Left before the layout flag resolved: still count the view, so fast
+      // bounces stay in the funnel (layout unknown).
+      if (!viewTracked.current) {
+        viewTracked.current = true;
+        track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side, paywall_layout: 'pending' });
+      }
       if (paywallResolved.current) return;
       track('paywall_dismissed', {
         source,
@@ -397,10 +410,7 @@ export default function UpgradeScreen() {
         const { data } = await supabase.rpc('get_coach_access_status');
         // 'trialing' counts too: it is Pro everywhere, and the hard-paywall
         // gate lets it in, so a buyer must never wait on it.
-        const row = data as { state?: string; connect?: boolean } | null;
-        const pro = row?.state === 'paid' || row?.state === 'trialing';
-        const connect = row?.connect === true;
-        if (want === 'pro' ? pro : want === 'connect' ? connect : pro || connect) return true;
+        if (accessHasPlan(data as { state?: string; connect?: boolean } | null, want)) return true;
       } catch {
         /* network blip, keep polling */
       }
@@ -410,7 +420,7 @@ export default function UpgradeScreen() {
   }, [supabase]);
 
   const handlePurchase = useCallback(async () => {
-    const pkg = packages[selectedPlan];
+    const pkg = plannedKey ? packages[plannedKey] : undefined;
     if (!pkg) {
       toast.error('Plan unavailable. Try again.');
       return;
