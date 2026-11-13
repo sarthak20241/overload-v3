@@ -463,6 +463,9 @@ export default function UpgradeScreen() {
       return;
     }
     if (purchasing || verifying || pendingOrder || activationPending) return;
+    // Read once from the package bought, not from screen state: a side or
+    // period switch during a slow pending purchase must not change them.
+    const trialDays = plan.endsWith('lifetime') ? 0 : freeTrialDays(pkg);
     setPurchasing(true);
     track('purchase_started', { plan, context, source, side, period, paywall_layout: layout });
     try {
@@ -485,7 +488,7 @@ export default function UpgradeScreen() {
         // periodType (INTRO | TRIAL) rather than trusting the plan.
         const onTrial = entitlementOnTrial(customerInfo, pkg.product?.identifier);
         if (onTrial) {
-          void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro', selectedTrial).then((scheduled) => {
+          void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro', trialDays).then((scheduled) => {
             track('trial_reminder_scheduled', { scheduled, plan });
           });
         }
@@ -495,7 +498,8 @@ export default function UpgradeScreen() {
         paywallResolved.current = true;
         // The bridge only reads user_profiles on sign-in, so stamp the new tier
         // now or every event until the next cold start still says 'free'.
-        setUserProps({ tier: plan, on_trial: onTrial });
+        // Connect is not a tier: keep the PostHog `tier` prop Pro-only.
+        setUserProps(isConnectPlan(plan) ? { connect_plan: plan, on_trial: onTrial } : { tier: plan, on_trial: onTrial });
         track('purchase_completed', {
           plan,
           on_trial: onTrial,
@@ -506,7 +510,7 @@ export default function UpgradeScreen() {
           paywall_layout: layout,
           seconds_to_purchase: Math.round((Date.now() - paywallOpenedAt.current) / 1000),
         });
-        setOutcome({ plan, onTrial, trialDays: selectedTrial });
+        setOutcome({ plan, onTrial, trialDays });
         setStep('success');
       } else if (isLocked) {
         // Paid, but the server has not caught up. Stay here: Restore leaves
@@ -547,16 +551,17 @@ export default function UpgradeScreen() {
           // they run even if the buyer left during the wait. These are exactly
           // the slow-bank buyers this branch exists for.
           if (onTrial) {
-            void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro', selectedTrial).then((scheduled) => {
+            void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro', trialDays).then((scheduled) => {
               track('trial_reminder_scheduled', { scheduled, plan });
             });
           }
           paywallResolved.current = true;
-          setUserProps({ tier: plan, on_trial: onTrial });
+          // Connect is not a tier: keep the PostHog `tier` prop Pro-only.
+        setUserProps(isConnectPlan(plan) ? { connect_plan: plan, on_trial: onTrial } : { tier: plan, on_trial: onTrial });
           track('purchase_completed', { plan, on_trial: onTrial, context, source, was_pending: true, side, period, paywall_layout: layout });
           if (!mounted.current) return;
           void prefetchDashboard(supabase, user?.id);
-          setOutcome({ plan, onTrial, trialDays: selectedTrial });
+          setOutcome({ plan, onTrial, trialDays });
           setStep('success');
         } else {
           if (!mounted.current) return;
@@ -593,7 +598,7 @@ export default function UpgradeScreen() {
       setPurchasing(false);
       setVerifying(false);
     }
-  }, [packages, plannedKey, selectedTrial, buyingConnect, side, period, layout, purchasing, verifying, pendingOrder, activationPending, user?.id, waitForTierFlip, toast, finish, supabase, context, isFunnel, isLocked, source]);
+  }, [packages, plannedKey, buyingConnect, side, period, layout, purchasing, verifying, pendingOrder, activationPending, user?.id, waitForTierFlip, toast, finish, supabase, context, isFunnel, isLocked, source]);
 
   const handleRestore = useCallback(async () => {
     if (restoring) return;
