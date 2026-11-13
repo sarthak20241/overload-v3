@@ -453,6 +453,11 @@ export const analyticsEnabled = !!posthog;
  * flag is unknown, or it does not load in `timeoutMs`. Never throws: an A/B
  * test must never block a screen.
  */
+// One network reload per app session at most: a user outside the experiment
+// must not pay a reload on every paywall open. A failed reload clears it, so
+// the next paywall open tries again.
+let flagsReload: Promise<void> | null = null;
+
 export async function getFlagVariant(flag: string, fallback: string, timeoutMs = 1500): Promise<string> {
   if (!posthog) return fallback;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -460,12 +465,13 @@ export async function getFlagVariant(flag: string, fallback: string, timeoutMs =
     const read = (async () => {
       const now = posthog!.getFeatureFlag(flag);
       if (typeof now === 'string') return now;
-      // One network reload per app session at most: a user outside the
-      // experiment must not pay a reload on every paywall open.
-      if (!flagsReloaded) {
-        flagsReloaded = true;
-        await posthog!.reloadFeatureFlagsAsync();
+      if (!flagsReload) {
+        flagsReload = Promise.resolve(posthog!.reloadFeatureFlagsAsync()).then(
+          () => undefined,
+          (e) => { flagsReload = null; throw e; },
+        );
       }
+      await flagsReload;
       const after = posthog!.getFeatureFlag(flag);
       return typeof after === 'string' ? after : fallback;
     })();
@@ -477,4 +483,3 @@ export async function getFlagVariant(flag: string, fallback: string, timeoutMs =
     if (timer) clearTimeout(timer);
   }
 }
-let flagsReloaded = false;

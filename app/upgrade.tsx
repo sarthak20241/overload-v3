@@ -97,6 +97,7 @@ import {
   priceLine,
   SIDE_PERIODS,
   SIDE_SUB,
+  SIDE_TITLE,
   type PaywallLayout,
   type PaywallPeriod,
   type PaywallSide,
@@ -145,6 +146,8 @@ interface PurchaseOutcome {
   plan: PlanKey;
   /** The entitlement carries an intro/trial period (annual, first time). */
   onTrial: boolean;
+  /** The store's free days for that plan (0 = unknown). */
+  trialDays: number;
 }
 
 /**
@@ -200,8 +203,20 @@ export default function UpgradeScreen() {
   // (Drona has no lifetime). Then nothing is sold: the button is off and
   // handlePurchase stops, never falling back to another plan.
   const plannedKey = planFor(side, period);
-  const selectedPlan: PlanKey = plannedKey ?? 'annual';
-  const buyingConnect = isConnectPlan(selectedPlan);
+  const buyingConnect = plannedKey ? isConnectPlan(plannedKey) : false;
+  // Price and trial per period of the side on screen, straight from the store
+  // (0 trial days = none). A period whose product did not load is hidden.
+  const sidePrices: Partial<Record<PaywallPeriod, string>> = {};
+  const sideTrials: Partial<Record<PaywallPeriod, number>> = {};
+  for (const p of SIDE_PERIODS[side]) {
+    const key = planFor(side, p);
+    const pkg = key ? packages[key] : undefined;
+    if (pkg?.product?.priceString) {
+      sidePrices[p] = pkg.product.priceString;
+      sideTrials[p] = p === 'lifetime' ? 0 : freeTrialDays(pkg);
+    }
+  }
+  const selectedTrial = sideTrials[period] ?? 0;
   // A/B test (PostHog flag paywall-layout): tiles (A, default) or icon list (B).
   const [layout, setLayout] = useState<PaywallLayout>('tiles');
   useEffect(() => {
@@ -213,7 +228,7 @@ export default function UpgradeScreen() {
       const resolved = layoutFromFlag(v);
       setLayout(resolved);
       viewTracked.current = true;
-      track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side, paywall_layout: resolved });
+      track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side, paywall_layout: resolved, flag_status: 'resolved' });
     });
     return () => { live = false; };
   }, []);
@@ -248,7 +263,7 @@ export default function UpgradeScreen() {
       // bounces stay in the funnel (layout unknown).
       if (!viewTracked.current) {
         viewTracked.current = true;
-        track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side, paywall_layout: 'pending' });
+        track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side, paywall_layout: 'tiles', flag_status: 'pending' });
       }
       if (paywallResolved.current) return;
       track('paywall_dismissed', {
@@ -420,14 +435,15 @@ export default function UpgradeScreen() {
   }, [supabase]);
 
   const handlePurchase = useCallback(async () => {
-    const pkg = plannedKey ? packages[plannedKey] : undefined;
-    if (!pkg) {
+    const plan = plannedKey;
+    const pkg = plan ? packages[plan] : undefined;
+    if (!plan || !pkg) {
       toast.error('Plan unavailable. Try again.');
       return;
     }
     if (purchasing || verifying || pendingOrder || activationPending) return;
     setPurchasing(true);
-    track('purchase_started', { plan: selectedPlan, context, source, side, period, paywall_layout: layout });
+    track('purchase_started', { plan, context, source, side, period, paywall_layout: layout });
     try {
       if (user?.id) await ensureIdentity(user.id);
       const customerInfo = await purchaseCoachPackage(pkg);
@@ -445,11 +461,11 @@ export default function UpgradeScreen() {
         // existing subscriber who upgrades has no intro trial, and
         // scheduling would fire a false "your trial converts in 2 days"
         // notification 5 days later. Check the active entitlement's
-        // periodType (INTRO | TRIAL) rather than trusting selectedPlan.
+        // periodType (INTRO | TRIAL) rather than trusting the plan.
         const onTrial = entitlementOnTrial(customerInfo);
         if (onTrial) {
           void scheduleTrialReminder().then((scheduled) => {
-            track('trial_reminder_scheduled', { scheduled, plan: selectedPlan });
+            track('trial_reminder_scheduled', { scheduled, plan });
           });
         }
         // Warm the dashboard cache while the success screen is up, so the
@@ -458,9 +474,9 @@ export default function UpgradeScreen() {
         paywallResolved.current = true;
         // The bridge only reads user_profiles on sign-in, so stamp the new tier
         // now or every event until the next cold start still says 'free'.
-        setUserProps({ tier: selectedPlan, on_trial: onTrial });
+        setUserProps({ tier: plan, on_trial: onTrial });
         track('purchase_completed', {
-          plan: selectedPlan,
+          plan,
           on_trial: onTrial,
           context,
           source,
@@ -469,17 +485,17 @@ export default function UpgradeScreen() {
           paywall_layout: layout,
           seconds_to_purchase: Math.round((Date.now() - paywallOpenedAt.current) / 1000),
         });
-        setOutcome({ plan: selectedPlan, onTrial });
+        setOutcome({ plan, onTrial, trialDays: selectedTrial });
         setStep('success');
       } else if (isLocked) {
         // Paid, but the server has not caught up. Stay here: Restore leaves
         // once it has.
         setActivationPending(true);
-        track('purchase_completed', { plan: selectedPlan, on_trial: false, context, source, tier_flip: 'pending' });
+        track('purchase_completed', { plan, on_trial: false, context, source, tier_flip: 'pending' });
         toast.info("Payment received. It's taking a moment. Tap Restore in a minute.", { durationMs: 10000 });
       } else {
         paywallResolved.current = true;
-        track('purchase_completed', { plan: selectedPlan, on_trial: false, context, source, tier_flip: 'pending' });
+        track('purchase_completed', { plan, on_trial: false, context, source, tier_flip: 'pending' });
         toast.info(
           "Purchase received. We're finalizing. Pull to refresh or relaunch in a minute.",
           { durationMs: 8000 },
@@ -489,17 +505,17 @@ export default function UpgradeScreen() {
     } catch (e) {
       if (e instanceof PurchaseCancelledError) {
         /* backed out of the payment sheet, stay put */
-        track('purchase_failed', { plan: selectedPlan, reason: 'cancelled', context, side, period, paywall_layout: layout });
+        track('purchase_failed', { plan, reason: 'cancelled', context, side, period, paywall_layout: layout });
       } else if (e instanceof PurchasePendingError) {
         // Nothing failed: the store is waiting on the buyer's bank (an Indian
         // card or UPI mandate, Ask to Buy, SEPA). Keep "Activating Pro…" up
         // and poll well past the normal window instead of saying "failed".
-        track('purchase_pending', { plan: selectedPlan, context, source });
+        track('purchase_pending', { plan, context, source, side, period, paywall_layout: layout });
         setPurchasing(false);
         setVerifying(true);
         const flipped = await waitForTierFlip(120_000, buyingConnect ? 'connect' : 'pro');
         invalidateCoachAccess();
-        track('purchase_pending_resolved', { plan: selectedPlan, context, source, flipped });
+        track('purchase_pending_resolved', { plan, context, source, flipped, side, period, paywall_layout: layout });
         if (flipped) {
           // A pending purchase never returned customerInfo. Read it fresh: a
           // product that offers a trial says nothing about whether THIS buyer
@@ -511,15 +527,15 @@ export default function UpgradeScreen() {
           // the slow-bank buyers this branch exists for.
           if (onTrial) {
             void scheduleTrialReminder().then((scheduled) => {
-              track('trial_reminder_scheduled', { scheduled, plan: selectedPlan });
+              track('trial_reminder_scheduled', { scheduled, plan });
             });
           }
           paywallResolved.current = true;
-          setUserProps({ tier: selectedPlan, on_trial: onTrial });
-          track('purchase_completed', { plan: selectedPlan, on_trial: onTrial, context, source, was_pending: true });
+          setUserProps({ tier: plan, on_trial: onTrial });
+          track('purchase_completed', { plan, on_trial: onTrial, context, source, was_pending: true, side, period, paywall_layout: layout });
           if (!mounted.current) return;
           void prefetchDashboard(supabase, user?.id);
-          setOutcome({ plan: selectedPlan, onTrial });
+          setOutcome({ plan, onTrial, trialDays: selectedTrial });
           setStep('success');
         } else {
           if (!mounted.current) return;
@@ -530,7 +546,7 @@ export default function UpgradeScreen() {
           );
         }
       } else if (e instanceof PurchasesUnavailableError) {
-        track('purchase_failed', { plan: selectedPlan, reason: 'unavailable', context });
+        track('purchase_failed', { plan, reason: 'unavailable', context });
         toast.error(e.message, { durationMs: 6000 });
       } else {
         // Carry the store's own reason into the event; a bare 'error' left
@@ -538,7 +554,7 @@ export default function UpgradeScreen() {
         const err = describePurchaseError(e);
         console.warn('[upgrade] purchase failed:', err, e);
         track('purchase_failed', {
-          plan: selectedPlan,
+          plan,
           reason: 'error',
           context,
           source,
@@ -553,7 +569,7 @@ export default function UpgradeScreen() {
       setPurchasing(false);
       setVerifying(false);
     }
-  }, [packages, selectedPlan, buyingConnect, side, period, layout, purchasing, verifying, pendingOrder, activationPending, user?.id, waitForTierFlip, toast, finish, supabase, context, isFunnel, isLocked, source]);
+  }, [packages, plannedKey, selectedTrial, buyingConnect, side, period, layout, purchasing, verifying, pendingOrder, activationPending, user?.id, waitForTierFlip, toast, finish, supabase, context, isFunnel, isLocked, source]);
 
   const handleRestore = useCallback(async () => {
     if (restoring) return;
@@ -627,19 +643,6 @@ export default function UpgradeScreen() {
     setStep('paywall');
   }, [context]);
 
-  // Price and trial per period of the side on screen, straight from the store
-  // (0 trial days = none). A period whose product did not load is hidden.
-  const sidePrices: Partial<Record<PaywallPeriod, string>> = {};
-  const sideTrials: Partial<Record<PaywallPeriod, number>> = {};
-  for (const p of SIDE_PERIODS[side]) {
-    const key = planFor(side, p);
-    const pkg = key ? packages[key] : undefined;
-    if (pkg?.product?.priceString) {
-      sidePrices[p] = pkg.product.priceString;
-      sideTrials[p] = p === 'lifetime' ? 0 : freeTrialDays(pkg);
-    }
-  }
-  const selectedTrial = sideTrials[period] ?? 0;
   const ctaLabel = paywallCta(side, period, selectedTrial);
   const selectedPrice = sidePrices[period] ?? null;
   // Connect products not in the offering yet (or not on this build's store):
@@ -654,9 +657,9 @@ export default function UpgradeScreen() {
   }, [side, context, layout]);
   const selectPeriod = useCallback((next: PaywallPeriod) => {
     track('paywall_period_selected', { side, period: next, previous_period: period, paywall_layout: layout });
-    track('paywall_plan_selected', { plan: planFor(side, next), previous_plan: selectedPlan });
+    track('paywall_plan_selected', { plan: planFor(side, next), previous_plan: plannedKey });
     setPeriod(next);
-  }, [side, period, layout, selectedPlan]);
+  }, [side, period, layout, plannedKey]);
   return (
     <SafeAreaView style={[u.safeArea, { backgroundColor: C.background }]}>
       {/* No iOS swipe-back past a locked paywall. */}
@@ -808,7 +811,7 @@ export default function UpgradeScreen() {
                 .planning/connect-plan-paywall.md section 3): one title, a
                 switch between Drona (Pro) and Your own AI (Connect), one
                 concrete example, what each side includes, then its prices. */}
-            <Text style={[u.pwTitle, { color: C.foreground }]}>A coach for your food and workouts</Text>
+            <Text style={[u.pwTitle, { color: C.foreground }]}>{SIDE_TITLE[side]}</Text>
             <PlanSwitch side={side} onChange={switchSide} disabled={purchasing || verifying} />
             <Text style={[u.pwSub, { color: C.textSecondary }]}>{SIDE_SUB[side]}</Text>
             <ExampleCard side={side} />
@@ -1014,12 +1017,12 @@ export default function UpgradeScreen() {
                 ? outcome.plan === 'connect_lifetime'
                   ? 'Overload Connect is yours for good. Connect your AI in Profile.'
                   : outcome.onTrial
-                    ? 'Your 7 free days start now. Connect your AI in Profile.'
+                    ? `${outcome.trialDays > 0 ? `Your ${outcome.trialDays} free days start` : 'Your free trial starts'} now. Connect your AI in Profile.`
                     : 'Overload Connect is active. Connect your AI in Profile.'
                 : outcome?.plan === 'founding_lifetime'
                 ? "Founding member. Overload Pro is yours for good, and I'm yours to keep."
                 : outcome?.onTrial
-                  ? "Your 7 days start now. I'll remind you on day 5, before anything is charged."
+                  ? `Your ${outcome.trialDays > 0 ? `${outcome.trialDays} days` : 'free trial'} ${outcome.trialDays > 0 ? 'start' : 'starts'} now. I'll remind you before anything is charged.`
                   : "Overload Pro is active. Give me a week of your training and judge me on the results."}
             </Animated.Text>
             <Animated.View

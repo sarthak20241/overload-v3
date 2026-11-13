@@ -52,6 +52,11 @@ export const SIDE_LABEL: Record<PaywallSide, string> = {
   own_ai: 'Your own AI',
 };
 
+export const SIDE_TITLE: Record<PaywallSide, string> = {
+  drona: 'A coach for your food and workouts',
+  own_ai: 'Your food and workouts, in your own AI',
+};
+
 export const SIDE_SUB: Record<PaywallSide, string> = {
   drona: 'The coach inside the app',
   own_ai: 'Log and analyze in ChatGPT, Claude, and more',

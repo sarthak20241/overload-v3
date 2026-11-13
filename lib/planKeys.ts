@@ -79,6 +79,11 @@ export function packageToPlanKey(pkg: PackageLike): PlanKey | null {
   if (connect) return connect;
   const mapped = PACKAGE_ID_MAP[pkg.identifier] ?? packageTypeToPlanKey(pkg.packageType);
   // A Connect package id over a product that is not Connect: trust nothing.
-  return mapped && isConnectPlan(mapped) ? null : mapped;
+  if (mapped && isConnectPlan(mapped)) {
+    // A RevenueCat offering set up wrong. Say so in the logs, sell nothing.
+    console.warn(`[revenuecat] package ${pkg.identifier} is Connect but its product ${pkg.product?.identifier} is not; hidden`);
+    return null;
+  }
+  return mapped;
 }
 
