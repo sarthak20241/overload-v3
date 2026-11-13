@@ -257,13 +257,16 @@ export default function UpgradeScreen() {
   const paywallOpenedAt = useRef(Date.now());
   const paywallResolved = useRef(false);
   const viewTracked = useRef(false);
+  // The side on screen now, for the unmount event (its effect runs once).
+  const sideRef = useRef(side);
+  sideRef.current = side;
   useEffect(() => {
     return () => {
       // Left before the layout flag resolved: still count the view, so fast
       // bounces stay in the funnel (layout unknown).
       if (!viewTracked.current) {
         viewTracked.current = true;
-        track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side, paywall_layout: 'tiles', flag_status: 'pending' });
+        track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side: sideRef.current, paywall_layout: 'tiles', flag_status: 'pending' });
       }
       if (paywallResolved.current) return;
       track('paywall_dismissed', {
@@ -464,7 +467,7 @@ export default function UpgradeScreen() {
         // periodType (INTRO | TRIAL) rather than trusting the plan.
         const onTrial = entitlementOnTrial(customerInfo);
         if (onTrial) {
-          void scheduleTrialReminder().then((scheduled) => {
+          void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro').then((scheduled) => {
             track('trial_reminder_scheduled', { scheduled, plan });
           });
         }
@@ -491,11 +494,11 @@ export default function UpgradeScreen() {
         // Paid, but the server has not caught up. Stay here: Restore leaves
         // once it has.
         setActivationPending(true);
-        track('purchase_completed', { plan, on_trial: false, context, source, tier_flip: 'pending' });
+        track('purchase_completed', { plan, on_trial: false, context, source, tier_flip: 'pending', side, period, paywall_layout: layout });
         toast.info("Payment received. It's taking a moment. Tap Restore in a minute.", { durationMs: 10000 });
       } else {
         paywallResolved.current = true;
-        track('purchase_completed', { plan, on_trial: false, context, source, tier_flip: 'pending' });
+        track('purchase_completed', { plan, on_trial: false, context, source, tier_flip: 'pending', side, period, paywall_layout: layout });
         toast.info(
           "Purchase received. We're finalizing. Pull to refresh or relaunch in a minute.",
           { durationMs: 8000 },
@@ -526,7 +529,7 @@ export default function UpgradeScreen() {
           // they run even if the buyer left during the wait. These are exactly
           // the slow-bank buyers this branch exists for.
           if (onTrial) {
-            void scheduleTrialReminder().then((scheduled) => {
+            void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro').then((scheduled) => {
               track('trial_reminder_scheduled', { scheduled, plan });
             });
           }
@@ -546,7 +549,7 @@ export default function UpgradeScreen() {
           );
         }
       } else if (e instanceof PurchasesUnavailableError) {
-        track('purchase_failed', { plan, reason: 'unavailable', context });
+        track('purchase_failed', { plan, reason: 'unavailable', context, side, period, paywall_layout: layout });
         toast.error(e.message, { durationMs: 6000 });
       } else {
         // Carry the store's own reason into the event; a bare 'error' left
@@ -562,6 +565,9 @@ export default function UpgradeScreen() {
           error_readable: err.readable,
           error_underlying: err.underlying,
           error_message: err.message,
+          side,
+          period,
+          paywall_layout: layout,
         });
         toast.error("That didn't go through. Try again. If you were charged, tap Restore.", { durationMs: 8000 });
       }

@@ -70,9 +70,10 @@ export async function requestNotificationPermission(): Promise<boolean> {
 /**
  * Schedule the day-5 "your trial converts in 2 days" reminder, replacing any
  * previously scheduled one. No-ops (returning false) without the module or
- * permission, so callers never branch.
+ * permission, so callers never branch. A Connect trial has no Drona, so it
+ * gets the plain reminder instead of Drona's voice.
  */
-export async function scheduleTrialReminder(): Promise<boolean> {
+export async function scheduleTrialReminder(plan: 'pro' | 'connect' = 'pro'): Promise<boolean> {
   const N = loadNotifications();
   if (!N) return false;
   try {
@@ -83,8 +84,9 @@ export async function scheduleTrialReminder(): Promise<boolean> {
       identifier: TRIAL_REMINDER_ID,
       content: {
         title: 'Two days left on your trial',
-        body:
-          "Drona here. Your trial converts in two days. Staying is one tap of nothing; leaving is two taps in Settings. Either way, you were warned like I promised.",
+        body: plan === 'connect'
+          ? 'Your Overload Connect trial converts in two days. To keep it, do nothing. To stop it, cancel in Settings.'
+          : "Drona here. Your trial converts in two days. Staying is one tap of nothing; leaving is two taps in Settings. Either way, you were warned like I promised.",
       },
       trigger: {
         // SDK 53 time-interval trigger. Seconds from now to day 5.
