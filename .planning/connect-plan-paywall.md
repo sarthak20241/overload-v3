@@ -101,7 +101,7 @@ Do this FIRST: new products need store review, about 1 to 2 days.
 - `overload_connect_monthly` (Apple ID 6833918533): 1 month, $2.99 US, 175 regions, display "Overload Connect Monthly", 1-week free intro offer. Level 4.
 - `overload_connect_lifetime` (Apple ID 6833922562): non-consumable, $49.99 US, 175 regions, display "Overload Connect Lifetime".
 - All three: "Prepare for Submission". Still missing: the review screenshot (needs the new paywall screen) and submission with the 1.0.5 build.
-- NOT done yet (owner must confirm, they change live prices for new buyers at once): Pro repricing to $9.99 / $49.99, and removing Founding Lifetime from sale.
+- Owner confirmed 2026-11-12, then done (see the Apple DONE block below): Pro repricing to $9.99 / $49.99 from 2026-11-14, and Founding Lifetime removed from sale.
 - Note: the group's customer-facing display name is "Overload Pro"; Connect buyers will see that name in their subscription settings. Consider renaming to "Overload".
 
 ### Google Play Console
