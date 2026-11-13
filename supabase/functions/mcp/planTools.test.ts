@@ -152,6 +152,9 @@ Deno.test("save_routine: sends checked slots; not linked to the plan unless aske
   assertEquals(calls[0][2], [{ exercise_id: BENCH, sets: 4, reps_min: 6, reps_max: 6, rest_seconds: 90, note: "RIR 2" }]);
   assertEquals(calls[0][3], "r-1");
   assertEquals(out.routine.exercises[0].exercise, "Bench");
+  assertEquals(out.routine.exercises[0].reps, "6");
+  const hold = await body("save_routine", { name: "Core", exercises: [{ exercise_id: BENCH, duration_seconds: 45 }] }, ctx);
+  assertEquals([hold.out.routine.exercises[0].reps, hold.out.routine.exercises[0].seconds_per_set], [undefined, 45], "a hold shows its time, not 8-12 reps");
   assertEquals(out.added_to_phase, undefined);
 });
 
@@ -174,6 +177,8 @@ Deno.test("save_routine: add_to_plan links the current phase; no plan or an ende
   const early = await body("save_routine", { name: "U", exercises: ex, add_to_plan: true },
     ctxWith({ activeProgram: () => Promise.resolve({ ...structuredClone(PROGRAM), start_date: "2026-11-20" }) }, { saveRoutine }));
   assertEquals([calls[1][1].phaseId, early.out.added_to_phase], [PH1, "Deficit block"], "before the start: the first phase");
+  assert(early.out.phase_note.includes("not started"), "says it is not the current phase");
+  assertEquals(out.phase_note, undefined, "a running phase needs no note");
 });
 
 Deno.test("save_routine: bad input is refused before any write", async () => {

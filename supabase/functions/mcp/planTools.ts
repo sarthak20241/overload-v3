@@ -94,7 +94,11 @@ function routineOut(r: Row) {
     exercises: list.map((e: Row) => ({
       name: e.exercises?.name ?? "Unknown exercise",
       sets: e.sets,
-      ...(repsText(e.reps_min, e.reps_max) ? { reps: repsText(e.reps_min, e.reps_max) } : {}),
+      // A time or distance slot stores the table's default reps (the app does
+      // the same, lib/planExercise.ts); its target is the time or distance.
+      ...(!e.target_duration_seconds && !e.target_distance_m && repsText(e.reps_min, e.reps_max)
+        ? { reps: repsText(e.reps_min, e.reps_max) }
+        : {}),
       rest_seconds: e.rest_seconds,
       ...(e.target_duration_seconds ? { seconds_per_set: e.target_duration_seconds } : {}),
       ...(e.target_distance_m ? { meters_per_set: r1(e.target_distance_m) } : {}),
@@ -210,7 +214,7 @@ const ROUTINE_EXERCISE_SCHEMA = {
     exercise_id: { type: "string", description: "From search_exercises. Preferred." },
     exercise_name: { type: "string", description: "Exact exercise name, when there is no id." },
     sets: { type: "integer", minimum: 1, maximum: 20, description: "Default 3." },
-    reps: { type: "integer", minimum: 1, maximum: 100, description: "One rep target, e.g. 5. Or give reps_min and reps_max." },
+    reps: { type: "integer", minimum: 1, maximum: 100, description: "One rep target, e.g. 5. Or give reps_min and reps_max. Leave out for a hold or cardio given by duration_seconds or distance_m." },
     reps_min: { type: "integer", minimum: 1, maximum: 100 },
     reps_max: { type: "integer", minimum: 1, maximum: 100 },
     rest_seconds: { type: "integer", minimum: 0, maximum: 900, description: "Default 90." },
@@ -273,6 +277,7 @@ const saveRoutine: Tool = {
 
       let phaseId: string | null = null;
       let phaseName: string | null = null;
+      let phaseNote: string | null = null;
       if (a.add_to_plan === true) {
         const prog = await ctx.data.activeProgram(ctx.userId);
         if (!prog) return refuse("The user has no active plan, so there is no phase to add it to. Save it without add_to_plan.");
@@ -280,6 +285,11 @@ const saveRoutine: Tool = {
         if (!pos.phase) return refuse("The user's plan has ended, so there is no current phase. Save it without add_to_plan.");
         phaseId = pos.phase.id;
         phaseName = pos.phase.name;
+        if (pos.state !== "running") {
+          phaseNote = pos.state === "not_started"
+            ? "The plan has not started yet, so it went into the plan's first phase."
+            : "No phase is running today, so it went into the next phase.";
+        }
       }
 
       const saved = await ctx.writes.saveRoutine(ctx.userId, { name, description, phaseId }, out, requestId);
@@ -300,7 +310,7 @@ const saveRoutine: Tool = {
           exercises: out.map((o, i) => ({
             exercise: saved.exercise_names?.[i] ?? o.exercise_id,
             sets: o.sets,
-            reps: o.reps_min === o.reps_max ? `${o.reps_min}` : `${o.reps_min}-${o.reps_max}`,
+            ...(o.target_duration_seconds || o.target_distance_m ? {} : { reps: repsText(o.reps_min, o.reps_max) }),
             rest_seconds: o.rest_seconds,
             ...(o.target_duration_seconds ? { seconds_per_set: o.target_duration_seconds } : {}),
             ...(o.target_distance_m ? { meters_per_set: o.target_distance_m } : {}),
@@ -308,6 +318,7 @@ const saveRoutine: Tool = {
           })),
         },
         ...(phaseName ? { added_to_phase: phaseName } : {}),
+        ...(phaseNote ? { phase_note: phaseNote } : {}),
         where: "In the Overload app: Routines. The user can edit or remove it there.",
       });
     });
