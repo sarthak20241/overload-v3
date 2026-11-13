@@ -5,6 +5,9 @@ import { handleMessage, parseBody, PROTOCOL_VERSIONS, type Tool } from "./protoc
 import { FOOD_WRITE_TOOLS } from "./foodWrites.ts";
 import { TOOLS } from "./tools.ts";
 import { PLAN_TOOLS } from "./planTools.ts";
+import { INSIGHT_TOOLS } from "./insightTools.ts";
+import { PROGRAM_TOOLS } from "./programTools.ts";
+import { PLANNING_GUIDE } from "./planningGuide.ts";
 import { WORKOUT_WRITE_TOOLS } from "./workoutWrites.ts";
 
 const ISSUER = "https://clerk.example.test";
@@ -93,9 +96,19 @@ const rpc = (method: string, params?: unknown, id: number | null = 1) =>
 Deno.test("initialize: echoes a known protocol version, else the newest", async () => {
   const a = await handleMessage(rpc("initialize", { protocolVersion: "2025-03-26" }), TOOLS, CTX) as any;
   assertEquals(a.result.protocolVersion, "2025-03-26");
-  assertEquals(a.result.capabilities, { tools: { listChanged: false } });
+  assertEquals(a.result.capabilities, { tools: { listChanged: false }, resources: { listChanged: false } });
   const b = await handleMessage(rpc("initialize", { protocolVersion: "1999-01-01" }), TOOLS, CTX) as any;
   assertEquals(b.result.protocolVersion, PROTOCOL_VERSIONS[0]);
+});
+
+Deno.test("resources: the planning guide is listed and readable; an unknown uri is an error", async () => {
+  const list = await handleMessage(rpc("resources/list"), TOOLS, CTX) as any;
+  assertEquals(list.result.resources.map((r: any) => r.uri), ["overload://guides/planning"]);
+  assertEquals(list.result.resources[0].text, undefined);
+  const read = await handleMessage(rpc("resources/read", { uri: "overload://guides/planning" }), TOOLS, CTX) as any;
+  assertEquals(read.result.contents[0].text, PLANNING_GUIDE);
+  const bad = await handleMessage(rpc("resources/read", { uri: "overload://x" }), TOOLS, CTX) as any;
+  assertEquals(bad.error.code, -32602);
 });
 
 Deno.test("a notification gets no reply", async () => {
@@ -110,7 +123,7 @@ Deno.test("tools/list lists ping with its schema", async () => {
 });
 
 Deno.test("tools/list: every tool has a title, says read or write, and is closed-world (directory review)", async () => {
-  const all = [...TOOLS, ...PLAN_TOOLS, ...FOOD_WRITE_TOOLS, ...WORKOUT_WRITE_TOOLS];
+  const all = [...TOOLS, ...PLAN_TOOLS, ...INSIGHT_TOOLS, ...PROGRAM_TOOLS, ...FOOD_WRITE_TOOLS, ...WORKOUT_WRITE_TOOLS];
   const r = await handleMessage(rpc("tools/list"), all, CTX) as any;
   assertEquals(r.result.tools.length, all.length);
   for (const t of r.result.tools) {
@@ -150,7 +163,7 @@ Deno.test("a gate refusal is the answer, and done() hears how each call ended", 
 Deno.test("an unknown tool or method is a JSON-RPC error", async () => {
   const a = await handleMessage(rpc("tools/call", { name: "nope" }), TOOLS, CTX) as any;
   assertEquals(a.error.code, -32602);
-  const b = await handleMessage(rpc("resources/list"), TOOLS, CTX) as any;
+  const b = await handleMessage(rpc("prompts/list"), TOOLS, CTX) as any;
   assertEquals(b.error.code, -32601);
 });
 

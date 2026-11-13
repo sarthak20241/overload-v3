@@ -6,6 +6,8 @@
 // This file has no I/O. index.ts passes in the tools and the signed-in user,
 // so the tests can drive it with plain objects.
 
+import { PLANNING_GUIDE, PLANNING_GUIDE_URI } from "./planningGuide.ts";
+
 export const SERVER_INFO = { name: "overload", title: "Overload", version: "0.1.0" };
 
 /** Newest first. We answer with the client's version when we know it. */
@@ -13,7 +15,21 @@ export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 
 export const INSTRUCTIONS =
   "Overload is the user's fitness app: food diary, workouts, and training plan. " +
-  "Use these tools to read the user's data and to log what they ate or trained.";
+  "Use these tools to read the user's data and to log what they ate or trained. " +
+  "Overload's coach, Drona, keeps a Goal & Plan and weekly insights for the user: read them with get_plan " +
+  "and get_insights before coaching. Before you create or edit a program, read get_planning_guide " +
+  `(also the resource ${PLANNING_GUIDE_URI}) and plan by its rules. Ask the user for a clear yes before any ` +
+  "change to their plan, and before every delete.";
+
+/** Read-only documents the assistant can open (resources/list, resources/read). */
+export const RESOURCES = [{
+  uri: PLANNING_GUIDE_URI,
+  name: "planning-guide",
+  title: "How to plan like Drona",
+  description: "Overload's rules for building and editing a training and nutrition program.",
+  mimeType: "text/markdown",
+  text: PLANNING_GUIDE,
+}];
 
 export interface ToolContext {
   userId: string;
@@ -103,13 +119,22 @@ export async function handleMessage(
       const protocolVersion = PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0];
       return ok(id, {
         protocolVersion,
-        capabilities: { tools: { listChanged: false } },
+        capabilities: { tools: { listChanged: false }, resources: { listChanged: false } },
         serverInfo: SERVER_INFO,
         instructions: INSTRUCTIONS,
       });
     }
     case "ping":
       return ok(id, {});
+    case "resources/list":
+      return ok(id, { resources: RESOURCES.map(({ text: _, ...r }) => r) });
+    case "resources/templates/list":
+      return ok(id, { resourceTemplates: [] });
+    case "resources/read": {
+      const r = RESOURCES.find((x) => x.uri === params.uri);
+      if (!r) return fail(id, INVALID_PARAMS, `Unknown resource: ${String(params.uri)}`);
+      return ok(id, { contents: [{ uri: r.uri, mimeType: r.mimeType, text: r.text }] });
+    }
     case "tools/list":
       return ok(id, {
         tools: tools.map((t) => ({

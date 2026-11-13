@@ -148,9 +148,9 @@ export function makeData(db: Db) {
      *  linked routines (the app's own embed: routines.program_phase_id). */
     activeProgram: (u: string) =>
       one(own(db, "coach_programs",
-        "id, title, objective, goal, target_weight_kg, target_date, start_date, total_weeks, " +
+        "id, title, objective, goal, target_weight_kg, target_date, start_date, total_weeks, applied_phase_seq, " +
           "coach_program_phases(id, seq, name, duration_weeks, start_offset_weeks, diet_calorie_target, " +
-          "diet_protein_g, diet_carb_g, diet_fat_g, diet_fuel_days, diet_directive, training_directive, " +
+          "diet_protein_g, diet_carb_g, diet_fat_g, diet_fuel_days, diet_directive, training_directive, readiness_directive, " +
           "training_block, activity_steps_target, cardio_sessions_per_week, job_text, coach_line, " +
           "routines!program_phase_id(id, name, routine_exercises(sets, reps_min, reps_max, rest_seconds, " +
           "target_duration_seconds, target_distance_m, note, order, exercises(name))))",
@@ -162,6 +162,84 @@ export function makeData(db: Db) {
         "phase_id, seq, is_hero, kind, ref, unit, direction, start_value, target_value, current_value, " +
           "status, status_note, checked_at",
         "user_id", u).eq("program_id", programId).order("seq")),
+
+    /** Every program of this user, newest first (any status). */
+    programs: (u: string) =>
+      rows(own(db, "coach_programs", "id, title, goal, status, start_date, total_weeks, source, created_at, updated_at",
+        "user_id", u).order("created_at", { ascending: false }).limit(30)),
+
+    /** One program of this user (any status), with its phases. */
+    programById: (u: string, id: string) =>
+      one(own(db, "coach_programs",
+        "id, title, objective, goal, target_weight_kg, target_date, start_date, total_weeks, status, applied_phase_seq, " +
+          "coach_program_phases(id, seq, name, duration_weeks, start_offset_weeks, diet_calorie_target, diet_protein_g, " +
+          "diet_carb_g, diet_fat_g, diet_fuel_days, diet_directive, training_directive, readiness_directive, " +
+          "training_block, activity_steps_target, cardio_sessions_per_week, job_text, routines!program_phase_id(id, name))",
+        "user_id", u).eq("id", id).maybeSingle()),
+
+    // ── Drona's insights (the weekly jobs write these; nothing here writes) ──
+    // Raw user text (drona_week_facts.wd_texts and the note columns, coach
+    // memory's sources) never leaves: insightTools.ts drops those columns.
+
+    cards: (u: string, fromWeek: string) =>
+      rows(own(db, "drona_cards",
+        "id, week_start, slot, kind, topic, title, body, evidence, payload, signals, status, source, moment_day, " +
+          "created_at, decided_at, deferred_at, expires_at",
+        "user_id", u).gte("week_start", fromWeek).order("created_at", { ascending: false }).limit(20)),
+
+    behaviours: (u: string, fromWeek: string) =>
+      rows(own(db, "drona_behaviours", "week_start, behaviour, priority, card_kind, meta, mutes, detail",
+        "user_id", u).gte("week_start", fromWeek).order("week_start", { ascending: false }).order("priority")),
+
+    behaviourPick: (u: string, fromWeek: string) =>
+      rows(own(db, "drona_behaviour_pick", "week_start, behaviour, card_kind, mutes", "user_id", u)
+        .gte("week_start", fromWeek).order("week_start", { ascending: false })),
+
+    signals: (u: string, fromWeek: string) =>
+      rows(own(db, "drona_signals", "week_start, signal, fired, pattern, detail", "user_id", u)
+        .gte("week_start", fromWeek).eq("fired", true).order("week_start", { ascending: false })),
+
+    wordSignals: (u: string, fromWeek: string) =>
+      rows(own(db, "drona_word_signals", "week_start, signal, fired", "user_id", u)
+        .gte("week_start", fromWeek).eq("fired", true).order("week_start", { ascending: false })),
+
+    /** The newest week with a maintenance estimate (the Nutrition screen's read). */
+    maintenance: (u: string, toWeek: string) =>
+      one(own(db, "drona_week_facts",
+        "week_start, m_estimate_kcal, m_guess_kcal, m_source, m_trend_kg, m_trend_rate_kg_per_week, m_data_weeks, " +
+          "m_readings_28, m_whole_days_28, m_last_weigh_in",
+        "user_id", u).lte("week_start", toWeek).not("m_estimate_kcal", "is", null)
+        .order("week_start", { ascending: false }).limit(1).maybeSingle()),
+
+    memory: (u: string) =>
+      rows(own(db, "coach_memory", "category, key, value, updated_at", "user_id", u)
+        .eq("status", "active").order("updated_at", { ascending: false }).limit(60)),
+
+    planChanges: (u: string, since: string) =>
+      rows(own(db, "plan_changes", "occurred_at, entity, action, changes, source, label", "user_id", u)
+        .gte("occurred_at", since).order("occurred_at", { ascending: false }).limit(25)),
+
+    weekFacts: (u: string, fromWeek: string, toWeek: string) =>
+      rows(own(db, "drona_week_facts", "*", "user_id", u)
+        .gte("week_start", fromWeek).lte("week_start", toWeek).order("week_start")),
+
+    dayFacts: (u: string, table: "drona_day_facts" | "drona_training_day_facts" | "drona_recovery_day_facts", from: string, to: string) =>
+      rows(own(db, table, "*", "user_id", u).gte("day", from).lte("day", to).order("day")),
+
+    exerciseWeekFacts: (u: string, fromWeek: string, toWeek: string) =>
+      rows(own(db, "drona_exercise_week_facts",
+        "week_start, exercise_name, muscle, sessions, working_sets, top_weight_kg, best_e1rm_kg, in_program",
+        "user_id", u).gte("week_start", fromWeek).lte("week_start", toWeek).order("week_start").limit(300)),
+
+    muscleWeekFacts: (u: string, fromWeek: string, toWeek: string) =>
+      rows(own(db, "drona_muscle_week_facts", "week_start, muscle, parent, role, working_sets, volume_kg",
+        "user_id", u).gte("week_start", fromWeek).lte("week_start", toWeek).order("week_start").limit(300)),
+
+    readiness: (u: string, from: string, to: string) =>
+      rows(own(db, "readiness_parts",
+        "metric_date, score, tier, band, provisional, sleep_basis, sleep_points, rhr_why, rhr_points, hrv_why, " +
+          "hrv_points, base_score, load_points, diet_points",
+        "user_id", u).gte("metric_date", from).lte("metric_date", to).order("metric_date")),
 
     exerciseById: (u: string, id: string) =>
       one(catalog(db, "id, name, muscle_group, metric_type", u).eq("id", id).maybeSingle()),

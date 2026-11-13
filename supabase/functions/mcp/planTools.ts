@@ -113,6 +113,7 @@ function phaseDetail(p: Row, metrics: Row[]) {
   const tb = (p.training_block ?? {}) as Row;
   const fuel = normalizeFuelDays(p.diet_fuel_days);
   return {
+    id: p.id,
     seq: p.seq,
     name: p.name,
     weeks: p.duration_weeks,
@@ -174,6 +175,7 @@ const getPlan: Tool = {
       has_plan: true,
       today,
       plan: {
+        id: prog.id,
         title: prog.title,
         ...(prog.objective ? { objective: prog.objective } : {}),
         goal: prog.goal ?? null,
@@ -193,6 +195,7 @@ const getPlan: Tool = {
         : { note: "Every phase has ended. The user can start a new goal in the app." }),
       current_phase: pos.phase ? phaseDetail(pos.phase, metrics) : null,
       phases: phases.map((p: Row) => ({
+        id: p.id,
         seq: p.seq,
         name: p.name,
         starts: addDays(prog.start_date, (p.start_offset_weeks ?? 0) * 7),
