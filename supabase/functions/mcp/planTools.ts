@@ -240,7 +240,7 @@ const saveRoutine: Tool = {
       const ctx = raw as Ctx;
       if (!ctx.writes) throw new Error("writes missing from context");
       const name = typeof a.name === "string" ? a.name.trim() : "";
-      if (!name || name.length > 80) return refuse("name must be 1 to 80 letters.");
+      if (!name || name.length > 80) return refuse("name must be 1 to 80 characters.");
       const description = typeof a.description === "string" && a.description.trim() ? a.description.trim().slice(0, 500) : null;
       let requestId: string | null = null;
       if (a.request_id != null && a.request_id !== "") {

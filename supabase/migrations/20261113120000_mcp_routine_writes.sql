@@ -71,6 +71,8 @@ begin
     end if;
   end if;
 
+  -- One save per user at a time, so two calls at 49 cannot both pass the cap.
+  perform pg_advisory_xact_lock(hashtext('mcp_save_routine:' || p_user));
   select count(*) into v_count from routines where user_id = p_user and source = 'mcp';
   if v_count >= 50 then
     raise exception 'this account already has 50 routines saved from an assistant; remove some in the app first'
