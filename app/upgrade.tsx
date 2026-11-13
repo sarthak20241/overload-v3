@@ -344,8 +344,10 @@ export default function UpgradeScreen() {
   // The store's plans did not load (store down, no network): nothing can be
   // bought, so a locked paywall must not trap anyone. It offers a retry and
   // opens like every other failure in the gate (fail open).
-  // Any purchasable plan counts: Connect alone loading is not an outage.
-  const storeDown = !loading && Object.keys(packages).length === 0;
+  // Only plans this paywall can sell count: Connect alone loading is not an
+  // outage, but a lone founding_lifetime package (no side sells it) is.
+  const storeDown = !loading && !(Object.keys(SIDE_PERIODS) as PaywallSide[]).some((sd) =>
+    SIDE_PERIODS[sd].some((p) => { const k = planFor(sd, p); return !!(k && packages[k]); }));
   // Once the store has failed, the way out stays while "try again" reloads.
   const [storeFailed, setStoreFailed] = useState(false);
   useEffect(() => {
@@ -737,7 +739,7 @@ export default function UpgradeScreen() {
               <Text style={u.ctaText}>Sounds good</Text>
             </PressableScale>
             <Text style={[u.ctaNote, { color: C.textMuted }]}>
-              Billing starts only after your 7-day trial, unless you cancel.
+              With a free trial, billing starts only after it ends, unless you cancel.
             </Text>
           </Animated.View>
         </Animated.View>
@@ -767,7 +769,7 @@ export default function UpgradeScreen() {
               entering={FadeInDown.delay(120).duration(400)}
               style={[u.subText, { color: C.textSecondary, textAlign: 'center' }]}
             >
-              You'll get a message on day 5, two days before you pay anything.
+              On a free trial, you'll get a message two days before you pay anything.
               Turn on notifications so you don't miss it.
             </Animated.Text>
             <Animated.View entering={FadeInDown.delay(240).duration(400)} style={u.bellWrap}>

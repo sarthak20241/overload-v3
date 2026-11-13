@@ -472,7 +472,9 @@ export async function getFlagVariant(flag: string, fallback: string, timeoutMs =
       if (typeof now === 'string') return { variant: now, fromFlag: true };
       if (!flagsReload) {
         flagsReload = Promise.resolve(posthog!.reloadFeatureFlagsAsync()).then(
-          () => undefined,
+          // The SDK resolves undefined on a failed request instead of
+          // rejecting: treat that as a failure too, so a later open retries.
+          (r) => { if (r === undefined) flagsReload = null; },
           (e) => { flagsReload = null; throw e; },
         );
       }

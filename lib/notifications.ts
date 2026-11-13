@@ -20,6 +20,10 @@
 import { track } from '@/lib/analytics';
 
 const TRIAL_REMINDER_ID = 'overload-trial-day5';
+// Connect has its own billing date, so its own reminder: a Connect trial must
+// not replace a Pro trial's reminder, or the reverse.
+const CONNECT_TRIAL_REMINDER_ID = 'overload-connect-trial-reminder';
+const reminderId = (plan: 'pro' | 'connect') => (plan === 'connect' ? CONNECT_TRIAL_REMINDER_ID : TRIAL_REMINDER_ID);
 const TRIAL_REMINDER_DAY = 5; // fire on day 5 of a 7-day trial
 
 // Loosely typed on purpose (same as lib/revenuecat.ts): the module may not
@@ -81,12 +85,12 @@ export async function scheduleTrialReminder(plan: 'pro' | 'connect' = 'pro', tri
   try {
     // Cancel first: a reminder left from an earlier trial must not fire after
     // a new one, even when the new one gets no reminder.
-    await N.cancelScheduledNotificationAsync(TRIAL_REMINDER_ID).catch(() => {});
+    await N.cancelScheduledNotificationAsync(reminderId(plan)).catch(() => {});
     if (trialDays > 0 && trialDays < 3) return false;
     const perms = await N.getPermissionsAsync();
     if (!perms.granted) return false;
     await N.scheduleNotificationAsync({
-      identifier: TRIAL_REMINDER_ID,
+      identifier: reminderId(plan),
       content: {
         // "two days" matches the trigger below (trialDays - 2). Change both together.
         title: 'Two days left on your trial',
@@ -107,14 +111,12 @@ export async function scheduleTrialReminder(plan: 'pro' | 'connect' = 'pro', tri
   }
 }
 
-/** Cancel the pending day-5 reminder (tier flipped to paid, sub cancelled). */
+/** Cancel the pending trial reminders, Pro and Connect (sign-out). */
 export async function cancelTrialReminder(): Promise<void> {
   const N = loadNotifications();
   if (!N) return;
-  try {
-    await N.cancelScheduledNotificationAsync(TRIAL_REMINDER_ID);
-  } catch {
-    /* nothing to cancel */
+  for (const id of [TRIAL_REMINDER_ID, CONNECT_TRIAL_REMINDER_ID]) {
+    await N.cancelScheduledNotificationAsync(id).catch(() => {});
   }
 }
 
