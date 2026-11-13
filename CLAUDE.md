@@ -163,6 +163,7 @@ deno test --allow-all --node-modules-dir=none supabase/migrations/checks/mcp_foo
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/connect_plan.check.ts # Connect plan on PGlite: Pro unchanged, Connect = free + connector, no in-app AI for new accounts (not in CI)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/mcp_workout_writes.check.ts # connector workout writes on PGlite: app volume, no XP for connector workouts, app-edit XP, delete only connector workouts (not in CI)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/mcp_routine_writes.check.ts # connector save_routine on PGlite: new routines only, source mcp, active-plan phase only, 50 cap (not in CI)
+deno test --allow-all --node-modules-dir=none supabase/migrations/checks/mcp_program_writes.check.ts # connector programs on PGlite: save/edit/end/delete in one step, plan log source mcp, started phase kept, 10 a day (not in CI)
 # App Store offer codes (key + pool in ~/.config/overload, never in the repo).
 # FRIENDMONTH = 1 month free (monthly), the iPhone referral code. "Free year" =
 # one-time codes; Apple makes 500+ per batch. The admin site Coupons page keeps

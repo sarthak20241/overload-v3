@@ -39,4 +39,6 @@ export const TRY_ASKING = [
   'How did my bench press move this month?',
   'Was I under my calories this week?',
   'Write my next leg day for this phase and save it as a routine.',
+  'What has Drona noticed about my training this month?',
+  'Add a deload week to the end of my plan.',
 ];

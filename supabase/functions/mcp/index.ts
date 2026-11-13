@@ -5,17 +5,20 @@ import { hasConnectorAccess, limitHit, NOT_PRO, writeTrace } from "./access.ts";
 import { resourceMetadata, verifyAccessToken, wwwAuthenticate } from "./auth.ts";
 import { makeData } from "./data.ts";
 import { FOOD_WRITE_TOOLS } from "./foodWrites.ts";
+import { INSIGHT_TOOLS } from "./insightTools.ts";
 import { PLAN_TOOLS } from "./planTools.ts";
+import { PROGRAM_TOOLS } from "./programTools.ts";
 import { WORKOUT_WRITE_TOOLS } from "./workoutWrites.ts";
 import { zoneOf } from "./days.ts";
 import { handleMessage, parseBody } from "./protocol.ts";
 import { type Ctx, TOOLS } from "./tools.ts";
 import { makeWrites } from "./writes.ts";
 
-const ALL_TOOLS = [...TOOLS, ...PLAN_TOOLS, ...FOOD_WRITE_TOOLS, ...WORKOUT_WRITE_TOOLS];
+const ALL_TOOLS = [...TOOLS, ...PLAN_TOOLS, ...INSIGHT_TOOLS, ...PROGRAM_TOOLS, ...FOOD_WRITE_TOOLS, ...WORKOUT_WRITE_TOOLS];
 
 // The Overload MCP server: lets a user's own ChatGPT or Claude read their
-// Overload data and plan, log food and workouts, and save routines. Plan: .planning/mcp-tools-plan.md
+// Overload data, plan and Drona's insights, log food and workouts, save routines,
+// and create, edit, end or delete the program. Plan: .planning/mcp-tools-plan.md
 //
 //   GET  .../mcp/.well-known/oauth-protected-resource  -> who signs users in
 //   POST .../mcp                                        -> one JSON-RPC message
@@ -38,8 +41,12 @@ const JWKS = createRemoteJWKSet(new URL(`${CLERK_ISSUER}/.well-known/jwks.json`)
 
 // Service role: the Clerk OAuth token is not a Supabase session, so RLS cannot
 // see the user. data.ts filters every query to the token's user instead.
+// x-change-source: every plan change this function causes (a routine, a
+// program, targets) is logged in plan_changes as made by an assistant ('mcp',
+// migration 20261114120000), not as the app's own 'system' edit.
 const ADMIN = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
   auth: { persistSession: false, autoRefreshToken: false },
+  global: { headers: { "x-change-source": "mcp" } },
 });
 
 const CORS = {

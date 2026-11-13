@@ -68,6 +68,24 @@ export function makeWrites(db: Db) {
         p_phase: r.phaseId, p_request_id: requestId,
       }, "An exercise is not in Overload's list or this user's own exercises, or the plan phase is gone. Use search_exercises for ids."),
 
+    // Programs (migration 20261114120000). The tool works out every value;
+    // these functions write it in one transaction and check ownership.
+    saveProgram: (u: string, program: Json, phases: Json[], mirror: Json | null, requestId: string | null) =>
+      call(db, "mcp_save_program", {
+        p_user: u, p_program: program, p_phases: phases, p_mirror: mirror, p_request_id: requestId,
+      }),
+
+    updateProgram: (u: string, id: string, fields: Json, phases: Json[], today: string, mirror: Json | null, requestId: string | null) =>
+      call(db, "mcp_update_program", {
+        p_user: u, p_program: id, p_fields: fields, p_phases: phases, p_today: today, p_mirror: mirror,
+        p_request_id: requestId,
+      }, "No active program with that id in this account, or a phase id is not one of its phases. Read get_plan again."),
+
+    endProgram: (u: string) => call(db, "mcp_end_program", { p_user: u }, "There is no active program to end."),
+
+    deleteProgram: (u: string, id: string) =>
+      call(db, "mcp_delete_program", { p_user: u, p_program: id }, "No such program in this account. Use list_programs for ids."),
+
     deleteWorkout: (u: string, id: string) =>
       call(db, "mcp_delete_workout", { p_user: u, p_workout: id }, "No such workout in this account."),
   };
