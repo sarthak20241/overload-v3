@@ -69,6 +69,8 @@ Deno.test('a purchase waits for the plan it bought; Restore takes either', () =>
   assertEquals(accessHasPlan(connectOnly, 'pro'), false);
   assertEquals(accessHasPlan({ state: 'trialing' }, 'pro'), true);
   assertEquals(accessHasPlan(connectOnly, 'either'), true);
+  // The lock-out case: a free account with Connect has bought something.
+  assertEquals(accessHasPlan({ state: 'free', connect: true }, 'connect'), true);
   assertEquals(accessHasPlan(proOnly, 'either'), true);
   assertEquals(accessHasPlan({ state: 'free' }, 'either'), false);
   assertEquals(accessHasPlan(null, 'either'), false);

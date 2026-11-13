@@ -451,21 +451,25 @@ export const analyticsEnabled = !!posthog;
 
 /**
  * A PostHog feature flag's variant, or `fallback` when PostHog is off, the
- * flag is unknown, or it does not load in `timeoutMs`. Never throws: an A/B
- * test must never block a screen.
+ * flag is unknown, or it does not load in `timeoutMs`. `fromFlag` says which:
+ * a fallback is not a real exposure, and the A/B analysis must know. Never
+ * throws: an A/B test must never block a screen.
  */
 // One network reload per app session at most: a user outside the experiment
 // must not pay a reload on every paywall open. A failed reload clears it, so
 // the next paywall open tries again.
 let flagsReload: Promise<void> | null = null;
 
-export async function getFlagVariant(flag: string, fallback: string, timeoutMs = 1500): Promise<string> {
-  if (!posthog) return fallback;
+export type FlagRead = { variant: string; fromFlag: boolean };
+
+export async function getFlagVariant(flag: string, fallback: string, timeoutMs = 1500): Promise<FlagRead> {
+  const miss: FlagRead = { variant: fallback, fromFlag: false };
+  if (!posthog) return miss;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const read = (async () => {
+    const read = (async (): Promise<FlagRead> => {
       const now = posthog!.getFeatureFlag(flag);
-      if (typeof now === 'string') return now;
+      if (typeof now === 'string') return { variant: now, fromFlag: true };
       if (!flagsReload) {
         flagsReload = Promise.resolve(posthog!.reloadFeatureFlagsAsync()).then(
           () => undefined,
@@ -474,12 +478,12 @@ export async function getFlagVariant(flag: string, fallback: string, timeoutMs =
       }
       await flagsReload;
       const after = posthog!.getFeatureFlag(flag);
-      return typeof after === 'string' ? after : fallback;
+      return typeof after === 'string' ? { variant: after, fromFlag: true } : miss;
     })();
-    const timeout = new Promise<string>((r) => { timer = setTimeout(() => r(fallback), timeoutMs); });
+    const timeout = new Promise<FlagRead>((r) => { timer = setTimeout(() => r(miss), timeoutMs); });
     return await Promise.race([read, timeout]);
   } catch {
-    return fallback;
+    return miss;
   } finally {
     if (timer) clearTimeout(timer);
   }

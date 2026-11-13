@@ -222,16 +222,28 @@ export default function UpgradeScreen() {
   const selectedTrial = sideTrials[period] ?? 0;
   // A/B test (PostHog flag paywall-layout): tiles (A, default) or icon list (B).
   const [layout, setLayout] = useState<PaywallLayout>('tiles');
+  // The features block stays hidden (space kept) until the layout is known,
+  // at most 1.5 s, so no viewer sees tiles turn into a list.
+  const [layoutReady, setLayoutReady] = useState(false);
   useEffect(() => {
     let live = true;
     // paywall_viewed waits for the layout (flag or 1.5 s timeout), so every
     // event of the funnel carries the layout this viewer really saw.
-    void getFlagVariant(PAYWALL_LAYOUT_FLAG, 'tiles').then((v) => {
+    void getFlagVariant(PAYWALL_LAYOUT_FLAG, 'tiles').then(({ variant, fromFlag }) => {
       if (!live) return;
-      const resolved = layoutFromFlag(v);
+      const resolved = layoutFromFlag(variant);
       setLayout(resolved);
+      setLayoutReady(true);
       viewTracked.current = true;
-      track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side: sideRef.current, paywall_layout: resolved, flag_status: 'resolved' });
+      track('paywall_viewed', {
+        source,
+        context,
+        purchases_available: purchasesUsable,
+        side: sideRef.current,
+        paywall_layout: resolved,
+        // 'fallback' = no flag value in time: not a real exposure of the test.
+        flag_status: fromFlag ? 'resolved' : 'fallback',
+      });
     });
     return () => { live = false; };
   }, []);
@@ -263,10 +275,10 @@ export default function UpgradeScreen() {
   useEffect(() => {
     return () => {
       // Left before the layout flag resolved: still count the view, so fast
-      // bounces stay in the funnel (layout unknown).
+      // bounces stay in the funnel. The features block was still hidden.
       if (!viewTracked.current) {
         viewTracked.current = true;
-        track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side: sideRef.current, paywall_layout: 'tiles', flag_status: 'pending' });
+        track('paywall_viewed', { source, context, purchases_available: purchasesUsable, side: sideRef.current, paywall_layout: 'none', flag_status: 'pending' });
       }
       if (paywallResolved.current) return;
       track('paywall_dismissed', {
@@ -467,7 +479,7 @@ export default function UpgradeScreen() {
         // periodType (INTRO | TRIAL) rather than trusting the plan.
         const onTrial = entitlementOnTrial(customerInfo);
         if (onTrial) {
-          void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro', selectedTrial || 7).then((scheduled) => {
+          void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro', selectedTrial).then((scheduled) => {
             track('trial_reminder_scheduled', { scheduled, plan });
           });
         }
@@ -529,7 +541,7 @@ export default function UpgradeScreen() {
           // they run even if the buyer left during the wait. These are exactly
           // the slow-bank buyers this branch exists for.
           if (onTrial) {
-            void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro', selectedTrial || 7).then((scheduled) => {
+            void scheduleTrialReminder(buyingConnect ? 'connect' : 'pro', selectedTrial).then((scheduled) => {
               track('trial_reminder_scheduled', { scheduled, plan });
             });
           }
@@ -830,7 +842,9 @@ export default function UpgradeScreen() {
             <Text style={[u.pwSub, { color: C.textSecondary }]}>{SIDE_SUB[side]}</Text>
             <ExampleCard side={side} />
             <View style={u.pwGap} />
-            <Features side={side} layout={layout} />
+            <View style={{ opacity: layoutReady ? 1 : 0 }}>
+              <Features side={side} layout={layout} />
+            </View>
 
             <View style={u.planSpacer} />
 
