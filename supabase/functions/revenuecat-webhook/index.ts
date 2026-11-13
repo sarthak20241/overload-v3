@@ -414,7 +414,8 @@ async function writeConnect(event: RcEvent, plan: ConnectPlan): Promise<void> {
   // Write only if the row still holds what was just read. A Connect event
   // that landed in between (a lifetime, a newer renewal) makes this match 0
   // rows; the throw below makes RevenueCat retry, and the retry decides again
-  // on the new values.
+  // on the new values. The expiry filter is a timestamptz compare: PostgREST
+  // casts the text it is given, so it matches by value, not by spelling.
   let update = admin
     .from("user_profiles")
     .update(row)
@@ -589,7 +590,11 @@ async function handleNonRenewingPurchase(event: RcEvent): Promise<void> {
 async function handleRenewal(event: RcEvent): Promise<void> {
   const plan = productPlan(event.product_id);
   if (plan?.kind === "connect") {
-    if (plan.plan === "lifetime" || !event.expiration_at_ms) return;
+    if (plan.plan === "lifetime") return;
+    if (!event.expiration_at_ms) {
+      console.warn(`[revenuecat] connect ${plan.plan} RENEWAL has no expiry, not written: user=${event.app_user_id}`);
+      return;
+    }
     // A renewal re-states the whole Connect row: it also activates a start
     // that was missed, and lands a deferred Pro -> Connect switch.
     await writeConnect(event, plan.plan);

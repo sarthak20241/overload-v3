@@ -61,10 +61,15 @@ export function makeData(db: Db) {
 
     /** The Connect plan (20261112150000). Kept apart from `profile` so a
      *  deploy that lands before the migration only loses Connect access,
-     *  never the whole profile read: a missing column reads as no Connect. */
+     *  never the whole profile read: a missing column reads as no Connect.
+     *  Any other error throws, so a passing database fault is an error, not
+     *  "no plan" told to a paying Connect user. */
     connect: (u: string) =>
       one(own(db, "user_profiles", "connect_plan, connect_expires_at", "clerk_user_id", u).maybeSingle())
-        .catch(() => null),
+        .catch((e: unknown) => {
+          if (/connect_(plan|expires_at).*does not exist/i.test(String((e as Error)?.message ?? e))) return null;
+          throw e;
+        }),
 
     /** Calls in the last `seconds`, for the rate limit. */
     recentCalls: async (u: string, seconds: number) => {
