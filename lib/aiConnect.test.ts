@@ -1,6 +1,23 @@
 // deno test --allow-all lib/aiConnect.test.ts
-import { assertEquals } from 'jsr:@std/assert';
-import { MCP_HOST, MCP_URL, SHORT_STEPS, stepMarks } from './aiConnect.ts';
+import { assert, assertEquals } from 'jsr:@std/assert@1';
+import { AI_APPS, CONNECT_STEPS, MCP_HOST, MCP_URL, SHORT_STEPS, TRY_ASKING, stepMarks } from './aiConnect.ts';
+
+Deno.test('the connector link uses the public Overload MCP URL', () => {
+  assertEquals(MCP_URL, 'https://mcp.tryoverload.app');
+});
+
+Deno.test('every app has three steps, long and short; no long dashes in any copy', () => {
+  for (const a of AI_APPS) {
+    assertEquals(CONNECT_STEPS[a.id].length, 3, a.id);
+    assertEquals(SHORT_STEPS[a.id].length, 3, a.id);
+  }
+  const all = [
+    ...Object.values(CONNECT_STEPS).flat(),
+    ...Object.values(SHORT_STEPS).flat().flatMap((s) => [s.title, s.detail]),
+    ...TRY_ASKING,
+  ];
+  for (const line of all) assert(!/[—–]/.test(line), line);
+});
 
 const base = { copied: false, copyFailed: false, opened: false, needsPlan: false };
 

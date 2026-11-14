@@ -210,6 +210,8 @@ export default function ConnectAiScreen() {
             style={s.details}
             onLayout={(e) => {
               // The link is the first thing in Full steps, so its top is the link.
+              // This y is only right while this View is a direct child of the
+              // ScrollView content; keep it there.
               linkY.current = e.nativeEvent.layout.y;
               if (scrollToLink.current) {
                 scrollToLink.current = false;
