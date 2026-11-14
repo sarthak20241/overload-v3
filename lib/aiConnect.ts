@@ -87,3 +87,20 @@ export const TRY_ASKING = [
   'What has Drona noticed about my training this month?',
   'Add a deload week to the end of my plan.',
 ];
+
+/** The "connect your AI later" card's state per account (lib/connectNudge.ts). */
+export type ConnectNudge = 'later' | 'done' | 'dismissed';
+
+/** Should the dashboard card show? Only after Do it later, and only while
+ *  the account can use the connector (a lapsed plan cannot connect). */
+export function showConnectNudge(state: ConnectNudge | null, hasConnector: boolean): boolean {
+  return state === 'later' && hasConnector;
+}
+
+/** Does the success screen lead with "Connect your AI"? A Connect buyer, and
+ *  anyone who came in for the connector (context 'connect'), whatever plan
+ *  they picked: Pro includes the connector too. A Pro buyer from the coach
+ *  path keeps today's next step. */
+export function connectFirstAfterPurchase(o: { boughtConnect: boolean; context: string | null }): boolean {
+  return o.boughtConnect || o.context === 'connect';
+}

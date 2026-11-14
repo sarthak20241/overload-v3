@@ -105,6 +105,8 @@ import {
   type PaywallPeriod,
   type PaywallSide,
 } from '@/lib/paywallPlans';
+import { connectFirstAfterPurchase } from '@/lib/aiConnect';
+import { setConnectNudge } from '@/lib/connectNudge';
 import { ExampleCard, Features, PAYWALL_LIME, PlanSwitch, PriceBoxes, useGlass } from '@/components/paywall/PaywallParts';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -1116,8 +1118,9 @@ export default function UpgradeScreen() {
             </Animated.View>
           </View>
           <Animated.View entering={FadeInDown.delay(440).duration(400)} style={u.footer}>
-            {outcome && isConnectPlan(outcome.plan) ? (
-              // A Connect buyer came for the connector: set it up now, while
+            {connectFirstAfterPurchase({ boughtConnect: !!outcome && isConnectPlan(outcome.plan), context }) ? (
+              // A Connect buyer, or anyone who came in for the connector (Pro
+              // includes it): set it up now. A Connect buyer came for the connector: set it up now, while
               // they want to. The setup screen closes to the dashboard.
               <>
                 <PressableScale
@@ -1129,7 +1132,12 @@ export default function UpgradeScreen() {
                   <Text style={u.ctaText}>Connect your AI</Text>
                 </PressableScale>
                 <TouchableOpacity
-                  onPress={() => { track('paywall_success_cta', { destination: fromCap ? 'back' : 'dashboard', skipped_connect: true }); (fromCap ? finish : goToDashboard)(); }}
+                  onPress={() => {
+                    track('paywall_success_cta', { destination: fromCap ? 'back' : 'dashboard', skipped_connect: true });
+                    // The dashboard keeps a small "Connect your AI" card until they do it or close it.
+                    if (user?.id) void setConnectNudge(user.id, 'later');
+                    (fromCap ? finish : goToDashboard)();
+                  }}
                   accessibilityRole="button"
                   style={u.successLater}
                 >

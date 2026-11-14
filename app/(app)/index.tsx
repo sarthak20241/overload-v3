@@ -66,6 +66,7 @@ import { DronaMark } from '@/components/coach/DronaMark';
 import { fetchDashboardData } from '@/lib/dashboardData';
 import { consumeCoachOpen } from '@/lib/coachLaunch';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
+import { ConnectNudgeCard } from '@/components/ConnectNudgeCard';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -1184,6 +1185,16 @@ export default function DashboardScreen() {
         <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
           <TodaySuggestionCard suggestion={todaySuggestion} onPress={handleTodayPress} />
         </View>
+
+        {/* After "Do it later" on the paywall: the ChatGPT / Claude setup,
+            until they open their AI from it or close the card. */}
+        {!isGuestSession && user?.id ? (
+          <ConnectNudgeCard
+            containerStyle={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}
+            userId={user.id}
+            hasConnector={coachAccess.state === 'paid' || coachAccess.state === 'trialing' || coachAccess.connect === true}
+          />
+        ) : null}
 
         {/* First-week checklist: where food logging, the AI modes, the phases
             and the weight log live. Gone once done, hidden, or after 3 weeks.
