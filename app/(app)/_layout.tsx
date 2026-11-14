@@ -30,6 +30,7 @@ import { useBodyLogRetry } from '@/lib/useBodyLogRetry';
 import { useForegroundProgramSync } from '@/lib/useProgramSync';
 import { resolveNeedsOnboarding } from '@/lib/onboarding';
 import { drainPendingOnboarding } from '@/lib/pendingOnboarding';
+import { connectFirstPaywallParams } from '@/lib/paywallPlans';
 import { useSync } from '@/components/SyncProvider';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { isPurchasesAvailable } from '@/lib/revenuecat';
@@ -355,6 +356,18 @@ export default function AppLayout() {
           if (!cancelled) setDrainedFor(target.clerkId);
           void flushNow();
           settle(false);
+          // The short "Use my own AI" path: they came for the connector, so
+          // the paywall opens on that side. Its success screen leads on to the
+          // connector setup. Guests and web have nothing to buy here.
+          const connectParams = connectFirstPaywallParams({
+            connectFirst: drained.connectFirst,
+            isSignedIn: !!isSignedIn,
+            os: Platform.OS,
+          });
+          if (connectParams) {
+            router.replace({ pathname: '/upgrade', params: connectParams } as any);
+            return;
+          }
           // Sign-up's next step is phase 1's workouts, not the dashboard:
           // the Goal screen opens the build at once, the user reads the
           // draft, talks it through with Drona if they like, and taps Save.

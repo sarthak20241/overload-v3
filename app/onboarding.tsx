@@ -177,6 +177,10 @@ export default function OnboardingScreen() {
   const toast = useToast();
 
   const [step, setStep] = useState<Step>('welcome');
+  // The short "Use my own AI" path, chosen on the welcome screen: goal and
+  // weight only, then sign-up, the paywall's Your own AI side and the
+  // connector setup. No program is built: they came for the connector.
+  const [connectPath, setConnectPath] = useState(false);
   // Smart defaults (plan, psychology layer): goal and single-select steps arrive
   // pre-answered with the most common choice, so Continue is always one tap and
   // the pre-selection reads as a recommendation.
@@ -489,9 +493,11 @@ export default function OnboardingScreen() {
   const stepIndex = STEP_ORDER.indexOf(step);
   const nextStep = STEP_ORDER[Math.min(stepIndex + 1, STEP_ORDER.length - 1)];
   const prevStep: Step =
-    step === 'interlude' || step === 'plan'
-      ? (paceCtx ? 'pace' : 'target')
-      : STEP_ORDER[Math.max(stepIndex - 1, 0)];
+    connectPath && step === 'weight'
+      ? 'goal'
+      : step === 'interlude' || step === 'plan'
+        ? (paceCtx ? 'pace' : 'target')
+        : STEP_ORDER[Math.max(stepIndex - 1, 0)];
 
   // Android hardware/gesture back mirrors the header chevron instead of
   // popping the (single-entry) root stack, which would exit the app mid-quiz.
@@ -712,6 +718,68 @@ export default function OnboardingScreen() {
     [finishing, isFreshVisitor, answers, targets, finalProgram, dronaProgram, weightUnit, router, completeOnboarding],
   );
 
+  // The short path's finish line (the weight step's Continue). Profile only,
+  // no program. A fresh visitor stashes it and signs up; the (app) layout then
+  // opens the paywall on the Your own AI side. A signed-in user saves and goes
+  // there directly.
+  const finishConnectPath = useCallback(async () => {
+    if (finishing) return;
+    setFinishing(true);
+    const kg = toKg(weightVal);
+    // Experience and days per week are pre-picked defaults on the long path.
+    // This path never asks them, so they are not saved as if answered: the
+    // user's own AI reads the profile.
+    const a: OnboardingAnswers = {
+      ...answers,
+      weightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null,
+      experience: null,
+      frequency: null,
+    };
+    const done = {
+      path: 'connect',
+      created_plan: false,
+      goal: a.goal ?? null,
+      goals: selectedGoals(a).join(','),
+      seconds_total: Math.round((Date.now() - onboardingStartedAt.current) / 1000),
+    };
+    try {
+      if (isFreshVisitor) {
+        await setPendingOnboarding({
+          answers: a,
+          targets: null,
+          program: null,
+          createPlan: false,
+          dest: '/(app)',
+          weightUnit,
+          goalWeightKg: null,
+          connectFirst: true,
+        });
+        track('onboarding_completed', { ...done, outcome: 'handed_to_signup' });
+        router.replace('/(auth)');
+        return;
+      }
+      const target = {
+        isGuest: !isSignedIn,
+        clerkId: isSignedIn ? user?.id ?? null : null,
+        client: supabaseClient,
+      };
+      try {
+        await saveOnboardingProfile(a, null, target);
+        basicInfo.setWeightUnit(weightUnit);
+        track('onboarding_completed', { ...done, outcome: 'saved' });
+      } catch {
+        toast.error("Couldn't save everything. You can finish setup in Profile.");
+        track('onboarding_completed', { ...done, outcome: 'save_failed' });
+      }
+      await markOnboardingDone(identity);
+      // A guest has no account to connect: the dashboard, as before.
+      if (isSignedIn) router.replace({ pathname: '/upgrade', params: { context: 'connect' } } as any);
+      else router.replace('/(app)');
+    } finally {
+      setFinishing(false);
+    }
+  }, [finishing, toKg, weightVal, answers, isFreshVisitor, weightUnit, router, isSignedIn, user?.id, supabaseClient, basicInfo, toast, identity]);
+
   // Onboarding is the front door now, so a fresh visitor (no identity yet)
   // has no plan to save on skip - they just want the sign-in screen for an
   // existing account. A guest or signed-in user re-visiting marks done and
@@ -771,8 +839,8 @@ export default function OnboardingScreen() {
             <OnboardingHeader
               // Once committed, the confetti hands straight to the build.
               onBack={() => { if (!celebrating) goTo(prevStep); }}
-              progressIndex={progressIndex}
-              progressTotal={PROGRESS_STEPS.length}
+              progressIndex={connectPath ? (step === 'weight' ? 1 : 0) : progressIndex}
+              progressTotal={connectPath ? 2 : PROGRESS_STEPS.length}
             />
           )}
 
@@ -783,9 +851,20 @@ export default function OnboardingScreen() {
               <Animated.View entering={FadeInDown.delay(500).duration(450)} style={s.footer}>
                 <PrimaryCta
                   label="Start with my goal"
-                  onPress={() => goTo('goal')}
+                  onPress={() => { setConnectPath(false); track('onboarding_path_chosen', { path: 'coach' }); goTo('goal'); }}
                   accessibilityLabel="Start setup"
                 />
+                {/* Came for the connector: two questions, then set it up. */}
+                <TouchableOpacity
+                  onPress={() => { setConnectPath(true); track('onboarding_path_chosen', { path: 'connect' }); goTo('goal'); }}
+                  disabled={finishing}
+                  style={s.welcomeSecond}
+                  accessibilityRole="button"
+                  accessibilityLabel="Use my own AI: ChatGPT or Claude"
+                >
+                  <Text style={s.welcomeSecondText}>Use my own AI</Text>
+                  <Text style={s.welcomeSecondSub}>ChatGPT or Claude</Text>
+                </TouchableOpacity>
                 <TouchableOpacity
                   onPress={skipEverything}
                   disabled={finishing}
@@ -805,7 +884,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="goal"
               question="What are you training for?"
-              sub="Pick all that apply. Change them anytime."
+              sub={connectPath ? 'Your AI reads this. Pick all that apply.' : 'Pick all that apply. Change them anytime.'}
               // One short line, only when it changes something: the goal step
               // must fit one screen with no scroll.
               caption={selectedGoals(answers).includes('fat_loss')
@@ -818,7 +897,7 @@ export default function OnboardingScreen() {
                 <PrimaryCta
                   label="Continue"
                   disabled={!goalStepReady}
-                  onPress={() => goTo('experience')}
+                  onPress={() => goTo(connectPath ? 'weight' : 'experience')}
                 />
               }
             >
@@ -1067,8 +1146,14 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="weight"
               question="What do you weigh today?"
-              sub="Just a starting point. We watch the trend."
-              footer={<PrimaryCta label="Continue" onPress={commitWeightStep} />}
+              sub={connectPath ? 'Last one. Your AI uses it for your numbers.' : 'Just a starting point. We watch the trend.'}
+              footer={
+                <PrimaryCta
+                  label="Continue"
+                  disabled={connectPath && finishing}
+                  onPress={connectPath ? finishConnectPath : commitWeightStep}
+                />
+              }
             >
                 <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
                   <View style={s.wheelRow}>
@@ -1470,6 +1555,20 @@ const s = StyleSheet.create({
   // Left-aligned rows: centered rows put each check mark in a different place.
   claimRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   claimText: { fontFamily: FontFamily.onboardingBody, fontSize: 16, lineHeight: 22, flexShrink: 1 },
+  // The welcome screen's second choice: quiet glass on the film, so the lime
+  // button stays the one loud thing.
+  welcomeSecond: {
+    minHeight: 56,
+    marginTop: Spacing.md,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
+    backgroundColor: 'rgba(255,255,255,0.10)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  welcomeSecondText: { fontSize: FontSize.lg, fontWeight: '600', color: '#ffffff' },
+  welcomeSecondSub: { fontSize: FontSize.sm, color: 'rgba(255,255,255,0.72)', marginTop: 1 },
   ghostLink: { alignItems: 'center', paddingVertical: Spacing.lg },
   ghostLinkText: { fontSize: FontSize.base },
 });

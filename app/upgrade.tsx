@@ -1055,10 +1055,10 @@ export default function UpgradeScreen() {
             >
               {outcome && isConnectPlan(outcome.plan)
                 ? outcome.plan === 'connect_lifetime'
-                  ? 'Overload Connect is yours for good. Connect your AI in Profile.'
+                  ? 'Overload Connect is yours for good. Connect your AI next.'
                   : outcome.onTrial
-                    ? `${outcome.trialDays > 0 ? `Your ${outcome.trialDays} free days start` : 'Your free trial starts'} now. Connect your AI in Profile.`
-                    : 'Overload Connect is active. Connect your AI in Profile.'
+                    ? `${outcome.trialDays > 0 ? `Your ${outcome.trialDays} free days start` : 'Your free trial starts'} now. Connect your AI next.`
+                    : 'Overload Connect is active. Connect your AI next.'
                 // Off sale since 2026-11-12, kept for owners who restore it.
                 : outcome?.plan === 'founding_lifetime'
                 ? "Founding member. Overload Pro is yours for good, and I'm yours to keep."
@@ -1087,14 +1087,36 @@ export default function UpgradeScreen() {
             </Animated.View>
           </View>
           <Animated.View entering={FadeInDown.delay(440).duration(400)} style={u.footer}>
-            <PressableScale
-              onPress={() => { track('paywall_success_cta', { destination: fromCap ? 'back' : 'dashboard' }); (fromCap ? finish : goToDashboard)(); }}
-              style={[u.cta, Shadow.playBtn]}
-              accessibilityRole="button"
-              accessibilityLabel="Continue"
-            >
-              <Text style={u.ctaText}>Continue</Text>
-            </PressableScale>
+            {outcome && isConnectPlan(outcome.plan) ? (
+              // A Connect buyer came for the connector: set it up now, while
+              // they want to. The setup screen closes to the dashboard.
+              <>
+                <PressableScale
+                  onPress={() => { track('paywall_success_cta', { destination: 'connect_ai' }); router.replace({ pathname: '/connect-ai', params: { from: 'paywall' } } as any); }}
+                  style={[u.cta, Shadow.playBtn]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Connect your AI"
+                >
+                  <Text style={u.ctaText}>Connect your AI</Text>
+                </PressableScale>
+                <TouchableOpacity
+                  onPress={() => { track('paywall_success_cta', { destination: fromCap ? 'back' : 'dashboard', skipped_connect: true }); (fromCap ? finish : goToDashboard)(); }}
+                  accessibilityRole="button"
+                  style={u.successLater}
+                >
+                  <Text style={[u.successLaterText, { color: C.textSecondary }]}>Do it later</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <PressableScale
+                onPress={() => { track('paywall_success_cta', { destination: fromCap ? 'back' : 'dashboard' }); (fromCap ? finish : goToDashboard)(); }}
+                style={[u.cta, Shadow.playBtn]}
+                accessibilityRole="button"
+                accessibilityLabel="Continue"
+              >
+                <Text style={u.ctaText}>Continue</Text>
+              </PressableScale>
+            )}
           </Animated.View>
         </Animated.View>
       )}
@@ -1372,6 +1394,8 @@ const u = StyleSheet.create({
     paddingTop: Spacing.sm,
     paddingBottom: Spacing.sm,
   },
+  successLater: { minHeight: 44, alignItems: 'center', justifyContent: 'center', marginTop: 4 },
+  successLaterText: { fontSize: 15 },
   cta: {
     flexDirection: 'row',
     alignItems: 'center',

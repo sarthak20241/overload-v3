@@ -76,6 +76,7 @@ export type AnalyticsEvent =
   | 'onboarding_step_completed'
   | 'onboarding_back'
   | 'onboarding_skipped'
+  | 'onboarding_path_chosen'
   | 'onboarding_plan_generated'
   | 'onboarding_plan_failed'
   | 'onboarding_completed'
