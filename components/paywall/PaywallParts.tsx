@@ -97,7 +97,8 @@ export function PlanSwitch({ side, onChange, disabled }: {
 
 // ── Example chat card (the hero, strong glass) ──────────────────────────────
 
-function Bubble({ text, mine }: { text: string; mine?: boolean }) {
+/** A chat bubble inside a GlassCard. Also used by the connector screen. */
+export function Bubble({ text, mine }: { text: string; mine?: boolean }) {
   const g = useGlass();
   return (
     <View style={[s.bubbleRow, { justifyContent: mine ? 'flex-end' : 'flex-start' }]}>
@@ -108,7 +109,8 @@ function Bubble({ text, mine }: { text: string; mine?: boolean }) {
   );
 }
 
-export function ExampleCard({ side }: { side: PaywallSide }) {
+/** The strong glass card (sheen, lit top and left edges, soft shadow). */
+export function GlassCard({ children }: { children: React.ReactNode }) {
   const g = useGlass();
   return (
     <View style={[s.heroShadow, !g.dark && s.heroShadowLight]}>
@@ -125,6 +127,22 @@ export function ExampleCard({ side }: { side: PaywallSide }) {
           },
         ]}
       >
+        {children}
+      </LinearGradient>
+    </View>
+  );
+}
+
+/** The small grey line above the bubbles ("In your ChatGPT"). */
+export function GlassCaption({ text }: { text: string }) {
+  const g = useGlass();
+  return <Text style={[s.caption, { color: g.C.textMuted }]}>{text}</Text>;
+}
+
+export function ExampleCard({ side }: { side: PaywallSide }) {
+  const g = useGlass();
+  return (
+    <GlassCard>
         {side === 'drona' ? (
           <>
             {/* An example of Drona's weekly card. It must stay true to the
@@ -148,8 +166,7 @@ export function ExampleCard({ side }: { side: PaywallSide }) {
             <Bubble text="Low on 4 of 7 days." />
           </>
         )}
-      </LinearGradient>
-    </View>
+    </GlassCard>
   );
 }
 

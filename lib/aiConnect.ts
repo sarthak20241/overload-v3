@@ -33,6 +33,31 @@ export const CONNECT_STEPS: Record<AiApp, string[]> = {
   ],
 };
 
+/**
+ * The short version of CONNECT_STEPS, one card each on the Connect screen.
+ * Step 1 is the Copy link button itself; the long steps above sit behind
+ * "Full steps and what it can change".
+ */
+export const SHORT_STEPS: Record<AiApp, { title: string; detail: string }[]> = {
+  claude: [
+    { title: 'Copy your link', detail: 'mcp.tryoverload.app' },
+    { title: 'Paste it in Claude', detail: 'Customize, Connectors, then Add. A computer is easiest.' },
+    { title: 'Sign in and allow', detail: 'With your Overload account' },
+  ],
+  chatgpt: [
+    { title: 'Copy your link', detail: 'mcp.tryoverload.app' },
+    { title: 'Paste it in ChatGPT', detail: 'Plugins, then Add. A computer is easiest.' },
+    { title: 'Sign in and allow', detail: 'With your Overload account' },
+  ],
+};
+
+/** Where "Open ChatGPT" / "Open Claude" goes after the link is copied.
+ *  Both checked in a browser 2026-11-14 (each page has an Add button). */
+export const APP_SETTINGS_URL: Record<AiApp, string> = {
+  claude: 'https://claude.ai/customize/connectors',
+  chatgpt: 'https://chatgpt.com/plugins',
+};
+
 /** Things to try first. Each one uses a tool the connector has. */
 export const TRY_ASKING = [
   'Log 2 eggs and toast for breakfast.',

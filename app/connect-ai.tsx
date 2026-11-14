@@ -1,44 +1,53 @@
-// Use Overload in ChatGPT or Claude: the connector link, a Copy button, and
-// three setup steps for each app (lib/aiConnect.ts). The connector itself is
-// supabase/functions/mcp; it serves Pro (and trial) accounts, the same rule
-// as hasPro in supabase/functions/mcp/access.ts, so a free account sees the
-// way to Pro instead of a link that would refuse it.
+// Use Overload in ChatGPT or Claude. Redesigned 2026-11-14 to match the
+// paywall's glass (components/paywall/PaywallParts.tsx): a strong-glass chat
+// card shows what it does, three short quiet-glass step cards show how, and
+// one button does the next step (Copy link, then Open ChatGPT / Claude). The
+// long steps and the fine print sit behind one row, closed by default.
+//
+// The connector itself is supabase/functions/mcp. It serves Pro, trial and
+// Connect accounts (hasConnectorAccess in supabase/functions/mcp/access.ts),
+// so an account with none of those sees the way to a plan instead.
 import { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import {
-  Colors,
-  FontFamily,
-  FontSize,
-  FontWeight,
-  IconSize,
-  LetterSpacing,
-  Radius,
-  Shadow,
-  Spacing,
-} from '@/constants/theme';
-import { useTheme } from '@/hooks/useTheme';
+import { FontFamily, IconSize, Shadow } from '@/constants/theme';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { useToast } from '@/components/ui/Toast';
+import { Bubble, GlassCaption, GlassCard, useGlass } from '@/components/paywall/PaywallParts';
 import { track } from '@/lib/analytics';
 import { copyToClipboard } from '@/lib/clipboard';
-import { AI_APPS, CONNECT_STEPS, MCP_URL, TRY_ASKING, type AiApp } from '@/lib/aiConnect';
+import {
+  AI_APPS,
+  APP_SETTINGS_URL,
+  CONNECT_STEPS,
+  MCP_URL,
+  SHORT_STEPS,
+  TRY_ASKING,
+  type AiApp,
+} from '@/lib/aiConnect';
+
+// ChatGPT first: more people already use it.
+const APP_ORDER: AiApp[] = ['chatgpt', 'claude'];
+const APP_LABEL: Record<AiApp, string> = Object.fromEntries(AI_APPS.map((a) => [a.id, a.label])) as Record<AiApp, string>;
 
 export default function ConnectAiScreen() {
-  const { C } = useTheme();
+  const g = useGlass();
+  const { C } = g;
   const router = useRouter();
   const toast = useToast();
   const { access, loading } = useCoachAccess();
-  const [app, setApp] = useState<AiApp>('claude');
+  const [app, setApp] = useState<AiApp>('chatgpt');
   const [copied, setCopied] = useState(false);
+  const [details, setDetails] = useState(false);
 
   // Same rule as the server (mcp/access.ts hasConnectorAccess): a paid plan,
   // a live trial, or an active Overload Connect plan.
   const known = !loading && access.state !== 'unknown';
   const hasPlan = access.state === 'paid' || access.state === 'trialing' || access.connect === true;
+  const needsPlan = known && !hasPlan;
 
   useEffect(() => {
     track('ai_connect_opened');
@@ -51,11 +60,21 @@ export default function ConnectAiScreen() {
     track('ai_connect_link_copied', { ok, app });
     if (ok) {
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      toast.success('Link copied');
     } else {
-      toast.error('Could not copy. Press and hold the link to copy it.');
+      // The link is selectable in "Full steps", so open that.
+      setDetails(true);
+      toast.error('Could not copy. Press and hold the link below to copy it.');
     }
   };
+
+  const openApp = () => {
+    track('ai_connect_app_opened', { app });
+    Linking.openURL(APP_SETTINGS_URL[app]).catch(() => toast.error(`Could not open ${APP_LABEL[app]}.`));
+  };
+
+  // Which step is next: 1 until the link is copied, then 2.
+  const current = copied ? 1 : 0;
 
   return (
     <SafeAreaView style={[s.root, { backgroundColor: C.background }]} edges={['top', 'bottom']}>
@@ -64,92 +83,146 @@ export default function ConnectAiScreen() {
           onPress={leave}
           accessibilityRole="button"
           accessibilityLabel="Close"
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          style={[s.closeBtn, { backgroundColor: C.card }]}
+          style={s.closeHit}
         >
-          <Feather name="x" size={IconSize.md} color={C.textMuted} />
+          <View style={[s.closeBtn, { backgroundColor: g.quietFill }]}>
+            <Feather name="x" size={IconSize.md} color={C.textSecondary} />
+          </View>
         </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={s.body} showsVerticalScrollIndicator={false}>
-        <Text style={[s.eyebrow, { color: C.accentText }]}>CHATGPT AND CLAUDE</Text>
-        <Text style={[s.title, { color: C.foreground }]}>Talk to your training where you already chat.</Text>
-        <Text style={[s.sub, { color: C.textSecondary }]}>
-          Connect Overload to ChatGPT or Claude. Log food and workouts there, ask about your
-          progress and what Drona has noticed, change your plan, and save the workouts it writes
-          as routines. It all lands in your Overload app.
-        </Text>
-
-        {/* The link: shown to everyone, so the steps make sense before paying. */}
-        <View style={[s.linkBox, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-          <Text style={[s.label, { color: C.textMuted }]}>YOUR CONNECTOR LINK</Text>
-          <Text selectable style={[s.link, { color: C.foreground }]}>{MCP_URL}</Text>
-        </View>
+        <Text style={[s.title, { color: C.foreground }]} accessibilityRole="header">Overload, inside your AI</Text>
+        <Text style={[s.sub, { color: C.textSecondary }]}>Log and ask from the chat you already use.</Text>
 
         {/* Which app */}
-        <View style={[s.tabs, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-          {AI_APPS.map((a) => {
-            const active = a.id === app;
+        <View
+          accessibilityRole="tablist"
+          style={[s.switch, { backgroundColor: g.quietFill, borderColor: g.quietEdge, borderTopColor: g.quietTop }]}
+        >
+          {APP_ORDER.map((id) => {
+            const on = id === app;
             return (
               <TouchableOpacity
-                key={a.id}
-                onPress={() => { if (!active) { setApp(a.id); track('ai_connect_app_switched', { app: a.id }); } }}
+                key={id}
                 accessibilityRole="tab"
-                accessibilityState={{ selected: active }}
-                style={[s.tab, active && { backgroundColor: Colors.primary }]}
+                accessibilityState={{ selected: on }}
+                onPress={() => { if (!on) { setApp(id); track('ai_connect_app_switched', { app: id }); } }}
+                style={[s.switchItem, on && { backgroundColor: g.selectedPill }]}
               >
-                <Text style={[s.tabText, { color: active ? Colors.primaryFg : C.textSecondary }]}>{a.label}</Text>
+                <Text
+                  style={[
+                    s.switchText,
+                    { color: on ? C.foreground : C.textSecondary },
+                    on && { fontFamily: FontFamily.onboardingHeading },
+                  ]}
+                >
+                  {APP_LABEL[id]}
+                </Text>
               </TouchableOpacity>
             );
           })}
         </View>
 
-        <View style={s.steps}>
-          {CONNECT_STEPS[app].map((step, i) => (
-            <View key={i} style={s.step}>
-              <View style={[s.stepNum, { backgroundColor: C.glowBg }]}>
-                <Text style={[s.stepNumText, { color: C.foreground }]}>{i + 1}</Text>
-              </View>
-              <Text style={[s.stepText, { color: C.foreground }]}>{step}</Text>
-            </View>
-          ))}
+        {/* What it does: the hero */}
+        <View style={s.heroGap}>
+          <GlassCard>
+            <GlassCaption text={`In your ${APP_LABEL[app]}`} />
+            <Bubble mine text="I ate 2 eggs and toast" />
+            <Bubble text="Saved to Overload. 310 calories." />
+            <Bubble mine text="How was my protein this week?" />
+            <Bubble text="Low on 4 of 7 days." />
+          </GlassCard>
         </View>
 
-        <Text style={[s.label, s.tryLabel, { color: C.textMuted }]}>THEN TRY</Text>
-        {TRY_ASKING.map((q) => (
-          <Text key={q} style={[s.try, { color: C.textSecondary }]}>“{q}”</Text>
-        ))}
+        {/* How: three short steps */}
+        <View style={s.steps}>
+          {SHORT_STEPS[app].map((step, i) => {
+            const done = i < current;
+            const next = i === current && !needsPlan;
+            return (
+              <View
+                key={step.title}
+                accessible
+                accessibilityLabel={`Step ${i + 1}${done ? ', done' : ''}. ${step.title}. ${step.detail}`}
+                style={[s.step, { backgroundColor: g.quietFill, borderColor: g.quietEdge, borderTopColor: g.quietTop }]}
+              >
+                <View style={[s.stepDot, { backgroundColor: next || done ? g.lime : g.selectedPill }]}>
+                  {done ? (
+                    <Feather name="check" size={14} color={g.dark ? '#1a2400' : '#ffffff'} />
+                  ) : (
+                    <Text style={[s.stepNum, { color: next ? (g.dark ? '#1a2400' : '#ffffff') : C.foreground }]}>{i + 1}</Text>
+                  )}
+                </View>
+                <View style={s.stepTextWrap}>
+                  <Text style={[s.stepTitle, { color: C.foreground }]}>{step.title}</Text>
+                  <Text style={[s.stepDetail, { color: C.textSecondary }]}>{step.detail}</Text>
+                </View>
+              </View>
+            );
+          })}
+        </View>
 
-        <Text style={[s.note, { color: C.textMuted }]}>
-          ChatGPT setup and available actions depend on your plan and workspace settings. Either
-          assistant can delete only food and workouts logged through the connector, and it never
-          changes or removes your own routines. It asks you before it changes, ends or deletes
-          your plan. Disconnect any time in your assistant’s settings. Workouts logged through
-          the connector earn no XP.
-        </Text>
+        {/* The long version, closed by default */}
+        <TouchableOpacity
+          onPress={() => { setDetails((d) => !d); track('ai_connect_details_toggled', { open: !details, app }); }}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: details }}
+          style={[s.moreRow, { borderColor: g.quietEdge }]}
+        >
+          <Text style={[s.moreText, { color: C.foreground }]}>Full steps and what it can change</Text>
+          <Feather name={details ? 'chevron-up' : 'chevron-down'} size={IconSize.md} color={C.textSecondary} />
+        </TouchableOpacity>
+
+        {details && (
+          <View style={s.details}>
+            <Text style={[s.detailHead, { color: C.textSecondary }]}>Your link</Text>
+            <Text selectable style={[s.link, { color: C.foreground }]}>{MCP_URL}</Text>
+
+            <Text style={[s.detailHead, { color: C.textSecondary }]}>{APP_LABEL[app]}, step by step</Text>
+            {CONNECT_STEPS[app].map((step, i) => (
+              <Text key={i} style={[s.detailText, { color: C.foreground }]}>{i + 1}. {step}</Text>
+            ))}
+
+            <Text style={[s.detailHead, { color: C.textSecondary }]}>Then try</Text>
+            {TRY_ASKING.map((q) => (
+              <Text key={q} style={[s.detailText, { color: C.foreground }]}>“{q}”</Text>
+            ))}
+
+            <Text style={[s.detailHead, { color: C.textSecondary }]}>What it can change</Text>
+            <Text style={[s.detailText, { color: C.foreground }]}>
+              It logs and edits food and workouts, and saves routines and plans it writes. It can
+              delete only food and workouts it logged, never your own routines. It asks before it
+              changes, ends or deletes your plan. Workouts it logs earn no XP. Disconnect any time
+              in your assistant’s settings. ChatGPT setup depends on your plan and workspace.
+            </Text>
+          </View>
+        )}
       </ScrollView>
 
       <View style={s.footer}>
-        {known && !hasPlan ? (
+        {needsPlan ? (
           <>
             <PressableScale
               onPress={() => { track('upgrade_prompt_tapped', { from: 'ai_connect' }); router.push('/upgrade?context=connect' as any); }}
-              style={[s.cta, Shadow.playBtn]}
+              style={[s.cta, Shadow.playBtn, { backgroundColor: g.lime }]}
               accessibilityRole="button"
               accessibilityLabel="See plans to connect"
             >
-              <Text style={s.ctaText}>See plans to connect</Text>
+              <Text style={[s.ctaText, { color: g.dark ? '#1a2400' : '#ffffff' }]}>See plans to connect</Text>
             </PressableScale>
-            <Text style={[s.footNote, { color: C.textMuted }]}>The connector is part of Overload Connect and Overload Pro.</Text>
+            <Text style={[s.footNote, { color: C.textSecondary }]}>Part of Overload Connect and Overload Pro.</Text>
           </>
         ) : (
           <PressableScale
-            onPress={copy}
-            style={[s.cta, Shadow.playBtn]}
+            onPress={copied ? openApp : copy}
+            style={[s.cta, Shadow.playBtn, { backgroundColor: g.lime }]}
             accessibilityRole="button"
-            accessibilityLabel="Copy link"
+            accessibilityLabel={copied ? `Open ${APP_LABEL[app]}` : 'Copy link'}
           >
-            <Text style={s.ctaText}>{copied ? 'Copied' : 'Copy link'}</Text>
+            <Text style={[s.ctaText, { color: g.dark ? '#1a2400' : '#ffffff' }]}>
+              {copied ? `Open ${APP_LABEL[app]}` : 'Copy link'}
+            </Text>
           </PressableScale>
         )}
       </View>
@@ -159,67 +232,48 @@ export default function ConnectAiScreen() {
 
 const s = StyleSheet.create({
   root: { flex: 1 },
-  topBar: {
+  topBar: { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 12 },
+  closeHit: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  closeBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  body: { paddingHorizontal: 20, paddingTop: 4, paddingBottom: 20 },
+  title: { fontFamily: FontFamily.onboardingHeading, fontSize: 28, lineHeight: 34 },
+  sub: { fontFamily: FontFamily.onboardingBody, fontSize: 15, lineHeight: 21, marginTop: 6 },
+  switch: { flexDirection: 'row', borderRadius: 12, borderWidth: 1, padding: 3, marginTop: 20 },
+  switchItem: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 9 },
+  switchText: { fontSize: 15, fontFamily: FontFamily.onboardingBody },
+  heroGap: { marginTop: 16 },
+  steps: { marginTop: 18, gap: 8 },
+  step: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.sm,
-  },
-  closeBtn: {
-    width: 32,
-    height: 32,
+    alignItems: 'center',
+    gap: 12,
+    minHeight: 60,
     borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  body: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.lg, paddingBottom: Spacing.xl },
-  eyebrow: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-    letterSpacing: LetterSpacing.eyebrow,
-    marginBottom: Spacing.sm,
-  },
-  title: {
-    fontFamily: FontFamily.display,
-    fontSize: 30,
-    letterSpacing: LetterSpacing.tight,
-    lineHeight: 36,
-  },
-  sub: { fontSize: FontSize.base, lineHeight: 21, marginTop: Spacing.md },
-  linkBox: {
-    marginTop: Spacing.xl,
-    borderRadius: Radius.lg,
     borderWidth: 1,
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.lg,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
-  label: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, letterSpacing: LetterSpacing.eyebrow },
-  link: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold, marginTop: Spacing.xs },
-  tabs: {
+  stepDot: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  stepNum: { fontSize: 14, fontFamily: FontFamily.onboardingHeading },
+  stepTextWrap: { flex: 1 },
+  stepTitle: { fontSize: 15, fontFamily: FontFamily.onboardingHeading },
+  stepDetail: { fontSize: 13, lineHeight: 18, marginTop: 2, fontFamily: FontFamily.onboardingBody },
+  moreRow: {
     flexDirection: 'row',
-    marginTop: Spacing.xl,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-    padding: 3,
-  },
-  tab: { flex: 1, alignItems: 'center', paddingVertical: Spacing.sm, borderRadius: Radius.full },
-  tabText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
-  steps: { marginTop: Spacing.lg, gap: Spacing.md },
-  step: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md },
-  stepNum: { width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  stepNumText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold },
-  stepText: { flex: 1, fontSize: FontSize.base, lineHeight: 21 },
-  tryLabel: { marginTop: Spacing.xl, marginBottom: Spacing.sm },
-  try: { fontSize: FontSize.base, lineHeight: 22 },
-  note: { fontSize: FontSize.sm, lineHeight: 18, marginTop: Spacing.xl },
-  footer: { paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg, paddingTop: Spacing.sm },
-  cta: {
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Colors.primary,
-    height: 56,
-    borderRadius: Radius.full,
+    justifyContent: 'space-between',
+    minHeight: 48,
+    marginTop: 16,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
   },
-  ctaText: { fontSize: 17, fontWeight: FontWeight.bold, color: Colors.primaryFg },
-  footNote: { fontSize: FontSize.sm, textAlign: 'center', marginTop: Spacing.sm },
+  moreText: { fontSize: 15, fontFamily: FontFamily.onboardingBody },
+  details: { paddingTop: 4 },
+  detailHead: { fontSize: 13, fontFamily: FontFamily.onboardingHeading, marginTop: 16, marginBottom: 6 },
+  detailText: { fontSize: 14, lineHeight: 21, fontFamily: FontFamily.onboardingBody, marginBottom: 4 },
+  link: { fontSize: 16, fontFamily: FontFamily.onboardingHeading },
+  footer: { paddingHorizontal: 20, paddingBottom: 12, paddingTop: 8 },
+  cta: { alignItems: 'center', justifyContent: 'center', height: 56, borderRadius: 999 },
+  ctaText: { fontSize: 17, fontFamily: FontFamily.onboardingHeading },
+  footNote: { fontSize: 13, textAlign: 'center', marginTop: 8, fontFamily: FontFamily.onboardingBody },
 });
