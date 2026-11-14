@@ -46,6 +46,10 @@ export interface PendingOnboarding {
   dest: '/(app)' | '/(app)/routines';
   weightUnit: 'kg' | 'lbs';
   goalWeightKg: number | null;
+  /** The short "Use my own AI" path (goal and weight only, no program): after
+   *  sign-up the paywall opens on the Your own AI side, then the connector
+   *  screen. Older blobs predate the field: read as false. */
+  connectFirst?: boolean;
 }
 
 export async function setPendingOnboarding(blob: PendingOnboarding): Promise<void> {
@@ -93,7 +97,7 @@ export async function drainPendingOnboarding(target: {
   isGuest: boolean;
   clerkId: string | null;
   client: SupabaseClient;
-}): Promise<{ dest: PendingOnboarding['dest']; firstPhaseId: string | null } | null> {
+}): Promise<{ dest: PendingOnboarding['dest']; firstPhaseId: string | null; connectFirst: boolean } | null> {
   const pending = await getPendingOnboarding();
   if (!pending) return null;
 
@@ -123,8 +127,9 @@ export async function drainPendingOnboarding(target: {
     // threw AFTER the blob was cleared, losing the post-signup destination.
     routines: 0,
     is_guest: target.isGuest,
+    connect_first: pending.connectFirst === true,
   });
-  return { dest: pending.dest ?? '/(app)', firstPhaseId };
+  return { dest: pending.dest ?? '/(app)', firstPhaseId, connectFirst: pending.connectFirst === true };
 }
 
 /**

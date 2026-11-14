@@ -2,6 +2,8 @@
 import { assertEquals } from 'jsr:@std/assert';
 import {
   accessHasPlan,
+  connectFirstNext,
+  connectFirstPaywallParams,
   ctaLabel,
   initialSide,
   layoutFromFlag,
@@ -74,4 +76,29 @@ Deno.test('a purchase waits for the plan it bought; Restore takes either', () =>
   assertEquals(accessHasPlan(proOnly, 'either'), true);
   assertEquals(accessHasPlan({ state: 'free' }, 'either'), false);
   assertEquals(accessHasPlan(null, 'either'), false);
+});
+
+Deno.test('the own-AI sign-up path opens the paywall on the Your own AI side', () => {
+  const p = connectFirstPaywallParams({ connectFirst: true, isSignedIn: true, os: 'ios' });
+  assertEquals(p, { flow: 'locked', context: 'connect' });
+  // The context it sends is the one that opens the Your own AI side.
+  assertEquals(initialSide(p!.context), 'own_ai');
+  assertEquals(connectFirstPaywallParams({ connectFirst: true, isSignedIn: true, os: 'android' }) !== null, true);
+  // The coach path, a guest and the web never get it.
+  assertEquals(connectFirstPaywallParams({ connectFirst: false, isSignedIn: true, os: 'ios' }), null);
+  assertEquals(connectFirstPaywallParams({ connectFirst: true, isSignedIn: false, os: 'ios' }), null);
+  assertEquals(connectFirstPaywallParams({ connectFirst: true, isSignedIn: true, os: 'web' }), null);
+});
+
+Deno.test('an account that already pays skips the sale on the own-AI path', () => {
+  const base = { connectFirst: true, isSignedIn: true, os: 'ios' };
+  assertEquals(connectFirstNext({ ...base, hasConnector: true }), { to: 'connect-ai' });
+  assertEquals(connectFirstNext({ ...base, hasConnector: false }), {
+    to: 'paywall',
+    params: { flow: 'locked', context: 'connect' },
+  });
+  // Still nothing for a guest, the web, or the coach path.
+  assertEquals(connectFirstNext({ ...base, isSignedIn: false, hasConnector: true }), null);
+  assertEquals(connectFirstNext({ ...base, os: 'web', hasConnector: true }), null);
+  assertEquals(connectFirstNext({ ...base, connectFirst: false, hasConnector: true }), null);
 });

@@ -50,9 +50,11 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActionSheetIOS,
   Alert,
   BackHandler,
   Linking,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -60,6 +62,7 @@ import {
   View,
 } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
@@ -102,7 +105,7 @@ import {
   type PaywallPeriod,
   type PaywallSide,
 } from '@/lib/paywallPlans';
-import { ExampleCard, Features, PAYWALL_LIME, PlanSwitch, PriceBoxes } from '@/components/paywall/PaywallParts';
+import { ExampleCard, Features, PAYWALL_LIME, PlanSwitch, PriceBoxes, useGlass } from '@/components/paywall/PaywallParts';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -172,6 +175,7 @@ function entitlementOnTrial(customerInfo: RevenueCatCustomerInfo | null | undefi
 export default function UpgradeScreen() {
   const router = useRouter();
   const { C } = useTheme();
+  const glass = useGlass();
   const toast = useToast();
   const { user, signOut, isLoaded: userLoaded } = useClerkUser();
   const supabase = useSupabaseClient();
@@ -661,6 +665,34 @@ export default function UpgradeScreen() {
   // funnel's next beat is the phase 1 split prompt, which only the dashboard
   // shows. A coach chat opened on top of it ("plan my week") buried that
   // prompt and asked for a week the split popup builds anyway.
+  const openHelp = useCallback(() => {
+    // No mail app: say where to write instead.
+    Linking.openURL('mailto:support@tryoverload.app?subject=Overload%20help').catch(() => {
+      toast.info('Email us at support@tryoverload.app', { durationMs: 8000 });
+    });
+  }, [toast]);
+  // The locked paywall's "More": the system sheet on iPhone, a dialog on
+  // Android (three buttons is its limit; tapping outside cancels).
+  const openMore = useCallback(() => {
+    track('paywall_more_opened', { source, context });
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: ['Get help', 'Sign out', 'Delete account', 'Cancel'], cancelButtonIndex: 3, destructiveButtonIndex: 2 },
+        (i) => {
+          if (i === 0) openHelp();
+          else if (i === 1) handleSignOut();
+          else if (i === 2) handleDeleteAccount();
+        },
+      );
+      return;
+    }
+    Alert.alert('More', undefined, [
+      { text: 'Get help', onPress: openHelp },
+      { text: 'Sign out', onPress: handleSignOut },
+      { text: 'Delete account', style: 'destructive', onPress: handleDeleteAccount },
+    ], { cancelable: true });
+  }, [openHelp, handleSignOut, handleDeleteAccount, source, context]);
+
   const fromCap = context === 'cap_chat' || context === 'cap_parse';
   const goToDashboard = useCallback(() => {
     router.replace('/(app)');
@@ -893,7 +925,24 @@ export default function UpgradeScreen() {
             )}
           </ScrollView>
 
-          <View style={u.paywallFooter}>
+          {/* The buy panel: one floating strong-glass card (lit top and left
+              edges, soft shadow) holding the prices, the button and the links,
+              so it reads as its own layer under the feature tiles. Same glass
+              as the example card; no live blur. */}
+          <View style={[u.trayShadow, !glass.dark && u.trayShadowLight]}>
+          <LinearGradient
+            colors={[glass.strongFrom, glass.strongTo]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={[
+              u.tray,
+              {
+                borderColor: glass.strongEdge,
+                borderTopColor: glass.strongEdgeLit,
+                borderLeftColor: glass.strongEdgeLit,
+              },
+            ]}
+          >
             {/* Prices sit in the fixed footer, right above the button, so they
                 are never scrolled away (the features scroll on short phones). */}
             {!loading && !sideUnavailable && (
@@ -996,43 +1045,23 @@ export default function UpgradeScreen() {
               >
                 <Text style={[u.footLink, { color: C.textMuted }]}>Have a code?</Text>
               </TouchableOpacity>
+              {/* A locked new account cannot reach Profile, so the paywall
+                  must offer sign out (wrong account), delete account (Apple
+                  5.1.1(v)) and a person to write to (paid but still locked).
+                  They sit behind one "More" so the row stays three links. */}
               {isLocked && (
                 <TouchableOpacity
-                  onPress={handleSignOut}
-                  disabled={purchasing || verifying || restoring}
-                  accessibilityRole="button"
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                >
-                  <Text style={[u.footLink, { color: C.textMuted }]}>Sign out</Text>
-                </TouchableOpacity>
-              )}
-              {isLocked && (
-                <TouchableOpacity
-                  onPress={handleDeleteAccount}
+                  onPress={openMore}
                   disabled={deleting || purchasing || verifying || restoring}
                   accessibilityRole="button"
+                  accessibilityLabel="More: sign out, delete account, help"
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
-                  <Text style={[u.footLink, { color: C.textMuted }]}>{deleting ? 'Deleting…' : 'Delete account'}</Text>
-                </TouchableOpacity>
-              )}
-              {/* Paid but still locked (a store webhook that never landed)
-                  and Restore can't fix it: a person to write to. */}
-              {isLocked && (
-                <TouchableOpacity
-                  onPress={() => {
-                    // No mail app: say where to write instead.
-                    Linking.openURL('mailto:support@tryoverload.app?subject=Overload%20Pro%20help').catch(() => {
-                      toast.info('Email us at support@tryoverload.app', { durationMs: 8000 });
-                    });
-                  }}
-                  accessibilityRole="link"
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                >
-                  <Text style={[u.footLink, { color: C.textMuted }]}>Help</Text>
+                  <Text style={[u.footLink, { color: C.textMuted }]}>{deleting ? 'Deleting…' : 'More'}</Text>
                 </TouchableOpacity>
               )}
             </View>
+          </LinearGradient>
           </View>
         </Animated.View>
       )}
@@ -1055,10 +1084,10 @@ export default function UpgradeScreen() {
             >
               {outcome && isConnectPlan(outcome.plan)
                 ? outcome.plan === 'connect_lifetime'
-                  ? 'Overload Connect is yours for good. Connect your AI in Profile.'
+                  ? 'Overload Connect is yours for good. Connect your AI next.'
                   : outcome.onTrial
-                    ? `${outcome.trialDays > 0 ? `Your ${outcome.trialDays} free days start` : 'Your free trial starts'} now. Connect your AI in Profile.`
-                    : 'Overload Connect is active. Connect your AI in Profile.'
+                    ? `${outcome.trialDays > 0 ? `Your ${outcome.trialDays} free days start` : 'Your free trial starts'} now. Connect your AI next.`
+                    : 'Overload Connect is active. Connect your AI next.'
                 // Off sale since 2026-11-12, kept for owners who restore it.
                 : outcome?.plan === 'founding_lifetime'
                 ? "Founding member. Overload Pro is yours for good, and I'm yours to keep."
@@ -1087,14 +1116,36 @@ export default function UpgradeScreen() {
             </Animated.View>
           </View>
           <Animated.View entering={FadeInDown.delay(440).duration(400)} style={u.footer}>
-            <PressableScale
-              onPress={() => { track('paywall_success_cta', { destination: fromCap ? 'back' : 'dashboard' }); (fromCap ? finish : goToDashboard)(); }}
-              style={[u.cta, Shadow.playBtn]}
-              accessibilityRole="button"
-              accessibilityLabel="Continue"
-            >
-              <Text style={u.ctaText}>Continue</Text>
-            </PressableScale>
+            {outcome && isConnectPlan(outcome.plan) ? (
+              // A Connect buyer came for the connector: set it up now, while
+              // they want to. The setup screen closes to the dashboard.
+              <>
+                <PressableScale
+                  onPress={() => { track('paywall_success_cta', { destination: 'connect_ai' }); router.replace({ pathname: '/connect-ai', params: { from: 'paywall' } } as any); }}
+                  style={[u.cta, Shadow.playBtn]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Connect your AI"
+                >
+                  <Text style={u.ctaText}>Connect your AI</Text>
+                </PressableScale>
+                <TouchableOpacity
+                  onPress={() => { track('paywall_success_cta', { destination: fromCap ? 'back' : 'dashboard', skipped_connect: true }); (fromCap ? finish : goToDashboard)(); }}
+                  accessibilityRole="button"
+                  style={u.successLater}
+                >
+                  <Text style={[u.successLaterText, { color: C.textSecondary }]}>Do it later</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <PressableScale
+                onPress={() => { track('paywall_success_cta', { destination: fromCap ? 'back' : 'dashboard' }); (fromCap ? finish : goToDashboard)(); }}
+                style={[u.cta, Shadow.playBtn]}
+                accessibilityRole="button"
+                accessibilityLabel="Continue"
+              >
+                <Text style={u.ctaText}>Continue</Text>
+              </PressableScale>
+            )}
           </Animated.View>
         </Animated.View>
       )}
@@ -1372,6 +1423,28 @@ const u = StyleSheet.create({
     paddingTop: Spacing.sm,
     paddingBottom: Spacing.sm,
   },
+  // The floating glass buy panel on the paywall step.
+  trayShadow: {
+    marginHorizontal: 12,
+    marginBottom: 6,
+    borderRadius: 28,
+    shadowColor: '#000',
+    shadowOpacity: 0.6,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: -6 },
+    elevation: 10,
+  },
+  trayShadowLight: { shadowOpacity: 0.12 },
+  tray: {
+    borderRadius: 28,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 12,
+    overflow: 'hidden',
+  },
+  successLater: { minHeight: 44, alignItems: 'center', justifyContent: 'center', marginTop: 4 },
+  successLaterText: { fontSize: 15 },
   cta: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1396,7 +1469,7 @@ const u = StyleSheet.create({
     justifyContent: 'center',
     columnGap: Spacing.lg,
     rowGap: Spacing.sm,
-    marginTop: Spacing.lg,
+    marginTop: Spacing.md,
   },
   footLink: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   legalPair: { flexDirection: 'row', alignItems: 'center' },

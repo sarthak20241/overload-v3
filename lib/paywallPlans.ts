@@ -141,3 +141,36 @@ export function accessHasPlan(
   const connect = row?.connect === true;
   return want === 'pro' ? pro : want === 'connect' ? connect : pro || connect;
 }
+
+/**
+ * After sign-up, does the short "Use my own AI" path open the paywall, and
+ * how? Only for a signed-in account on a phone: guests and web have nothing
+ * to buy. `flow: 'locked'` skips the Drona warm-up screens and locks a new
+ * account; `context: 'connect'` opens the Your own AI side (initialSide).
+ */
+export function connectFirstPaywallParams(o: {
+  connectFirst: boolean;
+  isSignedIn: boolean;
+  os: string;
+}): { flow: 'locked'; context: 'connect' } | null {
+  if (!o.connectFirst || !o.isSignedIn) return null;
+  if (o.os !== 'ios' && o.os !== 'android') return null;
+  return { flow: 'locked', context: 'connect' };
+}
+
+/**
+ * Where the short "Use my own AI" path goes once the account is known.
+ * An account that already has the connector (Pro, a trial or Connect) skips
+ * the sale and sets the connector up. `hasConnector` is only true on a known
+ * answer; an unknown one gets the paywall, which is closable for a payer.
+ */
+export function connectFirstNext(o: {
+  connectFirst: boolean;
+  isSignedIn: boolean;
+  os: string;
+  hasConnector: boolean;
+}): { to: 'paywall'; params: { flow: 'locked'; context: 'connect' } } | { to: 'connect-ai' } | null {
+  const params = connectFirstPaywallParams(o);
+  if (!params) return null;
+  return o.hasConnector ? { to: 'connect-ai' } : { to: 'paywall', params };
+}

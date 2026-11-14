@@ -9,7 +9,7 @@
 // so an account with none of those sees the way to a plan instead.
 import { useEffect, useRef, useState } from 'react';
 import { Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { FontFamily, IconSize, Shadow } from '@/constants/theme';
@@ -62,7 +62,14 @@ export default function ConnectAiScreen() {
     track('ai_connect_opened');
   }, []);
 
-  const leave = () => (router.canGoBack() ? router.back() : router.replace('/(app)/profile' as any));
+  // From the paywall's success screen (a new Connect buyer) there is nothing
+  // to go back to: close to the dashboard. From Profile, go back to Profile.
+  const { from } = useLocalSearchParams<{ from?: string }>();
+  const leave = () => {
+    if (from === 'paywall') router.replace('/(app)');
+    else if (router.canGoBack()) router.back();
+    else router.replace('/(app)/profile' as any);
+  };
 
   const copy = async () => {
     const ok = await copyToClipboard(MCP_URL);
