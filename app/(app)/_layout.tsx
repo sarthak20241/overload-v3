@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, BackHandler, Platform, Pressable, ScrollView, useWindowDimensions, Easing as RNEasing } from 'react-native';
 import { Tabs, useRouter, Redirect, usePathname } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
@@ -30,7 +30,7 @@ import { useBodyLogRetry } from '@/lib/useBodyLogRetry';
 import { useForegroundProgramSync } from '@/lib/useProgramSync';
 import { resolveNeedsOnboarding } from '@/lib/onboarding';
 import { drainPendingOnboarding } from '@/lib/pendingOnboarding';
-import { connectFirstNext } from '@/lib/paywallPlans';
+import { accessHasPlan, connectFirstNext } from '@/lib/paywallPlans';
 import { useSync } from '@/components/SyncProvider';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { isPurchasesAvailable } from '@/lib/revenuecat';
@@ -285,6 +285,9 @@ export default function AppLayout() {
   // fresh sign-up: that path routes to the phase 1 build and then the paywall
   // itself, so the gate must not jump ahead of it.
   const { access: coachAccess, refreshFresh: refreshCoachAccess } = useCoachAccess();
+  // The latest access for code that runs inside long-lived effects.
+  const coachAccessRef = useRef(coachAccess);
+  coachAccessRef.current = coachAccess;
   // The account the drain was for: the exemption holds only for it, never
   // for another account signed in later on the same mounted layout.
   const [drainedFor, setDrainedFor] = useState<string | null>(null);
@@ -350,11 +353,22 @@ export default function AppLayout() {
     // check - draining marks onboarding done, so the check then returns false
     // and they land straight on the dashboard with their plan.
     drainPendingOnboarding(target)
-      .then((drained) => {
+      .then(async (drained) => {
         if (drained) {
           const { dest, firstPhaseId } = drained;
           if (!cancelled) setDrainedFor(target.clerkId);
           void flushNow();
+          // The own-AI path decides on a FRESH access answer, read before the
+          // first-run spinner lifts: right after sign-in the saved answer is
+          // still loading, and a returning payer would be shown a sale. Three
+          // seconds at most; with no answer they get the paywall, which is
+          // closable for a payer.
+          if (drained.connectFirst && isSignedIn) {
+            await Promise.race([refreshCoachAccess(), new Promise((r) => setTimeout(r, 3000))]);
+            // One tick, so the hook's new state has rendered into the ref.
+            await new Promise((r) => setTimeout(r, 0));
+          }
+          if (cancelled) return;
           settle(false);
           // The short "Use my own AI" path: they came for the connector, so
           // the paywall opens on that side. Its success screen leads on to the
@@ -363,9 +377,9 @@ export default function AppLayout() {
             connectFirst: drained.connectFirst,
             isSignedIn: !!isSignedIn,
             os: Platform.OS,
-            // The saved access answer; a brand-new account has none, so it
-            // gets the paywall. An older payer who signs in skips the sale.
-            hasConnector: coachAccess.state === 'paid' || coachAccess.state === 'trialing' || coachAccess.connect === true,
+            // A brand-new account has no plan, so it gets the paywall. An
+            // older payer who signs in skips the sale.
+            hasConnector: accessHasPlan(coachAccessRef.current, 'either'),
           });
           if (connectNext?.to === 'connect-ai') {
             router.replace({ pathname: '/connect-ai', params: { from: 'paywall' } } as any);

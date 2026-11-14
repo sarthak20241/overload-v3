@@ -61,7 +61,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useGuestMode } from '@/lib/guestMode';
-import { connectFirstNext } from '@/lib/paywallPlans';
+import { accessHasPlan, connectFirstNext } from '@/lib/paywallPlans';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { track } from '@/lib/analytics';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
@@ -795,7 +795,7 @@ export default function OnboardingScreen() {
         isSignedIn: !!isSignedIn,
         os: Platform.OS,
         // Already Pro, on a trial or on Connect: no sale, straight to setup.
-        hasConnector: coachAccess.state === 'paid' || coachAccess.state === 'trialing' || coachAccess.connect === true,
+        hasConnector: accessHasPlan(coachAccess, 'either'),
       });
       if (next?.to === 'connect-ai') router.replace({ pathname: '/connect-ai', params: { from: 'paywall' } } as any);
       else if (next?.to === 'paywall') router.replace({ pathname: '/upgrade', params: next.params } as any);
@@ -803,7 +803,7 @@ export default function OnboardingScreen() {
     } finally {
       setFinishing(false);
     }
-  }, [finishing, toKg, weightVal, answers, isFreshVisitor, weightUnit, router, isSignedIn, user?.id, supabaseClient, basicInfo, toast, identity, coachAccess.state, coachAccess.connect]);
+  }, [finishing, toKg, weightVal, answers, isFreshVisitor, weightUnit, router, isSignedIn, user?.id, supabaseClient, basicInfo, toast, identity, coachAccess]);
 
   // Onboarding is the front door now, so a fresh visitor (no identity yet)
   // has no plan to save on skip - they just want the sign-in screen for an
