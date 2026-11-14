@@ -4,7 +4,7 @@
  * once they open their AI from that screen, or for good with its X
  * (lib/connectNudge.ts). Re-reads on focus, so it is gone when they come back.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View, type ViewStyle } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
@@ -26,11 +26,15 @@ export function ConnectNudgeCard({
   const g = useGlass();
   const router = useRouter();
   const [state, setState] = useState<ConnectNudge | null>(null);
+  // Bumped on dismiss: a storage read started before the X tap must not bring
+  // the card back when it answers late.
+  const generation = useRef(0);
 
   useFocusEffect(
     useCallback(() => {
       let live = true;
-      void readConnectNudge(userId).then((v) => { if (live) setState(v); });
+      const gen = generation.current;
+      void readConnectNudge(userId).then((v) => { if (live && gen === generation.current) setState(v); });
       return () => { live = false; };
     }, [userId]),
   );
@@ -57,7 +61,12 @@ export function ConnectNudgeCard({
           <Feather name="chevron-right" size={16} color={g.C.textSecondary} />
         </TouchableOpacity>
         <TouchableOpacity
-          onPress={() => { track('connect_nudge_dismissed'); setState('dismissed'); void setConnectNudge(userId, 'dismissed'); }}
+          onPress={() => {
+            track('connect_nudge_dismissed');
+            generation.current += 1;
+            setState('dismissed');
+            void setConnectNudge(userId, 'dismissed');
+          }}
           style={s.close}
           accessibilityRole="button"
           accessibilityLabel="Hide this reminder"

@@ -96,10 +96,11 @@ export default function ConnectAiScreen() {
   const openApp = () => {
     track('ai_connect_app_opened', { app });
     setOpened(true);
-    // The best sign this app has that they connected: the dashboard's
-    // "Connect your AI" reminder goes away.
-    if (user?.id) void setConnectNudge(user.id, 'done');
-    Linking.openURL(APP_SETTINGS_URL[app]).catch(() => toast.error(`Could not open ${APP_LABEL[app]}.`));
+    Linking.openURL(APP_SETTINGS_URL[app])
+      // Only once it really opened: the best sign this app has that they
+      // connected, so the dashboard's "Connect your AI" reminder goes away.
+      .then(() => { if (user?.id) void setConnectNudge(user.id, 'done'); })
+      .catch(() => toast.error(`Could not open ${APP_LABEL[app]}.`));
   };
 
   // Step looks: lib/aiConnect.ts stepMarks (tested). The button is "Open"

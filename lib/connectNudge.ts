@@ -28,13 +28,14 @@ export async function readConnectNudge(userId: string): Promise<ConnectNudge | n
 }
 
 /** 'later' never overwrites 'done' or 'dismissed': a second purchase screen
- *  must not bring back a card the user already finished with. */
+ *  must not bring back a card the user already finished with. 'done' only
+ *  closes a waiting reminder: opening ChatGPT from Profile before any "Do it
+ *  later" leaves nothing stored, so a later "Do it later" still shows it. */
 export async function setConnectNudge(userId: string, next: ConnectNudge): Promise<void> {
   try {
-    if (next === 'later') {
-      const now = await readConnectNudge(userId);
-      if (now === 'done' || now === 'dismissed') return;
-    }
+    const now = await readConnectNudge(userId);
+    if (next === 'later' && (now === 'done' || now === 'dismissed')) return;
+    if (next === 'done' && now !== 'later') return;
     await AsyncStorage.setItem(key(userId), next);
   } catch {
     /* best effort: the card is a reminder, not state that must survive */

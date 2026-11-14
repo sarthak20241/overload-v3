@@ -1132,10 +1132,12 @@ export default function UpgradeScreen() {
                   <Text style={u.ctaText}>Connect your AI</Text>
                 </PressableScale>
                 <TouchableOpacity
-                  onPress={() => {
+                  onPress={async () => {
                     track('paywall_success_cta', { destination: fromCap ? 'back' : 'dashboard', skipped_connect: true });
-                    // The dashboard keeps a small "Connect your AI" card until they do it or close it.
-                    if (user?.id) void setConnectNudge(user.id, 'later');
+                    // The dashboard keeps a small "Connect your AI" card until
+                    // they do it or close it. Saved before leaving, so the
+                    // dashboard's first read already sees it.
+                    if (user?.id) await setConnectNudge(user.id, 'later');
                     (fromCap ? finish : goToDashboard)();
                   }}
                   accessibilityRole="button"

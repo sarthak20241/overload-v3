@@ -330,6 +330,11 @@ export default function AppLayout() {
   useEffect(() => {
     if (!isLoaded || !guestLoaded) return;
     if (!isSignedIn && !isGuest) return; // the auth redirect below handles this
+    // Signed in, but Clerk's user has not landed yet: wait. Draining now would
+    // save the intake with no account id and use up the stashed blob, and the
+    // just-signed-up mark below would be keyed to nobody. user?.id is in the
+    // deps, so this runs again the moment it arrives.
+    if (isSignedIn && !user?.id) return;
     let cancelled = false;
     let settled = false;
     const settle = (value: boolean) => {
