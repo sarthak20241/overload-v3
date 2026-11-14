@@ -322,6 +322,7 @@ export type AnalyticsEvent =
   | 'paywall_store_retry'
   | 'paywall_store_down'
   | 'paywall_success_cta'
+  | 'paywall_more_opened'
   | 'paywall_side_switched'
   | 'paywall_side_unavailable'
   | 'paywall_period_selected'
