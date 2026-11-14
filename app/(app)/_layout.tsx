@@ -356,7 +356,12 @@ export default function AppLayout() {
       .then(async (drained) => {
         if (drained) {
           const { dest, firstPhaseId } = drained;
-          if (!cancelled) setDrainedFor(target.clerkId);
+          // Always, even when this run was cancelled by a quick re-run right
+          // after sign-in (Clerk's user lands a beat later): the blob is gone
+          // now, so the re-run cannot set it, and without it the hard-paywall
+          // gate locks the new account on the Drona side and wins the race
+          // with the route chosen below. Keyed to this account only.
+          setDrainedFor(target.clerkId);
           void flushNow();
           // The own-AI path decides on a FRESH access answer, read before the
           // first-run spinner lifts: right after sign-in the saved answer is
