@@ -61,6 +61,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useGuestMode } from '@/lib/guestMode';
+import { connectFirstPaywallParams } from '@/lib/paywallPlans';
 import { track } from '@/lib/analytics';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSync } from '@/components/SyncProvider';
@@ -478,6 +479,8 @@ export default function OnboardingScreen() {
       advanceTimer.current = null;
     }
     reportStepChange(next, 'cta');
+    // Back on the welcome screen no path is chosen: each button sets its own.
+    if (next === 'welcome') setConnectPath(false);
     setStep(next);
   }, [reportStepChange]);
 
@@ -772,8 +775,11 @@ export default function OnboardingScreen() {
         track('onboarding_completed', { ...done, outcome: 'save_failed' });
       }
       await markOnboardingDone(identity);
-      // A guest has no account to connect: the dashboard, as before.
-      if (isSignedIn) router.replace({ pathname: '/upgrade', params: { context: 'connect' } } as any);
+      // Same rule as after sign-up (the (app) layout): a signed-in phone
+      // account gets the paywall on the Your own AI side. A guest has no
+      // account to connect, and the web has nothing to buy: the dashboard.
+      const paywall = connectFirstPaywallParams({ connectFirst: true, isSignedIn: !!isSignedIn, os: Platform.OS });
+      if (paywall) router.replace({ pathname: '/upgrade', params: paywall } as any);
       else router.replace('/(app)');
     } finally {
       setFinishing(false);
