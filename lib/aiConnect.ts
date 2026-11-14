@@ -44,12 +44,12 @@ export const CONNECT_STEPS: Record<AiApp, string[]> = {
 export const SHORT_STEPS: Record<AiApp, { title: string; detail: string }[]> = {
   claude: [
     { title: 'Copy your link', detail: MCP_HOST },
-    { title: 'Paste it in Claude', detail: 'Customize, Connectors, then Add. A computer is easiest.' },
+    { title: 'Paste it in Claude', detail: 'On claude.ai, open Customize, then Connectors. Tap Add and paste.' },
     { title: 'Sign in and allow', detail: 'With your Overload account' },
   ],
   chatgpt: [
     { title: 'Copy your link', detail: MCP_HOST },
-    { title: 'Paste it in ChatGPT', detail: 'Plugins, then Add. A computer is easiest.' },
+    { title: 'Paste it in ChatGPT', detail: 'On chatgpt.com, open Plugins. Tap Add and paste.' },
     { title: 'Sign in and allow', detail: 'With your Overload account' },
   ],
 };

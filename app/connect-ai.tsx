@@ -44,6 +44,8 @@ export default function ConnectAiScreen() {
   const [details, setDetails] = useState(false);
   const [opened, setOpened] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+  // Set when copy fails: scroll to the selectable link once Full steps has laid out.
+  const scrollToLink = useRef(false);
 
   // Same rule as the server (mcp/access.ts hasConnectorAccess): a paid plan,
   // a live trial, or an active Overload Connect plan.
@@ -66,7 +68,7 @@ export default function ConnectAiScreen() {
     } else {
       // The link is selectable in "Full steps", so open that.
       setDetails(true);
-      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50);
+      scrollToLink.current = true;
       toast.error('Could not copy. Press and hold the link below to copy it.');
     }
   };
@@ -97,7 +99,17 @@ export default function ConnectAiScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView ref={scrollRef} contentContainerStyle={s.body} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={s.body}
+        showsVerticalScrollIndicator={false}
+        onContentSizeChange={() => {
+          if (scrollToLink.current) {
+            scrollToLink.current = false;
+            scrollRef.current?.scrollToEnd({ animated: true });
+          }
+        }}
+      >
         <Text style={[s.title, { color: C.foreground }]} accessibilityRole="header">Overload, inside your AI</Text>
         <Text style={[s.sub, { color: C.textSecondary }]}>Log and ask from the chat you already use.</Text>
 
@@ -113,7 +125,7 @@ export default function ConnectAiScreen() {
                 key={id}
                 accessibilityRole="tab"
                 accessibilityState={{ selected: on }}
-                onPress={() => { if (!on) { setApp(id); track('ai_connect_app_switched', { app: id }); } }}
+                onPress={() => { if (!on) { setApp(id); setOpened(false); track('ai_connect_app_switched', { app: id }); } }}
                 style={[s.switchItem, on && { backgroundColor: g.selectedPill }]}
               >
                 <Text
@@ -147,10 +159,16 @@ export default function ConnectAiScreen() {
             const done = i < current;
             const next = i === current && !needsPlan;
             return (
-              <View
+              <TouchableOpacity
                 key={step.title}
+                // Step 1 copies the link (again, once the button says Open).
+                disabled={i !== 0 || needsPlan}
+                onPress={copy}
+                activeOpacity={0.7}
                 accessible
+                accessibilityRole={i === 0 && !needsPlan ? 'button' : undefined}
                 accessibilityLabel={`Step ${i + 1}${done ? ', done' : ''}. ${step.title}. ${step.detail}`}
+                accessibilityHint={i === 0 && !needsPlan ? 'Copies the link' : undefined}
                 style={[s.step, { backgroundColor: g.quietFill, borderColor: g.quietEdge, borderTopColor: g.quietTop }]}
               >
                 <View style={[s.stepDot, { backgroundColor: next || done ? g.lime : g.selectedPill }]}>
@@ -164,7 +182,10 @@ export default function ConnectAiScreen() {
                   <Text style={[s.stepTitle, { color: C.foreground }]}>{step.title}</Text>
                   <Text style={[s.stepDetail, { color: C.textSecondary }]}>{step.detail}</Text>
                 </View>
-              </View>
+                {i === 0 && copied && !needsPlan && (
+                  <Feather name="copy" size={IconSize.sm} color={C.textSecondary} />
+                )}
+              </TouchableOpacity>
             );
           })}
         </View>
