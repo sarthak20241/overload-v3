@@ -61,7 +61,8 @@ import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useGuestMode } from '@/lib/guestMode';
-import { connectFirstPaywallParams } from '@/lib/paywallPlans';
+import { connectFirstNext } from '@/lib/paywallPlans';
+import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { track } from '@/lib/analytics';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSync } from '@/components/SyncProvider';
@@ -176,6 +177,7 @@ export default function OnboardingScreen() {
   const supabaseClient = useSupabaseClient();
   const basicInfo = useBasicInfo();
   const toast = useToast();
+  const { access: coachAccess } = useCoachAccess();
 
   const [step, setStep] = useState<Step>('welcome');
   // The short "Use my own AI" path, chosen on the welcome screen: goal and
@@ -781,20 +783,27 @@ export default function OnboardingScreen() {
         basicInfo.setWeightUnit(weightUnit);
         track('onboarding_completed', { ...done, outcome: 'saved' });
       } catch {
-        toast.error("Couldn't save everything. You can finish setup in Profile.");
+        toast.error("Couldn't save your goal and weight. You can set them in Profile.");
         track('onboarding_completed', { ...done, outcome: 'save_failed' });
       }
       await markOnboardingDone(identity);
       // Same rule as after sign-up (the (app) layout): a signed-in phone
       // account gets the paywall on the Your own AI side. A guest has no
       // account to connect, and the web has nothing to buy: the dashboard.
-      const paywall = connectFirstPaywallParams({ connectFirst: true, isSignedIn: !!isSignedIn, os: Platform.OS });
-      if (paywall) router.replace({ pathname: '/upgrade', params: paywall } as any);
+      const next = connectFirstNext({
+        connectFirst: true,
+        isSignedIn: !!isSignedIn,
+        os: Platform.OS,
+        // Already Pro, on a trial or on Connect: no sale, straight to setup.
+        hasConnector: coachAccess.state === 'paid' || coachAccess.state === 'trialing' || coachAccess.connect === true,
+      });
+      if (next?.to === 'connect-ai') router.replace({ pathname: '/connect-ai', params: { from: 'paywall' } } as any);
+      else if (next?.to === 'paywall') router.replace({ pathname: '/upgrade', params: next.params } as any);
       else router.replace('/(app)');
     } finally {
       setFinishing(false);
     }
-  }, [finishing, toKg, weightVal, answers, isFreshVisitor, weightUnit, router, isSignedIn, user?.id, supabaseClient, basicInfo, toast, identity]);
+  }, [finishing, toKg, weightVal, answers, isFreshVisitor, weightUnit, router, isSignedIn, user?.id, supabaseClient, basicInfo, toast, identity, coachAccess.state, coachAccess.connect]);
 
   // Onboarding is the front door now, so a fresh visitor (no identity yet)
   // has no plan to save on skip - they just want the sign-in screen for an

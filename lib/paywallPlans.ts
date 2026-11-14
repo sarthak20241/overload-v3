@@ -157,3 +157,20 @@ export function connectFirstPaywallParams(o: {
   if (o.os !== 'ios' && o.os !== 'android') return null;
   return { flow: 'locked', context: 'connect' };
 }
+
+/**
+ * Where the short "Use my own AI" path goes once the account is known.
+ * An account that already has the connector (Pro, a trial or Connect) skips
+ * the sale and sets the connector up. `hasConnector` is only true on a known
+ * answer; an unknown one gets the paywall, which is closable for a payer.
+ */
+export function connectFirstNext(o: {
+  connectFirst: boolean;
+  isSignedIn: boolean;
+  os: string;
+  hasConnector: boolean;
+}): { to: 'paywall'; params: { flow: 'locked'; context: 'connect' } } | { to: 'connect-ai' } | null {
+  const params = connectFirstPaywallParams(o);
+  if (!params) return null;
+  return o.hasConnector ? { to: 'connect-ai' } : { to: 'paywall', params };
+}

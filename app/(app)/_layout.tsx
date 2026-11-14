@@ -30,7 +30,7 @@ import { useBodyLogRetry } from '@/lib/useBodyLogRetry';
 import { useForegroundProgramSync } from '@/lib/useProgramSync';
 import { resolveNeedsOnboarding } from '@/lib/onboarding';
 import { drainPendingOnboarding } from '@/lib/pendingOnboarding';
-import { connectFirstPaywallParams } from '@/lib/paywallPlans';
+import { connectFirstNext } from '@/lib/paywallPlans';
 import { useSync } from '@/components/SyncProvider';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { isPurchasesAvailable } from '@/lib/revenuecat';
@@ -359,13 +359,20 @@ export default function AppLayout() {
           // The short "Use my own AI" path: they came for the connector, so
           // the paywall opens on that side. Its success screen leads on to the
           // connector setup. Guests and web have nothing to buy here.
-          const connectParams = connectFirstPaywallParams({
+          const connectNext = connectFirstNext({
             connectFirst: drained.connectFirst,
             isSignedIn: !!isSignedIn,
             os: Platform.OS,
+            // The saved access answer; a brand-new account has none, so it
+            // gets the paywall. An older payer who signs in skips the sale.
+            hasConnector: coachAccess.state === 'paid' || coachAccess.state === 'trialing' || coachAccess.connect === true,
           });
-          if (connectParams) {
-            router.replace({ pathname: '/upgrade', params: connectParams } as any);
+          if (connectNext?.to === 'connect-ai') {
+            router.replace({ pathname: '/connect-ai', params: { from: 'paywall' } } as any);
+            return;
+          }
+          if (connectNext?.to === 'paywall') {
+            router.replace({ pathname: '/upgrade', params: connectNext.params } as any);
             return;
           }
           // Sign-up's next step is phase 1's workouts, not the dashboard:
