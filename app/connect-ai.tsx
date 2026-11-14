@@ -25,6 +25,7 @@ import {
   CONNECT_STEPS,
   MCP_URL,
   SHORT_STEPS,
+  stepMarks,
   TRY_ASKING,
   type AiApp,
 } from '@/lib/aiConnect';
@@ -41,10 +42,14 @@ export default function ConnectAiScreen() {
   const { access, loading } = useCoachAccess();
   const [app, setApp] = useState<AiApp>('chatgpt');
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const [details, setDetails] = useState(false);
   const [opened, setOpened] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
-  // Set when copy fails: scroll to the selectable link once Full steps has laid out.
+  // Copy failed: scroll to the selectable link at the top of Full steps. Its
+  // y comes from that block's onLayout; if Full steps is closed, the scroll
+  // waits until it has opened and laid out.
+  const linkY = useRef<number | null>(null);
   const scrollToLink = useRef(false);
 
   // Same rule as the server (mcp/access.ts hasConnectorAccess): a paid plan,
@@ -67,8 +72,13 @@ export default function ConnectAiScreen() {
       toast.success('Link copied');
     } else {
       // The link is selectable in "Full steps", so open that.
-      setDetails(true);
-      scrollToLink.current = true;
+      setCopyFailed(true);
+      if (details && linkY.current != null) {
+        scrollRef.current?.scrollTo({ y: Math.max(0, linkY.current - 16), animated: true });
+      } else {
+        scrollToLink.current = true;
+        setDetails(true);
+      }
       toast.error('Could not copy. Press and hold the link below to copy it.');
     }
   };
@@ -79,10 +89,10 @@ export default function ConnectAiScreen() {
     Linking.openURL(APP_SETTINGS_URL[app]).catch(() => toast.error(`Could not open ${APP_LABEL[app]}.`));
   };
 
-  // Which step is next: 1 until the link is copied, 2 until the app is
-  // opened, then 3 (sign in there). The button stays "Open" so they can go
-  // back; the link stays selectable under Full steps.
-  const current = opened ? 2 : copied ? 1 : 0;
+  // Step looks: lib/aiConnect.ts stepMarks (tested). The button is "Open"
+  // once the link is copied (or copying failed and they copy it by hand).
+  const marks = stepMarks({ copied, copyFailed, opened, needsPlan });
+  const canOpen = copied || copyFailed;
 
   return (
     <SafeAreaView style={[s.root, { backgroundColor: C.background }]} edges={['top', 'bottom']}>
@@ -103,12 +113,6 @@ export default function ConnectAiScreen() {
         ref={scrollRef}
         contentContainerStyle={s.body}
         showsVerticalScrollIndicator={false}
-        onContentSizeChange={() => {
-          if (scrollToLink.current) {
-            scrollToLink.current = false;
-            scrollRef.current?.scrollToEnd({ animated: true });
-          }
-        }}
       >
         <Text style={[s.title, { color: C.foreground }]} accessibilityRole="header">Overload, inside your AI</Text>
         <Text style={[s.sub, { color: C.textSecondary }]}>Log and ask from the chat you already use.</Text>
@@ -156,8 +160,8 @@ export default function ConnectAiScreen() {
         {/* How: three short steps */}
         <View style={s.steps}>
           {SHORT_STEPS[app].map((step, i) => {
-            const done = i < current;
-            const next = i === current && !needsPlan;
+            const done = marks[i] === 'done';
+            const next = marks[i] === 'next';
             return (
               <TouchableOpacity
                 key={step.title}
@@ -192,7 +196,7 @@ export default function ConnectAiScreen() {
 
         {/* The long version, closed by default */}
         <TouchableOpacity
-          onPress={() => { setDetails((d) => !d); track('ai_connect_details_toggled', { open: !details, app }); }}
+          onPress={() => { if (details) linkY.current = null; setDetails((d) => !d); track('ai_connect_details_toggled', { open: !details, app }); }}
           accessibilityRole="button"
           accessibilityState={{ expanded: details }}
           style={[s.moreRow, { borderColor: g.quietEdge }]}
@@ -202,7 +206,17 @@ export default function ConnectAiScreen() {
         </TouchableOpacity>
 
         {details && (
-          <View style={s.details}>
+          <View
+            style={s.details}
+            onLayout={(e) => {
+              // The link is the first thing in Full steps, so its top is the link.
+              linkY.current = e.nativeEvent.layout.y;
+              if (scrollToLink.current) {
+                scrollToLink.current = false;
+                scrollRef.current?.scrollTo({ y: Math.max(0, linkY.current - 16), animated: true });
+              }
+            }}
+          >
             <Text style={[s.detailHead, { color: C.textSecondary }]}>Your link</Text>
             <Text selectable style={[s.link, { color: C.foreground }]}>{MCP_URL}</Text>
 
@@ -242,13 +256,13 @@ export default function ConnectAiScreen() {
           </>
         ) : (
           <PressableScale
-            onPress={copied ? openApp : copy}
+            onPress={canOpen ? openApp : copy}
             style={[s.cta, Shadow.playBtn, { backgroundColor: g.lime }]}
             accessibilityRole="button"
-            accessibilityLabel={copied ? `Open ${APP_LABEL[app]}` : 'Copy link'}
+            accessibilityLabel={canOpen ? `Open ${APP_LABEL[app]}` : 'Copy link'}
           >
             <Text style={[s.ctaText, { color: g.onLime }]}>
-              {copied ? `Open ${APP_LABEL[app]}` : 'Copy link'}
+              {canOpen ? `Open ${APP_LABEL[app]}` : 'Copy link'}
             </Text>
           </PressableScale>
         )}
