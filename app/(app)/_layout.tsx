@@ -288,6 +288,9 @@ export default function AppLayout() {
   // The latest access for code that runs inside long-lived effects.
   const coachAccessRef = useRef(coachAccess);
   coachAccessRef.current = coachAccess;
+  // The account signed in right now, for async work that outlives a render.
+  const currentUserIdRef = useRef<string | null>(user?.id ?? null);
+  currentUserIdRef.current = user?.id ?? null;
   // The account the drain was for: the exemption holds only for it, never
   // for another account signed in later on the same mounted layout.
   const [drainedFor, setDrainedFor] = useState<string | null>(null);
@@ -333,8 +336,12 @@ export default function AppLayout() {
     // Signed in, but Clerk's user has not landed yet: wait. Draining now would
     // save the intake with no account id and use up the stashed blob, and the
     // just-signed-up mark below would be keyed to nobody. user?.id is in the
-    // deps, so this runs again the moment it arrives.
-    if (isSignedIn && !user?.id) return;
+    // deps, so this runs again the moment it arrives. Same 6 s cap as the
+    // check below, so a user that never lands cannot hold the spinner.
+    if (isSignedIn && !user?.id) {
+      const waitCap = setTimeout(() => setNeedsOnboarding((v) => (v === null ? false : v)), 6000);
+      return () => clearTimeout(waitCap);
+    }
     let cancelled = false;
     let settled = false;
     const settle = (value: boolean) => {
@@ -366,7 +373,9 @@ export default function AppLayout() {
           // now, so the re-run cannot set it, and without it the hard-paywall
           // gate locks the new account on the Drona side and wins the race
           // with the route chosen below. Keyed to this account only.
-          setDrainedFor(target.clerkId);
+          // A drain that finishes after another account signed in must not
+          // overwrite that account's mark.
+          if (target.clerkId === currentUserIdRef.current) setDrainedFor(target.clerkId);
           void flushNow();
           // The own-AI path decides on a FRESH access answer, read before the
           // first-run spinner lifts: right after sign-in the saved answer is

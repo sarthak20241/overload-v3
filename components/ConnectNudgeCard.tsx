@@ -26,15 +26,14 @@ export function ConnectNudgeCard({
   const g = useGlass();
   const router = useRouter();
   const [state, setState] = useState<ConnectNudge | null>(null);
-  // Bumped on dismiss: a storage read started before the X tap must not bring
-  // the card back when it answers late.
-  const generation = useRef(0);
+  // Set on dismiss: no storage read, in flight or started before the write
+  // lands, may bring the card back during this visit.
+  const dismissed = useRef(false);
 
   useFocusEffect(
     useCallback(() => {
       let live = true;
-      const gen = generation.current;
-      void readConnectNudge(userId).then((v) => { if (live && gen === generation.current) setState(v); });
+      void readConnectNudge(userId).then((v) => { if (live && !dismissed.current) setState(v); });
       return () => { live = false; };
     }, [userId]),
   );
@@ -63,7 +62,7 @@ export function ConnectNudgeCard({
         <TouchableOpacity
           onPress={() => {
             track('connect_nudge_dismissed');
-            generation.current += 1;
+            dismissed.current = true;
             setState('dismissed');
             void setConnectNudge(userId, 'dismissed');
           }}
