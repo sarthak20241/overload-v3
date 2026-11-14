@@ -1120,8 +1120,8 @@ export default function UpgradeScreen() {
           <Animated.View entering={FadeInDown.delay(440).duration(400)} style={u.footer}>
             {connectFirstAfterPurchase({ boughtConnect: !!outcome && isConnectPlan(outcome.plan), context }) ? (
               // A Connect buyer, or anyone who came in for the connector (Pro
-              // includes it): set it up now. A Connect buyer came for the connector: set it up now, while
-              // they want to. The setup screen closes to the dashboard.
+              // includes it): set it up now, while they want to. The setup
+              // screen closes to the dashboard.
               <>
                 <PressableScale
                   onPress={() => { track('paywall_success_cta', { destination: 'connect_ai' }); router.replace({ pathname: '/connect-ai', params: { from: 'paywall' } } as any); }}
