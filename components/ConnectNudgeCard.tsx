@@ -30,6 +30,13 @@ export function ConnectNudgeCard({
   // lands, may bring the card back during this visit.
   const dismissed = useRef(false);
 
+  // A different account on the same mounted card starts fresh.
+  const forUser = useRef(userId);
+  if (forUser.current !== userId) {
+    forUser.current = userId;
+    dismissed.current = false;
+  }
+
   useFocusEffect(
     useCallback(() => {
       let live = true;

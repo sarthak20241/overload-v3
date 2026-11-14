@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert';
-import { HARD_PAYWALL_FROM, isHardPaywallAccount, markStoreDown, mustPay, resetStoreDown, storeRecentlyDown } from './hardPaywall.ts';
+import { drainMarksAccount, HARD_PAYWALL_FROM, isHardPaywallAccount, markStoreDown, mustPay, resetStoreDown, storeRecentlyDown } from './hardPaywall.ts';
 
 const NEW = new Date(HARD_PAYWALL_FROM + 60_000);
 const OLD = new Date(HARD_PAYWALL_FROM - 60_000);
@@ -54,4 +54,15 @@ Deno.test('store down: the gate opens for 10 minutes, then asks again', () => {
   assertEquals(storeRecentlyDown(1_000 + 9 * 60_000), true);
   assertEquals(storeRecentlyDown(1_000 + 11 * 60_000), false);
   resetStoreDown();
+});
+
+Deno.test('a sign-up drain marks only the account signed in now', () => {
+  // Normal: the drain finishes for the account that is signed in.
+  assertEquals(drainMarksAccount('user_B', 'user_B'), true);
+  // A drain for A that finishes after B signed in marks nobody.
+  assertEquals(drainMarksAccount('user_A', 'user_B'), false);
+  // No account id yet, or signed out by then: no mark.
+  assertEquals(drainMarksAccount(null, 'user_B'), false);
+  assertEquals(drainMarksAccount('user_A', null), false);
+  assertEquals(drainMarksAccount(null, null), false);
 });

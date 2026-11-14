@@ -34,7 +34,7 @@ import { accessHasPlan, connectFirstNext } from '@/lib/paywallPlans';
 import { useSync } from '@/components/SyncProvider';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { isPurchasesAvailable } from '@/lib/revenuecat';
-import { isHardPaywallAccount, mustPay, storeRecentlyDown } from '@/lib/hardPaywall';
+import { drainMarksAccount, isHardPaywallAccount, mustPay, storeRecentlyDown } from '@/lib/hardPaywall';
 import type { Routine } from '@/lib/types';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 
@@ -375,7 +375,7 @@ export default function AppLayout() {
           // with the route chosen below. Keyed to this account only.
           // A drain that finishes after another account signed in must not
           // overwrite that account's mark.
-          if (target.clerkId === currentUserIdRef.current) setDrainedFor(target.clerkId);
+          if (drainMarksAccount(target.clerkId, currentUserIdRef.current)) setDrainedFor(target.clerkId);
           void flushNow();
           // The own-AI path decides on a FRESH access answer, read before the
           // first-run spinner lifts: right after sign-in the saved answer is

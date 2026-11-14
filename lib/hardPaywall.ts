@@ -76,3 +76,14 @@ export function storeRecentlyDown(now = Date.now()): boolean {
 export function resetStoreDown(): void {
   storeDownAt = null;
 }
+
+/**
+ * May a finished sign-up drain mark its account as "just signed up" (which
+ * exempts it from the hard-paywall gate for this mount)? Only when it is the
+ * account signed in right now: a drain for account A that finishes after B
+ * signed in must not mark anyone. A cancelled run for the current account
+ * still may, since the blob it used up is gone for any later run.
+ */
+export function drainMarksAccount(drainedFor: string | null, signedInNow: string | null): boolean {
+  return drainedFor != null && drainedFor === signedInNow;
+}
