@@ -7,7 +7,7 @@
 // The connector itself is supabase/functions/mcp. It serves Pro, trial and
 // Connect accounts (hasConnectorAccess in supabase/functions/mcp/access.ts),
 // so an account with none of those sees the way to a plan instead.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -42,6 +42,8 @@ export default function ConnectAiScreen() {
   const [app, setApp] = useState<AiApp>('chatgpt');
   const [copied, setCopied] = useState(false);
   const [details, setDetails] = useState(false);
+  const [opened, setOpened] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
 
   // Same rule as the server (mcp/access.ts hasConnectorAccess): a paid plan,
   // a live trial, or an active Overload Connect plan.
@@ -64,17 +66,21 @@ export default function ConnectAiScreen() {
     } else {
       // The link is selectable in "Full steps", so open that.
       setDetails(true);
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50);
       toast.error('Could not copy. Press and hold the link below to copy it.');
     }
   };
 
   const openApp = () => {
     track('ai_connect_app_opened', { app });
+    setOpened(true);
     Linking.openURL(APP_SETTINGS_URL[app]).catch(() => toast.error(`Could not open ${APP_LABEL[app]}.`));
   };
 
-  // Which step is next: 1 until the link is copied, then 2.
-  const current = copied ? 1 : 0;
+  // Which step is next: 1 until the link is copied, 2 until the app is
+  // opened, then 3 (sign in there). The button stays "Open" so they can go
+  // back; the link stays selectable under Full steps.
+  const current = opened ? 2 : copied ? 1 : 0;
 
   return (
     <SafeAreaView style={[s.root, { backgroundColor: C.background }]} edges={['top', 'bottom']}>
@@ -91,7 +97,7 @@ export default function ConnectAiScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={s.body} showsVerticalScrollIndicator={false}>
+      <ScrollView ref={scrollRef} contentContainerStyle={s.body} showsVerticalScrollIndicator={false}>
         <Text style={[s.title, { color: C.foreground }]} accessibilityRole="header">Overload, inside your AI</Text>
         <Text style={[s.sub, { color: C.textSecondary }]}>Log and ask from the chat you already use.</Text>
 
@@ -149,9 +155,9 @@ export default function ConnectAiScreen() {
               >
                 <View style={[s.stepDot, { backgroundColor: next || done ? g.lime : g.selectedPill }]}>
                   {done ? (
-                    <Feather name="check" size={14} color={g.dark ? '#1a2400' : '#ffffff'} />
+                    <Feather name="check" size={14} color={g.onLime} />
                   ) : (
-                    <Text style={[s.stepNum, { color: next ? (g.dark ? '#1a2400' : '#ffffff') : C.foreground }]}>{i + 1}</Text>
+                    <Text style={[s.stepNum, { color: next ? g.onLime : C.foreground }]}>{i + 1}</Text>
                   )}
                 </View>
                 <View style={s.stepTextWrap}>
@@ -209,7 +215,7 @@ export default function ConnectAiScreen() {
               accessibilityRole="button"
               accessibilityLabel="See plans to connect"
             >
-              <Text style={[s.ctaText, { color: g.dark ? '#1a2400' : '#ffffff' }]}>See plans to connect</Text>
+              <Text style={[s.ctaText, { color: g.onLime }]}>See plans to connect</Text>
             </PressableScale>
             <Text style={[s.footNote, { color: C.textSecondary }]}>Part of Overload Connect and Overload Pro.</Text>
           </>
@@ -220,7 +226,7 @@ export default function ConnectAiScreen() {
             accessibilityRole="button"
             accessibilityLabel={copied ? `Open ${APP_LABEL[app]}` : 'Copy link'}
           >
-            <Text style={[s.ctaText, { color: g.dark ? '#1a2400' : '#ffffff' }]}>
+            <Text style={[s.ctaText, { color: g.onLime }]}>
               {copied ? `Open ${APP_LABEL[app]}` : 'Copy link'}
             </Text>
           </PressableScale>

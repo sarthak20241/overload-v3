@@ -13,6 +13,9 @@
 
 export const MCP_URL = 'https://mcp.tryoverload.app';
 
+/** The link without https://, as the step card shows it. */
+export const MCP_HOST = MCP_URL.replace(/^https?:\/\//, '');
+
 export type AiApp = 'claude' | 'chatgpt';
 
 export const AI_APPS: { id: AiApp; label: string }[] = [
@@ -40,12 +43,12 @@ export const CONNECT_STEPS: Record<AiApp, string[]> = {
  */
 export const SHORT_STEPS: Record<AiApp, { title: string; detail: string }[]> = {
   claude: [
-    { title: 'Copy your link', detail: 'mcp.tryoverload.app' },
+    { title: 'Copy your link', detail: MCP_HOST },
     { title: 'Paste it in Claude', detail: 'Customize, Connectors, then Add. A computer is easiest.' },
     { title: 'Sign in and allow', detail: 'With your Overload account' },
   ],
   chatgpt: [
-    { title: 'Copy your link', detail: 'mcp.tryoverload.app' },
+    { title: 'Copy your link', detail: MCP_HOST },
     { title: 'Paste it in ChatGPT', detail: 'Plugins, then Add. A computer is easiest.' },
     { title: 'Sign in and allow', detail: 'With your Overload account' },
   ],
