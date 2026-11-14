@@ -745,6 +745,16 @@ export default function OnboardingScreen() {
       goals: selectedGoals(a).join(','),
       seconds_total: Math.round((Date.now() - onboardingStartedAt.current) / 1000),
     };
+    // The weight step ends this path, so report it as completed here: goTo is
+    // not called, and without this the funnel shows everyone quitting at weight.
+    track('onboarding_step_completed', {
+      step: 'weight',
+      step_index: STEP_ORDER.indexOf('weight'),
+      seconds_on_step: Math.round((Date.now() - stepEnteredAt.current) / 1000),
+      next_step: isFreshVisitor ? 'signup' : 'paywall',
+      method: 'cta',
+      path: 'connect',
+    });
     try {
       if (isFreshVisitor) {
         await setPendingOnboarding({
