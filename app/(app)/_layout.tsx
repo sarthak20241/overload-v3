@@ -368,7 +368,9 @@ export default function AppLayout() {
             // One tick, so the hook's new state has rendered into the ref.
             await new Promise((r) => setTimeout(r, 0));
           }
-          if (cancelled) return;
+          // No early return when the effect re-ran during that wait: the blob
+          // is already cleared, so this is the only chance to send them on.
+          // settle() ignores a cancelled run by itself, and the router is stable.
           settle(false);
           // The short "Use my own AI" path: they came for the connector, so
           // the paywall opens on that side. Its success screen leads on to the

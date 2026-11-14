@@ -790,6 +790,8 @@ export default function OnboardingScreen() {
       // Same rule as after sign-up (the (app) layout): a signed-in phone
       // account gets the paywall on the Your own AI side. A guest has no
       // account to connect, and the web has nothing to buy: the dashboard.
+      // No fresh read here, unlike after sign-up: this user was signed in
+      // for the whole intake, so the access answer landed long ago.
       const next = connectFirstNext({
         connectFirst: true,
         isSignedIn: !!isSignedIn,
