@@ -51,6 +51,8 @@ export function useGlass() {
     bubbleTheirs: dark ? 'rgba(0,0,0,0.28)' : 'rgba(255,255,255,0.9)',
     track: dark ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.08)',
     lime: dark ? PAYWALL_LIME : '#4d7a00',
+    /** Text and icons on a lime fill. */
+    onLime: dark ? '#1a2400' : '#ffffff',
     dashed: tint(dark ? 0.14 : 0.14),
   };
 }
@@ -97,7 +99,8 @@ export function PlanSwitch({ side, onChange, disabled }: {
 
 // ── Example chat card (the hero, strong glass) ──────────────────────────────
 
-function Bubble({ text, mine }: { text: string; mine?: boolean }) {
+/** A chat bubble inside a GlassCard. Also used by the connector screen. */
+export function Bubble({ text, mine }: { text: string; mine?: boolean }) {
   const g = useGlass();
   return (
     <View style={[s.bubbleRow, { justifyContent: mine ? 'flex-end' : 'flex-start' }]}>
@@ -108,7 +111,8 @@ function Bubble({ text, mine }: { text: string; mine?: boolean }) {
   );
 }
 
-export function ExampleCard({ side }: { side: PaywallSide }) {
+/** The strong glass card (sheen, lit top and left edges, soft shadow). */
+export function GlassCard({ children }: { children: React.ReactNode }) {
   const g = useGlass();
   return (
     <View style={[s.heroShadow, !g.dark && s.heroShadowLight]}>
@@ -125,31 +129,46 @@ export function ExampleCard({ side }: { side: PaywallSide }) {
           },
         ]}
       >
-        {side === 'drona' ? (
-          <>
-            {/* An example of Drona's weekly card. It must stay true to the
-                app: Drona proposes a change and the user approves it. */}
-            <View style={s.goalRow}>
-              <Text style={[s.goalLabel, { color: g.C.textSecondary }]}>Your goal</Text>
-              <Text style={[s.goalValue, { color: g.C.foreground }]}>72 kg by Mar 3</Text>
-            </View>
-            <View style={[s.goalTrack, { backgroundColor: g.track }]}>
-              <View style={[s.goalFill, { backgroundColor: g.lime }]} />
-            </View>
-            <Text style={[s.caption, { color: g.C.textMuted }]}>Drona</Text>
-            <Bubble text="You ate 900 calories extra this week. I drafted next week for you. Approve it and you still reach 72 kg by Mar 3." />
-          </>
-        ) : (
-          <>
-            <Text style={[s.caption, { color: g.C.textMuted }]}>In your ChatGPT</Text>
-            <Bubble mine text="I ate 2 eggs and toast" />
-            <Bubble text="Saved to Overload. 310 calories." />
-            <Bubble mine text="How was my protein this week?" />
-            <Bubble text="Low on 4 of 7 days." />
-          </>
-        )}
+        {children}
       </LinearGradient>
     </View>
+  );
+}
+
+/** The small grey line above the bubbles ("In your ChatGPT"). */
+export function GlassCaption({ text }: { text: string }) {
+  const g = useGlass();
+  return <Text style={[s.caption, { color: g.C.textMuted }]}>{text}</Text>;
+}
+
+export function ExampleCard({ side }: { side: PaywallSide }) {
+  const g = useGlass();
+  return (
+    <GlassCard>
+      {side === 'drona' ? (
+        <>
+          {/* An example of Drona's weekly card. It must stay true to the
+              app: Drona proposes a change and the user approves it. */}
+          <View style={s.goalRow}>
+            <Text style={[s.goalLabel, { color: g.C.textSecondary }]}>Your goal</Text>
+            <Text style={[s.goalValue, { color: g.C.foreground }]}>72 kg by Mar 3</Text>
+          </View>
+          <View style={[s.goalTrack, { backgroundColor: g.track }]}>
+            <View style={[s.goalFill, { backgroundColor: g.lime }]} />
+          </View>
+          <Text style={[s.caption, { color: g.C.textMuted }]}>Drona</Text>
+          <Bubble text="You ate 900 calories extra this week. I drafted next week for you. Approve it and you still reach 72 kg by Mar 3." />
+        </>
+      ) : (
+        <>
+          <Text style={[s.caption, { color: g.C.textMuted }]}>In your ChatGPT</Text>
+          <Bubble mine text="I ate 2 eggs and toast" />
+          <Bubble text="Saved to Overload. 310 calories." />
+          <Bubble mine text="How was my protein this week?" />
+          <Bubble text="Low on 4 of 7 days." />
+        </>
+      )}
+    </GlassCard>
   );
 }
 

@@ -306,6 +306,8 @@ export type AnalyticsEvent =
   | 'ai_connect_opened'
   | 'ai_connect_link_copied'
   | 'ai_connect_app_switched'
+  | 'ai_connect_app_opened'
+  | 'ai_connect_details_toggled'
   | 'milestone_upsell_shown'
   | 'milestone_upsell_snoozed'
   | 'paywall_viewed'
