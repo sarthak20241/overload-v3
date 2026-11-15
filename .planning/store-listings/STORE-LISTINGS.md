@@ -1,3 +1,6 @@
+> SUPERSEDED by `ASO-2026-11.md` (2026-11-14). Kept for history; its prices
+> and "free" text are out of date. Do not paste from here.
+
 # Store listing copy — paste into consoles
 
 This file is reference copy for the Apple App Store and Google Play Store

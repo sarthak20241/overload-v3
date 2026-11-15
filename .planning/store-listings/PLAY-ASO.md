@@ -1,3 +1,6 @@
+> SUPERSEDED by `ASO-2026-11.md` (2026-11-14). Kept for history; its prices
+> and "free" text are out of date. Do not paste from here.
+
 # Play Store reach plan (not screenshots)
 
 Read from the live Play listing on 2026-10-25 through the Play Developer API.
