@@ -71,6 +71,7 @@ import {
   type StatedRaw,
   type StatedTotal,
   totalNote,
+  WEIGHT_LABELS,
 } from "./statedNumbers.ts";
 import {
   buildMemory,
@@ -597,10 +598,9 @@ export function dropUnextracted(
 const SKIP_DECIDE_MIN_TOP_SCORE = 0.75;
 
 /** Units we can convert without asking a model. */
-const MASS_UNITS = new Set([
-  "g", "gram", "grams", "gm", "gms",
-  "ml", "millilitre", "milliliter", "millilitres", "milliliters",
-]);
+// One set with statedNumbers' WEIGHT_LABELS: readTypedWeight skips the same
+// units, so a typed weight is never applied on top of a weight unit.
+const MASS_UNITS = WEIGHT_LABELS;
 
 /** Every metric amount in a label - "100 g", "100g", "(11 g)" - built from
  *  MASS_UNITS so the two can never drift apart. Longest spelling first, so

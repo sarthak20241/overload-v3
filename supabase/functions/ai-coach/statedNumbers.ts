@@ -408,7 +408,9 @@ export interface PortionLine extends LineMacros {
 
 const WEIGHT_IN_LABEL = /\s*\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|grams?|ml)\s*\)/gi;
 const LIQUID_LABELS = new Set(["ml", "millilitre", "milliliter", "millilitres", "milliliters"]);
-const WEIGHT_LABELS = new Set(["g", "gm", "gms", "gram", "grams", ...LIQUID_LABELS]);
+/** Units whose quantity IS the weight. parseMeal's MASS_UNITS is this same
+ *  set, so a typed weight and a weight unit can never disagree. */
+export const WEIGHT_LABELS: ReadonlySet<string> = new Set(["g", "gm", "gms", "gram", "grams", ...LIQUID_LABELS]);
 
 /**
  * The line at the weight the user typed beside a count ("2 slices (~50 g)").
