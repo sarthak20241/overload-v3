@@ -5589,7 +5589,12 @@ export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, step
       continue;
     }
     const scaled = scaleToTypedWeight(out[i], w.grams);
-    if (!scaled) continue;
+    if (!scaled) {
+      // Already at the user's weight (or no grams to scale from): traced, so
+      // "was my weight used?" is answered either way.
+      steps.push({ iter: 8, tool: "user_typed_weight", input: { line: w.name, grams: w.grams }, result: { applied: false, reason: "line already at that weight or has no grams", grams: out[i].grams } });
+      continue;
+    }
     steps.push({ iter: 8, tool: "user_typed_weight", input: { line: w.name, grams: w.grams }, result: { applied: true, from_g: out[i].grams, kcal: scaled.kcal } });
     out[i] = scaled;
     changed = true;
