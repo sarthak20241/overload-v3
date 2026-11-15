@@ -66,6 +66,24 @@ export function readStated(raw: unknown): StatedRaw | null {
   };
 }
 
+/**
+ * The weight the user typed for a counted amount ("2 slices (~50 g)", "2
+ * slices, 25 g each"), as the line's total grams. The extract call copies the
+ * number and says whether it is for the line or for each piece; the multiply
+ * is done here, never by the model. null when there is none, when the unit is
+ * itself a weight or volume (its quantity already is the weight), or when the
+ * total is past any portion.
+ */
+export function readTypedWeight(raw: unknown, quantity: number, unit: string): number | null {
+  if (!raw || typeof raw !== "object") return null;
+  if (WEIGHT_LABELS.has(unit.trim().toLowerCase())) return null;
+  const o = raw as Record<string, unknown>;
+  const g = typeof o.grams === "number" && Number.isFinite(o.grams) && o.grams > 0 ? o.grams : null;
+  if (g === null) return null;
+  const total = o.per === "each" ? g * (quantity > 0 ? quantity : 1) : g;
+  return total >= 0.5 && total <= 5000 ? r1(total) : null;
+}
+
 const r1 = (n: number) => Math.round(n * 10) / 10;
 
 /**
@@ -391,6 +409,32 @@ export interface PortionLine extends LineMacros {
 const WEIGHT_IN_LABEL = /\s*\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|grams?|ml)\s*\)/gi;
 const LIQUID_LABELS = new Set(["ml", "millilitre", "milliliter", "millilitres", "milliliters"]);
 const WEIGHT_LABELS = new Set(["g", "gm", "gms", "gram", "grams", ...LIQUID_LABELS]);
+
+/**
+ * The line at the weight the user typed beside a count ("2 slices (~50 g)").
+ * The food keeps its density: kcal and macros move with the grams. The amount
+ * stays the user's ("2 slice"), and a weight printed in the label is dropped,
+ * since it no longer holds. null when the line already is at that weight, or
+ * has no grams to scale from.
+ */
+export function scaleToTypedWeight<T extends PortionLine>(line: T, grams: number): T | null {
+  if (!(line.grams > 0) || !(grams > 0)) return null;
+  const ratio = grams / line.grams;
+  if (Math.abs(ratio - 1) < 0.01) return null;
+  const m = (v: number) => r1(v * ratio);
+  const weightUnit = isWeightLabel(line.serving_label);
+  return {
+    ...line,
+    grams: r1(grams),
+    kcal: m(line.kcal),
+    protein_g: m(line.protein_g),
+    carb_g: m(line.carb_g),
+    fat_g: m(line.fat_g),
+    fiber_g: line.fiber_g === null ? null : m(line.fiber_g),
+    quantity: weightUnit ? r1(grams) : line.quantity,
+    serving_label: weightUnit ? line.serving_label : line.serving_label.replace(WEIGHT_IN_LABEL, "").trim() || line.serving_label,
+  };
+}
 
 /** A unit that is itself a weight or volume ("g", "ml"): its quantity IS the
  *  grams, so it is never a count to keep while the grams move. */

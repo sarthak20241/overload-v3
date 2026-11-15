@@ -59,7 +59,9 @@ import {
   fitPortionToStated,
   readStated,
   readStatedTotal,
+  readTypedWeight,
   remainingTotal,
+  scaleToTypedWeight,
   shareNote,
   splitTotal,
   statedLineTotal,
@@ -1624,6 +1626,24 @@ const EXTRACT_TOOL = {
                 fiber_g: { type: ["number", "null"] },
               },
             },
+            typed_weight: {
+              type: ["object", "null"],
+              description:
+                "ONLY when the unit is a count or measure (slice, piece, roti, cup...) AND the " +
+                "user's text gives a weight in g or ml for that amount: \"2 slices (~50 g)\" is " +
+                "grams 50, per total; \"2 slices, 25 g each\" is grams 25, per each. Copy the " +
+                "number as written; do not multiply it. This is the weight they ate, not the " +
+                "pack's serving size. null when they wrote no weight for it, and null when the " +
+                "unit is already g or ml.",
+              properties: {
+                grams: { type: "number", description: "The weight as written, in g or ml." },
+                per: {
+                  type: "string",
+                  enum: ["total", "each"],
+                  description: "total: the weight of the whole amount. each: the weight of one piece.",
+                },
+              },
+            },
             meal: {
               type: ["string", "null"],
               enum: ["breakfast", "lunch", "dinner", "snack", null],
@@ -2523,6 +2543,46 @@ export function applyLabelChain(
   return { est: { kcal, protein_g, carb_g, fat_g, total_g }, applied: true };
 }
 
+type LineEst = { kcal: number; protein_g: number; carb_g: number; fat_g: number; total_g: number };
+
+/**
+ * Quick's estimate for one line, with the user's own data first. The label
+ * chain is for a pack label the model RECALLS, so it runs only when the user
+ * gave neither a weight nor numbers: a real log put "2 slices (~50 g)" in
+ * label_serving_g with 1 piece per serving, and the chain made it 100 g
+ * (2026-11-15). A typed weight then sets the line's grams, and the model's
+ * kcal and macros move with it at the model's own density.
+ */
+export function lineEstimate(
+  quantity: number,
+  unit: string,
+  rawEst: LineEst | null,
+  label: { applies: unknown; serving_g: unknown; serving_kcal: unknown; pieces: unknown },
+  typedGrams: number | null,
+  stated: unknown,
+): { est: LineEst | null; chained: boolean } {
+  if (!rawEst) return { est: null, chained: false };
+  if (!typedGrams && !stated) {
+    const c = applyLabelChain(quantity, unit, rawEst, label);
+    return { est: c.est, chained: c.applied };
+  }
+  if (!typedGrams || Math.abs(rawEst.total_g - typedGrams) < 0.05) return { est: rawEst, chained: false };
+  const f = typedGrams / rawEst.total_g;
+  return {
+    est: {
+      kcal: rawEst.kcal * f,
+      protein_g: rawEst.protein_g * f,
+      carb_g: rawEst.carb_g * f,
+      fat_g: rawEst.fat_g * f,
+      total_g: typedGrams,
+    },
+    chained: false,
+  };
+}
+
+/** Test hooks: the extract forms as sent. */
+export const EXTRACT_TOOL_FOR_TEST = EXTRACT_TOOL;
+
 const FAST_EXTRACT_TOOL = (() => {
   const t = JSON.parse(JSON.stringify(EXTRACT_TOOL));
   // Its own name: the schema is different enough that calling it extract_meal
@@ -2584,11 +2644,15 @@ const FAST_EXTRACT_TOOL = (() => {
   });
   item.required = [
     ...item.required,
+    // Required, so the model answers it (null or a weight) instead of skipping
+    // an optional field: measured skipped on the real "2 slices (~50 g)" log.
+    "typed_weight",
     "label_applies", "label_serving_g", "label_serving_kcal", "label_pieces_per_serving",
     "est_kcal", "est_protein_g", "est_carb_g", "est_fat_g", "est_total_g",
   ];
   return t;
 })();
+export const FAST_EXTRACT_TOOL_FOR_TEST = FAST_EXTRACT_TOOL;
 
 /** How many foods one message may log.
  *
@@ -3066,6 +3130,10 @@ export interface ExtractedItem {
   /** Nutrition numbers the USER wrote for this food, as written
    *  (statedNumbers.ts). They win over every source. */
   stated?: StatedRaw | null;
+  /** The weight the user typed for a counted amount ("2 slices (~50 g)"), as
+   *  the line's total grams (readTypedWeight). null for a g/ml unit, whose
+   *  quantity already is the weight. It sets the line's grams in every tier. */
+  typedGrams?: number | null;
 }
 
 export interface ResolvedItem extends ExtractedItem {
@@ -5294,9 +5362,10 @@ export function memoryLineName(it: { name: string; prep?: string | null }): stri
 export function statedFor(it: ExtractedItem): StatedPer100 | null {
   if (!it.stated) return null;
   const unit = it.unit.trim().toLowerCase();
-  // A line total converts only against a weight the user TYPED. The model's
-  // own gram guess would make "Your numbers: 200 kcal for 60 g" half ours.
-  const lineGrams = MASS_UNITS.has(unit) && it.quantity > 0 ? it.quantity : null;
+  // A line total converts only against a weight the user TYPED: a g/ml amount,
+  // or a weight beside a count ("2 slices (~50 g)"). The model's own gram
+  // guess would make "Your numbers: 200 kcal for 60 g" half ours.
+  const lineGrams = MASS_UNITS.has(unit) && it.quantity > 0 ? it.quantity : it.typedGrams ?? null;
   return statedPer100(it.stated, lineGrams, PLAUSIBLE.maxKcalPer100);
 }
 
@@ -5344,6 +5413,7 @@ export function statedQuickItem(s: StatedPer100, it: ExtractedItem): ParsedItem 
   const unit = it.unit.trim().toLowerCase();
   let grams: number | null = null;
   if (MASS_UNITS.has(unit)) grams = qty;
+  else if (it.typedGrams) grams = it.typedGrams;
   else if (s.serving_g) grams = qty * s.serving_g;
   else if (it.est && it.est.total_g > 0) grams = it.est.total_g;
   if (!grams || grams > 5000) return null;
@@ -5383,6 +5453,10 @@ export interface StatedCapture {
    *  "280 cals of poha + vegetable dalia" among thirteen other foods. Absent
    *  when it is for everything. */
   mealFoods?: string[];
+  /** Weights the user typed beside a count ("2 slices (~50 g)"), one per
+   *  line. They set the line's grams in every tier, whatever row or serving
+   *  the tier picked. */
+  weights?: { name: string; correctsFoodName: string | null; grams: number }[];
   /** For one line each: totals statedFor could not put on a per-100 basis. */
   lines: { name: string; correctsFoodName: string | null; totals: StatedTotal; amountTyped: boolean }[];
   /** A message of one food: whether the user named its amount. A meal total
@@ -5397,6 +5471,9 @@ export interface StatedCapture {
 export function captureStatedTotals(extMealTotal: unknown, extItems: ExtractedItem[]): StatedCapture {
   const lines: StatedCapture["lines"] = [];
   const ignored: string[] = [];
+  const weights = extItems
+    .filter((it) => !!it.typedGrams)
+    .map((it) => ({ name: foodLabel(it), correctsFoodName: it.correctsFoodName ?? null, grams: it.typedGrams! }));
   for (const it of extItems) {
     // Numbers statedFor can use are applied in the pipeline itself, where a
     // partial panel is filled from a row that is the right food.
@@ -5419,6 +5496,7 @@ export function captureStatedTotals(extMealTotal: unknown, extItems: ExtractedIt
   const some = picked > 0 && picked < extItems.length;
   return {
     meal, lines, ignored,
+    ...(weights.length ? { weights } : {}),
     soleAmountTyped: extItems.length === 1 ? amountTyped(extItems[0]) : null,
     ...(meal && some ? { mealFoods: foods } : {}),
   };
@@ -5461,7 +5539,7 @@ function amountTyped(it: Pick<ExtractedItem, "quantity" | "unit">): boolean {
 }
 
 /** The one line a named total belongs to, or -1 when it is not exactly one. */
-function lineForTotal(items: ParsedItem[], t: StatedCapture["lines"][number]): number {
+function lineForTotal(items: ParsedItem[], t: { name: string; correctsFoodName: string | null }): number {
   // An empty key (a name in another script, or only symbols) would "contain"
   // every line; it matches nothing instead.
   const keys = [t.name, t.correctsFoodName].filter((k): k is string => !!k).map(memoryKey).filter(Boolean);
@@ -5496,9 +5574,26 @@ const sameNumbers = (a: ParsedItem, b: ParsedItem) =>
  * meal of one line simply carries the total as the user's own numbers.
  */
 export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, steps: ParseStep[]): ParsedItem[] | null {
-  if (items.length === 0 || (!cap.meal && cap.lines.length === 0)) return null;
+  if (items.length === 0 || (!cap.meal && cap.lines.length === 0 && !cap.weights?.length)) return null;
   const out = [...items];
   let changed = false;
+
+  // A weight the user typed beside a count sets that line's grams, whatever
+  // row or serving the tier picked. First, so a total below then fits a line
+  // already at the user's weight.
+  for (const w of cap.weights ?? []) {
+    let i = lineForTotal(out, w);
+    if (i < 0 && out.length === 1 && cap.weights!.length === 1) i = 0;
+    if (i < 0) {
+      steps.push({ iter: 8, tool: "user_typed_weight", input: { line: w.name, grams: w.grams }, result: { applied: false, reason: "no single line by that name" } });
+      continue;
+    }
+    const scaled = scaleToTypedWeight(out[i], w.grams);
+    if (!scaled) continue;
+    steps.push({ iter: 8, tool: "user_typed_weight", input: { line: w.name, grams: w.grams }, result: { applied: true, from_g: out[i].grams, kcal: scaled.kcal } });
+    out[i] = scaled;
+    changed = true;
+  }
 
   for (const t of cap.lines) {
     let i = lineForTotal(out, t);
@@ -7185,15 +7280,18 @@ async function runParseMealCore(
       // Label chain: recall is the model's job, arithmetic is ours. When the
       // model reported the pack's printed serving, the line is RE-DERIVED from
       // it in code and the model's own multiplication is overridden.
-      const chained = rawEst
-        ? applyLabelChain(quantity, unit, rawEst, {
-          applies: o.label_applies,
-          serving_g: o.label_serving_g,
-          serving_kcal: o.label_serving_kcal,
-          pieces: o.label_pieces_per_serving,
-        })
-        : null;
-      if (chained?.applied) {
+      const typedGrams = readTypedWeight(o.typed_weight, quantity, unit);
+      // Traced, so "my weight was ignored" can be answered from the trace.
+      if (o.typed_weight) {
+        steps.push({ iter: 0, tool: "user_typed_weight", input: { item: name, raw: o.typed_weight }, result: { grams: typedGrams } });
+      }
+      const line = lineEstimate(quantity, unit, rawEst, {
+        applies: o.label_applies,
+        serving_g: o.label_serving_g,
+        serving_kcal: o.label_serving_kcal,
+        pieces: o.label_pieces_per_serving,
+      }, typedGrams, read.stated);
+      if (line.chained) {
         steps.push({
           iter: 0,
           tool: "label_chain",
@@ -7203,7 +7301,7 @@ async function runParseMealCore(
             serving_kcal: o.label_serving_kcal === null ? null : Number(o.label_serving_kcal),
             pieces: Number(o.label_pieces_per_serving),
           },
-          result: { total_g: round1(chained.est.total_g), kcal: round1(chained.est.kcal) },
+          result: { total_g: round1(line.est!.total_g), kcal: round1(line.est!.kcal) },
         });
       }
       return [{
@@ -7218,8 +7316,9 @@ async function runParseMealCore(
         meal: o.meal === "breakfast" || o.meal === "lunch" || o.meal === "dinner" || o.meal === "snack"
           ? o.meal
           : null,
-        est: chained ? chained.est : rawEst,
+        est: line.est,
         stated: read.stated,
+        typedGrams,
         savedMeal: typeof o.saved_meal === "string" && o.saved_meal.trim() ? o.saved_meal.trim().slice(0, 120) : null,
       }];
     });
