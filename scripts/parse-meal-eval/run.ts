@@ -558,6 +558,8 @@ async function main() {
             "extract_meal",
             "correction_scope",
             "correction_guard",
+            "label_chain",
+            "user_typed_weight",
             "fast_correction",
             "thorough_match",
             "thorough_brand_web",

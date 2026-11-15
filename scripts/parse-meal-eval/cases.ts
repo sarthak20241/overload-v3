@@ -1357,4 +1357,23 @@ export const CASES: EvalCase[] = [
       forbidNames: ["groundcherr", "gooseberr"],
     },
   },
+  // ── A weight typed beside a count (live 2026-11-15, Quick) ───────────────
+  // "2 slices (~50 g)" had no place in the extract form. Quick put the 50 g in
+  // label_serving_g with 1 piece per serving, the label chain made it 2 x 50 =
+  // 100 g, and the bread logged at 265 kcal. The line is the user's 50 g:
+  // 265 per 100 g gives 133 kcal. The cheese is "½ slice (~9 g)" at 289 per
+  // 100 g, 26 kcal.
+  {
+    id: "typed-weight-beside-count",
+    text: "Log the following meal:\n\n- The Health Factory Multi-Protein Bread \u2014 2 slices (~50 g)\n- Egg whites \u2014 3\n- Button mushrooms \u2014 100 g\n- Britannia Korean Chilli Cheese Slice \u2014 \u00bd slice (~9 g)\n- Pineapple \u2014 1 slice\n\nProduct-specific nutrition:\n\n1. The Health Factory Multi-Protein Bread\n\nPer 100 g:\n\n- Calories: 265 kcal\n- Protein: 20.8 g\n- Carbs: 41.5 g\n- Fat: 1.7 g\n- Fiber: 2.1 g\n\nFor 2 slices (~50 g): 133 kcal, 10.4 g protein, 20.8 g carbs, 0.9 g fat.\n\n2. Britannia Korean Chilli Cheese Slice\n\nPer 100 g:\n\n- Calories: 289 kcal\n- Protein: 14 g\n- Carbs: 3 g\n- Fat: 24.5 g\n\nFor \u00bd slice (~9 g): 26 kcal, 1.3 g protein, 0.3 g carbs, 2.2 g fat.\n\nUse standard nutrition values for the egg whites, mushrooms and pineapple. Log everything under Dinner.",
+    hour: 20,
+    expect: {
+      minItems: 5,
+      mealType: "dinner",
+      items: [
+        { nameIncludes: "bread", gramsBetween: [48, 52], kcalBetween: [128, 138] },
+        { nameIncludes: "cheese", gramsBetween: [8, 10], kcalBetween: [23, 29] },
+      ],
+    },
+  },
 ];
