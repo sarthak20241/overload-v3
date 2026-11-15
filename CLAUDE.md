@@ -159,6 +159,7 @@ deno test --allow-all --node-modules-dir=none supabase/migrations/checks/referra
 deno test --allow-all lib/weightWheel.test.ts    # onboarding weight wheels: whole + one decimal, the top of the scale, kg <-> lbs
 deno test --allow-all supabase/functions/ai-coach/freeGoalBuild.test.ts # one free goal plan per account: 1 build, 8 edit turns, a guest build spends it
 deno test --allow-all supabase/functions/ai-coach/regionRules.test.ts # FOOD_REGION_RULES: each region gets only its block, no rule lost, off = today
+deno test --allow-all supabase/functions/ai-coach/typedWeight.test.ts # "2 slices (~50 g)": the typed weight sets the line's grams in every tier; no label chain on the user's own data
 deno test --allow-all --node-modules-dir=none supabase/functions/mcp/ # ChatGPT/Claude connector: sign-in token, every query filtered to the user, read + food write tools
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/mcp_food_writes.check.ts # connector food writes on PGlite: one meal per day, no double log, delete only connector lines (not in CI)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/connect_plan.check.ts # Connect plan on PGlite: Pro unchanged, Connect = free + connector, no in-app AI for new accounts (not in CI)
