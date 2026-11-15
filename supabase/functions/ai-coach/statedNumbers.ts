@@ -420,7 +420,8 @@ export const WEIGHT_LABELS: ReadonlySet<string> = new Set(["g", "gm", "gms", "gr
  * has no grams to scale from.
  */
 export function scaleToTypedWeight<T extends PortionLine>(line: T, grams: number): T | null {
-  if (!(line.grams > 0) || !(grams > 0)) return null;
+  // Its own cap, the same as readTypedWeight's: no portion is past 5 kg.
+  if (!(line.grams > 0) || !(grams > 0) || grams > 5000) return null;
   const ratio = grams / line.grams;
   if (Math.abs(ratio - 1) < 0.01) return null;
   const m = (v: number) => r1(v * ratio);
