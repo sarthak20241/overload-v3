@@ -15,7 +15,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import * as WebBrowser from 'expo-web-browser';
 import { setGuestMode, getGuestMode } from '@/lib/guestMode';
 import { getGuestWorkouts, getGuestRoutines } from '@/lib/guestStore';
-import { classifySSO, shouldReloadSSO, ssoDetail, ssoErrorCopy, SIGN_IN_INCOMPLETE_COPY, type SSOOutcome } from '@/lib/ssoOutcome';
+import { classifySSO, isNewSSOAccount, shouldReloadSSO, ssoDetail, ssoErrorCopy, SIGN_IN_INCOMPLETE_COPY, type SSOOutcome } from '@/lib/ssoOutcome';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 
 function useWarmUpBrowser() {
@@ -430,7 +430,8 @@ export default function AuthScreen() {
 
       if (outcome.kind === 'session') {
         await result.setActive!({ session: outcome.sessionId });
-        track('signed_in', { method, after_reload: reloaded || undefined });
+        if (isNewSSOAccount(state)) track('signed_up', { method, email_verification: false });
+        else track('signed_in', { method, after_reload: reloaded || undefined });
         router.replace('/(app)');
         return;
       }

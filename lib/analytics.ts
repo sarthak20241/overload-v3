@@ -85,6 +85,10 @@ export type AnalyticsEvent =
   | 'signup_started'
   | 'signed_up'
   | 'signed_in'
+  // Where the person came from: Play install referrer (Android, once per
+  // install, lib/installSource.ts) and the onboarding question (both stores).
+  | 'install_attributed'
+  | 'acquisition_source_answered'
   | 'signed_out'
   | 'auth_failed'
   // Silent re-sign-in before Clerk's 7-day session end (SessionRefreshGate).
@@ -386,6 +390,14 @@ export function setUserProps(props: AnalyticsProps): void {
   try {
     const cleaned = clean(props);
     if (cleaned) posthog?.capture('$set', { $set: cleaned });
+  } catch {}
+}
+
+/** Person properties that keep their FIRST value (where someone came from). */
+export function setUserPropsOnce(props: AnalyticsProps): void {
+  try {
+    const cleaned = clean(props);
+    if (cleaned) posthog?.capture('$set', { $set_once: cleaned });
   } catch {}
 }
 

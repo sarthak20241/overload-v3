@@ -1,0 +1,53 @@
+/**
+ * Sends the Android install source to PostHog once per install.
+ *
+ * Google Play's install referrer says which store link brought the person in
+ * (lib/installReferrer.ts reads it). expo-application already carries the
+ * Play Install Referrer library in the shipped build, so this needs no new
+ * native code and goes out by OTA.
+ *
+ * The props go on the person with $set_once, so the first answer wins and a
+ * later reinstall never overwrites it. Works before sign-up: PostHog merges
+ * the anonymous person into the account on identify.
+ *
+ * iOS has no install referrer. Apple shows App Store campaign links (`ct=`)
+ * only in App Store Connect, so on iOS the sign-up question
+ * (`acquisition_source_answered`) is the signal.
+ */
+import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Application from 'expo-application';
+import { posthog } from '@/lib/analytics';
+import { installSourceProps, parseInstallReferrer } from '@/lib/installReferrer';
+
+const SENT_KEY = 'overload.install_source_sent.v1';
+const TIMEOUT_MS = 5000;
+
+let started = false;
+
+export async function captureInstallSourceOnce(): Promise<void> {
+  if (started || !posthog || Platform.OS !== 'android') return;
+  started = true;
+  try {
+    if (await AsyncStorage.getItem(SENT_KEY)) return;
+    const raw = await Promise.race<string | null>([
+      Application.getInstallReferrerAsync(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), TIMEOUT_MS)),
+    ]);
+    // Play not reachable yet (no Play services, offline): try again next open.
+    if (raw == null) return;
+    const props = installSourceProps(parseInstallReferrer(raw));
+    posthog.capture('install_attributed', {
+      ...props,
+      install_referrer_raw: raw.slice(0, 200),
+      $set_once: props,
+    });
+    await AsyncStorage.setItem(SENT_KEY, '1');
+  } catch {
+    // Sideloaded builds and emulators without Play throw. Never retry those
+    // in a loop, and never break the app for analytics.
+    try {
+      await AsyncStorage.setItem(SENT_KEY, 'error');
+    } catch {}
+  }
+}

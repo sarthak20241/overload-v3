@@ -63,7 +63,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useGuestMode } from '@/lib/guestMode';
 import { accessHasPlan, connectFirstNext } from '@/lib/paywallPlans';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
-import { track } from '@/lib/analytics';
+import { setUserPropsOnce, track } from '@/lib/analytics';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSync } from '@/components/SyncProvider';
 import { useToast } from '@/components/ui/Toast';
@@ -136,12 +136,12 @@ function formatMeasurement(value: number): string {
 }
 
 type Step =
-  | 'welcome' | 'goal' | 'experience' | 'frequency' | 'health' | 'prefs'
+  | 'welcome' | 'goal' | 'experience' | 'source' | 'frequency' | 'health' | 'prefs'
   | 'gender' | 'age' | 'height' | 'weight' | 'target' | 'pace'
   | 'interlude' | 'commit' | 'build' | 'plan';
-const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
+const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'source', 'frequency', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
 // Steps counted by the progress header (welcome and the build moment hide it).
-const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
+const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'source', 'frequency', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
 
 const GOAL_OPTIONS: { value: CoachGoal; icon: keyof typeof Feather.glyphMap; title: string }[] = [
   { value: 'hypertrophy', icon: 'layers', title: 'Build muscle' },
@@ -155,6 +155,18 @@ const EXPERIENCE_OPTIONS: { value: ExperienceLevel; icon: keyof typeof Feather.g
   { value: 'beginner', icon: 'sunrise', title: 'Beginner', sub: 'Less than 1 year' },
   { value: 'intermediate', icon: 'trending-up', title: 'Intermediate', sub: '1 to 3 years' },
   { value: 'advanced', icon: 'award', title: 'Advanced', sub: 'More than 3 years' },
+];
+
+// "How did you find us?" Android installs also carry Play's install referrer
+// (lib/installSource.ts); iOS has nothing else, so this is its only signal.
+const SOURCE_OPTIONS: { value: string; icon: keyof typeof Feather.glyphMap; title: string }[] = [
+  { value: 'instagram', icon: 'instagram', title: 'Instagram' },
+  { value: 'youtube', icon: 'youtube', title: 'YouTube' },
+  { value: 'chatgpt', icon: 'message-circle', title: 'ChatGPT' },
+  { value: 'google', icon: 'search', title: 'Google search' },
+  { value: 'app_store', icon: 'shopping-bag', title: 'Browsing the app store' },
+  { value: 'friend', icon: 'users', title: 'A friend' },
+  { value: 'other', icon: 'more-horizontal', title: 'Somewhere else' },
 ];
 
 const GOAL_PHRASES: Record<CoachGoal, string> = {
@@ -194,6 +206,9 @@ export default function OnboardingScreen() {
     experience: 'beginner',
     frequency: 3,
   });
+  // Asked once in the intake; kept here, not in answers, since nothing else
+  // reads it. Goes to PostHog only.
+  const [heardFrom, setHeardFrom] = useState<string | null>(null);
   const [finishing, setFinishing] = useState(false);
   const [celebrating, setCelebrating] = useState(false);
 
@@ -987,6 +1002,35 @@ export default function OnboardingScreen() {
                     sub={opt.sub}
                     selected={answers.experience === opt.value}
                     onPress={() => selectAndAdvance({ experience: opt.value })}
+                  />
+                ))}
+              </View>
+            </QuestionStep>
+          )}
+
+          {step === 'source' && (
+            <QuestionStep
+              stepKey="source"
+              question="How did you find Overload?"
+              sub="One tap. It tells us what is working."
+              compact
+              footer={<PrimaryCta label="Skip for now" onPress={() => goTo('frequency')} />}
+            >
+              <View style={s.options}>
+                {SOURCE_OPTIONS.map((opt, idx) => (
+                  <OptionCard
+                    key={opt.value}
+                    index={idx}
+                    icon={opt.icon}
+                    title={opt.title}
+                    compact
+                    selected={heardFrom === opt.value}
+                    onPress={() => {
+                      setHeardFrom(opt.value);
+                      track('acquisition_source_answered', { source: opt.value });
+                      setUserPropsOnce({ heard_from: opt.value });
+                      selectAndAdvance({});
+                    }}
                   />
                 ))}
               </View>
