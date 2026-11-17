@@ -76,3 +76,34 @@ export function installSourceProps(r: InstallReferrer): Record<string, string | 
   out.install_organic = r.organic;
   return out;
 }
+
+/**
+ * Retry bookkeeping for lib/installSource.ts, kept in one storage value:
+ * '1' = sent, 'fail:N' = N failed reads. Play's referrer service can be
+ * briefly unavailable (SERVICE_UNAVAILABLE, SERVICE_DISCONNECTED), so a
+ * failure is tried again on later opens, up to MAX_REFERRER_TRIES.
+ */
+export const MAX_REFERRER_TRIES = 5;
+
+function failures(stored: string | null): number {
+  const m = /^fail:(\d+)$/.exec(stored ?? '');
+  return m ? Number(m[1]) : 0;
+}
+
+export function shouldReadReferrer(stored: string | null): boolean {
+  if (stored === '1') return false;
+  return failures(stored) < MAX_REFERRER_TRIES;
+}
+
+export function afterReferrerFailure(stored: string | null): string {
+  return `fail:${failures(stored) + 1}`;
+}
+
+/** Parameter names only: enough to spot a new link format, no values. */
+export function referrerKeys(raw: string): string {
+  try {
+    return [...new Set([...new URLSearchParams((raw ?? '').trim()).keys()].filter(Boolean))].sort().join(',');
+  } catch {
+    return '';
+  }
+}

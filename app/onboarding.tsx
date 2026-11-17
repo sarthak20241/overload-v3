@@ -1014,7 +1014,16 @@ export default function OnboardingScreen() {
               question="How did you find Overload?"
               sub="One tap. It tells us what is working."
               compact
-              footer={<PrimaryCta label="Skip for now" onPress={() => goTo('frequency')} />}
+              footer={
+                <PrimaryCta
+                  label="Skip for now"
+                  onPress={() => {
+                    // Tells a skip apart from someone who quit on this step.
+                    if (!heardFrom) track('acquisition_source_answered', { source: 'skipped' });
+                    goTo('frequency');
+                  }}
+                />
+              }
             >
               <View style={s.options}>
                 {SOURCE_OPTIONS.map((opt, idx) => (
@@ -1026,9 +1035,12 @@ export default function OnboardingScreen() {
                     compact
                     selected={heardFrom === opt.value}
                     onPress={() => {
+                      // Back and the same tap again is not a second answer.
+                      if (heardFrom !== opt.value) {
+                        track('acquisition_source_answered', { source: opt.value, changed: heardFrom != null });
+                        setUserPropsOnce({ heard_from: opt.value });
+                      }
                       setHeardFrom(opt.value);
-                      track('acquisition_source_answered', { source: opt.value });
-                      setUserPropsOnce({ heard_from: opt.value });
                       selectAndAdvance({});
                     }}
                   />

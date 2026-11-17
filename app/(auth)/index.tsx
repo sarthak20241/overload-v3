@@ -430,7 +430,7 @@ export default function AuthScreen() {
 
       if (outcome.kind === 'session') {
         await result.setActive!({ session: outcome.sessionId });
-        if (isNewSSOAccount(state)) track('signed_up', { method, email_verification: false });
+        if (isNewSSOAccount(state)) track('signed_up', { method, email_verification: false, after_reload: reloaded || undefined });
         else track('signed_in', { method, after_reload: reloaded || undefined });
         router.replace('/(app)');
         return;

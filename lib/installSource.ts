@@ -18,7 +18,13 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Application from 'expo-application';
 import { posthog } from '@/lib/analytics';
-import { installSourceProps, parseInstallReferrer } from '@/lib/installReferrer';
+import {
+  afterReferrerFailure,
+  installSourceProps,
+  parseInstallReferrer,
+  referrerKeys,
+  shouldReadReferrer,
+} from '@/lib/installReferrer';
 
 const SENT_KEY = 'overload.install_source_sent.v1';
 const TIMEOUT_MS = 5000;
@@ -28,26 +34,33 @@ let started = false;
 export async function captureInstallSourceOnce(): Promise<void> {
   if (started || !posthog || Platform.OS !== 'android') return;
   started = true;
+  let stored: string | null = null;
   try {
-    if (await AsyncStorage.getItem(SENT_KEY)) return;
+    stored = await AsyncStorage.getItem(SENT_KEY);
+    if (!shouldReadReferrer(stored)) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const raw = await Promise.race<string | null>([
       Application.getInstallReferrerAsync(),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), TIMEOUT_MS)),
-    ]);
-    // Play not reachable yet (no Play services, offline): try again next open.
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), TIMEOUT_MS);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    // Play did not answer in time: try again next open, without counting it.
     if (raw == null) return;
     const props = installSourceProps(parseInstallReferrer(raw));
     posthog.capture('install_attributed', {
       ...props,
-      install_referrer_raw: raw.slice(0, 200),
+      // Names only, never values: a custom link could carry anything.
+      install_referrer_keys: referrerKeys(raw),
       $set_once: props,
     });
     await AsyncStorage.setItem(SENT_KEY, '1');
   } catch {
-    // Sideloaded builds and emulators without Play throw. Never retry those
-    // in a loop, and never break the app for analytics.
+    // Play's referrer service can be briefly unavailable, so a failure is
+    // tried again on later opens, up to MAX_REFERRER_TRIES. Sideloaded
+    // builds and emulators without Play end there. Never breaks the app.
     try {
-      await AsyncStorage.setItem(SENT_KEY, 'error');
+      await AsyncStorage.setItem(SENT_KEY, afterReferrerFailure(stored));
     } catch {}
   }
 }

@@ -4,7 +4,7 @@
 // strings are what Google Play's Install Referrer API hands back.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { installSourceProps, parseInstallReferrer } from "./installReferrer.ts";
+import { afterReferrerFailure, installSourceProps, MAX_REFERRER_TRIES, parseInstallReferrer, referrerKeys, shouldReadReferrer } from "./installReferrer.ts";
 
 Deno.test("a store search install is organic", () => {
   assertEquals(parseInstallReferrer("utm_source=google-play&utm_medium=organic"), {
@@ -58,4 +58,23 @@ Deno.test("person props: one flat set, nulls left out", () => {
     install_medium: "cpc",
     install_organic: false,
   });
+});
+
+Deno.test("retry: a failed read is tried again on later opens, then given up", () => {
+  assertEquals(shouldReadReferrer(null), true);
+  assertEquals(shouldReadReferrer("1"), false); // already sent
+  let stored: string | null = null;
+  for (let i = 0; i < MAX_REFERRER_TRIES - 1; i++) {
+    stored = afterReferrerFailure(stored);
+    assertEquals(shouldReadReferrer(stored), true);
+  }
+  stored = afterReferrerFailure(stored);
+  assertEquals(shouldReadReferrer(stored), false);
+  // The old build's marker is not a reason to stop.
+  assertEquals(shouldReadReferrer("error"), true);
+});
+
+Deno.test("only the parameter names of the raw referrer leave the phone", () => {
+  assertEquals(referrerKeys("utm_source=x&utm_medium=y&secret=abc"), "secret,utm_medium,utm_source");
+  assertEquals(referrerKeys(""), "");
 });
