@@ -45,8 +45,12 @@ export async function captureInstallSourceOnce(): Promise<void> {
         timer = setTimeout(() => resolve(null), TIMEOUT_MS);
       }),
     ]).finally(() => clearTimeout(timer));
-    // Play did not answer in time: try again next open, without counting it.
-    if (raw == null) return;
+    // Play did not answer in time: counts as a failed try, so a phone where
+    // Play always hangs stops waiting after MAX_REFERRER_TRIES opens.
+    if (raw == null) {
+      await AsyncStorage.setItem(SENT_KEY, afterReferrerFailure(stored));
+      return;
+    }
     const props = installSourceProps(parseInstallReferrer(raw));
     posthog.capture('install_attributed', {
       ...props,
