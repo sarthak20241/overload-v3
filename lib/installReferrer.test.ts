@@ -78,3 +78,14 @@ Deno.test("only the parameter names of the raw referrer leave the phone", () => 
   assertEquals(referrerKeys("utm_source=x&utm_medium=y&secret=abc"), "secret,utm_medium,utm_source");
   assertEquals(referrerKeys(""), "");
 });
+
+Deno.test("lowercase percent escapes are decoded too", () => {
+  const r = parseInstallReferrer("utm_source%3dinstagram%26utm_campaign%3dlaunch");
+  assertEquals(r.source, "instagram");
+  assertEquals(r.campaign, "launch");
+});
+
+Deno.test("organic means Play's own tag, not any organic medium", () => {
+  assertEquals(parseInstallReferrer("utm_source=google&utm_medium=organic").organic, false);
+  assertEquals(parseInstallReferrer("utm_source=google-play&utm_medium=organic").organic, true);
+});

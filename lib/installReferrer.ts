@@ -32,7 +32,7 @@ function cut(v: string | null): string | null {
 export function parseInstallReferrer(raw: string): InstallReferrer {
   let text = (raw ?? '').trim();
   // Some links double-encode the referrer value; Play then returns it encoded.
-  if (!text.includes('=') && text.includes('%3D')) {
+  if (!text.includes('=') && /%3d/i.test(text)) {
     try {
       text = decodeURIComponent(text);
     } catch {
@@ -61,7 +61,7 @@ export function parseInstallReferrer(raw: string): InstallReferrer {
     campaign: cut(q.get('utm_campaign')),
     content: cut(q.get('utm_content')),
     term: cut(q.get('utm_term')),
-    organic: medium === 'organic',
+    organic: source === 'google-play' && medium === 'organic',
   };
 }
 
