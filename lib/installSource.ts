@@ -58,10 +58,13 @@ export async function captureInstallSourceOnce(): Promise<void> {
     // The SDK defers calls made while it is still loading its stored state,
     // and an error in deferred work never reaches this catch. Wait for it.
     // Capped like the referrer read, so a stuck SDK never parks this forever.
+    let readyTimer: ReturnType<typeof setTimeout> | undefined;
     const ready = await Promise.race([
       posthog.ready().then(() => true),
-      new Promise<false>((resolve) => setTimeout(() => resolve(false), TIMEOUT_MS)),
-    ]);
+      new Promise<false>((resolve) => {
+        readyTimer = setTimeout(() => resolve(false), TIMEOUT_MS);
+      }),
+    ]).finally(() => clearTimeout(readyTimer));
     if (!ready) throw new Error('posthog not ready');
     // On the person, not only the event. First open is usually before
     // sign-up, and a raw $set_once from an anonymous visitor never reaches a

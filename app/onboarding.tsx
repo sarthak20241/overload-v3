@@ -218,6 +218,8 @@ export default function OnboardingScreen() {
   // Asked once in the intake; kept here, not in answers, since nothing else
   // reads it. Goes to PostHog only.
   const [heardFrom, setHeardFrom] = useState<string | null>(null);
+  // Back and Skip again is not a second skip.
+  const sourceSkipSent = useRef(false);
   const [finishing, setFinishing] = useState(false);
   const [celebrating, setCelebrating] = useState(false);
 
@@ -1033,7 +1035,10 @@ export default function OnboardingScreen() {
                   label="Skip for now"
                   onPress={() => {
                     // Tells a skip apart from someone who quit on this step.
-                    if (!heardFrom) track('acquisition_source_answered', { source: 'skipped' });
+                    if (!heardFrom && !sourceSkipSent.current) {
+                      sourceSkipSent.current = true;
+                      track('acquisition_source_answered', { source: 'skipped' });
+                    }
                     goTo(nextStep);
                   }}
                 />
