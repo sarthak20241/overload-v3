@@ -516,7 +516,7 @@ export default function FoodSearchScreen() {
               pressed && { opacity: 0.8 },
             ]}
             accessibilityRole="button"
-            accessibilityLabel={`Log ${dronaOffer} with Drona. ${PARSE_SPEED_COPY[runningSpeed].title} mode.`}
+            accessibilityLabel={`Log ${dronaOffer} with Drona AI. ${PARSE_SPEED_COPY[runningSpeed].title} mode.`}
           >
             <View style={s.aiBody}>
               <Text style={s.aiEyebrow}>Log with Drona AI</Text>
