@@ -293,16 +293,16 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
                     <Text style={[styles.progress, { color: C.mutedFg }]} accessibilityLabel={`Step ${tip.controls.progress.replace('/', ' of ')}`}>
                       {tip.controls.progress}
                     </Text>
-                  {tip.t.steps.length > 1 ? (
-                    <View style={styles.dots}>
-                      {tip.t.steps.map((_, k) => (
-                        <View
-                          key={k}
-                          style={[styles.stepDot, { backgroundColor: k === tip.i ? Colors.primary : C.border, width: k === tip.i ? 16 : 6 }]}
-                        />
-                      ))}
-                    </View>
-                  ) : null}
+                    {tip.t.steps.length > 1 ? (
+                      <View style={styles.dots}>
+                        {tip.t.steps.map((_, k) => (
+                          <View
+                            key={k}
+                            style={[styles.stepDot, { backgroundColor: k === tip.i ? Colors.primary : C.border, width: k === tip.i ? 16 : 6 }]}
+                          />
+                        ))}
+                      </View>
+                    ) : null}
                   </View>
                   <View style={styles.actions}>
                     {tip.controls.showSkip ? (

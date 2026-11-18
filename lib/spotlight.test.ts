@@ -140,12 +140,9 @@ Deno.test("the stored list reads defensively", () => {
 
 Deno.test("a tour cut short by something else comes back; a real end does not", () => {
   assert(!countsAsSeen("interrupted"), "a popup took the screen");
-  assert(!countsAsSeen("interrupted"));
-  assert(!countsAsSeen("left"), "pulled away mid-intro: show it again");
-  assert(!countsAsSeen("left"), "left without Got it or using it: show it again next visit");
+  assert(!countsAsSeen("left"), "left without answering it: show it again next visit");
   for (const how of ["finished", "skipped", "used", "outside"] as const) {
-    assert(countsAsSeen(how));
-    assert(countsAsSeen(how));
+    assert(countsAsSeen(how), how);
   }
 });
 
