@@ -85,6 +85,16 @@ export function canStart(
   return true;
 }
 
+/**
+ * Whether a screen may try its tour yet: this account's seen list is read and
+ * the account's date is known (the dev demo needs no date). Screens re-try
+ * when this turns true, so a slow cold start never loses the intro.
+ */
+export function dataLoaded(o: { seenLoaded: boolean; createdAtMs: number | null | undefined; demo: boolean }): boolean {
+  if (!o.seenLoaded) return false;
+  return o.demo || (o.createdAtMs != null && Number.isFinite(o.createdAtMs));
+}
+
 /** Whole days since the account was made, or null when unknown. */
 export function accountAgeDays(createdAtMs: number | null | undefined, nowMs: number): number | null {
   if (createdAtMs == null || !Number.isFinite(createdAtMs) || createdAtMs <= 0) return null;

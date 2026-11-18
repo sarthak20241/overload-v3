@@ -20,7 +20,7 @@
  *
  * Reduced Motion: no iris, no springs, no breathing ring; plain fades.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BackHandler,
   Keyboard,
@@ -75,6 +75,14 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
   // What is drawn: it outlives `tour` by the fade out.
   const [shown, setShown] = useState<Shown | null>(null);
   const [closing, setClosing] = useState(false);
+  // Read by the open/close effect, which runs on the props alone: refs keep it
+  // off stale state (a tour that opens during the last one's fade).
+  const shownRef = useRef<Shown | null>(null);
+  const closingRef = useRef(false);
+  const show = (v: Shown | null) => { shownRef.current = v; setShown(v); };
+  const setClosingBoth = (v: boolean) => { closingRef.current = v; setClosing(v); };
+  // The fade's end clears the drawing only if nothing opened meanwhile.
+  const clearIfClosed = () => { if (closingRef.current) { show(null); setClosingBoth(false); } };
 
   const x = useSharedValue(0);
   const y = useSharedValue(0);
@@ -87,9 +95,10 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
   // Open, move, close.
   useEffect(() => {
     if (tour && hole) {
-      const wasOpen = shown != null && !closing;
-      setShown({ tour, index, hole });
-      setClosing(false);
+      // Still drawn (even mid-fade): move the hole from where it is, no iris.
+      const wasOpen = shownRef.current != null;
+      show({ tour, index, hole });
+      setClosingBoth(false);
       const to = (v: typeof x, n: number) => { v.value = reduce ? n : withSpring(n, SPRING); };
       if (!wasOpen && !reduce && size) {
         // Iris: start from a hole bigger than the screen, centred on the control.
@@ -109,13 +118,13 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
       haptics.selection();
       return;
     }
-    if (shown && !closing) {
-      setClosing(true);
+    if (shownRef.current && !closingRef.current) {
+      setClosingBoth(true);
       dim.value = withTiming(0, { duration: 240 }, (ok) => {
-        if (ok) runOnJS(setShown)(null);
+        if (ok) runOnJS(clearIfClosed)();
       });
     }
-    // `shown` / `closing` are read, not reacted to: only the props drive this.
+    // Only the props drive this; the shared values and helpers are stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tour, index, hole, reduce]);
 
@@ -296,7 +305,7 @@ function OutsideBlockers({ hole, w, h, onPress }: { hole: Hole; w: number; h: nu
   return (
     <>
       {panels.map((p, i) => (
-        <Pressable key={i} style={[styles.blocker, p]} onPress={onPress} accessibilityLabel="Close tip" />
+        <Pressable key={i} style={[styles.blocker, p]} onPress={onPress} accessibilityRole="button" accessibilityLabel="Close tip" />
       ))}
     </>
   );

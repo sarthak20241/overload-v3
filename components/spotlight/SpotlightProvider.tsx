@@ -21,6 +21,7 @@ import {
   accountAgeDays,
   canStart,
   countsAsSeen,
+  dataLoaded,
   holeFor,
   nextStep,
   onScreen,
@@ -57,6 +58,8 @@ interface Ctx {
   register: (target: SpotlightTargetId, ref: React.RefObject<View | null>) => () => void;
   start: (id: SpotlightTourId) => Promise<boolean>;
   end: (id: SpotlightTourId, how: SpotlightEnd) => void;
+  /** The seen list and the account date are in: screens may try their tour. */
+  loaded: boolean;
 }
 
 const SpotlightContext = createContext<Ctx | null>(null);
@@ -142,7 +145,7 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     setActive(a);
     track('spotlight_shown', { tour: id, step: TOURS[id].steps[first.index].target });
     return true;
-  }, [createdAtMs, findStep, markSeen]);
+  }, [createdAtMs, findStep]);
 
   const end = useCallback((id: SpotlightTourId, how: SpotlightEnd) => {
     const a = activeRef.current;
@@ -166,7 +169,8 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     setActive(b);
   }, [end, findStep]);
 
-  const value = useMemo<Ctx>(() => ({ register, start, end }), [register, start, end]);
+  const loaded = dataLoaded({ seenLoaded: seen != null, createdAtMs, demo: DEMO });
+  const value = useMemo<Ctx>(() => ({ register, start, end, loaded }), [register, start, end, loaded]);
 
   return (
     <SpotlightContext.Provider value={value}>
@@ -214,13 +218,16 @@ export function useSpotlightTour(id: SpotlightTourId, ready: boolean) {
     };
   }, [id]));
 
+  const loaded = ctx?.loaded ?? false;
   useEffect(() => {
     if (!ctx || !focused) return;
     // Something else took the screen (a popup, a sheet): step aside for now.
     if (!ready) { ctx.end(id, 'interrupted'); return; }
+    // Re-runs when `loaded` turns true, so a slow cold start still gets its try.
+    if (!loaded) return;
     const t = setTimeout(() => { ctx.start(id); }, SETTLE_MS);
     return () => clearTimeout(t);
-  }, [ctx, focused, ready, id]);
+  }, [ctx, focused, ready, loaded, id]);
 
   return useCallback(() => ctxRef.current?.end(id, 'used'), [id]);
 }

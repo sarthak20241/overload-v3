@@ -7,6 +7,7 @@ import {
   accountAgeDays,
   canStart,
   countsAsSeen,
+  dataLoaded,
   holeFor,
   nextStep,
   onScreen,
@@ -105,4 +106,11 @@ Deno.test("a tour cut short by something else comes back; a real end does not", 
     assert(countsAsSeen("intro", how));
     assert(countsAsSeen("hint", how));
   }
+});
+
+Deno.test("a tour waits for the seen list and the account date, then tries again", () => {
+  assert(!dataLoaded({ seenLoaded: false, createdAtMs: 1_000, demo: false }), "seen list still loading");
+  assert(!dataLoaded({ seenLoaded: true, createdAtMs: null, demo: false }), "account not loaded yet");
+  assert(dataLoaded({ seenLoaded: true, createdAtMs: 1_000, demo: false }));
+  assert(dataLoaded({ seenLoaded: true, createdAtMs: null, demo: true }), "the dev demo needs no date");
 });
