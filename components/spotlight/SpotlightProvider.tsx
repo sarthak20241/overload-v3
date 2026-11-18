@@ -17,7 +17,7 @@
  * (it is only marked seen once it showed).
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import type { View } from 'react-native';
+import { Keyboard, type View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 // The safe accessor: ClerkProvider is not mounted when the key is missing,
 // and this provider wraps the whole Stack, including that guard screen.
@@ -143,8 +143,11 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
       const key = seenKey(userId);
       // Merge with what is stored, so a failed read earlier never wipes it,
       // and queue the saves, so two tours ending together never race.
+      // A failed read aborts the save (it would write only this session's
+      // list over the stored one). `next` holds every id this session, so the
+      // next save retries them all.
       writeChain.current = writeChain.current
-        .then(() => AsyncStorage.getItem(key).catch(() => null))
+        .then(() => AsyncStorage.getItem(key))
         .then((raw) => AsyncStorage.setItem(key, JSON.stringify(mergeSeen(raw, next))))
         // Not fatal (the tour shows once more next launch), but leave a trace.
         .catch((e) => trackError(e, { where: 'spotlight_seen_write', tour: id }));
@@ -208,6 +211,24 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
   }, [end]);
 
   const loaded = dataLoaded({ seenLoaded: seen != null, createdAtMs, demo: DEMO });
+  // The overlay's frame changed (Android keyboard resize, split view): the lit
+  // hole is in old coordinates. Measure the step again, or step aside.
+  useEffect(() => {
+    const a = activeRef.current;
+    if (!a || !screen) return;
+    let live = true;
+    findStep(a.id, a.index).then((found) => {
+      if (!live || activeRef.current !== a) return;
+      if (!found || found.index !== a.index) return end(a.id, 'interrupted');
+      const b = { ...a, hole: found.hole };
+      activeRef.current = b;
+      setActive(b);
+    });
+    return () => { live = false; };
+    // Only a frame change re-measures; the step itself drives start/next.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen]);
+
   const value = useMemo<Ctx>(() => ({ register, start, end, loaded }), [register, start, end, loaded]);
 
   return (
@@ -225,6 +246,17 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
       </Portal>
     </SpotlightContext.Provider>
   );
+}
+
+/** Whether the software keyboard is up (starts are held while it is). */
+function useKeyboardUp(): boolean {
+  const [up, setUp] = useState(() => Keyboard.isVisible());
+  useEffect(() => {
+    const a = Keyboard.addListener('keyboardDidShow', () => setUp(true));
+    const b = Keyboard.addListener('keyboardDidHide', () => setUp(false));
+    return () => { a.remove(); b.remove(); };
+  }, []);
+  return up;
 }
 
 /** Mark a control as a spotlight target. Pass the screen's own ref if it has one. */
@@ -263,11 +295,15 @@ export function useSpotlightTour(id: SpotlightTourId, ready: boolean) {
   // ctx is read through the ref, so a new context value (Clerk settling)
   // never restarts the settle timer; only `loaded` turning true does.
   const loaded = ctx?.loaded ?? false;
+  const keyboardUp = useKeyboardUp();
   useEffect(() => {
     const c = ctxRef.current;
     if (!c || !focused) return;
     // Something else took the screen (a popup, a sheet): step aside for now.
     if (!ready) { c.end(id, 'interrupted'); return; }
+    // Never start over an open keyboard (it would cover what the user types);
+    // try again once it closes. A tour already up ends itself as 'used'.
+    if (keyboardUp) return;
     // Re-runs when `loaded` turns true, so a slow cold start still gets its try.
     // It does NOT re-run when a tour ends (seen is not a dep), on purpose: a
     // follow-up (set_types, food_modes) waits for the next visit or `ready`
@@ -291,7 +327,7 @@ export function useSpotlightTour(id: SpotlightTourId, ready: boolean) {
       });
     }, SETTLE_MS);
     return () => { clearTimeout(t); if (retry) clearTimeout(retry); };
-  }, [focused, ready, loaded, id]);
+  }, [focused, ready, loaded, keyboardUp, id]);
 
   return useCallback(() => ctxRef.current?.end(id, 'used'), [id]);
 }

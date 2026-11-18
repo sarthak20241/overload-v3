@@ -160,7 +160,9 @@ export function canStart(
     const on = Date.parse(`${tour.release.on}T00:00:00Z`);
     if (!Number.isFinite(on) || o.createdAtMs == null || !Number.isFinite(o.createdAtMs)) return false;
     if (o.createdAtMs >= on) return false;
-    return o.nowMs <= on + (tour.release.days ?? RELEASE_TOUR_DAYS) * DAY_MS;
+    // Inside the window only: never before the release (an early dismiss
+    // would use it up), never after it closes.
+    return o.nowMs >= on && o.nowMs <= on + (tour.release.days ?? RELEASE_TOUR_DAYS) * DAY_MS;
   }
 
   // A hint waits until the intro has ended (finished or skipped), and a

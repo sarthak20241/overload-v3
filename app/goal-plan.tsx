@@ -144,7 +144,12 @@ export default function GoalPlanScreen() {
   const phaseTarget = useSpotlightTarget('phase_card');
   const phaseHintUsed = useSpotlightTour(
     'goal_plan',
-    !loading && !!program && !tourOn && tourParam !== '1' && !buildParam && !coachOpen && !logOpen && !aboutOpen,
+    // A dashboard build handoff (build=phase) holds it only until that build
+    // has run; its coach sheet is covered by !coachOpen. The sign-up visit
+    // (film tour) never gets it.
+    !loading && !!program && !tourOn && tourParam !== '1'
+      && !(buildParam === 'phase' && !autoBuildFired.current)
+      && !coachOpen && !logOpen && !aboutOpen,
   );
   const [buildSeed, setBuildSeed] = useState<PhaseBuildSeed | null>(null);
   const [buildAuto, setBuildAuto] = useState(false);

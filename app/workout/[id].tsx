@@ -472,7 +472,9 @@ export default function ActiveWorkoutScreen() {
   useSpotlightTarget('active_set', inputCardRef);
   const setHintUsed = useSpotlightTour(
     'workout_set',
-    !loading && !!currentEx && !exerciseFinished[currentIdx] && setTypeSheetIdx === null && !showRpeSheet,
+    // Started: before Start Exercise the set row is not drawn, and the tap
+    // that starts it must re-trigger the try.
+    !loading && !!currentEx && !!exerciseStarted[currentIdx] && !exerciseFinished[currentIdx] && setTypeSheetIdx === null && !showRpeSheet,
   );
   // Follow-up: once a set is logged in this exercise, light the set number
   // (warm-up, drop set, failure). Waits for the first-set hint to end.
@@ -480,7 +482,7 @@ export default function ActiveWorkoutScreen() {
   const loggedHere = currentEx?.sets.filter((s) => s.completed).length ?? 0;
   const setTypesUsed = useSpotlightTour(
     'set_types',
-    !loading && !!currentEx && !exerciseFinished[currentIdx] && loggedHere >= 1 && setTypeSheetIdx === null && !showRpeSheet,
+    !loading && !!currentEx && !!exerciseStarted[currentIdx] && !exerciseFinished[currentIdx] && loggedHere >= 1 && setTypeSheetIdx === null && !showRpeSheet,
   );
   // Every logger input calls this, stamping the open exercise onto the edit
   // guard. Effects compare editedForExRef against their own exercise's id.

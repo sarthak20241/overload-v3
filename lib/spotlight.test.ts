@@ -30,7 +30,8 @@ const fresh = { createdAtMs: FROM + DAY, nowMs: FROM + 2 * DAY };
 Deno.test("a new account sees each tour once, one at a time", () => {
   const seen = new Set<string>();
   assert(canStart(TOURS.intro, { seen, active: null, ...fresh }));
-  assert(!canStart(TOURS.food_box, { seen, active: "intro", ...fresh }), "never two at once");
+  // intro seen, so the active tour is the only reason to say no.
+  assert(!canStart(TOURS.food_box, { seen: new Set(["intro"]), active: "goal_plan", ...fresh }), "never two at once");
   assert(!canStart(TOURS.intro, { seen: new Set(["intro"]), active: null, ...fresh }), "only once");
 });
 
@@ -60,6 +61,8 @@ Deno.test("a release tour goes to accounts from before the release, for its wind
   assert(canStart({ ...rel, id: "workout_set" }, { seen: none, active: null, createdAtMs: on - 400 * DAY, nowMs: on + DAY }), "an old account, no intro needed");
   assert(!canStart({ ...rel, id: "workout_set" }, { seen: none, active: null, createdAtMs: on + DAY, nowMs: on + 2 * DAY }), "signed up after: it is not new to them");
   assert(!canStart({ ...rel, id: "workout_set" }, { seen: none, active: null, createdAtMs: on - DAY, nowMs: on + 31 * DAY }), "the window has closed");
+  assert(!canStart({ ...rel, id: "workout_set" }, { seen: none, active: null, createdAtMs: on - 400 * DAY, nowMs: on - 1 }), "not before the release date");
+  assert(canStart({ ...rel, id: "workout_set" }, { seen: none, active: null, createdAtMs: on - 400 * DAY, nowMs: on }), "from the release instant");
   assert(!canStart({ ...rel, id: "workout_set" }, { seen: new Set(["workout_set"]), active: null, createdAtMs: on - DAY, nowMs: on + DAY }), "once");
   assert(!canStart({ ...rel, id: "workout_set" }, { seen: none, active: "food_box", createdAtMs: on - DAY, nowMs: on + DAY }), "one at a time");
 });

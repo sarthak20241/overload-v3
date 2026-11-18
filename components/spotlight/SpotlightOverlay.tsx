@@ -34,6 +34,7 @@ import Animated, {
   FadeIn,
   FadeInDown,
   FadeInUp,
+  ReduceMotion,
   cancelAnimation,
   runOnJS,
   useAnimatedStyle,
@@ -55,6 +56,8 @@ const SPRING = { damping: 19, stiffness: 170, mass: 0.9 } as const;
 const GUTTER = Spacing.lg;
 const TIP_GAP = 14;
 const CARET = 12;
+/** The iris's length; touches outside the hole only dismiss after it. */
+const IRIS_MS = 620;
 
 interface Props {
   tour: SpotlightTour | null;
@@ -75,6 +78,9 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
   const { mode, C } = useTheme();
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
   const rootRef = useRef<View>(null);
+  const [opening, setOpening] = useState(false);
+  const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (openTimer.current) clearTimeout(openTimer.current); }, []);
   // What is drawn: it outlives `tour` by the fade out.
   const [shown, setShown] = useState<Shown | null>(null);
   const [closing, setClosing] = useState(false);
@@ -109,21 +115,28 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
         const cx = hole.x + hole.width / 2;
         const cy = hole.y + hole.height / 2;
         x.value = cx - big / 2; y.value = cy - big / 2; w.value = big; h.value = big; r.value = big / 2;
-        x.value = withTiming(hole.x, { duration: 620, easing: Easing.out(Easing.cubic) });
-        y.value = withTiming(hole.y, { duration: 620, easing: Easing.out(Easing.cubic) });
-        w.value = withTiming(hole.width, { duration: 620, easing: Easing.out(Easing.cubic) });
-        h.value = withTiming(hole.height, { duration: 620, easing: Easing.out(Easing.cubic) });
-        r.value = withTiming(hole.r, { duration: 620, easing: Easing.out(Easing.cubic) });
+        x.value = withTiming(hole.x, { duration: IRIS_MS, easing: Easing.out(Easing.cubic) });
+        y.value = withTiming(hole.y, { duration: IRIS_MS, easing: Easing.out(Easing.cubic) });
+        w.value = withTiming(hole.width, { duration: IRIS_MS, easing: Easing.out(Easing.cubic) });
+        h.value = withTiming(hole.height, { duration: IRIS_MS, easing: Easing.out(Easing.cubic) });
+        r.value = withTiming(hole.r, { duration: IRIS_MS, easing: Easing.out(Easing.cubic) });
+        // While the iris closes, the clear area is bigger than the final hole:
+        // a tap there must not count as "outside" (see the touch layer).
+        setOpening(true);
+        if (openTimer.current) clearTimeout(openTimer.current);
+        openTimer.current = setTimeout(() => setOpening(false), IRIS_MS);
       } else {
         to(x, hole.x); to(y, hole.y); to(w, hole.width); to(h, hole.height); to(r, hole.r);
       }
-      dim.value = withTiming(1, { duration: reduce ? 160 : 320 });
+      // Fades stay on under Reduced Motion (only movement is cut), so the
+      // policy is set explicitly: Reanimated's default would jump instead.
+      dim.value = withTiming(1, { duration: reduce ? 160 : 320, reduceMotion: ReduceMotion.Never });
       haptics.selection();
       return;
     }
     if (shownRef.current && !closingRef.current) {
       setClosingBoth(true);
-      dim.value = withTiming(0, { duration: 240 }, (ok) => {
+      dim.value = withTiming(0, { duration: 240, reduceMotion: ReduceMotion.Never }, (ok) => {
         if (ok) runOnJS(clearIfClosed)();
       });
     }
@@ -197,7 +210,7 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
       : { bottom: size.h - hl.y + TIP_GAP };
     const last = i === t.steps.length - 1;
     const enter = reduce
-      ? FadeIn.duration(180)
+      ? FadeIn.duration(180).reduceMotion(ReduceMotion.Never)
       : (side === 'below' ? FadeInDown : FadeInUp).springify().damping(17).stiffness(190).delay(i === 0 ? 300 : 90);
     return { t, i, step, side, caretLeft, pos, last, enter };
   }, [shown, size, reduce]);
@@ -239,7 +252,9 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
             <Pressable style={StyleSheet.absoluteFill} onPress={finish} accessibilityLabel="Next tip" />
           ) : null}
           {!closing && shown.tour.kind === 'hint' ? (
-            <OutsideBlockers hole={shown.hole} w={size.w} h={size.h} onPress={() => onEnd('outside')} />
+            // During the iris the panels only block (no dismiss): the screen
+            // there is still visibly clear. The lit control stays live.
+            <OutsideBlockers hole={shown.hole} w={size.w} h={size.h} onPress={opening ? () => {} : () => onEnd('outside')} />
           ) : null}
 
           {tip ? (
@@ -280,7 +295,9 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
                       </Pressable>
                     ) : null}
                     <Pressable
-                      onPress={press(tip.t.kind === 'hint' ? () => onEnd('finished') : finish)}
+                      // Next on a non-last step, Got it on the last, for both kinds
+                      // (a multi-step release hint must advance, not end).
+                      onPress={press(finish)}
                       style={({ pressed }) => [styles.cta, { opacity: pressed ? 0.85 : 1 }]}
                       accessibilityRole="button"
                     >
