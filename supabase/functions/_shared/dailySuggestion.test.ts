@@ -107,6 +107,24 @@ Deno.test("the server's basis equals the phone's for the same data, so the app d
   assertEquals(row.basis, phoneBasis);
 });
 
+Deno.test("a last session older than the app's 90-day read gives the server and the phone one basis", () => {
+  // The server reads 200 days of workouts, the dashboard 90. A test account
+  // whose last session was 109 days back got "#<that session>" from the server
+  // and "#0" on the phone, so every app open asked again and the card showed
+  // the phone's own pick instead of the saved one (2026-11-18).
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const now = new Date("2026-11-18T09:00:00Z");
+  const old = done("Push A", "2026-08-01T14:22:48Z");
+  const row = buildSuggestion({ routines, workouts: [old], program: null, timeZone: zone, now })!;
+  const phoneBasis = suggestionBasis(planKey(null, routines, now), latestWorkoutBeforeDay([], now));
+  assertEquals(row.basis, phoneBasis);
+  // Inside the window both still see it.
+  const recent = done("Push A", "2026-09-01T14:22:48Z");
+  const row2 = buildSuggestion({ routines, workouts: [recent], program: null, timeZone: zone, now })!;
+  assertEquals(row2.basis, suggestionBasis(planKey(null, routines, now), latestWorkoutBeforeDay([recent], now)));
+  assertEquals(row2.basis.endsWith("#0"), false);
+});
+
 Deno.test("a freestyle session reads as the program day it trained", () => {
   // The rows as the function reads them: exercises embedded under the routine,
   // sets under the workout. Push A and Pull A from their routines, then legs

@@ -3,8 +3,18 @@
  *
  * When the user follows a coach program, the pick comes from the split built
  * for the phase they are in today. A routine outside that split (an old one,
- * a one-off) is never offered over the program's own days. Without a program,
- * or before the phase's split is built, every saved routine is a candidate.
+ * a one-off) is never offered over the program's own days.
+ *
+ * Without a split (no program, or the phase's split not built yet), the pick
+ * comes from what the person trains. Someone who trains (3+ sessions in the
+ * last 14 days) is offered only the routines their sessions counted as in the
+ * last 4 weeks; a blank workout counts as the routine it covers best. Otherwise,
+ * or when no session matched a routine, any routine can win except one with
+ * under 3 exercises or no known muscle. A real account was offered a never-done
+ * one-exercise "Push" (dead hang) for 13 days while it trained Push / Pull /
+ * Legs from blank workouts. With no split, "most due" is read from the muscles:
+ * a routine counts as trained by any session that covered half of it, so
+ * copies of one day share its date.
  *
  * Inside the candidates the rule is "most due": the routine done longest ago,
  * never-done first. In a program split, ties go to day order, which is
@@ -192,6 +202,23 @@ const coverage = (day: Set<string>, trained: Set<string>) => {
 const COVERS_DAY = 0.5;
 /** How far back "trained lately" looks, in days before today. */
 const LATELY_DAYS = 7;
+/** With no split: this many sessions in ACTIVE_DAYS make a person who trains. */
+const ACTIVE_SESSIONS = 3;
+const ACTIVE_DAYS = 14;
+/** With no split, a trainer's TODAY comes from the routines used in this many days. */
+const IN_USE_DAYS = 28;
+/** A routine smaller than this is never offered on its own merit. */
+const MIN_EXERCISES = 3;
+
+/**
+ * Worth offering when nothing says the person uses it: 3+ exercises and at
+ * least one known muscle (not all "Other"). A routine whose exercises were not
+ * read (no routine_exercises at all) is not judged.
+ */
+function isOfferable(r: PickRoutine, muscles: Set<string>): boolean {
+  if (r.routine_exercises == null) return true;
+  return r.routine_exercises.length >= MIN_EXERCISES && muscles.size > 0;
+}
 
 /** A local calendar day as a whole number, so day arithmetic never meets DST. */
 const dayNumber = (d: Date) => Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86_400_000);
@@ -223,35 +250,50 @@ export function pickToday<R extends PickRoutine>(input: TodayPickInput<R>): Toda
   const phase = currentPhase(input.program, now);
   const phaseRoutines = phase ? routines.filter((r) => r.program_phase_id === phase.id) : [];
   const fromProgram = phaseRoutines.length > 0;
-  const candidates = fromProgram ? phaseRoutines : routines;
 
-  const isSessionOf = (w: PickWorkout, r: R) => {
-    const name = (r.name ?? '').trim().toLowerCase();
-    return (!!w.routine_id && w.routine_id === r.id)
-      || (!!name && (w.name ?? '').trim().toLowerCase() === name);
-  };
-  const muscles = new Map(candidates.map((r) => [r, routineMuscles(r)] as const));
+  const muscles = new Map(routines.map((r) => [r, routineMuscles(r)] as const));
   const startedAt = (w: PickWorkout) => ms(w.started_at || w.created_at);
+  const offerable = (r: R) => isOfferable(r, muscles.get(r)!);
   // Day order: a split's days by created_at; otherwise the list's own order
   // (the dashboard's routines arrive newest first, and onboarding staggers
   // created_at so Day A leads it).
   const dayOrder = (a: R, b: R) =>
-    fromProgram ? ms(a.created_at) - ms(b.created_at) : candidates.indexOf(a) - candidates.indexOf(b);
+    fromProgram ? ms(a.created_at) - ms(b.created_at) : routines.indexOf(a) - routines.indexOf(b);
 
-  // Which day each session counts as, oldest first. A session of a candidate
-  // counts as it. Any other counts as the day it covers best (at least half),
-  // a tie going to the day that was due then.
+  // Which routine each session counts as, oldest first.
+  // - In a split: a session of one of its days counts as that day. Any other
+  //   counts as the day it covers best (at least half), a tie going to the day
+  //   that was due then.
+  // - With no split: a session of any routine counts as that routine (by id,
+  //   else by name). Any other counts as the offerable routine it covers best,
+  //   a tie going to the one the person counted last, so copies of one day do
+  //   not each soak up a session.
+  const sessionOf = (w: PickWorkout): R | undefined => {
+    const pool = fromProgram ? phaseRoutines : routines;
+    const byId = w.routine_id ? pool.find((r) => r.id === w.routine_id) : undefined;
+    if (byId) return byId;
+    const name = (w.name ?? '').trim().toLowerCase();
+    if (!name) return undefined;
+    const named = pool.filter((r) => (r.name ?? '').trim().toLowerCase() === name);
+    return fromProgram ? named[0] : named.find(offerable) ?? named[0];
+  };
+  const coverPool = fromProgram ? phaseRoutines : routines.filter(offerable);
   const lastDone = new Map<R, number>(); // never done -> absent -> most due
   const countsAs = new Map<PickWorkout, R>();
   for (const w of [...workouts].sort((a, b) => startedAt(a) - startedAt(b))) {
-    let day = candidates.find((r) => isSessionOf(w, r));
+    let day = sessionOf(w);
     if (!day) {
       const trained = workoutMuscles(w);
-      day = candidates
-        .map((r) => ({ r, c: coverage(muscles.get(r)!, trained) }))
+      day = coverPool
+        .map((r) => ({ r, c: coverage(muscles.get(r)!, trained), back: coverage(trained, muscles.get(r)!) }))
         .filter((x) => x.c >= COVERS_DAY)
         .sort((a, b) => b.c - a.c
-          || (lastDone.get(a.r) ?? 0) - (lastDone.get(b.r) ?? 0)
+          // With no split, a shoulders-only routine is not a push session:
+          // the routine that holds more of the session wins.
+          || (fromProgram ? 0 : b.back - a.back)
+          || (fromProgram
+            ? (lastDone.get(a.r) ?? 0) - (lastDone.get(b.r) ?? 0)
+            : (lastDone.get(b.r) ?? 0) - (lastDone.get(a.r) ?? 0))
           || dayOrder(a.r, b.r))[0]?.r;
     }
     if (!day) continue;
@@ -262,10 +304,44 @@ export function pickToday<R extends PickRoutine>(input: TodayPickInput<R>): Toda
   // Muscle groups trained in the last 7 days, by any session.
   const since = startOfToday - LATELY_DAYS * 86_400_000;
   const lately = new Set<string>();
+  let recentSessions = 0;
   for (const w of workouts) {
     const at = doneAt(w);
     if (at >= since && at < startOfToday) for (const m of workoutMuscles(w)) lately.add(m);
+    if (at >= startOfToday - ACTIVE_DAYS * 86_400_000 && at < startOfToday) recentSessions += 1;
   }
+
+  // The routines that can win.
+  // - A split: its days.
+  // - No split, and the person trains (3+ sessions in 14 days): the routines
+  //   their sessions counted as in the last 4 weeks.
+  // - Otherwise (or none of those): every offerable routine, else every one.
+  let candidates: R[];
+  if (fromProgram) {
+    candidates = phaseRoutines;
+  } else {
+    const inUseSince = startOfToday - IN_USE_DAYS * 86_400_000;
+    const inUse = recentSessions >= ACTIVE_SESSIONS
+      ? routines.filter((r) => (lastDone.get(r) ?? 0) >= inUseSince)
+      : [];
+    const usable = routines.filter(offerable);
+    candidates = inUse.length > 0 ? inUse : usable.length > 0 ? usable : routines;
+  }
+
+  // When a routine's work was last done. In a split, the day a session counted
+  // as. With no split, also any session that covered it (at least half), so
+  // copies of one day share its date and the rotation is read from the muscles.
+  const lastTrained = new Map<R, number>();
+  for (const r of candidates) {
+    let t = lastDone.get(r) ?? 0;
+    if (!fromProgram && muscles.get(r)!.size > 0) {
+      for (const w of workouts) {
+        if (startedAt(w) > t && coverage(muscles.get(r)!, workoutMuscles(w)) >= COVERS_DAY) t = startedAt(w);
+      }
+    }
+    lastTrained.set(r, t);
+  }
+
   // A day done in the window counts too: its sets may still be syncing, or it
   // has no muscles to read.
   const trainedLately = (r: R) =>
@@ -273,8 +349,11 @@ export function pickToday<R extends PickRoutine>(input: TodayPickInput<R>): Toda
 
   const pick = [...candidates].sort(
     (a, b) => trainedLately(a) - trainedLately(b)
-      || (lastDone.get(a) ?? 0) - (lastDone.get(b) ?? 0)
-      || (fromProgram ? dayOrder(a, b) : 0),
+      || (lastTrained.get(a) ?? 0) - (lastTrained.get(b) ?? 0)
+      || (fromProgram
+        ? dayOrder(a, b)
+        // Copies of one day: the one the person uses, then the list's order.
+        : (lastDone.get(b) ?? 0) - (lastDone.get(a) ?? 0) || dayOrder(a, b)),
   )[0];
 
   // Rest days: only for a built split with a usable week pattern.
@@ -369,13 +448,25 @@ export function planKey<R extends PickRoutine>(
   return `${program.id ?? program.start_date}|${phase.id}|${split}`;
 }
 
-/** Newest workout finished before `now`'s local day began (epoch ms, 0 if none). */
+/**
+ * How far back, in days before the day began, a workout moves the basis. The
+ * dashboard reads 90 days of workouts and the server 200, so an older session
+ * would be in the server's basis and not the phone's: every open would ask
+ * again and show the phone's own pick. 89 days before the day began is always
+ * inside the phone's read (it reads from `now` - 90 days, and `now` is within
+ * a day of the day's start).
+ */
+export const BASIS_DAYS = 89;
+
+/** Newest workout finished before `now`'s local day began, and within
+ *  BASIS_DAYS of it (epoch ms, 0 if none). */
 export function latestWorkoutBeforeDay(workouts: PickWorkout[] | null | undefined, now: Date): number {
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const oldest = new Date(now.getFullYear(), now.getMonth(), now.getDate() - BASIS_DAYS).getTime();
   let latest = 0;
   for (const w of workouts ?? []) {
     const t = ms(w.finished_at || w.started_at || w.created_at);
-    if (t > 0 && t < startOfDay && t > latest) latest = t;
+    if (t >= oldest && t < startOfDay && t > latest) latest = t;
   }
   return latest;
 }

@@ -9,7 +9,7 @@
  *
  * Pure: the rules come from todayPick/weekPattern, shared with the app.
  */
-import { pickToday, planKey, suggestionBasis, type PickProgram, type PickRoutine, type PickSet } from './todayPick.ts';
+import { BASIS_DAYS, pickToday, planKey, suggestionBasis, type PickProgram, type PickRoutine, type PickSet } from './todayPick.ts';
 import { weekPatternFor } from './weekPattern.ts';
 import { wallClock } from './wallClock.ts';
 
@@ -63,7 +63,10 @@ export function buildSuggestion(input: {
   const before = input.workouts
     .map((w) => ({ raw: w, doneWall: wall(w.finished_at || w.started_at || w.created_at) }))
     .filter((w) => w.doneWall !== null && w.doneWall < midnightWall);
-  const latestMs = before.reduce((max, w) => {
+  // The basis counts only what the phone's 90-day read also has (BASIS_DAYS).
+  const oldest = new Date(Date.parse(`${day}T12:00:00Z`) - BASIS_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const oldestWall = `${oldest}T00:00:00`;
+  const latestMs = before.filter((w) => w.doneWall! >= oldestWall).reduce((max, w) => {
     const t = Date.parse(w.raw.finished_at || w.raw.started_at || w.raw.created_at || '');
     return Number.isFinite(t) && t > max ? t : max;
   }, 0);
