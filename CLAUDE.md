@@ -119,6 +119,8 @@ deno test --allow-all --no-check --unstable-sloppy-imports lib/foodOrigin.test.t
 deno run --node-modules-dir=none --allow-read --allow-env --allow-net --allow-write --allow-sys supabase/tests/food_memory_local.ts # food memory triggers on PGlite (downloads it; not in CI)
 deno test --allow-all --unstable-sloppy-imports lib/planExercise.test.ts # Drona plan exercise -> exercises + routine rows
 deno test --allow-all --unstable-sloppy-imports lib/routineTargets.test.ts # "45s" / "5km" -> routine time + distance targets
+deno test --allow-all --unstable-sloppy-imports lib/exerciseSwaps.test.ts # swap list for one exercise: same exact muscle first, then the group; done-before and well-known lead a tier
+deno test --allow-all lib/sessionSwaps.test.ts # swaps for this session only: Today preview hand-over, in-workout swap before the first logged set, back to the plan
 deno test --allow-all lib/maintenance.test.ts   # the Nutrition screen's maintenance row and sheet
 deno test --allow-all lib/foodPatterns.test.ts  # usual foods per meal, and when each meal is offered
 deno test --allow-all --unstable-sloppy-imports lib/yourFoods.test.ts # manual search: foods you logged before come first
@@ -137,6 +139,7 @@ deno test --allow-all supabase/functions/ai-coach/foodAgentLater.test.ts # step 
 deno test --allow-all supabase/functions/ai-coach/recipe.test.ts # step 5: build_recipe, parts summed in code, an assumed oil asked about once (FOOD_BUILD_RECIPE)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_threads.check.ts # the food_threads migration on PGlite (real Postgres, downloads it; not in CI)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_card_lines_recipe.check.ts # food_card_lines.recipe: a dish keeps its parts in the thread store (PGlite; not in CI)
+deno test --allow-all --node-modules-dir=none supabase/migrations/checks/exercise_swap_tags.check.ts # exercises.target_muscle + swap_pattern: catalog names tagged, muscle_group untouched (PGlite; not in CI)
 deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
 deno test --allow-all lib/questionPin.test.ts  # Drona chat: a reply types in under its question at the top

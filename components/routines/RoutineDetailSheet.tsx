@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -17,11 +17,17 @@ import { useTheme } from '@/hooks/useTheme';
 import { useExerciseNotes } from '@/hooks/useExerciseNotes';
 import { usesReps } from '@/lib/exercises';
 import { readRoutineTargets, slotTargetLabel } from '@/lib/routineTargets';
+import { track } from '@/lib/analytics';
+import { slotKey, type SessionSwaps } from '@/lib/sessionSwaps';
+import { useSwapCatalog } from '@/hooks/useSwapCatalog';
+import { ExerciseSwapList } from '@/components/routines/ExerciseSwapList';
 
 // Shared routine-detail / session-preview sheet. Used by the Routines screen
 // (tap a routine) and by the dashboard's "today" card (tap the suggestion).
 // It only shows the actions the caller wires: pass onEdit to show Edit, pass
-// onAskCoach to show "Ask Drona". Start Workout is always present.
+// onAskCoach to show "Ask Drona". Start Workout is always present. Pass
+// allowSwap to let the person swap an exercise for this session only: the
+// swaps go to onStartWorkout, and the routine itself is not changed.
 //
 // Rendered via the root <Portal> (NOT RN <Modal>) so it behaves on Android
 // edge-to-edge — a <Modal> is a separate Dialog window inset by the system nav
@@ -65,9 +71,12 @@ export interface RoutineRaw {
 interface Props {
   routine: RoutineRaw | null;
   onClose: () => void;
-  onStartWorkout: () => void;
+  /** Called with this session's swaps (empty when none, or when swapping is off). */
+  onStartWorkout: (swaps: SessionSwaps) => void;
   onEdit?: () => void;
   onAskCoach?: () => void;
+  /** Show a swap button on each exercise (signed-in only; guests have no catalog to rank). */
+  allowSwap?: boolean;
 }
 
 /** "0:45 · " for a timed slot with a target, "8-12 reps · " for a rep slot, and
@@ -80,28 +89,49 @@ function routineSlotLabel(re: RoutineExerciseRaw): string {
   return `${re.reps_min === re.reps_max ? re.reps_min : `${re.reps_min}-${re.reps_max}`} reps · `;
 }
 
-export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, onAskCoach }: Props) {
+export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, onAskCoach, allowSwap }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   // A null routine means the sheet is closed; don't fetch until it opens.
   const { noteFor } = useExerciseNotes(!!routine);
+  const swapCatalog = useSwapCatalog(!!routine && !!allowSwap);
+  const canSwap = !!allowSwap && swapCatalog.available;
+  // This session's swaps (slot key -> exercise), and the slot whose swap list is open.
+  const [swaps, setSwaps] = useState<SessionSwaps>({});
+  const [swapping, setSwapping] = useState<string | null>(null);
+  // A new routine in the sheet starts from its own plan.
+  useEffect(() => {
+    setSwaps({});
+    setSwapping(null);
+  }, [routine?.id]);
+  const catalogById = useMemo(() => new Map(swapCatalog.exercises.map((e) => [e.id, e])), [swapCatalog.exercises]);
 
   // <Portal> has no onRequestClose (unlike RN <Modal>), so wire the Android
-  // hardware back button to dismiss the sheet while it's open.
+  // hardware back button to dismiss the sheet while it's open. On the swap
+  // list it goes back to the session first.
   useEffect(() => {
     if (!routine) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      onClose();
+      if (swapping) setSwapping(null);
+      else onClose();
       return true;
     });
     return () => sub.remove();
-  }, [routine, onClose]);
+  }, [routine, onClose, swapping]);
 
   if (!routine) return null;
 
   const sortedExercises = [...routine.routine_exercises].sort((a, b) => a.order - b.order);
   // Superset members are contiguous once sorted; flag the first of each run so we
   // can label it once and run a left accent down the whole group (a bracket).
+  // What each slot holds now: its swap for this session, or the plan's exercise.
+  const shownOf = (re: RoutineExerciseRaw) => swaps[slotKey(re)] ?? re.exercises;
+  const swapCount = sortedExercises.filter((re) => swaps[slotKey(re)]).length;
+  const swapSlot = swapping ? sortedExercises.find((re) => slotKey(re) === swapping) ?? null : null;
+  const openSwap = (re: RoutineExerciseRaw) => {
+    track('today_swap_opened', { routine_id: routine.id, swapped_already: !!swaps[slotKey(re)] });
+    setSwapping(slotKey(re));
+  };
   const supersetRows = sortedExercises.map((re, i) => {
     const g = re.superset_group ?? null;
     const prevG = i > 0 ? (sortedExercises[i - 1].superset_group ?? null) : null;
@@ -126,6 +156,39 @@ export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, o
         >
           <View style={[s.handle, { backgroundColor: C.handle }]} />
 
+          {swapSlot ? (
+            <ExerciseSwapList
+              from={catalogById.get(shownOf(swapSlot).id) ?? shownOf(swapSlot)}
+              original={swaps[slotKey(swapSlot)] ? (catalogById.get(swapSlot.exercise_id) ?? swapSlot.exercises) : null}
+              exercises={swapCatalog.exercises}
+              doneIds={swapCatalog.doneIds}
+              excludeIds={new Set(sortedExercises.flatMap((re) => [shownOf(re).id, re.exercise_id]))}
+              onPick={(row, tier) => {
+                const key = slotKey(swapSlot);
+                track('today_exercise_swapped', {
+                  routine_id: routine.id,
+                  tier,
+                  done_before: swapCatalog.doneIds.has(row.id),
+                  tagged: !!row.swap_pattern,
+                });
+                setSwaps((prev) => ({
+                  ...prev,
+                  [key]: { id: row.id, name: row.name, muscle_group: row.muscle_group, category: row.category, metric_type: row.metric_type ?? null },
+                }));
+                setSwapping(null);
+              }}
+              onRestore={() => {
+                track('today_swap_undone', { routine_id: routine.id });
+                setSwaps((prev) => {
+                  const next = { ...prev };
+                  delete next[slotKey(swapSlot)];
+                  return next;
+                });
+                setSwapping(null);
+              }}
+              onBack={() => setSwapping(null)}
+            />
+          ) : (<>
           {/* Header */}
           <View style={s.detailHeader}>
             <View style={{ flex: 1 }}>
@@ -148,6 +211,11 @@ export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, o
             <Text style={[s.exercisesLabel, { color: C.textMuted }]}>
               EXERCISES ({sortedExercises.length})
             </Text>
+            {swapCount > 0 ? (
+              <Text style={[s.swapCount, { color: C.accentText }]}>
+                {swapCount} swapped for today
+              </Text>
+            ) : null}
           </View>
 
           <ScrollView
@@ -157,6 +225,8 @@ export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, o
           >
             {sortedExercises.map((re, i) => {
               const { grouped, isFirstInGroup } = supersetRows[i];
+              const shown = shownOf(re);
+              const swapped = shown !== re.exercises;
               return (
                 <View key={`${re.exercise_id}-${i}`}>
                   {isFirstInGroup ? (
@@ -177,12 +247,17 @@ export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, o
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={[s.detailExName, { color: C.foreground }]}>
-                        {re.exercises?.name || 'Unknown'}
+                        {shown?.name || 'Unknown'}
                       </Text>
+                      {swapped ? (
+                        <Text style={[s.detailExSwapped, { color: C.accentText }]} numberOfLines={1}>
+                          Swapped from {re.exercises?.name || 'the plan'}
+                        </Text>
+                      ) : null}
                       <Text style={[s.detailExMeta, { color: C.textMuted }]}>
                         {re.sets} sets · {routineSlotLabel(re)}{re.rest_seconds}s rest
                       </Text>
-                      {re.note ? (
+                      {re.note && !swapped ? (
                         <Text style={[s.detailExNote, { color: C.accentText }]} numberOfLines={3}>
                           {re.note}
                         </Text>
@@ -194,7 +269,7 @@ export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, o
                           marked with the same bookmark icon the session screen
                           uses, so the two never read as one voice. */}
                       {(() => {
-                        const own = noteFor(re.exercises?.name);
+                        const own = noteFor(shown?.name);
                         return own ? (
                           <View style={s.detailExOwnNoteRow}>
                             <Feather name="bookmark" size={10} color={C.textMuted} style={s.detailExOwnNoteIcon} />
@@ -205,12 +280,22 @@ export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, o
                         ) : null;
                       })()}
                     </View>
-                    {re.exercises?.muscle_group ? (
+                    {shown?.muscle_group && shown.muscle_group !== 'Other' ? (
                       <View style={[s.detailExBadge, { backgroundColor: C.muted }]}>
                         <Text style={[s.detailExBadgeText, { color: C.textSecondary }]}>
-                          {re.exercises.muscle_group}
+                          {shown.muscle_group}
                         </Text>
                       </View>
+                    ) : null}
+                    {canSwap ? (
+                      <TouchableOpacity
+                        onPress={() => openSwap(re)}
+                        style={[s.swapBtn, { backgroundColor: swapped ? C.primaryMuted : C.closeBtn }]}
+                        hitSlop={8}
+                        accessibilityLabel={`Swap ${shown?.name ?? 'this exercise'}`}
+                      >
+                        <Feather name="shuffle" size={12} color={swapped ? C.accentText : C.foreground} />
+                      </TouchableOpacity>
                     ) : null}
                   </View>
                 </View>
@@ -241,7 +326,7 @@ export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, o
               </TouchableOpacity>
             ) : null}
             <TouchableOpacity
-              onPress={onStartWorkout}
+              onPress={() => onStartWorkout(canSwap ? swaps : {})}
               style={s.startWorkoutBtn}
               activeOpacity={0.8}
             >
@@ -249,6 +334,7 @@ export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, o
               <Text style={s.startWorkoutBtnText}>Start Workout</Text>
             </TouchableOpacity>
           </View>
+          </>)}
         </Animated.View>
       </View>
     </Portal>
@@ -304,9 +390,27 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
   detailExercisesLabel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: Spacing.xl,
     marginBottom: Spacing.sm,
     flexShrink: 0,
+  },
+  swapCount: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+  },
+  detailExSwapped: {
+    fontSize: FontSize.xs,
+    marginTop: 2,
+  },
+  swapBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   exercisesLabel: {
     fontSize: FontSize.xs,
