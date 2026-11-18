@@ -60,6 +60,7 @@ import {
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
+import { REVEAL_CHOICES } from '@/lib/revealChoice';
 import { useGuestMode } from '@/lib/guestMode';
 import { accessHasPlan, connectFirstNext } from '@/lib/paywallPlans';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
@@ -660,6 +661,7 @@ export default function OnboardingScreen() {
         if (opts.createPlan) void flushNow();
         track('onboarding_completed', {
           created_plan: opts.createPlan,
+          reveal_choice: opts.dest === '/(app)/routines' ? 'own_routines' : 'plan',
           goal: answers.goal ?? null,
           goals: selectedGoals(answers).join(','),
           experience: answers.experience ?? null,
@@ -713,6 +715,7 @@ export default function OnboardingScreen() {
           track('onboarding_completed', {
             outcome: 'handed_to_signup',
             created_plan: opts.createPlan,
+            reveal_choice: opts.dest === '/(app)/routines' ? 'own_routines' : 'plan',
             goal: answers.goal ?? null,
             goals: selectedGoals(answers).join(','),
             experience: answers.experience ?? null,
@@ -1365,12 +1368,12 @@ export default function OnboardingScreen() {
                 <>
                   <PrimaryCta
                     label={isFreshVisitor ? 'Save my plan' : 'Start my plan'}
-                    onPress={() => finishOnboarding({ createPlan: true, dest: '/(app)' })}
+                    onPress={() => finishOnboarding(REVEAL_CHOICES.plan)}
                     loading={finishing}
                     accessibilityLabel={isFreshVisitor ? 'Save my plan' : 'Start my plan'}
                   />
                   <TouchableOpacity
-                    onPress={() => finishOnboarding({ createPlan: false, dest: '/(app)/routines' })}
+                    onPress={() => finishOnboarding(REVEAL_CHOICES.own_routines)}
                     disabled={finishing}
                     style={s.ghostLink}
                     accessibilityRole="button"

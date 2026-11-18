@@ -153,6 +153,7 @@ deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/coac
 deno test --allow-all lib/sheetText.test.ts     # text boxes in Portal sheets: late owner values never put old text back (Android letter drops)
 deno test --allow-all lib/firstOpenUpdate.test.ts # fresh store install: newest update before onboarding, 5 s cap, never reloads an open app
 deno test --allow-all lib/signupTour.test.ts    # the film tour after sign-up: its words, the tap rules, no promise the plan is done
+deno test --allow-all lib/revealChoice.test.ts  # onboarding plan reveal: "I'll build my own routines" keeps Drona's plan, lands on Routines
 deno test --allow-all lib/hardPaywall.test.ts   # hard paywall: accounts from HARD_PAYWALL_FROM on must pay; older ones keep free
 deno test --allow-all lib/paywallPlans.test.ts  # two-sided paywall: Drona = Pro, Your own AI = Connect; trial words only when the store gives one
 deno test --allow-all lib/aiConnect.test.ts     # ChatGPT/Claude connect screen: which step is lit, a failed copy still moves on, card link = copied link
