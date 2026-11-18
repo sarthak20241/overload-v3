@@ -9,7 +9,8 @@
  * food box on Nutrition (2026-10-31). The button puts that box one tap from
  * home.
  */
-import { StyleSheet } from 'react-native';
+import type { RefObject } from 'react';
+import { StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
@@ -29,9 +30,11 @@ interface Props {
   /** Something else owns the screen (a popup, the coach, a live workout). */
   hidden: boolean;
   onLog: () => void;
+  /** The spotlight intro lights the button through this (components/spotlight). */
+  targetRef?: RefObject<View | null>;
 }
 
-export function HomeLogButton({ hidden, onLog }: Props) {
+export function HomeLogButton({ hidden, onLog, targetRef }: Props) {
   const insets = useSafeAreaInsets();
   const { mode, C } = useTheme();
 
@@ -43,11 +46,16 @@ export function HomeLogButton({ hidden, onLog }: Props) {
   };
 
   return (
+    <View
+      ref={targetRef}
+      collapsable={false}
+      pointerEvents="box-none"
+      style={[s.spot, { bottom: TAB_BAR_HEIGHT + insets.bottom + Spacing.lg }]}
+    >
     <PressableScale
       onPress={press}
       scaleTo={0.92}
       style={[s.btn, {
-        bottom: TAB_BAR_HEIGHT + insets.bottom + Spacing.lg,
         backgroundColor: C.macro.calories,
         shadowColor: C.macro.calories,
       }]}
@@ -58,13 +66,13 @@ export function HomeLogButton({ hidden, onLog }: Props) {
       {/* Dark ink on the light dark-theme blue; white on the deep light-theme blue. */}
       <SaladIcon size={28} strokeWidth={2} color={mode === 'dark' ? Colors.primaryFg : '#ffffff'} />
     </PressableScale>
+    </View>
   );
 }
 
 const s = StyleSheet.create({
+  spot: { position: 'absolute', right: Spacing.xl, width: SIZE, height: SIZE },
   btn: {
-    position: 'absolute',
-    right: Spacing.xl,
     width: SIZE,
     height: SIZE,
     borderRadius: SIZE / 2,

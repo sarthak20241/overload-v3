@@ -36,6 +36,7 @@ import {
   flushExerciseNotes,
   refreshExerciseNotesFromServer,
 } from '@/lib/exerciseNotes';
+import { useSpotlightTarget, useSpotlightTour } from '@/components/spotlight/SpotlightProvider';
 import { useSync } from '@/components/SyncProvider';
 import type { ActiveWorkoutExercise, ActiveSet, SetType } from '@/lib/types';
 import { groupWithPartners, dissolveGroupAt, normalizeSupersetGroups } from '@/lib/supersets';
@@ -466,6 +467,13 @@ export default function ActiveWorkoutScreen() {
 
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
+
+  // First-visit hint: light the active set row in the user's first workout.
+  useSpotlightTarget('active_set', inputCardRef);
+  const setHintUsed = useSpotlightTour(
+    'workout_set',
+    !loading && !!currentEx && !exerciseFinished[currentIdx] && setTypeSheetIdx === null && !showRpeSheet,
+  );
   // Every logger input calls this, stamping the open exercise onto the edit
   // guard. Effects compare editedForExRef against their own exercise's id.
   const markEdited = () => { editedForExRef.current = currentEx?.exercise.id ?? null; };
@@ -1348,6 +1356,7 @@ export default function ActiveWorkoutScreen() {
   // Log a set
   const handleLogSet = () => {
     if (!currentEx) return;
+    setHintUsed();
     const axes = metricTypeDef(metricTypeOf(currentEx.exercise)).axes;
     const usesWeight = axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight');
     const usesReps = axes.includes('reps');

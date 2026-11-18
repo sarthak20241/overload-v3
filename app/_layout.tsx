@@ -28,6 +28,7 @@ import { ToastProvider } from '@/components/ui/Toast';
 import { AnalyticsBridge } from '@/components/AnalyticsBridge';
 import { posthog } from '@/lib/analytics';
 import { PortalProvider } from '@/components/ui/Portal';
+import { SpotlightProvider } from '@/components/spotlight/SpotlightProvider';
 import { CoachSheetHost } from '@/components/ai/CoachSheetHost';
 import { PostHogProvider } from 'posthog-react-native';
 
@@ -76,6 +77,7 @@ function AppInner() {
           */}
           <SyncProvider>
             <PortalProvider>
+             <SpotlightProvider>
               <AnalyticsBridge />
               <StatusBar style={C.statusBar} />
               <Stack screenOptions={{ headerShown: false }}>
@@ -94,6 +96,7 @@ function AppInner() {
               {/* Every coach sheet draws here, so one closed (or left) while
                   Drona works keeps going and says when it is ready. */}
               <CoachSheetHost />
+             </SpotlightProvider>
             </PortalProvider>
           </SyncProvider>
         </WorkoutProvider>

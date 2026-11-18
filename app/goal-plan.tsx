@@ -45,6 +45,7 @@ import {
   phaseProgress,
 } from '@/lib/phaseMetrics';
 import { loadMetricSeries, type MetricSeries } from '@/lib/phaseMetricSeries';
+import { useSpotlightTarget, useSpotlightTour } from '@/components/spotlight/SpotlightProvider';
 import { CHART_HEIGHT, MetricBarsChart, MetricLineChart } from '@/components/program/PhaseMetricChart';
 import { MetricLogSheet } from '@/components/program/MetricLogSheet';
 import { PlanRows } from '@/components/program/PlanRows';
@@ -138,6 +139,13 @@ export default function GoalPlanScreen() {
   const [logging, setLogging] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  // First-visit hint on the phase card. Never on the sign-up visit (the film
+  // and the build own that one), so it shows the first time the user comes back.
+  const phaseTarget = useSpotlightTarget('phase_card');
+  useSpotlightTour(
+    'goal_plan',
+    !loading && !!program && !tourOn && tourParam !== '1' && !buildParam && !coachOpen && !logOpen && !aboutOpen,
+  );
   const [buildSeed, setBuildSeed] = useState<PhaseBuildSeed | null>(null);
   const [buildAuto, setBuildAuto] = useState(false);
   const [buildPhaseId, setBuildPhaseId] = useState<string | null>(null);
@@ -599,7 +607,7 @@ export default function GoalPlanScreen() {
               </Text>
             </Stagger>
             <Stagger index={1}>{renderHero()}</Stagger>
-            <Stagger index={2}>{renderPhaseCard()}</Stagger>
+            <Stagger index={2}><View ref={phaseTarget} collapsable={false} style={styles.phaseSpot}>{renderPhaseCard()}</View></Stagger>
             {shownPhase && (
               <View style={{ marginTop: 19 }}>
                 <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} headingGap={13} />
@@ -725,7 +733,9 @@ const styles = StyleSheet.create({
 
   // Wider than the text column (16pt edges on a 402pt screen, text at 38pt),
   // no outline: the surface against the page is the edge.
-  phaseCard: { marginTop: 15, marginHorizontal: -8, borderRadius: 22, paddingHorizontal: 22, paddingTop: 16, paddingBottom: 16 },
+  // The margins sit on the wrapper (phaseSpot), so the spotlight hugs the card.
+  phaseSpot: { marginTop: 15, marginHorizontal: -8 },
+  phaseCard: { borderRadius: 22, paddingHorizontal: 22, paddingTop: 16, paddingBottom: 16 },
   // Sizes measured against the reference (same strings, same scale).
   phaseLabel: { fontSize: 10, lineHeight: 13, letterSpacing: 0.6 },
   phaseMeta: { fontSize: 13.5, lineHeight: 19, fontWeight: FontWeight.regular },

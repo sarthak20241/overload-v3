@@ -30,6 +30,7 @@ import { holdBackgroundTime, NOTICE_GRACE_MS } from '@/lib/backgroundTime';
 import {
   Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow,
 } from '@/constants/theme';
+import { useSpotlightTarget, useSpotlightTour } from '@/components/spotlight/SpotlightProvider';
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMealCard';
@@ -537,6 +538,10 @@ export default function NutritionScreen() {
   // lands, whether to open the result or tell the user with a toast.
   const [waitOpen, setWaitOpen] = useState(false);
   const [resultOpen, setResultOpen] = useState(false);
+  // First-visit hint on the food box. Not when a card sent the user here to
+  // type (focus=ai): the keyboard is already coming up.
+  const foodBoxTarget = useSpotlightTarget('food_box');
+  useSpotlightTour('food_box', !!isSignedIn && focus !== 'ai' && flow.status === 'idle' && !resultOpen);
   const [resultDayOpen, setResultDayOpen] = useState(false);
   const waitOpenRef = useRef(false);
   waitOpenRef.current = waitOpen;
@@ -2742,7 +2747,7 @@ export default function NutritionScreen() {
         )}
 
         {isSignedIn ? (
-          <View style={s.input} onLayout={(e) => setInputRowH(e.nativeEvent.layout.height)}>
+          <View ref={foodBoxTarget} collapsable={false} style={s.input} onLayout={(e) => setInputRowH(e.nativeEvent.layout.height)}>
             <Pressable onPress={() => openSearch(mealForNow())} hitSlop={8} style={s.iconBox}>
               <Feather name="search" size={16} color={C.textSecondary} />
             </Pressable>
