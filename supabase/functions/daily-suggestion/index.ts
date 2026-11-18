@@ -69,7 +69,10 @@ async function generate(
   const since = new Date(now.getTime() - WORKOUT_WINDOW_DAYS * 86_400_000).toISOString();
   const [routinesRes, workoutsRes, programRes] = await Promise.all([
     retried(() => db.from("routines")
-      .select("id, name, created_at, program_phase_id, routine_exercises(exercises(muscle_group))").eq("user_id", userId)),
+      .select("id, name, created_at, program_phase_id, routine_exercises(exercises(muscle_group))").eq("user_id", userId)
+      // Newest first, as the dashboard reads them: with no split, ties go to
+      // the list's order, so an unordered read picked another routine.
+      .order("created_at", { ascending: false })),
     retried(() => db.from("workouts")
       .select("name, routine_id, started_at, finished_at, created_at, workout_sets(completed, set_type, exercises(muscle_group))")
       .eq("user_id", userId).gte("started_at", since)),
