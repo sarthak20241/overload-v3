@@ -269,6 +269,9 @@ export function useSpotlightTour(id: SpotlightTourId, ready: boolean) {
     // Something else took the screen (a popup, a sheet): step aside for now.
     if (!ready) { c.end(id, 'interrupted'); return; }
     // Re-runs when `loaded` turns true, so a slow cold start still gets its try.
+    // It does NOT re-run when a tour ends (seen is not a dep), on purpose: a
+    // follow-up (set_types, food_modes) waits for the next visit or `ready`
+    // flip, so the user gets one lesson at a time.
     if (!loaded) return;
     // One retry: the control may not be laid out yet (a slow list, the
     // overlay's size not in). Hints wait on the intro, so a lost intro
