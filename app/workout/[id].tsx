@@ -474,6 +474,14 @@ export default function ActiveWorkoutScreen() {
     'workout_set',
     !loading && !!currentEx && !exerciseFinished[currentIdx] && setTypeSheetIdx === null && !showRpeSheet,
   );
+  // Follow-up: once a set is logged in this exercise, light the set number
+  // (warm-up, drop set, failure). Waits for the first-set hint to end.
+  const setTypeTarget = useSpotlightTarget('set_type');
+  const loggedHere = currentEx?.sets.filter((s) => s.completed).length ?? 0;
+  const setTypesUsed = useSpotlightTour(
+    'set_types',
+    !loading && !!currentEx && !exerciseFinished[currentIdx] && loggedHere >= 1 && setTypeSheetIdx === null && !showRpeSheet,
+  );
   // Every logger input calls this, stamping the open exercise onto the edit
   // guard. Effects compare editedForExRef against their own exercise's id.
   const markEdited = () => { editedForExRef.current = currentEx?.exercise.id ?? null; };
@@ -3435,7 +3443,14 @@ export default function ActiveWorkoutScreen() {
                     >
                       {/* Set marker — tap to set the type (warmup/drop/failure/...). The
                           chevron makes the otherwise-plain number read as a tappable picker. */}
-                      <TouchableOpacity style={styles.colSet} onPress={() => setSetTypeSheetIdx(-1)} hitSlop={6} accessibilityLabel="Set type">
+                      <TouchableOpacity
+                        ref={interactive ? (setTypeTarget as any) : undefined}
+                        style={styles.colSet}
+                        // Using the set-types hint (before the sheet opens and pauses it).
+                        onPress={() => { setTypesUsed(); setSetTypeSheetIdx(-1); }}
+                        hitSlop={6}
+                        accessibilityLabel="Set type"
+                      >
                         <SetTypeBadge type={activeSetType} num={countsAsWorkingSet(activeSetType) ? completedWorking + 1 : undefined} numColor={C.accentText} />
                         <Feather name="chevron-down" size={9} color={C.textMuted} style={{ marginTop: 1 }} />
                       </TouchableOpacity>

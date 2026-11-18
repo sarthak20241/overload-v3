@@ -167,3 +167,14 @@ Deno.test("a save merges with what is stored, so a failed read never wipes it", 
   assertEquals(mergeSeen(null, new Set(["intro"])), ["intro"]);
   assertEquals(mergeSeen("broken", new Set(["intro"])), ["intro"]);
 });
+
+Deno.test("follow-up hints wait for the hint before them", () => {
+  assertEquals(TOURS.set_types.after, "workout_set");
+  assertEquals(TOURS.food_modes.after, "food_box");
+  const intro = new Set<string>(["intro"]);
+  assert(!canStart(TOURS.set_types, { seen: intro, active: null, ...fresh }), "first set hint not done yet");
+  assert(canStart(TOURS.set_types, { seen: new Set(["intro", "workout_set"]), active: null, ...fresh }));
+  assert(!canStart(TOURS.food_modes, { seen: intro, active: null, ...fresh }), "food box hint not done yet");
+  assert(canStart(TOURS.food_modes, { seen: new Set(["intro", "food_box"]), active: null, ...fresh }));
+  assert(!canStart(TOURS.food_modes, { seen: new Set(["food_box"]), active: null, ...fresh }), "the intro still comes first");
+});

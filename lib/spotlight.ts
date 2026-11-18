@@ -28,11 +28,13 @@
  * and a body fits two.
  */
 
-export type OnboardingTourId = 'intro' | 'workout_set' | 'food_box' | 'goal_plan';
+export type OnboardingTourId = 'intro' | 'workout_set' | 'food_box' | 'goal_plan' | 'set_types' | 'food_modes';
 /** One per "what's new" tour. None yet: the first OTA that needs one adds it. */
 export type ReleaseTourId = never;
 export type SpotlightTourId = OnboardingTourId | ReleaseTourId;
-export type SpotlightTargetId = 'today_card' | 'log_food' | 'goal_button' | 'active_set' | 'food_box' | 'phase_card';
+export type SpotlightTargetId =
+  | 'today_card' | 'log_food' | 'goal_button' | 'active_set' | 'food_box' | 'phase_card'
+  | 'set_type' | 'log_mode';
 /** How the lit hole hugs the control. */
 export type SpotlightShape = 'card' | 'pill' | 'circle';
 
@@ -48,6 +50,12 @@ export interface SpotlightTour {
   /** 'intro': taps anywhere move on. 'hint': the lit control stays live. */
   kind: 'intro' | 'hint';
   steps: SpotlightStep[];
+  /**
+   * A follow-up hint: waits until this tour has ended, so the user learns one
+   * thing at a time (set types after the first set, Quick/Precise after the
+   * food box).
+   */
+  after?: SpotlightTourId;
   /**
    * Set on a "what's new" tour: the OTA's ship date (YYYY-MM-DD, UTC) and how
    * many days after it the tour may still show (default 30). Only accounts
@@ -107,6 +115,23 @@ const ONBOARDING_TOURS: Record<OnboardingTourId, SpotlightTour> = {
       { target: 'phase_card', shape: 'card', title: 'Your plan, in phases', body: 'Tap the phase to see what this week asks of you.' },
     ],
   },
+  // Follow-ups: shown once the basic hint is done, so never on a first visit.
+  set_types: {
+    id: 'set_types',
+    kind: 'hint',
+    after: 'workout_set',
+    steps: [
+      { target: 'set_type', shape: 'pill', title: 'Warm-ups and drop sets', body: 'Tap the set number to mark it a warm-up, drop set or failure.' },
+    ],
+  },
+  food_modes: {
+    id: 'food_modes',
+    kind: 'hint',
+    after: 'food_box',
+    steps: [
+      { target: 'log_mode', shape: 'circle', title: 'Quick or Precise', body: 'Quick is a fast estimate. Precise reads labels on packaged food.' },
+    ],
+  },
 };
 
 export const TOURS: Record<SpotlightTourId, SpotlightTour> = { ...ONBOARDING_TOURS, ...RELEASE_TOURS };
@@ -138,8 +163,10 @@ export function canStart(
     return o.nowMs <= on + (tour.release.days ?? RELEASE_TOUR_DAYS) * DAY_MS;
   }
 
-  // A hint waits until the intro has ended (finished or skipped).
+  // A hint waits until the intro has ended (finished or skipped), and a
+  // follow-up until the hint before it has.
   if (tour.id !== 'intro' && !o.seen.has('intro')) return false;
+  if (tour.after && !o.seen.has(tour.after)) return false;
   if (o.demo) return true;
   // Unknown date: the account is not loaded yet, so wait.
   if (o.createdAtMs == null || !Number.isFinite(o.createdAtMs)) return false;

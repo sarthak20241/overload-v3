@@ -735,6 +735,13 @@ export default function NutritionScreen() {
   const [parseSpeed, setParseSpeedState] = useState<ParseSpeed>('quick');
   const parseSpeedRef = useRef<ParseSpeed>('quick');
   const [speedSheetOpen, setSpeedSheetOpen] = useState(false);
+  // Follow-up hint on the Quick / Precise chip: waits for the food box hint,
+  // so it shows on a later visit or right after the first log settles.
+  const logModeTarget = useSpotlightTarget('log_mode');
+  const logModesUsed = useSpotlightTour(
+    'food_modes',
+    !!isSignedIn && focus !== 'ai' && flow.status === 'idle' && !resultOpen && !speedSheetOpen,
+  );
   // The dashboard's getting-started "Pick how I log food" lands here with
   // modes=<stamp>: open the mode sheet once per stamp, then clear it (this tab
   // stays mounted, like focus=ai above).
@@ -2773,7 +2780,10 @@ export default function NutritionScreen() {
                 will actually RUN, so a lapsed subscriber sees Quick rather
                 than a Precise badge over a Quick parse. */}
             <Pressable
+              ref={logModeTarget}
               onPress={() => {
+                // Using the Quick/Precise hint (before the sheet opens and pauses it).
+                logModesUsed();
                 // The portal shares the app window, so the keyboard would cover
                 // its bottom rows. Blur the composer without clearing its draft.
                 Keyboard.dismiss();
