@@ -142,7 +142,7 @@ export default function GoalPlanScreen() {
   // First-visit hint on the phase card. Never on the sign-up visit (the film
   // and the build own that one), so it shows the first time the user comes back.
   const phaseTarget = useSpotlightTarget('phase_card');
-  useSpotlightTour(
+  const phaseHintUsed = useSpotlightTour(
     'goal_plan',
     !loading && !!program && !tourOn && tourParam !== '1' && !buildParam && !coachOpen && !logOpen && !aboutOpen,
   );
@@ -365,6 +365,8 @@ export default function GoalPlanScreen() {
   const openPhase = () => {
     haptics.selection();
     // program_phase_opened is recorded once, by the phase screen on mount.
+    // Tapping the lit phase card is using the hint (else leaving would re-show it).
+    phaseHintUsed();
     router.push({ pathname: '/goal-plan-phase', params: shownPhase ? { seq: String(shownPhase.seq) } : {} } as any);
   };
 

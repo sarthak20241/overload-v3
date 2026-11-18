@@ -52,20 +52,20 @@ export function HomeLogButton({ hidden, onLog, targetRef }: Props) {
       pointerEvents="box-none"
       style={[s.spot, { bottom: TAB_BAR_HEIGHT + insets.bottom + Spacing.lg }]}
     >
-    <PressableScale
-      onPress={press}
-      scaleTo={0.92}
-      style={[s.btn, {
-        backgroundColor: C.macro.calories,
-        shadowColor: C.macro.calories,
-      }]}
-      accessibilityRole="button"
-      accessibilityLabel="Log a meal"
-      accessibilityHint="Opens the food box. Type what you ate."
-    >
-      {/* Dark ink on the light dark-theme blue; white on the deep light-theme blue. */}
-      <SaladIcon size={28} strokeWidth={2} color={mode === 'dark' ? Colors.primaryFg : '#ffffff'} />
-    </PressableScale>
+      <PressableScale
+        onPress={press}
+        scaleTo={0.92}
+        style={[s.btn, {
+          backgroundColor: C.macro.calories,
+          shadowColor: C.macro.calories,
+        }]}
+        accessibilityRole="button"
+        accessibilityLabel="Log a meal"
+        accessibilityHint="Opens the food box. Type what you ate."
+      >
+        {/* Dark ink on the light dark-theme blue; white on the deep light-theme blue. */}
+        <SaladIcon size={28} strokeWidth={2} color={mode === 'dark' ? Colors.primaryFg : '#ffffff'} />
+      </PressableScale>
     </View>
   );
 }

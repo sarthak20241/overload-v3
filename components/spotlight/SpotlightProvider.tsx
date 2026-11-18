@@ -240,8 +240,17 @@ export function useSpotlightTour(id: SpotlightTourId, ready: boolean) {
     if (!ready) { c.end(id, 'interrupted'); return; }
     // Re-runs when `loaded` turns true, so a slow cold start still gets its try.
     if (!loaded) return;
-    const t = setTimeout(() => { ctxRef.current?.start(id, () => wantedRef.current); }, SETTLE_MS);
-    return () => clearTimeout(t);
+    // One retry: the control may not be laid out yet (a slow list, the
+    // overlay's size not in). Hints wait on the intro, so a lost intro
+    // would cost them too.
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const tryStart = () => ctxRef.current?.start(id, () => wantedRef.current) ?? Promise.resolve(false);
+    const t = setTimeout(() => {
+      tryStart().then((ok) => {
+        if (!ok && wantedRef.current) retry = setTimeout(tryStart, SETTLE_MS * 2);
+      });
+    }, SETTLE_MS);
+    return () => { clearTimeout(t); if (retry) clearTimeout(retry); };
   }, [focused, ready, loaded, id]);
 
   return useCallback(() => ctxRef.current?.end(id, 'used'), [id]);

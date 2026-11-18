@@ -53,7 +53,9 @@ export const TOURS: Record<SpotlightTourId, SpotlightTour> = {
     id: 'workout_set',
     kind: 'hint',
     steps: [
-      { target: 'active_set', shape: 'card', title: 'Log your first set', body: 'Tap a number to change it, then tap the tick.' },
+      // The tip ends when the keyboard opens, so it says everything up front:
+      // the tick first, then the optional edit.
+      { target: 'active_set', shape: 'card', title: 'Log your first set', body: 'Tap the tick to log it. Tap a number first to change it.' },
     ],
   },
   food_box: {
@@ -145,14 +147,13 @@ export function tipSide(hole: Rect, screenH: number): 'above' | 'below' {
 export type SpotlightEnd = 'finished' | 'skipped' | 'used' | 'outside' | 'left' | 'interrupted';
 
 /**
- * Whether an end uses the tour up. A tour cut short by something else comes
- * back next time. Leaving the screen mid-intro does too, but a hint's lit
- * control usually opens another screen, so leaving is using it.
+ * Whether an end uses the tour up. Only the user's own answer does: Next to
+ * the end, Skip, Got it, a tap on the dark area, or using the lit control
+ * (a screen whose lit control opens another screen reports 'used' first).
+ * A tour cut short by a popup, or left behind, shows again next visit.
  */
-export function countsAsSeen(kind: 'intro' | 'hint', how: SpotlightEnd): boolean {
-  if (how === 'interrupted') return false;
-  if (how === 'left') return kind === 'hint';
-  return true;
+export function countsAsSeen(_kind: 'intro' | 'hint', how: SpotlightEnd): boolean {
+  return how !== 'interrupted' && how !== 'left';
 }
 
 /** The step after `index`, or 'done' past the last. */

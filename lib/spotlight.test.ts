@@ -101,7 +101,7 @@ Deno.test("a tour cut short by something else comes back; a real end does not", 
   assert(!countsAsSeen("intro", "interrupted"), "a popup took the screen");
   assert(!countsAsSeen("hint", "interrupted"));
   assert(!countsAsSeen("intro", "left"), "pulled away mid-intro: show it again");
-  assert(countsAsSeen("hint", "left"), "a hint's control usually navigates: that is using it");
+  assert(!countsAsSeen("hint", "left"), "left without Got it or using it: show it again next visit");
   for (const how of ["finished", "skipped", "used", "outside"] as const) {
     assert(countsAsSeen("intro", how));
     assert(countsAsSeen("hint", how));
