@@ -2,13 +2,25 @@
  * The spotlight tours: the screen goes dark and a lit hole opens around one
  * real control, with a short tip beside it (components/spotlight/ draws it).
  *
- * Two kinds, each shown once per account, to accounts up to 14 days old
- * (SPOTLIGHT_MAX_ACCOUNT_DAYS; so recent sign-ups get them once on update too):
+ * Onboarding tours, for accounts made on or after SPOTLIGHT_FROM, for their
+ * first 14 days (existing users never get them), each shown once:
  *  - the intro: three stops on the dashboard the first time the user lands
  *    there (today's workout, log food, Goal). A tap anywhere moves on.
  *  - hints: one stop, the first time the user reaches that screen for real
  *    (the first set of a workout, the food box, the Goal screen's phase). The
- *    lit control stays live, so the user does the real thing.
+ *    lit control stays live, so the user does the real thing. Hints wait
+ *    until the intro has ended.
+ *
+ * Release tours ("what's new"), for an OTA that adds or moves something: one
+ * or more stops on the screen where it lives, shown once to accounts made
+ * before the release, within `release.days` of it. To add one:
+ *  1. lib/spotlight.ts: add its id to ReleaseTourId, any new control to
+ *     SpotlightTargetId, and the tour to RELEASE_TOURS with
+ *     `release: { on: '<ship date, YYYY-MM-DD>' }`, its steps and copy.
+ *  2. The screen: `const ref = useSpotlightTarget('<target>')` on a plain
+ *     View around the control, and `useSpotlightTour('<id>', ready)`. If the
+ *     lit control opens another screen, call the returned done() first.
+ *  3. Dev: EXPO_PUBLIC_SPOTLIGHT_DEMO=1 shows it on any account.
  *
  * Pure on purpose (no imports) so `deno test` reaches it.
  *
@@ -16,7 +28,10 @@
  * and a body fits two.
  */
 
-export type SpotlightTourId = 'intro' | 'workout_set' | 'food_box' | 'goal_plan';
+export type OnboardingTourId = 'intro' | 'workout_set' | 'food_box' | 'goal_plan';
+/** One per "what's new" tour. None yet: the first OTA that needs one adds it. */
+export type ReleaseTourId = never;
+export type SpotlightTourId = OnboardingTourId | ReleaseTourId;
 export type SpotlightTargetId = 'today_card' | 'log_food' | 'goal_button' | 'active_set' | 'food_box' | 'phase_card';
 /** How the lit hole hugs the control. */
 export type SpotlightShape = 'card' | 'pill' | 'circle';
@@ -33,14 +48,33 @@ export interface SpotlightTour {
   /** 'intro': taps anywhere move on. 'hint': the lit control stays live. */
   kind: 'intro' | 'hint';
   steps: SpotlightStep[];
+  /**
+   * Set on a "what's new" tour: the OTA's ship date (YYYY-MM-DD, UTC) and how
+   * many days after it the tour may still show (default 30). Only accounts
+   * made before that date get it: to everyone newer it is not new.
+   */
+  release?: { on: string; days?: number };
 }
 
 export const SPOTLIGHT_TITLE_MAX = 28;
 export const SPOTLIGHT_BODY_MAX = 64;
-/** Accounts older than this never see a tour: they already know the app. */
+/** Onboarding tours: accounts older than this skip them. */
 export const SPOTLIGHT_MAX_ACCOUNT_DAYS = 14;
+/**
+ * Onboarding tours reach only accounts made on or after this date, so people
+ * who already use the app never get the beginner tour (owner, 2026-11-18).
+ */
+export const SPOTLIGHT_FROM = '2026-11-18';
+export const SPOTLIGHT_FROM_MS = Date.parse(`${SPOTLIGHT_FROM}T00:00:00Z`);
+/** How long a release tour may still show after its OTA, unless it says. */
+export const RELEASE_TOUR_DAYS = 30;
 
-export const TOURS: Record<SpotlightTourId, SpotlightTour> = {
+const DAY_MS = 86_400_000;
+
+/** "What's new" tours, one per OTA that needs one (see the header). */
+export const RELEASE_TOURS: Record<ReleaseTourId, SpotlightTour> = {};
+
+const ONBOARDING_TOURS: Record<OnboardingTourId, SpotlightTour> = {
   intro: {
     id: 'intro',
     kind: 'intro',
@@ -75,19 +109,43 @@ export const TOURS: Record<SpotlightTourId, SpotlightTour> = {
   },
 };
 
-/** Whether a tour may start now. Only one at a time, and the intro comes first. */
+export const TOURS: Record<SpotlightTourId, SpotlightTour> = { ...ONBOARDING_TOURS, ...RELEASE_TOURS };
+
+/**
+ * Whether a tour may start now. Always: one at a time, each once. Then
+ * onboarding tours: new accounts only (see SPOTLIGHT_FROM), and hints after
+ * the intro. Release tours: accounts from before the release, in its window.
+ * `demo` (dev only) skips the date rules but keeps the order.
+ */
 export function canStart(
-  id: SpotlightTourId,
-  o: { seen: ReadonlySet<string>; active: SpotlightTourId | null; accountAgeDays: number | null },
+  tour: SpotlightTour,
+  o: {
+    seen: ReadonlySet<string>;
+    active: SpotlightTourId | null;
+    createdAtMs: number | null | undefined;
+    nowMs: number;
+    demo?: boolean;
+  },
 ): boolean {
   if (o.active) return false;
-  if (o.seen.has(id)) return false;
+  if (o.seen.has(tour.id)) return false;
+
+  if (tour.release) {
+    if (o.demo) return true;
+    const on = Date.parse(`${tour.release.on}T00:00:00Z`);
+    if (!Number.isFinite(on) || o.createdAtMs == null || !Number.isFinite(o.createdAtMs)) return false;
+    if (o.createdAtMs >= on) return false;
+    return o.nowMs <= on + (tour.release.days ?? RELEASE_TOUR_DAYS) * DAY_MS;
+  }
+
   // A hint waits until the intro has ended (finished or skipped).
-  if (id !== 'intro' && !o.seen.has('intro')) return false;
-  // Unknown age: the account is not loaded yet, so wait.
-  if (o.accountAgeDays == null || !Number.isFinite(o.accountAgeDays)) return false;
-  if (o.accountAgeDays > SPOTLIGHT_MAX_ACCOUNT_DAYS) return false;
-  return true;
+  if (tour.id !== 'intro' && !o.seen.has('intro')) return false;
+  if (o.demo) return true;
+  // Unknown date: the account is not loaded yet, so wait.
+  if (o.createdAtMs == null || !Number.isFinite(o.createdAtMs)) return false;
+  if (o.createdAtMs < SPOTLIGHT_FROM_MS) return false;
+  const age = accountAgeDays(o.createdAtMs, o.nowMs);
+  return age != null && age <= SPOTLIGHT_MAX_ACCOUNT_DAYS;
 }
 
 /**
@@ -103,7 +161,7 @@ export function dataLoaded(o: { seenLoaded: boolean; createdAtMs: number | null 
 /** Whole days since the account was made, or null when unknown. */
 export function accountAgeDays(createdAtMs: number | null | undefined, nowMs: number): number | null {
   if (createdAtMs == null || !Number.isFinite(createdAtMs) || createdAtMs <= 0) return null;
-  return Math.max(0, (nowMs - createdAtMs) / 86_400_000);
+  return Math.max(0, (nowMs - createdAtMs) / DAY_MS);
 }
 
 export interface Rect { x: number; y: number; width: number; height: number }

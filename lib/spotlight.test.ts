@@ -13,7 +13,9 @@ import {
   onScreen,
   parseSeen,
   SPOTLIGHT_BODY_MAX,
+  SPOTLIGHT_FROM_MS,
   SPOTLIGHT_TITLE_MAX,
+  type SpotlightTour,
   tipSide,
   toOverlay,
   TOURS,
@@ -21,18 +23,47 @@ import {
 
 const DAY = 86_400_000;
 
+const FROM = SPOTLIGHT_FROM_MS;
+const fresh = { createdAtMs: FROM + DAY, nowMs: FROM + 2 * DAY };
+
 Deno.test("a new account sees each tour once, one at a time", () => {
   const seen = new Set<string>();
-  assert(canStart("intro", { seen, active: null, accountAgeDays: 0 }));
-  assert(!canStart("food_box", { seen, active: "intro", accountAgeDays: 0 }), "never two at once");
-  assert(!canStart("intro", { seen: new Set(["intro"]), active: null, accountAgeDays: 0 }), "only once");
+  assert(canStart(TOURS.intro, { seen, active: null, ...fresh }));
+  assert(!canStart(TOURS.food_box, { seen, active: "intro", ...fresh }), "never two at once");
+  assert(!canStart(TOURS.intro, { seen: new Set(["intro"]), active: null, ...fresh }), "only once");
 });
 
-Deno.test("an older account never sees a tour; an unknown age waits", () => {
+Deno.test("only accounts made after the tours shipped get them, for 14 days", () => {
   const seen = new Set<string>(["intro"]);
-  assert(canStart("goal_plan", { seen, active: null, accountAgeDays: 14 }));
-  assert(!canStart("goal_plan", { seen, active: null, accountAgeDays: 14.5 }));
-  assert(!canStart("goal_plan", { seen, active: null, accountAgeDays: null }));
+  assert(!canStart(TOURS.intro, { seen: new Set(), active: null, createdAtMs: FROM - 1, nowMs: FROM + DAY }), "an account from before, even 1 day old");
+  assert(canStart(TOURS.goal_plan, { seen, active: null, createdAtMs: FROM, nowMs: FROM + 14 * DAY }));
+  assert(!canStart(TOURS.goal_plan, { seen, active: null, createdAtMs: FROM, nowMs: FROM + 14.5 * DAY }), "older than 14 days");
+  assert(!canStart(TOURS.goal_plan, { seen, active: null, createdAtMs: null, nowMs: FROM }), "unknown date: wait");
+});
+
+Deno.test("the dev demo skips the date rules, never the order", () => {
+  const demo = { createdAtMs: null, nowMs: 0, demo: true };
+  assert(canStart(TOURS.intro, { seen: new Set(), active: null, ...demo }));
+  assert(!canStart(TOURS.food_box, { seen: new Set(), active: null, ...demo }), "hints still wait for the intro");
+});
+
+Deno.test("a release tour goes to accounts from before the release, for its window", () => {
+  const rel: SpotlightTour = {
+    id: "intro", // any id: the rules read the tour, not the id
+    kind: "hint",
+    release: { on: "2026-12-01", days: 30 },
+    steps: [{ target: "food_box", shape: "pill", title: "New", body: "New." }],
+  };
+  const on = Date.parse("2026-12-01T00:00:00Z");
+  const none = new Set<string>();
+  assert(canStart({ ...rel, id: "workout_set" }, { seen: none, active: null, createdAtMs: on - 400 * DAY, nowMs: on + DAY }), "an old account, no intro needed");
+  assert(!canStart({ ...rel, id: "workout_set" }, { seen: none, active: null, createdAtMs: on + DAY, nowMs: on + 2 * DAY }), "signed up after: it is not new to them");
+  assert(!canStart({ ...rel, id: "workout_set" }, { seen: none, active: null, createdAtMs: on - DAY, nowMs: on + 31 * DAY }), "the window has closed");
+  assert(!canStart({ ...rel, id: "workout_set" }, { seen: new Set(["workout_set"]), active: null, createdAtMs: on - DAY, nowMs: on + DAY }), "once");
+  assert(!canStart({ ...rel, id: "workout_set" }, { seen: none, active: "food_box", createdAtMs: on - DAY, nowMs: on + DAY }), "one at a time");
+});
+
+Deno.test("account age in days", () => {
   assertEquals(accountAgeDays(null, 0), null);
   assertEquals(accountAgeDays(0, 5), null);
   assertEquals(accountAgeDays(1_000, 1_000 + 3 * DAY), 3);
@@ -117,10 +148,8 @@ Deno.test("a tour waits for the seen list and the account date, then tries again
 });
 
 Deno.test("hints wait for the intro to end first", () => {
-  const age = 0;
-  assert(!canStart("food_box", { seen: new Set(), active: null, accountAgeDays: age }), "intro not done yet");
-  assert(canStart("food_box", { seen: new Set(["intro"]), active: null, accountAgeDays: age }), "intro finished or skipped");
-  assert(canStart("intro", { seen: new Set(), active: null, accountAgeDays: age }));
+  assert(!canStart(TOURS.food_box, { seen: new Set(), active: null, ...fresh }), "intro not done yet");
+  assert(canStart(TOURS.food_box, { seen: new Set(["intro"]), active: null, ...fresh }), "intro finished or skipped");
 });
 
 Deno.test("a control's window position is moved into the overlay's own space", () => {

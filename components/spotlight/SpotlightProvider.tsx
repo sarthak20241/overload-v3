@@ -1,6 +1,7 @@
 /**
- * Spotlight tours: the dashboard intro and the first-visit hints (rules and
- * words in lib/spotlight.ts, the drawing in ./SpotlightOverlay.tsx).
+ * Spotlight tours: the dashboard intro and first-visit hints for new accounts,
+ * and "what's new" tours for an OTA (rules, words and the how-to for adding a
+ * release tour in lib/spotlight.ts; the drawing in ./SpotlightOverlay.tsx).
  *
  * A screen marks a control with `useSpotlightTarget('food_box')` (a ref for a
  * plain View) and asks for its tour with `useSpotlightTour('food_box', ready)`.
@@ -25,7 +26,6 @@ import { useFocusEffect } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
 import { track, trackError } from '@/lib/analytics';
 import {
-  accountAgeDays,
   canStart,
   countsAsSeen,
   dataLoaded,
@@ -158,8 +158,7 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
   const start = useCallback(async (id: SpotlightTourId, stillWanted?: () => boolean) => {
     const s = seenRef.current;
     if (!s) return 'blocked';
-    const age = DEMO ? 0 : accountAgeDays(createdAtMs, Date.now());
-    if (!canStart(id, { seen: s, active: activeRef.current?.id ?? null, accountAgeDays: age })) return 'blocked';
+    if (!canStart(TOURS[id], { seen: s, active: activeRef.current?.id ?? null, createdAtMs, nowMs: Date.now(), demo: DEMO })) return 'blocked';
     const first = await findStep(id, 0);
     // Another tour may have started, or the screen gone, while we measured.
     if (activeRef.current) return 'blocked';
