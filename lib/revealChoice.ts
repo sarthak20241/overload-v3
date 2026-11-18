@@ -19,3 +19,9 @@ export const REVEAL_CHOICES: Record<RevealChoice, RevealFinish> = {
   plan: { createPlan: true, dest: '/(app)' },
   own_routines: { createPlan: true, dest: '/(app)/routines' },
 };
+
+/** Which reveal button led to this landing. The analytics value: with both
+ *  choices saving the plan, created_plan no longer tells them apart. */
+export function revealChoiceFor(dest: RevealFinish['dest'] | undefined): RevealChoice {
+  return dest === '/(app)/routines' ? 'own_routines' : 'plan';
+}

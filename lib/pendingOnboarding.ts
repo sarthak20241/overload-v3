@@ -25,6 +25,7 @@ import {
 } from '@/lib/onboarding';
 import { saveProgram, type GeneratedProgram } from '@/lib/programData';
 import { invalidateProfile } from '@/lib/profileReads';
+import { revealChoiceFor } from '@/lib/revealChoice';
 
 const PENDING_KEY = 'pending_onboarding_v1';
 
@@ -122,7 +123,7 @@ export async function drainPendingOnboarding(target: {
   // Closes the funnel opened by onboarding_completed{outcome:'handed_to_signup'}.
   track('onboarding_pending_drained', {
     created_plan: pending.createPlan,
-    reveal_choice: pending.dest === '/(app)/routines' ? 'own_routines' : 'plan',
+    reveal_choice: revealChoiceFor(pending.dest),
     // The drain saves no routines any more (phase 1 is built from the Goal
     // screen), and a fresh blob has no `plan` at all: reading its .length
     // threw AFTER the blob was cleared, losing the post-signup destination.

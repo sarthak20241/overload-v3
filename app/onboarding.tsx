@@ -60,7 +60,7 @@ import {
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
-import { REVEAL_CHOICES } from '@/lib/revealChoice';
+import { REVEAL_CHOICES, revealChoiceFor } from '@/lib/revealChoice';
 import { useGuestMode } from '@/lib/guestMode';
 import { accessHasPlan, connectFirstNext } from '@/lib/paywallPlans';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
@@ -661,7 +661,7 @@ export default function OnboardingScreen() {
         if (opts.createPlan) void flushNow();
         track('onboarding_completed', {
           created_plan: opts.createPlan,
-          reveal_choice: opts.dest === '/(app)/routines' ? 'own_routines' : 'plan',
+          reveal_choice: revealChoiceFor(opts.dest),
           goal: answers.goal ?? null,
           goals: selectedGoals(answers).join(','),
           experience: answers.experience ?? null,
@@ -715,7 +715,7 @@ export default function OnboardingScreen() {
           track('onboarding_completed', {
             outcome: 'handed_to_signup',
             created_plan: opts.createPlan,
-            reveal_choice: opts.dest === '/(app)/routines' ? 'own_routines' : 'plan',
+            reveal_choice: revealChoiceFor(opts.dest),
             goal: answers.goal ?? null,
             goals: selectedGoals(answers).join(','),
             experience: answers.experience ?? null,
