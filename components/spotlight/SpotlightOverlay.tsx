@@ -50,7 +50,7 @@ import { BlurMask, Canvas, FillType, Path, RoundedRect, Skia } from '@shopify/re
 import { Colors, FontFamily, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
-import { tipSide, type Hole, type SpotlightEnd, type SpotlightTour } from '@/lib/spotlight';
+import { tipControls, tipSide, type Hole, type SpotlightEnd, type SpotlightTour } from '@/lib/spotlight';
 
 const SPRING = { damping: 19, stiffness: 170, mass: 0.9 } as const;
 const GUTTER = Spacing.lg;
@@ -219,7 +219,8 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
     const enter = reduce
       ? FadeIn.duration(180).reduceMotion(ReduceMotion.Never)
       : (side === 'below' ? FadeInDown : FadeInUp).springify().damping(17).stiffness(190).delay(i === 0 ? 300 : 90);
-    return { t, i, step, side, caretLeft, pos, last, enter };
+    const controls = tipControls(t, i);
+    return { t, i, step, side, caretLeft, pos, last, enter, controls };
   }, [shown, size, reduce]);
 
   const press = (fn: () => void) => () => { haptics.tap(); fn(); };
@@ -288,6 +289,10 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
                 </View>
                 <Text style={[styles.body, { color: C.mutedFg }]}>{tip.step.body}</Text>
                 <View style={styles.row}>
+                  <View style={styles.progressWrap}>
+                    <Text style={[styles.progress, { color: C.mutedFg }]} accessibilityLabel={`Step ${tip.controls.progress.replace('/', ' of ')}`}>
+                      {tip.controls.progress}
+                    </Text>
                   {tip.t.steps.length > 1 ? (
                     <View style={styles.dots}>
                       {tip.t.steps.map((_, k) => (
@@ -297,10 +302,12 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
                         />
                       ))}
                     </View>
-                  ) : <View />}
+                  ) : null}
+                  </View>
                   <View style={styles.actions}>
-                    {tip.t.kind === 'intro' && !tip.last ? (
-                      <Pressable onPress={press(() => onEnd('skipped'))} hitSlop={10} accessibilityRole="button" accessibilityLabel="Skip the tour">
+                    {tip.controls.showSkip ? (
+                      // Closes this guide only (the intro, or this page's hint).
+                      <Pressable onPress={press(() => onEnd('skipped'))} hitSlop={10} accessibilityRole="button" accessibilityLabel={tip.t.kind === 'intro' ? 'Skip the tour' : 'Skip this tip'}>
                         <Text style={[styles.skip, { color: C.mutedFg }]}>Skip</Text>
                       </Pressable>
                     ) : null}
@@ -311,7 +318,7 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
                       style={({ pressed }) => [styles.cta, { opacity: pressed ? 0.85 : 1 }]}
                       accessibilityRole="button"
                     >
-                      <Text style={styles.ctaText}>{tip.last ? 'Got it' : 'Next'}</Text>
+                      <Text style={styles.ctaText}>{tip.controls.cta}</Text>
                     </Pressable>
                   </View>
                 </View>
@@ -372,7 +379,9 @@ const styles = StyleSheet.create({
   title: { fontFamily: FontFamily.onboardingHeading, fontSize: 17, lineHeight: 22 },
   body: { fontFamily: FontFamily.onboardingBody, fontSize: 15, lineHeight: 21, marginTop: 4, marginLeft: 15 },
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14 },
-  dots: { flexDirection: 'row', alignItems: 'center', gap: 5, marginLeft: 15 },
+  progressWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, marginLeft: 15 },
+  progress: { fontFamily: FontFamily.onboardingHeading, fontSize: 13, fontVariant: ['tabular-nums'] },
+  dots: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   stepDot: { height: 6, borderRadius: 3 },
   actions: { flexDirection: 'row', alignItems: 'center', gap: 18 },
   skip: { fontFamily: FontFamily.onboardingHeading, fontSize: 15 },

@@ -253,6 +253,22 @@ export function countsAsSeen(how: SpotlightEnd): boolean {
   return how !== 'interrupted' && how !== 'left';
 }
 
+/**
+ * The tip card's footer: the step count is always shown ("1/3", "1/1"), so
+ * the user knows how much is left. Skip closes this guide only; it shows on
+ * every step except the intro's last (Got it does the same job there). A page
+ * guide is one step, but it still gets Skip (owner, 2026-11-18).
+ */
+export function tipControls(tour: SpotlightTour, index: number): { progress: string; showSkip: boolean; cta: 'Next' | 'Got it' } {
+  const count = tour.steps.length;
+  const last = index >= count - 1;
+  return {
+    progress: `${Math.min(index + 1, count)}/${count}`,
+    showSkip: !(last && count > 1),
+    cta: last ? 'Got it' : 'Next',
+  };
+}
+
 /** The step after `index`, or 'done' past the last. */
 export function nextStep(index: number, count: number): number | 'done' {
   return index + 1 >= count ? 'done' : index + 1;

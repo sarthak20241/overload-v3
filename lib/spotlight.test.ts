@@ -17,6 +17,7 @@ import {
   SPOTLIGHT_FROM_MS,
   SPOTLIGHT_TITLE_MAX,
   type SpotlightTour,
+  tipControls,
   tipSide,
   toOverlay,
   TOURS,
@@ -180,4 +181,12 @@ Deno.test("follow-up hints wait for the hint before them", () => {
   assert(!canStart(TOURS.food_modes, { seen: intro, active: null, ...fresh }), "food box hint not done yet");
   assert(canStart(TOURS.food_modes, { seen: new Set(["intro", "food_box"]), active: null, ...fresh }));
   assert(!canStart(TOURS.food_modes, { seen: new Set(["food_box"]), active: null, ...fresh }), "the intro still comes first");
+});
+
+Deno.test("every tip shows its step count; Skip on every step but the intro's last", () => {
+  assertEquals(tipControls(TOURS.intro, 0), { progress: "1/3", showSkip: true, cta: "Next" });
+  assertEquals(tipControls(TOURS.intro, 1), { progress: "2/3", showSkip: true, cta: "Next" });
+  assertEquals(tipControls(TOURS.intro, 2), { progress: "3/3", showSkip: false, cta: "Got it" });
+  // A page guide: one step, but the user can still skip it.
+  assertEquals(tipControls(TOURS.food_box, 0), { progress: "1/1", showSkip: true, cta: "Got it" });
 });
