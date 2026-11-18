@@ -1394,7 +1394,6 @@ export default function ActiveWorkoutScreen() {
   // Log a set
   const handleLogSet = () => {
     if (!currentEx) return;
-    setHintUsed();
     const axes = metricTypeDef(metricTypeOf(currentEx.exercise)).axes;
     const usesWeight = axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight');
     const usesReps = axes.includes('reps');
@@ -1490,6 +1489,9 @@ export default function ActiveWorkoutScreen() {
     }
     updated[currentIdx] = ex;
     workout.updateExercises(updated);
+    // The first-set hint is used once a set is really saved (not on the first
+    // side of an L+R set, which returns above).
+    setHintUsed();
 
     // The core loop's heartbeat. Placed after the unilateral first-side early
     // return above, so one L+R round is one event, not two.
@@ -3525,6 +3527,8 @@ export default function ActiveWorkoutScreen() {
                     )}
                     <View
                       ref={interactive ? inputCardRef : undefined}
+                      // Measured for the first-set hint: never flattened away on Android.
+                      collapsable={false}
                       style={[styles.setRowActive, { backgroundColor: C.primaryMuted }]}
                     >
                       {/* Set marker — tap to set the type (warmup/drop/failure/...). The

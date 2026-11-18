@@ -538,8 +538,7 @@ export default function NutritionScreen() {
   // lands, whether to open the result or tell the user with a toast.
   const [waitOpen, setWaitOpen] = useState(false);
   const [resultOpen, setResultOpen] = useState(false);
-  // First-visit hint on the food box. Not when a card sent the user here to
-  // type (focus=ai): the keyboard is already coming up.
+  // The food box hint's target (its readiness check sits below every sheet's state).
   const foodBoxTarget = useSpotlightTarget('food_box');
   const [resultDayOpen, setResultDayOpen] = useState(false);
   const waitOpenRef = useRef(false);
@@ -888,6 +887,7 @@ export default function NutritionScreen() {
   // sheet's state, so none is left out.
   const sheetUp = resultOpen || resultDayOpen || calendarOpen || !!editEntry || fuelOpen || goalOpen
     || waitOpen || speedSheetOpen || savedListOpen || copyMeal !== null;
+  // Not when a card sent the user here to type (focus=ai): the keyboard is coming up.
   const hintReady = !!isSignedIn && focus !== 'ai' && flow.status === 'idle' && !sheetUp;
   useSpotlightTour('food_box', hintReady);
   const logModesUsed = useSpotlightTour('food_modes', hintReady);
