@@ -139,6 +139,14 @@ type Step =
   | 'welcome' | 'goal' | 'experience' | 'frequency' | 'health' | 'prefs'
   | 'gender' | 'age' | 'height' | 'weight' | 'target' | 'pace'
   | 'interlude' | 'commit' | 'build' | 'plan';
+// Day first, with the year once the date is in a later year ("30 Dec",
+// "4 Jan 2027"). "Dec 30" vs "Jan 4" with no year read as the faster pace
+// landing later, so a faster pace looked like a further goal.
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function dayMonthLabel(d: Date, withYear: boolean): string {
+  return `${d.getDate()} ${SHORT_MONTHS[d.getMonth()]}${withYear ? ` ${d.getFullYear()}` : ''}`;
+}
+
 const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
 // Steps counted by the progress header (welcome and the build moment hide it).
 const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
@@ -343,10 +351,9 @@ export default function OnboardingScreen() {
     if (!paceCtx || weeklyRate == null) return null;
     const iso = projectGoalDateIso(paceCtx.draft, weeklyRate);
     if (!iso) return null;
-    const d = new Date(iso);
-    const now = new Date();
-    const far = d.getTime() - now.getTime() > 330 * 24 * 3600 * 1000;
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(far ? { year: 'numeric' } : {}) });
+    const [y, m, day] = iso.split('-').map(Number);
+    const d = new Date(y, m - 1, day);
+    return dayMonthLabel(d, d.getFullYear() !== new Date().getFullYear());
   }, [paceCtx, weeklyRate]);
 
   const pacedPreview = useMemo(() => {
@@ -368,8 +375,8 @@ export default function OnboardingScreen() {
       const diff = Math.abs(targetVal - weightVal).toFixed(1).replace(/\.0$/, '');
       return `${paceCtx.direction === 'loss' ? 'Down' : 'Up'} ${diff} ${weightUnit} by ${paceDate}.`;
     }
-    const horizon = new Date(Date.now() + 84 * 24 * 3600 * 1000)
-      .toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const h = new Date(Date.now() + 84 * 24 * 3600 * 1000);
+    const horizon = dayMonthLabel(h, h.getFullYear() !== new Date().getFullYear());
     return `Visibly stronger by ${horizon}.`;
   }, [paceCtx, paceDate, targetVal, weightVal, weightUnit]);
 
