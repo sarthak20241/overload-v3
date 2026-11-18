@@ -278,6 +278,7 @@ export type AnalyticsEvent =
   // Spotlight intro + first-visit hints (components/spotlight/).
   | 'spotlight_shown'
   | 'spotlight_done'
+  | 'spotlight_missed'
   // The dashboard's floating log-food button (components/home/HomeLogButton.tsx).
   | 'home_log_food_tapped'
   | 'program_phase_advanced'

@@ -2,8 +2,9 @@
  * The spotlight tours: the screen goes dark and a lit hole opens around one
  * real control, with a short tip beside it (components/spotlight/ draws it).
  *
- * Two kinds, each shown once per account:
- *  - the intro: three stops on the dashboard the first time a new user lands
+ * Two kinds, each shown once per account, to accounts up to 14 days old
+ * (SPOTLIGHT_MAX_ACCOUNT_DAYS; so recent sign-ups get them once on update too):
+ *  - the intro: three stops on the dashboard the first time the user lands
  *    there (today's workout, log food, Goal). A tap anywhere moves on.
  *  - hints: one stop, the first time the user reaches that screen for real
  *    (the first set of a workout, the food box, the Goal screen's phase). The

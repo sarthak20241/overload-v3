@@ -56,10 +56,13 @@ interface Active {
   hole: Hole;
 }
 
+/** shown; blocked (seen, too old, another tour, screen gone); missed (no control on screen). */
+type StartResult = 'shown' | 'blocked' | 'missed';
+
 interface Ctx {
   register: (target: SpotlightTargetId, ref: React.RefObject<View | null>) => () => void;
   /** `stillWanted` is checked after measuring: the screen may have gone. */
-  start: (id: SpotlightTourId, stillWanted?: () => boolean) => Promise<boolean>;
+  start: (id: SpotlightTourId, stillWanted?: () => boolean) => Promise<StartResult>;
   end: (id: SpotlightTourId, how: SpotlightEnd) => void;
   /** The seen list and the account date are in: screens may try their tour. */
   loaded: boolean;
@@ -139,18 +142,19 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
 
   const start = useCallback(async (id: SpotlightTourId, stillWanted?: () => boolean) => {
     const s = seenRef.current;
-    if (!s) return false;
+    if (!s) return 'blocked';
     const age = DEMO ? 0 : accountAgeDays(createdAtMs, Date.now());
-    if (!canStart(id, { seen: s, active: activeRef.current?.id ?? null, accountAgeDays: age })) return false;
+    if (!canStart(id, { seen: s, active: activeRef.current?.id ?? null, accountAgeDays: age })) return 'blocked';
     const first = await findStep(id, 0);
     // Another tour may have started, or the screen gone, while we measured.
-    if (!first || activeRef.current) return false;
-    if (stillWanted && !stillWanted()) return false;
+    if (activeRef.current) return 'blocked';
+    if (stillWanted && !stillWanted()) return 'blocked';
+    if (!first) return 'missed';
     const a = { id, ...first };
     activeRef.current = a;
     setActive(a);
     track('spotlight_shown', { tour: id, step: TOURS[id].steps[first.index].target });
-    return true;
+    return 'shown';
   }, [createdAtMs, findStep]);
 
   const end = useCallback((id: SpotlightTourId, how: SpotlightEnd) => {
@@ -247,10 +251,17 @@ export function useSpotlightTour(id: SpotlightTourId, ready: boolean) {
     // overlay's size not in). Hints wait on the intro, so a lost intro
     // would cost them too.
     let retry: ReturnType<typeof setTimeout> | undefined;
-    const tryStart = () => ctxRef.current?.start(id, () => wantedRef.current) ?? Promise.resolve(false);
+    const tryStart = () => ctxRef.current?.start(id, () => wantedRef.current) ?? Promise.resolve<StartResult>('blocked');
     const t = setTimeout(() => {
-      tryStart().then((ok) => {
-        if (!ok && wantedRef.current) retry = setTimeout(tryStart, SETTLE_MS * 2);
+      tryStart().then((first) => {
+        if (first === 'missed' && wantedRef.current) {
+          retry = setTimeout(() => {
+            tryStart().then((again) => {
+              // Twice no control on screen: worth seeing how often in PostHog.
+              if (again === 'missed') track('spotlight_missed', { tour: id });
+            });
+          }, SETTLE_MS * 2);
+        }
       });
     }, SETTLE_MS);
     return () => { clearTimeout(t); if (retry) clearTimeout(retry); };
