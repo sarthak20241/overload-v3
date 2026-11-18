@@ -79,6 +79,8 @@ export function canStart(
 ): boolean {
   if (o.active) return false;
   if (o.seen.has(id)) return false;
+  // A hint waits until the intro has ended (finished or skipped).
+  if (id !== 'intro' && !o.seen.has('intro')) return false;
   // Unknown age: the account is not loaded yet, so wait.
   if (o.accountAgeDays == null || !Number.isFinite(o.accountAgeDays)) return false;
   if (o.accountAgeDays > SPOTLIGHT_MAX_ACCOUNT_DAYS) return false;

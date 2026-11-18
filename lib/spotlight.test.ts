@@ -28,7 +28,7 @@ Deno.test("a new account sees each tour once, one at a time", () => {
 });
 
 Deno.test("an older account never sees a tour; an unknown age waits", () => {
-  const seen = new Set<string>();
+  const seen = new Set<string>(["intro"]);
   assert(canStart("goal_plan", { seen, active: null, accountAgeDays: 14 }));
   assert(!canStart("goal_plan", { seen, active: null, accountAgeDays: 14.5 }));
   assert(!canStart("goal_plan", { seen, active: null, accountAgeDays: null }));
@@ -113,4 +113,11 @@ Deno.test("a tour waits for the seen list and the account date, then tries again
   assert(!dataLoaded({ seenLoaded: true, createdAtMs: null, demo: false }), "account not loaded yet");
   assert(dataLoaded({ seenLoaded: true, createdAtMs: 1_000, demo: false }));
   assert(dataLoaded({ seenLoaded: true, createdAtMs: null, demo: true }), "the dev demo needs no date");
+});
+
+Deno.test("hints wait for the intro to end first", () => {
+  const age = 0;
+  assert(!canStart("food_box", { seen: new Set(), active: null, accountAgeDays: age }), "intro not done yet");
+  assert(canStart("food_box", { seen: new Set(["intro"]), active: null, accountAgeDays: age }), "intro finished or skipped");
+  assert(canStart("intro", { seen: new Set(), active: null, accountAgeDays: age }));
 });

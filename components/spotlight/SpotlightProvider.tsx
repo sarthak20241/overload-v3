@@ -4,6 +4,7 @@
  *
  * A screen marks a control with `useSpotlightTarget('food_box')` (a ref for a
  * plain View) and asks for its tour with `useSpotlightTour('food_box', ready)`.
+ * Hints wait until the dashboard intro has ended, so the intro always comes first.
  * The provider keeps which tours this account has seen (AsyncStorage, per
  * user), runs one tour at a time, and measures each control on screen before
  * it lights it. A control that is not laid out or sits off screen is skipped,
@@ -171,6 +172,11 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     setActive(b);
   }, [end, findStep]);
 
+  // Stable, so the overlay's back-button and keyboard listeners subscribe once.
+  const endActive = useCallback((how: SpotlightEnd) => {
+    if (activeRef.current) end(activeRef.current.id, how);
+  }, [end]);
+
   const loaded = dataLoaded({ seenLoaded: seen != null, createdAtMs, demo: DEMO });
   const value = useMemo<Ctx>(() => ({ register, start, end, loaded }), [register, start, end, loaded]);
 
@@ -184,7 +190,7 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
           hole={active?.hole ?? null}
           onScreenSize={setScreen}
           onNext={next}
-          onEnd={(how) => { if (activeRef.current) end(activeRef.current.id, how); }}
+          onEnd={endActive}
         />
       </Portal>
     </SpotlightContext.Provider>
