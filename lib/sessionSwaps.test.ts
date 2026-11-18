@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { applySessionSwaps, canSwapLive, setSessionSwaps, slotKey, swapLiveSlot, takeSessionSwaps, type LiveSlot, type SwapSlot } from "./sessionSwaps.ts";
+import { applySessionSwaps, canSwapLive, clearSessionSwaps, peekSessionSwaps, setSessionSwaps, slotKey, swapLiveSlot, type LiveSlot, type SwapSlot } from "./sessionSwaps.ts";
 
 const row = (id: string, name: string) => ({ id, name, muscle_group: "Chest", category: "Dumbbell", metric_type: "weight_reps" });
 const slot = (order: number, id: string, name: string, more: Record<string, unknown> = {}) =>
@@ -30,21 +30,27 @@ Deno.test("no swaps, an unknown slot, or a swap to the same exercise change noth
   assertEquals(applySessionSwaps(SLOTS, { [slotKey(SLOTS[1])]: row("b", "Cable Fly") })[1].note, "Pause at the chest");
 });
 
-Deno.test("the hand-over is one time, and only for its own routine", () => {
+Deno.test("the hand-over survives a second read, and ends when the workout starts", () => {
   const swaps = { "0:a": row("x", "Incline Barbell Press") };
   setSessionSwaps("r1", swaps);
-  assertEquals(takeSessionSwaps("r1"), swaps);
-  assertEquals(takeSessionSwaps("r1"), null);
+  // The load can run twice before the workout exists: both reads see the swaps.
+  assertEquals(peekSessionSwaps("r1"), swaps);
+  assertEquals(peekSessionSwaps("r1"), swaps);
+  clearSessionSwaps();
+  assertEquals(peekSessionSwaps("r1"), null);
+});
 
-  // Another routine starts first: the waiting swaps are dropped, not kept for later.
+Deno.test("swaps waiting for one routine never reach another, nor a later start of their own", () => {
+  const swaps = { "0:a": row("x", "Incline Barbell Press") };
   setSessionSwaps("r1", swaps);
-  assertEquals(takeSessionSwaps("r2"), null);
-  assertEquals(takeSessionSwaps("r1"), null);
+  assertEquals(peekSessionSwaps("r2"), null);
+  // Another routine started first: the waiting swaps are gone, not kept for later.
+  assertEquals(peekSessionSwaps("r1"), null);
 
   // An empty set of swaps clears what was waiting.
   setSessionSwaps("r1", swaps);
   setSessionSwaps("r1", {});
-  assertEquals(takeSessionSwaps("r1"), null);
+  assertEquals(peekSessionSwaps("r1"), null);
 });
 
 Deno.test("a swapped slot remembers the plan's exercise and its note", () => {

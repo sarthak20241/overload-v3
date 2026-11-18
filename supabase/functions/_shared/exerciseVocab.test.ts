@@ -41,7 +41,11 @@ Deno.test("every swap tag in the migration is a word the app knows", async () =>
   assertEquals([...check.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]), [...SWAP_PATTERN_VALUES]);
 
   const rows = [...sql.matchAll(/^  \('((?:[^']|'')+)', '([^']+)', '([a-z_]+)'\),?$/gm)];
-  assertEquals(rows.length > 700, true, "tag rows found");
+  assertEquals(
+    rows.length > 700,
+    true,
+    `only ${rows.length} tag rows parsed: this test reads rows written as "  ('name', 'Muscle', 'pattern'),", so a reformatted migration needs this regex updated`,
+  );
   const names = rows.map((r) => r[1]);
   assertEquals(new Set(names).size, names.length, "one row per name");
   assertEquals(names.filter((n) => n !== n.toLowerCase()), [], "names are name_lower");

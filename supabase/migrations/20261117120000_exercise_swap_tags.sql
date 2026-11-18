@@ -23,8 +23,11 @@
 -- NULL means not tagged yet: a reader falls back to muscle_group.
 --
 -- The tags below are keyed by name_lower and cover every catalog name. A
--- user's own exercise with a catalog name gets the same tags. Names that only
--- users have are tagged outside this file, so no user's text is in the repo.
+-- user's own exercise with a catalog name gets the same tags, on purpose: the
+-- two columns are new, nobody has edited them, and a name means the same
+-- lift whoever made the row. Nothing the user wrote (name, muscle_group,
+-- category, metric_type) is touched. Names that only users have are tagged
+-- outside this file, so no user's text is in the repo.
 
 alter table public.exercises add column if not exists target_muscle text;
 alter table public.exercises add column if not exists swap_pattern text;
@@ -51,9 +54,8 @@ comment on column public.exercises.swap_pattern is
   'Movement family for swaps (SWAP_PATTERN_VALUES in _shared/exerciseVocab.ts). '
   'Not the form checker''s movement_pattern. NULL = not tagged.';
 
--- The swap list reads "same muscle, then same movement" over the catalog.
-create index if not exists idx_exercises_swap
-  on public.exercises (target_muscle, swap_pattern);
+-- No index: the app ranks swaps on the phone over the whole list it already
+-- holds (lib/exerciseSwaps), so no query filters on these columns.
 
 update public.exercises e
 set target_muscle = t.target_muscle, swap_pattern = t.swap_pattern

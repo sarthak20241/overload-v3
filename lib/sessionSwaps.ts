@@ -4,7 +4,8 @@
  * The Today card's session preview lets the person swap an exercise (the
  * machine is taken, the shoulder is sore). The swap is for this session: the
  * routine is not changed. The preview hands the swaps to the workout screen
- * one time (set, then take), the way "Start cardio" hands over its exercise.
+ * (set, then peek, then clear once the workout has started), the way "Start
+ * cardio" hands over its exercise.
  *
  * The finished session still counts as the routine's session (same
  * routine_id). The workout screen's end-of-session question ("update the
@@ -72,14 +73,19 @@ export function setSessionSwaps(routineId: string, swaps: SessionSwaps | null | 
 }
 
 /**
- * The swaps for `routineId`, one time. Anything waiting is cleared either way,
- * so a swap never leaks into a later start of another routine, or of the same
- * one from the Routines tab.
+ * The swaps waiting for `routineId`. Reading does not use them up: the
+ * workout screen's load can run twice (a dev double-mount, a re-run before
+ * the workout exists), and the second run must see them too. Swaps waiting
+ * for another routine are dropped, so they never reach a later start of it.
  */
-export function takeSessionSwaps(routineId: string): SessionSwaps | null {
-  const p = pending;
+export function peekSessionSwaps(routineId: string): SessionSwaps | null {
+  if (pending && pending.routineId !== routineId) pending = null;
+  return pending ? pending.swaps : null;
+}
+
+/** Used up: the workout started with them. Also call it when the start is given up. */
+export function clearSessionSwaps() {
   pending = null;
-  return p && p.routineId === routineId ? p.swaps : null;
 }
 
 // ── Swaps in a running workout ──────────────────────────────────────────────

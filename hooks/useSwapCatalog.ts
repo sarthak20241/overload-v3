@@ -29,7 +29,12 @@ const readThisRun = new Set<string>();
 /** Well-known names lead their tier (lib/exerciseSwaps commonNames). */
 export const COMMON_EXERCISE_NAMES: ReadonlySet<string> = new Set(EXERCISE_LIBRARY.map((e) => e.name.toLowerCase()));
 
-export function useSwapCatalog(enabled: boolean) {
+/**
+ * `refreshKey`: when it changes, "done before" is worked out again from this
+ * device's workouts, so a session finished earlier in the same app run counts.
+ * Pass what opens the list (the routine in the preview, the sheet's open flag).
+ */
+export function useSwapCatalog(enabled: boolean, refreshKey?: unknown) {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
   const isGuest = useIsGuestSession();
@@ -81,7 +86,7 @@ export function useSwapCatalog(enabled: boolean) {
     const logged = getLocalPreviousPerformance(userId, rows.map((r) => r.name));
     const names = new Set(Object.keys(logged));
     return new Set(rows.filter((r) => names.has(r.name.trim().toLowerCase())).map((r) => r.id));
-  }, [enabled, userId, rows]);
+  }, [enabled, userId, rows, refreshKey]);
 
   return { exercises: rows, doneIds, available: !!userId && rows.length > 0 };
 }

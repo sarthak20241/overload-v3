@@ -94,7 +94,7 @@ export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, o
   const insets = useSafeAreaInsets();
   // A null routine means the sheet is closed; don't fetch until it opens.
   const { noteFor } = useExerciseNotes(!!routine);
-  const swapCatalog = useSwapCatalog(!!routine && !!allowSwap);
+  const swapCatalog = useSwapCatalog(!!routine && !!allowSwap, routine?.id);
   const canSwap = !!allowSwap && swapCatalog.available;
   // This session's swaps (slot key -> exercise), and the slot whose swap list is open.
   const [swaps, setSwaps] = useState<SessionSwaps>({});

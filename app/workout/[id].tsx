@@ -24,7 +24,7 @@ import { getActiveWorkoutSnapshot, clearActiveWorkout, takeResumeCapture, type A
 import { findCatalogExerciseByName, resolveExerciseRow } from '@/lib/exerciseResolve';
 import { enqueueWorkout, newClientId, type PendingWorkout } from '@/lib/syncQueue';
 import { takeCardioStart } from '@/lib/cardioLog';
-import { applySessionSwaps, canSwapLive, swapLiveSlot, takeSessionSwaps } from '@/lib/sessionSwaps';
+import { applySessionSwaps, canSwapLive, clearSessionSwaps, peekSessionSwaps, swapLiveSlot } from '@/lib/sessionSwaps';
 import { useSwapCatalog, type SwapCatalogRow } from '@/hooks/useSwapCatalog';
 import type { SwapTier } from '@/lib/exerciseSwaps';
 import { ExerciseSwapSheet } from '@/components/workout/ExerciseSwapSheet';
@@ -346,7 +346,7 @@ export default function ActiveWorkoutScreen() {
   // Swap the open exercise for a like-for-like one (lib/exerciseSwaps ranks
   // the list). Signed-in only: guests have no catalog with swap tags.
   const [showSwapSheet, setShowSwapSheet] = useState(false);
-  const swapCatalog = useSwapCatalog(!isGuestSession);
+  const swapCatalog = useSwapCatalog(!isGuestSession, showSwapSheet);
   // Unilateral "L+R" (migration 0056/0059). The active set logs one side then the
   // other into ONE row. activeUnilateral persists across the exercise's sets (reset
   // on exercise change); firstSide is which side you log first (swappable via the ⇄);
@@ -794,7 +794,8 @@ export default function ActiveWorkoutScreen() {
         // Exercises swapped in the Today preview, for this session only. The
         // routine row is untouched; the swapped slots carry the new exercise,
         // so prefill and bests below read that exercise's own history.
-        const swaps = takeSessionSwaps(routine.id);
+        // Read, not used up: cleared only once the workout below has started.
+        const swaps = peekSessionSwaps(routine.id);
         if (swaps) {
           routine = { ...routine, routine_exercises: applySessionSwaps(routine.routine_exercises || [], swaps) };
         }
@@ -848,6 +849,7 @@ export default function ActiveWorkoutScreen() {
 
         // startWorkout seeds the started/finished flags (all false) in context.
         workout.startWorkout(routine.id, routine.name, activeExs, { ownerId: user?.id ?? null, isGuestSession });
+        clearSessionSwaps();
 
         if (activeExs.length > 0 && activeExs[0].previousSets?.[0]) {
           setInputWeight(String(activeExs[0].previousSets[0].weight_kg));
