@@ -56,7 +56,8 @@ interface Active {
 
 interface Ctx {
   register: (target: SpotlightTargetId, ref: React.RefObject<View | null>) => () => void;
-  start: (id: SpotlightTourId) => Promise<boolean>;
+  /** `stillWanted` is checked after measuring: the screen may have gone. */
+  start: (id: SpotlightTourId, stillWanted?: () => boolean) => Promise<boolean>;
   end: (id: SpotlightTourId, how: SpotlightEnd) => void;
   /** The seen list and the account date are in: screens may try their tour. */
   loaded: boolean;
@@ -132,14 +133,15 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     return null;
   }, []);
 
-  const start = useCallback(async (id: SpotlightTourId) => {
+  const start = useCallback(async (id: SpotlightTourId, stillWanted?: () => boolean) => {
     const s = seenRef.current;
     if (!s) return false;
     const age = DEMO ? 0 : accountAgeDays(createdAtMs, Date.now());
     if (!canStart(id, { seen: s, active: activeRef.current?.id ?? null, accountAgeDays: age })) return false;
     const first = await findStep(id, 0);
-    // Another tour may have started while we measured.
+    // Another tour may have started, or the screen gone, while we measured.
     if (!first || activeRef.current) return false;
+    if (stillWanted && !stillWanted()) return false;
     const a = { id, ...first };
     activeRef.current = a;
     setActive(a);
@@ -208,26 +210,33 @@ export function useSpotlightTour(id: SpotlightTourId, ready: boolean) {
   const ctxRef = useRef(ctx);
   ctxRef.current = ctx;
   const [focused, setFocused] = useState(false);
+  // Read after the async measure in start(): the screen may have gone by then.
+  const wantedRef = useRef(false);
+  wantedRef.current = focused && ready;
 
   // Only the screen's own focus may end its tour, never a context change.
   useFocusEffect(useCallback(() => {
     setFocused(true);
     return () => {
       setFocused(false);
+      wantedRef.current = false;
       ctxRef.current?.end(id, 'left');
     };
   }, [id]));
 
+  // ctx is read through the ref, so a new context value (Clerk settling)
+  // never restarts the settle timer; only `loaded` turning true does.
   const loaded = ctx?.loaded ?? false;
   useEffect(() => {
-    if (!ctx || !focused) return;
+    const c = ctxRef.current;
+    if (!c || !focused) return;
     // Something else took the screen (a popup, a sheet): step aside for now.
-    if (!ready) { ctx.end(id, 'interrupted'); return; }
+    if (!ready) { c.end(id, 'interrupted'); return; }
     // Re-runs when `loaded` turns true, so a slow cold start still gets its try.
     if (!loaded) return;
-    const t = setTimeout(() => { ctx.start(id); }, SETTLE_MS);
+    const t = setTimeout(() => { ctxRef.current?.start(id, () => wantedRef.current); }, SETTLE_MS);
     return () => clearTimeout(t);
-  }, [ctx, focused, ready, loaded, id]);
+  }, [focused, ready, loaded, id]);
 
   return useCallback(() => ctxRef.current?.end(id, 'used'), [id]);
 }

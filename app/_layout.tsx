@@ -77,26 +77,26 @@ function AppInner() {
           */}
           <SyncProvider>
             <PortalProvider>
-             <SpotlightProvider>
-              <AnalyticsBridge />
-              <StatusBar style={C.statusBar} />
-              <Stack screenOptions={{ headerShown: false }}>
-                <Stack.Screen name="index" options={{ headerShown: false }} />
-                <Stack.Screen name="(app)" options={{ headerShown: false }} />
-                <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-                <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'fade' }} />
-                <Stack.Screen name="upgrade" options={{ headerShown: false, animation: 'fade' }} />
-                <Stack.Screen name="invite" options={{ headerShown: false, animation: 'fade' }} />
-                <Stack.Screen name="refer" options={{ headerShown: false, animation: 'fade' }} />
-                <Stack.Screen name="connect-ai" options={{ headerShown: false, animation: 'fade' }} />
-                <Stack.Screen name="sso-callback" options={{ headerShown: false }} />
-                <Stack.Screen name="workout/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
-                <Stack.Screen name="workout/edit/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
-              </Stack>
-              {/* Every coach sheet draws here, so one closed (or left) while
-                  Drona works keeps going and says when it is ready. */}
-              <CoachSheetHost />
-             </SpotlightProvider>
+              <SpotlightProvider>
+                <AnalyticsBridge />
+                <StatusBar style={C.statusBar} />
+                <Stack screenOptions={{ headerShown: false }}>
+                  <Stack.Screen name="index" options={{ headerShown: false }} />
+                  <Stack.Screen name="(app)" options={{ headerShown: false }} />
+                  <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+                  <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'fade' }} />
+                  <Stack.Screen name="upgrade" options={{ headerShown: false, animation: 'fade' }} />
+                  <Stack.Screen name="invite" options={{ headerShown: false, animation: 'fade' }} />
+                  <Stack.Screen name="refer" options={{ headerShown: false, animation: 'fade' }} />
+                  <Stack.Screen name="connect-ai" options={{ headerShown: false, animation: 'fade' }} />
+                  <Stack.Screen name="sso-callback" options={{ headerShown: false }} />
+                  <Stack.Screen name="workout/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
+                  <Stack.Screen name="workout/edit/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
+                </Stack>
+                {/* Every coach sheet draws here, so one closed (or left) while
+                    Drona works keeps going and says when it is ready. */}
+                <CoachSheetHost />
+              </SpotlightProvider>
             </PortalProvider>
           </SyncProvider>
         </WorkoutProvider>

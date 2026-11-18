@@ -552,6 +552,8 @@ export default function GoalPlanScreen() {
   // The phase the tour's last scene names: the one being built, else the first.
   const tourPhase = (program?.phases.find((ph) => ph.id === buildPhaseId) ?? currentPhase ?? program?.phases[0]) || null;
 
+  const phaseCard = renderPhaseCard();
+
   return (
     <View style={[styles.root, { backgroundColor: pal.bg, paddingTop: insets.top }]}>
       <View style={styles.header}>
@@ -607,7 +609,8 @@ export default function GoalPlanScreen() {
               </Text>
             </Stagger>
             <Stagger index={1}>{renderHero()}</Stagger>
-            <Stagger index={2}><View ref={phaseTarget} collapsable={false} style={styles.phaseSpot}>{renderPhaseCard()}</View></Stagger>
+            {/* No card, no wrapper: its top margin would leave an empty gap. */}
+            <Stagger index={2}>{phaseCard ? <View ref={phaseTarget} collapsable={false} style={styles.phaseSpot}>{phaseCard}</View> : null}</Stagger>
             {shownPhase && (
               <View style={{ marginTop: 19 }}>
                 <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} headingGap={13} />
