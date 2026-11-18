@@ -162,7 +162,7 @@ export type SpotlightEnd = 'finished' | 'skipped' | 'used' | 'outside' | 'left' 
  * (a screen whose lit control opens another screen reports 'used' first).
  * A tour cut short by a popup, or left behind, shows again next visit.
  */
-export function countsAsSeen(_kind: 'intro' | 'hint', how: SpotlightEnd): boolean {
+export function countsAsSeen(how: SpotlightEnd): boolean {
   return how !== 'interrupted' && how !== 'left';
 }
 

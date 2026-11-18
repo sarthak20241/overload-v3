@@ -17,7 +17,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useUser } from '@clerk/clerk-expo';
 import { useFocusEffect } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
-import { track } from '@/lib/analytics';
+import { track, trackError } from '@/lib/analytics';
 import {
   accountAgeDays,
   canStart,
@@ -124,7 +124,9 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     next.add(id);
     seenRef.current = next;
     setSeen(next);
-    if (userId && !DEMO) AsyncStorage.setItem(seenKey(userId), JSON.stringify([...next])).catch(() => {});
+    if (userId && !DEMO) AsyncStorage.setItem(seenKey(userId), JSON.stringify([...next]))
+      // Not fatal (the tour shows once more next launch), but leave a trace.
+      .catch((e) => trackError(e, { where: 'spotlight_seen_write', tour: id }));
   }, [userId]);
 
   /** The lit hole for step `from` or the first later step whose control is on screen. */
@@ -163,7 +165,7 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     activeRef.current = null;
     setActive(null);
     // Seen only once it really ended, so a tour a popup cut short comes back.
-    if (countsAsSeen(TOURS[id].kind, how)) markSeen(id);
+    if (countsAsSeen(how)) markSeen(id);
     track('spotlight_done', { tour: id, how, step: a.index + 1, of: TOURS[id].steps.length });
   }, [markSeen]);
 
