@@ -146,6 +146,10 @@ export interface ActiveWorkoutExercise {
   // ad-hoc mid-session). Members of one superset share a value, NULL = solo. Drives
   // the interleaved logging + round rest. Stamped onto each set's superset_group on save.
   supersetGroup?: number | null;
+  // Swapped for this session (lib/sessionSwaps): the plan's exercise for this
+  // slot and its coach cue, so the person can go back to it. Absent or null =
+  // the slot holds what the plan put there.
+  swappedFrom?: { exercise: Exercise; coachNote?: string | null } | null;
 }
 
 export interface ActiveSet {

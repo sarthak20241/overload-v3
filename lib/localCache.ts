@@ -16,6 +16,8 @@ export type CacheEntity =
   | 'routines'
   | 'exercises'
   | 'catalog'
+  /** Catalog + own exercises with ids and swap tags (useSwapCatalog). */
+  | 'swapCatalog'
   | 'dashboardWorkouts'
   | 'historyWorkouts'
   | 'analyticsWorkouts'
@@ -32,6 +34,7 @@ const ENTITIES: CacheEntity[] = [
   'routines',
   'exercises',
   'catalog',
+  'swapCatalog',
   'dashboardWorkouts',
   'historyWorkouts',
   'analyticsWorkouts',
