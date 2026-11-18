@@ -1,6 +1,6 @@
 // Run with: deno test --allow-all lib/authEventOnce.test.ts
 import { assertEquals } from "jsr:@std/assert@1";
-import { claimAuthEvent, noteSSOMethod, ssoMethodForCallback } from "./authEventOnce.ts";
+import { claimAuthEvent, clearSSOMethod, noteSSOMethod, takeSSOMethod } from "./authEventOnce.ts";
 
 Deno.test("one session is reported once, whichever path gets there first", () => {
   assertEquals(claimAuthEvent("sess_a"), true); // sso-callback on Android
@@ -13,10 +13,18 @@ Deno.test("no session id: never blocked", () => {
   assertEquals(claimAuthEvent(undefined), true);
 });
 
-Deno.test("the callback reports the provider the sign-in started with", () => {
-  assertEquals(ssoMethodForCallback(), "oauth_callback");
+Deno.test("the callback reports the provider once, then forgets it", () => {
+  assertEquals(takeSSOMethod(), "oauth_callback");
   noteSSOMethod("google");
-  assertEquals(ssoMethodForCallback(), "google");
+  assertEquals(takeSSOMethod(), "google");
+  // A later cold-start deep link must not inherit the old provider.
+  assertEquals(takeSSOMethod(), "oauth_callback");
   noteSSOMethod("apple");
-  assertEquals(ssoMethodForCallback(), "apple");
+  clearSSOMethod();
+  assertEquals(takeSSOMethod(), "oauth_callback");
+});
+
+Deno.test("an old note is ignored", () => {
+  noteSSOMethod("google", 0);
+  assertEquals(takeSSOMethod(11 * 60 * 1000), "oauth_callback");
 });

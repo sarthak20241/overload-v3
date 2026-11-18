@@ -105,10 +105,14 @@ export function afterReferrerFailure(stored: string | null): string {
   return `fail:${failures(stored) + 1}`;
 }
 
+// A real parameter name. Anything else (a key that decoded to "a=b&c=d" from a
+// half-encoded referrer) could carry a value, so it is left out.
+const SAFE_KEY = /^[A-Za-z0-9_.-]{1,40}$/;
+
 /** Parameter names only: enough to spot a new link format, no values. */
 export function referrerKeys(raw: string): string {
   try {
-    return [...new Set([...new URLSearchParams(normalizeReferrer(raw)).keys()].filter(Boolean))].sort().join(',');
+    return [...new Set([...new URLSearchParams(normalizeReferrer(raw)).keys()].filter((k) => SAFE_KEY.test(k)))].sort().join(',');
   } catch {
     return '';
   }

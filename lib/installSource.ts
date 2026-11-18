@@ -6,7 +6,7 @@
  * Play Install Referrer library in the shipped build, so this needs no new
  * native code and goes out by OTA.
  *
- * The props go on the person with $set_once (setUserPropsOnce), so the first
+ * The props go on the person with $set_once (setPersonProperties), so the first
  * answer wins and a later reinstall never overwrites it. Works before sign-up:
  * PostHog merges the anonymous person into the account on identify.
  *
@@ -17,7 +17,7 @@
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Application from 'expo-application';
-import { posthog, setUserPropsOnce } from '@/lib/analytics';
+import { posthog } from '@/lib/analytics';
 import {
   afterReferrerFailure,
   installSourceProps,
@@ -39,8 +39,11 @@ export async function captureInstallSourceOnce(): Promise<void> {
     stored = await AsyncStorage.getItem(SENT_KEY);
     if (!shouldReadReferrer(stored)) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const referrerCall = Application.getInstallReferrerAsync();
+    // If the timeout wins, a late rejection must not surface as unhandled.
+    referrerCall.catch(() => {});
     const raw = await Promise.race<string | null>([
-      Application.getInstallReferrerAsync(),
+      referrerCall,
       new Promise<null>((resolve) => {
         timer = setTimeout(() => resolve(null), TIMEOUT_MS);
       }),
@@ -59,8 +62,11 @@ export async function captureInstallSourceOnce(): Promise<void> {
     });
     // On the person, not only the event. First open is usually before
     // sign-up, and a raw $set_once from an anonymous visitor never reaches a
-    // person in 'identified_only' mode (lib/analytics.ts setUserPropsOnce).
-    setUserPropsOnce(props);
+    // person in 'identified_only' mode. Called directly (not through the
+    // error-swallowing setUserPropsOnce) so a throw lands in the catch below
+    // and the read is retried. The SDK queues and sends it with the event;
+    // it gives no delivery receipt, so a queued call is as far as we can go.
+    posthog.setPersonProperties(undefined, props, false);
     await AsyncStorage.setItem(SENT_KEY, '1');
   } catch {
     // Play's referrer service can be briefly unavailable, so a failure is

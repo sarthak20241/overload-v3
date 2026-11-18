@@ -94,3 +94,9 @@ Deno.test("an encoded referrer still sends only parameter names", () => {
   assertEquals(referrerKeys("utm_source%3Dinstagram%26secret%3Dabc123"), "secret,utm_source");
   assertEquals(referrerKeys("utm_source%3dinstagram%26secret%3dabc123"), "secret,utm_source");
 });
+
+Deno.test("mixed encoding cannot smuggle a value into a key name", () => {
+  // A literal "=" stops the one-time decode; the encoded part must not pass as a name.
+  assertEquals(referrerKeys("utm_source%3Dinstagram%26secret%3Dabc123&x=1"), "x");
+  assertEquals(referrerKeys("a%26b=1&utm_medium=cpc"), "utm_medium");
+});

@@ -5,7 +5,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { hasClerkKey, useClerkUser } from '@/hooks/useClerkUser';
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
-import { claimAuthEvent, ssoMethodForCallback } from '@/lib/authEventOnce';
+import { claimAuthEvent, takeSSOMethod } from '@/lib/authEventOnce';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 
 // Catches the OAuth deep link (exp://.../--/sso-callback in Expo Go,
@@ -38,7 +38,7 @@ function ClerkSSOCallback() {
     if (signInSessionId && signInState?.setActive) {
       activatedRef.current = true;
       signInState.setActive({ session: signInSessionId })
-        .then(() => { if (claimAuthEvent(signInSessionId)) track('signed_in', { method: ssoMethodForCallback(), flow: 'sign_in', via: 'callback' }); })
+        .then(() => { if (claimAuthEvent(signInSessionId)) track('signed_in', { method: takeSSOMethod(), flow: 'sign_in', via: 'callback' }); })
         .catch((e: any) => {
           track('auth_failed', { method: 'oauth_callback', reason: 'set_active_failed' });
           console.warn('[sso-callback] setActive(signIn) failed', e);
@@ -46,7 +46,7 @@ function ClerkSSOCallback() {
     } else if (signUpSessionId && signUpState?.setActive) {
       activatedRef.current = true;
       signUpState.setActive({ session: signUpSessionId })
-        .then(() => { if (claimAuthEvent(signUpSessionId)) track('signed_up', { method: ssoMethodForCallback(), email_verification: false, via: 'callback' }); })
+        .then(() => { if (claimAuthEvent(signUpSessionId)) track('signed_up', { method: takeSSOMethod(), email_verification: false, via: 'callback' }); })
         .catch((e: any) => {
           track('auth_failed', { method: 'oauth_callback', reason: 'set_active_failed' });
           console.warn('[sso-callback] setActive(signUp) failed', e);

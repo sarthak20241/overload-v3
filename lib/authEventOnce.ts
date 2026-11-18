@@ -18,15 +18,25 @@ export function claimAuthEvent(sessionId: string | null | undefined): boolean {
 
 /**
  * The provider of the sign-in in progress. runSSO notes it before the browser
- * opens; when sso-callback wins the claim it reports this method, so the
- * event still says google or apple.
+ * opens; when sso-callback wins the claim it takes it, so the event still says
+ * google or apple. Taking clears it, and a note older than 10 minutes is
+ * ignored, so a later cold-start deep link never reports an old provider.
+ * runSSO does not clear it itself: on Android the callback can finish after
+ * runSSO has returned.
  */
-let pendingMethod: string | null = null;
+const NOTE_TTL_MS = 10 * 60 * 1000;
+let pending: { method: string; at: number } | null = null;
 
-export function noteSSOMethod(method: string): void {
-  pendingMethod = method;
+export function noteSSOMethod(method: string, now = Date.now()): void {
+  pending = { method, at: now };
 }
 
-export function ssoMethodForCallback(): string {
-  return pendingMethod ?? 'oauth_callback';
+export function clearSSOMethod(): void {
+  pending = null;
+}
+
+export function takeSSOMethod(now = Date.now()): string {
+  const p = pending;
+  pending = null;
+  return p && now - p.at < NOTE_TTL_MS ? p.method : 'oauth_callback';
 }
