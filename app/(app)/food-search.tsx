@@ -554,15 +554,16 @@ export default function FoodSearchScreen() {
                 {autoLog ? 'Goes straight into your diary.' : PARSE_SPEED_COPY[runningSpeed].sub}
               </Text>
             </View>
-            {/* A send button: lime circle with an up arrow, the same mark as
-                the send in Drona's chat. The card says what a tap does, so
-                the icon is hidden from screen readers. */}
+            {/* A send button: an up arrow in the same theme colors as the
+                Nutrition food box's send (lime in dark, deep green in light).
+                The card says what a tap does, so the icon is hidden from
+                screen readers. */}
             <View
-              style={[s.aiSend, { backgroundColor: Colors.primary }]}
+              style={[s.aiSend, { backgroundColor: C.accentText }]}
               accessibilityElementsHidden
               importantForAccessibility="no-hide-descendants"
             >
-              <Feather name="arrow-up" size={20} color={Colors.primaryFg} />
+              <Feather name="arrow-up" size={20} color={C.background} />
             </View>
           </Pressable>
         ) : null}
