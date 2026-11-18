@@ -234,8 +234,11 @@ export function tipSide(hole: Rect, screenH: number): 'above' | 'below' {
   return below >= above ? 'below' : 'above';
 }
 
-/** How a tour ended. 'interrupted': something else took the screen (a popup). */
-/** 'used_step': the user did a non-last step of a hint (the guide resumes at the next one). */
+/**
+ * How a tour ended. 'interrupted': something else took the screen (a popup).
+ * 'used_step': the user did a non-last step of a hint (the guide resumes at
+ * the next one).
+ */
 export type SpotlightEnd = 'finished' | 'skipped' | 'used' | 'used_step' | 'outside' | 'left' | 'interrupted';
 
 /**
