@@ -64,6 +64,8 @@ interface Props {
   index: number;
   hole: Hole | null;
   onScreenSize: (s: OverlayFrame) => void;
+  /** The frame changed and the hole is being measured again: no touch panels. */
+  remeasuring?: boolean;
   onNext: () => void;
   onEnd: (how: SpotlightEnd) => void;
 }
@@ -73,7 +75,7 @@ interface Shown { tour: SpotlightTour; index: number; hole: Hole }
 /** The overlay's size, and its top-left corner in window coordinates. */
 export interface OverlayFrame { w: number; h: number; ox: number; oy: number }
 
-export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEnd }: Props) {
+export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEnd, remeasuring }: Props) {
   const reduce = useReducedMotion();
   const { mode, C } = useTheme();
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
@@ -251,7 +253,7 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
           {!closing && shown.tour.kind === 'intro' ? (
             <Pressable style={StyleSheet.absoluteFill} onPress={finish} accessibilityLabel="Next tip" />
           ) : null}
-          {!closing && shown.tour.kind === 'hint' ? (
+          {!closing && !remeasuring && shown.tour.kind === 'hint' ? (
             // During the iris the panels only block (no dismiss): the screen
             // there is still visibly clear. The lit control stays live.
             <OutsideBlockers hole={shown.hole} w={size.w} h={size.h} onPress={opening ? () => {} : () => onEnd('outside')} />

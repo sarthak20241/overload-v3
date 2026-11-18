@@ -541,7 +541,9 @@ export default function NutritionScreen() {
   // First-visit hint on the food box. Not when a card sent the user here to
   // type (focus=ai): the keyboard is already coming up.
   const foodBoxTarget = useSpotlightTarget('food_box');
-  useSpotlightTour('food_box', !!isSignedIn && focus !== 'ai' && flow.status === 'idle' && !resultOpen);
+  // Hints wait while any sheet is over the screen (the lit hole would sit on it).
+  const sheetUp = resultOpen || calendarOpen || !!editEntry || fuelOpen || goalOpen || waitOpen;
+  useSpotlightTour('food_box', !!isSignedIn && focus !== 'ai' && flow.status === 'idle' && !sheetUp);
   const [resultDayOpen, setResultDayOpen] = useState(false);
   const waitOpenRef = useRef(false);
   waitOpenRef.current = waitOpen;
@@ -740,7 +742,7 @@ export default function NutritionScreen() {
   const logModeTarget = useSpotlightTarget('log_mode');
   const logModesUsed = useSpotlightTour(
     'food_modes',
-    !!isSignedIn && focus !== 'ai' && flow.status === 'idle' && !resultOpen && !speedSheetOpen,
+    !!isSignedIn && focus !== 'ai' && flow.status === 'idle' && !sheetUp && !speedSheetOpen,
   );
   // The dashboard's getting-started "Pick how I log food" lands here with
   // modes=<stamp>: open the mode sheet once per stamp, then clear it (this tab

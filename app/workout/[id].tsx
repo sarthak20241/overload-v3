@@ -468,13 +468,19 @@ export default function ActiveWorkoutScreen() {
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
 
+  // Any sheet, alert or the coach over the logger: hints wait until it closes
+  // (else the lit hole would sit on the sheet, not on the set row).
+  const overlayOpen = setTypeSheetIdx !== null || showSupersetSheet || showRpeSheet || showAddExercise
+    || showSettings || showCancelAlert || showNoSetsAlert || !!showErrorAlert || showSwitchAlert
+    || showFinishSheet || coachOpen;
+
   // First-visit hint: light the active set row in the user's first workout.
   useSpotlightTarget('active_set', inputCardRef);
   const setHintUsed = useSpotlightTour(
     'workout_set',
     // Started: before Start Exercise the set row is not drawn, and the tap
     // that starts it must re-trigger the try.
-    !loading && !!currentEx && !!exerciseStarted[currentIdx] && !exerciseFinished[currentIdx] && setTypeSheetIdx === null && !showRpeSheet,
+    !loading && !!currentEx && !!exerciseStarted[currentIdx] && !exerciseFinished[currentIdx] && !overlayOpen,
   );
   // Follow-up: once a set is logged in this exercise, light the set number
   // (warm-up, drop set, failure). Waits for the first-set hint to end.
@@ -482,7 +488,7 @@ export default function ActiveWorkoutScreen() {
   const loggedHere = currentEx?.sets.filter((s) => s.completed).length ?? 0;
   const setTypesUsed = useSpotlightTour(
     'set_types',
-    !loading && !!currentEx && !!exerciseStarted[currentIdx] && !exerciseFinished[currentIdx] && loggedHere >= 1 && setTypeSheetIdx === null && !showRpeSheet,
+    !loading && !!currentEx && !!exerciseStarted[currentIdx] && !exerciseFinished[currentIdx] && loggedHere >= 1 && !overlayOpen,
   );
   // Every logger input calls this, stamping the open exercise onto the edit
   // guard. Effects compare editedForExRef against their own exercise's id.

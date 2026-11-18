@@ -103,6 +103,7 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
   seenRef.current = seen;
   // The overlay's size and where it starts in the window (see toOverlay).
   const [screen, setScreen] = useState<OverlayFrame | null>(null);
+  const [remeasuring, setRemeasuring] = useState(false);
   const screenRef = useRef(screen);
   screenRef.current = screen;
 
@@ -175,6 +176,9 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     // Another tour may have started, or the screen gone, while we measured.
     if (activeRef.current) return 'blocked';
     if (stillWanted && !stillWanted()) return 'blocked';
+    // The keyboard may have opened while we measured; the hook tries again
+    // when it closes.
+    if (Keyboard.isVisible()) return 'blocked';
     if (!first) return 'missed';
     const a = { id, ...first };
     activeRef.current = a;
@@ -217,7 +221,10 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     const a = activeRef.current;
     if (!a || !screen) return;
     let live = true;
+    // The old hole's touch panels must not catch taps meant for the moved control.
+    setRemeasuring(true);
     findStep(a.id, a.index).then((found) => {
+      if (live) setRemeasuring(false);
       if (!live || activeRef.current !== a) return;
       if (!found || found.index !== a.index) return end(a.id, 'interrupted');
       const b = { ...a, hole: found.hole };
@@ -240,6 +247,7 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
           index={active?.index ?? 0}
           hole={active?.hole ?? null}
           onScreenSize={setScreen}
+          remeasuring={remeasuring}
           onNext={next}
           onEnd={endActive}
         />

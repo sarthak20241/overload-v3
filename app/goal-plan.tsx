@@ -103,6 +103,7 @@ export default function GoalPlanScreen() {
   const tourOnRef = useRef(tourOn);
   tourOnRef.current = tourOn;
   const autoBuildFired = useRef(false);
+  const [handoffDone, setHandoffDone] = useState(false);
   // ?drona=calories&kcal=N arrives from the goal sheet's "Change my whole plan
   // with Drona": open the program chat once, the request typed and unsent.
   const [programDraft, setProgramDraft] = useState<string | undefined>(undefined);
@@ -148,7 +149,7 @@ export default function GoalPlanScreen() {
     // has run; its coach sheet is covered by !coachOpen. The sign-up visit
     // (film tour) never gets it.
     !loading && !!program && !tourOn && tourParam !== '1'
-      && !(buildParam === 'phase' && !autoBuildFired.current)
+      && !(buildParam === 'phase' && !handoffDone)
       && !coachOpen && !logOpen && !aboutOpen,
   );
   const [buildSeed, setBuildSeed] = useState<PhaseBuildSeed | null>(null);
@@ -293,6 +294,9 @@ export default function GoalPlanScreen() {
     const phase = (Number.isFinite(want) ? program.phases.find((ph) => ph.seq === want) : null)
       ?? currentPhase ?? program.phases[0] ?? null;
     autoBuildFired.current = true;
+    // State too, not just the ref: the phase hint reads it, and a phase that
+    // already has routines opens no coach, so nothing else would re-render.
+    setHandoffDone(true);
     if (phase && phase.routines.length === 0) buildSplitFor(phase, autoParam === '1');
     else if (thenParam === 'upgrade') continueToUpgrade();
     // eslint-disable-next-line react-hooks/exhaustive-deps
