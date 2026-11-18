@@ -1034,7 +1034,7 @@ export default function OnboardingScreen() {
                   onPress={() => {
                     // Tells a skip apart from someone who quit on this step.
                     if (!heardFrom) track('acquisition_source_answered', { source: 'skipped' });
-                    goTo('frequency');
+                    goTo(nextStep);
                   }}
                 />
               }

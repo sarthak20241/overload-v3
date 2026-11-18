@@ -55,6 +55,9 @@ export async function captureInstallSourceOnce(): Promise<void> {
       return;
     }
     const props = installSourceProps(parseInstallReferrer(raw));
+    // The SDK defers calls made while it is still loading its stored state,
+    // and an error in deferred work never reaches this catch. Wait for it.
+    await posthog.ready();
     posthog.capture('install_attributed', {
       ...props,
       // Names only, never values: a custom link could carry anything.
@@ -64,9 +67,12 @@ export async function captureInstallSourceOnce(): Promise<void> {
     // sign-up, and a raw $set_once from an anonymous visitor never reaches a
     // person in 'identified_only' mode. Called directly (not through the
     // error-swallowing setUserPropsOnce) so a throw lands in the catch below
-    // and the read is retried. The SDK queues and sends it with the event;
-    // it gives no delivery receipt, so a queued call is as far as we can go.
+    // and the read is retried.
     posthog.setPersonProperties(undefined, props, false);
+    // Mark it done only after the queue went out. A failed send throws into
+    // the catch below and the read is tried again on a later open ($set_once
+    // keeps the first value, so a repeat is harmless).
+    await posthog.flush();
     await AsyncStorage.setItem(SENT_KEY, '1');
   } catch {
     // Play's referrer service can be briefly unavailable, so a failure is
