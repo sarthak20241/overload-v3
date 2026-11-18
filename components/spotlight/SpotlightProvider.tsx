@@ -4,7 +4,8 @@
  *
  * A screen marks a control with `useSpotlightTarget('food_box')` (a ref for a
  * plain View) and asks for its tour with `useSpotlightTour('food_box', ready)`.
- * Hints wait until the dashboard intro has ended, so the intro always comes first.
+ * Hints wait until the dashboard intro has ended, so the intro always comes first
+ * (an account that never sees the intro on the dashboard gets no hints).
  * A hint whose lit control opens another screen must call the returned `done()`
  * first (goal-plan's phase card does), or leaving reads as 'left' and the hint
  * shows again.
@@ -17,7 +18,9 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useUser } from '@clerk/clerk-expo';
+// The safe accessor: ClerkProvider is not mounted when the key is missing,
+// and this provider wraps the whole Stack, including that guard screen.
+import { useClerkUser } from '@/hooks/useClerkUser';
 import { useFocusEffect } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
 import { track, trackError } from '@/lib/analytics';
@@ -86,7 +89,7 @@ function measure(ref: React.RefObject<View | null> | undefined): Promise<Rect | 
 }
 
 export function SpotlightProvider({ children }: { children: React.ReactNode }) {
-  const { user } = useUser();
+  const { user } = useClerkUser();
   const userId = user?.id ?? null;
   const createdAtMs = user?.createdAt ? new Date(user.createdAt).getTime() : null;
 
@@ -114,7 +117,11 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     let live = true;
     AsyncStorage.getItem(seenKey(userId))
       .then((raw) => { if (live) setSeen(parseSeen(raw)); })
-      .catch(() => { if (live) setSeen(new Set()); });
+      .catch((e) => {
+        // Reads as nothing seen, so tours may repeat: leave a trace.
+        trackError(e, { where: 'spotlight_seen_read' });
+        if (live) setSeen(new Set());
+      });
     return () => { live = false; };
   }, [userId]);
 
