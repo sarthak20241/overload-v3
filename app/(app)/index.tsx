@@ -24,6 +24,7 @@ import { BuildSplitPrompt } from '@/components/program/BuildSplitPrompt';
 import { NextPhaseCard } from '@/components/program/NextPhaseCard';
 import { StartGuideCard } from '@/components/home/StartGuideCard';
 import { HomeLogButton, HOME_LOG_BUTTON_ROOM } from '@/components/home/HomeLogButton';
+import { useSpotlightTarget, useSpotlightTour } from '@/components/spotlight/SpotlightProvider';
 import { START_GUIDE_ENABLED, type StartStepId } from '@/lib/startGuide';
 import { readPhaseDraft } from '@/lib/phaseDraft';
 import { hasCompletedOnboarding } from '@/lib/onboarding';
@@ -56,6 +57,7 @@ import { MacroBar } from '@/components/diet/MacroBar';
 import { useTodayNutrition, useNutritionTargets } from '@/lib/dietData';
 import { fuelOn } from '@/lib/fuelDays';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
+import { setSessionSwaps } from '@/lib/sessionSwaps';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { getPendingWorkouts } from '@/lib/syncQueue';
@@ -1124,6 +1126,22 @@ export default function DashboardScreen() {
     && !aiCoachOpen;
   const showLogButton = !isGuestSession && !!user?.id;
 
+  // The spotlight intro: today's workout, log food, Goal. Once per new account,
+  // when the dashboard is clear (lib/spotlight.ts).
+  const todayTarget = useSpotlightTarget('today_card');
+  const logTarget = useSpotlightTarget('log_food');
+  const goalTarget = useSpotlightTarget('goal_button');
+  useSpotlightTour(
+    'intro',
+    showLogButton
+      && todaySuggestion.kind !== 'preparing'
+      && !popupShowing
+      && !splitPromptShowing
+      && !aiCoachOpen
+      && !workoutActive
+      && !doneSheetOpen,
+  );
+
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
       <ScrollView
@@ -1154,15 +1172,17 @@ export default function DashboardScreen() {
             {/* Goal & Plan entry (replaces the redundant Start button — a workout
                 still starts from the center ▶ tab and the coach's Quick Workout).
                 Leads to the coach-built program and this phase's targets. */}
-            <PressableScale
-              style={styles.startBtn}
-              onPress={() => router.push('/goal-plan' as any)}
-              accessibilityRole="button"
-              accessibilityLabel="Goal and plan"
-            >
-              <Feather name="target" size={16} color={Colors.primaryFg} />
-              <Text style={styles.startBtnText}>Goal</Text>
-            </PressableScale>
+            <View ref={goalTarget} collapsable={false}>
+              <PressableScale
+                style={styles.startBtn}
+                onPress={() => router.push('/goal-plan' as any)}
+                accessibilityRole="button"
+                accessibilityLabel="Goal and plan"
+              >
+                <Feather name="target" size={16} color={Colors.primaryFg} />
+                <Text style={styles.startBtnText}>Goal</Text>
+              </PressableScale>
+            </View>
             {/* Avatar */}
             <TouchableOpacity
               onPress={() => router.push('/(app)/profile')}
@@ -1182,7 +1202,9 @@ export default function DashboardScreen() {
             PRIMARY action, so it leads above the coach card (lead with the
             directive). Lime outline marks it as the primary action. */}
         <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
-          <TodaySuggestionCard suggestion={todaySuggestion} onPress={handleTodayPress} />
+          <View ref={todayTarget} collapsable={false}>
+            <TodaySuggestionCard suggestion={todaySuggestion} onPress={handleTodayPress} />
+          </View>
         </View>
 
         {/* First-week checklist: where food logging, the AI modes, the phases
@@ -1546,6 +1568,7 @@ export default function DashboardScreen() {
           here) has the screen. */}
       {showLogButton ? (
         <HomeLogButton
+          targetRef={logTarget}
           hidden={popupShowing || splitPromptShowing || aiCoachOpen || workoutActive}
           onLog={() => router.push({ pathname: '/nutrition', params: { focus: 'ai' } })}
         />
@@ -1566,15 +1589,19 @@ export default function DashboardScreen() {
       <RoutineDetailSheet
         routine={detailRoutine}
         onClose={() => setDetailRoutine(null)}
-        onStartWorkout={() => {
+        onStartWorkout={(swaps) => {
           const r = detailRoutine;
           setDetailRoutine(null);
           if (r) {
             markWorkoutSource('today_card');
+            // Swaps are for this session only: handed to the workout screen
+            // one time, the routine itself unchanged (lib/sessionSwaps).
+            setSessionSwaps(r.id, swaps);
             router.push(`/workout/${r.id}` as any);
           }
         }}
         onAskCoach={detailRoutine ? () => askCoachAboutRoutine(detailRoutine) : undefined}
+        allowSwap
       />
 
       {/* "Your program is ready, now let's build week one" */}

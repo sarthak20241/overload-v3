@@ -60,6 +60,7 @@ import {
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
+import { REVEAL_CHOICES, revealChoiceFor } from '@/lib/revealChoice';
 import { useGuestMode } from '@/lib/guestMode';
 import { accessHasPlan, connectFirstNext } from '@/lib/paywallPlans';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
@@ -139,6 +140,14 @@ type Step =
   | 'welcome' | 'goal' | 'experience' | 'source' | 'frequency' | 'health' | 'prefs'
   | 'gender' | 'age' | 'height' | 'weight' | 'target' | 'pace'
   | 'interlude' | 'commit' | 'build' | 'plan';
+// Day first, with the year once the date is in a later year ("30 Dec",
+// "4 Jan 2027"). "Dec 30" vs "Jan 4" with no year read as the faster pace
+// landing later, so a faster pace looked like a further goal.
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function dayMonthLabel(d: Date, withYear: boolean): string {
+  return `${d.getDate()} ${SHORT_MONTHS[d.getMonth()]}${withYear ? ` ${d.getFullYear()}` : ''}`;
+}
+
 const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'source', 'frequency', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
 // Steps counted by the progress header (welcome and the build moment hide it).
 const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'source', 'frequency', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
@@ -358,10 +367,9 @@ export default function OnboardingScreen() {
     if (!paceCtx || weeklyRate == null) return null;
     const iso = projectGoalDateIso(paceCtx.draft, weeklyRate);
     if (!iso) return null;
-    const d = new Date(iso);
-    const now = new Date();
-    const far = d.getTime() - now.getTime() > 330 * 24 * 3600 * 1000;
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(far ? { year: 'numeric' } : {}) });
+    const [y, m, day] = iso.split('-').map(Number);
+    const d = new Date(y, m - 1, day);
+    return dayMonthLabel(d, d.getFullYear() !== new Date().getFullYear());
   }, [paceCtx, weeklyRate]);
 
   const pacedPreview = useMemo(() => {
@@ -383,8 +391,8 @@ export default function OnboardingScreen() {
       const diff = Math.abs(targetVal - weightVal).toFixed(1).replace(/\.0$/, '');
       return `${paceCtx.direction === 'loss' ? 'Down' : 'Up'} ${diff} ${weightUnit} by ${paceDate}.`;
     }
-    const horizon = new Date(Date.now() + 84 * 24 * 3600 * 1000)
-      .toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const h = new Date(Date.now() + 84 * 24 * 3600 * 1000);
+    const horizon = dayMonthLabel(h, h.getFullYear() !== new Date().getFullYear());
     return `Visibly stronger by ${horizon}.`;
   }, [paceCtx, paceDate, targetVal, weightVal, weightUnit]);
 
@@ -668,6 +676,7 @@ export default function OnboardingScreen() {
         if (opts.createPlan) void flushNow();
         track('onboarding_completed', {
           created_plan: opts.createPlan,
+          reveal_choice: revealChoiceFor(opts.dest),
           goal: answers.goal ?? null,
           goals: selectedGoals(answers).join(','),
           experience: answers.experience ?? null,
@@ -688,7 +697,11 @@ export default function OnboardingScreen() {
         // Never trap the user at the finish line, but say what happened;
         // everything here is recoverable from Profile and Routines later.
         toast.error("Couldn't save everything. You can finish setup in Profile.");
-        track('onboarding_completed', { outcome: 'save_failed', created_plan: opts.createPlan });
+        track('onboarding_completed', {
+          outcome: 'save_failed',
+          created_plan: opts.createPlan,
+          reveal_choice: revealChoiceFor(opts.dest),
+        });
         await markOnboardingDone(identity);
         router.replace('/(app)');
       } finally {
@@ -721,6 +734,7 @@ export default function OnboardingScreen() {
           track('onboarding_completed', {
             outcome: 'handed_to_signup',
             created_plan: opts.createPlan,
+            reveal_choice: revealChoiceFor(opts.dest),
             goal: answers.goal ?? null,
             goals: selectedGoals(answers).join(','),
             experience: answers.experience ?? null,
@@ -1414,12 +1428,12 @@ export default function OnboardingScreen() {
                 <>
                   <PrimaryCta
                     label={isFreshVisitor ? 'Save my plan' : 'Start my plan'}
-                    onPress={() => finishOnboarding({ createPlan: true, dest: '/(app)' })}
+                    onPress={() => finishOnboarding(REVEAL_CHOICES.plan)}
                     loading={finishing}
                     accessibilityLabel={isFreshVisitor ? 'Save my plan' : 'Start my plan'}
                   />
                   <TouchableOpacity
-                    onPress={() => finishOnboarding({ createPlan: false, dest: '/(app)/routines' })}
+                    onPress={() => finishOnboarding(REVEAL_CHOICES.own_routines)}
                     disabled={finishing}
                     style={s.ghostLink}
                     accessibilityRole="button"

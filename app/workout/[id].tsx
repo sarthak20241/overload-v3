@@ -24,6 +24,10 @@ import { getActiveWorkoutSnapshot, clearActiveWorkout, takeResumeCapture, type A
 import { findCatalogExerciseByName, resolveExerciseRow } from '@/lib/exerciseResolve';
 import { enqueueWorkout, newClientId, type PendingWorkout } from '@/lib/syncQueue';
 import { takeCardioStart } from '@/lib/cardioLog';
+import { applySessionSwaps, canSwapLive, clearSessionSwaps, peekSessionSwaps, swapLiveSlot } from '@/lib/sessionSwaps';
+import { useSwapCatalog, type SwapCatalogRow } from '@/hooks/useSwapCatalog';
+import type { SwapTier } from '@/lib/exerciseSwaps';
+import { ExerciseSwapSheet } from '@/components/workout/ExerciseSwapSheet';
 import { enqueueRoutine, applyRoutineToCache, type PendingRoutine } from '@/lib/routineQueue';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { getLocalPreviousPerformance, getLocalAllTimeBestWeight } from '@/lib/previousPerformance';
@@ -36,6 +40,7 @@ import {
   flushExerciseNotes,
   refreshExerciseNotesFromServer,
 } from '@/lib/exerciseNotes';
+import { useSpotlightTarget, useSpotlightTour } from '@/components/spotlight/SpotlightProvider';
 import { useSync } from '@/components/SyncProvider';
 import type { ActiveWorkoutExercise, ActiveSet, SetType } from '@/lib/types';
 import { groupWithPartners, dissolveGroupAt, normalizeSupersetGroups } from '@/lib/supersets';
@@ -339,6 +344,10 @@ export default function ActiveWorkoutScreen() {
   const [setTypeSheetIdx, setSetTypeSheetIdx] = useState<number | null>(null);
   // Ad-hoc supersets: the partner-picker sheet (create / extend / break a group).
   const [showSupersetSheet, setShowSupersetSheet] = useState(false);
+  // Swap the open exercise for a like-for-like one (lib/exerciseSwaps ranks
+  // the list). Signed-in only: guests have no catalog with swap tags.
+  const [showSwapSheet, setShowSwapSheet] = useState(false);
+  const swapCatalog = useSwapCatalog(!isGuestSession, showSwapSheet);
   // Unilateral "L+R" (migration 0056/0059). The active set logs one side then the
   // other into ONE row. activeUnilateral persists across the exercise's sets (reset
   // on exercise change); firstSide is which side you log first (swappable via the ⇄);
@@ -466,6 +475,33 @@ export default function ActiveWorkoutScreen() {
 
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
+
+  // Any sheet, alert or the coach over the logger: hints wait until it closes
+  // (else the lit hole would sit on the sheet, not on the set row).
+  const overlayOpen = setTypeSheetIdx !== null || showSupersetSheet || showRpeSheet || showAddExercise
+    || showSettings || showCancelAlert || showNoSetsAlert || !!showErrorAlert || showSwitchAlert
+    || showFinishSheet || coachOpen || showSwapSheet;
+
+  // First-visit hint: light the active set row in the user's first workout.
+  useSpotlightTarget('active_set', inputCardRef);
+  // Sets already logged anywhere in this workout: "Log your first set" only
+  // makes sense before the first one.
+  const loggedInWorkout = exercises.reduce((n, e) => n + e.sets.filter((s) => s.completed).length, 0);
+  const setHintUsed = useSpotlightTour(
+    'workout_set',
+    // Started: before Start Exercise the set row is not drawn, and the tap
+    // that starts it must re-trigger the try.
+    !loading && !!currentEx && !!exerciseStarted[currentIdx] && !exerciseFinished[currentIdx] && !overlayOpen
+      && loggedInWorkout === 0,
+  );
+  // Once a set is logged in this exercise, light the set number (warm-up,
+  // drop set, failure).
+  const setTypeTarget = useSpotlightTarget('set_type');
+  const loggedHere = currentEx?.sets.filter((s) => s.completed).length ?? 0;
+  const setTypesUsed = useSpotlightTour(
+    'set_types',
+    !loading && !!currentEx && !!exerciseStarted[currentIdx] && !exerciseFinished[currentIdx] && loggedHere >= 1 && !overlayOpen,
+  );
   // Every logger input calls this, stamping the open exercise onto the edit
   // guard. Effects compare editedForExRef against their own exercise's id.
   const markEdited = () => { editedForExRef.current = currentEx?.exercise.id ?? null; };
@@ -783,6 +819,15 @@ export default function ActiveWorkoutScreen() {
           return;
         }
 
+        // Exercises swapped in the Today preview, for this session only. The
+        // routine row is untouched; the swapped slots carry the new exercise,
+        // so prefill and bests below read that exercise's own history.
+        // Read, not used up: cleared only once the workout below has started.
+        const swaps = peekSessionSwaps(routine.id);
+        if (swaps) {
+          routine = { ...routine, routine_exercises: applySessionSwaps(routine.routine_exercises || [], swaps) };
+        }
+
         // Previous-performance prefill, computed from LOCAL data only (cached
         // workouts + the pending queue) so the workout starts instantly with no
         // network on the critical path. The data is already on the device and
@@ -823,11 +868,16 @@ export default function ActiveWorkoutScreen() {
               targetDistanceM: target.target_distance_m,
               restSeconds: re.rest_seconds ?? 90,
               supersetGroup: typeof re.superset_group === 'number' ? re.superset_group : null,
+              // Swapped in the Today preview: the plan's exercise, to go back to.
+              swappedFrom: re.swapped_from
+                ? { exercise: re.swapped_from.exercise, coachNote: re.swapped_from.coachNote ?? null }
+                : null,
             };
           });
 
         // startWorkout seeds the started/finished flags (all false) in context.
         workout.startWorkout(routine.id, routine.name, activeExs, { ownerId: user?.id ?? null, isGuestSession });
+        clearSessionSwaps();
 
         if (activeExs.length > 0 && activeExs[0].previousSets?.[0]) {
           setInputWeight(String(activeExs[0].previousSets[0].weight_kg));
@@ -1443,6 +1493,9 @@ export default function ActiveWorkoutScreen() {
     }
     updated[currentIdx] = ex;
     workout.updateExercises(updated);
+    // The first-set hint is used once a set is really saved (not on the first
+    // side of an L+R set, which returns above).
+    setHintUsed();
 
     // The core loop's heartbeat. Placed after the unilateral first-side early
     // return above, so one L+R round is one event, not two.
@@ -1773,6 +1826,46 @@ export default function ActiveWorkoutScreen() {
         allTimeBestWeight: localBests[def.name],
       };
     }));
+  };
+
+  // Swap the open exercise, before its first logged set. The slot keeps its
+  // sets, reps, rest and superset; the new exercise's own last session fills
+  // the numbers at once from this device, and reconcileExerciseRow refreshes
+  // them from the server a moment later. The workout still counts as its
+  // routine's session; the end-of-session routine question offers to keep it.
+  const swapCurrentExercise = (row: SwapCatalogRow, tier: SwapTier | 'back') => {
+    const slot = exercises[currentIdx];
+    if (!slot || !canSwapLive(slot, !!exerciseFinished[currentIdx])) return;
+    const def: ExerciseDef = {
+      name: row.name,
+      muscle_group: row.muscle_group,
+      category: row.category,
+      metric_type: (row.metric_type ?? undefined) as ExerciseDef['metric_type'],
+    };
+    const to = { id: row.id, name: row.name, muscle_group: row.muscle_group, category: row.category, metric_type: def.metric_type };
+    const key = row.name.trim().toLowerCase();
+    const prev = getLocalPreviousPerformance(user?.id, [row.name]);
+    const prevSets = prev[row.name] ?? prev[key];
+    const best = getLocalAllTimeBestWeight(user?.id, [row.name])[row.name];
+    track('workout_exercise_swapped', {
+      tier,
+      exercise_index: currentIdx,
+      done_before: !!prevSets?.length,
+      tagged: !!row.swap_pattern,
+      workout_elapsed_seconds: workout.elapsed,
+    });
+    haptics.selection();
+    // The old exercise's timers, typed numbers and edit guard belong to it.
+    stopExerciseTimer();
+    stopRestTimer();
+    delete inputDraftsRef.current[slot.exercise.id];
+    if (editedForExRef.current === slot.exercise.id) editedForExRef.current = null;
+    workout.updateExercises(prevExs => prevExs.map((e, i) => (i === currentIdx
+      ? swapLiveSlot(e, to, { previousSets: prevSets, allTimeBestWeight: best }) as typeof e
+      : e)));
+    setExerciseStarted(prevS => prevS.map((v, i) => (i === currentIdx ? false : v)));
+    setShowSwapSheet(false);
+    void reconcileExerciseRow(def, row.id);
   };
 
   // Remove exercise. Removing the last one is allowed — the screen falls back
@@ -3238,6 +3331,11 @@ export default function ActiveWorkoutScreen() {
                 <Text style={[styles.exerciseName, { color: C.foreground }]} numberOfLines={1}>
                   {currentEx.exercise.name}
                 </Text>
+                {currentEx.swappedFrom ? (
+                  <Text style={[styles.exerciseMeta, { color: C.accentText }]} numberOfLines={1}>
+                    Swapped from {currentEx.swappedFrom.exercise.name}
+                  </Text>
+                ) : null}
                 <Text style={[styles.exerciseMeta, { color: C.textMuted }]}>
                   {currentEx.targetSets} sets{headerTarget(currentEx)}{currentEx.restSeconds > 0 ? ` · ${currentEx.restSeconds}s rest` : ''}
                 </Text>
@@ -3293,6 +3391,17 @@ export default function ActiveWorkoutScreen() {
                   </Text>
                 ) : null}
               </View>
+              {swapCatalog.available && canSwapLive(currentEx, !!exerciseFinished[currentIdx]) ? (
+                <TouchableOpacity
+                  onPress={() => { haptics.selection(); setShowSwapSheet(true); }}
+                  style={[styles.removeBtn, { backgroundColor: currentEx.swappedFrom ? C.primaryMuted : C.muted }]}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Swap ${currentEx.exercise.name}`}
+                >
+                  <Feather name="shuffle" size={13} color={currentEx.swappedFrom ? C.accentText : C.textDim} />
+                </TouchableOpacity>
+              ) : null}
               <TouchableOpacity
                 onPress={removeExercise}
                 style={[styles.removeBtn, { backgroundColor: C.muted }]}
@@ -3422,11 +3531,20 @@ export default function ActiveWorkoutScreen() {
                     )}
                     <View
                       ref={interactive ? inputCardRef : undefined}
+                      // Measured for the first-set hint: never flattened away on Android.
+                      collapsable={false}
                       style={[styles.setRowActive, { backgroundColor: C.primaryMuted }]}
                     >
                       {/* Set marker — tap to set the type (warmup/drop/failure/...). The
                           chevron makes the otherwise-plain number read as a tappable picker. */}
-                      <TouchableOpacity style={styles.colSet} onPress={() => setSetTypeSheetIdx(-1)} hitSlop={6} accessibilityLabel="Set type">
+                      <TouchableOpacity
+                        ref={interactive ? (setTypeTarget as any) : undefined}
+                        style={styles.colSet}
+                        // Using the set-types hint (before the sheet opens and pauses it).
+                        onPress={() => { setTypesUsed(); setSetTypeSheetIdx(-1); }}
+                        hitSlop={6}
+                        accessibilityLabel="Set type"
+                      >
                         <SetTypeBadge type={activeSetType} num={countsAsWorkingSet(activeSetType) ? completedWorking + 1 : undefined} numColor={C.accentText} />
                         <Feather name="chevron-down" size={9} color={C.textMuted} style={{ marginTop: 1 }} />
                       </TouchableOpacity>
@@ -3987,6 +4105,28 @@ export default function ActiveWorkoutScreen() {
         onRemove={() => { if (setTypeSheetIdx !== null && setTypeSheetIdx >= 0) handleDeleteSet(setTypeSheetIdx); }}
         onClose={() => setSetTypeSheetIdx(null)}
       />
+
+      {currentEx && swapCatalog.available ? (
+        <ExerciseSwapSheet
+          visible={showSwapSheet}
+          from={swapCatalog.exercises.find((e) => e.id === currentEx.exercise.id) ?? currentEx.exercise}
+          original={currentEx.swappedFrom
+            ? (swapCatalog.exercises.find((e) => e.id === currentEx.swappedFrom!.exercise.id) ?? currentEx.swappedFrom.exercise)
+            : null}
+          exercises={swapCatalog.exercises}
+          doneIds={swapCatalog.doneIds}
+          excludeIds={new Set(exercises.map((e) => e.exercise.id))}
+          onPick={(row, tier) => swapCurrentExercise(row, tier)}
+          onRestore={() => {
+            const plan = currentEx.swappedFrom?.exercise;
+            if (!plan) return;
+            const row = swapCatalog.exercises.find((e) => e.id === plan.id)
+              ?? { ...plan, metric_type: plan.metric_type ?? null };
+            swapCurrentExercise(row as SwapCatalogRow, 'back');
+          }}
+          onClose={() => setShowSwapSheet(false)}
+        />
+      ) : null}
 
       {currentEx && (
         <SupersetSheet

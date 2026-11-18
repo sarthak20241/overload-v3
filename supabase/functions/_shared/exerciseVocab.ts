@@ -93,6 +93,32 @@ export const CATEGORIES = [
   'Barbell', 'Dumbbell', 'Cable', 'Machine', 'Bodyweight', 'Other',
 ] as const;
 
+/**
+ * The movement family of an exercise, stored in `exercises.swap_pattern`
+ * (migration 20261117120000). With `exercises.target_muscle` it says which
+ * exercises can stand in for which: same muscle and same family is a
+ * like-for-like swap.
+ *
+ * Not the form checker's `movement_pattern`: that one has 9 camera-judged
+ * families and reads "none" for a lateral raise. This one is finer where a
+ * swap needs it (a fly is not a press, a leg curl is not a hinge) and covers
+ * every row, cardio and stretching included.
+ *
+ * The DB check constraint lists the same values; exerciseVocab.test.ts fails
+ * when the two differ.
+ */
+export const SWAP_PATTERN_VALUES = [
+  'horizontal_press', 'vertical_press', 'dip', 'fly',
+  'vertical_pull', 'horizontal_pull', 'pullover', 'shrug', 'upright_row', 'reverse_fly', 'raise',
+  'curl', 'elbow_extension', 'wrist', 'hold', 'carry',
+  'squat', 'lunge', 'hinge', 'hip_thrust', 'back_extension',
+  'leg_extension', 'leg_curl', 'hip_abduction', 'hip_adduction', 'hip_kickback', 'calf_raise',
+  'crunch', 'leg_raise', 'rotation', 'plank', 'rollout', 'neck',
+  'olympic', 'jump', 'throw', 'cardio', 'mobility', 'other',
+] as const;
+
+export type SwapPattern = typeof SWAP_PATTERN_VALUES[number];
+
 /** The template a newly invented exercise carries alongside its name. */
 export interface NewExerciseDef {
   muscle_group: string;

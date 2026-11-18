@@ -30,6 +30,7 @@ import { holdBackgroundTime, NOTICE_GRACE_MS } from '@/lib/backgroundTime';
 import {
   Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow,
 } from '@/constants/theme';
+import { useSpotlightTarget, useSpotlightTour } from '@/components/spotlight/SpotlightProvider';
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMealCard';
@@ -537,6 +538,8 @@ export default function NutritionScreen() {
   // lands, whether to open the result or tell the user with a toast.
   const [waitOpen, setWaitOpen] = useState(false);
   const [resultOpen, setResultOpen] = useState(false);
+  // The food box hint's target (its readiness check sits below every sheet's state).
+  const foodBoxTarget = useSpotlightTarget('food_box');
   const [resultDayOpen, setResultDayOpen] = useState(false);
   const waitOpenRef = useRef(false);
   waitOpenRef.current = waitOpen;
@@ -730,6 +733,8 @@ export default function NutritionScreen() {
   const [parseSpeed, setParseSpeedState] = useState<ParseSpeed>('quick');
   const parseSpeedRef = useRef<ParseSpeed>('quick');
   const [speedSheetOpen, setSpeedSheetOpen] = useState(false);
+  // Step 2 of the food guide lights the Quick / Precise chip.
+  const logModeTarget = useSpotlightTarget('log_mode');
   // The dashboard's getting-started "Pick how I log food" lands here with
   // modes=<stamp>: open the mode sheet once per stamp, then clear it (this tab
   // stays mounted, like focus=ai above).
@@ -876,6 +881,15 @@ export default function NutritionScreen() {
     [patterns, prevLines, byMeal],
   );
   const [copyMeal, setCopyMeal] = useState<MealType | null>(null);
+  // The spotlight hints (food box, then Quick/Precise) wait while any sheet is
+  // over the screen, or the lit hole would sit on the sheet. Here, below every
+  // sheet's state, so none is left out.
+  const sheetUp = resultOpen || resultDayOpen || calendarOpen || !!editEntry || fuelOpen || goalOpen
+    || waitOpen || speedSheetOpen || savedListOpen || copyMeal !== null;
+  // Not when a card sent the user here to type (focus=ai): the keyboard is coming up.
+  const hintReady = !!isSignedIn && focus !== 'ai' && flow.status === 'idle' && !sheetUp;
+  // The food guide: 1/2 the box, 2/2 the Quick / Precise chip.
+  const foodGuideUsed = useSpotlightTour('food_box', hintReady);
   const [relogBusy, setRelogBusy] = useState<string | null>(null);
   // The copy sheet's guard. State lags a render, so two quick taps could both
   // read "not busy" and copy twice; a ref is set before the first await.
@@ -2742,7 +2756,7 @@ export default function NutritionScreen() {
         )}
 
         {isSignedIn ? (
-          <View style={s.input} onLayout={(e) => setInputRowH(e.nativeEvent.layout.height)}>
+          <View ref={foodBoxTarget} collapsable={false} style={s.input} onLayout={(e) => setInputRowH(e.nativeEvent.layout.height)}>
             <Pressable onPress={() => openSearch(mealForNow())} hitSlop={8} style={s.iconBox}>
               <Feather name="search" size={16} color={C.textSecondary} />
             </Pressable>
@@ -2768,7 +2782,10 @@ export default function NutritionScreen() {
                 will actually RUN, so a lapsed subscriber sees Quick rather
                 than a Precise badge over a Quick parse. */}
             <Pressable
+              ref={logModeTarget}
               onPress={() => {
+                // Using the food guide's Quick/Precise step (before the sheet opens and pauses it).
+                foodGuideUsed();
                 // The portal shares the app window, so the keyboard would cover
                 // its bottom rows. Blur the composer without clearing its draft.
                 Keyboard.dismiss();

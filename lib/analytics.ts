@@ -150,6 +150,12 @@ export type AnalyticsEvent =
   | 'drona_inbox_opened'
   | 'today_up_next_tapped'
   | 'today_suggestion_requested'
+  // Swap an exercise in the Today session preview, for this session only.
+  | 'today_swap_opened'
+  | 'today_exercise_swapped'
+  | 'today_swap_undone'
+  // Swap an exercise in a running workout, before its first logged set.
+  | 'workout_exercise_swapped'
   | 'history_workout_edit_opened'
   | 'history_workout_deleted'
   | 'share_started'
@@ -279,6 +285,10 @@ export type AnalyticsEvent =
   | 'signup_tour_shown'
   | 'signup_tour_scene'
   | 'signup_tour_done'
+  // Spotlight intro + first-visit hints (components/spotlight/).
+  | 'spotlight_shown'
+  | 'spotlight_done'
+  | 'spotlight_missed'
   // The dashboard's floating log-food button (components/home/HomeLogButton.tsx).
   | 'home_log_food_tapped'
   | 'program_phase_advanced'

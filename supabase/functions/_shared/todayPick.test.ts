@@ -60,11 +60,19 @@ Deno.test("another phase's split is not today's", () => {
   assertEquals(pick.routine?.id, "p2");
 });
 
-Deno.test("no program keeps the old rule: least recently done across all routines", () => {
+Deno.test("no program, training: least recently done among the routines in use, not a never-done one", () => {
+  // 4 sessions in 4 days: "old" (never done) is not what this person trains.
+  // (todayPickNoSplit.test.ts has the rest of the no-split rules.)
   const workouts = [did(day1, 1), did(day2, 2), did(day3, 3), did(nextPhase, 4)];
   const pick = pickToday({ routines: newestFirst, workouts, program: null, now: NOW });
-  assertEquals(pick.routine?.id, "old");
+  assertEquals(pick.routine?.id, "p2");
   assertEquals(pick.fromProgram, false);
+});
+
+Deno.test("no program, not training: least recently done across all routines", () => {
+  const workouts = [did(day1, 1), did(day2, 20)];
+  const pick = pickToday({ routines: newestFirst, workouts, program: null, now: NOW });
+  assertEquals(pick.routine?.id, "p2");
 });
 
 Deno.test("no program, nothing done: the list's own order wins the tie", () => {
