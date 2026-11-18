@@ -80,6 +80,11 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
   const { mode, C } = useTheme();
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
   const rootRef = useRef<View>(null);
+  // The frame changed while a hint was lit: its hole is stale until the
+  // provider sends a new one (or the tour ends). No outside panels till then.
+  const [frameStale, setFrameStale] = useState(false);
+  const sizeRef = useRef<{ w: number; h: number } | null>(null);
+  useEffect(() => { setFrameStale(false); }, [hole, tour]);
   const [opening, setOpening] = useState(false);
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (openTimer.current) clearTimeout(openTimer.current); }, []);
@@ -230,6 +235,9 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
       ref={rootRef}
       onLayout={(e) => {
         const s = { w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height };
+        const prev = sizeRef.current;
+        if (prev && (prev.w !== s.w || prev.h !== s.h) && shownRef.current) setFrameStale(true);
+        sizeRef.current = s;
         setSize(s);
         // Where the overlay starts in the window, so measured controls line up.
         const node = rootRef.current;
@@ -253,7 +261,7 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
           {!closing && shown.tour.kind === 'intro' ? (
             <Pressable style={StyleSheet.absoluteFill} onPress={finish} accessibilityLabel="Next tip" />
           ) : null}
-          {!closing && !remeasuring && shown.tour.kind === 'hint' ? (
+          {!closing && !remeasuring && !frameStale && shown.tour.kind === 'hint' ? (
             // During the iris the panels only block (no dismiss): the screen
             // there is still visibly clear. The lit control stays live.
             <OutsideBlockers hole={shown.hole} w={size.w} h={size.h} onPress={opening ? () => {} : () => onEnd('outside')} />

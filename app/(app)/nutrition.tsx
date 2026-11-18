@@ -541,9 +541,6 @@ export default function NutritionScreen() {
   // First-visit hint on the food box. Not when a card sent the user here to
   // type (focus=ai): the keyboard is already coming up.
   const foodBoxTarget = useSpotlightTarget('food_box');
-  // Hints wait while any sheet is over the screen (the lit hole would sit on it).
-  const sheetUp = resultOpen || calendarOpen || !!editEntry || fuelOpen || goalOpen || waitOpen;
-  useSpotlightTour('food_box', !!isSignedIn && focus !== 'ai' && flow.status === 'idle' && !sheetUp);
   const [resultDayOpen, setResultDayOpen] = useState(false);
   const waitOpenRef = useRef(false);
   waitOpenRef.current = waitOpen;
@@ -740,10 +737,6 @@ export default function NutritionScreen() {
   // Follow-up hint on the Quick / Precise chip: waits for the food box hint,
   // so it shows on a later visit or right after the first log settles.
   const logModeTarget = useSpotlightTarget('log_mode');
-  const logModesUsed = useSpotlightTour(
-    'food_modes',
-    !!isSignedIn && focus !== 'ai' && flow.status === 'idle' && !sheetUp && !speedSheetOpen,
-  );
   // The dashboard's getting-started "Pick how I log food" lands here with
   // modes=<stamp>: open the mode sheet once per stamp, then clear it (this tab
   // stays mounted, like focus=ai above).
@@ -890,6 +883,14 @@ export default function NutritionScreen() {
     [patterns, prevLines, byMeal],
   );
   const [copyMeal, setCopyMeal] = useState<MealType | null>(null);
+  // The spotlight hints (food box, then Quick/Precise) wait while any sheet is
+  // over the screen, or the lit hole would sit on the sheet. Here, below every
+  // sheet's state, so none is left out.
+  const sheetUp = resultOpen || resultDayOpen || calendarOpen || !!editEntry || fuelOpen || goalOpen
+    || waitOpen || speedSheetOpen || savedListOpen || copyMeal !== null;
+  const hintReady = !!isSignedIn && focus !== 'ai' && flow.status === 'idle' && !sheetUp;
+  useSpotlightTour('food_box', hintReady);
+  const logModesUsed = useSpotlightTour('food_modes', hintReady);
   const [relogBusy, setRelogBusy] = useState<string | null>(null);
   // The copy sheet's guard. State lags a render, so two quick taps could both
   // read "not busy" and copy twice; a ref is set before the first await.

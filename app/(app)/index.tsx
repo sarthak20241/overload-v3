@@ -57,6 +57,7 @@ import { MacroBar } from '@/components/diet/MacroBar';
 import { useTodayNutrition, useNutritionTargets } from '@/lib/dietData';
 import { fuelOn } from '@/lib/fuelDays';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
+import { setSessionSwaps } from '@/lib/sessionSwaps';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { getPendingWorkouts } from '@/lib/syncQueue';
@@ -1588,15 +1589,19 @@ export default function DashboardScreen() {
       <RoutineDetailSheet
         routine={detailRoutine}
         onClose={() => setDetailRoutine(null)}
-        onStartWorkout={() => {
+        onStartWorkout={(swaps) => {
           const r = detailRoutine;
           setDetailRoutine(null);
           if (r) {
             markWorkoutSource('today_card');
+            // Swaps are for this session only: handed to the workout screen
+            // one time, the routine itself unchanged (lib/sessionSwaps).
+            setSessionSwaps(r.id, swaps);
             router.push(`/workout/${r.id}` as any);
           }
         }}
         onAskCoach={detailRoutine ? () => askCoachAboutRoutine(detailRoutine) : undefined}
+        allowSwap
       />
 
       {/* "Your program is ready, now let's build week one" */}

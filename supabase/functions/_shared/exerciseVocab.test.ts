@@ -7,6 +7,7 @@ import {
   METRIC_TYPE_VALUES,
   MUSCLE_GROUP_REFINEMENTS,
   normalizeNewExercise,
+  SWAP_PATTERN_VALUES,
 } from "./exerciseVocab.ts";
 import * as app from "../../../lib/exercises.ts";
 
@@ -27,4 +28,28 @@ Deno.test("loose matching keeps the app's spelling", () => {
     category: "Bodyweight",
     metric_type: "distance_duration",
   });
+});
+
+// The swap tags (migration 20261117120000) are data in a SQL file. A tag the
+// app does not know would rank an exercise under a muscle no screen shows, or
+// fail the column's check and stop the whole migration.
+Deno.test("every swap tag in the migration is a word the app knows", async () => {
+  const sql = await Deno.readTextFile(
+    new URL("../../migrations/20261117120000_exercise_swap_tags.sql", import.meta.url),
+  );
+  const check = sql.match(/swap_pattern in \(([^)]+)\)/)?.[1] ?? "";
+  assertEquals([...check.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]), [...SWAP_PATTERN_VALUES]);
+
+  const rows = [...sql.matchAll(/^  \('((?:[^']|'')+)', '([^']+)', '([a-z_]+)'\),?$/gm)];
+  assertEquals(
+    rows.length > 700,
+    true,
+    `only ${rows.length} tag rows parsed: this test reads rows written as "  ('name', 'Muscle', 'pattern'),", so a reformatted migration needs this regex updated`,
+  );
+  const names = rows.map((r) => r[1]);
+  assertEquals(new Set(names).size, names.length, "one row per name");
+  assertEquals(names.filter((n) => n !== n.toLowerCase()), [], "names are name_lower");
+  assertEquals([...new Set(rows.map((r) => r[2]))].filter((m) => !ALL_MUSCLE_GROUPS.includes(m)), []);
+  const known: readonly string[] = SWAP_PATTERN_VALUES;
+  assertEquals([...new Set(rows.map((r) => r[3]))].filter((p) => !known.includes(p)), []);
 });
