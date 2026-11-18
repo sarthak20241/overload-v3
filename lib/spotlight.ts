@@ -129,6 +129,15 @@ export function holeFor(rect: Rect, shape: SpotlightShape, pad = HOLE_PAD): Hole
   return { x: rect.x - pad, y: rect.y - pad, width, height, r };
 }
 
+/**
+ * A control's window position, moved into the overlay's own space. They match
+ * on iOS; on Android edge-to-edge or a status bar can shift the overlay, and
+ * the hole would sit off by that much.
+ */
+export function toOverlay(rect: Rect, origin: { x: number; y: number }): Rect {
+  return { x: rect.x - origin.x, y: rect.y - origin.y, width: rect.width, height: rect.height };
+}
+
 /** The control is measured, has a size, and sits fully inside the screen. */
 export function onScreen(rect: Rect | null, screenW: number, screenH: number): boolean {
   if (!rect) return false;

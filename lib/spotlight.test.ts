@@ -15,6 +15,7 @@ import {
   SPOTLIGHT_BODY_MAX,
   SPOTLIGHT_TITLE_MAX,
   tipSide,
+  toOverlay,
   TOURS,
 } from "./spotlight.ts";
 
@@ -120,4 +121,9 @@ Deno.test("hints wait for the intro to end first", () => {
   assert(!canStart("food_box", { seen: new Set(), active: null, accountAgeDays: age }), "intro not done yet");
   assert(canStart("food_box", { seen: new Set(["intro"]), active: null, accountAgeDays: age }), "intro finished or skipped");
   assert(canStart("intro", { seen: new Set(), active: null, accountAgeDays: age }));
+});
+
+Deno.test("a control's window position is moved into the overlay's own space", () => {
+  assertEquals(toOverlay({ x: 10, y: 100, width: 50, height: 20 }, { x: 0, y: 0 }), { x: 10, y: 100, width: 50, height: 20 });
+  assertEquals(toOverlay({ x: 10, y: 100, width: 50, height: 20 }, { x: 0, y: 24 }), { x: 10, y: 76, width: 50, height: 20 }, "overlay starts under a status bar");
 });

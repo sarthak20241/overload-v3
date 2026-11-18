@@ -28,6 +28,7 @@ import {
   onScreen,
   parseSeen,
   seenKey,
+  toOverlay,
   TOURS,
   type Hole,
   type Rect,
@@ -35,7 +36,7 @@ import {
   type SpotlightTargetId,
   type SpotlightTourId,
 } from '@/lib/spotlight';
-import { SpotlightOverlay } from './SpotlightOverlay';
+import { SpotlightOverlay, type OverlayFrame } from './SpotlightOverlay';
 
 /** Under the sign-up film (100), over every sheet. */
 const SPOTLIGHT_LAYER = 90;
@@ -90,7 +91,8 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
   const activeRef = useRef<Active | null>(null);
   activeRef.current = active;
   seenRef.current = seen;
-  const [screen, setScreen] = useState<{ w: number; h: number } | null>(null);
+  // The overlay's size and where it starts in the window (see toOverlay).
+  const [screen, setScreen] = useState<OverlayFrame | null>(null);
   const screenRef = useRef(screen);
   screenRef.current = screen;
 
@@ -128,7 +130,8 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     const sc = screenRef.current;
     if (!sc) return null;
     for (let i = from; i < steps.length; i++) {
-      const rect = await measure(targets.current.get(steps[i].target));
+      const measured = await measure(targets.current.get(steps[i].target));
+      const rect = measured ? toOverlay(measured, { x: sc.ox, y: sc.oy }) : null;
       if (onScreen(rect, sc.w, sc.h)) return { index: i, hole: holeFor(rect!, steps[i].shape) };
     }
     return null;

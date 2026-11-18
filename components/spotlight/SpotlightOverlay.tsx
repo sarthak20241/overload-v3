@@ -49,8 +49,7 @@ import { BlurMask, Canvas, FillType, Path, RoundedRect, Skia } from '@shopify/re
 import { Colors, FontFamily, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
-import { tipSide, type Hole, type SpotlightTour } from '@/lib/spotlight';
-import type { SpotlightEnd } from '@/lib/spotlight';
+import { tipSide, type Hole, type SpotlightEnd, type SpotlightTour } from '@/lib/spotlight';
 
 const SPRING = { damping: 19, stiffness: 170, mass: 0.9 } as const;
 const GUTTER = Spacing.lg;
@@ -61,17 +60,21 @@ interface Props {
   tour: SpotlightTour | null;
   index: number;
   hole: Hole | null;
-  onScreenSize: (s: { w: number; h: number }) => void;
+  onScreenSize: (s: OverlayFrame) => void;
   onNext: () => void;
   onEnd: (how: SpotlightEnd) => void;
 }
 
 interface Shown { tour: SpotlightTour; index: number; hole: Hole }
 
+/** The overlay's size, and its top-left corner in window coordinates. */
+export interface OverlayFrame { w: number; h: number; ox: number; oy: number }
+
 export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEnd }: Props) {
   const reduce = useReducedMotion();
   const { mode, C } = useTheme();
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+  const rootRef = useRef<View>(null);
   // What is drawn: it outlives `tour` by the fade out.
   const [shown, setShown] = useState<Shown | null>(null);
   const [closing, setClosing] = useState(false);
@@ -209,10 +212,14 @@ export function SpotlightOverlay({ tour, index, hole, onScreenSize, onNext, onEn
     <View
       style={StyleSheet.absoluteFill}
       pointerEvents={lit ? 'box-none' : 'none'}
+      ref={rootRef}
       onLayout={(e) => {
         const s = { w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height };
         setSize(s);
-        onScreenSize(s);
+        // Where the overlay starts in the window, so measured controls line up.
+        const node = rootRef.current;
+        if (!node) return onScreenSize({ ...s, ox: 0, oy: 0 });
+        node.measureInWindow((ox, oy) => onScreenSize({ ...s, ox: ox || 0, oy: oy || 0 }));
       }}
     >
       {shown && size ? (
