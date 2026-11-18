@@ -245,3 +245,13 @@ export function parseSeen(raw: string | null | undefined): Set<SpotlightTourId> 
     return new Set();
   }
 }
+
+/**
+ * What to store: the stored list plus this session's. Saving the union means
+ * a failed or stale read can never wipe tours seen before.
+ */
+export function mergeSeen(storedRaw: string | null | undefined, mine: ReadonlySet<string>): SpotlightTourId[] {
+  const all = parseSeen(storedRaw);
+  for (const id of mine) if (Object.prototype.hasOwnProperty.call(TOURS, id)) all.add(id as SpotlightTourId);
+  return [...all];
+}

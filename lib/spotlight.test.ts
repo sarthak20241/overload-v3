@@ -8,6 +8,7 @@ import {
   canStart,
   countsAsSeen,
   dataLoaded,
+  mergeSeen,
   holeFor,
   nextStep,
   onScreen,
@@ -159,4 +160,10 @@ Deno.test("a control's window position is moved into the overlay's own space", (
 
 Deno.test("only real tour names load from storage, not inherited object keys", () => {
   assertEquals([...parseSeen('["constructor","toString","intro"]')], ["intro"]);
+});
+
+Deno.test("a save merges with what is stored, so a failed read never wipes it", () => {
+  assertEquals(mergeSeen('["intro","food_box"]', new Set(["goal_plan"])).sort(), ["food_box", "goal_plan", "intro"]);
+  assertEquals(mergeSeen(null, new Set(["intro"])), ["intro"]);
+  assertEquals(mergeSeen("broken", new Set(["intro"])), ["intro"]);
 });

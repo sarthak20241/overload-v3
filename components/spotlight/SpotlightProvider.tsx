@@ -30,6 +30,7 @@ import {
   countsAsSeen,
   dataLoaded,
   holeFor,
+  mergeSeen,
   nextStep,
   onScreen,
   parseSeen,
@@ -137,9 +138,15 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     next.add(id);
     seenRef.current = next;
     setSeen(next);
-    if (userId && !DEMO) AsyncStorage.setItem(seenKey(userId), JSON.stringify([...next]))
-      // Not fatal (the tour shows once more next launch), but leave a trace.
-      .catch((e) => trackError(e, { where: 'spotlight_seen_write', tour: id }));
+    if (userId && !DEMO) {
+      const key = seenKey(userId);
+      // Merge with what is stored, so a failed read earlier never wipes it.
+      AsyncStorage.getItem(key)
+        .catch(() => null)
+        .then((raw) => AsyncStorage.setItem(key, JSON.stringify(mergeSeen(raw, next))))
+        // Not fatal (the tour shows once more next launch), but leave a trace.
+        .catch((e) => trackError(e, { where: 'spotlight_seen_write', tour: id }));
+    }
   }, [userId]);
 
   /** The lit hole for step `from` or the first later step whose control is on screen. */
