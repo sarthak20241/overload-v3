@@ -519,7 +519,7 @@ export default function FoodSearchScreen() {
             accessibilityLabel={`Log ${dronaOffer} with Drona. ${PARSE_SPEED_COPY[runningSpeed].title} mode.`}
           >
             <View style={s.aiBody}>
-              <Text style={s.aiEyebrow}>Log with Drona</Text>
+              <Text style={s.aiEyebrow}>Log with Drona AI</Text>
               <Text style={s.aiTitle} numberOfLines={2}>“{dronaOffer}”</Text>
               {/* Quick / Precise, right under the words they apply to. A
                   quiet track with the picked side lifted. */}
@@ -554,16 +554,15 @@ export default function FoodSearchScreen() {
                 {autoLog ? 'Goes straight into your diary.' : PARSE_SPEED_COPY[runningSpeed].sub}
               </Text>
             </View>
-            {/* The send is Drona's orb, turning slowly: the same mark that
-                works on the meal once it is sent, in lime on the dark card (on a
-                lime fill its far dots wash out). The card says what a tap
-                does, so the orb is hidden from screen readers. */}
+            {/* A send button: lime circle with an up arrow, the same mark as
+                the send in Drona's chat. The card says what a tap does, so
+                the icon is hidden from screen readers. */}
             <View
-              style={[s.aiSend, { borderColor: C.primaryBorder, backgroundColor: C.background }]}
+              style={[s.aiSend, { backgroundColor: Colors.primary }]}
               accessibilityElementsHidden
               importantForAccessibility="no-hide-descendants"
             >
-              <OrbLoader size={48} color={C.accentText} state="working" />
+              <Feather name="arrow-up" size={20} color={Colors.primaryFg} />
             </View>
           </Pressable>
         ) : null}
@@ -667,7 +666,7 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     modeSeg: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, height: 26, borderRadius: Radius.full },
     modeTxt: { fontSize: 12, fontWeight: FontWeight.semibold },
     modePro: { fontSize: 9, fontWeight: FontWeight.bold, letterSpacing: LetterSpacing.eyebrow },
-    aiSend: { width: 56, height: 56, borderRadius: 28, borderWidth: 1, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+    aiSend: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
 
     toast: { position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: Colors.primary, paddingHorizontal: Spacing.lg, paddingVertical: 10, borderRadius: Radius.full, ...Shadow.elevated },
     toastTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primaryFg },
