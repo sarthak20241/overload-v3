@@ -57,18 +57,25 @@ export async function captureInstallSourceOnce(): Promise<void> {
     const props = installSourceProps(parseInstallReferrer(raw));
     // The SDK defers calls made while it is still loading its stored state,
     // and an error in deferred work never reaches this catch. Wait for it.
-    await posthog.ready();
-    posthog.capture('install_attributed', {
-      ...props,
-      // Names only, never values: a custom link could carry anything.
-      install_referrer_keys: referrerKeys(raw),
-    });
+    // Capped like the referrer read, so a stuck SDK never parks this forever.
+    const ready = await Promise.race([
+      posthog.ready().then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), TIMEOUT_MS)),
+    ]);
+    if (!ready) throw new Error('posthog not ready');
     // On the person, not only the event. First open is usually before
     // sign-up, and a raw $set_once from an anonymous visitor never reaches a
     // person in 'identified_only' mode. Called directly (not through the
     // error-swallowing setUserPropsOnce) so a throw lands in the catch below
     // and the read is retried.
     posthog.setPersonProperties(undefined, props, false);
+    // After the person props, so a retry repeats the harmless $set_once first.
+    // A failed send can still repeat this event once on the next try.
+    posthog.capture('install_attributed', {
+      ...props,
+      // Names only, never values: a custom link could carry anything.
+      install_referrer_keys: referrerKeys(raw),
+    });
     // Mark it done only after the queue went out. A failed send throws into
     // the catch below and the read is tried again on a later open ($set_once
     // keeps the first value, so a repeat is harmless).

@@ -21,8 +21,9 @@ export function claimAuthEvent(sessionId: string | null | undefined): boolean {
  * opens; when sso-callback wins the claim it takes it, so the event still says
  * google or apple. Taking clears it, and a note older than 10 minutes is
  * ignored, so a later cold-start deep link never reports an old provider.
- * runSSO does not clear it itself: on Android the callback can finish after
- * runSSO has returned.
+ * runSSO clears it when it reports the sign-in itself or the user cancels;
+ * after a no-session end it leaves it, since on Android the callback can
+ * still finish the sign-in after runSSO has returned.
  */
 const NOTE_TTL_MS = 10 * 60 * 1000;
 let pending: { method: string; at: number } | null = null;
