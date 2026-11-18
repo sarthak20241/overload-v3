@@ -60,6 +60,7 @@ import {
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
+import { REVEAL_CHOICES, revealChoiceFor } from '@/lib/revealChoice';
 import { useGuestMode } from '@/lib/guestMode';
 import { accessHasPlan, connectFirstNext } from '@/lib/paywallPlans';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
@@ -660,6 +661,7 @@ export default function OnboardingScreen() {
         if (opts.createPlan) void flushNow();
         track('onboarding_completed', {
           created_plan: opts.createPlan,
+          reveal_choice: revealChoiceFor(opts.dest),
           goal: answers.goal ?? null,
           goals: selectedGoals(answers).join(','),
           experience: answers.experience ?? null,
@@ -680,7 +682,11 @@ export default function OnboardingScreen() {
         // Never trap the user at the finish line, but say what happened;
         // everything here is recoverable from Profile and Routines later.
         toast.error("Couldn't save everything. You can finish setup in Profile.");
-        track('onboarding_completed', { outcome: 'save_failed', created_plan: opts.createPlan });
+        track('onboarding_completed', {
+          outcome: 'save_failed',
+          created_plan: opts.createPlan,
+          reveal_choice: revealChoiceFor(opts.dest),
+        });
         await markOnboardingDone(identity);
         router.replace('/(app)');
       } finally {
@@ -713,6 +719,7 @@ export default function OnboardingScreen() {
           track('onboarding_completed', {
             outcome: 'handed_to_signup',
             created_plan: opts.createPlan,
+            reveal_choice: revealChoiceFor(opts.dest),
             goal: answers.goal ?? null,
             goals: selectedGoals(answers).join(','),
             experience: answers.experience ?? null,
@@ -1365,12 +1372,12 @@ export default function OnboardingScreen() {
                 <>
                   <PrimaryCta
                     label={isFreshVisitor ? 'Save my plan' : 'Start my plan'}
-                    onPress={() => finishOnboarding({ createPlan: true, dest: '/(app)' })}
+                    onPress={() => finishOnboarding(REVEAL_CHOICES.plan)}
                     loading={finishing}
                     accessibilityLabel={isFreshVisitor ? 'Save my plan' : 'Start my plan'}
                   />
                   <TouchableOpacity
-                    onPress={() => finishOnboarding({ createPlan: false, dest: '/(app)/routines' })}
+                    onPress={() => finishOnboarding(REVEAL_CHOICES.own_routines)}
                     disabled={finishing}
                     style={s.ghostLink}
                     accessibilityRole="button"
