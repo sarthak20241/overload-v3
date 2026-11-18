@@ -682,7 +682,11 @@ export default function OnboardingScreen() {
         // Never trap the user at the finish line, but say what happened;
         // everything here is recoverable from Profile and Routines later.
         toast.error("Couldn't save everything. You can finish setup in Profile.");
-        track('onboarding_completed', { outcome: 'save_failed', created_plan: opts.createPlan });
+        track('onboarding_completed', {
+          outcome: 'save_failed',
+          created_plan: opts.createPlan,
+          reveal_choice: revealChoiceFor(opts.dest),
+        });
         await markOnboardingDone(identity);
         router.replace('/(app)');
       } finally {
