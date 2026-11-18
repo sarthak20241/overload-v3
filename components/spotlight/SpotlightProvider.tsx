@@ -104,6 +104,12 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
   // The overlay's size and where it starts in the window (see toOverlay).
   const [screen, setScreen] = useState<OverlayFrame | null>(null);
   const [remeasuring, setRemeasuring] = useState(false);
+  const accountGen = useRef(0);
+  // onLayout reports a fresh object every time: keep the old one when nothing
+  // moved, so an unchanged frame never re-measures the lit step.
+  const setScreenIfChanged = useCallback((f: OverlayFrame) => {
+    setScreen((prev) => (prev && prev.w === f.w && prev.h === f.h && prev.ox === f.ox && prev.oy === f.oy ? prev : f));
+  }, []);
   const screenRef = useRef(screen);
   screenRef.current = screen;
 
@@ -111,6 +117,8 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Clear the refs too: start() reads them, and the next render is not here yet.
     seenRef.current = null;
+    // A start() still measuring for the old account must not open its tour.
+    accountGen.current += 1;
     activeRef.current = null;
     setSeen(null);
     setActive(null);
@@ -169,10 +177,12 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const start = useCallback(async (id: SpotlightTourId, stillWanted?: () => boolean) => {
+    const gen = accountGen.current;
     const s = seenRef.current;
     if (!s) return 'blocked';
     if (!canStart(TOURS[id], { seen: s, active: activeRef.current?.id ?? null, createdAtMs, nowMs: Date.now(), demo: DEMO })) return 'blocked';
     const first = await findStep(id, 0);
+    if (gen !== accountGen.current) return 'blocked';
     // Another tour may have started, or the screen gone, while we measured.
     if (activeRef.current) return 'blocked';
     if (stillWanted && !stillWanted()) return 'blocked';
@@ -246,7 +256,7 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
           tour={active ? TOURS[active.id] : null}
           index={active?.index ?? 0}
           hole={active?.hole ?? null}
-          onScreenSize={setScreen}
+          onScreenSize={setScreenIfChanged}
           remeasuring={remeasuring}
           onNext={next}
           onEnd={endActive}
