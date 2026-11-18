@@ -89,3 +89,8 @@ Deno.test("organic means Play's own tag, not any organic medium", () => {
   assertEquals(parseInstallReferrer("utm_source=google&utm_medium=organic").organic, false);
   assertEquals(parseInstallReferrer("utm_source=google-play&utm_medium=organic").organic, true);
 });
+
+Deno.test("an encoded referrer still sends only parameter names", () => {
+  assertEquals(referrerKeys("utm_source%3Dinstagram%26secret%3Dabc123"), "secret,utm_source");
+  assertEquals(referrerKeys("utm_source%3dinstagram%26secret%3dabc123"), "secret,utm_source");
+});

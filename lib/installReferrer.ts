@@ -29,16 +29,22 @@ function cut(v: string | null): string | null {
   return t ? t.slice(0, MAX_LEN) : null;
 }
 
-export function parseInstallReferrer(raw: string): InstallReferrer {
-  let text = (raw ?? '').trim();
+/** Trimmed, and decoded once when Play hands back a still-encoded value. */
+function normalizeReferrer(raw: string): string {
+  const text = (raw ?? '').trim();
   // Some links double-encode the referrer value; Play then returns it encoded.
   if (!text.includes('=') && /%3d/i.test(text)) {
     try {
-      text = decodeURIComponent(text);
+      return decodeURIComponent(text);
     } catch {
       // keep it as it is
     }
   }
+  return text;
+}
+
+export function parseInstallReferrer(raw: string): InstallReferrer {
+  const text = normalizeReferrer(raw);
   const empty: InstallReferrer = { source: null, medium: null, campaign: null, content: null, term: null, organic: false };
   if (!text.includes('=')) return empty;
 
@@ -102,7 +108,7 @@ export function afterReferrerFailure(stored: string | null): string {
 /** Parameter names only: enough to spot a new link format, no values. */
 export function referrerKeys(raw: string): string {
   try {
-    return [...new Set([...new URLSearchParams((raw ?? '').trim()).keys()].filter(Boolean))].sort().join(',');
+    return [...new Set([...new URLSearchParams(normalizeReferrer(raw)).keys()].filter(Boolean))].sort().join(',');
   } catch {
     return '';
   }

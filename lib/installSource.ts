@@ -6,9 +6,9 @@
  * Play Install Referrer library in the shipped build, so this needs no new
  * native code and goes out by OTA.
  *
- * The props go on the person with $set_once, so the first answer wins and a
- * later reinstall never overwrites it. Works before sign-up: PostHog merges
- * the anonymous person into the account on identify.
+ * The props go on the person with $set_once (setUserPropsOnce), so the first
+ * answer wins and a later reinstall never overwrites it. Works before sign-up:
+ * PostHog merges the anonymous person into the account on identify.
  *
  * iOS has no install referrer. Apple shows App Store campaign links (`ct=`)
  * only in App Store Connect, so on iOS the sign-up question
@@ -17,7 +17,7 @@
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Application from 'expo-application';
-import { posthog } from '@/lib/analytics';
+import { posthog, setUserPropsOnce } from '@/lib/analytics';
 import {
   afterReferrerFailure,
   installSourceProps,
@@ -56,8 +56,11 @@ export async function captureInstallSourceOnce(): Promise<void> {
       ...props,
       // Names only, never values: a custom link could carry anything.
       install_referrer_keys: referrerKeys(raw),
-      $set_once: props,
     });
+    // On the person, not only the event. First open is usually before
+    // sign-up, and a raw $set_once from an anonymous visitor never reaches a
+    // person in 'identified_only' mode (lib/analytics.ts setUserPropsOnce).
+    setUserPropsOnce(props);
     await AsyncStorage.setItem(SENT_KEY, '1');
   } catch {
     // Play's referrer service can be briefly unavailable, so a failure is

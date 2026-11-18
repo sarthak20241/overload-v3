@@ -15,3 +15,18 @@ export function claimAuthEvent(sessionId: string | null | undefined): boolean {
   claimed.add(sessionId);
   return true;
 }
+
+/**
+ * The provider of the sign-in in progress. runSSO notes it before the browser
+ * opens; when sso-callback wins the claim it reports this method, so the
+ * event still says google or apple.
+ */
+let pendingMethod: string | null = null;
+
+export function noteSSOMethod(method: string): void {
+  pendingMethod = method;
+}
+
+export function ssoMethodForCallback(): string {
+  return pendingMethod ?? 'oauth_callback';
+}

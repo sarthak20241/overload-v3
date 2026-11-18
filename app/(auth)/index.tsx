@@ -15,7 +15,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import * as WebBrowser from 'expo-web-browser';
 import { setGuestMode, getGuestMode } from '@/lib/guestMode';
 import { getGuestWorkouts, getGuestRoutines } from '@/lib/guestStore';
-import { claimAuthEvent } from '@/lib/authEventOnce';
+import { claimAuthEvent, noteSSOMethod } from '@/lib/authEventOnce';
 import { classifySSO, isNewSSOAccount, shouldReloadSSO, ssoDetail, ssoErrorCopy, SIGN_IN_INCOMPLETE_COPY, type SSOOutcome } from '@/lib/ssoOutcome';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 
@@ -415,6 +415,8 @@ export default function AuthScreen() {
     setError('');
     setMethodHint('');
     try {
+      // sso-callback may report this sign-in first (Android); it needs the provider.
+      noteSSOMethod(method);
       const result = await startSSOFlow({ strategy, redirectUrl: 'overload://sso-callback' });
       let outcome: SSOOutcome = classifySSO(result);
       let state = result;

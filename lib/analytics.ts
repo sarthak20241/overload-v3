@@ -403,11 +403,17 @@ export function setUserProps(props: AnalyticsProps): void {
   } catch {}
 }
 
-/** Person properties that keep their FIRST value (where someone came from). */
+/**
+ * Person properties that keep their FIRST value (where someone came from).
+ * Often called before sign-up. The client runs in personProfiles
+ * 'identified_only', where a raw `$set_once` capture from an anonymous visitor
+ * never reaches a person. setPersonProperties creates the profile first, and
+ * PostHog merges it into the account on identify.
+ */
 export function setUserPropsOnce(props: AnalyticsProps): void {
   try {
     const cleaned = clean(props);
-    if (cleaned) posthog?.capture('$set', { $set_once: cleaned });
+    if (cleaned) posthog?.setPersonProperties(undefined, cleaned, false);
   } catch {}
 }
 
