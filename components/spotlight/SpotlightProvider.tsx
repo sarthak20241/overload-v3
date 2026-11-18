@@ -133,6 +133,7 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  const writeChain = useRef<Promise<unknown>>(Promise.resolve());
   const markSeen = useCallback((id: SpotlightTourId) => {
     const next = new Set(seenRef.current ?? []);
     next.add(id);
@@ -140,9 +141,10 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     setSeen(next);
     if (userId && !DEMO) {
       const key = seenKey(userId);
-      // Merge with what is stored, so a failed read earlier never wipes it.
-      AsyncStorage.getItem(key)
-        .catch(() => null)
+      // Merge with what is stored, so a failed read earlier never wipes it,
+      // and queue the saves, so two tours ending together never race.
+      writeChain.current = writeChain.current
+        .then(() => AsyncStorage.getItem(key).catch(() => null))
         .then((raw) => AsyncStorage.setItem(key, JSON.stringify(mergeSeen(raw, next))))
         // Not fatal (the tour shows once more next launch), but leave a trace.
         .catch((e) => trackError(e, { where: 'spotlight_seen_write', tour: id }));
