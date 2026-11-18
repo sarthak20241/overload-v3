@@ -5,6 +5,9 @@
  * A screen marks a control with `useSpotlightTarget('food_box')` (a ref for a
  * plain View) and asks for its tour with `useSpotlightTour('food_box', ready)`.
  * Hints wait until the dashboard intro has ended, so the intro always comes first.
+ * A hint whose lit control opens another screen must call the returned `done()`
+ * first (goal-plan's phase card does), or leaving reads as 'left' and the hint
+ * shows again.
  * The provider keeps which tours this account has seen (AsyncStorage, per
  * user), runs one tour at a time, and measures each control on screen before
  * it lights it. A control that is not laid out or sits off screen is skipped,
@@ -101,6 +104,9 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
 
   // Load this account's seen list. A sign-out or account switch reloads.
   useEffect(() => {
+    // Clear the refs too: start() reads them, and the next render is not here yet.
+    seenRef.current = null;
+    activeRef.current = null;
     setSeen(null);
     setActive(null);
     if (!userId) return;

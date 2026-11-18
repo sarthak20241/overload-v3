@@ -127,3 +127,7 @@ Deno.test("a control's window position is moved into the overlay's own space", (
   assertEquals(toOverlay({ x: 10, y: 100, width: 50, height: 20 }, { x: 0, y: 0 }), { x: 10, y: 100, width: 50, height: 20 });
   assertEquals(toOverlay({ x: 10, y: 100, width: 50, height: 20 }, { x: 0, y: 24 }), { x: 10, y: 76, width: 50, height: 20 }, "overlay starts under a status bar");
 });
+
+Deno.test("only real tour names load from storage, not inherited object keys", () => {
+  assertEquals([...parseSeen('["constructor","toString","intro"]')], ["intro"]);
+});

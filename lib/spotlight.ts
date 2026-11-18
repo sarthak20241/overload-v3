@@ -182,7 +182,7 @@ export function parseSeen(raw: string | null | undefined): Set<SpotlightTourId> 
   try {
     const v = JSON.parse(raw);
     if (!Array.isArray(v)) return new Set();
-    return new Set(v.filter((x): x is SpotlightTourId => typeof x === 'string' && x in TOURS));
+    return new Set(v.filter((x): x is SpotlightTourId => typeof x === 'string' && Object.prototype.hasOwnProperty.call(TOURS, x)));
   } catch {
     return new Set();
   }
