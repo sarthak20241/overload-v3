@@ -40,6 +40,7 @@ import {
   flushExerciseNotes,
   refreshExerciseNotesFromServer,
 } from '@/lib/exerciseNotes';
+import { useSpotlightTarget, useSpotlightTour } from '@/components/spotlight/SpotlightProvider';
 import { useSync } from '@/components/SyncProvider';
 import type { ActiveWorkoutExercise, ActiveSet, SetType } from '@/lib/types';
 import { groupWithPartners, dissolveGroupAt, normalizeSupersetGroups } from '@/lib/supersets';
@@ -474,6 +475,33 @@ export default function ActiveWorkoutScreen() {
 
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
+
+  // Any sheet, alert or the coach over the logger: hints wait until it closes
+  // (else the lit hole would sit on the sheet, not on the set row).
+  const overlayOpen = setTypeSheetIdx !== null || showSupersetSheet || showRpeSheet || showAddExercise
+    || showSettings || showCancelAlert || showNoSetsAlert || !!showErrorAlert || showSwitchAlert
+    || showFinishSheet || coachOpen || showSwapSheet;
+
+  // First-visit hint: light the active set row in the user's first workout.
+  useSpotlightTarget('active_set', inputCardRef);
+  // Sets already logged anywhere in this workout: "Log your first set" only
+  // makes sense before the first one.
+  const loggedInWorkout = exercises.reduce((n, e) => n + e.sets.filter((s) => s.completed).length, 0);
+  const setHintUsed = useSpotlightTour(
+    'workout_set',
+    // Started: before Start Exercise the set row is not drawn, and the tap
+    // that starts it must re-trigger the try.
+    !loading && !!currentEx && !!exerciseStarted[currentIdx] && !exerciseFinished[currentIdx] && !overlayOpen
+      && loggedInWorkout === 0,
+  );
+  // Once a set is logged in this exercise, light the set number (warm-up,
+  // drop set, failure).
+  const setTypeTarget = useSpotlightTarget('set_type');
+  const loggedHere = currentEx?.sets.filter((s) => s.completed).length ?? 0;
+  const setTypesUsed = useSpotlightTour(
+    'set_types',
+    !loading && !!currentEx && !!exerciseStarted[currentIdx] && !exerciseFinished[currentIdx] && loggedHere >= 1 && !overlayOpen,
+  );
   // Every logger input calls this, stamping the open exercise onto the edit
   // guard. Effects compare editedForExRef against their own exercise's id.
   const markEdited = () => { editedForExRef.current = currentEx?.exercise.id ?? null; };
@@ -1465,6 +1493,9 @@ export default function ActiveWorkoutScreen() {
     }
     updated[currentIdx] = ex;
     workout.updateExercises(updated);
+    // The first-set hint is used once a set is really saved (not on the first
+    // side of an L+R set, which returns above).
+    setHintUsed();
 
     // The core loop's heartbeat. Placed after the unilateral first-side early
     // return above, so one L+R round is one event, not two.
@@ -3500,11 +3531,20 @@ export default function ActiveWorkoutScreen() {
                     )}
                     <View
                       ref={interactive ? inputCardRef : undefined}
+                      // Measured for the first-set hint: never flattened away on Android.
+                      collapsable={false}
                       style={[styles.setRowActive, { backgroundColor: C.primaryMuted }]}
                     >
                       {/* Set marker — tap to set the type (warmup/drop/failure/...). The
                           chevron makes the otherwise-plain number read as a tappable picker. */}
-                      <TouchableOpacity style={styles.colSet} onPress={() => setSetTypeSheetIdx(-1)} hitSlop={6} accessibilityLabel="Set type">
+                      <TouchableOpacity
+                        ref={interactive ? (setTypeTarget as any) : undefined}
+                        style={styles.colSet}
+                        // Using the set-types hint (before the sheet opens and pauses it).
+                        onPress={() => { setTypesUsed(); setSetTypeSheetIdx(-1); }}
+                        hitSlop={6}
+                        accessibilityLabel="Set type"
+                      >
                         <SetTypeBadge type={activeSetType} num={countsAsWorkingSet(activeSetType) ? completedWorking + 1 : undefined} numColor={C.accentText} />
                         <Feather name="chevron-down" size={9} color={C.textMuted} style={{ marginTop: 1 }} />
                       </TouchableOpacity>

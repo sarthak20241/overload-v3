@@ -45,6 +45,7 @@ import {
   phaseProgress,
 } from '@/lib/phaseMetrics';
 import { loadMetricSeries, type MetricSeries } from '@/lib/phaseMetricSeries';
+import { useSpotlightTarget, useSpotlightTour } from '@/components/spotlight/SpotlightProvider';
 import { CHART_HEIGHT, MetricBarsChart, MetricLineChart } from '@/components/program/PhaseMetricChart';
 import { MetricLogSheet } from '@/components/program/MetricLogSheet';
 import { PlanRows } from '@/components/program/PlanRows';
@@ -102,6 +103,7 @@ export default function GoalPlanScreen() {
   const tourOnRef = useRef(tourOn);
   tourOnRef.current = tourOn;
   const autoBuildFired = useRef(false);
+  const [handoffDone, setHandoffDone] = useState(false);
   // ?drona=calories&kcal=N arrives from the goal sheet's "Change my whole plan
   // with Drona": open the program chat once, the request typed and unsent.
   const [programDraft, setProgramDraft] = useState<string | undefined>(undefined);
@@ -138,6 +140,18 @@ export default function GoalPlanScreen() {
   const [logging, setLogging] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  // First-visit hint on the phase card. Never on the sign-up visit (the film
+  // and the build own that one), so it shows the first time the user comes back.
+  const phaseTarget = useSpotlightTarget('phase_card');
+  const phaseHintUsed = useSpotlightTour(
+    'goal_plan',
+    // A dashboard build handoff (build=phase) holds it only until that build
+    // has run; its coach sheet is covered by !coachOpen. The sign-up visit
+    // (film tour) never gets it.
+    !loading && !!program && !tourOn && tourParam !== '1'
+      && !(buildParam === 'phase' && !handoffDone)
+      && !coachOpen && !logOpen && !aboutOpen,
+  );
   const [buildSeed, setBuildSeed] = useState<PhaseBuildSeed | null>(null);
   const [buildAuto, setBuildAuto] = useState(false);
   const [buildPhaseId, setBuildPhaseId] = useState<string | null>(null);
@@ -280,6 +294,9 @@ export default function GoalPlanScreen() {
     const phase = (Number.isFinite(want) ? program.phases.find((ph) => ph.seq === want) : null)
       ?? currentPhase ?? program.phases[0] ?? null;
     autoBuildFired.current = true;
+    // State too, not just the ref: the phase hint reads it, and a phase that
+    // already has routines opens no coach, so nothing else would re-render.
+    setHandoffDone(true);
     if (phase && phase.routines.length === 0) buildSplitFor(phase, autoParam === '1');
     else if (thenParam === 'upgrade') continueToUpgrade();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -357,6 +374,8 @@ export default function GoalPlanScreen() {
   const openPhase = () => {
     haptics.selection();
     // program_phase_opened is recorded once, by the phase screen on mount.
+    // Tapping the lit phase card is using the hint (else leaving would re-show it).
+    phaseHintUsed();
     router.push({ pathname: '/goal-plan-phase', params: shownPhase ? { seq: String(shownPhase.seq) } : {} } as any);
   };
 
@@ -544,6 +563,8 @@ export default function GoalPlanScreen() {
   // The phase the tour's last scene names: the one being built, else the first.
   const tourPhase = (program?.phases.find((ph) => ph.id === buildPhaseId) ?? currentPhase ?? program?.phases[0]) || null;
 
+  const phaseCard = renderPhaseCard();
+
   return (
     <View style={[styles.root, { backgroundColor: pal.bg, paddingTop: insets.top }]}>
       <View style={styles.header}>
@@ -599,7 +620,8 @@ export default function GoalPlanScreen() {
               </Text>
             </Stagger>
             <Stagger index={1}>{renderHero()}</Stagger>
-            <Stagger index={2}>{renderPhaseCard()}</Stagger>
+            {/* No card, no wrapper: its top margin would leave an empty gap. */}
+            <Stagger index={2}>{phaseCard ? <View ref={phaseTarget} collapsable={false} style={styles.phaseSpot}>{phaseCard}</View> : null}</Stagger>
             {shownPhase && (
               <View style={{ marginTop: 19 }}>
                 <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} headingGap={13} />
@@ -725,7 +747,9 @@ const styles = StyleSheet.create({
 
   // Wider than the text column (16pt edges on a 402pt screen, text at 38pt),
   // no outline: the surface against the page is the edge.
-  phaseCard: { marginTop: 15, marginHorizontal: -8, borderRadius: 22, paddingHorizontal: 22, paddingTop: 16, paddingBottom: 16 },
+  // The margins sit on the wrapper (phaseSpot), so the spotlight hugs the card.
+  phaseSpot: { marginTop: 15, marginHorizontal: -8 },
+  phaseCard: { borderRadius: 22, paddingHorizontal: 22, paddingTop: 16, paddingBottom: 16 },
   // Sizes measured against the reference (same strings, same scale).
   phaseLabel: { fontSize: 10, lineHeight: 13, letterSpacing: 0.6 },
   phaseMeta: { fontSize: 13.5, lineHeight: 19, fontWeight: FontWeight.regular },
