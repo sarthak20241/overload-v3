@@ -117,11 +117,11 @@ const ONBOARDING_TOURS: Record<OnboardingTourId, SpotlightTour> = {
       { target: 'phase_card', shape: 'card', title: 'Your plan, in phases', body: 'Tap the phase to see what this week asks of you.' },
     ],
   },
-  // Follow-ups: shown once the basic hint is done, so never on a first visit.
+  // Shows once a set is logged in the exercise. It does not wait for the
+  // first-set hint: a user who logs before that hint shows still learns set types.
   set_types: {
     id: 'set_types',
     kind: 'hint',
-    after: 'workout_set',
     steps: [
       { target: 'set_type', shape: 'pill', title: 'Warm-ups and drop sets', body: 'Tap the set number to mark it a warm-up, drop set or failure.' },
     ],

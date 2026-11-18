@@ -173,11 +173,10 @@ Deno.test("a save merges with what is stored, so a failed read never wipes it", 
   assertEquals(mergeSeen("broken", new Set(["intro"])), ["intro"]);
 });
 
-Deno.test("follow-up hints wait for the hint before them", () => {
-  assertEquals(TOURS.set_types.after, "workout_set");
+Deno.test("set types does not wait for the first-set hint (a user may log before it shows)", () => {
+  assertEquals(TOURS.set_types.after, undefined);
   const intro = new Set<string>(["intro"]);
-  assert(!canStart(TOURS.set_types, { seen: intro, active: null, ...fresh }), "first set hint not done yet");
-  assert(canStart(TOURS.set_types, { seen: new Set(["intro", "workout_set"]), active: null, ...fresh }));
+  assert(canStart(TOURS.set_types, { seen: intro, active: null, ...fresh }), "first-set hint never shown: still teach set types");
   assert(!canStart(TOURS.set_types, { seen: new Set(["workout_set"]), active: null, ...fresh }), "the intro still comes first");
 });
 
@@ -195,4 +194,10 @@ Deno.test("every tip shows its step count; Skip on every step but the intro's la
 Deno.test("using step 1 of a two-step guide pauses it for step 2; it is not done yet", () => {
   assert(!countsAsSeen("used_step"), "the food guide still owes its Quick/Precise step");
   assert(countsAsSeen("used"), "using the last step finishes it");
+});
+
+Deno.test("a tour with `after` waits for that tour (kept for future follow-ups)", () => {
+  const follow: SpotlightTour = { ...TOURS.goal_plan, after: "workout_set" };
+  assert(!canStart(follow, { seen: new Set(["intro"]), active: null, ...fresh }));
+  assert(canStart(follow, { seen: new Set(["intro", "workout_set"]), active: null, ...fresh }));
 });

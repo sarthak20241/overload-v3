@@ -484,14 +484,18 @@ export default function ActiveWorkoutScreen() {
 
   // First-visit hint: light the active set row in the user's first workout.
   useSpotlightTarget('active_set', inputCardRef);
+  // Sets already logged anywhere in this workout: "Log your first set" only
+  // makes sense before the first one.
+  const loggedInWorkout = exercises.reduce((n, e) => n + e.sets.filter((s) => s.completed).length, 0);
   const setHintUsed = useSpotlightTour(
     'workout_set',
     // Started: before Start Exercise the set row is not drawn, and the tap
     // that starts it must re-trigger the try.
-    !loading && !!currentEx && !!exerciseStarted[currentIdx] && !exerciseFinished[currentIdx] && !overlayOpen,
+    !loading && !!currentEx && !!exerciseStarted[currentIdx] && !exerciseFinished[currentIdx] && !overlayOpen
+      && loggedInWorkout === 0,
   );
-  // Follow-up: once a set is logged in this exercise, light the set number
-  // (warm-up, drop set, failure). Waits for the first-set hint to end.
+  // Once a set is logged in this exercise, light the set number (warm-up,
+  // drop set, failure).
   const setTypeTarget = useSpotlightTarget('set_type');
   const loggedHere = currentEx?.sets.filter((s) => s.completed).length ?? 0;
   const setTypesUsed = useSpotlightTour(
