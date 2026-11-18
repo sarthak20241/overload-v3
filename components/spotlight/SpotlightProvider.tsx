@@ -105,6 +105,8 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
   const [screen, setScreen] = useState<OverlayFrame | null>(null);
   const [remeasuring, setRemeasuring] = useState(false);
   const accountGen = useRef(0);
+  /** A paused hint's next step (see 'used_step'). */
+  const resumeAt = useRef<Partial<Record<SpotlightTourId, number>>>({});
   // onLayout reports a fresh object every time: keep the old one when nothing
   // moved, so an unchanged frame never re-measures the lit step.
   const setScreenIfChanged = useCallback((f: OverlayFrame) => {
@@ -119,6 +121,7 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     seenRef.current = null;
     // A start() still measuring for the old account must not open its tour.
     accountGen.current += 1;
+    resumeAt.current = {};
     activeRef.current = null;
     setSeen(null);
     setActive(null);
@@ -181,7 +184,7 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     const s = seenRef.current;
     if (!s) return 'blocked';
     if (!canStart(TOURS[id], { seen: s, active: activeRef.current?.id ?? null, createdAtMs, nowMs: Date.now(), demo: DEMO })) return 'blocked';
-    const first = await findStep(id, 0);
+    const first = await findStep(id, resumeAt.current[id] ?? 0);
     if (gen !== accountGen.current) return 'blocked';
     // Another tour may have started, or the screen gone, while we measured.
     if (activeRef.current) return 'blocked';
@@ -193,13 +196,19 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     const a = { id, ...first };
     activeRef.current = a;
     setActive(a);
+    delete resumeAt.current[id];
     track('spotlight_shown', { tour: id, step: TOURS[id].steps[first.index].target });
     return 'shown';
   }, [createdAtMs, findStep]);
 
-  const end = useCallback((id: SpotlightTourId, how: SpotlightEnd) => {
+  const end = useCallback((id: SpotlightTourId, how0: SpotlightEnd) => {
     const a = activeRef.current;
     if (!a || a.id !== id) return;
+    // The user did a non-last step of a hint (typed in the food box): pause,
+    // and resume at the next step on the next try (the keyboard closing).
+    const n = nextStep(a.index, TOURS[id].steps.length);
+    const how: SpotlightEnd = how0 === 'used' && n !== 'done' ? 'used_step' : how0;
+    if (how === 'used_step' && n !== 'done') resumeAt.current[id] = n;
     activeRef.current = null;
     setActive(null);
     // Seen only once it really ended, so a tour a popup cut short comes back.
@@ -324,7 +333,7 @@ export function useSpotlightTour(id: SpotlightTourId, ready: boolean) {
     if (keyboardUp) return;
     // Re-runs when `loaded` turns true, so a slow cold start still gets its try.
     // It does NOT re-run when a tour ends (seen is not a dep), on purpose: a
-    // follow-up (set_types, food_modes) waits for the next visit or `ready`
+    // follow-up (set_types) waits for the next visit or `ready`
     // flip, so the user gets one lesson at a time.
     if (!loaded) return;
     // One retry: the control may not be laid out yet (a slow list, the

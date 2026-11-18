@@ -28,7 +28,7 @@
  * and a body fits two.
  */
 
-export type OnboardingTourId = 'intro' | 'workout_set' | 'food_box' | 'goal_plan' | 'set_types' | 'food_modes';
+export type OnboardingTourId = 'intro' | 'workout_set' | 'food_box' | 'goal_plan' | 'set_types';
 /** One per "what's new" tour. None yet: the first OTA that needs one adds it. */
 export type ReleaseTourId = never;
 export type SpotlightTourId = OnboardingTourId | ReleaseTourId;
@@ -52,8 +52,7 @@ export interface SpotlightTour {
   steps: SpotlightStep[];
   /**
    * A follow-up hint: waits until this tour has ended, so the user learns one
-   * thing at a time (set types after the first set, Quick/Precise after the
-   * food box).
+   * thing at a time (set types after the first set).
    */
   after?: SpotlightTourId;
   /**
@@ -104,8 +103,11 @@ const ONBOARDING_TOURS: Record<OnboardingTourId, SpotlightTour> = {
   food_box: {
     id: 'food_box',
     kind: 'hint',
+    // Two steps on the first visit (owner, 2026-11-18): the box, then the two
+    // log modes, so every new user learns both exist.
     steps: [
       { target: 'food_box', shape: 'pill', title: 'Type what you ate', body: 'Like “2 eggs and toast”. I do the rest.' },
+      { target: 'log_mode', shape: 'circle', title: 'Quick or Precise', body: 'Quick is a fast estimate. Precise reads labels on packaged food.' },
     ],
   },
   goal_plan: {
@@ -122,14 +124,6 @@ const ONBOARDING_TOURS: Record<OnboardingTourId, SpotlightTour> = {
     after: 'workout_set',
     steps: [
       { target: 'set_type', shape: 'pill', title: 'Warm-ups and drop sets', body: 'Tap the set number to mark it a warm-up, drop set or failure.' },
-    ],
-  },
-  food_modes: {
-    id: 'food_modes',
-    kind: 'hint',
-    after: 'food_box',
-    steps: [
-      { target: 'log_mode', shape: 'circle', title: 'Quick or Precise', body: 'Quick is a fast estimate. Precise reads labels on packaged food.' },
     ],
   },
 };
@@ -241,7 +235,8 @@ export function tipSide(hole: Rect, screenH: number): 'above' | 'below' {
 }
 
 /** How a tour ended. 'interrupted': something else took the screen (a popup). */
-export type SpotlightEnd = 'finished' | 'skipped' | 'used' | 'outside' | 'left' | 'interrupted';
+/** 'used_step': the user did a non-last step of a hint (the guide resumes at the next one). */
+export type SpotlightEnd = 'finished' | 'skipped' | 'used' | 'used_step' | 'outside' | 'left' | 'interrupted';
 
 /**
  * Whether an end uses the tour up. Only the user's own answer does: Next to
@@ -250,7 +245,7 @@ export type SpotlightEnd = 'finished' | 'skipped' | 'used' | 'outside' | 'left' 
  * A tour cut short by a popup, or left behind, shows again next visit.
  */
 export function countsAsSeen(how: SpotlightEnd): boolean {
-  return how !== 'interrupted' && how !== 'left';
+  return how !== 'interrupted' && how !== 'left' && how !== 'used_step';
 }
 
 /**

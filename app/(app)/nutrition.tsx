@@ -733,8 +733,7 @@ export default function NutritionScreen() {
   const [parseSpeed, setParseSpeedState] = useState<ParseSpeed>('quick');
   const parseSpeedRef = useRef<ParseSpeed>('quick');
   const [speedSheetOpen, setSpeedSheetOpen] = useState(false);
-  // Follow-up hint on the Quick / Precise chip: waits for the food box hint,
-  // so it shows on a later visit or right after the first log settles.
+  // Step 2 of the food guide lights the Quick / Precise chip.
   const logModeTarget = useSpotlightTarget('log_mode');
   // The dashboard's getting-started "Pick how I log food" lands here with
   // modes=<stamp>: open the mode sheet once per stamp, then clear it (this tab
@@ -889,8 +888,8 @@ export default function NutritionScreen() {
     || waitOpen || speedSheetOpen || savedListOpen || copyMeal !== null;
   // Not when a card sent the user here to type (focus=ai): the keyboard is coming up.
   const hintReady = !!isSignedIn && focus !== 'ai' && flow.status === 'idle' && !sheetUp;
-  useSpotlightTour('food_box', hintReady);
-  const logModesUsed = useSpotlightTour('food_modes', hintReady);
+  // The food guide: 1/2 the box, 2/2 the Quick / Precise chip.
+  const foodGuideUsed = useSpotlightTour('food_box', hintReady);
   const [relogBusy, setRelogBusy] = useState<string | null>(null);
   // The copy sheet's guard. State lags a render, so two quick taps could both
   // read "not busy" and copy twice; a ref is set before the first await.
@@ -2785,8 +2784,8 @@ export default function NutritionScreen() {
             <Pressable
               ref={logModeTarget}
               onPress={() => {
-                // Using the Quick/Precise hint (before the sheet opens and pauses it).
-                logModesUsed();
+                // Using the food guide's Quick/Precise step (before the sheet opens and pauses it).
+                foodGuideUsed();
                 // The portal shares the app window, so the keyboard would cover
                 // its bottom rows. Blur the composer without clearing its draft.
                 Keyboard.dismiss();

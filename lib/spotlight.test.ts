@@ -75,13 +75,17 @@ Deno.test("account age in days", () => {
   assertEquals(accountAgeDays(5_000, 1_000), 0, "a clock behind the server reads as brand new");
 });
 
-Deno.test("the intro is three dashboard stops; every hint is one", () => {
+Deno.test("the intro is three dashboard stops; the food guide is two; other hints one", () => {
   assertEquals(TOURS.intro.kind, "intro");
   assertEquals(TOURS.intro.steps.map((s) => s.target), ["today_card", "log_food", "goal_button"]);
-  for (const id of ["workout_set", "food_box", "goal_plan"] as const) {
+  // Owner, 2026-11-18: the food page shows both log modes on the first visit.
+  assertEquals(TOURS.food_box.kind, "hint");
+  assertEquals(TOURS.food_box.steps.map((s) => s.target), ["food_box", "log_mode"]);
+  for (const id of ["workout_set", "goal_plan", "set_types"] as const) {
     assertEquals(TOURS[id].kind, "hint");
     assertEquals(TOURS[id].steps.length, 1);
   }
+  assert(!("food_modes" in TOURS), "Quick/Precise is no longer a separate later hint");
 });
 
 Deno.test("copy: short, curly apostrophes, no em dashes", () => {
@@ -174,19 +178,24 @@ Deno.test("a save merges with what is stored, so a failed read never wipes it", 
 
 Deno.test("follow-up hints wait for the hint before them", () => {
   assertEquals(TOURS.set_types.after, "workout_set");
-  assertEquals(TOURS.food_modes.after, "food_box");
   const intro = new Set<string>(["intro"]);
   assert(!canStart(TOURS.set_types, { seen: intro, active: null, ...fresh }), "first set hint not done yet");
   assert(canStart(TOURS.set_types, { seen: new Set(["intro", "workout_set"]), active: null, ...fresh }));
-  assert(!canStart(TOURS.food_modes, { seen: intro, active: null, ...fresh }), "food box hint not done yet");
-  assert(canStart(TOURS.food_modes, { seen: new Set(["intro", "food_box"]), active: null, ...fresh }));
-  assert(!canStart(TOURS.food_modes, { seen: new Set(["food_box"]), active: null, ...fresh }), "the intro still comes first");
+  assert(!canStart(TOURS.set_types, { seen: new Set(["workout_set"]), active: null, ...fresh }), "the intro still comes first");
 });
 
 Deno.test("every tip shows its step count; Skip on every step but the intro's last", () => {
   assertEquals(tipControls(TOURS.intro, 0), { progress: "1/3", showSkip: true, cta: "Next" });
   assertEquals(tipControls(TOURS.intro, 1), { progress: "2/3", showSkip: true, cta: "Next" });
   assertEquals(tipControls(TOURS.intro, 2), { progress: "3/3", showSkip: false, cta: "Got it" });
-  // A page guide: one step, but the user can still skip it.
-  assertEquals(tipControls(TOURS.food_box, 0), { progress: "1/1", showSkip: true, cta: "Got it" });
+  // A one-step page guide: the user can still skip it.
+  assertEquals(tipControls(TOURS.goal_plan, 0), { progress: "1/1", showSkip: true, cta: "Got it" });
+  // The food guide: 1/2 then 2/2.
+  assertEquals(tipControls(TOURS.food_box, 0), { progress: "1/2", showSkip: true, cta: "Next" });
+  assertEquals(tipControls(TOURS.food_box, 1), { progress: "2/2", showSkip: false, cta: "Got it" });
+});
+
+Deno.test("using step 1 of a two-step guide pauses it for step 2; it is not done yet", () => {
+  assert(!countsAsSeen("used_step"), "the food guide still owes its Quick/Precise step");
+  assert(countsAsSeen("used"), "using the last step finishes it");
 });
