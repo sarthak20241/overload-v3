@@ -93,6 +93,10 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
   const { user } = useClerkUser();
   const userId = user?.id ?? null;
   const createdAtMs = user?.createdAt ? new Date(user.createdAt).getTime() : null;
+  // Read by start() through a ref, so Clerk settling does not rebuild start
+  // (and the context value every screen reads).
+  const createdAtRef = useRef(createdAtMs);
+  createdAtRef.current = createdAtMs;
 
   const targets = useRef(new Map<SpotlightTargetId, React.RefObject<View | null>>());
   const [seen, setSeen] = useState<Set<SpotlightTourId> | null>(null);
@@ -183,7 +187,7 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     const gen = accountGen.current;
     const s = seenRef.current;
     if (!s) return 'blocked';
-    if (!canStart(TOURS[id], { seen: s, active: activeRef.current?.id ?? null, createdAtMs, nowMs: Date.now(), demo: DEMO })) return 'blocked';
+    if (!canStart(TOURS[id], { seen: s, active: activeRef.current?.id ?? null, createdAtMs: createdAtRef.current, nowMs: Date.now(), demo: DEMO })) return 'blocked';
     const first = await findStep(id, resumeAt.current[id] ?? 0);
     if (gen !== accountGen.current) return 'blocked';
     // Another tour may have started, or the screen gone, while we measured.
@@ -199,7 +203,7 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     delete resumeAt.current[id];
     track('spotlight_shown', { tour: id, step: TOURS[id].steps[first.index].target });
     return 'shown';
-  }, [createdAtMs, findStep]);
+  }, [findStep]);
 
   const end = useCallback((id: SpotlightTourId, how0: SpotlightEnd) => {
     const a = activeRef.current;
@@ -211,6 +215,7 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
     if (how === 'used_step' && n !== 'done') resumeAt.current[id] = n;
     activeRef.current = null;
     setActive(null);
+    setRemeasuring(false);
     // Seen only once it really ended, so a tour a popup cut short comes back.
     if (countsAsSeen(how)) markSeen(id);
     track('spotlight_done', { tour: id, how, step: a.index + 1, of: TOURS[id].steps.length });
@@ -250,7 +255,8 @@ export function SpotlightProvider({ children }: { children: React.ReactNode }) {
       activeRef.current = b;
       setActive(b);
     });
-    return () => { live = false; };
+    // Never left on: a cancelled measure clears it too.
+    return () => { live = false; setRemeasuring(false); };
     // Only a frame change re-measures; the step itself drives start/next.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen]);
