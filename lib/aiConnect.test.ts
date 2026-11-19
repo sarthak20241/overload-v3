@@ -1,6 +1,16 @@
 // deno test --allow-all lib/aiConnect.test.ts
 import { assert, assertEquals } from 'jsr:@std/assert@1';
-import { AI_APPS, CONNECT_STEPS, MCP_HOST, MCP_URL, SHORT_STEPS, TRY_ASKING, stepMarks } from './aiConnect.ts';
+import {
+  AI_APPS,
+  CONNECT_STEPS,
+  connectFirstAfterPurchase,
+  MCP_HOST,
+  MCP_URL,
+  SHORT_STEPS,
+  showConnectNudge,
+  stepMarks,
+  TRY_ASKING,
+} from './aiConnect.ts';
 
 Deno.test('the connector link uses the public Overload MCP URL', () => {
   assertEquals(MCP_URL, 'https://mcp.tryoverload.app');
@@ -45,4 +55,21 @@ Deno.test('the step 1 card shows the same link that is copied', () => {
   assertEquals(`https://${MCP_HOST}`, MCP_URL);
   assertEquals(SHORT_STEPS.chatgpt[0].detail, MCP_HOST);
   assertEquals(SHORT_STEPS.claude[0].detail, MCP_HOST);
+});
+
+Deno.test('the success screen leads with connecting for Connect, and for anyone who came for it', () => {
+  assertEquals(connectFirstAfterPurchase({ boughtConnect: true, context: null }), true);
+  // Pro includes the connector: a Pro buyer who came in for it sets it up too.
+  assertEquals(connectFirstAfterPurchase({ boughtConnect: false, context: 'connect' }), true);
+  // A Pro buyer from the coach path keeps today's next step.
+  assertEquals(connectFirstAfterPurchase({ boughtConnect: false, context: null }), false);
+  assertEquals(connectFirstAfterPurchase({ boughtConnect: false, context: 'cap_chat' }), false);
+});
+
+Deno.test('the dashboard card shows only after Do it later, while the plan lasts', () => {
+  assertEquals(showConnectNudge('later', true), true);
+  assertEquals(showConnectNudge('later', false), false);
+  assertEquals(showConnectNudge('done', true), false);
+  assertEquals(showConnectNudge('dismissed', true), false);
+  assertEquals(showConnectNudge(null, true), false);
 });
