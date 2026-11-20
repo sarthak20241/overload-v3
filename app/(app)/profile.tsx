@@ -996,6 +996,24 @@ export default function ProfileScreen() {
                   </>
                 )}
               </TouchableOpacity>
+              {/* The ChatGPT / Claude connector (supabase/functions/mcp), right
+                  under the plan: log and ask from the assistant they already
+                  use. Setup lives on its own screen (app/connect-ai.tsx). */}
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => router.push('/connect-ai' as any)}
+                accessibilityRole="button"
+                accessibilityLabel="Connect to ChatGPT or Claude"
+                style={[styles.infoCard, styles.connectRow, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+              >
+                <View style={[styles.infoRow, { borderBottomWidth: 0 }]}>
+                  <View style={[styles.rowIcon, { backgroundColor: C.glowBg }]}>
+                    <Feather name="message-circle" size={11} color={C.mutedFg} />
+                  </View>
+                  <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>Connect to ChatGPT / Claude</Text>
+                  <Feather name="chevron-right" size={14} color={C.textDim} />
+                </View>
+              </TouchableOpacity>
               {/* Refer a friend (app/refer.tsx): open to everyone, payers too;
                   that screen does not promise a payer free months. */}
               <TouchableOpacity
@@ -1355,30 +1373,6 @@ export default function ProfileScreen() {
                   <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>
                     {dronaWaiting ? `${dronaWaiting} waiting for you` : 'Nothing waiting'}
                   </Text>
-                  <Feather name="chevron-right" size={14} color={C.textDim} />
-                </View>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {/* ─── ChatGPT and Claude ───
-              The connector (supabase/functions/mcp): log and ask from the
-              assistant they already use. Setup lives on its own screen. */}
-          {!isGuest && (
-            <View style={styles.section}>
-              <SectionLabel icon="message-circle">CONNECTIONS</SectionLabel>
-              <TouchableOpacity
-                activeOpacity={0.85}
-                onPress={() => router.push('/connect-ai' as any)}
-                accessibilityRole="button"
-                accessibilityLabel="Use Overload in ChatGPT or Claude"
-                style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
-              >
-                <View style={[styles.infoRow, { borderBottomWidth: 0 }]}>
-                  <View style={[styles.rowIcon, { backgroundColor: C.glowBg }]}>
-                    <Feather name="message-circle" size={11} color={C.mutedFg} />
-                  </View>
-                  <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>ChatGPT and Claude</Text>
                   <Feather name="chevron-right" size={14} color={C.textDim} />
                 </View>
               </TouchableOpacity>
@@ -1919,6 +1913,7 @@ const styles = StyleSheet.create({
 
   // Info card / rows
   infoCard: { borderRadius: Radius.lg, borderWidth: 1, overflow: 'hidden' },
+  connectRow: { marginTop: Spacing.sm },
   infoRow: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     paddingHorizontal: 12, paddingVertical: 10,
