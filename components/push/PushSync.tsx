@@ -31,7 +31,7 @@ export function PushSync({ userId }: { userId: string }) {
       track('push_opened', { type: String(data.type ?? '') });
       router.push(route);
     };
-    void takeLaunchTapData().then((data) => { if (data) open(data); });
+    void takeLaunchTapData((d) => pushRoute(d) !== null).then((data) => { if (data) open(data); });
     return addNotificationTapListener(open);
   }, [router]);
 

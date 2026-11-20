@@ -34,6 +34,7 @@ function fakeDb(people: Candidate[], pending: { id: number; tickets: Ticket[] }[
     record: async (u, k, tickets, status) => {
       Object.assign(sends.get(`${u}|${k}`)!, { tickets, status });
     },
+    release: async (u, k) => { sends.delete(`${u}|${k}`); },
     deleteTokens: async (t) => { deleted.push(...t); },
     unreadReceipts: async () => pending,
     markReceiptsRead: async (ids) => { marked.push(...ids); },
@@ -132,7 +133,7 @@ Deno.test("dry run decides but claims and sends nothing", async () => {
   assert(r.skipped.dry_run === 1);
 });
 
-Deno.test("Expo throws for one person: that one is marked failed, the rest still get theirs, dead tokens still go", async () => {
+Deno.test("Expo throws for one person: that one is let go, the rest still get theirs, dead tokens still go", async () => {
   const pending = [{ id: 9, tickets: [{ token: "ExponentPushToken[old]", ticket: "r-1", error: null }] }];
   const { db, sends, deleted } = fakeDb([
     person({ user_id: "boom", tokens: ["ExponentPushToken[boom]"] }),
@@ -149,7 +150,7 @@ Deno.test("Expo throws for one person: that one is marked failed, the rest still
   };
   const r = await runPush(db, api, NOW);
   assertEquals(sent, ["ExponentPushToken[ok]"]);
-  assertEquals(sends.get("boom|2026-11-18")!.status, "failed");
+  assert(!sends.has("boom|2026-11-18")); // let go: next hour retries
   assertEquals(sends.get("ok|2026-11-18")!.status, "sent");
   assertEquals(deleted, ["ExponentPushToken[old]"]);
   assertEquals(r.sent, 1);
@@ -173,4 +174,15 @@ Deno.test("time budget: no new send starts once the run is out of time; the rest
   assertEquals(sent.length, 1);
   assertEquals(sends.size, 1);
   assertEquals(r.skipped.out_of_time, 2);
+});
+
+Deno.test("Expo never took the push (request failed or threw): the claim is let go, so next hour retries", async () => {
+  const f = fakeDb([person()]);
+  const down: PushApi = { send: async () => { throw new Error("503"); }, receipts: async () => ({}) };
+  await runPush(f.db, down, NOW);
+  assertEquals(f.sends.size, 0);
+  const { api, sent } = fakeApi();
+  const r = await runPush(f.db, api, new Date(NOW.getTime() + 3600_000));
+  assertEquals(sent.length, 1);
+  assertEquals(r.sent, 1);
 });

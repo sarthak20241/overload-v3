@@ -218,19 +218,24 @@ export async function getExpoPushToken(projectId: string | undefined): Promise<s
 }
 
 /**
- * The data of the notification whose tap opened the app from cold, once.
+ * The data of the notification whose tap opened the app from cold, once,
+ * when `isOurs` says it is a server push (a kept-sheet notice is left alone).
  * Unlike the kept-sheet notices above, a server push names a screen, which
  * survives the restart, so its cold-start tap is routed too (by PushSync,
  * which mounts only once the signed-in app is up).
  */
-export async function takeLaunchTapData(): Promise<Record<string, unknown> | null> {
+export async function takeLaunchTapData(
+  isOurs: (data: Record<string, unknown>) => boolean,
+): Promise<Record<string, unknown> | null> {
   const N = loadNotifications();
   if (!N?.getLastNotificationResponseAsync) return null;
   try {
     const response = await N.getLastNotificationResponseAsync();
-    const data = response?.notification?.request?.content?.data;
+    const raw = response?.notification?.request?.content?.data;
+    const data = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+    if (!data || !isOurs(data)) return null; // someone else's tap: leave it be
     await N.clearLastNotificationResponseAsync?.().catch(() => {});
-    return data && typeof data === 'object' ? (data as Record<string, unknown>) : null;
+    return data;
   } catch {
     return null;
   }

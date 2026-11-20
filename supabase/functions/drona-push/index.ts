@@ -30,9 +30,10 @@ function realDb(db: SupabaseClient): PushDb {
       return (data ?? []) as Candidate[];
     },
     async claim(userId, lapseKey, title, body) {
-      const { error } = await retried(() =>
-        db.from("push_sends").insert({ user_id: userId, kind: "food_lapse", lapse_key: lapseKey, title, body })
-      );
+      // Not retried: an insert is not idempotent. A retry after a lost reply
+      // would hit our own row (23505) and read as "already sent".
+      const { error } = await db.from("push_sends")
+        .insert({ user_id: userId, kind: "food_lapse", lapse_key: lapseKey, title, body });
       if (!error) return true;
       if ((error as { code?: string }).code === "23505") return false;
       throw new Error(`claim: ${error.message}`);
@@ -43,6 +44,13 @@ function realDb(db: SupabaseClient): PushDb {
           .eq("user_id", userId).eq("kind", "food_lapse").eq("lapse_key", lapseKey)
       );
       if (error) console.error(`drona-push record ${userId}: ${error.message}`);
+    },
+    async release(userId, lapseKey) {
+      const { error } = await retried(() =>
+        db.from("push_sends").delete()
+          .eq("user_id", userId).eq("kind", "food_lapse").eq("lapse_key", lapseKey).eq("status", "claimed")
+      );
+      if (error) console.error(`drona-push release ${userId}: ${error.message}`);
     },
     async deleteTokens(tokens) {
       const { error } = await retried(() => db.from("push_tokens").delete().in("token", tokens));

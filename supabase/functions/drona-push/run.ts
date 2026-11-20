@@ -6,8 +6,9 @@
 //      tokens Expo says are gone,
 //   2. read candidates, decide with _shared/lapsePush.ts,
 //   3. CLAIM the lapse (insert push_sends, unique per lapse) BEFORE sending, so
-//      two overlapping runs can never both send. A claim whose send fails stays
-//      claimed (status failed): one missed push is better than a double one. A failed
+//      two overlapping runs can never both send. When Expo took nothing (a
+//      blip), the claim is let go and the next run retries. When every phone
+//      is dead, it stays (status failed): nothing to retry to. A failed
 //      send does not start the 7-day cooldown (get_food_lapse_candidates).
 //   4. send, record tickets, delete tokens reported dead on the spot.
 
@@ -31,6 +32,8 @@ export interface PushDb {
   /** Insert the push_sends row. false when this lapse already has one. */
   claim(userId: string, lapseKey: string, title: string, body: string): Promise<boolean>;
   record(userId: string, lapseKey: string, tickets: Ticket[], status: "sent" | "failed"): Promise<void>;
+  /** Delete the claim: Expo never took the push, so the next run may try again. */
+  release(userId: string, lapseKey: string): Promise<void>;
   deleteTokens(tokens: string[]): Promise<void>;
   /** Sends with tickets whose receipts are unread, sent between the two moments. */
   unreadReceipts(from: string, to: string): Promise<{ id: number; tickets: Ticket[] }[]>;
@@ -75,6 +78,7 @@ export async function runPush(db: PushDb, api: PushApi, now: Date, opts: RunOpts
     const receipts = await api.receipts([...byTicket.keys()]);
     for (const [id, r] of Object.entries(receipts)) {
       if (r.error === "DeviceNotRegistered" && byTicket.has(id)) dead.add(byTicket.get(id)!);
+      else if (r.status === "error") console.error(`drona-push receipt ${id}: ${r.error ?? "error"}`);
     }
     // Only rows whose every ticket came back are done; the rest wait a run.
     const done = pending.filter((p) => p.tickets.every((t) => !t.ticket || t.ticket in receipts)).map((p) => p.id);
@@ -148,6 +152,14 @@ async function sendAll(
       results = tokens.map((token) => ({ token, error: `send_threw: ${(e as Error).message}`.slice(0, 200) }));
     }
     for (const t of deadTokens(results)) dead.add(t);
+    // Expo took none of it (request failed, threw, rate limited) and no phone
+    // is dead: nothing reached anyone, so let the claim go and retry next hour.
+    const transient = results.every((r) => !r.ticketId && r.error !== "DeviceNotRegistered" && r.error !== "bad_token");
+    if (transient) {
+      await db.release(c.user_id, d.lapseKey);
+      report.skipped.send_failed = (report.skipped.send_failed ?? 0) + 1;
+      continue;
+    }
     const tickets: Ticket[] = results.map((r) => ({ token: r.token, ticket: r.ticketId ?? null, error: r.error ?? null }));
     const ok = tickets.some((t) => t.ticket);
     await db.record(c.user_id, d.lapseKey, tickets, ok ? "sent" : "failed");
