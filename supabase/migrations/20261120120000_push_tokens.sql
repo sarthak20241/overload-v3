@@ -3,7 +3,10 @@
 --   push_tokens  one row per phone (the Expo push token). The app saves it
 --                through save_push_token and removes it through
 --                clear_push_token on sign-out. A phone that changes account
---                moves to the new account (the token is the key).
+--                moves to the new account (the token is the key). So anyone
+--                signed in who has another phone's token could move it; Expo
+--                tokens are long and random and never leave the phone, so the
+--                phone-switch case wins.
 --   push_sends   one row per push decision, unique per (user, kind, lapse_key),
 --                so a lapse gets one push however often the cron runs. The
 --                Expo ticket ids ride along so the next run can read the

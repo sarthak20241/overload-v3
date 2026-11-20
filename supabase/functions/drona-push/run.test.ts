@@ -212,3 +212,17 @@ Deno.test("the time budget counts the receipts step too", async () => {
   await runPush(db, slowReceipts, NOW, { clock, budgetMs: 40_000 });
   assertEquals(sent.length, 0);
 });
+
+Deno.test("one phone dead, the other failed for a moment: the dead one goes, the claim is let go for a retry", async () => {
+  const f = fakeDb([person({ tokens: ["ExponentPushToken[dead]", "ExponentPushToken[live]"] })]);
+  const api: PushApi = {
+    send: async (msgs) => msgs.map((m) =>
+      m.to === "ExponentPushToken[dead]" ? { token: m.to, error: "DeviceNotRegistered" } : { token: m.to, error: "request_failed" }
+    ),
+    receipts: async () => ({}),
+  };
+  const r = await runPush(f.db, api, NOW);
+  assert(!f.sends.has("u1|2026-11-18"));
+  assertEquals(f.deleted, ["ExponentPushToken[dead]"]);
+  assertEquals(r.skipped.send_failed, 1);
+});

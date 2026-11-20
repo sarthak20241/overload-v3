@@ -75,7 +75,11 @@ export async function clearPushToken(): Promise<void> {
     const saved = await readJson<{ token: string }>(TOKEN_KEY);
     await AsyncStorage.multiRemove([TOKEN_KEY, DAYS_KEY, ASKED_KEY]);
     if (saved?.token && isSupabaseConfigured) {
-      await supabase.rpc('clear_push_token', { p_token: saved.token });
+      // Sign-out never waits on the network for this: 2 s, then it goes on.
+      await Promise.race([
+        supabase.rpc('clear_push_token', { p_token: saved.token }),
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]);
     }
   } catch {
     /* best-effort: the server drops it anyway once Expo reports it dead */

@@ -163,7 +163,10 @@ async function sendAll(
     for (const t of deadTokens(results)) dead.add(t);
     // Expo took none of it (request failed, threw, rate limited) and no phone
     // is dead: nothing reached anyone, so let the claim go and retry next hour.
-    const transient = results.every((r) => !r.ticketId && r.error !== "DeviceNotRegistered" && r.error !== "bad_token");
+    // No phone got it, and at least one failed for a reason that can pass
+    // (not dead, not malformed): retry next hour. Dead phones are already in `dead`.
+    const transient = results.every((r) => !r.ticketId) &&
+      results.some((r) => r.error !== "DeviceNotRegistered" && r.error !== "bad_token");
     if (transient) {
       await db.release(c.user_id, d.lapseKey);
       report.skipped.send_failed = (report.skipped.send_failed ?? 0) + 1;
