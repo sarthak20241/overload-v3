@@ -115,7 +115,12 @@ grant execute on function public.clear_push_token(text) to authenticated, servic
 -- day and hour and the local days they logged. The rules (steady, lapsed,
 -- quiet hours, cooldown) live in _shared/lapsePush.ts so they are unit-tested.
 -- A meal counts only with at least one line in it.
-create or replace function public.get_food_lapse_candidates(p_now timestamptz default now())
+--
+-- p_from_hour / p_until_hour: only people whose local hour is inside the send
+-- window are read (the TS rules check it again), so the hourly run reads a
+-- slice of users, not everyone.
+create or replace function public.get_food_lapse_candidates(
+  p_now timestamptz default now(), p_from_hour int default 0, p_until_hour int default 24)
 returns jsonb
 language sql
 stable
@@ -134,7 +139,7 @@ as $$
   select coalesce(jsonb_agg(jsonb_build_object(
            'user_id', p.uid, 'tz', p.tz, 'today', p.today, 'hour', p.hour,
            'days', d.days,
-           'last_push_at', (select max(s.sent_at) from push_sends s where s.user_id = p.uid and s.kind = 'food_lapse'),
+           'last_push_at', (select max(s.sent_at) from push_sends s where s.user_id = p.uid and s.kind = 'food_lapse' and s.status <> 'failed'),
            'tokens', (select jsonb_agg(t.token order by t.updated_at desc) from push_tokens t where t.user_id = p.uid)
          ) order by p.uid), '[]'::jsonb)
     from people p
@@ -145,10 +150,11 @@ as $$
          and m.logged_at >= p_now - interval '31 days'
          and exists (select 1 from meal_entries e where e.meal_id = m.id)
     ) d
-   where d.days is not null;
+   where d.days is not null
+     and p.hour >= p_from_hour and p.hour < p_until_hour;
 $$;
 
-revoke all on function public.get_food_lapse_candidates(timestamptz) from public, anon, authenticated;
-grant execute on function public.get_food_lapse_candidates(timestamptz) to service_role;
+revoke all on function public.get_food_lapse_candidates(timestamptz, int, int) from public, anon, authenticated;
+grant execute on function public.get_food_lapse_candidates(timestamptz, int, int) to service_role;
 
 notify pgrst, 'reload schema';

@@ -124,6 +124,13 @@ Deno.test("candidates: local days of meals with lines, people with a phone and a
   assertEquals([...v[0].days].sort(), ["2026-11-16", "2026-11-18"]); // the empty meal on Nov 15 does not count
   assertEquals(v[0].tokens, [T("k")]);
   assertEquals(v[0].last_push_at, null);
+  // Outside the send window: not read at all.
+  assertEquals((await q(`select get_food_lapse_candidates('2026-11-21T05:30:00Z', 12, 20) v`))[0].v, []);
+  // A failed send does not hold the cooldown; a sent one does.
+  await q(`insert into push_sends (user_id, kind, lapse_key, title, body, status) values ('u2', 'food_lapse', 'a', 't', 'b', 'failed')`);
+  assertEquals((await q(`select get_food_lapse_candidates('2026-11-21T05:30:00Z') v`))[0].v[0].last_push_at, null);
+  await q(`insert into push_sends (user_id, kind, lapse_key, title, body, status) values ('u2', 'food_lapse', 'b', 't', 'b', 'sent')`);
+  assert((await q(`select get_food_lapse_candidates('2026-11-21T05:30:00Z') v`))[0].v[0].last_push_at !== null);
 });
 
 Deno.test("sends: one row per lapse; account delete takes tokens and sends", async () => {
@@ -142,7 +149,7 @@ Deno.test("grants: the app may call save and clear, never read the tables or the
   const can = async (sql: string) => (await q(sql))[0].v;
   assertEquals(await can(`select has_function_privilege('authenticated', 'save_push_token(text,text,text)', 'execute') v`), true);
   assertEquals(await can(`select has_function_privilege('authenticated', 'clear_push_token(text)', 'execute') v`), true);
-  assertEquals(await can(`select has_function_privilege('authenticated', 'get_food_lapse_candidates(timestamptz)', 'execute') v`), false);
+  assertEquals(await can(`select has_function_privilege('authenticated', 'get_food_lapse_candidates(timestamptz,int,int)', 'execute') v`), false);
   assertEquals(await can(`select has_function_privilege('anon', 'save_push_token(text,text,text)', 'execute') v`), false);
   assertEquals(await can(`select has_table_privilege('authenticated', 'push_tokens', 'select') v`), false);
   assertEquals(await can(`select has_table_privilege('authenticated', 'push_sends', 'select') v`), false);

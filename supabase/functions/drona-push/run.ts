@@ -2,12 +2,13 @@
 // drive it with an in-memory fake. index.ts wires the real tables.
 //
 // Order of a run:
-//   1. read receipts of earlier sends (15 min to 1 day old) and delete the
+//   1. read receipts of earlier sends (15 min to 3 days old) and delete the
 //      tokens Expo says are gone,
 //   2. read candidates, decide with _shared/lapsePush.ts,
 //   3. CLAIM the lapse (insert push_sends, unique per lapse) BEFORE sending, so
 //      two overlapping runs can never both send. A claim whose send fails stays
-//      claimed: one missed push is better than a double one.
+//      claimed (status failed): one missed push is better than a double one. A failed
+//      send does not start the 7-day cooldown (get_food_lapse_candidates).
 //   4. send, record tickets, delete tokens reported dead on the spot.
 
 import { decideFoodLapse, lapseWords, pushTarget } from "../_shared/lapsePush.ts";
@@ -57,7 +58,7 @@ export async function runPush(db: PushDb, api: PushApi, now: Date, opts: { dryRu
 
   // 1. Receipts.
   const pending = await db.unreadReceipts(
-    new Date(now.getTime() - 24 * 60 * MIN).toISOString(),
+    new Date(now.getTime() - 3 * 24 * 60 * MIN).toISOString(), // Expo keeps receipts a day; 3 days covers a skipped run
     new Date(now.getTime() - 15 * MIN).toISOString(),
   );
   const byTicket = new Map<string, string>();
