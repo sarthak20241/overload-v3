@@ -12,7 +12,7 @@
 //          "user_ids":["user_..."] | "all":true, "screen":"home"|"nutrition",
 //          "respect_quiet_hours":true, "dry_run":false}
 //         One copy per person per campaign: run it again later (same campaign)
-//         to reach the people quiet hours skipped. For checking who WOULD get a push before turning it on.
+//         to reach the people quiet hours skipped.
 //
 // Sends through Expo (_shared/expoPush.ts). EXPO_ACCESS_TOKEN is optional: set
 // it only if the Expo project turns on "enhanced push security".
@@ -94,6 +94,13 @@ function realDb(db: SupabaseClient): PushDb {
 function manualDb(db: SupabaseClient, base: PushDb): ManualDb {
   return {
     claim: base.claim, record: base.record, release: base.release, deleteTokens: base.deleteTokens,
+    async alreadySent(campaign) {
+      const { data, error } = await retried(() =>
+        db.from("push_sends").select("user_id").eq("kind", "manual").eq("lapse_key", campaign).limit(100000)
+      );
+      if (error) throw new Error(`alreadySent: ${error.message}`);
+      return (data ?? []).map((r: { user_id: string }) => r.user_id);
+    },
     async targets(userIds) {
       const { data, error } = await retried(() =>
         db.rpc("get_push_targets", { p_user_ids: userIds, p_now: new Date().toISOString() })

@@ -155,8 +155,8 @@ Deno.test("grants: the app may call save and clear, never read the tables or the
   assertEquals(await can(`select has_table_privilege('authenticated', 'push_sends', 'select') v`), false);
 });
 
-// ── 20261121120000_push_manual_send ─────────────────────────────────────────
-const MANUAL = await Deno.readTextFile(new URL("../20261121120000_push_manual_send.sql", import.meta.url));
+// ── 20261121130000_push_manual_send ─────────────────────────────────────────
+const MANUAL = await Deno.readTextFile(new URL("../20261121130000_push_manual_send.sql", import.meta.url));
 
 Deno.test("manual: kind 'manual' allowed, one row per person per campaign; targets read the chosen people with hour + tokens", async () => {
   const { q, as, save, pg } = await db();

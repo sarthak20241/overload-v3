@@ -44,7 +44,7 @@ function fakes(targets: Target[]) {
   const claimed = new Map<string, string>();
   const sent: PushMessage[] = [];
   const db: ManualDb = {
-    targets: async () => targets,
+    targets: async (ids) => (ids ? targets.filter((t) => ids.includes(t.user_id)) : targets),
     claim: async (u, k) => {
       if (claimed.has(`${u}|${k}`)) return false;
       claimed.set(`${u}|${k}`, "claimed");
@@ -53,6 +53,7 @@ function fakes(targets: Target[]) {
     record: async (u, k, _t, status) => { claimed.set(`${u}|${k}`, status); },
     release: async (u, k) => { claimed.delete(`${u}|${k}`); },
     deleteTokens: async () => {},
+    alreadySent: async (k) => [...claimed.keys()].filter((x) => x.endsWith(`|${k}`)).map((x) => x.split("|")[0]),
   };
   const api: PushApi = {
     send: async (msgs) => { sent.push(...msgs); return msgs.map((m) => ({ token: m.to, ticketId: "t" })); },
@@ -91,4 +92,34 @@ Deno.test("send: dry run sends and claims nothing, and says who would get it", a
   assertEquals(f.claimed.size, 0);
   assertEquals(r.wouldSend, 1);
   assertEquals(r.skipped.no_token, 1);
+});
+
+Deno.test("dry run names who would get it, and leaves out people this campaign already reached", async () => {
+  const f = fakes([target(), target({ user_id: "u2" }), target({ user_id: "u3", hour: 23 })]);
+  await runManualSend(f.db, f.api, { ...REQ, userIds: ["u1"] }); // u1 got it already
+  const r = await runManualSend(f.db, f.api, { ...REQ, dryRun: true });
+  assertEquals(r.recipients, ["u2"]);
+  assertEquals(r.wouldSend, 1);
+  assertEquals(r.skipped.already_sent, 1);
+  assertEquals(r.skipped.quiet_hours, 1);
+});
+
+Deno.test("a claim that throws skips that person, the rest still get it", async () => {
+  const f = fakes([target(), target({ user_id: "u2" })]);
+  const orig = f.db.claim;
+  f.db.claim = async (u, k, t, b, kind) => { if (u === "u1") throw new Error("db down"); return orig(u, k, t, b, kind); };
+  const r = await runManualSend(f.db, f.api, REQ);
+  assertEquals(r.sent, 1);
+  assertEquals(r.skipped.claim_failed, 1);
+});
+
+Deno.test("out of time after the claim: the claim is let go and nothing is sent", async () => {
+  const f = fakes([target()]);
+  let t = 0;
+  const orig = f.db.claim;
+  f.db.claim = async (...a) => { t += 50_000; return orig(...a); }; // the claim itself was slow
+  const r = await runManualSend(f.db, f.api, REQ, { clock: () => t, budgetMs: 40_000 });
+  assertEquals(f.sent.length, 0);
+  assertEquals(f.claimed.size, 0);
+  assertEquals(r.skipped.out_of_time, 1);
 });

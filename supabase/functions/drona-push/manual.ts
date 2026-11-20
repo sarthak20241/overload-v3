@@ -10,9 +10,9 @@
 // Limits, on purpose: a send Expo refused for good (every phone dead, bad
 // credentials) is recorded failed and uses up the campaign for that person;
 // only a blip lets the claim go. dry_run counts everyone with a phone inside
-// quiet hours, including people this campaign already reached. Sends go one
-// person at a time, so "all" may stop at the 40 s budget (out_of_time): run the
-// same campaign again to finish.
+// quiet hours, minus the people this campaign already reached, and names them.
+// Sends go one person at a time, so "all" may stop at the 40 s budget
+// (out_of_time): run the same campaign again to finish.
 //
 // A send that died mid-flight leaves its claim (status claimed) so a re-run
 // never doubles it. To let that person get the campaign after all:
@@ -48,6 +48,8 @@ export type Target = { user_id: string; hour: number; tokens: string[] };
 
 export type ManualDb = Pick<PushDb, "claim" | "record" | "release" | "deleteTokens"> & {
   targets(userIds: string[] | null): Promise<Target[]>;
+  /** Users with any push_sends row for this campaign (read only, for dry runs). */
+  alreadySent(campaign: string): Promise<string[]>;
 };
 
 export type ManualReport = {
@@ -55,6 +57,8 @@ export type ManualReport = {
   targets: number;
   sent: number;
   wouldSend: number;
+  /** Dry run only: who would get it. */
+  recipients?: string[];
   skipped: Record<string, number>;
   deadTokens: number;
 };
@@ -103,13 +107,34 @@ export async function runManualSend(
   const skip = (why: string) => { report.skipped[why] = (report.skipped[why] ?? 0) + 1; };
   const dead = new Set<string>();
 
+  const reached = req.dryRun ? new Set(await db.alreadySent(req.campaign)) : null;
+  if (reached) report.recipients = [];
+
   try {
     for (const t of targets) {
       if (t.tokens.length === 0) { skip("no_token"); continue; }
       if (req.respectQuietHours && (t.hour < MANUAL_FROM_HOUR || t.hour >= MANUAL_UNTIL_HOUR)) { skip("quiet_hours"); continue; }
-      if (req.dryRun) { report.wouldSend++; continue; }
+      if (reached) {
+        if (reached.has(t.user_id)) { skip("already_sent"); continue; }
+        report.wouldSend++;
+        report.recipients!.push(t.user_id);
+        continue;
+      }
       if (clock() - started > budget) { skip("out_of_time"); continue; }
-      if (!(await db.claim(t.user_id, req.campaign, req.title, req.body, "manual"))) { skip("already_sent"); continue; }
+      let claimed: boolean;
+      try {
+        claimed = await db.claim(t.user_id, req.campaign, req.title, req.body, "manual");
+      } catch (e) {
+        console.error(`drona-push send claim ${t.user_id}: ${(e as Error).message}`);
+        skip("claim_failed"); // nothing sent; the same campaign can be run again
+        continue;
+      }
+      if (!claimed) { skip("already_sent"); continue; }
+      if (clock() - started > budget) {
+        await db.release(t.user_id, req.campaign, "manual"); // never start a send past the budget
+        skip("out_of_time");
+        continue;
+      }
 
       let results: PushResult[];
       try {
