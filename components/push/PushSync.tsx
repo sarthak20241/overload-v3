@@ -31,8 +31,13 @@ export function PushSync({ userId }: { userId: string }) {
       track('push_opened', { type: String(data.type ?? '') });
       router.push(route);
     };
-    void takeLaunchTapData((d) => pushRoute(d) !== null).then((data) => { if (data) open(data); });
-    return addNotificationTapListener(open);
+    // A launch tap waits a beat: the tab navigator may still be mounting.
+    let launch: ReturnType<typeof setTimeout> | undefined;
+    void takeLaunchTapData((d) => pushRoute(d) !== null).then((data) => {
+      if (data) launch = setTimeout(() => open(data), 400);
+    });
+    const unsubscribe = addNotificationTapListener(open);
+    return () => { if (launch) clearTimeout(launch); unsubscribe(); };
   }, [router]);
 
   return null;

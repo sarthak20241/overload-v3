@@ -4,7 +4,9 @@
 // up to their last log) and has now missed LAPSE_MIN_MISSED whole local days.
 // When: inside SEND_FROM_HOUR..SEND_UNTIL_HOUR of their own clock, never at night.
 // How often: once per lapse (the lapse is keyed by the last logged day, and
-// push_sends is unique on it), and never twice inside COOLDOWN_DAYS.
+// push_sends is unique on it), and never twice inside COOLDOWN_DAYS. One rare
+// exception: if Expo took a push but its reply was lost, drona-push lets the
+// claim go and the next hour sends it again. A second copy beats a lost one.
 // Not for people gone longer than LAPSE_MAX_GAP days: a first run must not wake
 // everyone who left months ago.
 //
