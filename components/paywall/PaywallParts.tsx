@@ -79,8 +79,9 @@ export function PlanSwitch({ side, onChange, disabled }: {
             accessibilityState={{ selected: on, disabled }}
             disabled={disabled}
             onPress={() => onChange(k)}
-            // The pill is 32 tall; the touch area reaches 44.
-            hitSlop={{ top: 6, bottom: 6 }}
+            // The pill is 36 tall; the slop stays inside the switch's
+            // 3 px padding (Android drops touches outside the parent).
+            hitSlop={{ top: 3, bottom: 3 }}
             style={[s.switchItem, on && { backgroundColor: g.selectedPill }]}
           >
             <Text
@@ -279,8 +280,8 @@ const HERO_RADIUS = 16;
 const s = StyleSheet.create({
   // Compact scale (2026-11-21): the paywall and the connect screen
   // (app/connect-ai.tsx) both use these, so both fit above their button.
-  switch: { flexDirection: 'row', borderRadius: 10, borderWidth: 1, padding: 2 },
-  switchItem: { flex: 1, minHeight: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
+  switch: { flexDirection: 'row', borderRadius: 11, borderWidth: 1, padding: 3 },
+  switchItem: { flex: 1, minHeight: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
   switchText: { fontSize: 13, fontFamily: FontFamily.onboardingBody },
 
   heroShadow: {

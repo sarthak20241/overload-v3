@@ -159,8 +159,9 @@ export default function ConnectAiScreen() {
                 key={id}
                 accessibilityRole="tab"
                 accessibilityState={{ selected: on }}
-                // The pill is 32 tall; the touch area reaches 44.
-                hitSlop={{ top: 6, bottom: 6 }}
+                // The pill is 36 tall; the slop stays inside the switch's
+                // 3 px padding (Android drops touches outside the parent).
+                hitSlop={{ top: 3, bottom: 3 }}
                 onPress={() => { if (!on) { setApp(id); setOpened(false); track('ai_connect_app_switched', { app: id }); } }}
                 style={[s.switchItem, on && { backgroundColor: g.selectedPill }]}
               >
@@ -323,8 +324,8 @@ const s = StyleSheet.create({
   body: { paddingHorizontal: 20, paddingTop: 0, paddingBottom: 16 },
   title: { fontFamily: FontFamily.onboardingHeading, fontSize: 22, lineHeight: 28 },
   sub: { fontFamily: FontFamily.onboardingBody, fontSize: 13, lineHeight: 18, marginTop: 4 },
-  switch: { flexDirection: 'row', borderRadius: 10, borderWidth: 1, padding: 2, marginTop: 14 },
-  switchItem: { flex: 1, minHeight: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
+  switch: { flexDirection: 'row', borderRadius: 11, borderWidth: 1, padding: 3, marginTop: 14 },
+  switchItem: { flex: 1, minHeight: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
   switchText: { fontSize: 13, fontFamily: FontFamily.onboardingBody },
   heroGap: { marginTop: 12 },
   steps: { marginTop: 12, gap: 6 },
@@ -346,7 +347,7 @@ const s = StyleSheet.create({
   // Step 2's form: what to type in each box.
   fields: { marginTop: 6, borderLeftWidth: 2, paddingLeft: 8, gap: 2 },
   fieldRow: { flexDirection: 'row', gap: 8 },
-  fieldLabel: { width: 36, fontSize: 12, lineHeight: 16, fontFamily: FontFamily.onboardingBody },
+  fieldLabel: { minWidth: 36, fontSize: 12, lineHeight: 16, fontFamily: FontFamily.onboardingBody },
   fieldValue: { flex: 1, fontSize: 12, lineHeight: 16, fontFamily: FontFamily.onboardingHeading },
   moreRow: {
     flexDirection: 'row',
