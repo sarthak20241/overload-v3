@@ -108,7 +108,6 @@
           "recordAudioAndroid": false
         }
       ],
-      "./plugins/withoutApsEnvironment",
       "./plugins/withMedia3Pin",
       "react-native-fast-tflite",
       "expo-localization"

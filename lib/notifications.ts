@@ -4,19 +4,22 @@
  * lazy-require pattern in lib/revenuecat.ts: callers get a uniform API and
  * never need "is the module here?" checks.
  *
- * v1 scope is deliberately tiny: the paywall funnel's trial reminder (two days before the trial ends).
+ * Server push (Drona's nudges) lives in lib/pushRegistration.ts and
+ * supabase/functions/drona-push; this file only gives it the token. The local
+ * scope: the paywall funnel's trial reminder (two days before the trial ends).
  * The reminder screen PROMISES a notification two days before the trial
  * converts ("I'll remind you before you pay"), so this is a product
  * commitment, not a nice-to-have: scheduleTrialReminder() is called the
  * moment a trial purchase verifies, and cancelTrialReminder() if the user's
  * tier flips to a non-trial purchase or the sub is cancelled client-side.
  *
- * Local scheduling (not server push) on purpose: no push infra exists yet,
- * the phone that bought the trial is the phone that needs the nudge, and a
+ * Local scheduling (not server push) on purpose: the phone that bought the
+ * trial is the phone that needs the nudge, and a
  * local notification survives offline. If the user deletes the app the
  * reminder dies with it, which Apple's own day-5 trial email covers.
  */
 
+import { Platform } from 'react-native';
 import { track } from '@/lib/analytics';
 
 const TRIAL_REMINDER_ID = 'overload-trial-day5';
@@ -173,5 +176,62 @@ export function addNotificationTapListener(onTap: (data: Record<string, unknown>
     return () => sub.remove();
   } catch {
     return () => {};
+  }
+}
+
+/** Push permission as lib/pushAsk.ts reads it. 'denied' also covers "asked, and the OS will not ask again". */
+export async function getPushPermission(): Promise<'granted' | 'undetermined' | 'denied' | 'missing'> {
+  const N = loadNotifications();
+  if (!N) return 'missing';
+  try {
+    const p = await N.getPermissionsAsync();
+    if (p.granted) return 'granted';
+    return p.canAskAgain ? 'undetermined' : 'denied';
+  } catch {
+    return 'missing';
+  }
+}
+
+/**
+ * This phone's Expo push token, for the server (lib/pushRegistration.ts).
+ * Null without the module, without permission, on a simulator, or when the
+ * build has no push entitlement. Never asks.
+ */
+export async function getExpoPushToken(projectId: string | undefined): Promise<string | null> {
+  const N = loadNotifications();
+  if (!N || !projectId) return null;
+  try {
+    const perms = await N.getPermissionsAsync();
+    if (!perms.granted) return null;
+    if (Platform.OS === 'android') {
+      // Android 8+ shows nothing without a channel. The server sends on 'default'.
+      await N.setNotificationChannelAsync('default', {
+        name: 'Drona',
+        importance: N.AndroidImportance?.DEFAULT ?? 3,
+      }).catch(() => {});
+    }
+    const res = await N.getExpoPushTokenAsync({ projectId });
+    return typeof res?.data === 'string' ? res.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The data of the notification whose tap opened the app from cold, once.
+ * Unlike the kept-sheet notices above, a server push names a screen, which
+ * survives the restart, so its cold-start tap is routed too (by PushSync,
+ * which mounts only once the signed-in app is up).
+ */
+export async function takeLaunchTapData(): Promise<Record<string, unknown> | null> {
+  const N = loadNotifications();
+  if (!N?.getLastNotificationResponseAsync) return null;
+  try {
+    const response = await N.getLastNotificationResponseAsync();
+    const data = response?.notification?.request?.content?.data;
+    await N.clearLastNotificationResponseAsync?.().catch(() => {});
+    return data && typeof data === 'object' ? (data as Record<string, unknown>) : null;
+  } catch {
+    return null;
   }
 }

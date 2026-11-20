@@ -24,6 +24,7 @@ import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
+import { noteFoodLogged } from '@/lib/pushRegistration';
 import { announceReady } from '@/lib/readyNotice';
 import { readyInbox } from '@/lib/readyInbox';
 import { holdBackgroundTime, NOTICE_GRACE_MS } from '@/lib/backgroundTime';
@@ -1465,6 +1466,7 @@ export default function NutritionScreen() {
       // The server wrote the diary itself, so none of the client writers
       // (logParsedMeal / logFood / logSavedMeal) run. Without this line the
       // whole "Just log it" mode is invisible in the meal_logged breakdown.
+      noteFoodLogged();
       track('meal_logged', {
         method: 'auto',
         item_count: res.meal.items.length,

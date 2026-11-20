@@ -21,6 +21,7 @@ import { mergePendingRoutines } from '@/lib/routineQueue';
 import { BottomNav, TAB_SWITCH_MS } from '@/components/ui/BottomNav';
 import { ResumeWorkoutPrompt } from '@/components/workout/ResumeWorkoutPrompt';
 import { OfflineBanner } from '@/components/ui/OfflineBanner';
+import { PushSync } from '@/components/push/PushSync';
 import { Portal } from '@/components/ui/Portal';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -603,6 +604,7 @@ export default function AppLayout() {
       )}
       {!hideWorkoutChrome && <ResumeWorkoutPrompt />}
       <OfflineBanner />
+      {isSignedIn && user?.id ? <PushSync userId={user.id} /> : null}
     </>
   );
 }

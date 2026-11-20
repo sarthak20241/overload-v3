@@ -51,6 +51,10 @@ export function useClerkUser(): ClerkUserState {
       // The Goal & Plan screen cache is keyed by user, so nothing leaks
       // across accounts, but a signed-out device should not keep it.
       clearCache();
+      // While the JWT still names this account: its pushes stop reaching this phone.
+      // Lazy require: lib/supabase imports this file.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      await require('@/lib/pushRegistration').clearPushToken().catch(() => {});
       if (signOut) await signOut();
     },
     getToken: isSignedIn && getToken ? getToken : null,
