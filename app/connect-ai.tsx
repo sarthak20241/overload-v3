@@ -12,6 +12,7 @@ import { Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'r
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
+import * as WebBrowser from 'expo-web-browser';
 import { FontFamily, IconSize, Shadow } from '@/constants/theme';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -93,14 +94,28 @@ export default function ConnectAiScreen() {
     }
   };
 
-  const openApp = () => {
+  // The website, never the phone app: custom connectors can only be added
+  // on chatgpt.com / claude.ai. A plain https link would be caught by the
+  // installed ChatGPT or Claude app (iOS universal links, Android app links);
+  // the in-app browser loads the page itself. If it cannot start, the system
+  // browser is the fallback.
+  const openApp = async () => {
     track('ai_connect_app_opened', { app });
     setOpened(true);
-    Linking.openURL(APP_SETTINGS_URL[app])
-      // Only once it really opened: the best sign this app has that they
-      // connected, so the dashboard's "Connect your AI" reminder goes away.
-      .then(() => { if (user?.id) void setConnectNudge(user.id, 'done'); })
-      .catch(() => toast.error(`Could not open ${APP_LABEL[app]}.`));
+    const url = APP_SETTINGS_URL[app];
+    // Only once it really opened: the best sign this app has that they
+    // connected, so the dashboard's "Connect your AI" reminder goes away.
+    const markDone = () => { if (user?.id) void setConnectNudge(user.id, 'done'); };
+    try {
+      await WebBrowser.openBrowserAsync(url, {
+        presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET,
+      });
+      markDone();
+    } catch {
+      Linking.openURL(url)
+        .then(markDone)
+        .catch(() => toast.error(`Could not open ${APP_LABEL[app]}.`));
+    }
   };
 
   // Step looks: lib/aiConnect.ts stepMarks (tested). The button is "Open"
@@ -187,7 +202,7 @@ export default function ConnectAiScreen() {
                 activeOpacity={0.7}
                 accessible
                 accessibilityRole={i === 0 && !needsPlan ? 'button' : undefined}
-                accessibilityLabel={`Step ${i + 1}${done ? ', done' : ''}. ${step.title}. ${step.detail}`}
+                accessibilityLabel={`Step ${i + 1}${done ? ', done' : ''}. ${step.title}. ${step.detail}${(step.fields ?? []).map((f) => ` ${f.label}: ${f.value}.`).join('')}`}
                 accessibilityHint={i === 0 && !needsPlan ? 'Copies the link' : undefined}
                 style={[s.step, { backgroundColor: g.quietFill, borderColor: g.quietEdge, borderTopColor: g.quietTop }]}
               >
@@ -201,6 +216,16 @@ export default function ConnectAiScreen() {
                 <View style={s.stepTextWrap}>
                   <Text style={[s.stepTitle, { color: C.foreground }]}>{step.title}</Text>
                   <Text style={[s.stepDetail, { color: C.textSecondary }]}>{step.detail}</Text>
+                  {step.fields && (
+                    <View style={[s.fields, { borderColor: g.quietEdge }]}>
+                      {step.fields.map((f) => (
+                        <View key={f.label} style={s.fieldRow}>
+                          <Text style={[s.fieldLabel, { color: C.textSecondary }]}>{f.label}</Text>
+                          <Text style={[s.fieldValue, { color: C.foreground }]}>{f.value}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
                 </View>
                 {i === 0 && copied && !needsPlan && (
                   <Feather name="copy" size={IconSize.sm} color={C.textSecondary} />
@@ -317,6 +342,11 @@ const s = StyleSheet.create({
   stepTextWrap: { flex: 1 },
   stepTitle: { fontSize: 14, fontFamily: FontFamily.onboardingHeading },
   stepDetail: { fontSize: 12, lineHeight: 16, marginTop: 1, fontFamily: FontFamily.onboardingBody },
+  // Step 2's form: what to type in each box.
+  fields: { marginTop: 6, borderLeftWidth: 2, paddingLeft: 8, gap: 2 },
+  fieldRow: { flexDirection: 'row', gap: 8 },
+  fieldLabel: { width: 36, fontSize: 12, lineHeight: 16, fontFamily: FontFamily.onboardingBody },
+  fieldValue: { flex: 1, fontSize: 12, lineHeight: 16, fontFamily: FontFamily.onboardingHeading },
   moreRow: {
     flexDirection: 'row',
     alignItems: 'center',
