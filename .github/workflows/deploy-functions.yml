@@ -123,6 +123,7 @@ jobs:
           deno test --allow-all supabase/functions/ai-coach/
           deno test --allow-all supabase/functions/_shared/
           deno test --allow-all supabase/functions/drona-cards/
+          deno test --allow-all supabase/functions/drona-push/
           deno test --allow-all supabase/functions/revenuecat-webhook/
           deno test --allow-all supabase/functions/session-refresh/
           deno test --allow-all lib/sessionRefresh.test.ts

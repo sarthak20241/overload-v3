@@ -303,6 +303,10 @@ export type AnalyticsEvent =
   | 'units_changed'
   | 'profile_field_changed'
   | 'notification_permission_result'
+  // Server push (lib/pushRegistration.ts): Drona's soft ask, its answer, a tapped push.
+  | 'push_ask_shown'
+  | 'push_ask_answered'
+  | 'push_opened'
   | 'offline_banner_shown'
   // ── Money ────────────────────────────────────────────────────────────────
   | 'limit_reached'

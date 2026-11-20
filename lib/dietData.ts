@@ -29,6 +29,7 @@ import { isMeasurementUnit } from '@/lib/units';
 import { fixWeightLabel } from '@/lib/servingSize';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { track } from '@/lib/analytics';
+import { noteFoodLogged } from '@/lib/pushRegistration';
 import { normalizeFuelDays, type FuelDay } from '@/lib/fuelDays';
 import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from '@/lib/targetHistory';
 import { readSwapOptions, type SwapOption } from '@/lib/variantSwap';
@@ -1499,6 +1500,7 @@ export async function logParsedMeal(
     }
     done.push(r.ref);
   }
+  noteFoodLogged();
   track('meal_logged', {
     method: via,
     item_count: meal.items.length,
@@ -2159,6 +2161,7 @@ export async function logSavedMeal(
     ({ error } = await supabase.from('meal_entries').insert(withoutColumns(rows, ORIGIN_COLS)));
   }
   if (!error) {
+    noteFoodLogged();
     track('meal_logged', {
       method: 'saved',
       item_count: rows.length,
@@ -2331,6 +2334,7 @@ export async function logFood(
     position: count ?? 0,
   });
   if (!error) {
+    noteFoodLogged();
     track('meal_logged', { method: 'search', item_count: 1, kcal: r0(n.kcal), meal_type: mealType });
   }
   return { error: error?.message };
@@ -2459,6 +2463,7 @@ export async function logQuickAdd(
     if (createdMeal) await deleteMealIfEmpty(supabase, mealId);
     return { error: error.message };
   }
+  noteFoodLogged();
   track('meal_logged', {
     method: 'quick_add',
     item_count: 1,

@@ -88,6 +88,9 @@ deno test --allow-all supabase/functions/session-refresh/   # who may get a sign
 deno test --allow-all lib/sessionRefresh.test.ts             # silent re-sign-in: ticket, then sign-out, then sign-in
 deno test --allow-all supabase/functions/_shared/   # TODAY pick rules, shared by app + daily-suggestion
 deno test --allow-all supabase/functions/drona-cards/ # weekly phase metrics check, against a fake database
+deno test --allow-all supabase/functions/drona-push/ # server push run: claim before send, one push per food lapse, dead tokens dropped
+deno test --allow-all lib/pushAsk.test.ts      # push permission ask after a food log on a 2nd day, a tapped push opens Nutrition
+deno test --allow-all --node-modules-dir=none supabase/migrations/checks/push_tokens.check.ts # push_tokens + push_sends on PGlite: own token only, phone moves account, one row per lapse (not in CI)
 deno test --allow-all lib/xp.test.ts
 deno test --allow-all lib/tiers.test.ts
 deno test --unstable-sloppy-imports --import-map=lib/test-import-map.json lib/readiness.test.ts

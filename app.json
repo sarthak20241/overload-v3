@@ -39,6 +39,7 @@
         "backgroundColor": "#0a0a0a"
       },
       "package": "com.overload.tracker",
+      "googleServicesFile": "./google-services.json",
       "permissions": [
         "android.permission.health.READ_STEPS",
         "android.permission.health.READ_ACTIVE_CALORIES_BURNED",
@@ -108,7 +109,6 @@
           "recordAudioAndroid": false
         }
       ],
-      "./plugins/withoutApsEnvironment",
       "./plugins/withMedia3Pin",
       "react-native-fast-tflite",
       "expo-localization"
