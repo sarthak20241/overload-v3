@@ -57,6 +57,11 @@ export type RunReport = {
 };
 
 const MIN = 60_000;
+
+/** Send errors that can clear up by the next run. */
+function passes(error: string | undefined): boolean {
+  return error === "request_failed" || error === "MessageRateExceeded" || !!error?.startsWith("send_threw");
+}
 /**
  * No new send starts after this long. The cron call times out at 55 s; one
  * send is a claim, an Expo call and a record. Who is left waits an hour (the
@@ -161,12 +166,11 @@ async function sendAll(
       results = tokens.map((token) => ({ token, error: `send_threw: ${(e as Error).message}`.slice(0, 200) }));
     }
     for (const t of deadTokens(results)) dead.add(t);
-    // Expo took none of it (request failed, threw, rate limited) and no phone
-    // is dead: nothing reached anyone, so let the claim go and retry next hour.
-    // No phone got it, and at least one failed for a reason that can pass
-    // (not dead, not malformed): retry next hour. Dead phones are already in `dead`.
-    const transient = results.every((r) => !r.ticketId) &&
-      results.some((r) => r.error !== "DeviceNotRegistered" && r.error !== "bad_token");
+    // No phone got it, and at least one failed for a reason that passes (the
+    // request failed, threw, or hit Expo's rate limit): let the claim go and
+    // retry next hour. Lasting errors (bad credentials, too big) stay failed,
+    // or they would retry every hour forever. Dead phones are already in `dead`.
+    const transient = results.every((r) => !r.ticketId) && results.some((r) => passes(r.error));
     if (transient) {
       await db.release(c.user_id, d.lapseKey);
       report.skipped.send_failed = (report.skipped.send_failed ?? 0) + 1;

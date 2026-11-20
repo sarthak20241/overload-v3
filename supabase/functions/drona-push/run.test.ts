@@ -226,3 +226,11 @@ Deno.test("one phone dead, the other failed for a moment: the dead one goes, the
   assertEquals(f.deleted, ["ExponentPushToken[dead]"]);
   assertEquals(r.skipped.send_failed, 1);
 });
+
+Deno.test("a lasting Expo error (bad credentials, too big) is not retried every hour: the claim stays, marked failed", async () => {
+  const f = fakeDb([person()]);
+  const api: PushApi = { send: async (msgs) => msgs.map((m) => ({ token: m.to, error: "InvalidCredentials" })), receipts: async () => ({}) };
+  const r = await runPush(f.db, api, NOW);
+  assertEquals(f.sends.get("u1|2026-11-18")!.status, "failed");
+  assertEquals(r.skipped.send_failed, undefined);
+});
