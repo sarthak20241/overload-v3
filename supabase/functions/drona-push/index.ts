@@ -95,11 +95,18 @@ function manualDb(db: SupabaseClient, base: PushDb): ManualDb {
   return {
     claim: base.claim, record: base.record, release: base.release, deleteTokens: base.deleteTokens,
     async alreadySent(campaign) {
-      const { data, error } = await retried(() =>
-        db.from("push_sends").select("user_id").eq("kind", "manual").eq("lapse_key", campaign).limit(100000)
-      );
-      if (error) throw new Error(`alreadySent: ${error.message}`);
-      return (data ?? []).map((r: { user_id: string }) => r.user_id);
+      // Paged: PostgREST caps one read at 1000 rows.
+      const out: string[] = [];
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await retried(() =>
+          db.from("push_sends").select("user_id").eq("kind", "manual").eq("lapse_key", campaign)
+            .order("id", { ascending: true }).range(from, from + 999)
+        );
+        if (error) throw new Error(`alreadySent: ${error.message}`);
+        out.push(...(data ?? []).map((r: { user_id: string }) => r.user_id));
+        if (!data || data.length < 1000) break;
+      }
+      return out;
     },
     async targets(userIds) {
       const { data, error } = await retried(() =>
