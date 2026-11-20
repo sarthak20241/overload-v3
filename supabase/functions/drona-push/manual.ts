@@ -44,7 +44,8 @@ export type SendRequest = {
   dryRun: boolean;
 };
 
-export type Target = { user_id: string; hour: number; tokens: string[] };
+/** hour: the person's local hour, or null when their time zone is unknown. */
+export type Target = { user_id: string; hour: number | null; tokens: string[] };
 
 export type ManualDb = Pick<PushDb, "claim" | "record" | "release" | "deleteTokens"> & {
   targets(userIds: string[] | null): Promise<Target[]>;
@@ -113,7 +114,11 @@ export async function runManualSend(
   try {
     for (const t of targets) {
       if (t.tokens.length === 0) { skip("no_token"); continue; }
-      if (req.respectQuietHours && (t.hour < MANUAL_FROM_HOUR || t.hour >= MANUAL_UNTIL_HOUR)) { skip("quiet_hours"); continue; }
+      // No known zone means no known hour: with quiet hours on, never guess.
+      if (req.respectQuietHours && (t.hour === null || t.hour < MANUAL_FROM_HOUR || t.hour >= MANUAL_UNTIL_HOUR)) {
+        skip("quiet_hours");
+        continue;
+      }
       if (reached) {
         if (reached.has(t.user_id)) { skip("already_sent"); continue; }
         report.wouldSend++;

@@ -123,3 +123,9 @@ Deno.test("out of time after the claim: the claim is let go and nothing is sent"
   assertEquals(f.claimed.size, 0);
   assertEquals(r.skipped.out_of_time, 1);
 });
+
+Deno.test("no saved time zone: unknown hour, so quiet hours skip them (sent only when quiet hours are off)", async () => {
+  const f = fakes([target({ hour: null })]);
+  assertEquals((await runManualSend(f.db, f.api, REQ)).skipped.quiet_hours, 1);
+  assertEquals((await runManualSend(f.db, f.api, { ...REQ, respectQuietHours: false })).sent, 1);
+});
