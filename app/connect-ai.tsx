@@ -162,12 +162,12 @@ export default function ConnectAiScreen() {
 
         {/* What it does: the hero */}
         <View style={s.heroGap}>
-          <GlassCard>
-            <GlassCaption text={`In your ${APP_LABEL[app]}`} />
-            <Bubble mine text="I ate 2 eggs and toast" />
-            <Bubble text="Saved to Overload. 310 calories." />
-            <Bubble mine text="How was my protein this week?" />
-            <Bubble text="Low on 4 of 7 days." />
+          <GlassCard compact>
+            <GlassCaption compact text={`In your ${APP_LABEL[app]}`} />
+            <Bubble compact mine text="I ate 2 eggs and toast" />
+            <Bubble compact text="Saved to Overload. 310 calories." />
+            <Bubble compact mine text="How was my protein this week?" />
+            <Bubble compact text="Low on 4 of 7 days." />
           </GlassCard>
         </View>
 
@@ -191,7 +191,7 @@ export default function ConnectAiScreen() {
               >
                 <View style={[s.stepDot, { backgroundColor: next || done ? g.lime : g.selectedPill }]}>
                   {done ? (
-                    <Feather name="check" size={14} color={g.onLime} />
+                    <Feather name="check" size={IconSize.xs} color={g.onLime} />
                   ) : (
                     <Text style={[s.stepNum, { color: next ? g.onLime : C.foreground }]}>{i + 1}</Text>
                   )}
@@ -292,45 +292,45 @@ const s = StyleSheet.create({
   topBar: { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 12 },
   closeHit: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   closeBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  body: { paddingHorizontal: 20, paddingTop: 4, paddingBottom: 20 },
-  title: { fontFamily: FontFamily.onboardingHeading, fontSize: 28, lineHeight: 34 },
-  sub: { fontFamily: FontFamily.onboardingBody, fontSize: 15, lineHeight: 21, marginTop: 6 },
-  switch: { flexDirection: 'row', borderRadius: 12, borderWidth: 1, padding: 3, marginTop: 20 },
-  switchItem: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 9 },
-  switchText: { fontSize: 15, fontFamily: FontFamily.onboardingBody },
-  heroGap: { marginTop: 16 },
-  steps: { marginTop: 18, gap: 8 },
+  body: { paddingHorizontal: 20, paddingTop: 0, paddingBottom: 16 },
+  title: { fontFamily: FontFamily.onboardingHeading, fontSize: 22, lineHeight: 28 },
+  sub: { fontFamily: FontFamily.onboardingBody, fontSize: 13, lineHeight: 18, marginTop: 4 },
+  switch: { flexDirection: 'row', borderRadius: 10, borderWidth: 1, padding: 2, marginTop: 14 },
+  switchItem: { flex: 1, minHeight: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
+  switchText: { fontSize: 13, fontFamily: FontFamily.onboardingBody },
+  heroGap: { marginTop: 12 },
+  steps: { marginTop: 12, gap: 6 },
   step: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    minHeight: 60,
-    borderRadius: 16,
+    gap: 10,
+    minHeight: 44,
+    borderRadius: 12,
     borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
-  stepDot: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  stepNum: { fontSize: 14, fontFamily: FontFamily.onboardingHeading },
+  stepDot: { width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  stepNum: { fontSize: 12, fontFamily: FontFamily.onboardingHeading },
   stepTextWrap: { flex: 1 },
-  stepTitle: { fontSize: 15, fontFamily: FontFamily.onboardingHeading },
-  stepDetail: { fontSize: 13, lineHeight: 18, marginTop: 2, fontFamily: FontFamily.onboardingBody },
+  stepTitle: { fontSize: 14, fontFamily: FontFamily.onboardingHeading },
+  stepDetail: { fontSize: 12, lineHeight: 16, marginTop: 1, fontFamily: FontFamily.onboardingBody },
   moreRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    minHeight: 48,
-    marginTop: 16,
+    minHeight: 44,
+    marginTop: 12,
     borderTopWidth: 1,
     borderBottomWidth: 1,
   },
-  moreText: { fontSize: 15, fontFamily: FontFamily.onboardingBody },
+  moreText: { fontSize: 13, fontFamily: FontFamily.onboardingBody },
   details: { paddingTop: 4 },
-  detailHead: { fontSize: 13, fontFamily: FontFamily.onboardingHeading, marginTop: 16, marginBottom: 6 },
-  detailText: { fontSize: 14, lineHeight: 21, fontFamily: FontFamily.onboardingBody, marginBottom: 4 },
-  link: { fontSize: 16, fontFamily: FontFamily.onboardingHeading },
-  footer: { paddingHorizontal: 20, paddingBottom: 12, paddingTop: 8 },
-  cta: { alignItems: 'center', justifyContent: 'center', height: 56, borderRadius: 999 },
-  ctaText: { fontSize: 17, fontFamily: FontFamily.onboardingHeading },
-  footNote: { fontSize: 13, textAlign: 'center', marginTop: 8, fontFamily: FontFamily.onboardingBody },
+  detailHead: { fontSize: 12, fontFamily: FontFamily.onboardingHeading, marginTop: 16, marginBottom: 6 },
+  detailText: { fontSize: 13, lineHeight: 19, fontFamily: FontFamily.onboardingBody, marginBottom: 4 },
+  link: { fontSize: 14, fontFamily: FontFamily.onboardingHeading },
+  footer: { paddingHorizontal: 20, paddingBottom: 10, paddingTop: 8 },
+  cta: { alignItems: 'center', justifyContent: 'center', height: 48, borderRadius: 999 },
+  ctaText: { fontSize: 15, fontFamily: FontFamily.onboardingHeading },
+  footNote: { fontSize: 12, textAlign: 'center', marginTop: 8, fontFamily: FontFamily.onboardingBody },
 });

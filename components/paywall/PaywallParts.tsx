@@ -100,28 +100,29 @@ export function PlanSwitch({ side, onChange, disabled }: {
 // ── Example chat card (the hero, strong glass) ──────────────────────────────
 
 /** A chat bubble inside a GlassCard. Also used by the connector screen. */
-export function Bubble({ text, mine }: { text: string; mine?: boolean }) {
+export function Bubble({ text, mine, compact }: { text: string; mine?: boolean; compact?: boolean }) {
   const g = useGlass();
   return (
-    <View style={[s.bubbleRow, { justifyContent: mine ? 'flex-end' : 'flex-start' }]}>
-      <View style={[s.bubble, { backgroundColor: mine ? g.bubbleMine : g.bubbleTheirs }]}>
-        <Text style={[s.bubbleText, { color: g.C.foreground }]}>{text}</Text>
+    <View style={[s.bubbleRow, compact && s.bubbleRowCompact, { justifyContent: mine ? 'flex-end' : 'flex-start' }]}>
+      <View style={[s.bubble, compact && s.bubbleCompact, { backgroundColor: mine ? g.bubbleMine : g.bubbleTheirs }]}>
+        <Text style={[s.bubbleText, compact && s.bubbleTextCompact, { color: g.C.foreground }]}>{text}</Text>
       </View>
     </View>
   );
 }
 
 /** The strong glass card (sheen, lit top and left edges, soft shadow). */
-export function GlassCard({ children }: { children: React.ReactNode }) {
+export function GlassCard({ children, compact }: { children: React.ReactNode; compact?: boolean }) {
   const g = useGlass();
   return (
-    <View style={[s.heroShadow, !g.dark && s.heroShadowLight]}>
+    <View style={[s.heroShadow, compact && s.heroCompactRadius, !g.dark && s.heroShadowLight]}>
       <LinearGradient
         colors={[g.strongFrom, g.strongTo]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={[
           s.hero,
+          compact && s.heroCompact,
           {
             borderColor: g.strongEdge,
             borderTopColor: g.strongEdgeLit,
@@ -136,9 +137,9 @@ export function GlassCard({ children }: { children: React.ReactNode }) {
 }
 
 /** The small grey line above the bubbles ("In your ChatGPT"). */
-export function GlassCaption({ text }: { text: string }) {
+export function GlassCaption({ text, compact }: { text: string; compact?: boolean }) {
   const g = useGlass();
-  return <Text style={[s.caption, { color: g.C.textMuted }]}>{text}</Text>;
+  return <Text style={[s.caption, compact && s.captionCompact, { color: g.C.textMuted }]}>{text}</Text>;
 }
 
 export function ExampleCard({ side }: { side: PaywallSide }) {
@@ -295,6 +296,14 @@ const s = StyleSheet.create({
   bubbleRow: { flexDirection: 'row', marginBottom: 6 },
   bubble: { maxWidth: '86%', borderRadius: 14, paddingHorizontal: 11, paddingVertical: 6 },
   bubbleText: { fontSize: 14, lineHeight: 20, fontFamily: FontFamily.onboardingBody },
+  // compact: the connect screen (app/connect-ai.tsx), where the card sits
+  // above a switch and three steps and must not push them under the button.
+  heroCompactRadius: { borderRadius: 16 },
+  heroCompact: { borderRadius: 16, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 5 },
+  captionCompact: { fontSize: 11, marginBottom: 6 },
+  bubbleRowCompact: { marginBottom: 5 },
+  bubbleCompact: { borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4 },
+  bubbleTextCompact: { fontSize: 13, lineHeight: 17 },
 
   tiles: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 8 },
   tile: {
