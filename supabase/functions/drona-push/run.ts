@@ -32,6 +32,8 @@ export interface PushDb {
   /** Insert the push_sends row. false when this lapse already has one. */
   claim(userId: string, lapseKey: string, title: string, body: string): Promise<boolean>;
   record(userId: string, lapseKey: string, tickets: Ticket[], status: "sent" | "failed"): Promise<void>;
+  /** Delete claims still 'claimed' from before this moment (a run died mid-send). Returns how many. */
+  releaseStaleClaims(before: string): Promise<number>;
   /** Delete the claim: Expo never took the push, so the next run may try again. */
   release(userId: string, lapseKey: string): Promise<void>;
   deleteTokens(tokens: string[]): Promise<void>;
@@ -51,6 +53,7 @@ export type RunReport = {
   skipped: Record<string, number>;
   deadTokens: number;
   receiptsRead: number;
+  staleClaims: number;
 };
 
 const MIN = 60_000;
@@ -64,7 +67,13 @@ export const RUN_BUDGET_MS = 40_000;
 type RunOpts = { dryRun?: boolean; clock?: () => number; budgetMs?: number };
 
 export async function runPush(db: PushDb, api: PushApi, now: Date, opts: RunOpts = {}): Promise<RunReport> {
-  const report: RunReport = { candidates: 0, sent: 0, skipped: {}, deadTokens: 0, receiptsRead: 0 };
+  const report: RunReport = { candidates: 0, sent: 0, skipped: {}, deadTokens: 0, receiptsRead: 0, staleClaims: 0 };
+  const clock = opts.clock ?? Date.now;
+  const started = clock(); // the budget covers the whole run, receipts too
+  // A run that died between claim and record left 'claimed' rows. Every
+  // finished send records within seconds, so a claim older than 15 min is
+  // dead: let it go, so its lapse is sent now and holds no cooldown.
+  if (!opts.dryRun) report.staleClaims = await db.releaseStaleClaims(new Date(now.getTime() - 15 * MIN).toISOString());
   const dead = new Set<string>();
 
   // 1. Receipts. A dry run changes nothing, so it reads none.
@@ -90,7 +99,7 @@ export async function runPush(db: PushDb, api: PushApi, now: Date, opts: RunOpts
 
   // 2-4. Decide, claim, send. Dead tokens are deleted even if the run breaks.
   try {
-    await sendAll(db, api, now, opts, report, dead);
+    await sendAll(db, api, now, opts, report, dead, started);
   } finally {
     // Never let the cleanup hide the error that broke the run.
     if (dead.size && !opts.dryRun) await db.deleteTokens([...dead]).catch((e) => console.error(`drona-push deleteTokens: ${e}`));
@@ -106,9 +115,9 @@ async function sendAll(
   opts: RunOpts,
   report: RunReport,
   dead: Set<string>,
+  started: number,
 ): Promise<void> {
   const clock = opts.clock ?? Date.now;
-  const started = clock();
   const budget = opts.budgetMs ?? RUN_BUDGET_MS;
   const people = await db.candidates(now.toISOString());
   report.candidates = people.length;

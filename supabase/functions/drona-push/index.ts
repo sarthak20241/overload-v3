@@ -45,6 +45,13 @@ function realDb(db: SupabaseClient): PushDb {
       );
       if (error) console.error(`drona-push record ${userId}: ${error.message}`);
     },
+    async releaseStaleClaims(before) {
+      const { data, error } = await retried(() =>
+        db.from("push_sends").delete().eq("status", "claimed").lt("sent_at", before).select("id")
+      );
+      if (error) console.error(`drona-push releaseStaleClaims: ${error.message}`);
+      return data?.length ?? 0;
+    },
     async release(userId, lapseKey) {
       const { error } = await retried(() =>
         db.from("push_sends").delete()

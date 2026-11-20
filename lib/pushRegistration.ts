@@ -36,21 +36,30 @@ async function readJson<T>(key: string): Promise<T | null> {
   }
 }
 
-/** Save the token when permission is already granted. Never asks. */
-export async function syncPushToken(opts: { force?: boolean } = {}): Promise<boolean> {
+type SavedToken = { token: string; userId: string | null; savedAt: number };
+
+/**
+ * Save the token when permission is already granted. Never asks. A save for
+ * the same account inside RESAVE_MS is skipped before the native token call.
+ * `userId` (from PushSync) catches a phone that changed account without the
+ * sign-out path; callers without it (a food log) only refresh.
+ */
+export async function syncPushToken(opts: { force?: boolean; userId?: string } = {}): Promise<boolean> {
   if (!isSupabaseConfigured || (Platform.OS !== 'ios' && Platform.OS !== 'android')) return false;
   try {
+    const saved = await readJson<SavedToken>(TOKEN_KEY);
+    const sameUser = !opts.userId || saved?.userId === opts.userId;
+    if (!opts.force && saved && sameUser && Date.now() - saved.savedAt < RESAVE_MS) return true;
     const token = await getExpoPushToken(projectId());
     if (!token) return false;
-    const saved = await readJson<{ token: string; savedAt: number }>(TOKEN_KEY);
-    if (!opts.force && saved?.token === token && Date.now() - saved.savedAt < RESAVE_MS) return true;
     let tz: string | null = null;
     try {
       tz = Intl.DateTimeFormat().resolvedOptions().timeZone ?? null;
     } catch { /* no zone */ }
     const { data, error } = await supabase.rpc('save_push_token', { p_token: token, p_platform: Platform.OS, p_tz: tz });
     if (error || data !== true) return false;
-    await AsyncStorage.setItem(TOKEN_KEY, JSON.stringify({ token, savedAt: Date.now() }));
+    const record: SavedToken = { token, userId: opts.userId ?? saved?.userId ?? null, savedAt: Date.now() };
+    await AsyncStorage.setItem(TOKEN_KEY, JSON.stringify(record));
     return true;
   } catch {
     return false;

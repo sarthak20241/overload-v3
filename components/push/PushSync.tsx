@@ -17,9 +17,9 @@ export function PushSync({ userId }: { userId: string }) {
   const router = useRouter();
 
   useEffect(() => {
-    void syncPushToken();
+    void syncPushToken({ userId });
     const sub = AppState.addEventListener('change', (s) => {
-      if (s === 'active') void syncPushToken();
+      if (s === 'active') void syncPushToken({ userId });
     });
     return () => sub.remove();
   }, [userId]);

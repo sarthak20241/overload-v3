@@ -35,6 +35,11 @@ function fakeDb(people: Candidate[], pending: { id: number; tickets: Ticket[] }[
       Object.assign(sends.get(`${u}|${k}`)!, { tickets, status });
     },
     release: async (u, k) => { sends.delete(`${u}|${k}`); },
+    releaseStaleClaims: async () => {
+      let n = 0;
+      for (const [k, v] of sends) if (v.status === "claimed") { sends.delete(k); n++; }
+      return n;
+    },
     deleteTokens: async (t) => { deleted.push(...t); },
     unreadReceipts: async () => pending,
     markReceiptsRead: async (ids) => { marked.push(...ids); },
@@ -185,4 +190,25 @@ Deno.test("Expo never took the push (request failed or threw): the claim is let 
   const r = await runPush(f.db, api, new Date(NOW.getTime() + 3600_000));
   assertEquals(sent.length, 1);
   assertEquals(r.sent, 1);
+});
+
+Deno.test("a claim left by a run that died mid-send is let go, so this run sends it", async () => {
+  const f = fakeDb([person()]);
+  await f.db.claim("u1", "2026-11-18", "t", "b"); // the dead run's row, status claimed
+  const { api, sent } = fakeApi();
+  const r = await runPush(f.db, api, NOW);
+  assertEquals(sent.length, 1);
+  assertEquals(r.staleClaims, 1);
+  assertEquals(f.sends.get("u1|2026-11-18")!.status, "sent");
+});
+
+Deno.test("the time budget counts the receipts step too", async () => {
+  const pending = [{ id: 1, tickets: [{ token: "ExponentPushToken[z]", ticket: "r", error: null }] }];
+  const { db } = fakeDb([person()], pending);
+  const { api, sent } = fakeApi([], { r: { status: "ok" } });
+  let t = 0;
+  const clock = () => t;
+  const slowReceipts = { ...api, receipts: async (ids: string[]) => { t += 45_000; return api.receipts(ids); } };
+  await runPush(db, slowReceipts, NOW, { clock, budgetMs: 40_000 });
+  assertEquals(sent.length, 0);
 });
