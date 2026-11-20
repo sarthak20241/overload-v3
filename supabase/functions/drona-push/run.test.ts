@@ -154,3 +154,23 @@ Deno.test("Expo throws for one person: that one is marked failed, the rest still
   assertEquals(deleted, ["ExponentPushToken[old]"]);
   assertEquals(r.sent, 1);
 });
+
+Deno.test("dry run changes nothing: no receipts marked, no tokens deleted", async () => {
+  const pending = [{ id: 3, tickets: [{ token: "ExponentPushToken[a]", ticket: "x", error: null }] }];
+  const { db, deleted, marked } = fakeDb([person()], pending);
+  const { api } = fakeApi([], { x: { status: "error", error: "DeviceNotRegistered" } });
+  await runPush(db, api, NOW, { dryRun: true });
+  assertEquals(deleted, []);
+  assertEquals(marked, []);
+});
+
+Deno.test("time budget: no new send starts once the run is out of time; the rest wait for the next hour", async () => {
+  const { db, sends } = fakeDb([person({ user_id: "a" }), person({ user_id: "b" }), person({ user_id: "c" })]);
+  const { api, sent } = fakeApi();
+  let t = 0;
+  const clock = () => (t += 20_000); // each check is 20 s later
+  const r = await runPush(db, api, NOW, { clock, budgetMs: 30_000 });
+  assertEquals(sent.length, 1);
+  assertEquals(sends.size, 1);
+  assertEquals(r.skipped.out_of_time, 2);
+});

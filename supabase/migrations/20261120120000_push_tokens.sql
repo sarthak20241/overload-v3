@@ -53,7 +53,9 @@ revoke all on sequence public.push_sends_id_seq from public, anon, authenticated
 grant all on table public.push_sends to service_role;
 
 -- The app saves its token. Also saves the phone's time zone when the profile
--- has none yet: the push respects quiet hours, which needs the zone.
+-- has none yet: the push respects quiet hours, which needs the zone. It never
+-- replaces a saved zone: drona-cards and daily-suggestion own that (they write
+-- the zone the app sends on each call), so someone who moves is caught there.
 create or replace function public.save_push_token(p_token text, p_platform text, p_tz text default null)
 returns boolean
 language plpgsql

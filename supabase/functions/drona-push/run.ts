@@ -51,13 +51,21 @@ export type RunReport = {
 };
 
 const MIN = 60_000;
+/**
+ * No new send starts after this long. The cron call times out at 55 s; one
+ * send is a claim, an Expo call and a record. Who is left waits an hour (the
+ * claim is unique per lapse, so nobody gets two).
+ */
+export const RUN_BUDGET_MS = 40_000;
 
-export async function runPush(db: PushDb, api: PushApi, now: Date, opts: { dryRun?: boolean } = {}): Promise<RunReport> {
+type RunOpts = { dryRun?: boolean; clock?: () => number; budgetMs?: number };
+
+export async function runPush(db: PushDb, api: PushApi, now: Date, opts: RunOpts = {}): Promise<RunReport> {
   const report: RunReport = { candidates: 0, sent: 0, skipped: {}, deadTokens: 0, receiptsRead: 0 };
   const dead = new Set<string>();
 
-  // 1. Receipts.
-  const pending = await db.unreadReceipts(
+  // 1. Receipts. A dry run changes nothing, so it reads none.
+  const pending = opts.dryRun ? [] : await db.unreadReceipts(
     new Date(now.getTime() - 3 * 24 * 60 * MIN).toISOString(), // Expo keeps receipts a day; 3 days covers a skipped run
     new Date(now.getTime() - 15 * MIN).toISOString(),
   );
@@ -81,7 +89,7 @@ export async function runPush(db: PushDb, api: PushApi, now: Date, opts: { dryRu
     await sendAll(db, api, now, opts, report, dead);
   } finally {
     // Never let the cleanup hide the error that broke the run.
-    if (dead.size) await db.deleteTokens([...dead]).catch((e) => console.error(`drona-push deleteTokens: ${e}`));
+    if (dead.size && !opts.dryRun) await db.deleteTokens([...dead]).catch((e) => console.error(`drona-push deleteTokens: ${e}`));
     report.deadTokens = dead.size;
   }
   return report;
@@ -91,10 +99,13 @@ async function sendAll(
   db: PushDb,
   api: PushApi,
   now: Date,
-  opts: { dryRun?: boolean },
+  opts: RunOpts,
   report: RunReport,
   dead: Set<string>,
 ): Promise<void> {
+  const clock = opts.clock ?? Date.now;
+  const started = clock();
+  const budget = opts.budgetMs ?? RUN_BUDGET_MS;
   const people = await db.candidates(now.toISOString());
   report.candidates = people.length;
   for (const c of people) {
@@ -106,6 +117,10 @@ async function sendAll(
     const tokens = c.tokens.filter((t) => !dead.has(t));
     if (tokens.length === 0) {
       report.skipped.no_token = (report.skipped.no_token ?? 0) + 1;
+      continue;
+    }
+    if (!opts.dryRun && clock() - started > budget) {
+      report.skipped.out_of_time = (report.skipped.out_of_time ?? 0) + 1;
       continue;
     }
     if (opts.dryRun) {

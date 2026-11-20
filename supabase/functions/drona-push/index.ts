@@ -3,8 +3,8 @@
 //
 //   cron  pg_cron posts {"mode":"cron"} hourly with x-cron-secret, checked
 //         against the database (drona_push_cron_ok, 20261120120100).
-//   dry   same secret, {"mode":"dry"}: decides and reports, claims and sends
-//         nothing. For checking who WOULD get a push before turning it on.
+//   dry   same secret, {"mode":"dry"}: decides and reports, and changes
+//         nothing (no claim, no send, no receipt read, no token deleted). For checking who WOULD get a push before turning it on.
 //
 // Sends through Expo (_shared/expoPush.ts). EXPO_ACCESS_TOKEN is optional: set
 // it only if the Expo project turns on "enhanced push security".
