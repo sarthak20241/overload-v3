@@ -45,9 +45,15 @@
 --   email on old_app codes, and the unique email index needs it unique).
 -- * token_usage_log is the cost ledger. The row and its cost stay; the
 --   'user_id' and 'user' metadata keys go. One index per key, so this step
---   does not scan the ledger.
+--   does not scan the ledger. They are built first, below. The build locks
+--   ledger writes; the ledger is about 7,900 rows, so that lasts milliseconds.
 -- * redemption_codes: a used code stays used. "Already redeemed" reads
 --   redeemed_at, so clearing redeemed_by_clerk_user_id cannot reopen it.
+--
+-- Private foods: every FK to foods is SET NULL (meal_entries, saved_meal_items,
+-- user_food_cache, precise_cache) or CASCADE (food_servings, food_log_stats,
+-- the food's own rows). Another user's logged line keeps its own name and
+-- macros and loses only the link, so nothing of theirs is deleted or blocked.
 --
 -- Left alone on purpose: admin_users (the owner's access list),
 -- redemption_codes.created_by and coupon_batches.created_by (which admin made
@@ -58,6 +64,12 @@
 -- A later migration that redefines delete_user_data must start from this body.
 -- Test: supabase/migrations/checks/delete_user_data.check.ts (PGlite, not in CI).
 -- Apply with Supabase MCP apply_migration, not supabase db push.
+-- drona_card writes the id as 'user'; every other pipeline as 'user_id'.
+create index if not exists token_usage_log_user_id_idx
+  on public.token_usage_log ((metadata->>'user_id'));
+create index if not exists token_usage_log_user_idx
+  on public.token_usage_log ((metadata->>'user'));
+
 create or replace function public.delete_user_data(p_user_id text)
 returns void
 language plpgsql
@@ -242,12 +254,6 @@ begin
   delete from public.user_profiles where clerk_user_id = p_user_id;
 end;
 $function$;
-
--- drona_card writes the id as 'user'; every other pipeline as 'user_id'.
-create index if not exists token_usage_log_user_id_idx
-  on public.token_usage_log ((metadata->>'user_id'));
-create index if not exists token_usage_log_user_idx
-  on public.token_usage_log ((metadata->>'user'));
 
 revoke all on function public.delete_user_data(text) from public, anon, authenticated;
 grant execute on function public.delete_user_data(text) to service_role;
