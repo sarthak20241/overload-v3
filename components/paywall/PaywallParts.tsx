@@ -79,6 +79,8 @@ export function PlanSwitch({ side, onChange, disabled }: {
             accessibilityState={{ selected: on, disabled }}
             disabled={disabled}
             onPress={() => onChange(k)}
+            // The pill is 32 tall; the touch area reaches 44.
+            hitSlop={{ top: 6, bottom: 6 }}
             style={[s.switchItem, on && { backgroundColor: g.selectedPill }]}
           >
             <Text
@@ -100,29 +102,28 @@ export function PlanSwitch({ side, onChange, disabled }: {
 // ── Example chat card (the hero, strong glass) ──────────────────────────────
 
 /** A chat bubble inside a GlassCard. Also used by the connector screen. */
-export function Bubble({ text, mine, compact }: { text: string; mine?: boolean; compact?: boolean }) {
+export function Bubble({ text, mine }: { text: string; mine?: boolean }) {
   const g = useGlass();
   return (
-    <View style={[s.bubbleRow, compact && s.bubbleRowCompact, { justifyContent: mine ? 'flex-end' : 'flex-start' }]}>
-      <View style={[s.bubble, compact && s.bubbleCompact, { backgroundColor: mine ? g.bubbleMine : g.bubbleTheirs }]}>
-        <Text style={[s.bubbleText, compact && s.bubbleTextCompact, { color: g.C.foreground }]}>{text}</Text>
+    <View style={[s.bubbleRow, { justifyContent: mine ? 'flex-end' : 'flex-start' }]}>
+      <View style={[s.bubble, { backgroundColor: mine ? g.bubbleMine : g.bubbleTheirs }]}>
+        <Text style={[s.bubbleText, { color: g.C.foreground }]}>{text}</Text>
       </View>
     </View>
   );
 }
 
 /** The strong glass card (sheen, lit top and left edges, soft shadow). */
-export function GlassCard({ children, compact }: { children: React.ReactNode; compact?: boolean }) {
+export function GlassCard({ children }: { children: React.ReactNode }) {
   const g = useGlass();
   return (
-    <View style={[s.heroShadow, compact && s.heroCompactRadius, !g.dark && s.heroShadowLight]}>
+    <View style={[s.heroShadow, !g.dark && s.heroShadowLight]}>
       <LinearGradient
         colors={[g.strongFrom, g.strongTo]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={[
           s.hero,
-          compact && s.heroCompact,
           {
             borderColor: g.strongEdge,
             borderTopColor: g.strongEdgeLit,
@@ -137,9 +138,9 @@ export function GlassCard({ children, compact }: { children: React.ReactNode; co
 }
 
 /** The small grey line above the bubbles ("In your ChatGPT"). */
-export function GlassCaption({ text, compact }: { text: string; compact?: boolean }) {
+export function GlassCaption({ text }: { text: string }) {
   const g = useGlass();
-  return <Text style={[s.caption, compact && s.captionCompact, { color: g.C.textMuted }]}>{text}</Text>;
+  return <Text style={[s.caption, { color: g.C.textMuted }]}>{text}</Text>;
 }
 
 export function ExampleCard({ side }: { side: PaywallSide }) {
@@ -196,7 +197,7 @@ export function Features({ side, layout }: { side: PaywallSide; layout: PaywallL
                   : { borderColor: g.dashed, borderStyle: 'dashed' },
               ]}
             >
-              <Feather name={f.included ? f.icon : 'lock'} size={13} color={f.included ? g.C.foreground : g.C.textMuted} />
+              <Feather name={f.included ? f.icon : 'lock'} size={12} color={f.included ? g.C.foreground : g.C.textMuted} />
             </View>
             <Text style={[s.listText, { color: f.included ? g.C.foreground : g.C.textMuted }]}>{f.label}</Text>
           </View>
@@ -218,7 +219,7 @@ export function Features({ side, layout }: { side: PaywallSide; layout: PaywallL
               : { borderColor: g.dashed, borderStyle: 'dashed' },
           ]}
         >
-          <Feather name={f.included ? f.icon : 'lock'} size={16} color={f.included ? g.C.foreground : g.C.textMuted} />
+          <Feather name={f.included ? f.icon : 'lock'} size={14} color={f.included ? g.C.foreground : g.C.textMuted} />
           <Text
             numberOfLines={3}
             style={[s.tileText, { color: f.included ? g.C.foreground : g.C.textMuted }]}
@@ -272,13 +273,18 @@ export function PriceBoxes({ periods, prices, selected, onSelect, disabled }: {
   );
 }
 
+// One radius for the hero card's shadow wrapper and its gradient.
+const HERO_RADIUS = 16;
+
 const s = StyleSheet.create({
-  switch: { flexDirection: 'row', borderRadius: 12, borderWidth: 1, padding: 3 },
-  switchItem: { flex: 1, minHeight: 38, alignItems: 'center', justifyContent: 'center', borderRadius: 9 },
-  switchText: { fontSize: 14, fontFamily: FontFamily.onboardingBody },
+  // Compact scale (2026-11-21): the paywall and the connect screen
+  // (app/connect-ai.tsx) both use these, so both fit above their button.
+  switch: { flexDirection: 'row', borderRadius: 10, borderWidth: 1, padding: 2 },
+  switchItem: { flex: 1, minHeight: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
+  switchText: { fontSize: 13, fontFamily: FontFamily.onboardingBody },
 
   heroShadow: {
-    borderRadius: 20,
+    borderRadius: HERO_RADIUS,
     shadowColor: '#000',
     shadowOpacity: 0.55,
     shadowRadius: 12,
@@ -286,46 +292,39 @@ const s = StyleSheet.create({
     elevation: 8,
   },
   heroShadowLight: { shadowOpacity: 0.12 },
-  hero: { borderRadius: 20, borderWidth: 1, paddingHorizontal: 14, paddingTop: 12, paddingBottom: 6, overflow: 'hidden' },
-  goalRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
-  goalLabel: { fontSize: 13, fontFamily: FontFamily.onboardingBody },
-  goalValue: { fontSize: 13, fontFamily: FontFamily.onboardingHeading },
-  goalTrack: { height: 6, borderRadius: 3, marginBottom: 14, overflow: 'hidden' },
-  goalFill: { width: '62%', height: 6, borderRadius: 3 },
-  caption: { fontSize: 12, marginBottom: 8, fontFamily: FontFamily.onboardingBody },
-  bubbleRow: { flexDirection: 'row', marginBottom: 6 },
-  bubble: { maxWidth: '86%', borderRadius: 14, paddingHorizontal: 11, paddingVertical: 6 },
-  bubbleText: { fontSize: 14, lineHeight: 20, fontFamily: FontFamily.onboardingBody },
-  // compact: the connect screen (app/connect-ai.tsx), where the card sits
-  // above a switch and three steps and must not push them under the button.
-  heroCompactRadius: { borderRadius: 16 },
-  heroCompact: { borderRadius: 16, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 5 },
-  captionCompact: { fontSize: 11, marginBottom: 6 },
-  bubbleRowCompact: { marginBottom: 5 },
-  bubbleCompact: { borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4 },
-  bubbleTextCompact: { fontSize: 13, lineHeight: 17 },
+  hero: { borderRadius: HERO_RADIUS, borderWidth: 1, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 5, overflow: 'hidden' },
+  goalRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
+  goalLabel: { fontSize: 12, fontFamily: FontFamily.onboardingBody },
+  goalValue: { fontSize: 12, fontFamily: FontFamily.onboardingHeading },
+  goalTrack: { height: 5, borderRadius: 3, marginBottom: 10, overflow: 'hidden' },
+  goalFill: { width: '62%', height: 5, borderRadius: 3 },
+  caption: { fontSize: 11, marginBottom: 6, fontFamily: FontFamily.onboardingBody },
+  bubbleRow: { flexDirection: 'row', marginBottom: 5 },
+  bubble: { maxWidth: '86%', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4 },
+  bubbleText: { fontSize: 13, lineHeight: 17, fontFamily: FontFamily.onboardingBody },
 
-  tiles: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 8 },
+  tiles: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 6 },
   tile: {
     width: '31.5%',
-    height: 74,
-    borderRadius: 14,
+    minHeight: 60,
+    borderRadius: 12,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 5,
-    gap: 5,
+    paddingVertical: 6,
+    gap: 4,
   },
-  tileText: { fontSize: 12, lineHeight: 16, textAlign: 'center', fontFamily: FontFamily.onboardingBody },
+  tileText: { fontSize: 11, lineHeight: 14, textAlign: 'center', fontFamily: FontFamily.onboardingBody },
 
   list: { paddingHorizontal: 2 },
-  listRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 },
-  listMark: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  listText: { fontSize: 14, fontFamily: FontFamily.onboardingBody, flexShrink: 1 },
+  listRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6 },
+  listMark: { width: 24, height: 24, borderRadius: 12, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  listText: { fontSize: 13, fontFamily: FontFamily.onboardingBody, flexShrink: 1 },
 
-  prices: { flexDirection: 'row', gap: 8 },
-  price: { flex: 1, minHeight: 56, borderRadius: 14, borderWidth: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 8, paddingHorizontal: 4 },
+  prices: { flexDirection: 'row', gap: 6 },
+  price: { flex: 1, minHeight: 48, borderRadius: 12, borderWidth: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 6, paddingHorizontal: 4 },
   priceOn: { borderWidth: 1.5 },
-  priceLabel: { fontSize: 12, fontFamily: FontFamily.onboardingBody },
-  priceValue: { fontSize: 16, marginTop: 2, fontFamily: FontFamily.onboardingHeading },
+  priceLabel: { fontSize: 11, fontFamily: FontFamily.onboardingBody },
+  priceValue: { fontSize: 15, marginTop: 1, fontFamily: FontFamily.onboardingHeading },
 });

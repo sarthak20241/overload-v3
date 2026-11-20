@@ -143,6 +143,8 @@ export default function ConnectAiScreen() {
                 key={id}
                 accessibilityRole="tab"
                 accessibilityState={{ selected: on }}
+                // The pill is 32 tall; the touch area reaches 44.
+                hitSlop={{ top: 6, bottom: 6 }}
                 onPress={() => { if (!on) { setApp(id); setOpened(false); track('ai_connect_app_switched', { app: id }); } }}
                 style={[s.switchItem, on && { backgroundColor: g.selectedPill }]}
               >
@@ -162,12 +164,12 @@ export default function ConnectAiScreen() {
 
         {/* What it does: the hero */}
         <View style={s.heroGap}>
-          <GlassCard compact>
-            <GlassCaption compact text={`In your ${APP_LABEL[app]}`} />
-            <Bubble compact mine text="I ate 2 eggs and toast" />
-            <Bubble compact text="Saved to Overload. 310 calories." />
-            <Bubble compact mine text="How was my protein this week?" />
-            <Bubble compact text="Low on 4 of 7 days." />
+          <GlassCard>
+            <GlassCaption text={`In your ${APP_LABEL[app]}`} />
+            <Bubble mine text="I ate 2 eggs and toast" />
+            <Bubble text="Saved to Overload. 310 calories." />
+            <Bubble mine text="How was my protein this week?" />
+            <Bubble text="Low on 4 of 7 days." />
           </GlassCard>
         </View>
 
@@ -330,7 +332,7 @@ const s = StyleSheet.create({
   detailText: { fontSize: 13, lineHeight: 19, fontFamily: FontFamily.onboardingBody, marginBottom: 4 },
   link: { fontSize: 14, fontFamily: FontFamily.onboardingHeading },
   footer: { paddingHorizontal: 20, paddingBottom: 10, paddingTop: 8 },
-  cta: { alignItems: 'center', justifyContent: 'center', height: 48, borderRadius: 999 },
+  cta: { alignItems: 'center', justifyContent: 'center', minHeight: 48, paddingVertical: 12, borderRadius: 999 },
   ctaText: { fontSize: 15, fontFamily: FontFamily.onboardingHeading },
   footNote: { fontSize: 12, textAlign: 'center', marginTop: 8, fontFamily: FontFamily.onboardingBody },
 });
