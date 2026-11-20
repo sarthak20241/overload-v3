@@ -55,7 +55,9 @@
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
     },
     "web": {
@@ -108,12 +110,6 @@
       ],
       "./plugins/withoutApsEnvironment",
       "./plugins/withMedia3Pin",
-      [
-        "expo-image-picker",
-        {
-          "photosPermission": "Overload needs your videos so it can check the form on a set you already filmed. The video is analysed on your phone and never uploaded."
-        }
-      ],
       "react-native-fast-tflite",
       "expo-localization"
     ],

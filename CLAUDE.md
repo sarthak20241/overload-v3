@@ -140,6 +140,7 @@ deno test --allow-all supabase/functions/ai-coach/recipe.test.ts # step 5: build
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_threads.check.ts # the food_threads migration on PGlite (real Postgres, downloads it; not in CI)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_card_lines_recipe.check.ts # food_card_lines.recipe: a dish keeps its parts in the thread store (PGlite; not in CI)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/exercise_swap_tags.check.ts # exercises.target_muscle + swap_pattern: catalog names tagged, muscle_group untouched (PGlite; not in CI)
+deno test --allow-all lib/appPermissions.test.ts # no photo-library prompt or storage permission: no screen picks from the gallery
 deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
 deno test --allow-all lib/questionPin.test.ts  # Drona chat: a reply types in under its question at the top
