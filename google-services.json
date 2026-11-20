@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "853218906047",
+    "project_id": "overload-53c17",
+    "storage_bucket": "overload-53c17.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:853218906047:android:8421f1eb77df5de4aa5b0a",
+        "android_client_info": {
+          "package_name": "com.overload.tracker"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAt5Wu0HikpOJuTqFZAtoibUC_1JWEiqXQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -39,6 +39,7 @@
         "backgroundColor": "#0a0a0a"
       },
       "package": "com.overload.tracker",
+      "googleServicesFile": "./google-services.json",
       "permissions": [
         "android.permission.health.READ_STEPS",
         "android.permission.health.READ_ACTIVE_CALORIES_BURNED",
