@@ -48,6 +48,11 @@ Deno.test("said Not now: ask again only after the wait", () => {
 Deno.test("tap: a food lapse push opens Nutrition; anything else is not ours", () => {
   assertEquals(pushRoute({ type: "food_lapse", screen: "nutrition" }), "/nutrition");
   assertEquals(pushRoute({ type: "ready", target: "x" }), null);
+  // Our own message (drona-push send): the screen it names, home when unknown.
+  assertEquals(pushRoute({ type: "drona", screen: "nutrition" }), "/nutrition");
+  assertEquals(pushRoute({ type: "drona", screen: "home" }), "/");
+  assertEquals(pushRoute({ type: "drona", screen: "somewhere-else" }), "/");
+  assertEquals(pushRoute({ type: "drona" }), "/");
   assertEquals(pushRoute({}), null);
 });
 
