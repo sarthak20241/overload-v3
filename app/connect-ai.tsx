@@ -103,8 +103,9 @@ export default function ConnectAiScreen() {
     track('ai_connect_app_opened', { app });
     setOpened(true);
     const url = APP_SETTINGS_URL[app];
-    // Only once it really opened: the best sign this app has that they
-    // connected, so the dashboard's "Connect your AI" reminder goes away.
+    // Only after the website really opened (openBrowserAsync resolves when
+    // the sheet is closed): the best sign this app has that they connected,
+    // so the dashboard's "Connect your AI" reminder goes away.
     const markDone = () => { if (user?.id) void setConnectNudge(user.id, 'done'); };
     try {
       await WebBrowser.openBrowserAsync(url, {

@@ -11,7 +11,7 @@
  * re-checked by the owner on 2026-11-21 (Add custom connector, then a name
  * and a URL, then Add, then sign in). Re-check them when either app moves its
  * settings. Custom connectors are added on the website, not in the phone
- * apps, so the screen opens the website (openAiWebsite in connect-ai.tsx).
+ * apps, so the screen opens the website (openApp in app/connect-ai.tsx).
  */
 
 export const MCP_URL = 'https://mcp.tryoverload.app';
