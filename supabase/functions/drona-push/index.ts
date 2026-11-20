@@ -3,8 +3,10 @@
 //
 //   cron  pg_cron posts {"mode":"cron"} hourly with x-cron-secret, checked
 //         against the database (drona_push_cron_ok, 20261120120100).
-//   dry   same secret, {"mode":"dry"}: decides and reports, and changes
-//         nothing (no claim, no send, no receipt read, no token deleted).
+//   dry   same secret, {"mode":"dry"}: the food nudge's dry run. Decides and
+//         reports, and changes nothing (no claim, no send, no receipt read, no
+//         token deleted).
+//
 //   send  same secret: our own message (manual.ts). Body:
 //         {"mode":"send","campaign":"nov-checkin","title":"...","body":"...",
 //          "user_ids":["user_..."] | "all":true, "screen":"home"|"nutrition",

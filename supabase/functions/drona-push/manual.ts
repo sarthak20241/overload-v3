@@ -13,6 +13,15 @@
 // quiet hours, including people this campaign already reached. Sends go one
 // person at a time, so "all" may stop at the 40 s budget (out_of_time): run the
 // same campaign again to finish.
+//
+// A send that died mid-flight leaves its claim (status claimed) so a re-run
+// never doubles it. To let that person get the campaign after all:
+//   delete from push_sends where kind = 'manual' and lapse_key = '<campaign>'
+//     and user_id = '<id>' and status = 'claimed';
+// Receipts: the hourly cron reads receipts for every kind (unreadReceipts does
+// not filter), so dead phones from a manual send are dropped there too.
+// "all" means everyone with a push token: fine for a check-in; decide on an
+// opt-out before any promotional use.
 
 import { deadTokens, type PushResult } from "../_shared/expoPush.ts";
 import { passes, type PushApi, type PushDb, RUN_BUDGET_MS, type Ticket } from "./run.ts";
@@ -62,7 +71,11 @@ export function parseSendRequest(raw: Record<string, unknown>): { req: SendReque
   const screen = (raw.screen ?? "home") as Screen;
   if (!SCREENS.includes(screen)) return { error: `screen: one of ${SCREENS.join(", ")}` };
   const all = raw.all === true;
-  const ids = Array.isArray(raw.user_ids) ? raw.user_ids.filter((u): u is string => typeof u === "string" && u.length > 0) : null;
+  if (raw.user_ids !== undefined && !Array.isArray(raw.user_ids)) return { error: "user_ids: a list of account ids" };
+  if (Array.isArray(raw.user_ids) && raw.user_ids.some((u) => typeof u !== "string" || u.trim() === "")) {
+    return { error: "user_ids: every entry must be a non-empty account id" };
+  }
+  const ids = Array.isArray(raw.user_ids) ? (raw.user_ids as string[]).map((u) => u.trim()) : null;
   if (all && ids) return { error: "give user_ids or all, not both" };
   if (!all && (!ids || ids.length === 0)) return { error: "give user_ids (a list) or all: true" };
   if (ids && ids.length > MAX_USERS) return { error: `at most ${MAX_USERS} user_ids per call` };

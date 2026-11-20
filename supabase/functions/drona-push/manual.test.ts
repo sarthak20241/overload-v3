@@ -21,6 +21,8 @@ Deno.test("request: needs a campaign id, a title, a body, and users or 'all'", (
     { campaign: "camp", title: "x".repeat(61), body: "b", all: true },
     { campaign: "camp", title: "t", body: "x".repeat(201), all: true },
     { campaign: "camp", title: "t", body: "b", all: true, screen: "settings" },
+    { campaign: "camp", title: "t", body: "b", user_ids: ["u1", 42] }, // not all text
+    { campaign: "camp", title: "t", body: "b", user_ids: ["u1", ""] },
     { campaign: "camp", title: "t", body: "b", user_ids: Array.from({ length: 1001 }, (_, i) => `u${i}`) },
   ]) {
     assert("error" in parseSendRequest(bad), JSON.stringify(bad).slice(0, 80));
