@@ -154,3 +154,25 @@ Deno.test("grants: the app may call save and clear, never read the tables or the
   assertEquals(await can(`select has_table_privilege('authenticated', 'push_tokens', 'select') v`), false);
   assertEquals(await can(`select has_table_privilege('authenticated', 'push_sends', 'select') v`), false);
 });
+
+// ── 20261121130000_push_manual_send ─────────────────────────────────────────
+const MANUAL = await Deno.readTextFile(new URL("../20261121130000_push_manual_send.sql", import.meta.url));
+
+Deno.test("manual: kind 'manual' allowed, one row per person per campaign; targets read the chosen people with hour + tokens", async () => {
+  const { q, as, save, pg } = await db();
+  await pg.exec(MANUAL);
+  await pg.exec(MANUAL); // re-runnable
+  await as("u2"); await save(T("k"));        // Kolkata
+  await as("u3"); await save(T("ny"));       // New York
+  await as("u1"); await save(T("utc"));      // no zone: UTC
+  const ins = `insert into push_sends (user_id, kind, lapse_key, title, body) values ('u2', 'manual', 'nov-checkin', 't', 'b')`;
+  await q(ins);
+  await assertRejects(() => q(ins));
+  await assertRejects(() => q(`insert into push_sends (user_id, kind, lapse_key, title, body) values ('u2', 'other', 'x', 't', 'b')`));
+
+  const [{ v: some }] = await q(`select get_push_targets(array['u2','u3','nobody'], '2026-11-21T05:30:00Z') v`);
+  assertEquals(some.map((t: any) => [t.user_id, t.hour, t.tokens]), [["u2", 11, [T("k")]], ["u3", 0, [T("ny")]]]);
+  const [{ v: all }] = await q(`select get_push_targets(null, '2026-11-21T05:30:00Z') v`);
+  assertEquals(all.map((t: any) => [t.user_id, t.hour]), [["u1", 5], ["u2", 11], ["u3", 0]]);
+  assertEquals((await q(`select has_function_privilege('authenticated', 'get_push_targets(text[],timestamptz)', 'execute') v`))[0].v, false);
+});

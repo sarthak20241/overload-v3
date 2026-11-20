@@ -27,15 +27,18 @@ export type Candidate = {
 
 export type Ticket = { token: string; ticket: string | null; error: string | null };
 
+/** push_sends.kind: the automatic food nudge, or our own message (manual.ts). */
+export type PushKind = "food_lapse" | "manual";
+
 export interface PushDb {
   candidates(now: string): Promise<Candidate[]>;
   /** Insert the push_sends row. false when this lapse already has one. */
-  claim(userId: string, lapseKey: string, title: string, body: string): Promise<boolean>;
-  record(userId: string, lapseKey: string, tickets: Ticket[], status: "sent" | "failed"): Promise<void>;
+  claim(userId: string, lapseKey: string, title: string, body: string, kind?: PushKind): Promise<boolean>;
+  record(userId: string, lapseKey: string, tickets: Ticket[], status: "sent" | "failed", kind?: PushKind): Promise<void>;
   /** Delete claims still 'claimed' from before this moment (a run died mid-send). Returns how many. */
   releaseStaleClaims(before: string): Promise<number>;
   /** Delete the claim: Expo never took the push, so the next run may try again. */
-  release(userId: string, lapseKey: string): Promise<void>;
+  release(userId: string, lapseKey: string, kind?: PushKind): Promise<void>;
   deleteTokens(tokens: string[]): Promise<void>;
   /** Sends with tickets whose receipts are unread, sent between the two moments. */
   unreadReceipts(from: string, to: string): Promise<{ id: number; tickets: Ticket[] }[]>;
@@ -59,7 +62,7 @@ export type RunReport = {
 const MIN = 60_000;
 
 /** Send errors that can clear up by the next run. */
-function passes(error: string | undefined): boolean {
+export function passes(error: string | undefined): boolean {
   return error === "request_failed" || error === "MessageRateExceeded" || !!error?.startsWith("send_threw");
 }
 /**

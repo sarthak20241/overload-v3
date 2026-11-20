@@ -89,6 +89,10 @@ deno test --allow-all lib/sessionRefresh.test.ts             # silent re-sign-in
 deno test --allow-all supabase/functions/_shared/   # TODAY pick rules, shared by app + daily-suggestion
 deno test --allow-all supabase/functions/drona-cards/ # weekly phase metrics check, against a fake database
 deno test --allow-all supabase/functions/drona-push/ # server push run: claim before send, one push per food lapse, dead tokens dropped
+# Our own push to chosen accounts (or "all": true). Secret = private.runtime_config
+# drona_push_cron_secret. One copy per person per campaign; dry_run first.
+# curl -X POST https://<ref>.supabase.co/functions/v1/drona-push -H "x-cron-secret: $SECRET" -H 'Content-Type: application/json' \
+#   -d '{"mode":"send","campaign":"nov-checkin","title":"Drona here","body":"...","user_ids":["user_..."],"screen":"nutrition","dry_run":true}'
 deno test --allow-all lib/pushAsk.test.ts      # push permission ask after a food log on a 2nd day, a tapped push opens Nutrition
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/push_tokens.check.ts # push_tokens + push_sends on PGlite: own token only, phone moves account, one row per lapse (not in CI)
 deno test --allow-all lib/xp.test.ts

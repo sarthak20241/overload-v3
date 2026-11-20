@@ -33,9 +33,14 @@ export function askDecision(a: { days: string[]; askedAt: string | null; perm: P
   return 'ask';
 }
 
-/** The screen a tapped server push opens, or null when the push is not one of these. */
-export function pushRoute(data: Record<string, unknown>): '/nutrition' | null {
+/**
+ * The screen a tapped server push opens, or null when the push is not one of
+ * these. 'drona' is our own message (drona-push mode "send"): it names a
+ * screen, and an unknown one lands on home.
+ */
+export function pushRoute(data: Record<string, unknown>): '/nutrition' | '/' | null {
   if (data.type === 'food_lapse') return '/nutrition';
+  if (data.type === 'drona') return data.screen === 'nutrition' ? '/nutrition' : '/';
   return null;
 }
 
