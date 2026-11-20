@@ -66,6 +66,23 @@ begin
   insert into public.free_phase_builds(user_id, phase_id) values (a, gen_random_uuid());
   insert into public.coach_traces(user_id, status, http_status, last_user_message_preview) values (a, 'ok', 200, 'leftover test');
 
+  -- Food box and free builds (live also clears these in user_profiles
+  -- delete triggers), and the old backup copy of food memory.
+  insert into public.food_bar_traces(request_id, user_id, status, input_text) values (gen_random_uuid(), a, 'ok', 'leftover test oats');
+  insert into public.food_threads(user_id) values (a);
+  insert into public.free_goal_builds(user_id) values (a);
+  if to_regclass('food_memory_private.user_food_cache_backup_20261107') is not null then
+    execute 'insert into food_memory_private.user_food_cache_backup_20261107 (id, user_id) values (gen_random_uuid(), $1)' using a;
+  end if;
+
+  -- Invite codes: A's referral code nobody used (goes), an old-app code sent
+  -- to A's email that B redeemed (stays, email replaced), a failed try.
+  update public.user_profiles set email = 'del-leftover-a@example.test' where clerk_user_id = a;
+  insert into public.invite_codes(code, source, owner_clerk_user_id) values ('DELLEFTA1', 'referral', a);
+  insert into public.invite_codes(code, source, owner_email) values ('DELLEFTA2', 'old_app', 'DEL-LEFTOVER-A@example.test');
+  insert into public.invite_redemptions(clerk_user_id, code, is_owner, days_granted) values ('del_leftover_b', 'DELLEFTA2', false, 30);
+  insert into public.invite_failed_tries(clerk_user_id) values (a);
+
   -- Rows that stay, minus the person: the cost ledger and a used code.
   insert into public.token_usage_log(pipeline, provider, model, metadata) values
     ('leftover_test', 'anthropic', 'test', jsonb_build_object('user_id', a, 'mode', 'fast')),
@@ -85,7 +102,7 @@ begin
       join information_schema.tables t using (table_schema, table_name)
      where t.table_type = 'BASE TABLE'
        and c.table_schema in ('public', 'private', 'food_memory_private')
-       and c.column_name in ('user_id', 'clerk_user_id', 'created_by', 'redeemed_by_clerk_user_id')
+       and c.column_name in ('user_id', 'clerk_user_id', 'created_by', 'redeemed_by_clerk_user_id', 'owner_clerk_user_id')
      order by 1, 2
   loop
     execute format('select count(*) from %I.%I where %I::text = $1', r.table_schema, r.table_name, r.column_name)
@@ -96,6 +113,9 @@ begin
   end loop;
   select count(*) into n from public.token_usage_log where metadata->>'user_id' = a or metadata->>'user' = a;
   if n > 0 then leftovers := leftovers || format('public.token_usage_log.metadata=%s', n); end if;
+
+  select count(*) into n from public.invite_codes where lower(owner_email) = 'del-leftover-a@example.test';
+  if n > 0 then leftovers := leftovers || format('public.invite_codes.owner_email=%s', n); end if;
 
   if cardinality(leftovers) > 0 then
     raise exception 'delete_user_data left rows behind: %', array_to_string(leftovers, ', ');
@@ -122,6 +142,11 @@ begin
     raise exception 'the used code was deleted or reopened'; end if;
   if not exists (select 1 from public.precise_cache where id = pc) then
     raise exception 'the shared precise_cache row was deleted'; end if;
+  if exists (select 1 from public.invite_codes where code = 'DELLEFTA1') then
+    raise exception 'A''s unused referral code survived'; end if;
+  if not exists (select 1 from public.invite_codes where code = 'DELLEFTA2' and owner_email = 'deleted:DELLEFTA2')
+     or not exists (select 1 from public.invite_redemptions where clerk_user_id = 'del_leftover_b' and code = 'DELLEFTA2') then
+    raise exception 'the code B redeemed was lost, or kept A''s email'; end if;
   if not exists (select 1 from public.user_profiles where clerk_user_id = 'del_leftover_b') then
     raise exception 'B''s profile went too'; end if;
 end $$;

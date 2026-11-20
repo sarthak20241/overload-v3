@@ -32,3 +32,8 @@ idx as (
   where not exists (select 1 from pg_constraint co where co.conindid=i.indexrelid)
 )
 select tables.s || E'\n\n' || cons.s || E'\n\n' || coalesce(idx.s,'') || E'\n\n' || fks.s as ddl from tables, cons, idx, fks;
+
+-- Part 2: the triggers that fire on a user_profiles delete. Append rows[0].ddl.
+select string_agg(pg_get_functiondef(t.tgfoid) || E';\n' || pg_get_triggerdef(t.oid) || ';', E'\n' order by t.tgname) ddl
+from pg_trigger t
+where t.tgrelid = 'public.user_profiles'::regclass and not t.tgisinternal and (t.tgtype & 8) <> 0

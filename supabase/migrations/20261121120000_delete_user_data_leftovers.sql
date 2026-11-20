@@ -5,22 +5,23 @@
 -- safety form say a user can delete their data; this makes that true.
 --
 -- Newly deleted (live left these behind):
---   parse_traces, food_bar_traces   user_id + the food text they typed
---   food_threads                    the food box chats (turns, cards, lines cascade)
 --   saved_meals                     (saved_meal_items cascade)
 --   precise_alias                   the user's own aliases; shared rows have null
 --   parse_meal_rate_limit, form_check_rate_limit, invite_failed_tries
 --   form_checks                     exercise name and form summary
---   free_phase_builds, free_goal_builds
+--   free_phase_builds
 --   coach_memory_seen, drona_word_signals
---   invite_redemptions              the user's own code redemptions
 --   foods                           private foods (created_by)
 --   exercises                       custom exercises (created_by); see below
+--   invite_codes                    the user's own invite and referral codes; see below
 --   food_memory_private.user_food_cache_backup_20261107  a backup copy, if still there
 --
--- Deleted on purpose now, not as a side effect of meal_entries triggers and
--- cascades: user_food_cache, food_memory_private.user_food_versions and
--- food_memory_private.alias_rejections.
+-- Deleted here on purpose now, not only as a side effect: parse_traces,
+-- food_bar_traces, food_threads and free_goal_builds (live clears them in
+-- AFTER DELETE triggers on user_profiles; those stay), invite_redemptions
+-- (cascade from user_profiles), and user_food_cache,
+-- food_memory_private.user_food_versions and food_memory_private.alias_rejections
+-- (meal_entries triggers and cascades).
 --
 -- Already gone by ON DELETE CASCADE from user_profiles, checked by the test:
 -- daily_suggestions, drona_facts_runs, drona_moment_asks, user_target_history,

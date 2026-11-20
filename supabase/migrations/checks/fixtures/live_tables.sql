@@ -1,7 +1,8 @@
 -- Live table shapes for delete_user_data.check.ts, read on 2026-11-21 from the
 -- live project by live_tables.gen.sql (schemas public and food_memory_private):
 -- columns, primary keys, unique keys and indexes, foreign keys with their
--- ON DELETE rule. Left out on purpose: defaults, check constraints, triggers,
+-- ON DELETE rule, and the triggers that fire on a user_profiles delete (at the
+-- end). Left out on purpose: defaults, check constraints, other triggers,
 -- RLS. The check fills every column itself, so it needs none of them.
 -- vector columns are text here (PGlite has no pgvector loaded).
 -- Regenerate when tables change:
@@ -1849,3 +1850,46 @@ alter table public.workout_exercise_notes add constraint workout_exercise_notes_
 alter table public.workout_sets add constraint workout_sets_exercise_id_fkey FOREIGN KEY (exercise_id) REFERENCES exercises(id) ON DELETE CASCADE;
 alter table public.workout_sets add constraint workout_sets_workout_id_fkey FOREIGN KEY (workout_id) REFERENCES workouts(id) ON DELETE CASCADE;
 alter table public.workouts add constraint workouts_routine_id_fkey FOREIGN KEY (routine_id) REFERENCES routines(id) ON DELETE SET NULL;
+
+-- Triggers that fire on a user_profiles delete (part of an account delete),
+-- read with live_tables.gen.sql part 2.
+CREATE OR REPLACE FUNCTION public.delete_food_threads_on_profile_delete()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+begin
+  delete from public.food_threads where user_id = old.clerk_user_id;
+  return old;
+end;
+$function$
+;
+CREATE TRIGGER trg_delete_food_threads_on_profile_delete AFTER DELETE ON public.user_profiles FOR EACH ROW EXECUTE FUNCTION delete_food_threads_on_profile_delete();
+CREATE OR REPLACE FUNCTION public.delete_free_goal_builds_on_profile_delete()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+begin
+  delete from public.free_goal_builds where user_id = old.clerk_user_id;
+  return old;
+end;
+$function$
+;
+CREATE TRIGGER trg_delete_free_goal_builds_on_profile_delete AFTER DELETE ON public.user_profiles FOR EACH ROW EXECUTE FUNCTION delete_free_goal_builds_on_profile_delete();
+CREATE OR REPLACE FUNCTION public.delete_traces_on_profile_delete()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+begin
+  delete from public.food_bar_traces where user_id = old.clerk_user_id;
+  delete from public.parse_traces where user_id = old.clerk_user_id;
+  return old;
+end;
+$function$
+;
+CREATE TRIGGER trg_delete_traces_on_profile_delete AFTER DELETE ON public.user_profiles FOR EACH ROW EXECUTE FUNCTION delete_traces_on_profile_delete();

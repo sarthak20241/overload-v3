@@ -281,7 +281,7 @@ Deno.test("delete_user_data: A is gone everywhere, B and shared rows stay", asyn
 Deno.test("delete_user_data: the live body from before fails this check", async () => {
   const problems = await run(OLD_FN);
   console.log(`old body: ${problems.length} problems\n  ${problems.join("\n  ")}`);
-  assert(problems.some((p) => p.startsWith("public.parse_traces")), "the check no longer catches the old gaps");
+  assert(problems.some((p) => p.startsWith("public.saved_meals")), "the check no longer catches the old gaps");
 });
 
 Deno.test("delete_user_data: definer, fixed search_path, service_role only", async () => {
