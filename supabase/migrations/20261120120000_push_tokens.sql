@@ -135,6 +135,8 @@ as $$
      where up.timezone is not null
        and exists (select 1 from pg_timezone_names z where z.name = up.timezone)
        and exists (select 1 from push_tokens t where t.user_id = up.clerk_user_id)
+       and extract(hour from (p_now at time zone up.timezone))::int >= p_from_hour
+       and extract(hour from (p_now at time zone up.timezone))::int < p_until_hour
   )
   select coalesce(jsonb_agg(jsonb_build_object(
            'user_id', p.uid, 'tz', p.tz, 'today', p.today, 'hour', p.hour,
@@ -150,8 +152,7 @@ as $$
          and m.logged_at >= p_now - interval '31 days'
          and exists (select 1 from meal_entries e where e.meal_id = m.id)
     ) d
-   where d.days is not null
-     and p.hour >= p_from_hour and p.hour < p_until_hour;
+   where d.days is not null;
 $$;
 
 revoke all on function public.get_food_lapse_candidates(timestamptz, int, int) from public, anon, authenticated;

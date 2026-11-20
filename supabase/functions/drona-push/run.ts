@@ -80,7 +80,8 @@ export async function runPush(db: PushDb, api: PushApi, now: Date, opts: { dryRu
   try {
     await sendAll(db, api, now, opts, report, dead);
   } finally {
-    if (dead.size) await db.deleteTokens([...dead]);
+    // Never let the cleanup hide the error that broke the run.
+    if (dead.size) await db.deleteTokens([...dead]).catch((e) => console.error(`drona-push deleteTokens: ${e}`));
     report.deadTokens = dead.size;
   }
   return report;
@@ -121,12 +122,12 @@ async function sendAll(
     let results: PushResult[];
     try {
       results = await api.send(tokens.map((to) => ({
-      to,
-      title: words.title,
-      body: words.body,
-      data: pushTarget(),
-      sound: "default",
-      channelId: "default",
+        to,
+        title: words.title,
+        body: words.body,
+        data: pushTarget(),
+        sound: "default",
+        channelId: "default",
       })));
     } catch (e) {
       results = tokens.map((token) => ({ token, error: `send_threw: ${(e as Error).message}`.slice(0, 200) }));
