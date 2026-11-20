@@ -28,7 +28,7 @@ as $$
        where p_user_ids is null or pt.user_id = any (p_user_ids)
        group by pt.user_id
     ) t
-    join user_profiles up on up.clerk_user_id = t.user_id
+    left join user_profiles up on up.clerk_user_id = t.user_id
     left join pg_timezone_names z on z.name = up.timezone;
 $$;
 

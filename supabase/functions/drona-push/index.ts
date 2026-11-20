@@ -54,7 +54,9 @@ function realDb(db: SupabaseClient): PushDb {
     },
     async releaseStaleClaims(before) {
       const { data, error } = await retried(() =>
-        db.from("push_sends").delete().eq("status", "claimed").lt("sent_at", before).select("id")
+        // food_lapse only: a manual claim left by a dead send stays, so a re-run
+        // of that campaign never risks a second copy.
+        db.from("push_sends").delete().eq("kind", "food_lapse").eq("status", "claimed").lt("sent_at", before).select("id")
       );
       if (error) console.error(`drona-push releaseStaleClaims: ${error.message}`);
       return data?.length ?? 0;
@@ -124,7 +126,7 @@ Deno.serve(async (req) => {
     const parsed = parseSendRequest(body);
     if ("error" in parsed) return json({ error: parsed.error }, 400);
     try {
-      const report = await runManualSend(manualDb(db, realDb(db)), api, new Date(), parsed.req);
+      const report = await runManualSend(manualDb(db, realDb(db)), api, parsed.req);
       return json({ ok: true, mode: "send", dry_run: parsed.req.dryRun, ...report });
     } catch (e) {
       return json({ error: (e as Error).message }, 500);

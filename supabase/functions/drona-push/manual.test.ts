@@ -7,8 +7,6 @@ import { type ManualDb, parseSendRequest, runManualSend, type Target } from "./m
 import type { PushApi } from "./run.ts";
 import type { PushMessage } from "../_shared/expoPush.ts";
 
-const NOW = new Date("2026-11-21T05:30:00Z");
-
 Deno.test("request: needs a campaign id, a title, a body, and users or 'all'", () => {
   const ok = parseSendRequest({ campaign: "nov-checkin", title: "Drona here", body: "Quick hello.", user_ids: ["u1"] });
   assert("req" in ok);
@@ -65,11 +63,11 @@ const REQ = { campaign: "nov-checkin", title: "Drona here", body: "Quick hello."
 
 Deno.test("send: each user gets it once per campaign, on every phone, tap opens the screen", async () => {
   const f = fakes([target({ tokens: ["ExponentPushToken[a]", "ExponentPushToken[b]"] }), target({ user_id: "u2" })]);
-  const r = await runManualSend(f.db, f.api, NOW, REQ);
+  const r = await runManualSend(f.db, f.api, REQ);
   assertEquals(r.sent, 2);
   assertEquals(f.sent.length, 3);
   assertEquals(f.sent[0].data, { type: "drona", screen: "nutrition", campaign: "nov-checkin" });
-  const again = await runManualSend(f.db, f.api, NOW, REQ);
+  const again = await runManualSend(f.db, f.api, REQ);
   assertEquals(again.sent, 0);
   assertEquals(again.skipped.already_sent, 2);
   assertEquals(f.sent.length, 3);
@@ -77,16 +75,16 @@ Deno.test("send: each user gets it once per campaign, on every phone, tap opens 
 
 Deno.test("send: quiet hours skip people at night unless turned off", async () => {
   const f = fakes([target({ hour: 23 }), target({ user_id: "u2", hour: 7 }), target({ user_id: "u3", hour: 12 })]);
-  const r = await runManualSend(f.db, f.api, NOW, REQ);
+  const r = await runManualSend(f.db, f.api, REQ);
   assertEquals(r.sent, 1);
   assertEquals(r.skipped.quiet_hours, 2);
   const g = fakes([target({ hour: 23 })]);
-  assertEquals((await runManualSend(g.db, g.api, NOW, { ...REQ, respectQuietHours: false })).sent, 1);
+  assertEquals((await runManualSend(g.db, g.api, { ...REQ, respectQuietHours: false })).sent, 1);
 });
 
 Deno.test("send: dry run sends and claims nothing, and says who would get it", async () => {
   const f = fakes([target(), target({ user_id: "u2", tokens: [] })]);
-  const r = await runManualSend(f.db, f.api, NOW, { ...REQ, dryRun: true });
+  const r = await runManualSend(f.db, f.api, { ...REQ, dryRun: true });
   assertEquals(f.sent.length, 0);
   assertEquals(f.claimed.size, 0);
   assertEquals(r.wouldSend, 1);

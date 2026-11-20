@@ -6,6 +6,13 @@
 // campaign id never sends a second copy. People outside 09:00-21:00 on their
 // own clock are skipped unless respect_quiet_hours is false; send again later
 // with the same campaign id to reach them (the ones already sent are skipped).
+//
+// Limits, on purpose: a send Expo refused for good (every phone dead, bad
+// credentials) is recorded failed and uses up the campaign for that person;
+// only a blip lets the claim go. dry_run counts everyone with a phone inside
+// quiet hours, including people this campaign already reached. Sends go one
+// person at a time, so "all" may stop at the 40 s budget (out_of_time): run the
+// same campaign again to finish.
 
 import { deadTokens, type PushResult } from "../_shared/expoPush.ts";
 import { passes, type PushApi, type PushDb, RUN_BUDGET_MS, type Ticket } from "./run.ts";
@@ -72,7 +79,6 @@ export function parseSendRequest(raw: Record<string, unknown>): { req: SendReque
 export async function runManualSend(
   db: ManualDb,
   api: PushApi,
-  _now: Date,
   req: SendRequest,
   opts: { clock?: () => number; budgetMs?: number } = {},
 ): Promise<ManualReport> {
