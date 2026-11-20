@@ -7,8 +7,11 @@
  * must remain stable once people connect.
  *
  * The steps follow what each app showed on 2026-11-10/11, when the connector
- * was first added to Claude.ai and ChatGPT (Plus). Re-check them when either
- * app moves its settings.
+ * was first added to Claude.ai and ChatGPT (Plus); ChatGPT's step 2 was
+ * re-checked by the owner on 2026-11-21 (Add custom connector, then a name
+ * and a URL, then Add, then sign in). Re-check them when either app moves its
+ * settings. Custom connectors are added on the website, not in the phone
+ * apps, so the screen opens the website (openApp in app/connect-ai.tsx).
  */
 
 export const MCP_URL = 'https://mcp.tryoverload.app';
@@ -26,13 +29,13 @@ export const AI_APPS: { id: AiApp; label: string }[] = [
 export const CONNECT_STEPS: Record<AiApp, string[]> = {
   claude: [
     'On claude.ai, open Customize, then Connectors.',
-    'Tap Add, then Add custom connector. Name it Overload and paste your link.',
-    'Tap Connect, sign in with your Overload account, and tap Allow.',
+    'Tap Add, then Add custom connector. Name it Overload and paste your link as the URL.',
+    'Tap Add, then Connect. Sign in with your Overload account and tap Allow.',
   ],
   chatgpt: [
     'On chatgpt.com, open Plugins (on some plans: Settings, then Apps).',
-    'Add a custom app or MCP server named Overload. Paste the link and choose OAuth. If prompted, enable developer mode.',
-    'Create the app, then choose Connect. Sign in with your Overload account and allow access.',
+    'Tap Add custom connector. Name it Overload and paste your link as the URL. If it asks, choose OAuth or turn on developer mode.',
+    'Tap Add, then sign in with your Overload account and allow access.',
   ],
 };
 
@@ -41,16 +44,29 @@ export const CONNECT_STEPS: Record<AiApp, string[]> = {
  * Step 1 is the Copy link button itself; the long steps above sit behind
  * "Full steps and what it can change".
  */
-export const SHORT_STEPS: Record<AiApp, { title: string; detail: string }[]> = {
+export type ShortStep = {
+  title: string;
+  detail: string;
+  /** What to type in the app's form, shown as small label/value rows. */
+  fields?: { label: string; value: string }[];
+};
+
+/** Step 2's form: the same in both apps. */
+const FORM_FIELDS = [
+  { label: 'Name', value: 'Overload' },
+  { label: 'URL', value: 'Paste your link' },
+];
+
+export const SHORT_STEPS: Record<AiApp, ShortStep[]> = {
   claude: [
     { title: 'Copy your link', detail: MCP_HOST },
-    { title: 'Paste it in Claude', detail: 'On claude.ai, open Customize, then Connectors. Tap Add and paste.' },
-    { title: 'Sign in and allow', detail: 'With your Overload account' },
+    { title: 'Add it on claude.ai', detail: 'In Connectors, tap Add, then Add custom connector.', fields: FORM_FIELDS },
+    { title: 'Tap Add, then Connect', detail: 'Sign in with your Overload account and allow.' },
   ],
   chatgpt: [
     { title: 'Copy your link', detail: MCP_HOST },
-    { title: 'Paste it in ChatGPT', detail: 'On chatgpt.com, open Plugins. Tap Add and paste.' },
-    { title: 'Sign in and allow', detail: 'With your Overload account' },
+    { title: 'Add it on chatgpt.com', detail: 'In Plugins, tap Add custom connector.', fields: FORM_FIELDS },
+    { title: 'Tap Add, then sign in', detail: 'With your Overload account. Then allow access.' },
   ],
 };
 

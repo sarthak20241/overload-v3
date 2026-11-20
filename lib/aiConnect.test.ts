@@ -23,7 +23,11 @@ Deno.test('every app has three steps, long and short; no long dashes in any copy
   }
   const all = [
     ...Object.values(CONNECT_STEPS).flat(),
-    ...Object.values(SHORT_STEPS).flat().flatMap((s) => [s.title, s.detail]),
+    ...Object.values(SHORT_STEPS).flat().flatMap((s) => [
+      s.title,
+      s.detail,
+      ...(s.fields ?? []).flatMap((f) => [f.label, f.value]),
+    ]),
     ...TRY_ASKING,
   ];
   for (const line of all) assert(!/[—–]/.test(line), line);
@@ -55,6 +59,17 @@ Deno.test('the step 1 card shows the same link that is copied', () => {
   assertEquals(`https://${MCP_HOST}`, MCP_URL);
   assertEquals(SHORT_STEPS.chatgpt[0].detail, MCP_HOST);
   assertEquals(SHORT_STEPS.claude[0].detail, MCP_HOST);
+});
+
+Deno.test('step 2 says what to type: the name Overload and the link as the URL', () => {
+  for (const a of AI_APPS) {
+    const fields = SHORT_STEPS[a.id][1].fields ?? [];
+    assertEquals(fields.map((f) => f.label), ['Name', 'URL'], a.id);
+    assertEquals(fields[0].value, 'Overload', a.id);
+    assert(/custom connector/i.test(SHORT_STEPS[a.id][1].detail), a.id);
+    // The long steps say the same name.
+    assert(CONNECT_STEPS[a.id][1].includes('Overload'), a.id);
+  }
 });
 
 Deno.test('the success screen leads with connecting for Connect, and for anyone who came for it', () => {
