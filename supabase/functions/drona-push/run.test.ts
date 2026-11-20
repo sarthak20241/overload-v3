@@ -131,3 +131,26 @@ Deno.test("dry run decides but claims and sends nothing", async () => {
   assertEquals(sends.size, 0);
   assert(r.skipped.dry_run === 1);
 });
+
+Deno.test("Expo throws for one person: that one is marked failed, the rest still get theirs, dead tokens still go", async () => {
+  const pending = [{ id: 9, tickets: [{ token: "ExponentPushToken[old]", ticket: "r-1", error: null }] }];
+  const { db, sends, deleted } = fakeDb([
+    person({ user_id: "boom", tokens: ["ExponentPushToken[boom]"] }),
+    person({ user_id: "ok", tokens: ["ExponentPushToken[ok]"] }),
+  ], pending);
+  const sent: string[] = [];
+  const api: PushApi = {
+    send: async (msgs) => {
+      if (msgs[0].to === "ExponentPushToken[boom]") throw new Error("expo 503");
+      sent.push(...msgs.map((m) => m.to));
+      return msgs.map((m) => ({ token: m.to, ticketId: "t" }));
+    },
+    receipts: async () => ({ "r-1": { status: "error", error: "DeviceNotRegistered" } }),
+  };
+  const r = await runPush(db, api, NOW);
+  assertEquals(sent, ["ExponentPushToken[ok]"]);
+  assertEquals(sends.get("boom|2026-11-18")!.status, "failed");
+  assertEquals(sends.get("ok|2026-11-18")!.status, "sent");
+  assertEquals(deleted, ["ExponentPushToken[old]"]);
+  assertEquals(r.sent, 1);
+});

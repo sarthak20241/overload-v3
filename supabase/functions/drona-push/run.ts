@@ -76,7 +76,24 @@ export async function runPush(db: PushDb, api: PushApi, now: Date, opts: { dryRu
     await db.markReceiptsRead(pending.map((p) => p.id));
   }
 
-  // 2-4. Decide, claim, send.
+  // 2-4. Decide, claim, send. Dead tokens are deleted even if the run breaks.
+  try {
+    await sendAll(db, api, now, opts, report, dead);
+  } finally {
+    if (dead.size) await db.deleteTokens([...dead]);
+    report.deadTokens = dead.size;
+  }
+  return report;
+}
+
+async function sendAll(
+  db: PushDb,
+  api: PushApi,
+  now: Date,
+  opts: { dryRun?: boolean },
+  report: RunReport,
+  dead: Set<string>,
+): Promise<void> {
   const people = await db.candidates(now.toISOString());
   report.candidates = people.length;
   for (const c of people) {
@@ -99,22 +116,25 @@ export async function runPush(db: PushDb, api: PushApi, now: Date, opts: { dryRu
       report.skipped.already_sent = (report.skipped.already_sent ?? 0) + 1;
       continue;
     }
-    const results = await api.send(tokens.map((to) => ({
+    // One person's Expo error must not stop everyone after them. The claim
+    // stays (status failed): a row left 'claimed' means the run died mid-send.
+    let results: PushResult[];
+    try {
+      results = await api.send(tokens.map((to) => ({
       to,
       title: words.title,
       body: words.body,
       data: pushTarget(),
       sound: "default",
       channelId: "default",
-    })));
+      })));
+    } catch (e) {
+      results = tokens.map((token) => ({ token, error: `send_threw: ${(e as Error).message}`.slice(0, 200) }));
+    }
     for (const t of deadTokens(results)) dead.add(t);
     const tickets: Ticket[] = results.map((r) => ({ token: r.token, ticket: r.ticketId ?? null, error: r.error ?? null }));
     const ok = tickets.some((t) => t.ticket);
     await db.record(c.user_id, d.lapseKey, tickets, ok ? "sent" : "failed");
     if (ok) report.sent++;
   }
-
-  if (dead.size) await db.deleteTokens([...dead]);
-  report.deadTokens = dead.size;
-  return report;
 }

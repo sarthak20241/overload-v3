@@ -49,10 +49,11 @@ function realDb(db: SupabaseClient): PushDb {
       if (error) console.error(`drona-push deleteTokens: ${error.message}`);
     },
     async unreadReceipts(from, to) {
-      const { data } = await retried(() =>
+      const { data, error } = await retried(() =>
         db.from("push_sends").select("id, tickets").eq("status", "sent").is("receipt_checked_at", null)
-          .gte("sent_at", from).lte("sent_at", to).limit(1000)
+          .gte("sent_at", from).lte("sent_at", to).order("sent_at", { ascending: true }).limit(1000)
       );
+      if (error) console.error(`drona-push unreadReceipts: ${error.message}`);
       return (data ?? []) as { id: number; tickets: Ticket[] }[];
     },
     async markReceiptsRead(ids) {
