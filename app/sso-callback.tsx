@@ -5,6 +5,8 @@ import * as WebBrowser from 'expo-web-browser';
 import { hasClerkKey, useClerkUser } from '@/hooks/useClerkUser';
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
+import { claimAuthEvent, takeSSOMethod } from '@/lib/authEventOnce';
+import { isNewSSOAccount } from '@/lib/ssoOutcome';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 
 // Catches the OAuth deep link (exp://.../--/sso-callback in Expo Go,
@@ -37,7 +39,15 @@ function ClerkSSOCallback() {
     if (signInSessionId && signInState?.setActive) {
       activatedRef.current = true;
       signInState.setActive({ session: signInSessionId })
-        .then(() => track('signed_in', { method: 'oauth_callback', flow: 'sign_in' }))
+        .then(() => {
+          if (!claimAuthEvent(signInSessionId)) return;
+          // Same rule as runSSO: a transfer that made a new account is a sign-up.
+          if (isNewSSOAccount({ signUp: signUpState?.signUp })) {
+            track('signed_up', { method: takeSSOMethod(), email_verification: false, via: 'callback' });
+          } else {
+            track('signed_in', { method: takeSSOMethod(), flow: 'sign_in', via: 'callback' });
+          }
+        })
         .catch((e: any) => {
           track('auth_failed', { method: 'oauth_callback', reason: 'set_active_failed' });
           console.warn('[sso-callback] setActive(signIn) failed', e);
@@ -45,7 +55,7 @@ function ClerkSSOCallback() {
     } else if (signUpSessionId && signUpState?.setActive) {
       activatedRef.current = true;
       signUpState.setActive({ session: signUpSessionId })
-        .then(() => track('signed_up', { method: 'oauth_callback', email_verification: false }))
+        .then(() => { if (claimAuthEvent(signUpSessionId)) track('signed_up', { method: takeSSOMethod(), email_verification: false, via: 'callback' }); })
         .catch((e: any) => {
           track('auth_failed', { method: 'oauth_callback', reason: 'set_active_failed' });
           console.warn('[sso-callback] setActive(signUp) failed', e);

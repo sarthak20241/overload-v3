@@ -20,6 +20,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { screen, identifyUser, resetAnalytics, setUserProps, registerSuperProps, analyticsEnabled } from '@/lib/analytics';
 import { clearCache } from '@/lib/screenCache';
 import { loadProfileRow } from '@/lib/profileReads';
+import { captureInstallSourceOnce } from '@/lib/installSource';
 
 /** Person props re-read from user_profiles at most this often on foreground. */
 const PROFILE_REFRESH_MS = 10 * 60 * 1000;
@@ -48,6 +49,11 @@ export function AnalyticsBridge() {
     if (!analyticsEnabled) return;
     registerSuperProps({ is_guest: isGuestSession });
   }, [isGuestSession]);
+
+  // Android: which store link brought this install (once per install).
+  useEffect(() => {
+    void captureInstallSourceOnce();
+  }, []);
 
   // Bumped on foreground (throttled) so tier, level and streak on the person
   // do not freeze at whatever they were on sign-in.

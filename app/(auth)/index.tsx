@@ -15,7 +15,8 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import * as WebBrowser from 'expo-web-browser';
 import { setGuestMode, getGuestMode } from '@/lib/guestMode';
 import { getGuestWorkouts, getGuestRoutines } from '@/lib/guestStore';
-import { classifySSO, shouldReloadSSO, ssoDetail, ssoErrorCopy, SIGN_IN_INCOMPLETE_COPY, type SSOOutcome } from '@/lib/ssoOutcome';
+import { claimAuthEvent, clearSSOMethod, noteSSOMethod } from '@/lib/authEventOnce';
+import { classifySSO, isNewSSOAccount, shouldReloadSSO, ssoDetail, ssoErrorCopy, SIGN_IN_INCOMPLETE_COPY, type SSOOutcome } from '@/lib/ssoOutcome';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 
 function useWarmUpBrowser() {
@@ -414,6 +415,8 @@ export default function AuthScreen() {
     setError('');
     setMethodHint('');
     try {
+      // sso-callback may report this sign-in first (Android); it needs the provider.
+      noteSSOMethod(method);
       const result = await startSSOFlow({ strategy, redirectUrl: 'overload://sso-callback' });
       let outcome: SSOOutcome = classifySSO(result);
       let state = result;
@@ -430,11 +433,19 @@ export default function AuthScreen() {
 
       if (outcome.kind === 'session') {
         await result.setActive!({ session: outcome.sessionId });
-        track('signed_in', { method, after_reload: reloaded || undefined });
+        // runSSO reports this one itself; the callback must not reuse the note.
+        clearSSOMethod();
+        if (claimAuthEvent(outcome.sessionId)) {
+          if (isNewSSOAccount(state)) track('signed_up', { method, email_verification: false, after_reload: reloaded || undefined });
+          else track('signed_in', { method, after_reload: reloaded || undefined });
+        }
         router.replace('/(app)');
         return;
       }
-      if (outcome.kind === 'cancelled') return;
+      if (outcome.kind === 'cancelled') {
+        clearSSOMethod();
+        return;
+      }
       if (outcome.kind === 'second_factor' && (await startSecondFactor(state.signIn))) return;
 
       const detail = ssoDetail(state);

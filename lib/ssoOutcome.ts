@@ -47,6 +47,17 @@ export type SSOOutcome =
   | { kind: 'provider_error'; code: string }
   | { kind: 'no_session' };
 
+/**
+ * True when a Google/Apple sign-in made a NEW account. Clerk turns an unknown
+ * account into a transfer sign-up, so the sign-up resource ends complete with
+ * the session. For a plain sign-in useSSO still returns a signUp resource,
+ * but it is empty. Without this, every Google/Apple sign-up was sent as
+ * `signed_in` and PostHog undercounted new users.
+ */
+export function isNewSSOAccount(r: SSOResultLike): boolean {
+  return r.signUp?.status === 'complete' && !!r.signUp.createdSessionId;
+}
+
 export function classifySSO(r: SSOResultLike): SSOOutcome {
   // Same precedence as useSSO: a transfer sign-up's session wins.
   const sessionId = r.createdSessionId || r.signUp?.createdSessionId || r.signIn?.createdSessionId;

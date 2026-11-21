@@ -99,7 +99,9 @@ deno test --allow-all lib/xp.test.ts
 deno test --allow-all lib/tiers.test.ts
 deno test --unstable-sloppy-imports --import-map=lib/test-import-map.json lib/readiness.test.ts
 deno test --allow-all lib/coachErrors.test.ts  # which bucket a failure lands in
-deno test --allow-all lib/ssoOutcome.test.ts   # Google/Apple sign-in with no session: next step + user copy
+deno test --allow-all lib/ssoOutcome.test.ts   # Google/Apple sign-in with no session: next step + user copy; a new account counts as signed_up
+deno test --allow-all lib/installReferrer.test.ts # Android install source from Play's referrer (sent once as install_attributed)
+deno test --allow-all lib/authEventOnce.test.ts  # a Google/Apple sign-in is reported once, by sso-callback or runSSO
 deno test --allow-all --no-check --unstable-sloppy-imports --import-map=lib/directFetchRetry.test-import-map.json lib/directFetchRetry.test.ts  # Today pick + weekly card retry an expired token once
 deno test --allow-all lib/authRetry.test.ts    # expired Clerk token: one retry with a fresh one
 deno test --allow-all lib/purchaseErrors.test.ts # a pending store payment is not a failure; failures keep the store's reason
