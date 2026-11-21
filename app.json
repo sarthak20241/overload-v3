@@ -110,6 +110,7 @@
         }
       ],
       "./plugins/withMedia3Pin",
+      "./plugins/withOptionalPortrait",
       "react-native-fast-tflite",
       "expo-localization"
     ],
