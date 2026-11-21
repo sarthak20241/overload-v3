@@ -146,6 +146,19 @@ const CASES: Case[] = [
     id: "oats", typed: "oats",
     rows: { "rolled oats": S, "Doctor's Choice banana caramel protein oats": SU, "oat milk": D },
   },
+  {
+    // 2026-11-18 Precise, demo account: "My usual oats and a Chobani yogurt".
+    // Her usual breakfast is "Oatmeal, cooked" (9 times since 10-24); the rest
+    // is her real memory for that parse. Extract passed the line as "Oats",
+    // which served nothing 3/3; the parse now asks with "my usual" kept
+    // (saysUsual), which served it 3/3.
+    id: "usual-oatmeal", real: true, typed: "my usual Oats",
+    rows: {
+      "Oatmeal, cooked": SU, "Salmon": D, "Rice": D, "broccoli": D, "Milk, NFS": D,
+      "chicken Caesar salad": D, "chips": D, "Diet Coke": D, "oat milk latte": D,
+    },
+    times: { "Oatmeal, cooked": 9 }, serves: "Oatmeal, cooked",
+  },
   // ── Branded protein oats (one user, 2026-09-30..10-28) ────────────────────
   // She saved the Too Yumm label on 10-11 and typed it three more times; every
   // time the label scored under MEMORY_FLOOR and the line was a guess or, once,

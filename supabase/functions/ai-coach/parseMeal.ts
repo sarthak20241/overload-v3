@@ -76,6 +76,7 @@ import {
 import {
   buildMemory,
   matchMemory,
+  saysUsual,
   type MemoryEntry,
   type MemoryFood,
   type MemoryMatch,
@@ -7864,6 +7865,13 @@ async function runParseMealCore(
       )).catch(() => [] as MemoryEntry[]) ?? [];
       const trustMode = deps.userMemory?.originTrust ?? "off";
       const foods = buildMemory([...aliases, ...loaded.entries], tier, undefined, undefined, trustMode === "on");
+      // "my usual oats": the user asked for the food she logs, so a line she
+      // called her usual may be answered by numbers from any tier (they keep
+      // their own numbers_tier on the card). Every other line keeps the rule.
+      const usual = toResolve.map((it) => saysUsual(input.text, { name: memoryLineName(it), brand: it.brand ?? null }));
+      const anyTier = tier !== "fast" && usual.some(Boolean)
+        ? buildMemory([...aliases, ...loaded.entries], "fast", undefined, undefined, trustMode === "on")
+        : foods;
       if (trustMode === "shadow") {
         // Where trust by origin would serve other numbers for the same food.
         const byOrigin = new Map(buildMemory([...aliases, ...loaded.entries], tier, undefined, undefined, true).map((f) => [f.key, f]));
@@ -7878,7 +7886,7 @@ async function runParseMealCore(
           result: { differs: differs.length, foods: differs.slice(0, 10).map((f) => ({ name: f.name, now: f.per100.kcal, by_origin: byOrigin.get(f.key)?.per100.kcal, origin: byOrigin.get(f.key)?.origin })) },
         });
       }
-      if (foods.length === 0) {
+      if (foods.length === 0 && anyTier.length === 0) {
         steps.push({
           iter: 1,
           tool: "user_memory",
@@ -7893,11 +7901,12 @@ async function runParseMealCore(
       }
       // The remembered foods a line may match: on a correction, never the food
       // the user just swapped that line away from (rejectedFood).
-      const memoryFoodsFor = (it: ExtractedItem) => {
+      const memoryFoodsFor = (it: ExtractedItem, idx: number) => {
         const gone = correctsPrevious ? rejectedFood(it, prevItems) : null;
-        const usable = withoutRejected(foods, gone, (f) => f.name, prevItems);
-        if (usable.length !== foods.length) {
-          steps.push({ iter: 1, tool: "rejected_food", input: { item: it.name, rejected: gone, from: "memory" }, result: { dropped: foods.length - usable.length } });
+        const pool = usual[idx] ? anyTier : foods;
+        const usable = withoutRejected(pool, gone, (f) => f.name, prevItems);
+        if (usable.length !== pool.length) {
+          steps.push({ iter: 1, tool: "rejected_food", input: { item: it.name, rejected: gone, from: "memory" }, result: { dropped: pool.length - usable.length } });
         }
         return usable;
       };
@@ -7913,7 +7922,7 @@ async function runParseMealCore(
           // with no typed weight falls back to the memory like any line.
           !memoryEligible[idx] || statedFor(it)
             ? Promise.resolve(null)
-            : matchMemory(deps.jev!, memoryFoodsFor(it), { name: memoryLineName(it), brand: it.brand ?? null }, { choice: !fastMode })
+            : matchMemory(deps.jev!, memoryFoodsFor(it, idx), { name: memoryLineName(it), brand: it.brand ?? null }, { choice: !fastMode, usual: usual[idx] })
         ),
       );
       for (const m of matches) if (m) steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: m.trace });
