@@ -39,6 +39,13 @@ Deno.test("first_tap: closing the build arms it, and the next tap opens the payw
   assertEquals(postBuildPaywallStep({ timing: "first_tap", event: "tap", armed: false, fired: false }), "allow");
 });
 
+Deno.test("a tap while the flag is still loading after the build opens the paywall, whatever the timing", () => {
+  for (const timing of ["after_save", "first_tap"] as const) {
+    assertEquals(postBuildPaywallStep({ timing, event: "tap", armed: false, fired: false, deciding: true }), "open");
+    assertEquals(postBuildPaywallStep({ timing, event: "tap", armed: false, fired: true, deciding: true }), "allow");
+  }
+});
+
 Deno.test("the paywall opens once, whatever the timing", () => {
   for (const timing of ["after_save", "first_tap"] as const) {
     assertEquals(postBuildPaywallStep({ timing, event: "build_closed", armed: false, fired: true }), "allow");

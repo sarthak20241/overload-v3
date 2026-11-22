@@ -325,7 +325,7 @@ export default function GoalPlanScreen() {
   }
   const armed = useRef<{ timing: PostBuildPaywallTiming; fromFlag: boolean } | null>(null);
   const [paywallArmed, setPaywallArmed] = useState(false);
-  const openPostBuildPaywall = useCallback((trigger: string, timing: PostBuildPaywallTiming, fromFlag: boolean) => {
+  const openPostBuildPaywall = useCallback((trigger: string, timing: PostBuildPaywallTiming | 'pending', fromFlag: boolean) => {
     upgradeFired.current = true;
     armed.current = null;
     setPaywallArmed(false);
@@ -336,15 +336,16 @@ export default function GoalPlanScreen() {
     if (thenParam !== 'upgrade' || upgradeFired.current || armed.current || upgradeDeciding.current) return;
     if (tourOnRef.current) { upgradeWaiting.current = true; return; }
     upgradeDeciding.current = true;
+    // Gate taps (and Android back) while the flag loads: either timing ends in a paywall.
+    setPaywallArmed(true);
     try {
       const { timing, fromFlag } = await (timingRead.current ?? Promise.resolve({ timing: DEFAULT_POST_BUILD_PAYWALL, fromFlag: false }));
       const step = postBuildPaywallStep({ timing, event: 'build_closed', armed: !!armed.current, fired: upgradeFired.current });
       if (step === 'open') openPostBuildPaywall('build_closed', timing, fromFlag);
       else if (step === 'arm') {
         armed.current = { timing, fromFlag };
-        setPaywallArmed(true);
-        track('post_build_paywall_armed', { timing, flag_status: fromFlag ? 'resolved' : 'fallback' });
-      }
+        track('post_build_paywall_armed', { timing, trigger: 'build_closed', flag_status: fromFlag ? 'resolved' : 'fallback' });
+      } else setPaywallArmed(false);
     } finally {
       upgradeDeciding.current = false;
     }
@@ -353,9 +354,14 @@ export default function GoalPlanScreen() {
   // the paywall instead. True when it did (the caller then stops).
   const paywallTap = useCallback((trigger: string): boolean => {
     const a = armed.current;
-    if (!a) return false;
-    if (postBuildPaywallStep({ timing: a.timing, event: 'tap', armed: true, fired: upgradeFired.current }) !== 'open') return false;
-    openPostBuildPaywall(trigger, a.timing, a.fromFlag);
+    const deciding = upgradeDeciding.current;
+    if (!a && !deciding) return false;
+    const step = postBuildPaywallStep({
+      timing: a?.timing ?? DEFAULT_POST_BUILD_PAYWALL, event: 'tap', armed: !!a, fired: upgradeFired.current, deciding,
+    });
+    if (step !== 'open') return false;
+    // Opened before the flag answered: the timing is not known yet.
+    openPostBuildPaywall(trigger, a ? a.timing : 'pending', a?.fromFlag ?? false);
     return true;
   }, [openPostBuildPaywall]);
   const gate = (trigger: string, fn: () => void) => () => { if (!paywallTap(trigger)) fn(); };

@@ -35,16 +35,18 @@ export type PostBuildPaywallStep = 'open' | 'arm' | 'allow';
 /**
  * What the Goal screen does on sign-up's visit. `build_closed` is the build
  * sheet closing; `tap` is any tap that leaves or changes the screen. `armed`
- * means the build closed under first_tap; `fired` means the paywall already
- * opened once.
+ * means the build closed under first_tap; `deciding` means the build closed
+ * and the flag is still loading (either timing ends in a paywall, so a tap
+ * then opens it); `fired` means the paywall already opened once.
  */
 export function postBuildPaywallStep(s: {
   timing: PostBuildPaywallTiming;
   event: 'build_closed' | 'tap';
   armed: boolean;
   fired: boolean;
+  deciding?: boolean;
 }): PostBuildPaywallStep {
   if (s.fired) return 'allow';
   if (s.event === 'build_closed') return s.timing === 'after_save' ? 'open' : 'arm';
-  return s.armed ? 'open' : 'allow';
+  return s.armed || s.deciding ? 'open' : 'allow';
 }
