@@ -79,9 +79,11 @@ interface Props {
   heading?: boolean;
   /** Space between the "Your plan" heading and the first row. */
   headingGap?: number;
+  /** Asked before a row opens its pillar; false stops it (sign-up's first-tap paywall). */
+  onBeforeOpen?: (pillar: Pillar) => boolean;
 }
 
-export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, heading = true, headingGap = 6 }: Props) {
+export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, heading = true, headingGap = 6, onBeforeOpen }: Props) {
   const { C } = useTheme();
   const router = useRouter();
   const statusColor = useStatusColor();
@@ -111,6 +113,7 @@ export function PlanRows({ phase, readinessToday, live, from, staggerFrom = 0, h
   // read as the whole goal's plan.
   const planTitle = `Your plan for phase ${phase.seq + 1}`;
   const open = (pillar: Pillar) => {
+    if (onBeforeOpen && !onBeforeOpen(pillar)) return;
     track('program_pillar_opened', { pillar, seq: phase.seq, from });
     router.push({ pathname: '/goal-plan-pillar', params: { pillar, seq: String(phase.seq) } } as any);
   };

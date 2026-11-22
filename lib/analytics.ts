@@ -281,6 +281,9 @@ export type AnalyticsEvent =
   | 'signup_tour_shown'
   | 'signup_tour_scene'
   | 'signup_tour_done'
+  // The paywall after sign-up's phase 1 build (lib/postBuildPaywall.ts).
+  | 'post_build_paywall_armed'
+  | 'post_build_paywall_opened'
   // Spotlight intro + first-visit hints (components/spotlight/).
   | 'spotlight_shown'
   | 'spotlight_done'
