@@ -18,8 +18,8 @@
  * text only. Nothing here needs the metrics tables to exist.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { track } from '@/lib/analytics';
-import { View, Text, Pressable, ScrollView, StyleSheet, Alert, useWindowDimensions } from 'react-native';
+import { getFlagVariant, track } from '@/lib/analytics';
+import { View, Text, Pressable, ScrollView, StyleSheet, Alert, BackHandler, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -62,6 +62,13 @@ import { Colors, Radius, FontWeight } from '@/constants/theme';
 import { OrbRefreshControl, RefreshOrb } from '@/components/ui/OrbRefresh';
 import { SignupTour } from '@/components/onboarding/SignupTour';
 import { phaseLineFor } from '@/lib/signupTour';
+import {
+  DEFAULT_POST_BUILD_PAYWALL,
+  POST_BUILD_PAYWALL_FLAG,
+  postBuildPaywallStep,
+  timingFromFlag,
+  type PostBuildPaywallTiming,
+} from '@/lib/postBuildPaywall';
 
 function fmtShortISO(iso: string): string {
   const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
@@ -298,20 +305,66 @@ export default function GoalPlanScreen() {
     // already has routines opens no coach, so nothing else would re-render.
     setHandoffDone(true);
     if (phase && phase.routines.length === 0) buildSplitFor(phase, autoParam === '1');
-    else if (thenParam === 'upgrade') continueToUpgrade();
+    else if (thenParam === 'upgrade') void continueToUpgrade();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [buildParam, seqParam, autoParam, currentPhase, program, buildSplitFor]);
 
   // Sign-up's build came first; the onboarding paywall follows it, once.
-  // While the tour plays it waits, and goes when the tour ends.
+  // While the tour plays it waits, and goes when the tour ends. The PostHog
+  // flag post-build-paywall picks when (lib/postBuildPaywall.ts): after_save
+  // opens it as the build sheet closes; first_tap leaves the Goal screen
+  // showing and the first tap on it opens the paywall instead.
   const upgradeFired = useRef(false);
   const upgradeWaiting = useRef(false);
-  const continueToUpgrade = useCallback(() => {
-    if (thenParam !== 'upgrade' || upgradeFired.current) return;
-    if (tourOnRef.current) { upgradeWaiting.current = true; return; }
+  const upgradeDeciding = useRef(false);
+  const timingRead = useRef<Promise<{ timing: PostBuildPaywallTiming; fromFlag: boolean }> | null>(null);
+  if (thenParam === 'upgrade' && !timingRead.current) {
+    // Read while phase 1 builds, so the answer is in by the time it closes.
+    timingRead.current = getFlagVariant(POST_BUILD_PAYWALL_FLAG, DEFAULT_POST_BUILD_PAYWALL, 3000)
+      .then(({ variant, fromFlag }) => ({ timing: timingFromFlag(variant), fromFlag }));
+  }
+  const armed = useRef<{ timing: PostBuildPaywallTiming; fromFlag: boolean } | null>(null);
+  const [paywallArmed, setPaywallArmed] = useState(false);
+  const openPostBuildPaywall = useCallback((trigger: string, timing: PostBuildPaywallTiming, fromFlag: boolean) => {
     upgradeFired.current = true;
+    armed.current = null;
+    setPaywallArmed(false);
+    track('post_build_paywall_opened', { timing, trigger, flag_status: fromFlag ? 'resolved' : 'fallback' });
     router.replace({ pathname: '/upgrade', params: { flow: 'onboarding' } } as any);
-  }, [thenParam, router]);
+  }, [router]);
+  const continueToUpgrade = useCallback(async () => {
+    if (thenParam !== 'upgrade' || upgradeFired.current || armed.current || upgradeDeciding.current) return;
+    if (tourOnRef.current) { upgradeWaiting.current = true; return; }
+    upgradeDeciding.current = true;
+    try {
+      const { timing, fromFlag } = await (timingRead.current ?? Promise.resolve({ timing: DEFAULT_POST_BUILD_PAYWALL, fromFlag: false }));
+      const step = postBuildPaywallStep({ timing, event: 'build_closed', armed: !!armed.current, fired: upgradeFired.current });
+      if (step === 'open') openPostBuildPaywall('build_closed', timing, fromFlag);
+      else if (step === 'arm') {
+        armed.current = { timing, fromFlag };
+        setPaywallArmed(true);
+        track('post_build_paywall_armed', { timing, flag_status: fromFlag ? 'resolved' : 'fallback' });
+      }
+    } finally {
+      upgradeDeciding.current = false;
+    }
+  }, [thenParam, openPostBuildPaywall]);
+  // first_tap: once armed, a tap that would leave or change the screen opens
+  // the paywall instead. True when it did (the caller then stops).
+  const paywallTap = useCallback((trigger: string): boolean => {
+    const a = armed.current;
+    if (!a) return false;
+    if (postBuildPaywallStep({ timing: a.timing, event: 'tap', armed: true, fired: upgradeFired.current }) !== 'open') return false;
+    openPostBuildPaywall(trigger, a.timing, a.fromFlag);
+    return true;
+  }, [openPostBuildPaywall]);
+  const gate = (trigger: string, fn: () => void) => () => { if (!paywallTap(trigger)) fn(); };
+  // Android back while armed is a tap too.
+  useEffect(() => {
+    if (!paywallArmed) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => paywallTap('hardware_back'));
+    return () => sub.remove();
+  }, [paywallArmed, paywallTap]);
 
   useEffect(() => {
     if (dronaParam !== 'calories' || dronaFired.current || loading) return;
@@ -454,7 +507,7 @@ export default function GoalPlanScreen() {
               </Text>
               {hero.kind === 'custom' && (
                 <Pressable
-                  onPress={() => { haptics.tap(); setLogOpen(true); }}
+                  onPress={gate('log', () => { haptics.tap(); setLogOpen(true); })}
                   style={({ pressed }) => [styles.logBtn, { backgroundColor: Colors.primary, opacity: pressed ? 0.85 : 1 }]}
                   accessibilityRole="button"
                   accessibilityLabel={`Log ${heroCapsLabel(hero)}`}
@@ -511,7 +564,7 @@ export default function GoalPlanScreen() {
       : notStarted ? `Starts ${fmtShortISO(program.start_date)}` : ended ? 'Done' : `${ph.duration_weeks} weeks`;
     return (
       <Pressable
-        onPress={openPhase}
+        onPress={gate('phase_card', openPhase)}
         style={({ pressed }) => [styles.phaseCard, { backgroundColor: pal.card, opacity: pressed ? 0.85 : 1 }]}
         accessibilityRole="button"
         accessibilityLabel={`Open the ${ph.name} phase. ${when}${target ? `, ${target}` : ''}${pct != null ? `, ${pct} percent of the phase target` : ''}`}
@@ -568,11 +621,11 @@ export default function GoalPlanScreen() {
   return (
     <View style={[styles.root, { backgroundColor: pal.bg, paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable onPress={back} hitSlop={12} accessibilityRole="button" accessibilityLabel="Back" style={styles.headerBtn}>
+        <Pressable onPress={gate('back', back)} hitSlop={12} accessibilityRole="button" accessibilityLabel="Back" style={styles.headerBtn}>
           <ChevronLeftIcon size={28} strokeWidth={1.75} color={C.foreground} />
         </Pressable>
         <Text style={[T.rowTitle, { color: C.foreground, fontWeight: FontWeight.semibold, fontSize: 17, lineHeight: 22 }]}>Goal & Plan</Text>
-        <Pressable onPress={openMenu} hitSlop={12} accessibilityRole="button" accessibilityLabel="More" style={styles.headerBtn}>
+        <Pressable onPress={gate('menu', openMenu)} hitSlop={12} accessibilityRole="button" accessibilityLabel="More" style={styles.headerBtn}>
           <Feather name="more-horizontal" size={22} color={C.foreground} />
           {dronaWaiting > 0 && <View style={[styles.menuDot, { backgroundColor: Colors.primary }]} />}
         </Pressable>
@@ -624,7 +677,7 @@ export default function GoalPlanScreen() {
             <Stagger index={2}>{phaseCard ? <View ref={phaseTarget} collapsable={false} style={styles.phaseSpot}>{phaseCard}</View> : null}</Stagger>
             {shownPhase && (
               <View style={{ marginTop: 19 }}>
-                <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} headingGap={13} />
+                <PlanRows phase={shownPhase} readinessToday={readinessToday} live={shownPhase.seq === program.currentPhaseSeq ? live : null} from="goal" staggerFrom={3} headingGap={13} onBeforeOpen={(pillar) => !paywallTap(`pillar_${pillar}`)} />
               </View>
             )}
 
@@ -654,10 +707,10 @@ export default function GoalPlanScreen() {
         <FooterAction
           label={unbuilt ? (draftWaiting ? 'Review and save workouts' : "Build this phase's workouts") : 'Adjust with Drona'}
           accessibilityLabel={unbuilt ? (draftWaiting ? "Review and save this phase's workouts" : "Build this phase's workouts") : 'Adjust this program with Drona'}
-          onPress={() => {
+          onPress={gate('footer', () => {
             if (unbuilt && currentPhase) buildSplitFor(currentPhase, true);
             else { setBuildSeed(null); setBuildPhaseId(null); setCoachOpen(true); }
-          }}
+          })}
         />
       )}
 
@@ -681,7 +734,7 @@ export default function GoalPlanScreen() {
         // The tour above it owns Android back until it ends.
         deferHardwareBack={tourOn}
         source="goal_plan"
-        onClose={() => { setCoachOpen(false); setBuildSeed(null); setBuildPhaseId(null); setBuildAuto(false); setProgramDraft(undefined); load(); continueToUpgrade(); }}
+        onClose={() => { setCoachOpen(false); setBuildSeed(null); setBuildPhaseId(null); setBuildAuto(false); setProgramDraft(undefined); load(); void continueToUpgrade(); }}
         initialScreen={buildSeed ? 'plan' : 'program'}
         planSeed={buildSeed ?? undefined}
         planAutoStart={buildAuto}
@@ -712,7 +765,7 @@ export default function GoalPlanScreen() {
             setTourOn(false);
             // Once only: a remount with the same params must not replay it.
             router.setParams({ tour: undefined } as any);
-            if (upgradeWaiting.current) { upgradeWaiting.current = false; continueToUpgrade(); }
+            if (upgradeWaiting.current) { upgradeWaiting.current = false; void continueToUpgrade(); }
           }}
         />
       )}

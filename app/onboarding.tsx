@@ -112,6 +112,7 @@ import type { GeneratedProgram } from '@/lib/programData';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 import { joinGoals, selectedGoals, toggleGoal } from '@/lib/fitnessGoals';
+import { signupGoalPlanParams } from '@/lib/postBuildPaywall';
 
 const WEIGHT_UNITS = [
   { value: 'kg', label: 'kg' },
@@ -674,7 +675,7 @@ export default function OnboardingScreen() {
         });
         // A saved program goes straight on to building phase 1's workouts.
         if (firstPhaseId && opts.dest !== '/(app)/routines') {
-          router.replace({ pathname: '/goal-plan', params: { build: 'phase', auto: '1', tour: '1' } } as any);
+          router.replace({ pathname: '/goal-plan', params: signupGoalPlanParams(Platform.OS) } as any);
           return;
         }
         router.replace(opts.dest);

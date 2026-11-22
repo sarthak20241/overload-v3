@@ -38,6 +38,7 @@ import { isPurchasesAvailable } from '@/lib/revenuecat';
 import { drainMarksAccount, isHardPaywallAccount, mustPay, storeRecentlyDown } from '@/lib/hardPaywall';
 import type { Routine } from '@/lib/types';
 import { OrbLoader } from '@/components/ui/OrbLoader';
+import { signupGoalPlanParams } from '@/lib/postBuildPaywall';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -419,13 +420,8 @@ export default function AppLayout() {
           if (isSignedIn && firstPhaseId && dest !== '/(app)/routines') {
             router.replace({
               pathname: '/goal-plan',
-              params: {
-                build: 'phase',
-                auto: '1',
-                // The film tour plays on top while phase 1 builds.
-                tour: '1',
-                ...(Platform.OS === 'ios' || Platform.OS === 'android' ? { then: 'upgrade' } : {}),
-              },
+              // The film tour plays on top while phase 1 builds; then=upgrade on mobile.
+              params: signupGoalPlanParams(Platform.OS),
             } as any);
             return;
           }
