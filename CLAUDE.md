@@ -164,6 +164,7 @@ deno test --allow-all lib/signupTour.test.ts    # the film tour after sign-up: i
 deno test --allow-all lib/spotlight.test.ts     # spotlight intro + hints (new accounts only) and what's-new tours per OTA (how to add one: top of lib/spotlight.ts)
 deno test --allow-all lib/revealChoice.test.ts  # onboarding plan reveal: "I'll build my own routines" keeps Drona's plan, lands on Routines
 deno test --allow-all lib/hardPaywall.test.ts   # hard paywall: accounts from HARD_PAYWALL_FROM on must pay; older ones keep free
+deno test --allow-all lib/postBuildPaywall.test.ts # paywall after sign-up's plan build: both doors carry it; flag post-build-paywall = after_save | first_tap
 deno test --allow-all lib/paywallPlans.test.ts  # two-sided paywall: Drona = Pro, Your own AI = Connect; trial words only when the store gives one
 deno test --allow-all lib/aiConnect.test.ts     # ChatGPT/Claude connect screen: which step is lit, a failed copy still moves on, card link = copied link
 deno test --allow-all lib/planKeys.test.ts # store package -> plan: a Connect product is never sold as Pro
