@@ -204,11 +204,16 @@ export const ExercisePillStrip = forwardRef<ExercisePillStripHandle, Props>(func
     stopIdle();
     idleTimer.current = setTimeout(() => onReorderModeChange(false), IDLE_EXIT_MS);
   }, [stopIdle, onReorderModeChange]);
+  // True while a pill is in the air, so the idle timer never ends a live drag.
+  const draggingRef = useRef(false);
   useEffect(() => {
     if (!reorderMode) { stopIdle(); return; }
+    // The hold that unlocks the mode normally starts a drag, and the drag end
+    // starts the timer. If that drag never engages, this start is the only one.
+    if (!draggingRef.current) startIdle();
     const sub = BackHandler.addEventListener('hardwareBackPress', () => { onReorderModeChange(false); return true; });
     return () => { sub.remove(); stopIdle(); };
-  }, [reorderMode, onReorderModeChange, stopIdle]);
+  }, [reorderMode, onReorderModeChange, stopIdle, startIdle]);
 
   const onHold = useCallback(() => {
     if (!reorderMode) {
@@ -224,8 +229,10 @@ export const ExercisePillStrip = forwardRef<ExercisePillStripHandle, Props>(func
   }, [reorderMode, startIdle, onSelect]);
 
   // The library calls these on the UI thread.
-  const onDragStart = useCallback(() => { 'worklet'; runOnJS(stopIdle)(); }, [stopIdle]);
-  const onDragEnd = useCallback(() => { 'worklet'; runOnJS(startIdle)(); }, [startIdle]);
+  const dragBegan = useCallback(() => { draggingRef.current = true; stopIdle(); }, [stopIdle]);
+  const dragEnded = useCallback(() => { draggingRef.current = false; startIdle(); }, [startIdle]);
+  const onDragStart = useCallback(() => { 'worklet'; runOnJS(dragBegan)(); }, [dragBegan]);
+  const onDragEnd = useCallback(() => { 'worklet'; runOnJS(dragEnded)(); }, [dragEnded]);
   const onReorder = useCallback(({ from, to }: ReorderableListReorderEvent) => {
     if (from === to) return;
     haptics.tick();
