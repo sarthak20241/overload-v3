@@ -3768,7 +3768,14 @@ export default function ActiveWorkoutScreen() {
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: C.background }]}>
+    <View
+      style={[styles.container, { backgroundColor: C.background }]}
+      // A touch anywhere but the pill row ends reorder mode. The touch still
+      // does its own job (the row's onTouchStart runs first and marks its own).
+      // The handler is always set: a prop that comes and goes with the mode
+      // changes the native view under a finger that is already down.
+      onTouchStart={() => { const inRow = pillStripRef.current?.touchedInside(); if (pillReorderMode && !inRow) setPillReorderMode(false); }}
+    >
       {/* TOP BAR */}
       <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
         <View style={styles.topCluster}>
