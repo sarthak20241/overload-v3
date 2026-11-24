@@ -39,6 +39,8 @@ const SHAKE_DEG = 1.8;
 /** Room kept at the end of the row so the last pill can scroll clear of the pinned Done. */
 const DONE_SPACE = 44;
 const DONE_FADE = 24;
+/** Width the pinned tick dock covers at the right edge (fade + gap + tick + edge pad). */
+const DOCK_W = DONE_FADE + 4 + 28 + PAD;
 
 export interface ExercisePillStripHandle {
   /** Scroll the row the minimum needed to show pill `idx` with some margin. */
@@ -160,6 +162,8 @@ export const ExercisePillStrip = forwardRef<ExercisePillStripHandle, Props>(func
   }, [exercises]);
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  const reorderModeRef = useRef(reorderMode);
+  reorderModeRef.current = reorderMode;
 
   // ---- Reveal the open pill ------------------------------------------------
   // Pill widths vary with the name, so each pill reports its width (kept by key,
@@ -192,9 +196,11 @@ export const ExercisePillStrip = forwardRef<ExercisePillStripHandle, Props>(func
     const off = scrollXSV.value;
     const left = frame.x;
     const right = frame.x + frame.width;
+    // In reorder mode the pinned tick covers the right edge: the visible row ends before it.
+    const viewW = winW - (reorderModeRef.current ? DOCK_W : 0);
     // Already comfortably on-screen: leave the row where the user left it.
-    if (left >= off + margin && right <= off + winW - margin) return;
-    const target = left < off + margin ? left - margin : right - winW + margin;
+    if (left >= off + margin && right <= off + viewW - margin) return;
+    const target = left < off + margin ? left - margin : right - viewW + margin;
     listRef.current?.scrollToOffset({ offset: Math.max(0, target), animated: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [winW]);
@@ -256,12 +262,22 @@ export const ExercisePillStrip = forwardRef<ExercisePillStripHandle, Props>(func
   }, [reorderMode, startIdle, onSelect]);
 
   // The library calls these on the UI thread.
-  const dragBegan = useCallback(() => { draggingRef.current = true; stopIdle(); }, [stopIdle]);
+  // The library calls onReorder after the drop animation (about 200 ms), with
+  // the indices from the drop. If the list changed in that gap (an exercise
+  // removed or added), those indices point at other exercises: drop the move.
+  const keysAtDragRef = useRef('');
+  const keysOf = (list: PillItem[]) => list.map((it) => it.key).join('|');
+  const dragBegan = useCallback(() => {
+    draggingRef.current = true;
+    keysAtDragRef.current = keysOf(itemsRef.current);
+    stopIdle();
+  }, [stopIdle]);
   const dragEnded = useCallback(() => { draggingRef.current = false; startIdle(); }, [startIdle]);
   const onDragStart = useCallback(() => { 'worklet'; runOnJS(dragBegan)(); }, [dragBegan]);
   const onDragEnd = useCallback(() => { 'worklet'; runOnJS(dragEnded)(); }, [dragEnded]);
   const onReorder = useCallback(({ from, to }: ReorderableListReorderEvent) => {
     if (from === to) return;
+    if (keysOf(itemsRef.current) !== keysAtDragRef.current) return;
     haptics.tick();
     onMove(from, to);
   }, [onMove]);
