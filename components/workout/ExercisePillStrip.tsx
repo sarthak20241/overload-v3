@@ -36,11 +36,15 @@ const IDLE_EXIT_MS = 5000;
 const HOLD_TO_UNLOCK_MS = 320;
 const HOLD_TO_DRAG_MS = 130;
 const SHAKE_DEG = 1.8;
-/** Room kept at the end of the row so the last pill can scroll clear of the pinned Done. */
-const DONE_SPACE = 44;
 const DONE_FADE = 24;
 /** Width the pinned tick dock covers at the right edge (fade + gap + tick + edge pad). */
 const DOCK_W = DONE_FADE + 4 + 28 + PAD;
+/**
+ * Empty room at the end of the row in reorder mode. With the cell gap and the
+ * content pad after it, the last pill can scroll fully clear of the dock and
+ * its fade, with a small gap left over.
+ */
+const DONE_SPACE = DOCK_W - PAD - GAP + 12;
 
 export interface ExercisePillStripHandle {
   /** Scroll the row the minimum needed to show pill `idx` with some margin. */
@@ -265,11 +269,15 @@ export const ExercisePillStrip = forwardRef<ExercisePillStripHandle, Props>(func
   // The library calls onReorder after the drop animation (about 200 ms), with
   // the indices from the drop. If the list changed in that gap (an exercise
   // removed or added), those indices point at other exercises: drop the move.
-  const keysAtDragRef = useRef('');
-  const keysOf = (list: PillItem[]) => list.map((it) => it.key).join('|');
+  // The exercises array is the list revision: any change to the list (a move,
+  // an add, a remove, a superset pick, two copies of one exercise trading
+  // places) makes a new array, even when the pill keys stay the same.
+  const exercisesRef = useRef(exercises);
+  exercisesRef.current = exercises;
+  const listAtDragRef = useRef<ActiveWorkoutExercise[] | null>(null);
   const dragBegan = useCallback(() => {
     draggingRef.current = true;
-    keysAtDragRef.current = keysOf(itemsRef.current);
+    listAtDragRef.current = exercisesRef.current;
     stopIdle();
   }, [stopIdle]);
   const dragEnded = useCallback(() => { draggingRef.current = false; startIdle(); }, [startIdle]);
@@ -277,7 +285,7 @@ export const ExercisePillStrip = forwardRef<ExercisePillStripHandle, Props>(func
   const onDragEnd = useCallback(() => { 'worklet'; runOnJS(dragEnded)(); }, [dragEnded]);
   const onReorder = useCallback(({ from, to }: ReorderableListReorderEvent) => {
     if (from === to) return;
-    if (keysOf(itemsRef.current) !== keysAtDragRef.current) return;
+    if (exercisesRef.current !== listAtDragRef.current) return;
     haptics.tick();
     onMove(from, to);
   }, [onMove]);
