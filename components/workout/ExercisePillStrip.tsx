@@ -155,6 +155,8 @@ export const ExercisePillStrip = forwardRef<ExercisePillStripHandle, Props>(func
   const widthsRef = useRef(new Map<string, number>());
   const scrollXSV = useSharedValue(0);
   const onScroll = useAnimatedScrollHandler({ onScroll: (e) => { scrollXSV.value = e.contentOffset.x; } });
+  // frameOf reads refs only. reveal and onWidth close over it with no dep, so
+  // keep it that way: no props or state in here.
   const frameOf = (idx: number): { x: number; width: number } | null => {
     const list = itemsRef.current;
     if (idx < 0 || idx >= list.length) return null;

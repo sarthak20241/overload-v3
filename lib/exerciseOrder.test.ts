@@ -28,6 +28,19 @@ Deno.test("an exercise dropped inside a superset lands after it, and the superse
   assertEquals(res.groupsChanged, false);
 });
 
+Deno.test("an exercise dropped at the edge of a superset stays next to it and joins nothing", () => {
+  // Just after the run: the superset is on the left only.
+  const after = moveExercise([ex("A"), ex("B", 1), ex("C", 1), ex("D")], 0, 2);
+  assertEquals(names(after.items), "B C A D");
+  assertEquals(groups(after.items), "1100");
+  assertEquals(after.groupsChanged, false);
+  // Just before the run: the superset is on the right only.
+  const before = moveExercise([ex("B", 1), ex("C", 1), ex("D"), ex("A")], 3, 0);
+  assertEquals(names(before.items), "A B C D");
+  assertEquals(groups(before.items), "0110");
+  assertEquals(before.groupsChanged, false);
+});
+
 Deno.test("members can change order inside their own superset", () => {
   const res = moveExercise([ex("A", 1), ex("B", 1), ex("C", 1), ex("D")], 0, 1);
   assertEquals(names(res.items), "B A C D");
