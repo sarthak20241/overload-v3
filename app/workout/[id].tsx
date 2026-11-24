@@ -28,6 +28,8 @@ import { applySessionSwaps, canSwapLive, clearSessionSwaps, peekSessionSwaps, sw
 import { useSwapCatalog, type SwapCatalogRow } from '@/hooks/useSwapCatalog';
 import type { SwapTier } from '@/lib/exerciseSwaps';
 import { ExerciseSwapSheet } from '@/components/workout/ExerciseSwapSheet';
+import { ExercisePillStrip, type ExercisePillStripHandle } from '@/components/workout/ExercisePillStrip';
+import { moveExercise } from '@/lib/exerciseOrder';
 import { enqueueRoutine, applyRoutineToCache, type PendingRoutine } from '@/lib/routineQueue';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { getLocalPreviousPerformance, getLocalAllTimeBestWeight } from '@/lib/previousPerformance';
@@ -458,7 +460,7 @@ export default function ActiveWorkoutScreen() {
   const swElapsedRef = useRef(0);
   const exerciseStartTimeRef = useRef<number | null>(null);
   const lastSetTimeRef = useRef<number | null>(null);
-  const pillsScrollRef = useRef<ScrollView>(null);
+  const pillStripRef = useRef<ExercisePillStripHandle>(null);
   // A resume's transient capture (half-logged unilateral side + inline stopwatch),
   // applied by the restore effect once currentIdx settles on the resumed index — so
   // the index-change reset effect can't wipe it (it runs first; the restore effect,
@@ -1886,10 +1888,6 @@ export default function ActiveWorkoutScreen() {
     const updated = exercises.filter((_, i) => i !== currentIdx);
     const newStarted = exerciseStarted.filter((_, i) => i !== currentIdx);
     const newFinished = exerciseFinished.filter((_, i) => i !== currentIdx);
-    // Keep the measured pill frames index-aligned with the exercise list so the
-    // reveal logic can't read a stale frame after a removal.
-    pillLayoutsRef.current.splice(currentIdx, 1);
-    pillLayoutsRef.current.length = updated.length;
     // Removing a member can leave a superset with one member — normalize dissolves it.
     workout.updateExercises(normalizeSupersetGroups(updated));
     setExerciseStarted(newStarted);
@@ -1922,7 +1920,6 @@ export default function ActiveWorkoutScreen() {
     const items = exercises.slice();
     const started = exerciseStarted.slice();
     const finished = exerciseFinished.slice();
-    const pills = pillLayoutsRef.current.slice();
     const pendingReconcile: { def: ExerciseDef; tempId: string }[] = [];
     // The pager must keep pointing at the same exercise when inserts and
     // removals shift the list under it.
@@ -1938,7 +1935,6 @@ export default function ActiveWorkoutScreen() {
         items.splice(step.index, 1);
         started.splice(step.index, 1);
         finished.splice(step.index, 1);
-        pills.splice(step.index, 1);
         if (step.index < nextIdx) nextIdx -= 1;
         else if (step.index === nextIdx) currentReplaced = true;
         applied += 1;
@@ -2008,13 +2004,11 @@ export default function ActiveWorkoutScreen() {
         items[step.index] = newEx;
         started[step.index] = false;
         finished[step.index] = false;
-        delete pills[step.index];
         if (step.index === nextIdx) currentReplaced = true;
       } else {
         items.splice(step.index, 0, newEx);
         started.splice(step.index, 0, false);
         finished.splice(step.index, 0, false);
-        pills.splice(step.index, 0, undefined as never);
         if (step.index <= nextIdx) nextIdx += 1;
       }
       pendingReconcile.push({ def, tempId });
@@ -2041,8 +2035,6 @@ export default function ActiveWorkoutScreen() {
       // open exercise. Same clear as the index-change reset path does.
       editedForExRef.current = null;
     }
-    pillLayoutsRef.current = pills;
-    pillLayoutsRef.current.length = items.length;
     // A removal can leave a superset holding one member; normalize dissolves it.
     workout.updateExercises(normalizeSupersetGroups(items));
     setExerciseStarted(started);
@@ -2097,11 +2089,6 @@ export default function ActiveWorkoutScreen() {
       mid_workout: !!exerciseStarted[currentIdx],
     });
     const map = res.indexMap;
-    const remap = <V,>(arr: V[]): V[] => {
-      const out = arr.slice();
-      map.forEach((ni, oi) => { out[ni] = arr[oi]; });
-      return out;
-    };
     const newIdx = map[currentIdx];
     const gAfter = res.items[newIdx]?.supersetGroup ?? null;
     // If ANY member of the new group is already being trained, start them all — you
@@ -2109,38 +2096,62 @@ export default function ActiveWorkoutScreen() {
     // members. (Any-member, not just the open one: picking a started exercise from
     // an unstarted one would otherwise leave the group half-started and the auto-hop
     // would land on the Start gate mid-round.)
-    let newStarted = remap(exerciseStarted);
-    if (gAfter != null) {
+    commitReorder(res.items, map, (newStarted) => {
+      if (gAfter == null) return newStarted;
       const anyStarted = res.items.some((e, i) => e.supersetGroup === gAfter && newStarted[i]);
-      if (anyStarted) {
-        newStarted = newStarted.map((st, i) => (res.items[i]?.supersetGroup === gAfter ? true : st));
-        // The open exercise may have just flipped live — bring up its sub-timer the
-        // way handleStartExercise would.
-        if (!exerciseStarted[currentIdx]) startExerciseTimer();
-      }
-    }
-    const newFinished = remap(exerciseFinished);
-    // Keep the measured pill frames index-aligned with the reordered list.
-    pillLayoutsRef.current = remap(pillLayoutsRef.current);
-    pillLayoutsRef.current.length = res.items.length;
+      if (!anyStarted) return newStarted;
+      // The open exercise may have just flipped live — bring up its sub-timer the
+      // way handleStartExercise would.
+      if (!exerciseStarted[currentIdx]) startExerciseTimer();
+      return newStarted.map((st, i) => (res.items[i]?.supersetGroup === gAfter ? true : st));
+    });
     clearGroupRest();
-    workout.updateExercises(res.items);
-    setExerciseStarted(newStarted);
-    setExerciseFinished(newFinished);
+  };
+  // Commit a new exercise order. `map` is old index -> new index; the started /
+  // finished flags follow their exercise, and the OPEN exercise stays open.
+  const commitReorder = (
+    items: ActiveWorkoutExercise[],
+    map: number[],
+    adjustStarted?: (started: boolean[]) => boolean[],
+  ) => {
+    const remap = <V,>(arr: V[]): V[] => {
+      const out = arr.slice();
+      map.forEach((ni, oi) => { out[ni] = arr[oi]; });
+      return out;
+    };
+    const newIdx = map[currentIdx];
+    const newStarted = remap(exerciseStarted);
+    workout.updateExercises(items);
+    setExerciseStarted(adjustStarted ? adjustStarted(newStarted) : newStarted);
+    setExerciseFinished(remap(exerciseFinished));
     if (newIdx !== currentIdx) {
       // Same exercise, new position. Move the pager WITHOUT letting the index-keyed
       // effects treat it as navigation: prevIdxRef gates the reset effect (stopwatch,
       // half-logged side), skipPrefillRef gates the input-prefill effect (typed
-      // weight/reps). Drop the remapped pill frame so the pill's remount re-measures
-      // and re-reveals against its true post-reorder position, and move the strip in
-      // the same beat so the reordered pager doesn't paint one frame at the old
-      // offset and then teleport (the currentIdx sync effect re-asserts the value).
+      // weight/reps). Move the strip in the same beat so the reordered pager doesn't
+      // paint one frame at the old offset and then teleport (the currentIdx sync
+      // effect re-asserts the value).
       prevIdxRef.current = newIdx;
       skipPrefillRef.current = true;
-      delete pillLayoutsRef.current[newIdx];
       scrollX.value = -newIdx * winW;
       setCurrentIdx(newIdx);
     }
+  };
+  // Pill row drag: hold a pill to unlock reorder mode, then drag it (see
+  // ExercisePillStrip). The rules for supersets live in lib/exerciseOrder.
+  const [pillReorderMode, setPillReorderMode] = useState(false);
+  const handleMoveExercise = (from: number, to: number) => {
+    const res = moveExercise(exercises, from, to);
+    if (res.items === exercises) return;
+    track('exercise_reordered', {
+      exercise_count: exercises.length,
+      moved_open_exercise: from === currentIdx,
+      superset_changed: res.groupsChanged,
+      mid_workout: exerciseStarted.some(Boolean),
+    });
+    commitReorder(res.items, res.indexMap);
+    // A pinned round rest belongs to the old superset shape.
+    if (res.groupsChanged) clearGroupRest();
   };
   const breakSuperset = () => {
     if (currentEx?.supersetGroup == null) return;
@@ -3050,31 +3061,16 @@ export default function ActiveWorkoutScreen() {
   // current index changes (swipe, arrows, or a pill tap) we scroll the strip
   // just enough to bring the active pill fully into view with a little margin —
   // a minimal reveal rather than always re-centring, so stepping through
-  // exercises one at a time doesn't make the whole row crawl sideways. Pill
-  // widths vary with the exercise name, so we measure each pill's frame on
-  // layout and scroll in content coordinates, tracking the live scroll offset.
-  const pillLayoutsRef = useRef<{ x: number; width: number }[]>([]);
-  const pillScrollXRef = useRef(0);
+  // exercises one at a time doesn't make the whole row crawl sideways. The
+  // measuring and the scroll live in ExercisePillStrip.
   // Index whose reveal has already been issued, so the currentIdx effect skips a
   // redundant scroll for a swipe that pre-revealed its target alongside the page
   // snap (see the gesture's onEnd).
   const lastRevealedPillRef = useRef(currentIdx);
   const revealActivePill = useCallback((idx: number) => {
     lastRevealedPillRef.current = idx;
-    const frame = pillLayoutsRef.current[idx];
-    const scroller = pillsScrollRef.current;
-    if (!frame || !scroller) return;
-    const margin = 48; // breathing room so a sliver of the neighbour stays visible
-    const off = pillScrollXRef.current;
-    const left = frame.x;
-    const right = frame.x + frame.width;
-    // Already comfortably on-screen — leave the strip where the user left it.
-    if (left >= off + margin && right <= off + winW - margin) return;
-    // Otherwise scroll the minimum needed to clear the near edge. ScrollView
-    // clamps the upper bound; we only guard the lower bound.
-    const target = left < off + margin ? left - margin : right - winW + margin;
-    scroller.scrollTo({ x: Math.max(0, target), animated: true });
-  }, [winW]);
+    pillStripRef.current?.reveal(idx);
+  }, []);
   // Reveal on index change for arrow / pill-tap navigation. Swipes pre-reveal in
   // the gesture's onEnd (coupled with the page snap) and set lastRevealedPillRef,
   // so this skips them. On first mount it no-ops (ref seeded to currentIdx); the
@@ -3849,81 +3845,17 @@ export default function ActiveWorkoutScreen() {
 
       {/* EXERCISE NAV PILLS */}
       {exercises.length > 0 && (
-        <ScrollView
-          ref={pillsScrollRef}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.pillsContainer}
-          style={styles.pillsScroll}
-          onScroll={(e) => { pillScrollXRef.current = e.nativeEvent.contentOffset.x; }}
-          scrollEventThrottle={16}
-        >
-          {exercises.map((ex, i) => {
-            const isCurrent = i === currentIdx;
-            const isDone = exerciseFinished[i];
-            return (
-              <TouchableOpacity
-                key={`${ex.exercise.id}-${i}`}
-                onPress={() => goTo(i)}
-                hitSlop={{ top: 8, bottom: 8, left: 0, right: 0 }}
-                onLayout={(e) => {
-                  const firstMeasure = pillLayoutsRef.current[i] === undefined;
-                  pillLayoutsRef.current[i] = { x: e.nativeEvent.layout.x, width: e.nativeEvent.layout.width };
-                  // Only the first measurement reveals; later index changes go
-                  // through the effect / onEnd. This stops a width change (e.g.
-                  // the done-check icon appearing) from yanking the strip back
-                  // against a manual scroll.
-                  if (firstMeasure && i === currentIdx) revealActivePill(i);
-                }}
-                style={[
-                  styles.pill,
-                  {
-                    backgroundColor: isCurrent
-                      ? Colors.primary
-                      : isDone
-                        ? C.primarySubtle
-                        : C.muted,
-                    // Superset members share a lime outline so the group reads as a
-                    // bracket at the nav level too (restrained: alpha'd, not filled).
-                    borderColor: isCurrent
-                      ? Colors.primary
-                      : ex.supersetGroup != null
-                        ? colorWithAlpha(Colors.primary, 0.55)
-                        : isDone
-                          ? C.primaryBorder
-                          : C.border,
-                  },
-                ]}
-              >
-                {isDone && <Feather name="check" size={10} color={C.accentText} style={{ marginRight: 4 }} />}
-                <Text
-                  style={[
-                    styles.pillText,
-                    {
-                      color: isCurrent
-                        ? Colors.primaryFg
-                        : isDone
-                          ? C.accentText
-                          : C.textMuted,
-                    },
-                  ]}
-                  numberOfLines={1}
-                >
-                  {ex.exercise.name.length > 16 ? ex.exercise.name.slice(0, 14) + '…' : ex.exercise.name}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-          <TouchableOpacity
-            onPress={() => { Keyboard.dismiss(); setShowAddExercise(true); }}
-            style={[styles.addPill, { borderColor: C.border }]}
-            hitSlop={10}
-            accessibilityRole="button"
-            accessibilityLabel="Add exercise"
-          >
-            <Feather name="plus" size={13} color={C.textMuted} />
-          </TouchableOpacity>
-        </ScrollView>
+        <ExercisePillStrip
+          ref={pillStripRef}
+          exercises={exercises}
+          currentIdx={currentIdx}
+          finished={exerciseFinished}
+          reorderMode={pillReorderMode}
+          onReorderModeChange={setPillReorderMode}
+          onSelect={goTo}
+          onMove={handleMoveExercise}
+          onAdd={() => { Keyboard.dismiss(); setShowAddExercise(true); }}
+        />
       )}
 
       {/* MAIN CONTENT — horizontal exercise pager (see renderExerciseBody) */}
@@ -4561,8 +4493,6 @@ const styles = StyleSheet.create({
   },
   finishBtnText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.primaryFg },
   // Pills
-  pillsScroll: { flexGrow: 0 },
-  pillsContainer: { paddingHorizontal: Spacing.xl, paddingVertical: Spacing.sm, gap: 8 },
 
   // Floating Coach button — absolute, bottom-right, always present (independent
   // of the exercise list, so it shows on blank workouts too). Distinct elevated
@@ -4579,24 +4509,6 @@ const styles = StyleSheet.create({
     ...Shadow.elevated,
   },
   coachFabText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primaryFg },
-  pill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-  },
-  pillText: { fontSize: 11, fontWeight: FontWeight.semibold },
-  addPill: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderStyle: 'dashed',
-  },
 
   // Main
   mainScroll: { flex: 1 },
