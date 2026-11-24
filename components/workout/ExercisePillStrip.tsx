@@ -3,8 +3,8 @@
  *
  * Tap a pill to open that exercise. Hold a pill to unlock reorder mode: every
  * pill starts a small shake (like the home screen icons of a phone), and the
- * held pill lifts and follows the finger. While the mode is on, a "Done" pill
- * sits pinned at the right edge, so the way out shows however long the row is.
+ * held pill lifts and follows the finger. While the mode is on, a round tick
+ * button (Done) sits pinned at the right edge, so the way out shows however long the row is.
  * The mode also ends on a touch outside the row (the screen asks touchedInside),
  * by itself after a few idle seconds, or on Android back.
  *
@@ -37,7 +37,7 @@ const HOLD_TO_UNLOCK_MS = 320;
 const HOLD_TO_DRAG_MS = 130;
 const SHAKE_DEG = 1.8;
 /** Room kept at the end of the row so the last pill can scroll clear of the pinned Done. */
-const DONE_SPACE = 84;
+const DONE_SPACE = 44;
 const DONE_FADE = 24;
 
 export interface ExercisePillStripHandle {
@@ -341,8 +341,7 @@ export const ExercisePillStrip = forwardRef<ExercisePillStripHandle, Props>(func
               accessibilityRole="button"
               accessibilityLabel="Done with the exercise order"
             >
-              <Feather name="check" size={11} color={Colors.primaryFg} />
-              <Text style={[styles.pillText, { color: Colors.primaryFg, marginLeft: 4 }]}>Done</Text>
+              <Feather name="check" size={14} color={Colors.primaryFg} />
             </TouchableOpacity>
           </View>
         </Animated.View>
@@ -379,11 +378,12 @@ const styles = StyleSheet.create({
   doneDock: { position: 'absolute', top: 0, bottom: 0, right: 0, flexDirection: 'row' },
   doneFade: { width: DONE_FADE },
   doneBack: { justifyContent: 'center', paddingLeft: 4, paddingRight: PAD },
+  // A round tick, the size of the "+" it stands in for: a button, not one more pill.
   donePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    width: 28,
     height: 28,
-    paddingHorizontal: 12,
-    borderRadius: Radius.full,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
