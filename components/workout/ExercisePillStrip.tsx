@@ -148,8 +148,6 @@ export const ExercisePillStrip = forwardRef<ExercisePillStripHandle, Props>(func
   }, [exercises]);
   const itemsRef = useRef(items);
   itemsRef.current = items;
-  const currentIdxRef = useRef(currentIdx);
-  currentIdxRef.current = currentIdx;
 
   // ---- Reveal the open pill ------------------------------------------------
   // Pill widths vary with the name, so each pill reports its width (kept by key,
@@ -169,9 +167,13 @@ export const ExercisePillStrip = forwardRef<ExercisePillStripHandle, Props>(func
     const width = widthsRef.current.get(list[idx].key);
     return width == null ? null : { x, width };
   };
+  // A reveal asked for before its pill is measured (the first paint, or a pill
+  // just added) waits here; onWidth runs it when the widths arrive.
+  const pendingRevealRef = useRef<number | null>(currentIdx);
   const reveal = useCallback((idx: number) => {
     const frame = frameOf(idx);
-    if (!frame) return;
+    if (!frame) { pendingRevealRef.current = idx; return; }
+    pendingRevealRef.current = null;
     const margin = 48; // breathing room so a sliver of the neighbour stays visible
     const off = scrollXSV.value;
     const left = frame.x;
@@ -184,13 +186,14 @@ export const ExercisePillStrip = forwardRef<ExercisePillStripHandle, Props>(func
   }, [winW]);
   useImperativeHandle(ref, () => ({ reveal }), [reveal]);
 
-  // The first full measure shows the open (or resumed) exercise.
-  const firstRevealDoneRef = useRef(false);
+  // The first full measure shows the open (or resumed) exercise; a later one
+  // shows a pill that was added after it.
   const onWidth = useCallback((key: string, width: number) => {
     widthsRef.current.set(key, width);
-    if (firstRevealDoneRef.current || !frameOf(currentIdxRef.current)) return;
-    firstRevealDoneRef.current = true;
-    reveal(currentIdxRef.current);
+    const pending = pendingRevealRef.current;
+    if (pending == null) return;
+    if (pending >= itemsRef.current.length) { pendingRevealRef.current = null; return; }
+    if (frameOf(pending)) reveal(pending);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal]);
 

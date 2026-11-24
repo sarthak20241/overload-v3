@@ -4492,8 +4492,6 @@ const styles = StyleSheet.create({
     borderRadius: Radius.xl,
   },
   finishBtnText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.primaryFg },
-  // Pills
-
   // Floating Coach button — absolute, bottom-right, always present (independent
   // of the exercise list, so it shows on blank workouts too). Distinct elevated
   // pill so it reads as the AI assistant, not another lime action button.

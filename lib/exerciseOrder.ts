@@ -61,7 +61,9 @@ export function moveExercise<T extends HasSupersetGroup>(items: T[], from: numbe
 /**
  * A stable key per exercise slot for the pill row. The workout has no slot id,
  * and one exercise can be in a workout twice, so the key is the exercise id
- * plus its occurrence number. It follows the exercise through a reorder.
+ * plus its occurrence number. It follows the exercise through a reorder. Two
+ * copies of one exercise that change places keep their keys; they look the
+ * same, so the row shows no difference.
  */
 export function pillKeys(items: { exercise: { id: string } }[]): string[] {
   const seen = new Map<string, number>();
