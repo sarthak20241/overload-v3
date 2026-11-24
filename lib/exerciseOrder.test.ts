@@ -55,8 +55,14 @@ Deno.test("a member dropped inside another superset lands after it and joins not
   assertEquals(groups(res.items), "11220");
 });
 
-Deno.test("pill keys stay with their exercise through a reorder, also for a repeated exercise", () => {
+Deno.test("pill keys stay with their exercise through a reorder when the copies keep their order", () => {
   const a = { exercise: { id: "a" } }, b = { exercise: { id: "b" } }, a2 = { exercise: { id: "a" } };
   assertEquals(pillKeys([a, b, a2]), ["a#0", "b#0", "a#1"]);
   assertEquals(pillKeys([b, a, a2]), ["b#0", "a#0", "a#1"]);
+});
+
+Deno.test("two copies of one exercise that cross each other trade keys: a key is the copy's place, not the copy", () => {
+  const a = { exercise: { id: "a" } }, b = { exercise: { id: "b" } }, a2 = { exercise: { id: "a" } };
+  // a2 moved in front of a: it is now the first copy, so it takes a#0.
+  assertEquals(pillKeys([a2, a, b]), ["a#0", "a#1", "b#0"]);
 });
