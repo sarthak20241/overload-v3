@@ -116,6 +116,7 @@ export type AnalyticsEvent =
   | 'custom_exercise_created'
   | 'exercise_note_saved'
   | 'superset_created'
+  | 'exercise_reordered'
   | 'superset_broken'
   | 'workout_paused'
   | 'workout_resumed'
