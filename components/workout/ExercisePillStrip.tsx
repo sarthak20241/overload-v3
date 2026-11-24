@@ -26,14 +26,14 @@ import { Colors, FontWeight, Radius, Spacing, colorWithAlpha } from '@/constants
 import { useTheme } from '@/hooks/useTheme';
 import { LinearGradient } from 'expo-linear-gradient';
 import { haptics } from '@/lib/haptics';
-import { pillKeys } from '@/lib/exerciseOrder';
+import { dropStillValid, pillKeys } from '@/lib/exerciseOrder';
 import type { ActiveWorkoutExercise } from '@/lib/types';
 
 const GAP = 8;
 const PAD = Spacing.xl;
 /** Reorder mode ends by itself after this long with no touch on the row. */
 const IDLE_EXIT_MS = 5000;
-const HOLD_TO_UNLOCK_MS = 320;
+const HOLD_TO_UNLOCK_MS = 250;
 const HOLD_TO_DRAG_MS = 130;
 const SHAKE_DEG = 1.8;
 const DONE_FADE = 24;
@@ -269,9 +269,8 @@ export const ExercisePillStrip = forwardRef<ExercisePillStripHandle, Props>(func
   // The library calls onReorder after the drop animation (about 200 ms), with
   // the indices from the drop. If the list changed in that gap (an exercise
   // removed or added), those indices point at other exercises: drop the move.
-  // The exercises array is the list revision: any change to the list (a move,
-  // an add, a remove, a superset pick, two copies of one exercise trading
-  // places) makes a new array, even when the pill keys stay the same.
+  // The list at drag start. A late drop lands only if the list still holds the
+  // same slot objects in the same places (lib/exerciseOrder dropStillValid).
   const exercisesRef = useRef(exercises);
   exercisesRef.current = exercises;
   const listAtDragRef = useRef<ActiveWorkoutExercise[] | null>(null);
@@ -285,7 +284,7 @@ export const ExercisePillStrip = forwardRef<ExercisePillStripHandle, Props>(func
   const onDragEnd = useCallback(() => { 'worklet'; runOnJS(dragEnded)(); }, [dragEnded]);
   const onReorder = useCallback(({ from, to }: ReorderableListReorderEvent) => {
     if (from === to) return;
-    if (exercisesRef.current !== listAtDragRef.current) return;
+    if (!listAtDragRef.current || !dropStillValid(listAtDragRef.current, exercisesRef.current)) return;
     haptics.tick();
     onMove(from, to);
   }, [onMove]);

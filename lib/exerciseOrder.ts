@@ -74,3 +74,16 @@ export function pillKeys(items: { exercise: { id: string } }[]): string[] {
     return `${e.exercise.id}#${k}`;
   });
 }
+
+/**
+ * The drag library reports a drop about 200 ms late, with the indices from the
+ * drop. Those indices are good only while the list holds the same exercise
+ * slots in the same places. A new array with the same slot objects is fine (a
+ * re-render that changed nothing). A slot added, removed, replaced, or two
+ * copies of one exercise trading places is not: the move is dropped.
+ */
+export function dropStillValid<T>(atDrag: readonly T[], now: readonly T[]): boolean {
+  if (atDrag === now) return true;
+  if (atDrag.length !== now.length) return false;
+  return atDrag.every((slot, i) => slot === now[i]);
+}

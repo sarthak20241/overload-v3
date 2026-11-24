@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { moveExercise, pillKeys } from "./exerciseOrder.ts";
+import { dropStillValid, moveExercise, pillKeys } from "./exerciseOrder.ts";
 
 const ex = (name: string, supersetGroup: number | null = null) => ({ name, supersetGroup });
 const names = (items: { name: string }[]) => items.map((e) => e.name).join(" ");
@@ -78,4 +78,19 @@ Deno.test("two copies of one exercise that cross each other trade keys: a key is
   const a = { exercise: { id: "a" } }, b = { exercise: { id: "b" } }, a2 = { exercise: { id: "a" } };
   // a2 moved in front of a: it is now the first copy, so it takes a#0.
   assertEquals(pillKeys([a2, a, b]), ["a#0", "a#1", "b#0"]);
+});
+
+Deno.test("a late drop lands only on the same exercise slots it was dragged on", () => {
+  const a = ex("A"), b = ex("B"), c = ex("C"), a2 = ex("A");
+  const atDrag = [a, b, a2];
+  // Same list, or a new array that holds the same slots: the drop is still good.
+  assertEquals(dropStillValid(atDrag, atDrag), true);
+  assertEquals(dropStillValid(atDrag, [a, b, a2]), true);
+  // Two copies of one exercise traded places: same names, other slots.
+  assertEquals(dropStillValid(atDrag, [a2, b, a]), false);
+  // An exercise removed or added in the gap.
+  assertEquals(dropStillValid(atDrag, [a, b]), false);
+  assertEquals(dropStillValid(atDrag, [a, b, a2, c]), false);
+  // One slot replaced (a new object for that exercise).
+  assertEquals(dropStillValid(atDrag, [ex("A"), b, a2]), false);
 });
