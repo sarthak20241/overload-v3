@@ -1,7 +1,7 @@
 # Listing the Overload connector in Claude and ChatGPT
 
 Server: `https://mcp.tryoverload.app` (the `mcp` edge function behind the
-Vercel forwarder in `mcp-proxy/`). Sign-in: Clerk OAuth. Use needs Overload Pro.
+Vercel forwarder in `mcp-proxy/`). Sign-in: Clerk OAuth. Use needs an Overload plan: Connect or Pro.
 
 ## Before either submission
 
@@ -10,10 +10,37 @@ Vercel forwarder in `mcp-proxy/`). Sign-in: Clerk OAuth. Use needs Overload Pro.
    - Sign in with email and password. No email codes, no magic links, no
      Google or Apple, no 2-step login. Check in the Clerk dashboard that this
      user can sign in with only a password.
-   - Give it Pro (set `user_profiles.tier` with a far `tier_expires_at`).
+   - Clerk **Protect -> Sign-in security -> Device Trust must stay off.** When
+     it is on, a password sign-in on a new device asks for an email code, and
+     reviewers cannot read that inbox. OpenAI rejected 1.0.0 for this
+     (rule 1.4, 2026-11-25). Turned off the same day, by the owner's choice.
+     **Effect on production:** this is one setting for the whole production
+     Clerk app (clerk.tryoverload.app), so no password sign-in gets the
+     new-device email code. Google and Apple sign-ins do not change, and
+     "Lock accounts after failed sign-ins" and "Prevent user enumeration"
+     stay on. A leaked password alone now opens an account. Do not turn it back on
+     after approval: both directories reuse this account for later reviews
+     and ongoing tests. To turn it on again, first move the demo account to
+     the portal's email-code option (OpenAI's own review inbox).
+   - Seed: `docs/connector-directory/reviewer-seed.sql`. Open the app once
+     with the reviewer account (it needs a profile row), put its Clerk user id
+     in place of `__UID__`, then run it on production:
+     `supabase db query --linked -f <the edited copy>`. It writes the last 21
+     days. Run it again before every resubmit, so "today" and "this week"
+     have data. Every row has a fixed
+     id (md5 of the day), so a rerun adds only the missing days and makes no
+     duplicates.
+   - Give it Pro, not Connect: Pro covers every connector tool and the app's
+     own coach (the seed sets `user_profiles.tier = 'annual'` with a far
+     `tier_expires_at`).
    - Fill it: about 3 weeks of food and workouts, a bench press history, a
-     few body weights, a live program with targets. Every test case below must
-     have data to read.
+     few body weights (the seed writes these), and a live program with
+     targets. The seed does not make the program: build one once in the app
+     with the reviewer account (Drona's goal flow) and keep it active. The
+     plan test case reads it with `get_plan`. Today's account has
+     "15-Week Lean Cut to 72 kg", active, 4 phases. Weekly insights come from
+     the weekly jobs, not the seed. Every test case below must have data to
+     read.
    - Run every test case with this account in Claude and in ChatGPT.
 2. **Deploy this branch's `mcp` function** and apply
    `supabase/migrations/20261112130000_mcp_update_workout_old_week.sql`.
@@ -28,7 +55,7 @@ Rules: https://claude.com/docs/connectors/building/submission
 | Step | What to enter |
 |---|---|
 | Connection | `https://mcp.tryoverload.app` (one URL for every user) |
-| Tools | Syncs by itself. All 16 tools have a title and a read or write hint. |
+| Tools | Syncs by itself. All 26 tools have a title and a read or write hint. |
 | Listing name | Overload |
 | One-liner (200) | Read and log your Overload food diary, workouts, lifts and body weight from Claude. |
 | Description (2000) | Use the `longDescription` text in `openai-plugin/plugin.json`, with "ChatGPT" changed to "Claude". |
@@ -38,7 +65,7 @@ Rules: https://claude.com/docs/connectors/building/submission
 | Support | hello@tryoverload.app |
 | Icon | `assets/icon.png` (1024 x 1024) |
 | Slug | `overload` (permanent once published) |
-| Use cases | Ask about your food, macros, workouts, lift progress and weight; log food and workouts by chat. Users need an Overload account with Pro. Reads and writes. |
+| Use cases | Ask about your food, macros, workouts, lift progress and weight; log food and workouts by chat. Users need an Overload account with Connect or Pro. Reads and writes. |
 | Authentication | Required. OAuth. Claude uses Clerk's client ID metadata (CIMD), so no client ID or secret is needed. |
 | Data handling | Our own API. Yes, it handles personal health data (food, body weight, workouts). No sponsored content. |
 | Test & launch | Reviewer account email + password, and the steps: add the connector, sign in, try the 5 prompts below. |
@@ -65,5 +92,9 @@ Rules: https://developers.openai.com/plugins/deploy/submission
    in the zip), and a demo recording URL (required).
 6. Submit for review. After approval, press Publish plugin.
 
-The 5 positive and 3 negative test cases are in `openai-plugin/plugin.json`
-under `review.test_cases`. Use the same 5 prompts for Claude's reviewers.
+The 5 positive and 3 negative test cases (the portal wants exactly that many) are in `openai-plugin/plugin.json`
+under `review.test_cases`. Use the same positive prompts for Claude's reviewers.
+
+A new version: bump `version` in `plugin.json`, zip the `overload/` folder
+again, then Create draft from ZIP (or Upload new version), MCPs -> Rescan,
+Add review information, Submit for review.
