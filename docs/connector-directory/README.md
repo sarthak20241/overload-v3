@@ -71,7 +71,7 @@ Rules: https://developers.openai.com/plugins/deploy/submission
    in the zip), and a demo recording URL (required).
 6. Submit for review. After approval, press Publish plugin.
 
-The 6 positive and 4 negative test cases are in `openai-plugin/plugin.json`
+The 5 positive and 3 negative test cases (the portal wants exactly that many) are in `openai-plugin/plugin.json`
 under `review.test_cases`. Use the same positive prompts for Claude's reviewers.
 
 A new version: bump `version` in `plugin.json`, zip the `overload/` folder

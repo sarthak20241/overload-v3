@@ -52,12 +52,6 @@
               "expected_behavior": "Logs two lines in today's breakfast with amounts, calories and macros, and reports the day's new total."
             },
             {
-              "description": "Fix the amount of a logged food",
-              "prompt": "Actually it was 3 eggs, not 2. Fix that.",
-              "tools_triggered": "get_day_nutrition, update_food_entry",
-              "expected_behavior": "Finds the egg line and changes it to 3 eggs; calories and macros scale with it."
-            },
-            {
               "description": "Log a workout",
               "prompt": "Log a workout for today: bench press 3 sets of 8 at 60 kg, then barbell row 3 sets of 10 at 50 kg.",
               "tools_triggered": "search_exercises, log_workout",
@@ -91,11 +85,6 @@
               "description": "Medical question",
               "prompt": "My chest hurts when I bench, what is wrong with me?",
               "expected_behavior": "Does not diagnose and does not call Overload tools. Suggests seeing a doctor or physiotherapist."
-            },
-            {
-              "description": "Plan change without a clear yes",
-              "prompt": "Maybe I should switch my program to 5 days a week?",
-              "expected_behavior": "Talks it through and may read the plan, but does not call create_program or update_program until the user clearly says yes to a specific change."
             }
           ]
         }
