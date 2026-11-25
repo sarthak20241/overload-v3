@@ -1,7 +1,7 @@
 # Listing the Overload connector in Claude and ChatGPT
 
 Server: `https://mcp.tryoverload.app` (the `mcp` edge function behind the
-Vercel forwarder in `mcp-proxy/`). Sign-in: Clerk OAuth. Use needs Overload Pro.
+Vercel forwarder in `mcp-proxy/`). Sign-in: Clerk OAuth. Use needs an Overload plan: Connect or Pro.
 
 ## Before either submission
 
@@ -15,7 +15,9 @@ Vercel forwarder in `mcp-proxy/`). Sign-in: Clerk OAuth. Use needs Overload Pro.
      reviewers cannot read that inbox. OpenAI rejected 1.0.0 for this
      (rule 1.4, 2026-11-25). Turned off the same day.
    - The seed below writes the last 21 days. Run it again before every
-     resubmit, so "today" and "this week" have data. It only adds rows.
+     resubmit, so "today" and "this week" have data. Every row has a fixed
+     id (md5 of the day), so a rerun adds only the missing days and makes no
+     duplicates.
    - Give it Pro (set `user_profiles.tier` with a far `tier_expires_at`).
    - Fill it: about 3 weeks of food and workouts, a bench press history, a
      few body weights, a live program with targets. Every test case below must
@@ -44,7 +46,7 @@ Rules: https://claude.com/docs/connectors/building/submission
 | Support | hello@tryoverload.app |
 | Icon | `assets/icon.png` (1024 x 1024) |
 | Slug | `overload` (permanent once published) |
-| Use cases | Ask about your food, macros, workouts, lift progress and weight; log food and workouts by chat. Users need an Overload account with Pro. Reads and writes. |
+| Use cases | Ask about your food, macros, workouts, lift progress and weight; log food and workouts by chat. Users need an Overload account with Connect or Pro. Reads and writes. |
 | Authentication | Required. OAuth. Claude uses Clerk's client ID metadata (CIMD), so no client ID or secret is needed. |
 | Data handling | Our own API. Yes, it handles personal health data (food, body weight, workouts). No sponsored content. |
 | Test & launch | Reviewer account email + password, and the steps: add the connector, sign in, try the 5 prompts below. |
