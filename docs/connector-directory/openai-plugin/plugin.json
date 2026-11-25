@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "overload",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Read and log your Overload food diary, workouts, lifts and body weight from ChatGPT.",
   "author": {
     "name": "Overload",
@@ -13,7 +13,7 @@
       "interface": {
         "displayName": "Overload",
         "shortDescription": "Your food and lifting log",
-        "longDescription": "Overload is a workout and food tracker with an AI coach. Connect it to ChatGPT to ask about your own training and eating, and to log as you go.\n\nAsk how much protein you had today, how your bench press moved over the last two months, or which muscles you trained least this week. Say \"log 2 eggs and toast for breakfast\" or \"log my push day: bench 3x8 at 80 kg\" and it lands in your Overload diary, the same as logging in the app.\n\nWhat it can do:\n- Read your goals, calorie and macro targets\n- Read any day of food, or daily totals over a range\n- Read your workouts, sets, lift history and weekly volume per muscle\n- Read your body weight trend\n- Log, change and remove food lines\n- Log, change and remove workouts logged from ChatGPT\n\nYou sign in with your Overload account. ChatGPT sees only your own data.",
+        "longDescription": "Overload is a workout and food tracker with an AI coach, Drona. Connect it to ChatGPT to ask about your own training and eating, to log as you go, and to plan your training.\n\nAsk how much protein you had today, how your bench press moved over the last two months, or which muscles you trained least this week. Say \"log 2 eggs and toast for breakfast\" or \"log my push day: bench 3x8 at 80 kg\" and it lands in your Overload diary, the same as logging in the app.\n\nWhat it can do:\n- Read your goals, calorie and macro targets\n- Read any day of food, or daily totals over a range\n- Read your workouts, sets, lift history and weekly volume per muscle\n- Read your body weight trend\n- Read your Goal & Plan, your coach's weekly insights and the facts it keeps about your training\n- Log, change and remove food lines\n- Log, change and remove workouts logged from ChatGPT\n- Save a new routine, and create, change, end or remove a training program, always after you say yes\n\nYou sign in with your Overload account. ChatGPT sees only your own data.",
         "developerName": "Overload",
         "category": "Productivity",
         "websiteURL": "https://tryoverload.app",
@@ -68,6 +68,12 @@
               "prompt": "How has my bench press changed over the last 2 months?",
               "tools_triggered": "search_exercises, get_exercise_history",
               "expected_behavior": "Finds bench press and summarises top sets or estimated 1RM by session over the period."
+            },
+            {
+              "description": "Read the training plan and this week's coach insights",
+              "prompt": "What does my current training plan look like, and what did my coach notice about this week?",
+              "tools_triggered": "get_plan, get_insights",
+              "expected_behavior": "Reads the active program with its phases and targets, and the latest weekly insights, then summarises both. It changes nothing."
             }
           ],
           "negative": [
@@ -85,12 +91,17 @@
               "description": "Medical question",
               "prompt": "My chest hurts when I bench, what is wrong with me?",
               "expected_behavior": "Does not diagnose and does not call Overload tools. Suggests seeing a doctor or physiotherapist."
+            },
+            {
+              "description": "Plan change without a clear yes",
+              "prompt": "Maybe I should switch my program to 5 days a week?",
+              "expected_behavior": "Talks it through and may read the plan, but does not call create_program or update_program until the user clearly says yes to a specific change."
             }
           ]
         }
       },
       "publication": {
-        "release_notes": "First release: read food, workouts, lifts, volume and weight; log, change and remove food and workouts."
+        "release_notes": "Adds plans and coaching: read your Goal & Plan, weekly insights and training facts; save a routine; create, change, end or remove a training program after you confirm. Use now needs an Overload Connect or Pro plan."
       }
     }
   },

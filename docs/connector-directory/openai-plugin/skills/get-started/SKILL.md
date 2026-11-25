@@ -1,6 +1,6 @@
 ---
 name: get-started
-description: Read and log the user's Overload food diary, workouts, lifts and body weight. Use when the user asks about what they ate, their macros, their workouts, lifts, weekly volume or weight trend, or asks to log food or a workout in Overload.
+description: Read and log the user's Overload food diary, workouts, lifts and body weight, and read or change their training plan. Use when the user asks about what they ate, their macros, workouts, lifts, weekly volume, weight trend or training plan, or asks to log food or a workout in Overload.
 ---
 
 # Overload
@@ -15,6 +15,8 @@ signed-in user's own Overload data.
 - Workouts: `list_workouts`, then `get_workout` for the sets.
 - One lift over time: `search_exercises` for the id, then `get_exercise_history`.
 - Training load: `get_weekly_volume`. Weight trend: `get_body_weight`.
+- The coach's Goal & Plan: `get_plan`. Weekly notes: `get_insights`.
+  Known facts about the user's training: `get_facts`. Programs: `list_programs`.
 
 ## Logging
 
@@ -24,5 +26,13 @@ signed-in user's own Overload data.
 - To fix a line, use `update_food_entry` or `update_workout`. To undo, use
   `delete_food_entries` or `delete_workout`. Ask before removing anything.
 
-Use of Overload from ChatGPT needs an Overload Pro plan. If a tool says the
-account does not have it, tell the user that, and that nothing was changed.
+## Planning
+
+- Read `get_planning_guide` before you create or change a program, and plan
+  by its rules.
+- `save_routine`, `create_program`, `update_program`, `end_program` and
+  `delete_program` change the user's plan. Ask for a clear yes first.
+
+Use of Overload from ChatGPT needs an Overload plan (Connect or Pro). If a tool
+says the account does not have one, tell the user that, and that nothing was
+changed.
