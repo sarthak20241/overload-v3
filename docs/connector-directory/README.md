@@ -13,20 +13,34 @@ Vercel forwarder in `mcp-proxy/`). Sign-in: Clerk OAuth. Use needs an Overload p
    - Clerk **Protect -> Sign-in security -> Device Trust must stay off.** When
      it is on, a password sign-in on a new device asks for an email code, and
      reviewers cannot read that inbox. OpenAI rejected 1.0.0 for this
-     (rule 1.4, 2026-11-25). Turned off the same day. Do not turn it back on
+     (rule 1.4, 2026-11-25). Turned off the same day, by the owner's choice.
+     **Effect on production:** this is one setting for the whole production
+     Clerk app (clerk.tryoverload.app), so no password sign-in gets the
+     new-device email code. Google and Apple sign-ins do not change, and
+     "Lock accounts after failed sign-ins" and "Prevent user enumeration"
+     stay on. A leaked password alone now opens an account. Do not turn it back on
      after approval: both directories reuse this account for later reviews
      and ongoing tests. To turn it on again, first move the demo account to
      the portal's email-code option (OpenAI's own review inbox).
-   - The seed below writes the last 21 days. Run it again before every
-     resubmit, so "today" and "this week" have data. Every row has a fixed
+   - Seed: `docs/connector-directory/reviewer-seed.sql`. Open the app once
+     with the reviewer account (it needs a profile row), put its Clerk user id
+     in place of `__UID__`, then run it on production:
+     `supabase db query --linked -f <the edited copy>`. It writes the last 21
+     days. Run it again before every resubmit, so "today" and "this week"
+     have data. Every row has a fixed
      id (md5 of the day), so a rerun adds only the missing days and makes no
      duplicates.
    - Give it Pro, not Connect: Pro covers every connector tool and the app's
      own coach (the seed sets `user_profiles.tier = 'annual'` with a far
      `tier_expires_at`).
    - Fill it: about 3 weeks of food and workouts, a bench press history, a
-     few body weights, a live program with targets. Every test case below must
-     have data to read.
+     few body weights (the seed writes these), and a live program with
+     targets. The seed does not make the program: build one once in the app
+     with the reviewer account (Drona's goal flow) and keep it active. The
+     plan test case reads it with `get_plan`. Today's account has
+     "15-Week Lean Cut to 72 kg", active, 4 phases. Weekly insights come from
+     the weekly jobs, not the seed. Every test case below must have data to
+     read.
    - Run every test case with this account in Claude and in ChatGPT.
 2. **Deploy this branch's `mcp` function** and apply
    `supabase/migrations/20261112130000_mcp_update_workout_old_week.sql`.
