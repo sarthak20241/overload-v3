@@ -34,7 +34,7 @@ Rules: https://claude.com/docs/connectors/building/submission
 | Step | What to enter |
 |---|---|
 | Connection | `https://mcp.tryoverload.app` (one URL for every user) |
-| Tools | Syncs by itself. All 27 tools have a title and a read or write hint. |
+| Tools | Syncs by itself. All 26 tools have a title and a read or write hint. |
 | Listing name | Overload |
 | One-liner (200) | Read and log your Overload food diary, workouts, lifts and body weight from Claude. |
 | Description (2000) | Use the `longDescription` text in `openai-plugin/plugin.json`, with "ChatGPT" changed to "Claude". |
