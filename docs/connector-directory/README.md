@@ -13,12 +13,17 @@ Vercel forwarder in `mcp-proxy/`). Sign-in: Clerk OAuth. Use needs an Overload p
    - Clerk **Protect -> Sign-in security -> Device Trust must stay off.** When
      it is on, a password sign-in on a new device asks for an email code, and
      reviewers cannot read that inbox. OpenAI rejected 1.0.0 for this
-     (rule 1.4, 2026-11-25). Turned off the same day.
+     (rule 1.4, 2026-11-25). Turned off the same day. Do not turn it back on
+     after approval: both directories reuse this account for later reviews
+     and ongoing tests. To turn it on again, first move the demo account to
+     the portal's email-code option (OpenAI's own review inbox).
    - The seed below writes the last 21 days. Run it again before every
      resubmit, so "today" and "this week" have data. Every row has a fixed
      id (md5 of the day), so a rerun adds only the missing days and makes no
      duplicates.
-   - Give it Pro (set `user_profiles.tier` with a far `tier_expires_at`).
+   - Give it Pro, not Connect: Pro covers every connector tool and the app's
+     own coach (the seed sets `user_profiles.tier = 'annual'` with a far
+     `tier_expires_at`).
    - Fill it: about 3 weeks of food and workouts, a bench press history, a
      few body weights, a live program with targets. Every test case below must
      have data to read.
