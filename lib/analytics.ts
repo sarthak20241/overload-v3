@@ -83,6 +83,7 @@ export type AnalyticsEvent =
   | 'onboarding_pending_drained'
   // ── Auth ─────────────────────────────────────────────────────────────────
   | 'signup_started'
+  | 'signup_resumed'
   | 'signed_up'
   | 'signed_in'
   | 'signed_out'
