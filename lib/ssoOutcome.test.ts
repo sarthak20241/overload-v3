@@ -4,7 +4,28 @@
 // below mirror what @clerk/clerk-expo 2.x useSSO().startSSOFlow resolves with.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { classifySSO, shouldReloadSSO, SIGN_IN_INCOMPLETE_COPY, ssoDetail, ssoErrorCopy, type SSOOutcome } from "./ssoOutcome.ts";
+import { classifySSO, isNewSSOAccount, shouldReloadSSO, SIGN_IN_INCOMPLETE_COPY, ssoDetail, ssoErrorCopy, type SSOOutcome } from "./ssoOutcome.ts";
+
+Deno.test("a Google or Apple sign-in that made a new account counts as a sign-up", () => {
+  // Clerk turns an unknown Google/Apple account into a transfer sign-up.
+  assertEquals(
+    isNewSSOAccount({ createdSessionId: "sess_2", signIn: { status: "needs_identifier" }, signUp: { status: "complete", createdSessionId: "sess_2" } }),
+    true,
+  );
+  assertEquals(
+    isNewSSOAccount({ createdSessionId: null, signIn: { firstFactorVerification: { status: "transferable" } }, signUp: { status: "complete", createdSessionId: "sess_3" } }),
+    true,
+  );
+});
+
+Deno.test("an existing account signing in is not a sign-up", () => {
+  assertEquals(isNewSSOAccount({ createdSessionId: "sess_1", signIn: { status: "complete", createdSessionId: "sess_1" } }), false);
+  // useSSO always hands back a signUp resource, empty for a plain sign-in.
+  assertEquals(
+    isNewSSOAccount({ createdSessionId: "sess_1", signIn: { status: "complete", createdSessionId: "sess_1" }, signUp: { status: null, createdSessionId: null } }),
+    false,
+  );
+});
 
 const success = { type: "success" };
 
