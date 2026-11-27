@@ -156,6 +156,14 @@ export function ensureConfigured(): boolean {
   try {
     P.configure({ apiKey });
     configured = true;
+    // Apple Ads: send Apple's AdServices token to RevenueCat, so a trial or a
+    // purchase shows which ad keyword brought the install. No tracking prompt
+    // needed (AdServices is not ATT). iOS only; a failure never blocks buying.
+    if (Platform.OS === 'ios' && typeof P.enableAdServicesAttributionTokenCollection === 'function') {
+      P.enableAdServicesAttributionTokenCollection().catch((e: unknown) =>
+        console.warn('[revenuecat] Apple Ads token failed:', e),
+      );
+    }
     return true;
   } catch (e) {
     console.warn('[revenuecat] configure failed:', e);
