@@ -167,7 +167,8 @@ export function ensureConfigured(): boolean {
 /**
  * Apple Ads: send Apple's AdServices token to RevenueCat, so a trial or a
  * purchase shows which ad keyword brought the install. No tracking prompt
- * needed (AdServices is not ATT). iOS only. Kept out of configure's try: a
+ * needed (AdServices is not ATT). iOS only. Runs once per app launch, right
+ * after the first successful configure. Kept out of configure's try: a
  * sync throw or a rejected promise only logs, and never makes the SDK read as
  * "not ready" (a failure never blocks buying).
  */

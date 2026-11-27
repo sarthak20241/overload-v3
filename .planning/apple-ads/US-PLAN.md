@@ -36,7 +36,11 @@ small fixed spend. Not growth yet.
 Sonar free tier gives 5 scores a day. The Apple Ads keyword tool shows
 popularity for every word, so we read the rest there while we build.
 
-## Campaigns (all US, iPhone, Search results)
+## Campaigns: first draft (all US, iPhone, Search results)
+
+This is the draft written before the build, in USD. What is live in Apple Ads
+is the "Built 2026-11-27" table below: more keywords per ad group, budgets in
+INR, and all 42 exact keywords as negatives in Discovery. Go by that table.
 
 Match rule: Exact match in Brand, Category and Competitor. Broad match only
 in Discovery. Each exact keyword is also a negative in Discovery, so the
@@ -91,9 +95,15 @@ Integration; the owner signs in to Apple).
 ## Order of work
 
 1. DONE in PR #416: the Apple Ads token in `lib/revenuecat.ts`
-   (`enableAppleAdsToken`, iOS only, runs once after a fresh `configure`).
-   JS only, so an OTA update ships it. Still to check on a device build
-   that the token reaches RevenueCat.
-2. TODO (owner): RevenueCat dashboard: Integrations -> Apple Search Ads -> on.
+   (`enableAppleAdsToken`, iOS only, runs once per app launch, right after
+   `configure`). JS only, so an OTA update ships it; the native method comes
+   with react-native-purchases 10.9.1, already in the shipped builds. Still to
+   check on a device build that the token reaches RevenueCat.
+2. TODO (owner), before any campaign goes on: RevenueCat dashboard:
+   Integrations -> Apple Search Ads -> the Advanced integration, connected
+   with your Apple Ads sign-in. The Basic one does not give keyword names,
+   and the test needs results per keyword.
 3. DONE 2026-11-27: the 4 campaigns are built in Apple Ads, all PAUSED.
-4. TODO (owner): read the paused campaigns and turn them on.
+4. TODO (owner): read the paused campaigns, set each campaign's end date to
+   14 days after the day you turn it on, then turn them on. Without an end
+   date Apple Ads keeps spending the daily budget after day 14.
