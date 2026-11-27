@@ -156,10 +156,29 @@ export function ensureConfigured(): boolean {
   try {
     P.configure({ apiKey });
     configured = true;
-    return true;
   } catch (e) {
     console.warn('[revenuecat] configure failed:', e);
     return false;
+  }
+  enableAppleAdsToken(P);
+  return true;
+}
+
+/**
+ * Apple Ads: send Apple's AdServices token to RevenueCat, so a trial or a
+ * purchase shows which ad keyword brought the install. No tracking prompt
+ * needed (AdServices is not ATT). iOS only. Runs once per app launch, right
+ * after the first successful configure. Kept out of configure's try: a
+ * sync throw or a rejected promise only logs, and never makes the SDK read as
+ * "not ready" (a failure never blocks buying).
+ */
+function enableAppleAdsToken(P: any): void {
+  if (Platform.OS !== 'ios' || typeof P.enableAdServicesAttributionTokenCollection !== 'function') return;
+  const warn = (e: unknown) => console.warn('[revenuecat] Apple Ads token failed:', e);
+  try {
+    void Promise.resolve(P.enableAdServicesAttributionTokenCollection()).catch(warn);
+  } catch (e) {
+    warn(e);
   }
 }
 
