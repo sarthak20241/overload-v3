@@ -90,9 +90,10 @@ Integration; the owner signs in to Apple).
 
 ## Order of work
 
-1. Code: turn on the Apple Ads token in `lib/revenuecat.ts` (iOS only, one
-   call after `configure`). It is JS only, so an OTA update can ship it.
-2. RevenueCat dashboard: Integrations -> Apple Search Ads -> on (owner).
-3. Apple Ads site (ads.apple.com, Advanced): owner signs in and adds the
-   payment card. Claude builds the 4 campaigns in Chrome, all PAUSED.
-4. Owner reads the paused campaigns and turns them on.
+1. DONE in PR #416: the Apple Ads token in `lib/revenuecat.ts`
+   (`enableAppleAdsToken`, iOS only, runs once after a fresh `configure`).
+   JS only, so an OTA update ships it. Still to check on a device build
+   that the token reaches RevenueCat.
+2. TODO (owner): RevenueCat dashboard: Integrations -> Apple Search Ads -> on.
+3. DONE 2026-11-27: the 4 campaigns are built in Apple Ads, all PAUSED.
+4. TODO (owner): read the paused campaigns and turn them on.
