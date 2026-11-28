@@ -16,7 +16,7 @@
 
 import { assert, assertEquals, assertFalse } from "jsr:@std/assert@1";
 import { inspectAudio, MAX_AUDIO_BYTES, MAX_AUDIO_SECONDS, MAX_BYTES_PER_SECOND, MAX_M4A_BYTES, MIN_AUDIO_SECONDS } from "./audio.ts";
-import { fakeProvider, openAiProvider, pickProvider, type SttProvider } from "./stt.ts";
+import { fakeProvider, geminiProvider, openAiProvider, pickProvider, type SttProvider } from "./stt.ts";
 import { buildVocabulary, INDIAN_FOODS, sanitizeTerm } from "./vocabulary.ts";
 import { cleanTranscript, keepsOnlySaidWords } from "./cleanup.ts";
 import { handleTranscribe, type TranscribeDeps } from "./handler.ts";
@@ -269,8 +269,67 @@ Deno.test("provider: OpenAI failures come back as reasons, never as text", async
   assertEquals(await noText.transcribe(clip, { purpose: "food", vocabulary: [] }), { ok: false, reason: "vendor_bad_reply" });
 });
 
-Deno.test("provider: chosen by STT_PROVIDER, OpenAI by default, nothing without a key", () => {
+Deno.test("provider: Gemini gets the documented Interactions request for gemini-3.5-transcribe", async () => {
+  let seen: { url: string; headers: Headers; body: Record<string, any> } | null = null;
+  const fetchFn = (async (url: string, init: RequestInit) => {
+    seen = { url, headers: new Headers(init.headers), body: JSON.parse(String(init.body)) };
+    return new Response(JSON.stringify({
+      status: "completed",
+      steps: [{ type: "model_output", content: [{ type: "text", text: "do roti aur " }, { type: "text", text: "dal makhani" }] }],
+      usage: { input_tokens: 96, output_tokens: 7 },
+    }));
+  }) as unknown as typeof fetch;
+  const p = geminiProvider({ apiKey: "g-test", fetchFn, languages: ["en-IN", "hi-IN"] });
+  assertEquals(p.name, "gemini");
+  const out = await p.transcribe(clip, { purpose: "food", vocabulary: ["roti", "dal makhani"], context: "ignored" });
+  assertEquals(out, { ok: true, text: "do roti aur dal makhani", audioSeconds: 3, model: "gemini-3.5-transcribe", usage: { input_tokens: 96, output_tokens: 7 } });
+  const s = seen as unknown as { url: string; headers: Headers; body: Record<string, any> };
+  assertEquals(s.url, "https://generativelanguage.googleapis.com/v1beta/interactions");
+  assertEquals(s.headers.get("x-goog-api-key"), "g-test");
+  assertEquals(s.headers.get("content-type"), "application/json");
+  assertEquals(s.body.model, "gemini-3.5-transcribe");
+  assertEquals(s.body.input.length, 1);
+  assertEquals(s.body.input[0].type, "audio");
+  // m4a is listed as audio/m4a (audio/mp4 is not in Gemini's list).
+  assertEquals(s.body.input[0].mime_type, "audio/m4a");
+  assertEquals(atob(s.body.input[0].data).length, clip.bytes.length);
+  assertEquals(s.body.generation_config.transcription_config, {
+    language_codes: ["en-IN", "hi-IN"],
+    custom_vocabulary: ["roti", "dal makhani"],
+  });
+});
+
+Deno.test("provider: Gemini failures come back as reasons, never as text", async () => {
+  const reply = (status: number, body: unknown) =>
+    geminiProvider({ apiKey: "k", fetchFn: (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch });
+  const t = (p: SttProvider) => p.transcribe(clip, { purpose: "food", vocabulary: [] });
+  assertEquals(await t(reply(429, {})), { ok: false, reason: "vendor_busy" });
+  assertEquals(await t(reply(400, {})), { ok: false, reason: "vendor_error" });
+  assertEquals(await t(reply(200, { status: "failed", steps: [] })), { ok: false, reason: "vendor_bad_reply" });
+  assertEquals(await t(reply(200, { status: "completed", steps: [] })), { ok: false, reason: "vendor_bad_reply" });
+  const throws = geminiProvider({ apiKey: "k", fetchFn: (() => Promise.reject(new Error("dns"))) as unknown as typeof fetch });
+  assertEquals(await t(throws), { ok: false, reason: "vendor_error" });
+});
+
+Deno.test("provider: Gemini with no language hints sends an empty list (auto-detect), no vocabulary sends none", async () => {
+  let body: Record<string, any> = {};
+  const p = geminiProvider({
+    apiKey: "k",
+    fetchFn: (async (_u: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ status: "completed", steps: [{ type: "model_output", content: [{ type: "text", text: "hi" }] }] }));
+    }) as unknown as typeof fetch,
+  });
+  await p.transcribe(clip, { purpose: "chat", vocabulary: [] });
+  assertEquals(body.generation_config.transcription_config, { language_codes: [] });
+});
+
+Deno.test("provider: chosen by STT_PROVIDER, else Gemini when its key is set, else OpenAI", () => {
+  assertEquals(pickProvider({ GEMINI_API_KEY: "g" })?.name, "gemini");
+  assertEquals(pickProvider({ GEMINI_API_KEY: "g", OPENAI_API_KEY: "k" })?.name, "gemini");
   assertEquals(pickProvider({ OPENAI_API_KEY: "k" })?.name, "openai");
+  assertEquals(pickProvider({ STT_PROVIDER: "openai", GEMINI_API_KEY: "g", OPENAI_API_KEY: "k" })?.name, "openai");
+  assertEquals(pickProvider({ STT_PROVIDER: "gemini", OPENAI_API_KEY: "k" }), null);
   assertEquals(pickProvider({ STT_PROVIDER: "openai", OPENAI_API_KEY: "k", STT_LANGUAGES: "en, hi" })?.name, "openai");
   assertEquals(pickProvider({}), null);
   assertEquals(pickProvider({ STT_PROVIDER: "wispr", OPENAI_API_KEY: "k" }), null);

@@ -10,13 +10,17 @@ import { pickProvider } from "./stt.ts";
 // this file wires them to Clerk, Supabase and the speech engine.
 //
 // Secrets:
-//   OPENAI_API_KEY     the speech engine's key (required; without it every
-//                      call is 503 not_configured)
-//   STT_PROVIDER       optional, default "openai"
-//   STT_MODEL          optional, default "gpt-transcribe"
-//   STT_LANGUAGES      optional ISO-639-1 hints, e.g. "en,hi". Unset lets
-//                      the engine detect, which is the default until the
-//                      engine comparison (scripts/voice-eval) says otherwise
+//   GEMINI_API_KEY     Google's key (AI Studio). Set it and Gemini is the
+//                      engine. On a free-tier key Google may use the audio to
+//                      improve its products; a key from a project with billing
+//                      on is the paid tier, where it does not.
+//   OPENAI_API_KEY     OpenAI's key, used when GEMINI_API_KEY is not set or
+//                      STT_PROVIDER=openai. With neither key every call is 503.
+//   STT_PROVIDER       optional: "gemini" or "openai"
+//   STT_MODEL          optional: default gemini-3.5-transcribe / gpt-transcribe
+//   STT_LANGUAGES      optional hints. Gemini: BCP-47 ("en-IN,hi-IN");
+//                      OpenAI: ISO-639-1 ("en,hi"). Unset lets the engine
+//                      detect, the default until scripts/voice-eval says otherwise
 //   ANTHROPIC_API_KEY  already set for ai-coach; turns on the chat cleanup
 //
 // Auth model: same as ai-coach. The gateway rejects Clerk JWTs, so

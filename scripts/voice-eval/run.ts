@@ -3,6 +3,7 @@
 //
 //   deno run -A scripts/voice-eval/run.ts                     # dry run: lists clips, prints the cost, calls nothing
 //   SPEND=1 OPENAI_API_KEY=sk-... deno run -A scripts/voice-eval/run.ts
+//   ENGINES=gemini SPEND=1 GEMINI_API_KEY=... deno run -A scripts/voice-eval/run.ts   # free on a free-tier key
 //   ENGINES=openai,fake ONLY=dal-1,poha-2 SPEND=1 deno run -A scripts/voice-eval/run.ts
 //   STT_LANGUAGES=en,hi SPEND=1 ... deno run -A scripts/voice-eval/run.ts   # language hints, as the function's secret
 //
@@ -14,17 +15,18 @@
 // The clips folder is git-ignored: recordings of a voice stay on this Mac.
 //
 // Billing: no Anthropic call is made. Each engine bills by its own key, per
-// audio minute (gpt-transcribe $0.0045/min on 2026-11-28). Nothing is sent
+// audio minute (gpt-transcribe $0.0045/min, gemini-3.5-transcribe $0.003/min
+// paid or free on a free-tier key, on 2026-11-28). Nothing is sent
 // without SPEND=1; the dry run prints what the run would cost first.
 //
-// Engines: `openai` (the function's provider, unchanged) and `fake` (a
+// Engines: `gemini` and `openai` (the function's providers, unchanged) and `fake` (a
 // floor that echoes nothing, to check the harness). Deepgram Nova-3, Sarvam
 // Saaras v3 and Groq whisper-large-v3-turbo go in as SttProvider objects in
 // supabase/functions/transcribe/stt.ts once their request shapes are checked
 // against their live docs, then show up here by name.
 
 import { inspectAudio } from "../../supabase/functions/transcribe/audio.ts";
-import { fakeProvider, openAiProvider, type SttProvider } from "../../supabase/functions/transcribe/stt.ts";
+import { fakeProvider, geminiProvider, openAiProvider, type SttProvider } from "../../supabase/functions/transcribe/stt.ts";
 import { buildVocabulary, contextFor } from "../../supabase/functions/transcribe/vocabulary.ts";
 import { costUsd, scoreClip } from "./score.ts";
 
@@ -37,7 +39,9 @@ interface Case {
   tags?: string[];
 }
 
-const PRICE_PER_MIN: Record<string, number> = { openai: 0.0045, fake: 0 };
+// Paid rates. Gemini on a free-tier key costs nothing (and Google may use the
+// clips to improve its products: use your own voice, not users').
+const PRICE_PER_MIN: Record<string, number> = { openai: 0.0045, gemini: 0.003, fake: 0 };
 const dir = new URL("./clips/", import.meta.url);
 
 let cases: Case[];
@@ -85,6 +89,14 @@ function engine(name: string): SttProvider | null {
       return null;
     }
     return openAiProvider({ apiKey, languages });
+  }
+  if (name === "gemini") {
+    const apiKey = Deno.env.get("GEMINI_API_KEY");
+    if (!apiKey) {
+      console.log("gemini: GEMINI_API_KEY is not set, skipped");
+      return null;
+    }
+    return geminiProvider({ apiKey, languages });
   }
   console.log(`${name}: no provider written yet, skipped`);
   return null;
