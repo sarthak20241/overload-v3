@@ -57,6 +57,14 @@ export function photoCameraAllowed(s: { os: string; build: string | null; dev: b
   return min !== null && n !== null && n >= min;
 }
 
+/** Photo logging may run here: the flag is on and this binary's camera
+ *  prompt covers meal photos. The camera screen checks it before it asks for
+ *  the camera, and the food box before it sends a hand-off, so a deep link
+ *  cannot reach either on a build the button would not show on. */
+export function photoLoggingAllowed(s: { flag: string | null; os: string; build: string | null; dev: boolean }): boolean {
+  return s.flag === 'on' && photoCameraAllowed(s);
+}
+
 /** The camera button shows in the food box. Only with no card under review:
  *  a photo starts a meal, it does not correct one. */
 export function photoButtonShows(s: {
@@ -67,7 +75,7 @@ export function photoButtonShows(s: {
   signedIn: boolean;
   cardOnScreen: boolean;
 }): boolean {
-  return s.flag === 'on' && s.signedIn && !s.cardOnScreen && photoCameraAllowed(s);
+  return s.signedIn && !s.cardOnScreen && photoLoggingAllowed(s);
 }
 
 // ── Hand-off from the camera screen ─────────────────────────────────────────

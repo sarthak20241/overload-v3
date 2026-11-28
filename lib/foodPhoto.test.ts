@@ -14,6 +14,7 @@ import {
   PHOTO_MAX_IMAGES,
   photoButtonShows,
   photoCameraAllowed,
+  photoLoggingAllowed,
   photoShownText,
   photoTurnText,
   setPendingPhoto,
@@ -74,6 +75,14 @@ Deno.test("button: never on a binary whose camera prompt still says video is nev
 Deno.test("button: a dev build may use it to test", () => {
   assert(photoCameraAllowed({ os: "ios", build: "1", dev: true }));
   assert(!photoCameraAllowed({ os: "web", build: null, dev: true }));
+});
+
+Deno.test("allowed: the camera screen and the hand-off need the flag and the build, as the button does", () => {
+  assert(photoLoggingAllowed({ flag: "on", os: "ios", build: "1", dev: true }));
+  assert(!photoLoggingAllowed({ flag: "off", os: "ios", build: "1", dev: true }));
+  assert(!photoLoggingAllowed({ flag: null, os: "ios", build: "1", dev: true }));
+  // A store build below the floor (here: none set) is never allowed.
+  assert(!photoLoggingAllowed({ flag: "on", os: "ios", build: "99999", dev: false }));
 });
 
 Deno.test("button: signed in, and only with no card under review", () => {

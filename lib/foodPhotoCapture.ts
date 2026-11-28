@@ -15,7 +15,14 @@ import type { Photo } from 'react-native-vision-camera';
 import { fitLongEdge, PHOTO_JPEG_QUALITY, type PhotoShot } from '@/lib/foodPhoto';
 
 export async function preparePhoto(photo: Photo): Promise<PhotoShot> {
-  const image = await photo.toImageAsync();
+  // The photo is disposed however this ends, a failed decode included.
+  let image: Awaited<ReturnType<Photo['toImageAsync']>>;
+  try {
+    image = await photo.toImageAsync();
+  } catch (e) {
+    photo.dispose();
+    throw e;
+  }
   try {
     const size = fitLongEdge(image.width, image.height);
     if (!size) throw new Error('empty photo');

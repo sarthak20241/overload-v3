@@ -364,10 +364,13 @@ function readGrams(raw: unknown): PhotoItem["grams"] {
   if (best === null || best < 1 || best > 3000) return null;
   const low = posNum(o.low) ?? best * 0.7;
   const high = posNum(o.high) ?? best * 1.3;
-  // In order, and inside a real portion: a bound past it falls back to best.
+  // Inside a real portion (a bound past it falls back to best), and around
+  // best: best is never moved, since it may be the user's own weight.
+  // Swapped bounds are put back in order first.
   const fit = (n: number) => (n >= 0.5 && n <= 5000 ? n : best);
-  const [a, b, c] = [fit(low), best, fit(high)].sort((x, y) => x - y);
-  return { low: r1(a), best: r1(b), high: r1(c) };
+  const lo = Math.min(fit(low), fit(high));
+  const hi = Math.max(fit(low), fit(high));
+  return { low: r1(Math.min(lo, best)), best: r1(best), high: r1(Math.max(hi, best)) };
 }
 
 /** The model's JSON as a PhotoRead, or null when it is not one. Everything
@@ -642,6 +645,10 @@ function noteFor(t: Target, line: PhotoLine): { text: string | null; max: Confid
     return { text: `Assumed, not seen: ${t.fat.label} ${t.fat.name} for cooking. Remove it if there was none.`, max: "low" };
   }
   const it = t.item;
+  if (it.label && it.label.kcal === null) {
+    // No panel went to the parse (panelOf), so the numbers are not the label's.
+    return { text: "I could not read the label's numbers, so these are from our food list.", max: "medium" };
+  }
   if (it.label) {
     const bits = ["Numbers from the label in your photo."];
     if (it.label.unread.length) bits.push(`I could not read ${it.label.unread.join(" or ")}.`);

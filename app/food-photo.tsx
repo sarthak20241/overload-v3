@@ -34,8 +34,11 @@ import { Camera, useCameraDevice, useCameraPermission, usePhotoOutput } from 're
 import { useTheme } from '@/hooks/useTheme';
 import { Colors, FontSize, FontWeight, Radius, Spacing } from '@/constants/theme';
 import { haptics } from '@/lib/haptics';
-import { track } from '@/lib/analytics';
-import { PHOTO_MAX_IMAGES, setPendingPhoto, type PendingPhotoMeal, type PhotoShot } from '@/lib/foodPhoto';
+import * as Application from 'expo-application';
+import { getFlagVariant, track } from '@/lib/analytics';
+import {
+  FOOD_PHOTO_FLAG, PHOTO_MAX_IMAGES, photoLoggingAllowed, setPendingPhoto, type PendingPhotoMeal, type PhotoShot,
+} from '@/lib/foodPhoto';
 import { discardShots, preparePhoto } from '@/lib/foodPhotoCapture';
 
 type Step = 'camera' | 'review';
@@ -51,6 +54,18 @@ export default function FoodPhotoScreen() {
     () => (typeof params.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(params.day) ? new Date(`${params.day}T12:00:00`) : new Date()),
     [params.day],
   );
+
+  // The same check as the food box's button (lib/foodPhoto), so a deep link
+  // cannot open the camera on a build or account the button is hidden for:
+  // an older binary's camera prompt still says nothing is uploaded.
+  const [allowed, setAllowed] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void getFlagVariant(FOOD_PHOTO_FLAG, 'off').then((r) => {
+      if (alive) setAllowed(photoLoggingAllowed({ flag: r.variant, os: Platform.OS, build: Application.nativeBuildVersion, dev: __DEV__ }));
+    });
+    return () => { alive = false; };
+  }, []);
 
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('back');
@@ -78,10 +93,11 @@ export default function FoodPhotoScreen() {
     const granted = await requestPermission();
     if (!granted) setPermissionBlocked(true);
   }, [requestPermission]);
-  // Asked once on open. After a no, only the Settings button can change it.
+  // Asked once on open, and only when photo logging is allowed here. After a
+  // no, only the Settings button can change it.
   useEffect(() => {
-    if (!hasPermission && !permissionBlocked) void askForCamera();
-  }, [hasPermission, permissionBlocked, askForCamera]);
+    if (allowed === true && !hasPermission && !permissionBlocked) void askForCamera();
+  }, [allowed, hasPermission, permissionBlocked, askForCamera]);
 
   const takePhoto = useCallback(async () => {
     if (busy) return;
@@ -92,7 +108,8 @@ export default function FoodPhotoScreen() {
       const photo = await photoOutput.capturePhoto({ flashMode: 'off' }, {});
       const shot = await preparePhoto(photo);
       // The live list (shotsRef), not this render's copy.
-      if (!mountedRef.current || shotsRef.current.length >= PHOTO_MAX_IMAGES) {
+      // Closed, or already sent: this shot has no owner, so it goes.
+      if (!mountedRef.current || sentRef.current || shotsRef.current.length >= PHOTO_MAX_IMAGES) {
         discardShots([shot]);
         return;
       }
@@ -124,6 +141,25 @@ export default function FoodPhotoScreen() {
   }, [shots, note, meal, day]);
 
   const close = useCallback(() => router.back(), []);
+
+  // ── not here ───────────────────────────────────────────────────────────────
+
+  if (allowed !== true) {
+    return (
+      <View style={[styles.root, { backgroundColor: '#000' }]}>
+        {allowed === false && (
+          <View style={styles.centered}>
+            <Feather name="camera-off" size={28} color="#fff" />
+            <Text style={styles.centerLead}>Meal photos aren't on in this version yet.</Text>
+            <Text style={styles.centerSub}>Type what you ate in the food box and I'll log it.</Text>
+            <Pressable onPress={close} style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.85 }]}>
+              <Text style={styles.primaryLabel}>Back</Text>
+            </Pressable>
+          </View>
+        )}
+      </View>
+    );
+  }
 
   // ── camera ─────────────────────────────────────────────────────────────────
 

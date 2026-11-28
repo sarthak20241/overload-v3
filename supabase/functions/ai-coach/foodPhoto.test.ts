@@ -259,6 +259,16 @@ Deno.test("read: weights are put in order and held to a real portion", () => {
   assertEquals(read.items[1].grams, null);
 });
 
+Deno.test("read: a bad range is repaired around the weight, never by moving it", () => {
+  // The user's 150 g must stay 150 g whatever the bounds say.
+  const read = plate([item({ grams: { low: 100, best: 150, high: 120 }, grams_from: "note" })]);
+  assertEquals(read.items[0].grams!.best, 150);
+  assertEquals(read.items[0].grams, { low: 100, best: 150, high: 150 });
+  assertStringIncludes(photoToText(read, "").text, "(~150 g)");
+  // An ordered range is left as it was.
+  assertEquals(plate([item({ grams: { low: 120, best: 150, high: 190 } })]).items[0].grams, { low: 120, best: 150, high: 190 });
+});
+
 Deno.test("read: junk is not a read", () => {
   assertEquals(parsePhotoRead(null), null);
   assertEquals(parsePhotoRead({ kind: "banana", items: [] }), null);
@@ -475,6 +485,14 @@ Deno.test("card: a label line says where its numbers came from and what could no
   assertStringIncludes(l.assumption!, "label");
   assertStringIncludes(l.assumption!, "fat");
   assertStringIncludes(l.assumption!, "1 serving");
+});
+
+Deno.test("card: a label whose calories could not be read does not claim the label's numbers", () => {
+  const read = labelRead([labelItem({ kcal: null })]);
+  const [l] = markPhotoLines([line({ food_name: "RiteBite protein bar", grams: 50 })], read, []);
+  assert(!l.assumption!.includes("Numbers from the label"), l.assumption!);
+  assertStringIncludes(l.assumption!, "could not read");
+  assertEquals(l.confidence, "medium");
 });
 
 Deno.test("card: a note the parse already put on the line is kept, and the whole fits 160 characters", () => {

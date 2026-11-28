@@ -25,7 +25,7 @@ import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { getFlagVariant, track } from '@/lib/analytics';
 import * as Application from 'expo-application';
-import { FOOD_PHOTO_FLAG, photoButtonShows, photoShownText, photoTurnText, takePendingPhoto, withoutPhotoTurn, withPhotoText, type PhotoShot } from '@/lib/foodPhoto';
+import { FOOD_PHOTO_FLAG, photoButtonShows, photoLoggingAllowed, photoShownText, photoTurnText, takePendingPhoto, withoutPhotoTurn, withPhotoText, type PhotoShot } from '@/lib/foodPhoto';
 import { discardShots } from '@/lib/foodPhotoCapture';
 import { noteFoodLogged } from '@/lib/pushRegistration';
 import { announceReady } from '@/lib/readyNotice';
@@ -157,7 +157,9 @@ type ParseFlow =
       // The tier that read this meal, for the result screen's chip.
       tier?: ParseSpeed;
     }
-  | { status: 'declined'; raw: string; message: string; pendingMeal?: PendingFoodMeal | null }
+  // `fromPhoto`: the meal waiting on this question was read from a photo, so
+  // its answer is never auto-logged (its portions are a read to check).
+  | { status: 'declined'; raw: string; message: string; pendingMeal?: PendingFoodMeal | null; fromPhoto?: boolean }
   // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
   // WRITE, not the whole AI parse (which would burn an API call + could differ).
   // `clientId`/`logDate`: a "Just log it" send that failed in transport. Retry
@@ -1216,6 +1218,7 @@ export default function NutritionScreen() {
     // A photo starts a meal: the camera opens only with no card under review.
     const prevReview = !photo && flowRef.current.status === 'review' ? flowRef.current : null;
     const pendingMeal = !retry && !photo && flowRef.current.status === 'declined' ? flowRef.current.pendingMeal : null;
+    const pendingFromPhoto = !!pendingMeal && flowRef.current.status === 'declined' && !!flowRef.current.fromPhoto;
     // A RETRY carries no context, deliberately. It re-sends one specific past
     // send, so the meal on screen is not what it is about: passing `pending`
     // here made the retry text arrive as a CORRECTION of an unrelated reviewed
@@ -1245,7 +1248,7 @@ export default function NutritionScreen() {
     // It cleared `pending` above, so the two rules do not fight.
     // Never for a photo: its portions are a read the user checks first.
     const auto = retry
-      ?? (!pending && !photo && autoLogRef.current
+      ?? (!pending && !photo && !pendingFromPhoto && autoLogRef.current
         ? { clientId: newAutoLogClientId(), logDate: ymd(logDay) }
         : null);
     if (auto) {
@@ -1407,7 +1410,10 @@ export default function NutritionScreen() {
         setFlow(stamp({ ...prevReview, meal: { ...prevReview.meal, items: kept }, notice: res.message, proposal: res.proposal ?? null }));
         return;
       }
-      setFlow({ status: 'declined', raw: photo ? photoShownText(t) : t, message: res.message, pendingMeal: res.pendingMeal });
+      setFlow({
+        status: 'declined', raw: photo ? photoShownText(t) : t, message: res.message, pendingMeal: res.pendingMeal,
+        ...((photo || pendingFromPhoto) && res.pendingMeal ? { fromPhoto: true } : {}),
+      });
       return;
     }
     // The free tier's daily logs ran out. This is a paywall, not a breakage:
@@ -2236,18 +2242,6 @@ export default function NutritionScreen() {
     void runParse(p.text, undefined, { mealHint: p.meal, day: p.day });
   }, [supabase, isSignedIn, parseInFlight, runParse]));
 
-  // Meal photos the camera screen left (lib/foodPhoto). Same rules as the
-  // sentence above: taken once, and only while no parse is running here.
-  useFocusEffect(useCallback(() => {
-    if (!supabase || !isSignedIn || parseInFlight) return;
-    const p = takePendingPhoto(Date.now(), discardShots);
-    if (!p) return;
-    // The files were only for the camera screen's thumbnails: the send (and
-    // a Retry) use the base64 already in memory, so they go now.
-    discardShots(p.images);
-    void runParse(p.note, undefined, { mealHint: p.meal, day: p.day }, { images: p.images });
-  }, [supabase, isSignedIn, parseInFlight, runParse]));
-
   // The food box's camera button (lib/foodPhoto photoButtonShows). The flag
   // is read once; until it loads the button stays hidden.
   const [photoFlag, setPhotoFlag] = useState<string | null>(null);
@@ -2256,13 +2250,29 @@ export default function NutritionScreen() {
     void getFlagVariant(FOOD_PHOTO_FLAG, 'off').then((r) => { if (alive) setPhotoFlag(r.variant); });
     return () => { alive = false; };
   }, []);
+
+  // Meal photos the camera screen left (lib/foodPhoto). Same rules as the
+  // sentence above: taken once, and only while no parse is running here.
+  // Waits for the flag; a hand-off where photo logging is not allowed (a
+  // deep link on an older build) is dropped, never sent.
+  useFocusEffect(useCallback(() => {
+    if (!supabase || !isSignedIn || parseInFlight || photoFlag === null) return;
+    const p = takePendingPhoto(Date.now(), discardShots);
+    if (!p) return;
+    // The files were only for the camera screen's thumbnails: the send (and
+    // a Retry) use the base64 already in memory, so they go now.
+    discardShots(p.images);
+    if (!photoLoggingAllowed({ flag: photoFlag, os: Platform.OS, build: Application.nativeBuildVersion, dev: __DEV__ })) return;
+    void runParse(p.note, undefined, { mealHint: p.meal, day: p.day }, { images: p.images });
+  }, [supabase, isSignedIn, parseInFlight, runParse, photoFlag]));
   const showPhoto = photoButtonShows({
     flag: photoFlag,
     os: Platform.OS,
     build: Application.nativeBuildVersion,
     dev: __DEV__,
     signedIn: !!isSignedIn,
-    cardOnScreen: flow.status === 'review' || parseInFlight,
+    // A failed Add keeps its meal for Retry: that is a card on screen too.
+    cardOnScreen: flow.status === 'review' || (flow.status === 'error' && !!flow.meal) || parseInFlight,
   });
   const openPhoto = useCallback(() => {
     track('meal_photo_opened', {});
