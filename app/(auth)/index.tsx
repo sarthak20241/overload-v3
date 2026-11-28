@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, ScrollView, Dimensions,
@@ -16,6 +16,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { setGuestMode, getGuestMode } from '@/lib/guestMode';
 import { getGuestWorkouts, getGuestRoutines } from '@/lib/guestStore';
 import { classifySSO, shouldReloadSSO, ssoDetail, ssoErrorCopy, SIGN_IN_INCOMPLETE_COPY, type SSOOutcome } from '@/lib/ssoOutcome';
+import { authFailProps, pendingEmailSignUp } from '@/lib/authResume';
 import { OrbLoader } from '@/components/ui/OrbLoader';
 
 function useWarmUpBrowser() {
@@ -121,6 +122,25 @@ export default function AuthScreen() {
   // and then tap Google — racing the shared `error` state and creating
   // two overlapping Clerk sign-in attempts.
   const authBusy = loading || googleLoading || appleLoading;
+
+  // Android can restart the app while the user is away reading the sign-up
+  // code email. This screen's state lives only in memory, so it came back
+  // empty in 'login' mode and the code step was lost (seen 2026-11-27). Clerk
+  // keeps the unfinished sign-up on its client, so ask it once, when it has
+  // loaded, and reopen the code step. "Cancel" there still goes back to the
+  // sign-up form.
+  const resumeChecked = useRef(false);
+  useEffect(() => {
+    if (resumeChecked.current || !signUpLoaded) return;
+    resumeChecked.current = true;
+    const pending = pendingEmailSignUp(signUp);
+    if (!pending) return;
+    setEmail(pending.email);
+    if (pending.firstName) setName(pending.firstName);
+    setCode('');
+    setMode('verify');
+    track('signup_resumed', { method: 'email' });
+  }, [signUpLoaded, signUp]);
 
   // Once Clerk reports a signed-in user, route them into the app.
   // Covers OAuth (where setActive may resolve before createdSessionId is
@@ -340,7 +360,7 @@ export default function AuthScreen() {
         router.replace('/(app)');
       }
     } catch (err: any) {
-      track('auth_failed', { method: mode, reason: err?.errors?.[0]?.code ?? 'unknown' });
+      track('auth_failed', authFailProps(mode, err));
       setError(err.errors?.[0]?.longMessage || err.message || 'Something went wrong');
     } finally {
       setLoading(false);
@@ -442,7 +462,7 @@ export default function AuthScreen() {
       console.warn(`[auth] ${provider} sign-in ended without a session: ${outcome.kind} (${detail})`);
       setError(ssoErrorCopy(outcome, provider) ?? ssoErrorCopy({ kind: 'no_session' }, provider)!);
     } catch (err: any) {
-      track('auth_failed', { method, reason: err?.errors?.[0]?.code ?? 'unknown' });
+      track('auth_failed', authFailProps(method, err));
       setError(err.errors?.[0]?.longMessage || err.message || `${provider} sign-in failed`);
     } finally {
       setBusy(false);
