@@ -11,6 +11,7 @@ import {
   fitLongEdge,
   PENDING_PHOTO_MAX_AGE_MS,
   PHOTO_LONG_EDGE,
+  PHOTO_MAX_IMAGES,
   photoButtonShows,
   photoCameraAllowed,
   photoShownText,
@@ -20,6 +21,7 @@ import {
   withoutPhotoTurn,
   withPhotoText,
 } from "./foodPhoto.ts";
+import { CLIENT_CAP_FOOD_PHOTO, FOOD_PHOTO_MAX_IMAGES } from "../supabase/functions/ai-coach/foodPhoto.ts";
 
 // ── sizing ──────────────────────────────────────────────────────────────────
 
@@ -83,6 +85,11 @@ Deno.test("button: signed in, and only with no card under review", () => {
 
 Deno.test("capability: the name the server reads", () => {
   assertEquals(FOOD_PHOTO_CAPABILITY, "food_photo");
+});
+
+Deno.test("app and server agree: capability name and photo count", () => {
+  assertEquals(FOOD_PHOTO_CAPABILITY, CLIENT_CAP_FOOD_PHOTO);
+  assertEquals(PHOTO_MAX_IMAGES, FOOD_PHOTO_MAX_IMAGES);
 });
 
 // ── hand-off from the camera screen ─────────────────────────────────────────
