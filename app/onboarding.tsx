@@ -8,6 +8,8 @@
  *   frequency  days per week as a story slider (activity factor). The split is
  *              NOT chosen here: it's decided at generation from goal,
  *              experience, days, and the optional notes below.
+ *   session    minutes per workout, one tap. A hard limit: every built
+ *              session is held to it (ai-coach sessionTime.ts).
  *   health     optional free text: injuries / conditions to train around
  *   prefs      optional free text: preferences for the routine
  *   gender     one tap, auto-advance (BMR math)
@@ -64,7 +66,7 @@ import { REVEAL_CHOICES, revealChoiceFor } from '@/lib/revealChoice';
 import { useGuestMode } from '@/lib/guestMode';
 import { accessHasPlan, connectFirstNext } from '@/lib/paywallPlans';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
-import { track } from '@/lib/analytics';
+import { getFlagVariant, track } from '@/lib/analytics';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSync } from '@/components/SyncProvider';
 import { useToast } from '@/components/ui/Toast';
@@ -98,7 +100,10 @@ import {
   markOnboardingDone,
   onboardingIdentity,
 } from '@/lib/onboarding';
-import { buildAnonIntake, requestAnonOnboardingProgram } from '@/lib/onboardingDrona';
+import { CUSTOM_SESSION_MAX, CUSTOM_SESSION_MIN, DEFAULT_SESSION_MINUTES, SESSION_LENGTH_OPTIONS, customSessionSub, isPresetSessionMinutes } from '@/lib/sessionLength';
+import { buildAnonIntake, requestAnonOnboardingProgram, requestAnonPhasePlan } from '@/lib/onboardingDrona';
+import { DEFAULT_PHASE1_BUILD_TIMING, PHASE1_BUILD_TIMING_FLAG, phase1TimingFromFlag, phaseBlockForPrebuild, startPhasePrebuild } from '@/lib/phasePrebuild';
+import { structuredToPlan } from '@/lib/generatedPlan';
 import { ClampedText, ProgramRoad } from '@/components/program/ProgramRoad';
 import { getDeviceId } from '@/lib/deviceId';
 import { setPendingOnboarding, saveOnboardingProgram } from '@/lib/pendingOnboarding';
@@ -138,7 +143,7 @@ function formatMeasurement(value: number): string {
 }
 
 type Step =
-  | 'welcome' | 'goal' | 'experience' | 'frequency' | 'health' | 'prefs'
+  | 'welcome' | 'goal' | 'experience' | 'frequency' | 'session' | 'health' | 'prefs'
   | 'gender' | 'age' | 'height' | 'weight' | 'target' | 'pace'
   | 'interlude' | 'commit' | 'build' | 'plan';
 // Day first, with the year once the date is in a later year ("30 Dec",
@@ -149,9 +154,9 @@ function dayMonthLabel(d: Date, withYear: boolean): string {
   return `${d.getDate()} ${SHORT_MONTHS[d.getMonth()]}${withYear ? ` ${d.getFullYear()}` : ''}`;
 }
 
-const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
+const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'session', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
 // Steps counted by the progress header (welcome and the build moment hide it).
-const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
+const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'session', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
 
 const GOAL_OPTIONS: { value: CoachGoal; icon: keyof typeof Feather.glyphMap; title: string }[] = [
   { value: 'hypertrophy', icon: 'layers', title: 'Build muscle' },
@@ -203,6 +208,7 @@ export default function OnboardingScreen() {
     goals: ['hypertrophy'],
     experience: 'beginner',
     frequency: 3,
+    sessionMinutes: DEFAULT_SESSION_MINUTES,
   });
   const [finishing, setFinishing] = useState(false);
   const [celebrating, setCelebrating] = useState(false);
@@ -262,6 +268,9 @@ export default function OnboardingScreen() {
   // Body/target inputs are picker-backed numbers, prefilled with population
   // medians (smart defaults): scan and adjust, never fill from scratch.
   const [ageYears, setAgeYears] = useState(24);
+  // The session step's Custom wheel: open, and the minutes on it.
+  const [sessionCustom, setSessionCustom] = useState(false);
+  const [customMinutes, setCustomMinutes] = useState(DEFAULT_SESSION_MINUTES);
   const [weightUnit, setWeightUnit] = useState<'kg' | 'lbs'>('kg');
   const [heightUnit, setHeightUnit] = useState<'cm' | 'ft'>('cm');
   const [heightCm, setHeightCm] = useState(172);
@@ -390,6 +399,9 @@ export default function OnboardingScreen() {
     if (step !== 'commit' || generationStarted.current) return;
     generationStarted.current = true;
     const genStartedAt = Date.now();
+    // When phase 1's workouts are built (PostHog flag phase1-build-timing):
+    // read now, while the program builds, so the answer is in when it lands.
+    const timingRead = getFlagVariant(PHASE1_BUILD_TIMING_FLAG, DEFAULT_PHASE1_BUILD_TIMING, 3000);
     // No cancellation on step change: the user moves commit -> build while
     // the request is in flight, and the result must still land. Post-unmount
     // setState is a no-op in React 18, so this is safe.
@@ -410,10 +422,12 @@ export default function OnboardingScreen() {
         // Drona's program replaces the deterministic road when it arrives.
         // Returns the phase count so the generated event can report what
         // actually landed rather than what was asked for.
+        let landed: GeneratedProgram | null = null;
         const applyProgram = (raw: Record<string, unknown> | null): number => {
           if (!raw) return 0;
           const mappedProgram = dronaProgramFromStructured(raw, answers, programExtras);
           if (!mappedProgram) return 0;
+          landed = mappedProgram;
           setDronaProgram(mappedProgram);
           return mappedProgram.phases.length;
         };
@@ -452,6 +466,29 @@ export default function OnboardingScreen() {
           // route. A 429 or any error just falls through to the deterministic
           // program below; the reveal never knows.
           phases = applyProgram(await requestGuest());
+          // before_signup: phase 1's workouts start building now, while they
+          // read the program and sign up (lib/phasePrebuild.ts). The Goal
+          // screen takes them after sign-up instead of building again.
+          const phase1 = landed ? phaseBlockForPrebuild((landed as GeneratedProgram).phases[0] ?? {}) : null;
+          const { variant } = await timingRead;
+          if (phase1 && phase1TimingFromFlag(variant) === 'before_signup') {
+            const deviceId = await getDeviceId();
+            const intake = buildAnonIntake(answers, { weeklyRateKg: weeklyRate, direction, targets: targetsPayload });
+            const startedAt = Date.now();
+            track('phase_prebuild_started', {});
+            startPhasePrebuild(() =>
+              requestAnonPhasePlan({ deviceId, intake, phase: phase1 })
+                .then((raw) => {
+                  const plan = structuredToPlan(raw);
+                  track('phase_prebuild_done', { ok: true, ms: Date.now() - startedAt, workouts: plan.workouts.length });
+                  return plan.workouts.length > 0 ? plan : null;
+                })
+                .catch((e) => {
+                  track('phase_prebuild_done', { ok: false, ms: Date.now() - startedAt, error: String(e).slice(0, 80) });
+                  return null;
+                }),
+            );
+          }
         }
         // Event names kept as they are so the existing funnel still lines
         // up; what onboarding generates is now the program, so it reports
@@ -521,11 +558,12 @@ export default function OnboardingScreen() {
       if (step === 'welcome') return false; // let the OS handle it
       if (step === 'build') return true; // no backing out mid-build
       if (celebrating) return true; // committed: the build screen is next
+      if (step === 'session' && sessionCustom) { setSessionCustom(false); return true; }
       goTo(STEP_ORDER[Math.max(STEP_ORDER.indexOf(step) - 1, 0)]);
       return true;
     });
     return () => sub.remove();
-  }, [step, goTo, celebrating]);
+  }, [step, goTo, celebrating, sessionCustom]);
 
   // Single-select answers advance on their own after a beat, so the user sees
   // the selected state land before the screen moves. One tap per question.
@@ -667,6 +705,7 @@ export default function OnboardingScreen() {
           goals: selectedGoals(answers).join(','),
           experience: answers.experience ?? null,
           days_per_week: answers.frequency ?? null,
+          session_minutes: answers.sessionMinutes ?? null,
           routines: 0,
           has_injury_notes: !!answers.healthNotes,
           has_preferences: !!answers.routinePrefs,
@@ -880,7 +919,12 @@ export default function OnboardingScreen() {
           {showHeader && (
             <OnboardingHeader
               // Once committed, the confetti hands straight to the build.
-              onBack={() => { if (!celebrating) goTo(prevStep); }}
+              onBack={() => {
+                if (celebrating) return;
+                // Back from the Custom wheel returns to the session list.
+                if (step === 'session' && sessionCustom) { setSessionCustom(false); return; }
+                goTo(prevStep);
+              }}
               progressIndex={connectPath ? (step === 'weight' ? 1 : 0) : progressIndex}
               progressTotal={connectPath ? 2 : PROGRESS_STEPS.length}
             />
@@ -896,17 +940,9 @@ export default function OnboardingScreen() {
                   onPress={() => { setConnectPath(false); track('onboarding_path_chosen', { path: 'coach' }); goTo('goal'); }}
                   accessibilityLabel="Start setup"
                 />
-                {/* Came for the connector: two questions, then set it up. */}
-                <TouchableOpacity
-                  onPress={() => { setConnectPath(true); track('onboarding_path_chosen', { path: 'connect' }); goTo('goal'); }}
-                  disabled={finishing}
-                  style={s.welcomeSecond}
-                  accessibilityRole="button"
-                  accessibilityLabel="Use my own AI: ChatGPT or Claude"
-                >
-                  <Text style={s.welcomeSecondText}>Use my own AI</Text>
-                  <Text style={s.welcomeSecondSub}>ChatGPT or Claude</Text>
-                </TouchableOpacity>
+                {/* "Use my own AI" was here (removed 2026-11-28: one path through
+                    sign-up). The connect path below stays for now, unused;
+                    the paywall still sells the Your own AI plan. */}
                 <TouchableOpacity
                   onPress={skipEverything}
                   disabled={finishing}
@@ -1013,7 +1049,7 @@ export default function OnboardingScreen() {
               stepKey="frequency"
               question="How many days a week?"
               sub="Pick what you can really keep up. You can change it later."
-              footer={<PrimaryCta label="Continue" onPress={() => goTo('health')} />}
+              footer={<PrimaryCta label="Continue" onPress={() => goTo('session')} />}
             >
                 <Animated.View entering={FadeInDown.delay(120).duration(400)} style={{ marginTop: Spacing.lg }}>
                   <FrequencyStory
@@ -1021,6 +1057,77 @@ export default function OnboardingScreen() {
                     onChange={(days) => setAnswers((a) => ({ ...a, frequency: days }))}
                   />
                 </Animated.View>
+            </QuestionStep>
+          )}
+
+          {step === 'session' && !sessionCustom && (
+            <QuestionStep
+              stepKey="session"
+              question="How long can you train each time?"
+              sub="I will fit every workout inside it."
+            >
+              <View style={s.options}>
+                {SESSION_LENGTH_OPTIONS.map((opt, idx) => (
+                  <OptionCard
+                    key={opt.minutes}
+                    index={idx}
+                    icon={opt.icon}
+                    title={opt.title}
+                    sub={opt.sub}
+                    selected={answers.sessionMinutes === opt.minutes}
+                    onPress={() => selectAndAdvance({ sessionMinutes: opt.minutes })}
+                  />
+                ))}
+                {/* Custom: any whole minute, on a wheel (lib/sessionLength.ts). */}
+                <OptionCard
+                  index={SESSION_LENGTH_OPTIONS.length}
+                  icon="sliders"
+                  title="Custom"
+                  sub={customSessionSub(answers.sessionMinutes)}
+                  selected={answers.sessionMinutes != null && !isPresetSessionMinutes(answers.sessionMinutes)}
+                  onPress={() => {
+                    track('onboarding_session_custom_opened', {});
+                    if (answers.sessionMinutes != null) setCustomMinutes(answers.sessionMinutes);
+                    setSessionCustom(true);
+                  }}
+                />
+              </View>
+            </QuestionStep>
+          )}
+
+          {step === 'session' && sessionCustom && (
+            <QuestionStep
+              stepKey="session-custom"
+              question="How many minutes?"
+              sub="I will fit every workout inside it."
+              footer={
+                <PrimaryCta
+                  label="Continue"
+                  onPress={() => {
+                    setSessionCustom(false);
+                    selectAndAdvance({ sessionMinutes: customMinutes });
+                  }}
+                />
+              }
+            >
+              <View style={s.heroCenter}>
+                <NumberWheel
+                  min={CUSTOM_SESSION_MIN}
+                  max={CUSTOM_SESSION_MAX}
+                  value={customMinutes}
+                  onChange={setCustomMinutes}
+                  accessibilityLabel="Minutes per workout"
+                />
+                <Text style={[s.wheelUnit, { color: C.textMuted }]}>minutes</Text>
+                <TouchableOpacity
+                  onPress={() => setSessionCustom(false)}
+                  style={s.ghostLink}
+                  accessibilityRole="button"
+                  accessibilityLabel="Pick from the list"
+                >
+                  <Text style={[s.ghostLinkText, { color: C.textMuted }]}>Pick from the list</Text>
+                </TouchableOpacity>
+              </View>
             </QuestionStep>
           )}
 
@@ -1052,7 +1159,7 @@ export default function OnboardingScreen() {
             <QuestionStep
               stepKey="prefs"
               question="How do you like to train?"
-              sub="Home or gym, moves you like, time you have."
+              sub="Home or gym, the kit you have, moves you like or skip."
               caption="Optional. Leave it blank and we will pick what works best."
               keyboardTaps
               footer={
@@ -1065,7 +1172,7 @@ export default function OnboardingScreen() {
                 <TextAreaField
                   value={answers.routinePrefs ?? ''}
                   onChangeText={(text) => setAnswers((a) => ({ ...a, routinePrefs: text }))}
-                  placeholder="e.g. Home, dumbbells, 45 min"
+                  placeholder="e.g. Home, dumbbells, no jumping"
                   accessibilityLabel="Routine preferences"
                 />
             </QuestionStep>
@@ -1503,6 +1610,7 @@ const s = StyleSheet.create({
   },
   genderChipText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
   heroCenter: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.md },
+  wheelUnit: { fontSize: FontSize.base, marginTop: -Spacing.sm },
   // A value wheel (or two) and the unit wheel beside it.
   wheelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm },
   targetHint: {

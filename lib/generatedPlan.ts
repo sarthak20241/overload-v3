@@ -17,6 +17,9 @@ export interface GeneratedExercise {
   // Set when Drona invented this exercise because the catalog had nothing
   // that fit (a stretch, a mobility drill). Saved as the user's own custom.
   new_exercise?: NewExerciseDef;
+  // The plan's own pick, when the person swapped this one before saving
+  // (lib/planSwap.ts). Kept in the phase draft to go back to it.
+  planned?: GeneratedExercise;
 }
 
 export interface GeneratedWorkout {

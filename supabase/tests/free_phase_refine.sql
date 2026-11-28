@@ -1,6 +1,6 @@
 -- Free refine turns on the free phase-1 build (20261031120000). A free user
 -- may refine ONLY the phase they claimed the free build for, only while it is
--- still phase 1 of their active program with no saved routines, and at most 8
+-- still phase 1 of their active program with no saved routines, and at most 40
 -- turns per account. Refine turns never spend build tries. Synthetic users
 -- only; always rolled back.
 begin;
@@ -35,15 +35,16 @@ begin
   select * into r from try_claim_free_phase_refine(pa1);
   if r.allowed or r.reason <> 'not_first_phase' then raise exception 'phase 2 refine: got % %', r.allowed, r.reason; end if;
 
-  -- 3. Eight turns on the claimed draft, then no more.
-  for i in 1..8 loop
+  -- 3. Forty turns on the claimed draft, then no more (was 8 until
+  -- 20261128130000: the owner wants the pre-paywall refine close to unlimited).
+  for i in 1..40 loop
     select * into r from try_claim_free_phase_refine(pa);
     if not r.allowed or r.reason <> 'refine' then raise exception 'turn %: got % %', i, r.allowed, r.reason; end if;
   end loop;
   select * into r from try_claim_free_phase_refine(pa);
-  if r.allowed or r.reason <> 'turns_spent' then raise exception 'turn 9: got % %', r.allowed, r.reason; end if;
+  if r.allowed or r.reason <> 'turns_spent' then raise exception 'turn 41: got % %', r.allowed, r.reason; end if;
   select * into row_a from public.free_phase_builds where user_id='refine_a';
-  if row_a.refine_turns <> 8 then raise exception 'refine_turns = %, want 8', row_a.refine_turns; end if;
+  if row_a.refine_turns <> 40 then raise exception 'refine_turns = %, want 40', row_a.refine_turns; end if;
   if row_a.attempts <> 1 then raise exception 'refine spent build tries: attempts = %', row_a.attempts; end if;
 
   -- 4. The build path is unchanged: a rebuild still has its tries.
@@ -100,5 +101,5 @@ begin
     raise exception 'free_phase_builds readable by clients'; end if;
 end;
 $$;
-select 'refine needs a claimed build, phase 1 only, 8 turns then spent, no build tries spent, rebuild intact, stops on save, ended program, other user, new program, grants passed' as checks;
+select 'refine needs a claimed build, phase 1 only, 40 turns then spent, no build tries spent, rebuild intact, stops on save, ended program, other user, new program, grants passed' as checks;
 rollback;

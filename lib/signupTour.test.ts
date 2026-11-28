@@ -3,7 +3,7 @@
 // The sign-up tour's words and its tap rules.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { nextScene, phaseLineFor, tapStep, TOUR_SUB_MAX, TOUR_TITLE_MAX, tourScenes } from "./signupTour.ts";
+import { buildStatusLine, buildWaitDetail, buildWaitTitle, nextScene, phaseLineFor, tapStep, TOUR_SUB_MAX, TOUR_TITLE_MAX, tourScenes } from "./signupTour.ts";
 
 Deno.test("five scenes, greeting by first name only", () => {
   const s = tourScenes("Sarthak Kumar", null);
@@ -43,4 +43,23 @@ Deno.test("left third goes back, the rest goes on; back stops at the first scene
   assertEquals(nextScene(0, -1, 5), 0);
   assertEquals(nextScene(2, 1, 5), 3);
   assertEquals(nextScene(4, 1, 5), "done");
+});
+
+// 2026-11-28: the tour says what is happening underneath it, so nobody
+// wonders where their plan is.
+Deno.test("the tour's status line says the Phase 1 workouts are being built, then that they are ready", () => {
+  assertEquals(buildStatusLine("building"), "Building your Phase 1 workouts");
+  assertEquals(buildStatusLine("ready"), "Your Phase 1 workouts are ready");
+  // A failed build makes no promise; the sheet under the tour says what happened.
+  assertEquals(buildStatusLine("failed"), null);
+  assertEquals(buildStatusLine(null), null);
+});
+
+Deno.test("the wait screen under the tour names the phase it is building", () => {
+  assertEquals(buildWaitTitle(1), "Phase 1 workouts");
+  assertEquals(buildWaitDetail(1), "I am building your Phase 1 workouts now.");
+  assertEquals(buildWaitDetail(3), "I am building your Phase 3 workouts now.");
+  // No phase number known: still say what is being built.
+  assertEquals(buildWaitTitle(undefined), "Your workouts");
+  assertEquals(buildWaitDetail(undefined), "I am building your workouts now.");
 });

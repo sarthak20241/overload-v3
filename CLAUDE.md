@@ -167,12 +167,18 @@ deno test --allow-all lib/spotlight.test.ts     # spotlight intro + hints (new a
 deno test --allow-all lib/revealChoice.test.ts  # onboarding plan reveal: "I'll build my own routines" keeps Drona's plan, lands on Routines
 deno test --allow-all lib/hardPaywall.test.ts   # hard paywall: accounts from HARD_PAYWALL_FROM on must pay; older ones keep free
 deno test --allow-all lib/postBuildPaywall.test.ts # paywall after sign-up's plan build: both doors carry it; flag post-build-paywall = after_save | first_tap
+deno test --allow-all lib/signupBuild.test.ts    # sign-up's phase 1 build: Back opens Drona to change it, Continue saves, never the coach menu
+deno test --allow-all --unstable-sloppy-imports lib/planSwap.test.ts # swap an exercise on a built plan before Save: name swaps, sets stay, Back to the plan's pick
+deno test --allow-all lib/phasePrebuild.test.ts   # phase 1 built before sign-up (flag phase1-build-timing): handed over once, waited for, never built twice
+deno test --allow-all --node-modules-dir=none supabase/migrations/checks/anon_phase_usage.check.ts # the no-account phase 1 build's own rate limit on PGlite (not in CI)
 deno test --allow-all lib/paywallPlans.test.ts  # two-sided paywall: Drona = Pro, Your own AI = Connect; trial words only when the store gives one
 deno test --allow-all lib/aiConnect.test.ts     # ChatGPT/Claude connect screen: which step is lit, a failed copy still moves on, card link = copied link
 deno test --allow-all lib/planKeys.test.ts # store package -> plan: a Connect product is never sold as Pro
 deno test --allow-all --no-check lib/invite.test.ts   # referral link + share text, store discount code URLs, refusal words
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/referral_codes.check.ts # referral + campaign codes on PGlite: both get a month, no cap, no own code, old-app rules kept (not in CI)
 deno test --allow-all lib/weightWheel.test.ts    # onboarding weight wheels: whole + one decimal, the top of the scale, kg <-> lbs
+deno test --allow-all lib/sessionLength.test.ts   # onboarding session length: saved number survives a coach form build
+deno test --allow-all supabase/functions/ai-coach/sessionTime.test.ts # session time limit: "20 minutes" in free text or profile, every built session trimmed to it
 deno test --allow-all supabase/functions/ai-coach/freeGoalBuild.test.ts # one free goal plan per account: 1 build, 8 edit turns, a guest build spends it
 deno test --allow-all supabase/functions/ai-coach/regionRules.test.ts # FOOD_REGION_RULES: each region gets only its block, no rule lost, off = today
 deno test --allow-all supabase/functions/ai-coach/typedWeight.test.ts # "2 slices (~50 g)": the typed weight sets the line's grams in every tier; no label chain on the user's own data

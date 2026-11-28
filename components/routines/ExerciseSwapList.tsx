@@ -56,9 +56,19 @@ interface Props {
   onPick: (row: SwapCatalogRow, tier: SwapTier) => void;
   onRestore?: () => void;
   onBack: () => void;
+  /** How long the swap lasts, under the title. Today: this session only. */
+  scopeNote?: string;
+  /** The back arrow's spoken name. */
+  backLabel?: string;
+  /** What to say when nothing is close. */
+  emptyNote?: string;
 }
 
-export function ExerciseSwapList({ from, original, exercises, doneIds, excludeIds, onPick, onRestore, onBack }: Props) {
+export function ExerciseSwapList({
+  from, original, exercises, doneIds, excludeIds, onPick, onRestore, onBack,
+  scopeNote = 'For this session only.', backLabel = 'Back to the session',
+  emptyNote = 'No close match for this one. Keep it, or change the routine in the Routines tab.',
+}: Props) {
   const { C } = useTheme();
   const [open, setOpen] = useState<Partial<Record<SwapTier, boolean>>>({});
 
@@ -79,13 +89,13 @@ export function ExerciseSwapList({ from, original, exercises, doneIds, excludeId
   return (
     <View style={{ flex: 1 }}>
       <View style={s.header}>
-        <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.closeBtn }]} hitSlop={8} accessibilityLabel="Back to the session">
+        <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.closeBtn }]} hitSlop={8} accessibilityLabel={backLabel}>
           <Feather name="chevron-left" size={16} color={C.foreground} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={[s.title, { color: C.foreground }]} numberOfLines={1}>Swap {from.name}</Text>
           <Text style={[s.subtitle, { color: C.mutedFg }]} numberOfLines={1}>
-            {label ? `${label}. For this session only.` : 'For this session only.'}
+            {label ? `${label}. ${scopeNote}` : scopeNote}
           </Text>
         </View>
       </View>
@@ -110,7 +120,7 @@ export function ExerciseSwapList({ from, original, exercises, doneIds, excludeId
 
         {tiers.length === 0 ? (
           <Text style={[s.empty, { color: C.mutedFg }]}>
-            No close match for this one. Keep it, or change the routine in the Routines tab.
+            {emptyNote}
           </Text>
         ) : null}
 

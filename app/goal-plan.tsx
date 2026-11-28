@@ -69,6 +69,7 @@ import {
   timingFromFlag,
   type PostBuildPaywallTiming,
 } from '@/lib/postBuildPaywall';
+import { isSignupBuildVisit, onSignupBuild, type SignupBuildState } from '@/lib/signupBuild';
 
 function fmtShortISO(iso: string): string {
   const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
@@ -106,6 +107,12 @@ export default function GoalPlanScreen() {
   const { build: buildParam, seq: seqParam, auto: autoParam, then: thenParam, drona: dronaParam, kcal: kcalParam, tour: tourParam } =
     useLocalSearchParams<{ build?: string; seq?: string; auto?: string; then?: string; drona?: string; kcal?: string; tour?: string }>();
   const [tourOn, setTourOn] = useState(tourParam === '1' && !tourPlayed);
+  // Sign-up's visit, read once: the tour param is cleared when the tour ends.
+  // Its build sheet has no way into the coach menu (lib/signupBuild.ts).
+  const [signupVisit] = useState(() => isSignupBuildVisit({ then: thenParam, tour: tourParam }));
+  // Where the phase 1 build under the tour stands, for the tour's status line.
+  const [signupBuildState, setSignupBuildState] = useState<SignupBuildState>(null);
+  useEffect(() => (signupVisit ? onSignupBuild(setSignupBuildState) : undefined), [signupVisit]);
   // Read by the paywall hand-off below, which must not cut the tour short.
   const tourOnRef = useRef(tourOn);
   tourOnRef.current = tourOn;
@@ -744,6 +751,7 @@ export default function GoalPlanScreen() {
         initialScreen={buildSeed ? 'plan' : 'program'}
         planSeed={buildSeed ?? undefined}
         planAutoStart={buildAuto}
+        signupBuild={signupVisit && !!buildSeed}
         programDraft={programDraft}
         // An active program: Drona opens on changing it, naming the phase.
         programExisting={program && currentPhase ? {
@@ -765,6 +773,9 @@ export default function GoalPlanScreen() {
         <SignupTour
           firstName={user?.firstName ?? null}
           phaseLine={phaseLineFor(tourPhase?.name, tourPhase?.duration_weeks)}
+          // Before the sheet reports, the build is on its way (it starts as
+          // soon as the program loads): say so from the first frame.
+          buildState={signupBuildState ?? (coachOpen || !handoffDone ? 'building' : null)}
           onDone={() => {
             tourOnRef.current = false;
             tourPlayed = true;

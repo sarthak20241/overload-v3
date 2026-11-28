@@ -143,6 +143,7 @@ import type { PreciseCacheRow } from "./preciseCache.ts";
 import { preciseAliasStore } from "./preciseAlias.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
+import { sessionCap } from "./sessionTime.ts";
 import { countryForTimezone } from "./searchCountry.ts";
 import { type FoodRegion, foodRegionForTimezone, parseFoodRegionRulesMode, startEarlyRegionRead } from "./regionRules.ts";
 import { freeGoalTurnKind, freePhaseBuildCandidate, freePhaseRefineCandidate } from "./freePhaseBuild.ts";
@@ -152,8 +153,10 @@ import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 import {
   type AnonIntake,
   ANON_GOAL_LABEL,
+  buildAnonPhaseMessage,
   buildAnonProgramMessage,
   sanitizeAnonIntake,
+  sanitizeAnonPhase,
 } from "./anonOnboarding.ts";
 import { type HeldSections, leanUserContext, readHeldSections } from "./userContextLean.ts";
 import {
@@ -2037,8 +2040,10 @@ async function handleFanoutPlan(args: {
   system: unknown[];
   userMessage: string;
   stream: boolean;
+  /** sessionTime.ts sessionCap for this build; null = no limit. */
+  sessionMinutes: number | null;
 }): Promise<Response> {
-  const { admin, trace, userId, startedAtMs, respond, system, userMessage, stream } = args;
+  const { admin, trace, userId, startedAtMs, respond, system, userMessage, stream, sessionMinutes } = args;
 
   // Split the pre-LLM overhead so we stop inferring it. `catalog_ms` isolates
   // the exercise-catalog fetch (a DB round trip, cold on a fresh isolate);
@@ -2067,6 +2072,7 @@ async function handleFanoutPlan(args: {
       ...(trace.spans ?? {}),
       pipeline_shape: "fanout",
       calls: result.calls,
+      session_minutes: sessionMinutes,
       catalog_ms: catalogMs,
       pre_llm_ms: preLlmMs,
       stages: result.stages,
@@ -2107,6 +2113,7 @@ async function handleFanoutPlan(args: {
           catalog,
           system,
           model: MODEL,
+          sessionMinutes,
           // Progressive reveal: the skeleton already carries every exercise
           // name, so the client can render the full plan structure at ~5s and
           // fill in prescriptions as each day lands, instead of showing
@@ -2154,7 +2161,7 @@ async function handleFanoutPlan(args: {
   // Non-streaming: what PR #66's onboarding build moment uses.
   try {
     const result = await runGeneratePlan(userMessage, {
-      call: makeTextCaller(), catalog, system, model: MODEL,
+      call: makeTextCaller(), catalog, system, model: MODEL, sessionMinutes,
     });
     finish(result);
     if (!result.plan) {
@@ -4557,6 +4564,105 @@ async function handleAnonOnboardingProgram(args: {
   return respond({ program: { name: "generate_program", input: toolUse.input } }, 200);
 }
 
+// ── Anonymous phase 1 workouts (flag phase1-build-timing = before_signup) ───
+// The app may ask for phase 1's workouts while the visitor reads their
+// program, before there is an account (lib/phasePrebuild.ts), so the week is
+// ready the moment they sign up. Same guards as the program route above:
+// structured input only (the brief is built here), its own rate limit
+// (check_anon_phase_quota, 20261128140000), and no writes but the counter.
+// ANON_PHASE_BUILD=off turns the route off without a deploy; the app then
+// builds after sign-up as before.
+const ANON_PHASE_BUILD_ENABLED = Deno.env.get("ANON_PHASE_BUILD") !== "off";
+
+async function handleAnonPhaseBuild(args: {
+  admin: any;
+  body: Record<string, unknown>;
+  req: Request;
+  trace: CoachTrace;
+  startedAtMs: number;
+  respond: (body: unknown, status: number) => Promise<Response>;
+}): Promise<Response> {
+  const { admin, body, req, trace, startedAtMs, respond } = args;
+  trace.mode = "onboarding_phase1";
+  if (!ANON_PHASE_BUILD_ENABLED) {
+    trace.status = "unauthorized";
+    trace.error_message = "anon_phase_build_off";
+    return respond({ error: "disabled" }, 403);
+  }
+
+  const deviceId = typeof body.device_id === "string" ? body.device_id.trim().slice(0, 128) : "";
+  if (!deviceId) return respond({ error: "device_id required" }, 400);
+  const intake = body.intake;
+  if (!intake || typeof intake !== "object") return respond({ error: "intake required" }, 400);
+  const phase = sanitizeAnonPhase(body.phase);
+  if (!phase) return respond({ error: "phase required" }, 400);
+
+  const ip = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || "unknown";
+  trace.user_id = `anon:${deviceId.slice(0, 12)}`;
+  trace.spans = { anon: true, prebuild: true };
+
+  // Fail closed, like the program route: the app builds after sign-up instead.
+  const { data: gate, error: gateErr } = await admin.rpc("check_anon_phase_quota", {
+    p_device_id: deviceId,
+    p_ip: ip,
+  });
+  if (gateErr) {
+    trace.status = "rate_limited";
+    trace.error_message = `anon_phase_quota_err: ${gateErr.message}`.slice(0, 200);
+    return respond({ error: "rate_check_failed" }, 429);
+  }
+  const row = Array.isArray(gate) ? gate[0] : gate;
+  if (!row?.allowed) {
+    trace.status = "rate_limited";
+    trace.error_message = `anon_phase_limit: ${row?.reason ?? "unknown"}`;
+    return respond({ error: "rate_limited", reason: row?.reason ?? "unknown" }, 429);
+  }
+
+  const sane = sanitizeAnonIntake(intake as AnonIntake);
+  const message = buildAnonPhaseMessage(sane, phase);
+  const { system } = buildSystemPrompt({ userContext: null, retrievedResearch: [], mode: "generate_plan" });
+  const catalog = await loadExerciseCatalog(admin);
+  const result = await runGeneratePlan(message, {
+    call: makeTextCaller(),
+    catalog,
+    system: system as unknown[],
+    model: MODEL,
+    sessionMinutes: sessionCap({ profileMinutes: sane.sessionMinutes, request: message }),
+  });
+
+  trace.tool_calls.push("generate_plan");
+  trace.input_tokens = result.usage.input_tokens || null;
+  trace.output_tokens = result.usage.output_tokens || null;
+  trace.cache_read_input_tokens = result.usage.cache_read_input_tokens || null;
+  trace.cache_creation_input_tokens = result.usage.cache_creation_input_tokens || null;
+  trace.spans = { ...trace.spans, pipeline_shape: "fanout", calls: result.calls, stages: result.stages };
+  void logTokenUsage(admin, {
+    pipeline: "coach",
+    provider: "anthropic",
+    model: MODEL,
+    input_tokens: result.usage.input_tokens,
+    output_tokens: result.usage.output_tokens,
+    cache_read_tokens: result.usage.cache_read_input_tokens,
+    cache_creation_tokens: result.usage.cache_creation_input_tokens,
+    latency_ms: Date.now() - startedAtMs,
+    status: result.plan ? "success" : "error",
+    error_message: result.error?.slice(0, 200),
+    metadata: { mode: "onboarding_phase1", anon: true, calls: result.calls },
+  });
+
+  if (!result.plan) {
+    trace.status = "internal_error";
+    trace.error_message = (result.error ?? "anon: no plan").slice(0, 200);
+    return respond({ error: "no_plan" }, 502);
+  }
+
+  // Spend a slot only now, on success.
+  await admin.from("anon_phase_usage").insert({ device_id: deviceId, ip });
+  trace.status = "success";
+  trace.response_preview = preview(result.plan.rationale ?? null);
+  return respond({ plan: { name: "generate_plan", input: result.plan } }, 200);
+}
+
 // The food box module runs on this function's own settings (foodBar.ts). Here,
 // after every constant it reads is set.
 configureFoodBar({
@@ -4625,6 +4731,10 @@ Deno.serve(async (req) => {
     // and renaming it would 400 them. What it returns is the program.
     if (anonBody && anonBody.mode === "onboarding_plan") {
       return handleAnonOnboardingProgram({ admin, body: anonBody, req, trace, startedAtMs, respond });
+    }
+    // Phase 1's workouts before sign-up (flag phase1-build-timing).
+    if (anonBody && anonBody.mode === "onboarding_phase1") {
+      return handleAnonPhaseBuild({ admin, body: anonBody, req, trace, startedAtMs, respond });
     }
     trace.status = "unauthorized";
     trace.error_message = auth.reason;
@@ -4926,6 +5036,21 @@ Deno.serve(async (req) => {
     console.log("[ai-coach] exercise-notes fetch threw:", String(e));
   }
 
+  // Session length for this turn: user_profiles.session_minutes (onboarding
+  // asks it), else a time written in training_preferences. A plan build holds
+  // every session to it (sessionTime.ts); chat sees it as
+  // user_context.session_minutes. Read on its own so a database without the
+  // column (app before migration) changes nothing else in 4c.
+  // Started here and awaited inside 4c, so it runs beside the notes read and
+  // adds no round trip of its own.
+  let profileSessionMinutes: number | null = null;
+  let profilePreferences: string | null = null;
+  const sessionMinutesRead = Promise.resolve(
+    userClient.from("user_profiles").select("session_minutes").maybeSingle(),
+  ).then(({ data, error }) =>
+    !error && data && typeof data.session_minutes === "number" ? data.session_minutes : null
+  ).catch(() => null); // no column yet: fall back to the free text
+
   // 4c. Standing profile notes set at onboarding: injury_notes = physical /
   // medical things to train around, training_preferences = how they like to
   // train (equipment, favourite/avoided lifts, session length), and goals =
@@ -4966,6 +5091,7 @@ Deno.serve(async (req) => {
         if (goals.length) ctx.goals = goals;
         trace.has_user_context = true;
       }
+      profilePreferences = prefs || null;
       // The user's date, so "yesterday" and "on Monday" mean their days. Date
       // and weekday only: a clock time here would change the cached
       // user_context block every minute. Only set when we KNOW the zone; a
@@ -4979,6 +5105,14 @@ Deno.serve(async (req) => {
     }
   } catch (e) {
     console.log("[ai-coach] profile-notes fetch threw:", String(e));
+  }
+  profileSessionMinutes = await sessionMinutesRead;
+  {
+    const minutes = sessionCap({ profileMinutes: profileSessionMinutes, preferences: profilePreferences });
+    if (minutes != null) {
+      if (!userContext || typeof userContext !== "object") userContext = {};
+      (userContext as Record<string, unknown>).session_minutes = minutes;
+    }
   }
 
   // 4d. Fuel days (0139). Two reads, both best effort like 4c: a database
@@ -5430,6 +5564,11 @@ Deno.serve(async (req) => {
       admin, trace, userId, startedAtMs, respond,
       system: system as unknown[],
       userMessage: lastUser?.content ?? "",
+      sessionMinutes: sessionCap({
+        profileMinutes: profileSessionMinutes,
+        preferences: profilePreferences,
+        request: typeof lastUser?.content === "string" ? lastUser.content : null,
+      }),
       stream: (body as { stream?: unknown }).stream === true,
       userClient,
     });
