@@ -2683,7 +2683,7 @@ function GeneratePlanScreen({
   onRequestUpgrade?: (kind: 'cap' | 'pro') => void;
   // When present (from the Goal & Plan screen "Build workout split"), pre-seeds
   // the form + prompt so the generated split matches a specific program phase.
-  seed?: { goal?: string; days?: string; note?: string };
+  seed?: { goal?: string; days?: string; note?: string; phaseName?: string };
   // The phase being built. Sent with the request so a free user's first
   // phase-1 build is let through by the server. Also keys the draft
   // (lib/phaseDraft.ts): a built plan is kept on the device until Save, so
@@ -2990,25 +2990,28 @@ function GeneratePlanScreen({
         const waitStarted = Date.now();
         setLoading(true);
         setGenStatus({ label: 'Building your Phase 1 workouts', state: 'thinking' });
-        const pre = await takePhasePrebuild<GeneratedPlan>(45_000);
+        const pre = await takePhasePrebuild<GeneratedPlan>(45_000, seed?.phaseName ?? '');
         if (pre) {
           // Kept as the draft even if this screen went away meanwhile.
           void writePhaseDraft(phaseId, pre, 'auto');
           track('phase_prebuild_used', { waited_ms: Date.now() - waitStarted, workouts: pre.workouts.length });
           // A free account's Refine with Drona needs the free build claimed
           // for this phase (try_claim_free_phase_refine). The build ran with
-          // no account, so claim it now; a payer's claim is harmless.
+          // no account, so claim it now, BEFORE the plan (and its refine
+          // button) shows; a payer's claim is harmless.
           if (planSupabase) {
-            void planSupabase.rpc('try_claim_free_phase_build', { p_phase_id: phaseId })
-              .then(({ data, error }: { data: unknown; error: { message: string } | null }) => {
-                const row = (Array.isArray(data) ? data[0] : data) as { allowed?: boolean; reason?: string } | null;
-                // Not claimed: a free account's Refine with Drona will meet
-                // the paywall. Rare on a brand-new account; tracked to see it.
-                if (error || !row?.allowed) {
-                  console.warn('[prebuild] free build claim failed', error?.message ?? row?.reason);
-                  track('phase_prebuild_claim_failed', { reason: error ? 'rpc_error' : (row?.reason ?? 'unknown') });
-                }
-              });
+            try {
+              const { data, error } = await planSupabase.rpc('try_claim_free_phase_build', { p_phase_id: phaseId });
+              const row = (Array.isArray(data) ? data[0] : data) as { allowed?: boolean; reason?: string } | null;
+              // Not claimed: a free account's Refine with Drona will meet
+              // the paywall. Rare on a brand-new account; tracked to see it.
+              if (error || !row?.allowed) {
+                console.warn('[prebuild] free build claim failed', error?.message ?? row?.reason);
+                track('phase_prebuild_claim_failed', { reason: error ? 'rpc_error' : (row?.reason ?? 'unknown') });
+              }
+            } catch (e) {
+              track('phase_prebuild_claim_failed', { reason: 'threw' });
+            }
           }
           if (!alive) return;
           setLoading(false);
@@ -4771,7 +4774,7 @@ export interface AICoachModalProps {
   // When set (from the Goal & Plan screen "Build workout split"), pre-seeds the
   // plan generator's form + prompt to a specific program phase. Pass
   // initialScreen="plan" alongside it.
-  planSeed?: { goal?: string; days?: string; note?: string };
+  planSeed?: { goal?: string; days?: string; note?: string; phaseName?: string };
   // Build at once instead of showing the plan form (a waiting phase draft
   // still opens first). Pass with planSeed + linkRoutinesToPhaseId.
   planAutoStart?: boolean;

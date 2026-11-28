@@ -6,6 +6,7 @@
 
 import { assertEquals } from "jsr:@std/assert@1";
 import {
+  clearPhasePrebuild,
   DEFAULT_PHASE1_BUILD_TIMING,
   hasPhasePrebuild,
   phase1TimingFromFlag,
@@ -41,29 +42,29 @@ Deno.test("phase 1's block goes out as the route reads it", () => {
 Deno.test("a finished build is handed over once", async () => {
   resetPhasePrebuildForTest();
   assertEquals(hasPhasePrebuild(), false);
-  startPhasePrebuild(() => Promise.resolve(plan));
+  startPhasePrebuild(() => Promise.resolve(plan), "P1");
   assertEquals(hasPhasePrebuild(), true);
-  assertEquals(await takePhasePrebuild(1000), plan);
+  assertEquals(await takePhasePrebuild(1000, "P1"), plan);
   // Taken: the next visit builds as usual.
   assertEquals(hasPhasePrebuild(), false);
-  assertEquals(await takePhasePrebuild(1000), null);
+  assertEquals(await takePhasePrebuild(1000, "P1"), null);
 });
 
 Deno.test("a build still running is waited for, not started again", async () => {
   resetPhasePrebuildForTest();
   let runs = 0;
-  startPhasePrebuild(() => { runs++; return later(plan, 30); });
-  assertEquals(await takePhasePrebuild(1000), plan);
+  startPhasePrebuild(() => { runs++; return later(plan, 30); }, "P1");
+  assertEquals(await takePhasePrebuild(1000, "P1"), plan);
   assertEquals(runs, 1);
 });
 
 Deno.test("a build that fails, or runs past the wait, hands over nothing", async () => {
   resetPhasePrebuildForTest();
-  startPhasePrebuild(() => Promise.reject(new Error("429")));
-  assertEquals(await takePhasePrebuild(1000), null);
+  startPhasePrebuild(() => Promise.reject(new Error("429")), "P1");
+  assertEquals(await takePhasePrebuild(1000, "P1"), null);
   resetPhasePrebuildForTest();
-  startPhasePrebuild(() => later(plan, 200));
-  assertEquals(await takePhasePrebuild(20), null);
+  startPhasePrebuild(() => later(plan, 200), "P1");
+  assertEquals(await takePhasePrebuild(20, "P1"), null);
   // Given up on: it never lands later on top of the build that replaced it.
   await later(null, 250);
   assertEquals(hasPhasePrebuild(), false);
@@ -73,16 +74,39 @@ Deno.test("a second onboarding replaces the first build", async () => {
   resetPhasePrebuildForTest();
   const first = { ...plan, name: "first" };
   const second = { ...plan, name: "second" };
-  startPhasePrebuild(() => later(first, 50));
-  startPhasePrebuild(() => Promise.resolve(second));
-  assertEquals(await takePhasePrebuild(1000), second);
+  startPhasePrebuild(() => later(first, 50), "P1");
+  startPhasePrebuild(() => Promise.resolve(second), "P1");
+  assertEquals(await takePhasePrebuild(1000, "P1"), second);
   await later(null, 80);
   assertEquals(hasPhasePrebuild(), false);
 });
 
 Deno.test("two callers waiting at once: one gets the plan, the other nothing", async () => {
   resetPhasePrebuildForTest();
-  startPhasePrebuild(() => later(plan, 30));
-  const [a, b] = await Promise.all([takePhasePrebuild(1000), takePhasePrebuild(1000)]);
+  startPhasePrebuild(() => later(plan, 30), "P1");
+  const [a, b] = await Promise.all([takePhasePrebuild(1000, "P1"), takePhasePrebuild(1000, "P1")]);
   assertEquals([a, b].filter((x) => x !== null).length, 1);
+});
+
+// PR #419 review: the plan is tied to the phase it was built for, so another
+// account or a redone onboarding never gets it.
+Deno.test("the plan goes only to the phase it was built for", async () => {
+  resetPhasePrebuildForTest();
+  startPhasePrebuild(() => Promise.resolve(plan), "Build the base");
+  assertEquals(await takePhasePrebuild(1000, "Another phase"), null);
+  // A wrong phase used it up: it never lands later on a different account.
+  assertEquals(hasPhasePrebuild(), false);
+  resetPhasePrebuildForTest();
+  startPhasePrebuild(() => Promise.resolve(plan), "Build the base");
+  assertEquals(await takePhasePrebuild(1000, "  build the BASE "), plan);
+});
+
+Deno.test("a new onboarding clears the old build even before it has its own", async () => {
+  resetPhasePrebuildForTest();
+  startPhasePrebuild(() => later(plan, 30), "Old");
+  clearPhasePrebuild();
+  assertEquals(hasPhasePrebuild(), false);
+  assertEquals(await takePhasePrebuild(1000, "Old"), null);
+  await later(null, 50);
+  assertEquals(hasPhasePrebuild(), false);
 });

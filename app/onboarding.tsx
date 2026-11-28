@@ -102,7 +102,7 @@ import {
 } from '@/lib/onboarding';
 import { CUSTOM_SESSION_MAX, CUSTOM_SESSION_MIN, DEFAULT_SESSION_MINUTES, SESSION_LENGTH_OPTIONS, customSessionSub, isPresetSessionMinutes } from '@/lib/sessionLength';
 import { buildAnonIntake, requestAnonOnboardingProgram, requestAnonPhasePlan } from '@/lib/onboardingDrona';
-import { DEFAULT_PHASE1_BUILD_TIMING, PHASE1_BUILD_TIMING_FLAG, phase1TimingFromFlag, phaseBlockForPrebuild, startPhasePrebuild } from '@/lib/phasePrebuild';
+import { clearPhasePrebuild, DEFAULT_PHASE1_BUILD_TIMING, PHASE1_BUILD_TIMING_FLAG, phase1TimingFromFlag, phaseBlockForPrebuild, startPhasePrebuild } from '@/lib/phasePrebuild';
 import { structuredToPlan } from '@/lib/generatedPlan';
 import { ClampedText, ProgramRoad } from '@/components/program/ProgramRoad';
 import { getDeviceId } from '@/lib/deviceId';
@@ -208,7 +208,9 @@ export default function OnboardingScreen() {
     goals: ['hypertrophy'],
     experience: 'beginner',
     frequency: 3,
-    sessionMinutes: DEFAULT_SESSION_MINUTES,
+    // Null until the person picks: an untouched default is never saved as a
+    // hard limit (the step only shows 45 as the suggestion).
+    sessionMinutes: null,
   });
   const [finishing, setFinishing] = useState(false);
   const [celebrating, setCelebrating] = useState(false);
@@ -402,6 +404,8 @@ export default function OnboardingScreen() {
     // When phase 1's workouts are built (PostHog flag phase1-build-timing):
     // read now, while the program builds, so the answer is in when it lands.
     const timingRead = getFlagVariant(PHASE1_BUILD_TIMING_FLAG, DEFAULT_PHASE1_BUILD_TIMING, 3000);
+    // A new program: an early build from an earlier run of onboarding is stale.
+    clearPhasePrebuild();
     // No cancellation on step change: the user moves commit -> build while
     // the request is in flight, and the result must still land. Post-unmount
     // setState is a no-op in React 18, so this is safe.
@@ -479,7 +483,7 @@ export default function OnboardingScreen() {
               const startedAt = Date.now();
               track('phase_prebuild_started', {});
               startPhasePrebuild(() =>
-                requestAnonPhasePlan({ deviceId, intake, phase: phase1 })
+                requestAnonPhasePlan({ deviceId, intake, phase: phase1! })
                   .then((raw) => {
                     const plan = structuredToPlan(raw);
                     track('phase_prebuild_done', { ok: true, ms: Date.now() - startedAt, workouts: plan.workouts.length });
@@ -489,6 +493,7 @@ export default function OnboardingScreen() {
                     track('phase_prebuild_done', { ok: false, ms: Date.now() - startedAt, error: String(e).slice(0, 80) });
                     return null;
                   }),
+                phase1!.name,
               );
             }
           })().catch(() => { /* the Goal screen builds after sign-up as before */ });
@@ -1077,7 +1082,7 @@ export default function OnboardingScreen() {
                     icon={opt.icon}
                     title={opt.title}
                     sub={opt.sub}
-                    selected={answers.sessionMinutes === opt.minutes}
+                    selected={(answers.sessionMinutes ?? DEFAULT_SESSION_MINUTES) === opt.minutes}
                     onPress={() => selectAndAdvance({ sessionMinutes: opt.minutes })}
                   />
                 ))}

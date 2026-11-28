@@ -68,11 +68,17 @@ export function phaseBlockForPrebuild(ph: {
 let run = 0;
 let pending: Promise<unknown | null> | null = null;
 let ready: unknown | null = null;
+// The phase it was built for: only that phase may take it, so another account
+// signing up in the same app run, or a redone onboarding, never gets it.
+let builtFor = '';
 
-/** Starts the early build. A newer call replaces an older one. */
-export function startPhasePrebuild<P>(request: () => Promise<P | null>): void {
+const phaseKey = (name: string) => name.trim().toLowerCase();
+
+/** Starts the early build for phase 1 called `phaseName`. A newer call replaces an older one. */
+export function startPhasePrebuild<P>(request: () => Promise<P | null>, phaseName: string): void {
   const mine = ++run;
   ready = null;
+  builtFor = phaseKey(phaseName);
   // The plan itself (null on any failure); the state update rides beside it.
   const plan = request().then((p) => p ?? null, () => null);
   pending = plan;
@@ -93,8 +99,13 @@ export function hasPhasePrebuild(): boolean {
  * there is none, it failed, or the wait ran out (then it is dropped, so it can
  * never land beside the build that runs instead).
  */
-export async function takePhasePrebuild<P>(waitMs: number): Promise<P | null> {
+export async function takePhasePrebuild<P>(waitMs: number, phaseName: string): Promise<P | null> {
   const mine = run;
+  // Built for another phase: drop it, so it can never land on this account.
+  if (phaseKey(phaseName) !== builtFor) {
+    clearPhasePrebuild();
+    return null;
+  }
   if (ready !== null) {
     const plan = ready as P;
     ready = null;
@@ -117,8 +128,14 @@ export async function takePhasePrebuild<P>(waitMs: number): Promise<P | null> {
   return plan;
 }
 
-export function resetPhasePrebuildForTest(): void {
+/** Drops any build: a new onboarding starts clean, even before it has its own. */
+export function clearPhasePrebuild(): void {
   run++;
   pending = null;
   ready = null;
+  builtFor = '';
+}
+
+export function resetPhasePrebuildForTest(): void {
+  clearPhasePrebuild();
 }

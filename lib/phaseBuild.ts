@@ -19,6 +19,8 @@ export interface PhaseBuildSeed {
   goal?: string;
   days?: string;
   note?: string;
+  /** The phase's name: sign-up's early build (lib/phasePrebuild.ts) is handed only to it. */
+  phaseName?: string;
 }
 
 /** What the plan screen and the background build ask Drona for. */
@@ -26,6 +28,7 @@ export function phaseBuildSeed(ph: Pick<ActiveProgramPhaseRow, 'name' | 'trainin
   const b = ph.training_block;
   const desc = [b?.split_type, b?.emphasis].filter(Boolean).join(', ');
   return {
+    phaseName: ph.name,
     goal: b?.emphasis || b?.split_type || undefined,
     note: `Build the training split for the "${ph.name}" phase of my current program${desc ? `: ${desc}` : ''}.${ph.training_directive ? ` ${ph.training_directive}` : ''} Follow that exact split and cadence.`,
   };

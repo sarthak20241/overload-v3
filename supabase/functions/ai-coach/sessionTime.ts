@@ -44,18 +44,29 @@ const NUM = String.raw`(\d+(?:\.\d+)?)`;
  * "45 min", "30-45 mins" (its top), "1 hour", "1.5 hrs", "an hour",
  * "half an hour". Out-of-range numbers are dropped.
  */
+// A time right next to one of these words is a part of the session ("a 10
+// min finisher", "warm-up 15 mins"), not its length.
+const PART_WORD = /^(?:warm[- ]?ups?|finishers?|cardio|rest|cool[- ]?downs?|stretch\w*|mobility)\b/;
+
 function durationsIn(text: string): number[] {
   const t = text.toLowerCase();
   const out: number[] = [];
   const push = (n: number) => { const v = valid(n); if (v != null) out.push(v); };
   const consumed: [number, number][] = [];
   const free = (i: number, j: number) => consumed.every(([a, b]) => j <= a || i >= b);
+  // The word straight after the time (past an "of") or straight before it.
+  const isPart = (i: number, j: number) => {
+    const after = /^\s*(?:of\s+)?([a-z][a-z-]*(?: [a-z]+)?)/.exec(t.slice(j))?.[1] ?? "";
+    const before = /([a-z][a-z-]*(?: [a-z]+)?)\s*:?\s*$/.exec(t.slice(0, i))?.[1] ?? "";
+    return PART_WORD.test(after) || PART_WORD.test(before.split(" ").pop() ?? "") || PART_WORD.test(before);
+  };
   const scan = (re: RegExp, f: (m: RegExpExecArray) => number) => {
     for (const m of t.matchAll(re)) {
       const i = m.index ?? 0;
       const j = i + m[0].length;
       if (!free(i, j)) continue;
       consumed.push([i, j]);
+      if (isPart(i, j)) continue;
       push(f(m as RegExpExecArray));
     }
   };

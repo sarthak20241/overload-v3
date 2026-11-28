@@ -143,3 +143,20 @@ Deno.test("no limit given: the plan is exactly what the model wrote", async () =
   assertEquals(Math.round(estimateWorkoutMinutes(r.plan!.workouts[1])), 35);
   assertEquals(prompts.some((p) => p.includes("must fit in")), false);
 });
+
+// PR #419 review: a time next to a warm-up, finisher, cardio or rest word is a
+// part of the session, not its length. Alone, it must not become a cap (it
+// used to cut the day to three exercises).
+Deno.test("a warm-up, finisher, cardio or rest time is never the session length", () => {
+  assertEquals(sessionMinutesFromText("10 min finisher"), null);
+  assertEquals(sessionMinutesFromText("15 min warm-up first"), null);
+  assertEquals(sessionMinutesFromText("warmup 10 mins"), null);
+  assertEquals(sessionMinutesFromText("20 min cardio after lifting"), null);
+  assertEquals(sessionMinutesFromText("5 min rest between circuits"), null);
+  assertEquals(sessionMinutesFromText("10 minute cool-down and stretching"), null);
+  // The session's own length still counts beside them.
+  assertEquals(sessionMinutesFromText("45 min with a 10 min warm-up"), 45);
+  assertEquals(sessionMinutesFromText("10 min warm-up, then 40 minutes"), 40);
+  assertEquals(sessionMinutesFromText("Home, 20 minutes"), 20);
+  assertEquals(sessionCap({ preferences: "add a 10 min finisher" }), null);
+});
