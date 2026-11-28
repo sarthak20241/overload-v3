@@ -73,3 +73,8 @@ verify_jwt = false
 # the unauthenticated GET of .well-known/oauth-protected-resource through.
 [functions.mcp]
 verify_jwt = false
+
+# transcribe: voice input for the food box and Drona chat. The app sends a
+# Clerk JWT, verified in the handler; the gateway would reject it.
+[functions.transcribe]
+verify_jwt = false

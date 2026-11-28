@@ -100,6 +100,8 @@ import { CopyMealSheet } from '@/components/diet/CopyMealSheet';
 import { OrbRefreshControl, RefreshOrb, usePullRefresh } from '@/components/ui/OrbRefresh';
 import { learnPatterns, mealsToSuggest, copyableFromDay, withPreviousDay, type FoodSuggestion, type HistoryEntry } from '@/lib/foodPatterns';
 import { useFoodHistory, useDayMealLines, relogLines, lineAsItem } from '@/lib/foodPatternsData';
+import { MicButton } from '@/components/voice/MicButton';
+import { insertTranscript } from '@/lib/voiceInput';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
  *  'review' holds a parsed-but-UNLOGGED meal: nothing is written until the user
@@ -2804,6 +2806,7 @@ export default function NutritionScreen() {
                 color={runningSpeed === 'quick' ? C.textSecondary : C.accentText}
               />
             </Pressable>
+            <MicButton purpose="food" disabled={parseInFlight} onText={(t) => setText((prev) => insertTranscript(prev, t))} />
             <Pressable
               // Bright while empty, so a tap must do something: open the field.
               onPress={() => (text.trim() ? onSend() : inputRef.current?.focus())}

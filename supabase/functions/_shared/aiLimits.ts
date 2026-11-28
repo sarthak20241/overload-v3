@@ -29,6 +29,18 @@ export const AI_LIMITS = {
   legacyProFood: 40,
 } as const;
 
+// Voice input (transcribe function, migration 20261128120000). A clip is at
+// most a minute and gpt-transcribe bills $0.0045 a minute, so the worst case
+// a day is 25 x $0.0045 = $0.11 free and 200 x $0.0045 = $0.90 Pro. A spoken
+// food log or question runs 5-15 s, so real use is a fraction of that. The
+// burst stops a stuck button or a script, never a person.
+export const VOICE_LIMITS = {
+  burst: 12,
+  burstWindowSeconds: 300,
+  freeDay: 25,
+  paidDay: 200,
+} as const;
+
 export interface CooldownRule {
   /** At most this many requests in any `burstWindowSeconds`. */
   burst: number;

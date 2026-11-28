@@ -149,7 +149,16 @@ deno test --allow-all supabase/functions/ai-coach/recipe.test.ts # step 5: build
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_threads.check.ts # the food_threads migration on PGlite (real Postgres, downloads it; not in CI)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_card_lines_recipe.check.ts # food_card_lines.recipe: a dish keeps its parts in the thread store (PGlite; not in CI)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/exercise_swap_tags.check.ts # exercises.target_muscle + swap_pattern: catalog names tagged, muscle_group untouched (PGlite; not in CI)
-deno test --allow-all lib/appPermissions.test.ts # no photo-library prompt or storage permission: no screen picks from the gallery
+deno test --allow-all lib/appPermissions.test.ts # no photo-library prompt or storage permission: no screen picks from the gallery; the mic declared with an honest iOS string
+deno test --allow-all supabase/functions/transcribe/ # voice input: clip length read from the file, one engine interface (fake + OpenAI), cleanup never adds words, auth and caps before any paid call, no transcript in logs
+deno test --allow-all lib/voiceInput.test.ts   # voice in the app: text goes after what is typed, mic ask + Settings, mic only on a 1.0.6+ binary, read-aloud text
+deno test --allow-all --node-modules-dir=none supabase/migrations/checks/voice_rate_limit.check.ts # voice_rate_limit on PGlite: burst + day cap with a wait, own slots only, account delete (not in CI)
+deno test --allow-all scripts/voice-eval/score.test.ts # engine comparison scoring: word error, food words spelled right, Latin letters
+# Speech engines on the owner's clips (Hinglish, food names). Dry run unless SPEND=1;
+# bills the engine's own key per audio minute, no Anthropic call. Clips stay in the git-ignored clips/.
+deno run -A scripts/voice-eval/run.ts           # SPEND=1 OPENAI_API_KEY=...  ENGINES=openai,fake  ONLY=id  STT_LANGUAGES=en,hi
+# Voice on a simulator with no key and no deploy: the real handler with a fake engine on :8790.
+deno run -A scripts/voice-eval/dev-server.ts    # then Metro with EXPO_PUBLIC_VOICE_DEV=1 EXPO_PUBLIC_VOICE_URL=http://localhost:8790
 deno test --allow-all lib/reviewPrompt.test.ts # store rating ask: a PR kept in the saved workout, 3+ workouts over 3+ days, every 90 days at most
 deno test --no-check --unstable-sloppy-imports lib/loggedEntryEdit.test.ts  # editing a logged food; empty meal cleanup on a move
 deno test --allow-all lib/questionPin.test.ts  # Drona chat: a reply types in under its question at the top

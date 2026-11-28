@@ -83,6 +83,9 @@ import { clearPhaseDraft, readPhaseDraft, writePhaseDraft } from '@/lib/phaseDra
 import { phaseBuildPrompt } from '@/lib/phaseBuild';
 import { writeWithTargetFallback } from '@/lib/routineTargets';
 import { findCatalogExerciseByName } from '@/lib/exerciseResolve';
+import { MicButton } from '@/components/voice/MicButton';
+import { ReadAloudToggle } from '@/components/voice/ReadAloudToggle';
+import { insertTranscript } from '@/lib/voiceInput';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 import {
   describeCoachEditOp,
@@ -2014,6 +2017,7 @@ function ChatScreen({
             clear, so it doesn't clutter an empty greeting. */}
         {!workoutContext && (
           <View style={s.headerActions}>
+            <ReadAloudToggle messages={messages} loading={loading} />
             {/* Past chats: only once there is one to show. */}
             {conversations.length > 0 && (
               <TouchableOpacity
@@ -2323,6 +2327,7 @@ function ChatScreen({
             onSubmitEditing={() => handleSend()}
             blurOnSubmit
           />
+          <MicButton purpose="chat" size={36} disabled={loading} onText={(t) => setInput((prev) => insertTranscript(prev, t, 500))} />
           {loading ? (
             // Send becomes Stop while the coach is working, the way every chat
             // app does it: one control, one place.
@@ -4511,6 +4516,7 @@ function RefineChatScreen({
             onSubmitEditing={() => handleSend()}
             blurOnSubmit
           />
+          <MicButton purpose="chat" size={36} disabled={loading} onText={(t) => setInput((prev) => insertTranscript(prev, t, 500))} />
           {loading ? (
             <TouchableOpacity
               onPress={handleStop}
