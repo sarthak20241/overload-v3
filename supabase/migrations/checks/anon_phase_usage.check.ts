@@ -82,6 +82,16 @@ Deno.test("a build that failed after the model ran: the phone may try again, the
   assertEquals(await check("d2", "7.7.7.7"), { allowed: false, reason: "global_day" });
 });
 
+Deno.test("failed builds have their own, higher limit per phone: 4 a day", async () => {
+  const { check, use } = await db();
+  for (let i = 0; i < 3; i++) await use("d1", "8.8.8.8", "0 minutes", "failed");
+  assertEquals((await check("d1", "8.8.8.8")).allowed, true);
+  await use("d1", "8.8.8.8", "0 minutes", "failed");
+  assertEquals(await check("d1", "8.8.8.8"), { allowed: false, reason: "device_failed_day" });
+  // A day later the phone may try again.
+  assertEquals((await check("d2", "8.8.8.8")).allowed, true);
+});
+
 Deno.test("finish: ok counts against the phone, failed does not; a stuck pending row stops counting after a few minutes", async () => {
   const { q } = await db();
   const reserve = async () =>

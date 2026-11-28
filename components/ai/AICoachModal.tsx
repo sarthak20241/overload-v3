@@ -85,7 +85,6 @@ import { clearPhaseDraft, readPhaseDraft, writePhaseDraft } from '@/lib/phaseDra
 import { reportSignupBuild, signupBuildStateOf, signupPlanBack } from '@/lib/signupBuild';
 import { buildWaitDetail, buildWaitTitle } from '@/lib/signupTour';
 import { hasPhasePrebuild, takePhasePrebuild } from '@/lib/phasePrebuild';
-import { claimForPrebuiltPlan, ensurePrebuildClaim } from '@/lib/prebuildClaim';
 import { restorePlanExercise, swapExcludeIds, swapFromFor, swapPlanExercise } from '@/lib/planSwap';
 import { ExerciseSwapList } from '@/components/routines/ExerciseSwapList';
 import { useSwapCatalog } from '@/hooks/useSwapCatalog';
@@ -2992,8 +2991,6 @@ function GeneratePlanScreen({
       if (d) {
         setResult(d.plan);
         conversationRef.current = [{ role: 'assistant', content: planToText(d.plan) }];
-        // A plan built before sign-up may still owe its free-build claim.
-        if (planSupabase) void ensurePrebuildClaim(planSupabase, phaseId);
         track('phase_draft_restored', { source: d.source, workouts: d.plan.workouts.length, age_hours: Math.round((Date.now() - d.builtAt) / 3600000) });
         return;
       }
@@ -3009,11 +3006,10 @@ function GeneratePlanScreen({
           // Kept as the draft even if this screen went away meanwhile.
           void writePhaseDraft(phaseId, pre, 'auto');
           track('phase_prebuild_used', { waited_ms: Date.now() - waitStarted, workouts: pre.workouts.length });
-          // A free account's Refine with Drona needs the free build claimed
-          // for this phase (try_claim_free_phase_refine). The build ran with
-          // no account, so claim it now, BEFORE the plan (and its refine
-          // button) shows; a payer's claim is harmless.
-          if (planSupabase) await claimForPrebuiltPlan(planSupabase, phaseId);
+          // No claim from here: the build ran with no account, and the
+          // first Refine with Drona claims the account's free build for this
+          // unsaved phase 1 on the server (try_claim_free_phase_refine,
+          // 20261128130000). A claim from the phone spent build tries.
           if (!alive) return;
           setLoading(false);
           setResult(pre);
@@ -3053,19 +3049,14 @@ function GeneratePlanScreen({
   }, [signup, signupState]);
   useEffect(() => () => { if (signup) reportSignupBuild(null); }, [signup]);
 
-  // Opens the Drona chat on this plan. A plan built before sign-up may owe its
-  // free-build claim (lib/prebuildClaim.ts): settle it first, so a free
-  // account's first refine turn is not refused as not_claimed.
-  const openRefine = async () => {
-    if (phaseId && planSupabase) await ensurePrebuildClaim(planSupabase, phaseId);
-    setShowRefineChat(true);
-  };
+  // Opens the Drona chat on this plan.
+  const openRefine = () => setShowRefineChat(true);
 
   // Sign-up: Back never reaches the coach menu (lib/signupBuild.ts).
   const signupBack = () => {
     const step = signupPlanBack({ hasPlan: !!result, refineOpen: showRefineChat, building: loading || refining, swapOpen: !!swapping });
     if (step === 'close_swap') setSwapping(null);
-    else if (step === 'open_refine') { track('signup_plan_refine_opened', { from: 'back' }); void openRefine(); }
+    else if (step === 'open_refine') { track('signup_plan_refine_opened', { from: 'back' }); openRefine(); }
     else if (step === 'close_refine') setShowRefineChat(false);
     else if (step === 'close_sheet') onBack();
   };
@@ -3248,7 +3239,7 @@ function GeneratePlanScreen({
         */}
         <View style={[s.refineWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
           <TouchableOpacity
-            onPress={() => { if (signup) track('signup_plan_refine_opened', { from: 'button' }); void openRefine(); }}
+            onPress={() => { if (signup) track('signup_plan_refine_opened', { from: 'button' }); openRefine(); }}
             disabled={refining}
             style={[s.secondaryBtn, { backgroundColor: C.muted }, refining && { opacity: 0.6 }]}
           >

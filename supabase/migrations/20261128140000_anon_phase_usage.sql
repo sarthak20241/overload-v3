@@ -8,7 +8,8 @@
 -- workouts build, or a person who redoes onboarding would lose their program.
 --
 -- Limits (tune here, single source of truth):
---   device: 2 / rolling day, 3 / lifetime
+--   device: 2 / rolling day, 3 / lifetime (successful builds)
+--           4 failed builds / rolling day
 --   ip:     15 / rolling hour, 40 / rolling day
 --   global: 500 / rolling day (wallet circuit breaker)
 -- A slot is RESERVED before the build (the row is written then, under a
@@ -20,7 +21,8 @@
 -- The GLOBAL cap counts every row, failed ones too: every model run is paid
 -- for, so the breaker bounds spend. The device and IP caps count successful
 -- builds and builds still in flight (pending, under 5 minutes old), so a real
--- person whose build failed may try again. With no IP known (p_ip null) the
+-- person whose build failed may try again. Failed builds have their own,
+-- higher cap per device (4 a day), so one phone cannot loop failing builds. With no IP known (p_ip null) the
 -- IP caps are skipped, so such requests never share one bucket.
 --
 -- device_id comes from the client and the IP from the first
@@ -61,6 +63,7 @@ as $$
 declare
   dev_day  int;
   dev_life int;
+  dev_fail int;
   ip_hr    int;
   ip_day   int;
   glob_day int;
@@ -79,6 +82,12 @@ begin
       and (outcome = 'ok' or (outcome = 'pending' and created_at > now() - interval '5 minutes'));
   if dev_day >= 2 then
     return query select false, 'device_day', null::bigint; return;
+  end if;
+
+  select count(*) into dev_fail from anon_phase_usage
+    where device_id = p_device_id and outcome = 'failed' and created_at > now() - interval '1 day';
+  if dev_fail >= 4 then
+    return query select false, 'device_failed_day', null::bigint; return;
   end if;
 
   select count(*) into dev_life from anon_phase_usage
