@@ -63,8 +63,9 @@ export function foodPhotoModel(raw: string | undefined): string {
 
 export const FOOD_PHOTO_MAX_IMAGES = 2;
 /** Per image, decoded. The app sends about 0.3 to 0.6 MB (1568 px long edge,
- *  JPEG quality 80); this leaves room and still keeps a request small. */
-export const FOOD_PHOTO_MAX_BYTES = 3_000_000;
+ *  JPEG quality 80); this leaves room for a detailed photo and keeps the
+ *  whole request (two images as base64) under about 5.5 MB. */
+export const FOOD_PHOTO_MAX_BYTES = 2_000_000;
 /** Same cap as a typed food message (parseMeal.ts USER_TEXT_MAX_CHARS). */
 const NOTE_MAX_CHARS = 2000;
 
