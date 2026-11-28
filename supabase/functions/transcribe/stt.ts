@@ -36,7 +36,10 @@ export interface TranscribeOptions {
   languages?: string[];
 }
 
-export type SttFailure = "timeout" | "vendor_busy" | "vendor_error";
+/** timeout: no answer in time (it may still have run and billed).
+ *  vendor_busy: a 429. vendor_error: any other refusal or a broken call.
+ *  vendor_bad_reply: a 200 whose body has no text (answered, so billed). */
+export type SttFailure = "timeout" | "vendor_busy" | "vendor_error" | "vendor_bad_reply";
 
 export type SttResult =
   | {
@@ -103,7 +106,7 @@ export function openAiProvider(cfg: {
           text?: unknown;
           usage?: { type?: string; input_tokens?: number; output_tokens?: number };
         };
-        if (typeof data?.text !== "string") return { ok: false, reason: "vendor_error" };
+        if (typeof data?.text !== "string") return { ok: false, reason: "vendor_bad_reply" };
         const u = data.usage;
         return {
           ok: true,

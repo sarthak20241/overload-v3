@@ -178,13 +178,20 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
     try {
       await audio.setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
       await withinMs(recorder.prepareToRecordAsync(), START_BUDGET_MS);
+      // The screen closed while the mic was starting: the unmount cleanup
+      // only stops a recorder that is recording, so never start this one.
+      if (!mounted.current) {
+        phaseRef.current = 'idle';
+        releaseSession(audio);
+        return;
+      }
       recorder.record();
       haptics.tap();
       setP('recording');
     } catch {
       releaseSession(audio);
       setP('idle');
-      toast.show({ type: 'error', text: "The mic didn't start. Try again, or type it." });
+      if (mounted.current) toast.show({ type: 'error', text: "The mic didn't start. Try again, or type it." });
     }
   }, [audio, recorder]);
 

@@ -260,8 +260,9 @@ Deno.test("provider: OpenAI failures come back as reasons, never as text", async
   assertEquals(await (await status(500)).transcribe(clip, { purpose: "food", vocabulary: [] }), { ok: false, reason: "vendor_error" });
   const throws = openAiProvider({ apiKey: "k", fetchFn: (() => Promise.reject(new Error("dns"))) as unknown as typeof fetch });
   assertEquals(await throws.transcribe(clip, { purpose: "food", vocabulary: [] }), { ok: false, reason: "vendor_error" });
+  // A 200 with no text was answered (and likely billed): its own reason.
   const noText = openAiProvider({ apiKey: "k", fetchFn: (async () => new Response("{}")) as unknown as typeof fetch });
-  assertEquals(await noText.transcribe(clip, { purpose: "food", vocabulary: [] }), { ok: false, reason: "vendor_error" });
+  assertEquals(await noText.transcribe(clip, { purpose: "food", vocabulary: [] }), { ok: false, reason: "vendor_bad_reply" });
 });
 
 Deno.test("provider: chosen by STT_PROVIDER, OpenAI by default, nothing without a key", () => {
@@ -571,7 +572,7 @@ Deno.test("handler: no Content-Length, a normal clip still works", async () => {
 });
 
 Deno.test("handler: a slot is given back when the engine fails before billing, not on success or timeout", async () => {
-  for (const [fail, back] of [["vendor_error", 1], ["vendor_busy", 1], ["timeout", 0]] as const) {
+  for (const [fail, back] of [["vendor_error", 1], ["vendor_busy", 1], ["timeout", 0], ["vendor_bad_reply", 0]] as const) {
     const d = deps({ provider: fakeProvider({ fail }) });
     await call(request({ bytes: m4a(3) }), d);
     assertEquals([fail, d.released], [fail, back]);

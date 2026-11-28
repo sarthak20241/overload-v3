@@ -10,7 +10,7 @@
 //   -> rate-limit slot -> vocabulary -> engine -> (chat only) cleanup -> text.
 // Access comes before the body, so a caller with no in-app AI never has a
 // megabyte buffered for them.
-// An engine failure that billed nothing gives its slot back.
+// An engine failure that most likely billed nothing gives its slot back.
 //
 // Privacy: the audio is held in memory for this request only. It is never
 // written to storage or a log, and neither is the transcript or the user's
@@ -85,9 +85,10 @@ async function readLimited(req: Request, max: number): Promise<Uint8Array<ArrayB
   return out;
 }
 
-/** Engine failures that mean nothing was billed: a refused or broken call.
- *  A timeout may have run (and billed) on the vendor's side, so its slot
- *  stays spent. */
+/** Engine failures that give the slot back: a 429, or a refused or broken
+ *  call with no answer. Most of these bill nothing; a 5xx after the vendor
+ *  started work might, and the day cap bounds that. A timeout or a 200 with
+ *  a bad body may well have been billed, so their slots stay spent. */
 const REFUNDED: ReadonlySet<string> = new Set(["vendor_busy", "vendor_error"]);
 
 export async function handleTranscribe(req: Request, deps: TranscribeDeps): Promise<Response> {

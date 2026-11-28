@@ -17,8 +17,8 @@
 -- function, not here; this function only makes the count race-free.
 --
 -- release_voice_slot(user, slot_id) gives back the slot that request was
--- granted (reserve returns its id), when the speech engine failed before it
--- billed (a refused or broken call). Service role only: a client that could
+-- granted (reserve returns its id), when the speech engine refused or broke
+-- with no answer (most likely unbilled; the day cap bounds the rest). Service role only: a client that could
 -- call it would hand its own slots back and have no limit.
 --
 -- Same mechanics as the other AI buckets (0089, 20261026120000): SECURITY
