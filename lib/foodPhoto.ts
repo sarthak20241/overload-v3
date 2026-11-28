@@ -24,6 +24,8 @@ export const FOOD_PHOTO_CAPABILITY = 'food_photo' as const;
 
 export const FOOD_PHOTO_FLAG = 'food-photo';
 
+// TODO(release): set both numbers in the release that ships the new
+// NSCameraUsageDescription, or photo logging stays dev-only.
 /** The first store build (iOS CFBundleVersion, Android versionCode) whose
  *  camera prompt covers meal photos. null: no such build yet, so no store
  *  build shows the button. Set both when that build is cut (app.json

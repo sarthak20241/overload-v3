@@ -1386,7 +1386,14 @@ export default function NutritionScreen() {
     // retype. Keep the card and show the reply as a notice on it.
     if (res.kind === 'declined') {
       settleThread(res.cleared ? 'cleared' : 'unchanged');
-      pushTurn('drona', res.message);
+      // A photo with nothing to log leaves no turns: the next typed message
+      // must not carry a photo the server never logged. One that asks a
+      // question keeps the exchange, with the read's words as the user's turn.
+      if (photo && !res.pendingMeal) turnsRef.current = withoutPhotoTurn(turnsRef.current);
+      else {
+        if (photo && res.pendingMeal) turnsRef.current = withPhotoText(turnsRef.current, res.pendingMeal.text);
+        pushTurn('drona', res.message);
+      }
       // The shared rule (lib/foodBarCard.ts): a reply keeps the card; the user
       // removing the last line clears it. Keeping it would show the line they
       // just deleted under a message saying it is gone, which is also what the
@@ -1420,11 +1427,8 @@ export default function NutritionScreen() {
     }
     if (res.kind === 'error') {
       track('meal_parse_failed', { tier, duration_ms: Date.now() - parseStartedAt, auto_log: !!auto, photo: !!photo });
-      // A photo that failed is said plainly, with no Retry: a retry would send
-      // the note alone, which is not the meal.
-      // A photo that failed once is kept (in memory) for one Retry. A second
-      // failure is said plainly: a retry of the note alone is not the meal.
-      // The failed send's turn goes too: a Retry adds it again.
+      // A photo that failed once is kept (in memory) for one Retry; a second
+      // failure is said plainly. Its turn goes either way (a Retry adds it).
       if (photo) turnsRef.current = withoutPhotoTurn(turnsRef.current);
       if (photo && !photo.retried) {
         setFlow({
@@ -1455,6 +1459,7 @@ export default function NutritionScreen() {
       const create = parseCoachFoodCreate(res.tool, res.input);
       if (!create) {
         const line = 'I could not put that one together. Give me the name and the calories and I will save it.';
+        if (photo) turnsRef.current = withoutPhotoTurn(turnsRef.current);
         if (prevReview) setFlow(stamp({ ...prevReview, notice: line, proposal: null }));
         else setFlow({ status: 'declined', raw: photo ? photoShownText(t) : t, message: line });
         return;
