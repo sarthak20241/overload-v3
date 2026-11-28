@@ -50,6 +50,11 @@ Deno.test("Android: storage permissions are blocked", () => {
   assert(blocked.includes("android.permission.WRITE_EXTERNAL_STORAGE"), "WRITE_EXTERNAL_STORAGE not blocked");
 });
 
+Deno.test("the camera prompt Drona Eyes needs is still there", () => {
+  assert(String(expo.ios?.infoPlist?.NSCameraUsageDescription ?? "").length > 0);
+  assert((expo.android?.permissions ?? []).includes("android.permission.CAMERA"));
+});
+
 // Voice input (food box, Drona chat) records with expo-audio. Its plugin adds
 // the iOS mic string and Android RECORD_AUDIO from these options, and the
 // app's own NSMicrophoneUsageDescription must say what the audio is for.
@@ -76,9 +81,4 @@ Deno.test("voice: no background audio and no media playback service came with th
   assert(blocked.includes("android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"));
   const modes: string[] = expo.ios?.infoPlist?.UIBackgroundModes ?? [];
   assert(!modes.includes("audio"), "recording never runs in the background");
-});
-
-Deno.test("the camera prompt Drona Eyes needs is still there", () => {
-  assert(String(expo.ios?.infoPlist?.NSCameraUsageDescription ?? "").length > 0);
-  assert((expo.android?.permissions ?? []).includes("android.permission.CAMERA"));
 });
