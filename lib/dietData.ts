@@ -13,7 +13,7 @@
  * offline) with the Supabase `foods` table (the 7.4k USDA catalog), deduped by name.
  */
 import type { FoodThreadSend } from './foodThread';
-import { FOOD_PHOTO_CAPABILITY } from './foodPhoto';
+import { FOOD_PHOTO_CAPABILITY, type PhotoScale } from './foodPhoto';
 import { persistLoggedEntryEdit } from './loggedEntryEdit';
 import { COPIED_FROM, isFoodOrigin, ORIGIN_COLS, originColumns, parseRecipe, type CopiedFrom, type FoodOrigin, type RecipePart } from './foodOrigin';
 import { missingColumn, withoutColumns } from './missingColumn';
@@ -1348,7 +1348,7 @@ export async function parseMeal(
     thread?: FoodThreadSend | null;
     /** Meal photos (lib/foodPhoto), resized and JPEG encoded. `text` is then
      *  the user's note and may be empty. Only the food box sends these. */
-    images?: { media_type: 'image/jpeg'; data: string }[] | null;
+    images?: { media_type: 'image/jpeg'; data: string; scale?: PhotoScale }[] | null;
   },
 ): Promise<ParseMealResult> {
   const text = args.text.trim();
@@ -1372,7 +1372,7 @@ export async function parseMeal(
         // A caller that can't draw a save card claims only what it sends.
         ...(args.canCreate ? { supports: FOOD_BAR_CAPABILITIES } : images ? { supports: [FOOD_PHOTO_CAPABILITY] } : {}),
         text,
-        ...(images ? { images: images.map((i) => ({ media_type: i.media_type, data: i.data })) } : {}),
+        ...(images ? { images: images.map((i) => ({ media_type: i.media_type, data: i.data, ...(i.scale ? { scale: i.scale } : {}) })) } : {}),
         local_hour: now.getHours(),
         local_date: localDate,
         // Tier rides its OWN field: `mode` is the dispatch value and reading the

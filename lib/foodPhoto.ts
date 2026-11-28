@@ -48,6 +48,68 @@ export function fitLongEdge(width: number, height: number): { width: number; hei
   return { width: Math.max(1, Math.round(width * k)), height: Math.max(1, Math.round(height * k)) };
 }
 
+// ── Real-world scale from a depth sensor ────────────────────────────────────
+//
+// A phone with a depth sensor that measures in metres (LiDAR on iPhone Pro)
+// can say how far the camera was from the food. With the lens data that gives
+// how many centimetres the whole photo spans, which is a better size cue for
+// the photo read than a fork or a hand. Sent with the image as a hint; a phone
+// without the sensor sends none and nothing else changes.
+
+/** Whole centimetres. Mirrors PhotoScale in the ai-coach function. */
+export interface PhotoScale {
+  distance_cm: number;
+  long_cm?: number;
+  short_cm?: number;
+}
+
+/** A meal is photographed from about this far. Outside it the reading is a
+ *  hole, the background, or not a meal photo. */
+const DEPTH_MIN_M = 0.1;
+const DEPTH_MAX_M = 2;
+
+/** The camera's distance to what is in the MIDDLE of the frame, in metres:
+ *  the median of the central 40% of a depth map (`stride` values per row, the
+ *  first `width` of them real). The middle, because that is where the plate
+ *  is; the median, because a depth map has holes and edges. null when under
+ *  a third of the middle has a usable reading. */
+export function centerDistanceM(values: ArrayLike<number>, width: number, height: number, stride: number): number | null {
+  if (!(width > 0) || !(height > 0) || stride < width) return null;
+  const x0 = Math.floor(width * 0.3), x1 = Math.ceil(width * 0.7);
+  const y0 = Math.floor(height * 0.3), y1 = Math.ceil(height * 0.7);
+  // At most about 2,500 samples however large the map is.
+  const step = Math.max(1, Math.floor(Math.sqrt(((x1 - x0) * (y1 - y0)) / 2500)));
+  const ok: number[] = [];
+  let seen = 0;
+  for (let y = y0; y < y1; y += step) {
+    for (let x = x0; x < x1; x += step) {
+      seen++;
+      const v = values[y * stride + x];
+      if (typeof v === 'number' && v >= DEPTH_MIN_M && v <= DEPTH_MAX_M) ok.push(v);
+    }
+  }
+  if (seen === 0 || ok.length < seen / 3) return null;
+  ok.sort((a, b) => a - b);
+  return ok[Math.floor(ok.length / 2)];
+}
+
+/** The scale to send: the distance, and with the lens data (a 3x3 intrinsic
+ *  matrix for a `width` x `height` sensor: focal lengths in pixels on its
+ *  diagonal) how much the whole photo spans at that distance. */
+export function photoScaleFrom(
+  distanceM: number | null,
+  lens: { matrix: ArrayLike<number>; width: number; height: number } | null,
+): PhotoScale | null {
+  if (distanceM === null || !(distanceM >= DEPTH_MIN_M) || !(distanceM <= DEPTH_MAX_M)) return null;
+  const distance_cm = Math.round(distanceM * 100);
+  const fx = lens ? Number(lens.matrix[0]) : 0;
+  const fy = lens ? Number(lens.matrix[4]) : 0;
+  if (!lens || !(fx > 0) || !(fy > 0) || !(lens.width > 0) || !(lens.height > 0)) return { distance_cm };
+  const a = (distanceM * lens.width / fx) * 100;
+  const b = (distanceM * lens.height / fy) * 100;
+  return { distance_cm, long_cm: Math.round(Math.max(a, b)), short_cm: Math.round(Math.min(a, b)) };
+}
+
 /** This binary may use the camera for meal photos. */
 export function photoCameraAllowed(s: { os: string; build: string | null; dev: boolean }): boolean {
   if (s.os !== 'ios' && s.os !== 'android') return false;
@@ -91,6 +153,8 @@ export interface PhotoShot {
   uri: string;
   width: number;
   height: number;
+  /** Measured by a depth sensor, when the phone has one. */
+  scale?: PhotoScale;
 }
 
 export interface PendingPhoto {

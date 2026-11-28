@@ -71,11 +71,37 @@ const NOTE_MAX_CHARS = 2000;
 export type PhotoMediaType = "image/jpeg" | "image/png" | "image/webp";
 const MEDIA_TYPES = new Set<string>(["image/jpeg", "image/png", "image/webp"]);
 
+/** A real-world scale for one image, measured on the phone by a depth
+ *  sensor (LiDAR): how far the camera was from the food, and how much the
+ *  whole photo spans at that distance. Whole centimetres. */
+export interface PhotoScale {
+  distance_cm: number;
+  long_cm?: number;
+  short_cm?: number;
+}
+
 export interface PhotoImage {
   media_type: PhotoMediaType;
   /** Base64, no data: prefix. */
   data: string;
   bytes: number;
+  scale?: PhotoScale;
+}
+
+/** A measure the app sent, or undefined when it is not a real photo's: it is
+ *  a hint, so a bad one is dropped and the photo is still read. */
+function readScale(raw: unknown): PhotoScale | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  const within = (v: unknown, lo: number, hi: number) =>
+    typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? Math.round(v) : null;
+  const distance = within(o.distance_cm, 10, 200);
+  if (distance === null) return undefined;
+  const long = within(o.long_cm, 5, 400);
+  const short = within(o.short_cm, 5, 400);
+  return long !== null && short !== null && long >= short
+    ? { distance_cm: distance, long_cm: long, short_cm: short }
+    : { distance_cm: distance };
 }
 
 export type PhotoGate =
@@ -121,7 +147,8 @@ export function readPhotoRequest(body: Record<string, unknown>, opts: { mode: Fo
     if (bytes > FOOD_PHOTO_MAX_BYTES) return { kind: "bad", error: "image_too_large" };
     if (!BASE64.test(data)) return { kind: "bad", error: "image_data" };
     if (sniff(data) !== o.media_type) return { kind: "bad", error: "image_type" };
-    images.push({ media_type: o.media_type as PhotoMediaType, data, bytes });
+    const scale = readScale(o.scale);
+    images.push({ media_type: o.media_type as PhotoMediaType, data, bytes, ...(scale ? { scale } : {}) });
   }
   const note = typeof body.text === "string" ? body.text.trim().slice(0, NOTE_MAX_CHARS) : "";
   return { kind: "photo", images, note };
@@ -271,7 +298,7 @@ Two images show the same meal from a second angle, or a product and its label. R
 
 For a plate:
 - One item per distinct food. Name it the way a person would search a food database, specific enough to find the right entry ("grilled chicken breast", "dal tadka", "steamed basmati rice"). Sauces, chutneys, dressings and drinks are items too.
-- Give the weight in grams of the portion as served: your best estimate, with a low and a high you would be surprised to see broken. Judge it against something you can actually see whose size you know: a fork or spoon, a hand, the plate or bowl, a can, an egg, a slice of bread. Name the cue you used. With no cue, say so and widen the range. A second angle helps with depth; use it.
+- Give the weight in grams of the portion as served: your best estimate, with a low and a high you would be surprised to see broken. Judge it against something you can actually see whose size you know: a fork or spoon, a hand, the plate or bowl, a can, an egg, a slice of bread. Name the cue you used. With no cue, say so and widen the range. A second angle helps with depth; use it. When an image comes with a measured scale (how far the camera was, and the real width and height the whole photo spans), size the plate and the food from that first: it is a measurement, and it is better than any cue you can see.
 - When the food is countable (2 rotis, 3 eggs, 1 slice), give the count and the unit as well as the total weight.
 - Confidence covers both what the food is and how much there is.
 - Hidden additions: food is often cooked or finished with fat or sugar the camera cannot see. For each item list what was likely added that its name does not already cover: oil, ghee or butter for fried, sauteed, tempered or curry-style dishes; butter or ghee on breads; dressing on salad; sugar in drinks; cream; mayonnaise. For each one say whether the note already covers it, meaning the note names it, gives its amount, or says there was none. List nothing for plainly boiled, steamed, raw or packaged food.
@@ -296,6 +323,14 @@ export function buildPhotoPayload(
   images.forEach((img, i) => {
     if (images.length > 1) content.push({ type: "text", text: `Image ${i + 1}:` });
     content.push({ type: "image", source: { type: "base64", media_type: img.media_type, data: img.data } });
+    if (img.scale) {
+      const s = img.scale;
+      content.push({
+        type: "text",
+        text: `Measured by the phone's depth sensor for this image: the camera was about ${s.distance_cm} cm from the food` +
+          (s.long_cm && s.short_cm ? `, and the whole photo spans about ${s.long_cm} cm by ${s.short_cm} cm at that distance.` : "."),
+      });
+    }
   });
   content.push({
     type: "text",
@@ -622,8 +657,13 @@ function panelOf(l: PhotoLabel): string {
 }
 
 export interface PhotoText {
-  /** The food message the text pipeline parses. */
+  /** The card's text: the user's note, then what the photo read. Everything
+   *  that reads a food message's words (router, corrections, threads) reads
+   *  this. */
   text: string;
+  /** The same two parts, apart, for the parse's own model call
+   *  (parseMeal.ts PHOTO_EXTRACT_NOTE): the note decides what the foods are. */
+  forParse: { note: string; read: string[] };
   assumed: AssumedFat[];
   /** Hidden additions that are asked about, never assumed. */
   ask: HiddenName[];
@@ -641,9 +681,14 @@ export function photoToText(read: PhotoRead, note: string): PhotoText {
     (panel ? labelled : plain).push(`${it.label ? (it.brand && !it.name.toLowerCase().includes(it.brand.toLowerCase()) ? `${it.brand} ${it.name}` : it.name) : namedWith(it)}${amountOf(it)}${panel}`);
   }
   for (const a of assumed) plain.push(`${a.name} (~${g(a.grams)} g)`);
-  let text = [...labelled, plain.join(", ")].filter(Boolean).join(" ");
-  if (read.meal && text) text = `${text.replace(/\.$/, "")} for ${read.meal}${labelled.length && !plain.length ? "." : ""}`;
-  return { text, assumed, ask };
+  const seen = [...labelled, plain.join(", ")].filter(Boolean).join(" ");
+  const said = note.trim();
+  const forParse = { note: said, read: [...labelled, ...plain] };
+  if (!seen) return { text: "", forParse, assumed, ask };
+  // With a note, its own words name the meal; without one, the read does.
+  if (said) return { text: `${said}${/[.!?]$/.test(said) ? "" : "."} From my photo: ${seen}`, forParse, assumed, ask };
+  const text = read.meal ? `${seen.replace(/\.$/, "")} for ${read.meal}${labelled.length && !plain.length ? "." : ""}` : seen;
+  return { text, forParse, assumed, ask };
 }
 
 // ── The card ────────────────────────────────────────────────────────────────
@@ -800,7 +845,7 @@ export function photoDecline(read: PhotoRead): string | null {
 /** What the trace keeps of a photo request: sizes and counts, never the image. */
 export function photoTraceView(images: PhotoImage[], res: PhotoReadResult | null): Record<string, unknown> {
   return {
-    images: images.map((i) => ({ media_type: i.media_type, bytes: i.bytes })),
+    images: images.map((i) => ({ media_type: i.media_type, bytes: i.bytes, ...(i.scale ? { scale: i.scale } : {}) })),
     ...(res
       ? {
         model: res.model,

@@ -8,7 +8,9 @@ import {
   FOOD_PHOTO_CAPABILITY,
   FOOD_PHOTO_FLAG,
   FOOD_PHOTO_MIN_BUILD,
+  centerDistanceM,
   fitLongEdge,
+  photoScaleFrom,
   PENDING_PHOTO_MAX_AGE_MS,
   PHOTO_LONG_EDGE,
   PHOTO_MAX_IMAGES,
@@ -174,4 +176,54 @@ Deno.test("turns: a failed photo send takes its turn back, so a Retry does not a
 Deno.test("shown text: a photo with no note still says what was sent", () => {
   assertEquals(photoShownText(""), "Your meal photo");
   assertEquals(photoShownText("cooked in ghee"), "cooked in ghee");
+});
+
+// ── real-world scale from a depth sensor ────────────────────────────────────
+
+/** A depth map (metres), row by row, with `stride` values per row. */
+function depthMap(w: number, h: number, stride: number, at: (x: number, y: number) => number): Float32Array {
+  const out = new Float32Array(stride * h).fill(NaN);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) out[y * stride + x] = at(x, y);
+  return out;
+}
+
+Deno.test("depth: the distance is the middle of the frame, not the far background", () => {
+  // Food at 0.35 m in the middle, table edge and floor at 1.2 m around it.
+  const map = depthMap(100, 80, 100, (x, y) => (x > 25 && x < 75 && y > 20 && y < 60 ? 0.35 : 1.2));
+  const d = centerDistanceM(map, 100, 80, 100)!;
+  assert(Math.abs(d - 0.35) < 0.001, String(d));
+});
+
+Deno.test("depth: row padding is skipped, holes are ignored", () => {
+  // 100 values per row, 128 stored: the padding must not be read as depth.
+  const map = depthMap(100, 80, 128, (x, y) => ((x + y) % 7 === 0 ? 0 : 0.4));
+  const d = centerDistanceM(map, 100, 80, 128)!;
+  assert(Math.abs(d - 0.4) < 0.001, String(d));
+});
+
+Deno.test("depth: no reading when the middle is mostly holes or out of a meal's range", () => {
+  assertEquals(centerDistanceM(depthMap(100, 80, 100, () => NaN), 100, 80, 100), null);
+  assertEquals(centerDistanceM(depthMap(100, 80, 100, () => 0), 100, 80, 100), null);
+  assertEquals(centerDistanceM(depthMap(100, 80, 100, () => 4.5), 100, 80, 100), null);
+  assertEquals(centerDistanceM(new Float32Array(0), 0, 0, 0), null);
+});
+
+Deno.test("scale: distance and lens give how much the photo spans", () => {
+  // fx = fy = 3000 px on a 4032 x 3024 sensor, 0.36 m away:
+  // 0.36 * 4032 / 3000 = 0.484 m, 0.36 * 3024 / 3000 = 0.363 m.
+  assertEquals(
+    photoScaleFrom(0.36, { matrix: [3000, 0, 2016, 0, 3000, 1512, 0, 0, 1], width: 4032, height: 3024 }),
+    { distance_cm: 36, long_cm: 48, short_cm: 36 },
+  );
+  // The long side is the long side, whichever way the sensor reports it.
+  assertEquals(
+    photoScaleFrom(0.36, { matrix: [3000, 0, 1512, 0, 3000, 2016, 0, 0, 1], width: 3024, height: 4032 }),
+    { distance_cm: 36, long_cm: 48, short_cm: 36 },
+  );
+});
+
+Deno.test("scale: without the lens data the distance alone is kept; no distance, no scale", () => {
+  assertEquals(photoScaleFrom(0.36, null), { distance_cm: 36 });
+  assertEquals(photoScaleFrom(0.36, { matrix: [0, 0, 0, 0, 0, 0, 0, 0, 0], width: 4032, height: 3024 }), { distance_cm: 36 });
+  assertEquals(photoScaleFrom(null, { matrix: [3000, 0, 0, 0, 3000, 0, 0, 0, 1], width: 4032, height: 3024 }), null);
 });

@@ -27,6 +27,7 @@ import {
   readPhotoRequest,
 } from "./foodPhoto.ts";
 import { readTypedWeight } from "./statedNumbers.ts";
+import { type ParseMealDeps, PHOTO_EXTRACT_NOTE, runParseMeal } from "./parseMeal.ts";
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -299,9 +300,10 @@ Deno.test("text: a counted food keeps its count beside the weight", () => {
   assertEquals(readTypedWeight({ grams: 80, per: "total" }, 2, "piece"), 80);
 });
 
-Deno.test("text: a meal named in the note is said", () => {
+Deno.test("text: a meal the read names is said; with a note, the note's own words say it", () => {
   const read = plate([item()], { meal: "dinner" });
-  assertEquals(photoToText(read, "this was dinner").text, "grilled chicken breast (~150 g) for dinner");
+  assertEquals(photoToText(read, "").text, "grilled chicken breast (~150 g) for dinner");
+  assertEquals(photoToText(read, "this was dinner").text, "this was dinner. From my photo: grilled chicken breast (~150 g)");
 });
 
 Deno.test("text: a food with no weight is still named", () => {
@@ -361,7 +363,9 @@ Deno.test("label: the amount from the note sets the weight; per 100 g is said as
     grams: { low: 25, best: 25, high: 25 },
     grams_from: "note",
   })]);
-  assertEquals(photoToText(read, "ate half, 25 g").text, "RiteBite protein bar (~25 g). Per 100 g: 402 kcal, 40 g protein, 36 g carbs, 13 g fat.");
+  const out = photoToText(read, "ate half, 25 g");
+  assertEquals(out.forParse.read, ["RiteBite protein bar (~25 g). Per 100 g: 402 kcal, 40 g protein, 36 g carbs, 13 g fat."]);
+  assertEquals(out.text, "ate half, 25 g. From my photo: RiteBite protein bar (~25 g). Per 100 g: 402 kcal, 40 g protein, 36 g carbs, 13 g fat.");
 });
 
 // ── hidden cooking fat ──────────────────────────────────────────────────────
@@ -689,4 +693,121 @@ Deno.test("end to end: read -> words -> card marks agree with each other", () =>
   assert(lines.every((l) => l.assumption), "every line says where it came from");
   assertStringIncludes(lines[2].assumption!, "Assumed");
   assertStringIncludes(lines[3].assumption!, "Assumed");
+});
+
+// ── the final food step sees the note AND the photo read ────────────────────
+
+Deno.test("for the parse: the note and the photo read go as two parts, the note word for word", () => {
+  const read = plate([
+    item({ name: "oats porridge", method: null, grams: { low: 200, best: 250, high: 320 } }),
+    item({ name: "banana", method: null, count: 1, unit: "piece", grams: { low: 50, best: 60, high: 75 } }),
+  ]);
+  const out = photoToText(read, "yogabar high protein oats with milk");
+  assertEquals(out.forParse, {
+    note: "yogabar high protein oats with milk",
+    read: ["oats porridge (~250 g)", "banana - 1 piece (~60 g)"],
+  });
+  // The card's text holds both, the user's words first.
+  assertEquals(out.text, "yogabar high protein oats with milk. From my photo: oats porridge (~250 g), banana - 1 piece (~60 g)");
+});
+
+Deno.test("for the parse: with no note the text is the read alone, as before", () => {
+  const read = plate([item()]);
+  const out = photoToText(read, "");
+  assertEquals(out.text, "grilled chicken breast (~150 g)");
+  assertEquals(out.forParse, { note: "", read: ["grilled chicken breast (~150 g)"] });
+});
+
+/** A parse whose model call is captured. The model answers one estimated item. */
+function capturingDeps(seen: { payload?: any }): ParseMealDeps {
+  return {
+    anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: false,
+    searchFoods: async () => [],
+    backfillOffFood: async () => null,
+    getFoodPer100: async () => null,
+    fetchFn: (async (url: string | URL | Request, init?: RequestInit) => {
+      if (!String(url).includes("anthropic")) return new Response("[]", { status: 200 });
+      seen.payload ??= JSON.parse(String(init!.body));
+      return new Response(JSON.stringify({
+        stop_reason: "tool_use",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        content: [{
+          type: "tool_use", name: "estimate_meal",
+          input: {
+            declined: false, meal_type_from_text: null,
+            items: [{
+              name: "high protein oats", brand: "Yogabar", quantity: 1, unit: "serving", prep: null,
+              label_applies: false, label_serving_g: null, label_serving_kcal: null, label_pieces_per_serving: null,
+              est_kcal: 300, est_protein_g: 20, est_carb_g: 40, est_fat_g: 6, est_total_g: 250,
+              typed_weight: { grams: 250, per: "total" },
+            }],
+          },
+        }],
+      }), { status: 200 });
+    }) as typeof fetch,
+  };
+}
+const PARSE_INPUT = { localHour: 9, mealHint: null, mode: "fast" as const, recentFoods: [], todayTotals: null, targets: null };
+const systemText = (payload: any) => JSON.stringify(payload.system);
+
+Deno.test("final step: a photo meal's model call gets the note and the read apart, and is told which decides what", async () => {
+  const seen: { payload?: any } = {};
+  const forParse = { note: "yogabar high protein oats with milk", read: ["oats porridge (~250 g)"] };
+  const r = await runParseMeal(capturingDeps(seen), {
+    ...PARSE_INPUT, text: "yogabar high protein oats with milk. From my photo: oats porridge (~250 g)", photo: forParse,
+  });
+  const sent = JSON.parse(seen.payload.messages[0].content);
+  assertEquals(sent, { user_note: forParse.note, photo_read: forParse.read });
+  assert(systemText(seen.payload).includes(PHOTO_EXTRACT_NOTE.trim().slice(0, 60)), "the photo rule is in the instructions");
+  // The model named it from the note; the photo's weight is the line's weight.
+  assertEquals(r.parsed!.items[0].food_name, "Yogabar high protein oats");
+  assertEquals(r.parsed!.items[0].grams, 250);
+});
+
+Deno.test("final step: a typed meal's model call is exactly today's (no photo rule, plain text)", async () => {
+  const seen: { payload?: any } = {};
+  await runParseMeal(capturingDeps(seen), { ...PARSE_INPUT, text: "yogabar high protein oats" });
+  assertEquals(seen.payload.messages[0].content, "yogabar high protein oats");
+  assert(!systemText(seen.payload).includes("photo_read"), "no photo words in a typed meal's instructions");
+});
+
+Deno.test("the photo rule says who decides what (true to the code around it)", () => {
+  for (const must of ["user_note", "photo_read", "typed_weight", "once"]) {
+    assert(PHOTO_EXTRACT_NOTE.includes(must), `mentions ${must}`);
+  }
+  assert(!PHOTO_EXTRACT_NOTE.includes("\u2014"));
+});
+
+// ── measured scale from a depth sensor ──────────────────────────────────────
+
+Deno.test("scale: a measured distance and frame size ride with their image", () => {
+  const body = photoBody({ images: [{ media_type: "image/jpeg", data: JPEG, scale: { distance_cm: 34.2, long_cm: 41, short_cm: 31 } }] });
+  const g = readPhotoRequest(body, { mode: "on" });
+  assert(g.kind === "photo");
+  assertEquals(g.images[0].scale, { distance_cm: 34, long_cm: 41, short_cm: 31 });
+  const content = (buildPhotoPayload(g.images, "", "claude-haiku-5-5") as any).messages[0].content as any[];
+  assertEquals(content.map((c) => c.type), ["image", "text", "text"]);
+  assertStringIncludes(content[1].text, "34 cm");
+  assertStringIncludes(content[1].text, "41 cm by 31 cm");
+});
+
+Deno.test("scale: a distance alone is still said; no measure, no line", () => {
+  const withD = readPhotoRequest(photoBody({ images: [{ media_type: "image/jpeg", data: JPEG, scale: { distance_cm: 40 } }] }), { mode: "on" });
+  assert(withD.kind === "photo");
+  const c1 = (buildPhotoPayload(withD.images, "", "claude-haiku-5-5") as any).messages[0].content as any[];
+  assertStringIncludes(c1[1].text, "40 cm");
+  assert(!c1[1].text.includes("spans"));
+  const none = readPhotoRequest(photoBody(), { mode: "on" });
+  assert(none.kind === "photo");
+  assertEquals(none.images[0].scale, undefined);
+  assertEquals((buildPhotoPayload(none.images, "", "claude-haiku-5-5") as any).messages[0].content.length, 2);
+});
+
+Deno.test("scale: a measure outside any real photo is dropped, never trusted, and never refuses the photo", () => {
+  for (const scale of [{ distance_cm: 2 }, { distance_cm: 900 }, { distance_cm: "34" }, { distance_cm: 34, long_cm: 9000, short_cm: 31 }, "near", null]) {
+    const g = readPhotoRequest(photoBody({ images: [{ media_type: "image/jpeg", data: JPEG, scale }] }), { mode: "on" });
+    assert(g.kind === "photo", JSON.stringify(scale));
+    const sc = g.images[0].scale;
+    assert(sc === undefined || (sc.distance_cm === 34 && sc.long_cm === undefined), JSON.stringify(scale));
+  }
 });

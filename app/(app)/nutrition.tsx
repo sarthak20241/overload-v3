@@ -1328,7 +1328,7 @@ export default function NutritionScreen() {
       // The food bar can draw a save card, so it asks for creates.
       canCreate: true,
       thread: thread?.send ?? null,
-      images: photo ? photo.images.map((i) => ({ media_type: i.media_type, data: i.data })) : null,
+      images: photo ? photo.images.map((i) => ({ media_type: i.media_type, data: i.data, ...(i.scale ? { scale: i.scale } : {}) })) : null,
     };
     // Streaming is only worth it on a first-shot log: a correction needs the
     // full pipeline anyway, and parseMealStreaming falls back on its own, but

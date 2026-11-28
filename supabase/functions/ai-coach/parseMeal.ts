@@ -1065,6 +1065,11 @@ export interface ParseMealInput {
   previousItems?: PreviousItem[];
   /** Only set after the router identifies a continuation of an unlogged meal. */
   pendingMeal?: PendingFoodMeal | null;
+  /** A meal logged from a photo: the vision read (one line per food) and the
+   *  user's note, apart, so the extract can let the note name the foods
+   *  (PHOTO_EXTRACT_NOTE). `text` still holds both, for everything else.
+   *  First message only: ignored with a card or a pending meal. */
+  photo?: { note: string; read: string[] } | null;
   /** The user was already asked about this meal and told Drona to go ahead:
    *  the extract may not decline it (PENDING_MUST_LOG). Set only by
    *  runParseMeal's own retry of a continuation that declined anyway. */
@@ -6676,6 +6681,29 @@ export async function tryFastCorrection(
 /** On a turn that answers a waiting meal the user has already been asked once.
  *  Asking again is how a thread went round in circles until the user gave up
  *  (live, 2026-10-04 and 2026-10-08), so this turn always logs. */
+/**
+ * A meal logged from a photo (foodPhoto.ts). The extract call gets the vision
+ * model's read and the user's own note as two parts, and this rule for how to
+ * join them: the note decides what the foods are, the photo how much. The
+ * vision model cannot know a brand or what is inside a dish; the user can.
+ * Added to the instructions only for a photo meal, so a typed meal's call is
+ * unchanged.
+ */
+export const PHOTO_EXTRACT_NOTE =
+  "\nThis meal was logged from a photo. The message is JSON with two parts. photo_read is what a vision model saw: " +
+  "one entry per food, with its guess at the name and its weight written as \"(~150 g)\"; a count such as " +
+  "\"2 piece\" comes before the weight, and an entry can end with a nutrition panel it read off a package. " +
+  "user_note is what the user wrote about the meal; it can be empty. The user knows what they ate and the camera " +
+  "does not, so user_note decides WHAT each food is: when the note names a food the photo also shows, log one " +
+  "item named from the note, with its brand, product, variety and cooking as the user wrote them (photo " +
+  "\"oats porridge\", note \"Yogabar high protein oats\": one item, name \"high protein oats\", brand " +
+  "\"Yogabar\"). The photo decides HOW MUCH only where the note gives no amount: use the photo's weight for that " +
+  "food, as the quantity in g, or in typed_weight (per total) when the food has a count. An amount in the note " +
+  "replaces the photo's. Log every food once: the vision model saw the note too, so the same food can be in both " +
+  "parts. A food only in the note is logged from the note. A food only in the photo is logged as read. A food the " +
+  "note says was not eaten is left out. A nutrition panel in photo_read is the user's own label: copy it into " +
+  "stated as written.";
+
 const PENDING_MUST_LOG =
   "The user has already been asked about this meal and has answered, so never decline it and never ask again: " +
   "every food in it is something they want logged. When the answer leaves a detail open, picks by position, or " +
@@ -7113,6 +7141,11 @@ async function runParseMealCore(
     steps.push({ iter: 0, tool: "pending_meal", input: { status: input.pendingMeal.status, question: input.pendingMeal.question } });
   }
   const extractTool = fastMode ? FAST_EXTRACT_TOOL : EXTRACT_TOOL;
+  // A photo meal's first message: the read and the note go to the model apart.
+  const photoIn = !hasPrevious && !input.pendingMeal && input.photo && input.photo.read.length > 0 ? input.photo : null;
+  if (photoIn) {
+    steps.push({ iter: 0, tool: "photo_input", input: { read_lines: photoIn.read.length, note_chars: photoIn.note.length } });
+  }
   const callExtract = (note = "") => callAnthropicOnce(deps, {
     model: deps.model,
     // A cap, not a target: the model emits what the message needs, so a short
@@ -7135,7 +7168,7 @@ async function runParseMealCore(
             PENDING_MUST_LOG
           : input.mustLog
           ? "\n" + PENDING_MUST_LOG
-          : "") + note,
+          : "") + (photoIn ? PHOTO_EXTRACT_NOTE : "") + note,
     ),
     tools: withToolCache([extractTool]),
     tool_choice: { type: "tool", name: fastMode ? "estimate_meal" : "extract_meal" },
@@ -7166,6 +7199,11 @@ async function runParseMealCore(
         }) + savedMealsBlock(saved, hint.forPrompt())
         : input.pendingMeal
         ? JSON.stringify({ text: userText.text, pending_meal: input.pendingMeal }) + savedMealsBlock(saved, hint.forPrompt())
+        : photoIn
+        ? JSON.stringify({
+          user_note: photoIn.note.slice(0, USER_TEXT_MAX_CHARS),
+          photo_read: photoIn.read.slice(0, MAX_ITEMS_PER_PARSE).map((l) => l.slice(0, 300)),
+        }) + savedMealsBlock(saved, hint.forPrompt())
         : userText.text + savedMealsBlock(saved, hint.forPrompt()),
     }],
   }, "extract");

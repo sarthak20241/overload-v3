@@ -3429,7 +3429,7 @@ async function handleParseMealRequest(args: {
   // The photo read: ONE vision call, after the slot (it is a parse like any
   // other, under the same caps and cooldown). Its words replace the note as
   // this message's text; the note went into the read as ground truth.
-  let photoMark: { read: PhotoRead; assumed: AssumedFat[]; ask: HiddenName[] } | null = null;
+  let photoMark: { read: PhotoRead; assumed: AssumedFat[]; ask: HiddenName[]; forParse: { note: string; read: string[] } } | null = null;
   if (photoReq) {
     const photoRes = await readFoodPhoto(
       { anthropicApiKey: ANTHROPIC_API_KEY!, model: FOOD_PHOTO_MODEL, timeoutMs: FOOD_PHOTO_TIMEOUT_MS },
@@ -3471,7 +3471,7 @@ async function handleParseMealRequest(args: {
     }
     text = made.text.slice(0, USER_TEXT_MAX_CHARS);
     FULL_USER_TEXT.set(trace, text);
-    photoMark = { read: photoRes.read, assumed: made.assumed, ask: made.ask };
+    photoMark = { read: photoRes.read, assumed: made.assumed, ask: made.ask, forParse: made.forParse };
   }
 
   // Context: recents + targets + today's totals, all non-fatal on failure.
@@ -4299,6 +4299,9 @@ async function handleParseMealRequest(args: {
           pendingMeal,
           recentTurns,
           variantChips: clientSupportsVariantSwap(body),
+          // A photo meal: the final call gets the vision read and the user's
+          // note apart, so the note names the foods (PHOTO_EXTRACT_NOTE).
+          ...(photoMark ? { photo: photoMark.forParse } : {}),
         },
       );
     };

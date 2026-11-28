@@ -73,7 +73,10 @@ export default function FoodPhotoScreen() {
   }, []);
 
   const { hasPermission, requestPermission } = useCameraPermission();
-  const device = useCameraDevice('back');
+  // The back camera that includes a LiDAR depth sensor when the phone has one
+  // (iPhone Pro), else the plain wide camera. With depth, the photo carries a
+  // measured distance, which sizes the food far better than a visual guess.
+  const device = useCameraDevice('back', { physicalDevices: ['wide-angle', 'lidar-depth'] });
   // About 12 MP: plenty for a 1568 px upload, and quick to take.
   const photoOutput = usePhotoOutput({ qualityPrioritization: 'balanced' });
 
@@ -114,7 +117,14 @@ export default function FoodPhotoScreen() {
     setProblem(null);
     haptics.tap();
     try {
-      const photo = await photoOutput.capturePhoto({ flashMode: 'off' }, {});
+      // Depth rides along when this camera can deliver it. If that capture
+      // fails for any reason, the photo is taken again without it.
+      let withDepth = false;
+      try { withDepth = photoOutput.supportsDepthDataDelivery === true; } catch { withDepth = false; }
+      const photo = withDepth
+        ? await photoOutput.capturePhoto({ flashMode: 'off', enableDepthData: true }, {})
+          .catch(() => photoOutput.capturePhoto({ flashMode: 'off' }, {}))
+        : await photoOutput.capturePhoto({ flashMode: 'off' }, {});
       const shot = await preparePhoto(photo);
       // The live list (shotsRef), not this render's copy.
       // Closed, or already sent: this shot has no owner, so it goes.
@@ -147,7 +157,11 @@ export default function FoodPhotoScreen() {
     // Once: a second tap would hand the same photos off again.
     if (!shots.length || sentRef.current) return;
     haptics.tap();
-    track('meal_photo_sent', { images: shots.length, has_note: note.trim().length > 0, note_chars: note.trim().length });
+    track('meal_photo_sent', {
+      images: shots.length, has_note: note.trim().length > 0, note_chars: note.trim().length,
+      // How often a phone really measures the scale (LiDAR).
+      with_scale: shots.filter((x) => !!x.scale).length,
+    });
     setPendingPhoto({ images: shots, note, meal, day }, Date.now(), discardShots);
     sentRef.current = true;
     router.back();
