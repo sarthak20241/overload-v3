@@ -14,8 +14,10 @@ import {
   photoButtonShows,
   photoCameraAllowed,
   photoShownText,
+  photoTurnText,
   setPendingPhoto,
   takePendingPhoto,
+  withoutPhotoTurn,
   withPhotoText,
 } from "./foodPhoto.ts";
 
@@ -140,6 +142,17 @@ Deno.test("turns: the photo's turn becomes the words its read made", () => {
   // Nothing to swap: the list is left as it is.
   assertEquals(withPhotoText([], "dal"), []);
   assertEquals(withPhotoText([{ role: "drona" as const, text: "hi" }], "dal"), [{ role: "drona", text: "hi" }]);
+});
+
+Deno.test("turns: a failed photo send takes its turn back, so a Retry does not add it twice", () => {
+  const before = [{ role: "drona" as const, text: "Logged your breakfast." }];
+  const sent = [...before, { role: "user" as const, text: photoTurnText("cooked in ghee") }];
+  assertEquals(withoutPhotoTurn(sent), before);
+  assertEquals(withoutPhotoTurn([...before, { role: "user" as const, text: photoTurnText("") }]), before);
+  // Anything else is left alone.
+  const typed = [...before, { role: "user" as const, text: "2 eggs" }];
+  assertEquals(withoutPhotoTurn(typed), typed);
+  assertEquals(withoutPhotoTurn([]), []);
 });
 
 Deno.test("shown text: a photo with no note still says what was sent", () => {

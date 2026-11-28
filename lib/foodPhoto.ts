@@ -136,6 +136,21 @@ export function photoShownText(note: string): string {
   return note.trim() || 'Your meal photo';
 }
 
+/** The user's turn for a photo send, before the read's words replace it. */
+const PHOTO_TURN = 'A photo of my meal.';
+export function photoTurnText(note: string): string {
+  const n = note.trim();
+  return n ? `${PHOTO_TURN} ${n}` : PHOTO_TURN;
+}
+
+/** The conversation after a photo send that failed: its turn is taken back,
+ *  so a Retry (which adds it again) does not leave it in twice. */
+export function withoutPhotoTurn<T extends { role: 'user' | 'drona'; text: string }>(turns: T[]): T[] {
+  const last = turns.length - 1;
+  if (last < 0 || turns[last].role !== 'user' || !turns[last].text.startsWith(PHOTO_TURN)) return turns;
+  return turns.slice(0, last);
+}
+
 /** The conversation after a photo meal: the user's last turn becomes the
  *  words the photo read made, so a follow-up ("the rice was one cup") is read
  *  against what the card was built from. */

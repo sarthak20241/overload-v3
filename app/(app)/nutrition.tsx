@@ -25,7 +25,7 @@ import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { getFlagVariant, track } from '@/lib/analytics';
 import * as Application from 'expo-application';
-import { FOOD_PHOTO_FLAG, photoButtonShows, photoShownText, takePendingPhoto, withPhotoText, type PhotoShot } from '@/lib/foodPhoto';
+import { FOOD_PHOTO_FLAG, photoButtonShows, photoShownText, photoTurnText, takePendingPhoto, withoutPhotoTurn, withPhotoText, type PhotoShot } from '@/lib/foodPhoto';
 import { discardShots } from '@/lib/foodPhotoCapture';
 import { noteFoodLogged } from '@/lib/pushRegistration';
 import { announceReady } from '@/lib/readyNotice';
@@ -1297,7 +1297,7 @@ export default function NutritionScreen() {
     const turns = retry ? [] : turnsRef.current.slice();
     // A photo's turn is replaced with the words its read made (below), so a
     // follow-up reads what the card was built from.
-    pushTurn('user', photo ? (t ? `A photo of my meal. ${t}` : 'A photo of my meal.') : t);
+    pushTurn('user', photo ? photoTurnText(t) : t);
     // The card on screen is a better hint than the wall clock. "and a dosa"
     // added to a meal the user has placed in Dinner must join THAT meal, and
     // sending mealForNow() split the card in two whenever the clock disagreed:
@@ -1422,6 +1422,8 @@ export default function NutritionScreen() {
       // the note alone, which is not the meal.
       // A photo that failed once is kept (in memory) for one Retry. A second
       // failure is said plainly: a retry of the note alone is not the meal.
+      // The failed send's turn goes too: a Retry adds it again.
+      if (photo) turnsRef.current = withoutPhotoTurn(turnsRef.current);
       if (photo && !photo.retried) {
         setFlow({
           status: 'error', raw: photoShownText(t), message: 'I could not read that photo. Try it again.',

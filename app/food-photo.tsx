@@ -12,7 +12,7 @@
  * ones typed food already has.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -47,9 +47,10 @@ export default function FoodPhotoScreen() {
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ meal?: string; day?: string }>();
   const meal: PendingPhotoMeal = isMeal(params.meal) ? params.meal : 'snack';
-  const day = typeof params.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(params.day)
-    ? new Date(`${params.day}T12:00:00`)
-    : new Date();
+  const day = useMemo(
+    () => (typeof params.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(params.day) ? new Date(`${params.day}T12:00:00`) : new Date()),
+    [params.day],
+  );
 
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('back');
