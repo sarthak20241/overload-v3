@@ -166,6 +166,10 @@ type ParseFlow =
   | {
       status: 'error'; raw: string; message: string; meal?: ParsedMeal; mealType?: MealType;
       clientId?: string; logDate?: string;
+      /** A photo send that failed, kept for ONE re-send so a network blip
+       *  does not cost the user the capture and the note. In memory only:
+       *  an error with no meal is never stored (lib/mealReady). */
+      photo?: { images: PhotoShot[]; note: string; mealHint: MealType; day: Date };
       /** The reviewed card's `words`, kept so Retry rebuilds it whole. */
       words?: string;
       /** A suggestion's origin, kept so a retried Add is still reported as one. */
@@ -1182,7 +1186,7 @@ export default function NutritionScreen() {
     from?: { mealHint: MealType; day: Date },
     /** Meal photos from app/food-photo (lib/foodPhoto). `raw` is then the
      *  user's note and may be empty. A photo always starts a new card. */
-    photo?: { images: PhotoShot[] },
+    photo?: { images: PhotoShot[]; retried?: boolean },
   ) => {
     const t = raw.trim();
     if ((!t && !photo) || !supabase) return;
@@ -1416,6 +1420,15 @@ export default function NutritionScreen() {
       track('meal_parse_failed', { tier, duration_ms: Date.now() - parseStartedAt, auto_log: !!auto, photo: !!photo });
       // A photo that failed is said plainly, with no Retry: a retry would send
       // the note alone, which is not the meal.
+      // A photo that failed once is kept (in memory) for one Retry. A second
+      // failure is said plainly: a retry of the note alone is not the meal.
+      if (photo && !photo.retried) {
+        setFlow({
+          status: 'error', raw: photoShownText(t), message: 'I could not read that photo. Try it again.',
+          photo: { images: photo.images, note: t, mealHint: args.mealHint, day: logDay },
+        });
+        return;
+      }
       if (photo) {
         setFlow({ status: 'declined', raw: photoShownText(t), message: 'I could not read that photo. Take it again, or type what you ate.' });
         return;
@@ -2018,6 +2031,12 @@ export default function NutritionScreen() {
 
   const onRetry = useCallback(() => {
     if (flow.status !== 'error') return;
+    // A failed photo send, re-sent once with the same shots and note.
+    if (flow.photo) {
+      const kept = flow.photo;
+      void runParse(kept.note, undefined, { mealHint: kept.mealHint, day: kept.day }, { images: kept.images, retried: true });
+      return;
+    }
     // A write failure kept the meal → re-show the review card (tapping Add re-writes
     // it, to the current day). Only re-run the AI parse if the meal is gone.
     if (flow.meal && flow.mealType) {
@@ -2211,8 +2230,10 @@ export default function NutritionScreen() {
     if (!supabase || !isSignedIn || parseInFlight) return;
     const p = takePendingPhoto(Date.now(), discardShots);
     if (!p) return;
-    void runParse(p.note, undefined, { mealHint: p.meal, day: p.day }, { images: p.images })
-      .finally(() => discardShots(p.images));
+    // The files were only for the camera screen's thumbnails: the send (and
+    // a Retry) use the base64 already in memory, so they go now.
+    discardShots(p.images);
+    void runParse(p.note, undefined, { mealHint: p.meal, day: p.day }, { images: p.images });
   }, [supabase, isSignedIn, parseInFlight, runParse]));
 
   // The food box's camera button (lib/foodPhoto photoButtonShows). The flag
@@ -2290,7 +2311,7 @@ export default function NutritionScreen() {
     return { ...f, meal: { ...f.meal, items }, notice: null, proposal: null };
   });
   const dismissNotice = () => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f));
-  const editWordsBlocked = parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && (!!flow.clientId || !!flow.meal));
+  const editWordsBlocked = parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && (!!flow.clientId || !!flow.meal || !!flow.photo));
   const editWords = () => {
     if (flow.status === 'idle') return;
     // A card a follow-up moved on: one step back. The card goes back to how

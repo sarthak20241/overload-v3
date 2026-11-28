@@ -13,6 +13,7 @@
  * offline) with the Supabase `foods` table (the 7.4k USDA catalog), deduped by name.
  */
 import type { FoodThreadSend } from './foodThread';
+import { FOOD_PHOTO_CAPABILITY } from './foodPhoto';
 import { persistLoggedEntryEdit } from './loggedEntryEdit';
 import { COPIED_FROM, isFoodOrigin, ORIGIN_COLS, originColumns, parseRecipe, type CopiedFrom, type FoodOrigin, type RecipePart } from './foodOrigin';
 import { missingColumn, withoutColumns } from './missingColumn';
@@ -834,7 +835,7 @@ export type AutoLogSkipped = 'declined' | 'implausible' | 'write_error';
  *  string, not a second flag the server has to learn to read. */
 // 'food_photo' (lib/foodPhoto): this build can send meal photos. The server
 // reads it only on a request that carries `images`.
-export const FOOD_BAR_CAPABILITIES = ['food_create', 'variant_swap', 'food_photo'] as const;
+export const FOOD_BAR_CAPABILITIES = ['food_create', 'variant_swap', FOOD_PHOTO_CAPABILITY] as const;
 
 /** Turns of a food conversation the app keeps and sends, and characters per
  *  turn. Mirrors FOOD_TURNS_KEPT / FOOD_TURN_CHARS in the ai-coach function's

@@ -72,9 +72,10 @@ export default function FoodPhotoScreen() {
     const granted = await requestPermission();
     if (!granted) setPermissionBlocked(true);
   }, [requestPermission]);
+  // Asked once on open. After a no, only the Settings button can change it.
   useEffect(() => {
-    if (!hasPermission) void askForCamera();
-  }, [hasPermission, askForCamera]);
+    if (!hasPermission && !permissionBlocked) void askForCamera();
+  }, [hasPermission, permissionBlocked, askForCamera]);
 
   const takePhoto = useCallback(async () => {
     if (busy) return;

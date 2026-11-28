@@ -20,7 +20,7 @@
 
 /** What a build sends in `supports` to say it can send photos. Mirrors
  *  CLIENT_CAP_FOOD_PHOTO in the ai-coach function. */
-export const FOOD_PHOTO_CAPABILITY = 'food_photo';
+export const FOOD_PHOTO_CAPABILITY = 'food_photo' as const;
 
 export const FOOD_PHOTO_FLAG = 'food-photo';
 
