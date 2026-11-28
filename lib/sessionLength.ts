@@ -81,3 +81,20 @@ export function coachFormSessionChoices(minutes: unknown): string[] {
   const m = sessionMinutesValue(minutes) ?? 0;
   return m < 20 ? [opening, ...COACH_FORM_SESSION_OPTIONS] : [...COACH_FORM_SESSION_OPTIONS, opening];
 }
+
+/**
+ * The coach form's session range to send, or null to send none (the server
+ * then keeps the saved time, sessionTime.sessionCap). The range goes out only
+ * when it can be trusted: the user picked it, the saved time was read and the
+ * form opened on it, or there is no account to have a saved time. A read
+ * still running, or one that failed, sends nothing: the untouched default
+ * would otherwise turn a saved 20 into a 60 minute cap.
+ */
+export function formSessionRange(s: {
+  picked: boolean;
+  read: 'pending' | 'ok' | 'failed' | 'none';
+  value: string;
+}): string | null {
+  if (s.picked) return s.value;
+  return s.read === 'ok' || s.read === 'none' ? s.value : null;
+}

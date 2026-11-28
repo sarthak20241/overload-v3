@@ -6,6 +6,7 @@
 
 import { assertEquals } from "jsr:@std/assert@1";
 import {
+  beginPrebuildGeneration,
   clearPhasePrebuild,
   DEFAULT_PHASE1_BUILD_TIMING,
   hasPhasePrebuild,
@@ -109,4 +110,16 @@ Deno.test("a new onboarding clears the old build even before it has its own", as
   assertEquals(await takePhasePrebuild(1000, "Old"), null);
   await later(null, 50);
   assertEquals(hasPhasePrebuild(), false);
+});
+
+// PR #419 review: onboarding A's program request lands late, after B began,
+// with the same phase name. A must not start a build over B's.
+Deno.test("a late start from an earlier onboarding is ignored, even with the same phase name", async () => {
+  resetPhasePrebuildForTest();
+  const a = beginPrebuildGeneration();
+  const b = beginPrebuildGeneration();
+  startPhasePrebuild(() => Promise.resolve({ ...plan, name: "A" }), "Build the base", a);
+  assertEquals(hasPhasePrebuild(), false);
+  startPhasePrebuild(() => Promise.resolve({ ...plan, name: "B" }), "Build the base", b);
+  assertEquals(((await takePhasePrebuild(1000, "Build the base")) as { name: string }).name, "B");
 });

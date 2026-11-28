@@ -71,11 +71,19 @@ let ready: unknown | null = null;
 // The phase it was built for: only that phase may take it, so another account
 // signing up in the same app run, or a redone onboarding, never gets it.
 let builtFor = '';
+// Each onboarding run's generation. A start carrying an older one (its program
+// request landed after a newer onboarding began) is ignored.
+let generation = 0;
 
 const phaseKey = (name: string) => name.trim().toLowerCase();
 
-/** Starts the early build for phase 1 called `phaseName`. A newer call replaces an older one. */
-export function startPhasePrebuild<P>(request: () => Promise<P | null>, phaseName: string): void {
+/**
+ * Starts the early build for phase 1 called `phaseName`. A newer call replaces
+ * an older one; a call from an older onboarding run (`gen` below the current
+ * one) does nothing.
+ */
+export function startPhasePrebuild<P>(request: () => Promise<P | null>, phaseName: string, gen?: number): void {
+  if (gen !== undefined && gen !== generation) return;
   const mine = ++run;
   ready = null;
   builtFor = phaseKey(phaseName);
@@ -126,6 +134,12 @@ export async function takePhasePrebuild<P>(waitMs: number, phaseName: string): P
   pending = null;
   ready = null;
   return plan;
+}
+
+/** A new onboarding run: drops any build and returns the run's token for startPhasePrebuild. */
+export function beginPrebuildGeneration(): number {
+  clearPhasePrebuild();
+  return ++generation;
 }
 
 /** Drops any build: a new onboarding starts clean, even before it has its own. */

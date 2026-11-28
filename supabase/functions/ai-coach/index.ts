@@ -4607,6 +4607,16 @@ async function handleAnonPhaseBuild(args: {
   trace.user_id = `anon:${deviceId.slice(0, 12)}`;
   trace.spans = { anon: true, prebuild: true };
 
+  // The brief is built BEFORE a slot is reserved: nothing that can throw sits
+  // between the reservation and the try below, so no row is left pending.
+  const sane = sanitizeAnonIntake(intake as AnonIntake);
+  // The limit from the session step, else a time written in the preferences
+  // ("Home, 20 minutes"). None known: no limit, like a signed-in account with
+  // none (the brief's 45-60 line is guidance for the model, not a cap).
+  const capMinutes = sessionCap({ profileMinutes: sane.sessionMinutes, preferences: sane.routinePrefs });
+  const message = buildAnonPhaseMessage(sane, phase, capMinutes);
+  const { system } = buildSystemPrompt({ userContext: null, retrievedResearch: [], mode: "generate_plan" });
+
   // Fail closed, like the program route: the app builds after sign-up instead.
   const { data: gate, error: gateErr } = await admin.rpc("reserve_anon_phase_slot", {
     p_device_id: deviceId,
@@ -4638,12 +4648,6 @@ async function handleAnonPhaseBuild(args: {
     if (error) console.log("[ai-coach] anon phase slot finish failed:", error.message);
   };
 
-  const sane = sanitizeAnonIntake(intake as AnonIntake);
-  // The limit from the session step, else a time written in the preferences
-  // ("Home, 20 minutes"); the brief's 45-60 default only when neither has one.
-  const capMinutes = sessionCap({ profileMinutes: sane.sessionMinutes, preferences: sane.routinePrefs });
-  const message = buildAnonPhaseMessage(sane, phase, capMinutes);
-  const { system } = buildSystemPrompt({ userContext: null, retrievedResearch: [], mode: "generate_plan" });
   let result: Awaited<ReturnType<typeof runGeneratePlan>>;
   let modelStarted = false;
   try {
@@ -4654,7 +4658,8 @@ async function handleAnonPhaseBuild(args: {
       catalog,
       system: system as unknown[],
       model: MODEL,
-      sessionMinutes: sessionCap({ profileMinutes: capMinutes, request: message }),
+      // Passed straight through: the brief is never re-read for a limit.
+      sessionMinutes: capMinutes,
     });
   } catch (e) {
     if (!modelStarted) await release();

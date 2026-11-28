@@ -37,7 +37,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, mixHex } from '@/constan
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser, hasClerkKey } from '@/hooks/useClerkUser';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import { coachFormSessionChoices, coachFormSessionOption, sessionMinutesValue } from '@/lib/sessionLength';
+import { coachFormSessionChoices, coachFormSessionOption, formSessionRange, sessionMinutesValue } from '@/lib/sessionLength';
 import { loadProfileRow } from '@/lib/profileReads';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { addGuestRoutine } from '@/lib/guestStore';
@@ -85,6 +85,7 @@ import { clearPhaseDraft, readPhaseDraft, writePhaseDraft } from '@/lib/phaseDra
 import { reportSignupBuild, signupBuildStateOf, signupPlanBack } from '@/lib/signupBuild';
 import { buildWaitDetail, buildWaitTitle } from '@/lib/signupTour';
 import { hasPhasePrebuild, takePhasePrebuild } from '@/lib/phasePrebuild';
+import { claimForPrebuiltPlan, ensurePrebuildClaim } from '@/lib/prebuildClaim';
 import { restorePlanExercise, swapExcludeIds, swapFromFor, swapPlanExercise } from '@/lib/planSwap';
 import { ExerciseSwapList } from '@/components/routines/ExerciseSwapList';
 import { useSwapCatalog } from '@/hooks/useSwapCatalog';
@@ -2719,20 +2720,23 @@ function GeneratePlanScreen({
   // The saved time, so a custom one no range holds ("15 min") is in the list.
   const [savedSessionMinutes, setSavedSessionMinutes] = useState<number | null>(null);
   const clerkUserId: string | null = clerkAuth?.userId ?? null;
-  // Until the saved time is read, the dropdown's default range is not sent: a
-  // Generate tap then would turn a saved 20 into the default's 60.
-  const [sessionSettled, setSessionSettled] = useState(() => !isSupabaseConfigured || !clerkUserId);
+  // The saved time's read: until it is 'ok', the dropdown's default range is
+  // not sent (lib/sessionLength.formSessionRange), or a saved 20 would become
+  // the default's 60. A failed read sends nothing either.
+  const [sessionRead, setSessionRead] = useState<'pending' | 'ok' | 'failed' | 'none'>(
+    () => (!isSupabaseConfigured || !clerkUserId ? 'none' : 'pending'),
+  );
   useEffect(() => {
-    if (!isSupabaseConfigured || !planSupabase || !clerkUserId) { setSessionSettled(true); return; }
+    if (!isSupabaseConfigured || !planSupabase || !clerkUserId) { setSessionRead('none'); return; }
     let live = true;
     loadProfileRow(planSupabase, clerkUserId)
       .then((row) => {
         if (!live) return;
         setSavedSessionMinutes(sessionMinutesValue(row?.session_minutes));
         if (!sessionPicked.current) setSessionLength(coachFormSessionOption(row?.session_minutes));
+        setSessionRead('ok');
       })
-      .catch(() => { /* keep the default */ })
-      .finally(() => { if (live) setSessionSettled(true); });
+      .catch(() => { if (live) setSessionRead('failed'); });
     return () => { live = false; };
   }, [planSupabase, clerkUserId]);
   const [level, setLevel] = useState<'Beginner' | 'Intermediate' | 'Advanced'>('Intermediate');
@@ -2802,7 +2806,7 @@ function GeneratePlanScreen({
   // The form's range, once it can be trusted: picked by the user, or opened on
   // their saved time. Before that, the prompt names no range and the server
   // keeps the saved time (sessionTime.sessionCap).
-  const formSession = sessionPicked.current || sessionSettled ? sessionLength : null;
+  const formSession = formSessionRange({ picked: sessionPicked.current, read: sessionRead, value: sessionLength });
   const buildInitialPrompt = () =>
     // An automatic build has no form answers, so it asks Drona to use what
     // the profile already says rather than the form's defaults.
@@ -2988,6 +2992,8 @@ function GeneratePlanScreen({
       if (d) {
         setResult(d.plan);
         conversationRef.current = [{ role: 'assistant', content: planToText(d.plan) }];
+        // A plan built before sign-up may still owe its free-build claim.
+        if (planSupabase) void ensurePrebuildClaim(planSupabase, phaseId);
         track('phase_draft_restored', { source: d.source, workouts: d.plan.workouts.length, age_hours: Math.round((Date.now() - d.builtAt) / 3600000) });
         return;
       }
@@ -3007,30 +3013,7 @@ function GeneratePlanScreen({
           // for this phase (try_claim_free_phase_refine). The build ran with
           // no account, so claim it now, BEFORE the plan (and its refine
           // button) shows; a payer's claim is harmless.
-          if (planSupabase) {
-            // Two tries, a second apart: a network blip must not leave a free
-            // account's refine refused for the life of this draft.
-            let reason = 'unknown';
-            for (let attempt = 0; attempt < 2; attempt++) {
-              try {
-                const { data, error } = await planSupabase.rpc('try_claim_free_phase_build', { p_phase_id: phaseId });
-                const row = (Array.isArray(data) ? data[0] : data) as { allowed?: boolean; reason?: string } | null;
-                if (!error && row?.allowed) { reason = ''; break; }
-                reason = error ? 'rpc_error' : (row?.reason ?? 'unknown');
-                // A refusal (not an error) will not change on a retry.
-                if (!error) break;
-              } catch {
-                reason = 'threw';
-              }
-              if (attempt === 0) await new Promise((r) => setTimeout(r, 1000));
-            }
-            // Not claimed: a free account's Refine with Drona will meet the
-            // paywall. Rare on a brand-new account; tracked to see it.
-            if (reason) {
-              console.warn('[prebuild] free build claim failed', reason);
-              track('phase_prebuild_claim_failed', { reason });
-            }
-          }
+          if (planSupabase) await claimForPrebuiltPlan(planSupabase, phaseId);
           if (!alive) return;
           setLoading(false);
           setResult(pre);
@@ -3070,11 +3053,19 @@ function GeneratePlanScreen({
   }, [signup, signupState]);
   useEffect(() => () => { if (signup) reportSignupBuild(null); }, [signup]);
 
+  // Opens the Drona chat on this plan. A plan built before sign-up may owe its
+  // free-build claim (lib/prebuildClaim.ts): settle it first, so a free
+  // account's first refine turn is not refused as not_claimed.
+  const openRefine = async () => {
+    if (phaseId && planSupabase) await ensurePrebuildClaim(planSupabase, phaseId);
+    setShowRefineChat(true);
+  };
+
   // Sign-up: Back never reaches the coach menu (lib/signupBuild.ts).
   const signupBack = () => {
     const step = signupPlanBack({ hasPlan: !!result, refineOpen: showRefineChat, building: loading || refining, swapOpen: !!swapping });
     if (step === 'close_swap') setSwapping(null);
-    else if (step === 'open_refine') { track('signup_plan_refine_opened', { from: 'back' }); setShowRefineChat(true); }
+    else if (step === 'open_refine') { track('signup_plan_refine_opened', { from: 'back' }); void openRefine(); }
     else if (step === 'close_refine') setShowRefineChat(false);
     else if (step === 'close_sheet') onBack();
   };
@@ -3257,7 +3248,7 @@ function GeneratePlanScreen({
         */}
         <View style={[s.refineWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
           <TouchableOpacity
-            onPress={() => { if (signup) track('signup_plan_refine_opened', { from: 'button' }); setShowRefineChat(true); }}
+            onPress={() => { if (signup) track('signup_plan_refine_opened', { from: 'button' }); void openRefine(); }}
             disabled={refining}
             style={[s.secondaryBtn, { backgroundColor: C.muted }, refining && { opacity: 0.6 }]}
           >

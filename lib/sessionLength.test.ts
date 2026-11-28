@@ -7,6 +7,7 @@ import {
   coachFormSessionChoices,
   coachFormSessionOption,
   customSessionSub,
+  formSessionRange,
   isPresetSessionMinutes,
   sessionMinutesValue,
 } from './sessionLength.ts';
@@ -75,4 +76,16 @@ Deno.test('the Custom card: lit for a time that is not a preset, with its number
   assertEquals(customSessionSub(45), 'Set your own minutes');
   assertEquals(CUSTOM_SESSION_MIN, 10);
   assertEquals(CUSTOM_SESSION_MAX, 180);
+});
+
+// PR #419 review: the coach form sends its range only when it can be trusted.
+// A failed read of the saved time must not send the untouched default, or a
+// saved 20 becomes a 60 minute cap.
+Deno.test("the coach form's range goes out only when picked or read", () => {
+  assertEquals(formSessionRange({ picked: true, read: "failed", value: "30-45 min" }), "30-45 min");
+  assertEquals(formSessionRange({ picked: false, read: "ok", value: "20-30 min" }), "20-30 min");
+  // No account: nothing saved to keep, the form's own range is the request.
+  assertEquals(formSessionRange({ picked: false, read: "none", value: "45-60 min" }), "45-60 min");
+  assertEquals(formSessionRange({ picked: false, read: "pending", value: "45-60 min" }), null);
+  assertEquals(formSessionRange({ picked: false, read: "failed", value: "45-60 min" }), null);
 });

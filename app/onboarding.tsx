@@ -102,7 +102,7 @@ import {
 } from '@/lib/onboarding';
 import { CUSTOM_SESSION_MAX, CUSTOM_SESSION_MIN, DEFAULT_SESSION_MINUTES, SESSION_LENGTH_OPTIONS, customSessionSub, isPresetSessionMinutes } from '@/lib/sessionLength';
 import { buildAnonIntake, requestAnonOnboardingProgram, requestAnonPhasePlan } from '@/lib/onboardingDrona';
-import { clearPhasePrebuild, DEFAULT_PHASE1_BUILD_TIMING, PHASE1_BUILD_TIMING_FLAG, phase1TimingFromFlag, phaseBlockForPrebuild, startPhasePrebuild } from '@/lib/phasePrebuild';
+import { beginPrebuildGeneration, DEFAULT_PHASE1_BUILD_TIMING, PHASE1_BUILD_TIMING_FLAG, phase1TimingFromFlag, phaseBlockForPrebuild, startPhasePrebuild } from '@/lib/phasePrebuild';
 import { structuredToPlan } from '@/lib/generatedPlan';
 import { ClampedText, ProgramRoad } from '@/components/program/ProgramRoad';
 import { getDeviceId } from '@/lib/deviceId';
@@ -404,8 +404,9 @@ export default function OnboardingScreen() {
     // When phase 1's workouts are built (PostHog flag phase1-build-timing):
     // read now, while the program builds, so the answer is in when it lands.
     const timingRead = getFlagVariant(PHASE1_BUILD_TIMING_FLAG, DEFAULT_PHASE1_BUILD_TIMING, 3000);
-    // A new program: an early build from an earlier run of onboarding is stale.
-    clearPhasePrebuild();
+    // A new program: an early build from an earlier run of onboarding is stale,
+    // and that run's late start is ignored (its token is older).
+    const prebuildGen = beginPrebuildGeneration();
     // No cancellation on step change: the user moves commit -> build while
     // the request is in flight, and the result must still land. Post-unmount
     // setState is a no-op in React 18, so this is safe.
@@ -494,6 +495,7 @@ export default function OnboardingScreen() {
                     return null;
                   }),
                 phase1!.name,
+                prebuildGen,
               );
             }
           })().catch(() => { /* the Goal screen builds after sign-up as before */ });
