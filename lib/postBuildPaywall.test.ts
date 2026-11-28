@@ -11,13 +11,15 @@ import {
   timingFromFlag,
 } from "./postBuildPaywall.ts";
 
-Deno.test("the flag picks the timing; an unknown or missing value falls back to the first tap", () => {
+// 2026-11-28: sign-up is one path (lib/signupBuild.ts): Continue on the
+// built plan goes straight to the paywall unless the flag says first_tap.
+Deno.test("the flag picks the timing; an unknown or missing value opens it right after the plan", () => {
   assertEquals(timingFromFlag("after_save"), "after_save");
   assertEquals(timingFromFlag("first_tap"), "first_tap");
-  assertEquals(DEFAULT_POST_BUILD_PAYWALL, "first_tap");
-  assertEquals(timingFromFlag(null), "first_tap");
-  assertEquals(timingFromFlag(undefined), "first_tap");
-  assertEquals(timingFromFlag("control"), "first_tap");
+  assertEquals(DEFAULT_POST_BUILD_PAYWALL, "after_save");
+  assertEquals(timingFromFlag(null), "after_save");
+  assertEquals(timingFromFlag(undefined), "after_save");
+  assertEquals(timingFromFlag("control"), "after_save");
 });
 
 Deno.test("sign-up's Goal screen visit carries the paywall on iPhone and Android, not on web", () => {

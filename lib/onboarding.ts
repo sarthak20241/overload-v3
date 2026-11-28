@@ -33,6 +33,8 @@ import {
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { missingGoalsColumn, primaryGoal, profileGoalFields, selectedGoals } from '@/lib/fitnessGoals';
 import { invalidateProfile } from '@/lib/profileReads';
+import { missingColumn } from '@/lib/missingColumn';
+import { sessionMinutesValue } from '@/lib/sessionLength';
 
 // ─── Answers ─────────────────────────────────────────────────────────────────
 
@@ -43,6 +45,12 @@ export interface OnboardingAnswers {
   experience: ExperienceLevel | null;
   /** Target training sessions per week (2..6). */
   frequency: number | null;
+  /**
+   * The most minutes one workout may take (the "session" step). Optional for
+   * intakes saved by older app versions. Saved to user_profiles.session_minutes;
+   * every plan build is held to it.
+   */
+  sessionMinutes?: number | null;
   gender: 'M' | 'F' | 'O' | null;
   ageYears: number | null;
   heightCm: number | null;
@@ -378,6 +386,9 @@ export async function saveOnboardingProfile(
   if (answers.goalWeightKg && answers.goalWeightKg > 0) patch.goal_weight_kg = answers.goalWeightKg;
 
   if (opts.isGuest || !opts.clerkId) {
+    // A guest keeps their session time too (the signed-in row sets it below).
+    const guestMinutes = sessionMinutesValue(answers.sessionMinutes);
+    if (guestMinutes != null) patch.session_minutes = guestMinutes;
     if (Object.keys(patch).length > 0) updateGuestProfile(patch);
     return;
   }
@@ -403,18 +414,27 @@ export async function saveOnboardingProfile(
   if (goalNote) row.goal_detail = goalNote.slice(0, 500);
   if (injury) row.injury_notes = injury.slice(0, 500);
   if (prefs) row.training_preferences = prefs.slice(0, 500);
+  const minutes = sessionMinutesValue(answers.sessionMinutes);
+  if (minutes != null) row.session_minutes = minutes;
   if (Object.keys(row).length === 1) return; // nothing beyond the id
   try {
-    const { error } = await withChangeSource(opts.client, 'onboarding')
-      .from('user_profiles')
-      .upsert(row, { onConflict: 'clerk_user_id' });
-    // A client may arrive before the migration/cache refresh. Preserve the
-    // rest of its intake and scalar primary goal during that short window.
-    if (missingGoalsColumn(error)) {
-      const { goals: _goals, ...legacyRow } = row;
-      await withChangeSource(opts.client, 'onboarding')
+    // A client may arrive before a migration/cache refresh (goals: 0150,
+    // session_minutes: 20261128120000). Drop only the column the database
+    // names and keep the rest of the intake; at most once per column.
+    let attempt: Record<string, unknown> = row;
+    for (let i = 0; i < 3; i++) {
+      const { error } = await withChangeSource(opts.client, 'onboarding')
         .from('user_profiles')
-        .upsert(legacyRow, { onConflict: 'clerk_user_id' });
+        .upsert(attempt, { onConflict: 'clerk_user_id' });
+      if (missingGoalsColumn(error) && 'goals' in attempt) {
+        const { goals: _goals, ...rest } = attempt;
+        attempt = rest;
+      } else if (missingColumn(error, ['session_minutes']) && 'session_minutes' in attempt) {
+        const { session_minutes: _minutes, ...rest } = attempt;
+        attempt = rest;
+      } else {
+        break;
+      }
     }
   } catch {
     /* best-effort; see docstring */

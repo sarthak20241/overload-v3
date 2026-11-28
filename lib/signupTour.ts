@@ -61,3 +61,27 @@ export function nextScene(index: number, step: -1 | 1, count: number): number | 
   if (to >= count) return 'done';
   return to;
 }
+
+/** Where the phase 1 build under the tour stands (lib/signupBuild.ts reports it). */
+export type TourBuildState = 'building' | 'ready' | 'failed' | null;
+
+/**
+ * The small line above the headline: what is happening under the tour. True
+ * at every moment: "ready" shows only once the plan has landed, and a failed
+ * build says nothing (the sheet under the tour explains it).
+ */
+export function buildStatusLine(state: TourBuildState): string | null {
+  if (state === 'building') return 'Building your Phase 1 workouts';
+  if (state === 'ready') return 'Your Phase 1 workouts are ready';
+  return null;
+}
+
+/** The wait screen's title while a phase's workouts are built. */
+export function buildWaitTitle(phaseNumber: number | null | undefined): string {
+  return phaseNumber ? `Phase ${phaseNumber} workouts` : 'Your workouts';
+}
+
+/** The line under the orb on that screen, in Drona's voice. */
+export function buildWaitDetail(phaseNumber: number | null | undefined): string {
+  return phaseNumber ? `I am building your Phase ${phaseNumber} workouts now.` : 'I am building your workouts now.';
+}

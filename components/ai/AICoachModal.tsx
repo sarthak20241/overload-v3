@@ -37,6 +37,8 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, mixHex } from '@/constan
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser, hasClerkKey } from '@/hooks/useClerkUser';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
+import { coachFormSessionChoices, coachFormSessionOption, formSessionRange, sessionMinutesValue } from '@/lib/sessionLength';
+import { loadProfileRow } from '@/lib/profileReads';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { addGuestRoutine } from '@/lib/guestStore';
 import { structuredToProgram, saveProgram, applyPhaseTargets, clampDiet, type GeneratedProgram } from '@/lib/programData';
@@ -80,6 +82,12 @@ import { withChangeSource } from '@/lib/planChangeSource';
 import { ilikeExact, planExerciseInsert, planRepsAndNote } from '@/lib/planExercise';
 import { structuredToPlan, structuredToWorkout, type GeneratedExercise, type GeneratedPlan, type GeneratedWorkout } from '@/lib/generatedPlan';
 import { clearPhaseDraft, readPhaseDraft, writePhaseDraft } from '@/lib/phaseDraft';
+import { reportSignupBuild, signupBuildStateOf, signupPlanBack } from '@/lib/signupBuild';
+import { buildWaitDetail, buildWaitTitle } from '@/lib/signupTour';
+import { hasPhasePrebuild, takePhasePrebuild } from '@/lib/phasePrebuild';
+import { restorePlanExercise, swapExcludeIds, swapFromFor, swapPlanExercise } from '@/lib/planSwap';
+import { ExerciseSwapList } from '@/components/routines/ExerciseSwapList';
+import { useSwapCatalog } from '@/hooks/useSwapCatalog';
 import { phaseBuildPrompt } from '@/lib/phaseBuild';
 import { writeWithTargetFallback } from '@/lib/routineTargets';
 import { findCatalogExerciseByName } from '@/lib/exerciseResolve';
@@ -363,7 +371,6 @@ const FOCUS_PICKS = ['Push Day', 'Pull Day', 'Leg Day', 'Full Body', 'Upper Body
 const DURATION_OPTIONS = ['30 min', '45 min', '60 min', '75 min', '90 min'];
 const EQUIPMENT_OPTIONS = ['Full Gym', 'Dumbbells Only', 'Bodyweight', 'Home Gym', 'Resistance Bands'];
 const DAYS_OPTIONS = ['2 days', '3 days', '4 days', '5 days', '6 days'];
-const SESSION_OPTIONS = ['30-45 min', '45-60 min', '60-75 min', '75-90 min'];
 
 /**
  * Sentinel returned by callAICoach when the live AI endpoint is unreachable
@@ -2455,7 +2462,7 @@ function BriefRationale({ text, color }: { text: string; color: string }) {
 
 // One exercise, compact: number, name, sets x reps. A tap opens its rest and
 // the coach's cue underneath, so the day reads as a short list, not a page.
-function PlanExerciseRow({ ex, index, first }: { ex: GeneratedExercise; index: number; first: boolean }) {
+function PlanExerciseRow({ ex, index, first, onSwap }: { ex: GeneratedExercise; index: number; first: boolean; onSwap?: () => void }) {
   const { C } = useTheme();
   const [open, setOpen] = useState(false);
   // A reply can leave reps out; then the row says the sets alone.
@@ -2480,6 +2487,18 @@ function PlanExerciseRow({ ex, index, first }: { ex: GeneratedExercise; index: n
         <Text style={[s.exName, { color: C.foreground }]} numberOfLines={open ? undefined : 1}>{ex.name}</Text>
         <Text style={[s.exSets, { color: C.textSecondary }]}>{setsText}</Text>
         <Feather name={open ? 'chevron-up' : 'chevron-down'} size={12} color={C.textMuted} />
+        {onSwap ? (
+          // Same button as Today's preview: lit once this one is swapped.
+          <TouchableOpacity
+            onPress={onSwap}
+            style={[s.exSwapBtn, { backgroundColor: ex.planned ? C.primaryMuted : C.closeBtn }]}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={`Swap ${ex.name}`}
+          >
+            <Feather name="shuffle" size={12} color={ex.planned ? C.accentText : C.foreground} />
+          </TouchableOpacity>
+        ) : null}
       </View>
       {open && (
         <Animated.View entering={FadeIn.duration(160)} style={s.exDetail}>
@@ -2505,12 +2524,15 @@ function WorkoutCard({
   showRationale = true,
   animated = false,
   delayMs = 0,
+  onSwapExercise,
 }: {
   workout: GeneratedWorkout;
   workoutNote?: string;
   showRationale?: boolean;
   animated?: boolean;
   delayMs?: number;
+  /** A swap button on each exercise (a built plan, before it is saved). */
+  onSwapExercise?: (index: number) => void;
 }) {
   const { C } = useTheme();
   const exerciseCountLabel = `${workout.exercises.length} exercise${workout.exercises.length === 1 ? '' : 's'}`;
@@ -2555,7 +2577,7 @@ function WorkoutCard({
 
       <View style={s.exList}>
         {workout.exercises.map((ex, ei) => (
-          <PlanExerciseRow key={ei} ex={ex} index={ei} first={ei === 0} />
+          <PlanExerciseRow key={ei} ex={ex} index={ei} first={ei === 0} onSwap={onSwapExercise ? () => onSwapExercise(ei) : undefined} />
         ))}
       </View>
     </Wrapper>
@@ -2653,13 +2675,15 @@ function GeneratePlanScreen({
   phaseId,
   phaseNumber,
   autoStart,
+  signup,
+  backRef,
 }: {
   onBack: () => void;
   onSaveRoutines: (routines: GeneratedWorkout[]) => void;
   onRequestUpgrade?: (kind: 'cap' | 'pro') => void;
   // When present (from the Goal & Plan screen "Build workout split"), pre-seeds
   // the form + prompt so the generated split matches a specific program phase.
-  seed?: { goal?: string; days?: string; note?: string };
+  seed?: { goal?: string; days?: string; note?: string; phaseName?: string };
   // The phase being built. Sent with the request so a free user's first
   // phase-1 build is let through by the server. Also keys the draft
   // (lib/phaseDraft.ts): a built plan is kept on the device until Save, so
@@ -2672,6 +2696,11 @@ function GeneratePlanScreen({
   // Skip the form and build at once (the post-sign-up build and the
   // dashboard's "Build phase 1"). Ignored when a draft is waiting.
   autoStart?: boolean;
+  // Sign-up's phase 1 build (lib/signupBuild.ts): no way into the coach menu.
+  // Back on the plan opens Drona to change it, and Continue saves it.
+  signup?: boolean;
+  // Filled with this screen's Back, so the sheet's Android back does the same.
+  backRef?: React.MutableRefObject<(() => void) | null>;
 }) {
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -2681,6 +2710,34 @@ function GeneratePlanScreen({
   const [goal, setGoal] = useState(seed?.goal ?? '');
   const [days, setDays] = useState(seed?.days ?? '4 days');
   const [sessionLength, setSessionLength] = useState('45-60 min');
+  // Open on the range that holds the saved session length (onboarding asks
+  // it), so a Build tap with the dropdown untouched keeps the user's number:
+  // the server lets a saved time inside the form's range win. Until a pick,
+  // only; a user's own choice is never overwritten by this late read.
+  const planSupabase = useSupabaseClient();
+  const sessionPicked = useRef(false);
+  // The saved time, so a custom one no range holds ("15 min") is in the list.
+  const [savedSessionMinutes, setSavedSessionMinutes] = useState<number | null>(null);
+  const clerkUserId: string | null = clerkAuth?.userId ?? null;
+  // The saved time's read: until it is 'ok', the dropdown's default range is
+  // not sent (lib/sessionLength.formSessionRange), or a saved 20 would become
+  // the default's 60. A failed read sends nothing either.
+  const [sessionRead, setSessionRead] = useState<'pending' | 'ok' | 'failed' | 'none'>(
+    () => (!isSupabaseConfigured || !clerkUserId ? 'none' : 'pending'),
+  );
+  useEffect(() => {
+    if (!isSupabaseConfigured || !planSupabase || !clerkUserId) { setSessionRead('none'); return; }
+    let live = true;
+    loadProfileRow(planSupabase, clerkUserId)
+      .then((row) => {
+        if (!live) return;
+        setSavedSessionMinutes(sessionMinutesValue(row?.session_minutes));
+        if (!sessionPicked.current) setSessionLength(coachFormSessionOption(row?.session_minutes));
+        setSessionRead('ok');
+      })
+      .catch(() => { if (live) setSessionRead('failed'); });
+    return () => { live = false; };
+  }, [planSupabase, clerkUserId]);
   const [level, setLevel] = useState<'Beginner' | 'Intermediate' | 'Advanced'>('Intermediate');
   const [loading, setLoading] = useState(false);
   // Kept for back-compat with the runGeneration signature; the inline
@@ -2745,6 +2802,10 @@ function GeneratePlanScreen({
     track('coach_generation_stopped', { mode: 'generate_plan', had_partial: coachIntent.length > 0 });
   };
 
+  // The form's range, once it can be trusted: picked by the user, or opened on
+  // their saved time. Before that, the prompt names no range and the server
+  // keeps the saved time (sessionTime.sessionCap).
+  const formSession = formSessionRange({ picked: sessionPicked.current, read: sessionRead, value: sessionLength });
   const buildInitialPrompt = () =>
     // An automatic build has no form answers, so it asks Drona to use what
     // the profile already says rather than the form's defaults.
@@ -2757,8 +2818,8 @@ function GeneratePlanScreen({
       // Phase-seeded build: the note carries the phase's exact split + cadence
       // (which may be a multi-day rotation, not a weekly count), so follow it
       // rather than imposing a "${days}/week" that would misrepresent it.
-      ? `Design my training split. ${seed.note} Keep sessions about ${sessionLength}, ${level} level. Match that split and cadence exactly, do not convert it into a generic fixed number of days per week. Use my training data for exercise selection, volume, and progression. Give each day a short "note" with its theme and per-exercise cues. Before calling generate_plan, write one short sentence (5-15 words) signaling your intent.`
-      : `Design a multi-day training plan for me. Goal: ${goal || 'general fitness'}. ${days}/week, ${sessionLength} sessions, ${level} level. Use my training data to choose appropriate volume, exercise selection, and progression. Give each day a short "note" with its theme and add per-exercise notes for form, intent, or RIR cues. Before calling generate_plan, write one short sentence (5-15 words) signaling your intent.`;
+      ? `Design my training split. ${seed.note} ${formSession ? `Keep sessions about ${formSession}` : 'Keep my saved session length (45-60 minutes if none is saved)'}, ${level} level. Match that split and cadence exactly, do not convert it into a generic fixed number of days per week. Use my training data for exercise selection, volume, and progression. Give each day a short "note" with its theme and per-exercise cues. Before calling generate_plan, write one short sentence (5-15 words) signaling your intent.`
+      : `Design a multi-day training plan for me. Goal: ${goal || 'general fitness'}. ${days}/week, ${formSession ? `${formSession} sessions` : 'sessions at my saved length (45-60 minutes if none is saved)'}, ${level} level. Use my training data to choose appropriate volume, exercise selection, and progression. Give each day a short "note" with its theme and add per-exercise notes for form, intent, or RIR cues. Before calling generate_plan, write one short sentence (5-15 words) signaling your intent.`;
 
   const runGeneration = async (
     conversation: { role: string; content: string }[],
@@ -2901,7 +2962,7 @@ function GeneratePlanScreen({
       // phaseId only on a fresh build: each request carrying it spends one of a
       // free user's 3 phase-1 tries. (Refine runs through RefineChatScreen in
       // refine_plan mode; with the phase id it spends one of the free user's
-      // 8 refine turns on that draft instead, try_claim_free_phase_refine.)
+      // 40 refine turns on that draft instead, try_claim_free_phase_refine.)
       {
         forceTool: 'generate_plan',
         phaseId: isRefine ? undefined : phaseId,
@@ -2924,7 +2985,7 @@ function GeneratePlanScreen({
     if (openedFor.current === phaseId) return;
     openedFor.current = phaseId;
     let alive = true;
-    readPhaseDraft(phaseId).then((d) => {
+    readPhaseDraft(phaseId).then(async (d) => {
       if (!alive) return;
       setRestoring(false);
       if (d) {
@@ -2932,6 +2993,32 @@ function GeneratePlanScreen({
         conversationRef.current = [{ role: 'assistant', content: planToText(d.plan) }];
         track('phase_draft_restored', { source: d.source, workouts: d.plan.workouts.length, age_hours: Math.round((Date.now() - d.builtAt) / 3600000) });
         return;
+      }
+      // Sign-up's phase 1, built before the account existed (PostHog flag
+      // phase1-build-timing = before_signup, lib/phasePrebuild.ts): take it,
+      // waiting while it finishes, instead of building a second one.
+      if (signup && phaseNumber === 1 && autoStart && hasPhasePrebuild()) {
+        const waitStarted = Date.now();
+        setLoading(true);
+        setGenStatus({ label: 'Building your Phase 1 workouts', state: 'thinking' });
+        const pre = await takePhasePrebuild<GeneratedPlan>(45_000, seed?.phaseName ?? '');
+        if (pre) {
+          // Kept as the draft even if this screen went away meanwhile.
+          void writePhaseDraft(phaseId, pre, 'auto');
+          track('phase_prebuild_used', { waited_ms: Date.now() - waitStarted, workouts: pre.workouts.length });
+          // No claim from here: the build ran with no account, and the
+          // first Refine with Drona claims the account's free build for this
+          // unsaved phase 1 on the server (try_claim_free_phase_refine,
+          // 20261128130000). A claim from the phone spent build tries.
+          if (!alive) return;
+          setLoading(false);
+          setResult(pre);
+          conversationRef.current = [{ role: 'assistant', content: planToText(pre) }];
+          return;
+        }
+        track('phase_prebuild_missed', { waited_ms: Date.now() - waitStarted });
+        if (!alive) return;
+        setLoading(false);
       }
       if (autoStart && seed?.note) void handleGenerate();
     });
@@ -2944,6 +3031,46 @@ function GeneratePlanScreen({
   useEffect(() => {
     if (phaseId && result) void writePhaseDraft(phaseId, result, 'build');
   }, [phaseId, result]);
+
+  // Swap an exercise on the built plan before it is saved, like Today's
+  // preview (lib/planSwap.ts). The swap is the plan's: the draft keeps it and
+  // Save writes it. Guests have no catalog, so they get no swap button.
+  const swapCatalog = useSwapCatalog(!!result, phaseId);
+  const [swapping, setSwapping] = useState<{ day: number; index: number } | null>(null);
+  const openPlanSwap = (day: number, index: number) => {
+    track('plan_swap_opened', { signup: !!signup, swapped_already: !!result?.workouts[day]?.exercises[index]?.planned });
+    setSwapping({ day, index });
+  };
+
+  // Sign-up: the film tour on top says where this build stands.
+  const signupState = signup ? signupBuildStateOf({ building: loading || restoring, hasPlan: !!result, failed: !!errorText }) : null;
+  useEffect(() => {
+    if (signup) reportSignupBuild(signupState);
+  }, [signup, signupState]);
+  useEffect(() => () => { if (signup) reportSignupBuild(null); }, [signup]);
+
+  // Opens the Drona chat on this plan.
+  const openRefine = () => setShowRefineChat(true);
+
+  // Sign-up: Back never reaches the coach menu (lib/signupBuild.ts).
+  const signupBack = () => {
+    const step = signupPlanBack({ hasPlan: !!result, refineOpen: showRefineChat, building: loading || refining, swapOpen: !!swapping });
+    if (step === 'close_swap') setSwapping(null);
+    else if (step === 'open_refine') { track('signup_plan_refine_opened', { from: 'back' }); openRefine(); }
+    else if (step === 'close_refine') setShowRefineChat(false);
+    else if (step === 'close_sheet') onBack();
+  };
+  // The sheet's Android back asks this screen first: always on sign-up, and
+  // anywhere while a swap list is open (back returns to the plan).
+  // Set after each commit, never during render (a render that is thrown away
+  // must not leave its handler behind). Cleared when the screen goes.
+  const signupBackRef = useRef(signupBack);
+  signupBackRef.current = signupBack;
+  useEffect(() => {
+    if (!backRef) return;
+    backRef.current = signup ? () => signupBackRef.current() : swapping ? () => setSwapping(null) : null;
+  });
+  useEffect(() => () => { if (backRef) backRef.current = null; }, [backRef]);
 
   // ── Discuss chat (pre-generate conversational) ──────────────────────────
   // Mounted instead of the form when the user taps "Or chat with Coach
@@ -2997,6 +3124,41 @@ function GeneratePlanScreen({
     );
   }
 
+  // ── Swap list for one exercise (lib/planSwap.ts) ─────────────────────────
+  const swapEx = result && swapping ? result.workouts[swapping.day]?.exercises[swapping.index] : null;
+  if (result && swapping && swapEx) {
+    const { day, index } = swapping;
+    const workout = result.workouts[day];
+    return (
+      <ExerciseSwapList
+        from={swapFromFor(swapEx, swapCatalog.exercises)}
+        original={swapEx.planned ? swapFromFor(swapEx.planned, swapCatalog.exercises) : null}
+        exercises={swapCatalog.exercises}
+        doneIds={swapCatalog.doneIds}
+        excludeIds={swapExcludeIds(workout, index, swapCatalog.exercises)}
+        scopeNote="It saves with your plan."
+        backLabel="Back to the plan"
+        emptyNote="No close match for this one. Keep it, or ask Drona to change it."
+        onPick={(row, tier) => {
+          track('plan_exercise_swapped', { signup: !!signup, tier, done_before: swapCatalog.doneIds.has(row.id), tagged: !!row.swap_pattern });
+          haptics.selection();
+          const next = swapPlanExercise(result, day, index, row);
+          setResult(next);
+          conversationRef.current = [{ role: 'assistant', content: planToText(next) }];
+          setSwapping(null);
+        }}
+        onRestore={() => {
+          track('plan_swap_undone', { signup: !!signup });
+          const next = restorePlanExercise(result, day, index);
+          setResult(next);
+          conversationRef.current = [{ role: 'assistant', content: planToText(next) }];
+          setSwapping(null);
+        }}
+        onBack={() => setSwapping(null)}
+      />
+    );
+  }
+
   // ── Result view ─────────────────────────────────────────────────────────
   // No KeyboardAvoidingView here — there is no TextInput on this screen,
   // and the parent AICoachModal already handles iOS keyboard avoidance
@@ -3009,13 +3171,14 @@ function GeneratePlanScreen({
             // A phase plan is a draft: Back leaves it waiting instead of
             // dropping the user on an empty form (one way plans were lost).
             onPress={() => {
+              if (signup) { signupBack(); return; }
               if (phaseId) { onBack(); return; }
               setResult(null); setShowRefineChat(false); conversationRef.current = [];
             }}
             style={[s.backBtn, { backgroundColor: C.muted }]}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel="Back"
+            accessibilityLabel={signup ? 'Change these with Drona' : 'Back'}
           >
             <Feather name="arrow-left" size={16} color={C.foreground} />
           </TouchableOpacity>
@@ -3055,6 +3218,7 @@ function GeneratePlanScreen({
               showRationale={false}
               animated
               delayMs={(wi + 1) * 80}
+              onSwapExercise={swapCatalog.available && !refining ? (ei) => openPlanSwap(wi, ei) : undefined}
             />
           ))}
 
@@ -3075,12 +3239,12 @@ function GeneratePlanScreen({
         */}
         <View style={[s.refineWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
           <TouchableOpacity
-            onPress={() => setShowRefineChat(true)}
+            onPress={() => { if (signup) track('signup_plan_refine_opened', { from: 'button' }); openRefine(); }}
             disabled={refining}
             style={[s.secondaryBtn, { backgroundColor: C.muted }, refining && { opacity: 0.6 }]}
           >
             <Feather name="message-circle" size={14} color={C.mutedFg} />
-            <Text style={[s.secondaryBtnText, { color: C.mutedFg }]}>{phaseId ? 'Talk it through with Drona' : 'Refine with AI'}</Text>
+            <Text style={[s.secondaryBtnText, { color: C.mutedFg }]}>{signup ? 'Change something with Drona' : phaseId ? 'Talk it through with Drona' : 'Refine with AI'}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             onPress={() => onSaveRoutines(result.workouts)}
@@ -3088,9 +3252,13 @@ function GeneratePlanScreen({
             style={[s.primaryBtn, refining && { opacity: 0.6 }]}
           >
             <Feather name="check" size={16} color={Colors.primaryFg} />
-            <Text style={s.primaryBtnText}>{phaseId ? (phaseNumber ? `Save phase ${phaseNumber} workouts` : 'Save these workouts') : 'Save All Routines'}</Text>
+            <Text style={s.primaryBtnText}>{signup ? 'Continue' : phaseId ? (phaseNumber ? `Save phase ${phaseNumber} workouts` : 'Save these workouts') : 'Save All Routines'}</Text>
           </TouchableOpacity>
-          {phaseId ? (
+          {signup ? (
+            <Text style={[s.draftNote, { color: C.textMuted }]}>
+              I save these when you continue. You can change them anytime.
+            </Text>
+          ) : phaseId ? (
             <Text style={[s.draftNote, { color: C.textMuted }]}>
               Nothing is saved until you tap Save. I keep this draft for you.
             </Text>
@@ -3109,18 +3277,23 @@ function GeneratePlanScreen({
     return (
       <View style={{ flex: 1 }}>
         <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
-          <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
-            <Feather name="arrow-left" size={16} color={C.foreground} />
-          </TouchableOpacity>
+          {/* Sign-up: the plan is on its way, so no Back (lib/signupBuild.ts). */}
+          {!signup && (
+            <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
+              <Feather name="arrow-left" size={16} color={C.foreground} />
+            </TouchableOpacity>
+          )}
           <SparkleIcon size={16} color={C.accentText} />
-          <Text style={[s.screenTitle, { color: C.foreground }]}>Generating…</Text>
+          {/* A phase build says what is being built, so the wait is not a mystery. */}
+          <Text style={[s.screenTitle, { color: C.foreground }]}>{phaseId ? buildWaitTitle(phaseNumber) : 'Generating…'}</Text>
         </View>
         <View style={s.loadingWrap}>
           <OrbStage
             state={genStatus.state}
             label={genStatus.label}
-            detail={coachIntent || 'Coach Drona is designing your plan'}
+            detail={coachIntent || (phaseId ? buildWaitDetail(phaseNumber) : 'Coach Drona is designing your plan')}
           />
+          {!signup && (
           <TouchableOpacity
             onPress={handleStopGeneration}
             style={[s.loadingStopBtn, { borderColor: C.border }]}
@@ -3130,6 +3303,7 @@ function GeneratePlanScreen({
             <View style={[s.stopSquare, { backgroundColor: C.foreground }]} />
             <Text style={[s.loadingStopText, { color: C.foreground }]}>Stop</Text>
           </TouchableOpacity>
+          )}
         </View>
       </View>
     );
@@ -3187,7 +3361,11 @@ function GeneratePlanScreen({
               <Feather name="clock" size={12} color={C.mutedFg} />
               <Text style={[s.formLabel, { color: C.mutedFg }]}>Session Length</Text>
             </View>
-            <DropdownPicker options={SESSION_OPTIONS} value={sessionLength} onSelect={setSessionLength} />
+            <DropdownPicker
+              options={coachFormSessionChoices(savedSessionMinutes)}
+              value={sessionLength}
+              onSelect={(v) => { sessionPicked.current = true; setSessionLength(v); }}
+            />
           </View>
         </View>
 
@@ -4596,10 +4774,13 @@ export interface AICoachModalProps {
   // When set (from the Goal & Plan screen "Build workout split"), pre-seeds the
   // plan generator's form + prompt to a specific program phase. Pass
   // initialScreen="plan" alongside it.
-  planSeed?: { goal?: string; days?: string; note?: string };
+  planSeed?: { goal?: string; days?: string; note?: string; phaseName?: string };
   // Build at once instead of showing the plan form (a waiting phase draft
   // still opens first). Pass with planSeed + linkRoutinesToPhaseId.
   planAutoStart?: boolean;
+  // Sign-up's phase 1 build (lib/signupBuild.ts): the plan screen has no way
+  // into the coach menu. Back opens Drona to change the plan; Continue saves it.
+  signupBuild?: boolean;
   // When set, the program chat opens with this typed in, unsent (the goal
   // sheet's "Change my whole plan with Drona"). Pass initialScreen="program".
   programDraft?: string;
@@ -4652,6 +4833,7 @@ export function CoachSheet({
   initialTopic,
   planSeed,
   planAutoStart,
+  signupBuild,
   programDraft,
   programExisting,
   linkRoutinesToPhaseId,
@@ -4787,6 +4969,9 @@ export function CoachSheet({
     transform: [{ translateY: away.value * 140 }],
   }));
 
+  // The plan screen's own Back on sign-up's build, for Android back.
+  const planBackRef = useRef<(() => void) | null>(null);
+
   // Back to the menu would unmount the screen Drona is working for and abort
   // it. While busy, back closes the sheet instead, and the store keeps it.
   const goMenu = () => {
@@ -4841,6 +5026,12 @@ export function CoachSheet({
     if (!visible) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (deferHardwareBack) return false;
+      // Sign-up's build: the plan screen decides, and never the menu.
+      // While Drona is working (a refine reply streaming), back waits: leaving
+      // the chat would abort the reply and lose that conversation.
+      if (signupBuild && accessAllowed && screen === 'plan') { if (!activity.busy) planBackRef.current?.(); return true; }
+      // A plan's exercise swap list is open: back returns to the plan.
+      if (accessAllowed && screen === 'plan' && planBackRef.current) { planBackRef.current(); return true; }
       // Gate or menu owns the modal → close it entirely (nothing to lose).
       if (!accessAllowed || screen === 'menu') { handleClose(); return true; }
       // Paywall overlay (trialing upgrade) → dismiss back to the menu.
@@ -4854,7 +5045,7 @@ export function CoachSheet({
     });
     return () => sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, accessAllowed, screen, showPaywall, workoutContext, activity.busy, deferHardwareBack]);
+  }, [visible, accessAllowed, screen, showPaywall, workoutContext, activity.busy, deferHardwareBack, signupBuild]);
 
   // Live-workout edit: hand the operations to the workout screen, then get out
   // of the way. Anything that actually landed is on the screen behind this
@@ -5363,7 +5554,11 @@ export function CoachSheet({
               )}
               {screen === 'plan' && (
                 <GeneratePlanScreen
-                  onBack={goMenu}
+                  // Sign-up: the plan's Back closes the sheet (only with no
+                  // plan to show), never the menu.
+                  onBack={signupBuild ? handleClose : goMenu}
+                  signup={signupBuild}
+                  backRef={planBackRef}
                   onSaveRoutines={handleSaveRoutines}
                   seed={planSeed}
                   phaseId={linkRoutinesToPhaseId}
@@ -6143,6 +6338,7 @@ const s = StyleSheet.create({
   exList: { marginTop: Spacing.md },
   exRow: { paddingVertical: 11 },
   exRowTop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  exSwapBtn: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   exIndex: { width: 18, fontSize: FontSize.xs, fontWeight: FontWeight.semibold, fontVariant: ['tabular-nums'] },
   exName: { flex: 1, fontSize: FontSize.base, fontWeight: FontWeight.medium },
   exSets: { fontSize: FontSize.sm, fontWeight: FontWeight.medium, fontVariant: ['tabular-nums'] },

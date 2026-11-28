@@ -53,6 +53,7 @@ import {
   normalizeNewExercise,
   type NewExerciseDef,
 } from "../_shared/exerciseVocab.ts";
+import { fitWorkoutToMinutes, maxExercisesFor, restCeiling } from "./sessionTime.ts";
 
 export interface PlanExercise {
   name: string;
@@ -141,6 +142,13 @@ export interface GeneratePlanDeps {
   model?: string;
   fillModel?: string;
   now?: () => number;
+  /**
+   * The most minutes one session may take (sessionTime.ts sessionCap). Every
+   * call that picks exercises or sets is told it, and the assembled days are
+   * trimmed to it in code, so a fill that ignores it cannot ship a long day.
+   * Undefined or null: no limit, the plan is what the model wrote.
+   */
+  sessionMinutes?: number | null;
 }
 
 export interface GeneratePlanResult {
@@ -507,9 +515,19 @@ export async function runGeneratePlan(
   ];
 
   const intake = stripToolDirectives(userMessage);
+  const cap = deps.sessionMinutes && deps.sessionMinutes > 0 ? deps.sessionMinutes : null;
+  // One rule, said to the skeleton and to every fill. The code trim after
+  // the fills is the guarantee; this is so the model plans the short session
+  // itself and the trim has little to do.
+  const timeRule = cap
+    ? `Time limit: every session must fit in ${cap} minutes, sets and rest included. The lifter asked for this, so it is a hard limit, not a preference.`
+    : "";
 
   // ── Stage 1: skeleton ─────────────────────────────────────────────────────
-  const skelPrompt = `${stripRationaleDirective(intake)}\n\n${VARIANT_RULE}\n\n${SKELETON_FORMAT_SPEC}`;
+  const skelTime = cap
+    ? `\n\n${timeRule} That leaves room for about ${maxExercisesFor(cap)} exercises a session at most; assign no more.`
+    : "";
+  const skelPrompt = `${stripRationaleDirective(intake)}${skelTime}\n\n${VARIANT_RULE}\n\n${SKELETON_FORMAT_SPEC}`;
   const runSkeleton = async (label: "skeleton" | "skeleton_retry") => {
     const started = now();
     const r = await deps.call({
@@ -592,6 +610,12 @@ export async function runGeneratePlan(
     }
   }
   deps.onSkeleton?.(skeleton);
+  const sk = skeleton;
+  // A day as the client sees it: assembled from the fill, then held to the cap.
+  const finalDay = (i: number, filled: PlanExercise[] | null) => {
+    const w = buildWorkout(sk.days[i], filled, sk.new_exercises);
+    return cap ? fitWorkoutToMinutes(w, cap).workout : w;
+  };
 
   // ── Stage 2: fills + rationale, all in flight at once ─────────────────────
   const skelSummary = skeletonText(skeleton);
@@ -615,6 +639,9 @@ export async function runGeneratePlan(
             const hint = measureHint(day.slots, skeleton.new_exercises);
             return hint ? [``, hint] : [];
           })(),
+          ...(cap
+            ? [``, `${timeRule} Add it up: sets x (work + rest) over all ${day.slots.length} exercises stays under ${cap} minutes. Rest at most ${Math.min(restCeiling(cap), 300)} seconds, and give fewer sets until it fits; keep every exercise.`]
+            : []),
           ``,
           FILL_FORMAT_SPEC,
         ].join("\n"),
@@ -685,7 +712,7 @@ export async function runGeneratePlan(
     });
     if (kind === "fill") {
       fills[index] = parseFill(text);
-      deps.onDay?.(index, buildWorkout(skeleton.days[index], fills[index], skeleton.new_exercises));
+      deps.onDay?.(index, finalDay(index, fills[index]));
     } else {
       rationale = text.trim();
     }
@@ -718,8 +745,10 @@ export async function runGeneratePlan(
     };
   }
 
+  const plan = assemblePlan(skeleton, fills, rationale);
+  if (cap) plan.workouts = plan.workouts.map((_w, i) => finalDay(i, fills[i]));
   return {
-    plan: assemblePlan(skeleton, fills, rationale),
+    plan,
     error: deadFills > 0 ? `${deadFills}/${totalDays} day-fills failed, defaults applied${reasonSuffix}` : undefined,
     usage, calls, stages,
   };

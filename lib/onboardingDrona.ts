@@ -18,6 +18,7 @@
  */
 import type { OnboardingAnswers } from '@/lib/onboarding';
 import { selectedGoals } from '@/lib/fitnessGoals';
+import type { PrebuildPhase } from '@/lib/phasePrebuild';
 
 // Generation can legitimately take 15-30 s (the build screen is elastic by
 // design and simply holds the thinking state). This cap only guards against
@@ -46,6 +47,8 @@ export interface AnonIntake {
   /** Optional free text; the edge sanitizes and length-caps it before use. */
   healthNotes: string | null;
   routinePrefs: string | null;
+  /** Most minutes one workout may take; the edge clamps it to 10-180. */
+  sessionMinutes: number | null;
 }
 
 export function buildAnonIntake(
@@ -72,6 +75,7 @@ export function buildAnonIntake(
     goalNote: answers.goalNote?.trim() || null,
     healthNotes: answers.healthNotes,
     routinePrefs: answers.routinePrefs,
+    sessionMinutes: answers.sessionMinutes ?? null,
   };
 }
 
@@ -116,6 +120,46 @@ export async function requestAnonOnboardingProgram(args: {
     const program = json.program?.name === 'generate_program' ? json.program.input : null;
     if (!program) throw new Error('No program in response');
     return program;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Phase 1's workouts before there is an account (PostHog flag
+ * phase1-build-timing = before_signup, lib/phasePrebuild.ts). Same anonymous,
+ * device-rate-limited road as the program, with its own counter on the
+ * server. Throws on any error; the caller then lets the Goal screen build
+ * after sign-up as before.
+ */
+export async function requestAnonPhasePlan(args: {
+  deviceId: string;
+  intake: AnonIntake;
+  phase: PrebuildPhase;
+}): Promise<Record<string, unknown>> {
+  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !anonKey) throw new Error('Supabase not configured');
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${supabaseUrl}/functions/v1/ai-coach`, {
+      method: 'POST',
+      headers: { apikey: anonKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'onboarding_phase1',
+        device_id: args.deviceId,
+        intake: args.intake,
+        phase: args.phase,
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const json = (await response.json()) as { plan?: { name?: string; input?: Record<string, unknown> } | null };
+    const plan = json.plan?.name === 'generate_plan' ? json.plan.input : null;
+    if (!plan) throw new Error('No plan in response');
+    return plan;
   } finally {
     clearTimeout(timeout);
   }

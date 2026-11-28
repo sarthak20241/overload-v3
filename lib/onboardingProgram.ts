@@ -248,7 +248,7 @@ export function buildOnboardingProgramMessage(a: OnboardingAnswers, extras: Prog
 
   return [
     `I just finished onboarding. Lay out my program toward my goal from these answers.`,
-    `Goal: ${goal}. Goals: ${goalLabels(a) || 'general fitness'}. Experience: ${a.experience ?? 'beginner'}. Training ${freq} days a week.`,
+    `Goal: ${goal}. Goals: ${goalLabels(a) || 'general fitness'}. Experience: ${a.experience ?? 'beginner'}. Training ${freq} days a week.${a.sessionMinutes ? ` Each workout fits in ${a.sessionMinutes} minutes; plan each phase's training inside that.` : ''}`,
     goalNoteBriefLine(a.goalNote),
     body.length ? `Body: ${body.join(', ')}.` : '',
     `Today is ${today}. ${horizon}`,

@@ -19,6 +19,9 @@ const migrations = [
   "supabase/migrations/20261031120000_free_phase_refine.sql",
   // Applied twice: the refine migration must be safe to re-run.
   "supabase/migrations/20261031120000_free_phase_refine.sql",
+  // 8 -> 40 turns. Twice as well.
+  "supabase/migrations/20261128130000_free_phase_refine_40.sql",
+  "supabase/migrations/20261128130000_free_phase_refine_40.sql",
 ];
 const tests = [
   "supabase/tests/free_phase_refine.sql",

@@ -104,6 +104,8 @@ export interface GuestProfile {
   weekly_target_sessions?: number | null;
   training_age_months?: number | null;
   date_of_birth?: string | null;
+  /** The onboarding session step's time (lib/sessionLength.ts), when picked. */
+  session_minutes?: number | null;
 }
 
 // --- Guest routine store (AsyncStorage-backed, never sent to Supabase) ---

@@ -6,14 +6,15 @@
 //   first_tap   the user sees their Goal screen; the first tap on it (back,
 //               a pillar, the phase card, Adjust with Drona, the menu) opens
 //               the paywall instead of what it would have opened
-// A missing or unknown flag value is first_tap. Both sign-up doors (onboarding
+// A missing or unknown flag value is after_save (2026-11-28: sign-up is one
+// path, plan -> paywall -> dashboard; it was first_tap before). Both sign-up doors (onboarding
 // first, or sign in first) build the Goal screen params here, so neither can
 // drop the paywall again (2026-11-20: the sign-in-first door had no then=upgrade).
 
 export type PostBuildPaywallTiming = 'after_save' | 'first_tap';
 
 export const POST_BUILD_PAYWALL_FLAG = 'post-build-paywall';
-export const DEFAULT_POST_BUILD_PAYWALL: PostBuildPaywallTiming = 'first_tap';
+export const DEFAULT_POST_BUILD_PAYWALL: PostBuildPaywallTiming = 'after_save';
 
 export function timingFromFlag(variant: string | null | undefined): PostBuildPaywallTiming {
   return variant === 'after_save' || variant === 'first_tap' ? variant : DEFAULT_POST_BUILD_PAYWALL;

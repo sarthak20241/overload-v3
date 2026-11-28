@@ -77,6 +77,8 @@ export type AnalyticsEvent =
   | 'onboarding_back'
   | 'onboarding_skipped'
   | 'onboarding_path_chosen'
+  // The session-length step's Custom card opened its minutes wheel (lib/sessionLength.ts).
+  | 'onboarding_session_custom_opened'
   | 'onboarding_plan_generated'
   | 'onboarding_plan_failed'
   | 'onboarding_completed'
@@ -151,6 +153,10 @@ export type AnalyticsEvent =
   // Swap an exercise in the Today session preview, for this session only.
   | 'today_swap_opened'
   | 'today_exercise_swapped'
+  // A built plan's exercise swapped before it is saved (Phase 1 workouts, lib/planSwap.ts).
+  | 'plan_swap_opened'
+  | 'plan_exercise_swapped'
+  | 'plan_swap_undone'
   | 'today_swap_undone'
   // Swap an exercise in a running workout, before its first logged set.
   | 'workout_exercise_swapped'
@@ -286,6 +292,13 @@ export type AnalyticsEvent =
   // The paywall after sign-up's phase 1 build (lib/postBuildPaywall.ts).
   | 'post_build_paywall_armed'
   | 'post_build_paywall_opened'
+  // Sign-up's built phase 1: Back or the button opened Drona to change it (lib/signupBuild.ts).
+  | 'signup_plan_refine_opened'
+  // Phase 1 built before sign-up (flag phase1-build-timing, lib/phasePrebuild.ts).
+  | 'phase_prebuild_started'
+  | 'phase_prebuild_done'
+  | 'phase_prebuild_used'
+  | 'phase_prebuild_missed'
   // Spotlight intro + first-visit hints (components/spotlight/).
   | 'spotlight_shown'
   | 'spotlight_done'

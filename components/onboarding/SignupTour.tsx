@@ -49,7 +49,7 @@ import { Portal } from '@/components/ui/Portal';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { haptics } from '@/lib/haptics';
 import { track } from '@/lib/analytics';
-import { nextScene, tapStep, TOUR_SCENE_MS, tourScenes, type TourSceneId } from '@/lib/signupTour';
+import { buildStatusLine, nextScene, tapStep, TOUR_SCENE_MS, tourScenes, type TourBuildState, type TourSceneId } from '@/lib/signupTour';
 
 const FILMS: Record<TourSceneId, number> = {
   welcome: require('@/assets/tour/welcome.mp4'),
@@ -135,9 +135,11 @@ interface Props {
   phaseLine: string | null;
   /** Finished (the last button) or skipped. The owner unmounts it. */
   onDone: (how: 'finished' | 'skipped') => void;
+  /** Where the phase 1 build under the tour stands: a small line says so. */
+  buildState?: TourBuildState;
 }
 
-export function SignupTour({ firstName, phaseLine, onDone }: Props) {
+export function SignupTour({ firstName, phaseLine, onDone, buildState = null }: Props) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const reduced = useReducedMotion();
@@ -219,6 +221,7 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
 
   const onTap = (e: GestureResponderEvent) => go(tapStep(e.nativeEvent.locationX, width));
   const isLast = index === last;
+  const statusLine = buildStatusLine(buildState);
 
   return (
     <Portal layer={TOUR_LAYER}>
@@ -280,6 +283,21 @@ export function SignupTour({ firstName, phaseLine, onDone }: Props) {
           {/* The home bar can be 0 (older phones) or 34; keep the button a
               steady distance above whichever it is. */}
           <View style={[s.bottom, { paddingBottom: Math.max(insets.bottom, Spacing.lg) + Spacing.lg }]} pointerEvents="box-none">
+            {/* What is happening under the tour: stays put while scenes change. */}
+            {statusLine ? (
+              <Animated.View
+                key={buildState}
+                entering={reduced ? undefined : FadeIn.duration(300)}
+                style={s.status}
+                pointerEvents="none"
+                accessibilityLiveRegion="polite"
+              >
+                {buildState === 'ready'
+                  ? <Feather name="check" size={12} color={Colors.primary} />
+                  : <View style={s.statusDot} />}
+                <Text style={s.statusText}>{statusLine}</Text>
+              </Animated.View>
+            ) : null}
             <Animated.View key={scene.id} entering={reduced ? undefined : FadeInDown.duration(520)} pointerEvents="none">
               <Text style={s.title} accessibilityRole="header">
                 {scene.title}
@@ -342,6 +360,11 @@ const s = StyleSheet.create({
     letterSpacing: -0.3,
   },
   sub: { color: 'rgba(255,255,255,0.55)' },
+  // The build's status: small, above the headline, no band behind it (the
+  // bottom scrim already carries white type).
+  status: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: Spacing.md },
+  statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.primary },
+  statusText: { color: 'rgba(255,255,255,0.85)', fontSize: FontSize.sm, fontWeight: FontWeight.medium, letterSpacing: 0.2 },
   // The arrow sits under the headline at the right, so the words keep the
   // full width and wrap the same on every scene.
   next: {
