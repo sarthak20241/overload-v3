@@ -54,3 +54,32 @@ Deno.test("the camera prompt Drona Eyes needs is still there", () => {
   assert(String(expo.ios?.infoPlist?.NSCameraUsageDescription ?? "").length > 0);
   assert((expo.android?.permissions ?? []).includes("android.permission.CAMERA"));
 });
+
+// Voice input (food box, Drona chat) records with expo-audio. Its plugin adds
+// the iOS mic string and Android RECORD_AUDIO from these options, and the
+// app's own NSMicrophoneUsageDescription must say what the audio is for.
+// Without the iOS string, the app is ended the moment it asks for the mic.
+Deno.test("voice: the microphone is declared on both platforms, with an honest iOS string", () => {
+  const audio = (expo.plugins ?? []).find((p: unknown) => Array.isArray(p) && p[0] === "expo-audio");
+  assert(audio, "expo-audio plugin is missing");
+  const opts = (audio as [string, Record<string, unknown>])[1] ?? {};
+  assertEquals(opts.recordAudioAndroid, true);
+  assert(typeof opts.microphonePermission === "string" && opts.microphonePermission.length > 0, "expo-audio microphonePermission is off");
+  const plist = String(expo.ios?.infoPlist?.NSMicrophoneUsageDescription ?? "");
+  assertEquals(plist, opts.microphonePermission, "two different mic strings would race in Info.plist");
+  // Says when it listens, what for, and what happens to the audio.
+  assert(/food/i.test(plist) && /Drona/.test(plist), "the string must name the food log and Drona");
+  assert(/not keep|doesn't keep|does not keep/i.test(plist), "the string must say the recording is not kept");
+  assert(/\bAI\b/.test(plist), "the string must say a Drona question's words go to an AI service");
+  assert(!plist.includes("—"), "no em dashes");
+  assert((expo.android?.permissions ?? []).includes("android.permission.RECORD_AUDIO"));
+  assert(!(expo.android?.blockedPermissions ?? []).includes("android.permission.RECORD_AUDIO"), "RECORD_AUDIO is still blocked");
+});
+
+Deno.test("voice: no background audio and no media playback service came with the mic", () => {
+  const blocked: string[] = expo.android?.blockedPermissions ?? [];
+  assert(blocked.includes("android.permission.FOREGROUND_SERVICE"));
+  assert(blocked.includes("android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"));
+  const modes: string[] = expo.ios?.infoPlist?.UIBackgroundModes ?? [];
+  assert(!modes.includes("audio"), "recording never runs in the background");
+});
