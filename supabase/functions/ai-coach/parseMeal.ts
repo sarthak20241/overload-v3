@@ -6678,9 +6678,6 @@ export async function tryFastCorrection(
 // or four only when server web_search fires), with every catalog lookup a
 // deterministic parallel fetch between them — versus 3-6 sequential model
 // turns in the old tool-loop design.
-/** On a turn that answers a waiting meal the user has already been asked once.
- *  Asking again is how a thread went round in circles until the user gave up
- *  (live, 2026-10-04 and 2026-10-08), so this turn always logs. */
 /**
  * A meal logged from a photo (foodPhoto.ts). The extract call gets the vision
  * model's read and the user's own note as two parts, and this rule for how to
@@ -6704,6 +6701,9 @@ export const PHOTO_EXTRACT_NOTE =
   "note says was not eaten is left out. A nutrition panel in photo_read is the user's own label: copy it into " +
   "stated as written.";
 
+/** On a turn that answers a waiting meal the user has already been asked once.
+ *  Asking again is how a thread went round in circles until the user gave up
+ *  (live, 2026-10-04 and 2026-10-08), so this turn always logs. */
 const PENDING_MUST_LOG =
   "The user has already been asked about this meal and has answered, so never decline it and never ask again: " +
   "every food in it is something they want logged. When the answer leaves a detail open, picks by position, or " +

@@ -3435,7 +3435,8 @@ async function handleParseMealRequest(args: {
   let photoMark: { read: PhotoRead; assumed: AssumedFat[]; ask: HiddenName[]; forParse: { note: string; read: string[] } } | null = null;
   if (photoReq) {
     const photoRes = await readFoodPhoto(
-      { anthropicApiKey: ANTHROPIC_API_KEY!, model: FOOD_PHOTO_MODEL, timeoutMs: FOOD_PHOTO_TIMEOUT_MS },
+      // One 30 s deadline for both tries (FOOD_PHOTO_TIMEOUT_MS each, capped).
+      { anthropicApiKey: ANTHROPIC_API_KEY!, model: FOOD_PHOTO_MODEL, timeoutMs: FOOD_PHOTO_TIMEOUT_MS, budgetMs: 30_000 },
       photoReq.images,
       photoReq.note,
     );

@@ -158,8 +158,10 @@ export function readPhotoRequest(body: Record<string, unknown>, opts: { mode: Fo
 /**
  * What the server answers before any model call and before a parse slot is
  * spent, or null to go on. No images: null, so every other request is exactly
- * today's. Flag off (or a client that did not claim the camera step): a plain
- * reply, since the photo is not the user's mistake. A photo beside a card
+ * today's. These refusals cost no parse slot; a photo that passes here and
+ * then fails to read DOES spend one, like any parse that fails. Flag off (or a
+ * client that did not claim the camera step): a plain reply, since the photo
+ * is not the user's mistake. A photo beside a card
  * under review is refused: the app opens the camera only with no card, and
  * marking a correction's kept lines as photo reads would be wrong.
  */
@@ -466,6 +468,11 @@ export interface PhotoReadDeps {
   fetchFn?: typeof fetch;
   /** Wait before the second try. Tests pass 0. */
   retryDelayMs?: number;
+  /** One deadline for the whole read, both tries included. Default: one and
+   *  a half tries. Each try gets the smaller of timeoutMs and what is left. */
+  budgetMs?: number;
+  /** A second try needs at least this much of the deadline left. */
+  minTryMs?: number;
 }
 
 export interface PhotoUsage {
@@ -490,9 +497,10 @@ async function attemptRead(
   deps: PhotoReadDeps,
   body: string,
   usage: PhotoUsage,
+  timeoutMs: number,
 ): Promise<Attempt> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), deps.timeoutMs);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await (deps.fetchFn ?? fetch)("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -534,7 +542,7 @@ async function attemptRead(
       ok: false,
       status: aborted ? 504 : 502,
       retry: true,
-      error: aborted ? `photo_read_timeout_${deps.timeoutMs}ms` : `photo_read_threw: ${String(e)}`,
+      error: aborted ? `photo_read_timeout_${timeoutMs}ms` : `photo_read_threw: ${String(e)}`,
     };
   } finally {
     clearTimeout(timer);
@@ -549,14 +557,19 @@ export async function readFoodPhoto(deps: PhotoReadDeps, images: PhotoImage[], n
   const t0 = Date.now();
   const usage: PhotoUsage = { input_tokens: 0, output_tokens: 0 };
   const body = JSON.stringify(buildPhotoPayload(images, note, deps.model, { effort: deps.effort }));
+  const deadline = t0 + (deps.budgetMs ?? Math.round(deps.timeoutMs * 1.5));
+  const minTry = deps.minTryMs ?? 5_000;
   let last: Attempt | null = null;
   let tries = 0;
-  for (tries = 1; tries <= 2; tries++) {
-    last = await attemptRead(deps, body, usage);
-    if (last.ok || !last.retry) break;
-    if (tries < 2) await new Promise((r) => setTimeout(r, deps.retryDelayMs ?? 800));
+  for (;;) {
+    tries++;
+    last = await attemptRead(deps, body, usage, Math.max(1, Math.min(deps.timeoutMs, deadline - Date.now())));
+    if (last.ok || !last.retry || tries >= 2) break;
+    const delay = deps.retryDelayMs ?? 800;
+    // No second try that the deadline would cut short.
+    if (deadline - Date.now() - delay < minTry) break;
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
   }
-  tries = Math.min(tries, 2);
   const base = { usage, model: deps.model, ms: Date.now() - t0, tries };
   if (last && last.ok) return { ok: true, read: last.read, ...base };
   let text = last?.error ?? "photo_read_failed";

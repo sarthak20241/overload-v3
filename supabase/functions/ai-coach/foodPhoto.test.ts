@@ -687,6 +687,40 @@ Deno.test("retry: two broken tries is a failure, never a third call", async () =
   assertEquals(s.calls(), 2);
 });
 
+Deno.test("retry: one deadline covers both tries, so a slow first try leaves no second one", async () => {
+  const g = readPhotoRequest(photoBody(), { mode: "on" });
+  assert(g.kind === "photo");
+  // The first try fails after 30 ms; the whole read may take 40 ms. What is
+  // left (10 ms) is under the floor for a second try, so there is none.
+  let calls = 0;
+  const slowFail = (() => {
+    calls++;
+    return new Promise<Response>((r) => setTimeout(() => r(new Response("busy", { status: 529 })), 30));
+  }) as unknown as typeof fetch;
+  const res = await readFoodPhoto({ ...deps(slowFail), budgetMs: 40, minTryMs: 25 }, g.images, g.note);
+  assertEquals(res.ok, false);
+  assertEquals(calls, 1);
+  assertEquals(res.tries, 1);
+});
+
+Deno.test("retry: a second try never runs past the deadline", async () => {
+  const g = readPhotoRequest(photoBody(), { mode: "on" });
+  assert(g.kind === "photo");
+  // First try fails at once; the second hangs. The deadline (60 ms) must cut
+  // it, not the per-try timeout (5 s).
+  let calls = 0;
+  const hangSecond = ((_u: string, init: RequestInit) => {
+    calls++;
+    if (calls === 1) return Promise.resolve(new Response("busy", { status: 529 }));
+    return new Promise<Response>((_r, rej) => init.signal?.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError"))));
+  }) as unknown as typeof fetch;
+  const t0 = Date.now();
+  const res = await readFoodPhoto({ ...deps(hangSecond), budgetMs: 60, minTryMs: 10 }, g.images, g.note);
+  assertEquals(res.ok, false);
+  assertEquals(calls, 2);
+  assert(Date.now() - t0 < 1000, `took ${Date.now() - t0} ms`);
+});
+
 Deno.test("call: the error text never holds the image", async () => {
   const g = readPhotoRequest(photoBody(), { mode: "on" });
   assert(g.kind === "photo");
