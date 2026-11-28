@@ -1369,7 +1369,8 @@ export async function parseMeal(
       region: FunctionRegion.UsEast1,
       body: {
         mode: 'parse_meal',
-        ...(args.canCreate || images ? { supports: FOOD_BAR_CAPABILITIES } : {}),
+        // A caller that can't draw a save card claims only what it sends.
+        ...(args.canCreate ? { supports: FOOD_BAR_CAPABILITIES } : images ? { supports: [FOOD_PHOTO_CAPABILITY] } : {}),
         text,
         ...(images ? { images: images.map((i) => ({ media_type: i.media_type, data: i.data })) } : {}),
         local_hour: now.getHours(),
