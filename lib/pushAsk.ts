@@ -43,7 +43,8 @@ export function askDecision(a: { days: string[]; askedAt: string | null; perm: P
  */
 export async function askThenSave(ask: () => Promise<boolean>, save: () => Promise<unknown>): Promise<boolean> {
   const granted = await ask();
-  if (granted) save().catch(() => {});
+  // Through a resolved promise so a save that throws at once is caught too.
+  if (granted) Promise.resolve().then(save).catch(() => {});
   return granted;
 }
 

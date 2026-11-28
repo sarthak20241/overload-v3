@@ -82,6 +82,8 @@ Deno.test("the ask never waits on the save, and a failed save is not an error", 
   assertEquals(await askThenSave(async () => true, () => slow), true); // returns before the save ends
   release();
   assertEquals(await askThenSave(async () => true, () => Promise.reject(new Error("offline"))), true);
+  // A save that throws before it returns a promise still never fails the ask.
+  assertEquals(await askThenSave(async () => true, () => { throw new Error("no module"); }), true);
 });
 
 Deno.test("no code asks for notification permission without saving the token", async () => {
