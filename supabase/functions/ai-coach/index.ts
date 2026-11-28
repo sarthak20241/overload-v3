@@ -4569,7 +4569,11 @@ async function handleAnonOnboardingProgram(args: {
 // program, before there is an account (lib/phasePrebuild.ts), so the week is
 // ready the moment they sign up. Same guards as the program route above:
 // structured input only (the brief is built here), its own rate limit
-// (check_anon_phase_quota, 20261128140000), and no writes but the counter.
+// (reserve_anon_phase_slot, 20261128140000), and no writes but the counter.
+// The slot is reserved BEFORE the model runs, so a burst from one device
+// cannot all pass the check; a failed build gives it back. device_id and the
+// IP can be faked, so those caps only stop an honest phone that loops: the
+// global cap (500 a day) and this switch bound the real worst case.
 // ANON_PHASE_BUILD=off turns the route off without a deploy; the app then
 // builds after sign-up as before.
 const ANON_PHASE_BUILD_ENABLED = Deno.env.get("ANON_PHASE_BUILD") !== "off";
@@ -4602,7 +4606,7 @@ async function handleAnonPhaseBuild(args: {
   trace.spans = { anon: true, prebuild: true };
 
   // Fail closed, like the program route: the app builds after sign-up instead.
-  const { data: gate, error: gateErr } = await admin.rpc("check_anon_phase_quota", {
+  const { data: gate, error: gateErr } = await admin.rpc("reserve_anon_phase_slot", {
     p_device_id: deviceId,
     p_ip: ip,
   });
@@ -4617,18 +4621,33 @@ async function handleAnonPhaseBuild(args: {
     trace.error_message = `anon_phase_limit: ${row?.reason ?? "unknown"}`;
     return respond({ error: "rate_limited", reason: row?.reason ?? "unknown" }, 429);
   }
+  const slotId = row.slot_id as number | null;
+  // A build that does not produce a plan gives its slot back.
+  const release = async () => {
+    if (slotId == null) return;
+    const { error } = await admin.rpc("release_anon_phase_slot", { p_slot_id: slotId });
+    if (error) console.log("[ai-coach] anon phase slot release failed:", error.message);
+  };
 
   const sane = sanitizeAnonIntake(intake as AnonIntake);
   const message = buildAnonPhaseMessage(sane, phase);
   const { system } = buildSystemPrompt({ userContext: null, retrievedResearch: [], mode: "generate_plan" });
-  const catalog = await loadExerciseCatalog(admin);
-  const result = await runGeneratePlan(message, {
-    call: makeTextCaller(),
-    catalog,
-    system: system as unknown[],
-    model: MODEL,
-    sessionMinutes: sessionCap({ profileMinutes: sane.sessionMinutes, request: message }),
-  });
+  let result: Awaited<ReturnType<typeof runGeneratePlan>>;
+  try {
+    const catalog = await loadExerciseCatalog(admin);
+    result = await runGeneratePlan(message, {
+      call: makeTextCaller(),
+      catalog,
+      system: system as unknown[],
+      model: MODEL,
+      sessionMinutes: sessionCap({ profileMinutes: sane.sessionMinutes, request: message }),
+    });
+  } catch (e) {
+    await release();
+    trace.status = "internal_error";
+    trace.error_message = `anon_phase_threw: ${String(e)}`.slice(0, 200);
+    return respond({ error: "no_plan" }, 502);
+  }
 
   trace.tool_calls.push("generate_plan");
   trace.input_tokens = result.usage.input_tokens || null;
@@ -4651,13 +4670,13 @@ async function handleAnonPhaseBuild(args: {
   });
 
   if (!result.plan) {
+    await release();
     trace.status = "internal_error";
     trace.error_message = (result.error ?? "anon: no plan").slice(0, 200);
     return respond({ error: "no_plan" }, 502);
   }
 
-  // Spend a slot only now, on success.
-  await admin.from("anon_phase_usage").insert({ device_id: deviceId, ip });
+  // The slot reserved above is now spent.
   trace.status = "success";
   trace.response_preview = preview(result.plan.rationale ?? null);
   return respond({ plan: { name: "generate_plan", input: result.plan } }, 200);

@@ -3000,8 +3000,14 @@ function GeneratePlanScreen({
           // no account, so claim it now; a payer's claim is harmless.
           if (planSupabase) {
             void planSupabase.rpc('try_claim_free_phase_build', { p_phase_id: phaseId })
-              .then(({ error }: { error: { message: string } | null }) => {
-                if (error) console.warn('[prebuild] free build claim failed', error.message);
+              .then(({ data, error }: { data: unknown; error: { message: string } | null }) => {
+                const row = (Array.isArray(data) ? data[0] : data) as { allowed?: boolean; reason?: string } | null;
+                // Not claimed: a free account's Refine with Drona will meet
+                // the paywall. Rare on a brand-new account; tracked to see it.
+                if (error || !row?.allowed) {
+                  console.warn('[prebuild] free build claim failed', error?.message ?? row?.reason);
+                  track('phase_prebuild_claim_failed', { reason: error ? 'rpc_error' : (row?.reason ?? 'unknown') });
+                }
               });
           }
           if (!alive) return;
@@ -3053,7 +3059,15 @@ function GeneratePlanScreen({
   };
   // The sheet's Android back asks this screen first: always on sign-up, and
   // anywhere while a swap list is open (back returns to the plan).
-  if (backRef) backRef.current = signup ? signupBack : swapping ? () => setSwapping(null) : null;
+  // Set after each commit, never during render (a render that is thrown away
+  // must not leave its handler behind). Cleared when the screen goes.
+  const signupBackRef = useRef(signupBack);
+  signupBackRef.current = signupBack;
+  useEffect(() => {
+    if (!backRef) return;
+    backRef.current = signup ? () => signupBackRef.current() : swapping ? () => setSwapping(null) : null;
+  });
+  useEffect(() => () => { if (backRef) backRef.current = null; }, [backRef]);
 
   // ── Discuss chat (pre-generate conversational) ──────────────────────────
   // Mounted instead of the form when the user taps "Or chat with Coach

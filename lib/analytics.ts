@@ -299,6 +299,7 @@ export type AnalyticsEvent =
   | 'phase_prebuild_done'
   | 'phase_prebuild_used'
   | 'phase_prebuild_missed'
+  | 'phase_prebuild_claim_failed'
   // Spotlight intro + first-visit hints (components/spotlight/).
   | 'spotlight_shown'
   | 'spotlight_done'

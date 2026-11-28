@@ -468,27 +468,30 @@ export default function OnboardingScreen() {
           phases = applyProgram(await requestGuest());
           // before_signup: phase 1's workouts start building now, while they
           // read the program and sign up (lib/phasePrebuild.ts). The Goal
-          // screen takes them after sign-up instead of building again.
+          // screen takes them after sign-up instead of building again. Not
+          // awaited: the reveal must never wait on the flag read.
           const phase1 = landed ? phaseBlockForPrebuild((landed as GeneratedProgram).phases[0] ?? {}) : null;
-          const { variant } = await timingRead;
-          if (phase1 && phase1TimingFromFlag(variant) === 'before_signup') {
-            const deviceId = await getDeviceId();
-            const intake = buildAnonIntake(answers, { weeklyRateKg: weeklyRate, direction, targets: targetsPayload });
-            const startedAt = Date.now();
-            track('phase_prebuild_started', {});
-            startPhasePrebuild(() =>
-              requestAnonPhasePlan({ deviceId, intake, phase: phase1 })
-                .then((raw) => {
-                  const plan = structuredToPlan(raw);
-                  track('phase_prebuild_done', { ok: true, ms: Date.now() - startedAt, workouts: plan.workouts.length });
-                  return plan.workouts.length > 0 ? plan : null;
-                })
-                .catch((e) => {
-                  track('phase_prebuild_done', { ok: false, ms: Date.now() - startedAt, error: String(e).slice(0, 80) });
-                  return null;
-                }),
-            );
-          }
+          if (phase1) void (async () => {
+            const { variant } = await timingRead;
+            if (phase1TimingFromFlag(variant) === 'before_signup') {
+              const deviceId = await getDeviceId();
+              const intake = buildAnonIntake(answers, { weeklyRateKg: weeklyRate, direction, targets: targetsPayload });
+              const startedAt = Date.now();
+              track('phase_prebuild_started', {});
+              startPhasePrebuild(() =>
+                requestAnonPhasePlan({ deviceId, intake, phase: phase1 })
+                  .then((raw) => {
+                    const plan = structuredToPlan(raw);
+                    track('phase_prebuild_done', { ok: true, ms: Date.now() - startedAt, workouts: plan.workouts.length });
+                    return plan.workouts.length > 0 ? plan : null;
+                  })
+                  .catch((e) => {
+                    track('phase_prebuild_done', { ok: false, ms: Date.now() - startedAt, error: String(e).slice(0, 80) });
+                    return null;
+                  }),
+              );
+            }
+          })().catch(() => { /* the Goal screen builds after sign-up as before */ });
         }
         // Event names kept as they are so the existing funnel still lines
         // up; what onboarding generates is now the program, so it reports
