@@ -27,9 +27,14 @@ export const MAX_AUDIO_SECONDS = 62;
 /** A tap that recorded nothing. The app drops these itself; this is the guard. */
 export const MIN_AUDIO_SECONDS = 0.4;
 
-/** 60 s of mono AAC at 32 kbps is about 240 KB. 1 MB leaves room for a phone
- *  that records richer than asked, and no room for a long file. */
+/** The body cap, sized for the largest format: a WAV for a future Wispr
+ *  engine. An m4a has its own, tighter cap below. */
 export const MAX_AUDIO_BYTES = 1_000_000;
+
+/** 60 s of mono AAC at 32 kbps is about 240 KB (iOS records it at 24 kbps,
+ *  180 KB). 400 KB leaves room for that, and only about 100 s of real AAC
+ *  for a file whose header lies about its length. */
+export const MAX_M4A_BYTES = 400_000;
 
 /** Twice 16 kHz 16-bit mono PCM (32 KB/s), the richest format a voice clip
  *  here comes in. AAC at 32 kbps is 4 KB/s. Small files skip the check: a
@@ -44,7 +49,7 @@ export type AudioFormat = "m4a" | "wav";
 
 export type AudioCheck =
   | { ok: true; format: AudioFormat; seconds: number }
-  | { ok: false; reason: "bad_audio" };
+  | { ok: false; reason: "bad_audio" | "too_large" };
 
 const BAD: AudioCheck = { ok: false, reason: "bad_audio" };
 
@@ -207,6 +212,7 @@ export function inspectAudio(bytes: Uint8Array): AudioCheck {
     format = "wav";
     seconds = wavSeconds(bytes);
   } else if (fourcc(bytes, 4) === "ftyp") {
+    if (bytes.length > MAX_M4A_BYTES) return { ok: false, reason: "too_large" };
     format = "m4a";
     seconds = m4aSeconds(bytes);
   } else {

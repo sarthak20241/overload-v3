@@ -193,6 +193,7 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
       haptics.tap();
       setP('recording');
     } catch {
+      deleteClip(recorder.uri); // a prepare that timed out may have made one
       releaseSession(audio);
       setP('idle');
       if (mounted.current) toast.show({ type: 'error', text: "The mic didn't start. Try again, or type it." });

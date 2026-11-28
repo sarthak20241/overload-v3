@@ -15,7 +15,7 @@
 //   before the paid call, Connect refused, and no transcript in the logs
 
 import { assert, assertEquals, assertFalse } from "jsr:@std/assert@1";
-import { inspectAudio, MAX_AUDIO_BYTES, MAX_AUDIO_SECONDS, MAX_BYTES_PER_SECOND, MIN_AUDIO_SECONDS } from "./audio.ts";
+import { inspectAudio, MAX_AUDIO_BYTES, MAX_AUDIO_SECONDS, MAX_BYTES_PER_SECOND, MAX_M4A_BYTES, MIN_AUDIO_SECONDS } from "./audio.ts";
 import { fakeProvider, openAiProvider, pickProvider, type SttProvider } from "./stt.ts";
 import { buildVocabulary, INDIAN_FOODS, sanitizeTerm } from "./vocabulary.ts";
 import { cleanTranscript, keepsOnlySaidWords } from "./cleanup.ts";
@@ -198,18 +198,22 @@ Deno.test("audio: a cut-off wav fmt chunk is bad_audio", () => {
 });
 
 Deno.test("audio: more bytes per second than any speech clip is refused", () => {
-  // 900 KB said to be 2 s: 450 KB/s, far past 16 kHz PCM (32 KB/s).
-  const r = inspectAudio(m4a(2, { mdatBytes: 900_000 }));
+  // 300 KB said to be 2 s: 150 KB/s, far past 16 kHz PCM (32 KB/s).
+  const r = inspectAudio(m4a(2, { mdatBytes: 300_000 }));
   assertEquals(r, { ok: false, reason: "bad_audio" });
   assert(MAX_BYTES_PER_SECOND >= 32_000);
 });
 
-Deno.test("audio: the caps are a minute of speech in under 1 MB", () => {
+Deno.test("audio: the caps are a minute of speech: 400 KB for m4a, 1 MB for wav", () => {
   assertEquals(MAX_AUDIO_SECONDS, 62);
   assert(MIN_AUDIO_SECONDS > 0 && MIN_AUDIO_SECONDS < 1);
-  // 60 s of AAC at 32 kbps is 240 KB. The cap leaves room for a phone that
-  // records at a higher rate than asked, and none for a long file.
+  // 60 s of AAC at 32 kbps is 240 KB (iOS records it at 24 kbps, 180 KB).
+  // 400 KB leaves room for that, and only ~100 s of real AAC for a file whose
+  // header lies about its length. WAV (a future Wispr engine) needs more.
+  assertEquals(MAX_M4A_BYTES, 400_000);
   assertEquals(MAX_AUDIO_BYTES, 1_000_000);
+  assertEquals(inspectAudio(m4a(50, { mdatBytes: 420_000 })), { ok: false, reason: "too_large" });
+  assert(inspectAudio(m4a(50, { mdatBytes: 300_000 })).ok);
 });
 
 // ── providers ──────────────────────────────────────────────────────────────
@@ -528,6 +532,13 @@ Deno.test("handler: logs never carry the transcript or the audio", async () => {
   assertFalse(all.includes("roti"));
   assertFalse(all.includes("Paneer Bhurji"));
   for (const l of d.logs) assert(typeof l.status === "string");
+});
+
+Deno.test("handler: an m4a over 400 KB is too large, before any slot", async () => {
+  const d = deps();
+  const r = await call(request({ bytes: m4a(50, { mdatBytes: 420_000 }) }), d);
+  assertEquals([r.status, r.body.error], [413, "too_large"]);
+  assertEquals(d.reserved, 0);
 });
 
 Deno.test("handler: a header that understates the clip is capped on its real length", async () => {

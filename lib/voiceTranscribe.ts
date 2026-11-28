@@ -17,7 +17,9 @@ import { sendWithFreshTokenRetry } from '@/lib/authRetry';
 import { getFreshSupabaseAccessToken, getSupabaseAccessToken } from '@/lib/supabase';
 import { transcribeOutcome, type TranscribeOutcome, VOICE_FORMAT } from '@/lib/voiceInput';
 
-const UPLOAD_TIMEOUT_MS = 30_000;
+// The upload, a token retry, the speech call (up to 20 s on the server) and
+// the chat tidy-up (up to 6 s) all fit, with room for a slow connection.
+const UPLOAD_TIMEOUT_MS = 45_000;
 
 function endpoint(): string {
   const dev = __DEV__ ? process.env.EXPO_PUBLIC_VOICE_URL : undefined;

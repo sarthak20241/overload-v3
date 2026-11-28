@@ -20,7 +20,7 @@
 // network (transcribe.test.ts); index.ts wires them to Clerk, Supabase and
 // the engine.
 
-import { inspectAudio, MAX_AUDIO_BYTES, MAX_AUDIO_SECONDS, MIN_AUDIO_SECONDS } from "./audio.ts";
+import { inspectAudio, MAX_AUDIO_BYTES, MAX_AUDIO_SECONDS, MAX_M4A_BYTES, MIN_AUDIO_SECONDS } from "./audio.ts";
 import { type CleanupCall, cleanTranscript } from "./cleanup.ts";
 import type { SttProvider, SttResult, VoicePurpose } from "./stt.ts";
 import { buildVocabulary, contextFor } from "./vocabulary.ts";
@@ -154,7 +154,11 @@ export async function handleTranscribe(req: Request, deps: TranscribeDeps): Prom
   if (file.size > MAX_AUDIO_BYTES) return done("too_large", json({ error: "too_large", max_bytes: MAX_AUDIO_BYTES }, 413));
   const bytes = new Uint8Array(await file.arrayBuffer());
   const audio = inspectAudio(bytes);
-  if (!audio.ok) return done("bad_audio", json({ error: "bad_audio" }, 422));
+  if (!audio.ok) {
+    return audio.reason === "too_large"
+      ? done("too_large", json({ error: "too_large", max_bytes: MAX_M4A_BYTES }, 413))
+      : done("bad_audio", json({ error: "bad_audio" }, 422));
+  }
   ev.format = audio.format;
   ev.audio_s = audio.seconds;
   if (audio.seconds > MAX_AUDIO_SECONDS) {

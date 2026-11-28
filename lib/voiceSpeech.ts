@@ -8,7 +8,7 @@
  * emphasis marks. Each line becomes one sentence.
  *
  * No imports, so Deno tests it (lib/voiceInput.test.ts). The speaking is
- * hooks/useReadAloud.ts, on-device, through expo-speech.
+ * components/voice/ReadAloudToggle.tsx, on-device, through expo-speech.
  */
 
 /** A long reply is read up to here, ending on a whole sentence. */
