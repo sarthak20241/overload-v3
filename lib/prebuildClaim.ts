@@ -4,8 +4,10 @@
  * free build was never claimed for the phase; a free account's Refine with
  * Drona (try_claim_free_phase_refine) needs it. The Goal screen claims it as
  * it takes the plan. If that fails, a note stays on the phone, and the claim
- * is tried again when the draft is reopened and before the Drona chat opens,
- * so a network blip never leaves the refine path refused for good.
+ * is tried again when the draft is reopened and before the Drona chat opens.
+ * The server is the backstop: since 20261128130000 a refine by an account
+ * with no claim at all claims the free build for its own unsaved phase 1, so
+ * a claim the phone never got through cannot send anyone to the paywall.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { track } from '@/lib/analytics';
@@ -46,7 +48,19 @@ export async function ensurePrebuildClaim(supabase: RpcClient, phaseId: string):
   if (owed) await settle(supabase, phaseId, 'retry');
 }
 
-async function settle(supabase: RpcClient, phaseId: string, when: 'taken' | 'retry'): Promise<void> {
+// One claim at a time per phase: a draft reopening and a chat opening at the
+// same moment share one attempt instead of spending two.
+const inFlight = new Map<string, Promise<void>>();
+
+function settle(supabase: RpcClient, phaseId: string, when: 'taken' | 'retry'): Promise<void> {
+  const running = inFlight.get(phaseId);
+  if (running) return running;
+  const p = settleOnce(supabase, phaseId, when).finally(() => inFlight.delete(phaseId));
+  inFlight.set(phaseId, p);
+  return p;
+}
+
+async function settleOnce(supabase: RpcClient, phaseId: string, when: 'taken' | 'retry'): Promise<void> {
   const reason = await claimOnce(supabase, phaseId);
   // Claimed, or refused for good (a refusal will not change): nothing owed.
   if (!reason || (reason !== 'rpc_error' && reason !== 'threw')) {

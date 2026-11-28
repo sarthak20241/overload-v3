@@ -9,10 +9,19 @@
 -- paywall with a plan they did not like. 40 is close to unlimited for a real
 -- person and still a cap on what one free account can cost in refine calls.
 --
+-- One more rule. Phase 1 may now be built BEFORE sign-up (PostHog flag
+-- phase1-build-timing, ai-coach mode onboarding_phase1), with no account, so
+-- no free build was claimed for it. The app claims it as it takes the plan,
+-- but if that call fails the first refine would answer not_claimed and send
+-- a free account to the paywall. So: when the caller has NO free build row
+-- at all, the refine claims the account's free build for this phase itself
+-- (it is their own unsaved phase 1 of their active program, checked below),
+-- exactly as the build would have. A caller who already claimed another
+-- phase is still refused (not_claimed): refine is never a second free build.
+--
 -- Every other rule is unchanged (20261031120000_free_phase_refine.sql): the
--- caller's own claimed phase 1, active program, no saved routines, once per
--- account, a turn counted at claim time. Only the constant moves; the
--- refine_turns column already exists.
+-- caller's own phase 1, active program, no saved routines, once per account,
+-- a turn counted at claim time. The refine_turns column already exists.
 --
 -- Reset-safe (create or replace). Apply to live via Supabase MCP
 -- apply_migration, then `notify pgrst, 'reload schema'`.
@@ -55,16 +64,25 @@ begin
   -- turns cannot overspend the cap.
   perform pg_advisory_xact_lock(hashtext('free_phase_build:' || v_uid));
 
-  select * into v_row from public.free_phase_builds where user_id = v_uid;
-  if not found or v_row.phase_id <> p_phase_id then
-    allowed := false; reason := 'not_claimed';
-    return next; return;
-  end if;
-
+  -- Checked first, so a refine never claims a build for a phase already saved.
   if exists (select 1 from public.routines where program_phase_id = p_phase_id) then
     allowed := false; reason := 'saved';
     return next; return;
   end if;
+
+  select * into v_row from public.free_phase_builds where user_id = v_uid;
+  if not found then
+    -- Never claimed (phase 1 built before sign-up): claim it now, for this
+    -- phase, the way try_claim_free_phase_build would have.
+    insert into public.free_phase_builds (user_id, phase_id)
+      values (v_uid, p_phase_id)
+      returning * into v_row;
+  end if;
+  if v_row.phase_id <> p_phase_id then
+    allowed := false; reason := 'not_claimed';
+    return next; return;
+  end if;
+
 
   if v_row.refine_turns >= c_max_turns then
     allowed := false; reason := 'turns_spent';
