@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1200" viewBox="0 0 900 1200">
+  <rect width="900" height="1200" fill="#d9cbb0"/>
+  <rect x="150" y="80" width="600" height="1040" fill="#fff" stroke="#000" stroke-width="6"/>
+  <g font-family="Helvetica, Arial, sans-serif" fill="#000">
+    <text x="180" y="170" font-size="64" font-weight="900">Nutrition Facts</text>
+    <text x="180" y="225" font-size="30">Oat Crunch Protein Bar</text>
+    <text x="180" y="270" font-size="30">Serving size 1 bar (60 g)</text>
+    <rect x="180" y="295" width="540" height="18"/>
+    <text x="180" y="360" font-size="28" font-weight="700">Amount per 100 g</text>
+    <text x="180" y="430" font-size="52" font-weight="900">Calories</text>
+    <text x="600" y="430" font-size="52" font-weight="900">380</text>
+    <rect x="180" y="450" width="540" height="8"/>
+    <text x="180" y="510" font-size="32" font-weight="700">Total Fat</text><text x="620" y="510" font-size="32">12 g</text>
+    <text x="180" y="570" font-size="32" font-weight="700">Total Carbohydrate</text><text x="620" y="570" font-size="32">45 g</text>
+    <text x="210" y="630" font-size="30">Dietary Fiber</text><text x="620" y="630" font-size="30">7 g</text>
+    <text x="180" y="690" font-size="32" font-weight="700">Protein</text><text x="620" y="690" font-size="32">25 g</text>
+    <rect x="180" y="720" width="540" height="18"/>
+    <text x="180" y="790" font-size="26">Ingredients: oats, whey protein, dates,</text>
+    <text x="180" y="830" font-size="26">almonds, honey, cocoa.</text>
+  </g>
+</svg>

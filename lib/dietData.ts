@@ -832,7 +832,9 @@ export type AutoLogSkipped = 'declined' | 'implausible' | 'write_error';
 /** What this build's food bar can render, sent with every parse. A list rather
  *  than a boolean so the next capability (improvise, challenge) is one more
  *  string, not a second flag the server has to learn to read. */
-export const FOOD_BAR_CAPABILITIES = ['food_create', 'variant_swap'] as const;
+// 'food_photo' (lib/foodPhoto): this build can send meal photos. The server
+// reads it only on a request that carries `images`.
+export const FOOD_BAR_CAPABILITIES = ['food_create', 'variant_swap', 'food_photo'] as const;
 
 /** Turns of a food conversation the app keeps and sends, and characters per
  *  turn. Mirrors FOOD_TURNS_KEPT / FOOD_TURN_CHARS in the ai-coach function's
@@ -866,6 +868,10 @@ export type ParseMealResult =
     autoLogSkipped?: AutoLogSkipped | null;
     /** Saved meals to offer as a one-tap swap. Empty from an older server. */
     savedSuggestions?: SavedSuggestion[];
+    /** A photo meal: the words the photo read made ("grilled chicken (~150 g)").
+     *  The card keeps them as its text, so a follow-up corrects them like
+     *  typed food. */
+    photoText?: string;
   }
   // "Just log it" only: the request left and no answer came back (a dropped
   // stream). The server keeps working without us, so this is NOT retried
@@ -1073,6 +1079,7 @@ function toParseResult(data: any): ParseMealResult {
           : []
       ))
       : [],
+    ...(typeof data?.photo_text === 'string' && data.photo_text.trim() ? { photoText: data.photo_text.trim().slice(0, 2000) } : {}),
   };
 }
 
@@ -1338,10 +1345,14 @@ export async function parseMeal(
      *  server keeps a durable copy under it when FOOD_THREADS is on or shadow,
      *  and ignores it otherwise. */
     thread?: FoodThreadSend | null;
+    /** Meal photos (lib/foodPhoto), resized and JPEG encoded. `text` is then
+     *  the user's note and may be empty. Only the food box sends these. */
+    images?: { media_type: 'image/jpeg'; data: string }[] | null;
   },
 ): Promise<ParseMealResult> {
   const text = args.text.trim();
-  if (!text) return { kind: 'error', message: 'Type what you ate first.' };
+  const images = args.images && args.images.length > 0 ? args.images : null;
+  if (!text && !images) return { kind: 'error', message: 'Type what you ate first.' };
 
   const now = new Date();
   const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -1357,8 +1368,9 @@ export async function parseMeal(
       region: FunctionRegion.UsEast1,
       body: {
         mode: 'parse_meal',
-        ...(args.canCreate ? { supports: FOOD_BAR_CAPABILITIES } : {}),
+        ...(args.canCreate || images ? { supports: FOOD_BAR_CAPABILITIES } : {}),
         text,
+        ...(images ? { images: images.map((i) => ({ media_type: i.media_type, data: i.data })) } : {}),
         local_hour: now.getHours(),
         local_date: localDate,
         // Tier rides its OWN field: `mode` is the dispatch value and reading the

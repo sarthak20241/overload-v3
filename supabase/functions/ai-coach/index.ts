@@ -88,6 +88,21 @@ import {
   cardQuestionFellToParse,
 } from "./foodIntent.ts";
 import { parseFoodBuildRecipeMode } from "./recipe.ts";
+import {
+  type AssumedFat,
+  foodPhotoModel,
+  type HiddenName,
+  markPhotoLines,
+  parseFoodPhotoMode,
+  photoDecline,
+  photoDronaLine,
+  type PhotoRead,
+  photoRefusal,
+  photoToText,
+  photoTraceView,
+  readFoodPhoto,
+  readPhotoRequest,
+} from "./foodPhoto.ts";
 import { type CardLine, cardMayBeCut, cardOriginsOf, readFoodContext, readPreviousItems, type FoodConversationContext, type PendingFoodMeal } from "./foodContext.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
@@ -347,6 +362,16 @@ function readTimezone(userClient: SupabaseClient): Promise<string | null> {
  *  rides on the later-mode agent (FOOD_AGENT_LATER, FOOD_FIRST_GATE). off
  *  (default): the agent has no build_recipe, exactly as today. */
 const FOOD_BUILD_RECIPE = parseFoodBuildRecipeMode(Deno.env.get("FOOD_BUILD_RECIPE"));
+
+/** Photo food logging (foodPhoto.ts): a parse_meal request may carry one or
+ *  two photos and a note. One vision call reads them into foods and weights,
+ *  and the words it makes go through the normal parse. off (default): a
+ *  request with images gets a plain "type it" reply and costs nothing; a
+ *  request without images is exactly today's either way. */
+const FOOD_PHOTO = parseFoodPhotoMode(Deno.env.get("FOOD_PHOTO"));
+/** The photo read's model, switched by measurement (scripts/food-photo-eval). */
+const FOOD_PHOTO_MODEL = foodPhotoModel(Deno.env.get("FOOD_PHOTO_MODEL"));
+const FOOD_PHOTO_TIMEOUT_MS = Math.min(Math.max(envInt("FOOD_PHOTO_TIMEOUT_MS", 30_000), 5_000), 60_000);
 
 /** Precise food box, warm memory (foodWarmMemory.ts, plan sections 4 and 6):
  *  the later-mode agent (FOOD_AGENT_LATER, FOOD_FIRST_GATE) gets recall_food
@@ -3164,6 +3189,8 @@ function supabaseAutoLogStore(userClient: SupabaseClient, admin: SupabaseClient,
  *  in handleParseMealRequest (stream asked for, Fast asked for, Fast on). One
  *  place, so a refused row and a served row read `streamed` the same way. */
 function wouldStream(body: Record<string, unknown>): boolean {
+  // A photo is never streamed: its rows are known only after the read.
+  if (Array.isArray(body.images) && body.images.length > 0) return false;
   return body.stream === true && body.speed === "fast" && PARSE_FAST_MODE !== "off";
 }
 
@@ -3277,14 +3304,29 @@ async function handleParseMealRequest(args: {
     return args.respond(b, status);
   };
 
-  const text = typeof body.text === "string" ? body.text.trim() : "";
-  if (!text) {
+  // `let`: a photo request's text becomes the words its photo read makes
+  // (below, after the slot), and everything from there on reads those.
+  let text = typeof body.text === "string" ? body.text.trim() : "";
+  // Photos (FOOD_PHOTO). Checked before any slot is spent: no images is
+  // today's request; a refused photo costs the user nothing.
+  const photoGate = readPhotoRequest(body, { mode: FOOD_PHOTO });
+  const photoStop = photoRefusal(photoGate, {
+    cardLines: Array.isArray(body.previous_items) ? body.previous_items.length : 0,
+  });
+  if (photoStop) {
+    trace.status = photoStop.status >= 400 ? "bad_request" : "success";
+    trace.error_message = photoStop.status >= 400 ? `parse_photo_refused:${String(photoStop.body.error)}` : "parse_photo_unavailable";
+    return respond(photoStop.body, photoStop.status);
+  }
+  const photoReq = photoGate.kind === "photo" ? photoGate : null;
+  if (!text && !photoReq) {
     trace.status = "bad_request";
     trace.error_message = "parse_meal requires non-empty text";
     return respond({ error: trace.error_message }, 400);
   }
   trace.model = PARSE_MEAL_MODEL;
-  trace.last_user_message_preview = preview(text);
+  // A photo's preview says so; the image itself is never on a trace.
+  trace.last_user_message_preview = preview(photoReq ? `[photo x${photoReq.images.length}] ${text}`.trim() : text);
   FULL_USER_TEXT.set(trace, text);
   trace.message_count = 1;
 
@@ -3384,6 +3426,53 @@ async function handleParseMealRequest(args: {
     }
   }
 
+  // The photo read: ONE vision call, after the slot (it is a parse like any
+  // other, under the same caps and cooldown). Its words replace the note as
+  // this message's text; the note went into the read as ground truth.
+  let photoMark: { read: PhotoRead; assumed: AssumedFat[]; ask: HiddenName[] } | null = null;
+  if (photoReq) {
+    const photoRes = await readFoodPhoto(
+      { anthropicApiKey: ANTHROPIC_API_KEY!, model: FOOD_PHOTO_MODEL, timeoutMs: FOOD_PHOTO_TIMEOUT_MS },
+      photoReq.images,
+      photoReq.note,
+    );
+    fbTrace.step({ src: "edge", tool: "food_photo", result: photoTraceView(photoReq.images, photoRes) });
+    void logTokenUsage(admin, {
+      pipeline: "parse_meal_photo",
+      provider: "anthropic",
+      model: FOOD_PHOTO_MODEL,
+      input_tokens: photoRes.usage.input_tokens,
+      output_tokens: photoRes.usage.output_tokens,
+      latency_ms: photoRes.ms,
+      status: photoRes.ok ? "success" : "error",
+      ...(photoRes.ok ? {} : { error_message: photoRes.error }),
+      metadata: {
+        user_id: userId,
+        request_id: requestId,
+        images: photoReq.images.length,
+        image_bytes: photoReq.images.map((i) => i.bytes),
+        has_note: photoReq.note.length > 0,
+        kind: photoRes.ok ? photoRes.read.kind : null,
+        items: photoRes.ok ? photoRes.read.items.length : null,
+      },
+    });
+    if (!photoRes.ok) {
+      trace.status = "anthropic_error";
+      trace.error_message = photoRes.error;
+      return respond({ error: "photo_read_failed", message: "I could not read that photo. Try again, or type what you ate." }, 502);
+    }
+    const said = photoDecline(photoRes.read);
+    const made = said ? null : photoToText(photoRes.read, photoReq.note);
+    if (said || !made?.text) {
+      trace.status = "success";
+      trace.response_preview = preview(said ?? "photo_no_text");
+      return respond({ parsed: null, declined: { message: said ?? photoDecline({ ...photoRes.read, items: [] })! }, proposal: null }, 200);
+    }
+    text = made.text.slice(0, USER_TEXT_MAX_CHARS);
+    FULL_USER_TEXT.set(trace, text);
+    photoMark = { read: photoRes.read, assumed: made.assumed, ask: made.ask };
+  }
+
   // Context: recents + targets + today's totals, all non-fatal on failure.
   const rawHour = body.local_hour;
   const localHour = typeof rawHour === "number" && Number.isFinite(rawHour) ? rawHour : null;
@@ -3447,7 +3536,8 @@ async function handleParseMealRequest(args: {
   // sticky toggle says, and auto-writing a correction would log lines the
   // review card was still holding back.
   const auto = readAutoLogRequest(body, localDate);
-  const autoLogArmed = auto.autoLog && previousItems.length === 0;
+  // Never for a photo: its portions are a read the user should see first.
+  const autoLogArmed = auto.autoLog && previousItems.length === 0 && !photoMark;
   fbRequest = readRequestView(body, { recentTurns, pendingMeal: baseFoodContext.pendingMeal }, {
     text, mealHint, localDate, localHour, streamed: wouldStream(body),
     autoLog: auto.autoLog, clientId: auto.clientId, canCreate: clientSupportsFoodCreate(body),
@@ -4245,6 +4335,18 @@ async function handleParseMealRequest(args: {
     if (autoLogArmed) keepAlive(work);
     const { result, autoRes, outcome, firstParse } = await work;
 
+    // A photo meal's lines say what they are (a weight read from the photo,
+    // an assumed fat, a label's numbers) and Drona says the portions are a
+    // read and asks one question. Before the thread write and the response,
+    // so both carry the marked card.
+    if (photoMark && outcome.action === "log" && result.parsed) {
+      result.parsed = {
+        ...result.parsed,
+        items: markPhotoLines(result.parsed.items, photoMark.read, photoMark.assumed),
+        drona_line: photoDronaLine(result.parsed.drona_line, photoMark.read, photoMark.assumed, photoMark.ask),
+      };
+    }
+
     trace.status = "success";
     trace.input_tokens = result.usage.input_tokens || null;
     trace.output_tokens = result.usage.output_tokens || null;
@@ -4325,6 +4427,9 @@ async function handleParseMealRequest(args: {
         saved_suggestions: result.saved_suggestions ?? [],
         // Just log it: `logged` when the diary was written, else why not.
         ...(autoRes?.extra ?? {}),
+        // The words the photo read made, so the app sends them back as this
+        // card's text and "the rice was one cup" corrects it like typed food.
+        ...(photoMark ? { photo_text: text } : {}),
         usage: result.usage,
         tool_calls: result.tool_calls,
       };

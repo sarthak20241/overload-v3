@@ -1,0 +1,338 @@
+/**
+ * Meal photo, full screen (photo food logging, lib/foodPhoto).
+ *
+ * Two steps. Camera: frame the plate and take it, with short tips that move
+ * accuracy most (from above, the whole plate, something for scale). Review:
+ * the photo, an optional second angle, and a note for what the camera cannot
+ * see (oil, ghee, how much was eaten). The note is the biggest single lever on
+ * accuracy, so the review step asks for it without making it required.
+ *
+ * Send leaves the photos for /nutrition (setPendingPhoto) and goes back; the
+ * food box runs the parse there, so the wait, the card and corrections are the
+ * ones typed food already has.
+ */
+
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Image,
+  KeyboardAvoidingView,
+  Linking,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Feather } from '@expo/vector-icons';
+import { router, useLocalSearchParams } from 'expo-router';
+import { Camera, useCameraDevice, useCameraPermission, usePhotoOutput } from 'react-native-vision-camera';
+
+import { useTheme } from '@/hooks/useTheme';
+import { Colors, FontSize, FontWeight, Radius, Spacing } from '@/constants/theme';
+import { haptics } from '@/lib/haptics';
+import { track } from '@/lib/analytics';
+import { PHOTO_MAX_IMAGES, setPendingPhoto, type PendingPhotoMeal, type PhotoShot } from '@/lib/foodPhoto';
+import { discardShots, preparePhoto } from '@/lib/foodPhotoCapture';
+
+type Step = 'camera' | 'review';
+
+const isMeal = (v: unknown): v is PendingPhotoMeal => v === 'breakfast' || v === 'lunch' || v === 'dinner' || v === 'snack';
+
+export default function FoodPhotoScreen() {
+  const { C } = useTheme();
+  const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ meal?: string; day?: string }>();
+  const meal: PendingPhotoMeal = isMeal(params.meal) ? params.meal : 'snack';
+  const day = typeof params.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(params.day)
+    ? new Date(`${params.day}T12:00:00`)
+    : new Date();
+
+  const { hasPermission, requestPermission } = useCameraPermission();
+  const device = useCameraDevice('back');
+  // About 12 MP: plenty for a 1568 px upload, and quick to take.
+  const photoOutput = usePhotoOutput({ qualityPrioritization: 'balanced' });
+
+  const [step, setStep] = useState<Step>('camera');
+  const [shots, setShots] = useState<PhotoShot[]>([]);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [permissionBlocked, setPermissionBlocked] = useState(false);
+  // Shots not handed to Nutrition are removed on the way out.
+  const sentRef = useRef(false);
+  const shotsRef = useRef<PhotoShot[]>([]);
+  shotsRef.current = shots;
+  useEffect(() => () => { if (!sentRef.current) discardShots(shotsRef.current); }, []);
+
+  const askForCamera = useCallback(async () => {
+    const granted = await requestPermission();
+    if (!granted) setPermissionBlocked(true);
+  }, [requestPermission]);
+  useEffect(() => {
+    if (!hasPermission) void askForCamera();
+  }, [hasPermission, askForCamera]);
+
+  const takePhoto = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    setProblem(null);
+    haptics.tap();
+    try {
+      const photo = await photoOutput.capturePhoto({ flashMode: 'off' }, {});
+      const shot = await preparePhoto(photo);
+      setShots((s) => [...s, shot].slice(0, PHOTO_MAX_IMAGES));
+      setStep('review');
+    } catch {
+      setProblem('That one did not come through. Try again.');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, photoOutput]);
+
+  const retake = useCallback((index: number) => {
+    setShots((s) => {
+      discardShots([s[index]]);
+      const next = s.filter((_, i) => i !== index);
+      if (next.length === 0) setStep('camera');
+      return next;
+    });
+  }, []);
+
+  const send = useCallback(() => {
+    if (!shots.length) return;
+    haptics.tap();
+    track('meal_photo_sent', { images: shots.length, has_note: note.trim().length > 0, note_chars: note.trim().length });
+    setPendingPhoto({ images: shots, note, meal, day });
+    sentRef.current = true;
+    router.back();
+  }, [shots, note, meal, day]);
+
+  const close = useCallback(() => router.back(), []);
+
+  // ── camera ─────────────────────────────────────────────────────────────────
+
+  if (step === 'camera') {
+    return (
+      <View style={[styles.root, { backgroundColor: '#000' }]}>
+        {hasPermission && device ? (
+          <Camera style={StyleSheet.absoluteFill} isActive device={device} outputs={[photoOutput]} onError={() => setProblem('The camera stopped. Close this and try again.')} />
+        ) : (
+          <View style={styles.centered}>
+            <Feather name={hasPermission ? 'camera-off' : 'camera'} size={28} color="#fff" />
+            <Text style={styles.centerLead}>
+              {!hasPermission
+                ? 'I need the camera to see your meal.'
+                : 'No camera here. Meal photos need a phone.'}
+            </Text>
+            <Text style={styles.centerSub}>
+              {!hasPermission
+                ? permissionBlocked
+                  ? 'Camera access is off for Overload. Open Settings to switch it on, then come back.'
+                  : 'The photo goes to Drona to read the food. Nothing is saved to your gallery.'
+                : 'You can still type what you ate in the food box.'}
+            </Text>
+            {!hasPermission && (
+              <Pressable
+                onPress={permissionBlocked ? () => void Linking.openSettings() : () => void askForCamera()}
+                style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.85 }]}
+              >
+                <Text style={styles.primaryLabel}>{permissionBlocked ? 'Open Settings' : 'Allow camera'}</Text>
+              </Pressable>
+            )}
+          </View>
+        )}
+
+        <View style={[styles.header, { paddingTop: insets.top + Spacing.sm }]}>
+          <Pressable onPress={close} hitSlop={12} style={styles.closeBtn} accessibilityRole="button" accessibilityLabel="Close">
+            <Feather name="x" size={20} color="#fff" />
+          </Pressable>
+          <Text style={styles.title}>{shots.length ? 'Second angle' : 'Snap your meal'}</Text>
+          <View style={styles.closeBtn} />
+        </View>
+
+        {hasPermission && device && (
+          <View style={[styles.cameraFoot, { paddingBottom: insets.bottom + Spacing.lg }]}>
+            <Text style={styles.tip}>
+              {shots.length
+                ? 'From the side this time, so I can see how deep it is.'
+                : 'From above, with the whole plate in frame. A fork or your hand beside it helps me judge size.'}
+            </Text>
+            {problem && <Text style={styles.problem}>{problem}</Text>}
+            <Pressable
+              onPress={() => void takePhoto()}
+              disabled={busy}
+              style={({ pressed }) => [styles.shutter, (pressed || busy) && { opacity: 0.7 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Take the photo"
+            >
+              {busy ? <ActivityIndicator color="#000" /> : <View style={styles.shutterInner} />}
+            </Pressable>
+            {shots.length > 0 && (
+              <Pressable onPress={() => setStep('review')} hitSlop={8}>
+                <Text style={styles.link}>Skip the second angle</Text>
+              </Pressable>
+            )}
+          </View>
+        )}
+      </View>
+    );
+  }
+
+  // ── review ─────────────────────────────────────────────────────────────────
+
+  return (
+    <KeyboardAvoidingView
+      style={[styles.root, { backgroundColor: C.background }]}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <View style={[styles.header, { paddingTop: insets.top + Spacing.sm }]}>
+        <Pressable onPress={close} hitSlop={12} style={styles.closeBtn} accessibilityRole="button" accessibilityLabel="Close">
+          <Feather name="x" size={20} color={C.foreground} />
+        </Pressable>
+        <Text style={[styles.title, { color: C.foreground }]}>Your meal</Text>
+        <View style={styles.closeBtn} />
+      </View>
+
+      <ScrollView contentContainerStyle={styles.reviewBody} keyboardShouldPersistTaps="handled">
+        <View style={styles.thumbs}>
+          {shots.map((s, i) => (
+            <View key={s.uri} style={[styles.thumbWrap, { backgroundColor: C.card }]}>
+              <Image source={{ uri: s.uri }} style={styles.thumb} resizeMode="cover" />
+              <Pressable
+                onPress={() => retake(i)}
+                hitSlop={8}
+                style={styles.thumbX}
+                accessibilityRole="button"
+                accessibilityLabel={`Remove photo ${i + 1}`}
+              >
+                <Feather name="x" size={12} color="#fff" />
+              </Pressable>
+            </View>
+          ))}
+          {shots.length < PHOTO_MAX_IMAGES && (
+            <Pressable
+              onPress={() => setStep('camera')}
+              style={[styles.thumbWrap, styles.addAngle, { borderColor: C.border }]}
+              accessibilityRole="button"
+              accessibilityLabel="Add a second angle"
+            >
+              <Feather name="plus" size={16} color={C.textSecondary} />
+              <Text style={[styles.addAngleText, { color: C.textSecondary }]}>Another angle</Text>
+            </Pressable>
+          )}
+        </View>
+
+        <Text style={[styles.noteLabel, { color: C.foreground }]}>Anything I can't see?</Text>
+        <TextInput
+          style={[styles.noteInput, { color: C.foreground, backgroundColor: C.inputBg, borderColor: C.borderSubtle }]}
+          value={note}
+          onChangeText={setNote}
+          placeholder="Oil or ghee, what's inside, how much you ate"
+          placeholderTextColor={C.textDim}
+          multiline
+          maxLength={500}
+        />
+        <Text style={[styles.noteHint, { color: C.textMuted }]}>
+          A weight or a count beats my eye. "Cooked in 1 tbsp ghee" or "ate half" changes the numbers more than a better photo.
+        </Text>
+      </ScrollView>
+
+      <View style={[styles.reviewFoot, { paddingBottom: insets.bottom + Spacing.lg, borderTopColor: C.borderSubtle }]}>
+        <Pressable
+          onPress={send}
+          style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.85 }]}
+          accessibilityRole="button"
+          accessibilityLabel="Send to Drona"
+        >
+          <Text style={styles.primaryLabel}>Send to Drona</Text>
+        </Pressable>
+      </View>
+    </KeyboardAvoidingView>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  header: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.lg,
+    zIndex: 2,
+  },
+  closeBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  title: { color: '#fff', fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.md, paddingHorizontal: Spacing.xl },
+  centerLead: { color: '#fff', fontSize: FontSize.lg, fontWeight: FontWeight.semibold, textAlign: 'center' },
+  centerSub: { color: 'rgba(255,255,255,0.75)', fontSize: FontSize.base, textAlign: 'center', lineHeight: 20 },
+  cameraFoot: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.lg,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  tip: { color: '#fff', fontSize: FontSize.base, textAlign: 'center', lineHeight: 20 },
+  problem: { color: '#ffb4a8', fontSize: FontSize.sm, textAlign: 'center' },
+  shutter: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    borderWidth: 4,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shutterInner: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff' },
+  link: { color: '#fff', fontSize: FontSize.sm, textDecorationLine: 'underline' },
+  reviewBody: { paddingTop: 96, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.xl, gap: Spacing.md },
+  thumbs: { flexDirection: 'row', gap: Spacing.md },
+  thumbWrap: { flex: 1, aspectRatio: 3 / 4, borderRadius: Radius.lg, overflow: 'hidden' },
+  thumb: { width: '100%', height: '100%' },
+  thumbX: {
+    position: 'absolute',
+    top: Spacing.sm,
+    right: Spacing.sm,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addAngle: { borderWidth: 1, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs },
+  addAngleText: { fontSize: FontSize.sm },
+  noteLabel: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, marginTop: Spacing.sm },
+  noteInput: {
+    minHeight: 72,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    fontSize: FontSize.base,
+    textAlignVertical: 'top',
+  },
+  noteHint: { fontSize: FontSize.sm, lineHeight: 18 },
+  reviewFoot: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.md, borderTopWidth: StyleSheet.hairlineWidth },
+  primaryBtn: {
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.lg,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.xl,
+    alignItems: 'center',
+    alignSelf: 'stretch',
+  },
+  primaryLabel: { color: Colors.primaryFg, fontSize: FontSize.base, fontWeight: FontWeight.semibold },
+});

@@ -30,7 +30,7 @@
       },
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSCameraUsageDescription": "Overload uses your camera to check your lifting form. Everything is analysed on your phone and your video is never uploaded."
+        "NSCameraUsageDescription": "Overload uses your camera to check your lifting form and to photograph meals you log. Form check video is analysed on your phone and never uploaded. Meal photos are sent to Drona to read the food."
       }
     },
     "android": {
