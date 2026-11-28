@@ -135,6 +135,8 @@ export function openAiProvider(cfg: {
 // The docs show no complete inline-audio example; this request is put
 // together from the documented fields (input part type/data/mime_type, and
 // generation_config.transcription_config language_codes/custom_vocabulary).
+// Checked against the live API on 2026-11-28: an m4a and a wav clip both came
+// back word for word.
 // Verbatim mode (the default): the chat tidy-up does the cleaning, checked.
 
 export const GEMINI_STT_MODEL = "gemini-3.5-transcribe";
@@ -195,7 +197,12 @@ export function geminiProvider(cfg: {
         if (data?.status !== "completed" || !text) return { ok: false, reason: "vendor_bad_reply" };
         const u = data.usage ?? {};
         const num = (v: unknown) => (typeof v === "number" ? v : undefined);
-        const usage = { input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens) };
+        // A live reply (2026-11-28) names them total_input_tokens and
+        // total_output_tokens; the plain names are kept as a fallback.
+        const usage = {
+          input_tokens: num(u.total_input_tokens) ?? num(u.input_tokens),
+          output_tokens: num(u.total_output_tokens) ?? num(u.output_tokens),
+        };
         return {
           ok: true,
           text,

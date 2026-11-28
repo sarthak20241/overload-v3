@@ -276,7 +276,8 @@ Deno.test("provider: Gemini gets the documented Interactions request for gemini-
     return new Response(JSON.stringify({
       status: "completed",
       steps: [{ type: "model_output", content: [{ type: "text", text: "do roti aur " }, { type: "text", text: "dal makhani" }] }],
-      usage: { input_tokens: 96, output_tokens: 7 },
+      // The real reply's usage shape (seen on a live call, 2026-11-28).
+      usage: { total_tokens: 103, total_input_tokens: 96, total_output_tokens: 7, total_thought_tokens: 0 },
     }));
   }) as unknown as typeof fetch;
   const p = geminiProvider({ apiKey: "g-test", fetchFn, languages: ["en-IN", "hi-IN"] });
