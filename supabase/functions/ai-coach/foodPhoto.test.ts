@@ -97,6 +97,11 @@ Deno.test("gate: a client that does not say it can send photos is not served one
   assertEquals(readPhotoRequest(body, { mode: "on" }).kind, "unavailable");
 });
 
+Deno.test("gate: a caller that claims only the photo capability is served (no food_create needed)", () => {
+  const g = readPhotoRequest(photoBody({ supports: [CLIENT_CAP_FOOD_PHOTO] }), { mode: "on" });
+  assertEquals(g.kind, "photo");
+});
+
 Deno.test("gate: flag on, a good photo passes with its note", () => {
   const g = readPhotoRequest(photoBody(), { mode: "on" });
   assert(g.kind === "photo");
