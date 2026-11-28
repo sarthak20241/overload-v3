@@ -1297,6 +1297,8 @@ export default function NutritionScreen() {
     // The sheet lives in the app window, so the keyboard would sit over it.
     Keyboard.dismiss();
     setWaitOpen(true);
+    // A photo starts a new meal: earlier turns must not steer its read.
+    if (photo) turnsRef.current = [];
     const turns = retry ? [] : turnsRef.current.slice();
     // A photo's turn is replaced with the words its read made (below), so a
     // follow-up reads what the card was built from.

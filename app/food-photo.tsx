@@ -51,10 +51,11 @@ export default function FoodPhotoScreen() {
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ meal?: string; day?: string }>();
   const meal: PendingPhotoMeal = isMeal(params.meal) ? params.meal : 'snack';
-  const day = useMemo(
-    () => (typeof params.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(params.day) ? new Date(`${params.day}T12:00:00`) : new Date()),
-    [params.day],
-  );
+  // A link's day that is not a real date ("2026-99-99") falls back to today.
+  const day = useMemo(() => {
+    const d = typeof params.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(params.day) ? new Date(`${params.day}T12:00:00`) : null;
+    return d && !Number.isNaN(d.getTime()) ? d : new Date();
+  }, [params.day]);
 
   // The same check as the food box's button (lib/foodPhoto), so a deep link
   // cannot open the camera on a build or account the button is hidden for:

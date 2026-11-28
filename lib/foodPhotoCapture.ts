@@ -50,6 +50,8 @@ export async function preparePhoto(photo: Photo): Promise<PhotoShot> {
 /** Remove the resized files once they are sent or thrown away. */
 export function discardShots(shots: { uri: string }[]): void {
   for (const s of shots) {
+    // A kept Retry copy carries no file.
+    if (!s.uri) continue;
     try {
       const f = new File(s.uri);
       if (f.exists) f.delete();
