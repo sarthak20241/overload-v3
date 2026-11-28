@@ -131,9 +131,10 @@ export default function FoodPhotoScreen() {
     }
   }, [busy, photoOutput]);
 
-  // The live list (shotsRef), so a quick double tap removes each photo once.
-  const retake = useCallback((index: number) => {
-    const gone = shotsRef.current[index];
+  // By the photo's own file, from the live list (shotsRef): a second tap on
+  // the same X finds nothing, and never removes the photo beside it.
+  const retake = useCallback((uri: string) => {
+    const gone = shotsRef.current.find((s) => s.uri === uri);
     if (!gone) return;
     discardShots([gone]);
     const next = shotsRef.current.filter((s) => s.uri !== gone.uri);
@@ -275,7 +276,7 @@ export default function FoodPhotoScreen() {
             <View key={s.uri} style={[styles.thumbWrap, { backgroundColor: C.card }]}>
               <Image source={{ uri: s.uri }} style={styles.thumb} resizeMode="cover" />
               <Pressable
-                onPress={() => retake(i)}
+                onPress={() => retake(s.uri)}
                 hitSlop={8}
                 style={styles.thumbX}
                 accessibilityRole="button"

@@ -687,7 +687,8 @@ function noteFor(t: Target, line: PhotoLine): { text: string | null; max: Confid
   const it = t.item;
   if (it.label && it.label.kcal === null) {
     // No panel went to the parse (panelOf), so the numbers are not the label's.
-    return { text: "I could not read the label's numbers, so these are from our food list.", max: "medium" };
+    const said = "I could not read the label's numbers, so these are from our food list.";
+    return { text: assumesOneServing(it) ? `${said} I assumed 1 serving.` : said, max: "medium" };
   }
   if (it.label) {
     const bits = ["Numbers from the label in your photo."];

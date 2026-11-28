@@ -495,6 +495,18 @@ Deno.test("card: a label whose calories could not be read does not claim the lab
   assertEquals(l.confidence, "medium");
 });
 
+Deno.test("card: an unreadable label still says the serving was assumed", () => {
+  // Per serving, no amount in the note: the words say "1 serving", so the card must too.
+  const read = labelRead([labelItem({ kcal: null })]);
+  assertStringIncludes(photoToText(read, "").text, "1 serving");
+  const [l] = markPhotoLines([line({ food_name: "RiteBite protein bar", grams: 50 })], read, []);
+  assertStringIncludes(l.assumption!, "I assumed 1 serving");
+  // With the amount from the note, nothing was assumed.
+  const given = labelRead([labelItem({ kcal: null }, { grams: { low: 25, best: 25, high: 25 }, grams_from: "note" })]);
+  const [g2] = markPhotoLines([line({ food_name: "RiteBite protein bar", grams: 25 })], given, []);
+  assert(!g2.assumption!.includes("assumed"), g2.assumption!);
+});
+
 Deno.test("card: a note the parse already put on the line is kept, and the whole fits 160 characters", () => {
   const read = plate([item()]);
   const [l] = markPhotoLines([line({ assumption: "Assumed skinless. ".repeat(12) })], read, []);

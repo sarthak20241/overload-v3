@@ -172,6 +172,9 @@ type ParseFlow =
        *  does not cost the user the capture and the note. In memory only:
        *  an error with no meal is never stored (lib/mealReady). */
       photo?: { images: PhotoShot[]; note: string; mealHint: MealType; day: Date };
+      /** This was an answer to a question about a photo meal. A Retry of it
+       *  is never auto-logged either. */
+      fromPhoto?: boolean;
       /** The reviewed card's `words`, kept so Retry rebuilds it whole. */
       words?: string;
       /** A suggestion's origin, kept so a retried Add is still reported as one. */
@@ -1219,6 +1222,9 @@ export default function NutritionScreen() {
     const prevReview = !photo && flowRef.current.status === 'review' ? flowRef.current : null;
     const pendingMeal = !retry && !photo && flowRef.current.status === 'declined' ? flowRef.current.pendingMeal : null;
     const pendingFromPhoto = !!pendingMeal && flowRef.current.status === 'declined' && !!flowRef.current.fromPhoto;
+    // The same answer, retried after it failed to send: still about a photo
+    // meal, so still never auto-logged.
+    const fromPhotoAnswer = pendingFromPhoto || (flowRef.current.status === 'error' && !!flowRef.current.fromPhoto);
     // A RETRY carries no context, deliberately. It re-sends one specific past
     // send, so the meal on screen is not what it is about: passing `pending`
     // here made the retry text arrive as a CORRECTION of an unrelated reviewed
@@ -1248,7 +1254,7 @@ export default function NutritionScreen() {
     // It cleared `pending` above, so the two rules do not fight.
     // Never for a photo: its portions are a read the user checks first.
     const auto = retry
-      ?? (!pending && !photo && !pendingFromPhoto && autoLogRef.current
+      ?? (!pending && !photo && !fromPhotoAnswer && autoLogRef.current
         ? { clientId: newAutoLogClientId(), logDate: ymd(logDay) }
         : null);
     if (auto) {
@@ -1460,6 +1466,7 @@ export default function NutritionScreen() {
       setFlow({
         status: 'error', raw: t, message: res.message,
         ...(auto ? { clientId: auto.clientId, logDate: auto.logDate } : {}),
+        ...(fromPhotoAnswer ? { fromPhoto: true } : {}),
       });
       return;
     }
