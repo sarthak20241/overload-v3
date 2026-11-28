@@ -166,6 +166,11 @@ export default function FoodPhotoScreen() {
   if (allowed !== true) {
     return (
       <View style={[styles.root, { backgroundColor: '#000' }]}>
+        {allowed === null && (
+          <View style={styles.centered}>
+            <ActivityIndicator color="#fff" />
+          </View>
+        )}
         {allowed === false && (
           <View style={styles.centered}>
             <Feather name="camera-off" size={28} color="#fff" />
