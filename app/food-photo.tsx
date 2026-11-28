@@ -94,19 +94,19 @@ export default function FoodPhotoScreen() {
   }, [busy, photoOutput]);
 
   const retake = useCallback((index: number) => {
-    setShots((s) => {
-      discardShots([s[index]]);
-      const next = s.filter((_, i) => i !== index);
-      if (next.length === 0) setStep('camera');
-      return next;
-    });
-  }, []);
+    const gone = shots[index];
+    if (!gone) return;
+    discardShots([gone]);
+    const next = shots.filter((_, i) => i !== index);
+    setShots(next);
+    if (next.length === 0) setStep('camera');
+  }, [shots]);
 
   const send = useCallback(() => {
     if (!shots.length) return;
     haptics.tap();
     track('meal_photo_sent', { images: shots.length, has_note: note.trim().length > 0, note_chars: note.trim().length });
-    setPendingPhoto({ images: shots, note, meal, day });
+    setPendingPhoto({ images: shots, note, meal, day }, Date.now(), discardShots);
     sentRef.current = true;
     router.back();
   }, [shots, note, meal, day]);

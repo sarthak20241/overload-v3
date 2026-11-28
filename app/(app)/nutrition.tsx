@@ -25,7 +25,7 @@ import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { getFlagVariant, track } from '@/lib/analytics';
 import * as Application from 'expo-application';
-import { FOOD_PHOTO_FLAG, photoButtonShows, takePendingPhoto, type PhotoShot } from '@/lib/foodPhoto';
+import { FOOD_PHOTO_FLAG, photoButtonShows, photoShownText, takePendingPhoto, withPhotoText, type PhotoShot } from '@/lib/foodPhoto';
 import { discardShots } from '@/lib/foodPhotoCapture';
 import { noteFoodLogged } from '@/lib/pushRegistration';
 import { announceReady } from '@/lib/readyNotice';
@@ -1282,7 +1282,7 @@ export default function NutritionScreen() {
     /** A card this message left on screen remembers the card before it. */
     const stamp = (f: ParseFlow & { status: 'review' }): ParseFlow & { status: 'review' } => (back ? withBack(f, back) : f);
     setFlow(photo
-      ? { status: 'analysing', raw: t || 'Your meal photo', auto: false, statusLabel: 'Reading your photo' }
+      ? { status: 'analysing', raw: photoShownText(t), auto: false, statusLabel: 'Reading your photo' }
       : { status: 'analysing', raw: t, auto: !!auto });
     // Every send gets the calm wait, a follow-up typed on the result screen
     // too: the sheet paints over the result (declared after it), and the
@@ -1396,7 +1396,7 @@ export default function NutritionScreen() {
         setFlow(stamp({ ...prevReview, meal: { ...prevReview.meal, items: kept }, notice: res.message, proposal: res.proposal ?? null }));
         return;
       }
-      setFlow({ status: 'declined', raw: t, message: res.message, pendingMeal: res.pendingMeal });
+      setFlow({ status: 'declined', raw: photo ? photoShownText(t) : t, message: res.message, pendingMeal: res.pendingMeal });
       return;
     }
     // The free tier's daily logs ran out. This is a paywall, not a breakage:
@@ -1408,7 +1408,7 @@ export default function NutritionScreen() {
       const capLine = capNotice(res);
       pushTurn('drona', capLine);
       if (prevReview) setFlow(stamp({ ...prevReview, notice: capLine, proposal: null }));
-      else setFlow({ status: 'declined', raw: t, message: capLine });
+      else setFlow({ status: 'declined', raw: photo ? photoShownText(t) : t, message: capLine });
       router.push({ pathname: '/upgrade', params: { context: capUpgradeContext(res) } });
       return;
     }
@@ -1417,7 +1417,7 @@ export default function NutritionScreen() {
       // A photo that failed is said plainly, with no Retry: a retry would send
       // the note alone, which is not the meal.
       if (photo) {
-        setFlow({ status: 'declined', raw: t, message: 'I could not read that photo. Take it again, or type what you ate.' });
+        setFlow({ status: 'declined', raw: photoShownText(t), message: 'I could not read that photo. Take it again, or type what you ate.' });
         return;
       }
       // Clear any standing proposal: it answered the previous message, and
@@ -1439,7 +1439,7 @@ export default function NutritionScreen() {
       if (!create) {
         const line = 'I could not put that one together. Give me the name and the calories and I will save it.';
         if (prevReview) setFlow(stamp({ ...prevReview, notice: line, proposal: null }));
-        else setFlow({ status: 'declined', raw: t, message: line });
+        else setFlow({ status: 'declined', raw: photo ? photoShownText(t) : t, message: line });
         return;
       }
       track('drona_food_create_proposed', {
@@ -1473,11 +1473,7 @@ export default function NutritionScreen() {
     // A photo meal: the turn and the card's text become the words the photo
     // read made, so "the rice was one cup" corrects them like typed food.
     const photoText = photo ? res.photoText ?? null : null;
-    if (photoText) {
-      const turnsNow = turnsRef.current;
-      const last = turnsNow.length - 1;
-      if (last >= 0 && turnsNow[last].role === 'user') turnsRef.current = [...turnsNow.slice(0, last), { role: 'user', text: photoText }];
-    }
+    if (photoText) turnsRef.current = withPhotoText(turnsRef.current, photoText);
     pushTurn('drona', res.meal.drona_line);
     // "Just log it": the server already wrote these lines, so there is nothing
     // left to review and no card to show. The rows themselves are the receipt -
@@ -2213,7 +2209,7 @@ export default function NutritionScreen() {
   // sentence above: taken once, and only while no parse is running here.
   useFocusEffect(useCallback(() => {
     if (!supabase || !isSignedIn || parseInFlight) return;
-    const p = takePendingPhoto();
+    const p = takePendingPhoto(Date.now(), discardShots);
     if (!p) return;
     void runParse(p.note, undefined, { mealHint: p.meal, day: p.day }, { images: p.images })
       .finally(() => discardShots(p.images));

@@ -97,21 +97,50 @@ export const PENDING_PHOTO_MAX_AGE_MS = 2 * 60_000;
 
 let _pending: PendingPhoto | null = null;
 
-/** Leave photos for Nutrition. A newer hand-off replaces an older one. */
+/** Deletes a dropped hand-off's resized files (lib/foodPhotoCapture
+ *  discardShots). Passed in so this file stays import-free. */
+export type DropShots = (shots: PhotoShot[]) => void;
+
+/** Leave photos for Nutrition. A newer hand-off replaces an older one, and
+ *  the older one's files go to `drop`. */
 export function setPendingPhoto(
   p: { images: PhotoShot[]; note: string; meal: PendingPhotoMeal; day: Date },
   now: number = Date.now(),
+  drop?: DropShots,
 ): void {
+  if (_pending) drop?.(_pending.images);
   const images = p.images.slice(0, PHOTO_MAX_IMAGES);
   _pending = images.length
     ? { images, note: p.note.replace(/\s+/g, ' ').trim(), meal: p.meal, day: new Date(p.day.getTime()), at: now }
     : null;
 }
 
-/** Take the waiting photos, if any. Reading them clears them. */
-export function takePendingPhoto(now: number = Date.now()): PendingPhoto | null {
+/** Take the waiting photos, if any. Reading them clears them. One too old
+ *  to send has its files go to `drop`; a taken one is the caller's to delete. */
+export function takePendingPhoto(now: number = Date.now(), drop?: DropShots): PendingPhoto | null {
   const p = _pending;
   _pending = null;
-  if (!p || now - p.at > PENDING_PHOTO_MAX_AGE_MS) return null;
+  if (!p) return null;
+  if (now - p.at > PENDING_PHOTO_MAX_AGE_MS) {
+    drop?.(p.images);
+    return null;
+  }
   return p;
+}
+
+// ── The card after a photo ──────────────────────────────────────────────────
+
+/** What the food box shows for a photo send: the note, or a plain label when
+ *  there is none, so a card never shows a blank request. */
+export function photoShownText(note: string): string {
+  return note.trim() || 'Your meal photo';
+}
+
+/** The conversation after a photo meal: the user's last turn becomes the
+ *  words the photo read made, so a follow-up ("the rice was one cup") is read
+ *  against what the card was built from. */
+export function withPhotoText<T extends { role: 'user' | 'drona'; text: string }>(turns: T[], photoText: string): T[] {
+  const last = turns.length - 1;
+  if (last < 0 || turns[last].role !== 'user') return turns;
+  return [...turns.slice(0, last), { ...turns[last], text: photoText }];
 }

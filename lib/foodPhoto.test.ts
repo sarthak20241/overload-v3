@@ -13,8 +13,10 @@ import {
   PHOTO_LONG_EDGE,
   photoButtonShows,
   photoCameraAllowed,
+  photoShownText,
   setPendingPhoto,
   takePendingPhoto,
+  withPhotoText,
 } from "./foodPhoto.ts";
 
 // ── sizing ──────────────────────────────────────────────────────────────────
@@ -104,4 +106,43 @@ Deno.test("hand-off: at most two images, none is nothing", () => {
 Deno.test("hand-off: an old one is dropped, not sent out of nowhere", () => {
   setPendingPhoto({ images: [img], note: "", meal: "snack", day: new Date() }, 0);
   assertEquals(takePendingPhoto(PENDING_PHOTO_MAX_AGE_MS + 1), null);
+});
+
+Deno.test("hand-off: a dropped one's files are handed back to be deleted", () => {
+  const dropped: string[][] = [];
+  const drop = (shots: { uri: string }[]) => dropped.push(shots.map((s) => s.uri));
+  const a = { ...img, uri: "file:///tmp/a.jpg" };
+  const b = { ...img, uri: "file:///tmp/b.jpg" };
+  // Replaced by a newer one.
+  setPendingPhoto({ images: [a], note: "", meal: "snack", day: new Date() }, 0, drop);
+  setPendingPhoto({ images: [b], note: "", meal: "snack", day: new Date() }, 1, drop);
+  assertEquals(dropped, [["file:///tmp/a.jpg"]]);
+  // Too old when taken.
+  assertEquals(takePendingPhoto(PENDING_PHOTO_MAX_AGE_MS + 10, drop), null);
+  assertEquals(dropped, [["file:///tmp/a.jpg"], ["file:///tmp/b.jpg"]]);
+  // A taken one is the caller's to delete, not dropped here.
+  setPendingPhoto({ images: [a], note: "", meal: "snack", day: new Date() }, 0, drop);
+  assert(takePendingPhoto(1, drop));
+  assertEquals(dropped.length, 2);
+});
+
+// ── the card after a photo ──────────────────────────────────────────────────
+
+Deno.test("turns: the photo's turn becomes the words its read made", () => {
+  const turns = [
+    { role: "drona" as const, text: "Logged your breakfast." },
+    { role: "user" as const, text: "A photo of my meal." },
+  ];
+  assertEquals(withPhotoText(turns, "dal tadka (~200 g)"), [
+    { role: "drona", text: "Logged your breakfast." },
+    { role: "user", text: "dal tadka (~200 g)" },
+  ]);
+  // Nothing to swap: the list is left as it is.
+  assertEquals(withPhotoText([], "dal"), []);
+  assertEquals(withPhotoText([{ role: "drona" as const, text: "hi" }], "dal"), [{ role: "drona", text: "hi" }]);
+});
+
+Deno.test("shown text: a photo with no note still says what was sent", () => {
+  assertEquals(photoShownText(""), "Your meal photo");
+  assertEquals(photoShownText("cooked in ghee"), "cooked in ghee");
 });
