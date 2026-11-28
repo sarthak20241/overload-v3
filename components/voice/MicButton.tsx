@@ -151,6 +151,7 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
   // prepare never returned that froze the JS thread.
   const level = useSharedValue(0);
   const [heldMs, setHeldMs] = useState(0);
+  const heldMsRef = useRef(0);
   useEffect(() => {
     if (phase !== 'recording') {
       level.value = withTiming(0, { duration: 120 });
@@ -160,7 +161,8 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
       try {
         const st = recorder.getStatus();
         level.value = withTiming(levelFromMetering(st.metering), { duration: 120 });
-        setHeldMs(st.durationMillis ?? 0);
+        heldMsRef.current = st.durationMillis ?? 0;
+        setHeldMs(heldMsRef.current);
       } catch {
         /* a status read that fails leaves the ring still */
       }
@@ -175,6 +177,7 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
   const begin = useCallback(async () => {
     setP('starting');
     setHeldMs(0);
+    heldMsRef.current = 0;
     try {
       await audio.setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
       await withinMs(recorder.prepareToRecordAsync(), START_BUDGET_MS);
@@ -197,7 +200,14 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
 
   const finish = useCallback(async () => {
     if (phaseRef.current !== 'recording') return;
-    const clipMs = recorder.getStatus().durationMillis ?? 0;
+    // A status read that throws must not leave the button stuck on
+    // 'recording': fall back to the length last polled.
+    let clipMs = heldMsRef.current;
+    try {
+      clipMs = recorder.getStatus().durationMillis ?? heldMsRef.current;
+    } catch {
+      /* keep the polled length */
+    }
     setP('sending');
     haptics.tick();
     try {
