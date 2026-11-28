@@ -1,4 +1,6 @@
 // Photo food logging: compare the photo-read models (FOOD_PHOTO_MODEL).
+// macOS only: photos are resized with `sips`. The API key comes from the env
+// or from the main checkout's .env.local (outside this worktree).
 //
 //   ANTHROPIC_API_KEY=... deno run -A scripts/food-photo-eval/run.ts
 //   MODELS=claude-haiku-5-5 ONLY=label-bar deno run -A ...      # one model, some cases

@@ -15,6 +15,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   Image,
   KeyboardAvoidingView,
   Linking,
@@ -122,14 +123,16 @@ export default function FoodPhotoScreen() {
     }
   }, [busy, photoOutput]);
 
+  // The live list (shotsRef), so a quick double tap removes each photo once.
   const retake = useCallback((index: number) => {
-    const gone = shots[index];
+    const gone = shotsRef.current[index];
     if (!gone) return;
     discardShots([gone]);
-    const next = shots.filter((_, i) => i !== index);
+    const next = shotsRef.current.filter((s) => s.uri !== gone.uri);
+    shotsRef.current = next;
     setShots(next);
     if (next.length === 0) setStep('camera');
-  }, [shots]);
+  }, []);
 
   const send = useCallback(() => {
     if (!shots.length) return;
@@ -141,6 +144,13 @@ export default function FoodPhotoScreen() {
   }, [shots, note, meal, day]);
 
   const close = useCallback(() => router.back(), []);
+
+  // The camera runs only while the app is in front.
+  const [appActive, setAppActive] = useState(AppState.currentState === 'active');
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (st) => setAppActive(st === 'active'));
+    return () => sub.remove();
+  }, []);
 
   // ── not here ───────────────────────────────────────────────────────────────
 
@@ -167,7 +177,7 @@ export default function FoodPhotoScreen() {
     return (
       <View style={[styles.root, { backgroundColor: '#000' }]}>
         {hasPermission && device ? (
-          <Camera style={StyleSheet.absoluteFill} isActive device={device} outputs={[photoOutput]} onError={() => setProblem('The camera stopped. Close this and try again.')} />
+          <Camera style={StyleSheet.absoluteFill} isActive={appActive} device={device} outputs={[photoOutput]} onError={() => setProblem('The camera stopped. Close this and try again.')} />
         ) : (
           <View style={styles.centered}>
             <Feather name={hasPermission ? 'camera-off' : 'camera'} size={28} color="#fff" />

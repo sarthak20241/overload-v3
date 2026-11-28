@@ -1440,7 +1440,8 @@ export default function NutritionScreen() {
       if (photo && !photo.retried) {
         setFlow({
           status: 'error', raw: photoShownText(t), message: 'I could not read that photo. Try it again.',
-          photo: { images: photo.images, note: t, mealHint: args.mealHint, day: logDay },
+          // The files are already deleted: keep only what a re-send uses.
+          photo: { images: photo.images.map((i) => ({ ...i, uri: '' })), note: t, mealHint: args.mealHint, day: logDay },
         });
         return;
       }
