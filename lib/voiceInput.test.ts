@@ -125,6 +125,8 @@ Deno.test("server answers: text, or the words to show", () => {
   const cases: [number, Record<string, unknown> | null, string][] = [
     [422, { error: "too_short" }, "nothing_heard"],
     [413, { error: "too_long" }, "too_long"],
+    [413, { error: "too_large" }, "too_large"],
+    [422, { error: "bad_audio" }, "bad_audio"],
     [429, { error: "voice_rate_limited", retry_after_seconds: 90 }, "rate_limited"],
     [402, { error: "pro_required", plan: "connect" }, "no_access"],
     [402, { error: "drona_access_required" }, "no_access"],
@@ -152,6 +154,8 @@ Deno.test("mic copy: says what leaves the phone, and no em dashes", () => {
   assert(/clip/i.test(MIC_COPY.explainBody));
   assert(/food names|names of (the )?foods/i.test(MIC_COPY.explainBody), MIC_COPY.explainBody);
   assert(/don't keep|do not keep/i.test(MIC_COPY.explainBody));
+  // A Drona question's words are also tidied by an AI service (Anthropic).
+  assert(/\bAI\b/.test(MIC_COPY.explainBody), MIC_COPY.explainBody);
   for (const v of Object.values(MIC_COPY)) assertFalse(v.includes("\u2014"));
 });
 

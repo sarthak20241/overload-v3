@@ -70,6 +70,7 @@ Deno.test("voice: the microphone is declared on both platforms, with an honest i
   // Says when it listens, what for, and what happens to the audio.
   assert(/food/i.test(plist) && /Drona/.test(plist), "the string must name the food log and Drona");
   assert(/not keep|doesn't keep|does not keep/i.test(plist), "the string must say the recording is not kept");
+  assert(/\bAI\b/.test(plist), "the string must say a Drona question's words go to an AI service");
   assert(!plist.includes("—"), "no em dashes");
   assert((expo.android?.permissions ?? []).includes("android.permission.RECORD_AUDIO"));
   assert(!(expo.android?.blockedPermissions ?? []).includes("android.permission.RECORD_AUDIO"), "RECORD_AUDIO is still blocked");

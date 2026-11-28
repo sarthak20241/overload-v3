@@ -185,6 +185,7 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
       // only stops a recorder that is recording, so never start this one.
       if (!mounted.current) {
         phaseRef.current = 'idle';
+        deleteClip(recorder.uri); // prepare may have created the file
         releaseSession(audio);
         return;
       }

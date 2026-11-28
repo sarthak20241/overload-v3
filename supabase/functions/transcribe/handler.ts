@@ -37,8 +37,9 @@ export interface TranscribeDeps {
   /** The names of foods this user logs, most recent first. */
   userFoods(authHeader: string): Promise<string[]>;
   /** Give back the slot this request was granted (the engine failed before
-   *  it billed). Runs as the service role: clients cannot call it. */
-  release(userId: string, slotId: number): Promise<void>;
+   *  it billed). True when it was given back, false past the day's refund
+   *  cap. Runs as the service role: clients cannot call it. */
+  release(userId: string, slotId: number): Promise<boolean>;
   provider: SttProvider | null;
   /** Null turns the chat cleanup off (no Anthropic key). */
   cleanup: CleanupCall | null;
@@ -194,8 +195,8 @@ export async function handleTranscribe(req: Request, deps: TranscribeDeps): Prom
     ev.reason = heard.reason;
     if (REFUNDED.has(heard.reason)) {
       try {
-        await deps.release(claims.sub, slot.slotId);
-        ev.slot_released = true;
+        // False past the 5-a-day refund cap: nothing was given back.
+        ev.slot_released = await deps.release(claims.sub, slot.slotId);
       } catch {
         ev.slot_released = false;
       }

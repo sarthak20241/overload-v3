@@ -363,6 +363,7 @@ function deps(over: Partial<TranscribeDeps> = {}): TestDeps {
     release: async (_uid: string, slotId: number) => {
       d.released++;
       d.releasedIds.push(slotId);
+      return true;
     },
     cleanup: async (raw: string) => ({ ok: true as const, text: raw.replace(/^um /, "") }),
     log: (e: Logged) => logs.push(e),
@@ -582,6 +583,10 @@ Deno.test("handler: a slot is given back when the engine fails before billing, n
   const ok = deps();
   await call(request({ bytes: m4a(3) }), ok);
   assertEquals(ok.released, 0);
+  // Past the 5-a-day refund cap, release answers false: the log says so.
+  const capped = deps({ provider: fakeProvider({ fail: "vendor_error" }), release: async () => false });
+  await call(request({ bytes: m4a(3) }), capped);
+  assertEquals(capped.logs.at(-1)?.slot_released, false);
   // A refund that fails does not turn a 502 into something else.
   const broken = deps({ provider: fakeProvider({ fail: "vendor_error" }), release: () => Promise.reject(new Error("db")) });
   assertEquals((await call(request({ bytes: m4a(3) }), broken)).status, 502);

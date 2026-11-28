@@ -119,7 +119,16 @@ export type TranscribeOutcome =
   | { ok: true; text: string }
   | {
     ok: false;
-    kind: 'nothing_heard' | 'too_long' | 'rate_limited' | 'no_access' | 'unavailable' | 'failed' | 'offline';
+    kind:
+      | 'nothing_heard'
+      | 'too_long'
+      | 'too_large'
+      | 'bad_audio'
+      | 'rate_limited'
+      | 'no_access'
+      | 'unavailable'
+      | 'failed'
+      | 'offline';
     message: string;
   };
 
@@ -133,6 +142,8 @@ export function transcribeOutcome(status: number, body: Record<string, unknown> 
   if (status === 0) return fail('offline');
   if (error === 'too_short') return fail('nothing_heard');
   if (error === 'too_long') return fail('too_long');
+  if (error === 'too_large') return fail('too_large');
+  if (error === 'bad_audio') return fail('bad_audio');
   if (status === 429) {
     const secs = Number(body?.retry_after_seconds ?? 0) || 60;
     const wait = secs >= 3600 ? `${Math.ceil(secs / 3600)} h` : `${Math.max(1, Math.ceil(secs / 60))} min`;
@@ -146,6 +157,8 @@ export function transcribeOutcome(status: number, body: Record<string, unknown> 
 const MESSAGES: Record<Exclude<TranscribeOutcome, { ok: true }>['kind'], string> = {
   nothing_heard: "I didn't catch that. Try again a little closer to the mic.",
   too_long: 'That ran past a minute. Keep it shorter and tap again.',
+  too_large: 'That clip was too big to send. Keep it shorter and tap again.',
+  bad_audio: "That recording didn't come through. Tap the mic and try again.",
   rate_limited: "That's a lot of talking for now. Try the mic again soon.",
   no_access: "Voice comes with in-app AI, and your plan doesn't include it. You can still type.",
   unavailable: "Voice isn't switched on yet. Type it for now.",
@@ -167,7 +180,7 @@ export const MIC_COPY = {
   explainBody:
     "Tap the mic, say it, tap again. I'll write it out in the box so you can check it before you send. " +
     'The clip goes to our speech service to be turned into text, with the food names you log so it spells them right. ' +
-    "We don't keep the clip.",
+    "For questions to me, our AI tidies the words. We don't keep the clip.",
   explainAllow: 'Turn on the mic',
   explainLater: 'Not now',
   settingsTitle: 'The mic is off for Overload',

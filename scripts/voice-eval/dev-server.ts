@@ -32,7 +32,7 @@ Deno.serve({ port }, (req) =>
     access: async () => ({ state: "free" }),
     reserve: async () => ({ ok: true, slotId: 0 }),
     userFoods: async () => [],
-    release: async () => {},
+    release: async () => false,
     provider: {
       ...fake,
       transcribe: async (clip, opts) => {

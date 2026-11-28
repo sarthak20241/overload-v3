@@ -29,7 +29,7 @@
         "usesNonExemptEncryption": false
       },
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Overload listens only while you tap the mic, to write out what you say for your food log or your question to Drona. The recording is sent to our speech service to be turned into text, and Overload does not keep it.",
+        "NSMicrophoneUsageDescription": "Overload listens only while you tap the mic, to write out what you say for your food log or your question to Drona. The recording is sent to our speech service to be turned into text, and a question's words are tidied by our AI. Overload does not keep the recording.",
         "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "Overload uses your camera to check your lifting form. Everything is analysed on your phone and your video is never uploaded."
       }
@@ -106,7 +106,7 @@
       [
         "expo-audio",
         {
-          "microphonePermission": "Overload listens only while you tap the mic, to write out what you say for your food log or your question to Drona. The recording is sent to our speech service to be turned into text, and Overload does not keep it.",
+          "microphonePermission": "Overload listens only while you tap the mic, to write out what you say for your food log or your question to Drona. The recording is sent to our speech service to be turned into text, and a question's words are tidied by our AI. Overload does not keep the recording.",
           "recordAudioAndroid": true
         }
       ],

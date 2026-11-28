@@ -124,8 +124,9 @@ Deno.serve(async (req) => {
     release: async (uid, slotId) => {
       // Service role, with the id from the verified JWT: this RPC is not
       // granted to clients, or they could hand their own slots back.
-      const { error } = await admin.rpc("release_voice_slot", { p_user_id: uid, p_slot_id: slotId });
+      const { data, error } = await admin.rpc("release_voice_slot", { p_user_id: uid, p_slot_id: slotId });
       if (error) throw new Error(error.message ?? "release failed");
+      return data === true;
     },
     provider: provider
       ? {
