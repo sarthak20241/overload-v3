@@ -86,14 +86,15 @@ export default function FoodPhotoScreen() {
     try {
       const photo = await photoOutput.capturePhoto({ flashMode: 'off' }, {});
       const shot = await preparePhoto(photo);
-      setShots((s) => [...s, shot].slice(0, PHOTO_MAX_IMAGES));
+      if (shots.length >= PHOTO_MAX_IMAGES) discardShots([shot]);
+      else setShots([...shots, shot]);
       setStep('review');
     } catch {
       setProblem('That one did not come through. Try again.');
     } finally {
       setBusy(false);
     }
-  }, [busy, photoOutput]);
+  }, [busy, photoOutput, shots]);
 
   const retake = useCallback((index: number) => {
     const gone = shots[index];

@@ -1419,7 +1419,8 @@ export default function NutritionScreen() {
       const capLine = capNotice(res);
       // The photo was never read: its turn goes, so nothing later reads it.
       if (photo) turnsRef.current = withoutPhotoTurn(turnsRef.current);
-      pushTurn('drona', capLine);
+      // A photo that was never read leaves no turns at all.
+      if (!photo) pushTurn('drona', capLine);
       if (prevReview) setFlow(stamp({ ...prevReview, notice: capLine, proposal: null }));
       else setFlow({ status: 'declined', raw: photo ? photoShownText(t) : t, message: capLine });
       router.push({ pathname: '/upgrade', params: { context: capUpgradeContext(res) } });
@@ -1438,6 +1439,8 @@ export default function NutritionScreen() {
         return;
       }
       if (photo) {
+        // The note goes back in the box, so typing the meal costs no retyping.
+        if (t) setText((cur) => cur.trim() ? cur : t);
         setFlow({ status: 'declined', raw: photoShownText(t), message: 'I could not read that photo. Take it again, or type what you ate.' });
         return;
       }
