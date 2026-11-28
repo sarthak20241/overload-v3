@@ -13,7 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { getExpoPushToken, getPushPermission, requestNotificationPermission } from '@/lib/notifications';
-import { ASK_COPY, askDecision, noteFoodDay } from '@/lib/pushAsk';
+import { ASK_COPY, askDecision, askThenSave, noteFoodDay } from '@/lib/pushAsk';
 import { localDayISO } from '@/lib/bodyLog';
 import { track } from '@/lib/analytics';
 
@@ -64,6 +64,16 @@ export async function syncPushToken(opts: { force?: boolean; userId?: string } =
   } catch {
     return false;
   }
+}
+
+/**
+ * Every notification permission ask in the app: the OS prompt, then on a yes
+ * the token saved at once (lib/pushAsk.ts askThenSave says why). Returns the
+ * answer without waiting on the save. Already granted counts as a yes, so the
+ * token is saved then too.
+ */
+export function requestPushPermission(userId?: string): Promise<boolean> {
+  return askThenSave(requestNotificationPermission, () => syncPushToken({ force: true, userId }));
 }
 
 /**
@@ -122,9 +132,7 @@ function askNow(): void {
       text: ASK_COPY.yes,
       onPress: () => {
         track('push_ask_answered', { answer: 'yes' });
-        void requestNotificationPermission().then((granted) => {
-          if (granted) void syncPushToken({ force: true });
-        });
+        void requestPushPermission();
       },
     },
   ]);

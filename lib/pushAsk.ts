@@ -34,6 +34,21 @@ export function askDecision(a: { days: string[]; askedAt: string | null; perm: P
 }
 
 /**
+ * Ask for permission; on a yes, start saving the token at once. Every ask goes
+ * through this (lib/pushRegistration.ts requestPushPermission). The saver that
+ * runs on app open (PushSync) lives in app/(app)/_layout.tsx, and sign-up's
+ * plan screen and paywall sit outside that group, so a yes given there was
+ * lost for anyone who left before the dashboard. The ask never waits on the
+ * save, and a failed save is never an error: it is tried again on app open.
+ */
+export async function askThenSave(ask: () => Promise<boolean>, save: () => Promise<unknown>): Promise<boolean> {
+  const granted = await ask();
+  // Through a resolved promise so a save that throws at once is caught too.
+  if (granted) Promise.resolve().then(save).catch(() => {});
+  return granted;
+}
+
+/**
  * The screen a tapped server push opens, or null when the push is not one of
  * these. 'drona' is our own message (drona-push mode "send"): it names a
  * screen, and an unknown one lands on home.
