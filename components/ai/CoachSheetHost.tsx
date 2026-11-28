@@ -26,7 +26,8 @@ import {
 } from '@/lib/readyNotice';
 import { isStaleCoachItem, readyInbox } from '@/lib/readyInbox';
 import { onPhaseDraftChange, readPhaseDraft } from '@/lib/phaseDraft';
-import { addNotificationTapListener, dismissNotification, presentNotificationNow, requestNotificationPermission } from '@/lib/notifications';
+import { addNotificationTapListener, dismissNotification, presentNotificationNow } from '@/lib/notifications';
+import { requestPushPermission } from '@/lib/pushRegistration';
 import { holdBackgroundTime, NOTICE_GRACE_MS } from '@/lib/backgroundTime';
 import { track } from '@/lib/analytics';
 
@@ -248,7 +249,9 @@ export function CoachSheetHost() {
       toastRef.current.info("Still on it. I'll tell you when it's ready.", { durationMs: 3000 });
       track('coach_kept_working', { screen: e.session.screen });
       // The one moment a "may I notify you" ask explains itself.
-      void requestNotificationPermission();
+      // Through requestPushPermission so a yes also saves the push token: this
+      // host is mounted at the root, outside (app) where PushSync lives.
+      void requestPushPermission();
       return;
     }
     // Seen as it ended: nothing to announce, unless the app was away. Then

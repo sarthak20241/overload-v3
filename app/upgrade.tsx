@@ -116,10 +116,8 @@ import { DronaMark } from '@/components/coach/DronaMark';
 import { DronaHeroOrb } from '@/components/coach/DronaHeroOrb';
 import { invalidateCoachAccess, useCoachAccess } from '@/hooks/useCoachAccess';
 import { prefetchDashboard } from '@/lib/dashboardData';
-import {
-  requestNotificationPermission,
-  scheduleTrialReminder,
-} from '@/lib/notifications';
+import { scheduleTrialReminder } from '@/lib/notifications';
+import { requestPushPermission } from '@/lib/pushRegistration';
 import {
   ensureIdentity,
   getCoachOfferings,
@@ -703,10 +701,12 @@ export default function UpgradeScreen() {
   const advanceFromReminder = useCallback(async () => {
     // The promise needs the permission. Denial is fine: the screen never
     // claimed the OS can't say no, and Apple emails trial reminders anyway.
-    const granted = await requestNotificationPermission();
+    // The yes also saves the push token: this screen sits outside (app), where
+    // the on-open saver (PushSync) lives, so nothing else would save it here.
+    const granted = await requestPushPermission(user?.id);
     track('paywall_step_advanced', { from: 'reminder', to: 'paywall', notifications_granted: granted, context });
     setStep('paywall');
-  }, [context]);
+  }, [context, user?.id]);
 
   const ctaLabel = paywallCta(side, period, selectedTrial);
   const selectedPrice = sidePrices[period] ?? null;

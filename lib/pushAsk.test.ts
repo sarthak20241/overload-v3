@@ -4,7 +4,7 @@
 // on a second day), and where a tapped push lands.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { ASK_COPY, askDecision, noteFoodDay, pushRoute, REASK_AFTER_DAYS } from "./pushAsk.ts";
+import { ASK_COPY, askDecision, askThenSave, noteFoodDay, pushRoute, REASK_AFTER_DAYS } from "./pushAsk.ts";
 
 const NOW = "2026-11-20T10:00:00Z";
 
@@ -62,4 +62,40 @@ Deno.test("ask copy: coach voice, short, no dashes, no numbers", () => {
     assert(!/\d/.test(s), s);
   }
   assert(ASK_COPY.body.length <= 140);
+});
+
+// A yes to the OS prompt saves the token at once, wherever the ask is. The
+// saver that runs on app open (PushSync) lives in app/(app)/_layout.tsx, and
+// sign-up's plan screen and paywall sit outside that group: a yes there was
+// never saved for anyone who left before the dashboard.
+Deno.test("a yes saves the token at once; a no saves nothing", async () => {
+  let saves = 0;
+  assertEquals(await askThenSave(async () => true, async () => { saves++; }), true);
+  assertEquals(saves, 1);
+  assertEquals(await askThenSave(async () => false, async () => { saves++; }), false);
+  assertEquals(saves, 1);
+});
+
+Deno.test("the ask never waits on the save, and a failed save is not an error", async () => {
+  let release = () => {};
+  const slow = new Promise<void>((r) => { release = r; });
+  assertEquals(await askThenSave(async () => true, () => slow), true); // returns before the save ends
+  release();
+  assertEquals(await askThenSave(async () => true, () => Promise.reject(new Error("offline"))), true);
+});
+
+Deno.test("no screen asks for notification permission without saving the token", async () => {
+  const offenders: string[] = [];
+  const walk = async (dir: string) => {
+    for await (const e of Deno.readDir(dir)) {
+      const path = `${dir}/${e.name}`;
+      if (e.isDirectory) await walk(path);
+      else if (/\.tsx?$/.test(e.name) && !e.name.includes(".test.")) {
+        if (/\brequestNotificationPermission\s*\(/.test(await Deno.readTextFile(path))) offenders.push(path);
+      }
+    }
+  };
+  const root = new URL("..", import.meta.url).pathname;
+  for (const dir of ["app", "components", "hooks"]) await walk(`${root}${dir}`);
+  assertEquals(offenders.map((p) => p.slice(root.length)), [], "use requestPushPermission from lib/pushRegistration.ts");
 });
