@@ -179,7 +179,12 @@ export function photoRefusal(
     };
   }
   if (gate.kind === "bad") return { status: 400, body: { error: gate.error } };
-  if (ctx.cardLines > 0) return { status: 400, body: { error: "photo_with_card" } };
+  if (ctx.cardLines > 0) {
+    return {
+      status: 200,
+      body: { parsed: null, declined: { message: "Add or clear the meal on screen first, then send the photo." }, proposal: null },
+    };
+  }
   return null;
 }
 
@@ -590,6 +595,19 @@ const NOTE_COVERS: Partial<Record<HiddenName, RegExp>> = {
 };
 
 const lastWord = (name: string) => name.toLowerCase().trim().split(/\s+/).pop() ?? "";
+
+/** The food's own name or method already says it was cooked in fat, so its
+ *  database price already holds that fat. Measured 2026-11-28 on 40 weighed
+ *  dishes (Nutrition5k): an assumed oil line on such dishes put calories
+ *  about 22 points too high and fat 6 g over. A fat is assumed only where the
+ *  name is silent: ghee on plain rice or a roti, butter on toast. */
+const COOKED_IN_FAT = new RegExp(
+  "\\b(?:fried|fry|fries|saut[eé]e?d?|roast(?:ed)?|grilled|baked|stir|pan|crisp(?:y)?|curry|masala|tadka|tarka|" +
+    "makhani|korma|gravy|bhurji|sabzi|sabji|bhaji|bhujia|poriyal|thoran|pakora|biryani|pulao|pilaf|tikka|" +
+    "butter(?:ed)?|ghee|oil|creamy|alfredo|carbonara)\\b",
+  "i",
+);
+const fatInName = (it: PhotoItem) => COOKED_IN_FAT.test(`${it.method ?? ""} ${it.name}`);
 /** The item is itself a cooking fat ("ghee", "olive oil"), not "peanut butter". */
 const isFatItem = (it: PhotoItem) => lastWord(it.name) in FAT_WORDS && assumedAmount(it.name) !== null;
 
@@ -604,7 +622,7 @@ function hiddenOf(read: PhotoRead, note: string): { assumed: AssumedFat[]; ask: 
     for (const h of it.hidden) {
       if (h.in_note) continue;
       if (COOKING_FATS.has(h.name)) {
-        if (fatCovered) continue;
+        if (fatCovered || fatInName(it)) continue;
         const per = assumedAmount(h.name)?.grams ?? 5;
         const have = assumed.find((a) => a.name === FAT_WORDS[h.name]);
         if (have) {

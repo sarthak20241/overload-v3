@@ -176,12 +176,15 @@ Deno.test("refusal: a bad image is a 400 that names the problem", () => {
   assertEquals(r.body.error, "image_too_large");
 });
 
-Deno.test("refusal: a photo beside a card under review is refused, so no line on it is relabelled", () => {
+Deno.test("refusal: a photo beside a card under review is a plain reply, so no line on it is relabelled", () => {
   const g = readPhotoRequest(photoBody(), { mode: "on" });
   assertEquals(photoRefusal(g, { cardLines: 0 }), null);
   const r = photoRefusal(g, { cardLines: 2 })!;
-  assertEquals(r.status, 400);
-  assertEquals(r.body.error, "photo_with_card");
+  // A reply, not an error: the app's error card would offer a Retry that
+  // can only fail the same way.
+  assertEquals(r.status, 200);
+  assertEquals(r.body.parsed, null);
+  assertStringIncludes((r.body.declined as { message: string }).message, "Add or clear");
 });
 
 // ── the model request ───────────────────────────────────────────────────────
@@ -373,10 +376,33 @@ Deno.test("label: the amount from the note sets the weight; per 100 g is said as
 const friedSabzi = (over: Record<string, unknown> = {}) =>
   item({ name: "aloo gobi sabzi", method: "sauteed", grams: { low: 150, best: 200, high: 260 }, hidden: [{ name: "oil", in_note: false }], ...over });
 
-Deno.test("hidden fat: a fried or curry dish with no fat in the note gets one assumed line", () => {
+/** Plain food with a fat put on it after cooking: the name says nothing of it. */
+const withGhee = (over: Record<string, unknown> = {}) =>
+  item({ name: "plain rice", method: "steamed", grams: { low: 150, best: 200, high: 260 }, hidden: [{ name: "ghee", in_note: false }], ...over });
+
+// Measured on 40 weighed dishes (Nutrition5k, 2026-11-28): an oil line added to
+// dishes named "fried", "sauteed" or "roasted" put calories 22 points too high
+// and fat 6 g over, because the price of a dish named that way already
+// includes its cooking fat. So the fat is assumed only where the name is silent.
+Deno.test("hidden fat: a dish whose name or method says it was cooked in fat gets no extra line", () => {
   const out = photoToText(plate([friedSabzi()]), "");
-  assertEquals(out.text, "sauteed aloo gobi sabzi (~200 g), cooking oil (~5 g)");
-  assertEquals(out.assumed, [{ name: "cooking oil", grams: 5, label: "1 tsp", for: ["aloo gobi sabzi"] }]);
+  assertEquals(out.text, "sauteed aloo gobi sabzi (~200 g)");
+  assertEquals(out.assumed, []);
+  for (const over of [
+    { name: "fried rice", method: null }, { name: "chicken curry", method: null }, { name: "green beans", method: "roasted" },
+    { name: "paneer butter masala", method: null }, { name: "dal tadka", method: null }, { name: "egg", method: "fried" },
+  ]) {
+    assertEquals(photoToText(plate([friedSabzi(over)]), "").assumed, [], JSON.stringify(over));
+  }
+});
+
+Deno.test("hidden fat: plain food with a fat put on it gets one assumed line", () => {
+  const out = photoToText(plate([withGhee()]), "");
+  assertEquals(out.text, "steamed plain rice (~200 g), ghee (~5 g)");
+  assertEquals(out.assumed, [{ name: "ghee", grams: 5, label: "1 tsp", for: ["plain rice"] }]);
+  // Butter on toast, ghee on a roti: the same.
+  assertEquals(photoToText(plate([withGhee({ name: "toast", method: "toasted", hidden: [{ name: "butter", in_note: false }] })]), "").assumed[0].name, "butter");
+  assertEquals(photoToText(plate([withGhee({ name: "roti", method: null })]), "").assumed[0].name, "ghee");
 });
 
 Deno.test("hidden fat: plain food gets none", () => {
@@ -388,24 +414,24 @@ Deno.test("hidden fat: plain food gets none", () => {
 Deno.test("note overrides the picture: a fat the note names is not assumed again", () => {
   // The model missed that the note covers it. The code still reads the note.
   for (const note of ["cooked in 1 tbsp ghee", "no oil", "air fried", "less butter than usual"]) {
-    const out = photoToText(plate([friedSabzi()]), note);
+    const out = photoToText(plate([withGhee()]), note);
     assertEquals(out.assumed, [], note);
-    assert(!out.text.includes("cooking oil"), note);
+    assert(out.forParse.read.every((l) => !/^(ghee|cooking oil|butter) \(~/.test(l)), note);
   }
 });
 
 Deno.test("note overrides the picture: the model's own in_note is honoured", () => {
-  const out = photoToText(plate([friedSabzi({ hidden: [{ name: "oil", in_note: true }] })]), "made at home the usual way");
+  const out = photoToText(plate([withGhee({ hidden: [{ name: "ghee", in_note: true }] })]), "made at home the usual way");
   assertEquals(out.assumed, []);
 });
 
 Deno.test("hidden fat: a fat already on the list is not added twice", () => {
-  const read = plate([friedSabzi(), item({ name: "ghee", method: null, grams: { low: 4, best: 5, high: 8 }, grams_from: "note" })]);
+  const read = plate([withGhee(), item({ name: "ghee", method: null, grams: { low: 4, best: 5, high: 8 }, grams_from: "note" })]);
   assertEquals(photoToText(read, "").assumed, []);
 });
 
 Deno.test("hidden fat: one line per fat, more dishes more fat, never past a tablespoon", () => {
-  const dishes = ["aloo gobi", "bhindi fry", "egg bhurji", "paneer masala"].map((name) => friedSabzi({ name }));
+  const dishes = ["plain rice", "roti", "khichdi", "idli"].map((name) => withGhee({ name }));
   const two = photoToText(plate(dishes.slice(0, 2)), "");
   assertEquals(two.assumed.length, 1);
   assertEquals(two.assumed[0].grams, 10);
@@ -471,11 +497,11 @@ Deno.test("card: the line is found by its weight when the catalog renamed it", (
 });
 
 Deno.test("card: the assumed fat line says it was assumed and how to drop it", () => {
-  const read = plate([friedSabzi()]);
+  const read = plate([withGhee()]);
   const { assumed } = photoToText(read, "");
   const out = markPhotoLines([
-    line({ food_name: "Aloo gobi", grams: 200 }),
-    line({ food_name: "Vegetable oil", grams: 5, kcal: 44, protein_g: 0, fat_g: 5 }),
+    line({ food_name: "Rice, white, steamed", grams: 200 }),
+    line({ food_name: "Ghee", grams: 5, kcal: 44, protein_g: 0, fat_g: 5 }),
   ], read, assumed);
   assertStringIncludes(out[1].assumption!, "Assumed");
   assertStringIncludes(out[1].assumption!, "1 tsp");
@@ -520,11 +546,11 @@ Deno.test("card: a note the parse already put on the line is kept, and the whole
 });
 
 Deno.test("Drona's line: says the portions are a read, and asks once about the assumed fat", () => {
-  const read = plate([friedSabzi()]);
+  const read = plate([withGhee()]);
   const { assumed, ask } = photoToText(read, "");
   const said = photoDronaLine("That is 310 kcal.", read, assumed, ask);
   assertStringIncludes(said, "That is 310 kcal.");
-  assertStringIncludes(said, "I assumed 1 tsp cooking oil");
+  assertStringIncludes(said, "I assumed 1 tsp ghee");
   assertEquals(said.split("?").length - 1, 1);
   assert(!said.includes("—"));
 });
@@ -683,16 +709,15 @@ Deno.test("end to end: read -> words -> card marks agree with each other", () =>
     item({ name: "roti", method: null, count: 2, unit: "piece", grams: { low: 60, best: 80, high: 100 }, hidden: [{ name: "ghee", in_note: false }] }),
   ]);
   const out = photoToText(read, "");
-  assertEquals(out.text, "sauteed aloo gobi sabzi (~200 g), roti - 2 piece (~80 g), cooking oil (~5 g), ghee (~5 g)");
+  // The sabzi's own name carries its oil; the roti's ghee is the hidden one.
+  assertEquals(out.text, "sauteed aloo gobi sabzi (~200 g), roti - 2 piece (~80 g), ghee (~5 g)");
   const lines = markPhotoLines([
     line({ food_name: "Aloo gobi", grams: 200 }),
     line({ food_name: "Roti", quantity: 2, serving_label: "piece", grams: 80 }),
-    line({ food_name: "Oil, vegetable", grams: 5 }),
     line({ food_name: "Ghee", grams: 5 }),
   ], read, out.assumed);
   assert(lines.every((l) => l.assumption), "every line says where it came from");
   assertStringIncludes(lines[2].assumption!, "Assumed");
-  assertStringIncludes(lines[3].assumption!, "Assumed");
 });
 
 // ── the final food step sees the note AND the photo read ────────────────────

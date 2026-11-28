@@ -371,7 +371,10 @@ const FOOD_BUILD_RECIPE = parseFoodBuildRecipeMode(Deno.env.get("FOOD_BUILD_RECI
 const FOOD_PHOTO = parseFoodPhotoMode(Deno.env.get("FOOD_PHOTO"));
 /** The photo read's model, switched by measurement (scripts/food-photo-eval). */
 const FOOD_PHOTO_MODEL = foodPhotoModel(Deno.env.get("FOOD_PHOTO_MODEL"));
-const FOOD_PHOTO_TIMEOUT_MS = Math.min(Math.max(envInt("FOOD_PHOTO_TIMEOUT_MS", 30_000), 5_000), 60_000);
+// Per try; a broken read is tried once more, then the normal parse runs.
+// 20 s each keeps the worst case (two tries, then the parse) well inside the
+// edge function's wall clock. A normal read takes 4 to 7 s.
+const FOOD_PHOTO_TIMEOUT_MS = Math.min(Math.max(envInt("FOOD_PHOTO_TIMEOUT_MS", 20_000), 5_000), 30_000);
 
 /** Precise food box, warm memory (foodWarmMemory.ts, plan sections 4 and 6):
  *  the later-mode agent (FOOD_AGENT_LATER, FOOD_FIRST_GATE) gets recall_food
