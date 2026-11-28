@@ -593,6 +593,31 @@ export function respellForJev(
   return { name, brand };
 }
 
+/** "my usual oats", "the usual protein shake": the words after "usual", up to
+ *  the next food in the message. */
+const USUAL_REF = /\b(?:my|the)\s+usual\s+(.+?)(?=\s*(?:,|;|\+|&|\.|$|\b(?:and|with|plus|then|also)\b))/giu;
+const wordsOf = (s: string) => memoryKey(s).split(" ").filter((w) => w.length >= 3);
+const sameWord = (a: string, b: string) => a === b || (Math.min(a.length, b.length) >= 3 && (a.startsWith(b) || b.startsWith(a)));
+
+/**
+ * Did the user call this line their usual ("my usual oats and a Chobani
+ * yogurt" -> the oats, not the yogurt)? Then they are asking for the food they
+ * log, so matchMemory asks Jev with "my usual" kept and any tier's numbers may
+ * answer. Extract drops the words: the line arrives as plain "Oats", and Jev
+ * rightly says plain oats are not her "Oatmeal, cooked" (demo account,
+ * 2026-11-18; memory-identity-eval usual-oatmeal: 0/3 as "Oats", 3/3 as "my
+ * usual oats").
+ */
+export function saysUsual(text: string, line: { name: string; brand: string | null }): boolean {
+  const mine = wordsOf(`${line.brand ?? ""} ${line.name}`);
+  if (mine.length === 0) return false;
+  for (const m of (text ?? "").matchAll(USUAL_REF)) {
+    const said = wordsOf(m[1]);
+    if (said.some((w) => mine.some((x) => sameWord(w, x)))) return true;
+  }
+  return false;
+}
+
 /** Ask Jev whether one of the user's remembered foods is this line. Never
  *  throws; any failure is "no match" and the tier runs as it would have. */
 export async function matchMemory(
@@ -600,8 +625,9 @@ export async function matchMemory(
   foods: MemoryFood[],
   line: { name: string; brand: string | null },
   /** choice: false skips the choice question. Quick has no decide step to
-   *  judge its answer, so there the call would be wasted. */
-  opts: { choice?: boolean } = {},
+   *  judge its answer, so there the call would be wasted. usual: the user
+   *  called this line their usual (saysUsual), so Jev reads "my usual". */
+  opts: { choice?: boolean; usual?: boolean } = {},
 ): Promise<MemoryMatch> {
   const lookup = memoryInputName(line);
   const trace: Record<string, unknown> = { item: line.name, lookup_name: lookup, remembered: foods.length, policy: "identity-v2" };
@@ -635,8 +661,10 @@ export async function matchMemory(
     }
     // Jev reads the brand as her saved foods spell it (respellForJev).
     const respelled = respellForJev(line, list);
-    const asked = respelled ?? line;
-    if (respelled) trace.respelled = { name: asked.name, brand: asked.brand };
+    const spelled = respelled ?? line;
+    if (respelled) trace.respelled = { name: spelled.name, brand: spelled.brand };
+    const asked = opts.usual ? { ...spelled, name: `my usual ${spelled.name}` } : spelled;
+    if (opts.usual) trace.usual = true;
     // The other remembered foods are deliberately NOT in the state: Jev judges
     // each one alone, so a second name for the same food cannot pull an answer
     // from "same" to "unclear".

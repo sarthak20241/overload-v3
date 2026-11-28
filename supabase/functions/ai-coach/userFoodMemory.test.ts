@@ -16,6 +16,7 @@ import {
   type MemoryFood,
   memoryNote,
   respellForJev,
+  saysUsual,
   brandApart,
   memoryQuestions,
   memoryChoiceQuestion,
@@ -198,7 +199,7 @@ Deno.test("no weight and no estimate: the memory is not used rather than guessed
 
 /** Fake network: Jev scores remembered rows by name; the model extracts one
  *  line and decides it onto whatever candidate id it is shown. */
-function net(opts: { scores: Record<string, number>; calls: string[]; line: Record<string, unknown>; extraction?: Record<string, unknown> }): typeof fetch {
+function net(opts: { scores: Record<string, number>; calls: string[]; line: Record<string, unknown>; extraction?: Record<string, unknown>; scoreOf?: (input: string, candidate: string) => number }): typeof fetch {
   return (async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url);
     const body = JSON.parse(String(init?.body ?? "{}"));
@@ -207,7 +208,8 @@ function net(opts: { scores: Record<string, number>; calls: string[]; line: Reco
       const answers: Record<string, unknown> = {};
       for (const [k, q] of Object.entries(body.questions as Record<string, { instructions: string }>)) {
         const name = /Candidate previously logged by this user: (.+)\.$/.exec(q.instructions)?.[1] ?? "";
-        const p = opts.scores[name] ?? 0;
+        const input = /Input food: (.+?)\. Candidate/.exec(q.instructions)?.[1] ?? "";
+        const p = opts.scoreOf ? opts.scoreOf(input, name) : opts.scores[name] ?? 0;
         answers[k] = { type: "score", probabilities: { "0": 1 - p, "1": 0, "2": p }, confidence: p };
       }
       return Response.json({ model: "jev-1.13.0", answers, usage: { input_tokens: 1, output_tokens: 1 } });
@@ -241,8 +243,8 @@ function net(opts: { scores: Record<string, number>; calls: string[]; line: Reco
 const liveAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
 const live = (over: Partial<MemoryEntry> = {}) => entry({ logged_at: liveAgo(1), ...over });
 
-function deps(entries: MemoryEntry[], scores: Record<string, number>, calls: string[], lookups: string[], line: Record<string, unknown>, extraction?: Record<string, unknown>): ParseMealDeps {
-  const fetchFn = net({ scores, calls, line, extraction });
+function deps(entries: MemoryEntry[], scores: Record<string, number>, calls: string[], lookups: string[], line: Record<string, unknown>, extraction?: Record<string, unknown>, scoreOf?: (input: string, candidate: string) => number): ParseMealDeps {
+  const fetchFn = net({ scores, calls, line, extraction, scoreOf });
   return {
     anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: true,
     searchFoods: async (q) => { lookups.push(`search:${q}`); return []; },
@@ -317,6 +319,59 @@ Deno.test("Quick: an accepted Quick guess is reused in Quick", async () => {
   );
   assertEquals(r.parsed!.items[0].numbers_tier, "fast");
   assertEquals(r.parsed!.items[0].source, "estimate");
+});
+
+// ── "my usual X" (demo account, 2026-11-18) ────────────────────────────────
+// Precise, "My usual oats and a Chobani yogurt". Her usual breakfast,
+// "Oatmeal, cooked" (a catalog row, logged in Quick 9 times), was left out of
+// the memory by the tier rule, and Jev scores bare "Oats" against it at about
+// 0.33 (dry oats vs cooked oatmeal). The parse logged dry oats at 607 kcal.
+// With the words "my usual" Jev serves it 3/3 (memory-identity-eval,
+// usual-oatmeal). The user asked for her own food, so any tier may answer.
+
+const OATMEAL = (over: Partial<MemoryEntry> = {}) => live({
+  food_name: "Oatmeal, cooked", kcal: 166, protein_g: 5.9, carb_g: 28.1, fat_g: 3.6, fiber_g: 4,
+  grams: 234, quantity: 1, serving_unit: "cup", source: "catalog", origin: "catalog", tier: "fast", ...over,
+});
+const OATS_LINE = { name: "Oats", brand: null, quantity: 1, unit: "serving", prep: null };
+/** Jev as measured: bare "Oats" is not her cooked oatmeal; "my usual Oats" is. */
+const oatsJev = (input: string, candidate: string) =>
+  candidate !== "Oatmeal, cooked" ? 0 : /^my usual /i.test(input) ? 0.9 : 0.33;
+
+Deno.test("saysUsual: the line the user called their usual, and only that one", () => {
+  const text = "My usual oats and a Chobani yogurt";
+  assertEquals(saysUsual(text, { name: "Oats", brand: null }), true);
+  assertEquals(saysUsual(text, { name: "Yogurt", brand: "Chobani" }), false);
+  assertEquals(saysUsual("oats and my usual coffee", { name: "oats", brand: null }), false);
+  assertEquals(saysUsual("oats and my usual coffee", { name: "coffee", brand: null }), true);
+  assertEquals(saysUsual("the usual protein shake", { name: "protein shake", brand: null }), true);
+  assertEquals(saysUsual("2 eggs", { name: "eggs", brand: null }), false);
+  assertEquals(saysUsual("an unusual oat bar", { name: "oat bar", brand: null }), false);
+});
+
+Deno.test("Precise: 'my usual oats' serves her usual oatmeal, even one logged in Quick", async () => {
+  const calls: string[] = [], lookups: string[] = [];
+  const r = await runParseMeal(
+    deps([OATMEAL(), OATMEAL({ logged_at: liveAgo(2) })], {}, calls, lookups, OATS_LINE, undefined, oatsJev),
+    { ...BASE, text: "My usual oats", mode: "super" },
+  );
+  assert(r.tool_calls.includes("user_memory_match"), JSON.stringify(r.tool_calls));
+  const item = r.parsed!.items[0];
+  assertEquals(item.food_name, "Oatmeal, cooked");
+  assertEquals(item.assumption, memoryNote({ ...food("x", 1), last_logged_at: liveAgo(1) }, "Asia/Kolkata"));
+  // Jev was asked with her words, not the bare name extract passed on.
+  assert(calls.includes("jev:my usual Oats"), JSON.stringify(calls));
+  // Her numbers keep their own tier: the card does not pass them off as Precise.
+  assertEquals(item.numbers_tier, "fast");
+});
+
+Deno.test("Precise: plain 'oats' still keeps the tier rule", async () => {
+  const calls: string[] = [], lookups: string[] = [];
+  const r = await runParseMeal(
+    deps([OATMEAL()], {}, calls, lookups, OATS_LINE, undefined, oatsJev),
+    { ...BASE, text: "oats", mode: "super" },
+  );
+  assert(!r.tool_calls.includes("user_memory_match"));
 });
 
 Deno.test("Quick: an unsure match keeps the model's own estimate", async () => {
