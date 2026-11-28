@@ -250,8 +250,9 @@ export function CoachSheetHost() {
       track('coach_kept_working', { screen: e.session.screen });
       // The one moment a "may I notify you" ask explains itself.
       // Through requestPushPermission so a yes also saves the push token: this
-      // host is mounted at the root, outside (app) where PushSync lives.
-      void requestPushPermission();
+      // host is mounted at the root, outside (app) where PushSync lives. The
+      // ref holds the signed-in id (this listener is set up once).
+      void requestPushPermission(lastUserRef.current ?? undefined);
       return;
     }
     // Seen as it ended: nothing to announce, unless the app was away. Then

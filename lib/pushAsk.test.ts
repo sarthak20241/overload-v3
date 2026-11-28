@@ -84,7 +84,9 @@ Deno.test("the ask never waits on the save, and a failed save is not an error", 
   assertEquals(await askThenSave(async () => true, () => Promise.reject(new Error("offline"))), true);
 });
 
-Deno.test("no screen asks for notification permission without saving the token", async () => {
+Deno.test("no code asks for notification permission without saving the token", async () => {
+  // The wrapper itself, and the one place that uses it.
+  const allowed = new Set(["lib/notifications.ts", "lib/pushRegistration.ts"]);
   const offenders: string[] = [];
   const walk = async (dir: string) => {
     for await (const e of Deno.readDir(dir)) {
@@ -96,6 +98,10 @@ Deno.test("no screen asks for notification permission without saving the token",
     }
   };
   const root = new URL("..", import.meta.url).pathname;
-  for (const dir of ["app", "components", "hooks"]) await walk(`${root}${dir}`);
-  assertEquals(offenders.map((p) => p.slice(root.length)), [], "use requestPushPermission from lib/pushRegistration.ts");
+  for (const dir of ["app", "components", "hooks", "lib"]) await walk(`${root}${dir}`);
+  assertEquals(
+    offenders.map((p) => p.slice(root.length)).filter((p) => !allowed.has(p)),
+    [],
+    "use requestPushPermission from lib/pushRegistration.ts",
+  );
 });
