@@ -89,9 +89,13 @@ export default function FoodPhotoScreen() {
   shotsRef.current = shots;
   // A shot that finishes after the screen has closed is deleted, not added.
   const mountedRef = useRef(true);
-  useEffect(() => () => {
-    mountedRef.current = false;
-    if (!sentRef.current) discardShots(shotsRef.current);
+  useEffect(() => {
+    // Set here too, so a remount that keeps the ref starts open again.
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (!sentRef.current) discardShots(shotsRef.current);
+    };
   }, []);
 
   const askForCamera = useCallback(async () => {
