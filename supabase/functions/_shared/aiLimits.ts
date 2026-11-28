@@ -33,7 +33,9 @@ export const AI_LIMITS = {
 // most a minute and gpt-transcribe bills $0.0045 a minute, so the worst case
 // a day is 25 x $0.0045 = $0.11 free and 200 x $0.0045 = $0.90 Pro. A spoken
 // food log or question runs 5-15 s, so real use is a fraction of that. The
-// burst stops a stuck button or a script, never a person.
+// burst stops a stuck button or a script, never a person. A clip the speech
+// engine refused is given back, at most 5 times a day per user (that number
+// is fixed in release_voice_slot, the same migration).
 export const VOICE_LIMITS = {
   burst: 12,
   burstWindowSeconds: 300,

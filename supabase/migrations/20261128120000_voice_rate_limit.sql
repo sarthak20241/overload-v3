@@ -18,15 +18,18 @@
 --
 -- release_voice_slot(user, slot_id) gives back the slot that request was
 -- granted (reserve returns its id), when the speech engine refused or broke
--- with no answer (most likely unbilled; the day cap bounds the rest). Service role only: a client that could
--- call it would hand its own slots back and have no limit.
+-- with no answer (most likely unbilled). The row stays, marked refunded, so
+-- it no longer counts toward the caps but does count toward the refunds:
+-- at most 5 a day per user, so a clip the engine keeps refusing cannot be
+-- retried for free forever. Service role only: a client that could call it
+-- would hand its own slots back and have no limit.
 --
 -- Same mechanics as the other AI buckets (0089, 20261026120000): SECURITY
 -- DEFINER, a per-user transaction advisory lock so a concurrent burst reads
 -- one count, RLS on with no policies so clients cannot read or write rows.
 -- Rows older than 24 hours are pruned for the caller on every reserve, so
 -- the table holds at most one day of timestamps per user. No audio and no
--- text are stored: a row is a user id and a time.
+-- text are stored: a row is a user id, a time, and whether it was refunded.
 --
 -- Account delete: a trigger on user_profiles, the pattern of
 -- 20261105120100. delete_user_data deletes the profile row last, so this
@@ -44,6 +47,9 @@ create table if not exists public.voice_rate_limit (
 -- Each granted slot has an id, so a failed request gives back its own row.
 alter table public.voice_rate_limit
   add column if not exists id bigint generated always as identity;
+-- A given-back slot: not counted toward the caps, counted toward refunds.
+alter table public.voice_rate_limit
+  add column if not exists refunded boolean not null default false;
 
 create index if not exists idx_voice_rl_recent
   on public.voice_rate_limit (user_id, request_at desc);
@@ -87,18 +93,18 @@ begin
 
   select count(*)::int into v_day_n
     from voice_rate_limit
-   where user_id = v_uid and request_at >= v_now - interval '24 hours';
+   where user_id = v_uid and not refunded and request_at >= v_now - interval '24 hours';
 
   select count(*)::int into v_burst_n
     from voice_rate_limit
-   where user_id = v_uid and request_at > v_now - make_interval(secs => p_burst_seconds);
+   where user_id = v_uid and not refunded and request_at > v_now - make_interval(secs => p_burst_seconds);
 
   -- A window frees a slot when the oldest counted clip in it ages out (the
   -- (n - cap + 1)th oldest, if rows past the cap exist).
   if v_burst_n >= p_burst then
     select request_at into v_frees_at
       from voice_rate_limit
-     where user_id = v_uid and request_at > v_now - make_interval(secs => p_burst_seconds)
+     where user_id = v_uid and not refunded and request_at > v_now - make_interval(secs => p_burst_seconds)
      order by request_at asc
      offset v_burst_n - p_burst limit 1;
     v_wait_burst := ceil(extract(epoch from
@@ -108,7 +114,7 @@ begin
   if v_day_n >= p_day_cap then
     select request_at into v_frees_at
       from voice_rate_limit
-     where user_id = v_uid and request_at >= v_now - interval '24 hours'
+     where user_id = v_uid and not refunded and request_at >= v_now - interval '24 hours'
      order by request_at asc
      offset v_day_n - p_day_cap limit 1;
     v_wait_day := ceil(extract(epoch from (v_frees_at + interval '24 hours' - v_now)))::int;
@@ -147,10 +153,18 @@ security definer
 set search_path = public
 as $$
 declare
-  v_n int;
+  v_n        int;
+  v_refunded int;
 begin
   perform pg_advisory_xact_lock(hashtext('voice_slot:' || p_user_id));
-  delete from voice_rate_limit where id = p_slot_id and user_id = p_user_id;
+  select count(*)::int into v_refunded
+    from voice_rate_limit
+   where user_id = p_user_id and refunded and request_at >= now() - interval '24 hours';
+  if v_refunded >= 5 then
+    return false;
+  end if;
+  update voice_rate_limit set refunded = true
+   where id = p_slot_id and user_id = p_user_id and not refunded;
   get diagnostics v_n = row_count;
   return v_n > 0;
 end;

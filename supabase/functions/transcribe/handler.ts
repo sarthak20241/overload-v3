@@ -102,6 +102,8 @@ export async function handleTranscribe(req: Request, deps: TranscribeDeps): Prom
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return done("method_not_allowed", json({ error: "method_not_allowed" }, 405));
 
+  // A request with no Content-Length (chunked) reads as 0 here and passes;
+  // readLimited below cuts it off at the same cap while it is read.
   const declared = Number(req.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
     ev.bytes = declared;

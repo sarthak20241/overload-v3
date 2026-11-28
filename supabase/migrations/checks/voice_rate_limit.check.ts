@@ -139,10 +139,35 @@ Deno.test("release: frees exactly the failed request's slot, for that user only"
   // Another user's id under u1's name frees nothing.
   assertEquals((await q(`select release_voice_slot('u1', $1) v`, [other]))[0].v, false);
   assertEquals((await q(`select release_voice_slot('u1', $1) v`, [failed]))[0].v, true);
-  const left = await q<{ id: number }>(`select id from voice_rate_limit order by id`);
-  assertEquals(left.map((r) => Number(r.id)), [later, other].map(Number).sort((x, y) => x - y));
+  const freed = await q<{ id: number }>(`select id from voice_rate_limit where refunded order by id`);
+  assertEquals(freed.map((r) => Number(r.id)), [Number(failed)]);
+  const counted = await q<{ id: number }>(`select id from voice_rate_limit where not refunded order by id`);
+  assertEquals(counted.map((r) => Number(r.id)), [later, other].map(Number).sort((x, y) => x - y));
   // Already freed: a second release frees nothing.
   assertEquals((await q(`select release_voice_slot('u1', $1) v`, [failed]))[0].v, false);
+});
+
+Deno.test("release: a freed slot does not count toward the burst or the day", async () => {
+  const { q, as, reserve } = await db();
+  await as("u1");
+  const a = (await reserve(2, 300, 2)).slot_id!;
+  await reserve(2, 300, 2);
+  assertEquals((await reserve(2, 300, 2)).inserted, false); // full
+  await as(null);
+  await q(`select release_voice_slot('u1', $1)`, [a]);
+  await as("u1");
+  assertEquals((await reserve(2, 300, 2)).inserted, true); // the freed one is back
+});
+
+Deno.test("release: at most 5 slots given back a day, so failures cannot be retried forever", async () => {
+  const { q, as, reserve } = await db();
+  for (let i = 0; i < 6; i++) {
+    await as("u1");
+    const id = (await reserve(100, 300, 100)).slot_id!;
+    await as(null);
+    const v = (await q(`select release_voice_slot('u1', $1) v`, [id]))[0].v;
+    assertEquals(v, i < 5, `refund ${i + 1}`);
+  }
 });
 
 Deno.test("release: service role only; a signed-in user cannot hand back slots", async () => {
