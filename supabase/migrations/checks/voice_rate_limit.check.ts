@@ -6,7 +6,8 @@
 // What it pins: no sign-in reserves nothing, the burst and the day cap each
 // stop a clip and say when the next is allowed, one user never uses another's
 // slots, day-old rows are pruned, clients cannot touch the table or call the
-// function as anon, and an account delete takes the rows with it.
+// function as anon, only the service role can give a slot back, and an
+// account delete takes the rows with it.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import { PGlite } from "npm:@electric-sql/pglite@0.2.17";
@@ -116,6 +117,33 @@ Deno.test("account delete takes the voice rows, and only that account's", async 
   await reserve();
   await q(`delete from user_profiles where clerk_user_id = 'u1'`);
   assertEquals(await q(`select user_id from voice_rate_limit`), [{ user_id: "u2" }]);
+});
+
+Deno.test("release: gives back the newest slot of that user from the last 2 minutes, nothing else", async () => {
+  const { q, as, reserve, age } = await db();
+  await as("u1");
+  await reserve(10);
+  await age("u1", 600); // an older clip, 10 min ago
+  await reserve(10); // the clip that failed
+  await as("u2");
+  await reserve(10);
+  await as(null);
+  assertEquals((await q(`select release_voice_slot('u1') v`))[0].v, true);
+  const left = await q<{ user_id: string; old: boolean }>(
+    `select user_id, request_at < now() - interval '5 minutes' as old from voice_rate_limit order by user_id`,
+  );
+  assertEquals(left, [{ user_id: "u1", old: true }, { user_id: "u2", old: false }]);
+  // Nothing recent left for u1: a second release frees nothing.
+  assertEquals((await q(`select release_voice_slot('u1') v`))[0].v, false);
+});
+
+Deno.test("release: service role only; a signed-in user cannot hand back slots", async () => {
+  const { q } = await db();
+  const fn = (role: string) =>
+    q<{ ok: boolean }>(`select has_function_privilege($1, 'public.release_voice_slot(text)', 'execute') ok`, [role]);
+  assertEquals((await fn("anon"))[0].ok, false);
+  assertEquals((await fn("authenticated"))[0].ok, false);
+  assertEquals((await fn("service_role"))[0].ok, true);
 });
 
 Deno.test("the edge function's numbers are sane against this function", () => {

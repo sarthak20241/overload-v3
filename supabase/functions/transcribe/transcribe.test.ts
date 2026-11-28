@@ -15,7 +15,7 @@
 //   before the paid call, Connect refused, and no transcript in the logs
 
 import { assert, assertEquals, assertFalse } from "jsr:@std/assert@1";
-import { inspectAudio, MAX_AUDIO_BYTES, MAX_AUDIO_SECONDS, MIN_AUDIO_SECONDS } from "./audio.ts";
+import { inspectAudio, MAX_AUDIO_BYTES, MAX_AUDIO_SECONDS, MAX_BYTES_PER_SECOND, MIN_AUDIO_SECONDS } from "./audio.ts";
 import { fakeProvider, openAiProvider, pickProvider, type SttProvider } from "./stt.ts";
 import { buildVocabulary, INDIAN_FOODS, sanitizeTerm } from "./vocabulary.ts";
 import { cleanTranscript, keepsOnlySaidWords } from "./cleanup.ts";
@@ -41,9 +41,30 @@ function concat(...parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
   return out;
 }
 
+/** An audio trak: hdlr 'soun', mdhd (timescale + duration), and stsz with
+ *  the number of AAC frames (1024 samples each). */
+function soundTrak(sampleRate: number, mdhdSeconds: number, frames: number): Uint8Array<ArrayBuffer> {
+  const hdlr = new Uint8Array(24);
+  hdlr.set(new TextEncoder().encode("soun"), 8);
+  const mdhd = new Uint8Array(24);
+  const mv = new DataView(mdhd.buffer);
+  mv.setUint32(12, sampleRate);
+  mv.setUint32(16, Math.round(mdhdSeconds * sampleRate));
+  const stsz = new Uint8Array(12);
+  new DataView(stsz.buffer).setUint32(8, frames);
+  const stbl = box("stbl", box("stsz", stsz));
+  const minf = box("minf", stbl);
+  const mdia = box("mdia", concat(box("mdhd", mdhd), box("hdlr", hdlr), minf));
+  return box("trak", mdia);
+}
+
 /** An m4a laid out the way AVAudioRecorder and MediaRecorder write one:
- *  ftyp, mdat, then moov holding mvhd with the clip's timescale and length. */
-function m4a(seconds: number, opts: { version?: 0 | 1; mdatBytes?: number; moovFirst?: boolean } = {}): Uint8Array<ArrayBuffer> {
+ *  ftyp, mdat, then moov holding mvhd with the clip's timescale and length,
+ *  and (with `track`) the audio trak whose frames a decoder actually plays. */
+function m4a(
+  seconds: number,
+  opts: { version?: 0 | 1; mdatBytes?: number; moovFirst?: boolean; track?: { mdhdSeconds: number; frames: number } } = {},
+): Uint8Array<ArrayBuffer> {
   const version = opts.version ?? 0;
   const timescale = 44100;
   const mvhd = new Uint8Array(version === 1 ? 112 : 100);
@@ -58,7 +79,7 @@ function m4a(seconds: number, opts: { version?: 0 | 1; mdatBytes?: number; moovF
   }
   const ftyp = box("ftyp", new TextEncoder().encode("M4A \0\0\0\0M4A mp42isom"));
   const mdat = box("mdat", new Uint8Array(opts.mdatBytes ?? 4000));
-  const moov = box("moov", box("mvhd", mvhd));
+  const moov = box("moov", concat(box("mvhd", mvhd), ...(opts.track ? [soundTrak(16000, opts.track.mdhdSeconds, opts.track.frames)] : [])));
   return opts.moovFirst ? concat(ftyp, moov, mdat) : concat(ftyp, mdat, moov);
 }
 
@@ -105,6 +126,47 @@ Deno.test("audio: refuses what is not an m4a or wav, and an m4a with no length",
   const lying = m4a(3);
   new DataView(lying.buffer).setUint32(0, 999999);
   assertEquals(inspectAudio(lying), { ok: false, reason: "bad_audio" });
+});
+
+Deno.test("audio: a real Apple m4a (16 kHz mono AAC) reads its true length", async () => {
+  // fixtures/said.m4a: macOS text-to-speech saying "two roti and a katori of
+  // dal makhani", converted with afconvert to the app's recording format.
+  const bytes = new Uint8Array(await Deno.readFile(new URL("./fixtures/said.m4a", import.meta.url)));
+  const r = inspectAudio(bytes);
+  assert(r.ok);
+  if (r.ok) assert(r.seconds >= 2.2 && r.seconds <= 2.5, `${r.seconds}`);
+});
+
+Deno.test("audio: a header that claims less than the audio holds is read at the longest", () => {
+  // mvhd says 3 s; the audio track's frames play for 70 s (1094 x 1024 / 16000).
+  const frames = Math.ceil((70 * 16000) / 1024);
+  const r = inspectAudio(m4a(3, { track: { mdhdSeconds: 3, frames } }));
+  assert(r.ok && r.seconds >= 70, JSON.stringify(r));
+  // mdhd alone lying long is also taken.
+  const r2 = inspectAudio(m4a(3, { track: { mdhdSeconds: 80, frames: 10 } }));
+  assert(r2.ok && r2.seconds >= 80, JSON.stringify(r2));
+  // An honest track agrees with mvhd.
+  const r3 = inspectAudio(m4a(3, { track: { mdhdSeconds: 3, frames: Math.round((3 * 16000) / 1024) } }));
+  assert(r3.ok && Math.abs(r3.seconds - 3) < 0.1, JSON.stringify(r3));
+});
+
+Deno.test("audio: a wav whose byte rate field lies is read from its sample format", () => {
+  const w = wav(30);
+  new DataView(w.buffer).setUint32(28, 16000 * 2 * 20, true); // claims 20x the real rate
+  const r = inspectAudio(w);
+  assert(r.ok && Math.abs(r.seconds - 30) < 0.01, JSON.stringify(r));
+});
+
+Deno.test("audio: a cut-off wav fmt chunk is bad_audio", () => {
+  const w = wav(1).slice(0, 30); // RIFF + WAVE + 'fmt ' header + 10 bytes of it
+  assertEquals(inspectAudio(w), { ok: false, reason: "bad_audio" });
+});
+
+Deno.test("audio: more bytes per second than any speech clip is refused", () => {
+  // 900 KB said to be 2 s: 450 KB/s, far past 16 kHz PCM (32 KB/s).
+  const r = inspectAudio(m4a(2, { mdatBytes: 900_000 }));
+  assertEquals(r, { ok: false, reason: "bad_audio" });
+  assert(MAX_BYTES_PER_SECOND >= 32_000);
 });
 
 Deno.test("audio: the caps are a minute of speech in under 1 MB", () => {
@@ -244,7 +306,9 @@ Deno.test("cleanup: the model's answer is used only when the guard passes; any f
 
 type Logged = Record<string, unknown>;
 
-function deps(over: Partial<TranscribeDeps> = {}): TranscribeDeps & { logs: Logged[]; reserved: number; provider: ReturnType<typeof fakeProvider> } {
+type TestDeps = TranscribeDeps & { logs: Logged[]; reserved: number; released: number; provider: ReturnType<typeof fakeProvider> };
+
+function deps(over: Partial<TranscribeDeps> = {}): TestDeps {
   const logs: Logged[] = [];
   const provider = fakeProvider({ text: "um I had panir and two roti" });
   const d = {
@@ -258,11 +322,15 @@ function deps(over: Partial<TranscribeDeps> = {}): TranscribeDeps & { logs: Logg
       return { ok: true as const };
     },
     userFoods: async () => ["Paneer Bhurji"],
+    released: 0,
+    release: async () => {
+      d.released++;
+    },
     cleanup: async (raw: string) => ({ ok: true as const, text: raw.replace(/^um /, "") }),
     log: (e: Logged) => logs.push(e),
     ...over,
   };
-  return d as TranscribeDeps & { logs: Logged[]; reserved: number; provider: ReturnType<typeof fakeProvider> };
+  return d as TestDeps;
 }
 
 function request(opts: { auth?: string | null; bytes?: Uint8Array; purpose?: string; method?: string; filename?: string } = {}): Request {
@@ -393,6 +461,71 @@ Deno.test("handler: logs never carry the transcript or the audio", async () => {
   assertFalse(all.includes("roti"));
   assertFalse(all.includes("Paneer Bhurji"));
   for (const l of d.logs) assert(typeof l.status === "string");
+});
+
+Deno.test("handler: a header that understates the clip is capped on its real length", async () => {
+  const frames = Math.ceil((70 * 16000) / 1024);
+  const d = deps();
+  const r = await call(request({ bytes: m4a(3, { track: { mdhdSeconds: 3, frames } }) }), d);
+  assertEquals([r.status, r.body.error], [413, "too_long"]);
+  assertEquals(d.reserved, 0);
+});
+
+function streamed(bytes: Uint8Array, chunk = 64 * 1024): ReadableStream<Uint8Array> {
+  let at = 0;
+  return new ReadableStream({
+    pull(c) {
+      if (at >= bytes.length) return c.close();
+      c.enqueue(bytes.slice(at, at + chunk));
+      at += chunk;
+    },
+  });
+}
+
+async function chunkedRequest(form: FormData): Promise<Request> {
+  // The same multipart body, sent as a stream with no Content-Length.
+  const body = new Response(form);
+  const type = body.headers.get("content-type")!;
+  const bytes = new Uint8Array(await body.arrayBuffer());
+  return new Request("http://local/transcribe", {
+    method: "POST",
+    headers: { Authorization: "Bearer good", "Content-Type": type },
+    body: streamed(bytes),
+  });
+}
+
+Deno.test("handler: no Content-Length, a body over the cap is cut off while it is read", async () => {
+  const form = new FormData();
+  form.append("audio", new File([new Uint8Array(MAX_AUDIO_BYTES * 3)], "clip.m4a", { type: "audio/mp4" }));
+  form.append("purpose", "food");
+  const req = await chunkedRequest(form);
+  assertEquals(req.headers.get("content-length"), null);
+  const d = deps();
+  const r = await call(req, d);
+  assertEquals([r.status, r.body.error], [413, "too_large"]);
+  assertEquals(d.reserved, 0);
+});
+
+Deno.test("handler: no Content-Length, a normal clip still works", async () => {
+  const form = new FormData();
+  form.append("audio", new File([m4a(3)], "clip.m4a", { type: "audio/mp4" }));
+  form.append("purpose", "food");
+  const r = await call(await chunkedRequest(form), deps());
+  assertEquals(r.status, 200);
+});
+
+Deno.test("handler: a slot is given back when the engine fails before billing, not on success or timeout", async () => {
+  for (const [fail, back] of [["vendor_error", 1], ["vendor_busy", 1], ["timeout", 0]] as const) {
+    const d = deps({ provider: fakeProvider({ fail }) });
+    await call(request({ bytes: m4a(3) }), d);
+    assertEquals([fail, d.released], [fail, back]);
+  }
+  const ok = deps();
+  await call(request({ bytes: m4a(3) }), ok);
+  assertEquals(ok.released, 0);
+  // A refund that fails does not turn a 502 into something else.
+  const broken = deps({ provider: fakeProvider({ fail: "vendor_error" }), release: () => Promise.reject(new Error("db")) });
+  assertEquals((await call(request({ bytes: m4a(3) }), broken)).status, 502);
 });
 
 Deno.test("handler: only POST", async () => {

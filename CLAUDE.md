@@ -150,9 +150,9 @@ deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_th
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_card_lines_recipe.check.ts # food_card_lines.recipe: a dish keeps its parts in the thread store (PGlite; not in CI)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/exercise_swap_tags.check.ts # exercises.target_muscle + swap_pattern: catalog names tagged, muscle_group untouched (PGlite; not in CI)
 deno test --allow-all lib/appPermissions.test.ts # no photo-library prompt or storage permission: no screen picks from the gallery; the mic declared with an honest iOS string
-deno test --allow-all supabase/functions/transcribe/ # voice input: clip length read from the file, one engine interface (fake + OpenAI), cleanup never adds words, auth and caps before any paid call, no transcript in logs
+deno test --allow-all supabase/functions/transcribe/ # voice input: clip length read from the file (longest reading, bytes-per-second ceiling), body read with a byte limit, one engine interface (fake + OpenAI), cleanup never adds words, auth and caps before any paid call, no transcript in logs
 deno test --allow-all lib/voiceInput.test.ts   # voice in the app: text goes after what is typed, mic ask + Settings, mic only on a 1.0.6+ binary, read-aloud text
-deno test --allow-all --node-modules-dir=none supabase/migrations/checks/voice_rate_limit.check.ts # voice_rate_limit on PGlite: burst + day cap with a wait, own slots only, account delete (not in CI)
+deno test --allow-all --node-modules-dir=none supabase/migrations/checks/voice_rate_limit.check.ts # voice_rate_limit on PGlite: burst + day cap with a wait, own slots only, slot given back by the service role only, account delete (not in CI)
 deno test --allow-all scripts/voice-eval/score.test.ts # engine comparison scoring: word error, food words spelled right, Latin letters
 # Speech engines on the owner's clips (Hinglish, food names). Dry run unless SPEND=1;
 # bills the engine's own key per audio minute, no Anthropic call. Clips stay in the git-ignored clips/.

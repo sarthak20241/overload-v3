@@ -10,6 +10,17 @@
 --   day    at most p_day_cap clips in a rolling 24 hours
 -- A denied clip inserts nothing and says when the next one is allowed.
 --
+-- The caps are arguments, and the function is granted to signed-in users, so
+-- anyone can call it directly with any numbers. That gains nothing: a direct
+-- call only adds rows for the caller (it never transcribes), and the edge
+-- function always passes its own numbers. The limit lives in the edge
+-- function, not here; this function only makes the count race-free.
+--
+-- release_voice_slot(user) gives back the newest slot from the last two
+-- minutes, when the speech engine failed before it billed (a refused or
+-- broken call). Service role only: a client that could call it would hand
+-- its own slots back and have no limit.
+--
 -- Same mechanics as the other AI buckets (0089, 20261026120000): SECURITY
 -- DEFINER, a per-user transaction advisory lock so a concurrent burst reads
 -- one count, RLS on with no policies so clients cannot read or write rows.
@@ -116,6 +127,32 @@ $$;
 revoke all on function public.try_reserve_voice_slot(int, int, int) from public;
 revoke all on function public.try_reserve_voice_slot(int, int, int) from anon;
 grant execute on function public.try_reserve_voice_slot(int, int, int) to authenticated;
+
+create or replace function public.release_voice_slot(p_user_id text)
+returns boolean
+language plpgsql
+volatile
+security definer
+set search_path = public
+as $$
+declare
+  v_n int;
+begin
+  perform pg_advisory_xact_lock(hashtext('voice_slot:' || p_user_id));
+  delete from voice_rate_limit
+   where ctid = (
+     select ctid from voice_rate_limit
+      where user_id = p_user_id and request_at > now() - interval '2 minutes'
+      order by request_at desc
+      limit 1
+   );
+  get diagnostics v_n = row_count;
+  return v_n > 0;
+end;
+$$;
+
+revoke all on function public.release_voice_slot(text) from public, anon, authenticated;
+grant execute on function public.release_voice_slot(text) to service_role;
 
 create or replace function public.delete_voice_rate_limit_on_profile_delete()
 returns trigger

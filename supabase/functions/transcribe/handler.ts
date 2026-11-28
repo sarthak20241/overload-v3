@@ -5,9 +5,10 @@
 // for the user to read and send. Nothing is sent on the user's behalf.
 //
 // Order, cheapest refusal first, and nothing paid before it is allowed:
-//   method -> declared size -> Clerk JWT -> body -> the clip's own size,
-//   format and length -> engine set up -> access -> rate-limit slot ->
-//   vocabulary -> engine -> (chat only) cleanup -> text.
+//   method -> declared size -> Clerk JWT -> body (read with a byte limit) ->
+//   the clip's own size, format and length -> engine set up -> access ->
+//   rate-limit slot -> vocabulary -> engine -> (chat only) cleanup -> text.
+// An engine failure that billed nothing gives its slot back.
 //
 // Privacy: the audio is held in memory for this request only. It is never
 // written to storage or a log, and neither is the transcript or the user's
@@ -33,6 +34,9 @@ export interface TranscribeDeps {
   ): Promise<{ ok: true } | { ok: false; retryAfterSeconds: number; reason: string } | { error: string }>;
   /** The names of foods this user logs, most recent first. */
   userFoods(authHeader: string): Promise<string[]>;
+  /** Give back the slot this request took (the engine failed before it
+   *  billed). Runs as the service role: clients cannot call it. */
+  release(userId: string): Promise<void>;
   provider: SttProvider | null;
   /** Null turns the chat cleanup off (no Anthropic key). */
   cleanup: CleanupCall | null;
@@ -50,8 +54,39 @@ function json(body: unknown, status = 200): Response {
 }
 
 // The multipart wrapper around the file is a few hundred bytes. Anything
-// declaring more than this is refused before its body is read.
+// declaring more than this is refused before its body is read, and a body
+// with no declared length (chunked) is cut off as soon as it passes it.
 const MAX_BODY_BYTES = MAX_AUDIO_BYTES + 64 * 1024;
+
+/** The body, read up to `max` bytes; null once it passes `max`. */
+async function readLimited(req: Request, max: number): Promise<Uint8Array<ArrayBuffer> | null> {
+  if (!req.body) return new Uint8Array(0);
+  const reader = req.body.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    parts.push(value);
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
+
+/** Engine failures that mean nothing was billed: a refused or broken call.
+ *  A timeout may have run (and billed) on the vendor's side, so its slot
+ *  stays spent. */
+const REFUNDED: ReadonlySet<string> = new Set(["vendor_busy", "vendor_error"]);
 
 export async function handleTranscribe(req: Request, deps: TranscribeDeps): Promise<Response> {
   const started = Date.now();
@@ -75,9 +110,11 @@ export async function handleTranscribe(req: Request, deps: TranscribeDeps): Prom
   if ("error" in claims) return done("unauthorized", json({ error: "Unauthorized" }, 401));
   ev.user_id = claims.sub;
 
+  const body = await readLimited(req, MAX_BODY_BYTES);
+  if (!body) return done("too_large", json({ error: "too_large", max_bytes: MAX_AUDIO_BYTES }, 413));
   let form: FormData;
   try {
-    form = await req.formData();
+    form = await new Response(body, { headers: { "content-type": req.headers.get("content-type") ?? "" } }).formData();
   } catch {
     return done("bad_request", json({ error: "bad_request", detail: "expected multipart form data" }, 400));
   }
@@ -149,6 +186,14 @@ export async function handleTranscribe(req: Request, deps: TranscribeDeps): Prom
   );
   if (!heard.ok) {
     ev.reason = heard.reason;
+    if (REFUNDED.has(heard.reason)) {
+      try {
+        await deps.release(claims.sub);
+        ev.slot_released = true;
+      } catch {
+        ev.slot_released = false;
+      }
+    }
     return done("stt_failed", json({ error: "stt_failed", reason: heard.reason }, 502));
   }
   ev.model = heard.model;
