@@ -160,3 +160,20 @@ Deno.test("a warm-up, finisher, cardio or rest time is never the session length"
   assertEquals(sessionMinutesFromText("Home, 20 minutes"), 20);
   assertEquals(sessionCap({ preferences: "add a 10 min finisher" }), null);
 });
+
+// PR #419 review: one timed exercise longer than the whole session ("1 x
+// 30min" under a 20 minute cap) could not be cut by dropping sets or
+// exercises. Its time is shortened to fit.
+Deno.test("a last timed exercise longer than the cap is shortened to fit", () => {
+  const long = { exercises: [{ name: "Bike", sets: 1, reps: "30min", rest_seconds: 0 }] };
+  const r = fitWorkoutToMinutes(long, 20);
+  assertEquals(r.trimmed, true);
+  assertEquals(r.workout.exercises[0].reps, "20 min");
+  assertEquals(estimateWorkoutMinutes(r.workout) <= 20, true);
+  const holds = { exercises: [{ name: "Plank", sets: 3, reps: "300s", rest_seconds: 60 }] };
+  const h = fitWorkoutToMinutes(holds, 10);
+  assertEquals(estimateWorkoutMinutes(h.workout) <= 10, true);
+  // One that already fits is left alone.
+  const fine = { exercises: [{ name: "Bike", sets: 1, reps: "15min", rest_seconds: 0 }] };
+  assertEquals(fitWorkoutToMinutes(fine, 20), { workout: fine, trimmed: false });
+});

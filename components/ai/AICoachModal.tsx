@@ -2719,8 +2719,11 @@ function GeneratePlanScreen({
   // The saved time, so a custom one no range holds ("15 min") is in the list.
   const [savedSessionMinutes, setSavedSessionMinutes] = useState<number | null>(null);
   const clerkUserId: string | null = clerkAuth?.userId ?? null;
+  // Until the saved time is read, the dropdown's default range is not sent: a
+  // Generate tap then would turn a saved 20 into the default's 60.
+  const [sessionSettled, setSessionSettled] = useState(() => !isSupabaseConfigured || !clerkUserId);
   useEffect(() => {
-    if (!isSupabaseConfigured || !planSupabase || !clerkUserId) return;
+    if (!isSupabaseConfigured || !planSupabase || !clerkUserId) { setSessionSettled(true); return; }
     let live = true;
     loadProfileRow(planSupabase, clerkUserId)
       .then((row) => {
@@ -2728,7 +2731,8 @@ function GeneratePlanScreen({
         setSavedSessionMinutes(sessionMinutesValue(row?.session_minutes));
         if (!sessionPicked.current) setSessionLength(coachFormSessionOption(row?.session_minutes));
       })
-      .catch(() => { /* keep the default */ });
+      .catch(() => { /* keep the default */ })
+      .finally(() => { if (live) setSessionSettled(true); });
     return () => { live = false; };
   }, [planSupabase, clerkUserId]);
   const [level, setLevel] = useState<'Beginner' | 'Intermediate' | 'Advanced'>('Intermediate');
@@ -2795,6 +2799,10 @@ function GeneratePlanScreen({
     track('coach_generation_stopped', { mode: 'generate_plan', had_partial: coachIntent.length > 0 });
   };
 
+  // The form's range, once it can be trusted: picked by the user, or opened on
+  // their saved time. Before that, the prompt names no range and the server
+  // keeps the saved time (sessionTime.sessionCap).
+  const formSession = sessionPicked.current || sessionSettled ? sessionLength : null;
   const buildInitialPrompt = () =>
     // An automatic build has no form answers, so it asks Drona to use what
     // the profile already says rather than the form's defaults.
@@ -2807,8 +2815,8 @@ function GeneratePlanScreen({
       // Phase-seeded build: the note carries the phase's exact split + cadence
       // (which may be a multi-day rotation, not a weekly count), so follow it
       // rather than imposing a "${days}/week" that would misrepresent it.
-      ? `Design my training split. ${seed.note} Keep sessions about ${sessionLength}, ${level} level. Match that split and cadence exactly, do not convert it into a generic fixed number of days per week. Use my training data for exercise selection, volume, and progression. Give each day a short "note" with its theme and per-exercise cues. Before calling generate_plan, write one short sentence (5-15 words) signaling your intent.`
-      : `Design a multi-day training plan for me. Goal: ${goal || 'general fitness'}. ${days}/week, ${sessionLength} sessions, ${level} level. Use my training data to choose appropriate volume, exercise selection, and progression. Give each day a short "note" with its theme and add per-exercise notes for form, intent, or RIR cues. Before calling generate_plan, write one short sentence (5-15 words) signaling your intent.`;
+      ? `Design my training split. ${seed.note} ${formSession ? `Keep sessions about ${formSession}` : 'Keep my saved session length (45-60 minutes if none is saved)'}, ${level} level. Match that split and cadence exactly, do not convert it into a generic fixed number of days per week. Use my training data for exercise selection, volume, and progression. Give each day a short "note" with its theme and per-exercise cues. Before calling generate_plan, write one short sentence (5-15 words) signaling your intent.`
+      : `Design a multi-day training plan for me. Goal: ${goal || 'general fitness'}. ${days}/week, ${formSession ? `${formSession} sessions` : 'sessions at my saved length (45-60 minutes if none is saved)'}, ${level} level. Use my training data to choose appropriate volume, exercise selection, and progression. Give each day a short "note" with its theme and add per-exercise notes for form, intent, or RIR cues. Before calling generate_plan, write one short sentence (5-15 words) signaling your intent.`;
 
   const runGeneration = async (
     conversation: { role: string; content: string }[],
@@ -3000,17 +3008,27 @@ function GeneratePlanScreen({
           // no account, so claim it now, BEFORE the plan (and its refine
           // button) shows; a payer's claim is harmless.
           if (planSupabase) {
-            try {
-              const { data, error } = await planSupabase.rpc('try_claim_free_phase_build', { p_phase_id: phaseId });
-              const row = (Array.isArray(data) ? data[0] : data) as { allowed?: boolean; reason?: string } | null;
-              // Not claimed: a free account's Refine with Drona will meet
-              // the paywall. Rare on a brand-new account; tracked to see it.
-              if (error || !row?.allowed) {
-                console.warn('[prebuild] free build claim failed', error?.message ?? row?.reason);
-                track('phase_prebuild_claim_failed', { reason: error ? 'rpc_error' : (row?.reason ?? 'unknown') });
+            // Two tries, a second apart: a network blip must not leave a free
+            // account's refine refused for the life of this draft.
+            let reason = 'unknown';
+            for (let attempt = 0; attempt < 2; attempt++) {
+              try {
+                const { data, error } = await planSupabase.rpc('try_claim_free_phase_build', { p_phase_id: phaseId });
+                const row = (Array.isArray(data) ? data[0] : data) as { allowed?: boolean; reason?: string } | null;
+                if (!error && row?.allowed) { reason = ''; break; }
+                reason = error ? 'rpc_error' : (row?.reason ?? 'unknown');
+                // A refusal (not an error) will not change on a retry.
+                if (!error) break;
+              } catch {
+                reason = 'threw';
               }
-            } catch (e) {
-              track('phase_prebuild_claim_failed', { reason: 'threw' });
+              if (attempt === 0) await new Promise((r) => setTimeout(r, 1000));
+            }
+            // Not claimed: a free account's Refine with Drona will meet the
+            // paywall. Rare on a brand-new account; tracked to see it.
+            if (reason) {
+              console.warn('[prebuild] free build claim failed', reason);
+              track('phase_prebuild_claim_failed', { reason });
             }
           }
           if (!alive) return;
@@ -5027,7 +5045,9 @@ export function CoachSheet({
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (deferHardwareBack) return false;
       // Sign-up's build: the plan screen decides, and never the menu.
-      if (signupBuild && accessAllowed && screen === 'plan') { planBackRef.current?.(); return true; }
+      // While Drona is working (a refine reply streaming), back waits: leaving
+      // the chat would abort the reply and lose that conversation.
+      if (signupBuild && accessAllowed && screen === 'plan') { if (!activity.busy) planBackRef.current?.(); return true; }
       // A plan's exercise swap list is open: back returns to the plan.
       if (accessAllowed && screen === 'plan' && planBackRef.current) { planBackRef.current(); return true; }
       // Gate or menu owns the modal → close it entirely (nothing to lose).

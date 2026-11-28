@@ -12,11 +12,16 @@
 --   ip:     15 / rolling hour, 40 / rolling day
 --   global: 500 / rolling day (wallet circuit breaker)
 -- A slot is RESERVED before the build (the row is written then, under a
--- lock), so a burst of requests from one device cannot all pass the check
--- before any row exists. A build that fails before the model runs gives its
--- slot back (release_anon_phase_slot); once the model has run, the slot is
--- spent even if no plan came out. With no IP known (p_ip null) the IP caps
--- are skipped, so such requests never share one bucket.
+-- lock, outcome 'pending'), so a burst of requests from one device cannot all
+-- pass the check before any row exists. Then:
+--   * the build fails before the model runs: the row is deleted
+--     (release_anon_phase_slot), nothing was spent
+--   * the model ran: finish_anon_phase_slot marks it 'ok' or 'failed'
+-- The GLOBAL cap counts every row, failed ones too: every model run is paid
+-- for, so the breaker bounds spend. The device and IP caps count successful
+-- builds and builds still in flight (pending, under 5 minutes old), so a real
+-- person whose build failed may try again. With no IP known (p_ip null) the
+-- IP caps are skipped, so such requests never share one bucket.
 --
 -- device_id comes from the client and the IP from the first
 -- x-forwarded-for entry; both can be faked. The per-device and per-IP caps
@@ -30,7 +35,8 @@ create table if not exists public.anon_phase_usage (
   id bigint generated always as identity primary key,
   device_id text not null,
   ip text,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  outcome text not null default 'pending' check (outcome in ('pending', 'ok', 'failed'))
 );
 
 create index if not exists anon_phase_usage_device_idx
@@ -69,25 +75,29 @@ begin
   end if;
 
   select count(*) into dev_day from anon_phase_usage
-    where device_id = p_device_id and created_at > now() - interval '1 day';
+    where device_id = p_device_id and created_at > now() - interval '1 day'
+      and (outcome = 'ok' or (outcome = 'pending' and created_at > now() - interval '5 minutes'));
   if dev_day >= 2 then
     return query select false, 'device_day', null::bigint; return;
   end if;
 
   select count(*) into dev_life from anon_phase_usage
-    where device_id = p_device_id;
+    where device_id = p_device_id
+      and (outcome = 'ok' or (outcome = 'pending' and created_at > now() - interval '5 minutes'));
   if dev_life >= 3 then
     return query select false, 'device_life', null::bigint; return;
   end if;
 
   select count(*) into ip_hr from anon_phase_usage
-    where ip = p_ip and created_at > now() - interval '1 hour';
+    where ip = p_ip and created_at > now() - interval '1 hour'
+      and (outcome = 'ok' or (outcome = 'pending' and created_at > now() - interval '5 minutes'));
   if ip_hr >= 15 then
     return query select false, 'ip_hour', null::bigint; return;
   end if;
 
   select count(*) into ip_day from anon_phase_usage
-    where ip = p_ip and created_at > now() - interval '1 day';
+    where ip = p_ip and created_at > now() - interval '1 day'
+      and (outcome = 'ok' or (outcome = 'pending' and created_at > now() - interval '5 minutes'));
   if ip_day >= 40 then
     return query select false, 'ip_day', null::bigint; return;
   end if;
@@ -96,6 +106,18 @@ begin
     returning id into v_id;
   return query select true, null::text, v_id;
 end;
+$$;
+
+-- The model ran: record how it went. 'failed' still counts toward the
+-- global cap (it was paid for) but no longer against the device or IP.
+create or replace function public.finish_anon_phase_slot(p_slot_id bigint, p_ok boolean)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  update anon_phase_usage set outcome = case when p_ok then 'ok' else 'failed' end
+   where id = p_slot_id;
 $$;
 
 -- A build that failed before the model ran gives its slot back.
@@ -113,3 +135,5 @@ revoke all on function public.reserve_anon_phase_slot(text, text) from public, a
 grant execute on function public.reserve_anon_phase_slot(text, text) to service_role;
 revoke all on function public.release_anon_phase_slot(bigint) from public, anon, authenticated;
 grant execute on function public.release_anon_phase_slot(bigint) to service_role;
+revoke all on function public.finish_anon_phase_slot(bigint, boolean) from public, anon, authenticated;
+grant execute on function public.finish_anon_phase_slot(bigint, boolean) to service_role;

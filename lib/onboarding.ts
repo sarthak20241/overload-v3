@@ -386,6 +386,9 @@ export async function saveOnboardingProfile(
   if (answers.goalWeightKg && answers.goalWeightKg > 0) patch.goal_weight_kg = answers.goalWeightKg;
 
   if (opts.isGuest || !opts.clerkId) {
+    // A guest keeps their session time too (the signed-in row sets it below).
+    const guestMinutes = sessionMinutesValue(answers.sessionMinutes);
+    if (guestMinutes != null) patch.session_minutes = guestMinutes;
     if (Object.keys(patch).length > 0) updateGuestProfile(patch);
     return;
   }

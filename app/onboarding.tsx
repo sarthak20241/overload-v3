@@ -1095,6 +1095,9 @@ export default function OnboardingScreen() {
                   selected={answers.sessionMinutes != null && !isPresetSessionMinutes(answers.sessionMinutes)}
                   onPress={() => {
                     track('onboarding_session_custom_opened', {});
+                    // A preset tapped a moment ago must not move the screen on
+                    // under the wheel.
+                    if (advanceTimer.current) { clearTimeout(advanceTimer.current); advanceTimer.current = null; }
                     if (answers.sessionMinutes != null) setCustomMinutes(answers.sessionMinutes);
                     setSessionCustom(true);
                   }}

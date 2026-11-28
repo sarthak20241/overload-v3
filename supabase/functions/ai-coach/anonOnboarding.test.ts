@@ -234,3 +234,12 @@ Deno.test("phase 1 brief: every word of the block arrives fenced, split, emphasi
     assertStringIncludes(msg, word);
   }
 });
+
+// PR #419 review: with no session step answer, a time written in the
+// preferences ("Home, 20 minutes") is the limit, not the 45-60 default.
+Deno.test("phase 1 brief: the limit passed in is the one written, the default only when none", () => {
+  const intake = sanitizeAnonIntake({ experience: "beginner", frequency: 3, routinePrefs: "Home, 20 minutes" });
+  const phase = sanitizeAnonPhase({ name: "Base" })!;
+  assertStringIncludes(buildAnonPhaseMessage(intake, phase, 20), "Keep sessions about 20 min.");
+  assertStringIncludes(buildAnonPhaseMessage(intake, phase, null), "Keep sessions about 45-60 min.");
+});

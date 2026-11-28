@@ -26,8 +26,9 @@ async function db() {
     if (r.slot_id != null) await q(`select release_anon_phase_slot($1)`, [r.slot_id]);
     return { allowed: r.allowed, reason: r.reason };
   };
-  const use = async (device: string, ip: string | null, ago = "0 minutes") =>
-    await q(`insert into anon_phase_usage (device_id, ip, created_at) values ($1, $2, now() - $3::interval)`, [device, ip, ago]);
+  // A finished, successful build (the counts the caps read).
+  const use = async (device: string, ip: string | null, ago = "0 minutes", outcome = "ok") =>
+    await q(`insert into anon_phase_usage (device_id, ip, created_at, outcome) values ($1, $2, now() - $3::interval, $4)`, [device, ip, ago, outcome]);
   return { q, check, use };
 }
 
@@ -69,6 +70,36 @@ Deno.test("no IP known: only the device and global caps apply, never one shared 
   assertEquals(await check("n21", null), { allowed: false, reason: "device_day" });
 });
 
+Deno.test("a build that failed after the model ran: the phone may try again, the daily total still counts it", async () => {
+  const { q, check, use } = await db();
+  await use("d1", "6.6.6.6", "0 minutes", "failed");
+  await use("d1", "6.6.6.6", "0 minutes", "failed");
+  await use("d1", "6.6.6.6", "0 minutes", "failed");
+  // Three failures: the phone's own caps are untouched.
+  assertEquals(await check("d1", "6.6.6.6"), { allowed: true, reason: null });
+  // But every paid run counts toward the global breaker.
+  await q(`insert into anon_phase_usage (device_id, ip, outcome) select 'f' || i, null, 'failed' from generate_series(1, 497) i`);
+  assertEquals(await check("d2", "7.7.7.7"), { allowed: false, reason: "global_day" });
+});
+
+Deno.test("finish: ok counts against the phone, failed does not; a stuck pending row stops counting after a few minutes", async () => {
+  const { q } = await db();
+  const reserve = async () =>
+    (await q<{ allowed: boolean; slot_id: number | null }>(`select * from reserve_anon_phase_slot('d9', null)`))[0];
+  const a = await reserve();
+  await q(`select finish_anon_phase_slot($1, false)`, [a.slot_id]);
+  const b = await reserve();
+  await q(`select finish_anon_phase_slot($1, true)`, [b.slot_id]);
+  assertEquals((await q(`select outcome from anon_phase_usage order by id`)).map((r) => r.outcome), ["failed", "ok"]);
+  // One success and one in-flight build fill the day.
+  const c = await reserve();
+  assertEquals(c.allowed, true);
+  assertEquals((await reserve()).allowed, false);
+  // An in-flight row whose request died (never finished) frees the phone later.
+  await q(`update anon_phase_usage set created_at = now() - interval '10 minutes' where id = $1`, [c.slot_id]);
+  assertEquals((await reserve()).allowed, true);
+});
+
 Deno.test("global breaker: 500 a day across everyone", async () => {
   const { q, check } = await db();
   await q(`insert into anon_phase_usage (device_id, ip) select 'g' || i, 'ip' || i from generate_series(1, 500) i`);
@@ -94,6 +125,9 @@ Deno.test("a reservation takes the slot at once; a failed build gives it back", 
 Deno.test("service role only: no client can read the table, reserve or release", async () => {
   const { q } = await db();
   const [r] = await q<Record<string, boolean>>(`select
+    has_function_privilege('anon', 'finish_anon_phase_slot(bigint, boolean)', 'EXECUTE')
+      or has_function_privilege('authenticated', 'finish_anon_phase_slot(bigint, boolean)', 'EXECUTE')
+      or not has_function_privilege('service_role', 'finish_anon_phase_slot(bigint, boolean)', 'EXECUTE') z,
     has_function_privilege('anon', 'reserve_anon_phase_slot(text, text)', 'EXECUTE') a,
     has_function_privilege('authenticated', 'reserve_anon_phase_slot(text, text)', 'EXECUTE') b,
     has_function_privilege('service_role', 'reserve_anon_phase_slot(text, text)', 'EXECUTE') c,
@@ -101,5 +135,5 @@ Deno.test("service role only: no client can read the table, reserve or release",
     has_function_privilege('authenticated', 'release_anon_phase_slot(bigint)', 'EXECUTE') e,
     has_function_privilege('service_role', 'release_anon_phase_slot(bigint)', 'EXECUTE') f,
     has_table_privilege('anon', 'anon_phase_usage', 'SELECT') g`);
-  assertEquals(r, { a: false, b: false, c: true, d: false, e: false, f: true, g: false });
+  assertEquals(r, { z: false, a: false, b: false, c: true, d: false, e: false, f: true, g: false });
 });

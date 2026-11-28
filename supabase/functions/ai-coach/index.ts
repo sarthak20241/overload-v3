@@ -4624,16 +4624,25 @@ async function handleAnonPhaseBuild(args: {
     return respond({ error: "rate_limited", reason: row?.reason ?? "unknown" }, 429);
   }
   const slotId = row.slot_id as number | null;
-  // Only a build that never reached the model gives its slot back: once the
-  // model has run, the tokens are spent, so a failed build counts too.
+  // A build that never reached the model gives its slot back. Once the model
+  // has run, the row stays (the global cap counts every paid run) and is
+  // marked ok or failed: a failed one no longer counts against the phone.
   const release = async () => {
     if (slotId == null) return;
     const { error } = await admin.rpc("release_anon_phase_slot", { p_slot_id: slotId });
     if (error) console.log("[ai-coach] anon phase slot release failed:", error.message);
   };
+  const finish = async (ok: boolean) => {
+    if (slotId == null) return;
+    const { error } = await admin.rpc("finish_anon_phase_slot", { p_slot_id: slotId, p_ok: ok });
+    if (error) console.log("[ai-coach] anon phase slot finish failed:", error.message);
+  };
 
   const sane = sanitizeAnonIntake(intake as AnonIntake);
-  const message = buildAnonPhaseMessage(sane, phase);
+  // The limit from the session step, else a time written in the preferences
+  // ("Home, 20 minutes"); the brief's 45-60 default only when neither has one.
+  const capMinutes = sessionCap({ profileMinutes: sane.sessionMinutes, preferences: sane.routinePrefs });
+  const message = buildAnonPhaseMessage(sane, phase, capMinutes);
   const { system } = buildSystemPrompt({ userContext: null, retrievedResearch: [], mode: "generate_plan" });
   let result: Awaited<ReturnType<typeof runGeneratePlan>>;
   let modelStarted = false;
@@ -4645,10 +4654,11 @@ async function handleAnonPhaseBuild(args: {
       catalog,
       system: system as unknown[],
       model: MODEL,
-      sessionMinutes: sessionCap({ profileMinutes: sane.sessionMinutes, request: message }),
+      sessionMinutes: sessionCap({ profileMinutes: capMinutes, request: message }),
     });
   } catch (e) {
     if (!modelStarted) await release();
+    else await finish(false);
     trace.status = "internal_error";
     trace.error_message = `anon_phase_threw: ${String(e)}`.slice(0, 200);
     return respond({ error: "no_plan" }, 502);
@@ -4675,12 +4685,13 @@ async function handleAnonPhaseBuild(args: {
   });
 
   if (!result.plan) {
+    await finish(false);
     trace.status = "internal_error";
     trace.error_message = (result.error ?? "anon: no plan").slice(0, 200);
     return respond({ error: "no_plan" }, 502);
   }
 
-  // The slot reserved above is now spent.
+  await finish(true);
   trace.status = "success";
   trace.response_preview = preview(result.plan.rationale ?? null);
   return respond({ plan: { name: "generate_plan", input: result.plan } }, 200);

@@ -197,5 +197,13 @@ export function fitWorkoutToMinutes<E extends TimedExercise, W extends TimedWork
   while (over() && exercises.length > 3) exercises.pop();
   while (over() && dropSet(1)) { /* trim */ }
   while (over() && exercises.length > 1) exercises.pop();
+  // One timed exercise longer than the whole session ("1 x 30min" under a 20
+  // minute cap): no set or exercise is left to drop, so shorten its time.
+  const last = exercises[0];
+  if (over() && last && /^\d+(?:\.\d+)?\s*(?:s|min)$/i.test(last.reps.trim())) {
+    const budget = capMinutes * 60;
+    const workEach = Math.max(10, Math.floor((budget + last.rest_seconds) / last.sets - last.rest_seconds));
+    last.reps = workEach >= 60 && workEach % 60 === 0 ? `${workEach / 60} min` : `${workEach}s`;
+  }
   return { workout: { ...w, exercises }, trimmed: true };
 }
