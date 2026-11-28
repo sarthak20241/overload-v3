@@ -25,7 +25,7 @@ import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { getFlagVariant, track } from '@/lib/analytics';
 import * as Application from 'expo-application';
-import { FOOD_PHOTO_FLAG, photoButtonShows, photoLoggingAllowed, photoShownText, photoTurnText, takePendingPhoto, withoutPhotoTurn, withPhotoText, type PhotoShot } from '@/lib/foodPhoto';
+import { answersPhotoMeal, FOOD_PHOTO_FLAG, photoButtonShows, photoLoggingAllowed, staysPhotoMeal, photoShownText, photoTurnText, takePendingPhoto, withoutPhotoTurn, withPhotoText, type PhotoShot } from '@/lib/foodPhoto';
 import { discardShots } from '@/lib/foodPhotoCapture';
 import { noteFoodLogged } from '@/lib/pushRegistration';
 import { announceReady } from '@/lib/readyNotice';
@@ -1221,10 +1221,14 @@ export default function NutritionScreen() {
     // A photo starts a meal: the camera opens only with no card under review.
     const prevReview = !photo && flowRef.current.status === 'review' ? flowRef.current : null;
     const pendingMeal = !retry && !photo && flowRef.current.status === 'declined' ? flowRef.current.pendingMeal : null;
-    const pendingFromPhoto = !!pendingMeal && flowRef.current.status === 'declined' && !!flowRef.current.fromPhoto;
-    // The same answer, retried after it failed to send: still about a photo
-    // meal, so still never auto-logged.
-    const fromPhotoAnswer = pendingFromPhoto || (flowRef.current.status === 'error' && !!flowRef.current.fromPhoto);
+    // An answer to a question about a photo meal, or the Retry of one that
+    // failed to send: still a photo meal, so never auto-logged
+    // (lib/foodPhoto answersPhotoMeal).
+    const flowNow = flowRef.current;
+    const fromPhotoAnswer = answersPhotoMeal(
+      { status: flowNow.status, fromPhoto: (flowNow.status === 'declined' || flowNow.status === 'error') && !!flowNow.fromPhoto },
+      !!pendingMeal,
+    );
     // A RETRY carries no context, deliberately. It re-sends one specific past
     // send, so the meal on screen is not what it is about: passing `pending`
     // here made the retry text arrive as a CORRECTION of an unrelated reviewed
@@ -1420,7 +1424,8 @@ export default function NutritionScreen() {
       }
       setFlow({
         status: 'declined', raw: photo ? photoShownText(t) : t, message: res.message, pendingMeal: res.pendingMeal,
-        ...((photo || pendingFromPhoto) && res.pendingMeal ? { fromPhoto: true } : {}),
+        // A second question keeps the photo origin, also after a Retry.
+        ...(staysPhotoMeal({ photo: !!photo, answersPhoto: fromPhotoAnswer, asksAgain: !!res.pendingMeal }) ? { fromPhoto: true } : {}),
       });
       return;
     }

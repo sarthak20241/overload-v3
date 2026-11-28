@@ -204,6 +204,29 @@ export function takePendingPhoto(now: number = Date.now(), drop?: DropShots): Pe
 
 // ── The card after a photo ──────────────────────────────────────────────────
 
+// ── A photo meal is never auto-logged ───────────────────────────────────────
+//
+// A photo's portions are a read the user checks first, so "Just log it" never
+// applies to it. That has to hold through everything a photo meal can turn
+// into: a question Drona asks about it, the user's answer, an answer that
+// failed and is retried, and a second question. The food box marks the card
+// `fromPhoto` at each step with these two rules.
+
+/** The message being sent is about a photo meal: it answers the question on
+ *  screen (`usesPending`: the pending meal is carried), or it is the Retry of
+ *  an answer that failed to send. */
+export function answersPhotoMeal(flow: { status: string; fromPhoto?: boolean }, usesPending: boolean): boolean {
+  if (!flow.fromPhoto) return false;
+  if (flow.status === 'declined') return usesPending;
+  return flow.status === 'error';
+}
+
+/** The card after this send is still a photo meal's: the send was a photo or
+ *  was about one, and Drona asked (again) instead of logging. */
+export function staysPhotoMeal(s: { photo: boolean; answersPhoto: boolean; asksAgain: boolean }): boolean {
+  return (s.photo || s.answersPhoto) && s.asksAgain;
+}
+
 /** What the food box shows for a photo send: the note, or a plain label when
  *  there is none, so a card never shows a blank request. */
 export function photoShownText(note: string): string {

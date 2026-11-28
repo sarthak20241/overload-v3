@@ -8,6 +8,7 @@ import {
   FOOD_PHOTO_CAPABILITY,
   FOOD_PHOTO_FLAG,
   FOOD_PHOTO_MIN_BUILD,
+  answersPhotoMeal,
   centerDistanceM,
   fitLongEdge,
   photoScaleFrom,
@@ -20,6 +21,7 @@ import {
   photoShownText,
   photoTurnText,
   setPendingPhoto,
+  staysPhotoMeal,
   takePendingPhoto,
   withoutPhotoTurn,
   withPhotoText,
@@ -226,4 +228,44 @@ Deno.test("scale: without the lens data the distance alone is kept; no distance,
   assertEquals(photoScaleFrom(0.36, null), { distance_cm: 36 });
   assertEquals(photoScaleFrom(0.36, { matrix: [0, 0, 0, 0, 0, 0, 0, 0, 0], width: 4032, height: 3024 }), { distance_cm: 36 });
   assertEquals(photoScaleFrom(null, { matrix: [3000, 0, 0, 0, 3000, 0, 0, 0, 1], width: 4032, height: 3024 }), null);
+});
+
+// ── a photo meal is never auto-logged, through questions and retries ────────
+
+Deno.test("photo origin: an answer to a photo question, and a retry of that answer, both count", () => {
+  // Answering the question on screen (the pending meal is carried).
+  assert(answersPhotoMeal({ status: "declined", fromPhoto: true }, true));
+  // The same declined card, but this send does not continue its meal.
+  assert(!answersPhotoMeal({ status: "declined", fromPhoto: true }, false));
+  // The answer failed to send; this is its Retry.
+  assert(answersPhotoMeal({ status: "error", fromPhoto: true }, false));
+  // Typed meals are untouched.
+  assert(!answersPhotoMeal({ status: "declined" }, true));
+  assert(!answersPhotoMeal({ status: "error" }, false));
+  assert(!answersPhotoMeal({ status: "idle" }, false));
+});
+
+Deno.test("photo origin: a second question keeps it, whichever way the first was reached", () => {
+  // The photo itself got a question.
+  assert(staysPhotoMeal({ photo: true, answersPhoto: false, asksAgain: true }));
+  // An answer (or a retried answer) got another question: still a photo meal.
+  assert(staysPhotoMeal({ photo: false, answersPhoto: true, asksAgain: true }));
+  // No question left open: nothing to carry.
+  assert(!staysPhotoMeal({ photo: true, answersPhoto: false, asksAgain: false }));
+  assert(!staysPhotoMeal({ photo: false, answersPhoto: false, asksAgain: true }));
+});
+
+Deno.test("photo origin: the whole chain, photo -> question -> failed answer -> retry -> second question -> answer", () => {
+  // 1. photo sent, Drona asks.
+  let flow: { status: string; fromPhoto?: boolean } = { status: "declined", fromPhoto: staysPhotoMeal({ photo: true, answersPhoto: false, asksAgain: true }) };
+  // 2. the answer fails to send.
+  let answers = answersPhotoMeal(flow, true);
+  assert(answers);
+  flow = { status: "error", fromPhoto: answers };
+  // 3. Retry, and Drona asks a second question.
+  answers = answersPhotoMeal(flow, false);
+  assert(answers);
+  flow = { status: "declined", fromPhoto: staysPhotoMeal({ photo: false, answersPhoto: answers, asksAgain: true }) };
+  // 4. the next answer is still about the photo meal, so it is not auto-logged.
+  assert(answersPhotoMeal(flow, true));
 });
