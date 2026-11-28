@@ -108,12 +108,12 @@ export async function takePhasePrebuild<P>(waitMs: number): Promise<P | null> {
   const timeout = new Promise<null>((r) => { timer = setTimeout(() => r(null), waitMs); });
   const plan = (await Promise.race([running, timeout])) as P | null;
   clearTimeout(timer);
-  if (mine === run) {
-    // Taken or given up on: either way it is used up.
-    run++;
-    pending = null;
-    ready = null;
-  }
+  // Another caller took it while this one waited: handed over once only.
+  if (mine !== run) return null;
+  // Taken or given up on: either way it is used up.
+  run++;
+  pending = null;
+  ready = null;
   return plan;
 }
 

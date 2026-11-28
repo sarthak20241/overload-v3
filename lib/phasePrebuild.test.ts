@@ -79,3 +79,10 @@ Deno.test("a second onboarding replaces the first build", async () => {
   await later(null, 80);
   assertEquals(hasPhasePrebuild(), false);
 });
+
+Deno.test("two callers waiting at once: one gets the plan, the other nothing", async () => {
+  resetPhasePrebuildForTest();
+  startPhasePrebuild(() => later(plan, 30));
+  const [a, b] = await Promise.all([takePhasePrebuild(1000), takePhasePrebuild(1000)]);
+  assertEquals([a, b].filter((x) => x !== null).length, 1);
+});

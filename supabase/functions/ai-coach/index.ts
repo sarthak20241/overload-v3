@@ -4601,7 +4601,9 @@ async function handleAnonPhaseBuild(args: {
   const phase = sanitizeAnonPhase(body.phase);
   if (!phase) return respond({ error: "phase required" }, 400);
 
-  const ip = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || "unknown";
+  // No IP known: null, so the IP caps are skipped rather than every such
+  // request sharing one "unknown" bucket (the device and global caps hold).
+  const ip = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || null;
   trace.user_id = `anon:${deviceId.slice(0, 12)}`;
   trace.spans = { anon: true, prebuild: true };
 
@@ -4622,7 +4624,8 @@ async function handleAnonPhaseBuild(args: {
     return respond({ error: "rate_limited", reason: row?.reason ?? "unknown" }, 429);
   }
   const slotId = row.slot_id as number | null;
-  // A build that does not produce a plan gives its slot back.
+  // Only a build that never reached the model gives its slot back: once the
+  // model has run, the tokens are spent, so a failed build counts too.
   const release = async () => {
     if (slotId == null) return;
     const { error } = await admin.rpc("release_anon_phase_slot", { p_slot_id: slotId });
@@ -4633,8 +4636,10 @@ async function handleAnonPhaseBuild(args: {
   const message = buildAnonPhaseMessage(sane, phase);
   const { system } = buildSystemPrompt({ userContext: null, retrievedResearch: [], mode: "generate_plan" });
   let result: Awaited<ReturnType<typeof runGeneratePlan>>;
+  let modelStarted = false;
   try {
     const catalog = await loadExerciseCatalog(admin);
+    modelStarted = true;
     result = await runGeneratePlan(message, {
       call: makeTextCaller(),
       catalog,
@@ -4643,7 +4648,7 @@ async function handleAnonPhaseBuild(args: {
       sessionMinutes: sessionCap({ profileMinutes: sane.sessionMinutes, request: message }),
     });
   } catch (e) {
-    await release();
+    if (!modelStarted) await release();
     trace.status = "internal_error";
     trace.error_message = `anon_phase_threw: ${String(e)}`.slice(0, 200);
     return respond({ error: "no_plan" }, 502);
@@ -4670,7 +4675,6 @@ async function handleAnonPhaseBuild(args: {
   });
 
   if (!result.plan) {
-    await release();
     trace.status = "internal_error";
     trace.error_message = (result.error ?? "anon: no plan").slice(0, 200);
     return respond({ error: "no_plan" }, 502);

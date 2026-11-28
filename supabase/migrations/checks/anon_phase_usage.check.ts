@@ -19,14 +19,14 @@ async function db() {
   await pg.exec(SQL);
   await pg.exec(SQL); // re-runnable
   const q = async <T = Record<string, any>>(s: string, p: unknown[] = []) => (await pg.query<T>(s, p)).rows;
-  const check = async (device: string, ip: string) => {
+  const check = async (device: string, ip: string | null) => {
     const r = (await q<{ allowed: boolean; reason: string | null; slot_id: number | null }>(
       `select * from reserve_anon_phase_slot($1, $2)`, [device, ip]))[0];
     // Reserving spends the slot; give it back so these checks only look.
     if (r.slot_id != null) await q(`select release_anon_phase_slot($1)`, [r.slot_id]);
     return { allowed: r.allowed, reason: r.reason };
   };
-  const use = async (device: string, ip: string, ago = "0 minutes") =>
+  const use = async (device: string, ip: string | null, ago = "0 minutes") =>
     await q(`insert into anon_phase_usage (device_id, ip, created_at) values ($1, $2, now() - $3::interval)`, [device, ip, ago]);
   return { q, check, use };
 }
@@ -56,6 +56,17 @@ Deno.test("IP caps: 15 an hour, 40 a day", async () => {
   assertEquals(await check("new", "3.3.3.3"), { allowed: false, reason: "ip_hour" });
   for (let i = 0; i < 40; i++) await use(`x${i}`, "4.4.4.4", "2 hours");
   assertEquals(await check("new", "4.4.4.4"), { allowed: false, reason: "ip_day" });
+});
+
+Deno.test("no IP known: only the device and global caps apply, never one shared bucket", async () => {
+  const { check, use } = await db();
+  for (let i = 0; i < 20; i++) await use(`n${i}`, null);
+  // 20 phones with no IP: a 21st is still let through (no "unknown" IP bucket).
+  assertEquals(await check("n21", null), { allowed: true, reason: null });
+  // Its device cap still holds.
+  await use("n21", null);
+  await use("n21", null);
+  assertEquals(await check("n21", null), { allowed: false, reason: "device_day" });
 });
 
 Deno.test("global breaker: 500 a day across everyone", async () => {

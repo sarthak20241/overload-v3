@@ -13,8 +13,10 @@
 --   global: 500 / rolling day (wallet circuit breaker)
 -- A slot is RESERVED before the build (the row is written then, under a
 -- lock), so a burst of requests from one device cannot all pass the check
--- before any row exists. A failed build gives its slot back
--- (release_anon_phase_slot), so failures cost no slot.
+-- before any row exists. A build that fails before the model runs gives its
+-- slot back (release_anon_phase_slot); once the model has run, the slot is
+-- spent even if no plan came out. With no IP known (p_ip null) the IP caps
+-- are skipped, so such requests never share one bucket.
 --
 -- device_id comes from the client and the IP from the first
 -- x-forwarded-for entry; both can be faked. The per-device and per-IP caps
@@ -96,7 +98,7 @@ begin
 end;
 $$;
 
--- A build that failed gives its slot back.
+-- A build that failed before the model ran gives its slot back.
 create or replace function public.release_anon_phase_slot(p_slot_id bigint)
 returns void
 language sql
