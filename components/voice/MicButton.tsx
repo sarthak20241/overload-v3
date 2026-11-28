@@ -149,9 +149,11 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
   // records. Polling it any other time (useAudioRecorderState polls from
   // mount) asks a recorder that may be mid-prepare, and on a simulator whose
   // prepare never returned that froze the JS thread.
+  // The polled length lives in a ref, and the minute cap is checked inside
+  // the poll, so recording does not re-render the button ten times a second.
   const level = useSharedValue(0);
-  const [heldMs, setHeldMs] = useState(0);
   const heldMsRef = useRef(0);
+  const finishRef = useRef<() => Promise<void>>(async () => {});
   useEffect(() => {
     if (phase !== 'recording') {
       level.value = withTiming(0, { duration: 120 });
@@ -162,10 +164,11 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
         const st = recorder.getStatus();
         level.value = withTiming(levelFromMetering(st.metering), { duration: 120 });
         heldMsRef.current = st.durationMillis ?? 0;
-        setHeldMs(heldMsRef.current);
       } catch {
         /* a status read that fails leaves the ring still */
       }
+      // A minute is the cap: stop and write out what is there.
+      if (heldMsRef.current >= MAX_CLIP_MS) void finishRef.current();
     }, 100);
     return () => clearInterval(t);
   }, [phase]);
@@ -176,7 +179,6 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
 
   const begin = useCallback(async () => {
     setP('starting');
-    setHeldMs(0);
     heldMsRef.current = 0;
     try {
       await audio.setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
@@ -230,11 +232,12 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
     if (out.ok) onTextRef.current(out.text);
     else toast.show({ type: out.kind === 'nothing_heard' ? 'info' : 'error', text: out.message, durationMs: 4000 });
   }, [audio, recorder, purpose]);
+  finishRef.current = finish;
 
-  // A minute is the cap: stop and write out what is there.
-  useEffect(() => {
-    if (phase === 'recording' && heldMs >= MAX_CLIP_MS) void finish();
-  }, [phase, heldMs, finish]);
+  // The screen may disable the mic (a send started) while the permission
+  // prompt is open, so "Allow" reads the latest value before it starts.
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
 
   const onPress = useCallback(async () => {
     if (phaseRef.current === 'recording') return void finish();
@@ -265,7 +268,7 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
         onPress: async () => {
           try {
             const asked = await audio.requestRecordingPermissionsAsync();
-            if (asked.granted) void begin();
+            if (asked.granted && !disabledRef.current) void begin();
             else toast.show({ type: 'info', text: MIC_COPY.deniedToast, durationMs: 2500 });
           } catch {
             toast.show({ type: 'error', text: "The mic didn't start. Try again, or type it." });
