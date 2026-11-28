@@ -67,7 +67,12 @@ export default function FoodPhotoScreen() {
   const sentRef = useRef(false);
   const shotsRef = useRef<PhotoShot[]>([]);
   shotsRef.current = shots;
-  useEffect(() => () => { if (!sentRef.current) discardShots(shotsRef.current); }, []);
+  // A shot that finishes after the screen has closed is deleted, not added.
+  const mountedRef = useRef(true);
+  useEffect(() => () => {
+    mountedRef.current = false;
+    if (!sentRef.current) discardShots(shotsRef.current);
+  }, []);
 
   const askForCamera = useCallback(async () => {
     const granted = await requestPermission();
@@ -87,8 +92,11 @@ export default function FoodPhotoScreen() {
       const photo = await photoOutput.capturePhoto({ flashMode: 'off' }, {});
       const shot = await preparePhoto(photo);
       // The live list (shotsRef), not this render's copy.
-      if (shotsRef.current.length >= PHOTO_MAX_IMAGES) discardShots([shot]);
-      else setShots((prev) => [...prev, shot]);
+      if (!mountedRef.current || shotsRef.current.length >= PHOTO_MAX_IMAGES) {
+        discardShots([shot]);
+        return;
+      }
+      setShots((prev) => [...prev, shot]);
       setStep('review');
     } catch {
       setProblem('That one did not come through. Try again.');
