@@ -76,7 +76,11 @@ export default function FoodPhotoScreen() {
   // The back camera that includes a LiDAR depth sensor when the phone has one
   // (iPhone Pro), else the plain wide camera. With depth, the photo carries a
   // measured distance, which sizes the food far better than a visual guess.
-  const device = useCameraDevice('back', { physicalDevices: ['wide-angle', 'lidar-depth'] });
+  // The plain back camera is the fallback, so a phone is never left with no
+  // camera because of the depth preference.
+  const depthDevice = useCameraDevice('back', { physicalDevices: ['wide-angle', 'lidar-depth'] });
+  const plainDevice = useCameraDevice('back');
+  const device = depthDevice ?? plainDevice;
   // About 12 MP: plenty for a 1568 px upload, and quick to take.
   const photoOutput = usePhotoOutput({ qualityPrioritization: 'balanced' });
 
