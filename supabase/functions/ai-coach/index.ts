@@ -3452,6 +3452,7 @@ async function handleParseMealRequest(args: {
         images: photoReq.images.length,
         image_bytes: photoReq.images.map((i) => i.bytes),
         has_note: photoReq.note.length > 0,
+        tries: photoRes.tries,
         kind: photoRes.ok ? photoRes.read.kind : null,
         items: photoRes.ok ? photoRes.read.items.length : null,
       },

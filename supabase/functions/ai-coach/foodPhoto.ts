@@ -419,9 +419,12 @@ export function parsePhotoRead(raw: unknown): PhotoRead | null {
 export interface PhotoReadDeps {
   anthropicApiKey: string;
   model: string;
+  /** Per try. A broken try is tried once more, so the worst case is twice. */
   timeoutMs: number;
   effort?: "low" | "medium" | "high";
   fetchFn?: typeof fetch;
+  /** Wait before the second try. Tests pass 0. */
+  retryDelayMs?: number;
 }
 
 export interface PhotoUsage {
@@ -430,22 +433,23 @@ export interface PhotoUsage {
 }
 
 export type PhotoReadResult =
-  | { ok: true; read: PhotoRead; usage: PhotoUsage; model: string; ms: number }
-  | { ok: false; error: string; status: number; usage: PhotoUsage; model: string; ms: number };
+  | { ok: true; read: PhotoRead; usage: PhotoUsage; model: string; ms: number; tries: number }
+  | { ok: false; error: string; status: number; usage: PhotoUsage; model: string; ms: number; tries: number };
 
-/** One vision call. Never throws, and never returns a guess: a failed call, a
- *  refusal, a cut-off or unreadable answer are all `ok: false`. The error text
- *  is short and never holds image data. */
-export async function readFoodPhoto(deps: PhotoReadDeps, images: PhotoImage[], note: string): Promise<PhotoReadResult> {
-  const t0 = Date.now();
-  const usage: PhotoUsage = { input_tokens: 0, output_tokens: 0 };
-  const fail = (status: number, why: string): PhotoReadResult => {
-    let text = why;
-    for (const img of images) text = text.split(img.data).join("[image]");
-    // Any other long run of base64 (a cut copy of the image) goes too.
-    text = text.replace(/[A-Za-z0-9+/=]{64,}/g, "[data]").slice(0, 200);
-    return { ok: false, error: text, status, usage, model: deps.model, ms: Date.now() - t0 };
-  };
+/** HTTP answers worth one more try: the service was busy or broke, not the
+ *  request. 400s (a bad request) would fail the same way again. */
+const RETRY_STATUS = new Set([408, 409, 429, 500, 502, 503, 504, 529]);
+
+type Attempt =
+  | { ok: true; read: PhotoRead }
+  | { ok: false; error: string; status: number; retry: boolean };
+
+/** One call. Never throws. Says whether a failure is worth one more try. */
+async function attemptRead(
+  deps: PhotoReadDeps,
+  body: string,
+  usage: PhotoUsage,
+): Promise<Attempt> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs);
   try {
@@ -456,15 +460,21 @@ export async function readFoodPhoto(deps: PhotoReadDeps, images: PhotoImage[], n
         "x-api-key": deps.anthropicApiKey,
         "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify(buildPhotoPayload(images, note, deps.model, { effort: deps.effort })),
+      body,
       signal: controller.signal,
     });
-    if (!res.ok) return fail(res.status, `photo_read_http_${res.status}: ${await res.text()}`);
+    if (!res.ok) {
+      return { ok: false, status: res.status, retry: RETRY_STATUS.has(res.status), error: `photo_read_http_${res.status}: ${await res.text()}` };
+    }
     // deno-lint-ignore no-explicit-any
     const data = (await res.json()) as any;
-    usage.input_tokens = Number(data?.usage?.input_tokens) || 0;
-    usage.output_tokens = Number(data?.usage?.output_tokens) || 0;
-    if (data?.stop_reason !== "end_turn") return fail(502, `photo_read_stop_${String(data?.stop_reason).slice(0, 30)}`);
+    usage.input_tokens += Number(data?.usage?.input_tokens) || 0;
+    usage.output_tokens += Number(data?.usage?.output_tokens) || 0;
+    // A refusal would refuse again; a cut-off answer is worth one more try.
+    if (data?.stop_reason === "refusal") return { ok: false, status: 502, retry: false, error: "photo_read_stop_refusal" };
+    if (data?.stop_reason !== "end_turn") {
+      return { ok: false, status: 502, retry: true, error: `photo_read_stop_${String(data?.stop_reason).slice(0, 30)}` };
+    }
     const text = (Array.isArray(data.content) ? data.content : [])
       // deno-lint-ignore no-explicit-any
       .filter((b: any) => b?.type === "text" && typeof b.text === "string").map((b: any) => b.text).join("");
@@ -472,17 +482,47 @@ export async function readFoodPhoto(deps: PhotoReadDeps, images: PhotoImage[], n
     try {
       json = JSON.parse(text);
     } catch {
-      return fail(502, "photo_read_not_json");
+      return { ok: false, status: 502, retry: true, error: "photo_read_not_json" };
     }
     const read = parsePhotoRead(json);
-    if (!read) return fail(502, "photo_read_bad_shape");
-    return { ok: true, read, usage, model: deps.model, ms: Date.now() - t0 };
+    if (!read) return { ok: false, status: 502, retry: true, error: "photo_read_bad_shape" };
+    return { ok: true, read };
   } catch (e) {
     const aborted = (e as Error)?.name === "AbortError";
-    return fail(aborted ? 504 : 502, aborted ? `photo_read_timeout_${deps.timeoutMs}ms` : `photo_read_threw: ${String(e)}`);
+    return {
+      ok: false,
+      status: aborted ? 504 : 502,
+      retry: true,
+      error: aborted ? `photo_read_timeout_${deps.timeoutMs}ms` : `photo_read_threw: ${String(e)}`,
+    };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** The vision call, tried at most twice: a busy or broken service, a network
+ *  error, a timeout or a garbled answer gets one more try; a bad request or a
+ *  refusal does not. Never throws, and never returns a guess. The error text
+ *  is short and never holds image data. Tokens of both tries are counted. */
+export async function readFoodPhoto(deps: PhotoReadDeps, images: PhotoImage[], note: string): Promise<PhotoReadResult> {
+  const t0 = Date.now();
+  const usage: PhotoUsage = { input_tokens: 0, output_tokens: 0 };
+  const body = JSON.stringify(buildPhotoPayload(images, note, deps.model, { effort: deps.effort }));
+  let last: Attempt | null = null;
+  let tries = 0;
+  for (tries = 1; tries <= 2; tries++) {
+    last = await attemptRead(deps, body, usage);
+    if (last.ok || !last.retry) break;
+    if (tries < 2) await new Promise((r) => setTimeout(r, deps.retryDelayMs ?? 800));
+  }
+  tries = Math.min(tries, 2);
+  const base = { usage, model: deps.model, ms: Date.now() - t0, tries };
+  if (last && last.ok) return { ok: true, read: last.read, ...base };
+  let text = last?.error ?? "photo_read_failed";
+  for (const img of images) text = text.split(img.data).join("[image]");
+  // Any other long run of base64 (a cut copy of the image) goes too.
+  text = text.replace(/[A-Za-z0-9+/=]{64,}/g, "[data]").slice(0, 200);
+  return { ok: false, error: text, status: last?.status ?? 502, ...base };
 }
 
 // ── Hidden cooking fat ──────────────────────────────────────────────────────
@@ -764,6 +804,7 @@ export function photoTraceView(images: PhotoImage[], res: PhotoReadResult | null
       ? {
         model: res.model,
         ms: res.ms,
+        tries: res.tries,
         ok: res.ok,
         input_tokens: res.usage.input_tokens,
         output_tokens: res.usage.output_tokens,

@@ -536,7 +536,7 @@ Deno.test("decline: a photo with no food says so and logs nothing", () => {
 const okAnswer = (read: unknown, usage = { input_tokens: 3100, output_tokens: 400 }) =>
   new Response(JSON.stringify({ stop_reason: "end_turn", content: [{ type: "thinking", thinking: "" }, { type: "text", text: JSON.stringify(read) }], usage }), { status: 200 });
 
-const deps = (fetchFn: typeof fetch) => ({ anthropicApiKey: "k", model: "claude-haiku-5-5", timeoutMs: 5000, fetchFn });
+const deps = (fetchFn: typeof fetch) => ({ anthropicApiKey: "k", model: "claude-haiku-5-5", timeoutMs: 5000, fetchFn, retryDelayMs: 0 });
 
 Deno.test("call: one request, the read comes back with its token use", async () => {
   const g = readPhotoRequest(photoBody(), { mode: "on" });
@@ -569,6 +569,80 @@ Deno.test("call: a failed call, a refusal and a cut-off answer are all 'no read'
     const res = await readFoodPhoto(deps((() => Promise.resolve(a)) as unknown as typeof fetch), g.images, g.note);
     assertEquals(res.ok, false);
   }
+});
+
+// ── a broken call is tried once more ────────────────────────────────────────
+
+/** A fetch that answers from a list, one per call, and counts the calls. */
+function scripted(answers: (() => Response | Promise<Response>)[]) {
+  let calls = 0;
+  const fetchFn = (() => {
+    const next = answers[Math.min(calls, answers.length - 1)];
+    calls++;
+    return Promise.resolve(next());
+  }) as unknown as typeof fetch;
+  return { fetchFn, calls: () => calls };
+}
+const okRead = () => okAnswer({ kind: "plate", meal: null, items: [item()], question: null });
+const retryDeps = (fetchFn: typeof fetch) => ({ ...deps(fetchFn), retryDelayMs: 0 });
+
+Deno.test("retry: an overloaded, rate-limited or failing service is tried once more", async () => {
+  const g = readPhotoRequest(photoBody(), { mode: "on" });
+  assert(g.kind === "photo");
+  for (const status of [529, 503, 500, 429, 408]) {
+    const s = scripted([() => new Response("busy", { status }), okRead]);
+    const res = await readFoodPhoto(retryDeps(s.fetchFn), g.images, g.note);
+    assert(res.ok, `recovered from ${status}`);
+    assertEquals(s.calls(), 2);
+    // Both tries' tokens are counted.
+    assertEquals(res.usage.input_tokens, 3100);
+  }
+});
+
+Deno.test("retry: a network error or a timeout is tried once more", async () => {
+  const g = readPhotoRequest(photoBody(), { mode: "on" });
+  assert(g.kind === "photo");
+  const s = scripted([() => Promise.reject(new TypeError("network down")), okRead]);
+  const res = await readFoodPhoto(retryDeps(s.fetchFn), g.images, g.note);
+  assert(res.ok);
+  assertEquals(s.calls(), 2);
+});
+
+Deno.test("retry: a garbled or cut-off answer is tried once more", async () => {
+  const g = readPhotoRequest(photoBody(), { mode: "on" });
+  assert(g.kind === "photo");
+  for (const bad of [
+    () => new Response(JSON.stringify({ stop_reason: "end_turn", content: [{ type: "text", text: "not json" }], usage: {} }), { status: 200 }),
+    () => new Response(JSON.stringify({ stop_reason: "max_tokens", content: [{ type: "text", text: "{" }], usage: {} }), { status: 200 }),
+  ]) {
+    const s = scripted([bad, okRead]);
+    const res = await readFoodPhoto(retryDeps(s.fetchFn), g.images, g.note);
+    assert(res.ok);
+    assertEquals(s.calls(), 2);
+  }
+});
+
+Deno.test("retry: a bad request or a refusal is not retried (the same call would fail the same way)", async () => {
+  const g = readPhotoRequest(photoBody(), { mode: "on" });
+  assert(g.kind === "photo");
+  for (const answer of [
+    () => new Response("bad request", { status: 400 }),
+    () => new Response(JSON.stringify({ stop_reason: "refusal", content: [], usage: {} }), { status: 200 }),
+  ]) {
+    const s = scripted([answer, okRead]);
+    const res = await readFoodPhoto(retryDeps(s.fetchFn), g.images, g.note);
+    assertEquals(res.ok, false);
+    assertEquals(s.calls(), 1);
+  }
+});
+
+Deno.test("retry: two broken tries is a failure, never a third call", async () => {
+  const g = readPhotoRequest(photoBody(), { mode: "on" });
+  assert(g.kind === "photo");
+  const s = scripted([() => new Response("busy", { status: 529 })]);
+  const res = await readFoodPhoto(retryDeps(s.fetchFn), g.images, g.note);
+  assertEquals(res.ok, false);
+  assertEquals(s.calls(), 2);
 });
 
 Deno.test("call: the error text never holds the image", async () => {
