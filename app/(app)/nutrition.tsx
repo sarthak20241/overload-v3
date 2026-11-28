@@ -2272,7 +2272,13 @@ export default function NutritionScreen() {
     // The files were only for the camera screen's thumbnails: the send (and
     // a Retry) use the base64 already in memory, so they go now.
     discardShots(p.images);
-    if (!photoLoggingAllowed({ flag: photoFlag, os: Platform.OS, build: Application.nativeBuildVersion, dev: __DEV__ })) return;
+    if (!photoLoggingAllowed({ flag: photoFlag, os: Platform.OS, build: Application.nativeBuildVersion, dev: __DEV__ })) {
+      // Said, not dropped in silence. A card or reply already on screen stays.
+      setFlow((f) => (f.status === 'idle'
+        ? { status: 'declined', raw: photoShownText(p.note), message: "Meal photos aren't on in this version yet. Type what you ate and I'll log it." }
+        : f));
+      return;
+    }
     void runParse(p.note, undefined, { mealHint: p.meal, day: p.day }, { images: p.images });
   }, [supabase, isSignedIn, parseInFlight, runParse, photoFlag]));
   const showPhoto = photoButtonShows({
