@@ -502,6 +502,15 @@ Deno.test("handler: no engine configured is a 503, a vendor failure a 502", asyn
   assertEquals([r.status, r.body.error], [502, "stt_failed"]);
 });
 
+Deno.test("handler: an engine that throws is a vendor error: 502, logged, slot given back", async () => {
+  const throwing: SttProvider = { name: "boom", formats: ["m4a"], transcribe: () => Promise.reject(new Error("engine bug")) };
+  const d = deps({ provider: throwing as ReturnType<typeof fakeProvider> });
+  const r = await call(request({ bytes: m4a(3) }), d);
+  assertEquals([r.status, r.body.error, r.body.reason], [502, "stt_failed", "vendor_error"]);
+  assertEquals(d.released, 1);
+  assertEquals(d.logs.at(-1)?.status, "stt_failed");
+});
+
 Deno.test("handler: a vocabulary read that fails still transcribes, with the static list", async () => {
   const d = deps({ userFoods: () => Promise.reject(new Error("db down")) });
   const r = await call(request({ bytes: m4a(3) }), d);

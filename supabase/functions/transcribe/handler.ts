@@ -22,7 +22,7 @@
 
 import { inspectAudio, MAX_AUDIO_BYTES, MAX_AUDIO_SECONDS, MIN_AUDIO_SECONDS } from "./audio.ts";
 import { type CleanupCall, cleanTranscript } from "./cleanup.ts";
-import type { SttProvider, VoicePurpose } from "./stt.ts";
+import type { SttProvider, SttResult, VoicePurpose } from "./stt.ts";
 import { buildVocabulary, contextFor } from "./vocabulary.ts";
 
 export interface TranscribeDeps {
@@ -187,10 +187,18 @@ export async function handleTranscribe(req: Request, deps: TranscribeDeps): Prom
   const vocabulary = buildVocabulary(userFoods, purpose);
   ev.keywords = vocabulary.length;
 
-  const heard = await provider.transcribe(
-    { bytes, format: audio.format, seconds: audio.seconds },
-    { purpose, vocabulary, context: contextFor(purpose) },
-  );
+  // A provider is meant to return its failures, not throw them. One that
+  // throws is treated as a broken call, so the slot comes back and the
+  // request is logged like any other failure.
+  let heard: SttResult;
+  try {
+    heard = await provider.transcribe(
+      { bytes, format: audio.format, seconds: audio.seconds },
+      { purpose, vocabulary, context: contextFor(purpose) },
+    );
+  } catch {
+    heard = { ok: false, reason: "vendor_error" };
+  }
   if (!heard.ok) {
     ev.reason = heard.reason;
     if (REFUNDED.has(heard.reason)) {
