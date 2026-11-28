@@ -16,14 +16,17 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, ScrollView, FlatList, Pressable, TextInput, StyleSheet, useWindowDimensions, AppState, Keyboard,
+  View, Text, ScrollView, FlatList, Pressable, TextInput, StyleSheet, useWindowDimensions, AppState, Keyboard, Platform,
   type NativeScrollEvent, type NativeSyntheticEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
-import { track } from '@/lib/analytics';
+import { getFlagVariant, track } from '@/lib/analytics';
+import * as Application from 'expo-application';
+import { answersPhotoMeal, FOOD_PHOTO_FLAG, photoButtonShows, photoLoggingAllowed, staysPhotoMeal, photoShownText, photoTurnText, takePendingPhoto, withoutPhotoTurn, withPhotoText, type PhotoShot } from '@/lib/foodPhoto';
+import { discardShots } from '@/lib/foodPhotoCapture';
 import { noteFoodLogged } from '@/lib/pushRegistration';
 import { announceReady } from '@/lib/readyNotice';
 import { readyInbox } from '@/lib/readyInbox';
@@ -154,7 +157,9 @@ type ParseFlow =
       // The tier that read this meal, for the result screen's chip.
       tier?: ParseSpeed;
     }
-  | { status: 'declined'; raw: string; message: string; pendingMeal?: PendingFoodMeal | null }
+  // `fromPhoto`: the meal waiting on this question was read from a photo, so
+  // its answer is never auto-logged (its portions are a read to check).
+  | { status: 'declined'; raw: string; message: string; pendingMeal?: PendingFoodMeal | null; fromPhoto?: boolean }
   // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
   // WRITE, not the whole AI parse (which would burn an API call + could differ).
   // `clientId`/`logDate`: a "Just log it" send that failed in transport. Retry
@@ -163,6 +168,13 @@ type ParseFlow =
   | {
       status: 'error'; raw: string; message: string; meal?: ParsedMeal; mealType?: MealType;
       clientId?: string; logDate?: string;
+      /** A photo send that failed, kept for ONE re-send so a network blip
+       *  does not cost the user the capture and the note. In memory only:
+       *  an error with no meal is never stored (lib/mealReady). */
+      photo?: { images: PhotoShot[]; note: string; mealHint: MealType; day: Date };
+      /** This was an answer to a question about a photo meal. A Retry of it
+       *  is never auto-logged either. */
+      fromPhoto?: boolean;
       /** The reviewed card's `words`, kept so Retry rebuilds it whole. */
       words?: string;
       /** A suggestion's origin, kept so a retried Add is still reported as one. */
@@ -1177,14 +1189,18 @@ export default function NutritionScreen() {
     raw: string,
     retry?: { clientId: string; logDate: string },
     from?: { mealHint: MealType; day: Date },
+    /** Meal photos from app/food-photo (lib/foodPhoto). `raw` is then the
+     *  user's note and may be empty. A photo always starts a new card. */
+    photo?: { images: PhotoShot[]; retried?: boolean },
   ) => {
     const t = raw.trim();
-    if (!t || !supabase) return;
+    if ((!t && !photo) || !supabase) return;
     // "2 eggs for tomorrow": the message names its own day. Go there first, so
     // the diary on screen, the card's Add and a "Just log it" write all land on
     // it, and send the parser the food without the date. A retry keeps the day
     // it was first sent for and only needs the same words taken out.
-    const named = readLogDayPhrase(t);
+    // A photo's note is read whole: its day came with the hand-off.
+    const named = photo ? null : readLogDayPhrase(t);
     const sendText = named ? named.rest : t;
     const logDay = !retry && named ? named.date : (from?.day ?? viewDate);
     if (!retry && ymd(logDay) !== ymd(viewDate)) {
@@ -1192,7 +1208,7 @@ export default function NutritionScreen() {
       setViewDate(logDay);
     }
     // Only a day ("for tomorrow"): moving there was the whole ask.
-    if (!sendText) return;
+    if (!sendText && !photo) return;
     setSavedReview(false);
     setCardMinimized(false);
     saveArrivedRef.current = null;
@@ -1202,8 +1218,17 @@ export default function NutritionScreen() {
     // A meal still under review is context for the next line: "make it a small
     // one" should correct THAT samosa, not log a second one. Captured before we
     // switch to 'analysing' (which drops the reviewed meal from flow).
-    const prevReview = flowRef.current.status === 'review' ? flowRef.current : null;
-    const pendingMeal = !retry && flowRef.current.status === 'declined' ? flowRef.current.pendingMeal : null;
+    // A photo starts a meal: the camera opens only with no card under review.
+    const prevReview = !photo && flowRef.current.status === 'review' ? flowRef.current : null;
+    const pendingMeal = !retry && !photo && flowRef.current.status === 'declined' ? flowRef.current.pendingMeal : null;
+    // An answer to a question about a photo meal, or the Retry of one that
+    // failed to send: still a photo meal, so never auto-logged
+    // (lib/foodPhoto answersPhotoMeal).
+    const flowNow = flowRef.current;
+    const fromPhotoAnswer = answersPhotoMeal(
+      { status: flowNow.status, fromPhoto: (flowNow.status === 'declined' || flowNow.status === 'error') && !!flowNow.fromPhoto },
+      !!pendingMeal,
+    );
     // A RETRY carries no context, deliberately. It re-sends one specific past
     // send, so the meal on screen is not what it is about: passing `pending`
     // here made the retry text arrive as a CORRECTION of an unrelated reviewed
@@ -1231,8 +1256,9 @@ export default function NutritionScreen() {
     // A retry is the exception and keeps its own identity: it was an auto send
     // when it was made, and re-sending it is not a new choice about the toggle.
     // It cleared `pending` above, so the two rules do not fight.
+    // Never for a photo: its portions are a read the user checks first.
     const auto = retry
-      ?? (!pending && autoLogRef.current
+      ?? (!pending && !photo && !fromPhotoAnswer && autoLogRef.current
         ? { clientId: newAutoLogClientId(), logDate: ymd(logDay) }
         : null);
     if (auto) {
@@ -1272,15 +1298,21 @@ export default function NutritionScreen() {
     cancelledRef.current = false;
     /** A card this message left on screen remembers the card before it. */
     const stamp = (f: ParseFlow & { status: 'review' }): ParseFlow & { status: 'review' } => (back ? withBack(f, back) : f);
-    setFlow({ status: 'analysing', raw: t, auto: !!auto });
+    setFlow(photo
+      ? { status: 'analysing', raw: photoShownText(t), auto: false, statusLabel: 'Reading your photo' }
+      : { status: 'analysing', raw: t, auto: !!auto });
     // Every send gets the calm wait, a follow-up typed on the result screen
     // too: the sheet paints over the result (declared after it), and the
     // answer opens the result again (arrivalAction 'show').
     // The sheet lives in the app window, so the keyboard would sit over it.
     Keyboard.dismiss();
     setWaitOpen(true);
+    // A photo starts a new meal: earlier turns must not steer its read.
+    if (photo) turnsRef.current = [];
     const turns = retry ? [] : turnsRef.current.slice();
-    pushTurn('user', t);
+    // A photo's turn is replaced with the words its read made (below), so a
+    // follow-up reads what the card was built from.
+    pushTurn('user', photo ? photoTurnText(t) : t);
     // The card on screen is a better hint than the wall clock. "and a dosa"
     // added to a meal the user has placed in Dinner must join THAT meal, and
     // sending mealForNow() split the card in two whenever the clock disagreed:
@@ -1300,6 +1332,7 @@ export default function NutritionScreen() {
       // The food bar can draw a save card, so it asks for creates.
       canCreate: true,
       thread: thread?.send ?? null,
+      images: photo ? photo.images.map((i) => ({ media_type: i.media_type, data: i.data, ...(i.scale ? { scale: i.scale } : {}) })) : null,
     };
     // Streaming is only worth it on a first-shot log: a correction needs the
     // full pipeline anyway, and parseMealStreaming falls back on its own, but
@@ -1317,12 +1350,16 @@ export default function NutritionScreen() {
       auto_log: !!auto,
       is_correction: !!pending,
       chars: t.length,
+      photos: photo?.images.length ?? 0,
     });
     // A Quick follow-up still says it is Quick. The correction itself runs the
     // full pipeline either way, but a fresh re-parse it triggers ("not from
     // saved meals") has to come back in the tier the user picked.
     const followUpSpeed = precise ? { speed: 'super' as const } : pending && tier === 'quick' ? { speed: 'fast' as const } : {};
-    const res = pending || tier !== 'quick'
+    const res = photo
+      // A photo is never streamed: its rows exist only after the read.
+      ? await parseMeal(supabase, { ...args, speed: precise ? 'super' : 'fast', tier: tier === 'precise' ? 'precise' : 'quick' })
+      : pending || tier !== 'quick'
       // `tier` on every message, corrections too: the server routes a Precise
       // thread's later messages on it, while `speed` keeps a correction smart.
       ? await parseMeal(supabase, { ...args, ...followUpSpeed, tier: tier === 'precise' ? 'precise' : 'quick' })
@@ -1364,7 +1401,14 @@ export default function NutritionScreen() {
     // retype. Keep the card and show the reply as a notice on it.
     if (res.kind === 'declined') {
       settleThread(res.cleared ? 'cleared' : 'unchanged');
-      pushTurn('drona', res.message);
+      // A photo with nothing to log leaves no turns: the next typed message
+      // must not carry a photo the server never logged. One that asks a
+      // question keeps the exchange, with the read's words as the user's turn.
+      if (photo && !res.pendingMeal) turnsRef.current = withoutPhotoTurn(turnsRef.current);
+      else {
+        if (photo && res.pendingMeal) turnsRef.current = withPhotoText(turnsRef.current, res.pendingMeal.text);
+        pushTurn('drona', res.message);
+      }
       // The shared rule (lib/foodBarCard.ts): a reply keeps the card; the user
       // removing the last line clears it. Keeping it would show the line they
       // just deleted under a message saying it is gone, which is also what the
@@ -1378,7 +1422,11 @@ export default function NutritionScreen() {
         setFlow(stamp({ ...prevReview, meal: { ...prevReview.meal, items: kept }, notice: res.message, proposal: res.proposal ?? null }));
         return;
       }
-      setFlow({ status: 'declined', raw: t, message: res.message, pendingMeal: res.pendingMeal });
+      setFlow({
+        status: 'declined', raw: photo ? photoShownText(t) : t, message: res.message, pendingMeal: res.pendingMeal,
+        // A second question keeps the photo origin, also after a Retry.
+        ...(staysPhotoMeal({ photo: !!photo, answersPhoto: fromPhotoAnswer, asksAgain: !!res.pendingMeal }) ? { fromPhoto: true } : {}),
+      });
       return;
     }
     // The free tier's daily logs ran out. This is a paywall, not a breakage:
@@ -1388,14 +1436,34 @@ export default function NutritionScreen() {
     if (res.kind === 'cap') {
       track('limit_reached', { feature: 'meal_parse', kind: res.scope, used: res.used ?? null, limit: res.limit ?? null });
       const capLine = capNotice(res);
-      pushTurn('drona', capLine);
+      // The photo was never read: its turn goes, so nothing later reads it.
+      if (photo) turnsRef.current = withoutPhotoTurn(turnsRef.current);
+      // A photo that was never read leaves no turns at all.
+      if (!photo) pushTurn('drona', capLine);
       if (prevReview) setFlow(stamp({ ...prevReview, notice: capLine, proposal: null }));
-      else setFlow({ status: 'declined', raw: t, message: capLine });
+      else setFlow({ status: 'declined', raw: photo ? photoShownText(t) : t, message: capLine });
       router.push({ pathname: '/upgrade', params: { context: capUpgradeContext(res) } });
       return;
     }
     if (res.kind === 'error') {
-      track('meal_parse_failed', { tier, duration_ms: Date.now() - parseStartedAt, auto_log: !!auto });
+      track('meal_parse_failed', { tier, duration_ms: Date.now() - parseStartedAt, auto_log: !!auto, photo: !!photo });
+      // A photo that failed once is kept (in memory) for one Retry; a second
+      // failure is said plainly. Its turn goes either way (a Retry adds it).
+      if (photo) turnsRef.current = withoutPhotoTurn(turnsRef.current);
+      if (photo && !photo.retried) {
+        setFlow({
+          status: 'error', raw: photoShownText(t), message: 'I could not read that photo. Try it again.',
+          // The files are already deleted: keep only what a re-send uses.
+          photo: { images: photo.images.map((i) => ({ ...i, uri: '' })), note: t, mealHint: args.mealHint, day: logDay },
+        });
+        return;
+      }
+      if (photo) {
+        // The note goes back in the box, so typing the meal costs no retyping.
+        if (t) setText((cur) => cur.trim() ? cur : t);
+        setFlow({ status: 'declined', raw: photoShownText(t), message: 'I could not read that photo. Take it again, or type what you ate.' });
+        return;
+      }
       // Clear any standing proposal: it answered the previous message, and
       // leaving it up would attach "use these numbers" to an error the user
       // just got for something else entirely.
@@ -1403,6 +1471,7 @@ export default function NutritionScreen() {
       setFlow({
         status: 'error', raw: t, message: res.message,
         ...(auto ? { clientId: auto.clientId, logDate: auto.logDate } : {}),
+        ...(fromPhotoAnswer ? { fromPhoto: true } : {}),
       });
       return;
     }
@@ -1414,8 +1483,9 @@ export default function NutritionScreen() {
       const create = parseCoachFoodCreate(res.tool, res.input);
       if (!create) {
         const line = 'I could not put that one together. Give me the name and the calories and I will save it.';
+        if (photo) turnsRef.current = withoutPhotoTurn(turnsRef.current);
         if (prevReview) setFlow(stamp({ ...prevReview, notice: line, proposal: null }));
-        else setFlow({ status: 'declined', raw: t, message: line });
+        else setFlow({ status: 'declined', raw: photo ? photoShownText(t) : t, message: line });
         return;
       }
       track('drona_food_create_proposed', {
@@ -1446,6 +1516,10 @@ export default function NutritionScreen() {
       return;
     }
     settleThread('meal');
+    // A photo meal: the turn and the card's text become the words the photo
+    // read made, so "the rice was one cup" corrects them like typed food.
+    const photoText = photo ? res.photoText ?? null : null;
+    if (photoText) turnsRef.current = withPhotoText(turnsRef.current, photoText);
     pushTurn('drona', res.meal.drona_line);
     // "Just log it": the server already wrote these lines, so there is nothing
     // left to review and no card to show. The rows themselves are the receipt -
@@ -1534,7 +1608,7 @@ export default function NutritionScreen() {
           const head = keptMealType ?? headOf(res.meal.items);
           return {
             status: 'review',
-            raw: res.meal.continued_pending && pendingMeal ? `${pendingMeal.text}; ${t}` : t,
+            raw: photoText ?? (res.meal.continued_pending && pendingMeal ? `${pendingMeal.text}; ${t}` : t),
             words,
             meal: { ...res.meal, meal_type: head },
             mealType: head,
@@ -1990,6 +2064,12 @@ export default function NutritionScreen() {
 
   const onRetry = useCallback(() => {
     if (flow.status !== 'error') return;
+    // A failed photo send, re-sent once with the same shots and note.
+    if (flow.photo) {
+      const kept = flow.photo;
+      void runParse(kept.note, undefined, { mealHint: kept.mealHint, day: kept.day }, { images: kept.images, retried: true });
+      return;
+    }
     // A write failure kept the meal → re-show the review card (tapping Add re-writes
     // it, to the current day). Only re-run the AI parse if the meal is gone.
     if (flow.meal && flow.mealType) {
@@ -2177,6 +2257,50 @@ export default function NutritionScreen() {
     void runParse(p.text, undefined, { mealHint: p.meal, day: p.day });
   }, [supabase, isSignedIn, parseInFlight, runParse]));
 
+  // The food box's camera button (lib/foodPhoto photoButtonShows). The flag
+  // is read once; until it loads the button stays hidden.
+  const [photoFlag, setPhotoFlag] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void getFlagVariant(FOOD_PHOTO_FLAG, 'off').then((r) => { if (alive) setPhotoFlag(r.variant); });
+    return () => { alive = false; };
+  }, []);
+
+  // Meal photos the camera screen left (lib/foodPhoto). Same rules as the
+  // sentence above: taken once, and only while no parse is running here.
+  // Waits for the flag; a hand-off where photo logging is not allowed (a
+  // deep link on an older build) is dropped, never sent.
+  useFocusEffect(useCallback(() => {
+    if (!supabase || !isSignedIn || parseInFlight || photoFlag === null) return;
+    const p = takePendingPhoto(Date.now(), discardShots);
+    if (!p) return;
+    // The files were only for the camera screen's thumbnails: the send (and
+    // a Retry) use the base64 already in memory, so they go now.
+    discardShots(p.images);
+    if (!photoLoggingAllowed({ flag: photoFlag, os: Platform.OS, build: Application.nativeBuildVersion, dev: __DEV__ })) {
+      // Said, not dropped in silence. A card or reply already on screen stays.
+      setFlow((f) => (f.status === 'idle'
+        ? { status: 'declined', raw: photoShownText(p.note), message: "Meal photos aren't on in this version yet. Type what you ate and I'll log it." }
+        : f));
+      return;
+    }
+    void runParse(p.note, undefined, { mealHint: p.meal, day: p.day }, { images: p.images });
+  }, [supabase, isSignedIn, parseInFlight, runParse, photoFlag]));
+  const showPhoto = photoButtonShows({
+    flag: photoFlag,
+    os: Platform.OS,
+    build: Application.nativeBuildVersion,
+    dev: __DEV__,
+    signedIn: !!isSignedIn,
+    // A failed Add keeps its meal for Retry: that is a card on screen too.
+    cardOnScreen: flow.status === 'review' || (flow.status === 'error' && !!flow.meal) || parseInFlight,
+  });
+  const openPhoto = useCallback(() => {
+    track('meal_photo_opened', {});
+    Keyboard.dismiss();
+    router.push({ pathname: '/food-photo', params: { meal: mealForNow(), day: ymd(viewDate) } });
+  }, [viewDate]);
+
   /** A send the server never took, re-sent under the SAME id and day. */
   const onRetryLost = useCallback((p: PendingAutoLog) => {
     setLostSends((l) => l.filter((x) => x.client_id !== p.client_id));
@@ -2230,7 +2354,7 @@ export default function NutritionScreen() {
     return { ...f, meal: { ...f.meal, items }, notice: null, proposal: null };
   });
   const dismissNotice = () => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f));
-  const editWordsBlocked = parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && (!!flow.clientId || !!flow.meal));
+  const editWordsBlocked = parseInFlight || adding || flow.status === 'sent' || (flow.status === 'error' && (!!flow.clientId || !!flow.meal || !!flow.photo));
   const editWords = () => {
     if (flow.status === 'idle') return;
     // A card a follow-up moved on: one step back. The card goes back to how
@@ -2762,6 +2886,11 @@ export default function NutritionScreen() {
             <Pressable onPress={() => openSearch(mealForNow())} hitSlop={8} style={s.iconBox}>
               <Feather name="search" size={16} color={C.textSecondary} />
             </Pressable>
+            {showPhoto && (
+              <Pressable onPress={openPhoto} hitSlop={8} style={s.iconBox} accessibilityRole="button" accessibilityLabel="Log a meal photo">
+                <Feather name="camera" size={16} color={C.textSecondary} />
+              </Pressable>
+            )}
             <TextInput
               ref={inputRef}
               style={s.inputText}

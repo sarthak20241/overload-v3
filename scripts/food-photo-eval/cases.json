@@ -1,0 +1,16 @@
+[
+  {
+    "id": "smoke-label-bar",
+    "smoke": true,
+    "images": ["smoke/label.jpg"],
+    "note": "ate the whole bar",
+    "kind": "label",
+    "label": { "kcal": 380, "protein_g": 25, "carb_g": 45, "fat_g": 12 }
+  },
+  {
+    "id": "smoke-not-food",
+    "smoke": true,
+    "images": ["smoke/not-food.jpg"],
+    "kind": "not_food"
+  }
+]

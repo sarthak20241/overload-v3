@@ -185,6 +185,9 @@ export type AnalyticsEvent =
   | 'meal_undone'
   | 'meal_parse_started'
   | 'meal_parse_failed'
+  // Photo food logging (lib/foodPhoto): the camera opened, and photos sent.
+  | 'meal_photo_opened'
+  | 'meal_photo_sent'
   | 'meal_auto_log_skipped'
   | 'parse_proposal_accepted'
   | 'parse_proposal_edited'

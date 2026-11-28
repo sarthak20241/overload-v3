@@ -146,6 +146,16 @@ deno test --allow-all lib/foodThread.test.ts    # food box thread ids + card ver
 deno test --allow-all supabase/functions/ai-coach/foodThreads.test.ts # thread store: stable line ids, one conditional write, restore
 deno test --allow-all supabase/functions/ai-coach/foodAgentLater.test.ts # step 2: later messages to the agent, one-line edits in a fixed order, no line lost
 deno test --allow-all supabase/functions/ai-coach/recipe.test.ts # step 5: build_recipe, parts summed in code, an assumed oil asked about once (FOOD_BUILD_RECIPE)
+deno test --allow-all supabase/functions/ai-coach/foodPhoto.test.ts # meal photos (FOOD_PHOTO): size/type caps, flag off = today, label vs plate, the note beats the picture, one assumed fat, never a 0 for an unread label field, the final call gets the note and the read apart, a depth-sensor scale rides with its image
+deno test --allow-all lib/foodPhoto.test.ts     # food box camera button: flag + store build + no card; 1568 px upload; the camera screen's hand-off; distance and frame size from a depth map
+# Photo-read model comparison (FOOD_PHOTO_MODEL), API credit. Smoke cases only in
+# the repo; the weighed set lives outside it: CASES=<path>/cases.json. MODELS=, ONLY=, REPEAT=, EFFORT=, OUT=.
+# SCALE=1 sends each photo's measured scale (as a LiDAR phone would); NOTE=names sends a note
+# naming the foods; E2E=0 skips the Quick end-to-end calories.
+deno run -A scripts/food-photo-eval/run.ts
+# The weighed set: 40 Nutrition5k dishes (CC BY 4.0), downloaded outside the repo (N= for more).
+deno run -A scripts/food-photo-eval/nutrition5k.ts
+CASES=~/.config/overload/food-photos/nutrition5k/cases.json deno run -A scripts/food-photo-eval/run.ts
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_threads.check.ts # the food_threads migration on PGlite (real Postgres, downloads it; not in CI)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/food_card_lines_recipe.check.ts # food_card_lines.recipe: a dish keeps its parts in the thread store (PGlite; not in CI)
 deno test --allow-all --node-modules-dir=none supabase/migrations/checks/exercise_swap_tags.check.ts # exercises.target_muscle + swap_pattern: catalog names tagged, muscle_group untouched (PGlite; not in CI)

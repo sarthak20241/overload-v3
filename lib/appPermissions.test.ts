@@ -50,6 +50,17 @@ Deno.test("Android: storage permissions are blocked", () => {
   assert(blocked.includes("android.permission.WRITE_EXTERNAL_STORAGE"), "WRITE_EXTERNAL_STORAGE not blocked");
 });
 
+// Photo food logging (lib/foodPhoto.ts) sends meal photos to Drona, so the
+// camera prompt must say so and must not promise that nothing is uploaded.
+// Gallery pick is left out on purpose: the picker package is pinned out above.
+Deno.test("the camera prompt covers meal photos and does not promise nothing leaves the phone", () => {
+  const s = String(expo.ios?.infoPlist?.NSCameraUsageDescription ?? "");
+  assert(/meal/i.test(s), "the prompt names meal photos");
+  assert(/form/i.test(s), "the prompt still names the form check");
+  assert(!/everything is analysed on your phone/i.test(s), "no blanket on-device promise");
+  assert(/meal photos are sent/i.test(s), "the prompt says meal photos are sent");
+});
+
 Deno.test("the camera prompt Drona Eyes needs is still there", () => {
   assert(String(expo.ios?.infoPlist?.NSCameraUsageDescription ?? "").length > 0);
   assert((expo.android?.permissions ?? []).includes("android.permission.CAMERA"));
