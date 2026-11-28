@@ -158,13 +158,16 @@ function fail(kind: keyof typeof MESSAGES): TranscribeOutcome {
 }
 
 /** The words around the phone's own mic prompt. They must stay true: the
- *  clip goes to the speech service to be written out, Overload stores
- *  neither the audio nor what was said beyond what lands in the box. */
+ *  clip goes to the speech service (OpenAI) to be written out; for a food
+ *  log, the names of foods the user logs go with it as spelling hints; a
+ *  chat question's words are tidied by Drona's model (Anthropic) before
+ *  they land in the box. Overload keeps neither the audio nor the words. */
 export const MIC_COPY = {
   explainTitle: 'Talk instead of typing',
   explainBody:
     "Tap the mic, say it, tap again. I'll write it out in the box so you can check it before you send. " +
-    "The clip goes to our speech service to be turned into text, and we don't keep it.",
+    'The clip goes to our speech service to be turned into text, with the food names you log so it spells them right. ' +
+    "We don't keep the clip.",
   explainAllow: 'Turn on the mic',
   explainLater: 'Not now',
   settingsTitle: 'The mic is off for Overload',

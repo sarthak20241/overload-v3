@@ -5,9 +5,11 @@
 // for the user to read and send. Nothing is sent on the user's behalf.
 //
 // Order, cheapest refusal first, and nothing paid before it is allowed:
-//   method -> declared size -> Clerk JWT -> body (read with a byte limit) ->
-//   the clip's own size, format and length -> engine set up -> access ->
-//   rate-limit slot -> vocabulary -> engine -> (chat only) cleanup -> text.
+//   method -> declared size -> Clerk JWT -> engine set up -> access ->
+//   body (read with a byte limit) -> the clip's own size, format and length
+//   -> rate-limit slot -> vocabulary -> engine -> (chat only) cleanup -> text.
+// Access comes before the body, so a caller with no in-app AI never has a
+// megabyte buffered for them.
 // An engine failure that billed nothing gives its slot back.
 //
 // Privacy: the audio is held in memory for this request only. It is never
@@ -110,6 +112,23 @@ export async function handleTranscribe(req: Request, deps: TranscribeDeps): Prom
   if ("error" in claims) return done("unauthorized", json({ error: "Unauthorized" }, 401));
   ev.user_id = claims.sub;
 
+  const provider = deps.provider;
+  if (!provider) return done("not_configured", json({ error: "not_configured" }, 503));
+  ev.provider = provider.name;
+
+  // Voice follows the AI food log's gate: every signed-in plan with in-app
+  // AI (free, trial, Pro), never Connect, whose AI is the user's own.
+  const access = await deps.access(authHeader!);
+  if ("error" in access) return done("access_failed", json({ error: "Access check failed" }, 500));
+  const state = access.state ?? "unauthenticated";
+  ev.state = state;
+  if (state !== "paid" && state !== "trialing" && state !== "free") {
+    return done("no_access", json({ error: "drona_access_required", state }, 402));
+  }
+  if (access.ai_blocked === true) {
+    return done("connect_no_ai", json({ error: "pro_required", state: "free", feature: "voice", plan: "connect" }, 402));
+  }
+
   const body = await readLimited(req, MAX_BODY_BYTES);
   if (!body) return done("too_large", json({ error: "too_large", max_bytes: MAX_AUDIO_BYTES }, 413));
   let form: FormData;
@@ -139,24 +158,8 @@ export async function handleTranscribe(req: Request, deps: TranscribeDeps): Prom
   }
   if (audio.seconds < MIN_AUDIO_SECONDS) return done("too_short", json({ error: "too_short" }, 422));
 
-  const provider = deps.provider;
-  if (!provider) return done("not_configured", json({ error: "not_configured" }, 503));
-  ev.provider = provider.name;
   if (!provider.formats.includes(audio.format)) {
     return done("unsupported_format", json({ error: "unsupported_format", formats: provider.formats }, 415));
-  }
-
-  // Voice follows the AI food log's gate: every signed-in plan with in-app
-  // AI (free, trial, Pro), never Connect, whose AI is the user's own.
-  const access = await deps.access(authHeader!);
-  if ("error" in access) return done("access_failed", json({ error: "Access check failed" }, 500));
-  const state = access.state ?? "unauthenticated";
-  ev.state = state;
-  if (state !== "paid" && state !== "trialing" && state !== "free") {
-    return done("no_access", json({ error: "drona_access_required", state }, 402));
-  }
-  if (access.ai_blocked === true) {
-    return done("connect_no_ai", json({ error: "pro_required", state: "free", feature: "voice", plan: "connect" }, 402));
   }
 
   const slot = await deps.reserve(authHeader!, state === "free");

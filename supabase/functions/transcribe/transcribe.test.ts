@@ -43,9 +43,9 @@ function concat(...parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
 
 /** An audio trak: hdlr 'soun', mdhd (timescale + duration), and stsz with
  *  the number of AAC frames (1024 samples each). */
-function soundTrak(sampleRate: number, mdhdSeconds: number, frames: number): Uint8Array<ArrayBuffer> {
+function soundTrak(sampleRate: number, mdhdSeconds: number, frames: number, handler = "soun"): Uint8Array<ArrayBuffer> {
   const hdlr = new Uint8Array(24);
-  hdlr.set(new TextEncoder().encode("soun"), 8);
+  hdlr.set(new TextEncoder().encode(handler), 8);
   const mdhd = new Uint8Array(24);
   const mv = new DataView(mdhd.buffer);
   mv.setUint32(12, sampleRate);
@@ -63,7 +63,13 @@ function soundTrak(sampleRate: number, mdhdSeconds: number, frames: number): Uin
  *  and (with `track`) the audio trak whose frames a decoder actually plays. */
 function m4a(
   seconds: number,
-  opts: { version?: 0 | 1; mdatBytes?: number; moovFirst?: boolean; track?: { mdhdSeconds: number; frames: number } } = {},
+  opts: {
+    version?: 0 | 1;
+    mdatBytes?: number;
+    moovFirst?: boolean;
+    track?: { mdhdSeconds: number; frames: number } | null;
+    handler?: string;
+  } = {},
 ): Uint8Array<ArrayBuffer> {
   const version = opts.version ?? 0;
   const timescale = 44100;
@@ -79,7 +85,8 @@ function m4a(
   }
   const ftyp = box("ftyp", new TextEncoder().encode("M4A \0\0\0\0M4A mp42isom"));
   const mdat = box("mdat", new Uint8Array(opts.mdatBytes ?? 4000));
-  const moov = box("moov", concat(box("mvhd", mvhd), ...(opts.track ? [soundTrak(16000, opts.track.mdhdSeconds, opts.track.frames)] : [])));
+  const track = opts.track === undefined ? { mdhdSeconds: seconds, frames: Math.floor((seconds * 16000) / 1024) } : opts.track;
+  const moov = box("moov", concat(box("mvhd", mvhd), ...(track ? [soundTrak(16000, track.mdhdSeconds, track.frames, opts.handler)] : [])));
   return opts.moovFirst ? concat(ftyp, moov, mdat) : concat(ftyp, mdat, moov);
 }
 
@@ -148,6 +155,34 @@ Deno.test("audio: a header that claims less than the audio holds is read at the 
   // An honest track agrees with mvhd.
   const r3 = inspectAudio(m4a(3, { track: { mdhdSeconds: 3, frames: Math.round((3 * 16000) / 1024) } }));
   assert(r3.ok && Math.abs(r3.seconds - 3) < 0.1, JSON.stringify(r3));
+});
+
+Deno.test("audio: one movie and audio tracks only; a second moov or a video track is refused", () => {
+  // A long real moov first and a short decoy last.
+  const real = m4a(70);
+  const decoy = m4a(3);
+  const moovOf = (f: Uint8Array) => {
+    const v = new DataView(f.buffer, f.byteOffset);
+    let at = 0;
+    while (at < f.length) {
+      const size = v.getUint32(at);
+      if (String.fromCharCode(...f.slice(at + 4, at + 8)) === "moov") return f.slice(at, at + size);
+      at += size;
+    }
+    throw new Error("no moov");
+  };
+  const twoMoov = concat(real.slice(0, real.length - moovOf(real).length), moovOf(real), moovOf(decoy));
+  assertEquals(inspectAudio(twoMoov), { ok: false, reason: "bad_audio" });
+  assertEquals(inspectAudio(m4a(3, { handler: "vide" })), { ok: false, reason: "bad_audio" });
+  // A movie with no audio track has nothing a decoder plays: refused.
+  assertEquals(inspectAudio(m4a(3, { track: null })), { ok: false, reason: "bad_audio" });
+});
+
+Deno.test("audio: a wav whose data size is 0 (still streaming) is read from the bytes it holds", () => {
+  const w = wav(2);
+  new DataView(w.buffer).setUint32(40, 0, true);
+  const r = inspectAudio(w);
+  assert(r.ok && Math.abs(r.seconds - 2) < 0.01, JSON.stringify(r));
 });
 
 Deno.test("audio: a wav whose byte rate field lies is read from its sample format", () => {
@@ -420,6 +455,25 @@ Deno.test("handler: access follows the AI food log: free, trial and Pro yes; Con
   const broken = deps({ access: async () => ({ error: "rpc down" }) });
   assertEquals((await call(request({ bytes: m4a(3) }), broken)).status, 500);
   assertEquals(broken.provider.calls.length, 0);
+});
+
+Deno.test("handler: no access is refused before the body is read", async () => {
+  let pulled = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(c) {
+      pulled++;
+      if (pulled > 20) return c.close();
+      c.enqueue(new Uint8Array(1024));
+    },
+  });
+  const req = new Request("http://local/transcribe", {
+    method: "POST",
+    headers: { Authorization: "Bearer good", "Content-Type": "multipart/form-data; boundary=x" },
+    body,
+  });
+  const r = await call(req, deps({ access: async () => ({ state: "free", ai_blocked: true }) }));
+  assertEquals(r.status, 402);
+  assert(pulled <= 1, `read ${pulled} chunks of a refused body`);
 });
 
 Deno.test("handler: the rate limit says how long to wait, and the vendor is not called", async () => {

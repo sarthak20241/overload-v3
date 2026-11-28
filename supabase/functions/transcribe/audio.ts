@@ -4,10 +4,10 @@
 // vendor bills by the minute. So the length cap reads the file. A file's
 // header is also written by the client, so no single field is trusted: every
 // reading of the length is taken, and the LONGEST one counts.
-//   m4a (what the app records): moov/mvhd (the movie's length), and for each
-//     audio track (hdlr 'soun') its mdhd length and its frame count from
-//     stsz, which is what a decoder actually plays (AAC: 1024 samples a
-//     frame, at the track's timescale, which is its sample rate).
+//   m4a (what the app records): exactly one moov, audio tracks only. Its
+//     mvhd (the movie's length), and for each track its mdhd length and its
+//     frame count from stsz, which is what a decoder actually plays (AAC:
+//     1024 samples a frame, at the track's timescale, its sample rate).
 //   wav (what a Wispr Flow engine would need: 16 kHz PCM): the data chunk's
 //     bytes over the slower of the fmt chunk's byte-rate field and the rate
 //     its sample format works out to.
@@ -113,29 +113,43 @@ function headerSeconds(b: Uint8Array, f: number, e: number): { timescale: number
   return timescale > 0 ? { timescale, seconds: v.getUint32(f + 16) / timescale } : null;
 }
 
-/** Every length reading in the file; the longest counts. Null when the file
- *  has no movie header or a box runs past the end. */
+/** How many direct children of `type` sit in [from, to). */
+function countChildren(b: Uint8Array, from: number, to: number, type: string): number {
+  let n = 0;
+  walkBoxes(b, from, to, (t) => {
+    if (t === type) n++;
+  });
+  return n;
+}
+
+/** Every length reading in the file; the longest counts. Null (bad_audio)
+ *  when a box runs past the end, or the file is not what the app records:
+ *  exactly one moov, at least one track, every track audio ('soun'), one
+ *  mdia per track. A second moov or a video track is how a file would show a
+ *  decoder one length and this check another, so neither is accepted. */
 function m4aSeconds(b: Uint8Array): number | null {
   const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
   const readings: number[] = [];
-  let moov: [number, number] | null = null;
+  const moovs: [number, number][] = [];
   const ok = walkBoxes(b, 0, b.length, (type, from, to) => {
-    if (type === "moov") moov = [from, to];
+    if (type === "moov") moovs.push([from, to]);
   });
-  if (!ok || !moov) return null;
-  const [mf, mt] = moov as [number, number];
+  if (!ok || moovs.length !== 1) return null;
+  const [mf, mt] = moovs[0];
 
   let broken = false;
+  let tracks = 0;
   const innerOk = walkBoxes(b, mf, mt, (type, f, e) => {
     if (type === "mvhd") {
       const h = headerSeconds(b, f, e);
       if (!h) return (broken = true);
       readings.push(h.seconds);
     } else if (type === "trak") {
-      const mdia = child(b, f, e, "mdia");
-      if (!mdia) return;
+      tracks++;
+      if (countChildren(b, f, e, "mdia") !== 1) return (broken = true);
+      const mdia = child(b, f, e, "mdia")!;
       const hdlr = child(b, mdia[0], mdia[1], "hdlr");
-      if (!hdlr || hdlr[0] + 12 > hdlr[1] || fourcc(b, hdlr[0] + 8) !== "soun") return;
+      if (!hdlr || hdlr[0] + 12 > hdlr[1] || fourcc(b, hdlr[0] + 8) !== "soun") return (broken = true);
       const mdhd = child(b, mdia[0], mdia[1], "mdhd");
       const h = mdhd ? headerSeconds(b, mdhd[0], mdhd[1]) : null;
       if (!h) return (broken = true);
@@ -149,7 +163,7 @@ function m4aSeconds(b: Uint8Array): number | null {
       }
     }
   });
-  if (broken || !innerOk || readings.length === 0) return null;
+  if (broken || !innerOk || tracks === 0 || readings.length === 0) return null;
   return Math.max(...readings);
 }
 
@@ -172,9 +186,10 @@ function wavSeconds(b: Uint8Array): number | null {
       const candidates = [byteRateField, fromFormat].filter((r) => r > 0);
       rate = candidates.length ? Math.min(...candidates) : 0;
     } else if (id === "data") {
-      // Some recorders write the data size as 0 or past the end while
-      // streaming; what is actually in the file is the honest length.
-      dataBytes = Math.min(size, b.length - at - 8);
+      // Some recorders write the data size as 0, or past the end, while
+      // streaming. Then what is actually in the file is the length.
+      const held = b.length - at - 8;
+      dataBytes = size === 0 || size > held ? held : size;
       break;
     }
     at += 8 + size + (size % 2);

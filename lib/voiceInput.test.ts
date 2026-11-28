@@ -14,6 +14,7 @@ import {
   insertTranscript,
   levelFromMetering,
   MAX_CLIP_MS,
+  MIC_COPY,
   micStep,
   transcribeOutcome,
   VOICE_FROM_VERSION,
@@ -136,6 +137,15 @@ Deno.test("server answers: text, or the words to show", () => {
   }
   const rl = transcribeOutcome(429, { retry_after_seconds: 90 });
   if (!rl.ok) assert(rl.message.includes("2 min"), rl.message);
+});
+
+Deno.test("mic copy: says what leaves the phone, and no em dashes", () => {
+  // The clip, and for food logs the names of foods the user logs (sent as
+  // spelling hints), go to the speech service. Nothing is kept by Overload.
+  assert(/clip/i.test(MIC_COPY.explainBody));
+  assert(/food names|names of (the )?foods/i.test(MIC_COPY.explainBody), MIC_COPY.explainBody);
+  assert(/don't keep|do not keep/i.test(MIC_COPY.explainBody));
+  for (const v of Object.values(MIC_COPY)) assertFalse(v.includes("\u2014"));
 });
 
 Deno.test("meter: quiet is 0, loud is 1, missing is 0", () => {

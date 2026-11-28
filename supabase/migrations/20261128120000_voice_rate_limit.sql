@@ -19,7 +19,10 @@
 -- release_voice_slot(user) gives back the newest slot from the last two
 -- minutes, when the speech engine failed before it billed (a refused or
 -- broken call). Service role only: a client that could call it would hand
--- its own slots back and have no limit.
+-- its own slots back and have no limit. It frees the newest recent row, not
+-- that request's own row (rows carry no request id), so with two clips in
+-- flight it may free the other one's. Either way one slot comes back for one
+-- failed call, so the count stays right.
 --
 -- Same mechanics as the other AI buckets (0089, 20261026120000): SECURITY
 -- DEFINER, a per-user transaction advisory lock so a concurrent burst reads
