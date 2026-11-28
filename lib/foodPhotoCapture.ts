@@ -23,8 +23,14 @@ export async function preparePhoto(photo: Photo): Promise<PhotoShot> {
     try {
       const path = await small.saveToTemporaryFileAsync('jpg', PHOTO_JPEG_QUALITY);
       const uri = path.startsWith('file://') ? path : `file://${path}`;
-      const data = await new File(uri).base64();
-      return { media_type: 'image/jpeg', data, uri, width: small.width, height: small.height };
+      try {
+        const data = await new File(uri).base64();
+        return { media_type: 'image/jpeg', data, uri, width: small.width, height: small.height };
+      } catch (e) {
+        // The file is written but will never be a shot: remove it here.
+        discardShots([{ uri }]);
+        throw e;
+      }
     } finally {
       small.dispose();
     }

@@ -1410,6 +1410,8 @@ export default function NutritionScreen() {
     if (res.kind === 'cap') {
       track('limit_reached', { feature: 'meal_parse', kind: res.scope, used: res.used ?? null, limit: res.limit ?? null });
       const capLine = capNotice(res);
+      // The photo was never read: its turn goes, so nothing later reads it.
+      if (photo) turnsRef.current = withoutPhotoTurn(turnsRef.current);
       pushTurn('drona', capLine);
       if (prevReview) setFlow(stamp({ ...prevReview, notice: capLine, proposal: null }));
       else setFlow({ status: 'declined', raw: photo ? photoShownText(t) : t, message: capLine });
