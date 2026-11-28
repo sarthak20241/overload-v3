@@ -17,8 +17,9 @@
  * Permission: the first tap explains in our words, then the phone asks. A
  * "never" offers Settings. A "no" leaves typing as it was.
  *
- * States: idle (mic), recording (stop square, a ring that swells with the
- * voice level, a buzz at start), sending (spinner). It stops itself at 60 s.
+ * States: idle (mic), starting and sending (spinner), recording (stop square,
+ * a ring that swells with the voice level, a buzz at start). It stops itself
+ * at 60 s. A mic that has not started in 4 s gives up and says so.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Platform, Pressable, StyleSheet, View, type ViewStyle } from 'react-native';
@@ -58,6 +59,27 @@ function loadAudio(): ExpoAudio | null {
   return audioModule;
 }
 
+/** Back to playback, and hand the session back so music the recording
+ *  paused (Spotify, Apple Music) picks up again. */
+function releaseSession(audio: ExpoAudio) {
+  void audio
+    .setAudioModeAsync({ allowsRecording: false })
+    .then(() => audio.setIsAudioActiveAsync(false))
+    .catch(() => {});
+}
+
+/** A mic that has not started by now is not going to: say so instead of
+ *  leaving a button that seems to do nothing. (Seen on a simulator whose
+ *  Mac had not given it the microphone: prepare never returned.) */
+const START_BUDGET_MS = 4000;
+
+function withinMs<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('mic start timed out')), ms);
+    p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  });
+}
+
 const BINARY_HAS_MIC = voiceSupported({
   nativeVersion: Application.nativeApplicationVersion,
   platform: Platform.OS,
@@ -86,13 +108,12 @@ export function MicButton(props: Props) {
   return <MicButtonLive {...props} audio={audio} />;
 }
 
-type Phase = 'idle' | 'recording' | 'sending';
+type Phase = 'idle' | 'starting' | 'recording' | 'sending';
 
 function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style, audio }: Props & { audio: ExpoAudio }) {
   const { C } = useTheme();
   const toast = useToast();
   const recorder = audio.useAudioRecorder(VOICE_RECORDING as unknown as Parameters<ExpoAudio['useAudioRecorder']>[0]);
-  const status = audio.useAudioRecorderState(recorder, 100);
   const [phase, setPhase] = useState<Phase>('idle');
   const phaseRef = useRef<Phase>('idle');
   const mounted = useRef(true);
@@ -111,29 +132,49 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
       // session back. Nothing is uploaded.
       if (phaseRef.current === 'recording') {
         void recorder.stop().then(() => deleteClip(recorder.uri), () => {});
-        void audio.setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+        releaseSession(audio);
       }
     };
   }, []);
 
+  // The level ring and the minute cap read the recorder only while it
+  // records. Polling it any other time (useAudioRecorderState polls from
+  // mount) asks a recorder that may be mid-prepare, and on a simulator whose
+  // prepare never returned that froze the JS thread.
   const level = useSharedValue(0);
+  const [heldMs, setHeldMs] = useState(0);
   useEffect(() => {
-    level.value = withTiming(phase === 'recording' ? levelFromMetering(status.metering) : 0, { duration: 120 });
-  }, [phase, status.metering]);
+    if (phase !== 'recording') {
+      level.value = withTiming(0, { duration: 120 });
+      return;
+    }
+    const t = setInterval(() => {
+      try {
+        const st = recorder.getStatus();
+        level.value = withTiming(levelFromMetering(st.metering), { duration: 120 });
+        setHeldMs(st.durationMillis ?? 0);
+      } catch {
+        /* a status read that fails leaves the ring still */
+      }
+    }, 100);
+    return () => clearInterval(t);
+  }, [phase]);
   const ringStyle = useAnimatedStyle(() => ({
     opacity: level.value > 0 ? 0.25 + level.value * 0.35 : 0,
     transform: [{ scale: 1 + level.value * 0.55 }],
   }));
 
   const begin = useCallback(async () => {
+    setP('starting');
+    setHeldMs(0);
     try {
       await audio.setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-      await recorder.prepareToRecordAsync();
+      await withinMs(recorder.prepareToRecordAsync(), START_BUDGET_MS);
       recorder.record();
       haptics.tap();
       setP('recording');
     } catch {
-      void audio.setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+      releaseSession(audio);
       setP('idle');
       toast.show({ type: 'error', text: "The mic didn't start. Try again, or type it." });
     }
@@ -141,7 +182,7 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
 
   const finish = useCallback(async () => {
     if (phaseRef.current !== 'recording') return;
-    const heldMs = recorder.getStatus().durationMillis ?? 0;
+    const clipMs = recorder.getStatus().durationMillis ?? 0;
     setP('sending');
     haptics.tick();
     try {
@@ -149,9 +190,9 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
     } catch {
       /* the file below is what counts */
     }
-    void audio.setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+    releaseSession(audio);
     const uri = recorder.uri;
-    if (!uri || heldMs < MIN_CLIP_MS) {
+    if (!uri || clipMs < MIN_CLIP_MS) {
       deleteClip(uri);
       setP('idle');
       return;
@@ -165,12 +206,12 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
 
   // A minute is the cap: stop and write out what is there.
   useEffect(() => {
-    if (phase === 'recording' && (status.durationMillis ?? 0) >= MAX_CLIP_MS) void finish();
-  }, [phase, status.durationMillis, finish]);
+    if (phase === 'recording' && heldMs >= MAX_CLIP_MS) void finish();
+  }, [phase, heldMs, finish]);
 
   const onPress = useCallback(async () => {
     if (phaseRef.current === 'recording') return void finish();
-    if (phaseRef.current === 'sending') return;
+    if (phaseRef.current === 'sending' || phaseRef.current === 'starting') return;
     let perm: Awaited<ReturnType<ExpoAudio['getRecordingPermissionsAsync']>> | null = null;
     try {
       perm = await audio.getRecordingPermissionsAsync();
@@ -215,15 +256,17 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
       disabled={disabled && !recording}
       hitSlop={8}
       accessibilityRole="button"
-      accessibilityLabel={recording ? 'Stop and write it out' : phase === 'sending' ? 'Writing out what you said' : 'Talk instead of typing'}
-      accessibilityState={{ busy: phase === 'sending', disabled: !!disabled && !recording }}
+      accessibilityLabel={
+        recording ? 'Stop and write it out' : phase === 'sending' ? 'Writing out what you said' : phase === 'starting' ? 'Starting the mic' : 'Talk instead of typing'
+      }
+      accessibilityState={{ busy: phase === 'sending' || phase === 'starting', disabled: !!disabled && !recording }}
       style={[{ width: size, height: size, opacity: disabled && !recording ? 0.4 : 1 }, s.wrap, style]}
     >
       <Animated.View
         pointerEvents="none"
         style={[StyleSheet.absoluteFill, { borderRadius: size / 2, backgroundColor: C.dangerText }, ringStyle]}
       />
-      {phase === 'sending' ? (
+      {phase === 'sending' || phase === 'starting' ? (
         <ActivityIndicator size="small" color={tint} />
       ) : recording ? (
         <View style={[s.stop, { backgroundColor: C.dangerText }]} />
@@ -238,3 +281,4 @@ const s = StyleSheet.create({
   wrap: { alignItems: 'center', justifyContent: 'center' },
   stop: { width: 11, height: 11, borderRadius: 2.5 },
 });
+
