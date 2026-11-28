@@ -124,6 +124,13 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
     if (mounted.current) setPhase(p);
   };
 
+  // The unmount cleanup reads these through refs, so it acts on the
+  // recorder in use at unmount, not the one from the first render.
+  const recorderRef = useRef(recorder);
+  recorderRef.current = recorder;
+  const audioRef = useRef(audio);
+  audioRef.current = audio;
+
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -131,8 +138,9 @@ function MicButtonLive({ purpose, onText, disabled, size = 28, iconColor, style,
       // Leaving the screen mid-clip: stop, drop the file, give the audio
       // session back. Nothing is uploaded.
       if (phaseRef.current === 'recording') {
-        void recorder.stop().then(() => deleteClip(recorder.uri), () => {});
-        releaseSession(audio);
+        const r = recorderRef.current;
+        void r.stop().then(() => deleteClip(r.uri), () => {});
+        releaseSession(audioRef.current);
       }
     };
   }, []);

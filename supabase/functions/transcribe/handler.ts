@@ -33,12 +33,12 @@ export interface TranscribeDeps {
   reserve(
     authHeader: string,
     free: boolean,
-  ): Promise<{ ok: true } | { ok: false; retryAfterSeconds: number; reason: string } | { error: string }>;
+  ): Promise<{ ok: true; slotId: number } | { ok: false; retryAfterSeconds: number; reason: string } | { error: string }>;
   /** The names of foods this user logs, most recent first. */
   userFoods(authHeader: string): Promise<string[]>;
-  /** Give back the slot this request took (the engine failed before it
-   *  billed). Runs as the service role: clients cannot call it. */
-  release(userId: string): Promise<void>;
+  /** Give back the slot this request was granted (the engine failed before
+   *  it billed). Runs as the service role: clients cannot call it. */
+  release(userId: string, slotId: number): Promise<void>;
   provider: SttProvider | null;
   /** Null turns the chat cleanup off (no Anthropic key). */
   cleanup: CleanupCall | null;
@@ -191,7 +191,7 @@ export async function handleTranscribe(req: Request, deps: TranscribeDeps): Prom
     ev.reason = heard.reason;
     if (REFUNDED.has(heard.reason)) {
       try {
-        await deps.release(claims.sub);
+        await deps.release(claims.sub, slot.slotId);
         ev.slot_released = true;
       } catch {
         ev.slot_released = false;

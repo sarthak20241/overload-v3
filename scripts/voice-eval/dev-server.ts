@@ -30,7 +30,7 @@ Deno.serve({ port }, (req) =>
   handleTranscribe(req, {
     verify: async (h) => (h?.startsWith("Bearer ") ? { sub: "dev" } : { error: "no token" }),
     access: async () => ({ state: "free" }),
-    reserve: async () => ({ ok: true }),
+    reserve: async () => ({ ok: true, slotId: 0 }),
     userFoods: async () => [],
     release: async () => {},
     provider: {

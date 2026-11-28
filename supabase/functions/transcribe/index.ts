@@ -102,7 +102,7 @@ Deno.serve(async (req) => {
       });
       if (error) return { error: error.message ?? "reserve failed" };
       const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
-      if (row?.inserted === true) return { ok: true };
+      if (row?.inserted === true && row.slot_id != null) return { ok: true, slotId: Number(row.slot_id) };
       return {
         ok: false,
         retryAfterSeconds: Math.max(1, Number(row?.retry_after_seconds ?? 0) || 1),
@@ -121,10 +121,10 @@ Deno.serve(async (req) => {
         ...((meals.data ?? []) as { name?: string }[]).map((r) => r.name ?? ""),
       ].filter(Boolean);
     },
-    release: async (uid) => {
+    release: async (uid, slotId) => {
       // Service role, with the id from the verified JWT: this RPC is not
       // granted to clients, or they could hand their own slots back.
-      const { error } = await admin.rpc("release_voice_slot", { p_user_id: uid });
+      const { error } = await admin.rpc("release_voice_slot", { p_user_id: uid, p_slot_id: slotId });
       if (error) throw new Error(error.message ?? "release failed");
     },
     provider: provider

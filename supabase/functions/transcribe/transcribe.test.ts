@@ -341,7 +341,7 @@ Deno.test("cleanup: the model's answer is used only when the guard passes; any f
 
 type Logged = Record<string, unknown>;
 
-type TestDeps = TranscribeDeps & { logs: Logged[]; reserved: number; released: number; provider: ReturnType<typeof fakeProvider> };
+type TestDeps = TranscribeDeps & { logs: Logged[]; reserved: number; released: number; releasedIds: number[]; provider: ReturnType<typeof fakeProvider> };
 
 function deps(over: Partial<TranscribeDeps> = {}): TestDeps {
   const logs: Logged[] = [];
@@ -352,14 +352,16 @@ function deps(over: Partial<TranscribeDeps> = {}): TestDeps {
     provider,
     verify: async (h: string | null) => (h === "Bearer good" ? { sub: "user_1" } : { error: "bad token" }),
     access: async () => ({ state: "free" }),
-    reserve: async () => {
+    reserve: async (): Promise<{ ok: true; slotId: number }> => {
       d.reserved++;
-      return { ok: true as const };
+      return { ok: true as const, slotId: 41 + d.reserved };
     },
     userFoods: async () => ["Paneer Bhurji"],
     released: 0,
-    release: async () => {
+    releasedIds: [] as number[],
+    release: async (_uid: string, slotId: number) => {
       d.released++;
+      d.releasedIds.push(slotId);
     },
     cleanup: async (raw: string) => ({ ok: true as const, text: raw.replace(/^um /, "") }),
     log: (e: Logged) => logs.push(e),
@@ -573,6 +575,8 @@ Deno.test("handler: a slot is given back when the engine fails before billing, n
     const d = deps({ provider: fakeProvider({ fail }) });
     await call(request({ bytes: m4a(3) }), d);
     assertEquals([fail, d.released], [fail, back]);
+    // The slot given back is the one this request was granted.
+    if (back) assertEquals(d.releasedIds, [42]);
   }
   const ok = deps();
   await call(request({ bytes: m4a(3) }), ok);

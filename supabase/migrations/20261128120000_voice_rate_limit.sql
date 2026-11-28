@@ -16,13 +16,10 @@
 -- function always passes its own numbers. The limit lives in the edge
 -- function, not here; this function only makes the count race-free.
 --
--- release_voice_slot(user) gives back the newest slot from the last two
--- minutes, when the speech engine failed before it billed (a refused or
--- broken call). Service role only: a client that could call it would hand
--- its own slots back and have no limit. It frees the newest recent row, not
--- that request's own row (rows carry no request id), so with two clips in
--- flight it may free the other one's. Either way one slot comes back for one
--- failed call, so the count stays right.
+-- release_voice_slot(user, slot_id) gives back the slot that request was
+-- granted (reserve returns its id), when the speech engine failed before it
+-- billed (a refused or broken call). Service role only: a client that could
+-- call it would hand its own slots back and have no limit.
 --
 -- Same mechanics as the other AI buckets (0089, 20261026120000): SECURITY
 -- DEFINER, a per-user transaction advisory lock so a concurrent burst reads
@@ -44,24 +41,32 @@ create table if not exists public.voice_rate_limit (
   request_at timestamptz not null default now()
 );
 
+-- Each granted slot has an id, so a failed request gives back its own row.
+alter table public.voice_rate_limit
+  add column if not exists id bigint generated always as identity;
+
 create index if not exists idx_voice_rl_recent
   on public.voice_rate_limit (user_id, request_at desc);
 
 alter table public.voice_rate_limit enable row level security;
 revoke all on public.voice_rate_limit from anon, authenticated;
 
+-- Dropped first: the return type gained slot_id, which create or replace
+-- cannot change on a function that already exists.
+drop function if exists public.try_reserve_voice_slot(int, int, int);
 create or replace function public.try_reserve_voice_slot(
   p_burst         int,
   p_burst_seconds int,
   p_day_cap       int
 )
-returns table (inserted boolean, current_count int, retry_after_seconds int, reason text)
+returns table (inserted boolean, current_count int, retry_after_seconds int, reason text, slot_id bigint)
 language plpgsql
 volatile
 security definer
 set search_path = public
 as $$
 declare
+  v_id         bigint;
   v_uid        text := current_clerk_user_id();
   v_now        timestamptz := now();
   v_day_n      int;
@@ -71,7 +76,7 @@ declare
   v_wait_day   int := 0;
 begin
   if v_uid is null then
-    return query select false, 0, 0, 'unauthenticated'::text;
+    return query select false, 0, 0, 'unauthenticated'::text, null::bigint;
     return;
   end if;
 
@@ -114,15 +119,17 @@ begin
     current_count := v_day_n;
     retry_after_seconds := greatest(v_wait_burst, v_wait_day, 1);
     reason := case when v_wait_day >= v_wait_burst then 'day_cap' else 'burst' end;
+    slot_id := null;
     return next;
     return;
   end if;
 
-  insert into voice_rate_limit(user_id) values (v_uid);
+  insert into voice_rate_limit(user_id) values (v_uid) returning id into v_id;
   inserted := true;
   current_count := v_day_n + 1;
   retry_after_seconds := 0;
   reason := null;
+  slot_id := v_id;
   return next;
 end;
 $$;
@@ -131,7 +138,8 @@ revoke all on function public.try_reserve_voice_slot(int, int, int) from public;
 revoke all on function public.try_reserve_voice_slot(int, int, int) from anon;
 grant execute on function public.try_reserve_voice_slot(int, int, int) to authenticated;
 
-create or replace function public.release_voice_slot(p_user_id text)
+drop function if exists public.release_voice_slot(text);
+create or replace function public.release_voice_slot(p_user_id text, p_slot_id bigint)
 returns boolean
 language plpgsql
 volatile
@@ -142,20 +150,14 @@ declare
   v_n int;
 begin
   perform pg_advisory_xact_lock(hashtext('voice_slot:' || p_user_id));
-  delete from voice_rate_limit
-   where ctid = (
-     select ctid from voice_rate_limit
-      where user_id = p_user_id and request_at > now() - interval '2 minutes'
-      order by request_at desc
-      limit 1
-   );
+  delete from voice_rate_limit where id = p_slot_id and user_id = p_user_id;
   get diagnostics v_n = row_count;
   return v_n > 0;
 end;
 $$;
 
-revoke all on function public.release_voice_slot(text) from public, anon, authenticated;
-grant execute on function public.release_voice_slot(text) to service_role;
+revoke all on function public.release_voice_slot(text, bigint) from public, anon, authenticated;
+grant execute on function public.release_voice_slot(text, bigint) to service_role;
 
 create or replace function public.delete_voice_rate_limit_on_profile_delete()
 returns trigger

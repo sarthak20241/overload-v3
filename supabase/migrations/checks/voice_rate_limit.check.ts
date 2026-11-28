@@ -33,7 +33,7 @@ async function db() {
   const as = async (uid: string | null) =>
     await pg.exec(`select set_config('request.jwt.claims', '${uid ? JSON.stringify({ sub: uid }) : "{}"}', false)`);
   const reserve = async (burst = 3, burstSeconds = 300, dayCap = 5) =>
-    (await q<{ inserted: boolean; current_count: number; retry_after_seconds: number; reason: string | null }>(
+    (await q<{ inserted: boolean; current_count: number; retry_after_seconds: number; reason: string | null; slot_id: number | null }>(
       `select * from try_reserve_voice_slot($1, $2, $3)`,
       [burst, burstSeconds, dayCap],
     ))[0];
@@ -119,28 +119,36 @@ Deno.test("account delete takes the voice rows, and only that account's", async 
   assertEquals(await q(`select user_id from voice_rate_limit`), [{ user_id: "u2" }]);
 });
 
-Deno.test("release: gives back the newest slot of that user from the last 2 minutes, nothing else", async () => {
-  const { q, as, reserve, age } = await db();
+Deno.test("reserve: a granted slot has an id, a refused one has none", async () => {
+  const { as, reserve } = await db();
   await as("u1");
-  await reserve(10);
-  await age("u1", 600); // an older clip, 10 min ago
-  await reserve(10); // the clip that failed
+  const a = await reserve(1);
+  assert(a.inserted && typeof a.slot_id === "number", JSON.stringify(a));
+  const b = await reserve(1);
+  assertEquals([b.inserted, b.slot_id], [false, null]);
+});
+
+Deno.test("release: frees exactly the failed request's slot, for that user only", async () => {
+  const { q, as, reserve } = await db();
+  await as("u1");
+  const failed = (await reserve(10)).slot_id!;
+  const later = (await reserve(10)).slot_id!; // another clip, reserved after
   await as("u2");
-  await reserve(10);
+  const other = (await reserve(10)).slot_id!;
   await as(null);
-  assertEquals((await q(`select release_voice_slot('u1') v`))[0].v, true);
-  const left = await q<{ user_id: string; old: boolean }>(
-    `select user_id, request_at < now() - interval '5 minutes' as old from voice_rate_limit order by user_id`,
-  );
-  assertEquals(left, [{ user_id: "u1", old: true }, { user_id: "u2", old: false }]);
-  // Nothing recent left for u1: a second release frees nothing.
-  assertEquals((await q(`select release_voice_slot('u1') v`))[0].v, false);
+  // Another user's id under u1's name frees nothing.
+  assertEquals((await q(`select release_voice_slot('u1', $1) v`, [other]))[0].v, false);
+  assertEquals((await q(`select release_voice_slot('u1', $1) v`, [failed]))[0].v, true);
+  const left = await q<{ id: number }>(`select id from voice_rate_limit order by id`);
+  assertEquals(left.map((r) => Number(r.id)), [later, other].map(Number).sort((x, y) => x - y));
+  // Already freed: a second release frees nothing.
+  assertEquals((await q(`select release_voice_slot('u1', $1) v`, [failed]))[0].v, false);
 });
 
 Deno.test("release: service role only; a signed-in user cannot hand back slots", async () => {
   const { q } = await db();
   const fn = (role: string) =>
-    q<{ ok: boolean }>(`select has_function_privilege($1, 'public.release_voice_slot(text)', 'execute') ok`, [role]);
+    q<{ ok: boolean }>(`select has_function_privilege($1, 'public.release_voice_slot(text,bigint)', 'execute') ok`, [role]);
   assertEquals((await fn("anon"))[0].ok, false);
   assertEquals((await fn("authenticated"))[0].ok, false);
   assertEquals((await fn("service_role"))[0].ok, true);
