@@ -51,10 +51,13 @@ export default function FoodPhotoScreen() {
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ meal?: string; day?: string }>();
   const meal: PendingPhotoMeal = isMeal(params.meal) ? params.meal : 'snack';
-  // A link's day that is not a real date ("2026-99-99") falls back to today.
+  // A link's day that is not a real date ("2026-99-99", "2026-02-31") falls
+  // back to today: the parsed date must read back as the same day.
   const day = useMemo(() => {
-    const d = typeof params.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(params.day) ? new Date(`${params.day}T12:00:00`) : null;
-    return d && !Number.isNaN(d.getTime()) ? d : new Date();
+    const m = typeof params.day === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(params.day) : null;
+    if (!m) return new Date();
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12);
+    return d.getFullYear() === Number(m[1]) && d.getMonth() === Number(m[2]) - 1 && d.getDate() === Number(m[3]) ? d : new Date();
   }, [params.day]);
 
   // The same check as the food box's button (lib/foodPhoto), so a deep link
@@ -136,7 +139,8 @@ export default function FoodPhotoScreen() {
   }, []);
 
   const send = useCallback(() => {
-    if (!shots.length) return;
+    // Once: a second tap would hand the same photos off again.
+    if (!shots.length || sentRef.current) return;
     haptics.tap();
     track('meal_photo_sent', { images: shots.length, has_note: note.trim().length > 0, note_chars: note.trim().length });
     setPendingPhoto({ images: shots, note, meal, day }, Date.now(), discardShots);
