@@ -22,6 +22,7 @@ import {
   voiceSupported,
 } from "./voiceInput.ts";
 import { speakableText } from "./voiceSpeech.ts";
+import { MAX_AUDIO_SECONDS } from "../supabase/functions/transcribe/audio.ts";
 
 Deno.test("transcript: fills an empty box", () => {
   assertEquals(insertTranscript("", "two roti and dal"), "two roti and dal");
@@ -108,6 +109,12 @@ Deno.test("recording: small mono AAC in an m4a, capped at a minute", () => {
   assert(VOICE_RECORDING.isMeteringEnabled);
   // 60 s at 32 kbps is 240 KB: under the server's 1 MB cap with room.
   assert((VOICE_RECORDING.bitRate / 8) * (MAX_CLIP_MS / 1000) < 1_000_000 / 2);
+});
+
+Deno.test("recording: the app stops well inside the server's length cap", () => {
+  // The app checks its length on a 100 ms poll, so a clip can run a little
+  // past MAX_CLIP_MS. The server must allow at least a second more.
+  assert(MAX_CLIP_MS + 1000 <= MAX_AUDIO_SECONDS * 1000, `${MAX_CLIP_MS} ms vs ${MAX_AUDIO_SECONDS} s`);
 });
 
 Deno.test("server answers: text, or the words to show", () => {
